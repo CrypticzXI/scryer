@@ -136,11 +136,13 @@ export const CalendarContainer = memo(function CalendarContainer({
     <div className="flex h-full min-h-0 flex-col">
       <Suspense
         fallback={
-          <Card>
-            <CardContent className="p-8 text-center text-muted-foreground">
-              {t("label.loading")}
-            </CardContent>
-          </Card>
+          <div className="flex min-h-0 flex-1 flex-col bg-[var(--scry-surfE)] px-4 py-5 sm:px-6 lg:px-7">
+            <Card className="rounded-none border-0 bg-transparent shadow-none">
+              <CardContent className="p-0 text-center text-muted-foreground">
+                {t("label.loading")}
+              </CardContent>
+            </Card>
+          </div>
         }
       >
         <CalendarView

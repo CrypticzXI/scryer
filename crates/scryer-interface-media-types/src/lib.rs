@@ -2191,7 +2191,7 @@ pub enum UiSettingsFacetValue {
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
-#[graphql(rename_items = "kebab-case")]
+#[graphql(rename_items = "camelCase")]
 pub enum UiTableViewModeValue {
     Compact,
     PosterTable,

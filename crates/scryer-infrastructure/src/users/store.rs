@@ -594,7 +594,8 @@ fn row_to_ui_table_column(row: &SqlRow) -> AppResult<UiTableColumnSetting> {
 }
 
 fn parse_ui_theme(value: String) -> AppResult<UiTheme> {
-    UiTheme::parse(&value).ok_or_else(|| AppError::Repository(format!("invalid UI theme {value:?}")))
+    UiTheme::parse(&value)
+        .ok_or_else(|| AppError::Repository(format!("invalid UI theme {value:?}")))
 }
 
 fn parse_ui_density(value: String) -> AppResult<UiDensity> {
@@ -703,7 +704,9 @@ mod tests {
     use std::sync::Arc;
 
     use chrono::Utc;
-    use scryer_application::{UserExternalAccountRepository, UserRepository};
+    use scryer_application::{
+        UserExternalAccountRepository, UserRepository, UserUiSettingsRepository,
+    };
     use scryer_domain::{AppPermissionMask, LibraryPermissionMask, UserAuthorization};
     use sqlx::sqlite::SqlitePoolOptions;
     use tokio::sync::Mutex;
@@ -752,6 +755,40 @@ mod tests {
         .execute(&pool)
         .await
         .expect("create user_external_accounts table");
+        sqlx::query(
+            "CREATE TABLE user_ui_settings (
+                user_id TEXT PRIMARY KEY NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                theme TEXT NOT NULL DEFAULT 'dark',
+                highlight_color TEXT,
+                secondary_color TEXT,
+                high_contrast_mode INTEGER NOT NULL DEFAULT 0,
+                reduce_motion INTEGER NOT NULL DEFAULT 0,
+                density TEXT NOT NULL DEFAULT 'comfortable',
+                sidebar_mode TEXT NOT NULL DEFAULT 'expanded',
+                default_landing_view TEXT NOT NULL DEFAULT 'movies',
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )",
+        )
+        .execute(&pool)
+        .await
+        .expect("create user_ui_settings table");
+        sqlx::query(
+            "CREATE TABLE user_ui_table_columns (
+                user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                facet TEXT NOT NULL,
+                table_view_mode TEXT NOT NULL,
+                column_id TEXT NOT NULL,
+                column_order INTEGER NOT NULL,
+                visible INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                PRIMARY KEY (user_id, facet, table_view_mode, column_id)
+            )",
+        )
+        .execute(&pool)
+        .await
+        .expect("create user_ui_table_columns table");
         sqlx::query(
             "CREATE UNIQUE INDEX idx_user_external_accounts_provider_identity
                ON user_external_accounts(provider, connection_id, external_user_id)",
@@ -820,6 +857,93 @@ mod tests {
             created_at: now,
             updated_at: now,
         }
+    }
+
+    #[tokio::test]
+    async fn ui_settings_defaults_upsert_replace_and_cascade() {
+        let store = test_store().await;
+        let user = UserRepository::create(&store, test_user("ui_user"))
+            .await
+            .expect("create user");
+
+        let missing = UserUiSettingsRepository::get_by_user_id(&store, &user.id)
+            .await
+            .expect("load missing UI settings");
+        assert!(missing.is_none());
+
+        let stored = UserUiSettingsRepository::upsert(
+            &store,
+            &user.id,
+            UiSettingsUpdate {
+                theme: UiTheme::Pride,
+                highlight_color: Some("#ff3366".to_string()),
+                secondary_color: Some("#2277aa".to_string()),
+                high_contrast_mode: true,
+                reduce_motion: true,
+                density: UiDensity::Compact,
+                sidebar_mode: UiSidebarMode::Collapsed,
+                default_landing_view: UiDefaultLandingView::Calendar,
+                table_columns: vec![
+                    UiTableColumnSetting {
+                        facet: UiSettingsFacet::Movies,
+                        table_view_mode: UiTableViewMode::Compact,
+                        column_id: "name".to_string(),
+                        column_order: 0,
+                        visible: true,
+                    },
+                    UiTableColumnSetting {
+                        facet: UiSettingsFacet::Series,
+                        table_view_mode: UiTableViewMode::PosterTable,
+                        column_id: "episodes".to_string(),
+                        column_order: 1,
+                        visible: false,
+                    },
+                ],
+            },
+        )
+        .await
+        .expect("upsert UI settings");
+        assert_eq!(stored.user_id, user.id);
+        assert_eq!(stored.theme, UiTheme::Pride);
+        assert_eq!(stored.table_columns.len(), 2);
+        assert_eq!(stored.table_columns[0].column_id, "name");
+        assert_eq!(stored.table_columns[1].column_id, "episodes");
+
+        let replaced = UserUiSettingsRepository::upsert(
+            &store,
+            &user.id,
+            UiSettingsUpdate {
+                theme: UiTheme::System,
+                highlight_color: None,
+                secondary_color: None,
+                high_contrast_mode: false,
+                reduce_motion: false,
+                density: UiDensity::Comfortable,
+                sidebar_mode: UiSidebarMode::Expanded,
+                default_landing_view: UiDefaultLandingView::Movies,
+                table_columns: vec![UiTableColumnSetting {
+                    facet: UiSettingsFacet::Anime,
+                    table_view_mode: UiTableViewMode::Compact,
+                    column_id: "status".to_string(),
+                    column_order: 0,
+                    visible: true,
+                }],
+            },
+        )
+        .await
+        .expect("replace UI settings");
+        assert_eq!(replaced.theme, UiTheme::System);
+        assert_eq!(replaced.table_columns.len(), 1);
+        assert_eq!(replaced.table_columns[0].facet, UiSettingsFacet::Anime);
+        assert_eq!(replaced.table_columns[0].column_id, "status");
+
+        UserRepository::delete(&store, &user.id)
+            .await
+            .expect("delete user");
+        let after_delete = UserUiSettingsRepository::get_by_user_id(&store, &user.id)
+            .await
+            .expect("load UI settings after cascade");
+        assert!(after_delete.is_none());
     }
 
     #[tokio::test]

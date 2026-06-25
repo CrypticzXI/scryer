@@ -131,9 +131,11 @@ const ja: LocaleDictionary = {
     "Scryer will return to open admin mode after reload.",
   "settings.securityDisableConfirmAction": "Disable",
   "settings.securityCredentialsInvalid": "Invalid username or password.",
-  "settings.securityCredentialsInsufficient": "That account cannot manage settings.",
+  "settings.securityCredentialsInsufficient":
+    "That account cannot manage settings.",
   "settings.securityEnabledSuccess": "Form login enabled.",
-  "settings.securityDisabledSuccess": "Form login disabled. Reloading into open admin mode…",
+  "settings.securityDisabledSuccess":
+    "Form login disabled. Reloading into open admin mode…",
   "settings.securityPreferenceSaved": "Security preference saved.",
   "settings.securityLoadFailed": "Failed to load security settings.",
   "settings.securitySaveFailed": "Failed to save security settings.",
@@ -684,6 +686,27 @@ const ja: LocaleDictionary = {
   "title.loading": "データ未読み込み",
   "title.noManaged": "このセクションにタイトルがありません。",
   "title.statusTemplate": "{{count}}件のタイトルを読み込みました。",
+  "title.contextPanelTitle": "タイトル詳細",
+  "title.contextEmptyTitle": "タイトルが選択されていません",
+  "title.contextEmptyBody": "表示するプレビュー詳細はありません。",
+  "title.contextForYouTitle": "ライブラリからのおすすめ",
+  "title.contextForYouSubtitle": "このカタログに戻るための見慣れた入口です。",
+  "title.contextForYouTop": "トップ",
+  "title.contextForYouGenre": "{{genre}} が好きなあなたへ",
+  "title.contextForYouRecent": "最近追加",
+  "title.contextForYouEmptyTitle": "まだおすすめはありません",
+  "title.contextForYouEmptyBody":
+    "タイトルを追加またはスキャンして、このライブラリ表示を作成してください。",
+  "title.contextMoreLikeThis": "似ているタイトル",
+  "title.contextMoreLikeThisScope": "現在の表示から",
+  "title.contextOverview": "概要",
+  "title.contextLibrary": "ライブラリ",
+  "title.contextQuality": "品質",
+  "title.contextRootFolder": "ルートフォルダー",
+  "title.contextSize": "サイズ",
+  "title.contextEpisodes": "エピソード",
+  "title.contextAdded": "追加済み",
+  "title.openOverview": "概要を開く",
   "title.table.facet": "タイプ",
   "title.table.monitored": "モニタリング",
   "title.table.poster": "ポスター",
@@ -692,6 +715,8 @@ const ja: LocaleDictionary = {
   "title.table.status": "状態",
   "title.table.size": "サイズ",
   "title.viewModeToggle": "表示モード",
+  "title.viewModeCompact": "コンパクト",
+  "title.viewModePosterTable": "リスト",
   "title.viewModeTable": "テーブル表示",
   "title.viewModePoster": "ポスター表示",
   "title.interactiveSearchComingSoon": "手動検索は近日公開予定です。",
@@ -699,8 +724,7 @@ const ja: LocaleDictionary = {
   "title.episodeMonitored": "エピソードモニタリング中",
   "title.deleteFilesOnDisk": "ディスク上のファイルを削除",
   "title.seasonsAndEpisodes": "シーズンとエピソード",
-  "title.noTrackedSeasons":
-    "この作品ではまだ追跡中のシーズンがありません。",
+  "title.noTrackedSeasons": "この作品ではまだ追跡中のシーズンがありません。",
   "title.fetchingData": "データを取得中",
   "title.filesOnDisk": "ディスク上のファイル",
   "title.noFilesTracked": "追跡中のファイルはありません。",
@@ -724,7 +748,8 @@ const ja: LocaleDictionary = {
   "title.movieDetails": "映画の詳細",
   "title.searchingReleases": "インデクサーでリリースを検索中…",
   "title.noReleasesFound": "{{name}} のリリースは見つかりませんでした。",
-  "title.searchNeedsDownloadClientTitle": "検索にはダウンロードクライアントが必要です",
+  "title.searchNeedsDownloadClientTitle":
+    "検索にはダウンロードクライアントが必要です",
   "title.searchNeedsDownloadClientDescription":
     "このタイトルページで検索またはインタラクティブ検索を使う前に、少なくとも 1 つのダウンロードクライアントを設定してください。",
   "title.searchNeedsDownloadClientAction": "ダウンロードクライアントを開く",
@@ -802,6 +827,7 @@ const ja: LocaleDictionary = {
   "nzb.searchResultsFor": "{{name}}のNZB結果",
   "nzb.selectTvdbFirst": "NZBGeekを検索するにはTVDBマッチを選択してください。",
   "nzb.noResultsYet": "リリースマッチはまだありません。",
+  "nzb.searchFailed": "リリース検索に失敗しました。",
   "nzb.blockedByProfile": "プロファイルによりブロック: {{reason}}",
   "nzb.queue": "キュー",
   "nzb.queueAdditionalFile": "追加ファイルとしてキュー",
@@ -898,7 +924,8 @@ const ja: LocaleDictionary = {
   "queue.deleteConfirmTitle": "ダウンロードを削除",
   "queue.deleteConfirmDescription":
     "このダウンロードをキューから削除しますか？この操作は元に戻せません。",
-  "queue.manualUnavailableForResult": "この結果では手動キューイングを利用できません。",
+  "queue.manualUnavailableForResult":
+    "この結果では手動キューイングを利用できません。",
   "importHistory.title": "インポート履歴",
   "importHistory.empty": "インポート記録が見つかりません。",
   "importHistory.status": "ステータス",
@@ -1028,13 +1055,16 @@ const ja: LocaleDictionary = {
   "settings.sub.enabled": "字幕管理を有効にする",
   "settings.sub.credentials": "OpenSubtitles 認証情報",
   "settings.sub.username": "ユーザー名",
-  "settings.sub.usernameEmailWarning": "メールアドレスではなく、OpenSubtitles のユーザー名を使ってください。",
+  "settings.sub.usernameEmailWarning":
+    "メールアドレスではなく、OpenSubtitles のユーザー名を使ってください。",
   "settings.sub.password": "パスワード",
   "settings.sub.apiKey": "APIキー",
   "settings.sub.apiKeyRequiredTitle": "字幕サービスを利用できません",
-  "settings.sub.apiKeyRequiredBody": "字幕サービスが再び利用可能になるまで、字幕の検索とダウンロードは無効のままです。",
+  "settings.sub.apiKeyRequiredBody":
+    "字幕サービスが再び利用可能になるまで、字幕の検索とダウンロードは無効のままです。",
   "settings.sub.credentialsRequiredTitle": "字幕の認証情報が必要です",
-  "settings.sub.credentialsRequiredBody": "字幕を検索またはダウンロードする前に、ここに字幕のユーザー名とパスワードを入力してください。",
+  "settings.sub.credentialsRequiredBody":
+    "字幕を検索またはダウンロードする前に、ここに字幕のユーザー名とパスワードを入力してください。",
   "settings.sub.credentialsVerified": "字幕の認証情報を確認しました",
   "settings.sub.languages": "字幕言語",
   "settings.sub.languagesHelp":
@@ -1159,7 +1189,8 @@ const ja: LocaleDictionary = {
     "Failed to install plugin '{{name}}': the published artifact no longer matches the registry checksum. Refresh the registry or try again later.",
   "status.pluginInstallFailedSdkMetadataMismatch":
     "Failed to install plugin '{{name}}': the published artifact does not match the registry SDK compatibility metadata. Refresh the registry or try again later.",
-  "status.pluginInstallFailedWithReason": "Failed to install plugin '{{name}}': {{reason}}",
+  "status.pluginInstallFailedWithReason":
+    "Failed to install plugin '{{name}}': {{reason}}",
   "status.pluginRevertedToBundled":
     "プラグイン'{{name}}'は組み込み版に戻されました。",
   "status.pluginUninstalled":
@@ -1374,10 +1405,12 @@ const ja: LocaleDictionary = {
   "subtitle.external": "外部",
   "subtitle.manualSearch": "手動検索",
   "subtitle.apiKeyRequiredTitle": "字幕サービスを利用できません",
-  "subtitle.apiKeyRequiredBody": "このファイルでは現在字幕サービスを利用できません。",
+  "subtitle.apiKeyRequiredBody":
+    "このファイルでは現在字幕サービスを利用できません。",
   "subtitle.apiKeyRequiredAction": "字幕設定を開く",
   "subtitle.credentialsRequiredTitle": "字幕の認証情報が必要です",
-  "subtitle.credentialsRequiredBody": "このファイルの字幕を検索する前に、設定 > 字幕で字幕のユーザー名とパスワードを設定してください。",
+  "subtitle.credentialsRequiredBody":
+    "このファイルの字幕を検索する前に、設定 > 字幕で字幕のユーザー名とパスワードを設定してください。",
   "subtitle.credentialsRequiredAction": "字幕設定を開く",
   "subtitle.blocklist": "ブロックリスト",
   "subtitle.blocklisted": "字幕をブロックリストに追加しました",
@@ -1455,7 +1488,8 @@ const ja: LocaleDictionary = {
   "status.nzbFoundForTitle":
     "{{name}}{{source}}に対して{{count}}件のNZBアイテムが見つかりました。",
   "status.noNzbFound": "NZB結果が見つかりません。",
-  "status.releaseMissingCandidateToken": "選択したリリースに検証済みの候補トークンがありません。",
+  "status.releaseMissingCandidateToken":
+    "選択したリリースに検証済みの候補トークンがありません。",
   "status.deleteCatalogConfirm":
     "カタログから{{name}}を削除しますか？下のオプションでローカルファイルも削除できます。",
   "status.titleDeleted": "カタログから{{name}}を削除しました。",

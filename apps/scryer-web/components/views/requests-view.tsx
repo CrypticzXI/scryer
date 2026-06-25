@@ -364,7 +364,7 @@ export function RequestsView({
   };
 
   return (
-    <section className="flex min-h-0 flex-1 flex-col gap-4">
+    <section className="flex min-h-0 flex-1 flex-col gap-4 bg-[var(--scry-surfE)] px-4 py-5 sm:px-6 lg:px-7">
       <div className="flex flex-wrap items-center gap-2">
         {showModeSwitch ? (
           <div className="inline-flex h-11 rounded-md border border-border bg-background p-1">

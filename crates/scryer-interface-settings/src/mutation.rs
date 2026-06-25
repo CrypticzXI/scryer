@@ -14,6 +14,7 @@ use scryer_application::{
     UpdateSubtitleSettings as AppUpdateSubtitleSettings,
 };
 
+use super::{from_ui_settings, ui_settings_update_from_input};
 use scryer_interface_core::{
     actor_from_ctx, app_from_ctx, auth_runtime_from_ctx, mfa_enrollment_actor_from_ctx,
     mfa_verification_from_ctx, require_config_app_permission, to_gql_error, to_login_gql_error,
@@ -604,6 +605,20 @@ fn parse_audio_codec_values(
 
 #[Object]
 impl SettingsMutations {
+    async fn set_my_ui_settings(
+        &self,
+        ctx: &Context<'_>,
+        input: SetMyUiSettingsInput,
+    ) -> GqlResult<UiSettingsPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let settings = app
+            .set_my_ui_settings(&actor, ui_settings_update_from_input(input))
+            .await
+            .map_err(to_gql_error)?;
+        Ok(from_ui_settings(settings))
+    }
+
     async fn update_subtitle_settings(
         &self,
         ctx: &Context<'_>,

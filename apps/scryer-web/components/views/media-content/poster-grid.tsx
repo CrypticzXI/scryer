@@ -9,6 +9,7 @@ import type { ParsedQualityProfile } from "@/lib/types/quality-profiles";
 import { selectPosterVariantUrl } from "@/lib/utils/poster-images";
 import { useIsMobile } from "@/lib/hooks/use-mobile";
 import { TitlePosterSlot } from "@/components/title-poster-slot";
+import { cn } from "@/lib/utils";
 import {
   TitleCollectionEmptyState,
   TitleCollectionLoadingState,
@@ -60,7 +61,12 @@ type PosterGridProps = {
   resolvedProfileName: string | null;
   qualityProfiles: ParsedQualityProfile[];
   qualityProfilesLoading: boolean;
-  onOpenOverview: (targetView: ViewId, overviewTarget: OverviewTitleTarget) => void;
+  onOpenOverview: (
+    targetView: ViewId,
+    overviewTarget: OverviewTitleTarget,
+  ) => void;
+  selectedTitleId?: string | null;
+  onSelectTitle?: (title: TitleRecord) => void;
   onDelete: (title: TitleRecord) => void;
   onAutoQueue: (title: TitleRecord) => void;
   isDeletingById: Record<string, boolean>;
@@ -83,6 +89,8 @@ export const PosterGrid = React.memo(function PosterGrid({
   qualityProfiles,
   qualityProfilesLoading,
   onOpenOverview,
+  selectedTitleId,
+  onSelectTitle,
   overviewTargetView,
   showScanLibraryAction = false,
   showConfigureRootsAction = false,
@@ -127,6 +135,8 @@ export const PosterGrid = React.memo(function PosterGrid({
           qualityProfiles={qualityProfiles}
           qualityProfilesLoading={qualityProfilesLoading}
           onOpenOverview={onOpenOverview}
+          selected={selectedTitleId === title.id}
+          onSelectTitle={onSelectTitle}
           overviewTargetView={overviewTargetView}
           isMobile={isMobile}
         />
@@ -141,7 +151,12 @@ type PosterCardProps = {
   resolvedProfileName: string | null;
   qualityProfiles: ParsedQualityProfile[];
   qualityProfilesLoading: boolean;
-  onOpenOverview: (targetView: ViewId, overviewTarget: OverviewTitleTarget) => void;
+  onOpenOverview: (
+    targetView: ViewId,
+    overviewTarget: OverviewTitleTarget,
+  ) => void;
+  selected: boolean;
+  onSelectTitle?: (title: TitleRecord) => void;
   overviewTargetView: ViewId;
   isMobile: boolean;
 };
@@ -153,6 +168,8 @@ const PosterCard = React.memo(function PosterCard({
   qualityProfiles,
   qualityProfilesLoading,
   onOpenOverview,
+  selected,
+  onSelectTitle,
   overviewTargetView,
   isMobile,
 }: PosterCardProps) {
@@ -165,17 +182,41 @@ const PosterCard = React.memo(function PosterCard({
   const posterClassName = isMobile
     ? "h-full w-full object-cover"
     : "h-full w-full object-cover transition-transform duration-150 group-hover:scale-105 group-hover:blur-md group-hover:brightness-[0.78] group-hover:saturate-[0.9] group-focus-within:scale-105 group-focus-within:blur-md group-focus-within:brightness-[0.78] group-focus-within:saturate-[0.9]";
+  const handleActivate = React.useCallback(() => {
+    if (onSelectTitle) {
+      persistOverviewWindowScroll(location.pathname);
+      onSelectTitle(title);
+      return;
+    }
+    persistOverviewWindowScroll(location.pathname);
+    onOpenOverview(overviewTargetView, title);
+  }, [
+    location.pathname,
+    onOpenOverview,
+    onSelectTitle,
+    overviewTargetView,
+    title,
+  ]);
 
   return (
-    <div className="cv-auto-poster group">
-      <div className="overflow-hidden rounded-xl border border-border bg-card shadow-[0_10px_24px_rgba(2,6,23,0.18)]">
+    <div
+      className={cn(
+        "cv-auto-poster group rounded-xl transition-shadow",
+        selected &&
+          "ring-2 ring-primary/60 ring-offset-2 ring-offset-background",
+      )}
+    >
+      <div
+        className={cn(
+          "overflow-hidden rounded-xl border bg-card shadow-[0_10px_24px_rgba(2,6,23,0.18)]",
+          selected ? "border-primary/70" : "border-border",
+        )}
+      >
         <div className="relative">
           <button
             type="button"
-            onClick={() => {
-              persistOverviewWindowScroll(location.pathname);
-              onOpenOverview(overviewTargetView, title);
-            }}
+            onClick={handleActivate}
+            aria-pressed={selected}
             className="block w-full overflow-hidden rounded-[calc(var(--radius)-1px)] bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             aria-label={title.name}
           >
@@ -195,9 +236,7 @@ const PosterCard = React.memo(function PosterCard({
 
               {!isMobile ? (
                 <>
-                  <div
-                    className="pointer-events-none absolute inset-0 z-10 overflow-hidden rounded-[calc(var(--radius)-1px)] opacity-0 transition-opacity duration-200 group-hover:opacity-100 group-focus-within:opacity-100"
-                  >
+                  <div className="pointer-events-none absolute inset-0 z-10 overflow-hidden rounded-[calc(var(--radius)-1px)] opacity-0 transition-opacity duration-200 group-hover:opacity-100 group-focus-within:opacity-100">
                     <div
                       aria-hidden="true"
                       className="absolute inset-0 rounded-[calc(var(--radius)-1px)] border border-white/15 bg-gradient-to-t from-black/55 via-black/24 to-white/18"
@@ -231,13 +270,16 @@ const PosterCard = React.memo(function PosterCard({
                 </div>
               ) : null}
 
-              {!isMovieView && title.contentStatus?.toLowerCase() === "ended" ? (
+              {!isMovieView &&
+              title.contentStatus?.toLowerCase() === "ended" ? (
                 <div className="absolute bottom-1.5 right-1.5 z-20 rounded border border-white/10 bg-black/80 px-1.5 py-0.5 text-[10px] font-medium text-zinc-300 opacity-0 shadow-sm transition-opacity duration-150 group-hover:opacity-100 group-focus-within:opacity-100">
                   {t("title.ended")}
                 </div>
               ) : null}
               <div className="absolute bottom-1.5 left-1.5 z-20 max-w-[calc(100%-0.75rem)] rounded border border-white/10 bg-black/80 px-1.5 py-0.5 text-[10px] font-medium text-white opacity-0 shadow-sm transition-opacity duration-150 group-hover:opacity-100 group-focus-within:opacity-100">
-                <span className="block truncate">{title.libraryName ?? title.libraryId}</span>
+                <span className="block truncate">
+                  {title.libraryName ?? title.libraryId}
+                </span>
               </div>
             </div>
           </button>

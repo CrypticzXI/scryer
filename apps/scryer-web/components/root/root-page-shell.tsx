@@ -32,12 +32,12 @@ import { useConfigStepUp } from "@/lib/hooks/use-config-step-up";
 import { TranslateContext } from "@/lib/context/translate-context";
 import { GlobalStatusContext } from "@/lib/context/global-status-context";
 import { RootHeader } from "@/components/root/root-header";
+import { buildRouteCommands } from "@/components/root/route-commands";
 import { JobRunProvider } from "@/components/root/job-run-provider";
 import { LibraryScanProgressProvider } from "@/components/root/library-scan-progress-provider";
 import { ReactiveRefreshProvider } from "@/components/root/reactive-refresh-provider";
 import { RootSidebar } from "@/components/root/root-sidebar";
 import { ViewLoadingFallback } from "@/components/common/view-loading-fallback";
-import { buildRouteCommands } from "@/components/root/route-commands";
 import { GlobalSearchProvider } from "@/components/root/global-search-provider";
 
 import { useGlobalStatusToast } from "@/lib/hooks/use-global-status-toast";
@@ -180,7 +180,11 @@ function fallbackMediaContentSettingsSection(
   canManageLibrarySettings: boolean,
   canResolveImports = false,
 ): ContentSettingsSection {
-  if (canManageLibrarySettings && !canManageConfig && isMediaSettingsSection(section)) {
+  if (
+    canManageLibrarySettings &&
+    !canManageConfig &&
+    isMediaSettingsSection(section)
+  ) {
     return "library";
   }
   if (canResolveImports) {
@@ -330,7 +334,9 @@ function SmgUpgradeBanner({
               : t("smgUpgrade.blockedBody")}
           </div>
           {serverMessage ? (
-            <div className="mt-1 text-sm text-[var(--scry-body)]">{serverMessage}</div>
+            <div className="mt-1 text-sm text-[var(--scry-body)]">
+              {serverMessage}
+            </div>
           ) : null}
           {details.length > 0 ? (
             <div className="mt-1 text-xs font-medium uppercase tracking-wide text-[var(--scry-muted2)]">
@@ -367,7 +373,9 @@ function SmgScryerUpdateBanner({
           aria-hidden="true"
         />
         <div className="min-w-0 flex-1 truncate">
-          <span className="font-medium text-[var(--scry-ink2)]">{t("smgUpdate.title")}</span>
+          <span className="font-medium text-[var(--scry-ink2)]">
+            {t("smgUpdate.title")}
+          </span>
           <span className="ml-2 text-[var(--scry-muted)]">
             {t("smgUpdate.body", {
               current: currentVersion || t("label.unknown"),
@@ -665,6 +673,8 @@ function MainContent({
         settingsSection={resolvedSettingsSection}
         userId={userId}
         username={username}
+        canManageSystemSettings={canManageSystemSettings}
+        canManageCatalogSettings={canManageCatalogSettings}
         availableLanguages={AVAILABLE_LANGUAGES}
         selectedLanguage={selectedLanguage}
         uiLanguage={uiLanguage}
@@ -968,7 +978,9 @@ function AuthenticatedHomePage({
         window.cancelAnimationFrame(animationFrame);
       }
       animationFrame = window.requestAnimationFrame(() => {
-        const topOffset = Math.round(Math.max(0, frame.getBoundingClientRect().top));
+        const topOffset = Math.round(
+          Math.max(0, frame.getBoundingClientRect().top),
+        );
         setShellTopOffset((previousOffset) =>
           previousOffset === topOffset ? previousOffset : topOffset,
         );
@@ -1351,6 +1363,17 @@ function AuthenticatedHomePage({
   });
   const viewingBackupsSettings =
     view === "settings" && settingsSection === "backups";
+  const globalSearchRouteCommands = useMemo(
+    () =>
+      buildRouteCommands({
+        t,
+        user: authenticatedUser,
+        activeFacet,
+        activityImportCount: manualImportRequiredCount,
+        onNavigate: navigateTo,
+      }).filter((command) => !command.id.startsWith("system-")),
+    [activeFacet, authenticatedUser, manualImportRequiredCount, navigateTo, t],
+  );
 
   useAutoBackupNotice({
     canManageSystemSettings,
@@ -1359,36 +1382,6 @@ function AuthenticatedHomePage({
     navigateTo,
     t,
   });
-
-  const routeCommandPalette = useMemo(
-    () =>
-      buildRouteCommands({
-        t,
-        user: authenticatedUser,
-        activeFacet,
-        activityImportCount: manualImportRequiredCount,
-        onNavigate: navigateTo,
-      }),
-    [
-      activeFacet,
-      authenticatedUser,
-      manualImportRequiredCount,
-      navigateTo,
-      t,
-    ],
-  );
-
-  const routeCommandPaletteConfig = useMemo(
-    () => ({
-      title: t("command.paletteTitle"),
-      description: t("command.paletteDescription"),
-      placeholder: t("command.palettePlaceholder"),
-      noResultsText: t("command.paletteNoResults"),
-      groupLabel: t("command.paletteGroup"),
-      items: routeCommandPalette,
-    }),
-    [routeCommandPalette, t],
-  );
 
   useEffect(() => {
     if (
@@ -1723,7 +1716,9 @@ function AuthenticatedHomePage({
                           className="flex items-center justify-center gap-2 border-b border-[var(--scry-border3)] bg-[linear-gradient(180deg,var(--scry-soft),var(--scry-surfA))] px-4 py-2 text-sm font-medium text-[var(--scry-body)] shadow-[0_8px_28px_rgba(2,6,23,0.14)] backdrop-blur"
                         >
                           <WifiOff className="h-4 w-4 flex-none text-[var(--scry-accent-ring)]" />
-                          <span className="text-[var(--scry-ink2)]">{t("pwa.offline")}</span>
+                          <span className="text-[var(--scry-ink2)]">
+                            {t("pwa.offline")}
+                          </span>
                         </div>
                       ) : null}
 
@@ -1833,7 +1828,7 @@ function AuthenticatedHomePage({
                           header={
                             <RootHeader
                               onOpenOverview={handleOpenOverview}
-                              routeCommandPalette={routeCommandPaletteConfig}
+                              routeCommandItems={globalSearchRouteCommands}
                             />
                           }
                           onNavigate={navigateTo}

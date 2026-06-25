@@ -5,7 +5,6 @@ import { RootHeader } from "@/components/root/root-header";
 import { RootSidebar } from "@/components/root/root-sidebar";
 import { GlobalSearchProvider } from "@/components/root/global-search-provider";
 import { ViewLoadingFallback } from "@/components/common/view-loading-fallback";
-import { buildRouteCommands } from "@/components/root/route-commands";
 import { useLanguage } from "@/lib/hooks/use-language";
 import { useGlobalStatusToast } from "@/lib/hooks/use-global-status-toast";
 import { useAuth, type AuthUser } from "@/lib/hooks/use-auth";
@@ -130,28 +129,6 @@ export function SeriesOverviewShell() {
     [navigate],
   );
 
-  const routeCommandPalette = useMemo(() => {
-    return buildRouteCommands({
-      t,
-      user: permissionUser,
-      activeFacet: "series",
-      activityImportCount: 0,
-      onNavigate: navigateTo,
-    });
-  }, [navigateTo, permissionUser, t]);
-
-  const routeCommandPaletteConfig = useMemo(
-    () => ({
-      title: t("command.paletteTitle"),
-      description: t("command.paletteDescription"),
-      placeholder: t("command.palettePlaceholder"),
-      noResultsText: t("command.paletteNoResults"),
-      groupLabel: t("command.paletteGroup"),
-      items: routeCommandPalette,
-    }),
-    [routeCommandPalette, t],
-  );
-
   return (
     <ScryerGraphqlProvider language={uiLanguage}>
       <TranslateContext.Provider value={t}>
@@ -162,8 +139,14 @@ export function SeriesOverviewShell() {
             queueFacet="series"
             uiLanguage={uiLanguage}
           >
-            <div className="flex min-h-screen flex-col bg-background text-foreground">
-              <div className="flex min-h-0 w-full flex-1">
+            <div
+              data-slot="root-app-frame"
+              className="flex min-h-dvh flex-col overflow-x-hidden text-[var(--scry-body)]"
+            >
+              <div
+                data-slot="root-shell-frame"
+                className="flex min-h-0 w-full flex-1 min-[981px]:h-[calc(100dvh-var(--root-shell-top-offset,0px))] min-[981px]:max-h-[calc(100dvh-var(--root-shell-top-offset,0px))] min-[981px]:overflow-hidden"
+              >
                 <RootSidebar
                   topNav={topNav}
                   view="series"
@@ -180,13 +163,15 @@ export function SeriesOverviewShell() {
                   scryerVersion={null}
                   header={
                     <RootHeader
-                      routeCommandPalette={routeCommandPaletteConfig}
                       onOpenOverview={handleOpenOverview}
                     />
                   }
                   onNavigate={navigateTo}
                 >
-                  <main className="min-h-[70vh]">
+                  <main
+                    data-slot="root-main-scroll"
+                    className="flex min-h-[70vh] flex-1 flex-col min-[981px]:min-h-0 min-[981px]:overflow-y-auto"
+                  >
                     <Suspense fallback={<ViewLoadingFallback />}>
                       <SeriesOverviewContainer
                         titleId={titleId}

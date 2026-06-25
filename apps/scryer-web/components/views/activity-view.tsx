@@ -975,8 +975,12 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
           setBulkDeleteConfirmItems([]);
         }}
       />
-      <Card id={selectorId("activity-view", activeTab)}>
-        <CardContent className="space-y-4">
+      <div className="flex min-h-0 flex-1 flex-col bg-[var(--scry-surfE)] px-4 py-5 sm:px-6 lg:px-7">
+        <Card
+          id={selectorId("activity-view", activeTab)}
+          className="min-h-0 flex-1 rounded-none border-0 bg-transparent shadow-none"
+        >
+          <CardContent className="space-y-4 p-0">
           {queueError ? (
             <p className="rounded border border-rose-500/40 bg-rose-950/40 p-2 text-sm text-rose-200">
               {queueError}
@@ -1161,8 +1165,9 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
               </Button>
             </div>
           ) : null}
-        </CardContent>
-      </Card>
+          </CardContent>
+        </Card>
+      </div>
     </>
   );
 }

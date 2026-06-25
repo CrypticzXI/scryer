@@ -1955,7 +1955,7 @@ impl UiDefaultLandingView {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum UiSettingsFacet {
     Movies,
     Series,
@@ -1981,7 +1981,7 @@ impl UiSettingsFacet {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum UiTableViewMode {
     Compact,
     PosterTable,

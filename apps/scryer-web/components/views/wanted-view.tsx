@@ -1,10 +1,13 @@
 import { Fragment, useEffect, useRef, useState } from "react";
+import { Link } from "react-router-dom";
 import { FilterChipButton } from "@/components/common/filter-chip-button";
 import { LibraryMultiSelect } from "@/components/common/library-multi-select";
 import { TitleAutocompletePicker } from "@/components/common/title-autocomplete-picker";
 import type { OverviewTitleTarget, ViewId, WantedSection } from "@/components/root/types";
 import { useTranslate } from "@/lib/context/translate-context";
 import type { Translate } from "@/components/root/types";
+import { buildViewPath } from "@/lib/utils/routing";
+import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -533,8 +536,52 @@ export function WantedView({
   pendingState,
   onOpenOverview,
 }: WantedViewProps) {
+  const t = useTranslate();
+  const wantedTabs = [
+    {
+      section: "wanted" as const,
+      label: t("wanted.title"),
+      count: wantedState.total,
+    },
+    {
+      section: "cutoff" as const,
+      label: t("cutoff.title"),
+      count: cutoffState.items.length,
+    },
+    {
+      section: "pending" as const,
+      label: t("pending.title"),
+      count: pendingState.items.length,
+    },
+  ];
+
   return (
     <div className="space-y-4 md:flex md:h-full md:min-h-0 md:flex-col md:gap-4 md:space-y-0">
+      <div className="shrink-0 border-b border-[var(--scry-border3)] px-4 pt-4 sm:px-5">
+        <nav className="flex gap-5 overflow-x-auto [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden" aria-label={t("nav.wanted")}>
+          {wantedTabs.map((tab) => {
+            const active = section === tab.section || (section === "history" && tab.section === "wanted");
+            return (
+              <Link
+                key={tab.section}
+                to={buildViewPath("wanted", undefined, undefined, undefined, tab.section)}
+                className={cn(
+                  "relative inline-flex h-10 shrink-0 items-center gap-2 border-b-2 border-transparent text-[13px] font-semibold text-[var(--scry-muted)] transition hover:text-[var(--scry-ink2)]",
+                  active && "border-[var(--scry-accent-ring)] text-[var(--scry-ink2)]",
+                )}
+              >
+                <span>{tab.label}</span>
+                <span className={cn(
+                  "rounded-md bg-[var(--scry-chip)] px-1.5 py-0.5 text-[10.5px] font-semibold tabular-nums text-[var(--scry-muted3)]",
+                  active && "bg-[rgba(var(--scry-accent-rgb),0.16)] text-[var(--scry-accent-text)]",
+                )}>
+                  {tab.count}
+                </span>
+              </Link>
+            );
+          })}
+        </nav>
+      </div>
       {section === "cutoff" ? (
         <CutoffUnmetView state={cutoffState} />
       ) : section === "pending" ? (
@@ -626,12 +673,20 @@ function WantedItemsCard({
   };
 
   return (
-    <Card className={shouldScrollDesktopTable ? "flex min-h-0 flex-1 flex-col" : undefined}>
-      <CardHeader>
+    <Card
+      className={
+        shouldScrollDesktopTable
+          ? "flex min-h-0 flex-1 flex-col overflow-hidden rounded-none border-0 bg-transparent shadow-none"
+          : "overflow-hidden rounded-none border-0 bg-transparent shadow-none"
+      }
+    >
+      <CardHeader className="border-b border-[var(--scry-border3)] bg-[linear-gradient(180deg,var(--scry-surfD),transparent)] px-4 py-4 sm:px-5">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <CardTitle>{t("wanted.title")}</CardTitle>
+          <CardTitle className="text-[22px] font-bold tracking-normal text-[var(--scry-ink2)]">
+            {t("wanted.title")}
+          </CardTitle>
           <Button
-            className="w-full sm:w-auto"
+            className="h-10 w-full rounded-[10px] border-[var(--scry-border2)] bg-[var(--scry-inset)] px-3 text-[13px] text-[var(--scry-body)] shadow-none hover:bg-[var(--scry-hover)] sm:w-auto"
             size="sm"
             variant="secondary"
             onClick={() => void refreshItems()}
@@ -642,8 +697,14 @@ function WantedItemsCard({
           </Button>
         </div>
       </CardHeader>
-      <CardContent className={shouldScrollDesktopTable ? "flex min-h-0 flex-1 flex-col space-y-3" : undefined}>
-        <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:flex-wrap">
+      <CardContent
+        className={
+          shouldScrollDesktopTable
+            ? "flex min-h-0 flex-1 flex-col space-y-3 bg-[color-mix(in_srgb,var(--scry-bg)_52%,transparent)] p-4 sm:p-5"
+            : "space-y-4 bg-[color-mix(in_srgb,var(--scry-bg)_52%,transparent)] p-4 sm:p-5"
+        }
+      >
+        <div className="flex flex-col gap-3 rounded-[14px] border border-[var(--scry-border3)] bg-[var(--scry-surfC)] p-3 sm:flex-row sm:flex-wrap sm:items-center">
           <TitleAutocompletePicker
             ariaLabel={t("wanted.filterTitle")}
             className="w-full sm:max-w-sm"
@@ -661,7 +722,7 @@ function WantedItemsCard({
               setOffset(0);
             }}
             disabled={librariesLoading || libraries.length === 0}
-            triggerClassName="w-full sm:w-[180px]"
+            triggerClassName="h-10 w-full rounded-[10px] border-[var(--scry-border2)] bg-[var(--scry-inset)] text-[13px] text-[var(--scry-body)] shadow-none sm:w-[180px]"
           />
 
           <WantedFiltersPopover
@@ -674,18 +735,18 @@ function WantedItemsCard({
             onFilterChange={() => setOffset(0)}
           />
 
-          <span className="self-center text-sm text-muted-foreground sm:ml-auto">
+          <span className="self-center text-sm font-medium text-[var(--scry-muted3)] sm:ml-auto">
             {t("wanted.totalCount", { count: total })}
           </span>
         </div>
 
         {isMobile ? (
           items.length === 0 && !loading ? (
-            <p className="text-center text-muted-foreground">{t("wanted.noItems")}</p>
+            <p className="text-center text-[var(--scry-muted3)]">{t("wanted.noItems")}</p>
           ) : (
             <div className="space-y-3">
               {items.map((item) => (
-                <div key={item.id} className="rounded-xl border border-border bg-card/30 p-3">
+                <div key={item.id} className="rounded-[14px] border border-[var(--scry-border2)] bg-[var(--scry-surfC)] p-3 shadow-[0_12px_28px_rgba(2,6,23,0.10)]">
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0 flex-1">
                       <button
@@ -843,8 +904,8 @@ function WantedItemsCard({
           <div
             className={
               shouldScrollDesktopTable
-                ? "min-h-0 flex-1 overflow-auto rounded-xl border border-border/60"
-                : "overflow-x-auto"
+                ? "min-h-0 flex-1 overflow-auto rounded-[14px] border border-[var(--scry-border2)] bg-[var(--scry-surfC)]"
+                : "overflow-x-auto rounded-[14px] border border-[var(--scry-border2)] bg-[var(--scry-surfC)]"
             }
           >
             <Table className="min-w-[980px]">
@@ -1185,12 +1246,14 @@ function PendingReleasesCard({ state }: { state: PendingViewState }) {
   }, [hasMore, items.length, loadMoreItems, loadingMore]);
 
   return (
-    <Card>
-      <CardHeader>
+    <Card className="overflow-hidden rounded-none border-0 bg-transparent shadow-none">
+      <CardHeader className="border-b border-[var(--scry-border3)] bg-[linear-gradient(180deg,var(--scry-surfD),transparent)] px-4 py-4 sm:px-5">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <CardTitle>{t("pending.title")}</CardTitle>
+          <CardTitle className="text-[22px] font-bold tracking-normal text-[var(--scry-ink2)]">
+            {t("pending.title")}
+          </CardTitle>
           <Button
-            className="w-full sm:w-auto"
+            className="h-10 w-full rounded-[10px] border-[var(--scry-border2)] bg-[var(--scry-inset)] px-3 text-[13px] text-[var(--scry-body)] shadow-none hover:bg-[var(--scry-hover)] sm:w-auto"
             size="sm"
             variant="secondary"
             onClick={() => void refreshItems()}
@@ -1201,14 +1264,14 @@ function PendingReleasesCard({ state }: { state: PendingViewState }) {
           </Button>
         </div>
       </CardHeader>
-      <CardContent>
+      <CardContent className="bg-[color-mix(in_srgb,var(--scry-bg)_52%,transparent)] p-4 sm:p-5">
         {isMobile ? (
           items.length === 0 && !loading ? (
-            <p className="text-center text-muted-foreground">{t("pending.noItems")}</p>
+            <p className="text-center text-[var(--scry-muted3)]">{t("pending.noItems")}</p>
           ) : (
             <div className="space-y-3">
               {items.map((item) => (
-                <div key={item.id} className="rounded-xl border border-border bg-card/30 p-3">
+                <div key={item.id} className="rounded-[14px] border border-[var(--scry-border2)] bg-[var(--scry-surfC)] p-3 shadow-[0_12px_28px_rgba(2,6,23,0.10)]">
                   <p className="break-words text-sm font-medium text-foreground">{item.releaseTitle}</p>
                   <div className="mt-2 grid grid-cols-2 gap-2 text-xs text-muted-foreground">
                     <div>
@@ -1246,7 +1309,7 @@ function PendingReleasesCard({ state }: { state: PendingViewState }) {
             </div>
           )
         ) : (
-          <div className="overflow-auto rounded-xl border border-border/60">
+          <div className="overflow-auto rounded-[14px] border border-[var(--scry-border2)] bg-[var(--scry-surfC)]">
             <Table className="min-w-[760px]">
               <TableHeader>
                 <TableRow>

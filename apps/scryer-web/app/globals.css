@@ -312,27 +312,14 @@ body {
 
   [data-slot="root-main-scroll"] {
     min-height: 0;
-    padding: 22px 26px 32px;
     overscroll-behavior: contain;
   }
 
   [data-slot="root-content-panel"] {
-    margin: 12px 14px 14px 0;
-    height: calc(100% - 26px);
-    max-height: calc(100% - 26px);
+    height: 100%;
+    max-height: 100%;
     overflow: hidden;
-    border: 1px solid var(--scry-border3);
-    border-radius: 24px;
-    background:
-      linear-gradient(
-        180deg,
-        color-mix(in srgb, var(--card) 72%, transparent) 0%,
-        color-mix(in srgb, var(--background) 82%, transparent) 100%
-      ),
-      var(--scry-shell-main-bg);
-    box-shadow:
-      0 24px 70px rgba(2, 6, 23, 0.14),
-      inset 0 1px 0 rgba(255, 255, 255, 0.42);
+    background: var(--scry-shell-main-bg);
   }
 }
 
@@ -348,20 +335,11 @@ body {
 
 .dark [data-slot="root-header"] {
   border-color: rgba(123, 140, 255, 0.12);
-  background:
-    linear-gradient(180deg, rgba(11, 17, 33, 0.94), rgba(6, 11, 23, 0.93)),
-    linear-gradient(
-      90deg,
-      rgba(91, 100, 255, 0.05),
-      rgba(56, 189, 248, 0.025) 72%,
-      rgba(16, 185, 129, 0.016) 100%
-    );
-  box-shadow:
-    0 12px 28px rgba(2, 6, 23, 0.28),
-    inset 0 -1px 0 rgba(255, 255, 255, 0.04);
+  background: var(--scry-bg);
+  box-shadow: inset 0 -1px 0 rgba(255, 255, 255, 0.04);
 }
 
-.dark [data-slot="card"],
+.dark [data-slot="card"]:not(.bg-transparent),
 .dark [data-slot="global-search-panel"],
 .dark [data-slot="dialog-content"],
 .dark [data-slot="sheet-content"],
@@ -371,14 +349,14 @@ body {
   backdrop-filter: blur(18px) saturate(125%);
 }
 
-.dark [data-slot="card"],
+.dark [data-slot="card"]:not(.bg-transparent),
 .dark [data-slot="sidebar-inner"] {
   position: relative;
   isolation: isolate;
   overflow: hidden;
 }
 
-.dark [data-slot="card"] {
+.dark [data-slot="card"]:not(.bg-transparent) {
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.01), rgba(255, 255, 255, 0.005) 18%, rgba(255, 255, 255, 0.003) 100%),
     linear-gradient(135deg, rgba(91, 100, 255, 0.03), rgba(56, 189, 248, 0.016) 72%, rgba(16, 185, 129, 0.012) 100%),
@@ -388,7 +366,7 @@ body {
     inset 0 1px 0 rgba(255, 255, 255, 0.05);
 }
 
-.dark [data-slot="card"]::before {
+.dark [data-slot="card"]:not(.bg-transparent)::before {
   content: "";
   position: absolute;
   inset: 0;
@@ -399,7 +377,7 @@ body {
   z-index: 0;
 }
 
-.dark [data-slot="card"] > * {
+.dark [data-slot="card"]:not(.bg-transparent) > * {
   position: relative;
   z-index: 1;
 }

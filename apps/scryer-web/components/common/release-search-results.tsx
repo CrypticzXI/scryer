@@ -1,8 +1,15 @@
-
 import * as React from "react";
-import { ChevronDown, ChevronUp, ArrowDown, ArrowUp, Check, FilePlus2 } from "lucide-react";
+import {
+  ChevronDown,
+  ChevronUp,
+  ArrowDown,
+  ArrowUp,
+  Check,
+  FilePlus2,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useTranslate } from "@/lib/context/translate-context";
+import { cn } from "@/lib/utils";
 import {
   releaseSearchResultQueueAdditionalId,
   releaseSearchResultQueueId,
@@ -70,6 +77,7 @@ function SearchResultRow({
   onQueue,
   onQueueAdditional,
   blocked,
+  disabled = false,
   requireCandidateToken = false,
   mobile = false,
 }: {
@@ -77,13 +85,15 @@ function SearchResultRow({
   onQueue: (r: Release) => Promise<void> | void;
   onQueueAdditional?: (r: Release) => Promise<void> | void;
   blocked: boolean;
+  disabled?: boolean;
   requireCandidateToken?: boolean;
   mobile?: boolean;
 }) {
   const t = useTranslate();
   const [expanded, setExpanded] = React.useState(false);
   const [queueRequested, setQueueRequested] = React.useState(false);
-  const [additionalQueueRequested, setAdditionalQueueRequested] = React.useState(false);
+  const [additionalQueueRequested, setAdditionalQueueRequested] =
+    React.useState(false);
   const decision = result.qualityProfileDecision;
   const hasLog = decision && decision.scoringLog.length > 0;
   const parsedBits = [
@@ -100,7 +110,10 @@ function SearchResultRow({
           ? { label: "HDR", className: "bg-cyan-500/20 text-cyan-300" }
           : null,
         result.parsedRelease.isDolbyVision
-          ? { label: "Dolby Vision", className: "bg-indigo-500/20 text-indigo-300" }
+          ? {
+              label: "Dolby Vision",
+              className: "bg-indigo-500/20 text-indigo-300",
+            }
           : null,
         result.parsedRelease.isProperUpload
           ? { label: "Proper", className: "bg-amber-500/20 text-amber-300" }
@@ -119,21 +132,32 @@ function SearchResultRow({
           : null,
       ]
         .filter(Boolean)
-        .filter((value) => value !== null && value !== undefined && typeof value === "object")
+        .filter(
+          (value) =>
+            value !== null && value !== undefined && typeof value === "object",
+        )
         .map((entry) => entry as { label: string; className: string })
     : [];
   const queueUnavailableReason =
     requireCandidateToken && !blocked && !result.candidateToken
       ? t("queue.manualUnavailableForResult")
       : null;
-  const queueDisabled = blocked || queueRequested || queueUnavailableReason !== null;
+  const queueDisabled =
+    disabled || blocked || queueRequested || queueUnavailableReason !== null;
   const queueButtonMuted = blocked || queueUnavailableReason !== null;
   const additionalQueueDisabled =
-    blocked || additionalQueueRequested || queueUnavailableReason !== null || !onQueueAdditional;
+    disabled ||
+    blocked ||
+    additionalQueueRequested ||
+    queueUnavailableReason !== null ||
+    !onQueueAdditional;
   const idVariant = mobile ? "mobile" : undefined;
   const rowId = releaseSearchResultRowId(result, idVariant);
   const queueButtonId = releaseSearchResultQueueId(result, idVariant);
-  const queueAdditionalButtonId = releaseSearchResultQueueAdditionalId(result, idVariant);
+  const queueAdditionalButtonId = releaseSearchResultQueueAdditionalId(
+    result,
+    idVariant,
+  );
 
   const handleQueueClick = React.useCallback(() => {
     if (queueDisabled) {
@@ -144,7 +168,10 @@ function SearchResultRow({
 
     try {
       const maybePromise = onQueue(result);
-      if (maybePromise && typeof (maybePromise as Promise<void>).then === "function") {
+      if (
+        maybePromise &&
+        typeof (maybePromise as Promise<void>).then === "function"
+      ) {
         void (maybePromise as Promise<void>).catch(() => {
           setQueueRequested(false);
         });
@@ -163,7 +190,10 @@ function SearchResultRow({
 
     try {
       const maybePromise = onQueueAdditional(result);
-      if (maybePromise && typeof (maybePromise as Promise<void>).then === "function") {
+      if (
+        maybePromise &&
+        typeof (maybePromise as Promise<void>).then === "function"
+      ) {
         void (maybePromise as Promise<void>).catch(() => {
           setAdditionalQueueRequested(false);
         });
@@ -194,7 +224,9 @@ function SearchResultRow({
             <span aria-hidden="true">•</span>
             <span>{result.publishedAt ?? t("label.unknown")}</span>
             <span aria-hidden="true">•</span>
-            <span className="font-medium text-foreground/80">{bytesToWholeReadable(result.sizeBytes)}</span>
+            <span className="font-medium text-foreground/80">
+              {bytesToWholeReadable(result.sizeBytes)}
+            </span>
           </div>
           {parsedBits.length > 0 ? (
             <div className="flex flex-wrap gap-1.5">
@@ -221,10 +253,14 @@ function SearchResultRow({
             </div>
           ) : null}
           {decision && decision.blockCodes.length > 0 ? (
-            <p className="text-xs text-red-400">{decision.blockCodes.join(" · ")}</p>
+            <p className="text-xs text-red-400">
+              {decision.blockCodes.join(" · ")}
+            </p>
           ) : null}
           {queueUnavailableReason ? (
-            <p className="text-xs text-muted-foreground">{queueUnavailableReason}</p>
+            <p className="text-xs text-muted-foreground">
+              {queueUnavailableReason}
+            </p>
           ) : null}
           <div className="mt-1 grid gap-2">
             <Button
@@ -294,9 +330,12 @@ function SearchResultRow({
       >
         <td className="rounded-l-lg border border-border border-r-0 px-4 py-2 align-middle">
           <div className="space-y-1">
-            <p className="min-w-0 whitespace-normal break-words text-base font-semibold text-foreground">{result.title}</p>
+            <p className="min-w-0 whitespace-normal break-words text-base font-semibold text-foreground">
+              {result.title}
+            </p>
             <p className="text-xs text-muted-foreground">
-              {result.source ?? t("label.unknown")} • {result.publishedAt ?? t("label.unknown")}
+              {result.source ?? t("label.unknown")} •{" "}
+              {result.publishedAt ?? t("label.unknown")}
             </p>
             {parsedBits.length > 0 ? (
               <div className="mt-1 flex flex-wrap gap-1.5">
@@ -323,10 +362,14 @@ function SearchResultRow({
               </div>
             ) : null}
             {decision && decision.blockCodes.length > 0 ? (
-              <p className="mt-1 text-xs text-red-400">{decision.blockCodes.join(" · ")}</p>
+              <p className="mt-1 text-xs text-red-400">
+                {decision.blockCodes.join(" · ")}
+              </p>
             ) : null}
             {queueUnavailableReason ? (
-              <p className="mt-1 text-xs text-muted-foreground">{queueUnavailableReason}</p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                {queueUnavailableReason}
+              </p>
             ) : null}
           </div>
         </td>
@@ -337,15 +380,23 @@ function SearchResultRow({
                 type="button"
                 className={`text-sm font-mono underline-offset-2 hover:underline ${decision.releaseScore < 0 ? "text-red-400" : "text-emerald-700 dark:text-emerald-300"}`}
                 onClick={() => setExpanded((prev) => !prev)}
-                aria-label={expanded ? t("nzb.hideScoringLog") : t("nzb.showScoringLog")}
+                aria-label={
+                  expanded ? t("nzb.hideScoringLog") : t("nzb.showScoringLog")
+                }
               >
                 {getScoreText(decision.releaseScore)}
               </button>
             ) : (
-              <span className={`text-sm font-mono ${decision.releaseScore < 0 ? "text-red-400" : "text-emerald-700 dark:text-emerald-300"}`}>{getScoreText(decision.releaseScore)}</span>
+              <span
+                className={`text-sm font-mono ${decision.releaseScore < 0 ? "text-red-400" : "text-emerald-700 dark:text-emerald-300"}`}
+              >
+                {getScoreText(decision.releaseScore)}
+              </span>
             )
           ) : (
-            <span className="text-sm font-mono text-muted-foreground">{getScoreText(undefined)}</span>
+            <span className="text-sm font-mono text-muted-foreground">
+              {getScoreText(undefined)}
+            </span>
           )}
         </td>
         <td className="border border-border border-x-0 px-4 py-2 text-center text-xl font-semibold text-foreground align-middle">
@@ -406,9 +457,14 @@ function SearchResultRow({
       </tr>
       {expanded && hasLog ? (
         <tr>
-          <td colSpan={4} className="border border-x border-t-0 border-border p-0">
+          <td
+            colSpan={4}
+            className="border border-x border-t-0 border-border p-0"
+          >
             <div className="bg-background/80 px-3 py-2">
-              <p className="mb-1 text-xs font-semibold text-muted-foreground">{t("nzb.scoringLog")}</p>
+              <p className="mb-1 text-xs font-semibold text-muted-foreground">
+                {t("nzb.scoringLog")}
+              </p>
               <div className="space-y-0.5">
                 {decision.scoringLog.map((entry) => {
                   const badge = entry.source?.startsWith("user:")
@@ -417,7 +473,10 @@ function SearchResultRow({
                       ? "System Rule"
                       : null;
                   return (
-                    <div key={entry.code} className="flex justify-between gap-4 font-mono text-xs">
+                    <div
+                      key={entry.code}
+                      className="flex justify-between gap-4 font-mono text-xs"
+                    >
                       <span className="flex items-center gap-1.5 text-muted-foreground">
                         {entry.code}
                         {badge && (
@@ -433,7 +492,13 @@ function SearchResultRow({
                           </>
                         )}
                       </span>
-                      <span className={entry.delta < 0 ? "text-red-400" : "text-emerald-600 dark:text-emerald-400"}>
+                      <span
+                        className={
+                          entry.delta < 0
+                            ? "text-red-400"
+                            : "text-emerald-600 dark:text-emerald-400"
+                        }
+                      >
                         {entry.delta > 0 ? "+" : ""}
                         {entry.delta}
                       </span>
@@ -443,7 +508,13 @@ function SearchResultRow({
               </div>
               <div className="mt-1.5 flex justify-between border-t border-border pt-1.5 font-mono text-xs font-semibold">
                 <span className="text-muted-foreground">{t("nzb.total")}</span>
-                <span className={decision.releaseScore < 0 ? "text-red-400" : "text-emerald-600 dark:text-emerald-400"}>
+                <span
+                  className={
+                    decision.releaseScore < 0
+                      ? "text-red-400"
+                      : "text-emerald-600 dark:text-emerald-400"
+                  }
+                >
                   {getScoreText(decision.releaseScore)}
                 </span>
               </div>
@@ -460,26 +531,37 @@ export function SearchResultBuckets({
   onQueue,
   onQueueAdditional,
   canQueueAdditional,
+  disabled = false,
   requireCandidateToken = false,
+  compact = false,
 }: {
   results: Release[];
   onQueue: (r: Release) => Promise<void> | void;
   onQueueAdditional?: (r: Release) => Promise<void> | void;
   canQueueAdditional?: (r: Release) => boolean;
+  disabled?: boolean;
   requireCandidateToken?: boolean;
+  compact?: boolean;
 }) {
   const t = useTranslate();
   const considered = React.useMemo(
-    () => results.filter((r) => !r.qualityProfileDecision || r.qualityProfileDecision.allowed),
+    () =>
+      results.filter(
+        (r) => !r.qualityProfileDecision || r.qualityProfileDecision.allowed,
+      ),
     [results],
   );
   const blocked = React.useMemo(
-    () => results.filter((r) => r.qualityProfileDecision && !r.qualityProfileDecision.allowed),
+    () =>
+      results.filter(
+        (r) => r.qualityProfileDecision && !r.qualityProfileDecision.allowed,
+      ),
     [results],
   );
   const [showBlocked, setShowBlocked] = React.useState(false);
   const [sortKey, setSortKey] = React.useState<SortKey>("score");
-  const [sortDirection, setSortDirection] = React.useState<SortDirection>("desc");
+  const [sortDirection, setSortDirection] =
+    React.useState<SortDirection>("desc");
 
   const sortedConsidered = React.useMemo(
     () => sortBy(considered, sortKey, sortDirection),
@@ -508,7 +590,11 @@ export function SearchResultBuckets({
       if (sortKey !== key) {
         return <ChevronDown className="h-3 w-3 opacity-30" />;
       }
-      return sortDirection === "desc" ? <ArrowDown className="h-3 w-3" /> : <ArrowUp className="h-3 w-3" />;
+      return sortDirection === "desc" ? (
+        <ArrowDown className="h-3 w-3" />
+      ) : (
+        <ArrowUp className="h-3 w-3" />
+      );
     },
     [sortDirection, sortKey],
   );
@@ -517,7 +603,12 @@ export function SearchResultBuckets({
     (entries: Release[], isBlocked: boolean) => {
       return (
         <div className="space-y-3">
-          <div className="flex flex-wrap items-center gap-2 md:hidden">
+          <div
+            className={cn(
+              "flex flex-wrap items-center gap-2",
+              !compact && "md:hidden",
+            )}
+          >
             <Button
               type="button"
               size="xs"
@@ -536,29 +627,38 @@ export function SearchResultBuckets({
             </Button>
           </div>
 
-          <div className="space-y-2 md:hidden">
+          <div className={cn("space-y-2", !compact && "md:hidden")}>
             {entries.map((result) => (
               <SearchResultRow
                 key={`${result.source}-${result.title}-${result.link}`}
                 result={result}
                 onQueue={onQueue}
                 onQueueAdditional={
-                  onQueueAdditional && (!canQueueAdditional || canQueueAdditional(result))
+                  onQueueAdditional &&
+                  (!canQueueAdditional || canQueueAdditional(result))
                     ? onQueueAdditional
                     : undefined
                 }
                 blocked={isBlocked}
+                disabled={disabled}
                 requireCandidateToken={requireCandidateToken}
                 mobile
               />
             ))}
           </div>
 
-          <div className="hidden overflow-x-auto rounded-md border border-border bg-background/30 md:block">
+          <div
+            className={cn(
+              "hidden overflow-x-auto rounded-md border border-border bg-background/30",
+              !compact && "md:block",
+            )}
+          >
             <table className="w-full table-fixed text-left">
               <thead className="bg-card/80">
                 <tr>
-                  <th className="w-[62%] px-4 py-3 text-base font-bold text-foreground">Release</th>
+                  <th className="w-[62%] px-4 py-3 text-base font-bold text-foreground">
+                    Release
+                  </th>
                   <th className="w-[8%] px-4 py-3 text-center text-base font-bold text-foreground">
                     <button
                       type="button"
@@ -577,7 +677,9 @@ export function SearchResultBuckets({
                       Size {renderSortIcon("size")}
                     </button>
                   </th>
-                  <th className="w-[20%] px-4 py-3 text-center text-base font-bold text-foreground">Actions</th>
+                  <th className="w-[20%] px-4 py-3 text-center text-base font-bold text-foreground">
+                    Actions
+                  </th>
                 </tr>
               </thead>
               <tbody>
@@ -587,11 +689,13 @@ export function SearchResultBuckets({
                     result={result}
                     onQueue={onQueue}
                     onQueueAdditional={
-                      onQueueAdditional && (!canQueueAdditional || canQueueAdditional(result))
+                      onQueueAdditional &&
+                      (!canQueueAdditional || canQueueAdditional(result))
                         ? onQueueAdditional
                         : undefined
                     }
                     blocked={isBlocked}
+                    disabled={disabled}
                     requireCandidateToken={requireCandidateToken}
                   />
                 ))}
@@ -603,6 +707,8 @@ export function SearchResultBuckets({
     },
     [
       canQueueAdditional,
+      compact,
+      disabled,
       handleSort,
       onQueue,
       onQueueAdditional,
@@ -615,7 +721,9 @@ export function SearchResultBuckets({
   return (
     <div className="space-y-3">
       {considered.length === 0 ? (
-        <p className="text-sm text-muted-foreground">{t("nzb.noConsideredResults")}</p>
+        <p className="text-sm text-muted-foreground">
+          {t("nzb.noConsideredResults")}
+        </p>
       ) : (
         renderTable(sortedConsidered, false)
       )}
@@ -626,10 +734,18 @@ export function SearchResultBuckets({
             className="flex items-center gap-1 text-xs text-muted-foreground hover:text-card-foreground"
             onClick={() => setShowBlocked((v) => !v)}
           >
-            {showBlocked ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
+            {showBlocked ? (
+              <ChevronUp className="h-3 w-3" />
+            ) : (
+              <ChevronDown className="h-3 w-3" />
+            )}
             {t("nzb.blockedResults", { count: blocked.length })}
           </button>
-          {showBlocked ? <div className="mt-2 space-y-2">{renderTable(sortedBlocked, true)}</div> : null}
+          {showBlocked ? (
+            <div className="mt-2 space-y-2">
+              {renderTable(sortedBlocked, true)}
+            </div>
+          ) : null}
         </div>
       ) : null}
     </div>

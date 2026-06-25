@@ -260,7 +260,8 @@ export function getEpisodeProgressPresentation(
   }
 
   const text = formatEpisodeProgress(counts.displayedOwned, counts.target);
-  const percent = counts.target > 0 ? (counts.displayedOwned / counts.target) * 100 : 0;
+  const percent =
+    counts.target > 0 ? (counts.displayedOwned / counts.target) * 100 : 0;
   const assistiveText = buildEpisodeProgressAssistiveText(item, t) ?? text;
 
   return {
@@ -328,7 +329,9 @@ export function EpisodeProgressBar({
   }
 
   return (
-    <div className={cn("relative", compact ? "w-[8rem]" : "w-[10rem]", className)}>
+    <div
+      className={cn("relative", compact ? "w-[8rem]" : "w-[10rem]", className)}
+    >
       <Progress
         value={progress.percent}
         className={cn(
@@ -398,9 +401,7 @@ export function resolveDisplayedQualityLabel(
   fallback: string | null,
   unknownLabel: string,
 ) {
-  return (
-    resolveTitleProfileName(item, profiles, fallback) || unknownLabel
-  );
+  return resolveTitleProfileName(item, profiles, fallback) || unknownLabel;
 }
 
 export function defaultSortDirectionForTitleKey(
@@ -414,6 +415,25 @@ export function defaultSortDirectionForTitleKey(
     default:
       return "asc";
   }
+}
+
+export function formatTitleDate(
+  value: string | null | undefined,
+): string | null {
+  if (!value) {
+    return null;
+  }
+
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return null;
+  }
+
+  return new Intl.DateTimeFormat(undefined, {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+  }).format(parsed);
 }
 
 export function StatusBadge({
@@ -544,11 +564,7 @@ export function TitleTableEmptyState({
   );
 }
 
-export function TitleTableLoadingState({
-  colSpan,
-}: {
-  colSpan: number;
-}) {
+export function TitleTableLoadingState({ colSpan }: { colSpan: number }) {
   return (
     <TableRow>
       <TableCell colSpan={colSpan} className="py-10">
@@ -579,7 +595,9 @@ export function TitleCollectionLoadingState() {
     >
       <Loader2 className="h-5 w-5 animate-spin text-primary" />
       <div className="text-left">
-        <p className="text-sm font-medium text-foreground">Loading library...</p>
+        <p className="text-sm font-medium text-foreground">
+          Loading library...
+        </p>
         <p className="text-sm text-muted-foreground">
           Checking your titles and library setup.
         </p>
@@ -621,8 +639,12 @@ export function TitleCollectionEmptyState({
         </div>
       ) : showScanAction && onScan ? (
         <div className="mx-auto max-w-sm rounded-xl border border-border/70 bg-card/60 px-5 py-5 text-center shadow-sm">
-          <p className="text-sm font-medium text-foreground">{t("title.noManaged")}</p>
-          <p className="mt-1 text-sm text-muted-foreground">{t("title.noFilesTrackedHint")}</p>
+          <p className="text-sm font-medium text-foreground">
+            {t("title.noManaged")}
+          </p>
+          <p className="mt-1 text-sm text-muted-foreground">
+            {t("title.noFilesTrackedHint")}
+          </p>
           <Button
             type="button"
             variant="primary"
@@ -632,7 +654,9 @@ export function TitleCollectionEmptyState({
             }}
             disabled={scanDisabled || scanLoading}
           >
-            {scanLoading ? <Loader2 className="mr-1.5 h-4 w-4 animate-spin" /> : null}
+            {scanLoading ? (
+              <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+            ) : null}
             {t("settings.libraryScanButton")}
           </Button>
           {scanNotice ? (

@@ -677,6 +677,8 @@ impl TestContext {
         let titles: Arc<dyn scryer_application::TitleRepository> = Arc::new(title_store.clone());
         let shows: Arc<dyn scryer_application::ShowRepository> = Arc::new(show_store.clone());
         let users: Arc<dyn scryer_application::UserRepository> = Arc::new(user_store.clone());
+        let ui_settings: Arc<dyn scryer_application::UserUiSettingsRepository> =
+            Arc::new(user_store.clone());
         let indexer_configs: Arc<dyn scryer_application::IndexerConfigRepository> =
             indexer_config_store;
         let download_client_configs: Arc<dyn scryer_application::DownloadClientConfigRepository> =
@@ -740,6 +742,7 @@ impl TestContext {
         .with_subtitle_downloads(Arc::new(subtitle_download_store))
         .with_libraries(Arc::new(library_store.clone()))
         .with_external_account_store(Arc::new(user_store.clone()))
+        .with_user_ui_settings_store(ui_settings)
         .with_external_identity_verifier(Arc::new(
             scryer_infrastructure::external_identity::HttpExternalIdentityVerifier::new(),
         ))

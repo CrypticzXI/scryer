@@ -36,6 +36,8 @@ mod title_image_cache;
 mod title_match;
 #[path = "integration_graphql/typed_settings.rs"]
 mod typed_settings;
+#[path = "integration_graphql/ui_settings.rs"]
+mod ui_settings;
 
 use async_trait::async_trait;
 use aws_lc_rs::hmac;

@@ -129,9 +129,11 @@ const zh_CN: LocaleDictionary = {
     "Scryer will return to open admin mode after reload.",
   "settings.securityDisableConfirmAction": "Disable",
   "settings.securityCredentialsInvalid": "Invalid username or password.",
-  "settings.securityCredentialsInsufficient": "That account cannot manage settings.",
+  "settings.securityCredentialsInsufficient":
+    "That account cannot manage settings.",
   "settings.securityEnabledSuccess": "Form login enabled.",
-  "settings.securityDisabledSuccess": "Form login disabled. Reloading into open admin mode…",
+  "settings.securityDisabledSuccess":
+    "Form login disabled. Reloading into open admin mode…",
   "settings.securityPreferenceSaved": "Security preference saved.",
   "settings.securityLoadFailed": "Failed to load security settings.",
   "settings.securitySaveFailed": "Failed to save security settings.",
@@ -226,8 +228,7 @@ const zh_CN: LocaleDictionary = {
   "settings.libraryScanAlreadyRunning": "{{facet}} 库扫描已在运行。",
   "settings.libraryScanProgressCount": "{{current}} / {{total}}",
   "settings.libraryScanCompleted": "媒体库扫描完成。",
-  "settings.libraryScanCompletedWithWarnings":
-    "媒体库扫描已完成，但有警告。",
+  "settings.libraryScanCompletedWithWarnings": "媒体库扫描已完成，但有警告。",
   "jobs.title": "工作机会",
   "jobs.activeRuns": "运行中的任务",
   "jobs.primary": "主要任务",
@@ -553,9 +554,11 @@ const zh_CN: LocaleDictionary = {
   "search.statusNoResults": "没有匹配“{{query}}”的结果",
   "search.tabAll": "全部",
   "search.tabLibrary": "媒体库中",
+  "search.tabActions": "操作",
   "search.catalog": "目录",
   "search.inLibrary": "媒体库中",
   "search.goToHint": "导航和操作",
+  "search.actionsAndSettings": "操作和设置",
   "search.alreadyInCollection": "已在你的收藏中",
   "search.everywhereElse": "其他位置",
   "search.resultCountOne": "1 个结果",
@@ -574,7 +577,8 @@ const zh_CN: LocaleDictionary = {
   "search.tipTitlesNoLibrary": "按电影、剧集、动漫标题、设置项或操作名称搜索。",
   "search.tipTabs": "使用标签将结果缩小到媒体库、导航或某个目录类型。",
   "search.tipTabsNoLibrary": "使用标签将结果缩小到导航或某个目录类型。",
-  "search.tipIndexers": "在索引器中查找元数据结果之外的标题前，先尝试更宽泛的词。",
+  "search.tipIndexers":
+    "在索引器中查找元数据结果之外的标题前，先尝试更宽泛的词。",
   "search.noMatchesFor": "没有匹配“{{query}}”的结果",
   "search.emptyHint": "试试其他电影、剧集、动漫、目录名称、设置项或操作。",
   "search.emptyHintNoLibrary": "试试其他电影、剧集、动漫、设置项或操作。",
@@ -639,6 +643,26 @@ const zh_CN: LocaleDictionary = {
   "title.loading": "未加载数据",
   "title.noManaged": "此部分没有标题。",
   "title.statusTemplate": "已加载 {{count}} 个标题。",
+  "title.contextPanelTitle": "标题详情",
+  "title.contextEmptyTitle": "未选择标题",
+  "title.contextEmptyBody": "没有可显示的预览详情。",
+  "title.contextForYouTitle": "从你的资料库推荐",
+  "title.contextForYouSubtitle": "回到此目录的几个熟悉入口。",
+  "title.contextForYouTop": "热门",
+  "title.contextForYouGenre": "因为你喜欢 {{genre}}",
+  "title.contextForYouRecent": "最近添加",
+  "title.contextForYouEmptyTitle": "还没有推荐",
+  "title.contextForYouEmptyBody": "添加或扫描标题以构建此资料库视图。",
+  "title.contextMoreLikeThis": "相似标题",
+  "title.contextMoreLikeThisScope": "来自当前视图",
+  "title.contextOverview": "概览",
+  "title.contextLibrary": "资料库",
+  "title.contextQuality": "质量",
+  "title.contextRootFolder": "根文件夹",
+  "title.contextSize": "大小",
+  "title.contextEpisodes": "剧集",
+  "title.contextAdded": "已添加",
+  "title.openOverview": "打开概览",
   "title.table.facet": "类型",
   "title.table.monitored": "已监控",
   "title.table.poster": "海报",
@@ -647,6 +671,8 @@ const zh_CN: LocaleDictionary = {
   "title.table.status": "状态",
   "title.table.size": "大小",
   "title.viewModeToggle": "视图模式",
+  "title.viewModeCompact": "紧凑",
+  "title.viewModePosterTable": "列表",
   "title.viewModeTable": "表格视图",
   "title.viewModePoster": "海报视图",
   "title.interactiveSearchComingSoon": "手动搜索即将推出。",
@@ -659,8 +685,7 @@ const zh_CN: LocaleDictionary = {
   "title.fetchingData": "正在获取数据",
   "title.filesOnDisk": "磁盘上的文件",
   "title.noFilesTracked": "没有已跟踪的文件。",
-  "title.noFilesTrackedHint":
-    "运行一次资料库扫描以检测磁盘上的文件。",
+  "title.noFilesTrackedHint": "运行一次资料库扫描以检测磁盘上的文件。",
   "title.configureRootFoldersHint":
     "扫描此资料库之前，请先在该分面设置中配置根数据文件夹。",
   "title.configureRootFoldersButton": "配置根数据文件夹",
@@ -754,6 +779,7 @@ const zh_CN: LocaleDictionary = {
   "nzb.searchResultsFor": "{{name}} 的 NZB 结果",
   "nzb.selectTvdbFirst": "选择一个 TVDB 匹配以搜索 NZBGeek。",
   "nzb.noResultsYet": "暂无版本匹配。",
+  "nzb.searchFailed": "发布资源搜索失败。",
   "nzb.blockedByProfile": "被配置阻止：{{reason}}",
   "nzb.queue": "队列",
   "nzb.queueAdditionalFile": "作为附加文件加入队列",
@@ -972,13 +998,16 @@ const zh_CN: LocaleDictionary = {
   "settings.sub.enabled": "启用字幕管理",
   "settings.sub.credentials": "OpenSubtitles 凭证",
   "settings.sub.username": "用户名",
-  "settings.sub.usernameEmailWarning": "请使用你的 OpenSubtitles 用户名，而不是电子邮箱地址。",
+  "settings.sub.usernameEmailWarning":
+    "请使用你的 OpenSubtitles 用户名，而不是电子邮箱地址。",
   "settings.sub.password": "密码",
   "settings.sub.apiKey": "API 密钥",
   "settings.sub.apiKeyRequiredTitle": "字幕服务不可用",
-  "settings.sub.apiKeyRequiredBody": "在字幕服务恢复可用之前，字幕搜索和下载将保持禁用。",
+  "settings.sub.apiKeyRequiredBody":
+    "在字幕服务恢复可用之前，字幕搜索和下载将保持禁用。",
   "settings.sub.credentialsRequiredTitle": "需要字幕凭据",
-  "settings.sub.credentialsRequiredBody": "在搜索或下载字幕之前，请先在此处添加你的字幕用户名和密码。",
+  "settings.sub.credentialsRequiredBody":
+    "在搜索或下载字幕之前，请先在此处添加你的字幕用户名和密码。",
   "settings.sub.credentialsVerified": "字幕凭据已验证",
   "settings.sub.languages": "字幕语言",
   "settings.sub.languagesHelp":
@@ -1081,8 +1110,7 @@ const zh_CN: LocaleDictionary = {
   "settings.pluginUpgrade": "升级到 v{{version}}",
   "settings.pluginOptimizedBuildAvailable": "优化构建可用",
   "settings.pluginInstallOptimizedBuild": "安装优化构建",
-  "settings.pluginNoCompatibleRelease":
-    "当前 Scryer 版本没有兼容的发布版本",
+  "settings.pluginNoCompatibleRelease": "当前 Scryer 版本没有兼容的发布版本",
   "settings.pluginNewerReleaseRequiresNewerScryer":
     "较新的发布版本需要更高版本的 Scryer",
   "settings.pluginNewerReleaseRequiresNewerScryerVersion":
@@ -1092,9 +1120,9 @@ const zh_CN: LocaleDictionary = {
     "Failed to install plugin '{{name}}': the published artifact no longer matches the registry checksum. Refresh the registry or try again later.",
   "status.pluginInstallFailedSdkMetadataMismatch":
     "Failed to install plugin '{{name}}': the published artifact does not match the registry SDK compatibility metadata. Refresh the registry or try again later.",
-  "status.pluginInstallFailedWithReason": "Failed to install plugin '{{name}}': {{reason}}",
-  "status.pluginRevertedToBundled":
-    "插件'{{name}}'已恢复为内置版本。",
+  "status.pluginInstallFailedWithReason":
+    "Failed to install plugin '{{name}}': {{reason}}",
+  "status.pluginRevertedToBundled": "插件'{{name}}'已恢复为内置版本。",
   "status.pluginUninstalled": "插件'{{name}}'已卸载。",
   "status.pluginUpgraded": "插件'{{name}}'已升级到 v{{version}}。",
   "status.pluginToggled": "插件'{{name}}'已{{state}}。",
@@ -1296,7 +1324,8 @@ const zh_CN: LocaleDictionary = {
   "subtitle.apiKeyRequiredBody": "该文件的字幕服务当前不可用。",
   "subtitle.apiKeyRequiredAction": "打开字幕设置",
   "subtitle.credentialsRequiredTitle": "需要字幕凭据",
-  "subtitle.credentialsRequiredBody": "在为该文件搜索字幕之前，请先在“设置 > 字幕”中配置你的字幕用户名和密码。",
+  "subtitle.credentialsRequiredBody":
+    "在为该文件搜索字幕之前，请先在“设置 > 字幕”中配置你的字幕用户名和密码。",
   "subtitle.credentialsRequiredAction": "打开字幕设置",
   "subtitle.blocklist": "阻止列表",
   "subtitle.blocklisted": "字幕已添加到阻止列表",
@@ -1762,8 +1791,7 @@ const zh_CN: LocaleDictionary = {
   "settings.recycleBinEnabled": "启用回收站",
   "settings.recycleBinEnabledHelp":
     "已删除和已替换的媒体文件会先移入回收站，再永久移除。",
-  "settings.recycleBinEnabledReadonly":
-    "回收站状态由可管理配置的用户控制。",
+  "settings.recycleBinEnabledReadonly": "回收站状态由可管理配置的用户控制。",
   "settings.recycleBinSection": "管理回收的媒体文件",
   "settings.recycleBinLibraryFilter": "媒体库",
   "settings.recycleBinEmpty": "回收站是空的。",

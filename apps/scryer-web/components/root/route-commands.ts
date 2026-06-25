@@ -294,6 +294,15 @@ export function buildRouteCommands({
           onSelect: buildNavigate(onNavigate, "activity", undefined, undefined, undefined, undefined, "history"),
         } satisfies RouteCommand]
       : []),
+    {
+      id: "settings-profile",
+      label: `${settingsGroupLabel} / ${t("settings.profile")}`,
+      description: t("settings.profile"),
+      groupLabel: settingsGroupLabel,
+      keywords: ["settings", "profile", "account", "me"],
+      icon: User,
+      onSelect: buildNavigate(onNavigate, "settings", "profile"),
+    },
     ...(canManageSystemSettings
       ? [{
           id: "settings-general",
@@ -313,15 +322,6 @@ export function buildRouteCommands({
           onSelect: buildNavigate(onNavigate, "settings", "backups"),
         } satisfies RouteCommand]
       : []),
-    {
-      id: "settings-profile",
-      label: `${settingsGroupLabel} / ${t("settings.profile")}`,
-      description: t("settings.profile"),
-      groupLabel: settingsGroupLabel,
-      keywords: ["settings", "profile", "account", "me"],
-      icon: User,
-      onSelect: buildNavigate(onNavigate, "settings", "profile"),
-    },
     ...(canManageUserAccounts
       ? [{
           id: "settings-security",

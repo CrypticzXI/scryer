@@ -131,9 +131,11 @@ const ko: LocaleDictionary = {
     "Scryer will return to open admin mode after reload.",
   "settings.securityDisableConfirmAction": "Disable",
   "settings.securityCredentialsInvalid": "Invalid username or password.",
-  "settings.securityCredentialsInsufficient": "That account cannot manage settings.",
+  "settings.securityCredentialsInsufficient":
+    "That account cannot manage settings.",
   "settings.securityEnabledSuccess": "Form login enabled.",
-  "settings.securityDisabledSuccess": "Form login disabled. Reloading into open admin mode…",
+  "settings.securityDisabledSuccess":
+    "Form login disabled. Reloading into open admin mode…",
   "settings.securityPreferenceSaved": "Security preference saved.",
   "settings.securityLoadFailed": "Failed to load security settings.",
   "settings.securitySaveFailed": "Failed to save security settings.",
@@ -576,9 +578,11 @@ const ko: LocaleDictionary = {
   "search.statusNoResults": "“{{query}}”에 대한 일치 항목 없음",
   "search.tabAll": "전체",
   "search.tabLibrary": "라이브러리 내",
+  "search.tabActions": "작업",
   "search.catalog": "카탈로그",
   "search.inLibrary": "라이브러리 내",
   "search.goToHint": "내비게이션 및 작업",
+  "search.actionsAndSettings": "작업 및 설정",
   "search.alreadyInCollection": "이미 컬렉션에 있음",
   "search.everywhereElse": "그 외",
   "search.resultCountOne": "결과 1개",
@@ -673,6 +677,27 @@ const ko: LocaleDictionary = {
   "title.loading": "데이터 없음",
   "title.noManaged": "이 섹션에 타이틀이 없습니다.",
   "title.statusTemplate": "{{count}}개 타이틀 로드됨.",
+  "title.contextPanelTitle": "타이틀 세부 정보",
+  "title.contextEmptyTitle": "선택된 타이틀 없음",
+  "title.contextEmptyBody": "표시할 미리보기 세부 정보가 없습니다.",
+  "title.contextForYouTitle": "내 라이브러리 추천",
+  "title.contextForYouSubtitle": "이 카탈로그로 돌아가는 익숙한 경로입니다.",
+  "title.contextForYouTop": "인기",
+  "title.contextForYouGenre": "{{genre}} 장르를 좋아한다면",
+  "title.contextForYouRecent": "최근 추가됨",
+  "title.contextForYouEmptyTitle": "아직 추천이 없습니다",
+  "title.contextForYouEmptyBody":
+    "타이틀을 추가하거나 스캔하여 이 라이브러리 보기를 만드세요.",
+  "title.contextMoreLikeThis": "비슷한 타이틀",
+  "title.contextMoreLikeThisScope": "현재 보기 기준",
+  "title.contextOverview": "개요",
+  "title.contextLibrary": "라이브러리",
+  "title.contextQuality": "품질",
+  "title.contextRootFolder": "루트 폴더",
+  "title.contextSize": "크기",
+  "title.contextEpisodes": "에피소드",
+  "title.contextAdded": "추가됨",
+  "title.openOverview": "개요 열기",
   "title.table.facet": "유형",
   "title.table.monitored": "모니터링됨",
   "title.table.poster": "포스터",
@@ -681,6 +706,8 @@ const ko: LocaleDictionary = {
   "title.table.status": "상태",
   "title.table.size": "크기",
   "title.viewModeToggle": "보기 모드",
+  "title.viewModeCompact": "컴팩트",
+  "title.viewModePosterTable": "목록",
   "title.viewModeTable": "테이블 보기",
   "title.viewModePoster": "포스터 보기",
   "title.interactiveSearchComingSoon": "수동 검색은 곧 제공됩니다.",
@@ -688,8 +715,7 @@ const ko: LocaleDictionary = {
   "title.episodeMonitored": "에피소드 모니터링 중",
   "title.deleteFilesOnDisk": "디스크에서 파일 삭제",
   "title.seasonsAndEpisodes": "시즌 및 에피소드",
-  "title.noTrackedSeasons":
-    "이 작품에서는 아직 모니터링 중인 시즌이 없습니다.",
+  "title.noTrackedSeasons": "이 작품에서는 아직 모니터링 중인 시즌이 없습니다.",
   "title.fetchingData": "데이터를 가져오는 중",
   "title.filesOnDisk": "디스크의 파일",
   "title.noFilesTracked": "추적 중인 파일이 없습니다.",
@@ -713,13 +739,13 @@ const ko: LocaleDictionary = {
   "title.movieDetails": "영화 세부 정보",
   "title.searchingReleases": "인덱서에서 릴리스를 검색하는 중…",
   "title.noReleasesFound": "{{name}}에 대한 릴리스를 찾지 못했습니다.",
-  "title.searchNeedsDownloadClientTitle": "검색에는 다운로드 클라이언트가 필요합니다",
+  "title.searchNeedsDownloadClientTitle":
+    "검색에는 다운로드 클라이언트가 필요합니다",
   "title.searchNeedsDownloadClientDescription":
     "이 제목 페이지에서 검색 또는 대화형 검색을 사용하기 전에 다운로드 클라이언트를 하나 이상 구성하세요.",
   "title.searchNeedsDownloadClientAction": "다운로드 클라이언트 열기",
   "title.blockedReleases": "차단된 릴리스",
-  "title.noBlockedReleases":
-    "이 영화에 기록된 차단된 릴리스가 없습니다.",
+  "title.noBlockedReleases": "이 영화에 기록된 차단된 릴리스가 없습니다.",
   "title.settings": "타이틀 설정",
   "title.qualityProfile": "품질 프로필",
   "title.rootFolder": "루트 폴더",
@@ -790,6 +816,7 @@ const ko: LocaleDictionary = {
   "nzb.searchResultsFor": "{{name}}에 대한 NZB 결과",
   "nzb.selectTvdbFirst": "NZBGeek을 검색하려면 TVDB 매치를 선택하세요.",
   "nzb.noResultsYet": "아직 릴리스 매치가 없습니다.",
+  "nzb.searchFailed": "릴리스 검색에 실패했습니다.",
   "nzb.blockedByProfile": "프로필에 의해 차단됨: {{reason}}",
   "nzb.queue": "대기열",
   "nzb.queueAdditionalFile": "추가 파일로 대기열에 추가",
@@ -885,7 +912,8 @@ const ko: LocaleDictionary = {
   "queue.deleteConfirmTitle": "다운로드 제거",
   "queue.deleteConfirmDescription":
     "이 다운로드를 대기열에서 제거하시겠습니까? 이 작업은 되돌릴 수 없습니다.",
-  "queue.manualUnavailableForResult": "이 결과는 수동 대기열 추가를 지원하지 않습니다.",
+  "queue.manualUnavailableForResult":
+    "이 결과는 수동 대기열 추가를 지원하지 않습니다.",
   "importHistory.title": "가져오기 기록",
   "importHistory.empty": "가져오기 기록이 없습니다.",
   "importHistory.status": "상태",
@@ -1014,13 +1042,16 @@ const ko: LocaleDictionary = {
   "settings.sub.enabled": "자막 관리 활성화",
   "settings.sub.credentials": "OpenSubtitles 자격 증명",
   "settings.sub.username": "사용자이르",
-  "settings.sub.usernameEmailWarning": "이메일 주소가 아니라 OpenSubtitles 사용자 이름을 사용하세요.",
+  "settings.sub.usernameEmailWarning":
+    "이메일 주소가 아니라 OpenSubtitles 사용자 이름을 사용하세요.",
   "settings.sub.password": "비밀번호",
   "settings.sub.apiKey": "API 키",
   "settings.sub.apiKeyRequiredTitle": "자막 서비스를 사용할 수 없음",
-  "settings.sub.apiKeyRequiredBody": "자막 서비스를 다시 사용할 수 있을 때까지 자막 검색과 다운로드는 비활성화된 상태로 유지됩니다.",
+  "settings.sub.apiKeyRequiredBody":
+    "자막 서비스를 다시 사용할 수 있을 때까지 자막 검색과 다운로드는 비활성화된 상태로 유지됩니다.",
   "settings.sub.credentialsRequiredTitle": "자막 자격 증명 필요",
-  "settings.sub.credentialsRequiredBody": "자막을 검색하거나 다운로드하기 전에 여기에 자막 사용자 이름과 비밀번호를 추가하세요.",
+  "settings.sub.credentialsRequiredBody":
+    "자막을 검색하거나 다운로드하기 전에 여기에 자막 사용자 이름과 비밀번호를 추가하세요.",
   "settings.sub.credentialsVerified": "자막 자격 증명이 확인되었습니다",
   "settings.sub.languages": "자막 언어",
   "settings.sub.languagesHelp":
@@ -1137,7 +1168,8 @@ const ko: LocaleDictionary = {
     "Failed to install plugin '{{name}}': the published artifact no longer matches the registry checksum. Refresh the registry or try again later.",
   "status.pluginInstallFailedSdkMetadataMismatch":
     "Failed to install plugin '{{name}}': the published artifact does not match the registry SDK compatibility metadata. Refresh the registry or try again later.",
-  "status.pluginInstallFailedWithReason": "Failed to install plugin '{{name}}': {{reason}}",
+  "status.pluginInstallFailedWithReason":
+    "Failed to install plugin '{{name}}': {{reason}}",
   "status.pluginRevertedToBundled":
     "'{{name}}' 플러그인이 내장 버전으로 되돌아갔습니다.",
   "status.pluginUninstalled": "'{{name}}' 플러그인이 제거되었습니다.",
@@ -1305,8 +1337,7 @@ const ko: LocaleDictionary = {
   "episode.quality": "품질",
   "episode.missing": "누락됨",
   "episode.noFile": "이 에피소드는 아직 다운로드되지 않았습니다.",
-  "episode.noBlockedReleases":
-    "이 에피소드에 기록된 차단된 릴리스가 없습니다.",
+  "episode.noBlockedReleases": "이 에피소드에 기록된 차단된 릴리스가 없습니다.",
   "episode.untitledRelease": "제목 없는 릴리스",
   "episode.filler": "필러",
   "episode.recap": "총집편",
@@ -1346,10 +1377,12 @@ const ko: LocaleDictionary = {
   "subtitle.external": "외부",
   "subtitle.manualSearch": "수동 검색",
   "subtitle.apiKeyRequiredTitle": "자막 서비스를 사용할 수 없음",
-  "subtitle.apiKeyRequiredBody": "이 파일에서는 현재 자막 서비스를 사용할 수 없습니다.",
+  "subtitle.apiKeyRequiredBody":
+    "이 파일에서는 현재 자막 서비스를 사용할 수 없습니다.",
   "subtitle.apiKeyRequiredAction": "자막 설정 열기",
   "subtitle.credentialsRequiredTitle": "자막 자격 증명 필요",
-  "subtitle.credentialsRequiredBody": "이 파일의 자막을 검색하기 전에 설정 > 자막에서 자막 사용자 이름과 비밀번호를 구성하세요.",
+  "subtitle.credentialsRequiredBody":
+    "이 파일의 자막을 검색하기 전에 설정 > 자막에서 자막 사용자 이름과 비밀번호를 구성하세요.",
   "subtitle.credentialsRequiredAction": "자막 설정 열기",
   "subtitle.blocklist": "차단 목록",
   "subtitle.blocklisted": "자막이 차단 목록에 추가되었습니다.",
@@ -1427,7 +1460,8 @@ const ko: LocaleDictionary = {
   "status.nzbFoundForTitle":
     "{{name}}{{source}}에 대한 {{count}}개 NZB 항목 발견.",
   "status.noNzbFound": "NZB 결과를 찾을 수 없습니다.",
-  "status.releaseMissingCandidateToken": "선택한 릴리스에 확인된 후보 토큰이 없습니다.",
+  "status.releaseMissingCandidateToken":
+    "선택한 릴리스에 확인된 후보 토큰이 없습니다.",
   "status.deleteCatalogConfirm":
     "카탈로그에서 {{name}}을(를) 제거하시겠습니까? 아래 옵션으로 로컬 파일도 삭제할 수 있습니다.",
   "status.titleDeleted": "카탈로그에서 {{name}}이(가) 제거되었습니다.",
@@ -1592,7 +1626,8 @@ const ko: LocaleDictionary = {
   "cutoff.colFacet": "유형",
   "cutoff.colCurrentQuality": "현재 품질",
   "cutoff.colTargetQuality": "목표 품질",
-  "cutoff.noItems": "모니터링 중인 영화와 에피소드가 모두 품질 프로필 컷오프를 충족합니다.",
+  "cutoff.noItems":
+    "모니터링 중인 영화와 에피소드가 모두 품질 프로필 컷오프를 충족합니다.",
   "cutoff.totalCount": "컷오프 미달 항목 {{count}}개",
   "cutoff.filterFacet": "유형",
   "cutoff.allFacets": "모든 유형",

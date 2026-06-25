@@ -35,10 +35,12 @@ import {
   viewToFacet,
 } from "@/lib/constants/settings";
 import { useClient } from "urql";
-import type { ContentSettingsSection, OverviewTitleTarget, ViewId } from "@/components/root/types";
-import {
-  toProfileOptions,
-} from "@/lib/utils/quality-profiles";
+import type {
+  ContentSettingsSection,
+  OverviewTitleTarget,
+  ViewId,
+} from "@/components/root/types";
+import { toProfileOptions } from "@/lib/utils/quality-profiles";
 import {
   normalizeLibraryFilterSelection,
   selectedLibraryIdsToQueryValue,
@@ -96,6 +98,7 @@ import {
 } from "@/components/views/media-content/content-view-mode";
 import {
   filterTitlesByQuickFilters,
+  getTitleQuickFilterCounts,
   type TitleQuickFilters,
 } from "@/components/views/media-content/title-quick-filters";
 import {
@@ -110,7 +113,9 @@ import {
 
 const HYDRATION_POSTER_REFRESH_WINDOW_MS = 5 * 60 * 1000;
 const HYDRATION_POSTER_REFRESH_INTERVAL_MS = 2_500;
-const TITLE_DELETION_JOB_FALLBACK_DELAYS_MS = [10_000, 60_000, 180_000] as const;
+const TITLE_DELETION_JOB_FALLBACK_DELAYS_MS = [
+  10_000, 60_000, 180_000,
+] as const;
 const TITLE_CATALOG_PAGE_SIZE = 300;
 const TITLE_CATALOG_PREFETCH_DISTANCE_PX = 1200;
 const ALL_LIBRARIES_VALUE = "__all__";
@@ -122,7 +127,10 @@ type MediaContentContainerProps = {
   canManageSystemSettings: boolean;
   canManageCatalogSettings: boolean;
   canManageLibrarySettings: boolean;
-  onOpenOverview: (targetView: ViewId, overviewTarget: OverviewTitleTarget) => void;
+  onOpenOverview: (
+    targetView: ViewId,
+    overviewTarget: OverviewTitleTarget,
+  ) => void;
 };
 
 type TitleCatalogState = {
@@ -179,9 +187,9 @@ type ActiveCatalogListFilters = {
 
 function sortCatalogTitles(titles: TitleRecord[]): TitleRecord[] {
   return [...titles].sort((left, right) => {
-    const nameCompare = left.name.toLocaleLowerCase().localeCompare(
-      right.name.toLocaleLowerCase(),
-    );
+    const nameCompare = left.name
+      .toLocaleLowerCase()
+      .localeCompare(right.name.toLocaleLowerCase());
     if (nameCompare !== 0) {
       return nameCompare;
     }
@@ -193,14 +201,18 @@ function mergePreferLoadedImageFields(
   current: TitleRecord,
   incoming: TitleRecord,
 ): TitleRecord {
-  const incomingHasPoster = Boolean(incoming.posterUrl || incoming.posterSourceUrl);
+  const incomingHasPoster = Boolean(
+    incoming.posterUrl || incoming.posterSourceUrl,
+  );
   const incomingHasBackground = Boolean(
     incoming.backgroundUrl || incoming.backgroundSourceUrl,
   );
 
   return {
     ...incoming,
-    posterUrl: incomingHasPoster ? incoming.posterUrl : (current.posterUrl ?? null),
+    posterUrl: incomingHasPoster
+      ? incoming.posterUrl
+      : (current.posterUrl ?? null),
     posterSourceUrl: incomingHasPoster
       ? incoming.posterSourceUrl
       : (current.posterSourceUrl ?? null),
@@ -303,17 +315,29 @@ function upsertCatalogTitleRecord(
   if (existingIndex === -1) {
     next.push(title);
   } else {
-    next[existingIndex] = mergePreferLoadedImageFields(next[existingIndex], title);
+    next[existingIndex] = mergePreferLoadedImageFields(
+      next[existingIndex],
+      title,
+    );
   }
   return sortCatalogTitles(next);
 }
 
-function isPendingHydrationPosterTitle(title: TitleRecord, nowMs: number): boolean {
-  if (title.posterUrl || title.posterSourceUrl || title.metadataFetchedAt != null) {
+function isPendingHydrationPosterTitle(
+  title: TitleRecord,
+  nowMs: number,
+): boolean {
+  if (
+    title.posterUrl ||
+    title.posterSourceUrl ||
+    title.metadataFetchedAt != null
+  ) {
     return false;
   }
 
-  const createdAtMs = title.createdAt ? Date.parse(title.createdAt) : Number.NaN;
+  const createdAtMs = title.createdAt
+    ? Date.parse(title.createdAt)
+    : Number.NaN;
   if (!Number.isFinite(createdAtMs)) {
     return true;
   }
@@ -321,7 +345,10 @@ function isPendingHydrationPosterTitle(title: TitleRecord, nowMs: number): boole
   return nowMs - createdAtMs <= HYDRATION_POSTER_REFRESH_WINDOW_MS;
 }
 
-function sameIdSet(left: ReadonlySet<string>, right: ReadonlySet<string>): boolean {
+function sameIdSet(
+  left: ReadonlySet<string>,
+  right: ReadonlySet<string>,
+): boolean {
   if (left.size !== right.size) {
     return false;
   }
@@ -457,7 +484,9 @@ function inferMonitoredBatchOutcome(
   refreshedTitles: TitleRecord[],
   monitored: boolean,
 ): { succeededIds: string[]; failedIds: string[] } {
-  const refreshedById = new Map(refreshedTitles.map((title) => [title.id, title]));
+  const refreshedById = new Map(
+    refreshedTitles.map((title) => [title.id, title]),
+  );
   return splitSucceededTitleIds(
     targets,
     (title) => refreshedById.get(title.id)?.monitored === monitored,
@@ -469,7 +498,9 @@ function inferTitleUpdateBatchOutcome(
   refreshedTitles: TitleRecord[],
   changes: TitleOptionUpdates,
 ): { succeededIds: string[]; failedIds: string[] } {
-  const refreshedById = new Map(refreshedTitles.map((title) => [title.id, title]));
+  const refreshedById = new Map(
+    refreshedTitles.map((title) => [title.id, title]),
+  );
   return splitSucceededTitleIds(targets, (title) => {
     const refreshed = refreshedById.get(title.id);
     if (!refreshed) {
@@ -529,7 +560,9 @@ function inferTitleUpdateBatchOutcome(
   });
 }
 
-function aggregateDeletePreviews(previews: DeletePreview[]): DeletePreview | null {
+function aggregateDeletePreviews(
+  previews: DeletePreview[],
+): DeletePreview | null {
   if (previews.length === 0) {
     return null;
   }
@@ -540,7 +573,10 @@ function aggregateDeletePreviews(previews: DeletePreview[]): DeletePreview | nul
   const typedPrompt =
     previews.find((preview) => preview.requiresTypedConfirmation)
       ?.typedConfirmationPrompt ?? null;
-  const mediaCount = previews.reduce((sum, preview) => sum + preview.mediaCount, 0);
+  const mediaCount = previews.reduce(
+    (sum, preview) => sum + preview.mediaCount,
+    0,
+  );
   const requiresTypedConfirmation =
     mediaCount > 50 ||
     previews.some((preview) => preview.requiresTypedConfirmation);
@@ -564,7 +600,10 @@ function aggregateDeletePreviews(previews: DeletePreview[]): DeletePreview | nul
     ),
     requiresTypedConfirmation,
     typedConfirmationPrompt:
-      typedPrompt ?? (requiresTypedConfirmation ? "Type DELETE to confirm this large delete." : null),
+      typedPrompt ??
+      (requiresTypedConfirmation
+        ? "Type DELETE to confirm this large delete."
+        : null),
     targetLabel: "",
     samplePaths,
   };
@@ -580,12 +619,8 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   onOpenOverview,
 }: MediaContentContainerProps) {
   const searchState = useSearchContext();
-  const {
-    queueFacet,
-    setQueueFacet,
-    runTvdbSearch,
-    tvdbCandidates,
-  } = searchState;
+  const { queueFacet, setQueueFacet, runTvdbSearch, tvdbCandidates } =
+    searchState;
   const setGlobalStatus = useGlobalStatus();
   const t = useTranslate();
   const client = useClient();
@@ -595,18 +630,21 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   const { queueCatalogTitleRefresh } = useReactiveRefresh();
   const [titleDeleteTypedConfirmation, setTitleDeleteTypedConfirmation] =
     React.useState("");
-  const [pendingDeletedTitleIds, setPendingDeletedTitleIds] = React.useState<Set<string>>(
-    () => new Set(),
-  );
+  const [pendingDeletedTitleIds, setPendingDeletedTitleIds] = React.useState<
+    Set<string>
+  >(() => new Set());
   const deletionJobIdsRef = React.useRef(new Set<string>());
-  const deletionFallbackTimersRef = React.useRef<ReturnType<typeof setTimeout>[]>(
-    [],
-  );
+  const deletionFallbackTimersRef = React.useRef<
+    ReturnType<typeof setTimeout>[]
+  >([]);
   const [startedLibraryScanSessionId, setStartedLibraryScanSessionId] =
     React.useState<string | null>(null);
   const activeFacet = viewToFacet[view as keyof typeof viewToFacet] ?? "movie";
-  const { getActiveSession, getSessionById, refreshSessions: refreshLibraryScanSessions } =
-    useLibraryScanProgress();
+  const {
+    getActiveSession,
+    getSessionById,
+    refreshSessions: refreshLibraryScanSessions,
+  } = useLibraryScanProgress();
   const activeLibraryScanSession = getActiveSession(activeFacet);
   const startedLibraryScanSession = startedLibraryScanSessionId
     ? getSessionById(startedLibraryScanSessionId)
@@ -619,15 +657,20 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   const shouldLoadCatalogTitles =
     isMediaView && contentSettingsSection === "overview";
   const shouldLoadMediaSettings = isMediaView;
-  const [desktopViewMode, setDesktopViewMode] = React.useState<ContentViewMode>(
-    () => readStoredContentViewMode(),
-  );
+  const [desktopViewModes, setDesktopViewModes] = React.useState<
+    Partial<Record<ViewId, ContentViewMode>>
+  >(() => ({ [view]: readStoredContentViewMode(view) }));
+  const desktopViewMode =
+    desktopViewModes[view] ?? readStoredContentViewMode(view);
   const effectiveViewMode: ContentViewMode = isMobile
     ? "poster"
     : desktopViewMode;
   const [selectedTitleIds, setSelectedTitleIds] = React.useState<Set<string>>(
     () => new Set(),
   );
+  const [selectedOverviewTitleId, setSelectedOverviewTitleId] = React.useState<
+    string | null
+  >(null);
   const [titleQuickFilters, setTitleQuickFilters] =
     React.useState<TitleQuickFilters>({
       monitored: false,
@@ -656,11 +699,19 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     loading: false,
     initialLoadComplete: false,
   });
-  const [rootValidationLibraries, setRootValidationLibraries] = React.useState<LibraryRecord[]>([]);
-  const [rootValidationLibrariesLoading, setRootValidationLibrariesLoading] = React.useState(false);
-  const [invalidRootLibraryIds, setInvalidRootLibraryIds] = React.useState<string[]>([]);
-  const [librarySettingsSaving, setLibrarySettingsSaving] = React.useState(false);
-  const [selectedLibraryIds, setSelectedLibraryIds] = React.useState<string[]>([]);
+  const [rootValidationLibraries, setRootValidationLibraries] = React.useState<
+    LibraryRecord[]
+  >([]);
+  const [rootValidationLibrariesLoading, setRootValidationLibrariesLoading] =
+    React.useState(false);
+  const [invalidRootLibraryIds, setInvalidRootLibraryIds] = React.useState<
+    string[]
+  >([]);
+  const [librarySettingsSaving, setLibrarySettingsSaving] =
+    React.useState(false);
+  const [selectedLibraryIds, setSelectedLibraryIds] = React.useState<string[]>(
+    [],
+  );
   const activeCatalogQueryRef = React.useRef("");
   const activeCatalogListFiltersRef = React.useRef<ActiveCatalogListFilters>({
     facet: activeFacet,
@@ -673,9 +724,8 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   const catalogQueryKeyRef = React.useRef("");
   const latestCriticalMutationEpochRef = React.useRef(0);
   const skipNextCatalogOverviewReloadRef = React.useRef(false);
-  const [catalogPaginationState, setCatalogPaginationState] = React.useState<TitleCatalogState>(
-    emptyTitleCatalogState,
-  );
+  const [catalogPaginationState, setCatalogPaginationState] =
+    React.useState<TitleCatalogState>(emptyTitleCatalogState);
 
   React.useEffect(() => {
     catalogQueryKeyRef.current = catalogPaginationState.queryKey;
@@ -724,13 +774,10 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     catalogBootstrapState.facet === activeFacet &&
     catalogBootstrapState.loading;
   const catalogBootstrapLoading =
-    shouldLoadCatalogTitles &&
-    !catalogInitialLoadComplete;
+    shouldLoadCatalogTitles && !catalogInitialLoadComplete;
   const titleDeletePreviewVariables = React.useMemo(
     () =>
-      titleToDelete && deleteFilesOnDisk
-        ? { titleId: titleToDelete.id }
-        : null,
+      titleToDelete && deleteFilesOnDisk ? { titleId: titleToDelete.id } : null,
     [deleteFilesOnDisk, titleToDelete],
   );
   const {
@@ -746,7 +793,8 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   const effectiveTitleQuickFilters = React.useMemo<TitleQuickFilters>(
     () => ({
       ...titleQuickFilters,
-      continuing: activeFacet === "movie" ? false : titleQuickFilters.continuing,
+      continuing:
+        activeFacet === "movie" ? false : titleQuickFilters.continuing,
       ended: activeFacet === "movie" ? false : titleQuickFilters.ended,
     }),
     [activeFacet, titleQuickFilters],
@@ -764,21 +812,32 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
       monitoredTitles.map((title) => ({
         ...title,
         libraryName:
-          title.libraryName ?? libraryNameById.get(title.libraryId) ?? title.libraryId,
+          title.libraryName ??
+          libraryNameById.get(title.libraryId) ??
+          title.libraryId,
         librarySlug:
           title.librarySlug ?? librarySlugById.get(title.libraryId) ?? null,
       })),
     [libraryNameById, librarySlugById, monitoredTitles],
   );
+  const titleQuickFilterSourceTitles = React.useMemo(
+    () =>
+      monitoredTitlesWithLibraries.filter(
+        (title) => !pendingDeletedTitleIds.has(title.id),
+      ),
+    [monitoredTitlesWithLibraries, pendingDeletedTitleIds],
+  );
+  const titleQuickFilterCounts = React.useMemo(
+    () => getTitleQuickFilterCounts(titleQuickFilterSourceTitles),
+    [titleQuickFilterSourceTitles],
+  );
   const visibleTitles = React.useMemo(
     () =>
       filterTitlesByQuickFilters(
-        monitoredTitlesWithLibraries.filter(
-          (title) => !pendingDeletedTitleIds.has(title.id),
-        ),
+        titleQuickFilterSourceTitles,
         effectiveTitleQuickFilters,
       ),
-    [effectiveTitleQuickFilters, monitoredTitlesWithLibraries, pendingDeletedTitleIds],
+    [effectiveTitleQuickFilters, titleQuickFilterSourceTitles],
   );
   const selectedTitles = React.useMemo(
     () => visibleTitles.filter((title) => selectedTitleIds.has(title.id)),
@@ -791,7 +850,9 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   const selectedTitleLibrary = React.useMemo(
     () =>
       selectedTitleLibraryIds.length === 1
-        ? libraries.find((library) => library.id === selectedTitleLibraryIds[0]) ?? null
+        ? (libraries.find(
+            (library) => library.id === selectedTitleLibraryIds[0],
+          ) ?? null)
         : null,
     [libraries, selectedTitleLibraryIds],
   );
@@ -808,9 +869,9 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
 
   React.useLayoutEffect(() => {
     if (
-      !shouldLoadCatalogTitles
-      || effectiveViewMode === "poster"
-      || typeof window === "undefined"
+      !shouldLoadCatalogTitles ||
+      effectiveViewMode === "poster" ||
+      typeof window === "undefined"
     ) {
       return;
     }
@@ -841,6 +902,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
       ended: false,
     });
     setSelectedTitleIds(new Set());
+    setSelectedOverviewTitleId(null);
     setSelectedLibraryIds([]);
   }, [activeFacet]);
 
@@ -861,15 +923,42 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   }, [visibleTitles]);
 
   React.useEffect(() => {
+    if (!shouldLoadCatalogTitles || contentSettingsSection !== "overview") {
+      setSelectedOverviewTitleId((current) =>
+        current === null ? current : null,
+      );
+      return;
+    }
+
+    setSelectedOverviewTitleId((current) => {
+      return current && visibleTitles.some((title) => title.id === current)
+        ? current
+        : null;
+    });
+  }, [contentSettingsSection, shouldLoadCatalogTitles, visibleTitles]);
+
+  React.useEffect(() => {
     activeCatalogQueryRef.current = debouncedTitleFilter;
   }, [debouncedTitleFilter]);
+
+  React.useEffect(() => {
+    setDesktopViewModes((current) => {
+      if (current[view]) {
+        return current;
+      }
+      return {
+        ...current,
+        [view]: readStoredContentViewMode(view),
+      };
+    });
+  }, [view]);
 
   React.useEffect(() => {
     if (isMobile) {
       return;
     }
-    writeStoredContentViewMode(desktopViewMode);
-  }, [desktopViewMode, isMobile]);
+    writeStoredContentViewMode(desktopViewMode, view);
+  }, [desktopViewMode, isMobile, view]);
 
   React.useEffect(() => {
     if (
@@ -879,7 +968,9 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     ) {
       return;
     }
-    setSelectedTitleIds((current) => (current.size === 0 ? current : new Set()));
+    setSelectedTitleIds((current) =>
+      current.size === 0 ? current : new Set(),
+    );
   }, [
     contentSettingsSection,
     effectiveViewMode,
@@ -1194,7 +1285,9 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
               ? page.offset + nextTitles.length
               : nextTitles.length,
           totalCount:
-            typeof page.totalCount === "number" ? page.totalCount : nextTitles.length,
+            typeof page.totalCount === "number"
+              ? page.totalCount
+              : nextTitles.length,
           loadingMore: false,
         });
         setTitleStatus(
@@ -1233,9 +1326,12 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     ],
   );
 
-  const refreshTitles = React.useCallback(async (query?: string) => {
-    await reloadTitles(query ?? titleFilter);
-  }, [reloadTitles, titleFilter]);
+  const refreshTitles = React.useCallback(
+    async (query?: string) => {
+      await reloadTitles(query ?? titleFilter);
+    },
+    [reloadTitles, titleFilter],
+  );
 
   const loadMoreCatalogTitles = React.useCallback(async () => {
     if (
@@ -1300,9 +1396,13 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
         queryKey,
         hasMore: Boolean(page.hasMore),
         nextOffset:
-          typeof page.offset === "number" ? page.offset + nextTitles.length : offset + nextTitles.length,
+          typeof page.offset === "number"
+            ? page.offset + nextTitles.length
+            : offset + nextTitles.length,
         totalCount:
-          typeof page.totalCount === "number" ? page.totalCount : catalogPaginationState.totalCount,
+          typeof page.totalCount === "number"
+            ? page.totalCount
+            : catalogPaginationState.totalCount,
         loadingMore: false,
       });
     } catch (error) {
@@ -1320,7 +1420,10 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
         catalogQueryKeyRef.current === queryKey
       ) {
         catalogPageLoadInFlightRef.current = false;
-        setCatalogPaginationState((current) => ({ ...current, loadingMore: false }));
+        setCatalogPaginationState((current) => ({
+          ...current,
+          loadingMore: false,
+        }));
       }
     }
   }, [
@@ -1403,7 +1506,9 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
 
     try {
       const { data, error } = await client
-        .query<{ jobRuns?: unknown[] }>(
+        .query<{
+          jobRuns?: unknown[];
+        }>(
           jobRunsQuery,
           { jobKey: "title_deletion", limit: 10 },
           { requestPolicy: "network-only" },
@@ -1425,15 +1530,18 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
 
   const scheduleDeletionJobFallbackChecks = React.useCallback(() => {
     clearDeletionFallbackTimers();
-    deletionFallbackTimersRef.current = TITLE_DELETION_JOB_FALLBACK_DELAYS_MS.map(
-      (delayMs) =>
+    deletionFallbackTimersRef.current =
+      TITLE_DELETION_JOB_FALLBACK_DELAYS_MS.map((delayMs) =>
         setTimeout(() => {
           void refreshTrackedDeletionJobs();
         }, delayMs),
-    );
+      );
   }, [clearDeletionFallbackTimers, refreshTrackedDeletionJobs]);
 
-  React.useEffect(() => clearDeletionFallbackTimers, [clearDeletionFallbackTimers]);
+  React.useEffect(
+    () => clearDeletionFallbackTimers,
+    [clearDeletionFallbackTimers],
+  );
 
   React.useEffect(() => {
     const refreshIfTrackingDeletion = () => {
@@ -1508,7 +1616,9 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     requestKey: "mediaContentTitleDeletionJobRuns",
     request: { query: jobRunEventsSubscription },
     onNext(result) {
-      handleTitleDeletionJobSnapshot(normalizeJobRun(result.data?.jobRunEvents));
+      handleTitleDeletionJobSnapshot(
+        normalizeJobRun(result.data?.jobRunEvents),
+      );
     },
     onError(error) {
       console.error("[title-deletion-job-runs] subscription error:", error);
@@ -1533,10 +1643,12 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
           return next;
         }
 
-        if (!catalogTitleMatchesActiveListFilters(
-          title,
-          activeCatalogListFiltersRef.current,
-        )) {
+        if (
+          !catalogTitleMatchesActiveListFilters(
+            title,
+            activeCatalogListFiltersRef.current,
+          )
+        ) {
           if (existingIndex === -1) {
             return current;
           }
@@ -1579,7 +1691,10 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   });
 
   React.useEffect(() => {
-    if (!shouldLoadCatalogTitles || pendingHydrationPosterTitleIds.length === 0) {
+    if (
+      !shouldLoadCatalogTitles ||
+      pendingHydrationPosterTitleIds.length === 0
+    ) {
       return;
     }
 
@@ -1591,7 +1706,10 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
             applyRefreshedTitleRecord(titleId, title, requestEpoch);
           },
           onError(error) {
-            console.error("[catalog-hydration-poster-refresh] refresh failed:", error);
+            console.error(
+              "[catalog-hydration-poster-refresh] refresh failed:",
+              error,
+            );
           },
         });
       });
@@ -1738,11 +1856,16 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
           "A download is already in progress for this title.",
           confirmReplaceConflict,
         );
-        assertNoReplaceConflict(payload, "A download is already in progress for this title.");
+        assertNoReplaceConflict(
+          payload,
+          "A download is already in progress for this title.",
+        );
         const queuedMessage = t("status.queuedLatest", { name: title.name });
         setGlobalStatus(queuedMessage);
       } catch (error) {
-        setGlobalStatus(userFacingGraphQlErrorMessage(error, t("status.queueFailed")));
+        setGlobalStatus(
+          userFacingGraphQlErrorMessage(error, t("status.queueFailed")),
+        );
       }
     },
     [client, confirmReplaceConflict, setGlobalStatus, t],
@@ -1769,8 +1892,9 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   const queueExistingFromRelease = React.useCallback(
     async (title: TitleRecord, release: Release) => {
       if (!release.candidateToken) {
-        setGlobalStatus(t("status.releaseMissingCandidateToken"));
-        return;
+        const message = t("status.releaseMissingCandidateToken");
+        setGlobalStatus(message);
+        throw new Error(message);
       }
 
       try {
@@ -1791,11 +1915,17 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
           "A download is already in progress for this title.",
           confirmReplaceConflict,
         );
-        assertNoReplaceConflict(payload, "A download is already in progress for this title.");
+        assertNoReplaceConflict(
+          payload,
+          "A download is already in progress for this title.",
+        );
         const queuedMessage = t("status.queuedLatest", { name: title.name });
         setGlobalStatus(queuedMessage);
       } catch (error) {
-        setGlobalStatus(userFacingGraphQlErrorMessage(error, t("status.queueFailed")));
+        setGlobalStatus(
+          userFacingGraphQlErrorMessage(error, t("status.queueFailed")),
+        );
+        throw error;
       }
     },
     [client, confirmReplaceConflict, setGlobalStatus, t],
@@ -1804,8 +1934,9 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   const queueAdditionalFromRelease = React.useCallback(
     async (title: TitleRecord, release: Release) => {
       if (!release.candidateToken) {
-        setGlobalStatus(t("status.releaseMissingCandidateToken"));
-        return;
+        const message = t("status.releaseMissingCandidateToken");
+        setGlobalStatus(message);
+        throw new Error(message);
       }
 
       try {
@@ -1826,7 +1957,10 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
         );
         setGlobalStatus(t("status.queuedLatest", { name: title.name }));
       } catch (error) {
-        setGlobalStatus(userFacingGraphQlErrorMessage(error, t("status.queueFailed")));
+        setGlobalStatus(
+          userFacingGraphQlErrorMessage(error, t("status.queueFailed")),
+        );
+        throw error;
       }
     },
     [client, setGlobalStatus, t],
@@ -1918,21 +2052,24 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     });
   }, []);
 
-  const updateTitleCatalogSort = React.useCallback((nextKey: TitleTableSortKey) => {
-    setTitleCatalogSort((current) => {
-      if (current.key === nextKey) {
+  const updateTitleCatalogSort = React.useCallback(
+    (nextKey: TitleTableSortKey) => {
+      setTitleCatalogSort((current) => {
+        if (current.key === nextKey) {
+          return {
+            key: nextKey,
+            direction: current.direction === "asc" ? "desc" : "asc",
+          };
+        }
+
         return {
           key: nextKey,
-          direction: current.direction === "asc" ? "desc" : "asc",
+          direction: defaultSortDirectionForTitleKey(nextKey),
         };
-      }
-
-      return {
-        key: nextKey,
-        direction: defaultSortDirectionForTitleKey(nextKey),
-      };
-    });
-  }, []);
+      });
+    },
+    [],
+  );
 
   const toggleAllVisibleTitles = React.useCallback(
     (checked: boolean) => {
@@ -1944,12 +2081,28 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   );
 
   const clearSelectedTitles = React.useCallback(() => {
-    setSelectedTitleIds((current) => (current.size === 0 ? current : new Set()));
+    setSelectedTitleIds((current) =>
+      current.size === 0 ? current : new Set(),
+    );
   }, []);
 
-  const setViewMode = React.useCallback((nextMode: ContentViewMode) => {
-    setDesktopViewMode(nextMode);
+  const selectOverviewTitle = React.useCallback((titleId: string | null) => {
+    setSelectedOverviewTitleId(titleId);
   }, []);
+
+  const clearSelectedOverviewTitle = React.useCallback(() => {
+    setSelectedOverviewTitleId(null);
+  }, []);
+
+  const setViewMode = React.useCallback(
+    (nextMode: ContentViewMode) => {
+      setDesktopViewModes((current) => ({
+        ...current,
+        [view]: nextMode,
+      }));
+    },
+    [view],
+  );
 
   const bulkMonitorTitles = React.useCallback(
     async (monitored: boolean) => {
@@ -1967,10 +2120,9 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
           ]),
         );
         const result = await client
-          .mutation<Record<string, { id: string; monitored: boolean }>>(
-            buildSetTitleMonitoredBatchMutation(targets.length),
-            variables,
-          )
+          .mutation<
+            Record<string, { id: string; monitored: boolean }>
+          >(buildSetTitleMonitoredBatchMutation(targets.length), variables)
           .toPromise();
         const payload = result.data ?? {};
         const refreshedTitles = await reloadTitles();
@@ -2064,10 +2216,9 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
           ]),
         );
         const result = await client
-          .mutation<Record<string, { id: string }>>(
-            buildUpdateTitleBatchMutation(targets.length),
-            variables,
-          )
+          .mutation<
+            Record<string, { id: string }>
+          >(buildUpdateTitleBatchMutation(targets.length), variables)
           .toPromise();
         const payload = result.data ?? {};
         const refreshedTitles = await reloadTitles();
@@ -2171,7 +2322,11 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
           const validationResults = await Promise.all(
             configuredPaths.map(async (path) => {
               const { error } = await client
-                .query(browsePathQuery, { path }, { requestPolicy: "network-only" })
+                .query(
+                  browsePathQuery,
+                  { path },
+                  { requestPolicy: "network-only" },
+                )
                 .toPromise();
               return error != null;
             }),
@@ -2189,7 +2344,10 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     };
 
     void validateRoots().catch((error) => {
-      console.error("[library-root-validation] failed to validate root folders:", error);
+      console.error(
+        "[library-root-validation] failed to validate root folders:",
+        error,
+      );
       if (!cancelled) {
         setInvalidRootLibraryIds([]);
       }
@@ -2209,7 +2367,12 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
       return;
     }
     setBulkEditDialogOpen(true);
-  }, [bulkActionBusy, selectedTitleLibraryIds.length, selectedTitles.length, setGlobalStatus]);
+  }, [
+    bulkActionBusy,
+    selectedTitleLibraryIds.length,
+    selectedTitles.length,
+    setGlobalStatus,
+  ]);
 
   const requestDeleteTitle = React.useCallback(
     (title: TitleRecord) => {
@@ -2327,13 +2490,17 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
       (titleDeletePreview.requiresTypedConfirmation &&
         titleDeleteTypedConfirmation.trim() !== "DELETE"));
 
-  const refreshLibraries = React.useCallback(async (): Promise<LibraryRecord[] | null> => {
+  const refreshLibraries = React.useCallback(async (): Promise<
+    LibraryRecord[] | null
+  > => {
     if (!isMediaView) {
       setLibraries([]);
       return [];
     }
     const permission =
-      contentSettingsSection === "library" && !canManageConfig ? "manageLibrary" : "view";
+      contentSettingsSection === "library" && !canManageConfig
+        ? "manageLibrary"
+        : "view";
     setLibrariesLoading(true);
     try {
       const { data, error } = await client
@@ -2368,43 +2535,53 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     t,
   ]);
 
-  const refreshRootValidationLibraries = React.useCallback(
-    async (): Promise<LibraryRecord[] | null> => {
-      if (!isMediaView) {
-        setRootValidationLibraries([]);
-        return [];
-      }
-      const permission =
-        contentSettingsSection === "library" && !canManageConfig ? "manageLibrary" : "view";
-      setRootValidationLibrariesLoading(true);
-      try {
-        const { data, error } = await client
-          .query(
-            librariesQuery,
-            { facet: null, permission },
-            { requestPolicy: "network-only" },
-          )
-          .toPromise();
-        if (error) throw error;
-        const nextLibraries = (data?.libraries ?? []) as LibraryRecord[];
-        setRootValidationLibraries(nextLibraries);
-        return nextLibraries;
-      } catch (error) {
-        setGlobalStatus(
-          error instanceof Error ? error.message : t("status.failedToLoad"),
-        );
-        return null;
-      } finally {
-        setRootValidationLibrariesLoading(false);
-      }
-    },
-    [canManageConfig, client, contentSettingsSection, isMediaView, setGlobalStatus, t],
-  );
+  const refreshRootValidationLibraries = React.useCallback(async (): Promise<
+    LibraryRecord[] | null
+  > => {
+    if (!isMediaView) {
+      setRootValidationLibraries([]);
+      return [];
+    }
+    const permission =
+      contentSettingsSection === "library" && !canManageConfig
+        ? "manageLibrary"
+        : "view";
+    setRootValidationLibrariesLoading(true);
+    try {
+      const { data, error } = await client
+        .query(
+          librariesQuery,
+          { facet: null, permission },
+          { requestPolicy: "network-only" },
+        )
+        .toPromise();
+      if (error) throw error;
+      const nextLibraries = (data?.libraries ?? []) as LibraryRecord[];
+      setRootValidationLibraries(nextLibraries);
+      return nextLibraries;
+    } catch (error) {
+      setGlobalStatus(
+        error instanceof Error ? error.message : t("status.failedToLoad"),
+      );
+      return null;
+    } finally {
+      setRootValidationLibrariesLoading(false);
+    }
+  }, [
+    canManageConfig,
+    client,
+    contentSettingsSection,
+    isMediaView,
+    setGlobalStatus,
+    t,
+  ]);
 
   const loadLibrarySettings = React.useCallback(
     async (libraryId: string): Promise<LibrarySettingsRecord | null> => {
       const { data, error } = await client
-        .query<{ librarySettings: LibrarySettingsRecord }>(
+        .query<{
+          librarySettings: LibrarySettingsRecord;
+        }>(
           librarySettingsQuery,
           { libraryId },
           { requestPolicy: "network-only" },
@@ -2423,7 +2600,9 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
       scopeId: LibraryRecord["facet"],
     ): Promise<DownloadClientRoutingEntry[]> => {
       const { data, error } = await client
-        .query<{ downloadClientRouting: DownloadClientRoutingEntry[] }>(
+        .query<{
+          downloadClientRouting: DownloadClientRoutingEntry[];
+        }>(
           downloadClientRoutingQuery,
           { scopeId },
           { requestPolicy: "network-only" },
@@ -2497,7 +2676,11 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   ]);
 
   const createLibrary = React.useCallback(
-    async (input: { name: string; roots: RootFolderOption[]; settings?: LibrarySettingsDraft }) => {
+    async (input: {
+      name: string;
+      roots: RootFolderOption[];
+      settings?: LibrarySettingsDraft;
+    }) => {
       setLibrarySettingsSaving(true);
       try {
         const { data, error } = await client
@@ -2522,20 +2705,33 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
         return library;
       } catch (error) {
         setGlobalStatus(
-          error instanceof Error ? error.message : t("settings.librarySaveFailed"),
+          error instanceof Error
+            ? error.message
+            : t("settings.librarySaveFailed"),
         );
         return null;
       } finally {
         setLibrarySettingsSaving(false);
       }
     },
-    [activeFacet, client, refreshLibraries, refreshRootValidationLibraries, setGlobalStatus, t],
+    [
+      activeFacet,
+      client,
+      refreshLibraries,
+      refreshRootValidationLibraries,
+      setGlobalStatus,
+      t,
+    ],
   );
 
   const updateLibrary = React.useCallback(
     async (
       libraryId: string,
-      input: { name: string; roots: RootFolderOption[]; settings?: LibrarySettingsDraft },
+      input: {
+        name: string;
+        roots: RootFolderOption[];
+        settings?: LibrarySettingsDraft;
+      },
     ) => {
       setLibrarySettingsSaving(true);
       try {
@@ -2560,14 +2756,22 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
         return library;
       } catch (error) {
         setGlobalStatus(
-          error instanceof Error ? error.message : t("settings.librarySaveFailed"),
+          error instanceof Error
+            ? error.message
+            : t("settings.librarySaveFailed"),
         );
         return null;
       } finally {
         setLibrarySettingsSaving(false);
       }
     },
-    [client, refreshLibraries, refreshRootValidationLibraries, setGlobalStatus, t],
+    [
+      client,
+      refreshLibraries,
+      refreshRootValidationLibraries,
+      setGlobalStatus,
+      t,
+    ],
   );
 
   const deleteLibrary = React.useCallback(
@@ -2575,16 +2779,21 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
       setLibrarySettingsSaving(true);
       try {
         const { data, error } = await client
-          .mutation<{ deleteLibrary: { id: string; deleted: boolean } }>(deleteLibraryMutation, {
-            id: libraryId,
-          })
+          .mutation<{ deleteLibrary: { id: string; deleted: boolean } }>(
+            deleteLibraryMutation,
+            {
+              id: libraryId,
+            },
+          )
           .toPromise();
         if (error) throw error;
         if (!data?.deleteLibrary?.deleted) {
           throw new Error(t("settings.libraryDeleteFailed"));
         }
         setSelectedLibraryIds((current) =>
-          current.filter((selectedLibraryId) => selectedLibraryId !== libraryId),
+          current.filter(
+            (selectedLibraryId) => selectedLibraryId !== libraryId,
+          ),
         );
         await refreshLibraries();
         await refreshRootValidationLibraries();
@@ -2592,50 +2801,33 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
         return true;
       } catch (error) {
         setGlobalStatus(
-          error instanceof Error ? error.message : t("settings.libraryDeleteFailed"),
+          error instanceof Error
+            ? error.message
+            : t("settings.libraryDeleteFailed"),
         );
         return false;
       } finally {
         setLibrarySettingsSaving(false);
       }
     },
-    [client, refreshLibraries, refreshRootValidationLibraries, setGlobalStatus, t],
+    [
+      client,
+      refreshLibraries,
+      refreshRootValidationLibraries,
+      setGlobalStatus,
+      t,
+    ],
   );
 
-  const handleLibraryScan = React.useCallback(async (libraryId?: string) => {
-    const targetLibraryId = libraryId ?? singleSelectedLibraryId(selectedLibraryIds);
-    if (!targetLibraryId) {
-      setLibraryScanNotice("Choose a library to scan.");
-      return;
-    }
-    if (activeLibraryScanSession) {
-      setLibraryScanNotice(
-        t("settings.libraryScanAlreadyRunning", {
-          facet: activeFacetLabel,
-        }),
-      );
-      return;
-    }
-
-    setLibraryScanNotice(null);
-    setLibraryScanLoading(true);
-    setLibraryScanSummary(null);
-    setStartedLibraryScanSessionId(null);
-    try {
-      const result = await client
-        .mutation(scanLibraryMutation, { input: { libraryId: targetLibraryId } })
-        .toPromise();
-      if (result.error) throw result.error;
-      const sessionId = result.data?.scanLibrary?.sessionId ?? null;
-      setStartedLibraryScanSessionId(sessionId);
-      void refreshLibraryScanSessions().catch((error) => {
-        console.error("[library-scan] failed to refresh active scan sessions:", error);
-      });
-    } catch (error) {
-      console.error("[library-scan] mutation failed:", error);
-      const message =
-        error instanceof Error ? error.message : String(error ?? "");
-      if (/library scan already running/i.test(message)) {
+  const handleLibraryScan = React.useCallback(
+    async (libraryId?: string) => {
+      const targetLibraryId =
+        libraryId ?? singleSelectedLibraryId(selectedLibraryIds);
+      if (!targetLibraryId) {
+        setLibraryScanNotice("Choose a library to scan.");
+        return;
+      }
+      if (activeLibraryScanSession) {
         setLibraryScanNotice(
           t("settings.libraryScanAlreadyRunning", {
             facet: activeFacetLabel,
@@ -2643,45 +2835,79 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
         );
         return;
       }
-      if (
-        error != null &&
-        typeof error === "object" &&
-        "networkError" in error &&
-        (error as { networkError?: unknown }).networkError != null
-      ) {
-        toast.error(
-          error instanceof Error
-            ? error.message
-            : t("settings.libraryScanFailed"),
-        );
+
+      setLibraryScanNotice(null);
+      setLibraryScanLoading(true);
+      setLibraryScanSummary(null);
+      setStartedLibraryScanSessionId(null);
+      try {
+        const result = await client
+          .mutation(scanLibraryMutation, {
+            input: { libraryId: targetLibraryId },
+          })
+          .toPromise();
+        if (result.error) throw result.error;
+        const sessionId = result.data?.scanLibrary?.sessionId ?? null;
+        setStartedLibraryScanSessionId(sessionId);
+        void refreshLibraryScanSessions().catch((error) => {
+          console.error(
+            "[library-scan] failed to refresh active scan sessions:",
+            error,
+          );
+        });
+      } catch (error) {
+        console.error("[library-scan] mutation failed:", error);
+        const message =
+          error instanceof Error ? error.message : String(error ?? "");
+        if (/library scan already running/i.test(message)) {
+          setLibraryScanNotice(
+            t("settings.libraryScanAlreadyRunning", {
+              facet: activeFacetLabel,
+            }),
+          );
+          return;
+        }
+        if (
+          error != null &&
+          typeof error === "object" &&
+          "networkError" in error &&
+          (error as { networkError?: unknown }).networkError != null
+        ) {
+          toast.error(
+            error instanceof Error
+              ? error.message
+              : t("settings.libraryScanFailed"),
+          );
+          setGlobalStatus(
+            error instanceof Error
+              ? error.message
+              : t("settings.libraryScanFailed"),
+          );
+          return;
+        }
         setGlobalStatus(
           error instanceof Error
             ? error.message
             : t("settings.libraryScanFailed"),
         );
-        return;
+      } finally {
+        setLibraryScanLoading(false);
       }
-      setGlobalStatus(
-        error instanceof Error
-          ? error.message
-          : t("settings.libraryScanFailed"),
-      );
-    } finally {
-      setLibraryScanLoading(false);
-    }
-  }, [
-    activeFacetLabel,
-    activeLibraryScanSession,
-    client,
-    selectedLibraryIds,
-    refreshLibraryScanSessions,
-    setLibraryScanLoading,
-    setLibraryScanNotice,
-    setLibraryScanSummary,
-    setStartedLibraryScanSessionId,
-    setGlobalStatus,
-    t,
-  ]);
+    },
+    [
+      activeFacetLabel,
+      activeLibraryScanSession,
+      client,
+      selectedLibraryIds,
+      refreshLibraryScanSessions,
+      setLibraryScanLoading,
+      setLibraryScanNotice,
+      setLibraryScanSummary,
+      setStartedLibraryScanSessionId,
+      setGlobalStatus,
+      t,
+    ],
+  );
 
   React.useEffect(() => {
     if (!titleStatus) {
@@ -2961,6 +3187,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
           catalogInitialLoadComplete,
           monitoredTitles: visibleTitles,
           titleQuickFilters,
+          titleQuickFilterCounts,
           toggleTitleQuickMonitoringFilter,
           toggleTitleQuickStatusFilter,
           clearTitleQuickFilters,
@@ -2991,7 +3218,8 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
           rulesSaving,
           onToggleRuleFacet,
           libraryScanLoading: libraryScanInProgress,
-          libraryScanDisabled: libraryScanInProgress || selectedLibraryIds.length !== 1,
+          libraryScanDisabled:
+            libraryScanInProgress || selectedLibraryIds.length !== 1,
           libraryScanNotice,
           libraryScanSummary,
           libraries,
@@ -3010,6 +3238,9 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
           updateLibrary,
           deleteLibrary,
           onOpenOverview,
+          selectedOverviewTitleId,
+          setSelectedOverviewTitleId: selectOverviewTitle,
+          clearSelectedOverviewTitle,
           scanLibrary: handleLibraryScan,
           deleteCatalogTitle: requestDeleteTitle,
           isDeletingCatalogTitleById: deleteTitleLoadingById,

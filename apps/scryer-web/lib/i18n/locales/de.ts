@@ -132,9 +132,11 @@ const de: LocaleDictionary = {
     "Scryer will return to open admin mode after reload.",
   "settings.securityDisableConfirmAction": "Disable",
   "settings.securityCredentialsInvalid": "Invalid username or password.",
-  "settings.securityCredentialsInsufficient": "That account cannot manage settings.",
+  "settings.securityCredentialsInsufficient":
+    "That account cannot manage settings.",
   "settings.securityEnabledSuccess": "Form login enabled.",
-  "settings.securityDisabledSuccess": "Form login disabled. Reloading into open admin mode…",
+  "settings.securityDisabledSuccess":
+    "Form login disabled. Reloading into open admin mode…",
   "settings.securityPreferenceSaved": "Security preference saved.",
   "settings.securityLoadFailed": "Failed to load security settings.",
   "settings.securitySaveFailed": "Failed to save security settings.",
@@ -597,9 +599,11 @@ const de: LocaleDictionary = {
   "search.statusNoResults": "Keine Treffer für „{{query}}“",
   "search.tabAll": "Alle",
   "search.tabLibrary": "In Bibliothek",
+  "search.tabActions": "Aktionen",
   "search.catalog": "Katalog",
   "search.inLibrary": "In Bibliothek",
   "search.goToHint": "Navigation und Aktionen",
+  "search.actionsAndSettings": "Aktionen & Einstellungen",
   "search.alreadyInCollection": "bereits in deiner Sammlung",
   "search.everywhereElse": "Überall sonst",
   "search.resultCountOne": "1 Ergebnis",
@@ -696,6 +700,28 @@ const de: LocaleDictionary = {
   "title.loading": "Keine Daten geladen",
   "title.noManaged": "Keine Titel für diesen Bereich gefunden.",
   "title.statusTemplate": "{{count}} Titel geladen.",
+  "title.contextPanelTitle": "Titeldetails",
+  "title.contextEmptyTitle": "Kein Titel ausgewählt",
+  "title.contextEmptyBody": "Es gibt keine Vorschaudetails.",
+  "title.contextForYouTitle": "Aus deiner Bibliothek empfohlen",
+  "title.contextForYouSubtitle":
+    "Ein paar vertraute Wege zurück in diesen Katalog.",
+  "title.contextForYouTop": "Top",
+  "title.contextForYouGenre": "Weil du {{genre}} magst",
+  "title.contextForYouRecent": "Kürzlich hinzugefügt",
+  "title.contextForYouEmptyTitle": "Noch keine Empfehlungen",
+  "title.contextForYouEmptyBody":
+    "Füge Titel hinzu oder scanne sie, um diese Bibliotheksansicht aufzubauen.",
+  "title.contextMoreLikeThis": "Ähnliche Titel",
+  "title.contextMoreLikeThisScope": "Aus der aktuellen Ansicht",
+  "title.contextOverview": "Übersicht",
+  "title.contextLibrary": "Bibliothek",
+  "title.contextQuality": "Qualität",
+  "title.contextRootFolder": "Stammordner",
+  "title.contextSize": "Größe",
+  "title.contextEpisodes": "Folgen",
+  "title.contextAdded": "Hinzugefügt",
+  "title.openOverview": "Übersicht öffnen",
   "title.table.facet": "Typ",
   "title.table.monitored": "Überwacht",
   "title.table.poster": "Poster",
@@ -704,6 +730,8 @@ const de: LocaleDictionary = {
   "title.table.status": "Status",
   "title.table.size": "Größe",
   "title.viewModeToggle": "Ansichtsmodus",
+  "title.viewModeCompact": "Kompakt",
+  "title.viewModePosterTable": "Liste",
   "title.viewModeTable": "Tabellenansicht",
   "title.viewModePoster": "Posteransicht",
   "title.interactiveSearchComingSoon": "Interaktive Suche kommt bald.",
@@ -737,7 +765,8 @@ const de: LocaleDictionary = {
   "title.movieDetails": "Filmdetails",
   "title.searchingReleases": "Indexer werden nach Releases durchsucht…",
   "title.noReleasesFound": "Keine Releases für {{name}} gefunden.",
-  "title.searchNeedsDownloadClientTitle": "Suche erfordert einen Download-Client",
+  "title.searchNeedsDownloadClientTitle":
+    "Suche erfordert einen Download-Client",
   "title.searchNeedsDownloadClientDescription":
     "Konfiguriere mindestens einen Download-Client, bevor du auf dieser Titelseite Suche oder interaktive Suche verwendest.",
   "title.searchNeedsDownloadClientAction": "Download-Clients öffnen",
@@ -817,6 +846,7 @@ const de: LocaleDictionary = {
   "nzb.searchResultsFor": "NZB-Ergebnisse für {{name}}",
   "nzb.selectTvdbFirst": "Wähle einen TVDB-Treffer, um NZBGeek zu durchsuchen.",
   "nzb.noResultsYet": "Noch keine Release-Treffer.",
+  "nzb.searchFailed": "Release-Suche fehlgeschlagen.",
   "nzb.blockedByProfile": "Vom Profil blockiert: {{reason}}",
   "nzb.queue": "Warteschlange",
   "nzb.queueAdditionalFile": "Als zusätzliche Datei",
@@ -913,7 +943,8 @@ const de: LocaleDictionary = {
   "queue.deleteConfirmTitle": "Download entfernen",
   "queue.deleteConfirmDescription":
     "Bist du sicher, dass du diesen Download aus der Warteschlange entfernen möchtest? Dies kann nicht rückgängig gemacht werden.",
-  "queue.manualUnavailableForResult": "Manuelles Queueing ist für dieses Ergebnis nicht verfügbar.",
+  "queue.manualUnavailableForResult":
+    "Manuelles Queueing ist für dieses Ergebnis nicht verfügbar.",
   "importHistory.title": "Import-Verlauf",
   "importHistory.empty": "Keine Import-Einträge gefunden.",
   "importHistory.status": "Status",
@@ -1045,13 +1076,17 @@ const de: LocaleDictionary = {
   "settings.sub.enabled": "Aktivieren Sie die Untertitelverwaltung",
   "settings.sub.credentials": "OpenSubtitles-Anmeldeinformationen",
   "settings.sub.username": "Nutzername",
-  "settings.sub.usernameEmailWarning": "Verwende deinen OpenSubtitles-Benutzernamen, nicht deine E-Mail-Adresse.",
+  "settings.sub.usernameEmailWarning":
+    "Verwende deinen OpenSubtitles-Benutzernamen, nicht deine E-Mail-Adresse.",
   "settings.sub.password": "Passwort",
   "settings.sub.apiKey": "API-Schlüssel",
   "settings.sub.apiKeyRequiredTitle": "Untertitel-Dienst nicht verfügbar",
-  "settings.sub.apiKeyRequiredBody": "Untertitelsuche und -download bleiben deaktiviert, bis der Untertitel-Dienst wieder verfügbar ist.",
-  "settings.sub.credentialsRequiredTitle": "Untertitel-Anmeldedaten erforderlich",
-  "settings.sub.credentialsRequiredBody": "Trage hier deinen Untertitel-Benutzernamen und dein Passwort ein, bevor du Untertitel suchst oder herunterlädst.",
+  "settings.sub.apiKeyRequiredBody":
+    "Untertitelsuche und -download bleiben deaktiviert, bis der Untertitel-Dienst wieder verfügbar ist.",
+  "settings.sub.credentialsRequiredTitle":
+    "Untertitel-Anmeldedaten erforderlich",
+  "settings.sub.credentialsRequiredBody":
+    "Trage hier deinen Untertitel-Benutzernamen und dein Passwort ein, bevor du Untertitel suchst oder herunterlädst.",
   "settings.sub.credentialsVerified": "Untertitel-Anmeldedaten verifiziert",
   "settings.sub.languages": "Untertitelsprache",
   "settings.sub.languagesHelp":
@@ -1188,7 +1223,8 @@ const de: LocaleDictionary = {
     "Failed to install plugin '{{name}}': the published artifact no longer matches the registry checksum. Refresh the registry or try again later.",
   "status.pluginInstallFailedSdkMetadataMismatch":
     "Failed to install plugin '{{name}}': the published artifact does not match the registry SDK compatibility metadata. Refresh the registry or try again later.",
-  "status.pluginInstallFailedWithReason": "Failed to install plugin '{{name}}': {{reason}}",
+  "status.pluginInstallFailedWithReason":
+    "Failed to install plugin '{{name}}': {{reason}}",
   "status.pluginRevertedToBundled":
     "Plugin '{{name}}' wurde auf die integrierte Version zurückgesetzt.",
   "status.pluginUninstalled": "Plugin '{{name}}' deinstalliert.",
@@ -1403,10 +1439,12 @@ const de: LocaleDictionary = {
   "subtitle.external": "Extern",
   "subtitle.manualSearch": "Manuelle Suche",
   "subtitle.apiKeyRequiredTitle": "Untertitel-Dienst nicht verfügbar",
-  "subtitle.apiKeyRequiredBody": "Der Untertitel-Dienst ist für diese Datei derzeit nicht verfügbar.",
+  "subtitle.apiKeyRequiredBody":
+    "Der Untertitel-Dienst ist für diese Datei derzeit nicht verfügbar.",
   "subtitle.apiKeyRequiredAction": "Untertitel-Einstellungen öffnen",
   "subtitle.credentialsRequiredTitle": "Untertitel-Anmeldedaten erforderlich",
-  "subtitle.credentialsRequiredBody": "Konfiguriere deinen Untertitel-Benutzernamen und dein Passwort unter Einstellungen > Untertitel, bevor du Untertitel für diese Datei suchst.",
+  "subtitle.credentialsRequiredBody":
+    "Konfiguriere deinen Untertitel-Benutzernamen und dein Passwort unter Einstellungen > Untertitel, bevor du Untertitel für diese Datei suchst.",
   "subtitle.credentialsRequiredAction": "Untertitel-Einstellungen öffnen",
   "subtitle.blocklist": "Sperrliste",
   "subtitle.blocklisted": "Untertitel zur Sperrliste hinzugefügt",
@@ -1484,7 +1522,8 @@ const de: LocaleDictionary = {
   "status.nzbFoundForTitle":
     "{{count}} NZB-Element(e) für {{name}}{{source}} gefunden.",
   "status.noNzbFound": "Kein NZB-Ergebnis gefunden.",
-  "status.releaseMissingCandidateToken": "Für die ausgewählte Veröffentlichung fehlt ein verifiziertes Candidate-Token.",
+  "status.releaseMissingCandidateToken":
+    "Für die ausgewählte Veröffentlichung fehlt ein verifiziertes Candidate-Token.",
   "status.deleteCatalogConfirm":
     "{{name}} aus dem Katalog entfernen? Verwende die Option unten, um auch lokale Dateien zu löschen.",
   "status.titleDeleted": "{{name}} aus dem Katalog entfernt.",
@@ -1939,7 +1978,8 @@ const de: LocaleDictionary = {
   "settings.recycleBinRecycled": "Recycelt",
   "status.recycleBinRestored": "Datei auf {{path}} wiederhergestellt.",
   "status.recycleBinDeleted": "Datei dauerhaft gelöscht.",
-  "status.recycleBinEmptied": "Papierkorb geleert ({{count}} Elemente entfernt).",
+  "status.recycleBinEmptied":
+    "Papierkorb geleert ({{count}} Elemente entfernt).",
   "status.recycleBinSettingsSaved": "Papierkorbeinstellungen gespeichert.",
   "settings.pp.animeScript": "Anime-Skript",
   "settings.pp.envVarsDescription":

@@ -132,9 +132,11 @@ const pt_BR: LocaleDictionary = {
     "Scryer will return to open admin mode after reload.",
   "settings.securityDisableConfirmAction": "Disable",
   "settings.securityCredentialsInvalid": "Invalid username or password.",
-  "settings.securityCredentialsInsufficient": "That account cannot manage settings.",
+  "settings.securityCredentialsInsufficient":
+    "That account cannot manage settings.",
   "settings.securityEnabledSuccess": "Form login enabled.",
-  "settings.securityDisabledSuccess": "Form login disabled. Reloading into open admin mode…",
+  "settings.securityDisabledSuccess":
+    "Form login disabled. Reloading into open admin mode…",
   "settings.securityPreferenceSaved": "Security preference saved.",
   "settings.securityLoadFailed": "Failed to load security settings.",
   "settings.securitySaveFailed": "Failed to save security settings.",
@@ -154,7 +156,8 @@ const pt_BR: LocaleDictionary = {
   "facetSettings.generalPolicies": "Políticas",
   "facetSettings.sidecarFiles": "Arquivos sidecar",
   "facetSettings.scoringPersona": "Persona de pontuação",
-  "facetSettings.scoringPersonaOverrideLabel": "Substituição da persona de pontuação",
+  "facetSettings.scoringPersonaOverrideLabel":
+    "Substituição da persona de pontuação",
   "facetSettings.scoringPersonaUseDefault": "Usar perfil padrão",
   "facetSettings.scoringBehavior": "Comportamento de pontuação",
   "facetSettings.scoringBehaviorHint":
@@ -600,9 +603,11 @@ const pt_BR: LocaleDictionary = {
   "search.statusNoResults": "Nenhuma correspondência para “{{query}}”",
   "search.tabAll": "Tudo",
   "search.tabLibrary": "Na biblioteca",
+  "search.tabActions": "Ações",
   "search.catalog": "Catálogo",
   "search.inLibrary": "Na biblioteca",
   "search.goToHint": "navegação e ações",
+  "search.actionsAndSettings": "Ações e configurações",
   "search.alreadyInCollection": "já na sua coleção",
   "search.everywhereElse": "Em todos os lugares",
   "search.resultCountOne": "1 resultado",
@@ -700,6 +705,28 @@ const pt_BR: LocaleDictionary = {
   "title.loading": "Nenhum dado carregado",
   "title.noManaged": "Nenhum título encontrado para esta seção.",
   "title.statusTemplate": "{{count}} título(s) carregado(s).",
+  "title.contextPanelTitle": "Detalhes do título",
+  "title.contextEmptyTitle": "Nenhum título selecionado",
+  "title.contextEmptyBody": "Não há detalhes de prévia para mostrar.",
+  "title.contextForYouTitle": "Recomendado da sua biblioteca",
+  "title.contextForYouSubtitle":
+    "Alguns caminhos familiares de volta para este catálogo.",
+  "title.contextForYouTop": "Top",
+  "title.contextForYouGenre": "Porque você gosta de {{genre}}",
+  "title.contextForYouRecent": "Adicionados recentemente",
+  "title.contextForYouEmptyTitle": "Ainda sem recomendações",
+  "title.contextForYouEmptyBody":
+    "Adicione ou escaneie títulos para criar esta visualização da biblioteca.",
+  "title.contextMoreLikeThis": "Títulos semelhantes",
+  "title.contextMoreLikeThisScope": "Da visualização atual",
+  "title.contextOverview": "Visão geral",
+  "title.contextLibrary": "Biblioteca",
+  "title.contextQuality": "Qualidade",
+  "title.contextRootFolder": "Pasta raiz",
+  "title.contextSize": "Tamanho",
+  "title.contextEpisodes": "Episódios",
+  "title.contextAdded": "Adicionado",
+  "title.openOverview": "Abrir visão geral",
   "title.table.facet": "Tipo",
   "title.table.monitored": "Monitorado",
   "title.table.poster": "Poster",
@@ -708,6 +735,8 @@ const pt_BR: LocaleDictionary = {
   "title.table.status": "Estado",
   "title.table.size": "Tamanho",
   "title.viewModeToggle": "Modo de exibição",
+  "title.viewModeCompact": "Compacta",
+  "title.viewModePosterTable": "Lista",
   "title.viewModeTable": "Exibição em tabela",
   "title.viewModePoster": "Exibição em poster",
   "title.interactiveSearchComingSoon":
@@ -742,7 +771,8 @@ const pt_BR: LocaleDictionary = {
   "title.movieDetails": "Detalhes do filme",
   "title.searchingReleases": "Buscando lançamentos nos indexadores…",
   "title.noReleasesFound": "Nenhum lançamento encontrado para {{name}}.",
-  "title.searchNeedsDownloadClientTitle": "A pesquisa requer um cliente de download",
+  "title.searchNeedsDownloadClientTitle":
+    "A pesquisa requer um cliente de download",
   "title.searchNeedsDownloadClientDescription":
     "Configure pelo menos um cliente de download antes de usar a pesquisa ou a pesquisa interativa nesta página de título.",
   "title.searchNeedsDownloadClientAction": "Abrir clientes de download",
@@ -821,6 +851,7 @@ const pt_BR: LocaleDictionary = {
   "nzb.selectTvdbFirst":
     "Selecione uma correspondência do TVDB para pesquisar no NZBGeek.",
   "nzb.noResultsYet": "Nenhuma correspondência de lançamento ainda.",
+  "nzb.searchFailed": "Falha ao pesquisar lançamentos.",
   "nzb.blockedByProfile": "Bloqueado pelo perfil: {{reason}}",
   "nzb.queue": "Fila",
   "nzb.queueAdditionalFile": "Enfileirar como arquivo adicional",
@@ -917,7 +948,8 @@ const pt_BR: LocaleDictionary = {
   "queue.deleteConfirmTitle": "Remover download",
   "queue.deleteConfirmDescription":
     "Tem certeza de que deseja remover este download da fila? Esta ação não pode ser desfeita.",
-  "queue.manualUnavailableForResult": "A fila manual não está disponível para este resultado.",
+  "queue.manualUnavailableForResult":
+    "A fila manual não está disponível para este resultado.",
   "importHistory.title": "Histórico de importação",
   "importHistory.empty": "Nenhum registro de importação encontrado.",
   "importHistory.status": "Status",
@@ -1048,13 +1080,17 @@ const pt_BR: LocaleDictionary = {
   "settings.sub.enabled": "Habilitar gerenciamento de legendas",
   "settings.sub.credentials": "Credenciais OpenSubtitles",
   "settings.sub.username": "Nome do usuário",
-  "settings.sub.usernameEmailWarning": "Use seu nome de usuário do OpenSubtitles, não seu endereço de e-mail.",
+  "settings.sub.usernameEmailWarning":
+    "Use seu nome de usuário do OpenSubtitles, não seu endereço de e-mail.",
   "settings.sub.password": "Senha",
   "settings.sub.apiKey": "Chave da API",
   "settings.sub.apiKeyRequiredTitle": "Serviço de legendas indisponível",
-  "settings.sub.apiKeyRequiredBody": "A busca e o download de legendas permanecem desativados até que o serviço de legendas volte a ficar disponível.",
-  "settings.sub.credentialsRequiredTitle": "Credenciais de legendas necessárias",
-  "settings.sub.credentialsRequiredBody": "Adicione aqui seu nome de usuário e senha de legendas antes de buscar ou baixar legendas.",
+  "settings.sub.apiKeyRequiredBody":
+    "A busca e o download de legendas permanecem desativados até que o serviço de legendas volte a ficar disponível.",
+  "settings.sub.credentialsRequiredTitle":
+    "Credenciais de legendas necessárias",
+  "settings.sub.credentialsRequiredBody":
+    "Adicione aqui seu nome de usuário e senha de legendas antes de buscar ou baixar legendas.",
   "settings.sub.credentialsVerified": "Credenciais de legendas verificadas",
   "settings.sub.languages": "Idiomas das Legendas",
   "settings.sub.languagesHelp":
@@ -1179,7 +1215,8 @@ const pt_BR: LocaleDictionary = {
     "Failed to install plugin '{{name}}': the published artifact no longer matches the registry checksum. Refresh the registry or try again later.",
   "status.pluginInstallFailedSdkMetadataMismatch":
     "Failed to install plugin '{{name}}': the published artifact does not match the registry SDK compatibility metadata. Refresh the registry or try again later.",
-  "status.pluginInstallFailedWithReason": "Failed to install plugin '{{name}}': {{reason}}",
+  "status.pluginInstallFailedWithReason":
+    "Failed to install plugin '{{name}}': {{reason}}",
   "status.pluginRevertedToBundled":
     "O plugin '{{name}}' voltou para a versão integrada.",
   "status.pluginUninstalled": "Plugin '{{name}}' desinstalado.",
@@ -1396,10 +1433,12 @@ const pt_BR: LocaleDictionary = {
   "subtitle.external": "Externa",
   "subtitle.manualSearch": "Pesquisa manual",
   "subtitle.apiKeyRequiredTitle": "Serviço de legendas indisponível",
-  "subtitle.apiKeyRequiredBody": "O serviço de legendas está indisponível para este arquivo no momento.",
+  "subtitle.apiKeyRequiredBody":
+    "O serviço de legendas está indisponível para este arquivo no momento.",
   "subtitle.apiKeyRequiredAction": "Abrir configurações de legendas",
   "subtitle.credentialsRequiredTitle": "Credenciais de legendas necessárias",
-  "subtitle.credentialsRequiredBody": "Configure seu nome de usuário e senha de legendas em Configurações > Legendas antes de buscar legendas para este arquivo.",
+  "subtitle.credentialsRequiredBody":
+    "Configure seu nome de usuário e senha de legendas em Configurações > Legendas antes de buscar legendas para este arquivo.",
   "subtitle.credentialsRequiredAction": "Abrir configurações de legendas",
   "subtitle.blocklist": "Lista de bloqueio",
   "subtitle.blocklisted": "Legenda adicionada à lista de bloqueio",
@@ -1477,7 +1516,8 @@ const pt_BR: LocaleDictionary = {
   "status.nzbFoundForTitle":
     "{{count}} item(ns) NZB encontrado(s) para {{name}}{{source}}.",
   "status.noNzbFound": "Nenhum resultado NZB encontrado.",
-  "status.releaseMissingCandidateToken": "A versão selecionada não tem um token de candidato verificado.",
+  "status.releaseMissingCandidateToken":
+    "A versão selecionada não tem um token de candidato verificado.",
   "status.deleteCatalogConfirm":
     "Remover {{name}} do catálogo? Use a opção abaixo para também remover os arquivos locais.",
   "status.titleDeleted": "{{name}} removido do catálogo.",

@@ -64,13 +64,24 @@ type CompactTitleTableProps = {
   resolvedProfileName: string | null;
   qualityProfiles: ParsedQualityProfile[];
   qualityProfilesLoading: boolean;
-  onOpenOverview: (targetView: ViewId, overviewTarget: OverviewTitleTarget) => void;
+  onOpenOverview: (
+    targetView: ViewId,
+    overviewTarget: OverviewTitleTarget,
+  ) => void;
+  selectedTitleId?: string | null;
+  onSelectTitle?: (title: TitleRecord) => void;
   onDelete: (title: TitleRecord) => void;
   onAutoQueue: (title: TitleRecord) => Promise<void> | void;
-  onToggleMonitored?: (title: TitleRecord, monitored: boolean) => Promise<void> | void;
+  onToggleMonitored?: (
+    title: TitleRecord,
+    monitored: boolean,
+  ) => Promise<void> | void;
   onInteractiveSearch: (title: TitleRecord) => Promise<Release[]> | Release[];
   onQueueFromInteractive: (title: TitleRecord, release: Release) => void;
-  onQueueAdditionalFromInteractive?: (title: TitleRecord, release: Release) => Promise<void> | void;
+  onQueueAdditionalFromInteractive?: (
+    title: TitleRecord,
+    release: Release,
+  ) => Promise<void> | void;
   isDeletingById: Record<string, boolean>;
   isTogglingMonitoredById?: Record<string, boolean>;
   selectedTitleIds: ReadonlySet<string>;
@@ -101,6 +112,8 @@ export function CompactTitleTable({
   qualityProfiles,
   qualityProfilesLoading,
   onOpenOverview,
+  selectedTitleId,
+  onSelectTitle,
   onDelete,
   onAutoQueue,
   onToggleMonitored,
@@ -133,12 +146,11 @@ export function CompactTitleTable({
   ).length;
   const allVisibleSelected =
     titles.length > 0 && selectedVisibleCount === titles.length;
-  const selectAllState =
-    allVisibleSelected
-      ? true
-      : selectedVisibleCount > 0
-        ? "indeterminate"
-        : false;
+  const selectAllState = allVisibleSelected
+    ? true
+    : selectedVisibleCount > 0
+      ? "indeterminate"
+      : false;
 
   const titleTableColGroup = (
     <colgroup>
@@ -202,7 +214,12 @@ export function CompactTitleTable({
 
   React.useEffect(() => {
     const element = titleTableScrollRef.current;
-    if (!element || !catalogHasMoreTitles || catalogLoadingMoreTitles || !onCatalogEndReached) {
+    if (
+      !element ||
+      !catalogHasMoreTitles ||
+      catalogLoadingMoreTitles ||
+      !onCatalogEndReached
+    ) {
       return;
     }
 
@@ -219,7 +236,12 @@ export function CompactTitleTable({
     return () => {
       element.removeEventListener("scroll", maybeLoadNextPage);
     };
-  }, [catalogHasMoreTitles, catalogLoadingMoreTitles, onCatalogEndReached, titles.length]);
+  }, [
+    catalogHasMoreTitles,
+    catalogLoadingMoreTitles,
+    onCatalogEndReached,
+    titles.length,
+  ]);
 
   const handleOpenOverview = React.useCallback(
     (item: OverviewTitleTarget) => {
@@ -230,7 +252,34 @@ export function CompactTitleTable({
       );
       onOpenOverview(overviewTargetView, item);
     },
-    [location.pathname, onOpenOverview, overviewTargetView, titleVirtualizer.scrollOffset],
+    [
+      location.pathname,
+      onOpenOverview,
+      overviewTargetView,
+      titleVirtualizer.scrollOffset,
+    ],
+  );
+
+  const handleActivateTitle = React.useCallback(
+    (item: TitleRecord) => {
+      if (onSelectTitle) {
+        persistOverviewScrollValue(
+          location.pathname,
+          "compact",
+          titleVirtualizer.scrollOffset ??
+            titleTableScrollRef.current?.scrollTop,
+        );
+        onSelectTitle(item);
+        return;
+      }
+      handleOpenOverview(item);
+    },
+    [
+      handleOpenOverview,
+      location.pathname,
+      onSelectTitle,
+      titleVirtualizer.scrollOffset,
+    ],
   );
 
   const handleSort = React.useCallback(
@@ -293,7 +342,10 @@ export function CompactTitleTable({
         return;
       }
       const titleId = title.id;
-      setAutoQueueLoadingByTitle((previous) => ({ ...previous, [titleId]: true }));
+      setAutoQueueLoadingByTitle((previous) => ({
+        ...previous,
+        [titleId]: true,
+      }));
       void Promise.resolve(onAutoQueue(title)).finally(() => {
         setAutoQueueLoadingByTitle((previous) => {
           if (!previous[titleId]) {
@@ -362,7 +414,11 @@ export function CompactTitleTable({
         handleRunInteractiveSearch(title);
       }
     },
-    [expandedInteractiveRows, handleRunInteractiveSearch, interactiveSearchResultsByTitle],
+    [
+      expandedInteractiveRows,
+      handleRunInteractiveSearch,
+      interactiveSearchResultsByTitle,
+    ],
   );
 
   const renderTitleRow = (item: TitleRecord) => {
@@ -374,13 +430,18 @@ export function CompactTitleTable({
     const autoQueueLoading = autoQueueLoadingByTitle[item.id] === true;
     const deleteLoading = isDeletingById[item.id] === true;
     const monitorToggleLoading = isTogglingMonitoredById?.[item.id] === true;
+    const isSelected = selectedTitleId === item.id;
 
     return (
       <React.Fragment key={item.id}>
         <TableRow
           id={titleOverviewRowId(item.id)}
           data-ui="compact-title-table-row"
-          className="h-12"
+          data-selected={isSelected ? "true" : undefined}
+          className={cn(
+            "h-12 transition-colors hover:bg-muted/35",
+            isSelected && "bg-primary/10 ring-1 ring-inset ring-primary/30",
+          )}
         >
           <TableCell className="align-middle">
             <Checkbox
@@ -395,7 +456,7 @@ export function CompactTitleTable({
             <button
               id={titleOverviewOpenButtonId(item.id)}
               type="button"
-              onClick={() => handleOpenOverview(item)}
+              onClick={() => handleActivateTitle(item)}
               data-ui="title-name"
               className="block w-full overflow-hidden text-left text-[13px] font-medium hover:text-foreground hover:underline"
             >
@@ -403,7 +464,9 @@ export function CompactTitleTable({
             </button>
           </TableCell>
           <TableCell className="align-middle overflow-hidden py-1.5 text-[12px] text-muted-foreground">
-            <span className="block truncate">{item.libraryName ?? item.libraryId}</span>
+            <span className="block truncate">
+              {item.libraryName ?? item.libraryId}
+            </span>
           </TableCell>
           <TableCell className="text-center align-middle">
             <span
@@ -556,13 +619,17 @@ export function CompactTitleTable({
                             if (bulkActionBusy) {
                               return;
                             }
-                            return onQueueAdditionalFromInteractive(item, release);
-                        }
+                            return onQueueAdditionalFromInteractive(
+                              item,
+                              release,
+                            );
+                          }
                         : undefined
                     }
                     canQueueAdditional={(release) =>
                       releaseSupportsAdditionalFileQueue(release, item.facet)
                     }
+                    disabled={bulkActionBusy}
                     requireCandidateToken
                   />
                 )}
@@ -628,11 +695,10 @@ export function CompactTitleTable({
     : 0;
 
   return (
-    <div className="space-y-3">
+    <div className="flex h-full min-h-0 flex-col gap-3">
       <div
         ref={titleTableScrollRef}
-        className="relative w-full overflow-auto rounded-lg border border-border bg-background/40"
-        style={{ maxHeight: "70vh" }}
+        className="relative min-h-[22rem] flex-1 overflow-auto rounded-lg border border-border bg-background/40"
       >
         <table
           data-ui="compact-title-table"
@@ -645,7 +711,10 @@ export function CompactTitleTable({
             <TableBody className="[&_tr:last-child]:border-0">
               {topSpacerHeight > 0 ? (
                 <tr aria-hidden>
-                  <td colSpan={columnCount} style={{ height: topSpacerHeight, padding: 0 }} />
+                  <td
+                    colSpan={columnCount}
+                    style={{ height: topSpacerHeight, padding: 0 }}
+                  />
                 </tr>
               ) : null}
               {virtualItems.map((virtualRow) => {
@@ -653,7 +722,11 @@ export function CompactTitleTable({
                 if (!item) {
                   return null;
                 }
-                return <React.Fragment key={virtualRow.key}>{renderTitleRow(item)}</React.Fragment>;
+                return (
+                  <React.Fragment key={virtualRow.key}>
+                    {renderTitleRow(item)}
+                  </React.Fragment>
+                );
               })}
               {bottomSpacerHeight > 0 ? (
                 <tr aria-hidden>

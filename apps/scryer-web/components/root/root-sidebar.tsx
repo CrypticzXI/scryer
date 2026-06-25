@@ -312,8 +312,8 @@ const SETTINGS_NAV_GROUPS: Array<{
     id: "settings",
     labelKey: "nav.settings",
     itemIds: [
-      "general",
       "profile",
+      "general",
       "qualityProfiles",
       "delayProfiles",
       "plugins",
@@ -878,14 +878,14 @@ function RootSidebarContent({
                     );
                   }
 
-                  const isPromotedSettingsSection =
-                    view === "settings" && PROMOTED_SETTINGS_SHORTCUT_IDS.has(settingsSection);
                   const isMediaSection = ["movies", "series", "anime"].includes(item.id);
                   const isSettingsTop = item.id === "settings";
                   const isSystemTop = item.id === "system";
                   const isActivityTop = item.id === "activity";
                   const isWantedTop = item.id === "wanted";
                   const isActiveMediaSection = isMediaSection && view === item.id && !isRequestsSection;
+                  const isPromotedSettingsSection =
+                    view === "settings" && PROMOTED_SETTINGS_SHORTCUT_IDS.has(settingsSection);
                   const isActiveSettingsSection =
                     isSettingsTop && view === "settings" && !isPromotedSettingsSection;
                   const isActiveSystemSection =
@@ -900,21 +900,18 @@ function RootSidebarContent({
                     : 0;
                   const shouldShowChildren =
                     isActiveMediaSection ||
-                    isActiveSettingsSection ||
                     isActiveSystemSection ||
                     (isActiveActivitySection && hasVisibleActivitySubnav) ||
                     isActiveWantedSection;
                   const hasExpandableChildren =
                     isMediaSection ||
-                    isSettingsTop ||
                     isSystemTop ||
                     (isActivityTop && hasVisibleActivitySubnav) ||
                     isWantedTop;
                   const reserveChevronForBadges =
                     (isMediaSection &&
                       (mediaFacetImportBadgeCount > 0 || mediaFacetRequestBadgeCount > 0)) ||
-                    (item.id === "activity" && hasActivityImportBadge) ||
-                    (item.id === "settings" && pluginUpdateCount > 0);
+                    (item.id === "activity" && hasActivityImportBadge);
                   if (!isMediaSection && !isSettingsTop && !isSystemTop && !isActivityTop && !isWantedTop) {
                     return (
                       <React.Fragment key={item.id}>
@@ -963,11 +960,7 @@ function RootSidebarContent({
                           aria-expanded={hasExpandableChildren ? shouldShowChildren : undefined}
                           onClick={(event) => {
                             if (isSettingsTop) {
-                              handleNavigate(
-                                event,
-                                "settings",
-                                isPromotedSettingsSection ? defaultSettingsSectionForTopNav : settingsSection,
-                              );
+                              handleNavigate(event, "settings", defaultSettingsSectionForTopNav);
                               return;
                             }
                             if (isSystemTop) {
@@ -1246,7 +1239,7 @@ function RootSidebarContent({
       </Sidebar>
       <SidebarInset
         data-slot="root-content-panel"
-        className="relative min-w-0 bg-transparent min-[981px]:h-[calc(100dvh-var(--root-shell-top-offset,0px))] min-[981px]:max-h-[calc(100dvh-var(--root-shell-top-offset,0px))] min-[981px]:overflow-hidden"
+        className="relative min-w-0 bg-[var(--scry-shell-main-bg)] min-[981px]:h-[calc(100dvh-var(--root-shell-top-offset,0px))] min-[981px]:max-h-[calc(100dvh-var(--root-shell-top-offset,0px))] min-[981px]:overflow-hidden"
       >
         {headerWithMobileNavigation}
         {canInjectMobileNavigation ? null : (

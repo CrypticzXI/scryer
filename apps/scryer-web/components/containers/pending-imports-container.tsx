@@ -1,11 +1,11 @@
 import * as React from "react";
-import { ChevronDown, Loader2 } from "lucide-react";
+import { ChevronDown, Loader2, TriangleAlertIcon } from "lucide-react";
 import { useClient } from "urql";
 
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
 import { LibraryMultiSelect } from "@/components/common/library-multi-select";
 import { PendingImportCard } from "@/components/containers/pending-import-card";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import type { Translate, ViewId } from "@/components/root/types";
@@ -872,17 +872,32 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
 
   return (
     <>
-    <div className="space-y-4">
-      <Card className="border-border/80 bg-card/70">
-        <CardHeader>
-          <CardTitle>{t("pendingImports.title")}</CardTitle>
-          <p className="text-sm text-muted-foreground">
+    <div className="min-h-0 flex-1 bg-transparent">
+      <div className="mx-auto w-full max-w-[1180px] space-y-5 px-4 py-5 sm:px-6 md:px-[30px] md:py-[26px] md:pb-12">
+      <div className="flex flex-wrap items-end gap-4">
+        <div className="min-w-0 flex-1">
+          <h1 className="text-[25px] font-bold tracking-normal text-[var(--scry-ink2)]">
+            {t("pendingImports.title")}
+          </h1>
+          <p className="mt-1.5 max-w-[640px] text-[13px] leading-5 text-[var(--scry-muted)]">
             {t("pendingImports.description", {
               facet: facet ? t(facet.navLabelKey) : view,
             })}
           </p>
-        </CardHeader>
-        <CardContent>
+        </div>
+        {!pendingLoading && !pendingError && pendingConnection.total > 0 ? (
+          <span className="inline-flex h-[30px] items-center gap-2 rounded-[9px] border border-amber-500/30 bg-amber-500/10 px-3 text-xs font-semibold tabular-nums text-amber-600 dark:text-amber-300">
+            <TriangleAlertIcon className="h-3.5 w-3.5" />
+            {pendingConnection.total === 1
+              ? t("pendingImports.unresolvedCountOne")
+              : t("pendingImports.unresolvedCountOther", {
+                  count: String(pendingConnection.total),
+                })}
+          </span>
+        ) : null}
+      </div>
+
+      <div className="flex flex-wrap items-center gap-3">
           <LibraryMultiSelect
             libraries={libraries}
             selectedLibraryIds={selectedLibraryIds}
@@ -894,8 +909,7 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
             disabled={librariesLoading || libraries.length === 0}
             triggerClassName="w-full sm:w-[220px]"
           />
-        </CardContent>
-      </Card>
+      </div>
 
       {pendingLoading || ignoredLoading ? (
         <Card>
@@ -966,6 +980,7 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
           </Collapsible>
         </Card>
       ) : null}
+      </div>
     </div>
     <ConfirmDialog
       open={Boolean(ignoreTargetItem && ignoreTargetItem.status === "pending")}

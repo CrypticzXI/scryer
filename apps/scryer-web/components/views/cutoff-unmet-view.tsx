@@ -241,14 +241,16 @@ export function CutoffUnmetView({ state }: { state: CutoffUnmetViewState }) {
     : items;
 
   return (
-    <Card>
-      <CardHeader>
+    <Card className="overflow-hidden rounded-none border-0 bg-transparent shadow-none">
+      <CardHeader className="border-b border-[var(--scry-border3)] bg-[linear-gradient(180deg,var(--scry-surfD),transparent)] px-4 py-4 sm:px-5">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <CardTitle>{t("cutoff.title")}</CardTitle>
+          <CardTitle className="text-[22px] font-bold tracking-normal text-[var(--scry-ink2)]">
+            {t("cutoff.title")}
+          </CardTitle>
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
             {bulkSearching && bulkProgress ? (
               <>
-                <span className="text-sm text-muted-foreground">
+                <span className="text-sm font-medium text-[var(--scry-muted3)]">
                   {t("cutoff.searchProgress", {
                     current: bulkProgress.current,
                     total: bulkProgress.total,
@@ -277,14 +279,14 @@ export function CutoffUnmetView({ state }: { state: CutoffUnmetViewState }) {
           </div>
         </div>
       </CardHeader>
-      <CardContent>
-        <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:flex-wrap">
+      <CardContent className="bg-[color-mix(in_srgb,var(--scry-bg)_52%,transparent)] p-4 sm:p-5">
+        <div className="mb-4 flex flex-col gap-3 rounded-[14px] border border-[var(--scry-border3)] bg-[var(--scry-surfC)] p-3 sm:flex-row sm:flex-wrap sm:items-center">
           <LibraryMultiSelect
             libraries={libraries}
             selectedLibraryIds={selectedLibraryIds}
             onSelectedLibraryIdsChange={setSelectedLibraryIds}
             disabled={librariesLoading}
-            triggerClassName="w-full sm:w-[210px]"
+            triggerClassName="h-10 w-full rounded-[10px] border-[var(--scry-border2)] bg-[var(--scry-inset)] text-[13px] text-[var(--scry-body)] shadow-none sm:w-[210px]"
           />
 
           <Select
@@ -293,7 +295,7 @@ export function CutoffUnmetView({ state }: { state: CutoffUnmetViewState }) {
               setFacetFilter(value === "__all__" ? undefined : value)
             }
           >
-            <SelectTrigger className="w-full sm:w-[150px]">
+            <SelectTrigger className="h-10 w-full rounded-[10px] border-[var(--scry-border2)] bg-[var(--scry-inset)] text-[13px] text-[var(--scry-body)] shadow-none sm:w-[150px]">
               <SelectValue placeholder={t("cutoff.filterFacet")} />
             </SelectTrigger>
             <SelectContent>
@@ -304,14 +306,14 @@ export function CutoffUnmetView({ state }: { state: CutoffUnmetViewState }) {
             </SelectContent>
           </Select>
 
-          <span className="self-center text-sm text-muted-foreground sm:ml-auto">
+          <span className="self-center text-sm font-medium text-[var(--scry-muted3)] sm:ml-auto">
             {t("cutoff.totalCount", { count: filtered.length })}
           </span>
         </div>
 
         {isMobile ? (
           filtered.length === 0 && !loading ? (
-            <p className="text-center text-muted-foreground">{t("cutoff.noItems")}</p>
+            <p className="text-center text-[var(--scry-muted3)]">{t("cutoff.noItems")}</p>
           ) : (
             <div className="space-y-3">
               {filtered.map((item) => {
@@ -322,7 +324,7 @@ export function CutoffUnmetView({ state }: { state: CutoffUnmetViewState }) {
                 return (
                   <div
                     key={itemKey}
-                    className="space-y-3 rounded-xl border border-border bg-card/30 p-3"
+                    className="space-y-3 rounded-[14px] border border-[var(--scry-border2)] bg-[var(--scry-surfC)] p-3 shadow-[0_12px_28px_rgba(2,6,23,0.10)]"
                   >
                     <div className="space-y-3">
                       <TitleCell item={item} />
@@ -355,7 +357,7 @@ export function CutoffUnmetView({ state }: { state: CutoffUnmetViewState }) {
             </div>
           )
         ) : (
-          <div className="overflow-auto rounded-xl border border-border/60">
+          <div className="overflow-auto rounded-[14px] border border-[var(--scry-border2)] bg-[var(--scry-surfC)]">
             <Table className="min-w-[900px]">
               <TableHeader>
                 <TableRow>

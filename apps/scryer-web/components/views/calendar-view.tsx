@@ -225,8 +225,8 @@ export function CalendarView({
   }, []);
 
   return (
-    <Card>
-      <CardContent className="pt-6">
+    <Card className="flex min-h-0 flex-1 flex-col rounded-none border-0 bg-[var(--scry-surfE)] shadow-none">
+      <CardContent className="flex min-h-0 flex-1 flex-col px-4 py-5 sm:px-6 lg:px-7">
         <div className="mb-3 flex flex-wrap items-center gap-2">
           <LibraryMultiSelect
             libraries={libraries}
@@ -265,7 +265,7 @@ export function CalendarView({
             {t("label.loading")}
           </p>
         )}
-        <div className="fc-scryer">
+        <div className="fc-scryer min-h-0 flex-1">
           <FullCalendar
             key={isMobile ? "calendar-mobile" : "calendar-desktop"}
             plugins={[dayGridPlugin]}
@@ -321,7 +321,8 @@ export function CalendarView({
                 dayMaxEvents: false,
               },
             }}
-            contentHeight="auto"
+            height="100%"
+            contentHeight="100%"
             expandRows={true}
             eventDisplay="block"
             displayEventTime={false}

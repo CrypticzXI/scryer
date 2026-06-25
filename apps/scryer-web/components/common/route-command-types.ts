@@ -74,7 +74,7 @@ export function filterRouteCommandItems(
   const terms = normalizedQuery.split(/\s+/).filter(Boolean);
 
   if (terms.length === 0) {
-    return items;
+    return [];
   }
 
   return items
