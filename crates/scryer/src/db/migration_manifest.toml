@@ -532,18 +532,35 @@ scope = "all"
 
 [[migration]]
 version = 139
-description = "user UI settings"
+description = "indexer system backoffs"
 checksum_algo = "blake3"
 
 [[migration.steps]]
 kind = "sql"
-file = "migrations/0139_user_ui_settings.sql"
+file = "migrations/0139_indexer_system_backoffs.sql"
 engine = "sqlite"
 scope = "all"
 
 [[migration.steps]]
 kind = "sql"
-file = "postgres/migrations/0139_user_ui_settings.sql"
+file = "postgres/migrations/0139_indexer_system_backoffs.sql"
+engine = "postgres"
+scope = "all"
+
+[[migration]]
+version = 140
+description = "user UI settings"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0140_user_ui_settings.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0140_user_ui_settings.sql"
 engine = "postgres"
 scope = "all"
 

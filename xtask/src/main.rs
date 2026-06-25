@@ -187,12 +187,29 @@ struct CiArgs {
 #[derive(Subcommand)]
 enum CiCommand {
     Clippy(ClippyArgs),
+    Winget(WingetArgs),
 }
 
 #[derive(Args)]
 struct ClippyArgs {
     #[arg(long)]
     linux_only: bool,
+}
+
+#[derive(Args)]
+struct WingetArgs {
+    #[arg(long)]
+    version: String,
+    #[arg(long)]
+    tag: Option<String>,
+    #[arg(long, default_value = "scryer-media/scryer")]
+    repository: String,
+    #[arg(long, default_value = "release-artifacts")]
+    artifacts_dir: PathBuf,
+    #[arg(long, default_value = "target/winget")]
+    output_dir: PathBuf,
+    #[arg(long)]
+    release_date: Option<String>,
 }
 
 #[derive(Args)]
@@ -420,6 +437,25 @@ fn delegate_ci(ctx: &TaskContext, args: &CiArgs) -> Result<()> {
             forwarded.push("clippy".to_string());
             if clippy.linux_only {
                 forwarded.push("--linux-only".to_string());
+            }
+        }
+        CiCommand::Winget(winget) => {
+            forwarded.push("winget".to_string());
+            forwarded.push("--version".to_string());
+            forwarded.push(winget.version.clone());
+            if let Some(tag) = &winget.tag {
+                forwarded.push("--tag".to_string());
+                forwarded.push(tag.clone());
+            }
+            forwarded.push("--repository".to_string());
+            forwarded.push(winget.repository.clone());
+            forwarded.push("--artifacts-dir".to_string());
+            forwarded.push(winget.artifacts_dir.to_string_lossy().into_owned());
+            forwarded.push("--output-dir".to_string());
+            forwarded.push(winget.output_dir.to_string_lossy().into_owned());
+            if let Some(release_date) = &winget.release_date {
+                forwarded.push("--release-date".to_string());
+                forwarded.push(release_date.clone());
             }
         }
     }

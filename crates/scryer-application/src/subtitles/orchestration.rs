@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use chrono::Utc;
 use tracing::{debug, info, warn};
@@ -23,6 +23,14 @@ use crate::{
 use scryer_domain::{
     ExternalSubtitleSourceKind, SubtitleBlocklistEntry, SubtitleDownload, Title, User,
 };
+
+const ON_IMPORT_SUBTITLE_SEARCH_CONCURRENCY_LIMIT: usize = 2;
+static ON_IMPORT_SUBTITLE_SEARCH_LIMIT: LazyLock<Arc<tokio::sync::Semaphore>> =
+    LazyLock::new(|| {
+        Arc::new(tokio::sync::Semaphore::new(
+            ON_IMPORT_SUBTITLE_SEARCH_CONCURRENCY_LIMIT,
+        ))
+    });
 
 pub struct DownloadSubtitleForMediaFileRequest {
     pub media_file_id: String,
@@ -694,6 +702,17 @@ pub async fn start_background_subtitle_poller(
 /// Called from import code when `subtitles.auto_download_on_import` is true.
 pub fn spawn_subtitle_search_for_file(app: AppUseCase, title_id: String, media_file_id: String) {
     tokio::spawn(async move {
+        let permit = match Arc::clone(&ON_IMPORT_SUBTITLE_SEARCH_LIMIT)
+            .acquire_owned()
+            .await
+        {
+            Ok(permit) => permit,
+            Err(err) => {
+                warn!(error = %err, title_id, media_file_id, "on-import subtitle search limiter closed");
+                return;
+            }
+        };
+        let _permit = permit;
         if let Err(err) = run_subtitle_search_for_file(&app, &title_id, &media_file_id).await {
             warn!(error = %err, title_id, media_file_id, "on-import subtitle search failed");
         }

@@ -1555,3 +1555,26 @@ pub(crate) fn map_snapshot_chunk_error(error: AppError) -> AppError {
     }
     error
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn domain_event_list_sql_pushes_down_event_type_filter() {
+        let (sql, args) = build_domain_event_list_sql(&DomainEventFilter {
+            after_sequence: Some(42),
+            event_types: Some(vec![
+                DomainEventType::TitleAdded,
+                DomainEventType::ImportCompleted,
+            ]),
+            limit: 100,
+            ..DomainEventFilter::default()
+        });
+
+        assert!(sql.contains("event_type IN ({}, {})"));
+        assert!(sql.contains("sequence > {}"));
+        assert!(sql.contains("ORDER BY sequence ASC"));
+        assert_eq!(args.len(), 4);
+    }
+}

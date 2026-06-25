@@ -9,19 +9,20 @@ pub(crate) async fn upsert_indexer_quota(
     api_max: Option<u32>,
     grab_current: Option<u32>,
     grab_max: Option<u32>,
+    query_delta: u32,
 ) -> AppResult<()> {
     sqlx::query(
         "INSERT INTO indexer_api_quotas (indexer_id, api_current, api_max, grab_current, grab_max, queries_today, last_query_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, 1, datetime('now'), datetime('now'))
+         VALUES (?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
          ON CONFLICT(indexer_id) DO UPDATE SET
-           api_current = excluded.api_current,
-           api_max = excluded.api_max,
-           grab_current = excluded.grab_current,
-           grab_max = excluded.grab_max,
+           api_current = COALESCE(excluded.api_current, indexer_api_quotas.api_current),
+           api_max = COALESCE(excluded.api_max, indexer_api_quotas.api_max),
+           grab_current = COALESCE(excluded.grab_current, indexer_api_quotas.grab_current),
+           grab_max = COALESCE(excluded.grab_max, indexer_api_quotas.grab_max),
            queries_today = CASE
              WHEN julianday('now') - julianday(indexer_api_quotas.last_reset_at) >= 1.0
-             THEN 1
-             ELSE indexer_api_quotas.queries_today + 1
+             THEN excluded.queries_today
+             ELSE indexer_api_quotas.queries_today + excluded.queries_today
            END,
            last_reset_at = CASE
              WHEN julianday('now') - julianday(indexer_api_quotas.last_reset_at) >= 1.0
@@ -36,6 +37,7 @@ pub(crate) async fn upsert_indexer_quota(
     .bind(api_max.map(|value| value as i64))
     .bind(grab_current.map(|value| value as i64))
     .bind(grab_max.map(|value| value as i64))
+    .bind(query_delta as i64)
     .execute(pool)
     .await
     .map_err(|error| AppError::Repository(error.to_string()))?;

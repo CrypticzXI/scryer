@@ -5,9 +5,10 @@ use async_graphql::{
         stream::{self, BoxStream, unfold},
     },
 };
+use scryer_application::user_facing_domain_event_types;
 use scryer_domain::{AppPermission, DomainEvent, DomainEventPayload, DownloadQueueItem};
 use std::collections::{HashSet, VecDeque};
-use tokio::sync::broadcast::error::RecvError;
+use tokio::sync::broadcast::error::{RecvError, TryRecvError};
 
 use crate::context::LogBuffer;
 use crate::context::{actor_from_ctx, app_from_ctx, auth_runtime_from_ctx};
@@ -329,11 +330,13 @@ impl SubscriptionRoot {
         };
 
         let initial_after = after_sequence.map(|value| value.0).unwrap_or(0);
+        let event_types = user_facing_domain_event_types();
         let stream = unfold(
             (receiver, initial_after, VecDeque::<DomainEvent>::new()),
             move |(mut receiver, mut cursor, mut pending)| {
                 let app = app.clone();
                 let actor = actor.clone();
+                let event_types = event_types.clone();
                 async move {
                     loop {
                         if let Some(event) = pending.pop_front() {
@@ -346,6 +349,7 @@ impl SubscriptionRoot {
                                 &actor,
                                 &scryer_domain::DomainEventFilter {
                                     after_sequence: Some(cursor),
+                                    event_types: Some(event_types.clone()),
                                     limit: 100,
                                     ..scryer_domain::DomainEventFilter::default()
                                 },
@@ -355,7 +359,31 @@ impl SubscriptionRoot {
                             Ok(events) if !events.is_empty() => events,
                             Ok(_) => match receiver.recv().await {
                                 Ok(sequence) => {
-                                    if sequence > cursor {
+                                    let mut earliest_sequence_after_cursor =
+                                        (sequence > cursor).then_some(sequence);
+                                    loop {
+                                        match receiver.try_recv() {
+                                            Ok(next_sequence) => {
+                                                if next_sequence > cursor {
+                                                    earliest_sequence_after_cursor = Some(
+                                                        earliest_sequence_after_cursor
+                                                            .map_or(next_sequence, |earliest| {
+                                                                earliest.min(next_sequence)
+                                                            }),
+                                                    );
+                                                }
+                                            }
+                                            Err(TryRecvError::Empty) => break,
+                                            Err(TryRecvError::Lagged(n)) => {
+                                                tracing::debug!(
+                                                    "domain_event_feed: receiver lagged while draining, skipped {n} wakeups"
+                                                );
+                                                break;
+                                            }
+                                            Err(TryRecvError::Closed) => return None,
+                                        }
+                                    }
+                                    if let Some(sequence) = earliest_sequence_after_cursor {
                                         cursor = sequence.saturating_sub(1);
                                     }
                                     continue;

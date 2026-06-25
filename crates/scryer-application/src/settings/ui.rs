@@ -87,7 +87,11 @@ fn validate_table_columns(columns: &mut [UiTableColumnSetting]) -> AppResult<()>
     let mut seen = HashSet::new();
     for column in columns.iter() {
         validate_table_column(column)?;
-        let key = (column.facet, column.table_view_mode, column.column_id.as_str());
+        let key = (
+            column.facet,
+            column.table_view_mode,
+            column.column_id.as_str(),
+        );
         if !seen.insert(key) {
             return Err(AppError::Validation(format!(
                 "duplicate UI table column setting for {} {} column {}",
@@ -138,4 +142,3 @@ fn validate_table_column(column: &UiTableColumnSetting) -> AppResult<()> {
     }
     Ok(())
 }
-

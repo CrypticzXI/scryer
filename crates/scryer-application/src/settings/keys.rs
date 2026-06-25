@@ -17,6 +17,8 @@ pub const LEGACY_NZBGET_CATEGORY_SETTING_KEY: &str = "nzbget.category";
 pub const NZBGET_RECENT_PRIORITY_SETTING_KEY: &str = "nzbget.recent_priority";
 pub const NZBGET_OLDER_PRIORITY_SETTING_KEY: &str = "nzbget.older_priority";
 pub const INDEXER_ROUTING_SETTINGS_KEY: &str = "indexer.routing";
+pub const FRUITLESS_WANTED_RESET_LAST_RUN_KEY: &str =
+    "acquisition.fruitless_wanted_reset.last_run_at";
 pub(crate) const INDEXER_ROUTING_MOVIE_DEFAULT_CATEGORIES: &[&str] = &["2000"];
 pub(crate) const INDEXER_ROUTING_SERIES_DEFAULT_CATEGORIES: &[&str] = &["5000"];
 pub(crate) const INDEXER_ROUTING_ANIME_DEFAULT_CATEGORIES: &[&str] = &["5070"];

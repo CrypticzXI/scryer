@@ -123,6 +123,60 @@ fn base_series_movie_wanted_item() -> WantedItem {
     }
 }
 
+fn slice_test_wanted_item(id: usize, title_id: &str) -> WantedItem {
+    let mut item = base_episode_wanted_item();
+    item.id = format!("wanted-{id}");
+    item.title_id = title_id.to_string();
+    item.title_name = Some(title_id.to_string());
+    item.episode_id = Some(format!("episode-{id}"));
+    item.collection_id = Some(format!("season-{id}"));
+    item.created_at = (now_utc() + chrono::Duration::seconds(id as i64)).to_rfc3339();
+    item.updated_at = item.created_at.clone();
+    item
+}
+
+#[test]
+fn cooperative_slice_keeps_existing_per_title_limit() {
+    let due_items = (0..12)
+        .map(|idx| slice_test_wanted_item(idx, "title-one"))
+        .collect();
+
+    let (selected, deferred_per_title, deferred_by_global_limit) =
+        select_due_items_for_cooperative_slice(due_items);
+
+    assert_eq!(selected.len(), ACQUISITION_MAX_WANTED_ITEMS_PER_TITLE_PER_SLICE);
+    assert_eq!(deferred_per_title.get("title-one"), Some(&2));
+    assert_eq!(deferred_by_global_limit, 0);
+}
+
+#[test]
+fn cooperative_slice_enforces_global_limit() {
+    let due_items = (0..14)
+        .map(|idx| slice_test_wanted_item(idx, &format!("title-{idx}")))
+        .collect();
+
+    let (selected, deferred_per_title, deferred_by_global_limit) =
+        select_due_items_for_cooperative_slice(due_items);
+
+    assert_eq!(selected.len(), ACQUISITION_MAX_WANTED_ITEMS_PER_SLICE);
+    assert!(deferred_per_title.is_empty());
+    assert_eq!(deferred_by_global_limit, 2);
+}
+
+#[test]
+fn fruitless_wanted_reset_cooldown_only_blocks_recent_runs() {
+    let now = Utc::now();
+
+    assert!(fruitless_wanted_reset_cooldown_active(
+        now,
+        now - chrono::Duration::hours(23)
+    ));
+    assert!(!fruitless_wanted_reset_cooldown_active(
+        now,
+        now - chrono::Duration::hours(25)
+    ));
+}
+
 fn base_episode() -> Episode {
     Episode {
         id: "episode-1".to_string(),
