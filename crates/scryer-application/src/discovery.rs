@@ -57,12 +57,33 @@ impl DiscoveryContextDefaults {
         DiscoveryPublicFeedInput {
             region: self.region.clone(),
             language: self.language.clone(),
-            section_types: Vec::new(),
+            section_types: DISCOVERY_PUBLIC_FEED_SECTION_TYPES
+                .iter()
+                .map(|section_type| (*section_type).to_string())
+                .collect(),
             limit_per_section: 25,
             include_unresolved: self.include_unresolved,
         }
     }
 }
+
+const DISCOVERY_PUBLIC_FEED_SECTION_TYPES: &[&str] = &[
+    "TOP_MOVIES_THIS_WEEK",
+    "TOP_SERIES_THIS_WEEK",
+    "TOP_ANIME_THIS_WEEK",
+    "TRENDING_NOW",
+    "POPULAR_RIGHT_NOW",
+    "POPULAR_MOVIES",
+    "POPULAR_SERIES",
+    "UPCOMING_MOVIES",
+    "UPCOMING_SERIES",
+    "UPCOMING_NEXT_SEASON",
+    "POPULAR_WITH_ANIME_FANS",
+    "ANIME_THIS_WEEK",
+    "ANIME_SEASON_STANDOUTS",
+    "MOST_ANTICIPATED_ANIME",
+    "EVERGREEN_POPULAR",
+];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct DiscoveryLibraryContext {
@@ -427,7 +448,6 @@ fn personalized_section_results(
         .collect::<Vec<_>>();
     let mut sections = Vec::new();
 
-    sections.extend(top_this_week_sections(&visible_items, limit));
     sections.extend(label_affinity_sections(
         &visible_items,
         &library_profile.genre_labels,
@@ -482,75 +502,6 @@ fn personalized_section_results(
     ));
 
     sections
-}
-
-fn top_this_week_sections(
-    items: &[DiscoveryItemRecord],
-    limit: usize,
-) -> Vec<DiscoverySectionResult> {
-    [
-        (
-            "movie",
-            "top_movies_this_week",
-            "TOP_MOVIES_THIS_WEEK",
-            "Top Movies This Week",
-        ),
-        (
-            "series",
-            "top_series_this_week",
-            "TOP_SERIES_THIS_WEEK",
-            "Top Series This Week",
-        ),
-        (
-            "anime",
-            "top_anime_this_week",
-            "TOP_ANIME_THIS_WEEK",
-            "Top Anime This Week",
-        ),
-    ]
-    .into_iter()
-    .filter_map(|(media_kind, section_id, section_type, title)| {
-        top_this_week_section(items, media_kind, section_id, section_type, title, limit)
-    })
-    .collect()
-}
-
-fn top_this_week_section(
-    items: &[DiscoveryItemRecord],
-    media_kind: &str,
-    section_id: &str,
-    section_type: &str,
-    title: &str,
-    limit: usize,
-) -> Option<DiscoverySectionResult> {
-    let mut section_items = items
-        .iter()
-        .filter(|item| discovery_item_media_kind(item).eq_ignore_ascii_case(media_kind))
-        .filter(|item| discovery_item_has_any_signal(item, TOP_THIS_WEEK_SIGNALS))
-        .cloned()
-        .collect::<Vec<_>>();
-    dedupe_and_sort_discovery_items(&mut section_items);
-
-    if section_items.len() < DISCOVERY_DERIVED_SECTION_MINIMUM_ITEMS {
-        section_items = items
-            .iter()
-            .filter(|item| discovery_item_media_kind(item).eq_ignore_ascii_case(media_kind))
-            .cloned()
-            .collect::<Vec<_>>();
-        dedupe_and_sort_discovery_items(&mut section_items);
-        if section_items.len() < 3 {
-            return None;
-        }
-    }
-
-    section_result(
-        section_id.to_string(),
-        section_type.to_string(),
-        title.to_string(),
-        "personalized".to_string(),
-        section_items,
-        limit,
-    )
 }
 
 fn label_affinity_sections(
@@ -622,16 +573,6 @@ struct DiscoveryLibraryAffinityProfile {
     genre_labels: Vec<String>,
     tag_labels: Vec<String>,
 }
-
-const TOP_THIS_WEEK_SIGNALS: &[&str] = &[
-    "trend",
-    "weekly",
-    "week",
-    "top",
-    "popular",
-    "favorite",
-    "most requested",
-];
 
 const ACCLAIMED_SIGNALS: &[&str] = &[
     "acclaim",

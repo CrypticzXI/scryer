@@ -85,16 +85,18 @@ fn compare_due_wanted_items_for_search(
         .then_with(|| left.title_id.cmp(&right.title_id))
         .then_with(|| wanted_due_media_order(left).cmp(&wanted_due_media_order(right)))
         .then_with(|| {
-            wanted_due_numeric_text_order(left.season_number.as_deref())
-                .cmp(&wanted_due_numeric_text_order(right.season_number.as_deref()))
+            wanted_due_numeric_text_order(left.season_number.as_deref()).cmp(
+                &wanted_due_numeric_text_order(right.season_number.as_deref()),
+            )
         })
         .then_with(|| {
             wanted_due_text_order(left.season_number.as_deref())
                 .cmp(&wanted_due_text_order(right.season_number.as_deref()))
         })
         .then_with(|| {
-            wanted_due_numeric_text_order(left.episode_number.as_deref())
-                .cmp(&wanted_due_numeric_text_order(right.episode_number.as_deref()))
+            wanted_due_numeric_text_order(left.episode_number.as_deref()).cmp(
+                &wanted_due_numeric_text_order(right.episode_number.as_deref()),
+            )
         })
         .then_with(|| {
             wanted_due_text_order(left.episode_number.as_deref())
@@ -528,6 +530,7 @@ async fn process_single_wanted_item(
                         &pack_subject,
                         "background_acquisition_season_pack",
                         SearchMode::Auto,
+                        tokio_util::sync::CancellationToken::new(),
                     )
                     .await
                 {
@@ -886,6 +889,7 @@ async fn process_single_wanted_item(
             &subject,
             "background_acquisition",
             SearchMode::Auto,
+            tokio_util::sync::CancellationToken::new(),
         )
         .await
     {
@@ -1441,9 +1445,7 @@ async fn process_single_wanted_item(
 
                 // If download-client submit is unavailable for this source kind,
                 // skip remaining candidates with the same protocol this run.
-                if submit_unavailable
-                    && let Some(sk) = candidate.source_kind
-                {
+                if submit_unavailable && let Some(sk) = candidate.source_kind {
                     if !failed_source_kinds.contains(&sk) {
                         failed_source_kinds.push(sk);
                     }
@@ -1524,21 +1526,20 @@ const INTERNAL_SETTINGS_SOURCE: &str = "system";
 const METADATA_REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(12 * 60 * 60);
 const METADATA_REFRESH_NEXT_RUN_MIN_DELAY: std::time::Duration = std::time::Duration::from_secs(1);
 
-fn fruitless_wanted_reset_cooldown_active(
-    now: DateTime<Utc>,
-    last_run_at: DateTime<Utc>,
-) -> bool {
+fn fruitless_wanted_reset_cooldown_active(now: DateTime<Utc>, last_run_at: DateTime<Utc>) -> bool {
     last_run_at + Duration::hours(FRUITLESS_WANTED_RESET_COOLDOWN_HOURS) > now
 }
 
-async fn fruitless_wanted_reset_last_run_at(
-    app: &AppUseCase,
-) -> AppResult<Option<DateTime<Utc>>> {
+async fn fruitless_wanted_reset_last_run_at(app: &AppUseCase) -> AppResult<Option<DateTime<Utc>>> {
     let Some(value_json) = app
         .services
         .config
         .settings
-        .get_setting_json_explicit(SETTINGS_SCOPE_SYSTEM, FRUITLESS_WANTED_RESET_LAST_RUN_KEY, None)
+        .get_setting_json_explicit(
+            SETTINGS_SCOPE_SYSTEM,
+            FRUITLESS_WANTED_RESET_LAST_RUN_KEY,
+            None,
+        )
         .await?
     else {
         return Ok(None);
@@ -1636,8 +1637,8 @@ async fn scheduler_instance_id(app: &AppUseCase) -> AppResult<String> {
     }
 
     let seed = uuid::Uuid::new_v4().to_string();
-    let value_json = serde_json::to_string(&seed)
-        .map_err(|error| AppError::Repository(error.to_string()))?;
+    let value_json =
+        serde_json::to_string(&seed).map_err(|error| AppError::Repository(error.to_string()))?;
     app.services
         .config
         .settings
@@ -1692,7 +1693,12 @@ fn metadata_refresh_first_delay(
     now: std::time::SystemTime,
     phase: std::time::Duration,
 ) -> std::time::Duration {
-    next_phased_delay_at(now, METADATA_REFRESH_INTERVAL, phase, METADATA_REFRESH_INTERVAL)
+    next_phased_delay_at(
+        now,
+        METADATA_REFRESH_INTERVAL,
+        phase,
+        METADATA_REFRESH_INTERVAL,
+    )
 }
 
 fn metadata_refresh_next_delay(
@@ -1708,8 +1714,10 @@ fn metadata_refresh_next_delay(
 }
 
 fn new_metadata_refresh_interval(first_delay: std::time::Duration) -> tokio::time::Interval {
-    let mut interval =
-        tokio::time::interval_at(tokio::time::Instant::now() + first_delay, METADATA_REFRESH_INTERVAL);
+    let mut interval = tokio::time::interval_at(
+        tokio::time::Instant::now() + first_delay,
+        METADATA_REFRESH_INTERVAL,
+    );
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     interval
 }
@@ -2084,10 +2092,7 @@ pub async fn start_background_acquisition_poller(
     }
 }
 
-async fn run_discovery_sync_worker(
-    app: AppUseCase,
-    token: tokio_util::sync::CancellationToken,
-) {
+async fn run_discovery_sync_worker(app: AppUseCase, token: tokio_util::sync::CancellationToken) {
     // The acquisition poller spawns this worker, so awaiting the startup pass here
     // keeps service startup nonblocking while preventing overlapping discovery runs.
     let mut delay = tokio::select! {
@@ -2173,8 +2178,7 @@ mod task_runner_tests {
 
     #[test]
     fn metadata_refresh_first_delay_uses_next_phase_after_twelve_hours() {
-        let now =
-            std::time::UNIX_EPOCH + std::time::Duration::from_secs(12 * 60 * 60 + 5 * 60);
+        let now = std::time::UNIX_EPOCH + std::time::Duration::from_secs(12 * 60 * 60 + 5 * 60);
         let phase = std::time::Duration::from_secs(10 * 60);
         let delay = metadata_refresh_first_delay(now, phase);
 
@@ -2185,8 +2189,7 @@ mod task_runner_tests {
 
     #[test]
     fn metadata_refresh_next_delay_advances_to_next_nonzero_phase_slot() {
-        let now =
-            std::time::UNIX_EPOCH + std::time::Duration::from_secs(12 * 60 * 60 + 10 * 60);
+        let now = std::time::UNIX_EPOCH + std::time::Duration::from_secs(12 * 60 * 60 + 10 * 60);
         let phase = std::time::Duration::from_secs(10 * 60);
         let delay = metadata_refresh_next_delay(now, phase);
 
@@ -2222,7 +2225,10 @@ mod task_runner_tests {
     #[test]
     fn non_metadata_scheduled_job_intervals_remain_unchanged() {
         assert_eq!(JobKey::RssSync.interval_seconds(), Some(15 * 60));
-        assert_eq!(JobKey::PluginRegistryRefresh.interval_seconds(), Some(24 * 60 * 60));
+        assert_eq!(
+            JobKey::PluginRegistryRefresh.interval_seconds(),
+            Some(24 * 60 * 60)
+        );
         assert_eq!(JobKey::HealthChecks.interval_seconds(), Some(6 * 60 * 60));
         assert_eq!(JobKey::StagedNzbPrune.interval_seconds(), Some(60 * 60));
     }
@@ -2311,7 +2317,10 @@ mod task_runner_tests {
         let snapshot = snapshot_with_job("job-baseline", true);
 
         assert!(submission_blocks_search_for_wanted_item(
-            &submission, &item, None, &snapshot,
+            &submission,
+            &item,
+            None,
+            &snapshot,
         ));
     }
 
@@ -2325,7 +2334,10 @@ mod task_runner_tests {
         let snapshot = snapshot_with_job("job-baseline", true);
 
         assert!(!submission_blocks_search_for_wanted_item(
-            &submission, &item, None, &snapshot,
+            &submission,
+            &item,
+            None,
+            &snapshot,
         ));
     }
 
@@ -2338,7 +2350,10 @@ mod task_runner_tests {
         let snapshot = snapshot_with_job("job-upgrade", false);
 
         assert!(submission_blocks_search_for_wanted_item(
-            &submission, &item, None, &snapshot,
+            &submission,
+            &item,
+            None,
+            &snapshot,
         ));
     }
 

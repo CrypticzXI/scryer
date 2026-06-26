@@ -729,21 +729,36 @@ impl CatalogQueries {
 
         let safe_limit = limit.unwrap_or(50).clamp(1, 200) as usize;
         let title_id = title_id.to_string();
+        let cancel_token = tokio_util::sync::CancellationToken::new();
+        struct CancelOnDrop(tokio_util::sync::CancellationToken);
+        impl Drop for CancelOnDrop {
+            fn drop(&mut self) {
+                self.0.cancel();
+            }
+        }
+        let _cancel_on_drop = CancelOnDrop(cancel_token.clone());
         let results = match (series_movie_link_id, season, episode) {
             (Some(series_movie_link_id), None, None) => app
                 .search_indexers_for_series_movie(
                     &actor,
                     title_id,
                     series_movie_link_id.to_string(),
+                    cancel_token.clone(),
                 )
                 .await
                 .map_err(to_gql_error)?,
             (None, Some(season), Some(episode)) => app
-                .search_indexers_for_episode(&actor, title_id, season, episode)
+                .search_indexers_for_episode(
+                    &actor,
+                    title_id,
+                    season,
+                    episode,
+                    cancel_token.clone(),
+                )
                 .await
                 .map_err(to_gql_error)?,
             (None, None, None) => app
-                .search_indexers_for_title(&actor, title_id)
+                .search_indexers_for_title(&actor, title_id, cancel_token.clone())
                 .await
                 .map_err(to_gql_error)?,
             (None, Some(_), None) | (None, None, Some(_)) => {

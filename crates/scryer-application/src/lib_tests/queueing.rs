@@ -2457,7 +2457,12 @@ async fn search_indexers_for_series_movie_merges_categories_and_accepts_short_ti
         .expect("create series movie link");
 
     let results = app
-        .search_indexers_for_series_movie(&user, title.id.clone(), link.id.clone())
+        .search_indexers_for_series_movie(
+            &user,
+            title.id.clone(),
+            link.id.clone(),
+            tokio_util::sync::CancellationToken::new(),
+        )
         .await
         .expect("series movie search should succeed");
 

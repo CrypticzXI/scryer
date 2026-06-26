@@ -19,6 +19,7 @@ impl IndexerClient for MockIndexerClient {
         _episode: Option<u32>,
         _absolute_episode: Option<u32>,
         _tagged_aliases: Vec<TaggedAlias>,
+        _cancel_token: tokio_util::sync::CancellationToken,
     ) -> AppResult<IndexerSearchResponse> {
         if let Some(tvdb) = ids.get("tvdb_id") {
             tracing::info!(tvdb_id = %tvdb, category = ?category, "mock nzbgeek search");
@@ -144,6 +145,7 @@ impl IndexerClient for TrackingIndexerClient {
         episode: Option<u32>,
         _absolute_episode: Option<u32>,
         _tagged_aliases: Vec<TaggedAlias>,
+        _cancel_token: tokio_util::sync::CancellationToken,
     ) -> AppResult<IndexerSearchResponse> {
         self.searches.lock().await.push(RecordedIndexerSearch {
             query: query.clone(),
@@ -228,6 +230,7 @@ impl IndexerClient for FixedReleaseIndexerClient {
         _episode: Option<u32>,
         _absolute_episode: Option<u32>,
         _tagged_aliases: Vec<TaggedAlias>,
+        _cancel_token: tokio_util::sync::CancellationToken,
     ) -> AppResult<IndexerSearchResponse> {
         Ok(IndexerSearchResponse {
             results: vec![IndexerSearchResult {
@@ -293,6 +296,7 @@ impl IndexerClient for SharedUrlMovieIndexerClient {
         _episode: Option<u32>,
         _absolute_episode: Option<u32>,
         _tagged_aliases: Vec<TaggedAlias>,
+        _cancel_token: tokio_util::sync::CancellationToken,
     ) -> AppResult<IndexerSearchResponse> {
         let query = query.trim();
         let release_title = if query.contains("Deferred Movie") {
@@ -397,6 +401,7 @@ impl IndexerClient for RecordingCategoriesIndexerClient {
         _episode: Option<u32>,
         _absolute_episode: Option<u32>,
         _tagged_aliases: Vec<TaggedAlias>,
+        _cancel_token: tokio_util::sync::CancellationToken,
     ) -> AppResult<IndexerSearchResponse> {
         self.calls.lock().await.push(RecordedSearchCall {
             query,
@@ -458,6 +463,7 @@ impl IndexerClient for RecordingStructuredQueryIndexerClient {
         episode: Option<u32>,
         absolute_episode: Option<u32>,
         _tagged_aliases: Vec<TaggedAlias>,
+        _cancel_token: tokio_util::sync::CancellationToken,
     ) -> AppResult<IndexerSearchResponse> {
         self.calls.lock().await.push(RecordedStructuredQueryCall {
             query,
@@ -505,6 +511,7 @@ impl IndexerClient for MultiReleaseIndexerClient {
         _episode: Option<u32>,
         _absolute_episode: Option<u32>,
         _tagged_aliases: Vec<TaggedAlias>,
+        _cancel_token: tokio_util::sync::CancellationToken,
     ) -> AppResult<IndexerSearchResponse> {
         Ok(IndexerSearchResponse {
             results: self

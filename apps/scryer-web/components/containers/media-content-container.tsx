@@ -35,7 +35,9 @@ import {
   librarySettingsQuery,
   externalSubtitlesQuery,
   mediaRenamePreviewQuery,
+  discoveryHomeQuery,
   discoveryItemsQuery,
+  scryerVersionQuery,
   ruleSetsQuery,
   routingPageInitQuery,
   searchForTitleQuery,
@@ -48,6 +50,7 @@ import {
   QUALITY_PROFILE_INHERIT_VALUE,
   viewToFacet,
 } from "@/lib/constants/settings";
+import { isAbortError, makeAbortableFetch } from "@/lib/graphql/urql-client";
 import { useClient } from "urql";
 import type {
   ContentSettingsSection,
@@ -80,6 +83,7 @@ import type {
   RootFolderOption,
   TitleReleaseBlocklistEntry,
   TitleRecord,
+  DiscoveryHomePayload,
   DiscoveryItemsInput,
   DiscoveryItemsPayload,
   DiscoveryItem,
@@ -198,12 +202,135 @@ const defaultTitleCatalogSortState: TitleCatalogSortState = {
   direction: "asc",
 };
 
-const TITLE_CONTEXT_DISCOVERY_ITEMS_LIMIT = 48;
+const TITLE_CONTEXT_DISCOVERY_ITEMS_LIMIT = 120;
 const TITLE_CONTEXT_DISCOVERY_TARGET_KINDS: Record<Facet, string[]> = {
   movie: ["movie"],
   series: ["series"],
   anime: ["anime"],
 };
+const TITLE_CONTEXT_PUBLIC_TOP_SECTION_TYPES: Record<Facet, string> = {
+  movie: "TOP_MOVIES_THIS_WEEK",
+  series: "TOP_SERIES_THIS_WEEK",
+  anime: "TOP_ANIME_THIS_WEEK",
+};
+const TITLE_CONTEXT_DISCOVERY_CACHE_PREFIX =
+  "scryer:discovery:library-home:v1";
+
+type TitleContextDiscoveryCachePayload = {
+  scryerVersion: string;
+  facet: Facet;
+  cachedAt: number;
+  discoveryItems: DiscoveryItem[];
+  publicTopItems: DiscoveryItem[];
+};
+
+function titleContextPublicTopItemsFromHome(
+  home: DiscoveryHomePayload | null | undefined,
+  facet: Facet,
+): DiscoveryItem[] {
+  const sectionType = TITLE_CONTEXT_PUBLIC_TOP_SECTION_TYPES[facet];
+  return (
+    home?.publicSections.find((section) => section.sectionType === sectionType)
+      ?.items ?? []
+  );
+}
+
+function normalizedTitleContextCacheVersion(version: string | null | undefined) {
+  return version?.trim() || null;
+}
+
+function titleContextDiscoveryCacheKey(version: string, facet: Facet) {
+  return `${TITLE_CONTEXT_DISCOVERY_CACHE_PREFIX}:${version}:${facet}`;
+}
+
+function isTitleContextDiscoveryCachePayload(
+  value: unknown,
+  version: string,
+  facet: Facet,
+): value is TitleContextDiscoveryCachePayload {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+  const candidate = value as Partial<TitleContextDiscoveryCachePayload>;
+  return (
+    candidate.scryerVersion === version &&
+    candidate.facet === facet &&
+    typeof candidate.cachedAt === "number" &&
+    Number.isFinite(candidate.cachedAt) &&
+    Array.isArray(candidate.discoveryItems) &&
+    Array.isArray(candidate.publicTopItems)
+  );
+}
+
+function readTitleContextDiscoveryCache(
+  version: string | null,
+  facet: Facet,
+) {
+  if (!version || typeof window === "undefined") {
+    return null;
+  }
+  const key = titleContextDiscoveryCacheKey(version, facet);
+  try {
+    const raw = window.localStorage.getItem(key);
+    if (!raw) {
+      return null;
+    }
+    const parsed = JSON.parse(raw) as unknown;
+    if (isTitleContextDiscoveryCachePayload(parsed, version, facet)) {
+      return parsed;
+    }
+    window.localStorage.removeItem(key);
+  } catch {
+    try {
+      window.localStorage.removeItem(key);
+    } catch {
+      // Ignore persistence failures.
+    }
+  }
+  return null;
+}
+
+function writeTitleContextDiscoveryCache(
+  version: string | null,
+  facet: Facet,
+  discoveryItems: DiscoveryItem[],
+  publicTopItems: DiscoveryItem[],
+) {
+  if (!version || typeof window === "undefined") {
+    return;
+  }
+  try {
+    window.localStorage.setItem(
+      titleContextDiscoveryCacheKey(version, facet),
+      JSON.stringify({
+        scryerVersion: version,
+        facet,
+        cachedAt: Date.now(),
+        discoveryItems,
+        publicTopItems,
+      } satisfies TitleContextDiscoveryCachePayload),
+    );
+  } catch {
+    // Ignore persistence failures.
+  }
+}
+
+async function loadTitleContextScryerVersion(client: ReturnType<typeof useClient>) {
+  try {
+    const { data, error } = await client
+      .query(scryerVersionQuery, {}, { requestPolicy: "network-only" })
+      .toPromise();
+    if (error) {
+      return null;
+    }
+    return normalizedTitleContextCacheVersion(
+      ((data as { scryerVersion?: string | null } | undefined)
+        ?.scryerVersion ?? null),
+    );
+  } catch {
+    return null;
+  }
+}
 
 function titleContextDiscoveryGenres(title: TitleRecord | null | undefined) {
   const seen = new Set<string>();
@@ -329,18 +456,6 @@ type ActiveCatalogListFilters = {
   query: string;
   libraryIds: readonly string[];
 };
-
-function sortCatalogTitles(titles: TitleRecord[]): TitleRecord[] {
-  return [...titles].sort((left, right) => {
-    const nameCompare = left.name
-      .toLocaleLowerCase()
-      .localeCompare(right.name.toLocaleLowerCase());
-    if (nameCompare !== 0) {
-      return nameCompare;
-    }
-    return left.id.localeCompare(right.id);
-  });
-}
 
 function mergePreferLoadedImageFields(
   current: TitleRecord,
@@ -519,7 +634,7 @@ function upsertCatalogTitleRecord(
       title,
     );
   }
-  return sortCatalogTitles(next);
+  return next;
 }
 
 function isPendingHydrationPosterTitle(
@@ -892,6 +1007,8 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   const activeFacet = viewToFacet[view as keyof typeof viewToFacet] ?? "movie";
   const [titleContextDiscoveryItems, setTitleContextDiscoveryItems] =
     React.useState<DiscoveryItem[]>([]);
+  const [titleContextPublicTopItems, setTitleContextPublicTopItems] =
+    React.useState<DiscoveryItem[]>([]);
   const [
     selectedTitleContextDiscoveryItems,
     setSelectedTitleContextDiscoveryItems,
@@ -924,25 +1041,79 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   const refreshTitleContextDiscovery = React.useCallback(async () => {
     if (!shouldLoadCatalogTitles) {
       setTitleContextDiscoveryItems([]);
+      setTitleContextPublicTopItems([]);
       return;
     }
-    try {
-      const { data, error } = await client
-        .query(
-          discoveryItemsQuery,
-          { input: titleContextDiscoveryItemsInput(activeFacet) },
-          { requestPolicy: "network-only" },
-        )
-        .toPromise();
-      if (error) {
-        throw error;
-      }
+    const scryerVersion = await loadTitleContextScryerVersion(client);
+    const cachedDiscovery = readTitleContextDiscoveryCache(
+      scryerVersion,
+      activeFacet,
+    );
+    if (cachedDiscovery) {
+      setTitleContextDiscoveryItems(cachedDiscovery.discoveryItems);
+      setTitleContextPublicTopItems(cachedDiscovery.publicTopItems);
+    }
+    const [discoveryItemsSettled, discoveryHomeSettled] =
+      await Promise.allSettled([
+        client
+          .query(
+            discoveryItemsQuery,
+            { input: titleContextDiscoveryItemsInput(activeFacet) },
+            { requestPolicy: "network-only" },
+          )
+          .toPromise(),
+        client
+          .query(
+            discoveryHomeQuery,
+            {
+              input: {
+                includePublic: true,
+                includePersonalized: false,
+                includeUnresolved: true,
+                limitPerSection: TITLE_CONTEXT_DISCOVERY_ITEMS_LIMIT,
+              },
+            },
+            { requestPolicy: "network-only" },
+          )
+          .toPromise(),
+      ]);
+    let nextDiscoveryItems: DiscoveryItem[] | null = null;
+    let nextPublicTopItems: DiscoveryItem[] | null = null;
+    if (
+      discoveryItemsSettled.status === "fulfilled" &&
+      !discoveryItemsSettled.value.error
+    ) {
+      nextDiscoveryItems =
+        ((discoveryItemsSettled.value.data?.discoveryItems ?? null) as
+          | DiscoveryItemsPayload
+          | null)?.items ?? [];
       setTitleContextDiscoveryItems(
-        ((data?.discoveryItems ?? null) as DiscoveryItemsPayload | null)
-          ?.items ?? [],
+        nextDiscoveryItems,
       );
-    } catch {
+    } else if (!cachedDiscovery) {
       setTitleContextDiscoveryItems([]);
+    }
+    if (
+      discoveryHomeSettled.status === "fulfilled" &&
+      !discoveryHomeSettled.value.error
+    ) {
+      nextPublicTopItems = titleContextPublicTopItemsFromHome(
+        (discoveryHomeSettled.value.data?.discoveryHome ?? null) as
+          | DiscoveryHomePayload
+          | null,
+        activeFacet,
+      );
+      setTitleContextPublicTopItems(nextPublicTopItems);
+    } else if (!cachedDiscovery) {
+      setTitleContextPublicTopItems([]);
+    }
+    if (nextDiscoveryItems && nextPublicTopItems) {
+      writeTitleContextDiscoveryCache(
+        scryerVersion,
+        activeFacet,
+        nextDiscoveryItems,
+        nextPublicTopItems,
+      );
     }
   }, [activeFacet, client, shouldLoadCatalogTitles]);
 
@@ -1023,6 +1194,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     [],
   );
   const activeCatalogQueryRef = React.useRef("");
+  const interactiveSearchAbortRef = React.useRef<AbortController | null>(null);
   const activeCatalogListFiltersRef = React.useRef<ActiveCatalogListFilters>({
     facet: activeFacet,
     query: "",
@@ -1041,6 +1213,13 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   React.useEffect(() => {
     catalogQueryKeyRef.current = catalogPaginationState.queryKey;
   }, [catalogPaginationState.queryKey]);
+
+  React.useEffect(() => {
+    return () => {
+      interactiveSearchAbortRef.current?.abort();
+      interactiveSearchAbortRef.current = null;
+    };
+  }, []);
 
   const {
     titleNameForQueue,
@@ -2085,9 +2264,8 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
             title,
           );
         }
-        const sorted = sortCatalogTitles(next);
         setTitleStatus(t("title.statusTemplate", { count: next.length }));
-        return sorted;
+        return next;
       });
     },
     [setMonitoredTitles, setTitleStatus, t],
@@ -2798,17 +2976,33 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
 
   const runInteractiveSearchForTitle = React.useCallback(
     async (title: TitleRecord) => {
+      interactiveSearchAbortRef.current?.abort();
+      const abortController = new AbortController();
+      interactiveSearchAbortRef.current = abortController;
+
       try {
         const { data, error } = await client
-          .query(searchForTitleQuery, { titleId: title.id })
+          .query(searchForTitleQuery, { titleId: title.id }, {
+            fetch: makeAbortableFetch(abortController.signal),
+          })
           .toPromise();
+        if (abortController.signal.aborted) {
+          return [];
+        }
         if (error) throw error;
         return (data?.searchReleases ?? []) as Release[];
       } catch (error) {
+        if (abortController.signal.aborted || isAbortError(error)) {
+          return [];
+        }
         setGlobalStatus(
           error instanceof Error ? error.message : t("status.searchFailed"),
         );
         return [];
+      } finally {
+        if (interactiveSearchAbortRef.current === abortController) {
+          interactiveSearchAbortRef.current = null;
+        }
       }
     },
     [client, setGlobalStatus, t],
@@ -4010,6 +4204,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
 
           void librariesPromise.finally(finalizeBootstrap);
         });
+        return;
       }
 
       if (skipNextCatalogOverviewReloadRef.current) {
@@ -4194,6 +4389,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
           monitoredTitles: visibleTitles,
           titleContextTitles: titleContextSourceTitles,
           titleContextDiscoveryItems: activeTitleContextDiscoveryItems,
+          titleContextPublicTopItems,
           canManageTitle,
           canRequestMedia,
           onTitleContextDiscoveryAction: handleTitleContextDiscoveryAction,

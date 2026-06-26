@@ -608,6 +608,7 @@ impl IndexerClient for ProwlarrSearchStub {
         _episode: Option<u32>,
         _absolute_episode: Option<u32>,
         _tagged_aliases: Vec<TaggedAlias>,
+        _cancel_token: tokio_util::sync::CancellationToken,
     ) -> AppResult<IndexerSearchResponse> {
         Err(AppError::Validation(
             "Prowlarr parent configs are management-only; search through synced child indexers"

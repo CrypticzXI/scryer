@@ -374,14 +374,253 @@ type TitleContextRecommendationGroup = {
   recommendations: TitleContextRecommendation[];
 };
 
+type TitleContextRankedEntry = {
+  item: DiscoveryItem;
+  score: number;
+};
+
+const TITLE_CONTEXT_RECOMMENDATION_LIMIT = 6;
+const TITLE_CONTEXT_AFFINITY_LABEL_LIMIT = 2;
+const TITLE_CONTEXT_ACCLAIMED_SIGNALS = [
+  "acclaim",
+  "award",
+  "best picture",
+  "top rated",
+  "favorite",
+  "critically",
+];
+
+function normalizedTitleContextLabel(value: string) {
+  return value
+    .trim()
+    .toLocaleLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+function simplifiedDiscoverySignal(value: string) {
+  const normalized = normalizedTitleContextLabel(value);
+  return (
+    normalized
+      .replace(/^mal genre /, "")
+      .replace(/^mal theme /, "")
+      .replace(/^tmdb genre /, "")
+      .replace(/^tvdb genre /, "")
+      .trim() || normalized
+  );
+}
+
+function uniqueTitleContextLabels(values: readonly string[] | undefined) {
+  const seen = new Set<string>();
+  return (values ?? [])
+    .map((value) => value.trim())
+    .filter((value) => {
+      if (!value) {
+        return false;
+      }
+      const key = normalizedTitleContextLabel(value);
+      if (!key || seen.has(key)) {
+        return false;
+      }
+      seen.add(key);
+      return true;
+    });
+}
+
+function topLibraryTitleLabels(
+  titles: TitleRecord[],
+  selectLabels: (title: TitleRecord) => readonly string[] | undefined,
+) {
+  const counts = new Map<string, { label: string; count: number }>();
+  for (const title of titles) {
+    for (const label of uniqueTitleContextLabels(selectLabels(title))) {
+      const key = normalizedTitleContextLabel(label);
+      const current = counts.get(key);
+      counts.set(key, {
+        label: current?.label ?? label,
+        count: (current?.count ?? 0) + 1,
+      });
+    }
+  }
+  return [...counts.values()]
+    .sort((left, right) =>
+      right.count === left.count
+        ? left.label.localeCompare(right.label)
+        : right.count - left.count,
+    )
+    .slice(0, TITLE_CONTEXT_AFFINITY_LABEL_LIMIT)
+    .map(({ label }) => label);
+}
+
+function discoveryItemSignalValues(item: DiscoveryItem) {
+  return [
+    ...item.genres,
+    ...item.statusTags,
+    ...item.sourceTags,
+    ...item.facetTerms,
+    ...item.contextTerms,
+    ...item.relationTypes,
+    ...item.relationSubtypes,
+    ...item.sources,
+  ];
+}
+
+function discoveryItemMatchesLibraryLabel(item: DiscoveryItem, label: string) {
+  const labelKey = normalizedTitleContextLabel(label);
+  if (!labelKey) {
+    return false;
+  }
+  return discoveryItemSignalValues(item).some((value) => {
+    const candidate = simplifiedDiscoverySignal(value);
+    return candidate === labelKey || candidate.includes(labelKey);
+  });
+}
+
+function discoveryItemHasAnySignal(item: DiscoveryItem, signals: string[]) {
+  return discoveryItemSignalValues(item).some((value) => {
+    const normalized = normalizedTitleContextLabel(value);
+    return signals.some((signal) => normalized.includes(signal));
+  });
+}
+
+function normalizeTitleContextOwnershipKey(value: string | null | undefined) {
+  return value?.trim().toLocaleLowerCase() || "";
+}
+
+function addTitleContextOwnershipKey(
+  keys: Set<string>,
+  value: string | null | undefined,
+) {
+  const key = normalizeTitleContextOwnershipKey(value);
+  if (key) {
+    keys.add(key);
+  }
+}
+
+function addTitleContextExternalOwnershipKeys(
+  keys: Set<string>,
+  source: string | null | undefined,
+  value: string | null | undefined,
+  facet: string,
+) {
+  const normalizedSource = normalizeTitleContextOwnershipKey(source);
+  const normalizedValue = normalizeTitleContextOwnershipKey(value);
+  if (!normalizedSource || !normalizedValue) {
+    return;
+  }
+  addTitleContextOwnershipKey(keys, `${normalizedSource}:${normalizedValue}`);
+  addTitleContextOwnershipKey(
+    keys,
+    `${normalizedSource}:${facet}:${normalizedValue}`,
+  );
+  if (facet === "anime") {
+    addTitleContextOwnershipKey(keys, `${normalizedSource}:series:${normalizedValue}`);
+    addTitleContextOwnershipKey(keys, `${normalizedSource}:anime:${normalizedValue}`);
+  }
+}
+
+function titleContextOwnedDiscoveryKeys(libraryTitles: TitleRecord[]) {
+  const keys = new Set<string>();
+  for (const title of libraryTitles) {
+    for (const externalId of title.externalIds ?? []) {
+      addTitleContextExternalOwnershipKeys(
+        keys,
+        externalId.source,
+        externalId.value,
+        title.facet,
+      );
+    }
+    addTitleContextExternalOwnershipKeys(keys, "imdb", title.imdbId, title.facet);
+  }
+  return keys;
+}
+
+function discoveryItemOwnershipKeys(item: DiscoveryItem) {
+  const keys = new Set<string>();
+  addTitleContextOwnershipKey(keys, item.targetKey);
+  const targetParts = item.targetKey
+    .split(":")
+    .map((part) => part.trim())
+    .filter(Boolean);
+  if (targetParts.length >= 3) {
+    addTitleContextOwnershipKey(keys, `${targetParts[0]}:${targetParts.slice(2).join(":")}`);
+  }
+  if (item.resolvedTitleId) {
+    const targetKind = normalizeTitleContextOwnershipKey(item.targetKind);
+    if (targetKind) {
+      addTitleContextOwnershipKey(keys, `tvdb:${targetKind}:${item.resolvedTitleId}`);
+      if (targetKind === "anime") {
+        addTitleContextOwnershipKey(keys, `tvdb:series:${item.resolvedTitleId}`);
+      }
+    }
+  }
+  return keys;
+}
+
+function discoveryItemIsOwnedByLibrary(
+  item: DiscoveryItem,
+  ownedKeys: ReadonlySet<string>,
+) {
+  if (item.ownedInInput) {
+    return true;
+  }
+  for (const key of discoveryItemOwnershipKeys(item)) {
+    if (ownedKeys.has(key)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function comparableDiscoveryRating(value: number | null | undefined) {
+  if (value == null || Number.isNaN(value)) {
+    return 0;
+  }
+  return value <= 1 ? value * 10 : value;
+}
+
+function discoveryItemIsAcclaimed(item: DiscoveryItem) {
+  return (
+    comparableDiscoveryRating(item.rating) >= 8 ||
+    discoveryItemHasAnySignal(item, TITLE_CONTEXT_ACCLAIMED_SIGNALS)
+  );
+}
+
+function discoveryItemHasCollectionSignal(item: DiscoveryItem) {
+  return (
+    Boolean(item.tmdbCollectionId || item.tmdbCollectionName?.trim()) ||
+    [...item.relationTypes, ...item.relationSubtypes].some((value) => {
+      const normalized = normalizedTitleContextLabel(value);
+      return normalized.includes("collection") || normalized.includes("franchise");
+    })
+  );
+}
+
+function titleContextWeeklyLabel(view: ViewId, t: Translate) {
+  if (view === "series") {
+    return t("title.contextForYouTopSeriesThisWeek");
+  }
+  if (view === "anime") {
+    return t("title.contextForYouTopAnimeThisWeek");
+  }
+  return t("title.contextForYouTopMoviesThisWeek");
+}
+
 function buildTitleContextRecommendationGroups(
   items: DiscoveryItem[],
+  publicTopItems: DiscoveryItem[],
+  libraryTitles: TitleRecord[],
+  view: ViewId,
   t: Translate,
 ): TitleContextRecommendationGroup[] {
-  if (items.length === 0) {
+  if (items.length === 0 && publicTopItems.length === 0) {
     return [];
   }
 
+  const ownedDiscoveryKeys = titleContextOwnedDiscoveryKeys(libraryTitles);
+  const publicTopEntries = publicTopItems
+    .filter((item) => !discoveryItemIsOwnedByLibrary(item, ownedDiscoveryKeys))
+    .map((item) => ({ item, score: item.rankScore ?? 0 }));
   const rankedEntries = items
     .filter((item) => !item.ownedInInput)
     .map((item) => ({
@@ -399,23 +638,20 @@ function buildTitleContextRecommendationGroups(
           )
         : right.score - left.score,
     );
-  if (rankedEntries.length === 0) {
-    return [];
-  }
-  const usedItemKeys = new Set<string>();
   const toRecommendation = (
-    entry: (typeof rankedEntries)[number],
+    entry: TitleContextRankedEntry,
     reason: string,
   ): TitleContextRecommendation => ({
     item: entry.item,
     reason,
   });
   const takeRecommendations = (
-    entries: typeof rankedEntries,
+    entries: TitleContextRankedEntry[],
     reason: string,
     limit: number,
   ) => {
     const recommendations: TitleContextRecommendation[] = [];
+    const usedItemKeys = new Set<string>();
     for (const entry of entries) {
       const key = entry.item.targetKey || entry.item.id;
       if (usedItemKeys.has(key)) {
@@ -431,58 +667,80 @@ function buildTitleContextRecommendationGroups(
   };
 
   const groups: TitleContextRecommendationGroup[] = [];
-  const topRecommendations = takeRecommendations(
-    rankedEntries,
-    t("title.contextForYouReasonTop"),
-    6,
-  );
-  if (topRecommendations.length > 0) {
-    groups.push({
-      id: "top",
-      label: t("title.contextForYouTop"),
-      recommendations: topRecommendations,
-    });
-  }
-
-  const genreCounts = new Map<string, { label: string; count: number }>();
-  for (const item of items) {
-    for (const genre of item.genres ?? []) {
-      const label = genre.trim();
-      if (!label) {
-        continue;
-      }
-      const key = label.toLocaleLowerCase();
-      const current = genreCounts.get(key);
-      genreCounts.set(key, {
-        label: current?.label ?? label,
-        count: (current?.count ?? 0) + 1,
-      });
-    }
-  }
-
-  const topGenre = [...genreCounts.values()].sort(
-    (a, b) => b.count - a.count || a.label.localeCompare(b.label),
-  )[0];
-  if (topGenre) {
-    const genreRecommendations = takeRecommendations(
-      rankedEntries.filter((entry) =>
-        entry.item.genres?.some(
-          (genre) =>
-            genre.trim().toLocaleLowerCase() ===
-            topGenre.label.toLocaleLowerCase(),
-        ),
-      ),
-      t("title.contextForYouReasonGenre", { genre: topGenre.label }),
-      6,
+  const addGroup = (
+    id: string,
+    label: string,
+    entries: TitleContextRankedEntry[],
+    reason: string,
+  ) => {
+    const recommendations = takeRecommendations(
+      entries,
+      reason,
+      TITLE_CONTEXT_RECOMMENDATION_LIMIT,
     );
-
-    if (genreRecommendations.length > 0) {
-      groups.push({
-        id: "genre",
-        label: t("title.contextForYouGenre", { genre: topGenre.label }),
-        recommendations: genreRecommendations,
-      });
+    if (recommendations.length === 0) {
+      return;
     }
+    groups.push({
+      id,
+      label,
+      recommendations,
+    });
+  };
+
+  addGroup(
+    `top-${view}-this-week`,
+    titleContextWeeklyLabel(view, t),
+    publicTopEntries,
+    t("title.contextForYouReasonWeekly"),
+  );
+
+  for (const genre of topLibraryTitleLabels(
+    libraryTitles,
+    (title) => title.genres,
+  )) {
+    addGroup(
+      `genre-${normalizedTitleContextLabel(genre).replaceAll(" ", "-")}`,
+      t("title.contextForYouGenre", { genre }),
+      rankedEntries.filter((entry) =>
+        discoveryItemMatchesLibraryLabel(entry.item, genre),
+      ),
+      t("title.contextForYouReasonGenre", { genre }),
+    );
+  }
+
+  for (const tag of topLibraryTitleLabels(libraryTitles, (title) => title.tags)) {
+    addGroup(
+      `tag-${normalizedTitleContextLabel(tag).replaceAll(" ", "-")}`,
+      t("title.contextForYouTag", { tag }),
+      rankedEntries.filter((entry) =>
+        discoveryItemMatchesLibraryLabel(entry.item, tag),
+      ),
+      t("title.contextForYouReasonTag", { tag }),
+    );
+  }
+
+  addGroup(
+    "acclaimed-not-in-library",
+    t("title.contextForYouAcclaimed"),
+    rankedEntries.filter((entry) => discoveryItemIsAcclaimed(entry.item)),
+    t("title.contextForYouReasonAcclaimed"),
+  );
+
+  addGroup(
+    "complete-the-collection",
+    t("title.contextForYouCompleteCollection"),
+    rankedEntries.filter((entry) => discoveryItemHasCollectionSignal(entry.item)),
+    t("title.contextForYouReasonCollection"),
+  );
+
+  if (groups.length === 0) {
+    addGroup(
+      "top",
+      t("title.contextForYouTop"),
+      rankedEntries,
+      t("title.contextForYouReasonTop"),
+    );
   }
 
   return groups;
@@ -505,7 +763,7 @@ function TitleContextRecommendationButton({
 }) {
   const item = recommendation.item;
   const titleLabel = discoveryItemDisplayTitle(item);
-  const posterUrl = selectPosterVariantUrl(item.posterUrl, "w70");
+  const posterUrl = selectPosterVariantUrl(item.posterUrl, "w250");
   const yearLabel =
     typeof item.year === "number" && Number.isFinite(item.year)
       ? String(item.year)
@@ -520,43 +778,37 @@ function TitleContextRecommendationButton({
   const actionDisabled = owned || (!canManageTitle && !canRequestMedia);
 
   return (
-    <div className="group flex min-w-0 items-center gap-3 rounded-[11px] border border-[var(--scry-border)] bg-[var(--scry-card2)] p-2 transition hover:border-[var(--scry-bhover)] hover:bg-[var(--scry-hover)]">
-      <div className="flex min-w-0 flex-1 gap-3 text-left">
-        <div className="h-[62px] w-[42px] shrink-0 overflow-hidden rounded-[6px] border border-[var(--scry-border2)] bg-[var(--scry-soft)]">
-          <TitlePosterSlot
-            src={posterUrl}
-            alt={t("media.posterAlt", { name: titleLabel })}
-            className="h-full w-full object-cover"
-            placeholderClassName="flex h-full w-full items-center justify-center px-1 text-center text-[9px] text-[var(--scry-muted3)]"
-            emptyLabel={t("label.noArt")}
-            loading="lazy"
-            decoding="async"
-          />
-        </div>
-        <span className="min-w-0 flex-1">
-          <span className="block truncate text-[13px] font-semibold text-[var(--scry-ink2)]">
-            {titleLabel}
-          </span>
-          <span className="mt-1 block truncate text-[11px] text-[var(--scry-faint)]">
-            {yearLabel ?? mediaTitleLabel(view, t)}
-          </span>
-          <span className="mt-1 block truncate text-[11px] text-[var(--scry-muted3)]">
-            {recommendation.reason}
-          </span>
-        </span>
+    <div className="group min-w-0 text-left">
+      <div className="relative aspect-[2/3] overflow-hidden rounded-[10px] border border-[var(--scry-border2)] bg-[var(--scry-soft)] shadow-[0_8px_20px_rgba(0,0,0,0.35)] transition group-hover:-translate-y-0.5 group-hover:border-[var(--scry-bhover2)] group-hover:shadow-[0_12px_26px_rgba(0,0,0,0.5)]">
+        <TitlePosterSlot
+          src={posterUrl}
+          alt={t("media.posterAlt", { name: titleLabel })}
+          className="h-full w-full object-cover"
+          placeholderClassName="flex h-full w-full items-center justify-center px-2 text-center text-[10px] text-[var(--scry-muted3)]"
+          emptyLabel={t("label.noArt")}
+          loading="lazy"
+          decoding="async"
+        />
+        <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(180deg,transparent_54%,rgba(4,6,12,0.88))]" />
+        <button
+          type="button"
+          className="absolute right-1.5 top-1.5 flex size-7 items-center justify-center rounded-[8px] border border-white/15 bg-slate-950/75 text-[var(--scry-text2)] backdrop-blur-sm transition hover:bg-[var(--scry-accent)] hover:text-white disabled:cursor-default disabled:opacity-60"
+          aria-label={`${actionLabel}: ${titleLabel}`}
+          disabled={actionDisabled}
+          onClick={() => onAction(item)}
+        >
+          <ActionIcon className="h-3.5 w-3.5" />
+        </button>
       </div>
-      <Button
-        type="button"
-        variant="outline"
-        size="sm"
-        className="h-8 shrink-0 gap-1.5 rounded-[8px] border-transparent bg-[rgba(var(--scry-accent-rgb),0.16)] px-3 text-[11.5px] font-semibold text-[var(--scry-accent-text)] shadow-none hover:bg-[rgba(var(--scry-accent-rgb),0.24)]"
-        aria-label={`${actionLabel}: ${titleLabel}`}
-        disabled={actionDisabled}
-        onClick={() => onAction(item)}
-      >
-        <ActionIcon className="h-3.5 w-3.5" />
-        {actionLabel}
-      </Button>
+      <p className="mt-2 overflow-hidden text-ellipsis text-[12.5px] font-semibold leading-snug text-[var(--scry-ink2)] [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:2]">
+        {titleLabel}
+      </p>
+      <p className="mt-1 truncate text-[11px] text-[var(--scry-faint)]">
+        {yearLabel ?? mediaTitleLabel(view, t)}
+      </p>
+      <p className="mt-1 overflow-hidden text-ellipsis text-[11px] leading-snug text-[var(--scry-muted3)] [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:2]">
+        {recommendation.reason}
+      </p>
     </div>
   );
 }
@@ -723,12 +975,16 @@ function TitleContextMoreLikeThisStrip({
 
 function TitleContextForYouPanel({
   discoveryItems,
+  publicTopItems,
+  libraryTitles,
   view,
   canManageTitle,
   canRequestMedia,
   onDiscoveryAction,
 }: {
   discoveryItems: DiscoveryItem[];
+  publicTopItems: DiscoveryItem[];
+  libraryTitles: TitleRecord[];
   view: ViewId;
   canManageTitle: boolean;
   canRequestMedia: boolean;
@@ -736,8 +992,15 @@ function TitleContextForYouPanel({
 }) {
   const t = useTranslate();
   const recommendationGroups = React.useMemo(
-    () => buildTitleContextRecommendationGroups(discoveryItems, t),
-    [discoveryItems, t],
+    () =>
+      buildTitleContextRecommendationGroups(
+        discoveryItems,
+        publicTopItems,
+        libraryTitles,
+        view,
+        t,
+      ),
+    [discoveryItems, publicTopItems, libraryTitles, t, view],
   );
 
   return (
@@ -780,7 +1043,7 @@ function TitleContextForYouPanel({
               <h3 className="mx-0.5 mb-2.5 text-[11px] font-bold uppercase tracking-[0.06em] text-[var(--scry-faint2)]">
                 {group.label}
               </h3>
-              <div className="grid grid-cols-[repeat(auto-fill,minmax(min(248px,100%),1fr))] gap-2.5">
+              <div className="grid grid-cols-[repeat(auto-fill,minmax(92px,1fr))] gap-3">
                 {group.recommendations.map((recommendation) => (
                   <TitleContextRecommendationButton
                     key={`${group.id}-${recommendation.item.id}`}
@@ -1046,6 +1309,8 @@ function TitleContextPanel({
   id,
   title,
   discoveryItems,
+  publicTopDiscoveryItems,
+  libraryTitles,
   view,
   overviewTargetView,
   resolvedProfileName,
@@ -1081,6 +1346,8 @@ function TitleContextPanel({
   id?: string;
   title: TitleRecord | null;
   discoveryItems: DiscoveryItem[];
+  publicTopDiscoveryItems: DiscoveryItem[];
+  libraryTitles: TitleRecord[];
   view: ViewId;
   overviewTargetView: ViewId;
   resolvedProfileName: string | null;
@@ -1264,6 +1531,8 @@ function TitleContextPanel({
       >
         <TitleContextForYouPanel
           discoveryItems={discoveryItems}
+          publicTopItems={publicTopDiscoveryItems}
+          libraryTitles={libraryTitles}
           view={view}
           canManageTitle={canManageTitle}
           canRequestMedia={canRequestMedia}
@@ -1862,6 +2131,7 @@ export function MediaContentView({
     monitoredTitles: TitleRecord[];
     titleContextTitles: TitleRecord[];
     titleContextDiscoveryItems: DiscoveryItem[];
+    titleContextPublicTopItems: DiscoveryItem[];
     canManageTitle: boolean;
     canRequestMedia: boolean;
     onTitleContextDiscoveryAction: (item: DiscoveryItem) => void;
@@ -2098,6 +2368,7 @@ export function MediaContentView({
     monitoredTitles,
     titleContextTitles,
     titleContextDiscoveryItems,
+    titleContextPublicTopItems,
     canManageTitle,
     canRequestMedia,
     onTitleContextDiscoveryAction,
@@ -2177,6 +2448,9 @@ export function MediaContentView({
     React.useDeferredValue(titleContextTitles);
   const deferredTitleContextDiscoveryItems = React.useDeferredValue(
     titleContextDiscoveryItems,
+  );
+  const deferredTitleContextPublicTopItems = React.useDeferredValue(
+    titleContextPublicTopItems,
   );
   const [visibleTitleTableColumns, setVisibleTitleTableColumns] =
     React.useState<TitleTableVisibleColumns>(() => ({
@@ -3435,6 +3709,10 @@ export function MediaContentView({
                       id={selectedTitleContextPanelId}
                       title={activeOverviewTitle}
                       discoveryItems={deferredTitleContextDiscoveryItems}
+                      publicTopDiscoveryItems={
+                        deferredTitleContextPublicTopItems
+                      }
+                      libraryTitles={deferredTitleContextTitles}
                       view={view}
                       overviewTargetView={overviewTargetView}
                       resolvedProfileName={resolvedProfileName}

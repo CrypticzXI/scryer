@@ -518,11 +518,18 @@ pub enum AppError {
     #[error("{0}")]
     TotpRecoveryCodeUsed(String),
 
+    #[error("canceled: {0}")]
+    Canceled(String),
+
     #[error("repository: {0}")]
     Repository(String),
 }
 
 impl AppError {
+    pub fn canceled(message: impl Into<String>) -> Self {
+        Self::Canceled(message.into())
+    }
+
     pub fn download_submit_unavailable(message: impl Into<String>) -> Self {
         Self::DownloadSubmitUnavailable(message.into())
     }
@@ -536,6 +543,10 @@ impl AppError {
 
     pub fn is_download_submit_unavailable(&self) -> bool {
         matches!(self, Self::DownloadSubmitUnavailable(_))
+    }
+
+    pub fn is_canceled(&self) -> bool {
+        matches!(self, Self::Canceled(_))
     }
 }
 

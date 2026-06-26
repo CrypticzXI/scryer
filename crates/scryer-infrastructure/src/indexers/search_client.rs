@@ -13,6 +13,7 @@ use scryer_domain::{
 };
 use serde::Deserialize;
 use tokio::sync::{Mutex, Semaphore};
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
 /// A single search strategy dispatched as an independent parallel task.
@@ -49,6 +50,7 @@ struct StrategyTierContext {
     per_indexer_categories: Option<Vec<String>>,
     mode: SearchMode,
     tagged_aliases: Vec<scryer_domain::TaggedAlias>,
+    cancel_token: CancellationToken,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -616,6 +618,44 @@ impl MultiIndexerSearchClient {
         }
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "test and direct callers use the same search envelope as the IndexerClient trait"
+    )]
+    pub async fn search(
+        &self,
+        query: String,
+        ids: HashMap<String, String>,
+        category: Option<String>,
+        facet: Option<String>,
+        id_search_facet: Option<String>,
+        newznab_categories: Option<Vec<String>>,
+        indexer_routing: Option<IndexerRoutingPlan>,
+        mode: SearchMode,
+        season: Option<u32>,
+        episode: Option<u32>,
+        absolute_episode: Option<u32>,
+        tagged_aliases: Vec<scryer_domain::TaggedAlias>,
+    ) -> AppResult<IndexerSearchResponse> {
+        <Self as IndexerClient>::search(
+            self,
+            query,
+            ids,
+            category,
+            facet,
+            id_search_facet,
+            newznab_categories,
+            indexer_routing,
+            mode,
+            season,
+            episode,
+            absolute_episode,
+            tagged_aliases,
+            CancellationToken::new(),
+        )
+        .await
+    }
+
     fn search_limit_for_mode(&self, mode: SearchMode) -> Arc<Semaphore> {
         if matches!(mode, SearchMode::Interactive) {
             self.interactive_search_limit.clone()
@@ -908,59 +948,83 @@ impl MultiIndexerSearchClient {
                     per_indexer_categories,
                     mode,
                     tagged_aliases,
+                    cancel_token,
                 } = context;
-                let permit = search_limit.acquire_owned().await;
+                let permit = tokio::select! {
+                    _ = cancel_token.cancelled() => {
+                        return StrategyExecutionOutcome {
+                            label: strategy_label,
+                            title_guard_mode,
+                            response: Err(AppError::canceled("indexer strategy canceled")),
+                            elapsed: std::time::Duration::ZERO,
+                            retry_after: None,
+                        };
+                    }
+                    permit = search_limit.acquire_owned() => permit,
+                };
                 let response = match permit {
                     Ok(_permit) => {
-                        rate_limiter
-                            .acquire(&indexer_id, rate_limit_seconds, mode)
-                            .await;
+                        tokio::select! {
+                            _ = cancel_token.cancelled() => {
+                                return StrategyExecutionOutcome {
+                                    label: strategy_label,
+                                    title_guard_mode,
+                                    response: Err(AppError::canceled("indexer strategy canceled")),
+                                    elapsed: std::time::Duration::ZERO,
+                                    retry_after: None,
+                                };
+                            }
+                            _ = rate_limiter.acquire(&indexer_id, rate_limit_seconds, mode) => {}
+                        }
                         let start = std::time::Instant::now();
-                        let response = tokio::time::timeout(
-                            std::time::Duration::from_secs(INDEXER_SEARCH_TIMEOUT_SECS),
-                            client.search(
-                                strategy.request_query,
-                                strategy.ids,
-                                if strategy.generic_query_only {
-                                    None
-                                } else {
-                                    category
-                                },
-                                if strategy.generic_query_only {
-                                    None
-                                } else {
-                                    Some(strategy.request_facet)
-                                },
-                                None,
-                                if strategy.generic_query_only {
-                                    None
-                                } else {
-                                    per_indexer_categories
-                                },
-                                None,
-                                mode,
-                                if strategy.generic_query_only {
-                                    None
-                                } else {
-                                    strategy.season
-                                },
-                                if strategy.generic_query_only {
-                                    None
-                                } else {
-                                    strategy.episode
-                                },
-                                if strategy.generic_query_only {
-                                    None
-                                } else {
-                                    strategy.absolute_episode
-                                },
-                                tagged_aliases,
-                            ),
-                        )
-                        .await
-                        .unwrap_or_else(|_| {
-                            Err(AppError::Repository("indexer search timed out".into()))
-                        });
+                        let request_cancel_token = cancel_token.child_token();
+                        let response = tokio::select! {
+                            _ = cancel_token.cancelled() => Err(AppError::canceled("indexer strategy canceled")),
+                            response = tokio::time::timeout(
+                                std::time::Duration::from_secs(INDEXER_SEARCH_TIMEOUT_SECS),
+                                client.search(
+                                    strategy.request_query,
+                                    strategy.ids,
+                                    if strategy.generic_query_only {
+                                        None
+                                    } else {
+                                        category
+                                    },
+                                    if strategy.generic_query_only {
+                                        None
+                                    } else {
+                                        Some(strategy.request_facet)
+                                    },
+                                    None,
+                                    if strategy.generic_query_only {
+                                        None
+                                    } else {
+                                        per_indexer_categories
+                                    },
+                                    None,
+                                    mode,
+                                    if strategy.generic_query_only {
+                                        None
+                                    } else {
+                                        strategy.season
+                                    },
+                                    if strategy.generic_query_only {
+                                        None
+                                    } else {
+                                        strategy.episode
+                                    },
+                                    if strategy.generic_query_only {
+                                        None
+                                    } else {
+                                        strategy.absolute_episode
+                                    },
+                                    tagged_aliases,
+                                    request_cancel_token,
+                                ),
+                            ) => response.unwrap_or_else(|_| {
+                                Err(AppError::Repository("indexer search timed out".into()))
+                            }),
+                        };
                         let retry_after = response.as_ref().err().and_then(retry_after_from_error);
 
                         return StrategyExecutionOutcome {
@@ -987,7 +1051,27 @@ impl MultiIndexerSearchClient {
         }
 
         let mut outcomes = Vec::new();
-        while let Some(join_result) = set.join_next().await {
+        loop {
+            let join_result = tokio::select! {
+                _ = context.cancel_token.cancelled() => {
+                    set.abort_all();
+                    while set.join_next().await.is_some() {}
+                    outcomes.push(StrategyExecutionOutcome {
+                        label: "cancel".into(),
+                        title_guard_mode: TitleGuardMode::SkipTitleMatch,
+                        response: Err(AppError::canceled("indexer strategy tier canceled")),
+                        elapsed: std::time::Duration::ZERO,
+                        retry_after: None,
+                    });
+                    break;
+                }
+                join_result = set.join_next() => join_result,
+            };
+
+            let Some(join_result) = join_result else {
+                break;
+            };
+
             match join_result {
                 Ok(outcome) => outcomes.push(outcome),
                 Err(error) => outcomes.push(StrategyExecutionOutcome {
@@ -1022,7 +1106,11 @@ impl IndexerClient for MultiIndexerSearchClient {
         episode: Option<u32>,
         absolute_episode: Option<u32>,
         tagged_aliases: Vec<scryer_domain::TaggedAlias>,
+        cancel_token: CancellationToken,
     ) -> AppResult<IndexerSearchResponse> {
+        if cancel_token.is_cancelled() {
+            return Err(AppError::canceled("indexer search canceled"));
+        }
         let is_rss_request = Self::is_rss_sync_request(
             &query,
             !ids.is_empty(),
@@ -1343,37 +1431,55 @@ impl IndexerClient for MultiIndexerSearchClient {
                     let indexer_configs = self.indexer_configs.clone();
                     let facet = facet.clone();
                     let search_limit = search_limit.clone();
+                    let task_cancel_token = cancel_token.child_token();
 
                     set.spawn(async move {
-                        let results = cell
-                            .get_or_init(|| async {
-                                let permit = search_limit.acquire_owned().await;
+                        let results = tokio::select! {
+                            _ = task_cancel_token.cancelled() => {
+                                return (
+                                    indexer_id,
+                                    indexer_name,
+                                    Err(AppError::canceled("RSS indexer search canceled")),
+                                );
+                            }
+                            results = cell.get_or_init(|| async {
+                                let permit = tokio::select! {
+                                    _ = task_cancel_token.cancelled() => return vec![],
+                                    permit = search_limit.acquire_owned() => permit,
+                                };
                                 let search_result = match permit {
                                     Ok(_permit) => {
-                                        rate_limiter
-                                            .acquire(&indexer_id, rate_limit_seconds, mode)
-                                            .await;
+                                        tokio::select! {
+                                            _ = task_cancel_token.cancelled() => return vec![],
+                                            _ = rate_limiter.acquire(&indexer_id, rate_limit_seconds, mode) => {}
+                                        }
                                         let start = std::time::Instant::now();
-                                        let response = tokio::time::timeout(
-                                            std::time::Duration::from_secs(
-                                                INDEXER_SEARCH_TIMEOUT_SECS,
-                                            ),
-                                            client.search(
-                                                query,
-                                                HashMap::new(),
-                                                category,
-                                                Some(facet),
-                                                None,
-                                                rss_category_request.clone(),
-                                                None,
-                                                mode,
-                                                season,
-                                                episode,
-                                                absolute_episode,
-                                                tagged_aliases,
-                                            ),
-                                        )
-                                        .await;
+                                        let request_cancel_token = task_cancel_token.child_token();
+                                        let response = tokio::select! {
+                                            _ = task_cancel_token.cancelled() => {
+                                                return vec![];
+                                            }
+                                            response = tokio::time::timeout(
+                                                std::time::Duration::from_secs(
+                                                    INDEXER_SEARCH_TIMEOUT_SECS,
+                                                ),
+                                                client.search(
+                                                    query,
+                                                    HashMap::new(),
+                                                    category,
+                                                    Some(facet),
+                                                    None,
+                                                    rss_category_request.clone(),
+                                                    None,
+                                                    mode,
+                                                    season,
+                                                    episode,
+                                                    absolute_episode,
+                                                    tagged_aliases,
+                                                    request_cancel_token,
+                                                ),
+                                            ) => response,
+                                        };
                                         (response, start.elapsed())
                                     }
                                     Err(error) => {
@@ -1407,6 +1513,9 @@ impl IndexerClient for MultiIndexerSearchClient {
                                         response.results
                                     }
                                     Ok(Err(err)) => {
+                                        if err.is_canceled() {
+                                            return vec![];
+                                        }
                                         warn!(indexer = indexer_name.as_str(), error = %err, "RSS feed fetch failed");
                                         stats_tracker.record_query(&indexer_id, &indexer_name, false);
                                         let backoff = backoff_tracker
@@ -1451,8 +1560,15 @@ impl IndexerClient for MultiIndexerSearchClient {
                                         vec![]
                                     }
                                 }
-                            })
-                            .await;
+                            }) => results,
+                        };
+                        if task_cancel_token.is_cancelled() {
+                            return (
+                                indexer_id,
+                                indexer_name,
+                                Err(AppError::canceled("RSS indexer search canceled")),
+                            );
+                        }
 
                         let response = IndexerSearchResponse {
                             results: results.clone(),
@@ -1531,8 +1647,16 @@ impl IndexerClient for MultiIndexerSearchClient {
                 let search_limit = search_limit.clone();
                 let rate_limiter = self.rate_limiter.clone();
                 let rate_limit_seconds = config.rate_limit_seconds;
+                let task_cancel_token = cancel_token.child_token();
 
                 set.spawn(async move {
+                    if task_cancel_token.is_cancelled() {
+                        return (
+                            indexer_id,
+                            indexer_name,
+                            Err(AppError::canceled("indexer search canceled")),
+                        );
+                    }
                     let mut collected_results = Vec::new();
                     let mut primary_attempted = false;
                     let mut batch_health = StrategyBatchHealth::default();
@@ -1548,6 +1672,7 @@ impl IndexerClient for MultiIndexerSearchClient {
                             per_indexer_categories: rss_category_request.clone(),
                             mode,
                             tagged_aliases: tagged_aliases_for_indexer.clone(),
+                            cancel_token: task_cancel_token.child_token(),
                         },
                         primary_strategies,
                     )
@@ -1596,6 +1721,13 @@ impl IndexerClient for MultiIndexerSearchClient {
                                 collected_results.append(&mut response.results);
                             }
                             Err(err) => {
+                                if err.is_canceled() {
+                                    return (
+                                        indexer_id,
+                                        indexer_name,
+                                        Err(AppError::canceled("indexer search canceled")),
+                                    );
+                                }
                                 batch_health.mark_error(outcome.retry_after);
                                 debug!(
                                     indexer = indexer_name.as_str(),
@@ -1646,6 +1778,7 @@ impl IndexerClient for MultiIndexerSearchClient {
                                 per_indexer_categories: rss_category_request,
                                 mode,
                                 tagged_aliases: tagged_aliases_for_indexer.clone(),
+                                cancel_token: task_cancel_token.child_token(),
                             },
                             fallback_strategies,
                         )
@@ -1693,6 +1826,13 @@ impl IndexerClient for MultiIndexerSearchClient {
                                     collected_results.append(&mut response.results);
                                 }
                                 Err(err) => {
+                                    if err.is_canceled() {
+                                        return (
+                                            indexer_id,
+                                            indexer_name,
+                                            Err(AppError::canceled("indexer search canceled")),
+                                        );
+                                    }
                                     batch_health.mark_error(outcome.retry_after);
                                     debug!(
                                         indexer = indexer_name.as_str(),
@@ -1773,7 +1913,21 @@ impl IndexerClient for MultiIndexerSearchClient {
         let mut successful_searches = 0usize;
         let mut failed_searches = 0usize;
         let mut first_failure: Option<String> = None;
-        while let Some(join_result) = set.join_next().await {
+        loop {
+            let join_result = tokio::select! {
+                _ = cancel_token.cancelled() => {
+                    set.abort_all();
+                    while set.join_next().await.is_some() {}
+                    self.rss_feed_cache.lock().await.clear();
+                    return Err(AppError::canceled("indexer search canceled"));
+                }
+                join_result = set.join_next() => join_result,
+            };
+
+            let Some(join_result) = join_result else {
+                break;
+            };
+
             match join_result {
                 Ok((_id, name, Ok(mut response))) => {
                     successful_searches += 1;
@@ -1785,6 +1939,12 @@ impl IndexerClient for MultiIndexerSearchClient {
                     all_results.append(&mut response.results);
                 }
                 Ok((id, name, Err(err))) => {
+                    if err.is_canceled() {
+                        set.abort_all();
+                        while set.join_next().await.is_some() {}
+                        self.rss_feed_cache.lock().await.clear();
+                        return Err(err);
+                    }
                     failed_searches += 1;
                     first_failure = first_failure.or_else(|| Some(err.to_string()));
                     warn!(indexer = name.as_str(), error = %err, "indexer search failed");
@@ -2537,6 +2697,7 @@ mod tests {
             _episode: Option<u32>,
             _absolute_episode: Option<u32>,
             _tagged_aliases: Vec<scryer_domain::TaggedAlias>,
+            _cancel_token: CancellationToken,
         ) -> AppResult<IndexerSearchResponse> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             Ok(IndexerSearchResponse {
@@ -2666,6 +2827,7 @@ mod tests {
             episode: Option<u32>,
             absolute_episode: Option<u32>,
             _tagged_aliases: Vec<scryer_domain::TaggedAlias>,
+            _cancel_token: CancellationToken,
         ) -> AppResult<IndexerSearchResponse> {
             let call = RecordedCall {
                 query,
@@ -2807,9 +2969,16 @@ mod tests {
             _episode: Option<u32>,
             _absolute_episode: Option<u32>,
             _tagged_aliases: Vec<scryer_domain::TaggedAlias>,
+            cancel_token: CancellationToken,
         ) -> AppResult<IndexerSearchResponse> {
             self.probe.mark_started();
-            self.probe.wait_until_released().await;
+            tokio::select! {
+                _ = cancel_token.cancelled() => {
+                    self.probe.mark_finished();
+                    return Err(AppError::canceled("blocking indexer search canceled"));
+                }
+                _ = self.probe.wait_until_released() => {}
+            }
             self.probe.mark_finished();
             Ok(IndexerSearchResponse {
                 results: vec![],
@@ -2920,6 +3089,54 @@ mod tests {
 
         assert_eq!(probe.started.load(Ordering::SeqCst), config_count * 2);
         assert!(probe.max_active.load(Ordering::SeqCst) <= limit);
+    }
+
+    #[tokio::test]
+    async fn interactive_search_cancellation_returns_promptly() {
+        let probe = StdArc::new(SearchConcurrencyProbe::default());
+        let client = Arc::new(BlockingIndexerClient {
+            probe: probe.clone(),
+        });
+        let multi = MultiIndexerSearchClient::new(
+            Arc::new(MockIndexerConfigRepository {
+                configs: indexed_mock_configs(3),
+            }),
+            Arc::new(MockIndexerStatsTracker),
+            Arc::new(ScriptedIndexerPluginProvider {
+                client,
+                caps: movie_caps(),
+            }),
+        );
+        let cancel_token = CancellationToken::new();
+        let search_cancel_token = cancel_token.clone();
+        let search = tokio::spawn(async move {
+            <MultiIndexerSearchClient as IndexerClient>::search(
+                &multi,
+                "Cancel Me".to_string(),
+                HashMap::new(),
+                None,
+                Some("movie".to_string()),
+                None,
+                None,
+                None,
+                SearchMode::Interactive,
+                None,
+                None,
+                None,
+                vec![],
+                search_cancel_token,
+            )
+            .await
+        });
+
+        wait_for_started(&probe, 1).await;
+        cancel_token.cancel();
+        let error = tokio::time::timeout(std::time::Duration::from_secs(2), search)
+            .await
+            .expect("search should return promptly")
+            .expect("search task should join")
+            .expect_err("search should be canceled");
+        assert!(error.is_canceled(), "unexpected error: {error}");
     }
 
     async fn backoff_state(

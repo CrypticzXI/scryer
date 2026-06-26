@@ -5,6 +5,7 @@ use scryer_application::{
 };
 use scryer_domain::{IndexerConfig, TaggedAlias};
 use std::{collections::BTreeMap, sync::mpsc};
+use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 use crate::loader::{apply_allowed_hosts, build_plugin, parse_config_json_entries};
@@ -100,7 +101,11 @@ impl IndexerPluginWorker {
         }
     }
 
-    async fn call_search(&self, input: String) -> AppResult<String> {
+    async fn call_search(
+        &self,
+        input: String,
+        cancel_token: CancellationToken,
+    ) -> AppResult<String> {
         let (response, result) = tokio::sync::oneshot::channel();
         self.tx
             .send(IndexerPluginCommand {
@@ -110,8 +115,13 @@ impl IndexerPluginWorker {
                 response,
             })
             .map_err(|_| AppError::Repository("plugin worker stopped".into()))?;
-        result
-            .await
+        let output = tokio::select! {
+            _ = cancel_token.cancelled() => {
+                return Err(AppError::canceled("plugin indexer search canceled"));
+            }
+            output = result => output,
+        };
+        output
             .map_err(|_| AppError::Repository("plugin worker stopped".into()))?
             .and_then(|output| {
                 output.ok_or_else(|| {
@@ -185,6 +195,7 @@ impl WasmIndexerClient {
     async fn call_search_request(
         &self,
         request: &PluginSearchRequest,
+        cancel_token: CancellationToken,
     ) -> AppResult<PluginSearchResponse> {
         let input = serde_json::to_string(request).map_err(|e| {
             AppError::Repository(format!("failed to serialize plugin request: {e}"))
@@ -192,7 +203,7 @@ impl WasmIndexerClient {
 
         tracing::debug!(plugin = %self.descriptor.name, %input, "plugin search request");
 
-        let output = self.worker.call_search(input).await?;
+        let output = self.worker.call_search(input, cancel_token).await?;
 
         decode_plugin_result(&output, EXPORT_INDEXER_SEARCH)
     }
@@ -795,7 +806,11 @@ impl IndexerClient for WasmIndexerClient {
         episode: Option<u32>,
         absolute_episode: Option<u32>,
         tagged_aliases: Vec<TaggedAlias>,
+        cancel_token: CancellationToken,
     ) -> AppResult<IndexerSearchResponse> {
+        if cancel_token.is_cancelled() {
+            return Err(AppError::canceled("plugin indexer search canceled"));
+        }
         let context = build_search_context(
             &query,
             &ids,
@@ -822,22 +837,30 @@ impl IndexerClient for WasmIndexerClient {
             context: Some(context),
         };
 
-        let response = match self.call_search_request(&request).await {
+        let response = match self
+            .call_search_request(&request, cancel_token.child_token())
+            .await
+        {
             Ok(response)
                 if response.results.is_empty() && should_try_generic_search_fallback(&request) =>
             {
                 let fallback_request = generic_search_fallback_request(&request, mode);
-                self.call_search_request(&fallback_request).await?
+                self.call_search_request(&fallback_request, cancel_token.child_token())
+                    .await?
             }
             Ok(response) => response,
             Err(primary_error) if should_try_generic_search_fallback(&request) => {
+                if primary_error.is_canceled() {
+                    return Err(primary_error);
+                }
                 tracing::debug!(
                     plugin = %self.descriptor.name,
                     error = %primary_error,
                     "plugin primary search failed; trying generic fallback"
                 );
                 let fallback_request = generic_search_fallback_request(&request, mode);
-                self.call_search_request(&fallback_request).await?
+                self.call_search_request(&fallback_request, cancel_token.child_token())
+                    .await?
             }
             Err(error) => return Err(error),
         };

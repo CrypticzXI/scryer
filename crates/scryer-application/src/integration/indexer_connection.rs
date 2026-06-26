@@ -151,6 +151,7 @@ impl AppUseCase {
                 None,
                 None,
                 vec![],
+                tokio_util::sync::CancellationToken::new(),
             )
             .await
             .map_err(|e| AppError::Repository(format!("indexer connection test failed: {e}")))?;
@@ -521,6 +522,7 @@ mod tests {
             _episode: Option<u32>,
             _absolute_episode: Option<u32>,
             _tagged_aliases: Vec<scryer_domain::TaggedAlias>,
+            _cancel_token: tokio_util::sync::CancellationToken,
         ) -> AppResult<IndexerSearchResponse> {
             self.calls
                 .lock()

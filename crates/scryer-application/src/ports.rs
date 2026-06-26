@@ -2647,6 +2647,7 @@ pub trait IndexerClient: Send + Sync {
         episode: Option<u32>,
         absolute_episode: Option<u32>,
         tagged_aliases: Vec<TaggedAlias>,
+        cancel_token: tokio_util::sync::CancellationToken,
     ) -> AppResult<IndexerSearchResponse>;
 }
 

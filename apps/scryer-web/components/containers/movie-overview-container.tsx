@@ -56,6 +56,7 @@ import {
   assertNoReplaceConflict,
   retryWithReplaceOnConflict,
 } from "@/lib/utils/download-conflicts";
+import { isAbortError, makeAbortableFetch } from "@/lib/graphql/urql-client";
 import type {
   TitleOverviewDownloadFeedbackSnapshot,
   TitleOverviewNativeSnapshot,
@@ -256,6 +257,7 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
   const [searchResults, setSearchResults] = React.useState<Release[]>([]);
   const [interactiveSearchAttempted, setInteractiveSearchAttempted] = React.useState(false);
   const [searching, setSearching] = React.useState(false);
+  const indexerSearchAbortRef = React.useRef<AbortController | null>(null);
   const [renamePlan, setRenamePlan] = React.useState<MediaRenamePlan | null>(null);
   const [renameEnabled, setRenameEnabled] = React.useState(true);
   const [renamePreviewing, setRenamePreviewing] = React.useState(false);
@@ -299,7 +301,16 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
   const currentTitleIdRef = React.useRef<string | null>(titleId ?? null);
   React.useEffect(() => {
     currentTitleIdRef.current = titleId ?? null;
+    indexerSearchAbortRef.current?.abort();
+    indexerSearchAbortRef.current = null;
+    setSearching(false);
   }, [titleId]);
+  React.useEffect(() => {
+    return () => {
+      indexerSearchAbortRef.current?.abort();
+      indexerSearchAbortRef.current = null;
+    };
+  }, []);
   const lastShownDownloadFeedbackWarningRef = React.useRef<string | null>(null);
   const [wantedActionLoading, setWantedActionLoading] = React.useState<
     "pause" | "resume" | "reset" | null
@@ -740,10 +751,14 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
 
   const runIndexerSearch = React.useCallback(async () => {
     if (!title) return;
+    indexerSearchAbortRef.current?.abort();
+    const abortController = new AbortController();
+    indexerSearchAbortRef.current = abortController;
     if (!hasDownloadClients) {
       setShowSearchPrerequisiteNotice(true);
       setSearchResults([]);
       setInteractiveSearchAttempted(false);
+      indexerSearchAbortRef.current = null;
       return;
     }
     setInteractiveSearchAttempted(true);
@@ -753,16 +768,25 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
     try {
       const { data, error } = await client.query(searchForTitleQuery, {
         titleId: title.id,
+      }, {
+        fetch: makeAbortableFetch(abortController.signal),
       }).toPromise();
       if (error) throw error;
+      if (abortController.signal.aborted) return;
       const results = data.searchReleases ?? [];
       setSearchResults(results);
       setGlobalStatus(t("status.foundNzb", { count: results.length }));
     } catch (err) {
+      if (isAbortError(err) || abortController.signal.aborted) {
+        return;
+      }
       setGlobalStatus(err instanceof Error ? err.message : t("status.apiError"));
       setSearchResults([]);
     } finally {
-      setSearching(false);
+      if (indexerSearchAbortRef.current === abortController) {
+        indexerSearchAbortRef.current = null;
+        setSearching(false);
+      }
     }
   }, [title, hasDownloadClients, client, t, setGlobalStatus]);
 

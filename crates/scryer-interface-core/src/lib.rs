@@ -276,6 +276,7 @@ pub fn to_gql_error(err: AppError) -> Error {
         AppError::TotpRecoveryCodeUsed(message) => {
             coded_gql_error(message, "TOTP_RECOVERY_CODE_USED")
         }
+        AppError::Canceled(message) => coded_gql_error(message, "CANCELED"),
         AppError::Repository(message) => repository_gql_error(message),
     }
 }
@@ -325,6 +326,7 @@ fn app_error_kind(err: &AppError) -> &'static str {
         AppError::MfaEnrollmentRequired(_) => "MfaEnrollmentRequired",
         AppError::TotpInvalidCode(_) => "TotpInvalidCode",
         AppError::TotpRecoveryCodeUsed(_) => "TotpRecoveryCodeUsed",
+        AppError::Canceled(_) => "Canceled",
         AppError::Repository(_) => "Repository",
     }
 }

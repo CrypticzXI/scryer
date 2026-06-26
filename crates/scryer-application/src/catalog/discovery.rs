@@ -8,6 +8,7 @@ use serde::Deserialize;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use tokio::task::JoinSet;
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
 fn release_search_tagged_aliases(title: &Title) -> Vec<TaggedAlias> {
@@ -812,7 +813,11 @@ impl AppUseCase {
             absolute_episode,
             tagged_aliases,
             search_subject_kind,
+            cancel_token,
         } = request;
+        if cancel_token.is_cancelled() {
+            return Err(AppError::canceled("indexer search canceled"));
+        }
         let quality_profile_lookup = QualityProfileLookup {
             title_tags,
             library_id,
@@ -916,6 +921,7 @@ impl AppUseCase {
             let newznab_categories = newznab_categories.clone();
             let tagged_aliases = tagged_aliases.to_vec();
             let query = query.clone();
+            let query_cancel_token = cancel_token.child_token();
 
             set.spawn(async move {
                 indexer_client
@@ -932,6 +938,7 @@ impl AppUseCase {
                         episode,
                         absolute_episode,
                         tagged_aliases,
+                        query_cancel_token,
                     )
                     .await
             });
@@ -942,7 +949,20 @@ impl AppUseCase {
         let mut first_failure: Option<String> = None;
         let mut raw_results: Vec<IndexerSearchResult> = Vec::new();
 
-        while let Some(result) = set.join_next().await {
+        loop {
+            let result = tokio::select! {
+                _ = cancel_token.cancelled() => {
+                    set.abort_all();
+                    while set.join_next().await.is_some() {}
+                    return Err(AppError::canceled("indexer search canceled"));
+                }
+                result = set.join_next() => result,
+            };
+
+            let Some(result) = result else {
+                break;
+            };
+
             match result {
                 Ok(Ok(mut response)) => {
                     successful_searches += 1;
@@ -958,6 +978,11 @@ impl AppUseCase {
                     raw_results.append(&mut response.results);
                 }
                 Ok(Err(error)) => {
+                    if error.is_canceled() {
+                        set.abort_all();
+                        while set.join_next().await.is_some() {}
+                        return Err(error);
+                    }
                     query_failures += 1;
                     first_failure = first_failure.or_else(|| Some(error.to_string()));
                     warn!(
@@ -1009,6 +1034,7 @@ impl AppUseCase {
         subject: &crate::acquisition_release_search::ResolvedReleaseSearchSubject,
         caller_label: &str,
         mode: SearchMode,
+        cancel_token: CancellationToken,
     ) -> AppResult<Vec<IndexerSearchResult>> {
         let tagged_aliases = release_search_tagged_aliases(title);
         let results = self
@@ -1036,6 +1062,7 @@ impl AppUseCase {
                 tagged_aliases: &tagged_aliases,
                 search_subject_kind: subject.subject_kind,
                 parse_context: &subject.title_evidence.parse_context,
+                cancel_token,
             })
             .await?;
 
@@ -1149,6 +1176,7 @@ impl AppUseCase {
         &self,
         actor: &User,
         title_id: String,
+        cancel_token: CancellationToken,
     ) -> AppResult<Vec<IndexerSearchResult>> {
         let title = self
             .services
@@ -1176,7 +1204,13 @@ impl AppUseCase {
         );
 
         let mut results = self
-            .search_and_evaluate_subject(&title, &subject, &actor.id, SearchMode::Interactive)
+            .search_and_evaluate_subject(
+                &title,
+                &subject,
+                &actor.id,
+                SearchMode::Interactive,
+                cancel_token,
+            )
             .await?;
         self.attach_candidate_tokens(actor, &title, &subject, &mut results, false)
             .await;
@@ -1197,6 +1231,7 @@ impl AppUseCase {
         actor: &User,
         title_id: String,
         series_movie_link_id: String,
+        cancel_token: CancellationToken,
     ) -> AppResult<Vec<IndexerSearchResult>> {
         let title = self
             .services
@@ -1243,6 +1278,7 @@ impl AppUseCase {
                 &subject,
                 &actor.id,
                 SearchMode::Interactive,
+                cancel_token,
             )
             .await?;
         self.attach_candidate_tokens(actor, &search_title, &subject, &mut results, true)
@@ -1268,6 +1304,7 @@ impl AppUseCase {
         title_id: String,
         season: String,
         episode: String,
+        cancel_token: CancellationToken,
     ) -> AppResult<Vec<IndexerSearchResult>> {
         let title = self
             .services
@@ -1295,7 +1332,13 @@ impl AppUseCase {
         );
 
         let mut results = self
-            .search_and_evaluate_subject(&title, &subject, &actor.id, SearchMode::Interactive)
+            .search_and_evaluate_subject(
+                &title,
+                &subject,
+                &actor.id,
+                SearchMode::Interactive,
+                cancel_token,
+            )
             .await?;
         self.attach_candidate_tokens(actor, &title, &subject, &mut results, false)
             .await;
@@ -1371,6 +1414,7 @@ pub(crate) struct ReleaseSearchRequest<'a> {
     pub(crate) tagged_aliases: &'a [TaggedAlias],
     pub(crate) search_subject_kind: ReleaseSearchSubjectKind,
     pub(crate) parse_context: &'a ReleaseParseContext,
+    pub(crate) cancel_token: CancellationToken,
 }
 
 impl AppUseCase {

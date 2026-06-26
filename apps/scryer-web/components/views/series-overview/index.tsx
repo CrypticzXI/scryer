@@ -10,6 +10,7 @@ import { useGlobalStatus } from "@/lib/context/global-status-context";
 import { useUiDateTimeFormat } from "@/lib/context/ui-settings-context";
 import { useDownloadConflictConfirmation } from "@/components/common/download-conflict-confirmation";
 import { userFacingGraphQlErrorMessage } from "@/lib/graphql/error-message";
+import { isAbortError, makeAbortableFetch } from "@/lib/graphql/urql-client";
 import { releaseQueueScopeInput } from "@/lib/utils/release-queue-scope";
 import { TitlePosterSlot } from "@/components/title-poster-slot";
 import {
@@ -279,6 +280,16 @@ export function SeriesOverviewView({
     React.useState<Record<string, boolean>>({});
   const [autoSearchSeriesMovieLoadingByLink, setAutoSearchSeriesMovieLoadingByLink] =
     React.useState<Record<string, boolean>>({});
+  const episodeSearchAbortByIdRef = React.useRef<Record<string, AbortController>>({});
+  const seriesMovieSearchAbortByLinkRef = React.useRef<Record<string, AbortController>>({});
+  React.useEffect(() => {
+    return () => {
+      Object.values(episodeSearchAbortByIdRef.current).forEach((controller) => controller.abort());
+      Object.values(seriesMovieSearchAbortByLinkRef.current).forEach((controller) => controller.abort());
+      episodeSearchAbortByIdRef.current = {};
+      seriesMovieSearchAbortByLinkRef.current = {};
+    };
+  }, []);
   const searchPrerequisiteNotice = canManageTitle && !hasDownloadClients && showSearchPrerequisiteNotice
     ? <TitleSearchDownloadClientNotice />
     : null;
@@ -402,24 +413,34 @@ export function SeriesOverviewView({
         || "1";
       const episodeNum = episode.episodeNumber?.trim().replace(/\D+/g, "") || "1";
 
+      episodeSearchAbortByIdRef.current[episodeId]?.abort();
+      const abortController = new AbortController();
+      episodeSearchAbortByIdRef.current[episodeId] = abortController;
       client.query(searchForEpisodeQuery, {
         titleId: title.id,
         season: seasonNum,
         episode: episodeNum,
-        }).toPromise()
+      }, {
+        fetch: makeAbortableFetch(abortController.signal),
+      }).toPromise()
         .then(({ data, error: queryError }) => {
           if (queryError) throw queryError;
+          if (abortController.signal.aborted) return;
           dispatchEpisodePanel({
             type: "SET_SEARCH_RESULTS",
             episodeId,
             results: data.searchReleases ?? [],
           });
         })
-        .catch(() => {
+        .catch((error) => {
+          if (isAbortError(error) || abortController.signal.aborted) return;
           dispatchEpisodePanel({ type: "SET_SEARCH_RESULTS", episodeId, results: [] });
         })
         .finally(() => {
-          dispatchEpisodePanel({ type: "SET_SEARCH_LOADING", episodeId, loading: false });
+          if (episodeSearchAbortByIdRef.current[episodeId] === abortController) {
+            delete episodeSearchAbortByIdRef.current[episodeId];
+            dispatchEpisodePanel({ type: "SET_SEARCH_LOADING", episodeId, loading: false });
+          }
         });
     },
     [client, hasDownloadClients, title, collections],
@@ -552,30 +573,40 @@ export function SeriesOverviewView({
         [link.id]: true,
       }));
 
+      seriesMovieSearchAbortByLinkRef.current[link.id]?.abort();
+      const abortController = new AbortController();
+      seriesMovieSearchAbortByLinkRef.current[link.id] = abortController;
       client
         .query(searchForSeriesMovieQuery, {
           titleId: title.id,
           seriesMovieLinkId: link.id,
+        }, {
+          fetch: makeAbortableFetch(abortController.signal),
         })
         .toPromise()
         .then(({ data, error: queryError }) => {
           if (queryError) throw queryError;
+          if (abortController.signal.aborted) return;
           setSeriesMovieSearchResultsByLink((prev) => ({
             ...prev,
             [link.id]: data?.searchReleases ?? [],
           }));
         })
-        .catch(() => {
+        .catch((error) => {
+          if (isAbortError(error) || abortController.signal.aborted) return;
           setSeriesMovieSearchResultsByLink((prev) => ({
             ...prev,
             [link.id]: [],
           }));
         })
         .finally(() => {
-          setSeriesMovieSearchLoadingByLink((prev) => ({
-            ...prev,
-            [link.id]: false,
-          }));
+          if (seriesMovieSearchAbortByLinkRef.current[link.id] === abortController) {
+            delete seriesMovieSearchAbortByLinkRef.current[link.id];
+            setSeriesMovieSearchLoadingByLink((prev) => ({
+              ...prev,
+              [link.id]: false,
+            }));
+          }
         });
     },
     [client, hasDownloadClients, title],

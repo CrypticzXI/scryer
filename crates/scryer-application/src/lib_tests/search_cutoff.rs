@@ -302,15 +302,27 @@ async fn search_indexers_for_title_keeps_direct_nab_searches_uncategorized_when_
         .await
         .expect("create anime title");
 
-    app.search_indexers_for_title(&user, movie.id.clone())
-        .await
-        .expect("movie search should succeed");
-    app.search_indexers_for_title(&user, series.id.clone())
-        .await
-        .expect("series search should succeed");
-    app.search_indexers_for_title(&user, anime.id.clone())
-        .await
-        .expect("anime search should succeed");
+    app.search_indexers_for_title(
+        &user,
+        movie.id.clone(),
+        tokio_util::sync::CancellationToken::new(),
+    )
+    .await
+    .expect("movie search should succeed");
+    app.search_indexers_for_title(
+        &user,
+        series.id.clone(),
+        tokio_util::sync::CancellationToken::new(),
+    )
+    .await
+    .expect("series search should succeed");
+    app.search_indexers_for_title(
+        &user,
+        anime.id.clone(),
+        tokio_util::sync::CancellationToken::new(),
+    )
+    .await
+    .expect("anime search should succeed");
 
     let calls = recording_client.calls.lock().await.clone();
     assert_eq!(calls.len(), 3);
@@ -390,9 +402,15 @@ async fn search_indexers_for_episode_dedupes_equivalent_structured_series_querie
         .await
         .expect("create series episode");
 
-    app.search_indexers_for_episode(&user, title.id.clone(), "2".to_string(), "11".to_string())
-        .await
-        .expect("series episode search should succeed");
+    app.search_indexers_for_episode(
+        &user,
+        title.id.clone(),
+        "2".to_string(),
+        "11".to_string(),
+        tokio_util::sync::CancellationToken::new(),
+    )
+    .await
+    .expect("series episode search should succeed");
 
     let calls = recording_client.calls.lock().await.clone();
     assert_eq!(
@@ -477,9 +495,15 @@ async fn search_indexers_for_episode_dedupes_equivalent_structured_anime_queries
         .await
         .expect("create anime episode");
 
-    app.search_indexers_for_episode(&user, title.id.clone(), "2".to_string(), "11".to_string())
-        .await
-        .expect("anime episode search should succeed");
+    app.search_indexers_for_episode(
+        &user,
+        title.id.clone(),
+        "2".to_string(),
+        "11".to_string(),
+        tokio_util::sync::CancellationToken::new(),
+    )
+    .await
+    .expect("anime episode search should succeed");
 
     let calls = recording_client.calls.lock().await.clone();
     assert_eq!(
@@ -534,7 +558,11 @@ async fn search_indexers_anime_required_english_accepts_dual_audio_release() {
         .expect("create anime title");
 
     let results = app
-        .search_indexers_for_title(&user, title.id.clone())
+        .search_indexers_for_title(
+            &user,
+            title.id.clone(),
+            tokio_util::sync::CancellationToken::new(),
+        )
         .await
         .expect("search indexers for title");
 
@@ -639,7 +667,11 @@ async fn search_indexers_for_title_uses_tagged_aliases_for_auto_evaluation() {
         .expect("persist tagged aliases");
 
     let results = app
-        .search_indexers_for_title(&authed_search_user, title.id.clone())
+        .search_indexers_for_title(
+            &authed_search_user,
+            title.id.clone(),
+            tokio_util::sync::CancellationToken::new(),
+        )
         .await
         .expect("search indexers for title");
 
@@ -704,7 +736,11 @@ async fn search_indexers_for_title_returns_results_when_candidate_token_attachme
     };
 
     let results = app
-        .search_indexers_for_title(&ghost_actor, title.id.clone())
+        .search_indexers_for_title(
+            &ghost_actor,
+            title.id.clone(),
+            tokio_util::sync::CancellationToken::new(),
+        )
         .await
         .expect("search should still succeed without candidate signing key");
 

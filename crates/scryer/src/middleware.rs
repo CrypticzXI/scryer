@@ -2054,6 +2054,11 @@ pub(crate) fn map_app_error(error: AppError) -> Response {
         | AppError::TotpRecoveryCodeUsed(message) => {
             (StatusCode::UNAUTHORIZED, Json(ErrorResponse::new(message))).into_response()
         }
+        AppError::Canceled(message) => (
+            StatusCode::REQUEST_TIMEOUT,
+            Json(ErrorResponse::new(message)),
+        )
+            .into_response(),
         AppError::Repository(message) => {
             let error_id = Id::new().0;
             tracing::error!(

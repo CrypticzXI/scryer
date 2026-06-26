@@ -75,18 +75,16 @@ fn wanted_item_candidates_for_submission_scope(
                     })
             })
             .collect(),
-        SubmissionScope::Collection { collection_id } => {
-            episodes
-                .iter()
-                .filter(|episode| episode.collection_id.as_deref() == Some(collection_id.as_str()))
-                .map(|episode| {
-                    (
-                        wanted_item_candidate_for_episode(title_id, episode),
-                        episode.collection_id.clone(),
-                    )
-                })
-                .collect()
-        }
+        SubmissionScope::Collection { collection_id } => episodes
+            .iter()
+            .filter(|episode| episode.collection_id.as_deref() == Some(collection_id.as_str()))
+            .map(|episode| {
+                (
+                    wanted_item_candidate_for_episode(title_id, episode),
+                    episode.collection_id.clone(),
+                )
+            })
+            .collect(),
         SubmissionScope::SeriesMovie {
             series_movie_link_id,
         } => vec![(
@@ -425,7 +423,8 @@ impl AppUseCase {
         let conflicts = if purpose.is_additional_file() {
             Vec::new()
         } else {
-            self.find_blocking_download_submissions(title, &scope).await?
+            self.find_blocking_download_submissions(title, &scope)
+                .await?
         };
         if !conflicts.is_empty() {
             match conflict_policy {
@@ -970,7 +969,13 @@ impl AppUseCase {
         };
 
         let results = self
-            .search_and_evaluate_subject(&search_title, &subject, &actor.id, SearchMode::Auto)
+            .search_and_evaluate_subject(
+                &search_title,
+                &subject,
+                &actor.id,
+                SearchMode::Auto,
+                tokio_util::sync::CancellationToken::new(),
+            )
             .await?;
         let best = results
             .into_iter()

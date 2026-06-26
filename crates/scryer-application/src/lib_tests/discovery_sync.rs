@@ -547,28 +547,12 @@ async fn discovery_home_and_items_use_local_rows_and_library_view_rbac() {
         .iter()
         .map(|section| section.section_type.as_str())
         .collect::<Vec<_>>();
-    assert!(personalized_section_types.contains(&"TOP_MOVIES_THIS_WEEK"));
-    assert!(personalized_section_types.contains(&"TOP_SERIES_THIS_WEEK"));
-    assert!(personalized_section_types.contains(&"TOP_ANIME_THIS_WEEK"));
+    assert!(!personalized_section_types.contains(&"TOP_MOVIES_THIS_WEEK"));
+    assert!(!personalized_section_types.contains(&"TOP_SERIES_THIS_WEEK"));
+    assert!(!personalized_section_types.contains(&"TOP_ANIME_THIS_WEEK"));
     assert!(!personalized_section_types.contains(&"MORE_FROM_SOURCE"));
     assert!(personalized_section_types.contains(&"BECAUSE_YOU_LIKE_TAG"));
     assert!(personalized_section_types.contains(&"TOP_RATED_ACCLAIMED_NOT_IN_LIBRARY"));
-    for (section_type, expected_kind) in [
-        ("TOP_MOVIES_THIS_WEEK", "movie"),
-        ("TOP_SERIES_THIS_WEEK", "series"),
-        ("TOP_ANIME_THIS_WEEK", "anime"),
-    ] {
-        let section = viewer_home
-            .personalized_sections
-            .iter()
-            .find(|section| section.section_type == section_type)
-            .expect("weekly facet section should be present");
-        assert!(section.items.iter().all(|item| {
-            item.content_type
-                .as_deref()
-                .is_some_and(|content_type| content_type.eq_ignore_ascii_case(expected_kind))
-        }));
-    }
     assert!(viewer_home.personalized_sections.iter().any(|section| {
         section.section_type == "BECAUSE_YOU_LIKE_GENRE"
             && section.title == "Because You Like Sci-Fi"
@@ -1696,7 +1680,22 @@ async fn discovery_sync_public_feed_runs_while_scan_and_context_backoff_are_acti
         .await
         .expect("discovery sync should evaluate");
 
-    assert_eq!(gateway.public_feed_inputs.lock().await.len(), 1);
+    let public_feed_inputs = gateway.public_feed_inputs.lock().await;
+    assert_eq!(public_feed_inputs.len(), 1);
+    for section_type in [
+        "TOP_MOVIES_THIS_WEEK",
+        "TOP_SERIES_THIS_WEEK",
+        "TOP_ANIME_THIS_WEEK",
+    ] {
+        assert!(
+            public_feed_inputs[0]
+                .section_types
+                .iter()
+                .any(|candidate| candidate == section_type),
+            "public feed input should request {section_type}"
+        );
+    }
+    drop(public_feed_inputs);
     assert!(gateway.submitted_inputs.lock().await.is_empty());
     assert!(gateway.change_inputs.lock().await.is_empty());
 
