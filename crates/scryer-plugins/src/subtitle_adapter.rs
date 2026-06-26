@@ -635,6 +635,8 @@ fn collapse_title_initialisms(tokens: Vec<&str>) -> Vec<String> {
                 collapsed.push(tokens[start..idx].concat());
                 continue;
             }
+
+            idx = start;
         }
 
         collapsed.push(tokens[idx].to_string());
@@ -846,6 +848,12 @@ mod tests {
         assert!(source_matches(Some("BluRay"), Some("Ultra HD Blu-ray")));
         assert!(source_matches(Some("HDTV"), Some("SDTV")));
         assert!(!source_matches(Some("WEB"), Some("BluRay")));
+    }
+
+    #[test]
+    fn title_normalization_handles_trailing_single_letter_token() {
+        assert_eq!(normalize_title_for_match("Mystery I"), "mystery i");
+        assert_eq!(normalize_title_for_match("Mystery U.S.A."), "mystery usa");
     }
 
     #[test]

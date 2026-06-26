@@ -4,7 +4,7 @@ use chrono::{NaiveDate, Utc};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use const_oid::db::rfc5280::ID_KP_CODE_SIGNING;
 use rustls_pki_types::{CertificateDer, TrustAnchor, UnixTime};
-use semver::Version;
+use semver::{Version, VersionReq};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sigstore::{
@@ -168,6 +168,10 @@ struct CatalogV3PluginEntry {
 #[derive(Clone, Debug, Deserialize)]
 struct CatalogV3Release {
     version: String,
+    #[serde(default)]
+    min_scryer_version: Option<String>,
+    #[serde(default)]
+    sdk_constraint: Option<String>,
     artifacts: Vec<CatalogV3PluginArtifact>,
 }
 
@@ -329,7 +333,8 @@ fn main() -> Result<()> {
         Commands::Release(args) => run_release(&ctx, args),
         Commands::Builtins(args) => match args.command {
             BuiltinsCommand::Sync => {
-                refresh_builtin_plugins(&ctx)?;
+                let scryer_version = package_version(&ctx.path("crates/scryer/Cargo.toml"))?;
+                refresh_builtin_plugins(&ctx, &scryer_version)?;
                 Ok(())
             }
         },
@@ -1840,6 +1845,71 @@ fn latest_catalog_v3_release<'a>(
         .ok_or_else(|| anyhow!("{plugin_id}: catalog-v3 entry has no releases"))
 }
 
+fn catalog_release_sdk_matches_host(plugin_id: &str, release: &CatalogV3Release) -> Result<bool> {
+    let Some(constraint) = release
+        .sdk_constraint
+        .as_deref()
+        .map(str::trim)
+        .filter(|constraint| !constraint.is_empty())
+    else {
+        return Ok(false);
+    };
+    let req = VersionReq::parse(constraint).with_context(|| {
+        format!(
+            "{plugin_id} {} has invalid sdk_constraint {constraint}",
+            release.version
+        )
+    })?;
+    let host_sdk = Version::parse(scryer_plugin_sdk::SDK_VERSION)?;
+    Ok(req.matches(&host_sdk))
+}
+
+fn catalog_release_supports_scryer_version(
+    plugin_id: &str,
+    release: &CatalogV3Release,
+    scryer_version: &Version,
+) -> Result<bool> {
+    let Some(min_scryer_version) = release
+        .min_scryer_version
+        .as_deref()
+        .map(str::trim)
+        .filter(|version| !version.is_empty())
+    else {
+        return Ok(false);
+    };
+    let min_scryer_version = Version::parse(min_scryer_version).with_context(|| {
+        format!(
+            "{plugin_id} {} has invalid min_scryer_version {}",
+            release.version, min_scryer_version
+        )
+    })?;
+    Ok(scryer_version >= &min_scryer_version)
+}
+
+fn catalog_release_is_builtin_compatible(
+    plugin_id: &str,
+    release: &CatalogV3Release,
+    scryer_version: &Version,
+) -> Result<bool> {
+    Ok(catalog_release_sdk_matches_host(plugin_id, release)?
+        && catalog_release_supports_scryer_version(plugin_id, release, scryer_version)?)
+}
+
+fn latest_compatible_catalog_v3_release<'a>(
+    plugin_id: &str,
+    releases: &'a [CatalogV3Release],
+    scryer_version: &Version,
+) -> Result<Option<&'a CatalogV3Release>> {
+    let mut compatible = Vec::new();
+    for release in releases {
+        if catalog_release_is_builtin_compatible(plugin_id, release, scryer_version)? {
+            compatible.push(release);
+        }
+    }
+    compatible.sort_by_key(|release| Version::parse(release.version.trim_start_matches('v')).ok());
+    Ok(compatible.pop())
+}
+
 fn baseline_catalog_v3_zstd_artifact<'a>(
     plugin_id: &str,
     release: &'a CatalogV3Release,
@@ -1860,7 +1930,42 @@ fn baseline_catalog_v3_zstd_artifact<'a>(
         })
 }
 
-fn sync_builtin_plugin(ctx: &TaskContext, spec: &BuiltinPluginSpec) -> Result<String> {
+fn require_builtin_descriptor_sdk_version(plugin_id: &str, sdk_version: &str) -> Result<()> {
+    let expected = scryer_plugin_sdk::SDK_VERSION;
+    if sdk_version != expected {
+        bail!(
+            "{plugin_id}: catalog-v3 builtin uses sdk_version {sdk_version}, expected {expected}"
+        );
+    }
+    Ok(())
+}
+
+fn existing_builtin_wasm_digest(ctx: &TaskContext, spec: &BuiltinPluginSpec) -> Result<String> {
+    let paths = builtin_asset_paths(ctx, spec);
+    let compressed_wasm = fs::read(&paths.wasm)
+        .with_context(|| format!("failed to read existing builtin {}", paths.wasm.display()))?;
+    let wasm_bytes = zstd::decode_all(compressed_wasm.as_slice()).with_context(|| {
+        format!(
+            "failed to decompress existing builtin {}",
+            paths.wasm.display()
+        )
+    })?;
+    let descriptor = scryer_plugin_sdk::load_plugin_descriptor_from_wasm_bytes(&wasm_bytes)
+        .map_err(|error| {
+            anyhow!(
+                "failed to describe existing builtin {}: {error}",
+                spec.plugin_id
+            )
+        })?;
+    require_builtin_descriptor_sdk_version(spec.plugin_id, &descriptor.sdk_version)?;
+    Ok(blake3_hex(&wasm_bytes))
+}
+
+fn sync_builtin_plugin(
+    ctx: &TaskContext,
+    spec: &BuiltinPluginSpec,
+    scryer_version: &Version,
+) -> Result<String> {
     let catalog_signer = official_plugin_v3_signer();
     let redirect_bytes = fetch_verified_bytes(
         ctx,
@@ -1894,7 +1999,18 @@ fn sync_builtin_plugin(ctx: &TaskContext, spec: &BuiltinPluginSpec) -> Result<St
             )
         })?;
     require_official_plugin_v3_signer(spec.plugin_id, &entry.required_signer)?;
-    let release = latest_catalog_v3_release(spec.plugin_id, &entry.releases)?;
+    latest_catalog_v3_release(spec.plugin_id, &entry.releases)?;
+    let Some(release) =
+        latest_compatible_catalog_v3_release(spec.plugin_id, &entry.releases, scryer_version)?
+    else {
+        warn(format!(
+            "No catalog-v3 release for builtin {} is compatible with Scryer {} and SDK {}; keeping embedded builtin",
+            spec.plugin_id,
+            scryer_version,
+            scryer_plugin_sdk::SDK_VERSION
+        ));
+        return existing_builtin_wasm_digest(ctx, spec);
+    };
     let artifact = baseline_catalog_v3_zstd_artifact(spec.plugin_id, release)?;
     let compressed_wasm = fetch_verified_bytes(
         ctx,
@@ -1932,6 +2048,7 @@ fn sync_builtin_plugin(ctx: &TaskContext, spec: &BuiltinPluginSpec) -> Result<St
             release.version
         );
     }
+    require_builtin_descriptor_sdk_version(spec.plugin_id, &descriptor.sdk_version)?;
     descriptor.sdk_version = scryer_plugin_sdk::SDK_VERSION.to_string();
     descriptor.sdk_constraint = scryer_plugin_sdk::current_sdk_constraint();
 
@@ -1984,11 +2101,11 @@ fn remove_stale_builtin_assets(ctx: &TaskContext) -> Result<()> {
     Ok(())
 }
 
-fn refresh_builtin_plugins(ctx: &TaskContext) -> Result<BuiltinRefresh> {
+fn refresh_builtin_plugins(ctx: &TaskContext, scryer_version: &Version) -> Result<BuiltinRefresh> {
     step("Syncing embedded plugin builtins from the official catalog");
     let mut catalog_wasm_blake3 = BTreeMap::new();
     for spec in BUILTIN_PLUGINS {
-        let wasm_digest = sync_builtin_plugin(ctx, spec)
+        let wasm_digest = sync_builtin_plugin(ctx, spec, scryer_version)
             .with_context(|| format!("failed to sync builtin {}", spec.plugin_id))?;
         catalog_wasm_blake3.insert(spec.plugin_id.to_string(), wasm_digest);
     }
@@ -2232,7 +2349,7 @@ fn run_release(ctx: &TaskContext, args: ReleaseArgs) -> Result<()> {
     }
 
     if !reused_dry_run_cache {
-        let refreshed_builtins = refresh_builtin_plugins(ctx)?;
+        let refreshed_builtins = refresh_builtin_plugins(ctx, &next_version)?;
         let validation_result = {
             step("Running web and Rust validation in parallel");
             let (web_tx, web_rx) = mpsc::channel();
@@ -2870,6 +2987,8 @@ mod tests {
     fn baseline_catalog_v3_zstd_artifact_selects_unfeatured_wasip1_zstd() {
         let release = CatalogV3Release {
             version: "0.2.15".to_string(),
+            min_scryer_version: Some("0.16.0".to_string()),
+            sdk_constraint: Some(">=3.0.0, <4.0.0".to_string()),
             artifacts: vec![
                 catalog_v3_plugin_artifact(
                     "https://cdn.example/newznab.wasm.br",
@@ -2903,6 +3022,47 @@ mod tests {
             "blake3:expected"
         );
         assert!(required_blake3_digest("test artifact", &[]).is_err());
+    }
+
+    #[test]
+    fn builtin_descriptor_sdk_version_must_match_host_sdk() {
+        assert!(
+            require_builtin_descriptor_sdk_version("newznab", scryer_plugin_sdk::SDK_VERSION)
+                .is_ok()
+        );
+
+        let error = require_builtin_descriptor_sdk_version("newznab", "3.1.0")
+            .expect_err("newer catalog SDK must be rejected");
+        assert!(error.to_string().contains("expected 3.0.0"), "{error:#}");
+    }
+
+    #[test]
+    fn catalog_builtin_release_must_support_target_scryer_and_sdk() {
+        let compatible = CatalogV3Release {
+            version: "0.2.16".to_string(),
+            min_scryer_version: Some("0.16.0".to_string()),
+            sdk_constraint: Some(">=3.0.0, <4.0.0".to_string()),
+            artifacts: vec![],
+        };
+        let too_new_scryer = CatalogV3Release {
+            version: "0.2.18".to_string(),
+            min_scryer_version: Some("0.17.0".to_string()),
+            sdk_constraint: Some(">=3.0.0, <4.0.0".to_string()),
+            artifacts: vec![],
+        };
+        let too_new_sdk = CatalogV3Release {
+            version: "0.2.19".to_string(),
+            min_scryer_version: Some("0.16.0".to_string()),
+            sdk_constraint: Some(">=3.2.0, <4.0.0".to_string()),
+            artifacts: vec![],
+        };
+        let target = Version::parse("0.16.6").unwrap();
+
+        assert!(catalog_release_is_builtin_compatible("newznab", &compatible, &target).unwrap());
+        assert!(
+            !catalog_release_is_builtin_compatible("newznab", &too_new_scryer, &target).unwrap()
+        );
+        assert!(!catalog_release_is_builtin_compatible("newznab", &too_new_sdk, &target).unwrap());
     }
 
     fn sample_release_dry_run_cache() -> ReleaseDryRunCache {
