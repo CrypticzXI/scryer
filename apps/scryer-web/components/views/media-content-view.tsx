@@ -52,12 +52,6 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
 import { LibraryMultiSelect } from "@/components/common/library-multi-select";
 import {
   MediaFilesOnDiskPanel,
@@ -109,6 +103,14 @@ import { AddTitleForm } from "./media-content/add-title-form";
 import { PosterGrid } from "./media-content/poster-grid";
 import { TitleTable } from "./media-content/title-table";
 import { CompactTitleTable } from "./media-content/compact-title-table";
+import {
+  TitleWorkspaceActionButton,
+  TitleWorkspaceActionGrid,
+  TitleWorkspaceHero,
+  TitleWorkspacePosterFrame,
+  TitleWorkspaceSectionCard,
+  TitleWorkspaceSectionHeader,
+} from "./media-content/title-workspace-primitives";
 import {
   TitleTableActionButton,
   DEFAULT_TITLE_TABLE_VISIBLE_COLUMNS,
@@ -189,11 +191,11 @@ const TITLE_TABLE_COLUMN_SHEDDING_TIERS: readonly {
 }[] = [
   { maxWidth: 1280, columns: ["added"] },
   { maxWidth: 1180, columns: ["episodes"] },
-  { maxWidth: 1040, columns: ["library"] },
-  { maxWidth: 920, columns: ["quality"] },
-  { maxWidth: 780, columns: ["actions"] },
-  { maxWidth: 640, columns: ["size"] },
-  { maxWidth: 520, columns: ["monitored"] },
+  { maxWidth: 980, columns: ["actions"] },
+  { maxWidth: 720, columns: ["quality"] },
+  { maxWidth: 640, columns: ["library"] },
+  { maxWidth: 560, columns: ["size"] },
+  { maxWidth: 500, columns: ["monitored"] },
 ];
 
 function clampPaneWidth(width: number, minWidth: number, maxWidth: number) {
@@ -239,18 +241,9 @@ function resolveTitleTablePaneWidth({
 function resolveEffectiveTitleTableColumns(
   visibleColumns: TitleTableVisibleColumns,
   tablePaneWidth: number | null,
-  selectedTitleInlineActive: boolean,
 ): TitleTableVisibleColumns {
   const nextColumns = { ...visibleColumns };
   const hiddenColumns = new Set<TitleTableColumnKey>();
-
-  if (selectedTitleInlineActive) {
-    hiddenColumns.add("added");
-    hiddenColumns.add("actions");
-    hiddenColumns.add("library");
-    hiddenColumns.add("quality");
-    hiddenColumns.add("episodes");
-  }
 
   if (tablePaneWidth != null) {
     for (const tier of TITLE_TABLE_COLUMN_SHEDDING_TIERS) {
@@ -297,7 +290,7 @@ function formatQualityProfileFallback(
 
 function mediaTitleLabel(view: ViewId, t: Translate): string {
   if (view === "movies") {
-    return t("title.manageMovies");
+    return t("nav.movies");
   }
   if (view === "anime") {
     return t("nav.anime");
@@ -439,7 +432,7 @@ function TitleContextSection({
       <Collapsible open={open} onOpenChange={setOpen}>
         <section
           className={cn(
-            "overflow-hidden rounded-[12px] border border-[var(--scry-border)] bg-[var(--scry-card2)] shadow-[0_10px_24px_rgba(0,0,0,0.16)]",
+            "overflow-hidden rounded-[12px] border border-[var(--scry-border)] bg-[var(--scry-card2)]",
             className,
           )}
         >
@@ -492,7 +485,7 @@ function TitleContextSection({
   return (
     <section
       className={cn(
-        "rounded-[12px] border border-[var(--scry-border)] bg-[var(--scry-card2)] p-4 shadow-[0_10px_24px_rgba(0,0,0,0.16)]",
+        "rounded-[12px] border border-[var(--scry-border)] bg-[var(--scry-card2)] p-4",
         className,
       )}
     >
@@ -695,12 +688,13 @@ function TitleContextRecommendationButton({
         type="button"
         variant="outline"
         size="sm"
-        className="h-8 w-8 shrink-0 rounded-[8px] border-transparent bg-[rgba(var(--scry-accent-rgb),0.16)] p-0 text-[var(--scry-accent-text)] shadow-none hover:bg-[rgba(var(--scry-accent-rgb),0.24)]"
+        className="h-8 shrink-0 gap-1.5 rounded-[8px] border-transparent bg-[rgba(var(--scry-accent-rgb),0.16)] px-3 text-[11.5px] font-semibold text-[var(--scry-accent-text)] shadow-none hover:bg-[rgba(var(--scry-accent-rgb),0.24)]"
         aria-label={`${actionLabel}: ${item.displayTitle}`}
         disabled={actionDisabled}
         onClick={() => onAction(item)}
       >
         <ActionIcon className="h-3.5 w-3.5" />
+        {actionLabel}
       </Button>
     </div>
   );
@@ -774,68 +768,6 @@ function buildTitleMoreLikeThisDiscoveryItems(
     .map(({ candidate }) => candidate);
 }
 
-function TitleContextActionButton({
-  icon: Icon,
-  label,
-  loading = false,
-  destructive = false,
-  active = false,
-  disabled = false,
-  expanded,
-  controlsId,
-  onClick,
-}: {
-  icon: React.ComponentType<{ className?: string }>;
-  label: string;
-  loading?: boolean;
-  destructive?: boolean;
-  active?: boolean;
-  disabled?: boolean;
-  expanded?: boolean;
-  controlsId?: string;
-  onClick: () => void;
-}) {
-  const actionDisabled = disabled || loading;
-
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <span
-          className="inline-flex shrink-0"
-          tabIndex={actionDisabled ? 0 : undefined}
-        >
-          <button
-            type="button"
-            aria-label={label}
-            aria-expanded={expanded}
-            aria-controls={controlsId}
-            className={cn(
-              "flex size-10 shrink-0 items-center justify-center rounded-[10px] border border-[var(--scry-border2)] bg-[var(--scry-card)] text-[var(--scry-muted3)] transition hover:border-[var(--scry-bhover2)] hover:bg-[var(--scry-hover)] hover:text-[var(--scry-ink2)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--scry-focus)] disabled:cursor-not-allowed disabled:opacity-55",
-              active
-                ? "border-[rgba(var(--scry-accent-rgb),0.32)] bg-[rgba(var(--scry-accent-rgb),0.12)] text-[var(--scry-accent-text)]"
-                : destructive
-                  ? "border-destructive/25 text-destructive hover:text-destructive"
-                  : "",
-            )}
-            disabled={actionDisabled}
-            onClick={onClick}
-            tabIndex={actionDisabled ? -1 : undefined}
-          >
-            {loading ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            ) : (
-              <Icon className="h-4 w-4" />
-            )}
-          </button>
-        </span>
-      </TooltipTrigger>
-      <TooltipContent side="bottom" align="center">
-        {label}
-      </TooltipContent>
-    </Tooltip>
-  );
-}
-
 function TitleContextMoreLikeThisStrip({
   items,
   view,
@@ -882,7 +814,7 @@ function TitleContextMoreLikeThisStrip({
 
           return (
             <div key={item.id} className="group w-24 shrink-0 text-left">
-              <div className="relative h-[142px] w-24 overflow-hidden rounded-[9px] border border-[var(--scry-border2)] bg-[var(--scry-soft)] shadow-[0_6px_16px_rgba(0,0,0,0.28)] transition group-hover:border-[var(--scry-bhover2)] group-hover:shadow-[0_10px_22px_rgba(0,0,0,0.36)]">
+              <div className="relative h-[142px] w-24 overflow-hidden rounded-[9px] border border-[var(--scry-border2)] bg-[var(--scry-soft)] transition group-hover:border-[var(--scry-bhover2)]">
                 <TitlePosterSlot
                   src={posterUrl}
                   alt={t("media.posterAlt", { name: item.displayTitle })}
@@ -1242,7 +1174,7 @@ function TitleContextReleaseSearchPanel({
 function TitleContextPanel({
   id,
   title,
-  titles,
+  discoveryItems,
   view,
   overviewTargetView,
   resolvedProfileName,
@@ -1269,13 +1201,15 @@ function TitleContextPanel({
   bulkActionBusy,
   onDelete,
   onClearSelection,
-  onSelectTitle,
+  canManageTitle,
+  canRequestMedia,
+  onDiscoveryAction,
   titleListDisclosure,
   className,
 }: {
   id?: string;
   title: TitleRecord | null;
-  titles: TitleRecord[];
+  discoveryItems: DiscoveryItem[];
   view: ViewId;
   overviewTargetView: ViewId;
   resolvedProfileName: string | null;
@@ -1322,7 +1256,9 @@ function TitleContextPanel({
   bulkActionBusy: boolean;
   onDelete: (title: TitleRecord) => void;
   onClearSelection: () => void;
-  onSelectTitle: (title: TitleRecord) => void;
+  canManageTitle: boolean;
+  canRequestMedia: boolean;
+  onDiscoveryAction: (item: DiscoveryItem) => void;
   titleListDisclosure?: React.ReactNode;
   className?: string;
 }) {
@@ -1347,12 +1283,15 @@ function TitleContextPanel({
   const releaseSearchOpen = title !== null && releaseSearchTitleId === title.id;
   const releaseSearchActionLoading = releaseSearchOpen && releaseSearchLoading;
   const panelClassName = cn(
-    "min-h-0 w-full min-w-0 flex-col overflow-hidden rounded-[16px] border border-[var(--scry-border2)] bg-[var(--scry-surfD)] shadow-[0_18px_44px_rgba(15,23,42,0.10)]",
+    "min-h-0 w-full min-w-0 flex-col overflow-hidden rounded-[16px] border border-[var(--scry-border2)] bg-[var(--scry-surfD)]",
     className,
   );
-  const moreLikeThisTitles = React.useMemo(
-    () => (title ? buildTitleMoreLikeThisTitles(title, titles) : []),
-    [title, titles],
+  const moreLikeThisItems = React.useMemo(
+    () =>
+      title
+        ? buildTitleMoreLikeThisDiscoveryItems(title, discoveryItems, view)
+        : [],
+    [discoveryItems, title, view],
   );
   const titleMediaFiles = React.useMemo<MediaFileOnDisk[]>(
     () =>
@@ -1453,9 +1392,11 @@ function TitleContextPanel({
         className={panelClassName}
       >
         <TitleContextForYouPanel
-          titles={titles}
+          discoveryItems={discoveryItems}
           view={view}
-          onSelectTitle={onSelectTitle}
+          canManageTitle={canManageTitle}
+          canRequestMedia={canRequestMedia}
+          onDiscoveryAction={onDiscoveryAction}
         />
       </aside>
     );
@@ -1545,47 +1486,25 @@ function TitleContextPanel({
         {titleListDisclosure ? (
           <div className="mb-3 flex items-center">{titleListDisclosure}</div>
         ) : null}
-        <section className="relative overflow-hidden rounded-[14px] border border-[var(--scry-border2)] bg-[linear-gradient(135deg,var(--scry-surfE),var(--scry-bg))] shadow-[0_18px_44px_rgba(0,0,0,0.28)]">
-          {backgroundUrl ? (
-            <img
-              src={backgroundUrl}
-              alt=""
-              aria-hidden="true"
-              className="absolute inset-0 h-full w-full object-cover opacity-40 saturate-90"
+        <TitleWorkspaceHero
+          backgroundUrl={backgroundUrl}
+          closeLabel={t("label.clear")}
+          onClose={onClearSelection}
+        >
+          <TitleWorkspacePosterFrame label={title.name}>
+            <TitlePosterSlot
+              src={posterUrl}
+              sourceSrc={title.posterSourceUrl}
+              metadataFetchedAt={title.metadataFetchedAt}
+              createdAt={title.createdAt}
+              alt={t("media.posterAlt", { name: title.name })}
+              className="h-full w-full object-cover"
+              placeholderClassName="flex h-full w-full items-center justify-center px-2 text-center text-[11px] text-[var(--scry-muted3)]"
+              emptyLabel={t("label.noArt")}
               loading="lazy"
+              decoding="async"
             />
-          ) : null}
-          <div className="absolute inset-0 bg-[linear-gradient(105deg,rgba(8,12,22,0.96)_28%,rgba(8,12,22,0.72)_68%,rgba(8,12,22,0.38))] dark:bg-[linear-gradient(105deg,rgba(8,12,22,0.97)_28%,rgba(8,12,22,0.66)_68%,rgba(8,12,22,0.34))]" />
-          <button
-            type="button"
-            aria-label={t("label.clear")}
-            className="absolute right-3 top-3 z-10 flex size-8 items-center justify-center rounded-[9px] border border-white/15 bg-slate-950/60 text-[#dde4f5] shadow-sm backdrop-blur-md transition hover:bg-slate-950/75 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--scry-focus)]"
-            onClick={onClearSelection}
-          >
-            <X className="h-4 w-4" />
-          </button>
-          <div className="relative flex gap-4 p-4 pr-14 sm:gap-5 sm:p-5 sm:pr-16">
-            <div className="relative h-44 w-[116px] shrink-0 overflow-hidden rounded-[10px] border border-[#2a3556] bg-[var(--scry-inset)] shadow-[0_12px_32px_rgba(0,0,0,0.5)] sm:h-[198px] sm:w-[132px]">
-              <TitlePosterSlot
-                src={posterUrl}
-                sourceSrc={title.posterSourceUrl}
-                metadataFetchedAt={title.metadataFetchedAt}
-                createdAt={title.createdAt}
-                alt={t("media.posterAlt", { name: title.name })}
-                className="h-full w-full object-cover"
-                placeholderClassName="flex h-full w-full items-center justify-center px-2 text-center text-[11px] text-[var(--scry-muted3)]"
-                emptyLabel={t("label.noArt")}
-                loading="lazy"
-                decoding="async"
-              />
-              <div
-                className="pointer-events-none absolute inset-0 bg-[linear-gradient(180deg,transparent_42%,rgba(4,6,12,0.86))]"
-                aria-hidden="true"
-              />
-              <span className="pointer-events-none absolute inset-x-2 bottom-2 line-clamp-2 text-[12px] font-bold leading-[1.08] text-white shadow-black [text-shadow:0_1px_6px_rgba(0,0,0,0.75)]">
-                {title.name}
-              </span>
-            </div>
+          </TitleWorkspacePosterFrame>
             <div className="min-w-0 flex-1">
               <h2 className="text-[21px] font-bold leading-[1.1] tracking-normal text-white">
                 {title.name}
@@ -1675,73 +1594,62 @@ function TitleContextPanel({
                 </span>
               </div>
             </div>
-          </div>
-        </section>
+        </TitleWorkspaceHero>
 
-        <TooltipProvider>
-          <div className="mt-3 overflow-x-auto">
-            <div className="flex gap-2">
-              <TitleContextActionButton
-                icon={title.monitored ? EyeOff : Eye}
-                label={
-                  title.monitored
-                    ? t("title.unmonitorAction")
-                    : t("title.monitorAction")
-                }
-                active={title.monitored}
-                loading={isTogglingMonitored}
-                disabled={bulkActionBusy || !onToggleMonitored}
-                onClick={() =>
-                  void onToggleMonitored?.(title, !title.monitored)
-                }
-              />
-              <TitleContextActionButton
-                icon={Zap}
-                label={t("title.queueLatest")}
-                loading={autoQueueLoading}
-                disabled={bulkActionBusy}
-                onClick={() => void handleAutoQueue()}
-              />
-              <TitleContextActionButton
-                icon={Search}
-                label={t("label.interactiveSearch")}
-                active={releaseSearchOpen}
-                loading={releaseSearchActionLoading}
-                disabled={bulkActionBusy && !releaseSearchOpen}
-                expanded={releaseSearchOpen}
-                controlsId={releaseSearchPanelId}
-                onClick={handleInteractiveSearchAction}
-              />
-              <TitleContextActionButton
-                icon={RefreshCw}
-                label={t("label.refresh")}
-                loading={refreshLoading}
-                disabled={bulkActionBusy || refreshLoading}
-                onClick={() => void onRefreshTitles()}
-              />
-              <TitleContextActionButton
-                icon={ClipboardList}
-                label={t("activity.history")}
-                disabled={bulkActionBusy}
-                onClick={() => setHistoryOpen(true)}
-              />
-              <TitleContextActionButton
-                icon={Edit}
-                label={t("label.edit")}
-                disabled={bulkActionBusy}
-                onClick={() => onOpenOverview(overviewTargetView, title)}
-              />
-              <TitleContextActionButton
-                icon={Trash2}
-                label={t("label.delete")}
-                destructive
-                loading={isDeleting}
-                disabled={bulkActionBusy}
-                onClick={() => onDelete(title)}
-              />
-            </div>
-          </div>
-        </TooltipProvider>
+        <TitleWorkspaceActionGrid>
+          <TitleWorkspaceActionButton
+            icon={title.monitored ? EyeOff : Eye}
+            label={t("title.monitorAction")}
+            active={title.monitored}
+            loading={isTogglingMonitored}
+            disabled={bulkActionBusy || !onToggleMonitored}
+            onClick={() => void onToggleMonitored?.(title, !title.monitored)}
+          />
+          <TitleWorkspaceActionButton
+            icon={Zap}
+            label={t("label.search")}
+            loading={autoQueueLoading}
+            disabled={bulkActionBusy}
+            onClick={() => void handleAutoQueue()}
+          />
+          <TitleWorkspaceActionButton
+            icon={Search}
+            label={t("label.interactiveSearch")}
+            active={releaseSearchOpen}
+            loading={releaseSearchActionLoading}
+            disabled={bulkActionBusy && !releaseSearchOpen}
+            expanded={releaseSearchOpen}
+            controlsId={releaseSearchPanelId}
+            onClick={handleInteractiveSearchAction}
+          />
+          <TitleWorkspaceActionButton
+            icon={RefreshCw}
+            label={t("label.refresh")}
+            loading={refreshLoading}
+            disabled={bulkActionBusy || refreshLoading}
+            onClick={() => void onRefreshTitles()}
+          />
+          <TitleWorkspaceActionButton
+            icon={ClipboardList}
+            label={t("activity.history")}
+            disabled={bulkActionBusy}
+            onClick={() => setHistoryOpen(true)}
+          />
+          <TitleWorkspaceActionButton
+            icon={Edit}
+            label={t("label.edit")}
+            disabled={bulkActionBusy}
+            onClick={() => onOpenOverview(overviewTargetView, title)}
+          />
+          <TitleWorkspaceActionButton
+            icon={Trash2}
+            label={t("label.delete")}
+            destructive
+            loading={isDeleting}
+            disabled={bulkActionBusy}
+            onClick={() => onDelete(title)}
+          />
+        </TitleWorkspaceActionGrid>
 
         {releaseSearchOpen ? (
           <div
@@ -1764,33 +1672,29 @@ function TitleContextPanel({
         ) : null}
 
         <div className="mt-3 space-y-3">
-          <section className="rounded-[12px] border border-[var(--scry-border)] bg-[var(--scry-card2)] p-4">
-            <div className="mb-3.5 flex min-w-0 items-center justify-between gap-3">
-              <div className="flex min-w-0 items-center gap-2.5">
-                <FolderOpen className="h-4 w-4 shrink-0 text-[var(--scry-accent-text)]" />
-                <div className="min-w-0">
-                  <h3 className="truncate text-[14px] font-semibold text-[var(--scry-ink2)]">
-                    {t("title.filesOnDisk")}
-                  </h3>
-                </div>
-              </div>
-              <Button
-                type="button"
-                variant="default"
-                size="sm"
-                className="h-[30px] shrink-0 rounded-[8px] border-0 bg-[var(--scry-accent-grad)] px-3 text-[11.5px] font-semibold text-white shadow-none hover:bg-[var(--scry-accent-grad)]"
-                onClick={() => {
-                  void handlePreviewRename();
-                }}
-                disabled={renamePreviewing || renameApplying}
-              >
-                <span>
-                  {renamePreviewing
-                    ? t("rename.previewing")
-                    : t("rename.previewButton")}
-                </span>
-              </Button>
-            </div>
+          <TitleWorkspaceSectionCard>
+            <TitleWorkspaceSectionHeader
+              icon={FolderOpen}
+              title={t("title.filesOnDisk")}
+              action={
+                <Button
+                  type="button"
+                  variant="default"
+                  size="sm"
+                  className="h-[30px] shrink-0 rounded-[8px] border-0 bg-[var(--scry-accent-grad)] px-3 text-[11.5px] font-semibold text-white shadow-none hover:bg-[var(--scry-accent-grad)]"
+                  onClick={() => {
+                    void handlePreviewRename();
+                  }}
+                  disabled={renamePreviewing || renameApplying}
+                >
+                  <span>
+                    {renamePreviewing
+                      ? t("rename.previewing")
+                      : t("rename.previewButton")}
+                  </span>
+                </Button>
+              }
+            />
             <div className="border-t border-[var(--scry-line3)] pt-3">
               <MediaFilesOnDiskPanel
                 emptyMessage={t("title.noFilesTracked")}
@@ -1826,12 +1730,14 @@ function TitleContextPanel({
                 }}
               />
             ) : null}
-          </section>
+          </TitleWorkspaceSectionCard>
 
           <TitleContextMoreLikeThisStrip
-            titles={moreLikeThisTitles}
+            items={moreLikeThisItems}
             view={view}
-            onSelectTitle={onSelectTitle}
+            canManageTitle={canManageTitle}
+            canRequestMedia={canRequestMedia}
+            onAction={onDiscoveryAction}
           />
 
           {blocklistEntries.length === 0 ? (
@@ -2092,6 +1998,10 @@ export function MediaContentView({
     catalogInitialLoadComplete: boolean;
     monitoredTitles: TitleRecord[];
     titleContextTitles: TitleRecord[];
+    titleContextDiscoveryItems: DiscoveryItem[];
+    canManageTitle: boolean;
+    canRequestMedia: boolean;
+    onTitleContextDiscoveryAction: (item: DiscoveryItem) => void;
     titleQuickFilters: TitleQuickFilters;
     titleQuickFilterCounts: TitleQuickFilterCounts;
     toggleTitleQuickMonitoringFilter: (
@@ -2321,6 +2231,10 @@ export function MediaContentView({
     catalogInitialLoadComplete,
     monitoredTitles,
     titleContextTitles,
+    titleContextDiscoveryItems,
+    canManageTitle,
+    canRequestMedia,
+    onTitleContextDiscoveryAction,
     titleQuickFilters,
     titleQuickFilterCounts,
     toggleTitleQuickMonitoringFilter,
@@ -2394,14 +2308,8 @@ export function MediaContentView({
   const deferredMonitoredTitles = React.useDeferredValue(monitoredTitles);
   const deferredTitleContextTitles =
     React.useDeferredValue(titleContextTitles);
-  const deferredTitleRecommendationTitles = React.useMemo(
-    () =>
-      selectedLibraryIds.length === 0
-        ? deferredTitleContextTitles
-        : deferredTitleContextTitles.filter((title) =>
-            selectedLibraryIds.includes(title.libraryId),
-          ),
-    [deferredTitleContextTitles, selectedLibraryIds],
+  const deferredTitleContextDiscoveryItems = React.useDeferredValue(
+    titleContextDiscoveryItems,
   );
   const [visibleTitleTableColumns, setVisibleTitleTableColumns] =
     React.useState<TitleTableVisibleColumns>(() => ({
@@ -2638,10 +2546,8 @@ export function MediaContentView({
       resolveEffectiveTitleTableColumns(
         visibleTitleTableColumns,
         titleTablePaneWidth,
-        selectedTitleFullTableInlineActive,
       ),
     [
-      selectedTitleFullTableInlineActive,
       titleTablePaneWidth,
       visibleTitleTableColumns,
     ],
@@ -3461,6 +3367,10 @@ export function MediaContentView({
                       qualityProfilesLoading={mediaSettingsLoading}
                       onOpenOverview={onOpenOverview}
                       selectedTitleId={contextPanelSelectedTitleId}
+                      selectedDrawerMode={
+                        selectedTitleCompactLayoutActive &&
+                        !selectedTitleListInlineActive
+                      }
                       contextPanelId={selectedTitleContextPanelId}
                       onSelectTitle={onSelectTitleForContextPanel}
                       onDelete={handleDeleteCatalogTitle}
@@ -3601,7 +3511,7 @@ export function MediaContentView({
                       id={selectedTitleContextPanelId}
                       aria-label={t("title.contextPanelTitle")}
                       className={cn(
-                        "min-h-0 w-full min-w-0 flex-col overflow-hidden rounded-[16px] border border-[var(--scry-border2)] bg-[var(--scry-surfD)] shadow-[0_18px_44px_rgba(15,23,42,0.10)]",
+                        "min-h-0 w-full min-w-0 flex-col overflow-hidden rounded-[16px] border border-[var(--scry-border2)] bg-[var(--scry-surfD)]",
                         titleOverviewPaneClassName,
                       )}
                     >
@@ -3630,11 +3540,7 @@ export function MediaContentView({
                     <TitleContextPanel
                       id={selectedTitleContextPanelId}
                       title={activeOverviewTitle}
-                      titles={
-                        activeOverviewTitle
-                          ? deferredTitleContextTitles
-                          : deferredTitleRecommendationTitles
-                      }
+                      discoveryItems={deferredTitleContextDiscoveryItems}
                       view={view}
                       overviewTargetView={overviewTargetView}
                       resolvedProfileName={resolvedProfileName}
@@ -3679,7 +3585,9 @@ export function MediaContentView({
                       bulkActionBusy={bulkActionBusy}
                       onDelete={handleDeleteCatalogTitle}
                       onClearSelection={clearSelectedOverviewTitle}
-                      onSelectTitle={handleSelectOverviewTitle}
+                      canManageTitle={canManageTitle}
+                      canRequestMedia={canRequestMedia}
+                      onDiscoveryAction={onTitleContextDiscoveryAction}
                       titleListDisclosure={titleListDisclosure}
                       className={titleOverviewPaneClassName}
                     />

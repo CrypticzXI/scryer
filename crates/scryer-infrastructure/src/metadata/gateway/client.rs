@@ -459,7 +459,6 @@ pub struct MetadataGatewayClient {
     search_multi_hash: String,
     movie_hash: String,
     series_hash: String,
-    discover_public_feed_hash: String,
     collection_completions_hash: String,
     submit_discovery_context_snapshot_hash: String,
     discovery_context_snapshot_status_hash: String,
@@ -495,7 +494,6 @@ impl MetadataGatewayClient {
         let search_multi_hash = apq_hash(graphql_docs::SEARCH_TVDB_MULTI_QUERY);
         let movie_hash = apq_hash(graphql_docs::GET_MOVIE_QUERY);
         let series_hash = apq_hash(graphql_docs::GET_SERIES_QUERY);
-        let discover_public_feed_hash = apq_hash(graphql_docs::DISCOVER_PUBLIC_FEED_QUERY);
         let collection_completions_hash = apq_hash(graphql_docs::COLLECTION_COMPLETIONS_QUERY);
         let submit_discovery_context_snapshot_hash =
             apq_hash(graphql_docs::SUBMIT_DISCOVERY_CONTEXT_SNAPSHOT_QUERY);
@@ -526,7 +524,6 @@ impl MetadataGatewayClient {
             %search_multi_hash,
             %movie_hash,
             %series_hash,
-            %discover_public_feed_hash,
             %collection_completions_hash,
             %submit_discovery_context_snapshot_hash,
             %discovery_context_snapshot_status_hash,
@@ -555,7 +552,6 @@ impl MetadataGatewayClient {
             search_multi_hash,
             movie_hash,
             series_hash,
-            discover_public_feed_hash,
             collection_completions_hash,
             submit_discovery_context_snapshot_hash,
             discovery_context_snapshot_status_hash,
@@ -581,7 +577,6 @@ impl MetadataGatewayClient {
         let search_multi_hash = apq_hash(graphql_docs::SEARCH_TVDB_MULTI_QUERY);
         let movie_hash = apq_hash(graphql_docs::GET_MOVIE_QUERY);
         let series_hash = apq_hash(graphql_docs::GET_SERIES_QUERY);
-        let discover_public_feed_hash = apq_hash(graphql_docs::DISCOVER_PUBLIC_FEED_QUERY);
         let collection_completions_hash = apq_hash(graphql_docs::COLLECTION_COMPLETIONS_QUERY);
         let submit_discovery_context_snapshot_hash =
             apq_hash(graphql_docs::SUBMIT_DISCOVERY_CONTEXT_SNAPSHOT_QUERY);
@@ -620,7 +615,6 @@ impl MetadataGatewayClient {
             search_multi_hash,
             movie_hash,
             series_hash,
-            discover_public_feed_hash,
             collection_completions_hash,
             submit_discovery_context_snapshot_hash,
             discovery_context_snapshot_status_hash,
@@ -1179,6 +1173,17 @@ impl MetadataGatewayClient {
                 self.execute_graphql_apq_register(operation_name, query, &extensions, &variables)
                     .await
             }
+            Ok(resp) if resp.status() == reqwest::StatusCode::METHOD_NOT_ALLOWED => {
+                let preview =
+                    read_response_body_preview(resp, "APQ GET response read failed").await?;
+                debug!(
+                    hash,
+                    body_preview = %preview.escaped_text(),
+                    "APQ GET not allowed, retrying via POST"
+                );
+                self.execute_graphql_apq_register(operation_name, query, &extensions, &variables)
+                    .await
+            }
             Ok(resp) => {
                 let status = resp.status();
                 let preview =
@@ -1238,6 +1243,65 @@ impl MetadataGatewayClient {
 
         self.execute_graphql_apq_register(operation_name, query, &extensions, &variables)
             .await
+    }
+
+    async fn execute_public_graphql_get<T: serde::de::DeserializeOwned>(
+        &self,
+        operation_name: &'static str,
+        query: &str,
+        variables: serde_json::Value,
+    ) -> AppResult<T> {
+        let variables_str = serde_json::to_string(&variables)
+            .map_err(|e| AppError::Repository(format!("failed to serialize variables: {e}")))?;
+        let mut url = reqwest::Url::parse(&self.endpoint)
+            .map_err(|e| AppError::Repository(format!("invalid endpoint URL: {e}")))?;
+        url.query_pairs_mut()
+            .append_pair("operationName", operation_name)
+            .append_pair("query", query)
+            .append_pair("variables", &variables_str);
+
+        debug!(endpoint = %self.endpoint, operation_name, "sending public metadata gateway GET");
+
+        let client = self.http.clone();
+        let response = self
+            .send_request_with_retry(
+                || {
+                    let client = client.clone();
+                    let url = url.clone();
+                    async move { Ok(client.get(url)) }
+                },
+                "metadata gateway public GraphQL GET",
+            )
+            .await?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let preview = read_response_body_preview(
+                response,
+                "metadata gateway public response read failed",
+            )
+            .await?;
+            warn!(
+                status = %status,
+                body_preview = %preview.escaped_text(),
+                body_preview_bytes = preview.preview_bytes,
+                content_length = ?preview.content_length,
+                content_type = ?preview.content_type,
+                body_truncated = preview.truncated,
+                "metadata gateway public request failed"
+            );
+            return Err(AppError::Repository(format!(
+                "metadata gateway public request failed ({status})"
+            )));
+        }
+
+        let raw_text = response
+            .text()
+            .await
+            .map_err(|err| AppError::Repository(err.to_string()))?;
+        debug!(status = %status, body_len = raw_text.len(), "metadata gateway public response");
+
+        self.parse_graphql_response(&raw_text)
     }
 
     async fn execute_graphql<T: serde::de::DeserializeOwned>(
@@ -2250,20 +2314,35 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn discover_public_feed_uses_apq_get_operation_name() {
+    async fn discover_public_feed_uses_full_query_public_get() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/graphql"))
             .and(query_param("operationName", OP_DISCOVER_PUBLIC_FEED))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "data": {
-                    "discoverPublicFeed": {
-                        "subject_keys": [],
-                        "generated_at": "2026-06-25T00:00:00Z",
-                        "sections": []
+            .and(query_param(
+                "query",
+                graphql_docs::DISCOVER_PUBLIC_FEED_QUERY,
+            ))
+            .respond_with(|request: &Request| {
+                let params = request
+                    .url
+                    .query_pairs()
+                    .map(|(key, _)| key.into_owned())
+                    .collect::<Vec<_>>();
+                assert!(
+                    !params.iter().any(|key| key == "extensions"),
+                    "public feed GET must not use hash-only APQ"
+                );
+                ResponseTemplate::new(200).set_body_json(json!({
+                    "data": {
+                        "discoverPublicFeed": {
+                            "subject_keys": [],
+                            "generated_at": "2026-06-25T00:00:00Z",
+                            "sections": []
+                        }
                     }
-                }
-            })))
+                }))
+            })
             .expect(1)
             .mount(&server)
             .await;
@@ -2278,7 +2357,7 @@ mod tests {
                 include_unresolved: false,
             })
             .await
-            .expect("discovery feed should succeed through APQ GET");
+            .expect("discovery feed should succeed through public GET");
 
         assert!(data.sections.is_empty());
     }
@@ -3881,10 +3960,9 @@ impl MetadataGateway for MetadataGatewayClient {
         input: &DiscoveryPublicFeedInput,
     ) -> AppResult<DiscoveryDashboardResult> {
         let data: DiscoverPublicFeedResponse = self
-            .execute_graphql_apq(
+            .execute_public_graphql_get(
                 OP_DISCOVER_PUBLIC_FEED,
                 graphql_docs::DISCOVER_PUBLIC_FEED_QUERY,
-                &self.discover_public_feed_hash,
                 json!({ "input": input }),
             )
             .await?;
@@ -3896,7 +3974,7 @@ impl MetadataGateway for MetadataGatewayClient {
         input: &DiscoveryCollectionCompletionInput,
     ) -> AppResult<DiscoveryCollectionCompletionResult> {
         let data: CollectionCompletionsResponse = self
-            .execute_graphql_apq(
+            .execute_graphql_apq_post(
                 OP_COLLECTION_COMPLETIONS,
                 graphql_docs::COLLECTION_COMPLETIONS_QUERY,
                 &self.collection_completions_hash,
@@ -3926,7 +4004,7 @@ impl MetadataGateway for MetadataGatewayClient {
         request_id: &str,
     ) -> AppResult<DiscoveryContextSnapshotStatusResult> {
         let data: DiscoveryContextSnapshotStatusResponse = self
-            .execute_graphql_apq(
+            .execute_graphql_apq_post(
                 OP_DISCOVERY_CONTEXT_SNAPSHOT_STATUS,
                 graphql_docs::DISCOVERY_CONTEXT_SNAPSHOT_STATUS_QUERY,
                 &self.discovery_context_snapshot_status_hash,
@@ -3942,7 +4020,7 @@ impl MetadataGateway for MetadataGatewayClient {
         page: i32,
     ) -> AppResult<DiscoveryContextSnapshotPageResult> {
         let data: DiscoveryContextSnapshotPageResponse = self
-            .execute_graphql_apq(
+            .execute_graphql_apq_post(
                 OP_DISCOVERY_CONTEXT_SNAPSHOT_PAGE,
                 graphql_docs::DISCOVERY_CONTEXT_SNAPSHOT_PAGE_QUERY,
                 &self.discovery_context_snapshot_page_hash,

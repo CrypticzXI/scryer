@@ -3,6 +3,7 @@ import type {
   SettingsSection,
   ViewId,
   ContentSettingsSection,
+  LogsSection,
   SystemSection,
   WantedSection,
 } from "@/components/root/types";
@@ -68,11 +69,13 @@ export const URL_SECTION_MOVIES = "movies";
 export const URL_SECTION_SERIES = "series";
 export const URL_SECTION_ANIME = "anime";
 export const URL_SECTION_DISCOVERY = "discovery";
+export const URL_SECTION_REQUESTS = "requests";
 export const URL_SECTION_ACTIVITY = "activity";
 export const URL_SECTION_CALENDAR = "calendar";
 export const URL_SECTION_WANTED = "wanted";
 export const URL_SECTION_HISTORY = "history";
 export const URL_SECTION_SYSTEM = "system";
+export const URL_SECTION_LOGS = "logs";
 export const URL_PARAM_LANGUAGE = "lang";
 export const URL_PARAM_VIEW_DEPRECATED = "view";
 export const URL_PARAM_SETTINGS_SECTION_DEPRECATED = "settingsSection";
@@ -81,11 +84,13 @@ export const URL_PARAM_CONTENT_SECTION_DEPRECATED = "contentSection";
 export const URL_PATH_SEGMENTS: ViewId[] = [
   ...MEDIA_VIEW_IDS as string[] as ViewId[],
   URL_SECTION_DISCOVERY,
+  URL_SECTION_REQUESTS,
   URL_SECTION_ACTIVITY,
   URL_SECTION_CALENDAR,
   URL_SECTION_WANTED,
   URL_SECTION_HISTORY,
   URL_SECTION_SETTINGS,
+  URL_SECTION_LOGS,
   URL_SECTION_SYSTEM,
 ];
 
@@ -133,7 +138,16 @@ export const CONTENT_SETTINGS_SUB_PAGE_PATH_TO_ID: Record<string, ContentSetting
 export const SYSTEM_SECTION_PATH_TO_ID: Record<string, SystemSection> = {
   overview: "overview",
   jobs: "jobs",
+  logs: "logs",
   audit: "audit",
+};
+
+export const LOGS_SECTION_PATH_TO_ID: Record<string, LogsSection> = {
+  logs: "logs",
+  service: "logs",
+  "service-logs": "logs",
+  audit: "audit",
+  "audit-logs": "audit",
 };
 
 export const ACTIVITY_SECTION_PATH_TO_ID: Record<string, ActivitySection> = {
@@ -143,6 +157,7 @@ export const ACTIVITY_SECTION_PATH_TO_ID: Record<string, ActivitySection> = {
 };
 
 export const WANTED_SECTION_PATH_TO_ID: Record<string, WantedSection> = {
+  items: "wanted",
   "wanted-items": "wanted",
   wanted: "wanted",
   "cutoff-unmet": "cutoff",

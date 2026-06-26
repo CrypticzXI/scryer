@@ -2088,16 +2088,23 @@ async fn run_discovery_sync_worker(
     app: AppUseCase,
     token: tokio_util::sync::CancellationToken,
 ) {
-    let initial_delay_seconds = JobKey::DiscoverySync
-        .initial_delay_seconds()
-        .unwrap_or(30 * 60)
-        .max(1);
+    let startup_grace_delay = std::time::Duration::from_secs(60);
     app.set_job_next_run_at(
         JobKey::DiscoverySync,
-        Utc::now() + chrono::Duration::seconds(initial_delay_seconds),
+        Utc::now()
+            + Duration::from_std(startup_grace_delay)
+                .expect("discovery sync startup delay should fit in chrono duration"),
     )
     .await;
-    let mut delay = std::time::Duration::from_secs(initial_delay_seconds as u64);
+
+    {
+        let app = app.clone();
+        tokio::spawn(async move {
+            let _ = run_discovery_sync_once(&app, JobTriggerSource::ScheduledStartup).await;
+        });
+    }
+
+    let mut delay = startup_grace_delay;
 
     loop {
         tokio::select! {
@@ -2105,27 +2112,50 @@ async fn run_discovery_sync_worker(
             _ = tokio::time::sleep(delay) => {}
         }
 
-        let started = std::time::Instant::now();
-        if let Err(error) = app
-            .run_scheduled_job_now(JobKey::DiscoverySync, JobTriggerSource::ScheduledInterval)
-            .await
-        {
-            warn!(error = %error, "periodic discovery sync failed");
-            metrics::counter!("scryer_task_errors_total", "task" => "discovery_sync").increment(1);
-        }
-        metrics::counter!("scryer_task_runs_total", "task" => "discovery_sync").increment(1);
-        metrics::histogram!("scryer_task_duration_seconds", "task" => "discovery_sync")
-            .record(started.elapsed().as_secs_f64());
-
-        delay = app
+        if let Some(next_run_at) = app
             .runtime
             .jobs
             .job_run_tracker
             .next_run_at(JobKey::DiscoverySync)
             .await
-            .map(discovery_sync_delay_until)
-            .unwrap_or_else(|| std::time::Duration::from_secs(24 * 60 * 60));
+        {
+            if next_run_at > Utc::now() {
+                delay = discovery_sync_delay_until(next_run_at);
+                continue;
+            }
+        }
+
+        delay = run_discovery_sync_once(&app, JobTriggerSource::ScheduledInterval).await;
     }
+}
+
+async fn run_discovery_sync_once(
+    app: &AppUseCase,
+    trigger_source: JobTriggerSource,
+) -> std::time::Duration {
+    let started = std::time::Instant::now();
+    if let Err(error) = app
+        .run_scheduled_job_now(JobKey::DiscoverySync, trigger_source)
+        .await
+    {
+        warn!(
+            error = %error,
+            trigger_source = trigger_source.as_str(),
+            "discovery sync failed"
+        );
+        metrics::counter!("scryer_task_errors_total", "task" => "discovery_sync").increment(1);
+    }
+    metrics::counter!("scryer_task_runs_total", "task" => "discovery_sync").increment(1);
+    metrics::histogram!("scryer_task_duration_seconds", "task" => "discovery_sync")
+        .record(started.elapsed().as_secs_f64());
+
+    app.runtime
+        .jobs
+        .job_run_tracker
+        .next_run_at(JobKey::DiscoverySync)
+        .await
+        .map(discovery_sync_delay_until)
+        .unwrap_or_else(|| std::time::Duration::from_secs(24 * 60 * 60))
 }
 
 fn discovery_sync_delay_until(next_run_at: DateTime<Utc>) -> std::time::Duration {

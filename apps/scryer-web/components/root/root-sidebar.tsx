@@ -3,6 +3,7 @@ import type { LucideIcon } from "lucide-react";
 import type {
   ActivitySection,
   ContentSettingsSection,
+  LogsSection,
   SettingsSection,
   SystemSection,
   Translate,
@@ -30,7 +31,6 @@ import {
   SidebarTrigger,
   useSidebar,
 } from "@/components/ui/sidebar";
-import { Collapsible, CollapsibleContent } from "@/components/ui/collapsible";
 import {
   Archive,
   Bell,
@@ -91,6 +91,7 @@ type TopNavGroup = {
 type TopNavGroupItemDefinition =
   | { kind: "view"; id: ViewId }
   | { kind: "requests"; icon: LucideIcon }
+  | { kind: "logs"; id: LogsSection; labelKey: string; icon: LucideIcon }
   | { kind: "system"; id: SystemSection; labelKey: string; icon: LucideIcon }
   | {
       kind: "settings";
@@ -104,6 +105,12 @@ type TopNavGroupItem =
   | {
       kind: "requests";
       id: "requests";
+      label: string;
+      icon: LucideIcon;
+    }
+  | {
+      kind: "logs";
+      id: LogsSection;
       label: string;
       icon: LucideIcon;
     }
@@ -175,8 +182,15 @@ const TOP_NAV_GROUPS: TopNavGroupDefinition[] = [
       },
       { kind: "settings", id: "security", icon: Shield },
       { kind: "settings", id: "backups", icon: Archive },
-      { kind: "system", id: "audit", labelKey: "nav.logs", icon: FileText },
       { kind: "view", id: "settings" },
+    ],
+  },
+  {
+    id: "logs",
+    labelKey: "nav.logs",
+    items: [
+      { kind: "logs", id: "logs", labelKey: "nav.serviceLogs", icon: FileText },
+      { kind: "logs", id: "audit", labelKey: "nav.auditLogs", icon: Shield },
     ],
   },
 ];
@@ -202,6 +216,7 @@ type RootSidebarProps = {
   settingsSection: SettingsSection;
   contentSettingsSection: ContentSettingsSection;
   systemSection: SystemSection;
+  logsSection: LogsSection;
   activitySection: ActivitySection;
   wantedSection: WantedSection;
   user: AuthUser;
@@ -219,6 +234,7 @@ type RootSidebarProps = {
     nextSystemSection?: SystemSection,
     nextWantedSection?: WantedSection,
     nextActivitySection?: ActivitySection,
+    nextLogsSection?: LogsSection,
   ) => void;
 };
 
@@ -358,7 +374,11 @@ const MEDIA_SETTINGS_SUB_PAGES: Array<{
 const SYSTEM_SUB_PAGES: Array<{ id: SystemSection; labelKey: string }> = [
   { id: "overview", labelKey: "system.title" },
   { id: "jobs", labelKey: "system.jobsTitle" },
-  { id: "audit", labelKey: "nav.logs" },
+];
+
+const LOGS_SUB_PAGES: Array<{ id: LogsSection; labelKey: string }> = [
+  { id: "logs", labelKey: "nav.serviceLogs" },
+  { id: "audit", labelKey: "nav.auditLogs" },
 ];
 
 const ACTIVITY_SUB_PAGES: Array<{ id: ActivitySection; labelKey: string }> = [
@@ -507,6 +527,7 @@ function RootSidebarContent({
   settingsSection,
   contentSettingsSection,
   systemSection,
+  logsSection,
   activitySection,
   wantedSection,
   user,
@@ -655,6 +676,19 @@ function RootSidebarContent({
             },
           ];
         }
+        if (definition.kind === "logs") {
+          if (!canManageSystemSettings) {
+            return [];
+          }
+          return [
+            {
+              kind: "logs",
+              id: definition.id,
+              label: t(definition.labelKey),
+              icon: definition.icon,
+            },
+          ];
+        }
         if (definition.kind === "system") {
           if (!canManageSystemSettings) {
             return [];
@@ -720,12 +754,7 @@ function RootSidebarContent({
     (total, viewId) => total + pendingMediaRequestCountForNavView(viewId),
     0,
   );
-  const isRequestsSection =
-    MEDIA_NAV_VIEW_IDS.includes(view) && contentSettingsSection === "requests";
-  const requestNavTargetView = MEDIA_NAV_VIEW_IDS.includes(view)
-    ? view
-    : (visibleTopNav.find((item) => MEDIA_NAV_VIEW_IDS.includes(item.id))?.id ??
-      "movies");
+  const isRequestsSection = view === "requests";
   const activityImportBadgeCount = Math.max(0, manualImportRequiredCount);
   const hasActivityImportBadge = activityImportBadgeCount > 0;
   const visibleActivitySubPages = React.useMemo(
@@ -756,6 +785,7 @@ function RootSidebarContent({
       nextSystemSection?: SystemSection,
       nextWantedSection?: WantedSection,
       nextActivitySection?: ActivitySection,
+      nextLogsSection?: LogsSection,
     ) => {
       event.preventDefault();
       onNavigate(
@@ -765,6 +795,7 @@ function RootSidebarContent({
         nextSystemSection,
         nextWantedSection,
         nextActivitySection,
+        nextLogsSection,
       );
       if (isMobile) {
         setOpenMobile(false);
@@ -776,6 +807,9 @@ function RootSidebarContent({
   const currentTopLevelLabel = React.useMemo(() => {
     if (isRequestsSection) {
       return t("nav.requests");
+    }
+    if (view === "logs") {
+      return t("nav.logs");
     }
 
     return (
@@ -832,6 +866,12 @@ function RootSidebarContent({
         : null;
     }
 
+    if (view === "logs") {
+      return LOGS_SUB_PAGES.find((entry) => entry.id === logsSection)?.labelKey
+        ? t(LOGS_SUB_PAGES.find((entry) => entry.id === logsSection)!.labelKey)
+        : null;
+    }
+
     if (view === "activity") {
       return visibleActivitySubPages.find(
         (entry) => entry.id === activitySection,
@@ -859,6 +899,7 @@ function RootSidebarContent({
     contentSettingsSection,
     settingsSection,
     systemSection,
+    logsSection,
     activitySection,
     t,
     view,
@@ -892,7 +933,7 @@ function RootSidebarContent({
         collapsible={isMobile ? "offcanvas" : "none"}
         mobileTitle={t("nav.mobileTitle")}
         mobileDescription={t("nav.mobileDescription")}
-        className="overflow-hidden border-r border-[var(--scry-border3)] shadow-[12px_0_40px_rgba(2,6,23,0.22)] backdrop-blur min-[981px]:sticky min-[981px]:top-[var(--root-shell-top-offset,0px)] min-[981px]:h-[calc(100dvh-var(--root-shell-top-offset,0px))] min-[981px]:max-h-[calc(100dvh-var(--root-shell-top-offset,0px))] min-[981px]:self-start"
+        className="overflow-hidden border-r border-[var(--scry-border3)] [background:var(--scry-shell-side-bg)] shadow-[12px_0_40px_rgba(2,6,23,0.22)] backdrop-blur min-[981px]:sticky min-[981px]:top-[var(--root-shell-top-offset,0px)] min-[981px]:h-[calc(100dvh-var(--root-shell-top-offset,0px))] min-[981px]:max-h-[calc(100dvh-var(--root-shell-top-offset,0px))] min-[981px]:self-start"
       >
         <SidebarHeader className="px-5 pb-3 pt-5">
           <div className="flex items-center gap-3">
@@ -927,12 +968,7 @@ function RootSidebarContent({
                             isActive={isRequestsSection}
                             className={TOP_NAV_BUTTON_CLASS}
                             onClick={(event) => {
-                              handleNavigate(
-                                event,
-                                requestNavTargetView,
-                                undefined,
-                                "requests",
-                              );
+                              handleNavigate(event, "requests");
                             }}
                           >
                             <Icon className="h-4 w-4" />
@@ -990,6 +1026,37 @@ function RootSidebarContent({
                               handleNavigate(
                                 event,
                                 "system",
+                                undefined,
+                                undefined,
+                                item.id,
+                              );
+                            }}
+                          >
+                            <Icon className="h-4 w-4" />
+                            {item.label}
+                          </SidebarMenuButton>
+                        </SidebarMenuItem>
+                      </React.Fragment>
+                    );
+                  }
+                  if (item.kind === "logs") {
+                    return (
+                      <React.Fragment key={`logs-${item.id}`}>
+                        <SidebarMenuItem>
+                          <SidebarMenuButton
+                            id={selectorId(
+                              "root-sidebar-logs-shortcut",
+                              item.id,
+                            )}
+                            isActive={view === "logs" && logsSection === item.id}
+                            className={TOP_NAV_BUTTON_CLASS}
+                            onClick={(event) => {
+                              handleNavigate(
+                                event,
+                                "logs",
+                                undefined,
+                                undefined,
+                                undefined,
                                 undefined,
                                 undefined,
                                 item.id,
@@ -1376,74 +1443,28 @@ function RootSidebarContent({
                                 ) : null}
                                 {canAccessMediaSettings ? (
                                   <SidebarMenuSubItem>
-                                    <Collapsible
-                                      open={isSettingsSubPage(
+                                    <SidebarMenuSubButton
+                                      id={selectorId(
+                                        "root-sidebar-media",
+                                        item.id,
+                                        "settings",
+                                      )}
+                                      isActive={isSettingsSubPage(
                                         contentSettingsSection,
                                       )}
-                                    >
-                                      <SidebarMenuSubButton
-                                        id={selectorId(
-                                          "root-sidebar-media",
+                                      className={SUB_NAV_BUTTON_CLASS}
+                                      onClick={(event) => {
+                                        handleNavigate(
+                                          event,
                                           item.id,
-                                          "settings",
-                                        )}
-                                        isActive={isSettingsSubPage(
-                                          contentSettingsSection,
-                                        )}
-                                        className={SUB_NAV_BUTTON_CLASS}
-                                        onClick={(event) => {
-                                          handleNavigate(
-                                            event,
-                                            item.id,
-                                            undefined,
-                                            "library",
-                                          );
-                                        }}
-                                      >
-                                        {getMediaSettingsLabel(item.id, t)}
-                                        <ChevronRight
-                                          className={`ml-auto h-3 w-3 transition-transform ${isSettingsSubPage(contentSettingsSection) ? "rotate-90" : ""}`}
-                                        />
-                                      </SidebarMenuSubButton>
-                                      <CollapsibleContent>
-                                        <SidebarMenuSub
-                                          className={SUB_NAV_MENU_CLASS}
-                                        >
-                                          {visibleMediaSettingsSubPages.map(
-                                            (subPage) => (
-                                              <SidebarMenuSubItem
-                                                key={subPage.id}
-                                              >
-                                                <SidebarMenuSubButton
-                                                  id={selectorId(
-                                                    "root-sidebar-media",
-                                                    item.id,
-                                                    subPage.id,
-                                                  )}
-                                                  isActive={
-                                                    contentSettingsSection ===
-                                                    subPage.id
-                                                  }
-                                                  className={
-                                                    SUB_NAV_BUTTON_CLASS
-                                                  }
-                                                  onClick={(event) => {
-                                                    handleNavigate(
-                                                      event,
-                                                      item.id,
-                                                      undefined,
-                                                      subPage.id,
-                                                    );
-                                                  }}
-                                                >
-                                                  {t(subPage.labelKey)}
-                                                </SidebarMenuSubButton>
-                                              </SidebarMenuSubItem>
-                                            ),
-                                          )}
-                                        </SidebarMenuSub>
-                                      </CollapsibleContent>
-                                    </Collapsible>
+                                          undefined,
+                                          "library",
+                                        );
+                                      }}
+                                    >
+                                      {getMediaSettingsLabel(item.id, t)}
+                                      <ChevronRight className="ml-auto h-3 w-3" />
+                                    </SidebarMenuSubButton>
                                   </SidebarMenuSubItem>
                                 ) : null}
                               </>

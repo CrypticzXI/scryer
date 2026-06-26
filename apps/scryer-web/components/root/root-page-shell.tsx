@@ -62,6 +62,7 @@ import type {
   ViewId,
   SettingsSection,
   ContentSettingsSection,
+  LogsSection,
   OverviewTitleTarget,
   SmgScryerUpdateNotice,
   SmgVersionCompatibilityNotice,
@@ -85,6 +86,7 @@ import {
   buildViewPath,
   parseActivitySectionFromPath,
   parseContentSectionFromPath,
+  parseLogsSectionFromPath,
   parseOverviewTargetFromPath,
   parseSettingsSectionFromPath,
   parseSystemSectionFromPath,
@@ -111,6 +113,12 @@ const mediaContainers = () =>
 
 const MediaContentContainer = lazy(() =>
   mediaContainers().then((m) => ({ default: m.MediaContentContainer })),
+);
+
+const RequestsContainer = lazy(() =>
+  import("@/components/containers/requests-container").then((m) => ({
+    default: m.RequestsContainer,
+  })),
 );
 
 const MovieOverviewContainer = lazy(() =>
@@ -253,8 +261,7 @@ function defaultAccessibleRoute(
 
   if (canRequestMedia) {
     return {
-      view: "movies",
-      contentSettingsSection: "requests",
+      view: "requests",
     };
   }
 
@@ -512,6 +519,7 @@ function MainContent({
   setLanguagePreferenceFromShell,
   contentSettingsSection,
   systemSection,
+  logsSection,
   activitySection,
   wantedSection,
   handleOpenOverview,
@@ -544,6 +552,7 @@ function MainContent({
   setLanguagePreferenceFromShell: (code: string) => void;
   contentSettingsSection: ContentSettingsSection;
   systemSection: SystemSection;
+  logsSection: LogsSection;
   activitySection: ActivitySection;
   wantedSection: WantedSection;
   handleOpenOverview: (
@@ -587,23 +596,19 @@ function MainContent({
       />
     );
   }
-  if (view === "wanted") {
-    if (wantedSection === "history") {
-      if (!canManageTitle) {
-        return (
-          <WantedContainer
-            key="wanted-wanted"
-            wantedSection="wanted"
-            onOpenOverview={handleOpenOverview}
-          />
-        );
-      }
-      return <WantedHistoryContainer key="wanted-history" />;
+  if (view === "requests") {
+    if (!canManageTitle && !canRequestMedia) {
+      return <ViewLoadingFallback />;
     }
+    return <RequestsContainer key="requests" facet={null} />;
+  }
+  if (view === "wanted") {
+    const resolvedWantedSection =
+      wantedSection === "history" && !canManageTitle ? "wanted" : wantedSection;
     return (
       <WantedContainer
-        key={`wanted-${wantedSection}`}
-        wantedSection={wantedSection}
+        key={`wanted-${resolvedWantedSection}`}
+        wantedSection={resolvedWantedSection}
         onOpenOverview={handleOpenOverview}
       />
     );
@@ -624,10 +629,25 @@ function MainContent({
     if (!canManageSystemSettings) {
       return <ViewLoadingFallback />;
     }
+    const effectiveSystemSection =
+      systemSection === "logs" || systemSection === "audit"
+        ? "overview"
+        : systemSection;
     return (
       <SystemContainer
-        key={`system-${systemSection}`}
-        systemSection={systemSection}
+        key={`system-${effectiveSystemSection}`}
+        systemSection={effectiveSystemSection}
+      />
+    );
+  }
+  if (view === "logs") {
+    if (!canManageSystemSettings) {
+      return <ViewLoadingFallback />;
+    }
+    return (
+      <SystemContainer
+        key={`logs-${logsSection}`}
+        systemSection={logsSection}
       />
     );
   }
@@ -724,6 +744,8 @@ function MainContent({
       canManageSystemSettings={canManageSystemSettings}
       canManageCatalogSettings={canManageCatalogSettings}
       canManageLibrarySettings={canManageLibrarySettings}
+      canManageTitle={canManageTitle}
+      canRequestMedia={canRequestMedia}
       onOpenOverview={handleOpenOverview}
     />
   );
@@ -847,6 +869,7 @@ function AuthenticatedHomePage({
     parsedSettingsSection: settingsSection,
     parsedContentSection: contentSettingsSection,
     parsedSystemSection: systemSection,
+    parsedLogsSection: logsSection,
     parsedActivitySection: activitySection,
     parsedWantedSection: wantedSection,
     parsedOverviewLibrarySlug,
@@ -870,6 +893,10 @@ function AuthenticatedHomePage({
       parsedView === "system"
         ? parseSystemSectionFromPath(normalizedSegments[1] ?? null)
         : "overview";
+    const parsedLogsSection: LogsSection =
+      parsedView === "logs"
+        ? parseLogsSectionFromPath(normalizedSegments[1] ?? null)
+        : "logs";
     const parsedActivitySection: ActivitySection =
       parsedView === "activity"
         ? parseActivitySectionFromPath(normalizedSegments[1] ?? null)
@@ -891,6 +918,7 @@ function AuthenticatedHomePage({
       parsedSettingsSection,
       parsedContentSection,
       parsedSystemSection,
+      parsedLogsSection,
       parsedActivitySection,
       parsedWantedSection,
       parsedOverviewLibrarySlug: parsedOverviewTarget.librarySlug,
@@ -928,6 +956,29 @@ function AuthenticatedHomePage({
       navigate(nextPathWithQuery, { replace: true });
     }
   }, [navigate, pathname, searchParams, view]);
+
+  useEffect(() => {
+    if (view !== "system" || (systemSection !== "logs" && systemSection !== "audit")) {
+      return;
+    }
+
+    const nextPath = buildViewPath(
+      "logs",
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      systemSection,
+    );
+    const nextQuery = searchParams.toString();
+    const nextPathWithQuery = `${nextPath}${nextQuery ? `?${nextQuery}` : ""}`;
+    const currentPathWithQuery = `${pathname}${nextQuery ? `?${nextQuery}` : ""}`;
+
+    if (nextPathWithQuery !== currentPathWithQuery) {
+      navigate(nextPathWithQuery, { replace: true });
+    }
+  }, [navigate, pathname, searchParams, systemSection, view]);
 
   const navigationOverviewTarget = useMemo(
     () =>
@@ -1063,6 +1114,7 @@ function AuthenticatedHomePage({
       nextSystemSection?: SystemSection,
       nextWantedSection?: WantedSection,
       nextActivitySection?: ActivitySection,
+      nextLogsSection?: LogsSection,
       nextOverviewTitleId?: string | null,
       nextEpisodeId?: string | null,
     ) => {
@@ -1074,6 +1126,7 @@ function AuthenticatedHomePage({
         nextView === "system" ? nextSystemSection : undefined,
         nextView === "wanted" ? nextWantedSection : undefined,
         nextView === "activity" ? nextActivitySection : undefined,
+        nextView === "logs" ? nextLogsSection : undefined,
       );
       const normalizedContentSection = isMedia
         ? (nextContentSection ?? "overview")
@@ -1393,11 +1446,10 @@ function AuthenticatedHomePage({
       buildRouteCommands({
         t,
         user: authenticatedUser,
-        activeFacet,
         activityImportCount: manualImportRequiredCount,
         onNavigate: navigateTo,
-      }).filter((command) => !command.id.startsWith("system-")),
-    [activeFacet, authenticatedUser, manualImportRequiredCount, navigateTo, t],
+      }),
+    [authenticatedUser, manualImportRequiredCount, navigateTo, t],
   );
 
   useAutoBackupNotice({
@@ -1531,7 +1583,7 @@ function AuthenticatedHomePage({
   }, [canViewCatalog, navigateToAccessibleDefault, view]);
 
   useEffect(() => {
-    if (view !== "system" || canManageSystemSettings) {
+    if ((view !== "system" && view !== "logs") || canManageSystemSettings) {
       return;
     }
 
@@ -1548,7 +1600,7 @@ function AuthenticatedHomePage({
     }
 
     if (canRequestMedia) {
-      navigateTo(view, undefined, "requests", undefined, undefined);
+      navigateTo("requests");
       return;
     }
 
@@ -1576,12 +1628,16 @@ function AuthenticatedHomePage({
   ]);
 
   useEffect(() => {
-    if (
-      !isMediaView(view) ||
-      contentSettingsSection !== "requests" ||
-      canManageTitle ||
-      canRequestMedia
-    ) {
+    if (isMediaView(view) && contentSettingsSection === "requests") {
+      if (canManageTitle || canRequestMedia) {
+        navigateTo("requests");
+        return;
+      }
+      navigateToAccessibleDefault();
+      return;
+    }
+
+    if (view !== "requests" || canManageTitle || canRequestMedia) {
       return;
     }
 
@@ -1590,6 +1646,7 @@ function AuthenticatedHomePage({
     canManageTitle,
     canRequestMedia,
     contentSettingsSection,
+    navigateTo,
     navigateToAccessibleDefault,
     view,
   ]);
@@ -1842,6 +1899,7 @@ function AuthenticatedHomePage({
                           settingsSection={settingsSection}
                           contentSettingsSection={contentSettingsSection}
                           systemSection={systemSection}
+                          logsSection={logsSection}
                           activitySection={activitySection}
                           wantedSection={wantedSection}
                           user={authenticatedUser}
@@ -1915,6 +1973,7 @@ function AuthenticatedHomePage({
                                     contentSettingsSection
                                   }
                                   systemSection={systemSection}
+                                  logsSection={logsSection}
                                   activitySection={activitySection}
                                   wantedSection={wantedSection}
                                   handleOpenOverview={handleOpenOverview}

@@ -38,6 +38,7 @@ import { CutoffUnmetView } from "@/components/views/cutoff-unmet-view";
 import type { CutoffUnmetItem } from "@/components/views/cutoff-unmet-view";
 import type {
   PendingReleaseItem,
+  PendingReleaseStatus,
   LibraryRecord,
   Release,
   ReleaseDecisionItem,
@@ -520,6 +521,7 @@ type WantedViewProps = {
   wantedState: WantedViewState;
   cutoffState: CutoffUnmetViewState;
   pendingState: PendingViewState;
+  historyContent?: React.ReactNode;
   onOpenOverview?: (
     targetView: ViewId,
     overviewTarget: OverviewTitleTarget,
@@ -532,6 +534,7 @@ export function WantedView({
   wantedState,
   cutoffState,
   pendingState,
+  historyContent,
   onOpenOverview,
 }: WantedViewProps) {
   const t = useTranslate();
@@ -551,6 +554,11 @@ export function WantedView({
       label: t("pending.title"),
       count: pendingState.items.length,
     },
+    {
+      section: "history" as const,
+      label: t("history.title"),
+      count: null,
+    },
   ];
 
   return (
@@ -558,7 +566,7 @@ export function WantedView({
       <div className="shrink-0 border-b border-[var(--scry-border3)] px-4 pt-4 sm:px-5">
         <nav className="flex gap-5 overflow-x-auto [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden" aria-label={t("nav.wanted")}>
           {wantedTabs.map((tab) => {
-            const active = section === tab.section || (section === "history" && tab.section === "wanted");
+            const active = section === tab.section;
             return (
               <Link
                 key={tab.section}
@@ -569,18 +577,22 @@ export function WantedView({
                 )}
               >
                 <span>{tab.label}</span>
-                <span className={cn(
-                  "rounded-md bg-[var(--scry-chip)] px-1.5 py-0.5 text-[10.5px] font-semibold tabular-nums text-[var(--scry-muted3)]",
-                  active && "bg-[rgba(var(--scry-accent-rgb),0.16)] text-[var(--scry-accent-text)]",
-                )}>
-                  {tab.count}
-                </span>
+                {tab.count === null ? null : (
+                  <span className={cn(
+                    "rounded-md bg-[var(--scry-chip)] px-1.5 py-0.5 text-[10.5px] font-semibold tabular-nums text-[var(--scry-muted3)]",
+                    active && "bg-[rgba(var(--scry-accent-rgb),0.16)] text-[var(--scry-accent-text)]",
+                  )}>
+                    {tab.count}
+                  </span>
+                )}
               </Link>
             );
           })}
         </nav>
       </div>
-      {section === "cutoff" ? (
+      {section === "history" ? (
+        historyContent ?? <WantedItemsCard state={wantedState} onOpenOverview={onOpenOverview} />
+      ) : section === "cutoff" ? (
         <CutoffUnmetView state={cutoffState} />
       ) : section === "pending" ? (
         <PendingReleasesCard state={pendingState} />
@@ -1209,6 +1221,49 @@ function formatTimeRemaining(delayUntil: string, t: Translate): string {
   return t("wanted.timeMinutes", { minutes });
 }
 
+function formatPendingStatus(status: PendingReleaseStatus): string {
+  return status
+    .split("_")
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+function pendingStatusBadge(status: PendingReleaseStatus) {
+  const cls =
+    status === "grabbed"
+      ? "border-emerald-500/30 bg-emerald-500/15 text-emerald-300"
+      : status === "expired" || status === "dismissed"
+        ? "border-red-500/25 bg-red-500/12 text-red-300"
+        : status === "processing"
+          ? "border-sky-500/30 bg-sky-500/14 text-sky-300"
+          : status === "superseded"
+            ? "border-amber-500/30 bg-amber-500/14 text-amber-300"
+            : "border-[var(--scry-border2)] bg-[var(--scry-chip)] text-[var(--scry-muted2)]";
+  return (
+    <span className={`inline-flex rounded-full border px-2 py-0.5 text-xs font-medium ${cls}`}>
+      {formatPendingStatus(status)}
+    </span>
+  );
+}
+
+function pendingPhaseBadge(status: PendingReleaseStatus) {
+  const label =
+    status === "processing"
+      ? "Processing"
+      : status === "grabbed"
+        ? "Grabbed"
+        : status === "expired" || status === "dismissed"
+          ? "Closed"
+          : status === "superseded"
+            ? "Superseded"
+            : "Scheduled";
+  return (
+    <span className="inline-flex rounded-full border border-[rgba(var(--scry-accent-rgb),0.24)] bg-[rgba(var(--scry-accent-rgb),0.13)] px-2 py-0.5 text-xs font-medium text-[var(--scry-accent-text)]">
+      {label}
+    </span>
+  );
+}
+
 function PendingReleasesCard({ state }: { state: PendingViewState }) {
   const t = useTranslate();
   const dateTimeFormat = useUiDateTimeFormat();
@@ -1224,6 +1279,11 @@ function PendingReleasesCard({ state }: { state: PendingViewState }) {
     forceGrab,
     dismiss,
   } = state;
+  const [expandedPendingId, setExpandedPendingId] = useState<string | null>(null);
+
+  const togglePendingExpanded = (id: string) => {
+    setExpandedPendingId((current) => (current === id ? null : id));
+  };
 
   useEffect(() => {
     const node = loadMoreRef.current;
@@ -1275,9 +1335,30 @@ function PendingReleasesCard({ state }: { state: PendingViewState }) {
             <p className="text-center text-[var(--scry-muted3)]">{t("pending.noItems")}</p>
           ) : (
             <div className="space-y-3">
-              {items.map((item) => (
+              {items.map((item) => {
+                const expanded = expandedPendingId === item.id;
+                return (
                 <div key={item.id} className="rounded-[14px] border border-[var(--scry-border2)] bg-[var(--scry-surfC)] p-3 shadow-[0_12px_28px_rgba(2,6,23,0.10)]">
-                  <p className="break-words text-sm font-medium text-foreground">{item.releaseTitle}</p>
+                  <div className="flex items-start gap-2">
+                    <button
+                      type="button"
+                      className="mt-0.5 p-0.5 text-muted-foreground hover:text-foreground"
+                      onClick={() => togglePendingExpanded(item.id)}
+                    >
+                      {expanded ? (
+                        <ChevronDown className="h-4 w-4" />
+                      ) : (
+                        <ChevronRight className="h-4 w-4" />
+                      )}
+                    </button>
+                    <div className="min-w-0 flex-1">
+                      <p className="break-words text-sm font-medium text-foreground">{item.releaseTitle}</p>
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        {pendingStatusBadge(item.status)}
+                        {pendingPhaseBadge(item.status)}
+                      </div>
+                    </div>
+                  </div>
                   <div className="mt-2 grid grid-cols-2 gap-2 text-xs text-muted-foreground">
                     <div>
                       <span className="block">{t("pending.colScore")}</span>
@@ -1304,6 +1385,18 @@ function PendingReleasesCard({ state }: { state: PendingViewState }) {
                   <p className="mt-2 text-xs text-muted-foreground">
                     {formatDate(item.addedAt, dateTimeFormat)}
                   </p>
+                  {expanded ? (
+                    <div className="mt-3 grid gap-2 rounded-[10px] border border-[var(--scry-border3)] bg-[var(--scry-bg)] p-3 text-xs">
+                      <div>
+                        <span className="block text-muted-foreground">Title ID</span>
+                        <span className="break-all text-foreground">{item.titleId}</span>
+                      </div>
+                      <div>
+                        <span className="block text-muted-foreground">Wanted Item</span>
+                        <span className="break-all text-foreground">{item.wantedItemId}</span>
+                      </div>
+                    </div>
+                  ) : null}
                   <div className="mt-3 flex gap-2">
                     <Button size="sm" variant="secondary" className="flex-1" onClick={() => void forceGrab(item.id)}>
                       <Download className="h-4 w-4" />
@@ -1315,15 +1408,19 @@ function PendingReleasesCard({ state }: { state: PendingViewState }) {
                     </Button>
                   </div>
                 </div>
-              ))}
+                );
+              })}
             </div>
           )
         ) : (
           <div className="overflow-auto rounded-[14px] border border-[var(--scry-border2)] bg-[var(--scry-surfC)]">
-            <Table className="min-w-[760px]">
+            <Table className="min-w-[980px]">
               <TableHeader>
                 <TableRow>
+                  <TableHead className="w-8" />
                   <TableHead>{t("pending.colRelease")}</TableHead>
+                  <TableHead>{t("wanted.colStatus")}</TableHead>
+                  <TableHead>{t("wanted.colPhase")}</TableHead>
                   <TableHead>{t("pending.colScore")}</TableHead>
                   <TableHead>{t("pending.colSize")}</TableHead>
                   <TableHead>{t("pending.colIndexer")}</TableHead>
@@ -1333,66 +1430,110 @@ function PendingReleasesCard({ state }: { state: PendingViewState }) {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {items.map((item) => (
-                  <TableRow key={item.id}>
-                    <TableCell className="max-w-[300px] truncate text-sm" title={item.releaseTitle}>
-                      {item.releaseTitle}
-                    </TableCell>
-                    <TableCell>{item.releaseScore}</TableCell>
-                    <TableCell className="text-xs">
-                      {item.releaseSizeBytes == null ? "—" : formatBytes(item.releaseSizeBytes)}
-                    </TableCell>
-                    <TableCell className="text-xs">{item.indexerSource ?? "—"}</TableCell>
-                    <TableCell className="text-xs">
-                      {formatDate(item.addedAt, dateTimeFormat)}
-                    </TableCell>
-                    <TableCell className="text-xs">
-                      <span title={formatDate(item.delayUntil, dateTimeFormat)}>
-                        {formatTimeRemaining(item.delayUntil, t)}
-                      </span>
-                    </TableCell>
-                    <TableCell>
-                      <div className="flex gap-1">
-                        <Button
-                          size="icon"
-                          variant="ghost"
-                          className="h-7 w-7"
-                          title={t("pending.forceGrab")}
-                          onClick={() => void forceGrab(item.id)}
-                        >
-                          <Download className="h-3.5 w-3.5" />
-                        </Button>
-                        <Button
-                          size="icon"
-                          variant="ghost"
-                          className="h-7 w-7"
-                          title={t("pending.dismiss")}
-                          onClick={() => void dismiss(item.id)}
-                        >
-                          <X className="h-3.5 w-3.5" />
-                        </Button>
-                      </div>
-                    </TableCell>
-                  </TableRow>
-                ))}
+                {items.map((item) => {
+                  const expanded = expandedPendingId === item.id;
+                  return (
+                    <Fragment key={item.id}>
+                      <TableRow>
+                        <TableCell>
+                          <button
+                            type="button"
+                            className="p-0.5 text-muted-foreground hover:text-foreground"
+                            onClick={() => togglePendingExpanded(item.id)}
+                          >
+                            {expanded ? (
+                              <ChevronDown className="h-4 w-4" />
+                            ) : (
+                              <ChevronRight className="h-4 w-4" />
+                            )}
+                          </button>
+                        </TableCell>
+                        <TableCell className="max-w-[340px] truncate text-sm" title={item.releaseTitle}>
+                          {item.releaseTitle}
+                        </TableCell>
+                        <TableCell>{pendingStatusBadge(item.status)}</TableCell>
+                        <TableCell>{pendingPhaseBadge(item.status)}</TableCell>
+                        <TableCell>{item.releaseScore}</TableCell>
+                        <TableCell className="text-xs">
+                          {item.releaseSizeBytes == null ? "—" : formatBytes(item.releaseSizeBytes)}
+                        </TableCell>
+                        <TableCell className="text-xs">{item.indexerSource ?? "—"}</TableCell>
+                        <TableCell className="text-xs">
+                          {formatDate(item.addedAt, dateTimeFormat)}
+                        </TableCell>
+                        <TableCell className="text-xs">
+                          <span title={formatDate(item.delayUntil, dateTimeFormat)}>
+                            {formatTimeRemaining(item.delayUntil, t)}
+                          </span>
+                        </TableCell>
+                        <TableCell>
+                          <div className="flex gap-1">
+                            <Button
+                              size="icon"
+                              variant="ghost"
+                              className="h-7 w-7"
+                              title={t("pending.forceGrab")}
+                              onClick={() => void forceGrab(item.id)}
+                            >
+                              <Download className="h-3.5 w-3.5" />
+                            </Button>
+                            <Button
+                              size="icon"
+                              variant="ghost"
+                              className="h-7 w-7"
+                              title={t("pending.dismiss")}
+                              onClick={() => void dismiss(item.id)}
+                            >
+                              <X className="h-3.5 w-3.5" />
+                            </Button>
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                      {expanded ? (
+                        <TableRow>
+                          <TableCell colSpan={10} className="bg-background/30 p-4">
+                            <div className="grid gap-3 text-xs sm:grid-cols-2 lg:grid-cols-4">
+                              <div>
+                                <span className="block text-muted-foreground">Title ID</span>
+                                <span className="break-all text-foreground">{item.titleId}</span>
+                              </div>
+                              <div>
+                                <span className="block text-muted-foreground">Wanted Item</span>
+                                <span className="break-all text-foreground">{item.wantedItemId}</span>
+                              </div>
+                              <div>
+                                <span className="block text-muted-foreground">{t("pending.colAddedAt")}</span>
+                                <span className="text-foreground">{formatDate(item.addedAt, dateTimeFormat)}</span>
+                              </div>
+                              <div>
+                                <span className="block text-muted-foreground">{t("pending.colDelayUntil")}</span>
+                                <span className="text-foreground">{formatDate(item.delayUntil, dateTimeFormat)}</span>
+                              </div>
+                            </div>
+                          </TableCell>
+                        </TableRow>
+                      ) : null}
+                    </Fragment>
+                  );
+                })}
                 {items.length === 0 && !loading && (
                   <TableRow>
-                    <TableCell colSpan={7} className="text-center text-muted-foreground">
+                    <TableCell colSpan={10} className="text-center text-muted-foreground">
                       {t("pending.noItems")}
                     </TableCell>
                   </TableRow>
-	                )}
-	              </TableBody>
-	            </Table>
-	          </div>
-	        )}
-	        <div ref={loadMoreRef} aria-hidden="true" className="h-px" />
-	        {loadingMore ? (
-	          <p className="mt-3 text-center text-sm text-muted-foreground">
-	            {t("wanted.refreshing")}
-	          </p>
-	        ) : null}
-	      </CardContent>
-	    </Card>
-	  );
-	}
+                )}
+              </TableBody>
+            </Table>
+          </div>
+        )}
+        <div ref={loadMoreRef} aria-hidden="true" className="h-px" />
+        {loadingMore ? (
+          <p className="mt-3 text-center text-sm text-muted-foreground">
+            {t("wanted.refreshing")}
+          </p>
+        ) : null}
+      </CardContent>
+    </Card>
+  );
+}

@@ -461,7 +461,7 @@ export function TitleTable({
         <button
           type="button"
           className={cn(
-            "inline-flex w-full items-center gap-1 text-left font-medium text-foreground transition-colors hover:text-foreground/80",
+            "inline-flex w-full items-center gap-1 text-left text-[11px] font-bold uppercase tracking-[0.05em] text-[var(--scry-faint2)] transition-colors hover:text-[var(--scry-muted2)]",
             buttonClassName,
           )}
           onClick={() => handleSort(key)}
@@ -556,8 +556,8 @@ export function TitleTable({
     const deleteLoading = isDeletingById[item.id] === true;
     const monitorToggleLoading = isTogglingMonitoredById?.[item.id] === true;
     const posterThumbUrl = selectPosterVariantUrl(item.posterUrl, "w70");
-    const posterActionButtonClassName = "size-8 [&_svg]:size-4";
-    const posterActionIconClassName = "h-4 w-4";
+    const posterActionButtonClassName = "h-7 w-[30px] rounded-[7px]";
+    const posterActionIconClassName = "h-3.5 w-3.5";
     const isSelected = selectedTitleId === item.id;
     const contextPanelControlsId = onSelectTitle ? contextPanelId : undefined;
     const selectedContextPanelControlsId = isSelected
@@ -616,11 +616,11 @@ export function TitleTable({
               aria-current={isSelected ? "true" : undefined}
               aria-controls={selectedContextPanelControlsId}
               tabIndex={onSelectTitle ? -1 : undefined}
-              className="flex w-full min-w-0 items-center gap-3 overflow-hidden text-left text-[14px] font-semibold leading-5 hover:text-foreground hover:underline"
+              className="flex w-full min-w-0 items-center gap-3 overflow-hidden text-left text-[14px] font-semibold leading-5 text-[var(--scry-ink3)] hover:text-foreground"
             >
               <span
                 data-ui="poster-thumb"
-                className="h-14 w-10 shrink-0 overflow-hidden rounded-[6px] border border-border bg-muted"
+                className="h-[47px] w-8 shrink-0 overflow-hidden rounded-[5px] border border-[var(--scry-border2)] bg-[var(--scry-soft)]"
               >
                 <TitlePosterSlot
                   src={posterThumbUrl}
@@ -638,11 +638,9 @@ export function TitleTable({
             </button>
           </TableCell>
           {showLibraryColumn ? (
-            <TableCell className="align-middle">
-              <span className="inline-flex max-w-full rounded border border-border bg-muted/60 px-1.5 py-0.5 text-[11px] font-medium leading-4 text-muted-foreground">
-                <span className="truncate">
-                  {item.libraryName ?? item.libraryId}
-                </span>
+            <TableCell className="align-middle overflow-hidden text-[12.5px] text-[var(--scry-muted)]">
+              <span className="block truncate">
+                {item.libraryName ?? item.libraryId}
               </span>
             </TableCell>
           ) : null}
@@ -662,7 +660,7 @@ export function TitleTable({
             </TableCell>
           ) : null}
           {showQualityColumn ? (
-            <TableCell className="align-middle whitespace-nowrap">
+            <TableCell className="align-middle whitespace-nowrap text-[12.5px] text-[var(--scry-text4)]">
               {qualityProfilesLoading
                 ? null
                 : resolveDisplayedQualityLabel(
@@ -679,12 +677,12 @@ export function TitleTable({
             </TableCell>
           ) : null}
           {showSizeColumn ? (
-            <TableCell className="align-middle whitespace-nowrap">
+            <TableCell className="align-middle whitespace-nowrap text-right text-[12.5px] tabular-nums text-[var(--scry-text4)]">
               {bytesToReadable(item.sizeBytes)}
             </TableCell>
           ) : null}
           {showAddedColumn ? (
-            <TableCell className="align-middle whitespace-nowrap">
+            <TableCell className="align-middle whitespace-nowrap text-right text-[12px] text-[var(--scry-muted)]">
               {addedLabel}
             </TableCell>
           ) : null}
@@ -834,7 +832,7 @@ export function TitleTable({
 
   const titleTableHeader = (
     <TableHeader>
-      <TableRow className="sticky top-0 z-10 border-b border-[var(--scry-border)] bg-[var(--scry-surfD)]">
+      <TableRow className="sticky top-0 z-10 h-11 border-b border-[var(--scry-border)] bg-[var(--scry-surfD)]">
         <TableHead className="w-12 text-center">
           {selectedPaneMode ? (
             <span
@@ -851,52 +849,58 @@ export function TitleTable({
             />
           )}
         </TableHead>
-        {renderSortableHeader("name", t("label.name"))}
+        {renderSortableHeader(
+          "name",
+          t("label.name"),
+          "text-[11px] font-bold uppercase tracking-[0.05em] text-[var(--scry-faint2)]",
+        )}
         {showLibraryColumn
           ? renderSortableHeader(
               "library",
               t("title.table.library"),
-              "whitespace-nowrap",
+              "whitespace-nowrap text-[11px] font-bold uppercase tracking-[0.05em] text-[var(--scry-faint2)]",
             )
           : null}
         {showMonitoredColumn
           ? renderSortableHeader(
               "monitored",
               t("title.table.monitored"),
-              "text-center whitespace-nowrap",
-              "justify-center text-center",
+              "text-center whitespace-nowrap text-[11px] font-bold uppercase tracking-[0.05em] text-[var(--scry-faint2)]",
+              "justify-center text-center uppercase tracking-[0.05em] text-[var(--scry-faint2)]",
             )
           : null}
         {showQualityColumn
           ? renderSortableHeader(
               "quality",
               t("title.table.qualityTier"),
-              "whitespace-nowrap",
+              "whitespace-nowrap text-[11px] font-bold uppercase tracking-[0.05em] text-[var(--scry-faint2)]",
             )
           : null}
         {showEpisodesColumn
           ? renderSortableHeader(
               "episodes",
               t("title.table.episodes"),
-              "whitespace-nowrap",
+              "whitespace-nowrap text-[11px] font-bold uppercase tracking-[0.05em] text-[var(--scry-faint2)]",
             )
           : null}
         {showSizeColumn
           ? renderSortableHeader(
               "size",
               t("title.table.size"),
-              "whitespace-nowrap",
+              "whitespace-nowrap text-right text-[11px] font-bold uppercase tracking-[0.05em] text-[var(--scry-faint2)]",
+              "justify-end text-right uppercase tracking-[0.05em] text-[var(--scry-faint2)]",
             )
           : null}
         {showAddedColumn
           ? renderSortableHeader(
               "added",
               t("title.contextAdded"),
-              "whitespace-nowrap",
+              "whitespace-nowrap text-right text-[11px] font-bold uppercase tracking-[0.05em] text-[var(--scry-faint2)]",
+              "justify-end text-right uppercase tracking-[0.05em] text-[var(--scry-faint2)]",
             )
           : null}
         {showActionsColumn ? (
-          <TableHead className="text-center whitespace-nowrap">
+          <TableHead className="whitespace-nowrap text-right text-[11px] font-bold uppercase tracking-[0.05em] text-[var(--scry-faint2)]">
             {t("label.actions")}
           </TableHead>
         ) : null}

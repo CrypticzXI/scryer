@@ -1,6 +1,7 @@
 import { memo, useCallback, useEffect, useRef, useState } from "react";
 import type { OverviewTitleTarget, ViewId, WantedSection } from "@/components/root/types";
 import { useClient, useMutation } from "urql";
+import { TitleHistoryContainer } from "@/components/containers/title-history-container";
 import { WantedView } from "@/components/views/wanted-view";
 import type { CutoffUnmetItem } from "@/components/views/cutoff-unmet-view";
 import {
@@ -637,6 +638,11 @@ export const WantedContainer = memo(function WantedContainer({
       <WantedView
         section={wantedSection}
         onOpenOverview={onOpenOverview}
+        historyContent={
+          wantedSection === "history" ? (
+            <TitleHistoryContainer showRetryActions={false} />
+          ) : null
+        }
         wantedState={{
           items,
           total,

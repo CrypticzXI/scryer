@@ -75,6 +75,8 @@ const ko: LocaleDictionary = {
   "nav.requests": "요청",
   "nav.system": "시스템",
   "nav.logs": "로그",
+  "nav.serviceLogs": "서비스 로그",
+  "nav.auditLogs": "감사 로그",
   "nav.usersAccess": "사용자 및 접근",
   "nav.group": "내비게이션",
   "nav.mobileTitle": "Scryer 내비게이션",

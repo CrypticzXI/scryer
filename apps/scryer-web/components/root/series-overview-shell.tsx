@@ -1,5 +1,5 @@
 import { lazy, Suspense, useState, useCallback, useMemo } from "react";
-import { ActivitySquare, CalendarDays, Clapperboard, Compass, Film, History, ListChecks, Monitor, MonitorCog, Settings } from "lucide-react";
+import { ActivitySquare, CalendarDays, Clapperboard, Compass, FileText, Film, History, Inbox, ListChecks, Monitor, MonitorCog, Settings } from "lucide-react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { RootHeader } from "@/components/root/root-header";
 import { RootSidebar } from "@/components/root/root-sidebar";
@@ -17,6 +17,7 @@ import type {
   ViewId,
   SettingsSection,
   ContentSettingsSection,
+  LogsSection,
   SystemSection,
   WantedSection,
 } from "@/components/root/types";
@@ -31,6 +32,7 @@ const TOP_NAV_IDS: ViewId[] = [
   "series",
   "anime",
   "discovery",
+  "requests",
   "activity",
   "calendar",
   "wanted",
@@ -43,11 +45,13 @@ const TOP_NAV_ICONS: Record<ViewId, typeof Film> = {
   series: Monitor,
   anime: Clapperboard,
   discovery: Compass,
+  requests: Inbox,
   activity: ActivitySquare,
   calendar: CalendarDays,
   wanted: ListChecks,
   history: History,
   settings: Settings,
+  logs: FileText,
   system: MonitorCog,
 };
 
@@ -113,6 +117,7 @@ export function SeriesOverviewShell() {
       nextSystemSection?: SystemSection,
       nextWantedSection?: WantedSection,
       nextActivitySection?: ActivitySection,
+      nextLogsSection?: LogsSection,
     ) => {
       const targetPath = buildViewPath(
         nextView,
@@ -125,6 +130,7 @@ export function SeriesOverviewShell() {
         nextView === "system" ? nextSystemSection : undefined,
         nextView === "wanted" ? nextWantedSection : undefined,
         nextView === "activity" ? nextActivitySection : undefined,
+        nextView === "logs" ? nextLogsSection : undefined,
       );
       navigate(targetPath);
     },
@@ -155,6 +161,7 @@ export function SeriesOverviewShell() {
                   settingsSection="profile"
                   contentSettingsSection="overview"
                   systemSection="overview"
+                  logsSection="logs"
                   activitySection="activity"
                   wantedSection="wanted"
                   user={permissionUser}

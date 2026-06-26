@@ -75,6 +75,8 @@ const it: LocaleDictionary = {
   "nav.requests": "Richieste",
   "nav.system": "Sistema",
   "nav.logs": "Log",
+  "nav.serviceLogs": "Log del servizio",
+  "nav.auditLogs": "Log di audit",
   "nav.usersAccess": "Utenti e accesso",
   "nav.group": "Navigazione",
   "nav.mobileTitle": "Navigazione Scryer",

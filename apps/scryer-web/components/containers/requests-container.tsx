@@ -32,10 +32,11 @@ import {
 import { normalizeLibraryFilterSelection } from "@/lib/utils/library-filter";
 
 type RequestsContainerProps = {
-  facet: Facet;
+  facet?: Facet | null;
 };
 
 type RequestsMode = "admin" | "mine";
+type RequestStatusFilter = "all" | MediaRequestRecord["status"];
 
 type QualityProfileOption = {
   id: string;
@@ -147,6 +148,9 @@ export function RequestsContainer({ facet }: RequestsContainerProps) {
   const [mode, setMode] = React.useState<RequestsMode>(
     canManageAnyTitle ? "admin" : "mine",
   );
+  const [statusFilter, setStatusFilter] = React.useState<RequestStatusFilter>(
+    canManageAnyTitle ? "pending" : "all",
+  );
   const [adminLibraries, setAdminLibraries] = React.useState<LibraryRecord[]>([]);
   const [requesterLibraries, setRequesterLibraries] = React.useState<LibraryRecord[]>([]);
   const [selectedLibraryIds, setSelectedLibraryIds] = React.useState<string[]>([]);
@@ -158,7 +162,8 @@ export function RequestsContainer({ facet }: RequestsContainerProps) {
   const [actionRequestId, setActionRequestId] = React.useState<string | null>(null);
   const refreshSeqRef = React.useRef(0);
   const librariesRef = React.useRef<LibraryRecord[]>([]);
-  const refreshContextKey = `${user?.id ?? ""}|${facet}|${mode}`;
+  const requestFacet = facet ?? null;
+  const refreshContextKey = `${user?.id ?? ""}|${requestFacet ?? "all"}|${mode}|${statusFilter}`;
   const refreshContextRef = React.useRef(refreshContextKey);
   const libraries = mode === "admin" ? adminLibraries : requesterLibraries;
   const canShowAdminMode = adminLibraries.length > 0;
@@ -174,6 +179,7 @@ export function RequestsContainer({ facet }: RequestsContainerProps) {
 
   React.useEffect(() => {
     setMode(canManageAnyTitle ? "admin" : "mine");
+    setStatusFilter(canManageAnyTitle ? "pending" : "all");
     setAdminLibraries([]);
     setRequesterLibraries([]);
     setRequests([]);
@@ -186,10 +192,10 @@ export function RequestsContainer({ facet }: RequestsContainerProps) {
     try {
       const [adminLibrariesResult, requesterLibrariesResult] = await Promise.all([
         client.query(mediaRequestAdminLibrariesQuery, {
-          facet,
+          facet: requestFacet,
         }).toPromise(),
         client.query(mediaRequestRequesterLibrariesQuery, {
-          facet,
+          facet: requestFacet,
         }).toPromise(),
       ]);
       if (
@@ -236,9 +242,9 @@ export function RequestsContainer({ facet }: RequestsContainerProps) {
       }
 
       const requestsQuery = nextMode === "admin" ? mediaRequestsQuery : myMediaRequestsQuery;
-      const requestStatus = nextMode === "admin" ? "pending" : null;
+      const requestStatus = statusFilter === "all" ? null : statusFilter;
       const requestsResult = await client.query(requestsQuery, {
-        facet,
+        facet: requestFacet,
         libraryIds:
           normalizedSelectedLibraryIds.length > 0
             ? normalizedSelectedLibraryIds
@@ -274,7 +280,7 @@ export function RequestsContainer({ facet }: RequestsContainerProps) {
         setLoading(false);
       }
     }
-  }, [client, facet, mode, refreshContextKey, selectedLibraryIds, setGlobalStatus, t]);
+  }, [client, mode, refreshContextKey, requestFacet, selectedLibraryIds, setGlobalStatus, statusFilter, t]);
 
   const refreshQualityProfileOptions = React.useCallback(async () => {
     try {
@@ -334,6 +340,7 @@ export function RequestsContainer({ facet }: RequestsContainerProps) {
 
   const changeMode = React.useCallback((nextMode: RequestsMode) => {
     setMode(nextMode);
+    setStatusFilter(nextMode === "admin" ? "pending" : "all");
   }, []);
 
   const approveRequest = React.useCallback(
@@ -458,6 +465,8 @@ export function RequestsContainer({ facet }: RequestsContainerProps) {
       canShowAdminMode={canShowAdminMode}
       canShowRequesterMode={canShowRequesterMode}
       onModeChange={changeMode}
+      statusFilter={statusFilter}
+      onStatusFilterChange={setStatusFilter}
       libraries={libraries}
       selectedLibraryIds={selectedLibraryIds}
       onSelectedLibraryIdsChange={setSelectedLibraryIds}

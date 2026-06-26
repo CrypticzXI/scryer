@@ -2,6 +2,7 @@ import type { LocaleCode } from "@/lib/i18n";
 import type {
   ActivitySection,
   ContentSettingsSection,
+  LogsSection,
   SettingsSection,
   SystemSection,
   ViewId,
@@ -14,6 +15,7 @@ import {
   SETTINGS_SECTION_PATH_TO_ID,
   CONTENT_SECTION_PATH_TO_ID,
   CONTENT_SETTINGS_SUB_PAGE_PATH_TO_ID,
+  LOGS_SECTION_PATH_TO_ID,
   SYSTEM_SECTION_PATH_TO_ID,
   ACTIVITY_SECTION_PATH_TO_ID,
   WANTED_SECTION_PATH_TO_ID,
@@ -52,7 +54,7 @@ export const CONTENT_SECTION_PATH: Record<ContentSettingsSection, string> = {
 };
 
 export const WANTED_SECTION_PATH: Record<WantedSection, string> = {
-  wanted: "wanted-items",
+  wanted: "items",
   cutoff: "cutoff-unmet",
   pending: "pending",
   history: "history",
@@ -64,6 +66,11 @@ export const ACTIVITY_SECTION_PATH: Record<ActivitySection, string> = {
   history: "history",
 };
 
+export const LOGS_SECTION_PATH: Record<LogsSection, string> = {
+  logs: "logs",
+  audit: "audit",
+};
+
 const MEDIA_RESERVED_OVERVIEW_SEGMENTS = new Set(["overview", "import", "requests", "settings"]);
 
 export function buildViewPath(
@@ -73,6 +80,7 @@ export function buildViewPath(
   nextSystemSection?: SystemSection,
   nextWantedSection?: WantedSection,
   nextActivitySection?: ActivitySection,
+  nextLogsSection?: LogsSection,
 ) {
   const base = `/${nextView}`;
   if (nextView === "settings" && nextSettingsSection) {
@@ -80,6 +88,13 @@ export function buildViewPath(
   }
   if (nextView === "system" && nextSystemSection && nextSystemSection !== "overview") {
     return `${base}/${nextSystemSection}`;
+  }
+  if (nextView === "logs") {
+    const logsSection = nextLogsSection ?? "logs";
+    if (logsSection !== "logs") {
+      return `${base}/${LOGS_SECTION_PATH[logsSection]}`;
+    }
+    return base;
   }
   if (nextView === "activity") {
     const activitySection = nextActivitySection ?? "activity";
@@ -212,6 +227,13 @@ export function parseSystemSectionFromPath(value: string | null): SystemSection 
     return "overview";
   }
   return SYSTEM_SECTION_PATH_TO_ID[value] ?? "overview";
+}
+
+export function parseLogsSectionFromPath(value: string | null): LogsSection {
+  if (!value) {
+    return "logs";
+  }
+  return LOGS_SECTION_PATH_TO_ID[value] ?? "logs";
 }
 
 export function parseActivitySectionFromPath(value: string | null): ActivitySection {

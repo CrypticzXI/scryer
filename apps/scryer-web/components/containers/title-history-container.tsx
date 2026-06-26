@@ -23,7 +23,11 @@ const WANTED_HISTORY_ACTIVITY_KINDS = new Set([
   "import_rejected",
 ]);
 
-export function TitleHistoryContainer() {
+export function TitleHistoryContainer({
+  showRetryActions = true,
+}: {
+  showRetryActions?: boolean;
+}) {
   const client = useClient();
   const setGlobalStatus = useGlobalStatus();
   const t = useTranslate();
@@ -205,7 +209,7 @@ export function TitleHistoryContainer() {
       onClearFilters={clearFilters}
       onPreviousPage={handlePreviousPage}
       onNextPage={handleNextPage}
-      onRetry={handleRetry}
+      onRetry={showRetryActions ? handleRetry : undefined}
       hasPreviousPage={page > 0}
       hasNextPage={offset + events.length < totalCount}
     />

@@ -18,7 +18,7 @@ import {
 import type { TitleHistoryEvent } from "@/lib/types";
 import { useTranslate } from "@/lib/context/translate-context";
 import { useUiDateTimeFormat } from "@/lib/context/ui-settings-context";
-import { formatUiDateTime } from "@/lib/utils/date-format";
+import { formatUiDate, formatUiTime } from "@/lib/utils/date-format";
 import { redactHistoryApiKeys } from "@/lib/utils/history-redaction";
 import { selectorId } from "@/lib/utils/dom-ids";
 import { HistoryEventIcon } from "./history-event-icon";
@@ -257,7 +257,12 @@ export function HistoryEventTable({
                     {event.quality ?? "\u2014"}
                   </TableCell>
                   <TableCell className="align-top text-sm text-muted-foreground">
-                    {formatUiDateTime(event.occurredAt ?? event.createdAt, dateTimeFormat)}
+                    <div className="font-medium text-foreground">
+                      {formatUiDate(event.occurredAt ?? event.createdAt, dateTimeFormat)}
+                    </div>
+                    <div className="mt-1 text-xs text-muted-foreground">
+                      {formatUiTime(event.occurredAt ?? event.createdAt, dateTimeFormat)}
+                    </div>
                   </TableCell>
                   {showActions ? (
                     <TableCell className="align-top">

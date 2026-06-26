@@ -82,3 +82,24 @@ export type DiscoveryHomePayload = {
   facets: DiscoveryFacet[];
   canViewPersonalized: boolean;
 };
+
+export type DiscoveryItemsInput = {
+  query?: string | null;
+  targetKinds?: string[] | null;
+  sources?: string[] | null;
+  relationTypes?: string[] | null;
+  relationSubtypes?: string[] | null;
+  genres?: string[] | null;
+  statusTags?: string[] | null;
+  facetTerms?: string[] | null;
+  includeOwned?: boolean | null;
+  includeUnresolved?: boolean | null;
+  limit?: number | null;
+  offset?: number | null;
+};
+
+export type DiscoveryItemsPayload = {
+  items: DiscoveryItem[];
+  totalCount: number;
+  canViewPersonalized: boolean;
+};

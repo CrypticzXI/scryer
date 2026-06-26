@@ -51,7 +51,7 @@ export function TitleHistoryView({
   onClearFilters: () => void;
   onPreviousPage: () => void;
   onNextPage: () => void;
-  onRetry: (importId: string, password?: string) => Promise<void>;
+  onRetry?: (importId: string, password?: string) => Promise<void>;
   hasPreviousPage: boolean;
   hasNextPage: boolean;
 }) {

@@ -75,6 +75,8 @@ const ja: LocaleDictionary = {
   "nav.requests": "リクエスト",
   "nav.system": "システム",
   "nav.logs": "ログ",
+  "nav.serviceLogs": "サービスログ",
+  "nav.auditLogs": "監査ログ",
   "nav.usersAccess": "ユーザーとアクセス",
   "nav.group": "ナビゲーション",
   "nav.mobileTitle": "Scryerナビゲーション",

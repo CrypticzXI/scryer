@@ -1,5 +1,5 @@
 import { lazy, Suspense, useState, useCallback, useMemo } from "react";
-import { ActivitySquare, CalendarDays, Clapperboard, Compass, Film, History, ListChecks, Monitor, MonitorCog, Settings } from "lucide-react";
+import { ActivitySquare, CalendarDays, Clapperboard, Compass, FileText, Film, History, Inbox, ListChecks, Monitor, MonitorCog, Settings } from "lucide-react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { RootHeader } from "@/components/root/root-header";
 import { RootSidebar } from "@/components/root/root-sidebar";
@@ -17,6 +17,7 @@ import type {
   ViewId,
   SettingsSection,
   ContentSettingsSection,
+  LogsSection,
   SystemSection,
   WantedSection,
 } from "@/components/root/types";
@@ -27,18 +28,20 @@ const MovieOverviewContainer = lazy(() =>
 );
 
 // Minimal nav items — same sidebar as the main shell so navigation feels consistent.
-const TOP_NAV_IDS: ViewId[] = ["movies", "series", "anime", "discovery", "activity", "calendar", "wanted", "settings", "system"];
+const TOP_NAV_IDS: ViewId[] = ["movies", "series", "anime", "discovery", "requests", "activity", "calendar", "wanted", "settings", "system"];
 
 const TOP_NAV_ICONS: Record<ViewId, typeof Film> = {
   movies: Film,
   series: Monitor,
   anime: Clapperboard,
   discovery: Compass,
+  requests: Inbox,
   activity: ActivitySquare,
   calendar: CalendarDays,
   wanted: ListChecks,
   history: History,
   settings: Settings,
+  logs: FileText,
   system: MonitorCog,
 };
 
@@ -104,6 +107,7 @@ export function MovieOverviewShell() {
       nextSystemSection?: SystemSection,
       nextWantedSection?: WantedSection,
       nextActivitySection?: ActivitySection,
+      nextLogsSection?: LogsSection,
     ) => {
       const targetPath = buildViewPath(
         nextView,
@@ -112,6 +116,7 @@ export function MovieOverviewShell() {
         nextView === "system" ? nextSystemSection : undefined,
         nextView === "wanted" ? nextWantedSection : undefined,
         nextView === "activity" ? nextActivitySection : undefined,
+        nextView === "logs" ? nextLogsSection : undefined,
       );
       navigate(targetPath);
     },
@@ -142,6 +147,7 @@ export function MovieOverviewShell() {
                   settingsSection="profile"
                   contentSettingsSection="overview"
                   systemSection="overview"
+                  logsSection="logs"
                   activitySection="activity"
                   wantedSection="wanted"
                   user={permissionUser}

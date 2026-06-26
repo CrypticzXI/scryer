@@ -692,10 +692,18 @@ export function SystemView({
         </CardContent>
       </Card>
 
-      {/* Log Viewer */}
+    </div>
+  );
+}
+
+export function SystemLogsView() {
+  const t = useTranslate();
+
+  return (
+    <div className="space-y-4">
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">Service Logs</CardTitle>
+          <CardTitle className="text-base">{t("nav.serviceLogs")}</CardTitle>
         </CardHeader>
         <CardContent>
           <LogViewer />

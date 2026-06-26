@@ -1,5 +1,19 @@
 import * as React from "react";
-import { Check, Loader2, Pencil, RefreshCw, X } from "lucide-react";
+import {
+  Check,
+  CircleCheck,
+  Clock,
+  Gem,
+  History,
+  Inbox,
+  Loader2,
+  Pencil,
+  RefreshCw,
+  ShieldX,
+  User,
+  X,
+  type LucideIcon,
+} from "lucide-react";
 
 import { LibraryMultiSelect } from "@/components/common/library-multi-select";
 import { TitlePoster } from "@/components/title-poster";
@@ -41,6 +55,8 @@ type QualityProfileOption = {
 };
 
 type RequestsMode = "admin" | "mine";
+type RequestStatusFilter = "all" | MediaRequestRecord["status"];
+type RequestFacetFilter = MediaRequestRecord["facet"];
 
 type RequestMonitorType =
   | "monitored"
@@ -65,6 +81,8 @@ type RequestsViewProps = {
   canShowAdminMode: boolean;
   canShowRequesterMode: boolean;
   onModeChange: (mode: RequestsMode) => void;
+  statusFilter: RequestStatusFilter;
+  onStatusFilterChange: (status: RequestStatusFilter) => void;
   libraries: LibraryRecord[];
   selectedLibraryIds: string[];
   onSelectedLibraryIdsChange: (libraryIds: string[]) => void;
@@ -226,7 +244,7 @@ function requestStatusLabel(t: ReturnType<typeof useTranslate>, status: MediaReq
     case "approved":
       return t("requests.status.approved");
     case "rejected":
-      return t("requests.status.rejected");
+      return "Dismissed";
     case "canceled":
       return t("requests.status.canceled");
     default:
@@ -234,11 +252,74 @@ function requestStatusLabel(t: ReturnType<typeof useTranslate>, status: MediaReq
   }
 }
 
+function requestStatusTone(
+  t: ReturnType<typeof useTranslate>,
+  status: MediaRequestRecord["status"],
+): { label: string; Icon: LucideIcon; className: string } {
+  switch (status) {
+    case "pending":
+      return {
+        label: requestStatusLabel(t, status),
+        Icon: Clock,
+        className: "border-amber-400/30 bg-amber-500/15 text-amber-300",
+      };
+    case "approved":
+      return {
+        label: requestStatusLabel(t, status),
+        Icon: Check,
+        className: "border-emerald-400/25 bg-emerald-500/15 text-emerald-300",
+      };
+    case "rejected":
+      return {
+        label: requestStatusLabel(t, status),
+        Icon: X,
+        className: "border-red-400/25 bg-red-500/15 text-red-300",
+      };
+    case "canceled":
+    default:
+      return {
+        label: requestStatusLabel(t, status),
+        Icon: ShieldX,
+        className: "border-border bg-background text-muted-foreground",
+      };
+  }
+}
+
+function statusFilterOptions(mode: RequestsMode): Array<{
+  value: RequestStatusFilter;
+  label: string;
+}> {
+  if (mode === "admin") {
+    return [
+      { value: "pending", label: "Pending" },
+      { value: "approved", label: "Approved" },
+      { value: "rejected", label: "Dismissed" },
+    ];
+  }
+
+  return [
+    { value: "all", label: "All" },
+    { value: "pending", label: "Pending" },
+    { value: "approved", label: "Approved" },
+    { value: "rejected", label: "Dismissed" },
+    { value: "canceled", label: "Canceled" },
+  ];
+}
+
+function requestCountByFacet(
+  requests: MediaRequestRecord[],
+  facet: RequestFacetFilter,
+): number {
+  return requests.filter((request) => request.facet === facet).length;
+}
+
 export function RequestsView({
   mode,
   canShowAdminMode,
   canShowRequesterMode,
   onModeChange,
+  statusFilter,
+  onStatusFilterChange,
   libraries,
   selectedLibraryIds,
   onSelectedLibraryIdsChange,
@@ -256,6 +337,23 @@ export function RequestsView({
   const t = useTranslate();
   const dateTimeFormat = useUiDateTimeFormat();
   const showModeSwitch = canShowAdminMode && canShowRequesterMode;
+  const HeadingIcon = mode === "admin" ? Inbox : Clock;
+  const headingTitle = mode === "admin" ? "Request Queue" : "My Requests";
+  const headingCopy =
+    mode === "admin"
+      ? "Approve or dismiss member requests. Approved titles are added to the library and start searching."
+      : "Track the titles you've asked Scryer to grab. You'll be notified when they're available.";
+  const filters = statusFilterOptions(mode);
+  const [adminFacetFilters, setAdminFacetFilters] = React.useState<
+    Record<RequestFacetFilter, boolean>
+  >({ movie: true, series: true, anime: true });
+  const displayedRequests = React.useMemo(
+    () =>
+      mode === "admin"
+        ? requests.filter((request) => adminFacetFilters[request.facet])
+        : requests,
+    [adminFacetFilters, mode, requests],
+  );
   const [approvalRequest, setApprovalRequest] =
     React.useState<MediaRequestRecord | null>(null);
   const [approvalProfileId, setApprovalProfileId] = React.useState("");
@@ -367,51 +465,110 @@ export function RequestsView({
   };
 
   return (
-    <section className="flex min-h-0 flex-1 flex-col gap-4 bg-[var(--scry-surfE)] px-4 py-5 sm:px-6 lg:px-7">
-      <div className="flex flex-wrap items-center gap-2">
-        {showModeSwitch ? (
-          <div className="inline-flex h-11 rounded-md border border-border bg-background p-1">
-            <Button
-              id="requests-mode-admin"
-              type="button"
-              variant={mode === "admin" ? "default" : "ghost"}
-              size="sm"
-              className="h-8"
-              onClick={() => onModeChange("admin")}
-            >
-              {t("requests.mode.admin")}
-            </Button>
-            <Button
-              id="requests-mode-mine"
-              type="button"
-              variant={mode === "mine" ? "default" : "ghost"}
-              size="sm"
-              className="h-8"
-              onClick={() => onModeChange("mine")}
-            >
-              {t("requests.mode.mine")}
-            </Button>
+    <section className="scry-scroll flex min-h-0 flex-1 overflow-y-auto bg-[var(--scry-surfE)]">
+      <div className="mx-auto flex w-full max-w-[1240px] flex-col gap-4 px-4 py-6 sm:px-6 lg:px-8">
+        <div className="flex items-start gap-4">
+          <div className="flex h-11 w-11 flex-none items-center justify-center rounded-[13px] border border-[var(--scry-baccent)] bg-[rgba(var(--scry-accent-rgb),0.16)] text-[var(--scry-accent-text)]">
+            <HeadingIcon className="h-5 w-5" />
           </div>
-        ) : null}
-        <LibraryMultiSelect
-          libraries={libraries}
-          selectedLibraryIds={selectedLibraryIds}
-          onSelectedLibraryIdsChange={onSelectedLibraryIdsChange}
-          triggerClassName="h-11 min-w-56"
-        />
-        <Button
-          type="button"
-          variant="outline"
-          className="h-11"
-          onClick={onRefresh}
-          disabled={loading}
-        >
-          <RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} />
-        </Button>
-      </div>
+          <div className="min-w-0 flex-1">
+            <h1 className="font-display text-[25px] font-bold leading-tight text-[var(--scry-ink)]">
+              {headingTitle}
+            </h1>
+            <p className="mt-1 max-w-2xl text-[13.5px] text-[var(--scry-muted)]">
+              {headingCopy}
+            </p>
+          </div>
+        </div>
 
-      <div className="grid gap-3">
-        {requests.length === 0 && !loading ? (
+        <div className="flex flex-wrap items-center gap-3">
+          {showModeSwitch ? (
+            <div className="inline-flex h-10 rounded-[9px] border border-border bg-background p-1">
+              <Button
+                id="requests-mode-admin"
+                type="button"
+                variant={mode === "admin" ? "default" : "ghost"}
+                size="sm"
+                className="h-8 rounded-[7px]"
+                onClick={() => onModeChange("admin")}
+              >
+                {t("requests.mode.admin")}
+              </Button>
+              <Button
+                id="requests-mode-mine"
+                type="button"
+                variant={mode === "mine" ? "default" : "ghost"}
+                size="sm"
+                className="h-8 rounded-[7px]"
+                onClick={() => onModeChange("mine")}
+              >
+                {t("requests.mode.mine")}
+              </Button>
+            </div>
+          ) : null}
+          <LibraryMultiSelect
+            libraries={libraries}
+            selectedLibraryIds={selectedLibraryIds}
+            onSelectedLibraryIdsChange={onSelectedLibraryIdsChange}
+            triggerClassName="h-10 min-w-56 rounded-[11px]"
+          />
+          {mode === "mine" ? (
+            <Button
+              type="button"
+              variant="outline"
+              className="h-10 w-10 rounded-[11px] p-0"
+              onClick={onRefresh}
+              disabled={loading}
+              aria-label="Refresh requests"
+            >
+              <RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} />
+            </Button>
+          ) : null}
+          <div className="ml-auto flex flex-wrap items-center gap-2">
+            {mode === "admin"
+              ? ([
+                  ["movie", t("search.facetMovies")],
+                  ["series", t("search.facetSeries")],
+                  ["anime", t("search.facetAnime")],
+                ] as Array<[RequestFacetFilter, string]>).map(([facet, label]) => (
+                  <Button
+                    key={facet}
+                    type="button"
+                    size="sm"
+                    aria-pressed={adminFacetFilters[facet]}
+                    variant={adminFacetFilters[facet] ? "default" : "outline"}
+                    className="h-9 rounded-[9px] px-3 text-xs font-semibold"
+                    onClick={() =>
+                      setAdminFacetFilters((current) => ({
+                        ...current,
+                        [facet]: !current[facet],
+                      }))
+                    }
+                  >
+                    {label}
+                    <span className="ml-1 opacity-80">
+                      {requestCountByFacet(requests, facet)}
+                    </span>
+                  </Button>
+                ))
+              : null}
+            {filters.map((filter) => (
+              <Button
+                key={filter.value}
+                type="button"
+                size="sm"
+                variant={statusFilter === filter.value ? "default" : "outline"}
+                className="h-9 rounded-[9px] px-3 text-xs font-semibold"
+                onClick={() => onStatusFilterChange(filter.value)}
+              >
+                {filter.label}
+              </Button>
+            ))}
+          </div>
+        </div>
+
+        <div className="grid gap-3">
+        {displayedRequests.length === 0 && !loading ? (
           <div
             id={mode === "admin" ? "requests-empty-admin" : "requests-empty-mine"}
             className="rounded-lg border border-dashed border-border bg-card/40 px-4 py-8 text-center text-sm text-muted-foreground"
@@ -420,13 +577,160 @@ export function RequestsView({
           </div>
         ) : null}
 
-        {requests.map((request) => {
+        {mode === "admin" && displayedRequests.length > 0 ? (
+          <div className="overflow-hidden rounded-[13px] border border-[var(--scry-border)] bg-[var(--scry-surf)]">
+            <div className="overflow-x-auto">
+              <table className="min-w-[920px] w-full border-collapse text-left text-sm">
+                <thead className="border-b border-[var(--scry-border2)] bg-[var(--scry-inset)] text-[11px] font-bold uppercase tracking-[0.06em] text-[var(--scry-faint2)]">
+                  <tr>
+                    <th className="px-4 py-3">Title</th>
+                    <th className="px-3 py-3">Requester</th>
+                    <th className="px-3 py-3">Library</th>
+                    <th className="px-3 py-3">Quality</th>
+                    <th className="px-3 py-3">Updated</th>
+                    <th className="px-3 py-3">Status</th>
+                    <th className="px-4 py-3 text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {displayedRequests.map((request) => {
+                    const posterUrl = selectPosterVariantUrl(request.posterUrl, "w70");
+                    const requesters = requesterLabel(request);
+                    const externalIds = requestExternalIdLabel(request);
+                    const isResolving = actionRequestId === request.id;
+                    const approveDisabled = loading || actionRequestId !== null;
+                    const actionsDisabled = loading || actionRequestId !== null;
+                    const statusMeta = requestStatusTone(t, request.status);
+                    const StatusIcon = statusMeta.Icon;
+                    const canResolveRequest = request.status === "pending";
+                    const libraryLabel =
+                      libraries.find((library) => library.id === request.libraryId)
+                        ?.name ?? request.libraryId;
+                    return (
+                      <tr
+                        key={request.id}
+                        id={mediaRequestRowId(request.id)}
+                        data-request-status={request.status}
+                        data-request-title={request.title}
+                        data-request-facet={request.facet}
+                        data-request-imdb-id={requestExternalIdValue(request, "imdb")}
+                        data-request-tvdb-id={requestExternalIdValue(request, "tvdb")}
+                        data-request-tmdb-id={requestExternalIdValue(request, "tmdb")}
+                        className="border-b border-[var(--scry-line2)] last:border-b-0 hover:bg-[var(--scry-hover)]"
+                      >
+                        <td className="px-4 py-3">
+                          <div className="flex min-w-0 items-center gap-3">
+                            <div className="h-12 w-8 flex-none overflow-hidden rounded-[6px] border border-border bg-muted">
+                              {posterUrl ? (
+                                <TitlePoster
+                                  src={posterUrl}
+                                  alt={t("media.posterAlt", { name: request.title })}
+                                  className="h-full w-full object-cover"
+                                  loading="lazy"
+                                />
+                              ) : (
+                                <div className="flex h-full w-full items-center justify-center text-[9px] text-muted-foreground">
+                                  {t("label.noArt")}
+                                </div>
+                              )}
+                            </div>
+                            <div className="min-w-0">
+                              <div className="truncate font-semibold text-[var(--scry-ink)]">
+                                {request.title}
+                              </div>
+                              <div className="truncate text-xs text-muted-foreground">
+                                {request.year ?? t("label.yearUnknown")}
+                                {externalIds ? ` - ${externalIds}` : ""}
+                              </div>
+                            </div>
+                          </div>
+                        </td>
+                        <td className="px-3 py-3 text-xs text-[var(--scry-body)]">
+                          <span className="inline-flex items-center gap-1.5">
+                            <RequesterAvatarStack request={request} />
+                            <span>{requesters || t("label.unknown")}</span>
+                          </span>
+                        </td>
+                        <td className="px-3 py-3 text-xs text-muted-foreground">
+                          {libraryLabel}
+                        </td>
+                        <td className="px-3 py-3 text-xs text-muted-foreground">
+                          {profileLabel(
+                            request.requestedQualityProfileId,
+                            request.requestedQualityProfileName,
+                            qualityProfileOptions,
+                          ) ?? t("requests.libraryDefaultProfile")}
+                        </td>
+                        <td className="px-3 py-3 text-xs text-muted-foreground">
+                          {formatUiDateTime(request.updatedAt, dateTimeFormat)}
+                        </td>
+                        <td className="px-3 py-3">
+                          <span
+                            id={mediaRequestStatusId(request.id)}
+                            data-request-status={request.status}
+                            className={cn(
+                              "inline-flex items-center gap-1.5 rounded-[7px] border px-2 py-1 text-[11px] font-bold uppercase",
+                              statusMeta.className,
+                            )}
+                          >
+                            <StatusIcon className="h-3 w-3" />
+                            {statusMeta.label}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3">
+                          <div className="flex justify-end gap-2">
+                            {canResolveRequest ? (
+                              <>
+                                <Button
+                                  id={mediaRequestApproveId(request.id)}
+                                  type="button"
+                                  size="sm"
+                                  className="h-8"
+                                  onClick={() => openApprovalDialog(request)}
+                                  disabled={approveDisabled}
+                                >
+                                  {isResolving ? (
+                                    <Loader2 className="h-4 w-4 animate-spin" />
+                                  ) : (
+                                    <Check className="h-4 w-4" />
+                                  )}
+                                  {t("requests.approve")}
+                                </Button>
+                                <Button
+                                  id={mediaRequestDismissId(request.id)}
+                                  type="button"
+                                  size="sm"
+                                  variant="outline"
+                                  className="h-8"
+                                  onClick={() => onDismiss(request)}
+                                  disabled={actionsDisabled}
+                                >
+                                  <X className="h-4 w-4" />
+                                  {t("requests.dismiss")}
+                                </Button>
+                              </>
+                            ) : (
+                              <span className="text-xs text-muted-foreground">-</span>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        ) : null}
+
+        {mode === "mine" ? displayedRequests.map((request) => {
           const posterUrl = selectPosterVariantUrl(request.posterUrl, "w70");
           const requesters = requesterLabel(request);
           const externalIds = requestExternalIdLabel(request);
           const isResolving = actionRequestId === request.id;
-          const approveDisabled = loading || actionRequestId !== null;
           const actionsDisabled = loading || actionRequestId !== null;
+          const statusMeta = requestStatusTone(t, request.status);
+          const StatusIcon = statusMeta.Icon;
           const canEditOwnRequest = mode === "mine" && request.status === "pending";
           return (
             <article
@@ -438,10 +742,10 @@ export function RequestsView({
               data-request-imdb-id={requestExternalIdValue(request, "imdb")}
               data-request-tvdb-id={requestExternalIdValue(request, "tvdb")}
               data-request-tmdb-id={requestExternalIdValue(request, "tmdb")}
-              className="rounded-lg border border-border bg-card/60 p-3"
+              className="rounded-[14px] border border-[var(--scry-border)] bg-[var(--scry-surf)] p-4"
             >
-              <div className="flex gap-3">
-                <div className="h-24 w-16 flex-none overflow-hidden rounded-md border border-border bg-muted">
+              <div className="flex gap-4">
+                <div className="h-[90px] w-[60px] flex-none overflow-hidden rounded-[9px] border border-border bg-muted">
                   {posterUrl ? (
                     <TitlePoster
                       src={posterUrl}
@@ -470,39 +774,15 @@ export function RequestsView({
                       <span
                         id={mediaRequestStatusId(request.id)}
                         data-request-status={request.status}
-                        className="rounded-md border border-border bg-background px-2 py-1 text-xs font-medium uppercase text-muted-foreground"
+                        className={cn(
+                          "inline-flex items-center gap-1.5 rounded-[7px] border px-2 py-1 text-[11px] font-bold uppercase",
+                          statusMeta.className,
+                        )}
                       >
-                        {requestStatusLabel(t, request.status)}
+                        <StatusIcon className="h-3 w-3" />
+                        {statusMeta.label}
                       </span>
-                      {mode === "admin" ? (
-                        <>
-                          <Button
-                            id={mediaRequestApproveId(request.id)}
-                            type="button"
-                            size="sm"
-                            onClick={() => openApprovalDialog(request)}
-                            disabled={approveDisabled}
-                          >
-                            {isResolving ? (
-                              <Loader2 className="h-4 w-4 animate-spin" />
-                            ) : (
-                              <Check className="h-4 w-4" />
-                            )}
-                            {t("requests.approve")}
-                          </Button>
-                          <Button
-                            id={mediaRequestDismissId(request.id)}
-                            type="button"
-                            size="sm"
-                            variant="outline"
-                            onClick={() => onDismiss(request)}
-                            disabled={actionsDisabled}
-                          >
-                            <X className="h-4 w-4" />
-                            {t("requests.dismiss")}
-                          </Button>
-                        </>
-                      ) : canEditOwnRequest ? (
+                      {canEditOwnRequest ? (
                         <>
                           <Button
                             id={mediaRequestEditId(request.id)}
@@ -541,11 +821,13 @@ export function RequestsView({
                   ) : null}
                   <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
                     <span className="inline-flex items-center gap-1.5">
+                      <User className="h-3.5 w-3.5" />
                       {t("requests.requesters")}:{" "}
                       <RequesterAvatarStack request={request} />
                       <span>{requesters || t("label.unknown")}</span>
                     </span>
-                    <span>
+                    <span className="inline-flex items-center gap-1.5">
+                      <Gem className="h-3.5 w-3.5" />
                       {t("requests.requestedQualityProfile")}:{" "}
                       {profileLabel(
                         request.requestedQualityProfileId,
@@ -554,12 +836,14 @@ export function RequestsView({
                       ) ?? t("requests.libraryDefaultProfile")}
                     </span>
                     {request.requestedMonitorType ? (
-                      <span>
+                      <span className="inline-flex items-center gap-1.5">
+                        <CircleCheck className="h-3.5 w-3.5" />
                         {t("requests.requestedMonitorType")}:{" "}
                         {monitorTypeLabel(t, request.requestedMonitorType)}
                       </span>
                     ) : null}
-                    <span>
+                    <span className="inline-flex items-center gap-1.5">
+                      <History className="h-3.5 w-3.5" />
                       {t("requests.updated")}:{" "}
                       {formatUiDateTime(request.updatedAt, dateTimeFormat)}
                     </span>
@@ -568,7 +852,8 @@ export function RequestsView({
               </div>
             </article>
           );
-        })}
+        }) : null}
+      </div>
       </div>
       <Dialog open={approvalRequest !== null} onOpenChange={(open) => { if (!open) closeApprovalDialog(); }}>
         <DialogContent id="approve-media-request-dialog" className="sm:max-w-sm">

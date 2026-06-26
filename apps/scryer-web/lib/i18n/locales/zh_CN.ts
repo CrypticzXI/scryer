@@ -73,6 +73,8 @@ const zh_CN: LocaleDictionary = {
   "nav.requests": "请求",
   "nav.system": "系统",
   "nav.logs": "日志",
+  "nav.serviceLogs": "服务日志",
+  "nav.auditLogs": "审计日志",
   "nav.usersAccess": "用户与访问",
   "nav.group": "导航",
   "nav.mobileTitle": "Scryer 导航",

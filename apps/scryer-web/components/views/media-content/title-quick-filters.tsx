@@ -1,5 +1,6 @@
 import { Eye, EyeOff, Play, Square } from "lucide-react";
 import type { ReactNode } from "react";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { useTranslate } from "@/lib/context/translate-context";
 import type { TitleRecord } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -109,29 +110,32 @@ export function filterTitlesByQuickFilters(
 
 function QuickFilterTab({
   selected,
-  onClick,
+  value,
   icon,
   label,
   count,
+  onClick,
   tone = "neutral",
 }: {
   selected: boolean;
-  onClick: () => void;
+  value: string;
   icon?: ReactNode;
   label: string;
   count?: number;
+  onClick?: () => void;
   tone?: "neutral" | "success" | "danger" | "muted";
 }) {
   return (
-    <button
-      type="button"
-      aria-pressed={selected}
+    <ToggleGroupItem
+      value={value}
+      size="sm"
+      variant="outline"
+      aria-label={label}
       onClick={onClick}
       className={cn(
-        "inline-flex h-[38px] shrink-0 items-center gap-2 border-b-2 px-0.5 text-[13px] font-semibold tracking-normal transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--scry-focus)]",
-        selected
-          ? "border-[var(--scry-accent-ring)] text-[var(--scry-ink2)]"
-          : "border-transparent text-[var(--scry-muted3)] hover:text-[var(--scry-ink2)]",
+        "h-10 shrink-0 gap-2 rounded-none border-0 border-b-2 border-transparent bg-transparent px-0 text-[13px] font-semibold tracking-normal text-[var(--scry-muted3)] shadow-none transition-colors hover:bg-transparent hover:text-[var(--scry-ink2)] focus-visible:ring-[var(--scry-focus)] data-[state=on]:border-b-[var(--scry-accent-ring)] data-[state=on]:bg-transparent data-[state=on]:text-[var(--scry-ink2)]",
+        selected &&
+          "border-b-[var(--scry-accent-ring)] bg-transparent text-[var(--scry-ink2)]",
       )}
     >
       {icon ? (
@@ -165,9 +169,16 @@ function QuickFilterTab({
           {count.toLocaleString()}
         </span>
       ) : null}
-    </button>
+    </ToggleGroupItem>
   );
 }
+
+type QuickFilterValue =
+  | "all"
+  | "monitored"
+  | "unmonitored"
+  | "continuing"
+  | "ended";
 
 export function TitleQuickFilterBar({
   view,
@@ -189,19 +200,59 @@ export function TitleQuickFilterBar({
   const t = useTranslate();
   const showStatusFilters = view !== "movies";
   const allSelected = !hasActiveTitleQuickFilters(filters, view);
+  const selectedValue: QuickFilterValue = allSelected
+    ? "all"
+    : filters.monitored
+      ? "monitored"
+      : filters.unmonitored
+        ? "unmonitored"
+        : showStatusFilters && filters.continuing
+          ? "continuing"
+          : showStatusFilters && filters.ended
+            ? "ended"
+            : "all";
+  const handleValueChange = (value: string) => {
+    if (!value || value === "all") {
+      onClear();
+      return;
+    }
+
+    if (value === "monitored") {
+      onToggleMonitoring("monitored");
+      return;
+    }
+    if (value === "unmonitored") {
+      onToggleMonitoring("unmonitored");
+      return;
+    }
+    if (showStatusFilters && value === "continuing") {
+      onToggleStatus("continuing");
+      return;
+    }
+    if (showStatusFilters && value === "ended") {
+      onToggleStatus("ended");
+    }
+  };
 
   return (
     <div className="flex flex-wrap items-end justify-between gap-3">
-      <div className="flex min-h-12 min-w-0 max-w-full flex-1 items-end gap-5 overflow-x-auto">
+      <ToggleGroup
+        type="single"
+        value={selectedValue}
+        onValueChange={handleValueChange}
+        aria-label={t("label.filters")}
+        className="relative top-px flex min-h-10 min-w-0 max-w-full flex-1 flex-wrap items-center justify-start gap-x-5 gap-y-1 border-0 bg-transparent p-0 shadow-none"
+      >
         <QuickFilterTab
           selected={allSelected}
+          value="all"
           onClick={onClear}
           label={t("activity.historyFilter.all")}
           count={counts?.all}
         />
         <QuickFilterTab
           selected={filters.monitored}
-          onClick={() => onToggleMonitoring("monitored")}
+          value="monitored"
           icon={<Eye className="h-3.5 w-3.5" />}
           label={t("title.monitored")}
           count={counts?.monitored}
@@ -209,7 +260,7 @@ export function TitleQuickFilterBar({
         />
         <QuickFilterTab
           selected={filters.unmonitored}
-          onClick={() => onToggleMonitoring("unmonitored")}
+          value="unmonitored"
           icon={<EyeOff className="h-3.5 w-3.5" />}
           label={t("search.monitorType.unmonitored")}
           count={counts?.unmonitored}
@@ -219,7 +270,7 @@ export function TitleQuickFilterBar({
           <>
             <QuickFilterTab
               selected={filters.continuing}
-              onClick={() => onToggleStatus("continuing")}
+              value="continuing"
               icon={<Play className="h-3.5 w-3.5" />}
               label={t("title.continuing")}
               count={counts?.continuing}
@@ -227,7 +278,7 @@ export function TitleQuickFilterBar({
             />
             <QuickFilterTab
               selected={filters.ended}
-              onClick={() => onToggleStatus("ended")}
+              value="ended"
               icon={<Square className="h-3.5 w-3.5" />}
               label={t("title.ended")}
               count={counts?.ended}
@@ -235,7 +286,7 @@ export function TitleQuickFilterBar({
             />
           </>
         ) : null}
-      </div>
+      </ToggleGroup>
       {trailingContent ? (
         <div className="w-full shrink-0 sm:w-auto">{trailingContent}</div>
       ) : null}

@@ -2,13 +2,16 @@ import * as React from "react";
 import type { CSSProperties } from "react";
 import type { LucideIcon } from "lucide-react";
 import {
+  Calendar,
   Check,
+  ChevronDown,
   ChevronRight,
   Compass,
   Drama,
   Heart,
   Loader2,
   Palette,
+  Play,
   Plus,
   Rocket,
   Scale,
@@ -22,6 +25,7 @@ import {
   TrendingUp,
   Video,
   WandSparkles,
+  X,
 } from "lucide-react";
 import { useTranslate } from "@/lib/context/translate-context";
 import { Button } from "@/components/ui/button";
@@ -74,6 +78,13 @@ const DISCOVERY_CONTENT_TYPES: DiscoveryContentType[] = [
   "series",
   "anime",
 ];
+const DEFAULT_DISCOVERY_CONTENT_TYPES: DiscoveryContentType[] = [
+  "movie",
+  "series",
+];
+const DEFAULT_MINIMUM_YEAR = 1990;
+const DEFAULT_MAXIMUM_YEAR = 2026;
+const DEFAULT_MINIMUM_RATING = 7;
 
 const GENRE_ICONS: LucideIcon[] = [
   Swords,
@@ -100,14 +111,63 @@ const GENRE_TILE_CLASS_NAMES = [
   "from-red-800 to-red-950",
   "from-cyan-700 to-cyan-950",
 ];
+const FILTER_RANGE_CLASS_NAME =
+  "h-1.5 w-full appearance-none rounded-full bg-[#16203a] accent-[var(--scry-accent)] [&::-moz-range-thumb]:h-[15px] [&::-moz-range-thumb]:w-[15px] [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:border-0 [&::-moz-range-thumb]:bg-white [&::-moz-range-thumb]:shadow-[0_1px_5px_rgba(0,0,0,0.5)] [&::-webkit-slider-runnable-track]:h-1.5 [&::-webkit-slider-runnable-track]:rounded-full [&::-webkit-slider-runnable-track]:bg-[#16203a] [&::-webkit-slider-thumb]:mt-[-4.5px] [&::-webkit-slider-thumb]:h-[15px] [&::-webkit-slider-thumb]:w-[15px] [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-white [&::-webkit-slider-thumb]:shadow-[0_1px_5px_rgba(0,0,0,0.5)]";
+const MONTH_ABBREVIATIONS = [
+  "Jan",
+  "Feb",
+  "Mar",
+  "Apr",
+  "May",
+  "Jun",
+  "Jul",
+  "Aug",
+  "Sep",
+  "Oct",
+  "Nov",
+  "Dec",
+] as const;
+const DATE_TOKEN_PATTERN = /(\d{4})[-/](\d{1,2})(?:[-/](\d{1,2}))?/;
 
 function itemStableKey(item: DiscoveryItem) {
   return `${item.targetKind}:${item.targetKey}:${item.id}`;
 }
 
+function itemIdentityKey(item: DiscoveryItem) {
+  return `${item.targetKind}:${item.targetKey}`;
+}
+
 function itemTypeLabel(item: DiscoveryItem) {
   const raw = item.contentType || item.targetKind;
   return raw.replace(/[_-]+/g, " ").trim().toUpperCase();
+}
+
+function formatCalendarDateToken(value: string) {
+  const match = value.match(DATE_TOKEN_PATTERN);
+  if (!match) {
+    return null;
+  }
+  const month = Number(match[2]);
+  if (!Number.isInteger(month) || month < 1 || month > 12) {
+    return match[1];
+  }
+  const monthLabel = MONTH_ABBREVIATIONS[month - 1];
+  const day = match[3] ? Number(match[3]) : null;
+  return day && Number.isInteger(day) && day > 0
+    ? `${monthLabel} ${day}`
+    : `${monthLabel} ${match[1]}`;
+}
+
+function itemCalendarBadgeLabel(item: DiscoveryItem) {
+  const dateLikeTag = [
+    ...item.statusTags,
+    ...item.contextTerms,
+    ...item.sourceTags,
+    ...item.relationSubtypes,
+  ]
+    .map(formatCalendarDateToken)
+    .find((label): label is string => Boolean(label));
+  return dateLikeTag ?? (item.year ? String(item.year) : null);
 }
 
 function hashHue(value: string) {
@@ -156,10 +216,7 @@ function formatScore(value: number | null | undefined) {
 }
 
 function itemMatchScore(item: DiscoveryItem) {
-  return (
-    formatScore(item.rankScore) ??
-    (item.sourceCount ? `${item.sourceCount} sources` : null)
-  );
+  return formatScore(item.rankScore);
 }
 
 function allHomeSections(home: DiscoveryHomePayload | null) {
@@ -213,6 +270,37 @@ function sectionsForTab(
   return sections.filter((section) => sectionMatchesTab(section, activeTab));
 }
 
+function sectionIsUpcoming(section: DiscoverySection) {
+  const haystack = normalizedSectionText(section);
+  return haystack.includes("upcoming") || haystack.includes("future");
+}
+
+function uniqueDiscoveryItems(items: DiscoveryItem[]) {
+  const seen = new Set<string>();
+  return items.filter((item) => {
+    const key = itemIdentityKey(item);
+    if (seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
+}
+
+function sectionWithoutItem(
+  section: DiscoverySection | null,
+  item: DiscoveryItem | null,
+) {
+  if (!section || !item) {
+    return section;
+  }
+  const itemKey = itemIdentityKey(item);
+  const items = section.items.filter(
+    (candidate) => itemIdentityKey(candidate) !== itemKey,
+  );
+  return items.length > 0 ? { ...section, items } : null;
+}
+
 function firstHeroItem(sections: DiscoverySection[]) {
   return (
     sections
@@ -253,6 +341,7 @@ function filterDiscoverySections(
     genre: string;
     tag: string;
     minimumYear: number;
+    maximumYear: number;
     minimumRating: number;
   },
 ) {
@@ -280,7 +369,10 @@ function filterDiscoverySections(
         ) {
           return false;
         }
-        if (item.year != null && item.year < filters.minimumYear) {
+        if (
+          item.year != null &&
+          (item.year < filters.minimumYear || item.year > filters.maximumYear)
+        ) {
           return false;
         }
         const rating = ratingForFilter(item.rating);
@@ -398,18 +490,22 @@ function PosterImage({ item }: { item: DiscoveryItem }) {
 function DiscoveryRailCard({
   item,
   size = "md",
+  variant = "default",
   canManageTitle,
   canRequestMedia,
   onAction,
 }: {
   item: DiscoveryItem;
   size?: "sm" | "md";
+  variant?: "default" | "upcoming";
   canManageTitle: boolean;
   canRequestMedia: boolean;
   onAction: (item: DiscoveryItem) => void;
 }) {
   const score = itemMatchScore(item);
   const compact = size === "sm";
+  const upcoming = variant === "upcoming" && !compact;
+  const calendarBadgeLabel = upcoming ? itemCalendarBadgeLabel(item) : null;
   return (
     <div
       className={cn(
@@ -422,15 +518,31 @@ function DiscoveryRailCard({
           "relative overflow-hidden border border-[var(--scry-border2)] shadow-[0_10px_26px_rgba(0,0,0,0.35)]",
           compact
             ? "h-[178px] w-[120px] rounded-[11px]"
-            : "h-[225px] w-[152px] rounded-[13px]",
+            : upcoming
+              ? "h-[210px] w-[152px] rounded-[13px]"
+              : "h-[225px] w-[152px] rounded-[13px]",
         )}
         style={posterFallbackStyle(item)}
       >
         <PosterImage item={item} />
-        <div className="absolute inset-0 bg-gradient-to-b from-transparent via-transparent to-slate-950/90" />
-        <span className="absolute left-2 top-2 rounded-[6px] bg-slate-950/70 px-2 py-0.5 text-[9.5px] font-bold tracking-[0.05em] text-slate-100 backdrop-blur">
-          {itemTypeLabel(item)}
-        </span>
+        <div
+          className={cn(
+            "absolute inset-0",
+            upcoming
+              ? "bg-gradient-to-b from-slate-950/45 via-transparent to-slate-950/90"
+              : "bg-gradient-to-b from-transparent via-transparent to-slate-950/90",
+          )}
+        />
+        {calendarBadgeLabel ? (
+          <span className="absolute left-2 top-2 inline-flex items-center gap-1 rounded-[7px] bg-slate-950/75 px-2.5 py-1 text-[9.5px] font-bold tracking-[0.04em] text-[#a9b3ff] backdrop-blur">
+            <Calendar className="h-3 w-3" />
+            {calendarBadgeLabel}
+          </span>
+        ) : (
+          <span className="absolute left-2 top-2 rounded-[6px] bg-slate-950/70 px-2 py-0.5 text-[9.5px] font-bold tracking-[0.05em] text-slate-100 backdrop-blur">
+            {itemTypeLabel(item)}
+          </span>
+        )}
         <div className="absolute right-2 top-2">
           <DiscoveryActionButton
             item={item}
@@ -440,18 +552,30 @@ function DiscoveryRailCard({
             compact
           />
         </div>
-        <div className="absolute bottom-8 left-2.5 right-2.5 font-[var(--font-space-grotesk)] text-[15px] font-bold leading-[1.05] text-white drop-shadow">
-          {item.displayTitle}
-        </div>
-        <div className="absolute bottom-2.5 left-2.5 flex items-center gap-2 text-[11px] text-[var(--scry-text2)]">
-          {item.year ? <span>{item.year}</span> : null}
-          {score ? (
-            <span className="inline-flex items-center gap-1 font-bold text-emerald-400">
-              <TrendingUp className="h-3 w-3" />
-              {score}
-            </span>
+        <div
+          className={cn(
+            "absolute left-2.5 right-2.5 font-[var(--font-space-grotesk)] text-[15px] font-bold leading-[1.05] text-white drop-shadow",
+            upcoming ? "bottom-2.5" : "bottom-8",
+          )}
+        >
+          <div>{item.displayTitle}</div>
+          {upcoming ? (
+            <div className="mt-1 font-sans text-[11px] font-medium text-[var(--scry-muted2)]">
+              {itemTypeLabel(item)}
+            </div>
           ) : null}
         </div>
+        {upcoming ? null : (
+          <div className="absolute bottom-2.5 left-2.5 flex items-center gap-2 text-[11px] text-[var(--scry-text2)]">
+            {item.year ? <span>{item.year}</span> : null}
+            {score ? (
+              <span className="inline-flex items-center gap-1 font-bold text-emerald-400">
+                <TrendingUp className="h-3 w-3" />
+                {score}
+              </span>
+            ) : null}
+          </div>
+        )}
       </div>
       {compact ? (
         <>
@@ -479,14 +603,20 @@ function DiscoverySectionRail({
   canRequestMedia,
   onAction,
   compact = false,
+  variant = "default",
 }: {
   section: DiscoverySection;
   canManageTitle: boolean;
   canRequestMedia: boolean;
   onAction: (item: DiscoveryItem) => void;
   compact?: boolean;
+  variant?: "default" | "upcoming";
 }) {
   const t = useTranslate();
+  const items = React.useMemo(
+    () => uniqueDiscoveryItems(section.items),
+    [section.items],
+  );
 
   return (
     <section className="mb-7">
@@ -494,20 +624,18 @@ function DiscoverySectionRail({
         <h3 className="m-0 font-[var(--font-space-grotesk)] text-lg font-semibold text-[var(--scry-ink2)]">
           {section.title}
         </h3>
-        <button
-          type="button"
-          className="inline-flex items-center gap-1 text-[12.5px] font-medium text-[var(--scry-muted)]"
-        >
+        <span className="inline-flex items-center gap-1 text-[12.5px] font-medium text-[var(--scry-muted)]">
           {t("discovery.viewAll")}
           <ChevronRight className="h-3.5 w-3.5" />
-        </button>
+        </span>
       </div>
       <div className="flex gap-3.5 overflow-x-auto pb-1.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-        {section.items.map((item) => (
+        {items.map((item) => (
           <DiscoveryRailCard
             key={itemStableKey(item)}
             item={item}
             size={compact ? "sm" : "md"}
+            variant={variant}
             canManageTitle={canManageTitle}
             canRequestMedia={canRequestMedia}
             onAction={onAction}
@@ -533,6 +661,19 @@ function DiscoveryHero({
   const score = formatScore(item.rating);
   const match = itemMatchScore(item);
   const genres = item.genres.slice(0, 3);
+  const statusLabel =
+    item.statusTags
+      .find((tag) => tag.trim().length > 0)
+      ?.replace(/[_-]+/g, " ") ?? null;
+  const sourceLabel =
+    item.sourceCount && item.sourceCount > 0
+      ? `${item.sourceCount} ${item.sourceCount === 1 ? "source" : "sources"}`
+      : null;
+  const detailItems = [
+    item.year ? String(item.year) : null,
+    statusLabel,
+    sourceLabel,
+  ].filter((detail): detail is string => Boolean(detail));
   return (
     <section className="relative min-h-[340px] overflow-hidden rounded-[18px] border border-[var(--scry-border2)] bg-slate-950">
       <div
@@ -554,7 +695,14 @@ function DiscoveryHero({
           {item.displayTitle}
         </h2>
         <div className="mb-3.5 flex flex-wrap items-center gap-3 text-[13px] text-[var(--scry-text2)]">
-          {item.year ? <span className="font-semibold">{item.year}</span> : null}
+          {detailItems.map((detail, index) => (
+            <React.Fragment key={`${detail}-${index}`}>
+              {index > 0 ? (
+                <span className="h-1 w-1 rounded-full bg-[var(--scry-faint2)]" />
+              ) : null}
+              <span className="font-semibold capitalize">{detail}</span>
+            </React.Fragment>
+          ))}
           {score ? (
             <span className="inline-flex items-center gap-1 rounded-[7px] bg-yellow-400/15 px-2 py-0.5 font-bold text-yellow-300">
               <Star className="h-3.5 w-3.5" />
@@ -590,6 +738,11 @@ function DiscoveryHero({
             canRequestMedia={canRequestMedia}
             onAction={onAction}
           />
+          <span className="inline-flex h-10 cursor-not-allowed items-center justify-center gap-2 rounded-[10px] border border-white/15 bg-white/10 px-4 text-[13.5px] font-semibold text-[var(--scry-ink3)] opacity-70 backdrop-blur">
+            <Play className="h-4 w-4" aria-hidden="true" />
+            <span>{t("discovery.trailer")}</span>
+            <span className="sr-only">{t("discovery.trailerUnavailable")}</span>
+          </span>
         </div>
       </div>
     </section>
@@ -597,48 +750,56 @@ function DiscoveryHero({
 }
 
 function DiscoveryFilters({
+  variant = "desktop",
   facets,
   items,
   selectedContentTypes,
   selectedGenre,
   selectedTag,
   minimumYear,
+  maximumYear,
   minimumRating,
   onToggleContentType,
   onGenreChange,
   onTagChange,
   onMinimumYearChange,
+  onMaximumYearChange,
   onMinimumRatingChange,
   onClear,
+  onRequestClose,
 }: {
+  variant?: "desktop" | "mobile";
   facets: DiscoveryFacet[];
   items: DiscoveryItem[];
   selectedContentTypes: DiscoveryContentType[];
   selectedGenre: string;
   selectedTag: string;
   minimumYear: number;
+  maximumYear: number;
   minimumRating: number;
   onToggleContentType: (contentType: DiscoveryContentType) => void;
   onGenreChange: (genre: string) => void;
   onTagChange: (tag: string) => void;
   onMinimumYearChange: (year: number) => void;
+  onMaximumYearChange: (year: number) => void;
   onMinimumRatingChange: (rating: number) => void;
   onClear: () => void;
+  onRequestClose?: () => void;
 }) {
   const t = useTranslate();
   const contentTypes: Array<{
     key: DiscoveryContentType;
     label: string;
     count: number;
-  }> = (
-    [
-    { key: "movie", label: t("discovery.type.movies") },
-    { key: "series", label: t("discovery.type.series") },
-    { key: "anime", label: t("discovery.type.anime") },
-    ] as Array<{ key: DiscoveryContentType; label: string }>
-  ).map((entry) => ({
-    ...entry,
-    count: facetCount(facets, entry.key) ?? contentTypeCount(items, entry.key),
+  }> = DISCOVERY_CONTENT_TYPES.map((key) => ({
+    key,
+    label:
+      key === "movie"
+        ? t("discovery.type.movies")
+        : key === "series"
+          ? t("discovery.type.series")
+          : t("discovery.type.anime"),
+    count: facetCount(facets, key) ?? contentTypeCount(items, key),
   }));
   const genres = [...new Set(items.flatMap((item) => item.genres).filter(Boolean))]
     .sort((left, right) => left.localeCompare(right));
@@ -656,23 +817,47 @@ function DiscoveryFilters({
   const years = items
     .map((item) => item.year)
     .filter((year): year is number => typeof year === "number");
-  const minimumYearBound = years.length ? Math.min(...years) : 1900;
-  const maximumYearBound = years.length ? Math.max(...years) : 2026;
+  const minimumYearBound = years.length ? Math.min(...years) : DEFAULT_MINIMUM_YEAR;
+  const maximumYearBound = years.length ? Math.max(...years) : DEFAULT_MAXIMUM_YEAR;
+  const yearSpan = Math.max(1, maximumYearBound - minimumYearBound);
+  const minimumYearPercent =
+    ((minimumYear - minimumYearBound) / yearSpan) * 100;
+  const maximumYearPercent =
+    ((maximumYear - minimumYearBound) / yearSpan) * 100;
 
   return (
-    <aside className="w-[284px] flex-none overflow-y-auto border-l border-[var(--scry-border3)] bg-slate-950/25 px-5 py-5 max-xl:hidden">
+    <aside
+      className={cn(
+        "overflow-y-auto px-5 py-5",
+        variant === "desktop"
+          ? "w-[284px] flex-none border-l border-[var(--scry-border3)] bg-slate-950/25 max-xl:hidden"
+          : "h-full w-full border-l border-white/10 bg-slate-950/95 shadow-[-18px_0_38px_rgba(0,0,0,0.36)]",
+      )}
+    >
       <div className="mb-4 flex items-center justify-between">
         <div className="flex items-center gap-2 font-[var(--font-space-grotesk)] text-[15px] font-semibold text-[var(--scry-ink2)]">
           <SlidersHorizontal className="h-4 w-4 text-[var(--scry-accent-text)]" />
           {t("discovery.filters")}
         </div>
-        <button
-          type="button"
-          className="text-xs font-medium text-[var(--scry-accent-ring)]"
-          onClick={onClear}
-        >
-          {t("discovery.clearAll")}
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            className="text-xs font-medium text-[var(--scry-accent-ring)]"
+            onClick={onClear}
+          >
+            {t("discovery.clearAll")}
+          </button>
+          {onRequestClose ? (
+            <button
+              type="button"
+              aria-label={t("discovery.closeFilters")}
+              onClick={onRequestClose}
+              className="inline-flex h-8 w-8 items-center justify-center rounded-[8px] border border-[var(--scry-border2)] bg-[var(--scry-bg)] text-[var(--scry-muted)]"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          ) : null}
+        </div>
       </div>
       <div className="mb-2.5 text-xs font-bold uppercase tracking-[0.05em] text-[var(--scry-muted2)]">
         {t("discovery.contentType")}
@@ -710,33 +895,39 @@ function DiscoveryFilters({
       <div className="mb-2.5 text-xs font-bold uppercase tracking-[0.05em] text-[var(--scry-muted2)]">
         {t("discovery.genres")}
       </div>
-      <select
-        value={selectedGenre}
-        onChange={(event) => onGenreChange(event.target.value)}
-        className="mb-5 h-[38px] w-full rounded-[9px] border border-[var(--scry-border2)] bg-[var(--scry-bg)] px-3 text-[13px] text-[var(--scry-faint)] outline-none"
-      >
-        <option value="">{t("discovery.selectGenres")}</option>
-        {genres.map((genre) => (
-          <option key={genre} value={genre}>
-            {genre}
-          </option>
-        ))}
-      </select>
+      <div className="relative mb-5">
+        <select
+          value={selectedGenre}
+          onChange={(event) => onGenreChange(event.target.value)}
+          className="h-[38px] w-full appearance-none rounded-[9px] border border-[var(--scry-border2)] bg-[var(--scry-bg)] px-3 pr-9 text-[13px] text-[var(--scry-faint)] outline-none transition hover:border-[var(--scry-bhover2)]"
+        >
+          <option value="">{t("discovery.selectGenres")}</option>
+          {genres.map((genre) => (
+            <option key={genre} value={genre}>
+              {genre}
+            </option>
+          ))}
+        </select>
+        <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-[15px] w-[15px] -translate-y-1/2 text-[var(--scry-faint)]" />
+      </div>
       <div className="mb-2.5 text-xs font-bold uppercase tracking-[0.05em] text-[var(--scry-muted2)]">
         {t("discovery.tags")}
       </div>
-      <select
-        value={selectedTag}
-        onChange={(event) => onTagChange(event.target.value)}
-        className="mb-3 h-[38px] w-full rounded-[9px] border border-[var(--scry-border2)] bg-[var(--scry-bg)] px-3 text-[13px] text-[var(--scry-faint)] outline-none"
-      >
-        <option value="">{t("discovery.selectTags")}</option>
-        {tags.map((tag) => (
-          <option key={tag} value={tag}>
-            {tag}
-          </option>
-        ))}
-      </select>
+      <div className="relative mb-3">
+        <select
+          value={selectedTag}
+          onChange={(event) => onTagChange(event.target.value)}
+          className="h-[38px] w-full appearance-none rounded-[9px] border border-[var(--scry-border2)] bg-[var(--scry-bg)] px-3 pr-9 text-[13px] text-[var(--scry-faint)] outline-none transition hover:border-[var(--scry-bhover2)]"
+        >
+          <option value="">{t("discovery.selectTags")}</option>
+          {tags.map((tag) => (
+            <option key={tag} value={tag}>
+              {tag}
+            </option>
+          ))}
+        </select>
+        <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-[15px] w-[15px] -translate-y-1/2 text-[var(--scry-faint)]" />
+      </div>
       {selectedTag ? (
         <div className="mb-5 flex flex-wrap gap-2">
           <span className="rounded-[8px] border border-[rgba(var(--scry-accent-rgb),0.32)] bg-[rgba(var(--scry-accent-rgb),0.14)] px-3 py-1 text-xs font-semibold text-[var(--scry-accent-text)]">
@@ -749,18 +940,47 @@ function DiscoveryFilters({
           {t("discovery.releaseYear")}
         </span>
         <span className="text-[11.5px] text-[var(--scry-faint)]">
-          {minimumYear} - {maximumYearBound}
+          {minimumYear} - {maximumYear}
         </span>
       </div>
-      <input
-        type="range"
-        min={minimumYearBound}
-        max={maximumYearBound}
-        value={minimumYear}
-        onChange={(event) => onMinimumYearChange(Number(event.target.value))}
-        className="mb-6 w-full"
-        style={{ accentColor: "var(--scry-accent)" }}
-      />
+      <div className="relative mb-6 h-5">
+        <div className="absolute left-0 right-0 top-1/2 h-1.5 -translate-y-1/2 rounded-full bg-[#16203a]" />
+        <div
+          className="absolute top-1/2 h-1.5 -translate-y-1/2 rounded-full bg-gradient-to-r from-[var(--scry-accent)] to-[var(--scry-accent-ring)]"
+          style={{
+            left: `${minimumYearPercent}%`,
+            right: `${100 - maximumYearPercent}%`,
+          }}
+        />
+        <input
+          type="range"
+          min={minimumYearBound}
+          max={maximumYearBound}
+          value={minimumYear}
+          aria-label={t("discovery.releaseYear")}
+          onChange={(event) =>
+            onMinimumYearChange(Math.min(Number(event.target.value), maximumYear))
+          }
+          className={cn(
+            "absolute left-0 right-0 top-1/2 -translate-y-1/2 bg-transparent",
+            FILTER_RANGE_CLASS_NAME,
+          )}
+        />
+        <input
+          type="range"
+          min={minimumYearBound}
+          max={maximumYearBound}
+          value={maximumYear}
+          aria-label={t("discovery.releaseYear")}
+          onChange={(event) =>
+            onMaximumYearChange(Math.max(Number(event.target.value), minimumYear))
+          }
+          className={cn(
+            "absolute left-0 right-0 top-1/2 -translate-y-1/2 bg-transparent",
+            FILTER_RANGE_CLASS_NAME,
+          )}
+        />
+      </div>
       <div className="mb-2.5 flex items-center justify-between">
         <span className="text-xs font-bold uppercase tracking-[0.05em] text-[var(--scry-muted2)]">
           {t("discovery.minimumRating")}
@@ -776,8 +996,7 @@ function DiscoveryFilters({
         step={0.5}
         value={minimumRating}
         onChange={(event) => onMinimumRatingChange(Number(event.target.value))}
-        className="w-full"
-        style={{ accentColor: "var(--scry-accent)" }}
+        className={FILTER_RANGE_CLASS_NAME}
       />
     </aside>
   );
@@ -796,11 +1015,17 @@ export function DiscoveryView({
   const [activeTab, setActiveTab] = React.useState<DiscoveryTabKey>("forYou");
   const [selectedContentTypes, setSelectedContentTypes] = React.useState<
     DiscoveryContentType[]
-  >(DISCOVERY_CONTENT_TYPES);
+  >(DEFAULT_DISCOVERY_CONTENT_TYPES);
   const [selectedGenre, setSelectedGenre] = React.useState("");
   const [selectedTag, setSelectedTag] = React.useState("");
-  const [minimumYear, setMinimumYear] = React.useState(1900);
-  const [minimumRating, setMinimumRating] = React.useState(0);
+  const [minimumYear, setMinimumYear] =
+    React.useState(DEFAULT_MINIMUM_YEAR);
+  const [maximumYear, setMaximumYear] =
+    React.useState(DEFAULT_MAXIMUM_YEAR);
+  const [minimumRating, setMinimumRating] = React.useState(
+    DEFAULT_MINIMUM_RATING,
+  );
+  const [filtersOpen, setFiltersOpen] = React.useState(false);
   const rawSections = React.useMemo(
     () => sectionsForTab(home, activeTab),
     [activeTab, home],
@@ -818,9 +1043,13 @@ export function DiscoveryView({
       maximum: years.length ? Math.max(...years) : 2026,
     };
   }, [rawItems]);
+  const effectiveMaximumYear = Math.max(
+    Math.min(Math.max(maximumYear, yearBounds.minimum), yearBounds.maximum),
+    yearBounds.minimum,
+  );
   const effectiveMinimumYear = Math.min(
     Math.max(minimumYear, yearBounds.minimum),
-    yearBounds.maximum,
+    effectiveMaximumYear,
   );
   const sections = React.useMemo(
     () =>
@@ -829,9 +1058,11 @@ export function DiscoveryView({
         genre: selectedGenre,
         tag: selectedTag,
         minimumYear: effectiveMinimumYear,
+        maximumYear: effectiveMaximumYear,
         minimumRating,
       }),
     [
+      effectiveMaximumYear,
       effectiveMinimumYear,
       minimumRating,
       rawSections,
@@ -850,6 +1081,10 @@ export function DiscoveryView({
     () => findHeroRailSection(sections),
     [sections],
   );
+  const heroRailSectionWithoutHero = React.useMemo(
+    () => sectionWithoutItem(heroRailSection, heroItem),
+    [heroItem, heroRailSection],
+  );
   const railSections = React.useMemo(
     () =>
       sections.filter(
@@ -857,6 +1092,19 @@ export function DiscoveryView({
       ),
     [heroRailSection, sections],
   );
+  const primaryRailSections = React.useMemo(
+    () => railSections.filter((section) => !sectionIsUpcoming(section)),
+    [railSections],
+  );
+  const upcomingRailSections = React.useMemo(
+    () => railSections.filter(sectionIsUpcoming),
+    [railSections],
+  );
+  const hasRenderableContent =
+    heroItem !== null ||
+    primaryRailSections.length > 0 ||
+    upcomingRailSections.length > 0 ||
+    genreTiles.length > 0;
   const toggleContentType = React.useCallback(
     (contentType: DiscoveryContentType) => {
       setSelectedContentTypes((current) =>
@@ -868,12 +1116,47 @@ export function DiscoveryView({
     [],
   );
   const clearFilters = React.useCallback(() => {
-    setSelectedContentTypes(DISCOVERY_CONTENT_TYPES);
+    setSelectedContentTypes(DEFAULT_DISCOVERY_CONTENT_TYPES);
     setSelectedGenre("");
     setSelectedTag("");
-    setMinimumYear(yearBounds.minimum);
-    setMinimumRating(0);
-  }, [yearBounds.minimum]);
+    setMinimumYear(Math.max(yearBounds.minimum, DEFAULT_MINIMUM_YEAR));
+    setMaximumYear(Math.min(yearBounds.maximum, DEFAULT_MAXIMUM_YEAR));
+    setMinimumRating(DEFAULT_MINIMUM_RATING);
+  }, [yearBounds.maximum, yearBounds.minimum]);
+  React.useEffect(() => {
+    if (!filtersOpen || typeof document === "undefined") {
+      return undefined;
+    }
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setFiltersOpen(false);
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [filtersOpen]);
+  const filterProps = {
+    facets: home?.facets ?? [],
+    items: rawItems,
+    selectedContentTypes,
+    selectedGenre,
+    selectedTag,
+    minimumYear: effectiveMinimumYear,
+    maximumYear: effectiveMaximumYear,
+    minimumRating,
+    onToggleContentType: toggleContentType,
+    onGenreChange: setSelectedGenre,
+    onTagChange: setSelectedTag,
+    onMinimumYearChange: setMinimumYear,
+    onMaximumYearChange: setMaximumYear,
+    onMinimumRatingChange: setMinimumRating,
+    onClear: clearFilters,
+  };
 
   if (loading && !home) {
     return (
@@ -886,25 +1169,36 @@ export function DiscoveryView({
   return (
     <div className="flex min-h-0 flex-1">
       <main className="min-w-0 flex-1 overflow-y-auto px-7 py-6 pb-16 max-sm:px-4">
-        <div className="mb-5 flex items-center gap-1.5 border-b border-[var(--scry-border3)]">
-          {TAB_DEFINITIONS.map((tab) => (
-            <button
-              key={tab.id}
-              type="button"
-              onClick={() => setActiveTab(tab.id)}
-              className={cn(
-                "relative px-3.5 py-2.5 text-[13.5px] font-semibold",
-                activeTab === tab.id
-                  ? "text-white"
-                  : "text-[var(--scry-muted)] hover:text-[var(--scry-ink2)]",
-              )}
-            >
-              {t(tab.labelKey)}
-              {activeTab === tab.id ? (
-                <span className="absolute bottom-[-1px] left-2 right-2 h-[2.5px] rounded-full bg-[var(--scry-accent-ring)]" />
-              ) : null}
-            </button>
-          ))}
+        <div className="mb-5 flex items-center justify-between gap-3 border-b border-[var(--scry-border3)]">
+          <div className="flex min-w-0 items-center gap-1.5 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+            {TAB_DEFINITIONS.map((tab) => (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => setActiveTab(tab.id)}
+                className={cn(
+                  "relative shrink-0 px-3.5 py-2.5 text-[13.5px] font-semibold",
+                  activeTab === tab.id
+                    ? "text-white"
+                    : "text-[var(--scry-muted)] hover:text-[var(--scry-ink2)]",
+                )}
+              >
+                {t(tab.labelKey)}
+                {activeTab === tab.id ? (
+                  <span className="absolute bottom-[-1px] left-2 right-2 h-[2.5px] rounded-full bg-[var(--scry-accent-ring)]" />
+                ) : null}
+              </button>
+            ))}
+          </div>
+          <button
+            type="button"
+            aria-label={t("discovery.openFilters")}
+            onClick={() => setFiltersOpen(true)}
+            className="hidden h-9 shrink-0 items-center gap-2 rounded-[9px] border border-[var(--scry-border2)] bg-[var(--scry-bg)] px-3 text-[12.5px] font-semibold text-[var(--scry-ink2)] max-xl:inline-flex"
+          >
+            <SlidersHorizontal className="h-4 w-4 text-[var(--scry-accent-text)]" />
+            {t("discovery.filters")}
+          </button>
         </div>
 
         {error ? (
@@ -924,12 +1218,13 @@ export function DiscoveryView({
               canRequestMedia={canRequestMedia}
               onAction={onAction}
             />
-            {heroRailSection ? (
+            {heroRailSectionWithoutHero ? (
               <DiscoverySectionRail
                 section={{
-                  ...heroRailSection,
+                  ...heroRailSectionWithoutHero,
                   title:
-                    heroRailSection.title || t("discovery.trendingThisWeek"),
+                    heroRailSectionWithoutHero.title ||
+                    t("discovery.trendingThisWeek"),
                 }}
                 compact
                 canManageTitle={canManageTitle}
@@ -940,8 +1235,8 @@ export function DiscoveryView({
           </div>
         ) : null}
 
-        {railSections.length > 0 ? (
-          railSections.map((section) => (
+        {primaryRailSections.length > 0 ? (
+          primaryRailSections.map((section) => (
             <DiscoverySectionRail
               key={section.sectionId}
               section={section}
@@ -950,7 +1245,7 @@ export function DiscoveryView({
               onAction={onAction}
             />
           ))
-        ) : !loading ? (
+        ) : !loading && !hasRenderableContent ? (
           <div className="rounded-[14px] border border-[var(--scry-border)] bg-[var(--scry-surf)] px-5 py-8 text-center">
             <Sparkles className="mx-auto mb-3 h-6 w-6 text-[var(--scry-accent-text)]" />
             <h2 className="mb-2 font-[var(--font-space-grotesk)] text-lg font-semibold text-[var(--scry-ink2)]">
@@ -995,22 +1290,36 @@ export function DiscoveryView({
             </div>
           </section>
         ) : null}
+
+        {upcomingRailSections.map((section) => (
+          <DiscoverySectionRail
+            key={section.sectionId}
+            section={section}
+            variant="upcoming"
+            canManageTitle={canManageTitle}
+            canRequestMedia={canRequestMedia}
+            onAction={onAction}
+          />
+        ))}
       </main>
-      <DiscoveryFilters
-        facets={home?.facets ?? []}
-        items={rawItems}
-        selectedContentTypes={selectedContentTypes}
-        selectedGenre={selectedGenre}
-        selectedTag={selectedTag}
-        minimumYear={effectiveMinimumYear}
-        minimumRating={minimumRating}
-        onToggleContentType={toggleContentType}
-        onGenreChange={setSelectedGenre}
-        onTagChange={setSelectedTag}
-        onMinimumYearChange={setMinimumYear}
-        onMinimumRatingChange={setMinimumRating}
-        onClear={clearFilters}
-      />
+      {filtersOpen ? (
+        <div className="fixed inset-0 z-50 xl:hidden">
+          <button
+            type="button"
+            aria-label={t("discovery.closeFilters")}
+            className="absolute inset-0 bg-slate-950/65 backdrop-blur-sm"
+            onClick={() => setFiltersOpen(false)}
+          />
+          <div className="absolute bottom-0 right-0 top-0 w-[min(360px,100%)]">
+            <DiscoveryFilters
+              {...filterProps}
+              variant="mobile"
+              onRequestClose={() => setFiltersOpen(false)}
+            />
+          </div>
+        </div>
+      ) : null}
+      <DiscoveryFilters {...filterProps} />
     </div>
   );
 }

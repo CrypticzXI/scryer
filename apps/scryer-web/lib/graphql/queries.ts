@@ -78,6 +78,16 @@ ${DISCOVERY_SECTION_FIELDS}
   }
 }`;
 
+export const discoveryItemsQuery = `query DiscoveryItems($input: DiscoveryItemsInput) {
+  discoveryItems(input: $input) {
+    totalCount
+    canViewPersonalized
+    items {
+${DISCOVERY_ITEM_FIELDS}
+    }
+  }
+}`;
+
 export const TITLE_CORE_FIELDS = `
     id
     name

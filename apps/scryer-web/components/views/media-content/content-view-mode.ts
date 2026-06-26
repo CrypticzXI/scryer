@@ -19,6 +19,7 @@ function parseStoredContentViewMode(
       return "poster";
     case "poster-table":
     case "table":
+    case "list":
       return "poster-table";
     default:
       return null;

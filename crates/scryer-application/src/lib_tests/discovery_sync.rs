@@ -689,7 +689,7 @@ async fn discovery_sync_ack_failure_after_commit_schedules_retry() {
 }
 
 #[tokio::test]
-async fn discovery_sync_initial_tick_schedules_bootstrap_quiet_before_smg_submit() {
+async fn discovery_sync_initial_tick_submits_snapshot_for_local_startup_testing() {
     let gateway = Arc::new(SnapshotMetadataGateway::default());
     let (app, _admin, titles) = bootstrap_with_metadata_gateway_and_titles(gateway.clone());
     let discovery = Arc::new(RecordingDiscoveryRepository::default());
@@ -706,17 +706,17 @@ async fn discovery_sync_initial_tick_schedules_bootstrap_quiet_before_smg_submit
         .await
         .expect("discovery sync should run");
 
-    assert!(gateway.submitted_inputs.lock().await.is_empty());
-    assert!(discovery.commits.lock().await.is_empty());
+    assert_eq!(gateway.submitted_inputs.lock().await.len(), 1);
+    assert_eq!(discovery.commits.lock().await.len(), 1);
     let state = discovery
         .state
         .lock()
         .await
         .clone()
         .expect("state should be written");
-    assert!(state.bootstrap_started_at.is_some());
-    assert!(state.bootstrap_quiet_until.is_some());
-    assert!(state.last_success_generation_id.is_none());
+    assert!(state.bootstrap_started_at.is_none());
+    assert!(state.bootstrap_quiet_until.is_none());
+    assert!(state.last_success_generation_id.is_some());
 }
 
 #[tokio::test]
@@ -747,6 +747,36 @@ async fn discovery_sync_initial_snapshot_waits_for_backoff_before_resubmitting()
 
     assert!(gateway.submitted_inputs.lock().await.is_empty());
     assert!(discovery.commits.lock().await.is_empty());
+}
+
+#[tokio::test]
+async fn discovery_sync_startup_snapshot_bypasses_backoff_for_local_testing() {
+    let gateway = Arc::new(SnapshotMetadataGateway::default());
+    let (app, _admin, titles) = bootstrap_with_metadata_gateway_and_titles(gateway.clone());
+    let discovery = Arc::new(RecordingDiscoveryRepository::default());
+    let app = app.with_test_overrides(|builder| builder.with_discovery_store(discovery.clone()));
+    let due_at = Utc.timestamp_opt(0, 0).unwrap();
+    *discovery.state.lock().await = Some(DiscoverySyncStateRecord {
+        bootstrap_started_at: Some(due_at),
+        bootstrap_quiet_until: Some(due_at),
+        backoff_until: Some(Utc::now() + chrono::Duration::hours(1)),
+        updated_at: due_at,
+        ..DiscoverySyncStateRecord::default()
+    });
+
+    titles.store.lock().await.push(test_title(
+        "title-1",
+        "The Example Movie",
+        MediaFacet::Movie,
+        vec![("tmdb_movie", "603")],
+    ));
+
+    app.run_scheduled_job_now(JobKey::DiscoverySync, JobTriggerSource::ScheduledStartup)
+        .await
+        .expect("startup discovery sync should run");
+
+    assert_eq!(gateway.submitted_inputs.lock().await.len(), 1);
+    assert_eq!(discovery.commits.lock().await.len(), 1);
 }
 
 #[tokio::test]
@@ -1314,14 +1344,17 @@ async fn discovery_sync_daily_snapshot_takes_precedence_and_clears_pending_chang
 }
 
 #[tokio::test]
-async fn discovery_sync_public_feed_runs_while_scan_is_active_and_filters_collection_section() {
+async fn discovery_sync_public_feed_runs_while_scan_and_context_backoff_are_active_and_filters_collection_section()
+ {
     let gateway = Arc::new(SnapshotMetadataGateway::default());
     let (app, _admin, _titles) = bootstrap_with_metadata_gateway_and_titles(gateway.clone());
     let discovery = Arc::new(RecordingDiscoveryRepository::default());
     let app = app.with_test_overrides(|builder| builder.with_discovery_store(discovery.clone()));
     let due_at = Utc.timestamp_opt(0, 0).unwrap();
+    let context_backoff_until = Utc::now() + chrono::Duration::hours(6);
     *discovery.state.lock().await = Some(DiscoverySyncStateRecord {
         next_public_feed_eligible_at: Some(due_at),
+        backoff_until: Some(context_backoff_until),
         updated_at: due_at,
         ..DiscoverySyncStateRecord::default()
     });
@@ -1386,7 +1419,7 @@ async fn discovery_sync_manual_run_forces_public_feed_when_fresh() {
 }
 
 #[tokio::test]
-async fn discovery_sync_manual_noop_writes_deferred_run_when_backoff_blocks_work() {
+async fn discovery_sync_manual_public_feed_runs_while_context_backoff_is_active() {
     let gateway = Arc::new(SnapshotMetadataGateway::default());
     let (app, _admin, _titles) = bootstrap_with_metadata_gateway_and_titles(gateway.clone());
     let discovery = Arc::new(RecordingDiscoveryRepository::default());
@@ -1407,23 +1440,12 @@ async fn discovery_sync_manual_noop_writes_deferred_run_when_backoff_blocks_work
 
     app.run_scheduled_job_now(JobKey::DiscoverySync, JobTriggerSource::Manual)
         .await
-        .expect("manual discovery sync should defer while backoff is active");
+        .expect("manual discovery sync should evaluate");
 
-    assert!(gateway.public_feed_inputs.lock().await.is_empty());
+    assert_eq!(gateway.public_feed_inputs.lock().await.len(), 1);
     assert!(gateway.submitted_inputs.lock().await.is_empty());
     assert!(gateway.change_inputs.lock().await.is_empty());
-    assert!(discovery.public_feed_commits.lock().await.is_empty());
-    let runs = discovery.runs.lock().await;
-    let run = runs
-        .iter()
-        .find(|run| run.kind == "deferred")
-        .expect("manual no-op should write deferred run");
-    assert_eq!(run.status, "deferred");
-    assert!(
-        run.error_text
-            .as_deref()
-            .is_some_and(|error| error.contains("No discovery sync work is currently eligible"))
-    );
+    assert_eq!(discovery.public_feed_commits.lock().await.len(), 1);
 }
 
 #[tokio::test]

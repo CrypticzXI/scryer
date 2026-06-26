@@ -17,7 +17,6 @@ import type { ParsedQualityProfile } from "@/lib/types/quality-profiles";
 import { formatUiDate } from "@/lib/utils/date-format";
 import { cn } from "@/lib/utils";
 import {
-  boxedActionButtonBaseClass,
   boxedActionButtonToneClass,
   type BoxedActionButtonTone,
 } from "@/lib/utils/action-button-styles";
@@ -532,7 +531,7 @@ export function TitleTableActionButton({
       title={showTitleAttribute ? label : undefined}
       aria-label={label}
       className={cn(
-        boxedActionButtonBaseClass,
+        "h-9 w-9 border shadow-none transition-colors hover:translate-y-0 hover:shadow-none",
         boxedActionButtonToneClass[tone],
         className,
       )}

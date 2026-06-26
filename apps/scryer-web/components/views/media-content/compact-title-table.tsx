@@ -78,6 +78,7 @@ type CompactTitleTableProps = {
     overviewTarget: OverviewTitleTarget,
   ) => void;
   selectedTitleId?: string | null;
+  selectedDrawerMode?: boolean;
   contextPanelId?: string;
   onSelectTitle?: (title: TitleRecord) => void;
   onDelete: (title: TitleRecord) => void;
@@ -125,6 +126,7 @@ export function CompactTitleTable({
   qualityProfilesLoading,
   onOpenOverview,
   selectedTitleId,
+  selectedDrawerMode = false,
   contextPanelId,
   onSelectTitle,
   onDelete,
@@ -156,15 +158,15 @@ export function CompactTitleTable({
   const overviewTargetView: ViewId = resolveOverviewTargetView(view);
   const selectedPaneMode =
     selectedTitleId !== null && onSelectTitle !== undefined;
-  const showLibraryColumn = !selectedPaneMode && visibleColumns.library;
-  const showMonitoredColumn = selectedPaneMode || visibleColumns.monitored;
-  const showQualityColumn = !selectedPaneMode && visibleColumns.quality;
+  const showLibraryColumn = !selectedDrawerMode && visibleColumns.library;
+  const showMonitoredColumn = !selectedDrawerMode && visibleColumns.monitored;
+  const showQualityColumn = !selectedDrawerMode && visibleColumns.quality;
   const showEpisodesColumn =
-    !selectedPaneMode && !isMovieView && visibleColumns.episodes;
-  const showSizeColumn = selectedPaneMode || visibleColumns.size;
-  const showAddedColumn = !selectedPaneMode && visibleColumns.added;
-  const showActionsColumn = !selectedPaneMode && visibleColumns.actions;
-  const columnCount = selectedPaneMode
+    !selectedDrawerMode && !isMovieView && visibleColumns.episodes;
+  const showSizeColumn = !selectedDrawerMode && visibleColumns.size;
+  const showAddedColumn = !selectedDrawerMode && visibleColumns.added;
+  const showActionsColumn = !selectedDrawerMode && visibleColumns.actions;
+  const columnCount = selectedDrawerMode
     ? 3
     : 2 +
       (showLibraryColumn ? 1 : 0) +
@@ -184,7 +186,7 @@ export function CompactTitleTable({
     : selectedVisibleCount > 0
       ? "indeterminate"
       : false;
-  const titleTableColGroup = selectedPaneMode ? (
+  const titleTableColGroup = selectedDrawerMode ? (
     <colgroup>
       <col />
       <col style={{ width: "44px" }} />
@@ -203,8 +205,8 @@ export function CompactTitleTable({
       {showActionsColumn ? <col style={{ width: "10rem" }} /> : null}
     </colgroup>
   );
-  const visibleColumnSignature = selectedPaneMode
-    ? "selected-pane"
+  const visibleColumnSignature = selectedDrawerMode
+    ? "drawer"
     : [
         showLibraryColumn && "library",
         showMonitoredColumn && "monitored",
@@ -243,7 +245,7 @@ export function CompactTitleTable({
     count: sortedTitles.length,
     getScrollElement: () => titleTableScrollRef.current,
     getItemKey: (index) => sortedTitles[index]?.id ?? index,
-    estimateSize: () => (selectedPaneMode ? 68 : 48),
+    estimateSize: () => (selectedDrawerMode ? 70 : 48),
     initialOffset: initialScrollOffset,
     overscan: 8,
   });
@@ -465,7 +467,7 @@ export function CompactTitleTable({
         <button
           type="button"
           className={cn(
-            "inline-flex w-full items-center gap-1 text-left font-medium text-foreground transition-colors hover:text-foreground/80",
+            "inline-flex w-full items-center gap-1 text-left text-[11px] font-bold uppercase tracking-[0.05em] text-[var(--scry-faint2)] transition-colors hover:text-[var(--scry-muted2)]",
             buttonClassName,
           )}
           onClick={() => handleSort(key)}
@@ -576,10 +578,14 @@ export function CompactTitleTable({
     const addedLabel =
       formatTitleDate(item.createdAt, dateTimeFormat) ?? t("label.unknown");
 
-    if (selectedPaneMode) {
+    const contextPanelControlsId = selectedPaneMode ? contextPanelId : undefined;
+    const selectedContextPanelControlsId = isSelected
+      ? contextPanelControlsId
+      : undefined;
+
+    if (selectedDrawerMode) {
       const posterUrl = selectPosterVariantUrl(item.posterUrl, "w70");
       const yearLabel = item.year ? String(item.year) : null;
-      const libraryLabel = item.libraryName ?? item.libraryId ?? null;
       const qualityLabel = qualityProfilesLoading
         ? null
         : resolveDisplayedQualityLabel(
@@ -588,20 +594,8 @@ export function CompactTitleTable({
             resolvedProfileName,
             t("label.unknown"),
           );
-      const totalEpisodes = item.episodesTotal ?? item.episodesMonitored ?? 0;
-      const episodeLabel =
-        !isMovieView && totalEpisodes > 0
-          ? `${item.episodesOwned ?? 0}/${totalEpisodes} ${t("title.table.episodes")}`
-          : null;
-      const hasSubline = Boolean(
-        yearLabel || episodeLabel || qualityLabel || libraryLabel,
-      );
-      const contextPanelControlsId = selectedPaneMode
-        ? contextPanelId
-        : undefined;
-      const selectedContextPanelControlsId = isSelected
-        ? contextPanelControlsId
-        : undefined;
+      const subline = [yearLabel, qualityLabel].filter(Boolean).join(" · ");
+      const libraryLabel = item.libraryName ?? item.libraryId ?? null;
 
       return (
         <TableRow
@@ -621,12 +615,12 @@ export function CompactTitleTable({
           onClick={(event) => handleTitleRowClick(event, item)}
           onKeyDown={(event) => handleTitleRowKeyDown(event, item)}
           className={cn(
-            "h-[68px] border-b border-[var(--scry-line2)] bg-[var(--scry-card2)] transition-colors hover:bg-[var(--scry-hover)]",
+            "h-[70px] border-b border-[var(--scry-line2)] transition-colors hover:bg-[var(--scry-hover)]",
             isSelected &&
               "bg-[rgba(var(--scry-accent-rgb),0.12)] shadow-[inset_3px_0_0_var(--scry-accent-ring)]",
           )}
         >
-          <TableCell className="align-middle overflow-hidden py-2 pl-3 pr-2">
+          <TableCell className="align-middle overflow-hidden py-2 pl-4 pr-2">
             <button
               id={titleOverviewOpenButtonId(item.id)}
               type="button"
@@ -635,9 +629,9 @@ export function CompactTitleTable({
               aria-current={isSelected ? "true" : undefined}
               aria-controls={selectedContextPanelControlsId}
               tabIndex={selectedPaneMode ? -1 : undefined}
-              className="flex w-full min-w-0 items-center gap-2.5 overflow-hidden rounded-[8px] p-1 text-left hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="flex w-full min-w-0 items-center gap-3 overflow-hidden text-left hover:text-foreground"
             >
-              <span className="h-12 w-8 shrink-0 overflow-hidden rounded-[6px] border border-[var(--scry-border2)] bg-[var(--scry-soft)]">
+              <span className="relative h-[50px] w-[34px] shrink-0 overflow-hidden rounded-[5px] border border-[var(--scry-border2)] bg-[var(--scry-card2)]">
                 <TitlePosterSlot
                   src={posterUrl}
                   sourceSrc={item.posterSourceUrl}
@@ -650,68 +644,52 @@ export function CompactTitleTable({
                   loading="lazy"
                   decoding="async"
                 />
+                <span
+                  aria-hidden="true"
+                  className="pointer-events-none absolute inset-0 bg-gradient-to-b from-transparent from-45% to-black/80"
+                />
               </span>
-              <span className="min-w-0 flex-1">
-                <span className="block truncate text-[13px] font-semibold text-[var(--scry-ink2)]">
+              <span className="min-w-0">
+                <span className="block truncate text-[13.5px] font-semibold text-[var(--scry-ink3)]">
                   {item.name}
                 </span>
-                {hasSubline ? (
-                  <span className="mt-1 flex min-w-0 items-center gap-1.5 overflow-hidden text-[10.5px] font-medium text-[var(--scry-muted3)]">
-                    {yearLabel ? (
-                      <span className="shrink-0 tabular-nums">{yearLabel}</span>
-                    ) : null}
-                    {episodeLabel ? (
-                      <span className="shrink-0 rounded-[5px] bg-[var(--scry-chip)] px-1.5 py-0.5 text-[10px] font-semibold text-[var(--scry-muted2)]">
-                        {episodeLabel}
-                      </span>
-                    ) : null}
-                    {qualityLabel ? (
-                      <span className="max-w-[5.5rem] shrink-0 truncate rounded-[5px] bg-sky-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-sky-300">
-                        {qualityLabel}
-                      </span>
-                    ) : null}
-                    {libraryLabel ? (
-                      <span className="inline-flex min-w-0 items-center gap-1.5">
-                        <span
-                          aria-hidden="true"
-                          className="size-1.5 shrink-0 rounded-full bg-[var(--scry-accent)]"
-                        />
-                        <span className="min-w-0 truncate">{libraryLabel}</span>
-                      </span>
-                    ) : null}
-                  </span>
-                ) : (
-                  <span className="mt-1 block text-[11px] text-[var(--scry-muted3)]">
-                    {t("label.unknown")}
-                  </span>
-                )}
+                <span className="mt-0.5 flex min-w-0 items-center gap-1.5 whitespace-nowrap text-[11.5px] text-[var(--scry-faint)]">
+                  <span
+                    aria-hidden="true"
+                    className="size-1.5 shrink-0 rounded-full bg-[var(--scry-accent)]"
+                  />
+                  {libraryLabel ? (
+                    <span className="min-w-0 truncate">{libraryLabel}</span>
+                  ) : null}
+                  {libraryLabel && subline ? (
+                    <span className="shrink-0">·</span>
+                  ) : null}
+                  {subline ? (
+                    <span className="min-w-0 truncate">{subline}</span>
+                  ) : null}
+                </span>
               </span>
             </button>
           </TableCell>
           <TableCell className="text-center align-middle">
             <span
-              className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[7px] border border-[var(--scry-line3)] bg-[var(--scry-inset)]"
+              className="inline-flex h-4 w-4 shrink-0 items-center justify-center"
               title={`${t("title.table.monitored")}: ${item.name}`}
               aria-label={`${t("title.table.monitored")}: ${item.name}`}
             >
               {item.monitored ? (
-                <Eye className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-300" />
+                <Eye className="h-4 w-4 text-emerald-600 dark:text-emerald-300" />
               ) : (
-                <EyeOff className="h-3.5 w-3.5 text-rose-600 dark:text-rose-300" />
+                <EyeOff className="h-4 w-4 text-rose-600 dark:text-rose-300" />
               )}
             </span>
           </TableCell>
-          <TableCell className="align-middle whitespace-nowrap py-2 text-right text-[12px] font-semibold tabular-nums">
+          <TableCell className="align-middle whitespace-nowrap py-2 pr-4 text-right text-[12.5px] tabular-nums text-[var(--scry-text4)]">
             {bytesToReadable(item.sizeBytes)}
           </TableCell>
         </TableRow>
       );
     }
-
-    const contextPanelControlsId = selectedPaneMode ? contextPanelId : undefined;
-    const selectedContextPanelControlsId = isSelected
-      ? contextPanelControlsId
-      : undefined;
 
     return (
       <React.Fragment key={item.id}>
@@ -732,7 +710,7 @@ export function CompactTitleTable({
           onClick={(event) => handleTitleRowClick(event, item)}
           onKeyDown={(event) => handleTitleRowKeyDown(event, item)}
           className={cn(
-            "h-12 transition-colors hover:bg-muted/35",
+            "h-12 border-b border-[var(--scry-line2)] transition-colors hover:bg-[var(--scry-hover)]",
             isSelected &&
               "bg-[rgba(var(--scry-accent-rgb),0.12)] shadow-[inset_3px_0_0_var(--scry-accent-ring)]",
           )}
@@ -755,13 +733,13 @@ export function CompactTitleTable({
               aria-current={isSelected ? "true" : undefined}
               aria-controls={selectedContextPanelControlsId}
               tabIndex={selectedPaneMode ? -1 : undefined}
-              className="block w-full overflow-hidden text-left text-[13px] font-medium hover:text-foreground hover:underline"
+              className="block w-full overflow-hidden text-left text-[13px] font-medium text-[var(--scry-ink3)] hover:text-foreground"
             >
               <span className="block truncate">{item.name}</span>
             </button>
           </TableCell>
           {showLibraryColumn ? (
-            <TableCell className="align-middle overflow-hidden py-1.5 text-[12px] text-muted-foreground">
+            <TableCell className="align-middle overflow-hidden py-1.5 text-[12px] text-[var(--scry-muted)]">
               <span className="block truncate">
                 {item.libraryName ?? item.libraryId}
               </span>
@@ -783,7 +761,7 @@ export function CompactTitleTable({
             </TableCell>
           ) : null}
           {showQualityColumn ? (
-            <TableCell className="align-middle whitespace-nowrap py-1.5 text-[13px]">
+            <TableCell className="align-middle whitespace-nowrap py-1.5 text-[12.5px] text-[var(--scry-text4)]">
               {qualityProfilesLoading
                 ? null
                 : resolveDisplayedQualityLabel(
@@ -800,12 +778,12 @@ export function CompactTitleTable({
             </TableCell>
           ) : null}
           {showSizeColumn ? (
-            <TableCell className="align-middle whitespace-nowrap py-1.5 text-[13px]">
+            <TableCell className="align-middle whitespace-nowrap py-1.5 text-right text-[12.5px] tabular-nums text-[var(--scry-text4)]">
               {bytesToReadable(item.sizeBytes)}
             </TableCell>
           ) : null}
           {showAddedColumn ? (
-            <TableCell className="align-middle whitespace-nowrap py-1.5 text-[12px] text-muted-foreground">
+            <TableCell className="align-middle whitespace-nowrap py-1.5 text-right text-[12px] text-[var(--scry-muted)]">
               {addedLabel}
             </TableCell>
           ) : null}
@@ -830,18 +808,16 @@ export function CompactTitleTable({
                     <Zap className="h-3.5 w-3.5" />
                   )}
                 </TitleTableLazyTooltipActionButton>
-                {selectedPaneMode ? null : (
-                  <TitleTableLazyTooltipActionButton
-                    tone="search"
-                    label={t("label.interactiveSearch")}
-                    tooltip={t("help.interactiveSearchTooltip")}
-                    onClick={() => handleToggleInteractiveSearch(item)}
-                    disabled={bulkActionBusy}
-                    className="size-7 rounded-sm"
-                  >
-                    <Search className="h-3.5 w-3.5" />
-                  </TitleTableLazyTooltipActionButton>
-                )}
+                <TitleTableLazyTooltipActionButton
+                  tone="search"
+                  label={t("label.interactiveSearch")}
+                  tooltip={t("help.interactiveSearchTooltip")}
+                  onClick={() => handleToggleInteractiveSearch(item)}
+                  disabled={bulkActionBusy}
+                  className="size-7 rounded-sm"
+                >
+                  <Search className="h-3.5 w-3.5" />
+                </TitleTableLazyTooltipActionButton>
                 {onToggleMonitored ? (
                   <TitleTableActionButton
                     tone={item.monitored ? "disabled" : "enabled"}
@@ -955,17 +931,17 @@ export function CompactTitleTable({
     );
   };
 
-  const titleTableHeader = selectedPaneMode ? (
+  const titleTableHeader = selectedDrawerMode ? (
     <TableHeader>
-      <TableRow className="sticky top-0 z-10 h-9 border-b border-[var(--scry-line3)] bg-[var(--scry-surfD)]">
+      <TableRow className="sticky top-0 z-10 h-11 border-b border-[var(--scry-border)] bg-[var(--scry-surfD)]">
         {renderSortableHeader(
           "name",
           t("label.title"),
-          "pl-3 text-[10.5px] font-bold uppercase tracking-normal text-[var(--scry-faint2)]",
-          "uppercase tracking-normal text-[var(--scry-faint2)]",
+          "pl-4 text-[11px] font-bold uppercase tracking-[0.05em] text-[var(--scry-faint2)]",
+          "uppercase tracking-[0.05em] text-[var(--scry-faint2)]",
         )}
         <TableHead
-          className="whitespace-nowrap text-center text-[10.5px] font-bold uppercase tracking-normal text-[var(--scry-faint2)]"
+          className="whitespace-nowrap text-center text-[11px] font-bold uppercase tracking-[0.05em] text-[var(--scry-faint2)]"
           title={t("title.table.monitored")}
         >
           MON.
@@ -973,14 +949,14 @@ export function CompactTitleTable({
         {renderSortableHeader(
           "size",
           t("title.table.size"),
-          "whitespace-nowrap pr-3 text-right text-[10.5px] font-bold uppercase tracking-normal text-[var(--scry-faint2)]",
-          "justify-end text-right uppercase tracking-normal text-[var(--scry-faint2)]",
+          "whitespace-nowrap pr-4 text-right text-[11px] font-bold uppercase tracking-[0.05em] text-[var(--scry-faint2)]",
+          "justify-end text-right uppercase tracking-[0.05em] text-[var(--scry-faint2)]",
         )}
       </TableRow>
     </TableHeader>
   ) : (
     <TableHeader>
-      <TableRow className="sticky top-0 z-10 border-b border-[var(--scry-border)] bg-[var(--scry-surfD)]">
+      <TableRow className="sticky top-0 z-10 h-11 border-b border-[var(--scry-border)] bg-[var(--scry-surfD)]">
         <TableHead className="w-12 text-center">
           <Checkbox
             checked={selectAllState}
@@ -990,52 +966,58 @@ export function CompactTitleTable({
             className="mx-auto size-5 rounded-md [&_svg]:size-4"
           />
         </TableHead>
-        {renderSortableHeader("name", t("label.name"))}
+        {renderSortableHeader(
+          "name",
+          t("label.name"),
+          "text-[11px] font-bold uppercase tracking-[0.05em] text-[var(--scry-faint2)]",
+        )}
         {showLibraryColumn
           ? renderSortableHeader(
               "library",
               t("title.table.library"),
-              "whitespace-nowrap",
+              "whitespace-nowrap text-[11px] font-bold uppercase tracking-[0.05em] text-[var(--scry-faint2)]",
             )
           : null}
         {showMonitoredColumn
           ? renderSortableHeader(
               "monitored",
               t("title.table.monitored"),
-              "text-center whitespace-nowrap",
-              "justify-center text-center",
+              "text-center whitespace-nowrap text-[11px] font-bold uppercase tracking-[0.05em] text-[var(--scry-faint2)]",
+              "justify-center text-center uppercase tracking-[0.05em] text-[var(--scry-faint2)]",
             )
           : null}
         {showQualityColumn
           ? renderSortableHeader(
               "quality",
               t("title.table.qualityTier"),
-              "whitespace-nowrap",
+              "whitespace-nowrap text-[11px] font-bold uppercase tracking-[0.05em] text-[var(--scry-faint2)]",
             )
           : null}
         {showEpisodesColumn
           ? renderSortableHeader(
               "episodes",
               t("title.table.episodes"),
-              "whitespace-nowrap",
+              "whitespace-nowrap text-[11px] font-bold uppercase tracking-[0.05em] text-[var(--scry-faint2)]",
             )
           : null}
         {showSizeColumn
           ? renderSortableHeader(
               "size",
               t("title.table.size"),
-              "whitespace-nowrap",
+              "whitespace-nowrap text-right text-[11px] font-bold uppercase tracking-[0.05em] text-[var(--scry-faint2)]",
+              "justify-end text-right uppercase tracking-[0.05em] text-[var(--scry-faint2)]",
             )
           : null}
         {showAddedColumn
           ? renderSortableHeader(
               "added",
               t("title.contextAdded"),
-              "whitespace-nowrap",
+              "whitespace-nowrap text-right text-[11px] font-bold uppercase tracking-[0.05em] text-[var(--scry-faint2)]",
+              "justify-end text-right uppercase tracking-[0.05em] text-[var(--scry-faint2)]",
             )
           : null}
         {showActionsColumn ? (
-          <TableHead className="text-center whitespace-nowrap">
+          <TableHead className="whitespace-nowrap text-right text-[11px] font-bold uppercase tracking-[0.05em] text-[var(--scry-faint2)]">
             {t("label.actions")}
           </TableHead>
         ) : null}

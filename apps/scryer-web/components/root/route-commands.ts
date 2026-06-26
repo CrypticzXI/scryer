@@ -24,6 +24,7 @@ import {
 import type {
   ActivitySection,
   ContentSettingsSection,
+  LogsSection,
   SettingsSection,
   SystemSection,
   Translate,
@@ -31,7 +32,6 @@ import type {
   WantedSection,
 } from "@/components/root/types";
 import { FACET_REGISTRY } from "@/lib/facets/registry";
-import type { Facet } from "@/lib/types";
 import type { AuthUser } from "@/lib/hooks/use-auth";
 import { APP_PERMISSIONS, LIBRARY_PERMISSIONS, hasAnyAppPermission, hasAnyLibraryPermission } from "@/lib/utils/permissions";
 
@@ -48,7 +48,6 @@ export type RouteCommand = {
 type BuildRouteCommandsArgs = {
   t: Translate;
   user: AuthUser;
-  activeFacet: Facet;
   activityImportCount?: number;
   onNavigate: (
     nextView: ViewId,
@@ -57,6 +56,7 @@ type BuildRouteCommandsArgs = {
     nextSystemSection?: SystemSection,
     nextWantedSection?: WantedSection,
     nextActivitySection?: ActivitySection,
+    nextLogsSection?: LogsSection,
   ) => void;
 };
 
@@ -68,16 +68,24 @@ function buildNavigate(
   systemSection?: SystemSection,
   wantedSection?: WantedSection,
   activitySection?: ActivitySection,
+  logsSection?: LogsSection,
 ): () => void {
   return () => {
-    onNavigate(view, settingsSection, contentSection, systemSection, wantedSection, activitySection);
+    onNavigate(
+      view,
+      settingsSection,
+      contentSection,
+      systemSection,
+      wantedSection,
+      activitySection,
+      logsSection,
+    );
   };
 }
 
 export function buildRouteCommands({
   t,
   user,
-  activeFacet,
   activityImportCount = 0,
   onNavigate,
 }: BuildRouteCommandsArgs): RouteCommand[] {
@@ -102,8 +110,7 @@ export function buildRouteCommands({
   const requestsGroupLabel = t("nav.group.requests");
   const settingsGroupLabel = t("nav.settings");
   const systemGroupLabel = t("nav.group.system");
-  const requestFacet = FACET_REGISTRY.find((f) => f.id === activeFacet) ?? FACET_REGISTRY[0];
-  const requestView = requestFacet.viewId as ViewId;
+  const logsGroupLabel = t("nav.logs");
   const mediaOverviewCommands = canViewCatalog ? FACET_REGISTRY.map((f) => ({
     id: `${f.viewId}-overview`,
     label: t(f.overviewLabelKey),
@@ -208,7 +215,7 @@ export function buildRouteCommands({
             "library",
           ],
           icon: Inbox,
-          onSelect: buildNavigate(onNavigate, requestView, undefined, "requests"),
+          onSelect: buildNavigate(onNavigate, "requests"),
         } satisfies RouteCommand]
       : []),
     ...(canViewCatalog
@@ -451,13 +458,21 @@ export function buildRouteCommands({
       : []),
     ...(canManageSystemSettings
       ? [{
-          id: "system-audit",
-          label: t("nav.logs"),
-          description: t("nav.logs"),
-          groupLabel: systemGroupLabel,
-          keywords: ["audit", "events", "logs", "log", "history", "delete"],
+          id: "logs-service",
+          label: t("nav.serviceLogs"),
+          description: t("nav.serviceLogs"),
+          groupLabel: logsGroupLabel,
+          keywords: ["service", "logs", "log", "tail", "debug", "events"],
           icon: FileText,
-          onSelect: buildNavigate(onNavigate, "system", undefined, undefined, "audit"),
+          onSelect: buildNavigate(onNavigate, "logs", undefined, undefined, undefined, undefined, undefined, "logs"),
+        } satisfies RouteCommand, {
+          id: "logs-audit",
+          label: t("nav.auditLogs"),
+          description: t("nav.auditLogs"),
+          groupLabel: logsGroupLabel,
+          keywords: ["audit", "events", "logs", "log", "history", "delete"],
+          icon: Shield,
+          onSelect: buildNavigate(onNavigate, "logs", undefined, undefined, undefined, undefined, undefined, "audit"),
         } satisfies RouteCommand]
       : []),
   ];

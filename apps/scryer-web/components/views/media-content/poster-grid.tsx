@@ -117,8 +117,7 @@ const PosterCard = React.memo(function PosterCard({
   const location = useLocation();
   const t = useTranslate();
   const posterUrl = selectPosterVariantUrl(title.posterUrl, "w250");
-  const posterClassName =
-    "h-full w-full object-cover transition-transform duration-150 group-hover:scale-105 group-hover:brightness-[0.78] group-hover:saturate-[0.9] group-focus-within:scale-105 group-focus-within:brightness-[0.78] group-focus-within:saturate-[0.9]";
+  const posterClassName = "h-full w-full object-cover";
   const contextPanelControlsId =
     selected && onSelectTitle ? contextPanelId : undefined;
   const handleActivate = React.useCallback(() => {
@@ -140,7 +139,7 @@ const PosterCard = React.memo(function PosterCard({
   return (
     <div
       className={cn(
-        "cv-auto-poster group motion-safe:transition-transform motion-safe:hover:-translate-y-1",
+        "cv-auto-poster group",
       )}
     >
       <div
@@ -148,7 +147,7 @@ const PosterCard = React.memo(function PosterCard({
           "overflow-hidden rounded-[12px] border bg-[var(--scry-card2)]",
           selected
             ? "border-[var(--scry-accent-ring)]"
-            : "border-[var(--scry-border2)] shadow-[0_8px_20px_rgba(0,0,0,0.4)]",
+            : "border-[var(--scry-border2)]",
         )}
       >
         <div className="relative">
@@ -193,7 +192,7 @@ const PosterCard = React.memo(function PosterCard({
                 )}
               >
                 <p
-                  className="line-clamp-2 text-[13px] font-semibold leading-tight tracking-normal text-white drop-shadow-md"
+                  className="line-clamp-2 text-[13px] font-semibold leading-tight tracking-normal text-white"
                   style={{
                     fontFamily:
                       "var(--font-space-grotesk), var(--font-inter), ui-sans-serif, system-ui, -apple-system, sans-serif",

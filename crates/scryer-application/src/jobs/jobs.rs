@@ -1443,7 +1443,10 @@ impl AppUseCase {
         let scans_active = active_scan_count > 0;
         let scan_blocked_retry_at = scans_active
             .then_some(now + chrono::Duration::seconds(DISCOVERY_SYNC_BOOTSTRAP_QUIET_SECONDS));
-        let snapshot_backoff_ready = state.backoff_until.is_none_or(|until| now >= until);
+        // TODO: remove before going live; local testing shortcut to retry the discovery
+        // snapshot on startup even if an earlier local SMG attempt left a backoff.
+        let snapshot_backoff_ready = trigger_source == JobTriggerSource::ScheduledStartup
+            || state.backoff_until.is_none_or(|until| now >= until);
         let snapshot_resume_due = state.inflight_context_snapshot_run_id.is_some()
             && !scans_active
             && snapshot_backoff_ready;
@@ -1469,21 +1472,8 @@ impl AppUseCase {
             true
         } else if snapshot_can_submit && state.last_success_generation_id.is_none() {
             if subject_context_changed {
-                match state.bootstrap_quiet_until {
-                    Some(quiet_until) if now >= quiet_until => true,
-                    _ => {
-                        if state.bootstrap_started_at.is_none() {
-                            state.bootstrap_started_at = Some(now);
-                        }
-                        state.bootstrap_quiet_until = Some(
-                            now + chrono::Duration::seconds(
-                                DISCOVERY_SYNC_BOOTSTRAP_QUIET_SECONDS
-                                    + state.startup_jitter_seconds,
-                            ),
-                        );
-                        false
-                    }
-                }
+                // TODO: remove before going live; local testing shortcut to run the first discovery snapshot on startup.
+                true
             } else {
                 false
             }
@@ -1540,10 +1530,9 @@ impl AppUseCase {
             None
         };
 
-        let public_feed_due = (trigger_source == JobTriggerSource::Manual
+        let public_feed_due = trigger_source == JobTriggerSource::Manual
             || state.last_public_feed_generation_id.is_none()
-            || previous_public_gate.is_some_and(|gate| now >= gate))
-            && state.backoff_until.is_none_or(|until| now >= until);
+            || previous_public_gate.is_some_and(|gate| now >= gate);
         let public_feed = if public_feed_due {
             Some(
                 self.execute_discovery_public_feed(trigger_source, &defaults, &mut state, now)
@@ -1946,8 +1935,6 @@ impl AppUseCase {
                     DISCOVERY_SYNC_DAILY_BACKSTOP_SECONDS + state.public_feed_jitter_seconds,
                 ),
         );
-        state.backoff_until = None;
-        discovery_reset_transient_failure_count(state);
         state.updated_at = completed_at;
 
         self.services

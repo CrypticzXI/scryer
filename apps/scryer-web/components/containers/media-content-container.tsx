@@ -1,6 +1,10 @@
 import * as React from "react";
-import { RequestsContainer } from "@/components/containers/requests-container";
 import { MediaContentView } from "@/components/views/media-content-view";
+import {
+  AddToCatalogDialog,
+  EMPTY_SEARCH_RESULT,
+} from "@/components/root/add-to-catalog-dialog";
+import { RequestMediaDialog } from "@/components/root/request-media-dialog";
 import type { MediaRenamePlan } from "@/components/common/media-rename-plan-panel";
 import {
   addTitleMutation,
@@ -31,6 +35,7 @@ import {
   librarySettingsQuery,
   externalSubtitlesQuery,
   mediaRenamePreviewQuery,
+  discoveryItemsQuery,
   ruleSetsQuery,
   routingPageInitQuery,
   searchForTitleQuery,
@@ -74,6 +79,11 @@ import type {
   RootFolderOption,
   TitleReleaseBlocklistEntry,
   TitleRecord,
+  DiscoveryItemsInput,
+  DiscoveryItemsPayload,
+  DiscoveryItem,
+  ExternalId,
+  Facet,
   RuleSetRecord,
 } from "@/lib/types";
 import type { ExternalSubtitleRecord } from "@/lib/types/subtitles";
@@ -137,6 +147,8 @@ type MediaContentContainerProps = {
   canManageSystemSettings: boolean;
   canManageCatalogSettings: boolean;
   canManageLibrarySettings: boolean;
+  canManageTitle: boolean;
+  canRequestMedia: boolean;
   onOpenOverview: (
     targetView: ViewId,
     overviewTarget: OverviewTitleTarget,
@@ -175,6 +187,95 @@ const defaultTitleCatalogSortState: TitleCatalogSortState = {
   key: "name",
   direction: "asc",
 };
+
+const TITLE_CONTEXT_DISCOVERY_ITEMS_LIMIT = 48;
+const TITLE_CONTEXT_DISCOVERY_TARGET_KINDS: Record<Facet, string[]> = {
+  movie: ["movie"],
+  series: ["series"],
+  anime: ["series"],
+};
+
+function titleContextDiscoveryGenres(title: TitleRecord | null | undefined) {
+  const seen = new Set<string>();
+  return (title?.genres ?? [])
+    .map((genre) => genre.trim())
+    .filter((genre) => {
+      if (!genre) {
+        return false;
+      }
+      const key = genre.toLocaleLowerCase();
+      if (seen.has(key)) {
+        return false;
+      }
+      seen.add(key);
+      return true;
+    })
+    .slice(0, 8);
+}
+
+function titleContextDiscoveryItemsInput(
+  facet: Facet,
+  title?: TitleRecord | null,
+): DiscoveryItemsInput {
+  const genres = titleContextDiscoveryGenres(title);
+  return {
+    targetKinds: TITLE_CONTEXT_DISCOVERY_TARGET_KINDS[facet],
+    facetTerms: facet === "anime" ? ["anime"] : undefined,
+    genres: genres.length > 0 ? genres : undefined,
+    includeOwned: false,
+    includeUnresolved: true,
+    limit: TITLE_CONTEXT_DISCOVERY_ITEMS_LIMIT,
+  };
+}
+
+function discoveryItemFacet(item: DiscoveryItem): Facet {
+  const raw = `${item.targetKind} ${item.contentType ?? ""} ${item.facetTerms.join(" ")}`.toLowerCase();
+  if (raw.includes("anime")) {
+    return "anime";
+  }
+  if (raw.includes("series") || raw.includes("show")) {
+    return "series";
+  }
+  return "movie";
+}
+
+function externalIdsForDiscoveryItem(item: DiscoveryItem): ExternalId[] {
+  const parts = item.targetKey.split(":").map((part) => part.trim());
+  const source = parts[0]?.toLowerCase() ?? "";
+  const value =
+    parts.length >= 3
+      ? parts.slice(2).join(":")
+      : parts.length === 2
+        ? parts[1]
+        : "";
+  return source && value ? [{ source, value }] : [];
+}
+
+function metadataResultForDiscoveryItem(
+  item: DiscoveryItem,
+): MetadataTvdbSearchItem {
+  const externalIds = externalIdsForDiscoveryItem(item);
+  return {
+    tvdbId:
+      externalIds.find((externalId) => externalId.source === "tvdb")?.value ??
+      "",
+    name: item.displayTitle,
+    imdbId:
+      externalIds.find((externalId) => externalId.source === "imdb")?.value ??
+      null,
+    externalIds,
+    slug: null,
+    type: item.contentType ?? item.targetKind,
+    year: item.year,
+    status: item.statusTags[0] ?? null,
+    overview: item.overview,
+    popularity: item.rankScore,
+    posterUrl: item.posterUrl,
+    language: null,
+    runtimeMinutes: null,
+    sortTitle: item.sortTitle,
+  };
+}
 
 function titleCatalogSortInput(sort: TitleCatalogSortState) {
   const key =
@@ -720,11 +821,26 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   canManageSystemSettings,
   canManageCatalogSettings,
   canManageLibrarySettings,
+  canManageTitle,
+  canRequestMedia,
   onOpenOverview,
 }: MediaContentContainerProps) {
   const searchState = useSearchContext();
-  const { queueFacet, setQueueFacet, runTvdbSearch, tvdbCandidates } =
-    searchState;
+  const {
+    addMetadataSearchResultToCatalog,
+    catalogConfigLoading,
+    catalogQualityProfileOptions,
+    ensureCatalogConfigReady,
+    librariesByFacet,
+    queueFacet,
+    requestableLibrariesByFacet,
+    requestMetadataSearchResult,
+    resolveDefaultQualityProfileIdForFacet,
+    rootFoldersByFacet,
+    runTvdbSearch,
+    setQueueFacet,
+    tvdbCandidates,
+  } = searchState;
   const setGlobalStatus = useGlobalStatus();
   const t = useTranslate();
   const client = useClient();
@@ -748,6 +864,20 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   const [startedLibraryScanSessionId, setStartedLibraryScanSessionId] =
     React.useState<string | null>(null);
   const activeFacet = viewToFacet[view as keyof typeof viewToFacet] ?? "movie";
+  const [titleContextDiscoveryItems, setTitleContextDiscoveryItems] =
+    React.useState<DiscoveryItem[]>([]);
+  const [
+    selectedTitleContextDiscoveryItems,
+    setSelectedTitleContextDiscoveryItems,
+  ] = React.useState<DiscoveryItem[]>([]);
+  const [addDiscoveryDialogTarget, setAddDiscoveryDialogTarget] =
+    React.useState<{ result: MetadataTvdbSearchItem; facet: Facet } | null>(
+      null,
+    );
+  const [requestDiscoveryDialogTarget, setRequestDiscoveryDialogTarget] =
+    React.useState<{ result: MetadataTvdbSearchItem; facet: Facet } | null>(
+      null,
+    );
   const {
     getActiveSession,
     getSessionById,
@@ -765,6 +895,35 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   const shouldLoadCatalogTitles =
     isMediaView && contentSettingsSection === "overview";
   const shouldLoadMediaSettings = isMediaView;
+  const refreshTitleContextDiscovery = React.useCallback(async () => {
+    if (!shouldLoadCatalogTitles) {
+      setTitleContextDiscoveryItems([]);
+      return;
+    }
+    try {
+      const { data, error } = await client
+        .query(
+          discoveryItemsQuery,
+          { input: titleContextDiscoveryItemsInput(activeFacet) },
+          { requestPolicy: "network-only" },
+        )
+        .toPromise();
+      if (error) {
+        throw error;
+      }
+      setTitleContextDiscoveryItems(
+        ((data?.discoveryItems ?? null) as DiscoveryItemsPayload | null)
+          ?.items ?? [],
+      );
+    } catch {
+      setTitleContextDiscoveryItems([]);
+    }
+  }, [activeFacet, client, shouldLoadCatalogTitles]);
+
+  React.useEffect(() => {
+    void refreshTitleContextDiscovery();
+  }, [refreshTitleContextDiscovery]);
+
   const [desktopViewModes, setDesktopViewModes] = React.useState<
     Partial<Record<ViewId, ContentViewMode>>
   >(() => ({ [view]: readStoredContentViewMode(view) }));
@@ -1554,6 +1713,42 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     [reloadTitles, titleFilter],
   );
 
+  const handleTitleContextDiscoveryAction = React.useCallback(
+    async (item: DiscoveryItem) => {
+      if (item.ownedInInput) {
+        return;
+      }
+      if (!canManageTitle && !canRequestMedia) {
+        setGlobalStatus(t("status.permissionDenied"));
+        return;
+      }
+      const facet = discoveryItemFacet(item);
+      const target = {
+        result: metadataResultForDiscoveryItem(item),
+        facet,
+      };
+      try {
+        await ensureCatalogConfigReady(facet);
+        if (canManageTitle) {
+          setAddDiscoveryDialogTarget(target);
+        } else {
+          setRequestDiscoveryDialogTarget(target);
+        }
+      } catch (caught) {
+        setGlobalStatus(
+          caught instanceof Error ? caught.message : t("status.apiError"),
+        );
+      }
+    },
+    [
+      canManageTitle,
+      canRequestMedia,
+      ensureCatalogConfigReady,
+      setGlobalStatus,
+      t,
+    ],
+  );
+
   const loadMoreCatalogTitles = React.useCallback(async () => {
     if (
       !shouldLoadCatalogTitles ||
@@ -2086,6 +2281,65 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     selectedOverviewTitleForPanelHydration !== null
       ? !hasSelectedTitleEpisodeDetails(selectedOverviewTitleForPanelHydration)
       : false;
+
+  React.useEffect(() => {
+    if (!shouldLoadCatalogTitles || !selectedOverviewTitleForPanelHydration) {
+      setSelectedTitleContextDiscoveryItems([]);
+      return;
+    }
+    if (titleContextDiscoveryGenres(selectedOverviewTitleForPanelHydration).length === 0) {
+      setSelectedTitleContextDiscoveryItems([]);
+      return;
+    }
+
+    let cancelled = false;
+    async function refreshSelectedTitleContextDiscovery() {
+      try {
+        const { data, error } = await client
+          .query(
+            discoveryItemsQuery,
+            {
+              input: titleContextDiscoveryItemsInput(
+                activeFacet,
+                selectedOverviewTitleForPanelHydration,
+              ),
+            },
+            { requestPolicy: "network-only" },
+          )
+          .toPromise();
+        if (error) {
+          throw error;
+        }
+        if (!cancelled) {
+          setSelectedTitleContextDiscoveryItems(
+            ((data?.discoveryItems ?? null) as DiscoveryItemsPayload | null)
+              ?.items ?? [],
+          );
+        }
+      } catch {
+        if (!cancelled) {
+          setSelectedTitleContextDiscoveryItems([]);
+        }
+      }
+    }
+
+    void refreshSelectedTitleContextDiscovery();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    activeFacet,
+    client,
+    selectedOverviewTitleForPanelHydration,
+    shouldLoadCatalogTitles,
+  ]);
+
+  const activeTitleContextDiscoveryItems =
+    selectedOverviewTitleForPanelHydration &&
+    selectedTitleContextDiscoveryItems.length > 0
+      ? selectedTitleContextDiscoveryItems
+      : titleContextDiscoveryItems;
+
   const loadSelectedOverviewExternalSubtitles = React.useCallback(
     async (titleId: string) => {
       const { data, error } = await client
@@ -2644,8 +2898,11 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     (nextFilter: "monitored" | "unmonitored") => {
       React.startTransition(() => {
         setTitleQuickFilters((current) => ({
-          ...current,
-          [nextFilter]: !current[nextFilter],
+          monitored: nextFilter === "monitored" ? !current.monitored : false,
+          unmonitored:
+            nextFilter === "unmonitored" ? !current.unmonitored : false,
+          continuing: false,
+          ended: false,
         }));
       });
     },
@@ -2656,8 +2913,10 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     (nextFilter: "continuing" | "ended") => {
       React.startTransition(() => {
         setTitleQuickFilters((current) => ({
-          ...current,
-          [nextFilter]: !current[nextFilter],
+          monitored: false,
+          unmonitored: false,
+          continuing: nextFilter === "continuing" ? !current.continuing : false,
+          ended: nextFilter === "ended" ? !current.ended : false,
         }));
       });
     },
@@ -3778,9 +4037,23 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     view,
   ]);
 
-  if (contentSettingsSection === "requests") {
-    return <RequestsContainer facet={activeFacet} />;
-  }
+  const addDiscoveryFacet = addDiscoveryDialogTarget?.facet ?? activeFacet;
+  const addDiscoveryResult =
+    addDiscoveryDialogTarget?.result ?? EMPTY_SEARCH_RESULT;
+  const requestDiscoveryFacet =
+    requestDiscoveryDialogTarget?.facet ?? activeFacet;
+  const requestDiscoveryResult =
+    requestDiscoveryDialogTarget?.result ?? EMPTY_SEARCH_RESULT;
+  const handleAddDiscoveryDialogOpenChange = (open: boolean) => {
+    if (!open) {
+      setAddDiscoveryDialogTarget(null);
+    }
+  };
+  const handleRequestDiscoveryDialogOpenChange = (open: boolean) => {
+    if (!open) {
+      setRequestDiscoveryDialogTarget(null);
+    }
+  };
 
   return (
     <>
@@ -3871,6 +4144,10 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
           catalogInitialLoadComplete,
           monitoredTitles: visibleTitles,
           titleContextTitles: titleContextSourceTitles,
+          titleContextDiscoveryItems: activeTitleContextDiscoveryItems,
+          canManageTitle,
+          canRequestMedia,
+          onTitleContextDiscoveryAction: handleTitleContextDiscoveryAction,
           titleQuickFilters,
           titleQuickFilterCounts,
           toggleTitleQuickMonitoringFilter,
@@ -3951,6 +4228,61 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
           openBulkTitleDelete,
         }}
       />
+      {canManageTitle ? (
+        <AddToCatalogDialog
+          open={addDiscoveryDialogTarget !== null}
+          onOpenChange={handleAddDiscoveryDialogOpenChange}
+          result={addDiscoveryResult}
+          facet={addDiscoveryFacet}
+          catalogQualityProfileOptions={catalogQualityProfileOptions}
+          catalogConfigLoading={catalogConfigLoading}
+          defaultQualityProfileId={resolveDefaultQualityProfileIdForFacet(
+            addDiscoveryFacet,
+          )}
+          manageableLibraries={librariesByFacet[addDiscoveryFacet] ?? []}
+          rootFolderOptions={rootFoldersByFacet[addDiscoveryFacet] ?? []}
+          onAdd={async (result, facet, options) => {
+            const titleId = await addMetadataSearchResultToCatalog(
+              result,
+              facet,
+              options,
+            );
+            if (titleId) {
+              await Promise.all([
+                refreshTitles(),
+                refreshTitleContextDiscovery(),
+              ]);
+            }
+            return titleId;
+          }}
+        />
+      ) : null}
+      {!canManageTitle && canRequestMedia ? (
+        <RequestMediaDialog
+          open={requestDiscoveryDialogTarget !== null}
+          onOpenChange={handleRequestDiscoveryDialogOpenChange}
+          result={requestDiscoveryResult}
+          facet={requestDiscoveryFacet}
+          requestableLibraries={
+            requestableLibrariesByFacet[requestDiscoveryFacet] ?? []
+          }
+          qualityProfileOptions={catalogQualityProfileOptions}
+          onRequest={async (result, facet, options) => {
+            const accepted = await requestMetadataSearchResult(
+              result,
+              facet,
+              options,
+            );
+            if (accepted) {
+              await Promise.all([
+                refreshTitles(),
+                refreshTitleContextDiscovery(),
+              ]);
+            }
+            return accepted;
+          }}
+        />
+      ) : null}
       <BulkTitleEditDialog
         open={bulkEditDialogOpen}
         onOpenChange={setBulkEditDialogOpen}
