@@ -29,6 +29,7 @@ import {
 } from "lucide-react";
 import { useTranslate } from "@/lib/context/translate-context";
 import { Button } from "@/components/ui/button";
+import { discoveryItemDisplayTitle } from "@/lib/utils/discovery-display";
 import { cn } from "@/lib/utils";
 import type {
   DiscoveryFacet,
@@ -81,6 +82,7 @@ const DISCOVERY_CONTENT_TYPES: DiscoveryContentType[] = [
 const DEFAULT_DISCOVERY_CONTENT_TYPES: DiscoveryContentType[] = [
   "movie",
   "series",
+  "anime",
 ];
 const DEFAULT_MINIMUM_YEAR = 1990;
 const DEFAULT_MAXIMUM_YEAR = 2026;
@@ -318,17 +320,37 @@ function ratingForFilter(value: number | null | undefined) {
   return value <= 1 ? value * 10 : value;
 }
 
+function itemPrimaryMediaKind(item: DiscoveryItem) {
+  return (item.contentType?.trim() || item.targetKind.trim()).toLowerCase();
+}
+
 function itemContentType(item: DiscoveryItem): DiscoveryContentType | null {
-  const values = [item.targetKind, item.contentType ?? "", ...item.facetTerms].map(
-    (value) => value.toLowerCase(),
-  );
-  if (values.some((value) => value.includes("anime"))) {
+  const primaryKind = itemPrimaryMediaKind(item);
+  if (primaryKind.includes("anime")) {
     return "anime";
   }
-  if (values.some((value) => value.includes("series") || value.includes("show"))) {
+  if (primaryKind.includes("series") || primaryKind.includes("show")) {
     return "series";
   }
-  if (values.some((value) => value.includes("movie") || value.includes("film"))) {
+  if (primaryKind.includes("movie") || primaryKind.includes("film")) {
+    return "movie";
+  }
+  const fallbackTerms = item.facetTerms.map((value) => value.toLowerCase());
+  if (fallbackTerms.some((value) => value.includes("anime"))) {
+    return "anime";
+  }
+  if (
+    fallbackTerms.some(
+      (value) => value.includes("series") || value.includes("show"),
+    )
+  ) {
+    return "series";
+  }
+  if (
+    fallbackTerms.some(
+      (value) => value.includes("movie") || value.includes("film"),
+    )
+  ) {
     return "movie";
   }
   return null;
@@ -417,15 +439,7 @@ function buildGenreTiles(items: DiscoveryItem[]): GenreTile[] {
 }
 
 function contentTypeCount(items: DiscoveryItem[], kind: string) {
-  const normalizedKind = kind.toLowerCase();
-  return items.filter((item) => {
-    const values = [
-      item.targetKind,
-      item.contentType ?? "",
-      ...item.facetTerms,
-    ].map((value) => value.toLowerCase());
-    return values.some((value) => value.includes(normalizedKind));
-  }).length;
+  return items.filter((item) => itemContentType(item) === kind).length;
 }
 
 function facetCount(facets: DiscoveryFacet[], value: string) {
@@ -458,11 +472,12 @@ function DiscoveryActionButton({
       ? t("discovery.add")
       : t("discovery.request");
   const disabled = owned || (!canManageTitle && !canRequestMedia);
+  const titleLabel = discoveryItemDisplayTitle(item);
 
   return (
     <button
       type="button"
-      aria-label={`${label}: ${item.displayTitle}`}
+      aria-label={`${label}: ${titleLabel}`}
       disabled={disabled}
       onClick={() => onAction(item)}
       className={cn(
@@ -506,6 +521,7 @@ function DiscoveryRailCard({
   const compact = size === "sm";
   const upcoming = variant === "upcoming" && !compact;
   const calendarBadgeLabel = upcoming ? itemCalendarBadgeLabel(item) : null;
+  const titleLabel = discoveryItemDisplayTitle(item);
   return (
     <div
       className={cn(
@@ -558,7 +574,7 @@ function DiscoveryRailCard({
             upcoming ? "bottom-2.5" : "bottom-8",
           )}
         >
-          <div>{item.displayTitle}</div>
+          <div>{titleLabel}</div>
           {upcoming ? (
             <div className="mt-1 font-sans text-[11px] font-medium text-[var(--scry-muted2)]">
               {itemTypeLabel(item)}
@@ -580,7 +596,7 @@ function DiscoveryRailCard({
       {compact ? (
         <>
           <div className="mt-2 truncate text-xs font-medium text-[var(--scry-body)]">
-            {item.displayTitle}
+            {titleLabel}
           </div>
           <div className="flex items-center gap-1.5 text-[11px] text-[var(--scry-faint)]">
             {item.year ? <span>{item.year}</span> : null}
@@ -658,6 +674,7 @@ function DiscoveryHero({
   onAction: (item: DiscoveryItem) => void;
 }) {
   const t = useTranslate();
+  const titleLabel = discoveryItemDisplayTitle(item);
   const score = formatScore(item.rating);
   const match = itemMatchScore(item);
   const genres = item.genres.slice(0, 3);
@@ -692,7 +709,7 @@ function DiscoveryHero({
           </span>
         </div>
         <h2 className="m-0 mb-3 font-[var(--font-space-grotesk)] text-[clamp(2rem,4vw,42px)] font-bold leading-none text-white drop-shadow">
-          {item.displayTitle}
+          {titleLabel}
         </h2>
         <div className="mb-3.5 flex flex-wrap items-center gap-3 text-[13px] text-[var(--scry-text2)]">
           {detailItems.map((detail, index) => (

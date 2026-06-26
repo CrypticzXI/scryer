@@ -51,7 +51,12 @@ import {
   TitleTableEmptyState,
   TitleTableLazyTooltipActionButton,
   TitleTableLoadingState,
+  COMPACT_TITLE_TABLE_ACTION_BUTTON_CLASS,
   DEFAULT_TITLE_TABLE_VISIBLE_COLUMNS,
+  TITLE_TABLE_HEADER_CELL_CLASS,
+  TITLE_TABLE_HEADER_ROW_CLASS,
+  TITLE_TABLE_ROW_CLASS,
+  TITLE_TABLE_SELECTED_ROW_CLASS,
   type TitleTableSortDirection,
   type TitleTableSortKey,
   type TitleTableVisibleColumns,
@@ -615,9 +620,9 @@ export function CompactTitleTable({
           onClick={(event) => handleTitleRowClick(event, item)}
           onKeyDown={(event) => handleTitleRowKeyDown(event, item)}
           className={cn(
-            "h-[70px] border-b border-[var(--scry-line2)] transition-colors hover:bg-[var(--scry-hover)]",
-            isSelected &&
-              "bg-[rgba(var(--scry-accent-rgb),0.12)] shadow-[inset_3px_0_0_var(--scry-accent-ring)]",
+            "h-[70px]",
+            TITLE_TABLE_ROW_CLASS,
+            isSelected && TITLE_TABLE_SELECTED_ROW_CLASS,
           )}
         >
           <TableCell className="align-middle overflow-hidden py-2 pl-4 pr-2">
@@ -678,9 +683,9 @@ export function CompactTitleTable({
               aria-label={`${t("title.table.monitored")}: ${item.name}`}
             >
               {item.monitored ? (
-                <Eye className="h-4 w-4 text-emerald-600 dark:text-emerald-300" />
+                <Eye className="size-4 text-emerald-600 dark:text-[#4ade80]" />
               ) : (
-                <EyeOff className="h-4 w-4 text-rose-600 dark:text-rose-300" />
+                <EyeOff className="size-4 text-[var(--scry-faint2)]" />
               )}
             </span>
           </TableCell>
@@ -710,9 +715,9 @@ export function CompactTitleTable({
           onClick={(event) => handleTitleRowClick(event, item)}
           onKeyDown={(event) => handleTitleRowKeyDown(event, item)}
           className={cn(
-            "h-12 border-b border-[var(--scry-line2)] transition-colors hover:bg-[var(--scry-hover)]",
-            isSelected &&
-              "bg-[rgba(var(--scry-accent-rgb),0.12)] shadow-[inset_3px_0_0_var(--scry-accent-ring)]",
+            "h-12",
+            TITLE_TABLE_ROW_CLASS,
+            isSelected && TITLE_TABLE_SELECTED_ROW_CLASS,
           )}
         >
           <TableCell className="align-middle">
@@ -721,7 +726,7 @@ export function CompactTitleTable({
               onCheckedChange={() => onToggleSelected(item.id)}
               aria-label={t("title.selectTitle", { name: item.name })}
               disabled={bulkActionBusy}
-              className="mx-auto size-5 rounded-md [&_svg]:size-4"
+              className="mx-auto size-[17px] rounded-[5px] [&_svg]:size-3"
             />
           </TableCell>
           <TableCell className="align-middle overflow-hidden py-1.5">
@@ -753,9 +758,9 @@ export function CompactTitleTable({
                 aria-label={`${t("title.table.monitored")}: ${item.name}`}
               >
                 {item.monitored ? (
-                  <Eye className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-300" />
+                  <Eye className="size-4 text-emerald-600 dark:text-[#4ade80]" />
                 ) : (
-                  <EyeOff className="h-3.5 w-3.5 text-rose-600 dark:text-rose-300" />
+                  <EyeOff className="size-4 text-[var(--scry-faint2)]" />
                 )}
               </span>
             </TableCell>
@@ -800,7 +805,7 @@ export function CompactTitleTable({
                   tooltip={t("help.autoSearchTooltip")}
                   onClick={() => handleQueueExisting(item)}
                   disabled={autoQueueLoading || bulkActionBusy}
-                  className="size-7 rounded-sm"
+                  className={COMPACT_TITLE_TABLE_ACTION_BUTTON_CLASS}
                 >
                   {autoQueueLoading ? (
                     <Loader2 className="h-3.5 w-3.5 animate-spin text-emerald-500" />
@@ -809,18 +814,18 @@ export function CompactTitleTable({
                   )}
                 </TitleTableLazyTooltipActionButton>
                 <TitleTableLazyTooltipActionButton
-                  tone="search"
+                  tone="accent"
                   label={t("label.interactiveSearch")}
                   tooltip={t("help.interactiveSearchTooltip")}
                   onClick={() => handleToggleInteractiveSearch(item)}
                   disabled={bulkActionBusy}
-                  className="size-7 rounded-sm"
+                  className={COMPACT_TITLE_TABLE_ACTION_BUTTON_CLASS}
                 >
                   <Search className="h-3.5 w-3.5" />
                 </TitleTableLazyTooltipActionButton>
                 {onToggleMonitored ? (
                   <TitleTableActionButton
-                    tone={item.monitored ? "disabled" : "enabled"}
+                    tone="search"
                     label={t(
                       item.monitored
                         ? "title.unmonitorAction"
@@ -828,7 +833,7 @@ export function CompactTitleTable({
                     )}
                     onClick={() => onToggleMonitored(item, !item.monitored)}
                     disabled={monitorToggleLoading || bulkActionBusy}
-                    className="size-7 rounded-sm"
+                    className={COMPACT_TITLE_TABLE_ACTION_BUTTON_CLASS}
                   >
                     {monitorToggleLoading ? (
                       <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -844,7 +849,7 @@ export function CompactTitleTable({
                   label={t("label.delete")}
                   onClick={() => onDelete(item)}
                   disabled={deleteLoading || bulkActionBusy}
-                  className="size-7 rounded-sm"
+                  className={COMPACT_TITLE_TABLE_ACTION_BUTTON_CLASS}
                 >
                   {deleteLoading ? (
                     <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -933,15 +938,18 @@ export function CompactTitleTable({
 
   const titleTableHeader = selectedDrawerMode ? (
     <TableHeader>
-      <TableRow className="sticky top-0 z-10 h-11 border-b border-[var(--scry-border)] bg-[var(--scry-surfD)]">
+      <TableRow className={TITLE_TABLE_HEADER_ROW_CLASS}>
         {renderSortableHeader(
           "name",
           t("label.title"),
-          "pl-4 text-[11px] font-bold uppercase tracking-[0.05em] text-[var(--scry-faint2)]",
+          cn("pl-4", TITLE_TABLE_HEADER_CELL_CLASS),
           "uppercase tracking-[0.05em] text-[var(--scry-faint2)]",
         )}
         <TableHead
-          className="whitespace-nowrap text-center text-[11px] font-bold uppercase tracking-[0.05em] text-[var(--scry-faint2)]"
+          className={cn(
+            "whitespace-nowrap text-center",
+            TITLE_TABLE_HEADER_CELL_CLASS,
+          )}
           title={t("title.table.monitored")}
         >
           MON.
@@ -949,14 +957,14 @@ export function CompactTitleTable({
         {renderSortableHeader(
           "size",
           t("title.table.size"),
-          "whitespace-nowrap pr-4 text-right text-[11px] font-bold uppercase tracking-[0.05em] text-[var(--scry-faint2)]",
+          cn("whitespace-nowrap pr-4 text-right", TITLE_TABLE_HEADER_CELL_CLASS),
           "justify-end text-right uppercase tracking-[0.05em] text-[var(--scry-faint2)]",
         )}
       </TableRow>
     </TableHeader>
   ) : (
     <TableHeader>
-      <TableRow className="sticky top-0 z-10 h-11 border-b border-[var(--scry-border)] bg-[var(--scry-surfD)]">
+      <TableRow className={TITLE_TABLE_HEADER_ROW_CLASS}>
         <TableHead className="w-12 text-center">
           <Checkbox
             checked={selectAllState}
@@ -969,20 +977,20 @@ export function CompactTitleTable({
         {renderSortableHeader(
           "name",
           t("label.name"),
-          "text-[11px] font-bold uppercase tracking-[0.05em] text-[var(--scry-faint2)]",
+          TITLE_TABLE_HEADER_CELL_CLASS,
         )}
         {showLibraryColumn
           ? renderSortableHeader(
               "library",
               t("title.table.library"),
-              "whitespace-nowrap text-[11px] font-bold uppercase tracking-[0.05em] text-[var(--scry-faint2)]",
+              cn("whitespace-nowrap", TITLE_TABLE_HEADER_CELL_CLASS),
             )
           : null}
         {showMonitoredColumn
           ? renderSortableHeader(
               "monitored",
               t("title.table.monitored"),
-              "text-center whitespace-nowrap text-[11px] font-bold uppercase tracking-[0.05em] text-[var(--scry-faint2)]",
+              cn("text-center whitespace-nowrap", TITLE_TABLE_HEADER_CELL_CLASS),
               "justify-center text-center uppercase tracking-[0.05em] text-[var(--scry-faint2)]",
             )
           : null}
@@ -990,21 +998,21 @@ export function CompactTitleTable({
           ? renderSortableHeader(
               "quality",
               t("title.table.qualityTier"),
-              "whitespace-nowrap text-[11px] font-bold uppercase tracking-[0.05em] text-[var(--scry-faint2)]",
+              cn("whitespace-nowrap", TITLE_TABLE_HEADER_CELL_CLASS),
             )
           : null}
         {showEpisodesColumn
           ? renderSortableHeader(
               "episodes",
               t("title.table.episodes"),
-              "whitespace-nowrap text-[11px] font-bold uppercase tracking-[0.05em] text-[var(--scry-faint2)]",
+              cn("whitespace-nowrap", TITLE_TABLE_HEADER_CELL_CLASS),
             )
           : null}
         {showSizeColumn
           ? renderSortableHeader(
               "size",
               t("title.table.size"),
-              "whitespace-nowrap text-right text-[11px] font-bold uppercase tracking-[0.05em] text-[var(--scry-faint2)]",
+              cn("whitespace-nowrap text-right", TITLE_TABLE_HEADER_CELL_CLASS),
               "justify-end text-right uppercase tracking-[0.05em] text-[var(--scry-faint2)]",
             )
           : null}
@@ -1012,12 +1020,14 @@ export function CompactTitleTable({
           ? renderSortableHeader(
               "added",
               t("title.contextAdded"),
-              "whitespace-nowrap text-right text-[11px] font-bold uppercase tracking-[0.05em] text-[var(--scry-faint2)]",
+              cn("whitespace-nowrap text-right", TITLE_TABLE_HEADER_CELL_CLASS),
               "justify-end text-right uppercase tracking-[0.05em] text-[var(--scry-faint2)]",
             )
           : null}
         {showActionsColumn ? (
-          <TableHead className="whitespace-nowrap text-right text-[11px] font-bold uppercase tracking-[0.05em] text-[var(--scry-faint2)]">
+          <TableHead
+            className={cn("whitespace-nowrap text-right", TITLE_TABLE_HEADER_CELL_CLASS)}
+          >
             {t("label.actions")}
           </TableHead>
         ) : null}
@@ -1040,10 +1050,8 @@ export function CompactTitleTable({
         data-slot="title-list-scroll"
         ref={titleTableScrollRef}
         className={cn(
-          "relative flex-1 overflow-auto rounded-[12px] border border-[var(--scry-border2)] bg-[var(--scry-card2)]",
-          selectedPaneMode
-            ? "min-h-0 rounded-[12px] border-[var(--scry-border2)] bg-[var(--scry-card2)]"
-            : "min-h-[22rem]",
+          "relative flex-1 overflow-auto rounded-[14px] border border-[var(--scry-border)] bg-[var(--scry-surfD)]",
+          selectedPaneMode ? "min-h-0" : "min-h-[22rem]",
         )}
       >
         <table

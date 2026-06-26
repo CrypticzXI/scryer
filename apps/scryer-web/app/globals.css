@@ -333,6 +333,18 @@ body {
     overflow: hidden;
     background: var(--scry-shell-main-bg);
   }
+
+  /* The shadcn SidebarProvider wrapper defaults to min-h-svh, which lets it
+     grow to content height and breaks the percentage-height chain feeding the
+     scrollable main. A percentage height here is treated as indefinite in the
+     flex context, so pin it to the same viewport-based definite height the
+     frame uses (the custom property inherits down) so inner scroll works. */
+  [data-slot="root-shell-frame"] > * {
+    height: calc(100dvh - var(--root-shell-top-offset, 0px));
+    max-height: calc(100dvh - var(--root-shell-top-offset, 0px));
+    min-height: 0;
+    overflow: hidden;
+  }
 }
 
 .dark body {

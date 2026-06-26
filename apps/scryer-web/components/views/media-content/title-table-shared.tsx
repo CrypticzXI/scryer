@@ -63,6 +63,23 @@ export const TITLE_TABLE_COLUMN_KEYS: readonly TitleTableColumnKey[] = [
   "added",
   "actions",
 ];
+
+export const TITLE_TABLE_HEADER_ROW_CLASS =
+  "sticky top-0 z-10 h-11 border-b border-[var(--scry-border)] bg-[var(--scry-surfD)]";
+
+export const TITLE_TABLE_HEADER_CELL_CLASS =
+  "text-[11px] font-bold uppercase tracking-[0.05em] text-[var(--scry-faint2)]";
+
+export const TITLE_TABLE_ROW_CLASS =
+  "border-b border-[var(--scry-line2)] transition-colors hover:bg-[var(--scry-hover)]";
+
+export const TITLE_TABLE_SELECTED_ROW_CLASS =
+  "bg-[rgba(var(--scry-accent-rgb),0.12)] shadow-[inset_3px_0_0_var(--scry-accent-ring)]";
+
+export const TITLE_TABLE_ACTION_BUTTON_CLASS = "h-7 w-[30px] rounded-[7px]";
+
+export const COMPACT_TITLE_TABLE_ACTION_BUTTON_CLASS = "size-7 rounded-[7px]";
+
 export type TitleTableSortDirection = "asc" | "desc";
 
 type TitleTableVirtualizer = {

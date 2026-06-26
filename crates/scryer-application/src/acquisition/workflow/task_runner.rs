@@ -2088,23 +2088,12 @@ async fn run_discovery_sync_worker(
     app: AppUseCase,
     token: tokio_util::sync::CancellationToken,
 ) {
-    let startup_grace_delay = std::time::Duration::from_secs(60);
-    app.set_job_next_run_at(
-        JobKey::DiscoverySync,
-        Utc::now()
-            + Duration::from_std(startup_grace_delay)
-                .expect("discovery sync startup delay should fit in chrono duration"),
-    )
-    .await;
-
-    {
-        let app = app.clone();
-        tokio::spawn(async move {
-            let _ = run_discovery_sync_once(&app, JobTriggerSource::ScheduledStartup).await;
-        });
-    }
-
-    let mut delay = startup_grace_delay;
+    // The acquisition poller spawns this worker, so awaiting the startup pass here
+    // keeps service startup nonblocking while preventing overlapping discovery runs.
+    let mut delay = tokio::select! {
+        _ = token.cancelled() => return,
+        delay = run_discovery_sync_once(&app, JobTriggerSource::ScheduledStartup) => delay,
+    };
 
     loop {
         tokio::select! {

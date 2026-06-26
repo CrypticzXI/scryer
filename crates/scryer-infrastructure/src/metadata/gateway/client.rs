@@ -3340,10 +3340,21 @@ fn map_metadata_gateway_outbound_error(request_label: &str, error: OutboundHttpE
                 _ => format!("{request_label} was rate limited by the metadata gateway"),
             })
         }
-        OutboundHttpError::Transport { source, .. } => {
-            AppError::Repository(format!("{request_label} failed: {source}"))
-        }
+        OutboundHttpError::Transport { source, .. } => AppError::Repository(format!(
+            "{request_label} failed: {}",
+            outbound_transport_error_message(&source)
+        )),
     }
+}
+
+fn outbound_transport_error_message(error: &reqwest::Error) -> String {
+    let mut message = error.to_string();
+    let mut source = std::error::Error::source(error);
+    while let Some(error) = source {
+        let _ = write!(message, ": {error}");
+        source = error.source();
+    }
+    message
 }
 
 fn normalize_artwork_url(url: &str) -> String {

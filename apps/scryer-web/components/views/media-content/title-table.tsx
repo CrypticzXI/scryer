@@ -51,6 +51,11 @@ import {
   TitleTableEmptyState,
   TitleTableLazyTooltipActionButton,
   TitleTableLoadingState,
+  TITLE_TABLE_ACTION_BUTTON_CLASS,
+  TITLE_TABLE_HEADER_CELL_CLASS,
+  TITLE_TABLE_HEADER_ROW_CLASS,
+  TITLE_TABLE_ROW_CLASS,
+  TITLE_TABLE_SELECTED_ROW_CLASS,
   DEFAULT_TITLE_TABLE_VISIBLE_COLUMNS,
   type TitleTableSortDirection,
   type TitleTableSortKey,
@@ -182,25 +187,25 @@ export function TitleTable({
       : false;
   const titleTableMinWidthRem =
     3 +
-    22.25 +
-    (showLibraryColumn ? 7.25 : 0) +
+    12 +
+    (showLibraryColumn ? 7 : 0) +
     (showMonitoredColumn ? 5.25 : 0) +
     (showQualityColumn ? 8 : 0) +
     (showEpisodesColumn ? 9.5 : 0) +
-    (showSizeColumn ? 6.75 : 0) +
+    (showSizeColumn ? 6 : 0) +
     (showAddedColumn ? 7.5 : 0) +
-    (showActionsColumn ? 11 : 0);
+    (showActionsColumn ? 9.5 : 0);
   const titleTableColGroup = (
     <colgroup>
       <col style={{ width: "3rem" }} />
       <col />
-      {showLibraryColumn ? <col style={{ width: "7.25rem" }} /> : null}
+      {showLibraryColumn ? <col style={{ width: "7rem" }} /> : null}
       {showMonitoredColumn ? <col style={{ width: "5.25rem" }} /> : null}
       {showQualityColumn ? <col style={{ width: "8rem" }} /> : null}
       {showEpisodesColumn ? <col style={{ width: "9.5rem" }} /> : null}
-      {showSizeColumn ? <col style={{ width: "6.75rem" }} /> : null}
+      {showSizeColumn ? <col style={{ width: "6rem" }} /> : null}
       {showAddedColumn ? <col style={{ width: "7.5rem" }} /> : null}
-      {showActionsColumn ? <col style={{ width: "11rem" }} /> : null}
+      {showActionsColumn ? <col style={{ width: "9.5rem" }} /> : null}
     </colgroup>
   );
   const visibleColumnSignature = [
@@ -556,7 +561,6 @@ export function TitleTable({
     const deleteLoading = isDeletingById[item.id] === true;
     const monitorToggleLoading = isTogglingMonitoredById?.[item.id] === true;
     const posterThumbUrl = selectPosterVariantUrl(item.posterUrl, "w70");
-    const posterActionButtonClassName = "h-7 w-[30px] rounded-[7px]";
     const posterActionIconClassName = "h-3.5 w-3.5";
     const isSelected = selectedTitleId === item.id;
     const contextPanelControlsId = onSelectTitle ? contextPanelId : undefined;
@@ -583,9 +587,9 @@ export function TitleTable({
           onClick={(event) => handleTitleRowClick(event, item)}
           onKeyDown={(event) => handleTitleRowKeyDown(event, item)}
           className={cn(
-            "h-[4.75rem] border-b border-[var(--scry-line2)] transition-colors hover:bg-[var(--scry-hover)]",
-            isSelected &&
-              "bg-[rgba(var(--scry-accent-rgb),0.12)] shadow-[inset_3px_0_0_var(--scry-accent-ring)]",
+            "h-[4.75rem]",
+            TITLE_TABLE_ROW_CLASS,
+            isSelected && TITLE_TABLE_SELECTED_ROW_CLASS,
           )}
         >
           <TableCell className="align-middle">
@@ -603,7 +607,7 @@ export function TitleTable({
                 onCheckedChange={() => onToggleSelected(item.id)}
                 aria-label={t("title.selectTitle", { name: item.name })}
                 disabled={bulkActionBusy}
-                className="mx-auto size-5 rounded-md [&_svg]:size-4"
+                className="mx-auto size-[17px] rounded-[5px] [&_svg]:size-3"
               />
             )}
           </TableCell>
@@ -620,7 +624,7 @@ export function TitleTable({
             >
               <span
                 data-ui="poster-thumb"
-                className="h-[47px] w-8 shrink-0 overflow-hidden rounded-[5px] border border-[var(--scry-border2)] bg-[var(--scry-soft)]"
+                className="relative h-[47px] w-8 shrink-0 overflow-hidden rounded-[5px] border border-[var(--scry-border2)] bg-[var(--scry-soft)]"
               >
                 <TitlePosterSlot
                   src={posterThumbUrl}
@@ -632,6 +636,10 @@ export function TitleTable({
                   placeholderClassName="flex h-full w-full items-center justify-center text-[10px] text-muted-foreground"
                   emptyLabel={t("label.noArt")}
                   loading="lazy"
+                />
+                <span
+                  aria-hidden="true"
+                  className="pointer-events-none absolute inset-0 bg-[linear-gradient(180deg,transparent_60%,rgba(4,6,12,0.55))]"
                 />
               </span>
               <span className="block min-w-0 truncate">{item.name}</span>
@@ -652,9 +660,9 @@ export function TitleTable({
                 aria-label={`${t("title.table.monitored")}: ${item.name}`}
               >
                 {item.monitored ? (
-                  <Eye className="h-4 w-4 text-emerald-600 dark:text-emerald-300" />
+                  <Eye className="size-[17px] text-emerald-600 dark:text-[#4ade80]" />
                 ) : (
-                  <EyeOff className="h-4 w-4 text-rose-600 dark:text-rose-300" />
+                  <EyeOff className="size-[17px] text-[var(--scry-faint2)]" />
                 )}
               </span>
             </TableCell>
@@ -699,7 +707,7 @@ export function TitleTable({
                   tooltip={t("help.autoSearchTooltip")}
                   onClick={() => handleQueueExisting(item)}
                   disabled={autoQueueLoading || bulkActionBusy}
-                  className={posterActionButtonClassName}
+                  className={TITLE_TABLE_ACTION_BUTTON_CLASS}
                 >
                   {autoQueueLoading ? (
                     <Loader2
@@ -713,18 +721,18 @@ export function TitleTable({
                   )}
                 </TitleTableLazyTooltipActionButton>
                 <TitleTableLazyTooltipActionButton
-                  tone="search"
+                  tone="accent"
                   label={t("label.interactiveSearch")}
                   tooltip={t("help.interactiveSearchTooltip")}
                   onClick={() => handleToggleInteractiveSearch(item)}
                   disabled={bulkActionBusy}
-                  className={posterActionButtonClassName}
+                  className={TITLE_TABLE_ACTION_BUTTON_CLASS}
                 >
                   <Search className={posterActionIconClassName} />
                 </TitleTableLazyTooltipActionButton>
                 {onToggleMonitored ? (
                   <TitleTableActionButton
-                    tone={item.monitored ? "disabled" : "enabled"}
+                    tone="search"
                     label={t(
                       item.monitored
                         ? "title.unmonitorAction"
@@ -732,7 +740,7 @@ export function TitleTable({
                     )}
                     onClick={() => onToggleMonitored(item, !item.monitored)}
                     disabled={monitorToggleLoading || bulkActionBusy}
-                    className={posterActionButtonClassName}
+                    className={TITLE_TABLE_ACTION_BUTTON_CLASS}
                   >
                     {monitorToggleLoading ? (
                       <Loader2
@@ -753,7 +761,7 @@ export function TitleTable({
                   label={t("label.delete")}
                   onClick={() => onDelete(item)}
                   disabled={deleteLoading || bulkActionBusy}
-                  className={posterActionButtonClassName}
+                  className={TITLE_TABLE_ACTION_BUTTON_CLASS}
                 >
                   {deleteLoading ? (
                     <Loader2
@@ -832,7 +840,7 @@ export function TitleTable({
 
   const titleTableHeader = (
     <TableHeader>
-      <TableRow className="sticky top-0 z-10 h-11 border-b border-[var(--scry-border)] bg-[var(--scry-surfD)]">
+      <TableRow className={TITLE_TABLE_HEADER_ROW_CLASS}>
         <TableHead className="w-12 text-center">
           {selectedPaneMode ? (
             <span
@@ -852,20 +860,20 @@ export function TitleTable({
         {renderSortableHeader(
           "name",
           t("label.name"),
-          "text-[11px] font-bold uppercase tracking-[0.05em] text-[var(--scry-faint2)]",
+          TITLE_TABLE_HEADER_CELL_CLASS,
         )}
         {showLibraryColumn
           ? renderSortableHeader(
               "library",
               t("title.table.library"),
-              "whitespace-nowrap text-[11px] font-bold uppercase tracking-[0.05em] text-[var(--scry-faint2)]",
+              cn("whitespace-nowrap", TITLE_TABLE_HEADER_CELL_CLASS),
             )
           : null}
         {showMonitoredColumn
           ? renderSortableHeader(
               "monitored",
               t("title.table.monitored"),
-              "text-center whitespace-nowrap text-[11px] font-bold uppercase tracking-[0.05em] text-[var(--scry-faint2)]",
+              cn("text-center whitespace-nowrap", TITLE_TABLE_HEADER_CELL_CLASS),
               "justify-center text-center uppercase tracking-[0.05em] text-[var(--scry-faint2)]",
             )
           : null}
@@ -873,21 +881,21 @@ export function TitleTable({
           ? renderSortableHeader(
               "quality",
               t("title.table.qualityTier"),
-              "whitespace-nowrap text-[11px] font-bold uppercase tracking-[0.05em] text-[var(--scry-faint2)]",
+              cn("whitespace-nowrap", TITLE_TABLE_HEADER_CELL_CLASS),
             )
           : null}
         {showEpisodesColumn
           ? renderSortableHeader(
               "episodes",
               t("title.table.episodes"),
-              "whitespace-nowrap text-[11px] font-bold uppercase tracking-[0.05em] text-[var(--scry-faint2)]",
+              cn("whitespace-nowrap", TITLE_TABLE_HEADER_CELL_CLASS),
             )
           : null}
         {showSizeColumn
           ? renderSortableHeader(
               "size",
               t("title.table.size"),
-              "whitespace-nowrap text-right text-[11px] font-bold uppercase tracking-[0.05em] text-[var(--scry-faint2)]",
+              cn("whitespace-nowrap text-right", TITLE_TABLE_HEADER_CELL_CLASS),
               "justify-end text-right uppercase tracking-[0.05em] text-[var(--scry-faint2)]",
             )
           : null}
@@ -895,12 +903,14 @@ export function TitleTable({
           ? renderSortableHeader(
               "added",
               t("title.contextAdded"),
-              "whitespace-nowrap text-right text-[11px] font-bold uppercase tracking-[0.05em] text-[var(--scry-faint2)]",
+              cn("whitespace-nowrap text-right", TITLE_TABLE_HEADER_CELL_CLASS),
               "justify-end text-right uppercase tracking-[0.05em] text-[var(--scry-faint2)]",
             )
           : null}
         {showActionsColumn ? (
-          <TableHead className="whitespace-nowrap text-right text-[11px] font-bold uppercase tracking-[0.05em] text-[var(--scry-faint2)]">
+          <TableHead
+            className={cn("whitespace-nowrap text-right", TITLE_TABLE_HEADER_CELL_CLASS)}
+          >
             {t("label.actions")}
           </TableHead>
         ) : null}
@@ -921,12 +931,12 @@ export function TitleTable({
     <div
       data-slot="title-list-scroll"
       ref={titleTableScrollRef}
-      className="relative h-full min-h-[22rem] w-full overflow-auto rounded-[12px] border border-[var(--scry-border2)] bg-[var(--scry-card2)]"
+      className="relative h-full min-h-[22rem] w-full overflow-auto rounded-[14px] border border-[var(--scry-border)] bg-[var(--scry-surfD)]"
     >
       <table
         data-ui="title-table"
         data-view={view}
-        className="table-fixed caption-bottom text-sm"
+        className="w-full table-fixed caption-bottom text-sm"
         style={{ minWidth: `${titleTableMinWidthRem}rem` }}
       >
         {titleTableColGroup}

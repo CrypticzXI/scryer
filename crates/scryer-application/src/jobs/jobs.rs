@@ -33,6 +33,7 @@ const DISCOVERY_SYNC_DOMAIN_EVENT_CATCH_UP_BATCH_LIMIT: usize = 500;
 const DISCOVERY_SYNC_DOMAIN_EVENT_CATCH_UP_MAX_BATCHES: usize = 20;
 const DISCOVERY_DIRTY_REASON_TITLE_CHANGE: i64 = 1 << 0;
 const DISCOVERY_DIRTY_REASON_SCAN_BOUNDARY: i64 = 1 << 1;
+const DISCOVERY_PUBLIC_FEED_REQUEST_TIMEOUT_SECONDS: u64 = 30;
 const SCHEDULER_INSTANCE_ID_KEY: &str = "scheduler.instance_id";
 
 fn is_background_library_refresh_job(job_key: JobKey) -> bool {
@@ -1877,17 +1878,35 @@ impl AppUseCase {
             .await?;
 
         let input = defaults.public_feed_input();
-        let result = match self
-            .services
-            .library
-            .metadata_gateway
-            .discover_public_feed(&input)
-            .await
+        let result = match tokio::time::timeout(
+            std::time::Duration::from_secs(DISCOVERY_PUBLIC_FEED_REQUEST_TIMEOUT_SECONDS),
+            self.services
+                .library
+                .metadata_gateway
+                .discover_public_feed(&input),
+        )
+        .await
         {
-            Ok(result) => result,
-            Err(error) => {
+            Ok(Ok(result)) => result,
+            Ok(Err(error)) => {
                 self.fail_discovery_sync_run(&mut run, &error.to_string())
                     .await?;
+                let failed_at = self.runtime.environment.now();
+                let retry_at = discovery_transient_retry_after(state, failed_at);
+                discovery_schedule_public_feed_retry(state, retry_at);
+                state.updated_at = failed_at;
+                return Ok(DiscoveryPublicFeedRunSummary {
+                    run_id,
+                    committed: false,
+                    section_count: 0,
+                    item_count: 0,
+                });
+            }
+            Err(_) => {
+                let error = format!(
+                    "SMG discovery public feed request timed out after {DISCOVERY_PUBLIC_FEED_REQUEST_TIMEOUT_SECONDS}s"
+                );
+                self.fail_discovery_sync_run(&mut run, &error).await?;
                 let failed_at = self.runtime.environment.now();
                 let retry_at = discovery_transient_retry_after(state, failed_at);
                 discovery_schedule_public_feed_retry(state, retry_at);

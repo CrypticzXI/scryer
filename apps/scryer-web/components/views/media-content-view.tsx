@@ -139,6 +139,7 @@ import type {
 } from "@/lib/types/quality-profiles";
 import { buildViewPath } from "@/lib/utils/routing";
 import { selectPosterVariantUrl } from "@/lib/utils/poster-images";
+import { discoveryItemDisplayTitle } from "@/lib/utils/discovery-display";
 import { cn } from "@/lib/utils";
 import { persistOverviewWindowScroll } from "@/lib/hooks/use-overview-window-scroll-restoration";
 import { releaseSupportsAdditionalFileQueue } from "@/lib/utils/release-queue-scope";
@@ -185,19 +186,6 @@ const SELECTED_POSTER_INLINE_MIN_WIDTH =
   TITLE_WORKSPACE_PANE_GAP +
   TITLE_POSTER_GRID_MIN_COLUMN_WIDTH;
 
-const TITLE_TABLE_COLUMN_SHEDDING_TIERS: readonly {
-  maxWidth: number;
-  columns: readonly TitleTableColumnKey[];
-}[] = [
-  { maxWidth: 1280, columns: ["added"] },
-  { maxWidth: 1180, columns: ["episodes"] },
-  { maxWidth: 980, columns: ["actions"] },
-  { maxWidth: 720, columns: ["quality"] },
-  { maxWidth: 640, columns: ["library"] },
-  { maxWidth: 560, columns: ["size"] },
-  { maxWidth: 500, columns: ["monitored"] },
-];
-
 function clampPaneWidth(width: number, minWidth: number, maxWidth: number) {
   return Math.min(Math.max(width, minWidth), maxWidth);
 }
@@ -236,30 +224,6 @@ function resolveTitleTablePaneWidth({
   );
 
   return Math.max(layoutWidth - panelWidth - TITLE_WORKSPACE_PANE_GAP, 0);
-}
-
-function resolveEffectiveTitleTableColumns(
-  visibleColumns: TitleTableVisibleColumns,
-  tablePaneWidth: number | null,
-): TitleTableVisibleColumns {
-  const nextColumns = { ...visibleColumns };
-  const hiddenColumns = new Set<TitleTableColumnKey>();
-
-  if (tablePaneWidth != null) {
-    for (const tier of TITLE_TABLE_COLUMN_SHEDDING_TIERS) {
-      if (tablePaneWidth < tier.maxWidth) {
-        for (const column of tier.columns) {
-          hiddenColumns.add(column);
-        }
-      }
-    }
-  }
-
-  for (const column of hiddenColumns) {
-    nextColumns[column] = false;
-  }
-
-  return nextColumns;
 }
 
 type QualityProfileOption = {
@@ -398,128 +362,8 @@ function titleExternalIdValue(
   return trimmed || null;
 }
 
-function TitleContextSection({
-  icon: Icon,
-  title,
-  description,
-  summary,
-  action,
-  children,
-  className,
-  collapsible = false,
-  defaultOpen = true,
-  resetKey,
-}: {
-  icon: React.ComponentType<{ className?: string }>;
-  title: string;
-  description?: React.ReactNode;
-  summary?: React.ReactNode;
-  action?: React.ReactNode;
-  children: React.ReactNode;
-  className?: string;
-  collapsible?: boolean;
-  defaultOpen?: boolean;
-  resetKey?: React.Key;
-}) {
-  const [open, setOpen] = React.useState(defaultOpen);
-
-  React.useEffect(() => {
-    setOpen(defaultOpen);
-  }, [defaultOpen, resetKey]);
-
-  if (collapsible) {
-    return (
-      <Collapsible open={open} onOpenChange={setOpen}>
-        <section
-          className={cn(
-            "overflow-hidden rounded-[12px] border border-[var(--scry-border)] bg-[var(--scry-card2)]",
-            className,
-          )}
-        >
-          <div className="flex min-w-0 items-stretch">
-            <CollapsibleTrigger asChild>
-              <button
-                type="button"
-                className="flex min-w-0 flex-1 items-center gap-3 px-4 py-3.5 text-left transition hover:bg-[var(--scry-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--scry-focus)]"
-              >
-                <span className="flex size-7 shrink-0 items-center justify-center rounded-[8px] border border-[var(--scry-line3)] bg-[var(--scry-inset)] text-[var(--scry-accent-text)]">
-                  <Icon className="h-3.5 w-3.5" />
-                </span>
-                <span className="min-w-0 flex-1">
-                  <span className="block text-[14px] font-semibold tracking-normal text-[var(--scry-ink2)]">
-                    {title}
-                  </span>
-                  {description ? (
-                    <span className="mt-1 block text-[11.5px] leading-5 text-[var(--scry-muted3)]">
-                      {description}
-                    </span>
-                  ) : null}
-                </span>
-                {summary ? (
-                  <span className="max-w-[8rem] shrink-0 truncate text-right text-[11.5px] font-semibold text-[var(--scry-muted2)]">
-                    {summary}
-                  </span>
-                ) : null}
-                <ChevronDown
-                  className={cn(
-                    "h-4 w-4 shrink-0 text-[var(--scry-muted3)] transition-transform",
-                    open && "rotate-180",
-                  )}
-                />
-              </button>
-            </CollapsibleTrigger>
-            {action ? (
-              <div className="flex shrink-0 items-center py-3.5 pr-4">
-                {action}
-              </div>
-            ) : null}
-          </div>
-          <CollapsibleContent className="border-t border-[var(--scry-line3)] p-4">
-            {children}
-          </CollapsibleContent>
-        </section>
-      </Collapsible>
-    );
-  }
-
-  return (
-    <section
-      className={cn(
-        "rounded-[12px] border border-[var(--scry-border)] bg-[var(--scry-card2)] p-4",
-        className,
-      )}
-    >
-      <div className="mb-3 flex min-w-0 items-start justify-between gap-3">
-        <div className="flex min-w-0 items-start gap-2.5">
-          <span className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-[8px] border border-[var(--scry-line3)] bg-[var(--scry-inset)] text-[var(--scry-accent-text)]">
-            <Icon className="h-3.5 w-3.5" />
-          </span>
-          <div className="min-w-0">
-            <h3 className="text-[14px] font-semibold tracking-normal text-[var(--scry-ink2)]">
-              {title}
-            </h3>
-            {description ? (
-              <p className="mt-1 text-[11.5px] leading-5 text-[var(--scry-muted3)]">
-                {description}
-              </p>
-            ) : null}
-          </div>
-        </div>
-        {summary ? (
-          <div className="shrink-0 text-[11.5px] font-semibold text-[var(--scry-muted2)]">
-            {summary}
-          </div>
-        ) : null}
-        {action ? <div className="shrink-0">{action}</div> : null}
-      </div>
-      {children}
-    </section>
-  );
-}
-
 type TitleContextRecommendation = {
   item: DiscoveryItem;
-  matchPercent: number;
   reason: string;
 };
 
@@ -549,32 +393,55 @@ function buildTitleContextRecommendationGroups(
     }))
     .sort((left, right) =>
       right.score === left.score
-        ? left.item.displayTitle.localeCompare(right.item.displayTitle)
+        ? discoveryItemDisplayTitle(left.item).localeCompare(
+            discoveryItemDisplayTitle(right.item),
+          )
         : right.score - left.score,
     );
   if (rankedEntries.length === 0) {
     return [];
   }
-  const maxScore = Math.max(1, rankedEntries[0]?.score ?? 1);
+  const usedItemKeys = new Set<string>();
   const toRecommendation = (
     entry: (typeof rankedEntries)[number],
     reason: string,
   ): TitleContextRecommendation => ({
     item: entry.item,
-    matchPercent: Math.round(78 + (entry.score / maxScore) * 20),
     reason,
   });
-  const groups: TitleContextRecommendationGroup[] = [
-    {
+  const takeRecommendations = (
+    entries: typeof rankedEntries,
+    reason: string,
+    limit: number,
+  ) => {
+    const recommendations: TitleContextRecommendation[] = [];
+    for (const entry of entries) {
+      const key = entry.item.targetKey || entry.item.id;
+      if (usedItemKeys.has(key)) {
+        continue;
+      }
+      usedItemKeys.add(key);
+      recommendations.push(toRecommendation(entry, reason));
+      if (recommendations.length >= limit) {
+        break;
+      }
+    }
+    return recommendations;
+  };
+
+  const groups: TitleContextRecommendationGroup[] = [];
+  const topRecommendations = takeRecommendations(
+    rankedEntries,
+    t("title.contextForYouReasonTop"),
+    6,
+  );
+  if (topRecommendations.length > 0) {
+    groups.push({
       id: "top",
       label: t("title.contextForYouTop"),
-      recommendations: rankedEntries
-        .slice(0, 4)
-        .map((entry) =>
-          toRecommendation(entry, t("title.contextForYouReasonTop")),
-        ),
-    },
-  ];
+      recommendations: topRecommendations,
+    });
+  }
 
   const genreCounts = new Map<string, { label: string; count: number }>();
   for (const item of items) {
@@ -596,21 +463,17 @@ function buildTitleContextRecommendationGroups(
     (a, b) => b.count - a.count || a.label.localeCompare(b.label),
   )[0];
   if (topGenre) {
-    const genreRecommendations = rankedEntries
-      .filter((entry) =>
+    const genreRecommendations = takeRecommendations(
+      rankedEntries.filter((entry) =>
         entry.item.genres?.some(
           (genre) =>
             genre.trim().toLocaleLowerCase() ===
             topGenre.label.toLocaleLowerCase(),
         ),
-      )
-      .slice(0, 4)
-      .map((entry) =>
-        toRecommendation(
-          entry,
-          t("title.contextForYouReasonGenre", { genre: topGenre.label }),
-        ),
-      );
+      ),
+      t("title.contextForYouReasonGenre", { genre: topGenre.label }),
+      6,
+    );
 
     if (genreRecommendations.length > 0) {
       groups.push({
@@ -640,14 +503,12 @@ function TitleContextRecommendationButton({
   onAction: (item: DiscoveryItem) => void;
 }) {
   const item = recommendation.item;
+  const titleLabel = discoveryItemDisplayTitle(item);
   const posterUrl = selectPosterVariantUrl(item.posterUrl, "w70");
   const yearLabel =
     typeof item.year === "number" && Number.isFinite(item.year)
       ? String(item.year)
       : null;
-  const matchLabel = t("title.contextForYouMatch", {
-    match: `${recommendation.matchPercent}%`,
-  });
   const owned = item.ownedInInput;
   const ActionIcon = owned ? Check : canManageTitle ? Plus : Send;
   const actionLabel = owned
@@ -663,7 +524,7 @@ function TitleContextRecommendationButton({
         <div className="h-[62px] w-[42px] shrink-0 overflow-hidden rounded-[6px] border border-[var(--scry-border2)] bg-[var(--scry-soft)]">
           <TitlePosterSlot
             src={posterUrl}
-            alt={t("media.posterAlt", { name: item.displayTitle })}
+            alt={t("media.posterAlt", { name: titleLabel })}
             className="h-full w-full object-cover"
             placeholderClassName="flex h-full w-full items-center justify-center px-1 text-center text-[9px] text-[var(--scry-muted3)]"
             emptyLabel={t("label.noArt")}
@@ -673,11 +534,10 @@ function TitleContextRecommendationButton({
         </div>
         <span className="min-w-0 flex-1">
           <span className="block truncate text-[13px] font-semibold text-[var(--scry-ink2)]">
-            {item.displayTitle}
+            {titleLabel}
           </span>
           <span className="mt-1 block truncate text-[11px] text-[var(--scry-faint)]">
-            {[yearLabel, matchLabel].filter(Boolean).join(" / ") ||
-              mediaTitleLabel(view, t)}
+            {yearLabel ?? mediaTitleLabel(view, t)}
           </span>
           <span className="mt-1 block truncate text-[11px] text-[var(--scry-muted3)]">
             {recommendation.reason}
@@ -689,7 +549,7 @@ function TitleContextRecommendationButton({
         variant="outline"
         size="sm"
         className="h-8 shrink-0 gap-1.5 rounded-[8px] border-transparent bg-[rgba(var(--scry-accent-rgb),0.16)] px-3 text-[11.5px] font-semibold text-[var(--scry-accent-text)] shadow-none hover:bg-[rgba(var(--scry-accent-rgb),0.24)]"
-        aria-label={`${actionLabel}: ${item.displayTitle}`}
+        aria-label={`${actionLabel}: ${titleLabel}`}
         disabled={actionDisabled}
         onClick={() => onAction(item)}
       >
@@ -725,15 +585,22 @@ function titleSharedGenreCount(
   return shared;
 }
 
+function discoveryItemPrimaryMediaKind(item: DiscoveryItem) {
+  return (item.contentType?.trim() || item.targetKind.trim()).toLowerCase();
+}
+
 function discoveryItemMatchesView(item: DiscoveryItem, view: ViewId): boolean {
-  const raw = `${item.targetKind} ${item.contentType ?? ""} ${item.facetTerms.join(" ")}`.toLowerCase();
+  const primaryKind = discoveryItemPrimaryMediaKind(item);
   if (view === "anime") {
-    return raw.includes("anime");
+    return (
+      primaryKind.includes("anime") ||
+      item.facetTerms.some((term) => term.toLowerCase().includes("anime"))
+    );
   }
   if (view === "series") {
-    return raw.includes("series") || raw.includes("show");
+    return primaryKind.includes("series") || primaryKind.includes("show");
   }
-  return raw.includes("movie") || raw.includes("film");
+  return primaryKind.includes("movie") || primaryKind.includes("film");
 }
 
 function buildTitleMoreLikeThisDiscoveryItems(
@@ -762,7 +629,9 @@ function buildTitleMoreLikeThisDiscoveryItems(
       const scoreDelta = right.score - left.score;
       return scoreDelta !== 0
         ? scoreDelta
-        : left.candidate.displayTitle.localeCompare(right.candidate.displayTitle);
+        : discoveryItemDisplayTitle(left.candidate).localeCompare(
+            discoveryItemDisplayTitle(right.candidate),
+          );
     })
     .slice(0, 5)
     .map(({ candidate }) => candidate);
@@ -788,12 +657,12 @@ function TitleContextMoreLikeThisStrip({
   }
 
   return (
-    <TitleContextSection
-      icon={Sparkles}
-      title={t("title.contextMoreLikeThis")}
-      className="bg-[var(--scry-surf)]"
-    >
-      <div className="flex gap-3 overflow-x-auto pb-2">
+    <TitleWorkspaceSectionCard className="rounded-[14px] bg-[var(--scry-surf)]">
+      <TitleWorkspaceSectionHeader
+        icon={Sparkles}
+        title={t("title.contextMoreLikeThis")}
+      />
+      <div className="flex gap-[11px] overflow-x-auto pb-1">
         {items.map((item) => {
           const posterUrl = selectPosterVariantUrl(item.posterUrl, "w250");
           const yearLabel =
@@ -803,6 +672,7 @@ function TitleContextMoreLikeThisStrip({
           const genreLabel =
             item.genres?.find((candidate) => candidate.trim().length > 0) ??
             null;
+          const titleLabel = discoveryItemDisplayTitle(item);
           const owned = item.ownedInInput;
           const ActionIcon = owned ? Check : canManageTitle ? Plus : Send;
           const actionLabel = owned
@@ -814,10 +684,10 @@ function TitleContextMoreLikeThisStrip({
 
           return (
             <div key={item.id} className="group w-24 shrink-0 text-left">
-              <div className="relative h-[142px] w-24 overflow-hidden rounded-[9px] border border-[var(--scry-border2)] bg-[var(--scry-soft)] transition group-hover:border-[var(--scry-bhover2)]">
+              <div className="relative h-[142px] w-24 overflow-hidden rounded-[9px] border border-[var(--scry-border2)] bg-[var(--scry-soft)] shadow-[0_6px_16px_rgba(0,0,0,0.4)] transition group-hover:border-[var(--scry-bhover2)] group-hover:shadow-[0_10px_22px_rgba(0,0,0,0.55)]">
                 <TitlePosterSlot
                   src={posterUrl}
-                  alt={t("media.posterAlt", { name: item.displayTitle })}
+                  alt={t("media.posterAlt", { name: titleLabel })}
                   className="h-full w-full object-cover"
                   placeholderClassName="flex h-full w-full items-center justify-center px-2 text-center text-[10px] text-[var(--scry-muted3)]"
                   emptyLabel={t("label.noArt")}
@@ -828,7 +698,7 @@ function TitleContextMoreLikeThisStrip({
                 <button
                   type="button"
                   className="absolute right-1.5 top-1.5 flex size-6 items-center justify-center rounded-[7px] border border-white/15 bg-slate-950/70 text-[var(--scry-text2)] backdrop-blur-sm transition hover:bg-[var(--scry-accent)] hover:text-white disabled:cursor-default disabled:opacity-60"
-                  aria-label={`${actionLabel}: ${item.displayTitle}`}
+                  aria-label={`${actionLabel}: ${titleLabel}`}
                   disabled={actionDisabled}
                   onClick={() => onAction(item)}
                 >
@@ -836,7 +706,7 @@ function TitleContextMoreLikeThisStrip({
                 </button>
               </div>
               <p className="mt-2 truncate text-[12px] font-semibold text-[var(--scry-body)]">
-                {item.displayTitle}
+                {titleLabel}
               </p>
               <p className="truncate text-[11px] text-[var(--scry-faint)]">
                 {[yearLabel, genreLabel].filter(Boolean).join(" / ") ||
@@ -846,7 +716,7 @@ function TitleContextMoreLikeThisStrip({
           );
         })}
       </div>
-    </TitleContextSection>
+    </TitleWorkspaceSectionCard>
   );
 }
 
@@ -1420,8 +1290,6 @@ function TitleContextPanel({
       );
   const overviewText =
     title.overview?.trim() || t("title.descriptionUnavailable");
-  const subheading = yearLabel ?? mediaTitleLabel(view, t);
-  const libraryLabel = title.libraryName ?? title.libraryId;
   const runtimeLabel = formatRuntimeLabel(title.runtimeMinutes);
   const loadingLabel = t("label.loading");
   const studioOrNetworkLabel =
@@ -1583,12 +1451,6 @@ function TitleContextPanel({
                 </div>
               ) : null}
               <div className="mt-3 flex flex-wrap items-center gap-2 text-[11px] text-[var(--scry-faint2)]">
-                <span>{subheading || mediaTitleLabel(view, t)}</span>
-                <span aria-hidden="true">/</span>
-                <span>
-                  {t("title.contextLibrary")}: {libraryLabel}
-                </span>
-                <span aria-hidden="true">/</span>
                 <span>
                   {t("title.contextAdded")}: {addedAtLabel}
                 </span>
@@ -1614,7 +1476,7 @@ function TitleContextPanel({
           />
           <TitleWorkspaceActionButton
             icon={Search}
-            label={t("label.interactiveSearch")}
+            label={t("label.interactive")}
             active={releaseSearchOpen}
             loading={releaseSearchActionLoading}
             disabled={bulkActionBusy && !releaseSearchOpen}
@@ -2541,17 +2403,11 @@ export function MediaContentView({
     selectedTitleListInlineActive,
     selectedTitlePosterLayoutActive,
   });
-  const effectiveVisibleTitleTableColumns = React.useMemo(
-    () =>
-      resolveEffectiveTitleTableColumns(
-        visibleTitleTableColumns,
-        titleTablePaneWidth,
-      ),
-    [
-      titleTablePaneWidth,
-      visibleTitleTableColumns,
-    ],
-  );
+  // The design never sheds table columns — the table always keeps the chosen
+  // columns and scrolls horizontally when the overview pane squeezes it. The
+  // narrow "compact drawer" (title/mon/size) is a separate width-gated layout,
+  // not column shedding, so we keep the full column set in every table state.
+  const effectiveVisibleTitleTableColumns = visibleTitleTableColumns;
   const showTitleTableColumnControls =
     effectiveViewMode !== "poster" && !selectedTitleCompactDrawerActive;
   const showTitleBulkSelectionBar =
@@ -2926,7 +2782,7 @@ export function MediaContentView({
   );
   const titleSummaryNoun = (() => {
     if (view === "movies") {
-      return totalTitleCount === 1 ? "movie" : "movies";
+      return totalTitleCount === 1 ? "title" : "titles";
     }
     return view === "series" ? "series" : "anime";
   })();
@@ -3124,6 +2980,7 @@ export function MediaContentView({
                   />
                   <ToggleGroup
                     type="single"
+                    variant="outline"
                     value={effectiveViewMode}
                     onValueChange={(v) => {
                       if (
@@ -3136,7 +2993,7 @@ export function MediaContentView({
                     }}
                     size="sm"
                     aria-label={t("title.viewModeToggle")}
-                    className="h-10 shrink-0 rounded-[10px] border border-[var(--scry-border2)] bg-[var(--scry-inset)] p-1 shadow-none"
+                    className="h-10 shrink-0 gap-0.5 rounded-[10px] border border-[var(--scry-border2)] bg-[var(--scry-inset)] p-1 shadow-none"
                   >
                     <ToggleGroupItem
                       id={titleOverviewViewModeId(view, "compact")}
@@ -3184,8 +3041,11 @@ export function MediaContentView({
                       </PopoverTrigger>
                       <PopoverContent
                         align="end"
-                        className="w-56 rounded-[12px] border-[var(--scry-border2)] bg-[var(--scry-surfD)] p-2"
+                        className="w-56 rounded-[12px] border-[var(--scry-border2)] bg-[var(--scry-soft)] p-2 shadow-[0_18px_44px_rgba(0,0,0,0.55)]"
                       >
+                        <div className="px-2 pb-1.5 pt-1 text-[10.5px] font-bold uppercase tracking-[0.06em] text-[var(--scry-faint2)]">
+                          {t("title.toggleColumns")}
+                        </div>
                         <div className="space-y-1">
                           {titleTableColumnOptions.map((columnKey) => (
                             <label

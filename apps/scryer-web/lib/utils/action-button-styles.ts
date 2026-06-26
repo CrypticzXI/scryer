@@ -9,6 +9,8 @@ export const boxedActionButtonToneClass = {
     "border-emerald-200 bg-emerald-50 text-emerald-700 hover:border-emerald-300 hover:bg-emerald-100 hover:text-emerald-800 dark:border-emerald-500/35 dark:bg-emerald-500/12 dark:text-emerald-200 dark:hover:border-emerald-400/45 dark:hover:bg-emerald-500/22 dark:hover:text-emerald-50",
   search:
     "border-sky-200 bg-sky-50 text-sky-700 hover:border-sky-300 hover:bg-sky-100 hover:text-sky-800 dark:border-sky-500/35 dark:bg-sky-500/12 dark:text-sky-200 dark:hover:border-sky-400/45 dark:hover:bg-sky-500/22 dark:hover:text-sky-50",
+  accent:
+    "border-[rgba(var(--scry-accent-rgb),0.3)] bg-[rgba(var(--scry-accent-rgb),0.1)] text-[var(--scry-accent-text)] hover:border-[rgba(var(--scry-accent-rgb),0.45)] hover:bg-[rgba(var(--scry-accent-rgb),0.2)] hover:text-[var(--scry-accent-text)]",
   edit:
     "border-sky-200 bg-sky-50 text-sky-700 hover:border-sky-300 hover:bg-sky-100 hover:text-sky-800 dark:border-sky-500/35 dark:bg-sky-500/12 dark:text-sky-200 dark:hover:border-sky-400/45 dark:hover:bg-sky-500/22 dark:hover:text-sky-50",
   reorder:

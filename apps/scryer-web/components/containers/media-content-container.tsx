@@ -54,6 +54,7 @@ import type {
   OverviewTitleTarget,
   ViewId,
 } from "@/components/root/types";
+import { discoveryItemDisplayTitle } from "@/lib/utils/discovery-display";
 import { toProfileOptions } from "@/lib/utils/quality-profiles";
 import {
   normalizeLibraryFilterSelection,
@@ -192,7 +193,7 @@ const TITLE_CONTEXT_DISCOVERY_ITEMS_LIMIT = 48;
 const TITLE_CONTEXT_DISCOVERY_TARGET_KINDS: Record<Facet, string[]> = {
   movie: ["movie"],
   series: ["series"],
-  anime: ["series"],
+  anime: ["anime"],
 };
 
 function titleContextDiscoveryGenres(title: TitleRecord | null | undefined) {
@@ -220,7 +221,6 @@ function titleContextDiscoveryItemsInput(
   const genres = titleContextDiscoveryGenres(title);
   return {
     targetKinds: TITLE_CONTEXT_DISCOVERY_TARGET_KINDS[facet],
-    facetTerms: facet === "anime" ? ["anime"] : undefined,
     genres: genres.length > 0 ? genres : undefined,
     includeOwned: false,
     includeUnresolved: true,
@@ -228,12 +228,26 @@ function titleContextDiscoveryItemsInput(
   };
 }
 
+function discoveryItemPrimaryMediaKind(item: DiscoveryItem) {
+  return (item.contentType?.trim() || item.targetKind.trim()).toLowerCase();
+}
+
 function discoveryItemFacet(item: DiscoveryItem): Facet {
-  const raw = `${item.targetKind} ${item.contentType ?? ""} ${item.facetTerms.join(" ")}`.toLowerCase();
-  if (raw.includes("anime")) {
+  const primaryKind = discoveryItemPrimaryMediaKind(item);
+  if (primaryKind.includes("anime")) {
     return "anime";
   }
-  if (raw.includes("series") || raw.includes("show")) {
+  if (primaryKind.includes("series") || primaryKind.includes("show")) {
+    return "series";
+  }
+  if (primaryKind.includes("movie") || primaryKind.includes("film")) {
+    return "movie";
+  }
+  const fallbackTerms = item.facetTerms.join(" ").toLowerCase();
+  if (fallbackTerms.includes("anime")) {
+    return "anime";
+  }
+  if (fallbackTerms.includes("series") || fallbackTerms.includes("show")) {
     return "series";
   }
   return "movie";
@@ -259,7 +273,7 @@ function metadataResultForDiscoveryItem(
     tvdbId:
       externalIds.find((externalId) => externalId.source === "tvdb")?.value ??
       "",
-    name: item.displayTitle,
+    name: discoveryItemDisplayTitle(item),
     imdbId:
       externalIds.find((externalId) => externalId.source === "imdb")?.value ??
       null,

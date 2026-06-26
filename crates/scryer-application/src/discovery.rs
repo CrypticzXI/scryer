@@ -161,6 +161,7 @@ impl AppUseCase {
                     complete_collection_section(&personalized_items, include_unresolved, limit);
                 personalized_sections =
                     personalized_section_results(&personalized_items, include_unresolved, limit);
+                let facet_counts = local_facet_counts(&personalized_items, include_unresolved);
                 facets = self
                     .services
                     .library
@@ -169,11 +170,7 @@ impl AppUseCase {
                     .await?
                     .into_iter()
                     .map(|mut facet| {
-                        facet.local_count = Some(local_facet_count(
-                            &personalized_items,
-                            &facet,
-                            include_unresolved,
-                        ));
+                        facet.local_count = Some(local_count_for_facet(&facet_counts, &facet));
                         facet
                     })
                     .collect();
@@ -380,13 +377,13 @@ fn personalized_section_results(
 
     section_specs
         .into_iter()
-        .filter_map(|(section_type, title, target_kind, minimum_items)| {
+        .filter_map(|(section_type, title, media_kind, minimum_items)| {
             let mut section_items = items
                 .iter()
                 .filter(|item| home_item_visible(item, include_unresolved))
                 .filter(|item| {
-                    target_kind.is_none_or(|target_kind| {
-                        item.target_kind.eq_ignore_ascii_case(target_kind)
+                    media_kind.is_none_or(|kind| {
+                        discovery_item_media_kind(item).eq_ignore_ascii_case(kind)
                     })
                 })
                 .filter(|item| section_type != "BECAUSE_YOU_HAVE" || item.matched_subject_count > 0)
@@ -468,6 +465,14 @@ fn home_item_visible(item: &DiscoveryItemRecord, include_unresolved: bool) -> bo
     !item.owned_in_input && (include_unresolved || item.resolved)
 }
 
+fn discovery_item_media_kind(item: &DiscoveryItemRecord) -> &str {
+    item.content_type
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| item.target_kind.trim())
+}
+
 fn resolve_discovery_matched_subjects(
     items: &mut [DiscoveryItemRecord],
     submitted_subjects: &[DiscoverySubmittedSubjectRecord],
@@ -510,7 +515,7 @@ fn item_matches_discovery_items_query(
         return false;
     }
     if !query.target_kinds.is_empty()
-        && !contains_case_insensitive(&query.target_kinds, &item.target_kind)
+        && !contains_case_insensitive(&query.target_kinds, discovery_item_media_kind(item))
     {
         return false;
     }
@@ -591,23 +596,42 @@ fn compare_discovery_items(left: &DiscoveryItemRecord, right: &DiscoveryItemReco
         .then_with(|| left.target_key.cmp(&right.target_key))
 }
 
-fn local_facet_count(
-    items: &[DiscoveryItemRecord],
-    facet: &DiscoveryFacetRecord,
-    include_unresolved: bool,
-) -> i64 {
-    items
+#[derive(Default)]
+struct LocalFacetCounts {
+    genres: HashMap<String, i64>,
+    terms: HashMap<String, i64>,
+}
+
+fn local_facet_counts(items: &[DiscoveryItemRecord], include_unresolved: bool) -> LocalFacetCounts {
+    let mut counts = LocalFacetCounts::default();
+    for item in items
         .iter()
         .filter(|item| home_item_visible(item, include_unresolved))
-        .filter(|item| {
-            if facet.facet_name.eq_ignore_ascii_case("genre") {
-                json_contains_text(&item.genres_json, &facet.facet_value)
-            } else {
-                json_contains_text(&item.facet_terms_json, &facet.facet_value)
-                    || json_contains_text(&item.context_terms_json, &facet.facet_value)
-            }
-        })
-        .count() as i64
+    {
+        for genre in normalized_json_text_values(&item.genres_json) {
+            *counts.genres.entry(genre).or_default() += 1;
+        }
+
+        let mut terms = HashSet::new();
+        terms.extend(normalized_json_text_values(&item.facet_terms_json));
+        terms.extend(normalized_json_text_values(&item.context_terms_json));
+        for term in terms {
+            *counts.terms.entry(term).or_default() += 1;
+        }
+    }
+    counts
+}
+
+fn local_count_for_facet(counts: &LocalFacetCounts, facet: &DiscoveryFacetRecord) -> i64 {
+    let value = normalize_discovery_filter_value(&facet.facet_value);
+    if value.is_empty() {
+        return 0;
+    }
+    if facet.facet_name.eq_ignore_ascii_case("genre") {
+        counts.genres.get(&value).copied().unwrap_or_default()
+    } else {
+        counts.terms.get(&value).copied().unwrap_or_default()
+    }
 }
 
 fn json_contains_any(raw: &str, filters: &[String]) -> bool {
@@ -627,10 +651,16 @@ fn json_or_text_contains_any(raw: &str, text: Option<&str>, filters: &[String]) 
     }) || json_contains_any(raw, filters)
 }
 
-fn json_contains_text(raw: &str, filter: &str) -> bool {
+fn normalized_json_text_values(raw: &str) -> Vec<String> {
     json_text_values(raw)
-        .iter()
-        .any(|value| value.eq_ignore_ascii_case(filter))
+        .into_iter()
+        .map(|value| normalize_discovery_filter_value(&value))
+        .filter(|value| !value.is_empty())
+        .collect()
+}
+
+fn normalize_discovery_filter_value(value: &str) -> String {
+    value.trim().to_ascii_lowercase()
 }
 
 fn contains_case_insensitive(values: &[String], candidate: &str) -> bool {
@@ -1381,7 +1411,8 @@ fn discovery_item_record(
         target_key: item.target_key.clone(),
         target_kind: item.target_kind.clone(),
         resolved: item.resolved,
-        resolved_title_id: non_empty_string(&item.resolved_title_id),
+        // SMG does not know Scryer's local title ids; keep any SMG identifier in raw_json.
+        resolved_title_id: None,
         display_title: item.display_title.clone(),
         original_title: non_empty_string(&item.original_title),
         sort_title: non_empty_string(&item.display_title),
@@ -1804,6 +1835,88 @@ mod tests {
         assert_eq!(context.subjects[0].subject_key, "anidb:anime:10");
     }
 
+    #[test]
+    fn discovery_item_records_do_not_persist_smg_resolved_title_id_as_local_fk() {
+        let now = Utc.timestamp_opt(0, 0).unwrap();
+        let item = DiscoveryTitle {
+            target_key: "tmdb:movie:603".to_string(),
+            target_kind: "movie".to_string(),
+            resolved: true,
+            resolved_title_id: "smg-title-603".to_string(),
+            display_title: "The Example".to_string(),
+            ..DiscoveryTitle::default()
+        };
+
+        let records = snapshot_item_records("run-1", "run-1", &[item], now)
+            .expect("discovery item records should build");
+
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].resolved_title_id, None);
+    }
+
+    #[test]
+    fn discovery_item_media_kind_prefers_content_type_over_target_kind() {
+        let mut item = test_discovery_item("item-1", "series", Some("anime"));
+        item.resolved = true;
+
+        assert!(item_matches_discovery_items_query(
+            &item,
+            &DiscoveryItemsQuery {
+                target_kinds: vec!["anime".to_string()],
+                include_unresolved: false,
+                ..DiscoveryItemsQuery::default()
+            }
+        ));
+        assert!(!item_matches_discovery_items_query(
+            &item,
+            &DiscoveryItemsQuery {
+                target_kinds: vec!["series".to_string()],
+                include_unresolved: false,
+                ..DiscoveryItemsQuery::default()
+            }
+        ));
+    }
+
+    #[test]
+    fn local_facet_counts_parse_item_json_once_per_item() {
+        let mut item = test_discovery_item("item-1", "series", Some("anime"));
+        item.genres_json = serde_json::json!(["Action"]).to_string();
+        item.facet_terms_json = serde_json::json!(["Most Popular Anime"]).to_string();
+        item.context_terms_json =
+            serde_json::json!(["Most Popular Anime", "Winter 2026"]).to_string();
+
+        let counts = local_facet_counts(&[item], false);
+
+        assert_eq!(
+            local_count_for_facet(
+                &counts,
+                &DiscoveryFacetRecord {
+                    run_id: "run-1".to_string(),
+                    facet_name: "genre".to_string(),
+                    facet_value: "action".to_string(),
+                    smg_count: None,
+                    local_count: None,
+                    raw_json: "{}".to_string(),
+                }
+            ),
+            1
+        );
+        assert_eq!(
+            local_count_for_facet(
+                &counts,
+                &DiscoveryFacetRecord {
+                    run_id: "run-1".to_string(),
+                    facet_name: "facet_term".to_string(),
+                    facet_value: "Most Popular Anime".to_string(),
+                    smg_count: None,
+                    local_count: None,
+                    raw_json: "{}".to_string(),
+                }
+            ),
+            1
+        );
+    }
+
     fn test_pending_change(
         id: &str,
         change_type: &str,
@@ -1884,6 +1997,66 @@ mod tests {
             min_availability: None,
             digital_release_date: None,
             folder_path: None,
+        }
+    }
+
+    fn test_discovery_item(
+        id: &str,
+        target_kind: &str,
+        content_type: Option<&str>,
+    ) -> DiscoveryItemRecord {
+        let now = Utc.timestamp_opt(0, 0).unwrap();
+        DiscoveryItemRecord {
+            id: id.to_string(),
+            run_id: "run-1".to_string(),
+            base_generation_id: Some("run-1".to_string()),
+            source_run_kind: "context_snapshot".to_string(),
+            section_id: None,
+            target_key: format!("{target_kind}:{id}"),
+            target_kind: target_kind.to_string(),
+            resolved: true,
+            resolved_title_id: None,
+            display_title: "Example".to_string(),
+            original_title: None,
+            sort_title: Some("Example".to_string()),
+            year: None,
+            poster_path: None,
+            poster_url: None,
+            background_url: None,
+            overview: None,
+            content_type: content_type.map(str::to_string),
+            genres_json: "[]".to_string(),
+            rating: None,
+            rating_sources_json: "[]".to_string(),
+            status_tags_json: "[]".to_string(),
+            source_tags_json: "[]".to_string(),
+            sources_json: "[]".to_string(),
+            best_source: None,
+            relation_types_json: "[]".to_string(),
+            relation_subtypes_json: "[]".to_string(),
+            chart_signals_json: "[]".to_string(),
+            provider_signals_json: "[]".to_string(),
+            rank_components_json: "[]".to_string(),
+            source_count: None,
+            edge_count: None,
+            relation_count: None,
+            source_subject_count: None,
+            rank_score: None,
+            matched_subject_keys_json: "[]".to_string(),
+            matched_subject_titles_json: "[]".to_string(),
+            matched_subject_count: 0,
+            tmdb_collection_id: None,
+            tmdb_collection_name: None,
+            owned_in_input: false,
+            facet_terms_json: "[]".to_string(),
+            context_terms_json: "[]".to_string(),
+            change_subject_keys_json: "[]".to_string(),
+            removed_subject_keys_json: "[]".to_string(),
+            tombstoned_by_run_id: None,
+            tombstoned_at: None,
+            raw_json: "{}".to_string(),
+            created_at: now,
+            updated_at: now,
         }
     }
 }

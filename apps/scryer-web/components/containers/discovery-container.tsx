@@ -10,6 +10,7 @@ import { discoveryHomeQuery } from "@/lib/graphql/queries";
 import { useGlobalStatus } from "@/lib/context/global-status-context";
 import { useSearchContext } from "@/lib/context/search-context";
 import { useTranslate } from "@/lib/context/translate-context";
+import { discoveryItemDisplayTitle } from "@/lib/utils/discovery-display";
 import type { MetadataTvdbSearchItem } from "@/lib/graphql/smg-queries";
 import type {
   DiscoveryHomeInput,
@@ -32,11 +33,23 @@ const DISCOVERY_HOME_INPUT: DiscoveryHomeInput = {
 };
 
 function facetForDiscoveryItem(item: DiscoveryItem): Facet {
-  const raw = `${item.targetKind} ${item.contentType ?? ""} ${item.facetTerms.join(" ")}`.toLowerCase();
-  if (raw.includes("anime")) {
+  const primaryKind = (
+    item.contentType?.trim() || item.targetKind.trim()
+  ).toLowerCase();
+  if (primaryKind.includes("anime")) {
     return "anime";
   }
-  if (raw.includes("series") || raw.includes("show")) {
+  if (primaryKind.includes("series") || primaryKind.includes("show")) {
+    return "series";
+  }
+  if (primaryKind.includes("movie") || primaryKind.includes("film")) {
+    return "movie";
+  }
+  const fallbackTerms = item.facetTerms.join(" ").toLowerCase();
+  if (fallbackTerms.includes("anime")) {
+    return "anime";
+  }
+  if (fallbackTerms.includes("series") || fallbackTerms.includes("show")) {
     return "series";
   }
   return "movie";
@@ -61,7 +74,7 @@ function metadataResultForDiscoveryItem(
   return {
     tvdbId:
       externalIds.find((externalId) => externalId.source === "tvdb")?.value ?? "",
-    name: item.displayTitle,
+    name: discoveryItemDisplayTitle(item),
     imdbId:
       externalIds.find((externalId) => externalId.source === "imdb")?.value ??
       null,

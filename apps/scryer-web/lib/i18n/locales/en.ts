@@ -7,6 +7,7 @@ const en: LocaleDictionary = {
   "label.search": "Search",
   "label.autoSearch": "Auto Search",
   "label.interactiveSearch": "Interactive Search",
+  "label.interactive": "Interactive",
   "label.searching": "Searching",
   "help.autoSearchTooltip":
     "Auto search and queue the latest matching release for this item.",
@@ -1009,6 +1010,7 @@ const en: LocaleDictionary = {
   "title.contextInterSeasonMovies": "Inter-season movies",
   "title.openOverview": "Open Overview",
   "title.columns": "Columns",
+  "title.toggleColumns": "Toggle columns",
   "title.table.facet": "Facet",
   "title.table.library": "Library",
   "title.table.monitored": "Monitored",
