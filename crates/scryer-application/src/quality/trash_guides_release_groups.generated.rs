@@ -2,7 +2,7 @@
 // Do not edit by hand.
 
 #[allow(dead_code)]
-pub const TRASH_GUIDES_SYNCED_AT: &str = "2026-06-25";
+pub const TRASH_GUIDES_SYNCED_AT: &str = "2026-06-26";
 
 pub static GROUP_RULES: &[GroupRule] = &[
     GroupRule {
