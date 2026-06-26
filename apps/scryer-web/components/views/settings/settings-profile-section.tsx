@@ -34,6 +34,8 @@ import type {
 } from "@/lib/types/settings";
 import { formatUiDateTime } from "@/lib/utils/date-format";
 import { selectorId } from "@/lib/utils/dom-ids";
+import { cn } from "@/lib/utils";
+import { HIGHLIGHT_COLOR_PRESETS } from "@/lib/theme";
 
 const TOTP_CODE_LENGTH = 6;
 
@@ -41,6 +43,9 @@ type TotpProfileAction = "regenerateRecoveryCodes" | "disable" | null;
 
 type Props = {
   username?: string;
+  highlightColor: string | null;
+  savingHighlightColor: string | null;
+  onSelectHighlightColor: (value: string) => void;
   currentPassword: string;
   newPassword: string;
   confirmPassword: string;
@@ -150,6 +155,9 @@ const PROFILE_ROW_CARD_CLASS =
 
 export function SettingsProfileSection({
   username,
+  highlightColor,
+  savingHighlightColor,
+  onSelectHighlightColor,
   currentPassword,
   newPassword,
   confirmPassword,
@@ -289,6 +297,67 @@ export function SettingsProfileSection({
           >
             {username ?? "—"}
           </span>
+        </div>
+      </div>
+
+      <div className={PROFILE_CARD_CLASS}>
+        <div className="space-y-1">
+          <h3 className={PROFILE_CARD_TITLE_CLASS}>{t("profile.appearance")}</h3>
+          <p className={PROFILE_MUTED_TEXT_CLASS}>
+            {t("profile.appearanceDescription")}
+          </p>
+        </div>
+        <div className={PROFILE_ROW_CARD_CLASS}>
+          <div className="space-y-1">
+            <div className="font-medium text-[var(--scry-ink2)]">
+              {t("profile.highlightColor")}
+            </div>
+            <p className={`${PROFILE_MUTED_TEXT_CLASS} max-w-xs`}>
+              {t("profile.highlightColorHelp")}
+            </p>
+          </div>
+          <div
+            id="settings-profile-highlight-colors"
+            role="group"
+            aria-label={t("profile.highlightColor")}
+            className="flex flex-wrap items-center gap-2.5"
+          >
+            {HIGHLIGHT_COLOR_PRESETS.map((preset) => {
+              const selected =
+                (highlightColor ?? HIGHLIGHT_COLOR_PRESETS[0].value) ===
+                preset.value;
+              const savingThis = savingHighlightColor === preset.value;
+              return (
+                <button
+                  key={preset.value}
+                  id={selectorId(
+                    "settings-profile-highlight-color",
+                    preset.value.replace("#", ""),
+                  )}
+                  type="button"
+                  title={t(preset.labelKey)}
+                  aria-label={t(preset.labelKey)}
+                  aria-pressed={selected}
+                  disabled={savingHighlightColor !== null}
+                  onClick={() => onSelectHighlightColor(preset.value)}
+                  className={cn(
+                    "relative h-[30px] w-[30px] rounded-[9px] outline-none transition",
+                    "ring-offset-2 ring-offset-[var(--scry-card2)]",
+                    "focus-visible:ring-2 focus-visible:ring-[var(--scry-accent-ring)]",
+                    "disabled:cursor-not-allowed",
+                    selected
+                      ? "ring-2 ring-[var(--scry-accent-ring)]"
+                      : "ring-0 enabled:hover:scale-105 disabled:opacity-60",
+                  )}
+                  style={{ backgroundColor: preset.value }}
+                >
+                  {savingThis ? (
+                    <Loader2 className="absolute inset-0 m-auto h-3.5 w-3.5 animate-spin text-white" />
+                  ) : null}
+                </button>
+              );
+            })}
+          </div>
         </div>
       </div>
 

@@ -1,7 +1,9 @@
 import * as React from "react";
+import { useTheme } from "next-themes";
 import { useClient } from "urql";
 import { myUiSettingsQuery } from "@/lib/graphql/queries";
 import { AUTH_SESSION_CHANGED_EVENT } from "@/lib/hooks/use-auth";
+import { applyHighlightColor, isDarkTheme } from "@/lib/theme";
 import type { UiSettings } from "@/lib/types/settings";
 
 export const DEFAULT_UI_SETTINGS: UiSettings = {
@@ -49,6 +51,7 @@ export function uiSettingsInputFromSettings(settings: UiSettings): UiSettings {
 
 export function UiSettingsProvider({ children }: { children: React.ReactNode }) {
   const client = useClient();
+  const { resolvedTheme, theme } = useTheme();
   const [uiSettings, setUiSettings] = React.useState<UiSettings>(DEFAULT_UI_SETTINGS);
   const [uiSettingsLoading, setUiSettingsLoading] = React.useState(true);
   const [uiSettingsLoaded, setUiSettingsLoaded] = React.useState(false);
@@ -107,6 +110,18 @@ export function UiSettingsProvider({ children }: { children: React.ReactNode }) 
       window.removeEventListener(AUTH_SESSION_CHANGED_EVENT, handleAuthSessionChanged);
     };
   }, [loadUiSettings]);
+
+  // Apply the user's highlight color to the accent CSS variables on bootstrap,
+  // whenever it changes (live), and when the active theme flips (so on-accent
+  // text/border shades track the light vs dark background).
+  React.useEffect(() => {
+    if (typeof document === "undefined") return;
+    applyHighlightColor(
+      document.documentElement,
+      uiSettings.highlightColor,
+      isDarkTheme(resolvedTheme ?? theme),
+    );
+  }, [uiSettings.highlightColor, resolvedTheme, theme]);
 
   const value = React.useMemo<UiSettingsContextValue>(
     () => ({

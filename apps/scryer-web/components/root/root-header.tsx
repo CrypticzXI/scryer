@@ -77,9 +77,7 @@ import {
   hasAnyLibraryPermission,
 } from "@/lib/utils/permissions";
 import {
-  globalSearchConfigureAddId,
   globalSearchMetadataResultId,
-  globalSearchRequestId,
   selectorId,
 } from "@/lib/utils/dom-ids";
 import {
@@ -1113,7 +1111,6 @@ export const RootHeader = React.memo(function RootHeader({
         const {
           actionTitle,
           disabled,
-          inlineActionLabel,
           isInCatalog,
           isUnavailable,
           opensRequestDialog,
@@ -1129,10 +1126,7 @@ export const RootHeader = React.memo(function RootHeader({
           resultName: result.name,
           t,
         });
-        const posterUrl = selectPosterVariantUrl(result.posterUrl, "w70");
-        const actionId = opensRequestDialog
-          ? globalSearchRequestId(facet, result)
-          : globalSearchConfigureAddId(facet, result);
+        const posterUrl = selectPosterVariantUrl(result.posterUrl, "w250");
         const handleMetadataAction = () => {
           if (disabled) {
             return;
@@ -1159,16 +1153,12 @@ export const RootHeader = React.memo(function RootHeader({
             onClick={handleMetadataAction}
             onKeyDown={handleSearchResultKeyDown}
             disabled={disabled}
-            actionId={actionId}
             actionKind={actionKind}
-            actionLabel={inlineActionLabel}
             actionTitle={actionTitle}
-            emptyLabel={t("label.noArt")}
+            facet={facet}
             name={result.name}
-            posterAlt={t("media.posterAlt", { name: result.name })}
             posterUrl={posterUrl}
             resultAttribute="data-global-search-result"
-            surface="desktop"
             yearLabel={result.year ? result.year : t("label.yearUnknown")}
           />
         );
@@ -1632,7 +1622,7 @@ export const RootHeader = React.memo(function RootHeader({
                   aria-controls="account-menu-content"
                   aria-expanded={accountMenuOpen}
                 >
-                  <span className="flex h-[30px] w-[30px] items-center justify-center rounded-lg bg-[var(--scry-accent-grad)] text-[13px] font-bold text-primary-foreground shadow-[0_8px_18px_rgba(var(--scry-accent-rgb),0.25)]">
+                  <span className="flex h-[30px] w-[30px] items-center justify-center rounded-lg bg-[var(--scry-accent-grad)] text-[13px] font-bold text-primary-foreground">
                     {accountInitial}
                   </span>
                   <span className="hidden min-w-0 flex-col items-start leading-tight sm:flex">

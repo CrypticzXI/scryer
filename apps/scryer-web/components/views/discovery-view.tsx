@@ -2,7 +2,6 @@ import * as React from "react";
 import type { CSSProperties } from "react";
 import type { LucideIcon } from "lucide-react";
 import {
-  Calendar,
   Check,
   ChevronDown,
   ChevronRight,
@@ -22,7 +21,6 @@ import {
   Sparkles,
   Star,
   Swords,
-  TrendingUp,
   Video,
   WandSparkles,
   X,
@@ -31,6 +29,7 @@ import { useTranslate } from "@/lib/context/translate-context";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { TitleCard } from "@/components/title-card";
 import { discoveryItemDisplayTitle } from "@/lib/utils/discovery-display";
 import { cn } from "@/lib/utils";
 import type {
@@ -510,17 +509,6 @@ function DiscoveryActionButton({
   );
 }
 
-function PosterImage({ item }: { item: DiscoveryItem }) {
-  return item.posterUrl ? (
-    <img
-      src={item.posterUrl}
-      alt=""
-      className="absolute inset-0 h-full w-full object-cover"
-      loading="lazy"
-    />
-  ) : null;
-}
-
 function DiscoveryRailCard({
   item,
   size = "md",
@@ -536,98 +524,36 @@ function DiscoveryRailCard({
   canRequestMedia: boolean;
   onAction: (item: DiscoveryItem) => void;
 }) {
-  const score = itemMatchScore(item);
   const compact = size === "sm";
   const upcoming = variant === "upcoming" && !compact;
-  const calendarBadgeLabel = upcoming ? itemCalendarBadgeLabel(item) : null;
-  const titleLabel = discoveryItemDisplayTitle(item);
+  const owned = item.ownedInInput;
+  const contentType = itemContentType(item);
+  const facet =
+    contentType === "movie" ||
+    contentType === "series" ||
+    contentType === "anime"
+      ? contentType
+      : null;
+  const handleAction = () => onAction(item);
   return (
     <div
       className={cn(
-        "group flex-none cursor-pointer transition-transform hover:-translate-y-1",
+        "flex-none transition-transform hover:-translate-y-1",
         compact ? "w-[120px]" : "w-[152px]",
       )}
     >
-      <div
-        className={cn(
-          "relative overflow-hidden border border-[var(--scry-border2)] shadow-[0_10px_26px_rgba(0,0,0,0.35)]",
-          compact
-            ? "h-[178px] w-[120px] rounded-[11px]"
-            : upcoming
-              ? "h-[210px] w-[152px] rounded-[13px]"
-              : "h-[225px] w-[152px] rounded-[13px]",
-        )}
-        style={posterFallbackStyle(item)}
-      >
-        <PosterImage item={item} />
-        <div
-          className={cn(
-            "absolute inset-0",
-            upcoming
-              ? "bg-gradient-to-b from-slate-950/45 via-transparent to-slate-950/90"
-              : "bg-gradient-to-b from-transparent via-transparent to-slate-950/90",
-          )}
-        />
-        {calendarBadgeLabel ? (
-          <span className="absolute left-2 top-2 inline-flex items-center gap-1 rounded-[7px] bg-slate-950/75 px-2.5 py-1 text-[9.5px] font-bold tracking-[0.04em] text-[#a9b3ff] backdrop-blur">
-            <Calendar className="h-3 w-3" />
-            {calendarBadgeLabel}
-          </span>
-        ) : (
-          <span className="absolute left-2 top-2 rounded-[6px] bg-slate-950/70 px-2 py-0.5 text-[9.5px] font-bold tracking-[0.05em] text-slate-100 backdrop-blur">
-            {itemTypeLabel(item)}
-          </span>
-        )}
-        <div className="absolute right-2 top-2">
-          <DiscoveryActionButton
-            item={item}
-            canManageTitle={canManageTitle}
-            canRequestMedia={canRequestMedia}
-            onAction={onAction}
-            compact
-          />
-        </div>
-        <div
-          className={cn(
-            "absolute left-2.5 right-2.5 font-[var(--font-space-grotesk)] text-[15px] font-bold leading-[1.05] text-white drop-shadow",
-            upcoming ? "bottom-2.5" : "bottom-8",
-          )}
-        >
-          <div>{titleLabel}</div>
-          {upcoming ? (
-            <div className="mt-1 font-sans text-[11px] font-medium text-[var(--scry-muted2)]">
-              {itemTypeLabel(item)}
-            </div>
-          ) : null}
-        </div>
-        {upcoming ? null : (
-          <div className="absolute bottom-2.5 left-2.5 flex items-center gap-2 text-[11px] text-[var(--scry-text2)]">
-            {item.year ? <span>{item.year}</span> : null}
-            {score ? (
-              <span className="inline-flex items-center gap-1 font-bold text-emerald-400">
-                <TrendingUp className="h-3 w-3" />
-                {score}
-              </span>
-            ) : null}
-          </div>
-        )}
-      </div>
-      {compact ? (
-        <>
-          <div className="mt-2 truncate text-xs font-medium text-[var(--scry-body)]">
-            {titleLabel}
-          </div>
-          <div className="flex items-center gap-1.5 text-[11px] text-[var(--scry-faint)]">
-            {item.year ? <span>{item.year}</span> : null}
-            {score ? (
-              <span className="inline-flex items-center gap-1 font-bold text-emerald-400">
-                <TrendingUp className="h-3 w-3" />
-                {score}
-              </span>
-            ) : null}
-          </div>
-        </>
-      ) : null}
+      <TitleCard
+        title={discoveryItemDisplayTitle(item)}
+        year={upcoming ? itemCalendarBadgeLabel(item) : item.year}
+        facet={facet}
+        facetLabel={itemTypeLabel(item)}
+        posterUrl={item.posterUrl}
+        addable={!owned && canManageTitle}
+        requestable={!owned && !canManageTitle && canRequestMedia}
+        onAdd={handleAction}
+        onRequest={handleAction}
+        compact
+      />
     </div>
   );
 }

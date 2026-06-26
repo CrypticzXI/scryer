@@ -2789,11 +2789,11 @@ export function MediaContentView({
   })();
   const totalManagedBytes = React.useMemo(
     () =>
-      deferredMonitoredTitles.reduce(
+      deferredTitleContextTitles.reduce(
         (total, title) => total + Math.max(0, title.sizeBytes ?? 0),
         0,
       ),
-    [deferredMonitoredTitles],
+    [deferredTitleContextTitles],
   );
   const mediaSummary = [
     `${totalTitleCount.toLocaleString()} ${titleSummaryNoun}`,

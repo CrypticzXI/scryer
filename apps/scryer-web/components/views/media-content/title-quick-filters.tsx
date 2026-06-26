@@ -1,6 +1,5 @@
 import { Eye, EyeOff, Play, Square } from "lucide-react";
 import type { ReactNode } from "react";
-import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { useTranslate } from "@/lib/context/translate-context";
 import type { TitleRecord } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -49,20 +48,49 @@ export function hasActiveTitleQuickFilters(
 
 export function getTitleQuickFilterCounts(
   titles: TitleRecord[],
+  filters?: TitleQuickFilters,
+  view: "movies" | "series" | "anime" = "series",
 ): TitleQuickFilterCounts {
+  const effectiveFilters = filters
+    ? {
+        ...filters,
+        continuing: view === "movies" ? false : filters.continuing,
+        ended: view === "movies" ? false : filters.ended,
+      }
+    : null;
+  const titleMatchesActiveMonitoring = (title: TitleRecord) => {
+    if (!effectiveFilters?.monitored && !effectiveFilters?.unmonitored) {
+      return true;
+    }
+    return (
+      (effectiveFilters.monitored && title.monitored) ||
+      (effectiveFilters.unmonitored && !title.monitored)
+    );
+  };
+  const titleMatchesActiveStatus = (title: TitleRecord) => {
+    if (!effectiveFilters?.continuing && !effectiveFilters?.ended) {
+      return true;
+    }
+    const status = normalizeQuickFilterStatus(title.contentStatus);
+    return (
+      (effectiveFilters.continuing && status === "continuing") ||
+      (effectiveFilters.ended && status === "ended")
+    );
+  };
+
   return titles.reduce<TitleQuickFilterCounts>(
     (counts, title) => {
       counts.all += 1;
-      if (title.monitored) {
+      if (title.monitored && titleMatchesActiveStatus(title)) {
         counts.monitored += 1;
-      } else {
+      } else if (!title.monitored && titleMatchesActiveStatus(title)) {
         counts.unmonitored += 1;
       }
 
       const status = normalizeQuickFilterStatus(title.contentStatus);
-      if (status === "continuing") {
+      if (status === "continuing" && titleMatchesActiveMonitoring(title)) {
         counts.continuing += 1;
-      } else if (status === "ended") {
+      } else if (status === "ended" && titleMatchesActiveMonitoring(title)) {
         counts.ended += 1;
       }
 
@@ -110,7 +138,6 @@ export function filterTitlesByQuickFilters(
 
 function QuickFilterTab({
   selected,
-  value,
   icon,
   label,
   count,
@@ -118,7 +145,6 @@ function QuickFilterTab({
   tone = "neutral",
 }: {
   selected: boolean;
-  value: string;
   icon?: ReactNode;
   label: string;
   count?: number;
@@ -126,16 +152,16 @@ function QuickFilterTab({
   tone?: "neutral" | "success" | "danger" | "muted";
 }) {
   return (
-    <ToggleGroupItem
-      value={value}
-      size="sm"
-      variant="outline"
+    <button
+      type="button"
       aria-label={label}
+      aria-pressed={selected}
       onClick={onClick}
       className={cn(
-        "h-10 shrink-0 gap-2 rounded-none border-0 border-b-2 border-transparent bg-transparent px-0 text-[13px] font-semibold tracking-normal text-[var(--scry-muted3)] shadow-none transition-colors hover:bg-transparent hover:text-[var(--scry-ink2)] focus-visible:ring-[var(--scry-focus)] data-[state=on]:border-b-[var(--scry-accent-ring)] data-[state=on]:bg-transparent data-[state=on]:text-[var(--scry-ink2)]",
-        selected &&
-          "border-b-[var(--scry-accent-ring)] bg-transparent text-[var(--scry-ink2)]",
+        "relative inline-flex h-10 shrink-0 items-center gap-2 px-3.5 py-2.5 text-[13.5px] font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--scry-focus)]",
+        selected
+          ? "text-white"
+          : "text-[var(--scry-muted)] hover:text-[var(--scry-ink2)]",
       )}
     >
       {icon ? (
@@ -160,7 +186,7 @@ function QuickFilterTab({
       {typeof count === "number" ? (
         <span
           className={cn(
-            "rounded-[6px] px-1.5 py-0.5 text-[11px] font-bold leading-none tabular-nums",
+            "inline-flex min-w-[6ch] justify-center rounded-[6px] px-1.5 py-0.5 text-[11px] font-bold leading-none tabular-nums",
             selected
               ? "bg-[rgba(var(--scry-accent-rgb),0.18)] text-[var(--scry-accent-text)]"
               : "bg-[var(--scry-chip)] text-[var(--scry-muted2)]",
@@ -169,16 +195,12 @@ function QuickFilterTab({
           {count.toLocaleString()}
         </span>
       ) : null}
-    </ToggleGroupItem>
+      {selected ? (
+        <span className="absolute bottom-[-1px] left-2 right-2 h-[2.5px] rounded-full bg-[var(--scry-accent-ring)]" />
+      ) : null}
+    </button>
   );
 }
-
-type QuickFilterValue =
-  | "all"
-  | "monitored"
-  | "unmonitored"
-  | "continuing"
-  | "ended";
 
 export function TitleQuickFilterBar({
   view,
@@ -200,59 +222,23 @@ export function TitleQuickFilterBar({
   const t = useTranslate();
   const showStatusFilters = view !== "movies";
   const allSelected = !hasActiveTitleQuickFilters(filters, view);
-  const selectedValue: QuickFilterValue = allSelected
-    ? "all"
-    : filters.monitored
-      ? "monitored"
-      : filters.unmonitored
-        ? "unmonitored"
-        : showStatusFilters && filters.continuing
-          ? "continuing"
-          : showStatusFilters && filters.ended
-            ? "ended"
-            : "all";
-  const handleValueChange = (value: string) => {
-    if (!value || value === "all") {
-      onClear();
-      return;
-    }
-
-    if (value === "monitored") {
-      onToggleMonitoring("monitored");
-      return;
-    }
-    if (value === "unmonitored") {
-      onToggleMonitoring("unmonitored");
-      return;
-    }
-    if (showStatusFilters && value === "continuing") {
-      onToggleStatus("continuing");
-      return;
-    }
-    if (showStatusFilters && value === "ended") {
-      onToggleStatus("ended");
-    }
-  };
 
   return (
     <div className="flex flex-wrap items-end justify-between gap-3">
-      <ToggleGroup
-        type="single"
-        value={selectedValue}
-        onValueChange={handleValueChange}
+      <div
+        role="group"
         aria-label={t("label.filters")}
         className="relative top-px flex min-h-10 min-w-0 max-w-full flex-1 flex-wrap items-center justify-start gap-x-5 gap-y-1 border-0 bg-transparent p-0 shadow-none"
       >
         <QuickFilterTab
           selected={allSelected}
-          value="all"
           onClick={onClear}
           label={t("activity.historyFilter.all")}
           count={counts?.all}
         />
         <QuickFilterTab
           selected={filters.monitored}
-          value="monitored"
+          onClick={() => onToggleMonitoring("monitored")}
           icon={<Eye className="h-3.5 w-3.5" />}
           label={t("title.monitored")}
           count={counts?.monitored}
@@ -260,7 +246,7 @@ export function TitleQuickFilterBar({
         />
         <QuickFilterTab
           selected={filters.unmonitored}
-          value="unmonitored"
+          onClick={() => onToggleMonitoring("unmonitored")}
           icon={<EyeOff className="h-3.5 w-3.5" />}
           label={t("search.monitorType.unmonitored")}
           count={counts?.unmonitored}
@@ -270,7 +256,7 @@ export function TitleQuickFilterBar({
           <>
             <QuickFilterTab
               selected={filters.continuing}
-              value="continuing"
+              onClick={() => onToggleStatus("continuing")}
               icon={<Play className="h-3.5 w-3.5" />}
               label={t("title.continuing")}
               count={counts?.continuing}
@@ -278,7 +264,7 @@ export function TitleQuickFilterBar({
             />
             <QuickFilterTab
               selected={filters.ended}
-              value="ended"
+              onClick={() => onToggleStatus("ended")}
               icon={<Square className="h-3.5 w-3.5" />}
               label={t("title.ended")}
               count={counts?.ended}
@@ -286,7 +272,7 @@ export function TitleQuickFilterBar({
             />
           </>
         ) : null}
-      </ToggleGroup>
+      </div>
       {trailingContent ? (
         <div className="w-full shrink-0 sm:w-auto">{trailingContent}</div>
       ) : null}

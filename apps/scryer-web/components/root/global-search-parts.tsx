@@ -6,10 +6,8 @@ import {
   Eye,
   Info,
   Loader2,
-  Plus,
   Search,
   SearchX,
-  Send,
 } from "lucide-react";
 import type { GlobalSearchTab } from "@/components/root/global-search-model";
 import {
@@ -18,7 +16,9 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { TitlePosterSlot } from "@/components/title-poster-slot";
+import { TitleCard } from "@/components/title-card";
 import { cn } from "@/lib/utils";
+import type { Facet } from "@/lib/types/titles";
 
 type SearchSurface = "desktop" | "mobile";
 
@@ -320,121 +320,53 @@ export function SearchCatalogResultButton({
 }
 
 type SearchMetadataPosterButtonProps = {
-  actionId: string;
   actionKind: MetadataActionKind;
-  actionLabel: string;
   actionTitle: string;
   disabled: boolean;
-  emptyLabel: string;
+  facet: Facet;
   id: string;
   name: string;
   onClick: () => void;
   onKeyDown: React.KeyboardEventHandler<HTMLButtonElement>;
-  posterAlt: string;
   posterUrl?: string | null;
   resultAttribute: SearchResultDataAttribute;
-  surface: SearchSurface;
-  yearLabel: React.ReactNode;
+  yearLabel: string | number | null;
 };
 
 export function SearchMetadataPosterButton({
-  actionId,
   actionKind,
-  actionLabel,
   actionTitle,
   disabled,
-  emptyLabel,
+  facet,
   id,
   name,
   onClick,
   onKeyDown,
-  posterAlt,
   posterUrl,
   resultAttribute,
-  surface,
   yearLabel,
 }: SearchMetadataPosterButtonProps) {
-  const isDesktop = surface === "desktop";
-
   return (
-    <button
-      id={id}
-      type="button"
-      className="group w-[124px] flex-none rounded-[12px] text-left outline-none transition focus-visible:ring-2 focus-visible:ring-primary/35 disabled:cursor-default disabled:opacity-75"
-      {...searchResultAttribute(resultAttribute)}
-      onClick={onClick}
-      onKeyDown={onKeyDown}
-      disabled={disabled}
-      aria-label={actionTitle}
-      title={actionTitle}
-    >
-      <div
-        className={cn(
-          "relative mb-2 h-[184px] overflow-hidden rounded-[11px] border border-[var(--scry-border2)] bg-[var(--scry-surfA)] shadow-[0_8px_20px_rgba(0,0,0,0.40)] transition",
-          isDesktop
-            ? "group-hover:border-[var(--scry-bhover2)] group-hover:shadow-[0_12px_26px_rgba(0,0,0,0.50)]"
-            : "group-active:border-[var(--scry-bhover2)] group-active:shadow-[0_12px_26px_rgba(0,0,0,0.50)]",
-        )}
-      >
-        <TitlePosterSlot
-          src={posterUrl}
-          alt={posterAlt}
-          className="h-full w-full object-cover"
-          placeholderClassName={cn(
-            "flex h-full w-full items-center justify-center text-muted-foreground",
-            isDesktop ? "text-xs" : "text-[10px]",
-          )}
-          emptyLabel={emptyLabel}
-          loading="lazy"
-        />
-        <div
-          className={
-            isDesktop
-              ? "pointer-events-none absolute inset-0 bg-[linear-gradient(180deg,transparent_50%,rgba(4,6,12,0.90))]"
-              : "pointer-events-none absolute inset-x-0 bottom-0 h-2/3 bg-gradient-to-t from-black/85 via-black/35 to-transparent"
-          }
-        />
-        <p
-          className={cn(
-            "pointer-events-none absolute line-clamp-2 font-bold text-white shadow-black drop-shadow",
-            isDesktop
-              ? "inset-x-2.5 bottom-2 text-[13px] leading-[1.06]"
-              : "inset-x-2 bottom-2 text-[12px] leading-tight",
-          )}
-        >
-          {name}
-        </p>
-      </div>
-      <div className={cn("min-w-0", isDesktop ? "px-0.5" : "px-1")}>
-        <div className="flex items-center justify-between gap-2">
-          <span className="truncate text-[11px] text-[var(--scry-muted)]">
-            {yearLabel}
-          </span>
-          <span
-            id={actionId}
-            className={cn(
-              "inline-flex min-w-0 items-center gap-1 rounded-md text-[11px] font-semibold",
-              disabled
-                ? "text-[var(--scry-muted3)]"
-                : isDesktop
-                  ? "text-[var(--scry-accent-text)] transition group-hover:text-primary"
-                  : "text-[var(--scry-accent-text)] transition group-active:text-primary",
-            )}
-          >
-            {actionKind === "inCatalog" ? (
-              <CircleCheck className="h-3 w-3 shrink-0" />
-            ) : actionKind === "unavailable" ? (
-              <SearchX className="h-3 w-3 shrink-0" />
-            ) : actionKind === "request" ? (
-              <Send className="h-3 w-3 shrink-0" />
-            ) : (
-              <Plus className="h-3 w-3 shrink-0" />
-            )}
-            <span className="truncate">{actionLabel}</span>
-          </span>
-        </div>
-      </div>
-    </button>
+    <div className={cn("w-[124px] flex-none", disabled && "opacity-80")}>
+      <TitleCard
+        title={name}
+        year={yearLabel}
+        facet={facet}
+        posterUrl={posterUrl}
+        addable={!disabled && actionKind === "add"}
+        requestable={!disabled && actionKind === "request"}
+        compact
+        onAdd={onClick}
+        onRequest={onClick}
+        interactiveProps={{
+          id,
+          onKeyDown,
+          title: actionTitle,
+          "aria-label": actionTitle,
+          ...searchResultAttribute(resultAttribute),
+        }}
+      />
+    </div>
   );
 }
 

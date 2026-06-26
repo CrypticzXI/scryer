@@ -8,6 +8,7 @@ import {
   linkJellyfinAccountMutation,
   linkPlexAccountMutation,
   revokeMyOauthAppMutation,
+  setMyUiSettingsMutation,
   setUserPasswordMutation,
   totpDisableMutation,
   totpEnrollmentCompleteMutation,
@@ -30,6 +31,10 @@ import {
 } from "@/lib/constants/integration-providers";
 import { useTranslate } from "@/lib/context/translate-context";
 import { useGlobalStatus } from "@/lib/context/global-status-context";
+import {
+  useUiSettings,
+  uiSettingsInputFromSettings,
+} from "@/lib/context/ui-settings-context";
 import { useAuth, type AuthUser } from "@/lib/hooks/use-auth";
 import type {
   ExternalAccountProvider,
@@ -41,6 +46,7 @@ import type {
   TotpEnrollmentComplete,
   TotpEnrollmentStart,
   TotpStatus,
+  UiSettings,
 } from "@/lib/types/settings";
 import type { UserAccountKind } from "@/lib/types/users";
 import { PasskeyClientError, registerPasskey } from "@/lib/utils/passkeys";
@@ -88,6 +94,11 @@ export function SettingsProfileContainer({ userId, username }: Props) {
   const t = useTranslate();
   const client = useClient();
   const { login, user: authUser } = useAuth();
+  const { uiSettings, setUiSettings, uiSettingsLoaded, uiSettingsLoading } =
+    useUiSettings();
+  const [savingHighlightColor, setSavingHighlightColor] = useState<string | null>(
+    null,
+  );
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -177,6 +188,61 @@ export function SettingsProfileContainer({ userId, username }: Props) {
       setSaving(false);
     }
   }, [accountKind, authUser?.username, client, userId, username, hasPassword, currentPassword, newPassword, confirmPassword, login, setGlobalStatus, t]);
+
+  const handleSelectHighlightColor = useCallback(
+    async (highlightColor: string) => {
+      if (
+        !uiSettingsLoaded ||
+        uiSettingsLoading ||
+        savingHighlightColor ||
+        uiSettings.highlightColor === highlightColor
+      ) {
+        return;
+      }
+
+      const previous = uiSettings;
+      const next: UiSettings = { ...uiSettings, highlightColor };
+      setSavingHighlightColor(highlightColor);
+      // Apply the accent live while the mutation persists through the interface.
+      setUiSettings(next);
+      try {
+        const result = await client
+          .mutation<{ setMyUiSettings?: UiSettings }, { input: UiSettings }>(
+            setMyUiSettingsMutation,
+            { input: uiSettingsInputFromSettings(next) },
+          )
+          .toPromise();
+        if (result.error || !result.data?.setMyUiSettings) {
+          setUiSettings(previous);
+          setGlobalStatus(
+            result.error?.message ?? t("profile.highlightColorSaveFailed"),
+          );
+          return;
+        }
+        setUiSettings(result.data.setMyUiSettings);
+        setGlobalStatus(t("profile.highlightColorSaved"));
+      } catch (error) {
+        setUiSettings(previous);
+        setGlobalStatus(
+          error instanceof Error
+            ? error.message
+            : t("profile.highlightColorSaveFailed"),
+        );
+      } finally {
+        setSavingHighlightColor(null);
+      }
+    },
+    [
+      client,
+      savingHighlightColor,
+      setGlobalStatus,
+      setUiSettings,
+      t,
+      uiSettings,
+      uiSettingsLoaded,
+      uiSettingsLoading,
+    ],
+  );
 
   useEffect(() => {
     if (!userId) {
@@ -731,6 +797,9 @@ export function SettingsProfileContainer({ userId, username }: Props) {
   return (
     <SettingsProfileSection
       username={username}
+      highlightColor={uiSettings.highlightColor}
+      savingHighlightColor={savingHighlightColor}
+      onSelectHighlightColor={handleSelectHighlightColor}
       currentPassword={currentPassword}
       newPassword={newPassword}
       confirmPassword={confirmPassword}

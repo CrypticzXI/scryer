@@ -55,9 +55,7 @@ import {
 import { useSearchContext } from "@/lib/context/search-context";
 import { selectPosterVariantUrl } from "@/lib/utils/poster-images";
 import {
-  globalSearchConfigureAddId,
   globalSearchMetadataResultId,
-  globalSearchRequestId,
 } from "@/lib/utils/dom-ids";
 import {
   AddToCatalogDialog,
@@ -750,7 +748,6 @@ export function MobileSearchOverlay({
       const {
         actionTitle,
         disabled,
-        inlineActionLabel,
         isInCatalog,
         isUnavailable,
         opensRequestDialog,
@@ -766,10 +763,7 @@ export function MobileSearchOverlay({
         resultName: result.name,
         t,
       });
-      const posterUrl = selectPosterVariantUrl(result.posterUrl, "w70");
-      const actionId = opensRequestDialog
-        ? globalSearchRequestId(facet, result)
-        : globalSearchConfigureAddId(facet, result);
+      const posterUrl = selectPosterVariantUrl(result.posterUrl, "w250");
       const handleMetadataAction = () => {
         if (disabled) {
           return;
@@ -797,16 +791,12 @@ export function MobileSearchOverlay({
           onClick={handleMetadataAction}
           onKeyDown={handleMobileSearchResultKeyDown}
           disabled={disabled}
-          actionId={actionId}
           actionKind={actionKind}
-          actionLabel={inlineActionLabel}
           actionTitle={actionTitle}
-          emptyLabel={t("label.noArt")}
+          facet={facet}
           name={result.name}
-          posterAlt={t("media.posterAlt", { name: result.name })}
           posterUrl={posterUrl}
           resultAttribute="data-mobile-global-search-result"
-          surface="mobile"
           yearLabel={result.year ? result.year : t("label.yearUnknown")}
         />
       );

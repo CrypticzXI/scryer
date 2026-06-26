@@ -1,7 +1,7 @@
 import * as React from "react";
 import { Clock, Eye, EyeOff, Plus, Send } from "lucide-react";
 import type { Facet } from "@/lib/types/titles";
-import { TitlePosterSlot } from "@/components/title-poster-slot";
+import { TitlePoster } from "@/components/title-poster";
 import { useTranslate } from "@/lib/context/translate-context";
 import { cn } from "@/lib/utils";
 
@@ -16,9 +16,6 @@ const FACET_LABEL_KEY: Record<Facet, string> = {
   series: "search.facetSeries",
   anime: "search.facetAnime",
 };
-
-const ACTION_BUTTON_CLASS =
-  "pointer-events-auto flex h-14 w-14 items-center justify-center rounded-[16px] text-white shadow-lg transition hover:brightness-110 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/80 disabled:cursor-default";
 
 const ACCENT_ACTION_STYLE: React.CSSProperties = {
   backgroundImage: "var(--scry-accent-grad)",
@@ -41,58 +38,111 @@ export type TitleCardProps = {
   facetLabel?: string | null;
   posterUrl?: string | null;
   posterSourceUrl?: string | null;
-  metadataFetchedAt?: string | null;
-  createdAt?: string | null;
-  /** Operator with library access can add it → centered "+" action. */
+  /** Operator with library access can add it → centered "+" action on hover. */
   addable?: boolean;
-  /** Member without direct access can request it → centered paper-airplane. */
+  /** Member without direct access can request it → centered paper-airplane on hover. */
   requestable?: boolean;
   /** Already requested / pending → amber clock; takes precedence over add/request. */
   requested?: boolean;
   /** Library monitored state. When non-null, shows an eye / eye-off indicator. */
   monitored?: boolean | null;
+  /** Denser sizing (action button, title, badge) for small grid/rail contexts. */
+  compact?: boolean;
   /** Click the card body (opens overview/detail). When omitted, the body is inert. */
   onOpen?: () => void;
   onAdd?: () => void;
   onRequest?: () => void;
   selected?: boolean;
   className?: string;
+  /**
+   * Attributes spread onto the primary full-card click target (the single-action
+   * / open button) — e.g. an id, onKeyDown, or data-* attribute for list
+   * keyboard navigation. Only applies when the whole card is the click target.
+   */
+  interactiveProps?: React.ButtonHTMLAttributes<HTMLButtonElement> &
+    Partial<Record<`data-${string}`, string>>;
 };
 
 /**
  * The single, consistent interactive poster used everywhere a movie, series, or
- * anime is surfaced — facet overviews and every discovery surface. A poster
- * under a frosted-glass veil with its title at the base; the action lives in the
- * center: "+" to add (operators), a paper airplane to request (members), both
- * side by side when a person can do either, an amber clock once requested, and
- * no action when it's browse-only.
+ * anime is surfaced — facet overviews and every discovery surface.
+ *
+ * At rest it's a sharp poster with the facet badge and the title at the base.
+ * On hover/focus (or when selected) a frosted-glass veil settles over the
+ * poster and the action surfaces in the center: "+" to add (operators), a paper
+ * airplane to request (members), both side by side when a person can do either,
+ * an amber clock once requested, and nothing when it's browse-only.
+ *
+ * When exactly one action is possible the WHOLE card is the click target for it
+ * (the center icon is just a hint) so there's no small target to aim for. The
+ * two-button layout only appears in the rare add+request case.
+ *
+ * Kept deliberately light (no per-card timers) so it stays cheap in dense,
+ * unvirtualized contexts like discovery rails.
  */
-export function TitleCard({
+function TitleCardImpl({
   title,
   year,
   facet,
   facetLabel,
   posterUrl,
   posterSourceUrl,
-  metadataFetchedAt,
-  createdAt,
   addable = false,
   requestable = false,
   requested = false,
   monitored,
+  compact = false,
   onOpen,
   onAdd,
   onRequest,
   selected = false,
   className,
+  interactiveProps,
 }: TitleCardProps) {
   const t = useTranslate();
-  const badgeLabel =
-    facetLabel ?? (facet ? t(FACET_LABEL_KEY[facet]) : null);
+  const badgeLabel = facetLabel ?? (facet ? t(FACET_LABEL_KEY[facet]) : null);
   const badgeColorClass = facet
     ? FACET_BADGE_TEXT_CLASS[facet]
     : "text-[var(--scry-muted2)]";
   const hasYear = year != null && `${year}`.trim() !== "";
+
+  // Exactly one action available → the whole card triggers it.
+  const actionCount = requested ? 0 : Number(addable) + Number(requestable);
+  const wholeCardActs = actionCount === 1;
+  const wholeCardHandler = wholeCardActs ? (addable ? onAdd : onRequest) : onOpen;
+  const wholeCardLabel = wholeCardActs
+    ? `${addable ? t("discovery.add") : t("discovery.request")}: ${title}`
+    : title;
+  const hasCenter = requested || addable || requestable;
+
+  // Frost the poster on hover/focus (or when selected). Transition only the
+  // transform — the blur/brightness snap, so sweeping the cursor across many
+  // cards never animates an expensive `filter: blur`.
+  const posterClass = cn(
+    "h-full w-full object-cover transition-transform duration-200",
+    "group-hover:scale-105 group-hover:blur-md group-hover:brightness-[0.6]",
+    "group-focus-within:scale-105 group-focus-within:blur-md group-focus-within:brightness-[0.6]",
+    selected && "scale-105 blur-md brightness-[0.6]",
+  );
+  // Reveal the centered action on the same hover/focus/selected cue.
+  const revealClass = cn(
+    "opacity-0 transition-opacity duration-200 group-hover:opacity-100 group-focus-within:opacity-100",
+    selected && "opacity-100",
+  );
+  const actionBaseClass = cn(
+    "flex items-center justify-center text-white shadow-lg transition",
+    compact ? "h-11 w-11 rounded-[13px]" : "h-14 w-14 rounded-[16px]",
+  );
+  // Visual-only affordance (single action / requested) — the whole card clicks.
+  const actionVisualClass = cn(actionBaseClass, "group-hover:brightness-110");
+  // Individually interactive buttons (the rare add+request case).
+  const actionButtonClass = cn(
+    actionBaseClass,
+    "pointer-events-none hover:brightness-110 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/80 group-hover:pointer-events-auto group-focus-within:pointer-events-auto",
+    selected && "pointer-events-auto",
+  );
+  const plusIconClass = compact ? "h-5 w-5" : "h-6 w-6";
+  const sendIconClass = compact ? "h-4 w-4" : "h-5 w-5";
 
   return (
     <div
@@ -102,42 +152,45 @@ export function TitleCard({
         className,
       )}
     >
-      {/* Frosted poster backdrop */}
+      {/* Poster (sharp by default; frosts on hover) */}
       <div className="absolute inset-0">
-        <TitlePosterSlot
+        <TitlePoster
           src={posterUrl}
           sourceSrc={posterSourceUrl}
-          metadataFetchedAt={metadataFetchedAt}
-          createdAt={createdAt}
           alt={title}
-          emptyLabel=""
-          className="h-full w-full scale-110 object-cover blur-xl brightness-[0.55] saturate-[0.92]"
-          placeholderClassName="flex h-full w-full items-center justify-center bg-[var(--scry-card2)]"
+          className={posterClass}
           loading="lazy"
           decoding="async"
         />
+        {/* Base scrim so the title stays legible over a sharp poster */}
         <div
           aria-hidden="true"
-          className="absolute inset-0 bg-gradient-to-b from-black/30 via-black/15 to-black/70"
+          className="absolute inset-0 bg-gradient-to-t from-black/75 via-black/5 to-transparent"
         />
       </div>
 
-      {/* Card body click target (paints under the action buttons) */}
-      {onOpen ? (
+      {/* Card body click target — performs the action when there's exactly one,
+          otherwise opens the detail. Paints under the two-button layout. */}
+      {wholeCardHandler ? (
         <button
           type="button"
-          onClick={onOpen}
-          aria-label={title}
-          className="absolute inset-0 z-0 cursor-pointer rounded-[16px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--scry-accent-ring)]"
+          onClick={wholeCardHandler}
+          aria-label={wholeCardLabel}
+          {...interactiveProps}
+          className={cn(
+            "absolute inset-0 z-0 cursor-pointer rounded-[16px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--scry-accent-ring)]",
+            interactiveProps?.className,
+          )}
         />
       ) : null}
 
-      {/* Top-left: facet badge + optional monitored indicator */}
+      {/* Top-left: facet badge + optional monitored indicator (always visible) */}
       <div className="pointer-events-none absolute left-2.5 top-2.5 z-10 flex items-center gap-1.5">
         {badgeLabel ? (
           <span
             className={cn(
-              "rounded-md border border-white/10 bg-[rgba(4,6,12,0.7)] px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.06em] backdrop-blur-[4px]",
+              "rounded-md border border-white/10 bg-[rgba(4,6,12,0.82)] font-bold uppercase tracking-[0.06em]",
+              compact ? "px-1.5 py-0.5 text-[9px]" : "px-2 py-0.5 text-[10px]",
               badgeColorClass,
             )}
           >
@@ -145,7 +198,7 @@ export function TitleCard({
           </span>
         ) : null}
         {monitored != null ? (
-          <span className="flex h-[25px] w-[25px] items-center justify-center rounded-[7px] border border-white/10 bg-[rgba(4,6,12,0.7)] backdrop-blur-[4px]">
+          <span className="flex h-[25px] w-[25px] items-center justify-center rounded-[7px] border border-white/10 bg-[rgba(4,6,12,0.82)]">
             {monitored ? (
               <Eye className="h-3.5 w-3.5 text-emerald-400" />
             ) : (
@@ -155,61 +208,90 @@ export function TitleCard({
         ) : null}
       </div>
 
-      {/* Centered action(s) */}
-      <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center gap-2.5">
-        {requested ? (
-          <span
-            className={cn(ACTION_BUTTON_CLASS, "cursor-default")}
-            style={REQUESTED_ACTION_STYLE}
-            title={t("discovery.requested")}
-            aria-label={t("discovery.requested")}
-            role="img"
-          >
-            <Clock className="h-6 w-6" />
-          </span>
-        ) : (
-          <>
-            {addable ? (
+      {/* Centered action affordance — revealed on hover/focus/selection */}
+      {hasCenter ? (
+        <div
+          className={cn(
+            "pointer-events-none absolute inset-0 z-10 flex items-center justify-center gap-2.5",
+            revealClass,
+          )}
+        >
+          {requested ? (
+            <span
+              className={cn(actionVisualClass, "cursor-default")}
+              style={REQUESTED_ACTION_STYLE}
+              role="img"
+              aria-label={t("discovery.requested")}
+              title={t("discovery.requested")}
+            >
+              <Clock className={plusIconClass} />
+            </span>
+          ) : wholeCardActs ? (
+            <span
+              className={actionVisualClass}
+              style={ACCENT_ACTION_STYLE}
+              aria-hidden="true"
+            >
+              {addable ? (
+                <Plus className={plusIconClass} />
+              ) : (
+                <Send className={sendIconClass} />
+              )}
+            </span>
+          ) : (
+            <>
               <button
                 type="button"
                 onClick={onAdd}
-                className={ACTION_BUTTON_CLASS}
+                className={actionButtonClass}
                 style={ACCENT_ACTION_STYLE}
                 title={t("discovery.add")}
                 aria-label={`${t("discovery.add")}: ${title}`}
               >
-                <Plus className="h-6 w-6" />
+                <Plus className={plusIconClass} />
               </button>
-            ) : null}
-            {requestable ? (
               <button
                 type="button"
                 onClick={onRequest}
-                className={ACTION_BUTTON_CLASS}
+                className={actionButtonClass}
                 style={ACCENT_ACTION_STYLE}
                 title={t("discovery.request")}
                 aria-label={`${t("discovery.request")}: ${title}`}
               >
-                <Send className="h-5 w-5" />
+                <Send className={sendIconClass} />
               </button>
-            ) : null}
-          </>
-        )}
-      </div>
+            </>
+          )}
+        </div>
+      ) : null}
 
-      {/* Title + year at the base */}
-      <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 px-3 pb-3.5 pt-12 text-center">
+      {/* Title + year at the base (always visible) */}
+      <div
+        className={cn(
+          "pointer-events-none absolute inset-x-0 bottom-0 z-10 text-center",
+          compact ? "px-2.5 pb-2.5" : "px-3 pb-3.5",
+        )}
+      >
         <p
-          className="line-clamp-2 text-[17px] font-bold leading-tight text-white drop-shadow-[0_1px_3px_rgba(0,0,0,0.65)]"
+          className={cn(
+            "line-clamp-2 font-bold leading-tight text-white",
+            compact ? "text-[13px]" : "text-[17px]",
+          )}
           style={{
             fontFamily:
               "var(--font-space-grotesk), var(--font-inter), ui-sans-serif, system-ui, -apple-system, sans-serif",
+            textShadow: "0 1px 3px rgba(0,0,0,0.65)",
           }}
         >
           {title}
         </p>
         {hasYear ? (
-          <p className="mt-0.5 text-[12.5px] font-medium text-white/55">
+          <p
+            className={cn(
+              "mt-0.5 font-medium text-white/70",
+              compact ? "text-[11px]" : "text-[12.5px]",
+            )}
+          >
             {year}
           </p>
         ) : null}
@@ -217,3 +299,5 @@ export function TitleCard({
     </div>
   );
 }
+
+export const TitleCard = React.memo(TitleCardImpl);

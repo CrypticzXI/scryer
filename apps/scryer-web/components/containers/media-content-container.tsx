@@ -140,6 +140,12 @@ const TITLE_DELETION_JOB_FALLBACK_DELAYS_MS = [
 ] as const;
 const TITLE_CATALOG_PAGE_SIZE = 300;
 const ALL_LIBRARIES_VALUE = "__all__";
+const EMPTY_TITLE_QUICK_FILTERS: TitleQuickFilters = {
+  monitored: false,
+  unmonitored: false,
+  continuing: false,
+  ended: false,
+};
 
 type MediaContentContainerProps = {
   view: ViewId;
@@ -973,12 +979,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
       ? selectedOverviewExternalSubtitleState.entries
       : [];
   const [titleQuickFilters, setTitleQuickFilters] =
-    React.useState<TitleQuickFilters>({
-      monitored: false,
-      unmonitored: false,
-      continuing: false,
-      ended: false,
-    });
+    React.useState<TitleQuickFilters>(EMPTY_TITLE_QUICK_FILTERS);
   const [titleCatalogSort, setTitleCatalogSort] =
     React.useState<TitleCatalogSortState>(defaultTitleCatalogSortState);
   const effectiveTitleCatalogSort =
@@ -1164,26 +1165,6 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     () => new Map(libraries.map((library) => [library.id, library.slug])),
     [libraries],
   );
-  const monitoredTitlesWithLibraries = React.useMemo(
-    () =>
-      monitoredTitles.map((title) => ({
-        ...title,
-        libraryName:
-          title.libraryName ??
-          libraryNameById.get(title.libraryId) ??
-          title.libraryId,
-        librarySlug:
-          title.librarySlug ?? librarySlugById.get(title.libraryId) ?? null,
-      })),
-    [libraryNameById, librarySlugById, monitoredTitles],
-  );
-  const titleQuickFilterSourceTitles = React.useMemo(
-    () =>
-      monitoredTitlesWithLibraries.filter(
-        (title) => !pendingDeletedTitleIds.has(title.id),
-      ),
-    [monitoredTitlesWithLibraries, pendingDeletedTitleIds],
-  );
   const titleContextTitlesWithLibraries = React.useMemo(
     () =>
       titleContextTitles.map((title) => ({
@@ -1205,9 +1186,24 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
       ),
     [activeFacet, pendingDeletedTitleIds, titleContextTitlesWithLibraries],
   );
+  const titleQuickFilterView =
+    activeFacet === "movie"
+      ? "movies"
+      : activeFacet === "series"
+        ? "series"
+        : "anime";
   const titleQuickFilterCounts = React.useMemo(
-    () => getTitleQuickFilterCounts(titleQuickFilterSourceTitles),
-    [titleQuickFilterSourceTitles],
+    () =>
+      getTitleQuickFilterCounts(
+        titleContextSourceTitles,
+        effectiveTitleQuickFilters,
+        titleQuickFilterView,
+      ),
+    [
+      effectiveTitleQuickFilters,
+      titleContextSourceTitles,
+      titleQuickFilterView,
+    ],
   );
   React.useEffect(() => {
     if (pendingDeletedTitleIds.size === 0) {
@@ -1220,10 +1216,10 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   const visibleTitles = React.useMemo(
     () =>
       filterTitlesByQuickFilters(
-        titleQuickFilterSourceTitles,
+        titleContextSourceTitles,
         effectiveTitleQuickFilters,
       ),
-    [effectiveTitleQuickFilters, titleQuickFilterSourceTitles],
+    [effectiveTitleQuickFilters, titleContextSourceTitles],
   );
   const selectedTitles = React.useMemo(
     () => visibleTitles.filter((title) => selectedTitleIds.has(title.id)),
@@ -1281,12 +1277,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   }, [shouldLoadCatalogTitles, titleFilter]);
 
   React.useEffect(() => {
-    setTitleQuickFilters({
-      monitored: false,
-      unmonitored: false,
-      continuing: false,
-      ended: false,
-    });
+    setTitleQuickFilters(EMPTY_TITLE_QUICK_FILTERS);
     setSelectedTitleIds(new Set());
     setSelectedOverviewTitleId(null);
     setSelectedLibraryIds([]);
@@ -1619,13 +1610,13 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
       setTitleStatus(t("title.loading"));
       const query = (queryOverride ?? activeCatalogQueryRef.current).trim();
       const libraryIds = libraryIdsOverride ?? selectedLibraryIds;
-      const filter = titleCatalogFilterInput(effectiveTitleQuickFilters);
+      const filter = null;
       const sort = titleCatalogSortInput(effectiveTitleCatalogSort);
       const queryKey = titleCatalogQueryKey({
         facet: activeFacet,
         query,
         libraryIds,
-        filters: effectiveTitleQuickFilters,
+        filters: EMPTY_TITLE_QUICK_FILTERS,
         sort: effectiveTitleCatalogSort,
       });
       activeCatalogListFiltersRef.current = buildActiveCatalogListFilters(
@@ -1709,7 +1700,6 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     [
       activeFacet,
       client,
-      effectiveTitleQuickFilters,
       effectiveTitleCatalogSort,
       mergeTitleContextTitles,
       selectedLibraryIds,
@@ -1775,13 +1765,13 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
 
     const requestSeq = catalogTitleRequestSeqRef.current;
     const query = activeCatalogQueryRef.current.trim();
-    const filter = titleCatalogFilterInput(effectiveTitleQuickFilters);
+    const filter = null;
     const sort = titleCatalogSortInput(effectiveTitleCatalogSort);
     const queryKey = titleCatalogQueryKey({
       facet: activeFacet,
       query,
       libraryIds: selectedLibraryIds,
-      filters: effectiveTitleQuickFilters,
+      filters: EMPTY_TITLE_QUICK_FILTERS,
       sort: effectiveTitleCatalogSort,
     });
     if (catalogPaginationState.queryKey !== queryKey) {
@@ -1866,7 +1856,6 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     catalogPaginationState.totalCount,
     client,
     effectiveTitleCatalogSort,
-    effectiveTitleQuickFilters,
     mergeTitleContextTitles,
     selectedLibraryIds,
     setMonitoredTitles,
@@ -2912,11 +2901,12 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     (nextFilter: "monitored" | "unmonitored") => {
       React.startTransition(() => {
         setTitleQuickFilters((current) => ({
-          monitored: nextFilter === "monitored" ? !current.monitored : false,
+          ...current,
+          monitored: nextFilter === "monitored" ? !current.monitored : current.monitored,
           unmonitored:
-            nextFilter === "unmonitored" ? !current.unmonitored : false,
-          continuing: false,
-          ended: false,
+            nextFilter === "unmonitored"
+              ? !current.unmonitored
+              : current.unmonitored,
         }));
       });
     },
@@ -2927,10 +2917,10 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     (nextFilter: "continuing" | "ended") => {
       React.startTransition(() => {
         setTitleQuickFilters((current) => ({
-          monitored: false,
-          unmonitored: false,
-          continuing: nextFilter === "continuing" ? !current.continuing : false,
-          ended: nextFilter === "ended" ? !current.ended : false,
+          ...current,
+          continuing:
+            nextFilter === "continuing" ? !current.continuing : current.continuing,
+          ended: nextFilter === "ended" ? !current.ended : current.ended,
         }));
       });
     },
@@ -2939,12 +2929,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
 
   const clearTitleQuickFilters = React.useCallback(() => {
     React.startTransition(() => {
-      setTitleQuickFilters({
-        monitored: false,
-        unmonitored: false,
-        continuing: false,
-        ended: false,
-      });
+      setTitleQuickFilters(EMPTY_TITLE_QUICK_FILTERS);
     });
   }, []);
 

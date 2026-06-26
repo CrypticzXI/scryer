@@ -145,7 +145,7 @@ export const PendingImportCard = React.memo(function PendingImportCard({
             {knownTitleHref ? (
               <Link
                 to={knownTitleHref}
-                className="break-all text-primary underline-offset-4 hover:underline"
+                className="break-all text-foreground underline-offset-4 hover:underline"
               >
                 {knownTitleLabel}
               </Link>

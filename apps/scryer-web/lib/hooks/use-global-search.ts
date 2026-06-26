@@ -247,7 +247,7 @@ function sameCatalogLookup(
 
 const AUTOCOMPLETE_MIN_CHARS = 2;
 const AUTOCOMPLETE_DEBOUNCE_MS = 250;
-const AUTOCOMPLETE_LIMIT = 10;
+const AUTOCOMPLETE_LIMIT = 20;
 const EMPTY_QUERY_CATALOG_LIMIT = 12;
 
 type UseGlobalSearchArgs = {
