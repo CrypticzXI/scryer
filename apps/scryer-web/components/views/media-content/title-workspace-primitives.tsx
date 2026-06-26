@@ -143,6 +143,27 @@ export function TitleWorkspaceSectionCard({
   );
 }
 
+export function TitleWorkspaceHeaderLink({
+  icon: Icon,
+  label,
+  onClick,
+}: {
+  icon: React.ComponentType<{ className?: string }>;
+  label: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      className="inline-flex h-7 items-center gap-1 rounded-[7px] px-1.5 text-[12px] font-semibold text-[var(--scry-accent-ring)] transition hover:bg-[rgba(var(--scry-accent-rgb),0.12)] hover:text-[var(--scry-accent-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--scry-focus)]"
+      onClick={onClick}
+    >
+      <span>{label}</span>
+      <Icon className="h-[13px] w-[13px]" />
+    </button>
+  );
+}
+
 export function TitleWorkspaceSectionHeader({
   icon: Icon,
   title,
