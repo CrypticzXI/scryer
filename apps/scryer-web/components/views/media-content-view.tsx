@@ -99,6 +99,7 @@ import { DownloadClientRoutingPanel } from "./media-content/download-client-rout
 import { GeneralSettingsPanel } from "./media-content/general-settings-panel";
 import { QualitySettingsPanel } from "./media-content/quality-settings-panel";
 import { RenameSettingsPanel } from "./media-content/rename-settings-panel";
+import { FacetSettingsSection } from "./media-content/facet-settings-section";
 import { AddTitleForm } from "./media-content/add-title-form";
 import { PosterGrid } from "./media-content/poster-grid";
 import { TitleTable } from "./media-content/title-table";
@@ -2800,9 +2801,26 @@ export function MediaContentView({
     `${bytesToReadable(totalManagedBytes)} managed`,
   ].join(" · ");
 
+  const facetSettingsSection =
+    effectiveContentSettingsSection === "library" ||
+    effectiveContentSettingsSection === "general" ||
+    effectiveContentSettingsSection === "quality" ||
+    effectiveContentSettingsSection === "renaming" ||
+    effectiveContentSettingsSection === "routing"
+      ? effectiveContentSettingsSection
+      : null;
+
   return (
-    <div className="flex min-h-0 flex-col gap-4">
-      {effectiveContentSettingsSection === "quality" ? (
+    <div className="flex min-h-0 flex-1 flex-col gap-4">
+      {facetSettingsSection ? (
+        <FacetSettingsSection
+          view={view}
+          section={facetSettingsSection}
+          facetLabel={mediaTitle}
+          canManageConfig={canManageConfig}
+          canManageLibrarySettings={canManageLibrarySettings}
+        >
+          {effectiveContentSettingsSection === "quality" ? (
         <QualitySettingsPanel
           contentSettingsLabel={contentSettingsLabel}
           mediaSettingsLoading={mediaSettingsLoading}
@@ -2945,6 +2963,8 @@ export function MediaContentView({
           importMode={importMode}
           handleImportModeChange={handleImportModeChange}
         />
+          ) : null}
+        </FacetSettingsSection>
       ) : view === "movies" || view === "series" || view === "anime" ? (
         <Card
           id={`media-overview-${view}`}
@@ -3001,7 +3021,7 @@ export function MediaContentView({
                       size="sm"
                       aria-label={t("title.viewModeCompact")}
                       title={t("title.viewModeCompact")}
-                      className="h-8 w-8 rounded-lg px-0 text-[var(--scry-muted2)] transition hover:bg-[var(--scry-hover)] hover:text-[var(--scry-ink2)] data-[state=on]:!border-transparent data-[state=on]:!bg-[var(--scry-accent-grad)] data-[state=on]:!text-primary-foreground"
+                      className="h-8 w-8 rounded-lg px-0 text-[var(--scry-muted2)] transition hover:bg-[var(--scry-hover)] hover:text-[var(--scry-ink2)] data-[state=on]:!border-transparent data-[state=on]:!bg-[var(--scry-accent)] data-[state=on]:!text-primary-foreground data-[state=on]:!shadow-none"
                     >
                       <TableIcon className="h-4 w-4" />
                     </ToggleGroupItem>
@@ -3011,7 +3031,7 @@ export function MediaContentView({
                       size="sm"
                       aria-label={t("title.viewModePosterTable")}
                       title={t("title.viewModePosterTable")}
-                      className="h-8 w-8 rounded-lg px-0 text-[var(--scry-muted2)] transition hover:bg-[var(--scry-hover)] hover:text-[var(--scry-ink2)] data-[state=on]:!border-transparent data-[state=on]:!bg-[var(--scry-accent-grad)] data-[state=on]:!text-primary-foreground"
+                      className="h-8 w-8 rounded-lg px-0 text-[var(--scry-muted2)] transition hover:bg-[var(--scry-hover)] hover:text-[var(--scry-ink2)] data-[state=on]:!border-transparent data-[state=on]:!bg-[var(--scry-accent)] data-[state=on]:!text-primary-foreground data-[state=on]:!shadow-none"
                     >
                       <LayoutList className="h-4 w-4" />
                     </ToggleGroupItem>
@@ -3021,7 +3041,7 @@ export function MediaContentView({
                       size="sm"
                       aria-label={t("title.viewModePoster")}
                       title={t("title.viewModePoster")}
-                      className="h-8 w-8 rounded-lg px-0 text-[var(--scry-muted2)] transition hover:bg-[var(--scry-hover)] hover:text-[var(--scry-ink2)] data-[state=on]:!border-transparent data-[state=on]:!bg-[var(--scry-accent-grad)] data-[state=on]:!text-primary-foreground"
+                      className="h-8 w-8 rounded-lg px-0 text-[var(--scry-muted2)] transition hover:bg-[var(--scry-hover)] hover:text-[var(--scry-ink2)] data-[state=on]:!border-transparent data-[state=on]:!bg-[var(--scry-accent)] data-[state=on]:!text-primary-foreground data-[state=on]:!shadow-none"
                     >
                       <LayoutGrid className="h-4 w-4" />
                     </ToggleGroupItem>
@@ -3041,16 +3061,16 @@ export function MediaContentView({
                       </PopoverTrigger>
                       <PopoverContent
                         align="end"
-                        className="w-56 rounded-[12px] border-[var(--scry-border2)] bg-[var(--scry-soft)] p-2 shadow-[0_18px_44px_rgba(0,0,0,0.55)]"
+                        className="w-[194px] rounded-[11px] border border-[var(--scry-border2)] bg-[var(--scry-soft)] p-[7px] shadow-[0_18px_44px_rgba(0,0,0,0.55)]"
                       >
-                        <div className="px-2 pb-1.5 pt-1 text-[10.5px] font-bold uppercase tracking-[0.06em] text-[var(--scry-faint2)]">
+                        <div className="px-2 pb-2 pt-1 text-[10.5px] font-bold uppercase tracking-[0.06em] text-[var(--scry-faint2)]">
                           {t("title.toggleColumns")}
                         </div>
-                        <div className="space-y-1">
+                        <div>
                           {titleTableColumnOptions.map((columnKey) => (
                             <label
                               key={columnKey}
-                              className="flex min-h-9 cursor-pointer items-center gap-2 rounded-[8px] px-2.5 text-[12px] font-medium text-[var(--scry-body)] transition hover:bg-[var(--scry-hover)]"
+                              className="flex cursor-pointer items-center gap-2.5 rounded-[8px] px-2 py-[7px] text-[13px] text-[var(--scry-text2)] transition hover:bg-[var(--scry-hover)]"
                             >
                               <Checkbox
                                 checked={visibleTitleTableColumns[columnKey]}
@@ -3064,7 +3084,7 @@ export function MediaContentView({
                                   columnKey,
                                   t,
                                 )}
-                                className="size-4 rounded-[5px] [&_svg]:size-3"
+                                className="size-[17px] rounded-[5px] [&_svg]:size-3"
                               />
                               <span className="min-w-0 truncate">
                                 {titleTableColumnLabel(columnKey, t)}

@@ -37,7 +37,6 @@ import {
   buildMetadataResultCounts,
   buildMetadataSearchActionState,
   countHiddenCatalogResults,
-  countHiddenMetadataResults,
   countHiddenRouteCommandResults,
   countMetadataResults,
   countVisibleCatalogResults,
@@ -47,7 +46,6 @@ import {
   getMetadataSectionFacets,
   getVisibleCatalogFacets,
   getVisibleCatalogResults,
-  getVisibleMetadataResults,
   getVisibleRouteCommandResults,
   type GlobalSearchTabKey,
 } from "@/components/root/global-search-model";
@@ -66,7 +64,6 @@ import {
 import { MobileSearchOverlay } from "@/components/root/mobile-search-overlay";
 import {
   sectionLabelForFacet,
-  viewAllLabelForFacet,
   viewFromFacet,
 } from "@/lib/facets/helpers";
 import { selectPosterVariantUrl } from "@/lib/utils/poster-images";
@@ -1462,20 +1459,7 @@ export const RootHeader = React.memo(function RootHeader({
                                     const items =
                                       metadataSearchResults[f.metadataKey] ??
                                       [];
-                                    const visibleItems =
-                                      getVisibleMetadataResults(
-                                        desktopSearchTab,
-                                        items,
-                                      );
-                                    const hiddenItemCount =
-                                      countHiddenMetadataResults(
-                                        desktopSearchTab,
-                                        items,
-                                        visibleItems,
-                                      );
                                     const facetLabel = t(f.navLabelKey);
-                                    const viewAllFacetLabel =
-                                      viewAllLabelForFacet(t, f.id);
                                     const resultCountLabel =
                                       items.length === 1
                                         ? t("search.resultCountOne")
@@ -1502,24 +1486,6 @@ export const RootHeader = React.memo(function RootHeader({
                                                 : resultCountLabel}
                                             </span>
                                           </div>
-                                          <div className="flex shrink-0 items-center gap-3">
-                                            {desktopSearchTab === "all" &&
-                                            hiddenItemCount > 0 ? (
-                                              <button
-                                                type="button"
-                                                className="text-xs font-medium normal-case text-[var(--scry-accent-ring)] transition hover:text-[var(--scry-accent-text)]"
-                                                onMouseDown={(event) =>
-                                                  event.preventDefault()
-                                                }
-                                                onClick={() =>
-                                                  focusDesktopSearchTab(f.id)
-                                                }
-                                                aria-label={viewAllFacetLabel}
-                                              >
-                                                {viewAllFacetLabel}
-                                              </button>
-                                            ) : null}
-                                          </div>
                                         </div>
                                         {metadataSearchLoading ? (
                                           <SearchSectionLoading
@@ -1530,9 +1496,9 @@ export const RootHeader = React.memo(function RootHeader({
                                             {t("search.noMetadataMatches")}
                                           </p>
                                         ) : (
-                                          <div className="flex gap-3 overflow-x-auto pb-1 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+                                          <div className="flex gap-3 overflow-x-auto overscroll-x-contain pb-1 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
                                             {renderMetadataSection(
-                                              visibleItems,
+                                              items,
                                               f.id,
                                               f.metadataKey,
                                             )}

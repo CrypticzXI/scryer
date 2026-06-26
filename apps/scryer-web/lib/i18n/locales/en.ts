@@ -105,6 +105,7 @@ const en: LocaleDictionary = {
   "discovery.inLibrary": "In Library",
   "discovery.add": "Add",
   "discovery.request": "Request",
+  "discovery.requested": "Requested",
   "discovery.trailer": "Trailer",
   "discovery.trailerUnavailable": "Trailer unavailable from discovery data",
   "discovery.openFilters": "Open filters",

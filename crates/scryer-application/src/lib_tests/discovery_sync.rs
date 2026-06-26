@@ -30,10 +30,43 @@ use tokio::sync::Mutex;
 #[tokio::test]
 async fn discovery_sync_status_returns_state_recent_runs_and_pending_count() {
     let gateway = Arc::new(SnapshotMetadataGateway::default());
-    let (app, admin, _titles) = bootstrap_with_metadata_gateway_and_titles(gateway);
+    let (app, admin, titles) = bootstrap_with_metadata_gateway_and_titles(gateway);
     let discovery = Arc::new(RecordingDiscoveryRepository::default());
     let app = app.with_test_overrides(|builder| builder.with_discovery_store(discovery.clone()));
     let observed_at = Utc.timestamp_opt(1_000, 0).unwrap();
+    let visible_movie_library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Movie);
+    let mut owned_drama_sci_fi = test_title(
+        "owned-1",
+        "Owned Drama Sci-Fi",
+        MediaFacet::Movie,
+        vec![("tmdb_movie", "603")],
+    );
+    owned_drama_sci_fi.library_id = visible_movie_library_id.clone();
+    owned_drama_sci_fi.genres = vec!["Drama".to_string(), "Sci-Fi".to_string()];
+    owned_drama_sci_fi.tags = vec!["horror".to_string(), "isekai".to_string()];
+    let mut owned_drama = test_title(
+        "owned-2",
+        "Owned Drama",
+        MediaFacet::Movie,
+        vec![("tmdb_movie", "604")],
+    );
+    owned_drama.library_id = visible_movie_library_id.clone();
+    owned_drama.genres = vec!["Drama".to_string()];
+    owned_drama.tags = vec!["horror".to_string()];
+    let mut owned_sci_fi = test_title(
+        "owned-3",
+        "Owned Sci-Fi",
+        MediaFacet::Movie,
+        vec![("tmdb_movie", "605")],
+    );
+    owned_sci_fi.library_id = visible_movie_library_id;
+    owned_sci_fi.genres = vec!["Sci-Fi".to_string()];
+    owned_sci_fi.tags = vec!["isekai".to_string()];
+    titles
+        .store
+        .lock()
+        .await
+        .extend([owned_drama_sci_fi, owned_drama, owned_sci_fi]);
 
     *discovery.state.lock().await = Some(DiscoverySyncStateRecord {
         last_success_generation_id: Some("run-current".to_string()),
@@ -113,7 +146,7 @@ async fn discovery_sync_recovers_committed_unacked_snapshot_before_new_submit() 
 #[tokio::test]
 async fn discovery_home_and_items_use_local_rows_and_library_view_rbac() {
     let gateway = Arc::new(SnapshotMetadataGateway::default());
-    let (app, admin, _titles) = bootstrap_with_metadata_gateway_and_titles(gateway);
+    let (app, admin, titles) = bootstrap_with_metadata_gateway_and_titles(gateway);
     let discovery = Arc::new(RecordingDiscoveryRepository::default());
     let app = app.with_test_overrides(|builder| builder.with_discovery_store(discovery.clone()));
     let (_public_user, public_actor) =
@@ -127,6 +160,39 @@ async fn discovery_home_and_items_use_local_rows_and_library_view_rbac() {
     )
     .await;
     let observed_at = Utc.timestamp_opt(1_000, 0).unwrap();
+    let visible_movie_library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Movie);
+    let mut owned_drama_sci_fi = test_title(
+        "title-603",
+        "Owned Drama Sci-Fi",
+        MediaFacet::Movie,
+        vec![("tmdb_movie", "603")],
+    );
+    owned_drama_sci_fi.library_id = visible_movie_library_id.clone();
+    owned_drama_sci_fi.genres = vec!["Drama".to_string(), "Sci-Fi".to_string()];
+    owned_drama_sci_fi.tags = vec!["horror".to_string(), "isekai".to_string()];
+    let mut owned_drama = test_title(
+        "owned-2",
+        "Owned Drama",
+        MediaFacet::Movie,
+        vec![("tmdb_movie", "604")],
+    );
+    owned_drama.library_id = visible_movie_library_id.clone();
+    owned_drama.genres = vec!["Drama".to_string()];
+    owned_drama.tags = vec!["horror".to_string()];
+    let mut owned_sci_fi = test_title(
+        "owned-3",
+        "Owned Sci-Fi",
+        MediaFacet::Movie,
+        vec![("tmdb_movie", "605")],
+    );
+    owned_sci_fi.library_id = visible_movie_library_id;
+    owned_sci_fi.genres = vec!["Sci-Fi".to_string()];
+    owned_sci_fi.tags = vec!["isekai".to_string()];
+    titles
+        .store
+        .lock()
+        .await
+        .extend([owned_drama_sci_fi, owned_drama, owned_sci_fi]);
 
     *discovery.state.lock().await = Some(DiscoverySyncStateRecord {
         last_success_generation_id: Some("context-run".to_string()),
@@ -144,11 +210,8 @@ async fn discovery_home_and_items_use_local_rows_and_library_view_rbac() {
             "TRENDING",
             "public",
         ));
-    discovery
-        .submitted_subjects
-        .lock()
-        .await
-        .push(DiscoverySubmittedSubjectRecord {
+    discovery.submitted_subjects.lock().await.extend([
+        DiscoverySubmittedSubjectRecord {
             run_id: "context-run".to_string(),
             subject_key: "tmdb:movie:603".to_string(),
             title_id: Some("title-603".to_string()),
@@ -157,7 +220,28 @@ async fn discovery_home_and_items_use_local_rows_and_library_view_rbac() {
             display_title: Some("Local Example Movie".to_string()),
             external_ids_json: serde_json::json!([{"source": "tmdb", "value": "603"}]).to_string(),
             raw_subject_json: serde_json::json!({"tmdbId": 603}).to_string(),
-        });
+        },
+        DiscoverySubmittedSubjectRecord {
+            run_id: "context-run".to_string(),
+            subject_key: "tmdb:movie:604".to_string(),
+            title_id: Some("owned-2".to_string()),
+            library_facet: Some("movie".to_string()),
+            title_kind: Some("movie".to_string()),
+            display_title: Some("Owned Drama".to_string()),
+            external_ids_json: serde_json::json!([{"source": "tmdb", "value": "604"}]).to_string(),
+            raw_subject_json: serde_json::json!({"tmdbId": 604}).to_string(),
+        },
+        DiscoverySubmittedSubjectRecord {
+            run_id: "context-run".to_string(),
+            subject_key: "tmdb:movie:605".to_string(),
+            title_id: Some("owned-3".to_string()),
+            library_facet: Some("movie".to_string()),
+            title_kind: Some("movie".to_string()),
+            display_title: Some("Owned Sci-Fi".to_string()),
+            external_ids_json: serde_json::json!([{"source": "tmdb", "value": "605"}]).to_string(),
+            raw_subject_json: serde_json::json!({"tmdbId": 605}).to_string(),
+        },
+    ]);
     let mut private_recommendation = discovery_item_record(
         "context-run",
         "context-run",
@@ -176,6 +260,121 @@ async fn discovery_home_and_items_use_local_rows_and_library_view_rbac() {
     private_recommendation.matched_subject_titles_json =
         serde_json::json!(["SMG should not leak this"]).to_string();
     private_recommendation.matched_subject_count = 2;
+    let top_context_terms = serde_json::json!(["weekly", "popular"]).to_string();
+    let mut sci_fi_one = discovery_item_record(
+        "context-run",
+        "context-run",
+        None,
+        "tmdb:movie:300",
+        "Sci-Fi One",
+        "movie",
+        89.0,
+        &["Sci-Fi"],
+        &[],
+        false,
+        true,
+    );
+    sci_fi_one.context_terms_json = top_context_terms.clone();
+    let mut sci_fi_two = discovery_item_record(
+        "context-run",
+        "context-run",
+        None,
+        "tmdb:movie:301",
+        "Sci-Fi Two",
+        "movie",
+        88.0,
+        &["Sci-Fi"],
+        &[],
+        false,
+        true,
+    );
+    sci_fi_two.context_terms_json = top_context_terms.clone();
+    let mut drama_one = discovery_item_record(
+        "context-run",
+        "context-run",
+        None,
+        "tmdb:movie:302",
+        "Drama One",
+        "movie",
+        87.0,
+        &["Drama"],
+        &[],
+        false,
+        true,
+    );
+    drama_one.context_terms_json = top_context_terms;
+    let mut drama_two = discovery_item_record(
+        "context-run",
+        "context-run",
+        None,
+        "tmdb:movie:303",
+        "Drama Two",
+        "movie",
+        86.0,
+        &["Drama"],
+        &[],
+        false,
+        true,
+    );
+    drama_two.rating = Some(8.7);
+    drama_two.status_tags_json = serde_json::json!(["Award Winning"]).to_string();
+    let mut acclaimed_sci_fi = discovery_item_record(
+        "context-run",
+        "context-run",
+        None,
+        "tmdb:movie:304",
+        "Acclaimed Sci-Fi",
+        "movie",
+        85.0,
+        &["Sci-Fi"],
+        &[],
+        false,
+        true,
+    );
+    acclaimed_sci_fi.rating = Some(9.1);
+    let horror_item = discovery_item_record(
+        "context-run",
+        "context-run",
+        None,
+        "tmdb:movie:305",
+        "Horror Match",
+        "movie",
+        84.0,
+        &["Horror"],
+        &[],
+        false,
+        true,
+    );
+    let mut isekai_item = discovery_item_record(
+        "context-run",
+        "context-run",
+        None,
+        "tmdb:movie:306",
+        "Isekai Match",
+        "movie",
+        83.0,
+        &["Fantasy"],
+        &[],
+        false,
+        true,
+    );
+    isekai_item.source_tags_json =
+        serde_json::json!([{"source": "mal", "category": "theme", "name": "Isekai"}]).to_string();
+    let mut collection_signal_movie = discovery_item_record(
+        "context-run",
+        "context-run",
+        None,
+        "tmdb:movie:307",
+        "Collection Signal Movie",
+        "movie",
+        82.0,
+        &["Adventure"],
+        &["tmdb.collection"],
+        false,
+        true,
+    );
+    collection_signal_movie.tmdb_collection_id = None;
+    collection_signal_movie.tmdb_collection_name = None;
     discovery.items.lock().await.extend([
         discovery_item_record(
             "public-run",
@@ -191,6 +390,14 @@ async fn discovery_home_and_items_use_local_rows_and_library_view_rbac() {
             true,
         ),
         private_recommendation,
+        sci_fi_one,
+        sci_fi_two,
+        drama_one,
+        drama_two,
+        acclaimed_sci_fi,
+        horror_item,
+        isekai_item,
+        collection_signal_movie,
         discovery_item_record(
             "context-run",
             "context-run",
@@ -265,7 +472,39 @@ async fn discovery_home_and_items_use_local_rows_and_library_view_rbac() {
         .expect("viewer discovery home should load");
     assert!(viewer_home.can_view_personalized);
     assert!(viewer_home.complete_collection.is_some());
-    assert_eq!(viewer_home.facets[0].local_count, Some(1));
+    let complete_collection = viewer_home
+        .complete_collection
+        .as_ref()
+        .expect("complete collection should be present");
+    assert!(complete_collection.items.iter().any(|item| {
+        item.display_title == "Collection Signal Movie"
+            && item.tmdb_collection_id.is_none()
+            && item.tmdb_collection_name.is_none()
+    }));
+    assert_eq!(viewer_home.facets[0].local_count, Some(3));
+    let personalized_section_types = viewer_home
+        .personalized_sections
+        .iter()
+        .map(|section| section.section_type.as_str())
+        .collect::<Vec<_>>();
+    assert!(personalized_section_types.contains(&"TOP_MOVIES_THIS_WEEK"));
+    assert!(!personalized_section_types.contains(&"MORE_FROM_SOURCE"));
+    assert!(personalized_section_types.contains(&"BECAUSE_YOU_LIKE_TAG"));
+    assert!(personalized_section_types.contains(&"TOP_RATED_ACCLAIMED_NOT_IN_LIBRARY"));
+    assert!(viewer_home.personalized_sections.iter().any(|section| {
+        section.section_type == "BECAUSE_YOU_LIKE_GENRE"
+            && section.title == "Because You Like Sci-Fi"
+    }));
+    assert!(viewer_home.personalized_sections.iter().any(|section| {
+        section.section_type == "BECAUSE_YOU_LIKE_GENRE"
+            && section.title == "Because You Like Drama"
+    }));
+    assert!(viewer_home.personalized_sections.iter().any(|section| {
+        section.section_type == "BECAUSE_YOU_LIKE_TAG" && section.title == "Because You Like Horror"
+    }));
+    assert!(viewer_home.personalized_sections.iter().any(|section| {
+        section.section_type == "BECAUSE_YOU_LIKE_TAG" && section.title == "Because You Like Isekai"
+    }));
 
     let filtered = app
         .discovery_items(
@@ -277,8 +516,19 @@ async fn discovery_home_and_items_use_local_rows_and_library_view_rbac() {
         )
         .await
         .expect("viewer discovery items should load");
-    assert_eq!(filtered.total_count, 1);
-    assert_eq!(filtered.items[0].display_title, "Collection Movie");
+    assert_eq!(filtered.total_count, 2);
+    assert!(
+        filtered
+            .items
+            .iter()
+            .any(|item| item.display_title == "Collection Movie")
+    );
+    assert!(
+        filtered
+            .items
+            .iter()
+            .any(|item| item.display_title == "Collection Signal Movie")
+    );
 
     let matched_context = app
         .discovery_items(

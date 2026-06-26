@@ -16,12 +16,13 @@ use scryer_domain::{
     DomainEvent, DomainEventPayload, DomainExternalIds, LibraryPermission, MediaFacet, Title,
     TitleContextSnapshot, User,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use std::cmp::Ordering;
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 pub(crate) const DISCOVERY_CONTEXT_CHANGES_MAX_CHANGED_SUBJECTS: usize = 250;
+const DISCOVERY_DERIVED_SECTION_MINIMUM_ITEMS: usize = 2;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -31,6 +32,12 @@ pub(crate) struct DiscoveryContextDefaults {
     pub(crate) max_items: usize,
     pub(crate) include_owned: bool,
     pub(crate) include_unresolved: bool,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+struct DiscoverySourceTagValue {
+    category: Option<String>,
+    name: Option<String>,
 }
 
 impl Default for DiscoveryContextDefaults {
@@ -157,10 +164,17 @@ impl AppUseCase {
                     .list_discovery_submitted_subjects(context_run_id)
                     .await?;
                 resolve_discovery_matched_subjects(&mut personalized_items, &submitted_subjects)?;
+                let library_profile = self
+                    .discovery_library_affinity_profile(actor, &submitted_subjects)
+                    .await?;
                 complete_collection =
                     complete_collection_section(&personalized_items, include_unresolved, limit);
-                personalized_sections =
-                    personalized_section_results(&personalized_items, include_unresolved, limit);
+                personalized_sections = personalized_section_results(
+                    &personalized_items,
+                    &library_profile,
+                    include_unresolved,
+                    limit,
+                );
                 let facet_counts = local_facet_counts(&personalized_items, include_unresolved);
                 facets = self
                     .services
@@ -314,6 +328,44 @@ impl AppUseCase {
     }
 }
 
+impl AppUseCase {
+    async fn discovery_library_affinity_profile(
+        &self,
+        actor: &User,
+        submitted_subjects: &[DiscoverySubmittedSubjectRecord],
+    ) -> AppResult<DiscoveryLibraryAffinityProfile> {
+        let library_ids = self
+            .authorized_library_ids(actor, None, LibraryPermission::View)
+            .await?;
+        let allowed_library_ids = library_ids.iter().collect::<HashSet<_>>();
+        let mut titles = Vec::new();
+        let mut seen_title_ids = HashSet::new();
+        for title_id in submitted_subjects
+            .iter()
+            .filter_map(|subject| subject.title_id.as_deref())
+            .filter(|title_id| seen_title_ids.insert((*title_id).to_string()))
+        {
+            if let Some(title) = self.services.catalog.titles.get_by_id(title_id).await?
+                && allowed_library_ids.contains(&title.library_id)
+            {
+                titles.push(title);
+            }
+        }
+        if titles.is_empty() {
+            titles = self
+                .services
+                .catalog
+                .titles
+                .list_for_libraries(None, &library_ids, None)
+                .await?;
+        }
+        Ok(DiscoveryLibraryAffinityProfile {
+            genre_labels: top_owned_title_labels(&titles, |title| title.genres.iter(), 2),
+            tag_labels: top_owned_title_labels(&titles, |title| title.tags.iter(), 2),
+        })
+    }
+}
+
 fn discovery_section_limit(limit: usize) -> usize {
     if limit == 0 { 25 } else { limit.clamp(1, 100) }
 }
@@ -364,9 +416,38 @@ fn public_section_results(
 
 fn personalized_section_results(
     items: &[DiscoveryItemRecord],
+    library_profile: &DiscoveryLibraryAffinityProfile,
     include_unresolved: bool,
     limit: usize,
 ) -> Vec<DiscoverySectionResult> {
+    let visible_items = items
+        .iter()
+        .filter(|item| home_item_visible(item, include_unresolved))
+        .cloned()
+        .collect::<Vec<_>>();
+    let mut sections = Vec::new();
+
+    if let Some(section) = top_movies_this_week_section(&visible_items, limit) {
+        sections.push(section);
+    }
+    sections.extend(label_affinity_sections(
+        &visible_items,
+        &library_profile.genre_labels,
+        "BECAUSE_YOU_LIKE_GENRE",
+        "because_you_like_genre",
+        limit,
+    ));
+    sections.extend(label_affinity_sections(
+        &visible_items,
+        &library_profile.tag_labels,
+        "BECAUSE_YOU_LIKE_TAG",
+        "because_you_like_tag",
+        limit,
+    ));
+    if let Some(section) = acclaimed_not_in_library_section(&visible_items, limit) {
+        sections.push(section);
+    }
+
     let section_specs = [
         ("FOR_YOU", "For You", None, 1usize),
         ("MOVIES_FOR_YOU", "Movies For You", Some("movie"), 6usize),
@@ -375,12 +456,10 @@ fn personalized_section_results(
         ("BECAUSE_YOU_HAVE", "Because You Have", None, 1usize),
     ];
 
-    section_specs
-        .into_iter()
-        .filter_map(|(section_type, title, media_kind, minimum_items)| {
-            let mut section_items = items
+    sections.extend(section_specs.into_iter().filter_map(
+        |(section_type, title, media_kind, minimum_items)| {
+            let mut section_items = visible_items
                 .iter()
-                .filter(|item| home_item_visible(item, include_unresolved))
                 .filter(|item| {
                     media_kind.is_none_or(|kind| {
                         discovery_item_media_kind(item).eq_ignore_ascii_case(kind)
@@ -401,8 +480,380 @@ fn personalized_section_results(
                 section_items,
                 limit,
             )
+        },
+    ));
+
+    sections
+}
+
+fn top_movies_this_week_section(
+    items: &[DiscoveryItemRecord],
+    limit: usize,
+) -> Option<DiscoverySectionResult> {
+    let mut section_items = items
+        .iter()
+        .filter(|item| discovery_item_media_kind(item).eq_ignore_ascii_case("movie"))
+        .filter(|item| discovery_item_has_any_signal(item, TOP_THIS_WEEK_SIGNALS))
+        .cloned()
+        .collect::<Vec<_>>();
+    dedupe_and_sort_discovery_items(&mut section_items);
+
+    if section_items.len() < DISCOVERY_DERIVED_SECTION_MINIMUM_ITEMS {
+        section_items = items
+            .iter()
+            .filter(|item| discovery_item_media_kind(item).eq_ignore_ascii_case("movie"))
+            .cloned()
+            .collect::<Vec<_>>();
+        dedupe_and_sort_discovery_items(&mut section_items);
+        if section_items.len() < 3 {
+            return None;
+        }
+    }
+
+    section_result(
+        "top_movies_this_week".to_string(),
+        "TOP_MOVIES_THIS_WEEK".to_string(),
+        "Top Movies This Week".to_string(),
+        "personalized".to_string(),
+        section_items,
+        limit,
+    )
+}
+
+fn label_affinity_sections(
+    items: &[DiscoveryItemRecord],
+    labels: &[String],
+    section_type: &str,
+    section_id_prefix: &str,
+    limit: usize,
+) -> Vec<DiscoverySectionResult> {
+    labels
+        .iter()
+        .filter_map(|label| {
+            let mut items = items
+                .iter()
+                .filter(|item| discovery_item_matches_affinity_label(item, label))
+                .cloned()
+                .collect::<Vec<_>>();
+            dedupe_and_sort_discovery_items(&mut items);
+            if items.is_empty() {
+                return None;
+            }
+            section_result(
+                format!(
+                    "{}_{}",
+                    section_id_prefix,
+                    slugify_discovery_section_part(label)
+                ),
+                section_type.to_string(),
+                format!("Because You Like {}", label),
+                "personalized".to_string(),
+                items,
+                limit,
+            )
         })
         .collect()
+}
+
+fn acclaimed_not_in_library_section(
+    items: &[DiscoveryItemRecord],
+    limit: usize,
+) -> Option<DiscoverySectionResult> {
+    let mut section_items = items
+        .iter()
+        .filter(|item| discovery_item_is_acclaimed(item))
+        .cloned()
+        .collect::<Vec<_>>();
+    dedupe_and_sort_discovery_items(&mut section_items);
+    section_items.sort_by(|left, right| {
+        discovery_item_comparable_rating(right)
+            .partial_cmp(&discovery_item_comparable_rating(left))
+            .unwrap_or(Ordering::Equal)
+            .then_with(|| compare_discovery_items(left, right))
+    });
+    if section_items.len() < DISCOVERY_DERIVED_SECTION_MINIMUM_ITEMS {
+        return None;
+    }
+    section_result(
+        "acclaimed_not_in_library".to_string(),
+        "TOP_RATED_ACCLAIMED_NOT_IN_LIBRARY".to_string(),
+        "Acclaimed - Not in Your Library".to_string(),
+        "personalized".to_string(),
+        section_items,
+        limit,
+    )
+}
+
+#[derive(Clone, Debug, Default)]
+struct DiscoveryLibraryAffinityProfile {
+    genre_labels: Vec<String>,
+    tag_labels: Vec<String>,
+}
+
+const TOP_THIS_WEEK_SIGNALS: &[&str] = &[
+    "trend",
+    "weekly",
+    "week",
+    "top",
+    "popular",
+    "favorite",
+    "most requested",
+];
+
+const ACCLAIMED_SIGNALS: &[&str] = &[
+    "acclaim",
+    "award",
+    "best picture",
+    "top rated",
+    "favorite",
+    "critically",
+];
+
+const GENRE_SOURCE_TAG_CATEGORIES: &[&str] = &["genre", "theme"];
+
+fn discovery_item_genre_labels(item: &DiscoveryItemRecord) -> Vec<String> {
+    let mut labels = Vec::new();
+    let mut seen = HashSet::new();
+    for label in
+        json_text_values(&item.genres_json)
+            .into_iter()
+            .chain(source_tag_names_for_categories(
+                &item.source_tags_json,
+                GENRE_SOURCE_TAG_CATEGORIES,
+            ))
+    {
+        push_unique_discovery_label(&mut labels, &mut seen, label);
+    }
+    labels
+}
+
+fn discovery_item_matches_affinity_label(item: &DiscoveryItemRecord, label: &str) -> bool {
+    let label_key = normalize_discovery_affinity_key(label);
+    if label_key.is_empty() {
+        return false;
+    }
+    discovery_item_affinity_values(item)
+        .into_iter()
+        .any(|candidate| affinity_value_matches_label(&candidate, &label_key))
+}
+
+fn discovery_item_affinity_values(item: &DiscoveryItemRecord) -> Vec<String> {
+    let mut values = discovery_item_genre_labels(item);
+    values.extend(json_text_values(&item.facet_terms_json));
+    values.extend(json_text_values(&item.context_terms_json));
+    values.extend(json_text_values(&item.relation_subtypes_json));
+    values
+}
+
+fn affinity_value_matches_label(value: &str, label_key: &str) -> bool {
+    let value_key = normalize_discovery_affinity_key(value);
+    value_key == label_key
+        || value_key
+            .strip_prefix("mal genre ")
+            .is_some_and(|tail| tail == label_key)
+        || value_key
+            .strip_prefix("mal theme ")
+            .is_some_and(|tail| tail == label_key)
+        || value_key
+            .strip_prefix("tmdb genre ")
+            .is_some_and(|tail| tail == label_key)
+}
+
+fn source_tag_names_for_categories(raw: &str, categories: &[&str]) -> Vec<String> {
+    serde_json::from_str::<Vec<DiscoverySourceTagValue>>(raw)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|tag| {
+            let category = tag.category?.trim().to_ascii_lowercase();
+            if !categories
+                .iter()
+                .any(|candidate| category.eq_ignore_ascii_case(candidate))
+            {
+                return None;
+            }
+            tag.name.map(|name| name.trim().to_string())
+        })
+        .filter(|name| !name.is_empty())
+        .collect()
+}
+
+fn push_unique_discovery_label(
+    labels: &mut Vec<String>,
+    seen: &mut HashSet<String>,
+    label: String,
+) {
+    let label = label.trim();
+    if label.is_empty() {
+        return;
+    }
+    let key = normalize_discovery_filter_value(label);
+    if seen.insert(key) {
+        labels.push(label.to_string());
+    }
+}
+
+fn top_owned_title_labels<'a, F, I>(
+    titles: &'a [Title],
+    labels_for_title: F,
+    limit: usize,
+) -> Vec<String>
+where
+    F: Fn(&'a Title) -> I,
+    I: IntoIterator<Item = &'a String>,
+{
+    let mut counts = HashMap::<String, (String, usize)>::new();
+    for title in titles {
+        let mut seen_for_title = HashSet::new();
+        for raw_label in labels_for_title(title) {
+            let label_key = normalize_discovery_affinity_key(raw_label);
+            if label_key.is_empty()
+                || discovery_affinity_label_is_generic(&label_key)
+                || raw_label.trim_start().starts_with("scryer:")
+                || !seen_for_title.insert(label_key.clone())
+            {
+                continue;
+            }
+            let label = display_discovery_affinity_label(raw_label);
+            let entry = counts.entry(label_key).or_insert((label, 0));
+            entry.1 += 1;
+        }
+    }
+
+    let mut counts = counts.into_values().collect::<Vec<_>>();
+    counts.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
+    counts
+        .into_iter()
+        .take(limit)
+        .map(|(label, _)| label)
+        .collect()
+}
+
+fn display_discovery_affinity_label(value: &str) -> String {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    if trimmed
+        .chars()
+        .any(|character| character.is_ascii_uppercase())
+    {
+        return trimmed.to_string();
+    }
+
+    trimmed
+        .split(|character: char| !character.is_alphanumeric())
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            let mut chars = part.chars();
+            match chars.next() {
+                Some(first) => first
+                    .to_uppercase()
+                    .chain(chars.flat_map(char::to_lowercase))
+                    .collect::<String>(),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn discovery_item_has_any_signal(item: &DiscoveryItemRecord, signals: &[&str]) -> bool {
+    discovery_item_signal_values(item).into_iter().any(|value| {
+        let value = value.to_ascii_lowercase();
+        signals.iter().any(|signal| value.contains(signal))
+    })
+}
+
+fn discovery_item_signal_values(item: &DiscoveryItemRecord) -> Vec<String> {
+    let mut values = Vec::new();
+    values.extend(json_text_values(&item.status_tags_json));
+    values.extend(json_text_values(&item.source_tags_json));
+    values.extend(json_text_values(&item.sources_json));
+    values.extend(json_text_values(&item.relation_types_json));
+    values.extend(json_text_values(&item.relation_subtypes_json));
+    values.extend(json_text_values(&item.facet_terms_json));
+    values.extend(json_text_values(&item.context_terms_json));
+    if let Some(best_source) = item.best_source.as_deref() {
+        values.push(best_source.to_string());
+    }
+    if let Some(collection_name) = item.tmdb_collection_name.as_deref() {
+        values.push(collection_name.to_string());
+    }
+    values
+}
+
+fn discovery_item_is_acclaimed(item: &DiscoveryItemRecord) -> bool {
+    discovery_item_comparable_rating(item) >= 8.0
+        || discovery_item_has_any_signal(item, ACCLAIMED_SIGNALS)
+}
+
+fn discovery_item_comparable_rating(item: &DiscoveryItemRecord) -> f64 {
+    item.rating
+        .map(|rating| if rating <= 1.0 { rating * 10.0 } else { rating })
+        .unwrap_or_default()
+}
+
+fn discovery_affinity_label_is_generic(normalized: &str) -> bool {
+    matches!(
+        normalized,
+        "movie"
+            | "movies"
+            | "series"
+            | "show"
+            | "shows"
+            | "anime"
+            | "recommendation"
+            | "recommendations"
+            | "similar"
+            | "relation"
+            | "list"
+            | "community"
+            | "tmdb"
+            | "tvdb"
+            | "mal"
+            | "anilist"
+            | "myanimelist"
+    )
+}
+
+fn normalize_discovery_affinity_key(value: &str) -> String {
+    let mut normalized = String::new();
+    let mut last_was_separator = false;
+    for character in value.trim().chars().flat_map(char::to_lowercase) {
+        if character.is_alphanumeric() {
+            normalized.push(character);
+            last_was_separator = false;
+        } else if !last_was_separator && !normalized.is_empty() {
+            normalized.push(' ');
+            last_was_separator = true;
+        }
+    }
+    while normalized.ends_with(' ') {
+        normalized.pop();
+    }
+    normalized
+}
+
+fn slugify_discovery_section_part(value: &str) -> String {
+    let mut slug = String::new();
+    let mut last_was_separator = false;
+    for character in value.chars().flat_map(char::to_lowercase) {
+        if character.is_ascii_alphanumeric() {
+            slug.push(character);
+            last_was_separator = false;
+        } else if !last_was_separator && !slug.is_empty() {
+            slug.push('_');
+            last_was_separator = true;
+        }
+    }
+    while slug.ends_with('_') {
+        slug.pop();
+    }
+    if slug.is_empty() {
+        "section".to_string()
+    } else {
+        slug
+    }
 }
 
 fn complete_collection_section(
@@ -413,17 +864,10 @@ fn complete_collection_section(
     let mut items = items
         .iter()
         .filter(|item| {
-            item.target_kind.eq_ignore_ascii_case("movie")
+            discovery_item_media_kind(item).eq_ignore_ascii_case("movie")
                 && !item.owned_in_input
                 && (include_unresolved || item.resolved)
-                && (item.tmdb_collection_id.is_some()
-                    || item
-                        .tmdb_collection_name
-                        .as_deref()
-                        .is_some_and(|name| !name.trim().is_empty()))
-                && json_text_values(&item.relation_subtypes_json)
-                    .iter()
-                    .any(|value| value.eq_ignore_ascii_case("tmdb.collection"))
+                && discovery_item_has_collection_signal(item)
         })
         .cloned()
         .collect::<Vec<_>>();
@@ -436,6 +880,27 @@ fn complete_collection_section(
         items,
         limit,
     )
+}
+
+fn discovery_item_has_collection_signal(item: &DiscoveryItemRecord) -> bool {
+    if item.tmdb_collection_id.is_some()
+        || item
+            .tmdb_collection_name
+            .as_deref()
+            .is_some_and(|name| !name.trim().is_empty())
+    {
+        return true;
+    }
+
+    json_text_values(&item.relation_types_json)
+        .into_iter()
+        .chain(json_text_values(&item.relation_subtypes_json))
+        .any(|value| {
+            let value = value.trim().to_ascii_lowercase();
+            value == "tmdb.collection"
+                || value.contains("collection")
+                || value.contains("franchise")
+        })
 }
 
 fn section_result(

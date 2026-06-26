@@ -575,7 +575,7 @@ function RuleLibrary({
               )}
             </div>
           ) : (
-            <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+            <div className="grid grid-cols-1 gap-2 @[420px]:grid-cols-2 @[640px]:grid-cols-3">
               {communityPacks.length === 0 && communityPacksLoaded ? (
                 <p className="col-span-full text-sm text-muted-foreground">
                   {t("settings.ruleLibraryCommunityEmpty")}
@@ -621,7 +621,7 @@ function TemplateGrid({
   onApply: (template: RuleTemplate) => void;
 }) {
   return (
-    <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+    <div className="grid grid-cols-1 gap-2 @[420px]:grid-cols-2 @[640px]:grid-cols-3">
       {templates.map((tpl) => (
         <button
           id={selectorId("settings-rules-library-template", tpl.id)}
@@ -681,6 +681,8 @@ export function SettingsRulesSection({
         {t("settings.rulesSection")}
       </CardTitle>
 
+      <div className="flex flex-col gap-4 xl:flex-row xl:items-start">
+        <div className="min-w-0 flex-1 space-y-4">
       <div className="rounded border border-border">
         <div className="flex items-center justify-between border-b border-border px-3 py-2">
           <CardTitle className="text-base">
@@ -810,11 +812,6 @@ export function SettingsRulesSection({
           </Table>
         </div>
       </div>
-
-      <RuleLibrary
-        defaultOpen={ruleSetRecords.length === 0}
-        onApply={applyTemplate}
-      />
 
       {isEditorOpen ? (
         <>
@@ -1028,8 +1025,15 @@ export function SettingsRulesSection({
           </Button>
         </div>
       )}
-
-      <RulesContextReference />
+        </div>
+        <div className="@container w-full space-y-4 xl:w-[44%] xl:max-w-[880px] xl:shrink-0">
+          <RuleLibrary
+            defaultOpen={ruleSetRecords.length === 0}
+            onApply={applyTemplate}
+          />
+          <RulesContextReference />
+        </div>
+      </div>
     </div>
   );
 }

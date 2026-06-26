@@ -35,7 +35,6 @@ import {
   Archive,
   Bell,
   Captions,
-  ChevronRight,
   Database,
   Download,
   FileText,
@@ -468,25 +467,6 @@ function LeafNavBadge({
     <span className={cn(LEAF_NAV_BADGE_BASE_CLASS, navBadgeToneClass(tone))}>
       {count}
     </span>
-  );
-}
-
-function TopNavExpansionChevron({
-  open,
-  reserveForBadges = false,
-}: {
-  open: boolean;
-  reserveForBadges?: boolean;
-}) {
-  return (
-    <ChevronRight
-      aria-hidden="true"
-      className={cn(
-        "ml-auto h-3.5 w-3.5 shrink-0 text-sidebar-foreground/45 transition-transform",
-        open && "rotate-90 text-primary",
-        reserveForBadges && "mr-11",
-      )}
-    />
   );
 }
 
@@ -1111,11 +1091,6 @@ function RootSidebarContent({
                     isSystemTop ||
                     (isActivityTop && hasVisibleActivitySubnav) ||
                     isWantedTop;
-                  const reserveChevronForBadges =
-                    (isMediaSection &&
-                      (mediaFacetImportBadgeCount > 0 ||
-                        mediaFacetRequestBadgeCount > 0)) ||
-                    (item.id === "activity" && hasActivityImportBadge);
                   if (
                     !isMediaSection &&
                     !isSettingsTop &&
@@ -1232,12 +1207,6 @@ function RootSidebarContent({
                           <span className="min-w-0 flex-1 truncate">
                             {item.label}
                           </span>
-                          {hasExpandableChildren ? (
-                            <TopNavExpansionChevron
-                              open={shouldShowChildren}
-                              reserveForBadges={reserveChevronForBadges}
-                            />
-                          ) : null}
                         </SidebarMenuButton>
                         {item.id === "activity" && hasActivityImportBadge ? (
                           <SidebarMenuBadge className="bg-primary text-primary-foreground">
@@ -1408,7 +1377,9 @@ function RootSidebarContent({
                                     </SidebarMenuSubButton>
                                   </SidebarMenuSubItem>
                                 ) : null}
-                                {canAccessFacetImport ? (
+                                {canAccessFacetImport &&
+                                (pendingImportCountForNavView(item.id) > 0 ||
+                                  contentSettingsSection === "import") ? (
                                   <SidebarMenuSubItem>
                                     <SidebarMenuSubButton
                                       id={selectorId(
@@ -1463,7 +1434,6 @@ function RootSidebarContent({
                                       }}
                                     >
                                       {getMediaSettingsLabel(item.id, t)}
-                                      <ChevronRight className="ml-auto h-3 w-3" />
                                     </SidebarMenuSubButton>
                                   </SidebarMenuSubItem>
                                 ) : null}

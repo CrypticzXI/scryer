@@ -250,7 +250,12 @@ export const SettingsContainer = memo(function SettingsContainer({
         data-slot="settings-main-scroll"
         className="min-w-0 flex-1 overflow-y-auto bg-transparent"
       >
-        <div className="mx-auto w-full max-w-[1280px] px-4 py-5 sm:px-6 md:px-[30px] md:py-[26px] md:pb-[60px]">
+        <div
+          className={cn(
+            "mx-auto w-full px-4 py-5 sm:px-6 md:px-[30px] md:py-[26px] md:pb-[60px]",
+            settingsSection === "rules" ? "max-w-none" : "max-w-[1280px]",
+          )}
+        >
           <div className="mb-4 flex items-center gap-1.5 text-[12.5px] text-[var(--scry-faint)]">
             <span>{t("nav.settings")}</span>
             <ChevronRight className="h-3.5 w-3.5" />

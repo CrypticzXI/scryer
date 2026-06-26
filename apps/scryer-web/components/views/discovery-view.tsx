@@ -29,10 +29,11 @@ import {
 } from "lucide-react";
 import { useTranslate } from "@/lib/context/translate-context";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { discoveryItemDisplayTitle } from "@/lib/utils/discovery-display";
 import { cn } from "@/lib/utils";
 import type {
-  DiscoveryFacet,
   DiscoveryHomePayload,
   DiscoveryItem,
   DiscoverySection,
@@ -84,8 +85,7 @@ const DEFAULT_DISCOVERY_CONTENT_TYPES: DiscoveryContentType[] = [
   "series",
   "anime",
 ];
-const DEFAULT_MINIMUM_YEAR = 1990;
-const DEFAULT_MAXIMUM_YEAR = 2026;
+const DEFAULT_MINIMUM_YEAR = 1900;
 const DEFAULT_MINIMUM_RATING = 7;
 
 const GENRE_ICONS: LucideIcon[] = [
@@ -114,7 +114,14 @@ const GENRE_TILE_CLASS_NAMES = [
   "from-cyan-700 to-cyan-950",
 ];
 const FILTER_RANGE_CLASS_NAME =
-  "h-1.5 w-full appearance-none rounded-full bg-[#16203a] accent-[var(--scry-accent)] [&::-moz-range-thumb]:h-[15px] [&::-moz-range-thumb]:w-[15px] [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:border-0 [&::-moz-range-thumb]:bg-white [&::-moz-range-thumb]:shadow-[0_1px_5px_rgba(0,0,0,0.5)] [&::-webkit-slider-runnable-track]:h-1.5 [&::-webkit-slider-runnable-track]:rounded-full [&::-webkit-slider-runnable-track]:bg-[#16203a] [&::-webkit-slider-thumb]:mt-[-4.5px] [&::-webkit-slider-thumb]:h-[15px] [&::-webkit-slider-thumb]:w-[15px] [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-white [&::-webkit-slider-thumb]:shadow-[0_1px_5px_rgba(0,0,0,0.5)]";
+  "h-1.5 w-full appearance-none rounded-full bg-transparent accent-[var(--scry-accent)] [&::-moz-range-progress]:h-1.5 [&::-moz-range-progress]:rounded-full [&::-moz-range-progress]:bg-transparent [&::-moz-range-thumb]:h-[15px] [&::-moz-range-thumb]:w-[15px] [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:border-0 [&::-moz-range-thumb]:bg-white [&::-moz-range-thumb]:shadow-[0_1px_5px_rgba(0,0,0,0.5)] [&::-moz-range-track]:h-1.5 [&::-moz-range-track]:rounded-full [&::-moz-range-track]:bg-transparent [&::-webkit-slider-runnable-track]:h-1.5 [&::-webkit-slider-runnable-track]:rounded-full [&::-webkit-slider-runnable-track]:bg-transparent [&::-webkit-slider-thumb]:mt-[-4.5px] [&::-webkit-slider-thumb]:h-[15px] [&::-webkit-slider-thumb]:w-[15px] [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-white [&::-webkit-slider-thumb]:shadow-[0_1px_5px_rgba(0,0,0,0.5)]";
+const FILTER_RANGE_THUMB_POINTER_CLASS_NAME =
+  "pointer-events-none [&::-moz-range-thumb]:pointer-events-auto [&::-webkit-slider-thumb]:pointer-events-auto";
+
+function defaultMaximumDiscoveryYear() {
+  return new Date().getFullYear() + 3;
+}
+
 const MONTH_ABBREVIATIONS = [
   "Jan",
   "Feb",
@@ -262,10 +269,14 @@ function sectionsForTab(
 ) {
   const sections = allHomeSections(home);
   if (activeTab === "forYou") {
+    const personalizedSections = home?.personalizedSections ?? [];
+    const completeCollection = home?.completeCollection;
     return [
-      ...(home?.personalizedSections ?? []),
+      ...personalizedSections,
+      ...(completeCollection ? [completeCollection] : []),
       ...sections.filter(
-        (section) => !(home?.personalizedSections ?? []).includes(section),
+        (section) =>
+          !personalizedSections.includes(section) && section !== completeCollection,
       ),
     ].filter((section) => section.items.length > 0);
   }
@@ -320,6 +331,18 @@ function ratingForFilter(value: number | null | undefined) {
   return value <= 1 ? value * 10 : value;
 }
 
+function matchesAnySelectedValue(values: string[], selectedValues: string[]) {
+  if (selectedValues.length === 0) {
+    return true;
+  }
+  const normalizedValues = new Set(
+    values.map((value) => value.trim().toLowerCase()),
+  );
+  return selectedValues.some((value) =>
+    normalizedValues.has(value.trim().toLowerCase()),
+  );
+}
+
 function itemPrimaryMediaKind(item: DiscoveryItem) {
   return (item.contentType?.trim() || item.targetKind.trim()).toLowerCase();
 }
@@ -356,16 +379,46 @@ function itemContentType(item: DiscoveryItem): DiscoveryContentType | null {
   return null;
 }
 
+type DiscoveryItemFilters = {
+  contentTypes: DiscoveryContentType[];
+  genres: string[];
+  tags: string[];
+  minimumYear: number;
+  maximumYear: number;
+  minimumRating: number;
+};
+
+function itemMatchesDiscoveryFacetFilters(
+  item: DiscoveryItem,
+  filters: Omit<DiscoveryItemFilters, "contentTypes">,
+) {
+  if (!matchesAnySelectedValue(item.genres, filters.genres)) {
+    return false;
+  }
+  if (
+    !matchesAnySelectedValue(
+      [...item.contextTerms, ...item.sourceTags, ...item.statusTags],
+      filters.tags,
+    )
+  ) {
+    return false;
+  }
+  if (
+    item.year != null &&
+    (item.year < filters.minimumYear || item.year > filters.maximumYear)
+  ) {
+    return false;
+  }
+  const rating = ratingForFilter(item.rating);
+  if (rating != null && rating < filters.minimumRating) {
+    return false;
+  }
+  return true;
+}
+
 function filterDiscoverySections(
   sections: DiscoverySection[],
-  filters: {
-    contentTypes: DiscoveryContentType[];
-    genre: string;
-    tag: string;
-    minimumYear: number;
-    maximumYear: number;
-    minimumRating: number;
-  },
+  filters: DiscoveryItemFilters,
 ) {
   return sections
     .map((section) => ({
@@ -375,33 +428,7 @@ function filterDiscoverySections(
         if (contentType && !filters.contentTypes.includes(contentType)) {
           return false;
         }
-        if (
-          filters.genre &&
-          !item.genres.some(
-            (genre) => genre.toLowerCase() === filters.genre.toLowerCase(),
-          )
-        ) {
-          return false;
-        }
-        if (
-          filters.tag &&
-          ![...item.contextTerms, ...item.sourceTags, ...item.statusTags].some(
-            (tag) => tag.toLowerCase() === filters.tag.toLowerCase(),
-          )
-        ) {
-          return false;
-        }
-        if (
-          item.year != null &&
-          (item.year < filters.minimumYear || item.year > filters.maximumYear)
-        ) {
-          return false;
-        }
-        const rating = ratingForFilter(item.rating);
-        if (rating != null && rating < filters.minimumRating) {
-          return false;
-        }
-        return true;
+        return itemMatchesDiscoveryFacetFilters(item, filters);
       }),
     }))
     .filter((section) => section.items.length > 0);
@@ -440,14 +467,6 @@ function buildGenreTiles(items: DiscoveryItem[]): GenreTile[] {
 
 function contentTypeCount(items: DiscoveryItem[], kind: string) {
   return items.filter((item) => itemContentType(item) === kind).length;
-}
-
-function facetCount(facets: DiscoveryFacet[], value: string) {
-  const normalizedValue = value.toLowerCase();
-  return (
-    facets.find((facet) => facet.value.toLowerCase() === normalizedValue)
-      ?.smgCount ?? null
-  );
 }
 
 function DiscoveryActionButton({
@@ -766,19 +785,135 @@ function DiscoveryHero({
   );
 }
 
+function toggleSelectedFilterValue(selectedValues: string[], value: string) {
+  return selectedValues.includes(value)
+    ? selectedValues.filter((selectedValue) => selectedValue !== value)
+    : [...selectedValues, value];
+}
+
+function DiscoveryFilterMultiSelect({
+  options,
+  selectedValues,
+  placeholder,
+  ariaLabel,
+  onSelectedValuesChange,
+}: {
+  options: string[];
+  selectedValues: string[];
+  placeholder: string;
+  ariaLabel: string;
+  onSelectedValuesChange: (values: string[]) => void;
+}) {
+  const selectedSet = React.useMemo(
+    () => new Set(selectedValues),
+    [selectedValues],
+  );
+  const triggerLabel =
+    selectedValues.length > 0
+      ? selectedValues.length === 1
+        ? selectedValues[0]
+        : `${selectedValues.length} selected`
+      : placeholder;
+
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <Button
+          type="button"
+          variant="ghost"
+          aria-label={ariaLabel}
+          className={cn(
+            "h-[38px] w-full justify-between rounded-[9px] border border-[var(--scry-border2)] bg-[var(--scry-bg)] px-3 text-left text-[13px] font-normal outline-none transition hover:border-[var(--scry-bhover2)] hover:bg-[var(--scry-bg)]",
+            selectedValues.length > 0
+              ? "text-[var(--scry-text2)]"
+              : "text-[var(--scry-faint)]",
+          )}
+        >
+          <span className="min-w-0 truncate">{triggerLabel}</span>
+          <ChevronDown className="h-[15px] w-[15px] text-[var(--scry-faint)]" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent
+        align="start"
+        className="max-h-72 w-[var(--radix-popover-trigger-width)] overflow-y-auto rounded-[9px] border border-[var(--scry-border2)] bg-[var(--scry-bg)] p-1 shadow-[0_18px_42px_rgba(0,0,0,0.45)]"
+      >
+        {options.map((option) => {
+          const selected = selectedSet.has(option);
+          const toggleOption = () =>
+            onSelectedValuesChange(
+              toggleSelectedFilterValue(selectedValues, option),
+            );
+          return (
+            <div
+              key={option}
+              role="checkbox"
+              aria-checked={selected}
+              tabIndex={0}
+              onClick={toggleOption}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  toggleOption();
+                }
+              }}
+              className="flex w-full cursor-pointer items-center gap-2 rounded-[7px] px-2 py-2 text-left text-[13px] text-[var(--scry-text2)] transition hover:bg-[var(--scry-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--scry-accent)]"
+            >
+              <Checkbox
+                checked={selected}
+                tabIndex={-1}
+                aria-hidden="true"
+                aria-label={option}
+                className="pointer-events-none border-[var(--scry-border2)] data-[state=checked]:border-[var(--scry-accent)] data-[state=checked]:bg-[var(--scry-accent)]"
+              />
+              <span className="min-w-0 flex-1 truncate">{option}</span>
+            </div>
+          );
+        })}
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+function DiscoveryFilterChips({
+  values,
+  onRemove,
+}: {
+  values: string[];
+  onRemove: (value: string) => void;
+}) {
+  if (values.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="mt-3 flex flex-wrap gap-2">
+      {values.map((value) => (
+        <button
+          key={value}
+          type="button"
+          onClick={() => onRemove(value)}
+          className="inline-flex max-w-full items-center gap-2 rounded-[8px] border border-[rgba(var(--scry-accent-rgb),0.34)] bg-[rgba(var(--scry-accent-rgb),0.15)] px-3 py-1.5 text-xs font-semibold text-[var(--scry-accent-text)] transition hover:border-[rgba(var(--scry-accent-rgb),0.48)] hover:bg-[rgba(var(--scry-accent-rgb),0.22)]"
+        >
+          <span className="truncate">{value}</span>
+          <X className="h-3.5 w-3.5 opacity-75" aria-hidden="true" />
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function DiscoveryFilters({
   variant = "desktop",
-  facets,
   items,
   selectedContentTypes,
-  selectedGenre,
-  selectedTag,
+  selectedGenres,
+  selectedTags,
   minimumYear,
   maximumYear,
   minimumRating,
   onToggleContentType,
-  onGenreChange,
-  onTagChange,
+  onGenresChange,
+  onTagsChange,
   onMinimumYearChange,
   onMaximumYearChange,
   onMinimumRatingChange,
@@ -786,17 +921,16 @@ function DiscoveryFilters({
   onRequestClose,
 }: {
   variant?: "desktop" | "mobile";
-  facets: DiscoveryFacet[];
   items: DiscoveryItem[];
   selectedContentTypes: DiscoveryContentType[];
-  selectedGenre: string;
-  selectedTag: string;
+  selectedGenres: string[];
+  selectedTags: string[];
   minimumYear: number;
   maximumYear: number;
   minimumRating: number;
   onToggleContentType: (contentType: DiscoveryContentType) => void;
-  onGenreChange: (genre: string) => void;
-  onTagChange: (tag: string) => void;
+  onGenresChange: (genres: string[]) => void;
+  onTagsChange: (tags: string[]) => void;
   onMinimumYearChange: (year: number) => void;
   onMaximumYearChange: (year: number) => void;
   onMinimumRatingChange: (rating: number) => void;
@@ -804,6 +938,19 @@ function DiscoveryFilters({
   onRequestClose?: () => void;
 }) {
   const t = useTranslate();
+  const contentTypeCountItems = React.useMemo(
+    () =>
+      items.filter((item) =>
+        itemMatchesDiscoveryFacetFilters(item, {
+          genres: selectedGenres,
+          tags: selectedTags,
+          minimumYear,
+          maximumYear,
+          minimumRating,
+        }),
+      ),
+    [items, maximumYear, minimumRating, minimumYear, selectedGenres, selectedTags],
+  );
   const contentTypes: Array<{
     key: DiscoveryContentType;
     label: string;
@@ -816,7 +963,7 @@ function DiscoveryFilters({
         : key === "series"
           ? t("discovery.type.series")
           : t("discovery.type.anime"),
-    count: facetCount(facets, key) ?? contentTypeCount(items, key),
+    count: contentTypeCount(contentTypeCountItems, key),
   }));
   const genres = [...new Set(items.flatMap((item) => item.genres).filter(Boolean))]
     .sort((left, right) => left.localeCompare(right));
@@ -831,16 +978,14 @@ function DiscoveryFilters({
         .filter(Boolean),
     ),
   ].sort((left, right) => left.localeCompare(right));
-  const years = items
-    .map((item) => item.year)
-    .filter((year): year is number => typeof year === "number");
-  const minimumYearBound = years.length ? Math.min(...years) : DEFAULT_MINIMUM_YEAR;
-  const maximumYearBound = years.length ? Math.max(...years) : DEFAULT_MAXIMUM_YEAR;
+  const minimumYearBound = DEFAULT_MINIMUM_YEAR;
+  const maximumYearBound = defaultMaximumDiscoveryYear();
   const yearSpan = Math.max(1, maximumYearBound - minimumYearBound);
   const minimumYearPercent =
     ((minimumYear - minimumYearBound) / yearSpan) * 100;
   const maximumYearPercent =
     ((maximumYear - minimumYearBound) / yearSpan) * 100;
+  const ratingPercent = (Math.min(Math.max(minimumRating, 0), 10) / 10) * 100;
 
   return (
     <aside
@@ -912,46 +1057,43 @@ function DiscoveryFilters({
       <div className="mb-2.5 text-xs font-bold uppercase tracking-[0.05em] text-[var(--scry-muted2)]">
         {t("discovery.genres")}
       </div>
-      <div className="relative mb-5">
-        <select
-          value={selectedGenre}
-          onChange={(event) => onGenreChange(event.target.value)}
-          className="h-[38px] w-full appearance-none rounded-[9px] border border-[var(--scry-border2)] bg-[var(--scry-bg)] px-3 pr-9 text-[13px] text-[var(--scry-faint)] outline-none transition hover:border-[var(--scry-bhover2)]"
-        >
-          <option value="">{t("discovery.selectGenres")}</option>
-          {genres.map((genre) => (
-            <option key={genre} value={genre}>
-              {genre}
-            </option>
-          ))}
-        </select>
-        <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-[15px] w-[15px] -translate-y-1/2 text-[var(--scry-faint)]" />
+      <div className="mb-5">
+        <DiscoveryFilterMultiSelect
+          options={genres}
+          selectedValues={selectedGenres}
+          placeholder={t("discovery.selectGenres")}
+          ariaLabel={t("discovery.genres")}
+          onSelectedValuesChange={onGenresChange}
+        />
+        <DiscoveryFilterChips
+          values={selectedGenres}
+          onRemove={(genre) =>
+            onGenresChange(
+              selectedGenres.filter((selectedGenre) => selectedGenre !== genre),
+            )
+          }
+        />
       </div>
       <div className="mb-2.5 text-xs font-bold uppercase tracking-[0.05em] text-[var(--scry-muted2)]">
         {t("discovery.tags")}
       </div>
-      <div className="relative mb-3">
-        <select
-          value={selectedTag}
-          onChange={(event) => onTagChange(event.target.value)}
-          className="h-[38px] w-full appearance-none rounded-[9px] border border-[var(--scry-border2)] bg-[var(--scry-bg)] px-3 pr-9 text-[13px] text-[var(--scry-faint)] outline-none transition hover:border-[var(--scry-bhover2)]"
-        >
-          <option value="">{t("discovery.selectTags")}</option>
-          {tags.map((tag) => (
-            <option key={tag} value={tag}>
-              {tag}
-            </option>
-          ))}
-        </select>
-        <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-[15px] w-[15px] -translate-y-1/2 text-[var(--scry-faint)]" />
+      <div className="mb-5">
+        <DiscoveryFilterMultiSelect
+          options={tags}
+          selectedValues={selectedTags}
+          placeholder={t("discovery.selectTags")}
+          ariaLabel={t("discovery.tags")}
+          onSelectedValuesChange={onTagsChange}
+        />
+        <DiscoveryFilterChips
+          values={selectedTags}
+          onRemove={(tag) =>
+            onTagsChange(
+              selectedTags.filter((selectedTag) => selectedTag !== tag),
+            )
+          }
+        />
       </div>
-      {selectedTag ? (
-        <div className="mb-5 flex flex-wrap gap-2">
-          <span className="rounded-[8px] border border-[rgba(var(--scry-accent-rgb),0.32)] bg-[rgba(var(--scry-accent-rgb),0.14)] px-3 py-1 text-xs font-semibold text-[var(--scry-accent-text)]">
-            {selectedTag}
-          </span>
-        </div>
-      ) : null}
       <div className="mb-2.5 flex items-center justify-between">
         <span className="text-xs font-bold uppercase tracking-[0.05em] text-[var(--scry-muted2)]">
           {t("discovery.releaseYear")}
@@ -981,6 +1123,7 @@ function DiscoveryFilters({
           className={cn(
             "absolute left-0 right-0 top-1/2 -translate-y-1/2 bg-transparent",
             FILTER_RANGE_CLASS_NAME,
+            FILTER_RANGE_THUMB_POINTER_CLASS_NAME,
           )}
         />
         <input
@@ -995,6 +1138,7 @@ function DiscoveryFilters({
           className={cn(
             "absolute left-0 right-0 top-1/2 -translate-y-1/2 bg-transparent",
             FILTER_RANGE_CLASS_NAME,
+            FILTER_RANGE_THUMB_POINTER_CLASS_NAME,
           )}
         />
       </div>
@@ -1006,15 +1150,25 @@ function DiscoveryFilters({
           {minimumRating.toFixed(1)}+
         </span>
       </div>
-      <input
-        type="range"
-        min={0}
-        max={10}
-        step={0.5}
-        value={minimumRating}
-        onChange={(event) => onMinimumRatingChange(Number(event.target.value))}
-        className={FILTER_RANGE_CLASS_NAME}
-      />
+      <div className="relative h-5">
+        <div className="absolute left-0 right-0 top-1/2 h-1.5 -translate-y-1/2 rounded-full bg-[#16203a]" />
+        <div
+          className="absolute left-0 top-1/2 h-1.5 -translate-y-1/2 rounded-full bg-gradient-to-r from-[var(--scry-accent)] to-[var(--scry-accent-ring)]"
+          style={{ width: `${ratingPercent}%` }}
+        />
+        <input
+          type="range"
+          min={0}
+          max={10}
+          step={0.5}
+          value={minimumRating}
+          onChange={(event) => onMinimumRatingChange(Number(event.target.value))}
+          className={cn(
+            "absolute left-0 right-0 top-1/2 -translate-y-1/2",
+            FILTER_RANGE_CLASS_NAME,
+          )}
+        />
+      </div>
     </aside>
   );
 }
@@ -1033,12 +1187,13 @@ export function DiscoveryView({
   const [selectedContentTypes, setSelectedContentTypes] = React.useState<
     DiscoveryContentType[]
   >(DEFAULT_DISCOVERY_CONTENT_TYPES);
-  const [selectedGenre, setSelectedGenre] = React.useState("");
-  const [selectedTag, setSelectedTag] = React.useState("");
+  const [selectedGenres, setSelectedGenres] = React.useState<string[]>([]);
+  const [selectedTags, setSelectedTags] = React.useState<string[]>([]);
   const [minimumYear, setMinimumYear] =
     React.useState(DEFAULT_MINIMUM_YEAR);
-  const [maximumYear, setMaximumYear] =
-    React.useState(DEFAULT_MAXIMUM_YEAR);
+  const [maximumYear, setMaximumYear] = React.useState(
+    defaultMaximumDiscoveryYear,
+  );
   const [minimumRating, setMinimumRating] = React.useState(
     DEFAULT_MINIMUM_RATING,
   );
@@ -1051,15 +1206,13 @@ export function DiscoveryView({
     () => rawSections.flatMap((section) => section.items),
     [rawSections],
   );
-  const yearBounds = React.useMemo(() => {
-    const years = rawItems
-      .map((item) => item.year)
-      .filter((year): year is number => typeof year === "number");
-    return {
-      minimum: years.length ? Math.min(...years) : 1900,
-      maximum: years.length ? Math.max(...years) : 2026,
-    };
-  }, [rawItems]);
+  const yearBounds = React.useMemo(
+    () => ({
+      minimum: DEFAULT_MINIMUM_YEAR,
+      maximum: defaultMaximumDiscoveryYear(),
+    }),
+    [],
+  );
   const effectiveMaximumYear = Math.max(
     Math.min(Math.max(maximumYear, yearBounds.minimum), yearBounds.maximum),
     yearBounds.minimum,
@@ -1072,8 +1225,8 @@ export function DiscoveryView({
     () =>
       filterDiscoverySections(rawSections, {
         contentTypes: selectedContentTypes,
-        genre: selectedGenre,
-        tag: selectedTag,
+        genres: selectedGenres,
+        tags: selectedTags,
         minimumYear: effectiveMinimumYear,
         maximumYear: effectiveMaximumYear,
         minimumRating,
@@ -1084,8 +1237,8 @@ export function DiscoveryView({
       minimumRating,
       rawSections,
       selectedContentTypes,
-      selectedGenre,
-      selectedTag,
+      selectedGenres,
+      selectedTags,
     ],
   );
   const allItems = React.useMemo(
@@ -1134,10 +1287,10 @@ export function DiscoveryView({
   );
   const clearFilters = React.useCallback(() => {
     setSelectedContentTypes(DEFAULT_DISCOVERY_CONTENT_TYPES);
-    setSelectedGenre("");
-    setSelectedTag("");
+    setSelectedGenres([]);
+    setSelectedTags([]);
     setMinimumYear(Math.max(yearBounds.minimum, DEFAULT_MINIMUM_YEAR));
-    setMaximumYear(Math.min(yearBounds.maximum, DEFAULT_MAXIMUM_YEAR));
+    setMaximumYear(yearBounds.maximum);
     setMinimumRating(DEFAULT_MINIMUM_RATING);
   }, [yearBounds.maximum, yearBounds.minimum]);
   React.useEffect(() => {
@@ -1158,17 +1311,16 @@ export function DiscoveryView({
     };
   }, [filtersOpen]);
   const filterProps = {
-    facets: home?.facets ?? [],
     items: rawItems,
     selectedContentTypes,
-    selectedGenre,
-    selectedTag,
+    selectedGenres,
+    selectedTags,
     minimumYear: effectiveMinimumYear,
     maximumYear: effectiveMaximumYear,
     minimumRating,
     onToggleContentType: toggleContentType,
-    onGenreChange: setSelectedGenre,
-    onTagChange: setSelectedTag,
+    onGenresChange: setSelectedGenres,
+    onTagsChange: setSelectedTags,
     onMinimumYearChange: setMinimumYear,
     onMaximumYearChange: setMaximumYear,
     onMinimumRatingChange: setMinimumRating,
@@ -1286,7 +1438,11 @@ export function DiscoveryView({
                   <button
                     key={genre.name}
                     type="button"
-                    onClick={() => setSelectedGenre(genre.name)}
+                    onClick={() =>
+                      setSelectedGenres((current) =>
+                        toggleSelectedFilterValue(current, genre.name),
+                      )
+                    }
                     className={cn(
                       "flex h-[88px] flex-col justify-between overflow-hidden rounded-[13px] border border-white/10 bg-gradient-to-br p-3.5 text-left text-white transition hover:-translate-y-0.5 hover:border-white/30",
                       genre.className,

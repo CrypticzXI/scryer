@@ -117,7 +117,12 @@ const PosterCard = React.memo(function PosterCard({
   const location = useLocation();
   const t = useTranslate();
   const posterUrl = selectPosterVariantUrl(title.posterUrl, "w250");
-  const posterClassName = "h-full w-full object-cover";
+  const posterClassName = cn(
+    "h-full w-full object-cover transition-transform duration-150",
+    "group-hover:scale-105 group-hover:blur-md group-hover:brightness-[0.78] group-hover:saturate-[0.9]",
+    "group-focus-within:scale-105 group-focus-within:blur-md group-focus-within:brightness-[0.78] group-focus-within:saturate-[0.9]",
+    selected && "scale-105 blur-md brightness-[0.78] saturate-[0.9]",
+  );
   const contextPanelControlsId =
     selected && onSelectTitle ? contextPanelId : undefined;
   const handleActivate = React.useCallback(() => {
@@ -182,17 +187,17 @@ const PosterCard = React.memo(function PosterCard({
               >
                 <div
                   aria-hidden="true"
-                  className="absolute inset-0 rounded-[11px] border border-white/15 bg-gradient-to-t from-black/82 via-black/18 to-transparent"
+                  className="absolute inset-0 rounded-[11px] border border-white/15 bg-gradient-to-t from-black/55 via-black/24 to-white/18"
                 />
               </div>
               <div
                 className={cn(
-                  "pointer-events-none absolute inset-x-0 bottom-0 z-20 px-3 pb-3 pt-10 text-left opacity-0 transition-opacity duration-200 group-hover:opacity-100 group-focus-within:opacity-100",
+                  "pointer-events-none absolute inset-0 z-20 flex items-center justify-center rounded-[11px] px-3 opacity-0 transition-opacity duration-200 group-hover:opacity-100 group-focus-within:opacity-100",
                   selected && "opacity-100",
                 )}
               >
                 <p
-                  className="line-clamp-2 text-[13px] font-semibold leading-tight tracking-normal text-white"
+                  className="line-clamp-3 origin-center text-center text-lg font-semibold leading-tight tracking-tight text-white drop-shadow-md transition-transform duration-200 group-hover:scale-[1.05] group-focus-within:scale-[1.05]"
                   style={{
                     fontFamily:
                       "var(--font-space-grotesk), var(--font-inter), ui-sans-serif, system-ui, -apple-system, sans-serif",
