@@ -1963,6 +1963,8 @@ export function MediaContentView({
       overviewTarget: OverviewTitleTarget,
     ) => void;
     selectedOverviewTitleId: string | null;
+    selectedOverviewDetailLoading: boolean;
+    routeOverviewEpisodeId: string | null;
     selectedOverviewBlocklistEntries: TitleReleaseBlocklistEntry[];
     selectedOverviewExternalSubtitles: ExternalSubtitleRecord[];
     refreshSelectedOverviewExternalSubtitles: () => Promise<void> | void;
@@ -1984,6 +1986,7 @@ export function MediaContentView({
     ) => Promise<boolean | void> | boolean | void;
     setSelectedOverviewTitleId: (titleId: string | null) => void;
     clearSelectedOverviewTitle: () => void;
+    onCloseOverview: () => void;
     deleteCatalogTitle: (title: TitleRecord) => void;
     isDeletingCatalogTitleById: Record<string, boolean>;
     isMobile: boolean;
@@ -2141,6 +2144,8 @@ export function MediaContentView({
     scanLibrary,
     onOpenOverview,
     selectedOverviewTitleId,
+    selectedOverviewDetailLoading,
+    routeOverviewEpisodeId,
     selectedOverviewBlocklistEntries,
     selectedOverviewExternalSubtitles,
     refreshSelectedOverviewExternalSubtitles,
@@ -2149,8 +2154,7 @@ export function MediaContentView({
     selectedOverviewPrimaryMovieFileUpdatingId,
     previewTitleRename,
     applyTitleRename,
-    setSelectedOverviewTitleId,
-    clearSelectedOverviewTitle,
+    onCloseOverview,
     deleteCatalogTitle,
     isDeletingCatalogTitleById,
     viewMode,
@@ -2224,24 +2228,33 @@ export function MediaContentView({
     if (
       titleLoading ||
       catalogBootstrapLoading ||
-      !catalogInitialLoadComplete
+      !catalogInitialLoadComplete ||
+      selectedOverviewDetailLoading
     ) {
       return;
     }
-    clearSelectedOverviewTitle();
+    onCloseOverview();
   }, [
     catalogBootstrapLoading,
     catalogInitialLoadComplete,
-    clearSelectedOverviewTitle,
+    onCloseOverview,
+    selectedOverviewDetailLoading,
     selectedOverviewTitle,
     selectedOverviewTitleId,
     titleLoading,
   ]);
   const handleSelectOverviewTitle = React.useCallback(
     (title: TitleRecord) => {
-      setSelectedOverviewTitleId(title.id);
+      // Selecting a title is a navigation: the URL (slug deep link) is the
+      // source of truth, and the container mirrors it into the inline pane.
+      onOpenOverview(view, {
+        id: title.id,
+        slug: title.slug ?? null,
+        libraryId: title.libraryId,
+        librarySlug: title.librarySlug ?? null,
+      });
     },
-    [setSelectedOverviewTitleId],
+    [onOpenOverview, view],
   );
   const effectiveContentSettingsSection = canAccessMediaSettingsSection(
     contentSettingsSection,
@@ -2751,9 +2764,9 @@ export function MediaContentView({
   }, [refreshTitles, setTitleFilter, titleFilter, titleFilterInputValue]);
 
   const handleSelectedOverviewBackToList = React.useCallback(() => {
-    clearSelectedOverviewTitle();
+    onCloseOverview();
     void refreshTitles(titleFilterInputValue);
-  }, [clearSelectedOverviewTitle, refreshTitles, titleFilterInputValue]);
+  }, [onCloseOverview, refreshTitles, titleFilterInputValue]);
 
   const handleLibraryScan = React.useCallback(
     (libraryId?: string) => {
@@ -3406,11 +3419,12 @@ export function MediaContentView({
                         ) : null}
                         <SeriesOverviewContainer
                           titleId={activeOverviewTitle.id}
+                          initialEpisodeId={routeOverviewEpisodeId}
                           onTitleNotFound={handleSelectedOverviewBackToList}
                           onBackToList={handleSelectedOverviewBackToList}
                           onTitleResolved={(resolvedTitle) => {
                             if (resolvedTitle.id !== activeOverviewTitle.id) {
-                              setSelectedOverviewTitleId(resolvedTitle.id);
+                              onOpenOverview(view, resolvedTitle);
                             }
                           }}
                         />
@@ -3464,7 +3478,7 @@ export function MediaContentView({
                       }
                       bulkActionBusy={bulkActionBusy}
                       onDelete={handleDeleteCatalogTitle}
-                      onClearSelection={clearSelectedOverviewTitle}
+                      onClearSelection={onCloseOverview}
                       canManageTitle={canManageTitle}
                       canRequestMedia={canRequestMedia}
                       onDiscoveryAction={onTitleContextDiscoveryAction}

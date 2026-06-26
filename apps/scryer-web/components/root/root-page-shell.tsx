@@ -121,14 +121,6 @@ const RequestsContainer = lazy(() =>
   })),
 );
 
-const MovieOverviewContainer = lazy(() =>
-  mediaContainers().then((m) => ({ default: m.MovieOverviewContainer })),
-);
-
-const SeriesOverviewContainer = lazy(() =>
-  mediaContainers().then((m) => ({ default: m.SeriesOverviewContainer })),
-);
-
 const SettingsContainer = lazy(() =>
   import("@/components/containers/settings/settings-container").then((m) => ({
     default: m.SettingsContainer,
@@ -422,34 +414,6 @@ function SmgScryerUpdateBanner({
   );
 }
 
-function OverviewContainerForView({
-  view,
-  initialEpisodeId,
-  onTitleResolved,
-  ...props
-}: {
-  view: ViewId;
-  titleId: string;
-  onBackToList: () => void;
-  onTitleNotFound: () => void;
-  onTitleResolved?: (title: OverviewTitleTarget) => void;
-  initialEpisodeId?: string | null;
-}) {
-  const facet = facetForView(view);
-  if (facet?.hasEpisodes) {
-    return (
-      <SeriesOverviewContainer
-        {...props}
-        initialEpisodeId={initialEpisodeId}
-        onTitleResolved={onTitleResolved}
-      />
-    );
-  }
-  return (
-    <MovieOverviewContainer {...props} onTitleResolved={onTitleResolved} />
-  );
-}
-
 type OverviewNavigationState = {
   scryerOverviewTarget?: {
     view?: unknown;
@@ -506,11 +470,8 @@ function readOverviewTargetFromLocationState(
 function MainContent({
   view,
   overviewTitleId,
-  overviewLoading,
-  overviewEpisodeId,
+  routeOverviewEpisodeId,
   handleBackToList,
-  handleTitleNotFound,
-  handleOverviewTitleResolved,
   settingsSection,
   userId,
   username,
@@ -539,11 +500,8 @@ function MainContent({
 }: {
   view: ViewId;
   overviewTitleId: string | null;
-  overviewLoading: boolean;
-  overviewEpisodeId: string | null;
+  routeOverviewEpisodeId: string | null;
   handleBackToList: () => void;
-  handleTitleNotFound: () => void;
-  handleOverviewTitleResolved: (title: OverviewTitleTarget) => void;
   settingsSection: SettingsSection;
   userId: string | undefined;
   username: string | undefined;
@@ -671,26 +629,6 @@ function MainContent({
   ) {
     return <ViewLoadingFallback />;
   }
-  if (
-    isMediaView(view) &&
-    contentSettingsSection === "overview" &&
-    overviewLoading
-  ) {
-    return <ViewLoadingFallback />;
-  }
-  if (isMediaView(view) && overviewTitleId) {
-    return (
-      <OverviewContainerForView
-        key={`${view}-overview-${overviewTitleId}`}
-        view={view}
-        titleId={overviewTitleId}
-        initialEpisodeId={overviewEpisodeId}
-        onBackToList={handleBackToList}
-        onTitleNotFound={handleTitleNotFound}
-        onTitleResolved={handleOverviewTitleResolved}
-      />
-    );
-  }
   if (view === "settings") {
     const resolvedSettingsSection = canAccessSettingsSection(
       settingsSection,
@@ -747,6 +685,9 @@ function MainContent({
       canManageTitle={canManageTitle}
       canRequestMedia={canRequestMedia}
       onOpenOverview={handleOpenOverview}
+      routeOverviewTitleId={overviewTitleId}
+      routeOverviewEpisodeId={routeOverviewEpisodeId}
+      onCloseOverview={handleBackToList}
     />
   );
 }
@@ -1016,7 +957,7 @@ function AuthenticatedHomePage({
   } = useSmgNotices();
   const [resolvedOverviewTarget, setResolvedOverviewTarget] =
     useState<OverviewTitleTarget | null>(null);
-  const [overviewSlugLoading, setOverviewSlugLoading] = useState(false);
+  const [, setOverviewSlugLoading] = useState(false);
 
   const setLanguagePreferenceFromShell = useCallback(
     (code: string) => {
@@ -1330,10 +1271,6 @@ function AuthenticatedHomePage({
   const overviewTitleId = parsedOverviewSlug
     ? (navigationOverviewTarget?.id ?? resolvedOverviewTarget?.id ?? null)
     : legacyOverviewTitleId;
-  const overviewLoading =
-    Boolean(parsedOverviewSlug) &&
-    !navigationOverviewTarget &&
-    (overviewSlugLoading || overviewTitleId === null);
 
   const handleOpenOverview = useCallback(
     (
@@ -1348,43 +1285,6 @@ function AuthenticatedHomePage({
       navigateToOverview(targetView, overviewTarget, episodeId);
     },
     [navigateToOverview],
-  );
-
-  const handleOverviewTitleResolved = useCallback(
-    (overviewTarget: OverviewTitleTarget) => {
-      if (!isMediaView(view) || contentSettingsSection !== "overview") {
-        return;
-      }
-
-      const normalizedSlug = overviewTarget.slug?.trim() || null;
-      const normalizedLibrarySlug = overviewTarget.librarySlug?.trim() || null;
-      if (!normalizedSlug || !normalizedLibrarySlug) {
-        return;
-      }
-
-      if (parsedOverviewSlug && parsedOverviewLibrarySlug) {
-        if (
-          normalizedSlug !== parsedOverviewSlug ||
-          normalizedLibrarySlug !== parsedOverviewLibrarySlug
-        ) {
-          navigateToOverview(view, overviewTarget, overviewEpisodeId, true);
-        }
-        return;
-      }
-
-      if (legacyOverviewTitleId) {
-        navigateToOverview(view, overviewTarget, overviewEpisodeId, true);
-      }
-    },
-    [
-      contentSettingsSection,
-      legacyOverviewTitleId,
-      navigateToOverview,
-      overviewEpisodeId,
-      parsedOverviewLibrarySlug,
-      parsedOverviewSlug,
-      view,
-    ],
   );
 
   const topNav = useMemo(
@@ -1727,11 +1627,6 @@ function AuthenticatedHomePage({
     });
   }, [navigate, searchParams, view]);
 
-  const handleTitleNotFound = useCallback(
-    () => navigateTo(view, undefined, "overview", undefined, undefined),
-    [navigateTo, view],
-  );
-
   useEffect(() => {
     if (
       view !== "activity" ||
@@ -1954,13 +1849,8 @@ function AuthenticatedHomePage({
                                 <MainContent
                                   view={view}
                                   overviewTitleId={overviewTitleId}
-                                  overviewLoading={overviewLoading}
-                                  overviewEpisodeId={overviewEpisodeId}
+                                  routeOverviewEpisodeId={overviewEpisodeId}
                                   handleBackToList={handleBackToList}
-                                  handleTitleNotFound={handleTitleNotFound}
-                                  handleOverviewTitleResolved={
-                                    handleOverviewTitleResolved
-                                  }
                                   settingsSection={settingsSection}
                                   userId={authenticatedUser.id}
                                   username={authenticatedUser.username}

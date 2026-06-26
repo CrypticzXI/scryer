@@ -302,7 +302,7 @@ async fn discovery_home_and_items_use_local_rows_and_library_view_rbac() {
         false,
         true,
     );
-    drama_one.context_terms_json = top_context_terms;
+    drama_one.context_terms_json = top_context_terms.clone();
     let mut drama_two = discovery_item_record(
         "context-run",
         "context-run",
@@ -360,6 +360,62 @@ async fn discovery_home_and_items_use_local_rows_and_library_view_rbac() {
     );
     isekai_item.source_tags_json =
         serde_json::json!([{"source": "mal", "category": "theme", "name": "Isekai"}]).to_string();
+    let mut weekly_series_one = discovery_item_record(
+        "context-run",
+        "context-run",
+        None,
+        "tvdb:series:400",
+        "Weekly Series One",
+        "series",
+        81.0,
+        &["Mystery"],
+        &[],
+        false,
+        true,
+    );
+    weekly_series_one.context_terms_json = top_context_terms.clone();
+    let mut weekly_series_two = discovery_item_record(
+        "context-run",
+        "context-run",
+        None,
+        "tvdb:series:401",
+        "Weekly Series Two",
+        "series",
+        80.0,
+        &["Sci-Fi"],
+        &[],
+        false,
+        true,
+    );
+    weekly_series_two.context_terms_json = top_context_terms.clone();
+    let mut weekly_anime_one = discovery_item_record(
+        "context-run",
+        "context-run",
+        None,
+        "mal:anime:500",
+        "Weekly Anime One",
+        "anime",
+        79.0,
+        &["Fantasy"],
+        &[],
+        false,
+        true,
+    );
+    weekly_anime_one.context_terms_json = top_context_terms.clone();
+    let mut weekly_anime_two = discovery_item_record(
+        "context-run",
+        "context-run",
+        None,
+        "mal:anime:501",
+        "Weekly Anime Two",
+        "anime",
+        78.0,
+        &["Adventure"],
+        &[],
+        false,
+        true,
+    );
+    weekly_anime_two.context_terms_json = top_context_terms.clone();
     let mut collection_signal_movie = discovery_item_record(
         "context-run",
         "context-run",
@@ -397,6 +453,10 @@ async fn discovery_home_and_items_use_local_rows_and_library_view_rbac() {
         acclaimed_sci_fi,
         horror_item,
         isekai_item,
+        weekly_series_one,
+        weekly_series_two,
+        weekly_anime_one,
+        weekly_anime_two,
         collection_signal_movie,
         discovery_item_record(
             "context-run",
@@ -488,9 +548,27 @@ async fn discovery_home_and_items_use_local_rows_and_library_view_rbac() {
         .map(|section| section.section_type.as_str())
         .collect::<Vec<_>>();
     assert!(personalized_section_types.contains(&"TOP_MOVIES_THIS_WEEK"));
+    assert!(personalized_section_types.contains(&"TOP_SERIES_THIS_WEEK"));
+    assert!(personalized_section_types.contains(&"TOP_ANIME_THIS_WEEK"));
     assert!(!personalized_section_types.contains(&"MORE_FROM_SOURCE"));
     assert!(personalized_section_types.contains(&"BECAUSE_YOU_LIKE_TAG"));
     assert!(personalized_section_types.contains(&"TOP_RATED_ACCLAIMED_NOT_IN_LIBRARY"));
+    for (section_type, expected_kind) in [
+        ("TOP_MOVIES_THIS_WEEK", "movie"),
+        ("TOP_SERIES_THIS_WEEK", "series"),
+        ("TOP_ANIME_THIS_WEEK", "anime"),
+    ] {
+        let section = viewer_home
+            .personalized_sections
+            .iter()
+            .find(|section| section.section_type == section_type)
+            .expect("weekly facet section should be present");
+        assert!(section.items.iter().all(|item| {
+            item.content_type
+                .as_deref()
+                .is_some_and(|content_type| content_type.eq_ignore_ascii_case(expected_kind))
+        }));
+    }
     assert!(viewer_home.personalized_sections.iter().any(|section| {
         section.section_type == "BECAUSE_YOU_LIKE_GENRE"
             && section.title == "Because You Like Sci-Fi"

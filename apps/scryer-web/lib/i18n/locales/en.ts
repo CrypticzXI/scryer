@@ -81,6 +81,7 @@ const en: LocaleDictionary = {
   "nav.history": "History",
   "nav.settings": "Settings",
   "nav.library": "Library",
+  "nav.catalog": "Catalog",
   "nav.import": "Import",
   "nav.system": "System",
   "nav.logs": "Logs",

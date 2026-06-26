@@ -38,6 +38,7 @@ import {
   Database,
   Download,
   FileText,
+  FolderCog,
   Inbox,
   Monitor,
   Moon,
@@ -157,6 +158,7 @@ const TOP_NAV_GROUPS: TopNavGroupDefinition[] = [
       { kind: "view", id: "calendar" },
       { kind: "view", id: "activity" },
       { kind: "settings", id: "rules", icon: SlidersHorizontal },
+      { kind: "settings", id: "post-processing", icon: FolderCog },
     ],
   },
   {
@@ -425,33 +427,16 @@ function navBadgeToneClass(tone: NavBadgeTone) {
   }
 }
 
-function FacetNavBadges({
-  importCount,
-  requestCount,
-}: {
-  importCount: number;
-  requestCount: number;
-}) {
-  if (importCount <= 0 && requestCount <= 0) {
+function FacetNavBadges({ importCount }: { importCount: number }) {
+  if (importCount <= 0) {
     return null;
   }
 
   return (
     <div className={TOP_NAV_BADGE_GROUP_CLASS}>
-      {importCount > 0 ? (
-        <span
-          className={cn(TOP_NAV_BADGE_BASE_CLASS, navBadgeToneClass("cta"))}
-        >
-          {importCount}
-        </span>
-      ) : null}
-      {requestCount > 0 ? (
-        <span
-          className={cn(TOP_NAV_BADGE_BASE_CLASS, navBadgeToneClass("request"))}
-        >
-          {requestCount}
-        </span>
-      ) : null}
+      <span className={cn(TOP_NAV_BADGE_BASE_CLASS, navBadgeToneClass("cta"))}>
+        {importCount}
+      </span>
     </div>
   );
 }
@@ -481,7 +466,7 @@ function isSettingsSubPage(section: ContentSettingsSection): boolean {
 }
 
 function getMediaOverviewLabel(_viewId: ViewId, t: Translate): string {
-  return t("nav.library");
+  return t("nav.catalog");
 }
 
 function getMediaSettingsLabel(_viewId: ViewId, t: Translate): string {
@@ -1057,7 +1042,6 @@ function RootSidebarContent({
                   const isSettingsTop = item.id === "settings";
                   const isSystemTop = item.id === "system";
                   const isActivityTop = item.id === "activity";
-                  const isWantedTop = item.id === "wanted";
                   const isActiveMediaSection =
                     isMediaSection && view === item.id && !isRequestsSection;
                   const isPromotedSettingsSection =
@@ -1073,30 +1057,22 @@ function RootSidebarContent({
                     systemSection !== "audit";
                   const isActiveActivitySection =
                     isActivityTop && view === "activity";
-                  const isActiveWantedSection =
-                    isWantedTop && view === "wanted";
                   const mediaFacetImportBadgeCount = isMediaSection
                     ? pendingImportCountForNavView(item.id)
-                    : 0;
-                  const mediaFacetRequestBadgeCount = isMediaSection
-                    ? pendingMediaRequestCountForNavView(item.id)
                     : 0;
                   const shouldShowChildren =
                     isActiveMediaSection ||
                     isActiveSystemSection ||
-                    (isActiveActivitySection && hasVisibleActivitySubnav) ||
-                    isActiveWantedSection;
+                    (isActiveActivitySection && hasVisibleActivitySubnav);
                   const hasExpandableChildren =
                     isMediaSection ||
                     isSystemTop ||
-                    (isActivityTop && hasVisibleActivitySubnav) ||
-                    isWantedTop;
+                    (isActivityTop && hasVisibleActivitySubnav);
                   if (
                     !isMediaSection &&
                     !isSettingsTop &&
                     !isSystemTop &&
-                    !isActivityTop &&
-                    !isWantedTop
+                    !isActivityTop
                   ) {
                     return (
                       <React.Fragment key={item.id}>
@@ -1182,19 +1158,6 @@ function RootSidebarContent({
                               );
                               return;
                             }
-                            if (isWantedTop) {
-                              handleNavigate(
-                                event,
-                                "wanted",
-                                undefined,
-                                undefined,
-                                undefined,
-                                canManageTitle || wantedSection !== "history"
-                                  ? wantedSection
-                                  : "wanted",
-                              );
-                              return;
-                            }
                             handleNavigate(
                               event,
                               item.id,
@@ -1216,7 +1179,6 @@ function RootSidebarContent({
                         {isMediaSection ? (
                           <FacetNavBadges
                             importCount={mediaFacetImportBadgeCount}
-                            requestCount={mediaFacetRequestBadgeCount}
                           />
                         ) : null}
                       </SidebarMenuItem>
@@ -1322,31 +1284,6 @@ function RootSidebarContent({
                                         count={activityImportBadgeCount}
                                       />
                                     ) : null}
-                                  </SidebarMenuSubButton>
-                                </SidebarMenuSubItem>
-                              ))
-                            ) : isWantedTop ? (
-                              visibleWantedSubPages.map((entry) => (
-                                <SidebarMenuSubItem key={entry.id}>
-                                  <SidebarMenuSubButton
-                                    id={selectorId(
-                                      "root-sidebar-wanted",
-                                      entry.id,
-                                    )}
-                                    isActive={wantedSection === entry.id}
-                                    className={SUB_NAV_BUTTON_CLASS}
-                                    onClick={(event) => {
-                                      handleNavigate(
-                                        event,
-                                        "wanted",
-                                        undefined,
-                                        undefined,
-                                        undefined,
-                                        entry.id,
-                                      );
-                                    }}
-                                  >
-                                    {t(entry.labelKey)}
                                   </SidebarMenuSubButton>
                                 </SidebarMenuSubItem>
                               ))

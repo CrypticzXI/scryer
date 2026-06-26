@@ -2,6 +2,7 @@ import * as React from "react";
 import type { CSSProperties } from "react";
 import type { LucideIcon } from "lucide-react";
 import {
+  Calendar,
   Check,
   ChevronDown,
   ChevronRight,
@@ -21,6 +22,7 @@ import {
   Sparkles,
   Star,
   Swords,
+  TrendingUp,
   Video,
   WandSparkles,
   X,
@@ -29,7 +31,7 @@ import { useTranslate } from "@/lib/context/translate-context";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { TitleCard } from "@/components/title-card";
+import { TitlePoster } from "@/components/title-poster";
 import { discoveryItemDisplayTitle } from "@/lib/utils/discovery-display";
 import { cn } from "@/lib/utils";
 import type {
@@ -262,20 +264,89 @@ function sectionMatchesTab(section: DiscoverySection, activeTab: DiscoveryTabKey
   return haystack.includes("recent") || haystack.includes("added");
 }
 
+const WEEKLY_FOR_YOU_SECTION_TYPES = [
+  "TOP_MOVIES_THIS_WEEK",
+  "TOP_SERIES_THIS_WEEK",
+  "TOP_ANIME_THIS_WEEK",
+];
+
+const GENERIC_FOR_YOU_FALLBACK_SECTION_TYPES = new Set([
+  "FOR_YOU",
+  "MOVIES_FOR_YOU",
+  "SERIES_FOR_YOU",
+  "ANIME_FOR_YOU",
+  "BECAUSE_YOU_HAVE",
+]);
+
+function discoverySectionType(section: DiscoverySection) {
+  return section.sectionType.trim().toUpperCase();
+}
+
+function sectionIsCompleteCollection(section: DiscoverySection) {
+  return (
+    discoverySectionType(section) === "COMPLETE_THE_COLLECTION" ||
+    section.sectionId === "complete_the_collection"
+  );
+}
+
 function sectionsForTab(
   home: DiscoveryHomePayload | null,
   activeTab: DiscoveryTabKey,
 ) {
   const sections = allHomeSections(home);
   if (activeTab === "forYou") {
-    const personalizedSections = home?.personalizedSections ?? [];
-    const completeCollection = home?.completeCollection;
-    return [
-      ...personalizedSections,
+    const personalizedSections = (home?.personalizedSections ?? []).filter(
+      (section) => section.items.length > 0,
+    );
+    const completeCollection =
+      home?.completeCollection && home.completeCollection.items.length > 0
+        ? home.completeCollection
+        : null;
+    const usedPersonalizedSections = new Set<DiscoverySection>();
+    const takePersonalizedSections = (sectionType: string) =>
+      personalizedSections.filter((section) => {
+        if (discoverySectionType(section) !== sectionType) {
+          return false;
+        }
+        usedPersonalizedSections.add(section);
+        return true;
+      });
+    const promotedSections = [
+      ...WEEKLY_FOR_YOU_SECTION_TYPES.flatMap(takePersonalizedSections),
+      ...takePersonalizedSections("BECAUSE_YOU_LIKE_GENRE"),
+      ...takePersonalizedSections("BECAUSE_YOU_LIKE_TAG"),
+      ...takePersonalizedSections("TOP_RATED_ACCLAIMED_NOT_IN_LIBRARY"),
+    ];
+    const unknownPersonalizedSections = personalizedSections.filter(
+      (section) =>
+        !usedPersonalizedSections.has(section) &&
+        !GENERIC_FOR_YOU_FALLBACK_SECTION_TYPES.has(
+          discoverySectionType(section),
+        ),
+    );
+    const hasLibrarySections =
+      promotedSections.length > 0 ||
+      completeCollection !== null ||
+      unknownPersonalizedSections.length > 0;
+    const fallbackSections = hasLibrarySections
+      ? []
+      : personalizedSections.filter((section) =>
+          GENERIC_FOR_YOU_FALLBACK_SECTION_TYPES.has(discoverySectionType(section)),
+        );
+    const orderedSections = [
+      ...promotedSections,
       ...(completeCollection ? [completeCollection] : []),
+      ...unknownPersonalizedSections,
+      ...fallbackSections,
+    ];
+    const orderedSectionSet = new Set(orderedSections);
+    return [
+      ...orderedSections,
       ...sections.filter(
         (section) =>
-          !personalizedSections.includes(section) && section !== completeCollection,
+          !orderedSectionSet.has(section) &&
+          !personalizedSections.includes(section) &&
+          section !== completeCollection,
       ),
     ].filter((section) => section.items.length > 0);
   }
@@ -513,6 +584,7 @@ function DiscoveryRailCard({
   item,
   size = "md",
   variant = "default",
+  fillHeight = false,
   canManageTitle,
   canRequestMedia,
   onAction,
@@ -520,40 +592,101 @@ function DiscoveryRailCard({
   item: DiscoveryItem;
   size?: "sm" | "md";
   variant?: "default" | "upcoming";
+  fillHeight?: boolean;
   canManageTitle: boolean;
   canRequestMedia: boolean;
   onAction: (item: DiscoveryItem) => void;
 }) {
   const compact = size === "sm";
   const upcoming = variant === "upcoming" && !compact;
-  const owned = item.ownedInInput;
-  const contentType = itemContentType(item);
-  const facet =
-    contentType === "movie" ||
-    contentType === "series" ||
-    contentType === "anime"
-      ? contentType
-      : null;
-  const handleAction = () => onAction(item);
+  const calendarBadgeLabel = upcoming ? itemCalendarBadgeLabel(item) : null;
+  const titleLabel = discoveryItemDisplayTitle(item);
+  const matchScore = itemMatchScore(item);
   return (
     <div
       className={cn(
-        "flex-none transition-transform hover:-translate-y-1",
-        compact ? "w-[120px]" : "w-[152px]",
+        "group flex-none",
+        fillHeight
+          ? "aspect-[2/3] h-full"
+          : compact
+            ? "w-[120px]"
+            : "w-[152px]",
       )}
     >
-      <TitleCard
-        title={discoveryItemDisplayTitle(item)}
-        year={upcoming ? itemCalendarBadgeLabel(item) : item.year}
-        facet={facet}
-        facetLabel={itemTypeLabel(item)}
-        posterUrl={item.posterUrl}
-        addable={!owned && canManageTitle}
-        requestable={!owned && !canManageTitle && canRequestMedia}
-        onAdd={handleAction}
-        onRequest={handleAction}
-        compact
-      />
+      <div
+        className={cn(
+          "relative overflow-hidden border border-[var(--scry-border2)] bg-[var(--scry-bg)] shadow-[0_10px_26px_rgba(0,0,0,0.35)] transition-transform group-hover:-translate-y-1",
+          fillHeight
+            ? "h-full w-full rounded-[13px]"
+            : compact
+              ? "h-[178px] w-[120px] rounded-[11px]"
+              : upcoming
+                ? "h-[210px] w-[152px] rounded-[13px]"
+                : "h-[225px] w-[152px] rounded-[13px]",
+        )}
+        style={posterFallbackStyle(item)}
+      >
+        {item.posterUrl ? (
+          <TitlePoster
+            src={item.posterUrl}
+            alt={titleLabel}
+            loading="lazy"
+            className="absolute inset-0 h-full w-full object-cover"
+          />
+        ) : null}
+        <div
+          className={cn(
+            "absolute inset-0",
+            upcoming
+              ? "bg-gradient-to-b from-slate-950/45 via-transparent to-slate-950/90"
+              : "bg-gradient-to-b from-transparent via-transparent to-slate-950/90",
+          )}
+        />
+        {calendarBadgeLabel ? (
+          <span className="absolute left-2 top-2 inline-flex items-center gap-1 rounded-[7px] bg-slate-950/75 px-2.5 py-1 text-[9.5px] font-bold tracking-[0.04em] text-[#a9b3ff] backdrop-blur">
+            <Calendar className="h-3 w-3" />
+            {calendarBadgeLabel}
+          </span>
+        ) : (
+          <span className="absolute left-2 top-2 rounded-[6px] bg-slate-950/70 px-2 py-0.5 text-[9.5px] font-bold tracking-[0.05em] text-slate-100 backdrop-blur">
+            {itemTypeLabel(item)}
+          </span>
+        )}
+        <div className="absolute right-2 top-2">
+          <DiscoveryActionButton
+            item={item}
+            canManageTitle={canManageTitle}
+            canRequestMedia={canRequestMedia}
+            onAction={onAction}
+            compact
+          />
+        </div>
+        <div
+          className={cn(
+            "absolute left-2.5 right-2.5 font-[var(--font-space-grotesk)] font-bold leading-[1.05] text-white drop-shadow",
+            fillHeight ? "text-[clamp(15px,1.35vw,21px)]" : "text-[15px]",
+            upcoming ? "bottom-2.5" : "bottom-8",
+          )}
+        >
+          <div>{titleLabel}</div>
+          {upcoming ? (
+            <div className="mt-1 font-sans text-[11px] font-medium text-[var(--scry-muted2)]">
+              {itemTypeLabel(item)}
+            </div>
+          ) : null}
+        </div>
+        {!upcoming && (item.year || matchScore) ? (
+          <div className="absolute bottom-2.5 left-2.5 flex items-center gap-2 text-[11px] text-[var(--scry-text2)]">
+            {item.year ? <span>{item.year}</span> : null}
+            {matchScore ? (
+              <span className="inline-flex items-center gap-1 font-bold text-emerald-400">
+                <TrendingUp className="h-3 w-3" />
+                {matchScore}
+              </span>
+            ) : null}
+          </div>
+        ) : null}
+      </div>
     </div>
   );
 }
@@ -564,6 +697,7 @@ function DiscoverySectionRail({
   canRequestMedia,
   onAction,
   compact = false,
+  fillHeight = false,
   variant = "default",
 }: {
   section: DiscoverySection;
@@ -571,6 +705,7 @@ function DiscoverySectionRail({
   canRequestMedia: boolean;
   onAction: (item: DiscoveryItem) => void;
   compact?: boolean;
+  fillHeight?: boolean;
   variant?: "default" | "upcoming";
 }) {
   const t = useTranslate();
@@ -580,7 +715,7 @@ function DiscoverySectionRail({
   );
 
   return (
-    <section className="mb-7">
+    <section className={cn("mb-7", fillHeight && "flex h-full min-h-0 flex-col")}>
       <div className="mb-3.5 flex items-center justify-between gap-3">
         <h3 className="m-0 font-[var(--font-space-grotesk)] text-lg font-semibold text-[var(--scry-ink2)]">
           {section.title}
@@ -590,13 +725,19 @@ function DiscoverySectionRail({
           <ChevronRight className="h-3.5 w-3.5" />
         </span>
       </div>
-      <div className="flex gap-3.5 overflow-x-auto pb-1.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+      <div
+        className={cn(
+          "flex gap-3.5 overflow-x-auto pb-1.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden",
+          fillHeight && "min-h-0 flex-1",
+        )}
+      >
         {items.map((item) => (
           <DiscoveryRailCard
             key={itemStableKey(item)}
             item={item}
             size={compact ? "sm" : "md"}
             variant={variant}
+            fillHeight={fillHeight}
             canManageTitle={canManageTitle}
             canRequestMedia={canRequestMedia}
             onAction={onAction}
@@ -1171,11 +1312,18 @@ export function DiscoveryView({
     () => sections.flatMap((section) => section.items),
     [sections],
   );
-  const heroItem = React.useMemo(() => firstHeroItem(sections), [sections]);
+  const heroSections = React.useMemo(
+    () => sections.filter((section) => !sectionIsCompleteCollection(section)),
+    [sections],
+  );
+  const heroItem = React.useMemo(
+    () => firstHeroItem(heroSections),
+    [heroSections],
+  );
   const genreTiles = React.useMemo(() => buildGenreTiles(allItems), [allItems]);
   const heroRailSection = React.useMemo(
-    () => findHeroRailSection(sections),
-    [sections],
+    () => findHeroRailSection(heroSections),
+    [heroSections],
   );
   const heroRailSectionWithoutHero = React.useMemo(
     () => sectionWithoutItem(heroRailSection, heroItem),
@@ -1306,7 +1454,7 @@ export function DiscoveryView({
         ) : null}
 
         {heroItem ? (
-          <div className="mb-7 grid grid-cols-[minmax(0,1.45fr)_minmax(0,1fr)] gap-5 max-lg:grid-cols-1">
+          <div className="mb-7 grid grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)] items-stretch gap-5 max-lg:grid-cols-1">
             <DiscoveryHero
               item={heroItem}
               canManageTitle={canManageTitle}
@@ -1321,7 +1469,7 @@ export function DiscoveryView({
                     heroRailSectionWithoutHero.title ||
                     t("discovery.trendingThisWeek"),
                 }}
-                compact
+                fillHeight
                 canManageTitle={canManageTitle}
                 canRequestMedia={canRequestMedia}
                 onAction={onAction}

@@ -427,9 +427,7 @@ fn personalized_section_results(
         .collect::<Vec<_>>();
     let mut sections = Vec::new();
 
-    if let Some(section) = top_movies_this_week_section(&visible_items, limit) {
-        sections.push(section);
-    }
+    sections.extend(top_this_week_sections(&visible_items, limit));
     sections.extend(label_affinity_sections(
         &visible_items,
         &library_profile.genre_labels,
@@ -486,13 +484,48 @@ fn personalized_section_results(
     sections
 }
 
-fn top_movies_this_week_section(
+fn top_this_week_sections(
     items: &[DiscoveryItemRecord],
+    limit: usize,
+) -> Vec<DiscoverySectionResult> {
+    [
+        (
+            "movie",
+            "top_movies_this_week",
+            "TOP_MOVIES_THIS_WEEK",
+            "Top Movies This Week",
+        ),
+        (
+            "series",
+            "top_series_this_week",
+            "TOP_SERIES_THIS_WEEK",
+            "Top Series This Week",
+        ),
+        (
+            "anime",
+            "top_anime_this_week",
+            "TOP_ANIME_THIS_WEEK",
+            "Top Anime This Week",
+        ),
+    ]
+    .into_iter()
+    .filter_map(|(media_kind, section_id, section_type, title)| {
+        top_this_week_section(items, media_kind, section_id, section_type, title, limit)
+    })
+    .collect()
+}
+
+fn top_this_week_section(
+    items: &[DiscoveryItemRecord],
+    media_kind: &str,
+    section_id: &str,
+    section_type: &str,
+    title: &str,
     limit: usize,
 ) -> Option<DiscoverySectionResult> {
     let mut section_items = items
         .iter()
-        .filter(|item| discovery_item_media_kind(item).eq_ignore_ascii_case("movie"))
+        .filter(|item| discovery_item_media_kind(item).eq_ignore_ascii_case(media_kind))
         .filter(|item| discovery_item_has_any_signal(item, TOP_THIS_WEEK_SIGNALS))
         .cloned()
         .collect::<Vec<_>>();
@@ -501,7 +534,7 @@ fn top_movies_this_week_section(
     if section_items.len() < DISCOVERY_DERIVED_SECTION_MINIMUM_ITEMS {
         section_items = items
             .iter()
-            .filter(|item| discovery_item_media_kind(item).eq_ignore_ascii_case("movie"))
+            .filter(|item| discovery_item_media_kind(item).eq_ignore_ascii_case(media_kind))
             .cloned()
             .collect::<Vec<_>>();
         dedupe_and_sort_discovery_items(&mut section_items);
@@ -511,9 +544,9 @@ fn top_movies_this_week_section(
     }
 
     section_result(
-        "top_movies_this_week".to_string(),
-        "TOP_MOVIES_THIS_WEEK".to_string(),
-        "Top Movies This Week".to_string(),
+        section_id.to_string(),
+        section_type.to_string(),
+        title.to_string(),
         "personalized".to_string(),
         section_items,
         limit,

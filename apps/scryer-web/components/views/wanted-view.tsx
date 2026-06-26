@@ -25,8 +25,12 @@ import {
 import {
   ChevronDown,
   ChevronRight,
+  Clock,
   Download,
   Filter,
+  Gauge,
+  History,
+  ListChecks,
   Pause,
   Play,
   RefreshCw,
@@ -538,67 +542,92 @@ export function WantedView({
   onOpenOverview,
 }: WantedViewProps) {
   const t = useTranslate();
-  const wantedTabs = [
+  const wantedNav = [
     {
       section: "wanted" as const,
       label: t("wanted.title"),
       count: wantedState.total,
+      icon: ListChecks,
     },
     {
       section: "cutoff" as const,
       label: t("cutoff.title"),
       count: cutoffState.items.length,
+      icon: Gauge,
     },
     {
       section: "pending" as const,
       label: t("pending.title"),
       count: pendingState.items.length,
+      icon: Clock,
     },
     {
       section: "history" as const,
       label: t("history.title"),
       count: null,
+      icon: History,
     },
   ];
 
   return (
-    <div className="space-y-4 md:flex md:h-full md:min-h-0 md:flex-col md:gap-4 md:space-y-0">
-      <div className="shrink-0 border-b border-[var(--scry-border3)] px-4 pt-4 sm:px-5">
-        <nav className="flex gap-5 overflow-x-auto [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden" aria-label={t("nav.wanted")}>
-          {wantedTabs.map((tab) => {
-            const active = section === tab.section;
+    <div className="md:flex md:h-full md:min-h-0 md:flex-row">
+      <aside className="w-full shrink-0 border-b border-[var(--scry-border3)] bg-[var(--scry-surfF)] p-3 md:h-full md:w-[218px] md:overflow-y-auto md:border-b-0 md:border-r md:p-[22px_14px]">
+        <div className="mb-3 flex items-center gap-2 px-2 text-[var(--scry-ink2)] md:mb-4">
+          <ListChecks className="h-[18px] w-[18px] text-[var(--scry-accent-text)]" />
+          <span className="text-[16px] font-bold">{t("nav.wanted")}</span>
+        </div>
+        <nav
+          className="flex gap-2 overflow-x-auto pb-1 md:flex-col md:overflow-visible md:pb-0"
+          aria-label={t("nav.wanted")}
+        >
+          {wantedNav.map((item) => {
+            const Icon = item.icon;
+            const active = section === item.section;
             return (
               <Link
-                key={tab.section}
-                to={buildViewPath("wanted", undefined, undefined, undefined, tab.section)}
+                key={item.section}
+                to={buildViewPath("wanted", undefined, undefined, undefined, item.section)}
                 className={cn(
-                  "relative inline-flex h-10 shrink-0 items-center gap-2 border-b-2 border-transparent text-[13px] font-semibold text-[var(--scry-muted)] transition hover:text-[var(--scry-ink2)]",
-                  active && "border-[var(--scry-accent-ring)] text-[var(--scry-ink2)]",
+                  "flex h-9 shrink-0 items-center gap-2 rounded-[9px] px-3 text-[13px] font-medium text-[var(--scry-muted)] transition hover:bg-[var(--scry-hover)] hover:text-[var(--scry-ink2)] md:w-full",
+                  active &&
+                    "bg-[linear-gradient(90deg,rgba(var(--scry-accent-rgb),0.26),rgba(var(--scry-accent-rgb),0.08))] text-[var(--scry-ink2)] shadow-[inset_2px_0_0_var(--scry-accent-ring)]",
                 )}
               >
-                <span>{tab.label}</span>
-                {tab.count === null ? null : (
-                  <span className={cn(
-                    "rounded-md bg-[var(--scry-chip)] px-1.5 py-0.5 text-[10.5px] font-semibold tabular-nums text-[var(--scry-muted3)]",
-                    active && "bg-[rgba(var(--scry-accent-rgb),0.16)] text-[var(--scry-accent-text)]",
-                  )}>
-                    {tab.count}
+                <Icon
+                  className={cn(
+                    "h-[17px] w-[17px] text-[var(--scry-muted2)]",
+                    active && "text-[var(--scry-accent-text)]",
+                  )}
+                />
+                <span className="whitespace-nowrap">{item.label}</span>
+                {item.count === null ? null : (
+                  <span
+                    className={cn(
+                      "ml-auto rounded-md bg-[var(--scry-chip)] px-1.5 py-0.5 text-[10.5px] font-semibold tabular-nums text-[var(--scry-muted3)]",
+                      active && "bg-[rgba(var(--scry-accent-rgb),0.16)] text-[var(--scry-accent-text)]",
+                    )}
+                  >
+                    {item.count}
                   </span>
                 )}
               </Link>
             );
           })}
         </nav>
-      </div>
-      {section === "history" ? (
-        historyContent ?? <WantedItemsCard state={wantedState} onOpenOverview={onOpenOverview} />
-      ) : section === "cutoff" ? (
-        <CutoffUnmetView state={cutoffState} />
-      ) : section === "pending" ? (
-        <PendingReleasesCard state={pendingState} />
-      ) : (
-        <WantedItemsCard state={wantedState} onOpenOverview={onOpenOverview} />
-      )}
+      </aside>
+      <main className="space-y-4 md:flex md:h-full md:min-h-0 md:min-w-0 md:flex-1 md:flex-col md:gap-4 md:space-y-0">
+        {section === "history" ? (
+          historyContent ?? (
+            <WantedItemsCard state={wantedState} onOpenOverview={onOpenOverview} />
+          )
+        ) : section === "cutoff" ? (
+          <CutoffUnmetView state={cutoffState} />
+        ) : section === "pending" ? (
+          <PendingReleasesCard state={pendingState} />
+        ) : (
+          <WantedItemsCard state={wantedState} onOpenOverview={onOpenOverview} />
+        )}
+      </main>
     </div>
   );
 }

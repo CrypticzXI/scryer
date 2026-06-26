@@ -7,7 +7,9 @@ import {
 } from "@/lib/graphql/queries";
 import {
   beginInstallPluginMutation,
+  beginUpgradePluginMutation,
   refreshPluginCatalogMutation,
+  togglePluginMutation,
   uninstallPluginMutation,
 } from "@/lib/graphql/mutations";
 import { wsClient } from "@/lib/graphql/ws-client";
@@ -396,6 +398,81 @@ export function usePluginManagement({
     ],
   );
 
+  const togglePlugin = useCallback(
+    async (plugin: RegistryPluginRecord) => {
+      beginPluginMutation(plugin.id);
+      setPluginErrors((current) => {
+        const next = { ...current };
+        delete next[plugin.id];
+        return next;
+      });
+      setPluginsError(null);
+      try {
+        const { error } = await client
+          .mutation(togglePluginMutation, {
+            input: { pluginId: plugin.id, enabled: !plugin.isEnabled },
+          })
+          .toPromise();
+        if (error) throw error;
+
+        await Promise.all([loadPlugins(false), refreshProviderOptions()]);
+      } catch (error) {
+        setPluginErrors((current) => ({
+          ...current,
+          [plugin.id]:
+            extractPluginMutationErrorMessage(error) ??
+            t("status.failedToUpdate"),
+        }));
+      } finally {
+        endPluginMutation(plugin.id);
+      }
+    },
+    [
+      beginPluginMutation,
+      client,
+      endPluginMutation,
+      loadPlugins,
+      refreshProviderOptions,
+      t,
+    ],
+  );
+
+  const upgradePlugin = useCallback(
+    async (plugin: RegistryPluginRecord) => {
+      beginPluginMutation(plugin.id);
+      setPluginErrors((current) => {
+        const next = { ...current };
+        delete next[plugin.id];
+        return next;
+      });
+      setPluginsError(null);
+      try {
+        const { data, error } = await client
+          .mutation(beginUpgradePluginMutation, { pluginId: plugin.id })
+          .toPromise();
+        if (error) throw error;
+        const snapshot = data?.beginUpgradePlugin;
+        if (!snapshot) {
+          throw new Error("plugin upgrade did not return progress");
+        }
+        beginLivePluginProgress(plugin, snapshot);
+      } catch (error) {
+        setPluginErrors((current) => ({
+          ...current,
+          [plugin.id]: formatPluginInstallError(plugin, error, t),
+        }));
+        endPluginMutation(plugin.id);
+      }
+    },
+    [
+      beginLivePluginProgress,
+      beginPluginMutation,
+      client,
+      endPluginMutation,
+      t,
+    ],
+  );
+
   return {
     plugins,
     pluginsLoading,
@@ -407,5 +484,7 @@ export function usePluginManagement({
     refreshPluginsRegistry,
     installPlugin,
     uninstallPlugin,
+    togglePlugin,
+    upgradePlugin,
   };
 }

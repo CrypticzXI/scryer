@@ -160,6 +160,9 @@ type MediaContentContainerProps = {
     targetView: ViewId,
     overviewTarget: OverviewTitleTarget,
   ) => void;
+  routeOverviewTitleId: string | null;
+  routeOverviewEpisodeId: string | null;
+  onCloseOverview: () => void;
 };
 
 type SelectedOverviewMediaFile = NonNullable<TitleRecord["mediaFiles"]>[number];
@@ -844,6 +847,9 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   canManageTitle,
   canRequestMedia,
   onOpenOverview,
+  routeOverviewTitleId,
+  routeOverviewEpisodeId,
+  onCloseOverview,
 }: MediaContentContainerProps) {
   const searchState = useSearchContext();
   const {
@@ -958,6 +964,8 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   const [selectedOverviewTitleId, setSelectedOverviewTitleId] = React.useState<
     string | null
   >(null);
+  const [selectedOverviewDetailLoading, setSelectedOverviewDetailLoading] =
+    React.useState(false);
   const [selectedOverviewBlocklistState, setSelectedOverviewBlocklistState] =
     React.useState<{
       titleId: string | null;
@@ -1283,6 +1291,13 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     setSelectedLibraryIds([]);
     setTitleContextTitles([]);
   }, [activeFacet]);
+
+  // The route (slug deep link / in-app navigation) is the source of truth for
+  // which title is selected in the list. Mirror it into local selection state
+  // so the inline overview pane reflects the URL on load and live navigation.
+  React.useEffect(() => {
+    setSelectedOverviewTitleId(routeOverviewTitleId);
+  }, [routeOverviewTitleId]);
 
   React.useEffect(() => {
     const visibleTitleIds = new Set(visibleTitles.map((title) => title.id));
@@ -2118,6 +2133,41 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     },
     [applyRefreshedTitleRecord, client],
   );
+
+  // When a slug deep link selects a title that isn't part of the currently
+  // loaded catalog page, fetch its detail so the inline overview pane can render
+  // it instead of the list bouncing back. A genuine miss closes to the list.
+  const titleContextSourceTitlesRef = React.useRef(titleContextSourceTitles);
+  titleContextSourceTitlesRef.current = titleContextSourceTitles;
+  React.useEffect(() => {
+    const titleId = routeOverviewTitleId;
+    if (!titleId) {
+      setSelectedOverviewDetailLoading(false);
+      return;
+    }
+    if (
+      titleContextSourceTitlesRef.current.some((title) => title.id === titleId)
+    ) {
+      setSelectedOverviewDetailLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setSelectedOverviewDetailLoading(true);
+    void refreshTitlePanelDetail(titleId)
+      .catch(() => {
+        if (!cancelled) {
+          onCloseOverview();
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setSelectedOverviewDetailLoading(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [routeOverviewTitleId, refreshTitlePanelDetail, onCloseOverview]);
 
   const previewTitleRename = React.useCallback(
     async (title: TitleRecord): Promise<MediaRenamePlan | null> => {
@@ -4199,7 +4249,10 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
           updateLibrary,
           deleteLibrary,
           onOpenOverview,
+          onCloseOverview,
           selectedOverviewTitleId,
+          selectedOverviewDetailLoading,
+          routeOverviewEpisodeId,
           selectedOverviewBlocklistEntries,
           selectedOverviewExternalSubtitles,
           refreshSelectedOverviewExternalSubtitles,

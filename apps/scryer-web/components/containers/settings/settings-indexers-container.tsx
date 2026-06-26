@@ -8,6 +8,7 @@ import {
 } from "react";
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
 import { SettingsIndexersSection } from "@/components/views/settings/settings-indexers-section";
+import { FilteredPluginList } from "@/components/views/settings/filtered-plugin-list";
 import { useClient } from "urql";
 import { useTranslate } from "@/lib/context/translate-context";
 import { useGlobalStatus } from "@/lib/context/global-status-context";
@@ -688,6 +689,8 @@ export function SettingsIndexersContainer({
 
   return (
     <>
+      <div className="flex flex-col gap-4 xl:flex-row xl:items-start">
+        <div className="min-w-0 flex-1 space-y-4">
       <SettingsIndexersSection
         editingIndexerId={editingIndexerId}
         indexerDraft={indexerDraft}
@@ -709,6 +712,14 @@ export function SettingsIndexersContainer({
         editorMode={editorMode}
         startCreateIndexer={requestCreateEditor}
       />
+        </div>
+        <div className="w-full xl:w-[40%] xl:max-w-[620px] xl:shrink-0">
+          <FilteredPluginList
+            family="indexer"
+            refreshProviderOptions={refreshProviderTypes}
+          />
+        </div>
+      </div>
       <ConfirmDialog
         open={pendingEditorAction !== null}
         title={t("settings.indexerConfirmDiscardTitle")}

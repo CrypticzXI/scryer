@@ -111,6 +111,10 @@ export const SettingsContainer = memo(function SettingsContainer({
     settingsSection === "notifications" ||
     settingsSection === "subtitles";
   const subscribeToProviderCatalog = showPluginsLink;
+  // Surfaces that embed the FilteredPluginList manage plugins inline, so they
+  // don't need the shortcut to the standalone Plugins page.
+  const showPluginsShortcut =
+    showPluginsLink && settingsSection !== "indexers";
   const settingsSectionLabel =
     settingsSection === "profile"
       ? t("settings.profile")
@@ -253,7 +257,9 @@ export const SettingsContainer = memo(function SettingsContainer({
         <div
           className={cn(
             "mx-auto w-full px-4 py-5 sm:px-6 md:px-[30px] md:py-[26px] md:pb-[60px]",
-            settingsSection === "rules" ? "max-w-none" : "max-w-[1280px]",
+            settingsSection === "rules" || settingsSection === "indexers"
+              ? "max-w-none"
+              : "max-w-[1280px]",
           )}
         >
           <div className="mb-4 flex items-center gap-1.5 text-[12.5px] text-[var(--scry-faint)]">
@@ -275,7 +281,7 @@ export const SettingsContainer = memo(function SettingsContainer({
                 </p>
               </div>
             </div>
-            {showPluginsLink ? (
+            {showPluginsShortcut ? (
               <Button asChild variant="primary" className="h-10 shrink-0 rounded-[10px] px-3 text-[13px]">
                 <Link to="/settings/plugins">{t("settings.plugins")}</Link>
               </Button>
