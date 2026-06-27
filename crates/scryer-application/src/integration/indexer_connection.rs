@@ -151,6 +151,7 @@ impl AppUseCase {
                 None,
                 None,
                 vec![],
+                None,
                 tokio_util::sync::CancellationToken::new(),
             )
             .await
@@ -522,6 +523,7 @@ mod tests {
             _episode: Option<u32>,
             _absolute_episode: Option<u32>,
             _tagged_aliases: Vec<scryer_domain::TaggedAlias>,
+            _learning_context: Option<crate::IndexerSearchLearningContext>,
             _cancel_token: tokio_util::sync::CancellationToken,
         ) -> AppResult<IndexerSearchResponse> {
             self.calls

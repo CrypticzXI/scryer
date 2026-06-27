@@ -4,13 +4,13 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use scryer_application::{
     AppError, AppResult, AppServices, AppServicesBuilder, DiscoveryRepository, DownloadClient,
-    DownloadClientConfigRepository, IndexerClient, IndexerConfigRepository, IndexerStatsTracker,
-    LibraryRepository, LogicalBackupExporter, MediaRequestRepository,
-    MediaServerConnectionRepository, OAuthRepository, PluginInstallationRepository,
-    PostProcessingScriptRepository, QualityProfileRepository, RuleSetRepository,
-    SettingsRepository, ShowRepository, SubtitleProviderConfigRepository, TitleImageProcessor,
-    TitleImageRepository, TitleRepository, TotpRepository, UserExternalAccountRepository,
-    UserRepository, UserUiSettingsRepository, WebauthnRepository,
+    DownloadClientConfigRepository, IndexerClient, IndexerConfigRepository,
+    IndexerSearchLearningRepository, IndexerStatsTracker, LibraryRepository, LogicalBackupExporter,
+    MediaRequestRepository, MediaServerConnectionRepository, OAuthRepository,
+    PluginInstallationRepository, PostProcessingScriptRepository, QualityProfileRepository,
+    RuleSetRepository, SettingsRepository, ShowRepository, SubtitleProviderConfigRepository,
+    TitleImageProcessor, TitleImageRepository, TitleRepository, TotpRepository,
+    UserExternalAccountRepository, UserRepository, UserUiSettingsRepository, WebauthnRepository,
 };
 
 #[cfg(feature = "image-processing")]
@@ -26,13 +26,13 @@ use crate::{
     AcquisitionStore, BlocklistStore, DomainEventStore, DownloadClientConfigStore,
     DownloadQueueCommandStore, DownloadSubmissionStore, ExternalImportMonitorStore,
     FileSystemStagedNzbStore, HousekeepingStore, ImportStore, InMemoryIndexerStatsTracker,
-    IndexerConfigStore, LibraryProbeStore, LibraryScanUnmatchedStore, MediaFileStore,
-    MediaRequestStore, MediaServerConnectionStore, MetadataGatewayClient, MigrationMode,
-    NotificationStore, OAuthStore, PendingReleaseStore, PluginStore, PostProcessingScriptStore,
-    QualityProfileStore, ReleaseStore, RuleSetStore, SettingsStore, ShowStore, SmgEnrollmentConfig,
-    SqliteLogicalBackupExporter, SqliteServices, SubtitleDownloadStore,
-    SubtitleProviderConfigStore, TitleImageStore, TitleStore, TotpStore, WantedStore,
-    WebauthnStore, WorkflowOperationStore,
+    IndexerConfigStore, IndexerSearchLearningStore, LibraryProbeStore, LibraryScanUnmatchedStore,
+    MediaFileStore, MediaRequestStore, MediaServerConnectionStore, MetadataGatewayClient,
+    MigrationMode, NotificationStore, OAuthStore, PendingReleaseStore, PluginStore,
+    PostProcessingScriptStore, QualityProfileStore, ReleaseStore, RuleSetStore, SettingsStore,
+    ShowStore, SmgEnrollmentConfig, SqliteLogicalBackupExporter, SqliteServices,
+    SubtitleDownloadStore, SubtitleProviderConfigStore, TitleImageStore, TitleStore, TotpStore,
+    WantedStore, WebauthnStore, WorkflowOperationStore,
 };
 use crate::{LibraryStore, UserStore};
 
@@ -1167,6 +1167,17 @@ impl DatastoreAssembly {
                 Arc::new(InMemoryIndexerStatsTracker::new(Some(db.pool().clone())))
             }
             DatastoreStores::Postgres { .. } => Arc::new(InMemoryIndexerStatsTracker::new(None)),
+        }
+    }
+
+    pub fn indexer_search_learning_repository(&self) -> Arc<dyn IndexerSearchLearningRepository> {
+        match &self.stores {
+            DatastoreStores::Sqlite { db, .. } => {
+                Arc::new(IndexerSearchLearningStore::new(db.datastore()))
+            }
+            DatastoreStores::Postgres { db, .. } => {
+                Arc::new(IndexerSearchLearningStore::new(db.datastore()))
+            }
         }
     }
 

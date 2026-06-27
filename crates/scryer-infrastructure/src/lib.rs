@@ -282,6 +282,7 @@ pub use downloads::staged_nzb_store::FileSystemStagedNzbStore;
 pub use indexers::config_store::IndexerConfigStore;
 pub use indexers::providers::prowlarr::{NativeProwlarrIndexerProvider, PROWLARR_PROVIDER_TYPE};
 pub use indexers::search_client::MultiIndexerSearchClient;
+pub use indexers::search_learning::IndexerSearchLearningStore;
 pub use indexers::stats::InMemoryIndexerStatsTracker;
 #[cfg(feature = "image-processing")]
 pub use media::images::processor::HttpTitleImageProcessor;

@@ -329,6 +329,7 @@ impl AppUseCase {
                 None,
                 None,
                 vec![],
+                None,
                 tokio_util::sync::CancellationToken::new(),
             )
             .await;

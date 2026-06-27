@@ -32,7 +32,8 @@ use crate::{
     DownloadQueueCommandRepository, DownloadSourceIdentity, DownloadSubmission,
     DownloadSubmissionRepository, ExternalIdentityVerifier,
     ExternalImportMonitorSnapshotRepository, FileImporter, HousekeepingRepository, ImportArtifact,
-    ImportArtifactRepository, ImportRepository, IndexerQueryStats, IndexerStatsTracker, JobKey,
+    ImportArtifactRepository, ImportRepository, IndexerQueryStats, IndexerSearchLearningKey,
+    IndexerSearchLearningRecord, IndexerSearchLearningRepository, IndexerStatsTracker, JobKey,
     JobRunRecord, JobRunRepository, LibraryProbeRepository, LibraryProbeSignature,
     LibraryRepository, LibraryRootDraft, LibraryScanUnmatchedItem,
     LibraryScanUnmatchedItemRepository, MediaFileRepository, MediaRequestCounts, MediaRequestQuery,
@@ -1032,6 +1033,54 @@ impl IndexerStatsTracker for NullIndexerStatsTracker {
     }
     fn all_stats(&self) -> Vec<IndexerQueryStats> {
         vec![]
+    }
+}
+
+#[derive(Default)]
+pub struct NullIndexerSearchLearningRepository;
+
+#[async_trait]
+impl IndexerSearchLearningRepository for NullIndexerSearchLearningRepository {
+    async fn list_for_title(
+        &self,
+        _indexer_id: &str,
+        _title_id: &str,
+        _facet: &str,
+    ) -> AppResult<Vec<IndexerSearchLearningRecord>> {
+        Ok(vec![])
+    }
+
+    async fn record_outcome(
+        &self,
+        key: &IndexerSearchLearningKey,
+        usable_hits: u32,
+    ) -> AppResult<IndexerSearchLearningRecord> {
+        Ok(IndexerSearchLearningRecord {
+            key: key.clone(),
+            attempts: 1,
+            empty_successes: u32::from(usable_hits == 0),
+            usable_successes: u32::from(usable_hits > 0),
+            last_attempt_at: None,
+            last_usable_at: None,
+            suppressed: false,
+            updated_at: None,
+        })
+    }
+
+    async fn set_suppressed(
+        &self,
+        _key: &IndexerSearchLearningKey,
+        _suppressed: bool,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn try_claim_suppressed_reprobe(
+        &self,
+        _key: &IndexerSearchLearningKey,
+        _stale_before: chrono::DateTime<chrono::Utc>,
+    ) -> AppResult<bool> {
+        Ok(false)
     }
 }
 
@@ -2625,6 +2674,7 @@ pub mod test_nulls {
             _: Option<u32>,
             _: Option<u32>,
             _: Vec<scryer_domain::TaggedAlias>,
+            _: Option<crate::IndexerSearchLearningContext>,
             _: tokio_util::sync::CancellationToken,
         ) -> AppResult<IndexerSearchResponse> {
             Ok(IndexerSearchResponse {

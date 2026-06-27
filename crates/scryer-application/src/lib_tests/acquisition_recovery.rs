@@ -2515,6 +2515,7 @@ async fn acquisition_cycle_falls_back_to_episode_grabs_when_season_pack_is_not_s
             episode: Option<u32>,
             _absolute_episode: Option<u32>,
             _tagged_aliases: Vec<TaggedAlias>,
+            _learning_context: Option<crate::IndexerSearchLearningContext>,
             _cancel_token: tokio_util::sync::CancellationToken,
         ) -> AppResult<IndexerSearchResponse> {
             self.searches.lock().await.push(RecordedIndexerSearch {

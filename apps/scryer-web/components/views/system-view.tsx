@@ -438,12 +438,15 @@ function LogViewer() {
   }, [snapshot.bufferedCount, snapshot.liveTailing, snapshot.lines.length]);
 
   return (
-    <div className="space-y-3">
-      <div className="grid gap-3 sm:flex sm:flex-wrap sm:items-end">
+    <div className="flex min-h-0 flex-1 flex-col space-y-3">
+      <div className="grid gap-3 rounded-[14px] border border-[var(--scry-border3)] bg-[var(--scry-surfC)] p-3 sm:flex sm:flex-wrap sm:items-end">
         <div className="space-y-1">
-          <Label className="text-xs text-muted-foreground">Level</Label>
+          <Label className="text-xs text-[var(--scry-muted3)]">Level</Label>
           <Select value={level} onValueChange={setLevel}>
-            <SelectTrigger size="sm" className="w-full sm:w-[100px]">
+            <SelectTrigger
+              size="sm"
+              className="h-9 w-full rounded-[10px] border-[var(--scry-border2)] bg-[var(--scry-inset)] text-[13px] text-[var(--scry-body)] shadow-none sm:w-[110px]"
+            >
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -457,20 +460,20 @@ function LogViewer() {
           </Select>
         </div>
         <div className="space-y-1">
-          <Label className="text-xs text-muted-foreground">Search</Label>
+          <Label className="text-xs text-[var(--scry-muted3)]">Search</Label>
           <Input
             type="search"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="filter..."
-            className="h-8 w-full text-sm sm:w-48"
+            className="h-9 w-full rounded-[10px] border-[var(--scry-border2)] bg-[var(--scry-inset)] text-[13px] text-[var(--scry-body)] shadow-none sm:w-52"
           />
         </div>
         <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
           <Button
             size="sm"
             variant="secondary"
-            className="w-full sm:w-auto"
+            className="h-9 w-full rounded-[10px] border-[var(--scry-border2)] bg-[var(--scry-inset)] px-3 text-[13px] text-[var(--scry-body)] shadow-none hover:bg-[var(--scry-hover)] sm:w-auto"
             onClick={() => setPaused((p) => !p)}
           >
             {paused ? "Resume" : "Pause"}
@@ -478,7 +481,7 @@ function LogViewer() {
           <Button
             size="sm"
             variant="secondary"
-            className="w-full sm:w-auto"
+            className="h-9 w-full rounded-[10px] border-[var(--scry-border2)] bg-[var(--scry-inset)] px-3 text-[13px] text-[var(--scry-body)] shadow-none hover:bg-[var(--scry-hover)] sm:w-auto"
             onClick={() => {
               if (ingestTimerRef.current) {
                 clearTimeout(ingestTimerRef.current);
@@ -499,7 +502,7 @@ function LogViewer() {
             Clear
           </Button>
         </div>
-        <div className="flex items-center gap-1.5 text-xs text-muted-foreground sm:ml-auto">
+        <div className="flex items-center gap-1.5 text-xs text-[var(--scry-muted3)] sm:ml-auto">
           <span
             className={`inline-block size-2 rounded-full ${connected ? "bg-green-400" : "bg-red-400"}`}
           />
@@ -508,17 +511,17 @@ function LogViewer() {
         </div>
       </div>
       {liveTailNotice ? (
-        <p className="text-xs text-muted-foreground">{liveTailNotice}</p>
+        <p className="shrink-0 text-xs text-[var(--scry-muted3)]">{liveTailNotice}</p>
       ) : null}
       <div
         ref={scrollRef}
         onScroll={handleScroll}
         data-code-font
-        className={`overflow-y-auto rounded-lg border border-border bg-card text-xs leading-5 ${isMobile ? "h-[55vh] min-h-[280px]" : "h-[calc(100vh-320px)] min-h-[400px]"}`}
+        className={`overflow-y-auto rounded-[14px] border border-[var(--scry-border2)] bg-[var(--scry-surfC)] text-xs leading-5 ${isMobile ? "h-[55vh] min-h-[280px]" : "min-h-[400px] flex-1"}`}
         style={{ fontFamily: CODE_FONT }}
       >
         {snapshot.lines.length === 0 ? (
-          <p className="p-4 text-muted-foreground">No logs available yet.</p>
+          <p className="p-4 text-[var(--scry-muted3)]">No logs available yet.</p>
         ) : (
           <div className="space-y-0.5 p-2">
             {snapshot.lines.map((line, index) => (
@@ -543,7 +546,7 @@ function LogViewer() {
           </div>
         )}
       </div>
-      <p className="text-xs text-muted-foreground">
+      <p className="shrink-0 text-xs text-[var(--scry-muted3)]">
         {snapshot.lines.length} shown
         {` · ${snapshot.matchedCount} matching`}
         {` · ${snapshot.bufferedCount} buffered`}
@@ -700,15 +703,15 @@ export function SystemLogsView() {
   const t = useTranslate();
 
   return (
-    <div className="space-y-4">
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">{t("nav.serviceLogs")}</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <LogViewer />
-        </CardContent>
-      </Card>
-    </div>
+    <Card className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-none border-0 bg-transparent shadow-none">
+      <CardHeader className="border-b border-[var(--scry-border3)] bg-[linear-gradient(180deg,var(--scry-surfD),transparent)] px-4 py-4 sm:px-5">
+        <CardTitle className="text-[22px] font-bold tracking-normal text-[var(--scry-ink2)]">
+          {t("nav.serviceLogs")}
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="flex min-h-0 flex-1 flex-col bg-[color-mix(in_srgb,var(--scry-bg)_52%,transparent)] p-4 sm:p-5">
+        <LogViewer />
+      </CardContent>
+    </Card>
   );
 }

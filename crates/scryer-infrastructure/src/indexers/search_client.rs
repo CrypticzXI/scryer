@@ -2,10 +2,14 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use chrono::{DateTime, Duration, Utc};
 use scryer_application::{
     AppError, AppResult, IndexerClient, IndexerConfigRepository, IndexerPluginProvider,
-    IndexerRoutingPlan, IndexerSearchResponse, IndexerSearchResult, IndexerStatsTracker,
-    IndexerSystemBackoff, ReleaseCandidateProvenance, ReleaseSearchSubjectKind, SearchMode,
+    IndexerRoutingPlan, IndexerSearchLearningContext, IndexerSearchLearningKey,
+    IndexerSearchLearningRecord, IndexerSearchLearningRepository, IndexerSearchResponse,
+    IndexerSearchResult, IndexerStatsTracker, IndexerSystemBackoff,
+    NullIndexerSearchLearningRepository, ReleaseCandidateProvenance, ReleaseSearchSubjectKind,
+    SearchMode,
 };
 use scryer_domain::{
     IndexerCapsSearchNode, IndexerCapsSnapshot, IndexerConfig, IndexerProviderCapabilities,
@@ -189,6 +193,8 @@ impl StrategyBatchHealth {
 const INDEXER_SEARCH_TIMEOUT_SECS: u64 = 12;
 const BACKGROUND_INDEXER_SEARCH_CONCURRENCY_LIMIT: usize = 12;
 const INTERACTIVE_INDEXER_SEARCH_CONCURRENCY_LIMIT: usize = 24;
+const LEARNED_EMPTY_SUPPRESSION_THRESHOLD: u32 = 3;
+const LEARNED_SUPPRESSION_REPROBE_INTERVAL_DAYS: i64 = 7;
 
 fn log_indexer_skip(
     mode: SearchMode,
@@ -329,6 +335,102 @@ fn record_auto_strategy_selection(
     );
 }
 
+async fn record_strategy_learning_outcome(
+    search_learning: &Arc<dyn IndexerSearchLearningRepository>,
+    learning_context: Option<&IndexerSearchLearningContext>,
+    mode: SearchMode,
+    indexer_id: &str,
+    indexer_name: &str,
+    strategy_label: &str,
+    usable_hits: usize,
+) {
+    if mode != SearchMode::Auto {
+        return;
+    }
+    let Some(learning_context) = learning_context else {
+        return;
+    };
+    if learning_context.title_id.trim().is_empty()
+        || learning_context.subject_kind == ReleaseSearchSubjectKind::Rss
+    {
+        return;
+    }
+    let Some(strategy_key) = learning_strategy_key(strategy_label) else {
+        return;
+    };
+
+    let key = IndexerSearchLearningKey {
+        indexer_id: indexer_id.to_string(),
+        title_id: learning_context.title_id.clone(),
+        facet: learning_context.facet.clone(),
+        strategy_key: strategy_key.to_string(),
+    };
+    let usable_hits = usable_hits.min(u32::MAX as usize) as u32;
+
+    if let Err(error) = search_learning.record_outcome(&key, usable_hits).await {
+        warn!(
+            indexer = indexer_name,
+            strategy = strategy_key,
+            error = %error,
+            "failed to record indexer search learning outcome"
+        );
+        return;
+    }
+
+    let records = match search_learning
+        .list_for_title(
+            indexer_id,
+            &learning_context.title_id,
+            &learning_context.facet,
+        )
+        .await
+    {
+        Ok(records) => records,
+        Err(error) => {
+            warn!(
+                indexer = indexer_name,
+                error = %error,
+                "failed to load indexer search learning outcomes"
+            );
+            return;
+        }
+    };
+
+    for record in records
+        .iter()
+        .filter(|record| is_learning_id_strategy_key(&record.key.strategy_key))
+        .filter(|record| !record.suppressed)
+        .filter(|record| record.empty_successes >= LEARNED_EMPTY_SUPPRESSION_THRESHOLD)
+        .filter(|record| record.usable_successes == 0)
+    {
+        let has_working_alternative = records.iter().any(|candidate| {
+            candidate.key.strategy_key != record.key.strategy_key && candidate.usable_successes > 0
+        });
+        if !has_working_alternative {
+            continue;
+        }
+
+        if let Err(error) = search_learning.set_suppressed(&record.key, true).await {
+            warn!(
+                indexer = indexer_name,
+                strategy = record.key.strategy_key.as_str(),
+                error = %error,
+                "failed to suppress learned-empty indexer search strategy"
+            );
+            continue;
+        }
+
+        info!(
+            indexer = indexer_name,
+            title_id = learning_context.title_id.as_str(),
+            facet = learning_context.facet.as_str(),
+            strategy = record.key.strategy_key.as_str(),
+            empty_successes = record.empty_successes,
+            "suppressing learned-empty automatic indexer search strategy"
+        );
+    }
+}
+
 fn preferred_anime_alias_query(
     query: &str,
     tagged_aliases: &[scryer_domain::TaggedAlias],
@@ -365,6 +467,114 @@ fn is_freetext_strategy_label(label: &str) -> bool {
 
 fn is_title_query_strategy_label(label: &str) -> bool {
     is_freetext_strategy_label(label) || label == "fallback"
+}
+
+fn learning_strategy_key(label: &str) -> Option<&'static str> {
+    match label {
+        "ids_abs" => Some("ids_abs"),
+        "ids_sxex" => Some("ids_sxex"),
+        "ids" => Some("ids"),
+        "freetext" | "freetext_alias" | "fallback" => Some("freetext"),
+        _ => None,
+    }
+}
+
+fn is_learning_id_strategy_key(strategy_key: &str) -> bool {
+    matches!(strategy_key, "ids_abs" | "ids_sxex" | "ids")
+}
+
+fn learning_record_updated_at(record: &IndexerSearchLearningRecord) -> Option<DateTime<Utc>> {
+    record
+        .updated_at
+        .as_deref()
+        .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+        .map(|value| value.with_timezone(&Utc))
+}
+
+fn learned_suppression_is_active(record: &IndexerSearchLearningRecord, now: DateTime<Utc>) -> bool {
+    if !record.suppressed || !is_learning_id_strategy_key(&record.key.strategy_key) {
+        return false;
+    }
+
+    let Some(updated_at) = learning_record_updated_at(record) else {
+        return false;
+    };
+
+    updated_at >= now - Duration::days(LEARNED_SUPPRESSION_REPROBE_INTERVAL_DAYS)
+}
+
+async fn suppress_learned_strategies(
+    search_learning: &Arc<dyn IndexerSearchLearningRepository>,
+    indexer_name: &str,
+    mode: SearchMode,
+    strategies: Vec<SearchStrategy>,
+    learned_records: &[IndexerSearchLearningRecord],
+    now: DateTime<Utc>,
+) -> Vec<SearchStrategy> {
+    if mode != SearchMode::Auto || learned_records.is_empty() {
+        return strategies;
+    }
+
+    let stale_before = now - Duration::days(LEARNED_SUPPRESSION_REPROBE_INTERVAL_DAYS);
+    let mut suppressed_keys = HashSet::new();
+    for record in learned_records {
+        if !record.suppressed || !is_learning_id_strategy_key(&record.key.strategy_key) {
+            continue;
+        }
+
+        if learned_suppression_is_active(record, now) {
+            suppressed_keys.insert(record.key.strategy_key.as_str());
+            continue;
+        }
+
+        match search_learning
+            .try_claim_suppressed_reprobe(&record.key, stale_before)
+            .await
+        {
+            Ok(true) => {
+                debug!(
+                    indexer = indexer_name,
+                    strategy = record.key.strategy_key.as_str(),
+                    "claimed learned-empty indexer strategy re-probe"
+                );
+            }
+            Ok(false) => {
+                suppressed_keys.insert(record.key.strategy_key.as_str());
+            }
+            Err(error) => {
+                warn!(
+                    indexer = indexer_name,
+                    strategy = record.key.strategy_key.as_str(),
+                    error = %error,
+                    "failed to claim learned-empty indexer strategy re-probe"
+                );
+                suppressed_keys.insert(record.key.strategy_key.as_str());
+            }
+        }
+    }
+
+    if suppressed_keys.is_empty() {
+        return strategies;
+    }
+
+    strategies
+        .into_iter()
+        .filter(|strategy| {
+            let Some(strategy_key) = learning_strategy_key(&strategy.label) else {
+                return true;
+            };
+            let suppressed =
+                is_learning_id_strategy_key(strategy_key) && suppressed_keys.contains(strategy_key);
+            if suppressed {
+                debug!(
+                    indexer = indexer_name,
+                    strategy = strategy_key,
+                    "skipping learned-empty indexer strategy for automatic search"
+                );
+            }
+            !suppressed
+        })
+        .collect()
 }
 
 fn should_defer_freetext_to_fallback(_facet: &str, strategies: &[SearchStrategy]) -> bool {
@@ -699,6 +909,7 @@ type RssFeedCache =
 pub struct MultiIndexerSearchClient {
     indexer_configs: Arc<dyn IndexerConfigRepository>,
     stats_tracker: Arc<dyn IndexerStatsTracker>,
+    search_learning: Arc<dyn IndexerSearchLearningRepository>,
     plugin_provider: Arc<dyn IndexerPluginProvider>,
     rate_limiter: IndexerRateLimiter,
     backoff_tracker: IndexerBackoffTracker,
@@ -716,6 +927,7 @@ impl MultiIndexerSearchClient {
         Self {
             indexer_configs,
             stats_tracker,
+            search_learning: Arc::new(NullIndexerSearchLearningRepository),
             plugin_provider,
             rate_limiter: IndexerRateLimiter::new(),
             backoff_tracker: IndexerBackoffTracker::new(),
@@ -727,6 +939,14 @@ impl MultiIndexerSearchClient {
                 INTERACTIVE_INDEXER_SEARCH_CONCURRENCY_LIMIT,
             )),
         }
+    }
+
+    pub fn with_search_learning_repository(
+        mut self,
+        search_learning: Arc<dyn IndexerSearchLearningRepository>,
+    ) -> Self {
+        self.search_learning = search_learning;
+        self
     }
 
     #[expect(
@@ -762,6 +982,7 @@ impl MultiIndexerSearchClient {
             episode,
             absolute_episode,
             tagged_aliases,
+            None,
             CancellationToken::new(),
         )
         .await
@@ -1130,6 +1351,7 @@ impl MultiIndexerSearchClient {
                                         strategy.absolute_episode
                                     },
                                     tagged_aliases,
+                                    None,
                                     request_cancel_token,
                                 ),
                             ) => response.unwrap_or_else(|_| {
@@ -1217,6 +1439,7 @@ impl IndexerClient for MultiIndexerSearchClient {
         episode: Option<u32>,
         absolute_episode: Option<u32>,
         tagged_aliases: Vec<scryer_domain::TaggedAlias>,
+        learning_context: Option<IndexerSearchLearningContext>,
         cancel_token: CancellationToken,
     ) -> AppResult<IndexerSearchResponse> {
         if cancel_token.is_cancelled() {
@@ -1587,6 +1810,7 @@ impl IndexerClient for MultiIndexerSearchClient {
                                                     episode,
                                                     absolute_episode,
                                                     tagged_aliases,
+                                                    None,
                                                     request_cancel_token,
                                                 ),
                                             ) => response,
@@ -1739,6 +1963,55 @@ impl IndexerClient for MultiIndexerSearchClient {
                     label: "rss".into(),
                 });
             }
+            let learned_records = if mode == SearchMode::Auto {
+                if let Some(learning_context) = learning_context.as_ref() {
+                    match self
+                        .search_learning
+                        .list_for_title(
+                            &config.id,
+                            &learning_context.title_id,
+                            &learning_context.facet,
+                        )
+                        .await
+                    {
+                        Ok(records) => records,
+                        Err(error) => {
+                            warn!(
+                                indexer = config.name.as_str(),
+                                title_id = learning_context.title_id.as_str(),
+                                facet = learning_context.facet.as_str(),
+                                error = %error,
+                                "failed to load indexer search learning records"
+                            );
+                            Vec::new()
+                        }
+                    }
+                } else {
+                    Vec::new()
+                }
+            } else {
+                Vec::new()
+            };
+            let strategies = suppress_learned_strategies(
+                &self.search_learning,
+                config.name.as_str(),
+                mode,
+                strategies,
+                &learned_records,
+                Utc::now(),
+            )
+            .await;
+            if strategies.is_empty() && !is_rss_request {
+                debug!(
+                    indexer = config.name.as_str(),
+                    title_id = learning_context
+                        .as_ref()
+                        .map(|context| context.title_id.as_str())
+                        .unwrap_or(""),
+                    "skipping indexer: all automatic search strategies are learned-suppressed"
+                );
+                continue;
+            }
             let (primary_strategies, fallback_strategies) =
                 split_strategy_tiers(mode, &facet, strategies);
             if mode == SearchMode::Auto {
@@ -1758,6 +2031,8 @@ impl IndexerClient for MultiIndexerSearchClient {
                 let category_for_indexer = category.clone();
                 let tagged_aliases_for_indexer = tagged_aliases.clone();
                 let stats_tracker = self.stats_tracker.clone();
+                let search_learning = self.search_learning.clone();
+                let learning_context = learning_context.clone();
                 let backoff_tracker = self.backoff_tracker.clone();
                 let indexer_configs = self.indexer_configs.clone();
                 let client = client.clone();
@@ -1838,6 +2113,16 @@ impl IndexerClient for MultiIndexerSearchClient {
                                         is_rss_request,
                                     },
                                 );
+                                record_strategy_learning_outcome(
+                                    &search_learning,
+                                    learning_context.as_ref(),
+                                    mode,
+                                    &indexer_id,
+                                    &indexer_name,
+                                    &outcome.label,
+                                    response.results.len(),
+                                )
+                                .await;
                                 collected_results.append(&mut response.results);
                             }
                             Err(err) => {
@@ -1946,6 +2231,16 @@ impl IndexerClient for MultiIndexerSearchClient {
                                             is_rss_request,
                                         },
                                     );
+                                    record_strategy_learning_outcome(
+                                        &search_learning,
+                                        learning_context.as_ref(),
+                                        mode,
+                                        &indexer_id,
+                                        &indexer_name,
+                                        &outcome.label,
+                                        response.results.len(),
+                                    )
+                                    .await;
                                     collected_results.append(&mut response.results);
                                 }
                                 Err(err) => {
@@ -2185,14 +2480,8 @@ fn build_strategies(p: &StrategyParams<'_>) -> Vec<SearchStrategy> {
 
     let eligible_ids = filter_ids_for_types(ids, caps.id_types_for_facet(id_facet));
     if !eligible_ids.is_empty() && !is_alias_query {
-        let full_ids = ids
-            .iter()
-            .filter(|(_, value)| !value.trim().is_empty())
-            .map(|(id_type, value)| (id_type.clone(), value.clone()))
-            .collect::<HashMap<_, _>>();
         let selected_ids = match id_dispatch_mode {
-            IdDispatchMode::LegacyAggregate => full_ids,
-            IdDispatchMode::Aggregate => eligible_ids.clone(),
+            IdDispatchMode::LegacyAggregate | IdDispatchMode::Aggregate => eligible_ids.clone(),
             IdDispatchMode::QueryOnly => HashMap::new(),
         };
         if id_facet == "anime" && !selected_ids.is_empty() {
@@ -2667,7 +2956,7 @@ mod tests {
     use std::sync::{Arc as StdArc, Mutex as StdMutex};
 
     use async_trait::async_trait;
-    use chrono::Utc;
+    use chrono::{Duration, Utc};
     use scryer_application::{IndexerQueryStats, IndexerSearchResponse};
     use scryer_domain::IndexerProviderCapabilities;
 
@@ -2820,6 +3109,7 @@ mod tests {
             _episode: Option<u32>,
             _absolute_episode: Option<u32>,
             _tagged_aliases: Vec<scryer_domain::TaggedAlias>,
+            _learning_context: Option<IndexerSearchLearningContext>,
             _cancel_token: CancellationToken,
         ) -> AppResult<IndexerSearchResponse> {
             self.calls.fetch_add(1, Ordering::SeqCst);
@@ -2950,6 +3240,7 @@ mod tests {
             episode: Option<u32>,
             absolute_episode: Option<u32>,
             _tagged_aliases: Vec<scryer_domain::TaggedAlias>,
+            _learning_context: Option<IndexerSearchLearningContext>,
             _cancel_token: CancellationToken,
         ) -> AppResult<IndexerSearchResponse> {
             let call = RecordedCall {
@@ -3092,6 +3383,7 @@ mod tests {
             _episode: Option<u32>,
             _absolute_episode: Option<u32>,
             _tagged_aliases: Vec<scryer_domain::TaggedAlias>,
+            _learning_context: Option<IndexerSearchLearningContext>,
             cancel_token: CancellationToken,
         ) -> AppResult<IndexerSearchResponse> {
             self.probe.mark_started();
@@ -3247,6 +3539,7 @@ mod tests {
                 None,
                 None,
                 vec![],
+                None,
                 search_cancel_token,
             )
             .await
@@ -3763,8 +4056,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn direct_newznab_without_caps_snapshot_uses_legacy_static_ids_to_carry_full_id_envelope()
-    {
+    async fn direct_newznab_without_caps_snapshot_uses_static_caps_ids_only() {
         let mut config = mock_indexer_config();
         config.provider_type = "newznab".into();
 
@@ -3810,10 +4102,7 @@ mod tests {
         assert_eq!(recorded.len(), 1);
         assert_eq!(
             recorded[0].ids,
-            HashMap::from([
-                ("imdb_id".to_string(), "tt12004567".to_string()),
-                ("tmdb_id".to_string(), "120045".to_string()),
-            ])
+            HashMap::from([("imdb_id".to_string(), "tt12004567".to_string())])
         );
     }
 
@@ -4645,13 +4934,7 @@ mod tests {
         assert_eq!(recorded.len(), 1, "ID results should suppress fallback");
         assert_eq!(
             recorded[0].ids,
-            HashMap::from([
-                ("imdb_id".to_string(), "tt12345678".to_string()),
-                ("tmdb_id".to_string(), "123456".to_string()),
-                ("tvdb_id".to_string(), "98765".to_string()),
-                ("anidb_id".to_string(), "54321".to_string()),
-                ("mal_id".to_string(), "67890".to_string()),
-            ])
+            HashMap::from([("imdb_id".to_string(), "tt12345678".to_string())])
         );
     }
 
@@ -4911,6 +5194,41 @@ mod tests {
         assert_eq!(strategies[0].label, "ids");
         assert_eq!(strategies[0].request_facet, "movie");
         assert!(strategies[0].ids.contains_key("imdb_id"));
+    }
+
+    #[test]
+    fn legacy_aggregate_filters_outbound_ids_to_caps() {
+        let caps = IndexerProviderCapabilities {
+            supported_ids: HashMap::from([("series".into(), vec!["tvdb_id".into()])]),
+            search: true,
+            tvdb_search: true,
+            imdb_search: false,
+            ..Default::default()
+        };
+        let ids = HashMap::from([
+            ("imdb_id".to_string(), "tt11032374".to_string()),
+            ("tvdb_id".to_string(), "424536".to_string()),
+        ]);
+
+        let strategies = build_strategies(&StrategyParams {
+            query: "Signal Run S01E12",
+            query_facet: "series",
+            id_facet: "series",
+            ids: &ids,
+            season: Some(1),
+            episode: Some(12),
+            absolute_episode: None,
+            caps: &caps,
+            id_dispatch_mode: IdDispatchMode::LegacyAggregate,
+            text_dispatch_mode: TextDispatchMode::None,
+            is_alias_query: false,
+        });
+
+        assert_eq!(strategies.len(), 1);
+        assert_eq!(
+            strategies[0].ids,
+            HashMap::from([("tvdb_id".to_string(), "424536".to_string())])
+        );
     }
 
     #[tokio::test]
@@ -5513,6 +5831,481 @@ mod tests {
             generic_query_only: false,
             label: label.into(),
         }
+    }
+
+    fn learning_record(
+        strategy_key: &str,
+        empty_successes: u32,
+        usable_successes: u32,
+        suppressed: bool,
+        updated_at: Option<String>,
+    ) -> IndexerSearchLearningRecord {
+        IndexerSearchLearningRecord {
+            key: IndexerSearchLearningKey {
+                indexer_id: "idx".into(),
+                title_id: "title-1".into(),
+                facet: "anime".into(),
+                strategy_key: strategy_key.into(),
+            },
+            attempts: empty_successes + usable_successes,
+            empty_successes,
+            usable_successes,
+            last_attempt_at: None,
+            last_usable_at: None,
+            suppressed,
+            updated_at,
+        }
+    }
+
+    #[tokio::test]
+    async fn learned_suppression_skips_suppressed_id_strategy_for_auto() {
+        let now = Utc::now();
+        let repo: StdArc<dyn IndexerSearchLearningRepository> =
+            StdArc::new(InMemorySearchLearningRepository::default());
+        let strategies = vec![
+            strategy_with_label("ids_abs"),
+            strategy_with_label("ids_sxex"),
+            strategy_with_label("freetext"),
+        ];
+        let records = vec![learning_record(
+            "ids_abs",
+            3,
+            0,
+            true,
+            Some(now.to_rfc3339()),
+        )];
+
+        let filtered = suppress_learned_strategies(
+            &repo,
+            "indexer",
+            SearchMode::Auto,
+            strategies,
+            &records,
+            now,
+        )
+        .await;
+        let labels = filtered
+            .iter()
+            .map(|strategy| strategy.label.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(labels, vec!["ids_sxex", "freetext"]);
+    }
+
+    #[tokio::test]
+    async fn learned_suppression_is_not_applied_to_interactive_search() {
+        let now = Utc::now();
+        let repo: StdArc<dyn IndexerSearchLearningRepository> =
+            StdArc::new(InMemorySearchLearningRepository::default());
+        let strategies = vec![
+            strategy_with_label("ids_abs"),
+            strategy_with_label("ids_sxex"),
+        ];
+        let records = vec![learning_record(
+            "ids_abs",
+            3,
+            0,
+            true,
+            Some(now.to_rfc3339()),
+        )];
+
+        let filtered = suppress_learned_strategies(
+            &repo,
+            "indexer",
+            SearchMode::Interactive,
+            strategies,
+            &records,
+            now,
+        )
+        .await;
+        let labels = filtered
+            .iter()
+            .map(|strategy| strategy.label.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(labels, vec!["ids_abs", "ids_sxex"]);
+    }
+
+    #[tokio::test]
+    async fn learned_suppression_claim_allows_only_one_stale_reprobe() {
+        let now = Utc::now();
+        let repo_impl = StdArc::new(InMemorySearchLearningRepository::default());
+        let strategies = vec![
+            strategy_with_label("ids_abs"),
+            strategy_with_label("ids_sxex"),
+            strategy_with_label("freetext"),
+        ];
+        let records = vec![learning_record(
+            "ids_abs",
+            3,
+            0,
+            true,
+            Some(
+                (now - Duration::days(LEARNED_SUPPRESSION_REPROBE_INTERVAL_DAYS + 1)).to_rfc3339(),
+            ),
+        )];
+        repo_impl
+            .records
+            .lock()
+            .expect("learning records mutex")
+            .insert(records[0].key.clone(), records[0].clone());
+        let repo: StdArc<dyn IndexerSearchLearningRepository> = repo_impl;
+
+        let filtered = suppress_learned_strategies(
+            &repo,
+            "indexer",
+            SearchMode::Auto,
+            strategies,
+            &records,
+            now,
+        )
+        .await;
+        let labels = filtered
+            .iter()
+            .map(|strategy| strategy.label.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(labels, vec!["ids_abs", "ids_sxex", "freetext"]);
+
+        let second_strategies = vec![
+            strategy_with_label("ids_abs"),
+            strategy_with_label("ids_sxex"),
+            strategy_with_label("freetext"),
+        ];
+        let second_filtered = suppress_learned_strategies(
+            &repo,
+            "indexer",
+            SearchMode::Auto,
+            second_strategies,
+            &records,
+            now,
+        )
+        .await;
+        let second_labels = second_filtered
+            .iter()
+            .map(|strategy| strategy.label.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(second_labels, vec!["ids_sxex", "freetext"]);
+    }
+
+    #[tokio::test]
+    async fn learned_suppression_reprobes_missing_or_unparseable_updated_at() {
+        let now = Utc::now();
+
+        for updated_at in [None, Some("not-a-timestamp".to_string())] {
+            let repo_impl = StdArc::new(InMemorySearchLearningRepository::default());
+            let strategies = vec![strategy_with_label("ids_abs")];
+            let records = vec![learning_record("ids_abs", 3, 0, true, updated_at)];
+            repo_impl
+                .records
+                .lock()
+                .expect("learning records mutex")
+                .insert(records[0].key.clone(), records[0].clone());
+            let repo: StdArc<dyn IndexerSearchLearningRepository> = repo_impl;
+
+            let filtered = suppress_learned_strategies(
+                &repo,
+                "indexer",
+                SearchMode::Auto,
+                strategies,
+                &records,
+                now,
+            )
+            .await;
+
+            assert_eq!(filtered.len(), 1);
+            assert_eq!(filtered[0].label, "ids_abs");
+        }
+    }
+
+    #[derive(Default)]
+    struct InMemorySearchLearningRepository {
+        records: StdArc<StdMutex<HashMap<IndexerSearchLearningKey, IndexerSearchLearningRecord>>>,
+    }
+
+    #[async_trait]
+    impl IndexerSearchLearningRepository for InMemorySearchLearningRepository {
+        async fn list_for_title(
+            &self,
+            indexer_id: &str,
+            title_id: &str,
+            facet: &str,
+        ) -> AppResult<Vec<IndexerSearchLearningRecord>> {
+            Ok(self
+                .records
+                .lock()
+                .expect("learning records mutex")
+                .values()
+                .filter(|record| {
+                    record.key.indexer_id == indexer_id
+                        && record.key.title_id == title_id
+                        && record.key.facet == facet
+                })
+                .cloned()
+                .collect())
+        }
+
+        async fn record_outcome(
+            &self,
+            key: &IndexerSearchLearningKey,
+            usable_hits: u32,
+        ) -> AppResult<IndexerSearchLearningRecord> {
+            let now = Utc::now().to_rfc3339();
+            let mut records = self.records.lock().expect("learning records mutex");
+            let record =
+                records
+                    .entry(key.clone())
+                    .or_insert_with(|| IndexerSearchLearningRecord {
+                        key: key.clone(),
+                        attempts: 0,
+                        empty_successes: 0,
+                        usable_successes: 0,
+                        last_attempt_at: None,
+                        last_usable_at: None,
+                        suppressed: false,
+                        updated_at: None,
+                    });
+            record.attempts += 1;
+            record.last_attempt_at = Some(now.clone());
+            record.updated_at = Some(now.clone());
+            if usable_hits == 0 {
+                record.empty_successes += 1;
+            } else {
+                record.usable_successes += 1;
+                record.last_usable_at = Some(now);
+                record.suppressed = false;
+            }
+            Ok(record.clone())
+        }
+
+        async fn set_suppressed(
+            &self,
+            key: &IndexerSearchLearningKey,
+            suppressed: bool,
+        ) -> AppResult<()> {
+            if let Some(record) = self
+                .records
+                .lock()
+                .expect("learning records mutex")
+                .get_mut(key)
+            {
+                record.suppressed = suppressed;
+                record.updated_at = Some(Utc::now().to_rfc3339());
+            }
+            Ok(())
+        }
+
+        async fn try_claim_suppressed_reprobe(
+            &self,
+            key: &IndexerSearchLearningKey,
+            stale_before: DateTime<Utc>,
+        ) -> AppResult<bool> {
+            let mut records = self.records.lock().expect("learning records mutex");
+            let Some(record) = records.get_mut(key) else {
+                return Ok(false);
+            };
+            if !record.suppressed {
+                return Ok(false);
+            }
+
+            let stale = record
+                .updated_at
+                .as_deref()
+                .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+                .map(|value| value.with_timezone(&Utc) < stale_before)
+                .unwrap_or(true);
+            if !stale {
+                return Ok(false);
+            }
+
+            record.updated_at = Some(Utc::now().to_rfc3339());
+            Ok(true)
+        }
+    }
+
+    #[tokio::test]
+    async fn learned_outcome_suppresses_empty_id_after_working_alternative() {
+        let repo: StdArc<dyn IndexerSearchLearningRepository> =
+            StdArc::new(InMemorySearchLearningRepository::default());
+        let context = IndexerSearchLearningContext {
+            title_id: "title-1".into(),
+            facet: "anime".into(),
+            subject_kind: ReleaseSearchSubjectKind::Episode,
+        };
+
+        record_strategy_learning_outcome(
+            &repo,
+            Some(&context),
+            SearchMode::Auto,
+            "idx",
+            "Indexer",
+            "ids_sxex",
+            1,
+        )
+        .await;
+        for _ in 0..LEARNED_EMPTY_SUPPRESSION_THRESHOLD {
+            record_strategy_learning_outcome(
+                &repo,
+                Some(&context),
+                SearchMode::Auto,
+                "idx",
+                "Indexer",
+                "ids_abs",
+                0,
+            )
+            .await;
+        }
+
+        let records = repo
+            .list_for_title("idx", "title-1", "anime")
+            .await
+            .expect("learning records");
+        let abs_record = records
+            .iter()
+            .find(|record| record.key.strategy_key == "ids_abs")
+            .expect("ids_abs record");
+
+        assert_eq!(
+            abs_record.empty_successes,
+            LEARNED_EMPTY_SUPPRESSION_THRESHOLD
+        );
+        assert_eq!(abs_record.usable_successes, 0);
+        assert!(abs_record.suppressed);
+    }
+
+    #[tokio::test]
+    async fn learned_outcome_does_not_suppress_without_working_alternative() {
+        let repo: StdArc<dyn IndexerSearchLearningRepository> =
+            StdArc::new(InMemorySearchLearningRepository::default());
+        let context = IndexerSearchLearningContext {
+            title_id: "title-1".into(),
+            facet: "anime".into(),
+            subject_kind: ReleaseSearchSubjectKind::Episode,
+        };
+
+        for _ in 0..LEARNED_EMPTY_SUPPRESSION_THRESHOLD {
+            record_strategy_learning_outcome(
+                &repo,
+                Some(&context),
+                SearchMode::Auto,
+                "idx",
+                "Indexer",
+                "ids_abs",
+                0,
+            )
+            .await;
+        }
+
+        let records = repo
+            .list_for_title("idx", "title-1", "anime")
+            .await
+            .expect("learning records");
+        let abs_record = records
+            .iter()
+            .find(|record| record.key.strategy_key == "ids_abs")
+            .expect("ids_abs record");
+
+        assert!(!abs_record.suppressed);
+    }
+
+    #[tokio::test]
+    async fn learned_stale_reprobe_usable_outcome_clears_suppression() {
+        let repo_impl = InMemorySearchLearningRepository::default();
+        let key = IndexerSearchLearningKey {
+            indexer_id: "idx".into(),
+            title_id: "title-1".into(),
+            facet: "anime".into(),
+            strategy_key: "ids_abs".into(),
+        };
+        repo_impl
+            .records
+            .lock()
+            .expect("learning records mutex")
+            .insert(
+                key,
+                learning_record(
+                    "ids_abs",
+                    LEARNED_EMPTY_SUPPRESSION_THRESHOLD,
+                    0,
+                    true,
+                    Some(
+                        (Utc::now()
+                            - Duration::days(LEARNED_SUPPRESSION_REPROBE_INTERVAL_DAYS + 1))
+                        .to_rfc3339(),
+                    ),
+                ),
+            );
+        let repo: StdArc<dyn IndexerSearchLearningRepository> = StdArc::new(repo_impl);
+        let context = IndexerSearchLearningContext {
+            title_id: "title-1".into(),
+            facet: "anime".into(),
+            subject_kind: ReleaseSearchSubjectKind::Episode,
+        };
+
+        record_strategy_learning_outcome(
+            &repo,
+            Some(&context),
+            SearchMode::Auto,
+            "idx",
+            "Indexer",
+            "ids_abs",
+            1,
+        )
+        .await;
+
+        let records = repo
+            .list_for_title("idx", "title-1", "anime")
+            .await
+            .expect("learning records");
+        let abs_record = records
+            .iter()
+            .find(|record| record.key.strategy_key == "ids_abs")
+            .expect("ids_abs record");
+
+        assert_eq!(abs_record.usable_successes, 1);
+        assert!(!abs_record.suppressed);
+    }
+
+    #[tokio::test]
+    async fn automatic_search_errors_do_not_record_empty_learning() {
+        let repo: StdArc<dyn IndexerSearchLearningRepository> =
+            StdArc::new(InMemorySearchLearningRepository::default());
+        let (client, _calls) = scripted_search_client(movie_caps(), |_call| {
+            Err(AppError::Repository("quota limited".into()))
+        });
+        let client = client.with_search_learning_repository(repo.clone());
+        let context = IndexerSearchLearningContext {
+            title_id: "title-1".into(),
+            facet: "movie".into(),
+            subject_kind: ReleaseSearchSubjectKind::Title,
+        };
+
+        let result = <MultiIndexerSearchClient as IndexerClient>::search(
+            &client,
+            "Lattice Zero".into(),
+            HashMap::from([("imdb_id".to_string(), "tt0133093".to_string())]),
+            Some("movie".into()),
+            Some("movie".into()),
+            None,
+            None,
+            None,
+            SearchMode::Auto,
+            None,
+            None,
+            None,
+            vec![],
+            Some(context),
+            CancellationToken::new(),
+        )
+        .await;
+
+        let _ = result.expect("automatic aggregate search should tolerate indexer errors");
+        let records = repo
+            .list_for_title("idx-1", "title-1", "movie")
+            .await
+            .expect("learning records");
+        assert!(records.is_empty());
     }
 
     #[test]

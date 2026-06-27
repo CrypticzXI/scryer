@@ -549,6 +549,8 @@ function MainContent({
     return (
       <DiscoveryContainer
         key="discovery"
+        userId={userId}
+        uiLanguage={uiLanguage}
         canManageTitle={canManageTitle}
         canRequestMedia={canRequestMedia}
       />

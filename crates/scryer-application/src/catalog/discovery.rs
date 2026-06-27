@@ -1,5 +1,6 @@
 use super::*;
 use crate::acquisition_release_search::ResolvedReleaseSearchSubject;
+use crate::ports::IndexerSearchLearningContext;
 use crate::quality_profile::ScoringSource;
 use crate::quality_profile::evaluate_against_profile_for_category;
 use crate::settings::keys::default_indexer_routing_categories_for_scope;
@@ -985,6 +986,15 @@ impl AppUseCase {
         if let Some(mal_id) = mal_id.clone() {
             ids.insert("mal_id".to_string(), mal_id);
         }
+        let learning_context = if mode == SearchMode::Auto && !title_id.trim().is_empty() {
+            Some(IndexerSearchLearningContext {
+                title_id: title_id.to_string(),
+                facet: search_facet.as_str().to_string(),
+                subject_kind: search_subject_kind,
+            })
+        } else {
+            None
+        };
 
         for query in effective_queries {
             let indexer_client = self.services.integrations.indexer_client.clone();
@@ -997,6 +1007,7 @@ impl AppUseCase {
             let indexer_routing = indexer_routing.clone();
             let newznab_categories = newznab_categories.clone();
             let tagged_aliases = tagged_aliases.to_vec();
+            let learning_context = learning_context.clone();
             let query = query.clone();
             let query_cancel_token = cancel_token.child_token();
 
@@ -1015,6 +1026,7 @@ impl AppUseCase {
                         episode,
                         absolute_episode,
                         tagged_aliases,
+                        learning_context,
                         query_cancel_token,
                     )
                     .await

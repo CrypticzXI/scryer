@@ -104,7 +104,7 @@ export function TitleWorkspaceActionButton({
       aria-expanded={expanded}
       aria-controls={controlsId}
       className={cn(
-        "flex min-h-[88px] min-w-0 flex-col items-center justify-center gap-1.5 bg-[var(--scry-card2)] px-2 py-3 text-[var(--scry-muted2)] transition hover:bg-[var(--scry-hover)] hover:text-[var(--scry-ink2)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--scry-focus)] disabled:cursor-not-allowed disabled:opacity-55",
+        "flex min-h-[96px] min-w-0 flex-col items-center justify-center gap-2 bg-[var(--scry-card2)] px-2 py-3 text-[var(--scry-muted2)] transition hover:bg-[var(--scry-hover)] hover:text-[var(--scry-ink2)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--scry-focus)] disabled:cursor-not-allowed disabled:opacity-55",
         active &&
           "bg-[rgba(var(--scry-accent-rgb),0.13)] text-[var(--scry-accent-text)] shadow-[inset_0_-2px_0_var(--scry-accent-ring)]",
         destructive && "text-destructive hover:text-destructive",
@@ -113,11 +113,11 @@ export function TitleWorkspaceActionButton({
       onClick={onClick}
     >
       {loading ? (
-        <Loader2 className="h-[18px] w-[18px] animate-spin" />
+        <Loader2 className="size-6 animate-spin" />
       ) : (
-        <Icon className="h-[18px] w-[18px]" />
+        <Icon className="size-6" />
       )}
-      <span className="truncate text-center text-[9.5px] font-bold uppercase tracking-[0.04em]">
+      <span className="truncate text-center text-[11px] font-bold uppercase tracking-[0.04em]">
         {label}
       </span>
     </button>

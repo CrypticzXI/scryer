@@ -1034,6 +1034,7 @@ impl TitleRepository for TitleStore {
             let id = id.clone();
             Box::pin(async move {
                 delete_title_search_projection_sql_tx(tx, &id).await?;
+                delete_indexer_search_learning_for_title_tx(tx, &id).await?;
                 let rows = SqlRuntime::execute(
                     SqlExec::Tx(tx),
                     "DELETE FROM titles WHERE id = {}",
@@ -2226,5 +2227,127 @@ async fn delete_title_search_projection_sql_tx(
         )
         .await?;
         Ok(())
+    }
+}
+
+async fn delete_indexer_search_learning_for_title_tx(
+    tx: &mut SqlTx<'_>,
+    title_id: &str,
+) -> AppResult<()> {
+    SqlRuntime::execute(
+        SqlExec::Tx(tx),
+        "DELETE FROM indexer_search_learning WHERE title_id = {}",
+        &[SqlArg::Text(title_id.to_string())],
+    )
+    .await?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use sqlx::sqlite::SqlitePoolOptions;
+
+    async fn delete_test_store() -> (TitleStore, sqlx::SqlitePool) {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("in-memory sqlite should open");
+
+        sqlx::query("CREATE TABLE titles (id TEXT PRIMARY KEY)")
+            .execute(&pool)
+            .await
+            .expect("titles table should be created");
+        sqlx::query(
+            "CREATE TABLE title_search_terms (
+                term_id INTEGER PRIMARY KEY,
+                title_id TEXT NOT NULL
+            )",
+        )
+        .execute(&pool)
+        .await
+        .expect("title_search_terms table should be created");
+        sqlx::query("CREATE TABLE title_search_spellfix (term TEXT)")
+            .execute(&pool)
+            .await
+            .expect("title_search_spellfix table should be created");
+        sqlx::query(
+            "CREATE TABLE indexer_search_learning (
+                indexer_id TEXT NOT NULL,
+                title_id TEXT NOT NULL,
+                facet TEXT NOT NULL,
+                strategy_key TEXT NOT NULL,
+                attempts INTEGER NOT NULL DEFAULT 0,
+                empty_successes INTEGER NOT NULL DEFAULT 0,
+                usable_successes INTEGER NOT NULL DEFAULT 0,
+                last_attempt_at TEXT,
+                last_usable_at TEXT,
+                suppressed INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                PRIMARY KEY (indexer_id, title_id, facet, strategy_key)
+            )",
+        )
+        .execute(&pool)
+        .await
+        .expect("indexer_search_learning table should be created");
+
+        let store = TitleStore::new(StoreDatastore::Sqlite {
+            pool: pool.clone(),
+            writer_gate: std::sync::Arc::new(tokio::sync::Mutex::new(())),
+        });
+
+        (store, pool)
+    }
+
+    async fn insert_learning_row(pool: &sqlx::SqlitePool, title_id: &str) {
+        sqlx::query(
+            "INSERT INTO indexer_search_learning
+             (indexer_id, title_id, facet, strategy_key)
+             VALUES (?, ?, 'anime', 'ids_abs')",
+        )
+        .bind(format!("idx-{title_id}"))
+        .bind(title_id)
+        .execute(pool)
+        .await
+        .expect("learning row should insert");
+    }
+
+    async fn learning_count(pool: &sqlx::SqlitePool, title_id: &str) -> i64 {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*)
+             FROM indexer_search_learning
+             WHERE title_id = ?",
+        )
+        .bind(title_id)
+        .fetch_one(pool)
+        .await
+        .expect("learning count should load")
+    }
+
+    #[tokio::test]
+    async fn delete_title_clears_only_that_titles_indexer_search_learning_rows() {
+        let (store, pool) = delete_test_store().await;
+        sqlx::query("INSERT INTO titles (id) VALUES ('title-1'), ('title-2')")
+            .execute(&pool)
+            .await
+            .expect("titles should insert");
+        insert_learning_row(&pool, "title-1").await;
+        insert_learning_row(&pool, "title-2").await;
+        insert_learning_row(&pool, "missing-title").await;
+
+        TitleRepository::delete(&store, "title-1")
+            .await
+            .expect("title delete should succeed");
+
+        assert_eq!(learning_count(&pool, "title-1").await, 0);
+        assert_eq!(learning_count(&pool, "title-2").await, 1);
+
+        let error = TitleRepository::delete(&store, "missing-title")
+            .await
+            .expect_err("missing title should report not found");
+        assert!(matches!(error, AppError::NotFound(_)));
+        assert_eq!(learning_count(&pool, "missing-title").await, 1);
     }
 }

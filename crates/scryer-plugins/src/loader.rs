@@ -3165,6 +3165,7 @@ mod tests {
             _episode: Option<u32>,
             _absolute_episode: Option<u32>,
             _tagged_aliases: Vec<scryer_domain::TaggedAlias>,
+            _learning_context: Option<scryer_application::IndexerSearchLearningContext>,
             _cancel_token: tokio_util::sync::CancellationToken,
         ) -> scryer_application::AppResult<scryer_application::IndexerSearchResponse> {
             unreachable!("dummy indexer client should not be called")

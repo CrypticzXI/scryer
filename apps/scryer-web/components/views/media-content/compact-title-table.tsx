@@ -1051,7 +1051,7 @@ export function CompactTitleTable({
         ref={titleTableScrollRef}
         className={cn(
           "relative flex-1 overflow-auto rounded-[14px] border border-[var(--scry-border)] bg-[var(--scry-surfD)]",
-          selectedPaneMode ? "min-h-0" : "min-h-[22rem]",
+          selectedDrawerMode ? "min-h-0" : "min-h-[22rem]",
         )}
       >
         <table

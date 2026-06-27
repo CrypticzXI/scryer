@@ -1478,6 +1478,15 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     setSelectedOverviewTitleId(routeOverviewTitleId);
   }, [routeOverviewTitleId]);
 
+  // Multi-select and the single-title overview are mutually exclusive: as soon
+  // as the user selects a title for a bulk action, close any open overview so
+  // the full library list (and its bulk-selection bar) takes over.
+  React.useEffect(() => {
+    if (selectedTitleIds.size > 0 && routeOverviewTitleId) {
+      onCloseOverview();
+    }
+  }, [onCloseOverview, routeOverviewTitleId, selectedTitleIds]);
+
   React.useEffect(() => {
     const visibleTitleIds = new Set(visibleTitles.map((title) => title.id));
     setSelectedTitleIds((current) => {

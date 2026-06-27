@@ -593,23 +593,13 @@ export function TitleTable({
           )}
         >
           <TableCell className="align-middle">
-            {selectedPaneMode ? (
-              <span
-                aria-hidden="true"
-                className={cn(
-                  "mx-auto block size-4 rounded-[5px] border border-border bg-muted/30",
-                  isSelected && "border-primary bg-primary/20",
-                )}
-              />
-            ) : (
-              <Checkbox
-                checked={selectedTitleIds.has(item.id)}
-                onCheckedChange={() => onToggleSelected(item.id)}
-                aria-label={t("title.selectTitle", { name: item.name })}
-                disabled={bulkActionBusy}
-                className="mx-auto size-[17px] rounded-[5px] [&_svg]:size-3"
-              />
-            )}
+            <Checkbox
+              checked={selectedTitleIds.has(item.id)}
+              onCheckedChange={() => onToggleSelected(item.id)}
+              aria-label={t("title.selectTitle", { name: item.name })}
+              disabled={bulkActionBusy}
+              className="mx-auto size-[17px] rounded-[5px] [&_svg]:size-3"
+            />
           </TableCell>
           <TableCell className="align-middle overflow-hidden">
             <button
@@ -842,20 +832,13 @@ export function TitleTable({
     <TableHeader>
       <TableRow className={TITLE_TABLE_HEADER_ROW_CLASS}>
         <TableHead className="w-12 text-center">
-          {selectedPaneMode ? (
-            <span
-              aria-hidden="true"
-              className="mx-auto block size-4 rounded-[5px] border border-border bg-muted/30"
-            />
-          ) : (
-            <Checkbox
-              checked={selectAllState}
-              onCheckedChange={(checked) => onToggleSelectAll(checked === true)}
-              aria-label={t("title.selectAllTitles")}
-              disabled={bulkActionBusy}
-              className="mx-auto size-5 rounded-md [&_svg]:size-4"
-            />
-          )}
+          <Checkbox
+            checked={selectAllState}
+            onCheckedChange={(checked) => onToggleSelectAll(checked === true)}
+            aria-label={t("title.selectAllTitles")}
+            disabled={bulkActionBusy}
+            className="mx-auto size-5 rounded-md [&_svg]:size-4"
+          />
         </TableHead>
         {renderSortableHeader(
           "name",

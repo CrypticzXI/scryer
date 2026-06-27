@@ -2571,11 +2571,14 @@ export function MediaContentView({
       : titleLayoutWidth >= SELECTED_POSTER_INLINE_MIN_WIDTH);
   const selectedTitleCompactLayoutActive =
     selectedTitleLayoutActive && !selectedTitlePosterInlineActive;
+  // Keep the title list inline (side-by-side with the overview) at exactly the
+  // widths where the discovery panel is already shown, so opening a title only
+  // swaps the panel's content instead of reflowing the list into a drawer.
   const selectedTitleListInlineActive =
     selectedTitleCompactLayoutActive &&
     (titleLayoutWidth == null
       ? selectedTitleListInlineViewportMatches
-      : titleLayoutWidth >= 1180);
+      : titleLayoutWidth >= contextPanelMinimumWidth);
   const [selectedTitleListDrawerOpen, setSelectedTitleListDrawerOpen] =
     React.useState(false);
   const selectedTitleListDrawerRef = React.useRef<HTMLDivElement | null>(null);
@@ -3513,7 +3516,7 @@ export function MediaContentView({
                 } else if (collectionViewMode === "compact") {
                   titleCollectionView = (
                     <CompactTitleTable
-                      key={`${view}-${selectedTitleCompactLayoutActive ? "selected" : "full"}-compact-title-table`}
+                      key={`${view}-${selectedTitleCompactLayoutActive && !selectedTitleListInlineActive ? "drawer" : "full"}-compact-title-table`}
                       view={view}
                       titles={deferredMonitoredTitles}
                       titleLoading={titleLoading || catalogBootstrapLoading}
@@ -3571,11 +3574,7 @@ export function MediaContentView({
                 } else {
                   titleCollectionView = (
                     <TitleTable
-                      key={`${view}-${
-                        selectedTitleFullTableInlineActive
-                          ? "selected"
-                          : "full"
-                      }-poster-title-table`}
+                      key={`${view}-poster-title-table`}
                       view={view}
                       titles={deferredMonitoredTitles}
                       titleLoading={titleLoading || catalogBootstrapLoading}

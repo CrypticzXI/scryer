@@ -806,6 +806,7 @@ impl IndexerClient for WasmIndexerClient {
         episode: Option<u32>,
         absolute_episode: Option<u32>,
         tagged_aliases: Vec<TaggedAlias>,
+        _learning_context: Option<scryer_application::IndexerSearchLearningContext>,
         cancel_token: CancellationToken,
     ) -> AppResult<IndexerSearchResponse> {
         if cancel_token.is_cancelled() {

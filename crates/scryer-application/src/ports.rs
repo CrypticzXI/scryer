@@ -1644,6 +1644,61 @@ pub trait IndexerStatsTracker: Send + Sync {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct IndexerSearchLearningKey {
+    pub indexer_id: String,
+    pub title_id: String,
+    pub facet: String,
+    pub strategy_key: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IndexerSearchLearningRecord {
+    pub key: IndexerSearchLearningKey,
+    pub attempts: u32,
+    pub empty_successes: u32,
+    pub usable_successes: u32,
+    pub last_attempt_at: Option<String>,
+    pub last_usable_at: Option<String>,
+    pub suppressed: bool,
+    pub updated_at: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IndexerSearchLearningContext {
+    pub title_id: String,
+    pub facet: String,
+    pub subject_kind: ReleaseSearchSubjectKind,
+}
+
+#[async_trait]
+pub trait IndexerSearchLearningRepository: Send + Sync {
+    async fn list_for_title(
+        &self,
+        indexer_id: &str,
+        title_id: &str,
+        facet: &str,
+    ) -> AppResult<Vec<IndexerSearchLearningRecord>>;
+
+    async fn record_outcome(
+        &self,
+        key: &IndexerSearchLearningKey,
+        usable_hits: u32,
+    ) -> AppResult<IndexerSearchLearningRecord>;
+
+    async fn set_suppressed(
+        &self,
+        key: &IndexerSearchLearningKey,
+        suppressed: bool,
+    ) -> AppResult<()>;
+
+    async fn try_claim_suppressed_reprobe(
+        &self,
+        key: &IndexerSearchLearningKey,
+        stale_before: DateTime<Utc>,
+    ) -> AppResult<bool>;
+}
+
 #[async_trait]
 pub trait QualityProfileRepository: Send + Sync {
     async fn list_quality_profiles(
@@ -2647,6 +2702,7 @@ pub trait IndexerClient: Send + Sync {
         episode: Option<u32>,
         absolute_episode: Option<u32>,
         tagged_aliases: Vec<TaggedAlias>,
+        learning_context: Option<IndexerSearchLearningContext>,
         cancel_token: tokio_util::sync::CancellationToken,
     ) -> AppResult<IndexerSearchResponse>;
 }

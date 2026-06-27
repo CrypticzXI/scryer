@@ -996,6 +996,7 @@ async fn bootstrap_application(
         Some(download_client_plugin_provider.clone()),
     ));
     let indexer_stats = datastore.indexer_stats_tracker();
+    let indexer_learning = datastore.indexer_search_learning_repository();
 
     let dynamic_provider = Arc::new(scryer_plugins::DynamicPluginProvider::new(
         scryer_plugins::build_indexer_plugin_provider_from_runtime_plugins(
@@ -1018,7 +1019,8 @@ async fn bootstrap_application(
         indexer_configs.clone(),
         indexer_stats.clone(),
         plugin_provider.clone(),
-    );
+    )
+    .with_search_learning_repository(indexer_learning);
 
     let indexer_client = Arc::new(indexer_client);
     let title_images_for_route: Arc<dyn TitleImageRepository> = datastore.title_images();

@@ -608,6 +608,7 @@ impl IndexerClient for ProwlarrSearchStub {
         _episode: Option<u32>,
         _absolute_episode: Option<u32>,
         _tagged_aliases: Vec<TaggedAlias>,
+        _learning_context: Option<scryer_application::IndexerSearchLearningContext>,
         _cancel_token: tokio_util::sync::CancellationToken,
     ) -> AppResult<IndexerSearchResponse> {
         Err(AppError::Validation(

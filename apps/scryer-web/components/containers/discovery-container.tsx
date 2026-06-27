@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useState } from "react";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { useClient } from "urql";
 import {
   AddToCatalogDialog,
@@ -10,6 +10,13 @@ import { discoveryHomeQuery } from "@/lib/graphql/queries";
 import { useGlobalStatus } from "@/lib/context/global-status-context";
 import { useSearchContext } from "@/lib/context/search-context";
 import { useTranslate } from "@/lib/context/translate-context";
+import {
+  clearDiscoveryHomeCache,
+  discoveryHomeCacheKey,
+  readDiscoveryHomeCache,
+  writeDiscoveryHomeCache,
+} from "@/lib/discovery-home-cache";
+import type { LocaleCode } from "@/lib/i18n";
 import { discoveryItemDisplayTitle } from "@/lib/utils/discovery-display";
 import type { MetadataTvdbSearchItem } from "@/lib/graphql/smg-queries";
 import type {
@@ -21,6 +28,8 @@ import type {
 } from "@/lib/types";
 
 type DiscoveryContainerProps = {
+  userId: string | null | undefined;
+  uiLanguage: LocaleCode;
   canManageTitle: boolean;
   canRequestMedia: boolean;
 };
@@ -93,6 +102,8 @@ function metadataResultForDiscoveryItem(
 }
 
 export const DiscoveryContainer = memo(function DiscoveryContainer({
+  userId,
+  uiLanguage,
   canManageTitle,
   canRequestMedia,
 }: DiscoveryContainerProps) {
@@ -116,8 +127,37 @@ export const DiscoveryContainer = memo(function DiscoveryContainer({
   const [selectedItem, setSelectedItem] = useState<DiscoveryItem | null>(null);
   const [addDialogOpen, setAddDialogOpen] = useState(false);
   const [requestDialogOpen, setRequestDialogOpen] = useState(false);
+  const refreshRequestIdRef = useRef(0);
+  const mountedRef = useRef(true);
+  const cacheKeyRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    return () => {
+      mountedRef.current = false;
+      refreshRequestIdRef.current += 1;
+    };
+  }, []);
 
   const refresh = useCallback(async () => {
+    const requestId = refreshRequestIdRef.current + 1;
+    refreshRequestIdRef.current = requestId;
+    const cacheScope = {
+      userId,
+      uiLanguage,
+      input: DISCOVERY_HOME_INPUT,
+    };
+    const cacheKey = discoveryHomeCacheKey(cacheScope);
+    const sameCacheScope = cacheKeyRef.current === cacheKey;
+    cacheKeyRef.current = cacheKey;
+    const cachedHome = readDiscoveryHomeCache(cacheScope);
+    if (!mountedRef.current || refreshRequestIdRef.current !== requestId) {
+      return;
+    }
+    if (cachedHome) {
+      setHome(cachedHome);
+    } else if (!sameCacheScope) {
+      setHome(null);
+    }
     setLoading(true);
     setError(null);
     try {
@@ -131,16 +171,32 @@ export const DiscoveryContainer = memo(function DiscoveryContainer({
       if (queryError) {
         throw queryError;
       }
-      setHome((data?.discoveryHome ?? null) as DiscoveryHomePayload | null);
+      if (!mountedRef.current || refreshRequestIdRef.current !== requestId) {
+        return;
+      }
+      const nextHome = (data?.discoveryHome ?? null) as
+        | DiscoveryHomePayload
+        | null;
+      setHome(nextHome);
+      if (nextHome) {
+        writeDiscoveryHomeCache(cacheScope, nextHome);
+      } else {
+        clearDiscoveryHomeCache(cacheScope);
+      }
     } catch (caught) {
+      if (!mountedRef.current || refreshRequestIdRef.current !== requestId) {
+        return;
+      }
       const message =
         caught instanceof Error ? caught.message : t("discovery.failedToLoad");
       setError(message);
       setGlobalStatus(message);
     } finally {
-      setLoading(false);
+      if (mountedRef.current && refreshRequestIdRef.current === requestId) {
+        setLoading(false);
+      }
     }
-  }, [client, setGlobalStatus, t]);
+  }, [client, setGlobalStatus, t, uiLanguage, userId]);
 
   useEffect(() => {
     void refresh();

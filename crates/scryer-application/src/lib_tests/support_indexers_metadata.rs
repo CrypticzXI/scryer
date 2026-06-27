@@ -19,6 +19,7 @@ impl IndexerClient for MockIndexerClient {
         _episode: Option<u32>,
         _absolute_episode: Option<u32>,
         _tagged_aliases: Vec<TaggedAlias>,
+        _learning_context: Option<crate::IndexerSearchLearningContext>,
         _cancel_token: tokio_util::sync::CancellationToken,
     ) -> AppResult<IndexerSearchResponse> {
         if let Some(tvdb) = ids.get("tvdb_id") {
@@ -145,6 +146,7 @@ impl IndexerClient for TrackingIndexerClient {
         episode: Option<u32>,
         _absolute_episode: Option<u32>,
         _tagged_aliases: Vec<TaggedAlias>,
+        _learning_context: Option<crate::IndexerSearchLearningContext>,
         _cancel_token: tokio_util::sync::CancellationToken,
     ) -> AppResult<IndexerSearchResponse> {
         self.searches.lock().await.push(RecordedIndexerSearch {
@@ -230,6 +232,7 @@ impl IndexerClient for FixedReleaseIndexerClient {
         _episode: Option<u32>,
         _absolute_episode: Option<u32>,
         _tagged_aliases: Vec<TaggedAlias>,
+        _learning_context: Option<crate::IndexerSearchLearningContext>,
         _cancel_token: tokio_util::sync::CancellationToken,
     ) -> AppResult<IndexerSearchResponse> {
         Ok(IndexerSearchResponse {
@@ -296,6 +299,7 @@ impl IndexerClient for SharedUrlMovieIndexerClient {
         _episode: Option<u32>,
         _absolute_episode: Option<u32>,
         _tagged_aliases: Vec<TaggedAlias>,
+        _learning_context: Option<crate::IndexerSearchLearningContext>,
         _cancel_token: tokio_util::sync::CancellationToken,
     ) -> AppResult<IndexerSearchResponse> {
         let query = query.trim();
@@ -401,6 +405,7 @@ impl IndexerClient for RecordingCategoriesIndexerClient {
         _episode: Option<u32>,
         _absolute_episode: Option<u32>,
         _tagged_aliases: Vec<TaggedAlias>,
+        _learning_context: Option<crate::IndexerSearchLearningContext>,
         _cancel_token: tokio_util::sync::CancellationToken,
     ) -> AppResult<IndexerSearchResponse> {
         self.calls.lock().await.push(RecordedSearchCall {
@@ -463,6 +468,7 @@ impl IndexerClient for RecordingStructuredQueryIndexerClient {
         episode: Option<u32>,
         absolute_episode: Option<u32>,
         _tagged_aliases: Vec<TaggedAlias>,
+        _learning_context: Option<crate::IndexerSearchLearningContext>,
         _cancel_token: tokio_util::sync::CancellationToken,
     ) -> AppResult<IndexerSearchResponse> {
         self.calls.lock().await.push(RecordedStructuredQueryCall {
@@ -511,6 +517,7 @@ impl IndexerClient for MultiReleaseIndexerClient {
         _episode: Option<u32>,
         _absolute_episode: Option<u32>,
         _tagged_aliases: Vec<TaggedAlias>,
+        _learning_context: Option<crate::IndexerSearchLearningContext>,
         _cancel_token: tokio_util::sync::CancellationToken,
     ) -> AppResult<IndexerSearchResponse> {
         Ok(IndexerSearchResponse {
