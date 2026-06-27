@@ -15,24 +15,38 @@ export function SetupProgressBar({ currentStep, stepLabels }: SetupProgressBarPr
           <div key={label} className="flex items-center gap-2">
             {index > 0 && (
               <div
-                className={`h-px w-8 ${isComplete ? "bg-emerald-500" : "bg-muted"}`}
+                className="h-px w-8 rounded-full"
+                style={{
+                  background: isComplete
+                    ? "var(--scry-accent)"
+                    : "var(--scry-border2)",
+                }}
               />
             )}
             <div className="flex items-center gap-1.5">
               <div
-                className={`flex h-6 w-6 items-center justify-center rounded-full text-xs font-medium ${
+                className={`flex h-6 w-6 items-center justify-center rounded-full text-xs font-semibold ${
                   isComplete
-                    ? "bg-emerald-600 text-white"
+                    ? "text-white shadow-[0_6px_16px_rgba(var(--scry-accent-rgb),0.4)]"
                     : isCurrent
-                      ? "bg-primary text-primary-foreground"
-                      : "bg-muted text-muted-foreground"
+                      ? "border border-[var(--scry-baccent)] bg-[rgba(var(--scry-accent-rgb),0.14)] text-[var(--scry-accent-text)]"
+                      : "bg-[var(--scry-chip)] text-[var(--scry-muted2)]"
                 }`}
+                style={
+                  isComplete
+                    ? { backgroundImage: "var(--scry-accent-grad)" }
+                    : undefined
+                }
               >
                 {isComplete ? <Check className="h-3.5 w-3.5" /> : index + 1}
               </div>
               <span
                 className={`text-xs ${
-                  isCurrent ? "font-medium text-foreground" : "text-muted-foreground"
+                  isCurrent
+                    ? "font-semibold text-[var(--scry-ink2)]"
+                    : isComplete
+                      ? "text-[var(--scry-text2)]"
+                      : "text-[var(--scry-muted)]"
                 }`}
               >
                 {label}

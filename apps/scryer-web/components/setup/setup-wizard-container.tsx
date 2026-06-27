@@ -48,6 +48,7 @@ import type {
 } from "@/lib/types/external-import";
 import type { ProviderTypeInfo } from "@/lib/types";
 
+import ScryerLogo from "@/components/scryer-logo";
 import { SetupProgressBar } from "./setup-progress-bar";
 import { SetupWelcomeView } from "./setup-welcome-view";
 import { SetupPersonaView } from "./setup-persona-view";
@@ -1394,6 +1395,13 @@ export function SetupWizardContainer({
         isWideImportStep ? "max-w-6xl" : "max-w-2xl"
       }`}
     >
+      <div className="mb-8 flex items-center gap-2.5">
+        <ScryerLogo className="h-9 w-9" />
+        <span className="font-[var(--font-space-grotesk)] text-lg font-bold tracking-tight text-[var(--scry-ink2)]">
+          Scryer
+        </span>
+      </div>
+
       {currentStep > 0 && (
         <div className="mb-8 w-full">
           <SetupProgressBar
