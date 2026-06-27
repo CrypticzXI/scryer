@@ -45,9 +45,6 @@ const SettingsDelayProfilesContainer = lazy(async () => ({
 const SettingsQualityProfilesContainer = lazy(async () => ({
   default: (await import("@/components/containers/settings/settings-quality-profiles-container")).SettingsQualityProfilesContainer,
 }));
-const SettingsAcquisitionContainer = lazy(async () => ({
-  default: (await import("@/components/containers/settings/settings-acquisition-container")).SettingsAcquisitionContainer,
-}));
 const SettingsProfileContainer = lazy(async () => ({
   default: (await import("@/components/containers/settings/settings-profile-container")).SettingsProfileContainer,
 }));
@@ -132,23 +129,21 @@ export const SettingsContainer = memo(function SettingsContainer({
                   ? t("settings.indexers")
                   : settingsSection === "downloadClients"
                     ? t("settings.downloadClients")
-                    : settingsSection === "acquisition"
-                      ? t("settings.acquisition")
-                      : settingsSection === "rules"
-                        ? t("settings.rules")
-                        : settingsSection === "plugins"
-                          ? t("settings.plugins")
-                          : settingsSection === "notifications"
-                            ? t("settings.notifications")
-                            : settingsSection === "post-processing"
-                              ? t("settings.postProcessing")
-                              : settingsSection === "subtitles"
-                                ? t("settings.subtitles")
-                                : settingsSection === "recycleBin"
-                                  ? t("settings.recycleBin")
-                                  : settingsSection === "delayProfiles"
-                                    ? t("settings.delayProfiles")
-                                    : t("settings.qualityProfiles");
+                    : settingsSection === "rules"
+                      ? t("settings.rules")
+                      : settingsSection === "plugins"
+                        ? t("settings.plugins")
+                        : settingsSection === "notifications"
+                          ? t("settings.notifications")
+                          : settingsSection === "post-processing"
+                            ? t("settings.postProcessing")
+                            : settingsSection === "subtitles"
+                              ? t("settings.subtitles")
+                              : settingsSection === "recycleBin"
+                                ? t("settings.recycleBin")
+                                : settingsSection === "delayProfiles"
+                                  ? t("settings.delayProfiles")
+                                  : t("settings.qualityProfiles");
   const primarySettingsNav = [
     {
       section: "profile" as const,
@@ -318,8 +313,6 @@ export const SettingsContainer = memo(function SettingsContainer({
             <SettingsDownloadClientsContainer
               providerCatalogVersion={providerCatalogVersions.download_client}
             />
-          ) : settingsSection === "acquisition" ? (
-            <SettingsAcquisitionContainer />
           ) : settingsSection === "rules" ? (
             <SettingsRulesContainer />
           ) : settingsSection === "plugins" ? (

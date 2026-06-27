@@ -32,6 +32,37 @@ async fn graphql_media_settings_rejects_invalid_folder_template_tokens() {
 }
 
 #[tokio::test]
+async fn graphql_media_settings_rejects_invalid_rename_template_tokens() {
+    let ctx = TestContext::new().await;
+    seed_typed_settings_definitions(&ctx).await;
+    let body = gql(
+        &ctx,
+        r#"
+        mutation UpdateMediaSettings($input: UpdateMediaSettingsInput!) {
+          updateMediaSettings(input: $input) {
+            scope
+            renameTemplate
+          }
+        }
+        "#,
+        json!({
+          "input": {
+            "scope": "movie",
+            "renameTemplate": "{title|truncate:0}.{ext}"
+          }
+        }),
+    )
+    .await;
+
+    let errors = body["errors"]
+        .as_array()
+        .expect("invalid rename template should return graphql errors");
+    assert!(!errors.is_empty());
+    let message = errors[0]["message"].as_str().unwrap_or_default();
+    assert!(message.contains("unsupported rename template token"));
+}
+
+#[tokio::test]
 async fn graphql_typed_media_settings_round_trip() {
     let ctx = TestContext::new().await;
     seed_typed_settings_definitions(&ctx).await;
@@ -67,9 +98,9 @@ async fn graphql_typed_media_settings_round_trip() {
               { "path": "/library/anime-archive", "isDefault": false }
             ],
             "requiredAudioLanguages": ["eng", "jpn"],
-            "folderTemplate": "{title} ({year})",
+            "folderTemplate": "{title|truncate:64|space:_} ({year})",
             "renameEnabled": false,
-            "renameTemplate": "{title} [{quality}].{ext}",
+            "renameTemplate": "{title|truncate:64|space:_} [{quality}].{ext}",
             "renameCollisionPolicy": "replace_if_better",
             "renameMissingMetadataPolicy": "skip",
             "fillerPolicy": "skip_filler",
@@ -92,9 +123,15 @@ async fn graphql_typed_media_settings_round_trip() {
     assert_eq!(updated["rootFolders"][0]["isDefault"], true);
     assert_eq!(updated["requiredAudioLanguages"][0], "eng");
     assert_eq!(updated["requiredAudioLanguages"][1], "jpn");
-    assert_eq!(updated["folderTemplate"], "{title} ({year})");
+    assert_eq!(
+        updated["folderTemplate"],
+        "{title|truncate:64|space:_} ({year})"
+    );
     assert_eq!(updated["renameEnabled"], false);
-    assert_eq!(updated["renameTemplate"], "{title} [{quality}].{ext}");
+    assert_eq!(
+        updated["renameTemplate"],
+        "{title|truncate:64|space:_} [{quality}].{ext}"
+    );
     assert_eq!(updated["renameCollisionPolicy"], "replace_if_better");
     assert_eq!(updated["renameMissingMetadataPolicy"], "skip");
     assert_eq!(updated["fillerPolicy"], "skip_filler");
@@ -140,9 +177,15 @@ async fn graphql_typed_media_settings_round_trip() {
     assert_eq!(settings["rootFolders"][1]["path"], "/library/anime-archive");
     assert_eq!(settings["requiredAudioLanguages"][0], "eng");
     assert_eq!(settings["requiredAudioLanguages"][1], "jpn");
-    assert_eq!(settings["folderTemplate"], "{title} ({year})");
+    assert_eq!(
+        settings["folderTemplate"],
+        "{title|truncate:64|space:_} ({year})"
+    );
     assert_eq!(settings["renameEnabled"], false);
-    assert_eq!(settings["renameTemplate"], "{title} [{quality}].{ext}");
+    assert_eq!(
+        settings["renameTemplate"],
+        "{title|truncate:64|space:_} [{quality}].{ext}"
+    );
     assert_eq!(settings["renameCollisionPolicy"], "replace_if_better");
     assert_eq!(settings["renameMissingMetadataPolicy"], "skip");
     assert_eq!(settings["fillerPolicy"], "skip_filler");

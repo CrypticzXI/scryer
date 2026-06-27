@@ -9,7 +9,9 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 import {
+  applyRenameTokenFilters,
   applyRenameTemplatePreview,
+  parseRenameTemplateTokenSpec,
   splitRenameTemplateSegments,
   validateRenameTemplateSyntax,
   type RenameTemplateSegment,
@@ -159,9 +161,14 @@ function validateFolderTemplate(
       if (inner.includes("{")) {
         return t("settings.renameValidationUnmatchedOpen");
       }
-      const tokenName = inner.includes(":") ? inner.split(":")[0] : inner;
-      if (!VALID_FOLDER_TOKENS.has(tokenName)) {
-        return t("settings.folderValidationUnknownToken", { token: tokenName });
+      const parsed = parseRenameTemplateTokenSpec(inner);
+      if (!parsed.ok) {
+        return parsed.kind === "invalidFilter"
+          ? t("settings.renameValidationInvalidFilter", { filter: parsed.value })
+          : t("settings.folderValidationUnknownToken", { token: parsed.value });
+      }
+      if (!VALID_FOLDER_TOKENS.has(parsed.spec.lookupName)) {
+        return t("settings.folderValidationUnknownToken", { token: parsed.spec.tokenName });
       }
       i = closeIndex + 1;
     } else if (template[i] === "}") {
@@ -228,15 +235,13 @@ function applyFolderTemplate(template: string, scopeId: ViewCategoryId): string 
       if (closeIndex === -1) return null;
       const inner = template.slice(i + 1, closeIndex);
       if (inner.includes("{")) return null;
-      const colonIdx = inner.indexOf(":");
-      const tokenName = colonIdx >= 0 ? inner.slice(0, colonIdx) : inner;
-      const padWidth = colonIdx >= 0 ? parseInt(inner.slice(colonIdx + 1), 10) : 0;
-      if (!VALID_FOLDER_TOKENS.has(tokenName)) return null;
-      let value = sampleValues[tokenName] ?? tokenName;
-      if (padWidth > 0 && /^\d+$/.test(value)) {
-        value = value.padStart(padWidth, "0");
+      const parsed = parseRenameTemplateTokenSpec(inner);
+      if (!parsed.ok || !VALID_FOLDER_TOKENS.has(parsed.spec.lookupName)) return null;
+      let value = sampleValues[parsed.spec.lookupName] ?? parsed.spec.tokenName;
+      if (parsed.spec.padWidth > 0 && /^\d+$/.test(value)) {
+        value = value.padStart(parsed.spec.padWidth, "0");
       }
-      result += value;
+      result += applyRenameTokenFilters(value, parsed.spec.filters);
       i = closeIndex + 1;
     } else if (template[i] === "}") {
       return null;
@@ -261,7 +266,10 @@ function splitFolderTemplateSegments(template: string): RenameTemplateSegment[] 
       const closeIndex = template.indexOf("}", cursor + 1);
       if (closeIndex !== -1) {
         const inner = template.slice(cursor + 1, closeIndex);
-        if (!inner.includes("{")) {
+        const parsed = inner.includes("{")
+          ? null
+          : parseRenameTemplateTokenSpec(inner);
+        if (parsed?.ok && VALID_FOLDER_TOKENS.has(parsed.spec.lookupName)) {
           segments.push({
             text: template.slice(cursor, closeIndex + 1),
             isToken: true,

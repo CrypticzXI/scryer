@@ -1706,10 +1706,13 @@ fn build_title_catalog_order_sql(
         SortDirection::Desc => "DESC",
     };
     match sort.key {
-        TitleCatalogSortKey::Title => format!(
-            "ORDER BY LOWER(COALESCE(NULLIF(TRIM(sort_title), ''), name)) {direction}, \
-             CASE WHEN year IS NULL THEN 1 ELSE 0 END ASC, year {direction}, id {direction}"
-        ),
+        TitleCatalogSortKey::Title => {
+            let title_expression = title_catalog_name_sort_expression_sql();
+            format!(
+                "ORDER BY {title_expression} {direction}, LOWER(TRIM(name)) {direction}, \
+                 CASE WHEN year IS NULL THEN 1 ELSE 0 END ASC, year {direction}, id {direction}"
+            )
+        }
         TitleCatalogSortKey::Library => format!(
             "ORDER BY LOWER(COALESCE(NULLIF(TRIM(title_catalog_library.sort_library_name), ''), titles.library_id)) {direction}, {}",
             title_catalog_ascending_tie_order_sql()
@@ -1763,9 +1766,46 @@ fn build_title_catalog_order_sql(
     }
 }
 
-fn title_catalog_ascending_tie_order_sql() -> &'static str {
-    "LOWER(COALESCE(NULLIF(TRIM(sort_title), ''), name)) ASC, \
-     CASE WHEN year IS NULL THEN 1 ELSE 0 END ASC, year ASC, id ASC"
+const TITLE_CATALOG_WORD_ARTICLES: &[&str] = &[
+    "a", "an", "the", "el", "la", "lo", "los", "las", "un", "una", "unos", "unas", "le",
+    "les", "une", "des", "il", "gli", "uno", "der", "die", "das", "den", "dem", "ein",
+    "eine", "einen", "einem", "einer", "eines", "de", "het", "een", "o", "os", "as", "um",
+    "uma", "uns", "umas", "en", "et", "ett", "det", "els", "uns", "unes",
+];
+
+const TITLE_CATALOG_PREFIX_ARTICLES: &[&str] = &["l'", "l’", "al-"];
+
+fn sql_string_literal(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
+}
+
+fn title_catalog_name_sort_expression_sql() -> String {
+    let normalized_name = "LOWER(TRIM(name))";
+    let mut expression = String::from("CASE");
+    for article in TITLE_CATALOG_WORD_ARTICLES {
+        let start = article.chars().count() + 2;
+        expression.push_str(&format!(
+            " WHEN {normalized_name} LIKE {} THEN TRIM(SUBSTR({normalized_name}, {start}))",
+            sql_string_literal(&format!("{article} %")),
+        ));
+    }
+    for article in TITLE_CATALOG_PREFIX_ARTICLES {
+        let start = article.chars().count() + 1;
+        expression.push_str(&format!(
+            " WHEN {normalized_name} LIKE {} THEN TRIM(SUBSTR({normalized_name}, {start}))",
+            sql_string_literal(&format!("{article}%")),
+        ));
+    }
+    expression.push_str(&format!(" ELSE {normalized_name} END"));
+    expression
+}
+
+fn title_catalog_ascending_tie_order_sql() -> String {
+    format!(
+        "{} ASC, LOWER(TRIM(name)) ASC, \
+         CASE WHEN year IS NULL THEN 1 ELSE 0 END ASC, year ASC, id ASC",
+        title_catalog_name_sort_expression_sql()
+    )
 }
 
 fn nullable_text_missing_direction(direction: SortDirection) -> &'static str {

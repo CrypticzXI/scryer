@@ -511,6 +511,7 @@ impl AppUseCase {
         }
 
         if let Some(rename_template) = normalize_optional_string(input.rename_template) {
+            crate::validate_rename_template(&rename_template)?;
             self.services
                 .config
                 .settings

@@ -533,6 +533,50 @@ mod catalog_artifact_selection_tests {
 
         assert_eq!(selected_release.version, "1.0.0");
     }
+
+    #[test]
+    fn catalog_selection_checks_all_releases_before_picking_highest_compatible() {
+        let mut newest_incompatible_first = release(vec![artifact(
+            &[],
+            "https://example.invalid/plugin-v3.zst",
+        )]);
+        newest_incompatible_first.version = "3.0.0".to_string();
+        newest_incompatible_first.min_scryer_version = Some("999.0.0".to_string());
+
+        let older_compatible =
+            release(vec![artifact(&[], "https://example.invalid/plugin-v1.zst")]);
+
+        let mut incompatible_after_compatible = release(vec![artifact(
+            &[],
+            "https://example.invalid/plugin-v4.zst",
+        )]);
+        incompatible_after_compatible.version = "4.0.0".to_string();
+        incompatible_after_compatible.min_scryer_version = Some("999.0.0".to_string());
+
+        let mut highest_compatible =
+            release(vec![artifact(&[], "https://example.invalid/plugin-v2.zst")]);
+        highest_compatible.version = "2.0.0".to_string();
+
+        let plugin = plugin(vec![
+            newest_incompatible_first,
+            older_compatible,
+            incompatible_after_compatible,
+            highest_compatible,
+        ]);
+
+        let (selected_release, selected_artifact) = select_catalog_release_and_artifact(
+            &plugin,
+            &HashSet::new(),
+            RuntimePerformanceClass::Slow,
+        )
+        .expect("compatible release");
+
+        assert_eq!(selected_release.version, "2.0.0");
+        assert_eq!(
+            selected_artifact.url,
+            "https://example.invalid/plugin-v2.zst"
+        );
+    }
 }
 
 #[cfg(test)]

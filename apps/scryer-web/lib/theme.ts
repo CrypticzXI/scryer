@@ -1,4 +1,4 @@
-export const SELECTABLE_THEMES = ["light", "dark", "pride"] as const;
+export const SELECTABLE_THEMES = ["light", "dark"] as const;
 
 export const THEME_CYCLE_ORDER = [...SELECTABLE_THEMES, "system"] as const;
 

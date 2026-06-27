@@ -1,5 +1,6 @@
 import * as React from "react";
 import type { LucideIcon } from "lucide-react";
+import { useClient } from "urql";
 import type {
   ActivitySection,
   ContentSettingsSection,
@@ -43,7 +44,6 @@ import {
   Monitor,
   Moon,
   Puzzle,
-  Rainbow,
   Server,
   Settings2,
   Shield,
@@ -58,7 +58,14 @@ import { getNextTheme } from "@/lib/theme";
 import { cn } from "@/lib/utils";
 import type { PendingImportCounts } from "@/lib/types";
 import { pendingImportCountForView } from "@/lib/types";
+import { setMyUiSettingsMutation } from "@/lib/graphql/mutations";
+import { useGlobalStatus } from "@/lib/context/global-status-context";
+import {
+  useUiSettings,
+  uiSettingsInputFromSettings,
+} from "@/lib/context/ui-settings-context";
 import type { AuthUser } from "@/lib/hooks/use-auth";
+import type { UiSettings } from "@/lib/types/settings";
 import {
   APP_PERMISSIONS,
   LIBRARY_PERMISSIONS,
@@ -308,11 +315,6 @@ const settingsEntries: Array<{
     requiredAnyAppPermission: [APP_PERMISSIONS.manageCatalogSettings],
   },
   {
-    id: "acquisition",
-    label: (t) => t("settings.acquisition"),
-    requiredAnyAppPermission: [APP_PERMISSIONS.manageCatalogSettings],
-  },
-  {
     id: "plugins",
     label: (t) => t("settings.plugins"),
     icon: Puzzle,
@@ -480,7 +482,7 @@ function getThemeLabel(theme: string | undefined, t: Translate): string {
     case "dark":
       return t("theme.dark");
     case "pride":
-      return t("theme.pride");
+      return t("theme.dark");
     default:
       return t("theme.system");
   }
@@ -505,15 +507,70 @@ function RootSidebarContent({
   children,
   onNavigate,
 }: RootSidebarProps) {
+  const client = useClient();
   const t = useTranslate();
+  const setGlobalStatus = useGlobalStatus();
   const { isMobile, setOpenMobile } = useSidebar();
   const { theme, setTheme } = useTheme();
+  const {
+    uiSettings,
+    uiSettingsLoaded,
+    uiSettingsLoading,
+    setUiSettings,
+  } = useUiSettings();
+  const themeSaveSequenceRef = React.useRef(0);
   const [themeMounted, setThemeMounted] = React.useState(false);
   React.useEffect(() => setThemeMounted(true), []);
   const cycleTheme = React.useCallback(() => {
-    setTheme(getNextTheme(theme));
-  }, [theme, setTheme]);
-  const themeLabel = getThemeLabel(theme, t);
+    const nextTheme = getNextTheme(theme);
+    setTheme(nextTheme);
+
+    if (!uiSettingsLoaded || uiSettingsLoading || uiSettings.theme === nextTheme) {
+      return;
+    }
+
+    const requestId = themeSaveSequenceRef.current + 1;
+    themeSaveSequenceRef.current = requestId;
+    const previous = uiSettings;
+    const next: UiSettings = { ...uiSettings, theme: nextTheme };
+    setUiSettings(next);
+    void client
+      .mutation<{ setMyUiSettings?: UiSettings }, { input: UiSettings }>(
+        setMyUiSettingsMutation,
+        { input: uiSettingsInputFromSettings(next) },
+      )
+      .toPromise()
+      .then((result) => {
+        if (themeSaveSequenceRef.current !== requestId) return;
+        if (result.error || !result.data?.setMyUiSettings) {
+          setUiSettings(previous);
+          setTheme(previous.theme);
+          setGlobalStatus(result.error?.message ?? t("status.failedToUpdate"));
+          return;
+        }
+        setUiSettings(result.data.setMyUiSettings);
+      })
+      .catch((error) => {
+        if (themeSaveSequenceRef.current !== requestId) return;
+        setUiSettings(previous);
+        setTheme(previous.theme);
+        setGlobalStatus(
+          error instanceof Error ? error.message : t("status.failedToUpdate"),
+        );
+      });
+  }, [
+    client,
+    setGlobalStatus,
+    setTheme,
+    setUiSettings,
+    t,
+    theme,
+    uiSettings,
+    uiSettingsLoaded,
+    uiSettingsLoading,
+  ]);
+  const displayTheme = theme === "pride" ? "dark" : theme;
+  const themeLabel = getThemeLabel(displayTheme, t);
   const canManageSystemSettings = hasAnyAppPermission(user, [
     APP_PERMISSIONS.manageSystemSettings,
   ]);
@@ -1405,15 +1462,12 @@ function RootSidebarContent({
                 aria-label={t("theme.switchLabel", { theme: themeLabel })}
                 className={cn(
                   "flex min-w-0 shrink-0 items-center gap-1.5 rounded-lg border border-transparent bg-transparent px-2 py-1.5 text-xs font-medium text-[var(--scry-muted)] transition hover:border-[var(--scry-border2)] hover:bg-[var(--scry-hover)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/25",
-                  theme === "pride" && "text-pink-200 hover:text-pink-100",
                 )}
               >
-                {theme === "light" ? (
+                {displayTheme === "light" ? (
                   <Sun className="h-4 w-4" />
-                ) : theme === "dark" ? (
+                ) : displayTheme === "dark" ? (
                   <Moon className="h-4 w-4" />
-                ) : theme === "pride" ? (
-                  <Rainbow className="h-4 w-4" />
                 ) : (
                   <Monitor className="h-4 w-4" />
                 )}

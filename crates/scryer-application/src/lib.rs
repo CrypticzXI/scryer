@@ -241,7 +241,7 @@ pub use library::rename::{
 };
 pub(crate) use library::rename::{
     effective_title_folder_path, normalize_title_folder_template_or_default,
-    validate_title_folder_template,
+    validate_rename_template, validate_title_folder_template,
 };
 pub use media::language::{
     normalize_detected_audio_language_code, normalize_detected_audio_languages,

@@ -751,18 +751,50 @@ fn sort_titles_for_catalog(titles: &mut [Title], sort: TitleCatalogSort) {
 fn compare_titles_by_catalog_title(left: &Title, right: &Title) -> Ordering {
     title_catalog_sort_value(left)
         .cmp(&title_catalog_sort_value(right))
+        .then_with(|| title_catalog_name_tie_value(left).cmp(&title_catalog_name_tie_value(right)))
         .then_with(|| left.year.cmp(&right.year))
         .then_with(|| left.id.cmp(&right.id))
 }
 
 fn title_catalog_sort_value(title: &Title) -> String {
-    title
-        .sort_title
-        .as_deref()
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or(&title.name)
-        .trim()
+    strip_catalog_sort_article(title.name.trim())
+        .trim_start()
         .to_lowercase()
+}
+
+fn title_catalog_name_tie_value(title: &Title) -> String {
+    title.name.trim().to_lowercase()
+}
+
+const TITLE_CATALOG_WORD_ARTICLES: &[&str] = &[
+    "a", "an", "the", "el", "la", "lo", "los", "las", "un", "una", "unos", "unas", "le",
+    "les", "une", "des", "il", "gli", "uno", "der", "die", "das", "den", "dem", "ein",
+    "eine", "einen", "einem", "einer", "eines", "de", "het", "een", "o", "os", "as", "um",
+    "uma", "uns", "umas", "en", "et", "ett", "det", "els", "uns", "unes",
+];
+
+const TITLE_CATALOG_PREFIX_ARTICLES: &[&str] = &["l'", "l’", "al-"];
+
+fn strip_catalog_sort_article(value: &str) -> &str {
+    let lower = value.to_lowercase();
+    for article in TITLE_CATALOG_PREFIX_ARTICLES {
+        if lower.starts_with(article) {
+            return &value[article.len()..];
+        }
+    }
+    let Some((split_index, _)) = value.char_indices().find(|(_, ch)| ch.is_whitespace()) else {
+        return value;
+    };
+    let article = &value[..split_index];
+    let rest = &value[split_index..];
+    if TITLE_CATALOG_WORD_ARTICLES
+        .iter()
+        .any(|candidate| article.eq_ignore_ascii_case(candidate))
+    {
+        rest
+    } else {
+        value
+    }
 }
 
 fn title_catalog_quality_profile_id(title: &Title) -> String {

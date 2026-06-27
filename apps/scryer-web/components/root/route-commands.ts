@@ -12,7 +12,6 @@ import {
   Inbox,
   ListChecks,
   Puzzle,
-  Search,
   Server,
   Settings,
   Shield,
@@ -376,14 +375,6 @@ export function buildRouteCommands({
           keywords: ["settings", "rules", "rego", "opa", "scoring", "custom"],
           icon: SlidersHorizontal,
           onSelect: buildNavigate(onNavigate, "settings", "rules"),
-        } satisfies RouteCommand, {
-          id: "settings-acquisition",
-          label: `${catalogsGroupLabel} / ${t("settings.acquisition")}`,
-          description: t("settings.acquisition"),
-          groupLabel: catalogsGroupLabel,
-          keywords: ["settings", "acquisition", "search", "grab", "release"],
-          icon: Search,
-          onSelect: buildNavigate(onNavigate, "settings", "acquisition"),
         } satisfies RouteCommand, {
           id: "settings-post-processing",
           label: `${catalogsGroupLabel} / ${t("settings.postProcessing")}`,

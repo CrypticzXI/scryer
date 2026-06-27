@@ -2453,12 +2453,18 @@ async fn list_uses_compatible_release_when_newer_release_requires_newer_host() {
     let json = make_raw_catalog_v3_json(&[catalog_entry_with_releases(
         "alpha",
         vec![
-            catalog_v3_release("1.5.0", "https://example.com/alpha-v1_5.wasm.zst", None),
             catalog_v3_release(
-                "2.0.0",
-                "https://example.com/alpha-v2.wasm.zst",
+                "3.0.0",
+                "https://example.com/alpha-v3.wasm.zst",
                 Some("999.0.0"),
             ),
+            catalog_v3_release("1.0.0", "https://example.com/alpha-v1.wasm.zst", None),
+            catalog_v3_release(
+                "4.0.0",
+                "https://example.com/alpha-v4.wasm.zst",
+                Some("999.0.0"),
+            ),
+            catalog_v3_release("1.5.0", "https://example.com/alpha-v1_5.wasm.zst", None),
         ],
     )]);
     h.plugin_repo
@@ -2482,12 +2488,18 @@ async fn list_upgrades_to_compatible_release_when_newer_release_requires_newer_h
     let json = make_raw_catalog_v3_json(&[catalog_entry_with_releases(
         "alpha",
         vec![
-            catalog_v3_release("1.5.0", "https://example.com/alpha-v1_5.wasm.zst", None),
             catalog_v3_release(
-                "2.0.0",
-                "https://example.com/alpha-v2.wasm.zst",
+                "3.0.0",
+                "https://example.com/alpha-v3.wasm.zst",
                 Some("999.0.0"),
             ),
+            catalog_v3_release("1.2.0", "https://example.com/alpha-v1_2.wasm.zst", None),
+            catalog_v3_release(
+                "4.0.0",
+                "https://example.com/alpha-v4.wasm.zst",
+                Some("999.0.0"),
+            ),
+            catalog_v3_release("1.5.0", "https://example.com/alpha-v1_5.wasm.zst", None),
         ],
     )]);
     h.plugin_repo

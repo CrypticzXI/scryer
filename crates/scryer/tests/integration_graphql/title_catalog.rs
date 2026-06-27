@@ -65,6 +65,90 @@ async fn graphql_list_titles_starts_empty() {
     assert_eq!(body["data"]["titles"]["items"].as_array().unwrap().len(), 0);
 }
 
+async fn add_test_title_with_tvdb_id(
+    ctx: &TestContext,
+    name: &str,
+    facet: &str,
+    tvdb_id: &str,
+) -> String {
+    let body = gql(
+        ctx,
+        r#"mutation($input: AddTitleInput!) { addTitle(input: $input) { title { id name } } }"#,
+        json!({
+            "input": {
+                "name": name,
+                "facet": facet,
+                "monitored": true,
+                "tags": [],
+                "externalIds": [{ "source": "tvdb", "value": tvdb_id }]
+            }
+        }),
+    )
+    .await;
+    assert_no_errors(&body);
+    body["data"]["addTitle"]["title"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+async fn set_title_sort_title(ctx: &TestContext, title_id: &str, sort_title: &str) {
+    sqlx::query("UPDATE titles SET sort_title = ? WHERE id = ?")
+        .bind(sort_title)
+        .bind(title_id)
+        .execute(ctx.db.pool())
+        .await
+        .expect("title sort title fixture should update title row");
+}
+
+#[tokio::test]
+async fn graphql_title_sort_uses_visible_name_ignoring_articles() {
+    let ctx = TestContext::new().await;
+    let apothecary_id =
+        add_test_title_with_tvdb_id(&ctx, "The Apothecary Diaries", "anime", "900001").await;
+    let better_id = add_test_title_with_tvdb_id(&ctx, "A Better Tomorrow", "movie", "900002").await;
+    let education_id = add_test_title_with_tvdb_id(&ctx, "An Education", "movie", "900003").await;
+    let fullmetal_id =
+        add_test_title_with_tvdb_id(&ctx, "Fullmetal Alchemist: Brotherhood", "anime", "900004")
+            .await;
+    set_title_sort_title(&ctx, &apothecary_id, "zzzz").await;
+    set_title_sort_title(&ctx, &better_id, "mmmm").await;
+    set_title_sort_title(&ctx, &education_id, "aaaa").await;
+    set_title_sort_title(&ctx, &fullmetal_id, "鋼の錬金術師 fullmetal alchemist").await;
+
+    let body = gql(
+        &ctx,
+        r#"query($limit: Int, $offset: Int, $sort: TitleCatalogSortInput) {
+            titles(limit: $limit, offset: $offset, sort: $sort) {
+                hasMore
+                items { name sortTitle }
+            }
+        }"#,
+        json!({
+            "limit": 4,
+            "offset": 0,
+            "sort": { "key": "title", "direction": "asc" }
+        }),
+    )
+    .await;
+    assert_no_errors(&body);
+    let names: Vec<&str> = body["data"]["titles"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|item| item["name"].as_str())
+        .collect();
+    assert_eq!(
+        names,
+        vec![
+            "The Apothecary Diaries",
+            "A Better Tomorrow",
+            "An Education",
+            "Fullmetal Alchemist: Brotherhood",
+        ]
+    );
+}
+
 #[tokio::test]
 async fn graphql_titles_use_server_pagination_and_sort() {
     let ctx = TestContext::new().await;
