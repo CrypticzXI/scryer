@@ -207,13 +207,13 @@ const TITLE_BULK_POSTER_STACK_SLOTS = [
       "0 16px 34px rgba(0,0,0,0.5), 0 0 0 1.5px var(--scry-accent-ring)",
   },
   {
-    transform: "translateX(-34px) translateY(11px) rotate(-7deg) scale(0.94)",
+    transform: "translateX(-51px) translateY(16px) rotate(-7deg) scale(0.94)",
     zIndex: 2,
     opacity: 0.82,
     boxShadow: "0 12px 26px rgba(0,0,0,0.42)",
   },
   {
-    transform: "translateX(34px) translateY(15px) rotate(7deg) scale(0.88)",
+    transform: "translateX(51px) translateY(23px) rotate(7deg) scale(0.88)",
     zIndex: 1,
     opacity: 0.6,
     boxShadow: "0 10px 22px rgba(0,0,0,0.36)",
@@ -239,14 +239,14 @@ export function TitleBulkPosterStack({
   return (
     <div
       aria-hidden="true"
-      className="relative flex h-[184px] w-full items-center justify-center"
+      className="relative flex h-[276px] w-full items-center justify-center"
     >
       {cards.map((title, index) => {
         const slot = TITLE_BULK_POSTER_STACK_SLOTS[index];
         return (
           <div
             key={title.id}
-            className="absolute h-[166px] w-[124px] overflow-hidden rounded-[13px] border border-white/20"
+            className="absolute h-[249px] w-[186px] overflow-hidden rounded-[20px] border border-white/20"
             style={{
               transform: slot.transform,
               zIndex: slot.zIndex,
@@ -272,8 +272,8 @@ export function TitleBulkPosterStack({
               }}
             />
             {index === 0 ? (
-              <span className="absolute right-2 top-2 flex h-5 w-5 items-center justify-center rounded-full bg-[var(--scry-accent)] shadow-[0_2px_8px_rgba(0,0,0,0.45)]">
-                <Check className="h-3 w-3 text-[#04121f]" strokeWidth={3.4} />
+              <span className="absolute right-3 top-3 flex h-[30px] w-[30px] items-center justify-center rounded-full bg-[var(--scry-accent)] shadow-[0_2px_8px_rgba(0,0,0,0.45)]">
+                <Check className="h-[18px] w-[18px] text-[#04121f]" strokeWidth={3.4} />
               </span>
             ) : null}
           </div>
