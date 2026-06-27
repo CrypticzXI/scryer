@@ -103,6 +103,7 @@ import { PosterGrid } from "./media-content/poster-grid";
 import { TitleTable } from "./media-content/title-table";
 import { CompactTitleTable } from "./media-content/compact-title-table";
 import {
+  TitleBulkPosterStack,
   TitleWorkspaceActionButton,
   TitleWorkspaceActionGrid,
   TitleWorkspaceHero,
@@ -2406,6 +2407,13 @@ export function MediaContentView({
         .length,
     [deferredMonitoredTitles, selectedTitleIds],
   );
+  const bulkPosterStackTitles = React.useMemo(
+    () =>
+      deferredMonitoredTitles
+        .filter((title) => selectedTitleIds.has(title.id))
+        .slice(0, 3),
+    [deferredMonitoredTitles, selectedTitleIds],
+  );
   const selectedOverviewTitle = React.useMemo(
     () =>
       selectedOverviewTitleId
@@ -3258,11 +3266,12 @@ export function MediaContentView({
                         <Button
                           type="button"
                           variant="outline"
-                          className="h-10 w-full rounded-[10px] border-[var(--scry-border2)] bg-[var(--scry-inset)] px-3 text-[13px] shadow-none lg:w-auto"
+                          className="h-10 w-full rounded-[10px] border-[var(--scry-border2)] bg-[var(--scry-inset)] px-3 text-[13px] text-[var(--scry-muted2)] shadow-none transition hover:bg-[var(--scry-hover)] hover:text-[var(--scry-ink2)] lg:w-10 lg:px-0"
                           aria-label={t("title.columns")}
+                          title={t("title.columns")}
                         >
                           <Columns3 className="h-4 w-4" />
-                          <span>{t("title.columns")}</span>
+                          <span className="lg:hidden">{t("title.columns")}</span>
                         </Button>
                       </PopoverTrigger>
                       <PopoverContent
@@ -3597,6 +3606,7 @@ export function MediaContentView({
                     )}
                   >
                     <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-6 p-6 text-center">
+                      <TitleBulkPosterStack titles={bulkPosterStackTitles} />
                       <div className="space-y-1">
                         <div className="text-[17px] font-semibold text-[var(--scry-ink2)]">
                           {t("title.bulkSelectionCount", {
@@ -3611,7 +3621,7 @@ export function MediaContentView({
                         <Button
                           onClick={() => void bulkMonitorTitles(true)}
                           disabled={bulkActionBusy}
-                          className="justify-start gap-2"
+                          className="justify-center gap-2"
                         >
                           <Eye className="h-4 w-4" />
                           {t("title.monitorAction")}
@@ -3620,7 +3630,7 @@ export function MediaContentView({
                           variant="outline"
                           onClick={() => void bulkMonitorTitles(false)}
                           disabled={bulkActionBusy}
-                          className="justify-start gap-2"
+                          className="justify-center gap-2"
                         >
                           <EyeOff className="h-4 w-4" />
                           {t("title.unmonitorAction")}
@@ -3629,7 +3639,7 @@ export function MediaContentView({
                           variant="outline"
                           onClick={openBulkTitleEdit}
                           disabled={bulkActionBusy}
-                          className="justify-start gap-2"
+                          className="justify-center gap-2"
                         >
                           <Pencil className="h-4 w-4" />
                           {t("label.edit")}
@@ -3638,7 +3648,7 @@ export function MediaContentView({
                           variant="destructive"
                           onClick={openBulkTitleDelete}
                           disabled={bulkActionBusy}
-                          className="justify-start gap-2"
+                          className="justify-center gap-2"
                         >
                           <Trash2 className="h-4 w-4" />
                           {t("label.delete")}

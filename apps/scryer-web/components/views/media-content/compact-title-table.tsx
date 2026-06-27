@@ -56,7 +56,6 @@ import {
   TITLE_TABLE_HEADER_CELL_CLASS,
   TITLE_TABLE_HEADER_ROW_CLASS,
   TITLE_TABLE_ROW_CLASS,
-  TITLE_TABLE_SELECTED_ROW_CLASS,
   type TitleTableSortDirection,
   type TitleTableSortKey,
   type TitleTableVisibleColumns,
@@ -619,6 +618,8 @@ export function CompactTitleTable({
     const deleteLoading = isDeletingById[item.id] === true;
     const monitorToggleLoading = isTogglingMonitoredById?.[item.id] === true;
     const isSelected = selectedTitleId === item.id;
+    const isRowHighlighted =
+      isSelected || (selectionMode && selectedTitleIds.has(item.id));
     const addedLabel =
       formatTitleDate(item.createdAt, dateTimeFormat) ?? t("label.unknown");
 
@@ -645,7 +646,7 @@ export function CompactTitleTable({
         <TableRow
           id={titleOverviewRowId(item.id)}
           data-ui="compact-title-table-row"
-          data-selected={isSelected ? "true" : undefined}
+          data-selected={isRowHighlighted ? "true" : undefined}
           aria-selected={selectedPaneMode ? isSelected : undefined}
           aria-current={isSelected ? "true" : undefined}
           aria-controls={selectedContextPanelControlsId}
@@ -658,11 +659,7 @@ export function CompactTitleTable({
           tabIndex={selectedPaneMode ? 0 : undefined}
           onClick={(event) => handleTitleRowClick(event, item)}
           onKeyDown={(event) => handleTitleRowKeyDown(event, item)}
-          className={cn(
-            "h-[70px]",
-            TITLE_TABLE_ROW_CLASS,
-            isSelected && TITLE_TABLE_SELECTED_ROW_CLASS,
-          )}
+          className={cn("h-[70px]", TITLE_TABLE_ROW_CLASS)}
         >
           <TableCell className="align-middle overflow-hidden py-2 pl-4 pr-2">
             <button
@@ -740,7 +737,7 @@ export function CompactTitleTable({
         <TableRow
           id={titleOverviewRowId(item.id)}
           data-ui="compact-title-table-row"
-          data-selected={isSelected ? "true" : undefined}
+          data-selected={isRowHighlighted ? "true" : undefined}
           aria-selected={selectedPaneMode ? isSelected : undefined}
           aria-current={isSelected ? "true" : undefined}
           aria-controls={selectedContextPanelControlsId}
@@ -756,11 +753,7 @@ export function CompactTitleTable({
           className={cn(
             "h-12",
             TITLE_TABLE_ROW_CLASS,
-            isSelected && TITLE_TABLE_SELECTED_ROW_CLASS,
             selectionMode && "cursor-pointer",
-            selectionMode &&
-              selectedTitleIds.has(item.id) &&
-              TITLE_TABLE_SELECTED_ROW_CLASS,
           )}
         >
           <TableCell className="align-middle">

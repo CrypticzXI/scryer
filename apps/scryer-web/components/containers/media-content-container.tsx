@@ -240,6 +240,7 @@ type NormalizedTitleContextDiscoveryItemsInput = {
   facetTerms: string[] | null;
   includeOwned: boolean | null;
   includeUnresolved: boolean | null;
+  includePublic: boolean | null;
   limit: number | null;
   offset: number | null;
 };
@@ -304,6 +305,7 @@ function normalizeTitleContextDiscoveryItemsInput(
     facetTerms: normalizeTitleContextStringArray(input.facetTerms),
     includeOwned: normalizeTitleContextBoolean(input.includeOwned),
     includeUnresolved: normalizeTitleContextBoolean(input.includeUnresolved),
+    includePublic: normalizeTitleContextBoolean(input.includePublic),
     limit: normalizeTitleContextNumber(input.limit),
     offset: normalizeTitleContextNumber(input.offset),
   };
@@ -401,6 +403,8 @@ function isNormalizedTitleContextDiscoveryItemsInput(
       value.includeOwned === null) &&
     (typeof value.includeUnresolved === "boolean" ||
       value.includeUnresolved === null) &&
+    (typeof value.includePublic === "boolean" ||
+      value.includePublic === null) &&
     (typeof value.limit === "number" || value.limit === null) &&
     (typeof value.offset === "number" || value.offset === null)
   );
@@ -556,6 +560,7 @@ function titleContextDiscoveryItemsInput(
     genres: genres.length > 0 ? genres : undefined,
     includeOwned: false,
     includeUnresolved: true,
+    includePublic: true,
     limit: TITLE_CONTEXT_DISCOVERY_ITEMS_LIMIT,
   };
 }

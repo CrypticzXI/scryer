@@ -12,7 +12,7 @@ import type { Facet, TitleRecord } from "../../lib/types/titles.ts";
 
 export type GlobalSearchTabKey = "all" | "library" | "actions" | Facet;
 
-export const GLOBAL_SEARCH_ALL_CATALOG_RESULT_LIMIT = 3;
+export const GLOBAL_SEARCH_ALL_CATALOG_RESULT_LIMIT = 4;
 export const GLOBAL_SEARCH_ALL_METADATA_RESULT_LIMIT = 6;
 export const GLOBAL_SEARCH_ALL_ROUTE_COMMAND_LIMIT = 4;
 export const GLOBAL_SEARCH_ALL_ROUTE_COMMAND_DESKTOP_LIMIT = 6;

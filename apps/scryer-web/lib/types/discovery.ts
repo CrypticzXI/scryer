@@ -94,6 +94,7 @@ export type DiscoveryItemsInput = {
   facetTerms?: string[] | null;
   includeOwned?: boolean | null;
   includeUnresolved?: boolean | null;
+  includePublic?: boolean | null;
   limit?: number | null;
   offset?: number | null;
 };

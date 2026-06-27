@@ -55,7 +55,6 @@ import {
   TITLE_TABLE_HEADER_CELL_CLASS,
   TITLE_TABLE_HEADER_ROW_CLASS,
   TITLE_TABLE_ROW_CLASS,
-  TITLE_TABLE_SELECTED_ROW_CLASS,
   DEFAULT_TITLE_TABLE_VISIBLE_COLUMNS,
   type TitleTableSortDirection,
   type TitleTableSortKey,
@@ -586,6 +585,8 @@ export function TitleTable({
     const posterThumbUrl = selectPosterVariantUrl(item.posterUrl, "w70");
     const posterActionIconClassName = "h-3.5 w-3.5";
     const isSelected = selectedTitleId === item.id;
+    const isRowHighlighted =
+      isSelected || (selectionMode && selectedTitleIds.has(item.id));
     const contextPanelControlsId = onSelectTitle ? contextPanelId : undefined;
     const selectedContextPanelControlsId = isSelected
       ? contextPanelControlsId
@@ -598,7 +599,7 @@ export function TitleTable({
         <TableRow
           id={titleOverviewRowId(item.id)}
           data-ui="title-table-row"
-          data-selected={isSelected ? "true" : undefined}
+          data-selected={isRowHighlighted ? "true" : undefined}
           aria-selected={onSelectTitle ? isSelected : undefined}
           aria-current={isSelected ? "true" : undefined}
           aria-controls={selectedContextPanelControlsId}
@@ -612,11 +613,7 @@ export function TitleTable({
           className={cn(
             "h-[4.75rem]",
             TITLE_TABLE_ROW_CLASS,
-            isSelected && TITLE_TABLE_SELECTED_ROW_CLASS,
             selectionMode && "cursor-pointer",
-            selectionMode &&
-              selectedTitleIds.has(item.id) &&
-              TITLE_TABLE_SELECTED_ROW_CLASS,
           )}
         >
           <TableCell className="align-middle">

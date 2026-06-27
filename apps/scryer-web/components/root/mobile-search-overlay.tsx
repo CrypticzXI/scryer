@@ -56,6 +56,7 @@ import { useSearchContext } from "@/lib/context/search-context";
 import { selectPosterVariantUrl } from "@/lib/utils/poster-images";
 import {
   globalSearchMetadataResultId,
+  selectorId,
 } from "@/lib/utils/dom-ids";
 import {
   AddToCatalogDialog,
@@ -708,6 +709,7 @@ export function MobileSearchOverlay({
 
       return (
         <SearchCatalogResultButton
+          id={selectorId("global-search-catalog-result", facet, title.id)}
           key={title.id}
           onClick={() => {
             resetGlobalSearch();
@@ -722,6 +724,8 @@ export function MobileSearchOverlay({
           ariaLabel={viewTitleLabel}
           createdAt={title.createdAt}
           emptyLabel={t("label.noArt")}
+          externalIds={title.externalIds}
+          facet={facet}
           facetLabel={facetLabel}
           inLibraryLabel={t("search.inLibrary")}
           metadataFetchedAt={title.metadataFetchedAt}
@@ -735,8 +739,10 @@ export function MobileSearchOverlay({
           resultAttribute="data-mobile-global-search-result"
           secondaryParts={secondaryParts}
           surface="mobile"
+          titleId={title.id}
           titleName={title.name}
           viewLabel={t("search.view")}
+          year={title.year}
         />
       );
     },
@@ -794,9 +800,12 @@ export function MobileSearchOverlay({
           actionKind={actionKind}
           actionTitle={actionTitle}
           facet={facet}
+          imdbId={result.imdbId}
           name={result.name}
           posterUrl={posterUrl}
           resultAttribute="data-mobile-global-search-result"
+          tvdbId={result.tvdbId}
+          year={result.year}
           yearLabel={result.year ? result.year : t("label.yearUnknown")}
         />
       );
@@ -968,7 +977,7 @@ export function MobileSearchOverlay({
 
         <div
           data-slot="mobile-global-search-tabs"
-          className="flex gap-2 overflow-x-auto border-b border-[var(--scry-border)] px-[14px] py-[13px] [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+          className="flex gap-x-5 gap-y-1 overflow-x-auto border-b border-[var(--scry-border)] px-[14px] py-2 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
           role="tablist"
           aria-label={t("search.title")}
         >
@@ -985,7 +994,6 @@ export function MobileSearchOverlay({
               onKeyDown={(event) =>
                 handleMobileSearchTabKeyDown(event, tab.key)
               }
-              surface="mobile"
               tab={tab}
             />
           ))}

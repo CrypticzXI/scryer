@@ -1,6 +1,9 @@
 import * as React from "react";
-import { Loader2, X } from "lucide-react";
+import { Check, Loader2, X } from "lucide-react";
 import { cn } from "@/lib/utils";
+
+import { TitlePosterSlot } from "@/components/title-poster-slot";
+import { selectPosterVariantUrl } from "@/lib/utils/poster-images";
 
 export function TitleWorkspaceHero({
   backgroundUrl,
@@ -182,6 +185,100 @@ export function TitleWorkspaceSectionHeader({
         </h3>
       </div>
       {action ? <div className="shrink-0">{action}</div> : null}
+    </div>
+  );
+}
+
+type TitleBulkPosterStackItem = {
+  id: string;
+  name: string;
+  posterUrl?: string | null;
+  posterSourceUrl?: string | null;
+  metadataFetchedAt?: string | null;
+  createdAt?: string | null;
+};
+
+const TITLE_BULK_POSTER_STACK_SLOTS = [
+  {
+    transform: "translateX(0) rotate(0deg)",
+    zIndex: 3,
+    opacity: 1,
+    boxShadow:
+      "0 16px 34px rgba(0,0,0,0.5), 0 0 0 1.5px var(--scry-accent-ring)",
+  },
+  {
+    transform: "translateX(-34px) translateY(11px) rotate(-7deg) scale(0.94)",
+    zIndex: 2,
+    opacity: 0.82,
+    boxShadow: "0 12px 26px rgba(0,0,0,0.42)",
+  },
+  {
+    transform: "translateX(34px) translateY(15px) rotate(7deg) scale(0.88)",
+    zIndex: 1,
+    opacity: 0.6,
+    boxShadow: "0 10px 22px rgba(0,0,0,0.36)",
+  },
+] as const;
+
+/**
+ * Fanned, art-only poster stack for the bulk multi-select panel. Renders up to
+ * three of the selected titles' posters; the top card sits upright with an
+ * accent ring + check badge and the two behind fan out with rotation. Purely
+ * decorative — the "{n} selected" count beside it is the accessible readout.
+ */
+export function TitleBulkPosterStack({
+  titles,
+}: {
+  titles: ReadonlyArray<TitleBulkPosterStackItem>;
+}) {
+  const cards = titles.slice(0, TITLE_BULK_POSTER_STACK_SLOTS.length);
+  if (cards.length === 0) {
+    return null;
+  }
+
+  return (
+    <div
+      aria-hidden="true"
+      className="relative flex h-[184px] w-full items-center justify-center"
+    >
+      {cards.map((title, index) => {
+        const slot = TITLE_BULK_POSTER_STACK_SLOTS[index];
+        return (
+          <div
+            key={title.id}
+            className="absolute h-[166px] w-[124px] overflow-hidden rounded-[13px] border border-white/20"
+            style={{
+              transform: slot.transform,
+              zIndex: slot.zIndex,
+              opacity: slot.opacity,
+              boxShadow: slot.boxShadow,
+            }}
+          >
+            <TitlePosterSlot
+              src={selectPosterVariantUrl(title.posterUrl, "w250")}
+              sourceSrc={title.posterSourceUrl}
+              metadataFetchedAt={title.metadataFetchedAt}
+              createdAt={title.createdAt}
+              emptyLabel=""
+              alt={title.name}
+              className="h-full w-full object-cover"
+              placeholderClassName="flex h-full w-full items-center justify-center bg-[#0c1322]"
+            />
+            <div
+              className="pointer-events-none absolute inset-0"
+              style={{
+                background:
+                  "linear-gradient(180deg,rgba(255,255,255,0.16) 0%,transparent 36%,rgba(0,0,0,0.32) 72%,rgba(0,0,0,0.62) 100%)",
+              }}
+            />
+            {index === 0 ? (
+              <span className="absolute right-2 top-2 flex h-5 w-5 items-center justify-center rounded-full bg-[var(--scry-accent)] shadow-[0_2px_8px_rgba(0,0,0,0.45)]">
+                <Check className="h-3 w-3 text-[#04121f]" strokeWidth={3.4} />
+              </span>
+            ) : null}
+          </div>
+        );
+      })}
     </div>
   );
 }

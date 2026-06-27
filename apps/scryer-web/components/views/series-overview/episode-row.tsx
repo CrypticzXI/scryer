@@ -490,8 +490,10 @@ export const EpisodeRow = React.memo(function EpisodeRow({
           className="cursor-pointer align-middle text-sm text-card-foreground hover:text-foreground"
           onClick={handleToggleEpisodeDetails}
         >
-          <div className="flex items-center gap-1.5">
-            <span>{episode.title || episode.episodeLabel || "—"}</span>
+          <div className="flex min-w-0 items-center gap-1.5">
+            <span className="min-w-0 break-words">
+              {episode.title || episode.episodeLabel || "—"}
+            </span>
             {episodeTypeBadges}
           </div>
           {episodeRuntime ? (

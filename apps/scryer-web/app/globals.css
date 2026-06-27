@@ -573,6 +573,22 @@ body {
   background: color-mix(in srgb, var(--accent) 42%, transparent);
 }
 
+/*
+ * Selected / multi-selected row highlight. Applied per-cell (not on the <tr>)
+ * so it spans the full row even when the table overflows horizontally — a
+ * <tr> background only paints to the table's visible width, while cells extend
+ * across the full scrolled content. This mirrors the per-cell hover above.
+ */
+[data-ui="title-table-row"][data-selected="true"] > [data-slot="table-cell"],
+[data-ui="compact-title-table-row"][data-selected="true"] > [data-slot="table-cell"] {
+  background: rgba(var(--scry-accent-rgb), 0.12);
+}
+
+[data-ui="title-table-row"][data-selected="true"] > [data-slot="table-cell"]:first-child,
+[data-ui="compact-title-table-row"][data-selected="true"] > [data-slot="table-cell"]:first-child {
+  box-shadow: inset 3px 0 0 var(--scry-accent-ring);
+}
+
 [data-ui="title-table"] [data-ui="title-name"],
 [data-ui="compact-title-table"] [data-ui="title-name"] {
   color: var(--foreground);

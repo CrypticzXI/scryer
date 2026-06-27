@@ -5,15 +5,12 @@ import {
   CircleAlert,
   CircleCheck,
   CircleDashed,
-  Clapperboard,
-  Film,
   ListChecks,
   LoaderCircle,
   PictureInPicture2,
   Sparkles,
   Timer,
   TriangleAlert,
-  Tv,
   X,
   type LucideIcon,
 } from "lucide-react";
@@ -22,6 +19,7 @@ import { useClient } from "urql";
 import { toast } from "@/components/ui/sonner";
 import type { Translate } from "@/components/root/types";
 import { cancelLibraryScanMutation } from "@/lib/graphql/mutations";
+import { facetById } from "@/lib/facets/registry";
 import type { Facet } from "@/lib/types/titles";
 import type { LibraryScanPhaseProgress, LibraryScanProgress } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -38,21 +36,25 @@ type FacetConfig = {
 
 // State colors are literal hex (not yet in the core token set) per the design
 // handoff — promote to --scry-success / --scry-warning / --scry-danger-soft later.
+function navIconForFacet(facet: Facet): LucideIcon {
+  return facetById(facet)?.icon ?? ListChecks;
+}
+
 const FACET_CONFIG: Record<Facet, FacetConfig> = {
   movie: {
-    Icon: Film,
+    Icon: navIconForFacet("movie"),
     rgb: "123,140,255",
     base: "#7b8cff",
     grad: "linear-gradient(90deg,#5b64ff,#7b5bff)",
   },
   series: {
-    Icon: Tv,
+    Icon: navIconForFacet("series"),
     rgb: "92,200,245",
     base: "#5cc8f5",
     grad: "linear-gradient(90deg,#2aa3e0,#5cc8f5)",
   },
   anime: {
-    Icon: Clapperboard,
+    Icon: navIconForFacet("anime"),
     rgb: "199,155,245",
     base: "#c79bf5",
     grad: "linear-gradient(90deg,#9b5bff,#c79bf5)",
@@ -144,16 +146,6 @@ function phaseCountLabel(
     current: done.toLocaleString(),
     total: phase.total.toLocaleString(),
   });
-}
-
-function formatElapsed(ms: number): string {
-  const total = Math.max(0, Math.floor(ms / 1000));
-  const hours = Math.floor(total / 3600);
-  const minutes = Math.floor((total % 3600) / 60);
-  const seconds = total % 60;
-  const mm = String(minutes).padStart(2, "0");
-  const ss = String(seconds).padStart(2, "0");
-  return hours > 0 ? `${hours}:${mm}:${ss}` : `${mm}:${ss}`;
 }
 
 function scanSummaryText(
@@ -369,14 +361,26 @@ export function LibraryScanToast({
   const etaSamplesRef = React.useRef<EtaSample[]>([]);
   const etaSmoothingAtRef = React.useRef<number | null>(null);
 
-  // Tick elapsed time while the scan is live.
+  const mediaAnalysisDone =
+    session.mediaAnalysisProgress.completed +
+    session.mediaAnalysisProgress.failed;
+  const mediaAnalysisTotal = session.mediaAnalysisProgress.total;
+  const mediaAnalysisRemaining = Math.max(
+    0,
+    mediaAnalysisTotal - mediaAnalysisDone,
+  );
+  const mediaAnalysisActive =
+    !terminal && mediaAnalysisTotal > 0 && mediaAnalysisRemaining > 0;
+
+  // Refresh the clock once a second while media analysis runs so the ETA
+  // estimate keeps recomputing.
   React.useEffect(() => {
-    if (terminal) {
+    if (!mediaAnalysisActive) {
       return;
     }
     const timer = window.setInterval(() => setNowMs(Date.now()), 1000);
     return () => window.clearInterval(timer);
-  }, [terminal]);
+  }, [mediaAnalysisActive]);
 
   // Success/canceled auto-dismiss. The remaining time is tracked across pauses
   // so the JS timer stays in sync with the CSS countdown fill (both pause when
@@ -422,17 +426,6 @@ export function LibraryScanToast({
   }, [cancelPending, client, session.sessionId, t]);
 
   // --- Media-analysis ETA estimate (smoothed, from recent throughput) ---
-  const mediaAnalysisDone =
-    session.mediaAnalysisProgress.completed +
-    session.mediaAnalysisProgress.failed;
-  const mediaAnalysisTotal = session.mediaAnalysisProgress.total;
-  const mediaAnalysisRemaining = Math.max(
-    0,
-    mediaAnalysisTotal - mediaAnalysisDone,
-  );
-  const mediaAnalysisActive =
-    !terminal && mediaAnalysisTotal > 0 && mediaAnalysisRemaining > 0;
-
   React.useEffect(() => {
     if (!mediaAnalysisActive) {
       mediaAnalysisStartedAtRef.current = null;
@@ -589,7 +582,6 @@ export function LibraryScanToast({
             ? t("settings.libraryScanFailedSubtitle")
             : t("settings.libraryScanCanceledSubtitle");
 
-  const elapsed = formatElapsed(nowMs - (Date.parse(session.startedAt) || nowMs));
   const etaCountdown =
     smoothedEtaSeconds != null && Number.isFinite(smoothedEtaSeconds)
       ? formatEtaCountdown(smoothedEtaSeconds)
@@ -844,9 +836,11 @@ export function LibraryScanToast({
           <div className="flex items-center gap-2.5">
             {visualState === "scanning" ? (
               <>
-                <span className="text-xs font-semibold tabular-nums text-[var(--scry-muted2)]">
-                  {etaCountdown ?? elapsed}
-                </span>
+                {etaCountdown ? (
+                  <span className="text-xs font-semibold tabular-nums text-[var(--scry-muted2)]">
+                    {etaCountdown}
+                  </span>
+                ) : null}
                 <LoaderCircle
                   className="h-4 w-4 animate-spin"
                   style={{ color: facet.base }}

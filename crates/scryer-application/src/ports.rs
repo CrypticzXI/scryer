@@ -7,6 +7,7 @@ use scryer_plugin_sdk::{SubtitleSyncAlignResponse, SubtitleSyncAudioCodec, Subti
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use unicode_normalization::UnicodeNormalization;
 
 pub const NOTIFICATION_REQUEST_SCHEMA_VERSION: u32 = 1;
 const TITLE_QUALITY_PROFILE_TAG_PREFIX: &str = "scryer:quality-profile:";
@@ -757,23 +758,38 @@ fn compare_titles_by_catalog_title(left: &Title, right: &Title) -> Ordering {
 }
 
 fn title_catalog_sort_value(title: &Title) -> String {
-    strip_catalog_sort_article(title.name.trim())
+    let normalized_name = title_catalog_cjk_width_normalized_name(&title.name);
+    strip_catalog_sort_article(normalized_name.trim())
         .trim_start()
         .to_lowercase()
 }
 
 fn title_catalog_name_tie_value(title: &Title) -> String {
-    title.name.trim().to_lowercase()
+    title_catalog_cjk_width_normalized_name(&title.name)
+        .trim()
+        .to_lowercase()
 }
 
 const TITLE_CATALOG_WORD_ARTICLES: &[&str] = &[
-    "a", "an", "the", "el", "la", "lo", "los", "las", "un", "una", "unos", "unas", "le",
-    "les", "une", "des", "il", "gli", "uno", "der", "die", "das", "den", "dem", "ein",
-    "eine", "einen", "einem", "einer", "eines", "de", "het", "een", "o", "os", "as", "um",
-    "uma", "uns", "umas", "en", "et", "ett", "det", "els", "uns", "unes",
+    "a", "an", "the", "el", "la", "lo", "los", "las", "un", "una", "unos", "unas", "le", "les",
+    "une", "des", "il", "gli", "uno", "der", "die", "das", "den", "dem", "ein", "eine", "einen",
+    "einem", "einer", "eines", "de", "het", "een", "o", "os", "as", "um", "uma", "uns", "umas",
+    "en", "et", "ett", "det", "els", "unes",
 ];
 
 const TITLE_CATALOG_PREFIX_ARTICLES: &[&str] = &["l'", "l’", "al-"];
+
+fn title_catalog_cjk_width_normalized_name(value: &str) -> String {
+    let mut normalized = String::with_capacity(value.len());
+    for character in value.chars() {
+        if character == '\u{3000}' || ('\u{ff01}'..='\u{ff5e}').contains(&character) {
+            normalized.extend(character.to_string().nfkc());
+        } else {
+            normalized.push(character);
+        }
+    }
+    normalized
+}
 
 fn strip_catalog_sort_article(value: &str) -> &str {
     let lower = value.to_lowercase();

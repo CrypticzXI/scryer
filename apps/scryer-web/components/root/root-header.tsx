@@ -71,9 +71,7 @@ import { useSearchContext } from "@/lib/context/search-context";
 import { cn } from "@/lib/utils";
 import { buildViewPath } from "@/lib/utils/routing";
 import {
-  APP_PERMISSIONS,
   LIBRARY_PERMISSIONS,
-  hasAnyAppPermission,
   hasAnyLibraryPermission,
 } from "@/lib/utils/permissions";
 import {
@@ -358,32 +356,29 @@ export const RootHeader = React.memo(function RootHeader({
 
   const handleOpenAddDialog = React.useCallback(
     (result: MetadataTvdbSearchItem, facet: Facet) => {
-      closeGlobalSearchPanel();
       setAddDialogTarget({ result, facet });
       void ensureCatalogConfigReady(facet);
     },
-    [closeGlobalSearchPanel, ensureCatalogConfigReady],
+    [ensureCatalogConfigReady],
   );
 
   const handleOpenRequestDialog = React.useCallback(
     (result: MetadataTvdbSearchItem, facet: Facet) => {
-      closeGlobalSearchPanel();
       setRequestDialogTarget({ result, facet });
     },
-    [closeGlobalSearchPanel],
+    [],
   );
 
-  const reopenGlobalSearchAfterDialogCancel = React.useCallback(() => {
+  const restoreGlobalSearchInputFocus = React.useCallback(() => {
     if (isMobile || typeof window === "undefined") {
       return;
     }
 
-    openGlobalSearchPanel(true);
     window.requestAnimationFrame(() => {
       globalSearchInputRef.current?.focus();
       globalSearchInputRef.current?.select();
     });
-  }, [globalSearchInputRef, isMobile, openGlobalSearchPanel]);
+  }, [globalSearchInputRef, isMobile]);
 
   const handleAddDialogOpenChange = React.useCallback(
     (open: boolean) => {
@@ -395,9 +390,9 @@ export const RootHeader = React.memo(function RootHeader({
         closingAddDialogAfterSuccessfulActionRef.current = false;
         return;
       }
-      reopenGlobalSearchAfterDialogCancel();
+      restoreGlobalSearchInputFocus();
     },
-    [reopenGlobalSearchAfterDialogCancel],
+    [restoreGlobalSearchInputFocus],
   );
 
   const handleRequestDialogOpenChange = React.useCallback(
@@ -410,9 +405,9 @@ export const RootHeader = React.memo(function RootHeader({
         closingRequestDialogAfterSuccessfulActionRef.current = false;
         return;
       }
-      reopenGlobalSearchAfterDialogCancel();
+      restoreGlobalSearchInputFocus();
     },
-    [reopenGlobalSearchAfterDialogCancel],
+    [restoreGlobalSearchInputFocus],
   );
 
   const handleAddDialogSubmit = React.useCallback(
@@ -1008,6 +1003,8 @@ export const RootHeader = React.memo(function RootHeader({
             ariaLabel={viewTitleLabel}
             createdAt={title.createdAt}
             emptyLabel={t("label.noArt")}
+            externalIds={title.externalIds}
+            facet={facet}
             facetLabel={facetLabel}
             inLibraryLabel={t("search.inLibrary")}
             metadataFetchedAt={title.metadataFetchedAt}
@@ -1021,8 +1018,10 @@ export const RootHeader = React.memo(function RootHeader({
             resultAttribute="data-global-search-result"
             secondaryParts={secondaryParts}
             surface="desktop"
+            titleId={title.id}
             titleName={title.name}
             viewLabel={t("search.view")}
+            year={title.year}
           />
         );
       });
@@ -1156,9 +1155,12 @@ export const RootHeader = React.memo(function RootHeader({
             actionKind={actionKind}
             actionTitle={actionTitle}
             facet={facet}
+            imdbId={result.imdbId}
             name={result.name}
             posterUrl={posterUrl}
             resultAttribute="data-global-search-result"
+            tvdbId={result.tvdbId}
+            year={result.year}
             yearLabel={result.year ? result.year : t("label.yearUnknown")}
           />
         );
@@ -1177,24 +1179,6 @@ export const RootHeader = React.memo(function RootHeader({
     ],
   );
   const accountInitial = (user?.username.trim().charAt(0) || "?").toUpperCase();
-  const isOperatorAccount = user
-    ? hasAnyAppPermission(user, [
-        APP_PERMISSIONS.manageUsers,
-        APP_PERMISSIONS.managePermissions,
-        APP_PERMISSIONS.manageSystemSettings,
-        APP_PERMISSIONS.manageCatalogSettings,
-      ]) ||
-      hasAnyLibraryPermission(user, LIBRARY_PERMISSIONS.manageTitles) ||
-      hasAnyLibraryPermission(user, LIBRARY_PERMISSIONS.manageLibrary) ||
-      hasAnyLibraryPermission(user, LIBRARY_PERMISSIONS.resolveImports)
-    : false;
-  const accountRoleLabel = isOperatorAccount
-    ? t("profile.operator")
-    : t("profile.member");
-  const accountKindLabel =
-    user?.accountKind === "external_auto_provisioned"
-      ? t("profile.externalAccount")
-      : t("profile.localAccount");
 
   return (
     <>
@@ -1349,7 +1333,7 @@ export const RootHeader = React.memo(function RootHeader({
                           </button>
                         </div>
                         <div
-                          className="flex gap-2 overflow-x-auto border-b border-[var(--scry-border)] px-[18px] py-[13px] [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+                          className="flex gap-x-5 gap-y-1 overflow-x-auto border-b border-[var(--scry-border)] px-[18px] py-2 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
                           role="tablist"
                           aria-label={t("search.title")}
                         >
@@ -1366,7 +1350,6 @@ export const RootHeader = React.memo(function RootHeader({
                               onKeyDown={(event) =>
                                 handleDesktopSearchTabKeyDown(event, tab.key)
                               }
-                              surface="desktop"
                               tab={tab}
                             />
                           ))}
@@ -1434,7 +1417,7 @@ export const RootHeader = React.memo(function RootHeader({
                                         : t("search.noCatalogMatches")}
                                     </p>
                                   ) : (
-                                    <div className="flex flex-col gap-3">
+                                    <div className="grid gap-3 xl:grid-cols-2">
                                       {visibleCatalogResults.flatMap(
                                         ({ facet, title }) =>
                                           renderCatalogSection([title], facet),
@@ -1629,9 +1612,6 @@ export const RootHeader = React.memo(function RootHeader({
                     <span className="max-w-32 truncate text-[12.5px] font-semibold text-[var(--scry-ink2)]">
                       {user.username}
                     </span>
-                    <span className="text-[10.5px] font-medium text-[var(--scry-faint)]">
-                      {accountRoleLabel}
-                    </span>
                   </span>
                   <ChevronsUpDown className="h-4 w-4 text-[var(--scry-faint)]" />
                 </Button>
@@ -1646,14 +1626,6 @@ export const RootHeader = React.memo(function RootHeader({
                   <p className="truncate text-sm font-medium text-foreground">
                     {user.username}
                   </p>
-                  <div className="mt-1 flex min-w-0 flex-wrap items-center gap-1.5">
-                    <span className="rounded-md bg-[rgba(var(--scry-accent-rgb),0.16)] px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-[var(--scry-accent-text)]">
-                      {accountRoleLabel}
-                    </span>
-                    <span className="rounded-md bg-[var(--scry-kbdbg)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--scry-muted)]">
-                      {accountKindLabel}
-                    </span>
-                  </div>
                 </div>
                 <div className="space-y-1 pt-2">
                   <Button

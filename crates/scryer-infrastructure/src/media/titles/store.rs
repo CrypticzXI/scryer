@@ -13,6 +13,7 @@ use scryer_domain::{ExternalId, MediaFacet, Title};
 use serde::de::DeserializeOwned;
 use serde_json::Value as JsonValue;
 use sqlx::{QueryBuilder, Row, Sqlite, postgres::PgRow};
+use unicode_normalization::UnicodeNormalization;
 
 use crate::queries::{
     common::parse_utc_datetime,
@@ -1708,8 +1709,9 @@ fn build_title_catalog_order_sql(
     match sort.key {
         TitleCatalogSortKey::Title => {
             let title_expression = title_catalog_name_sort_expression_sql();
+            let title_tie_expression = title_catalog_normalized_name_tie_expression_sql();
             format!(
-                "ORDER BY {title_expression} {direction}, LOWER(TRIM(name)) {direction}, \
+                "ORDER BY {title_expression} {direction}, {title_tie_expression} {direction}, \
                  CASE WHEN year IS NULL THEN 1 ELSE 0 END ASC, year {direction}, id {direction}"
             )
         }
@@ -1767,10 +1769,10 @@ fn build_title_catalog_order_sql(
 }
 
 const TITLE_CATALOG_WORD_ARTICLES: &[&str] = &[
-    "a", "an", "the", "el", "la", "lo", "los", "las", "un", "una", "unos", "unas", "le",
-    "les", "une", "des", "il", "gli", "uno", "der", "die", "das", "den", "dem", "ein",
-    "eine", "einen", "einem", "einer", "eines", "de", "het", "een", "o", "os", "as", "um",
-    "uma", "uns", "umas", "en", "et", "ett", "det", "els", "uns", "unes",
+    "a", "an", "the", "el", "la", "lo", "los", "las", "un", "una", "unos", "unas", "le", "les",
+    "une", "des", "il", "gli", "uno", "der", "die", "das", "den", "dem", "ein", "eine", "einen",
+    "einem", "einer", "eines", "de", "het", "een", "o", "os", "as", "um", "uma", "uns", "umas",
+    "en", "et", "ett", "det", "els", "unes",
 ];
 
 const TITLE_CATALOG_PREFIX_ARTICLES: &[&str] = &["l'", "l’", "al-"];
@@ -1779,8 +1781,36 @@ fn sql_string_literal(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
 }
 
+fn title_catalog_cjk_width_normalization_chars() -> impl Iterator<Item = char> {
+    std::iter::once('\u{3000}').chain('\u{ff01}'..='\u{ff5e}')
+}
+
+fn title_catalog_normalized_name_expression_sql() -> String {
+    let mut expression = "name".to_string();
+    for value in title_catalog_cjk_width_normalization_chars() {
+        let source = value.to_string();
+        let replacement = source.nfkc().collect::<String>();
+        if source == replacement {
+            continue;
+        }
+        expression = format!(
+            "REPLACE({expression}, {}, {})",
+            sql_string_literal(&source),
+            sql_string_literal(&replacement),
+        );
+    }
+    expression
+}
+
+fn title_catalog_normalized_name_tie_expression_sql() -> String {
+    format!(
+        "LOWER(TRIM({}))",
+        title_catalog_normalized_name_expression_sql()
+    )
+}
+
 fn title_catalog_name_sort_expression_sql() -> String {
-    let normalized_name = "LOWER(TRIM(name))";
+    let normalized_name = title_catalog_normalized_name_tie_expression_sql();
     let mut expression = String::from("CASE");
     for article in TITLE_CATALOG_WORD_ARTICLES {
         let start = article.chars().count() + 2;
@@ -1802,9 +1832,10 @@ fn title_catalog_name_sort_expression_sql() -> String {
 
 fn title_catalog_ascending_tie_order_sql() -> String {
     format!(
-        "{} ASC, LOWER(TRIM(name)) ASC, \
+        "{} ASC, {} ASC, \
          CASE WHEN year IS NULL THEN 1 ELSE 0 END ASC, year ASC, id ASC",
-        title_catalog_name_sort_expression_sql()
+        title_catalog_name_sort_expression_sql(),
+        title_catalog_normalized_name_tie_expression_sql()
     )
 }
 

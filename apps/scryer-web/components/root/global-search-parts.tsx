@@ -27,11 +27,86 @@ type SearchResultDataAttribute =
   | "data-mobile-global-search-result";
 
 type MetadataActionKind = "add" | "inCatalog" | "request" | "unavailable";
+type SearchResultKind = "catalog" | "metadata";
+
+type SearchResultExternalId = {
+  source?: string | null;
+  value?: string | number | null;
+};
+
+type SearchResultIdentityInput = {
+  actionKind?: MetadataActionKind;
+  externalIds?: SearchResultExternalId[] | null;
+  facet: Facet;
+  imdbId?: string | null;
+  kind: SearchResultKind;
+  titleId?: string | null;
+  titleName: string;
+  tvdbId?: string | number | null;
+  year?: string | number | null;
+};
 
 function searchResultAttribute(attribute: SearchResultDataAttribute) {
   return { [attribute]: "true" } as Partial<
     Record<SearchResultDataAttribute, "true">
   >;
+}
+
+function dataAttributeValue(value: string | number | null | undefined) {
+  const text = String(value ?? "").trim();
+  return text.length > 0 ? text : null;
+}
+
+function externalIdValue(
+  externalIds: SearchResultExternalId[] | null | undefined,
+  source: string,
+) {
+  return (
+    externalIds
+      ?.find(
+        (externalId) =>
+          externalId.source?.trim().toLowerCase() === source.toLowerCase(),
+      )
+      ?.value?.toString()
+      .trim() || null
+  );
+}
+
+function searchResultIdentityAttributes({
+  actionKind,
+  externalIds,
+  facet,
+  imdbId,
+  kind,
+  titleId,
+  titleName,
+  tvdbId,
+  year,
+}: SearchResultIdentityInput) {
+  const normalizedImdbId =
+    dataAttributeValue(imdbId) ?? externalIdValue(externalIds, "imdb");
+  const normalizedTvdbId =
+    dataAttributeValue(tvdbId) ?? externalIdValue(externalIds, "tvdb");
+  return {
+    "data-global-search-result-kind": kind,
+    "data-global-search-result-facet": facet,
+    "data-global-search-result-title": titleName,
+    ...(actionKind
+      ? { "data-global-search-result-action": actionKind }
+      : {}),
+    ...(dataAttributeValue(titleId)
+      ? { "data-global-search-result-title-id": dataAttributeValue(titleId)! }
+      : {}),
+    ...(normalizedImdbId
+      ? { "data-global-search-result-imdb-id": normalizedImdbId }
+      : {}),
+    ...(normalizedTvdbId
+      ? { "data-global-search-result-tvdb-id": normalizedTvdbId }
+      : {}),
+    ...(dataAttributeValue(year)
+      ? { "data-global-search-result-year": dataAttributeValue(year)! }
+      : {}),
+  } satisfies Partial<Record<`data-${string}`, string>>;
 }
 
 export function SearchSectionLoading({
@@ -63,18 +138,15 @@ type SearchTabButtonProps = {
   onKeyDown: React.KeyboardEventHandler<HTMLButtonElement>;
   onSelect: () => void;
   tab: GlobalSearchTab;
-  surface: SearchSurface;
 };
 
 export const SearchTabButton = React.forwardRef<
   HTMLButtonElement,
   SearchTabButtonProps
 >(function SearchTabButton(
-  { active, controlsId, id, onKeyDown, onSelect, tab, surface },
+  { active, controlsId, id, onKeyDown, onSelect, tab },
   ref,
 ) {
-  const isDesktop = surface === "desktop";
-
   return (
     <button
       id={id}
@@ -85,31 +157,29 @@ export const SearchTabButton = React.forwardRef<
       aria-controls={controlsId}
       tabIndex={active ? 0 : -1}
       className={cn(
-        "inline-flex h-8 shrink-0 items-center rounded-[9px] border text-[12.5px] font-semibold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/35",
-        isDesktop ? "gap-1.5 px-[13px]" : "gap-2 px-3",
+        "relative inline-flex h-10 shrink-0 items-center gap-2 px-0 py-2.5 text-[13.5px] font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--scry-focus)]",
         active
-          ? "border-transparent bg-[var(--scry-accent-grad)] text-primary-foreground shadow-[0_8px_18px_rgba(var(--scry-accent-rgb),0.26)]"
-          : isDesktop
-            ? "border-[var(--scry-border2)] bg-[var(--scry-card2)] text-[var(--scry-muted2)] hover:border-[var(--scry-bhover2)] hover:bg-[var(--scry-hover)] hover:text-[var(--scry-ink2)]"
-            : "border-[var(--scry-border2)] bg-[var(--scry-card2)] text-[var(--scry-muted2)] active:bg-[var(--scry-hover)]",
+          ? "text-white"
+          : "text-[var(--scry-muted)] hover:text-[var(--scry-ink2)]",
       )}
       onMouseDown={(event) => event.preventDefault()}
       onClick={onSelect}
       onKeyDown={onKeyDown}
     >
-      {tab.label}
+      <span className="whitespace-nowrap">{tab.label}</span>
       <span
         className={cn(
-          "font-medium tabular-nums",
-          isDesktop
-            ? active
-              ? "text-primary-foreground/80"
-              : "text-[var(--scry-muted2)]"
-            : "opacity-75",
+          "inline-flex min-w-[6ch] justify-center rounded-[6px] px-1.5 py-0.5 text-[11px] font-bold leading-none tabular-nums",
+          active
+            ? "bg-[rgba(var(--scry-accent-rgb),0.18)] text-[var(--scry-accent-text)]"
+            : "bg-[var(--scry-chip)] text-[var(--scry-muted2)]",
         )}
       >
         {tab.count}
       </span>
+      {active ? (
+        <span className="absolute bottom-[-1px] left-2 right-2 h-[2.5px] rounded-full bg-[var(--scry-accent-ring)]" />
+      ) : null}
     </button>
   );
 });
@@ -192,6 +262,8 @@ type SearchCatalogResultButtonProps = {
   ariaLabel: string;
   createdAt?: string | null;
   emptyLabel: string;
+  externalIds?: SearchResultExternalId[] | null;
+  facet: Facet;
   facetLabel: string;
   id?: string;
   inLibraryLabel: string;
@@ -206,14 +278,18 @@ type SearchCatalogResultButtonProps = {
   resultAttribute: SearchResultDataAttribute;
   secondaryParts: Array<string | null | undefined>;
   surface: SearchSurface;
+  titleId: string;
   titleName: string;
   viewLabel: string;
+  year?: string | number | null;
 };
 
 export function SearchCatalogResultButton({
   ariaLabel,
   createdAt,
   emptyLabel,
+  externalIds,
+  facet,
   facetLabel,
   id,
   inLibraryLabel,
@@ -228,13 +304,23 @@ export function SearchCatalogResultButton({
   resultAttribute,
   secondaryParts,
   surface,
+  titleId,
   titleName,
   viewLabel,
+  year,
 }: SearchCatalogResultButtonProps) {
   const isDesktop = surface === "desktop";
   const visibleSecondaryParts = secondaryParts.filter(
     (part): part is string => Boolean(part),
   );
+  const identityAttributes = searchResultIdentityAttributes({
+    externalIds,
+    facet,
+    kind: "catalog",
+    titleId,
+    titleName,
+    year,
+  });
 
   return (
     <button
@@ -242,6 +328,7 @@ export function SearchCatalogResultButton({
       type="button"
       onClick={onClick}
       {...searchResultAttribute(resultAttribute)}
+      {...identityAttributes}
       onKeyDown={onKeyDown}
       className={cn(
         "group flex w-full items-center gap-[13px] rounded-[12px] border border-[var(--scry-border)] bg-[var(--scry-surfA)] p-2.5 text-left transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/25",
@@ -325,11 +412,14 @@ type SearchMetadataPosterButtonProps = {
   disabled: boolean;
   facet: Facet;
   id: string;
+  imdbId?: string | null;
   name: string;
   onClick: () => void;
   onKeyDown: React.KeyboardEventHandler<HTMLButtonElement>;
   posterUrl?: string | null;
   resultAttribute: SearchResultDataAttribute;
+  tvdbId?: string | number | null;
+  year?: string | number | null;
   yearLabel: string | number | null;
 };
 
@@ -339,15 +429,31 @@ export function SearchMetadataPosterButton({
   disabled,
   facet,
   id,
+  imdbId,
   name,
   onClick,
   onKeyDown,
   posterUrl,
   resultAttribute,
+  tvdbId,
+  year,
   yearLabel,
 }: SearchMetadataPosterButtonProps) {
+  const identityAttributes = searchResultIdentityAttributes({
+    actionKind,
+    facet,
+    imdbId,
+    kind: "metadata",
+    titleName: name,
+    tvdbId,
+    year,
+  });
   return (
-    <div className={cn("w-[124px] flex-none", disabled && "opacity-80")}>
+    <div
+      className={cn("w-[124px] flex-none", disabled && "opacity-80")}
+      data-global-search-result-card="metadata"
+      {...identityAttributes}
+    >
       <TitleCard
         title={name}
         year={yearLabel}
@@ -364,6 +470,7 @@ export function SearchMetadataPosterButton({
           title: actionTitle,
           "aria-label": actionTitle,
           ...searchResultAttribute(resultAttribute),
+          ...identityAttributes,
         }}
       />
     </div>

@@ -73,9 +73,6 @@ export const TITLE_TABLE_HEADER_CELL_CLASS =
 export const TITLE_TABLE_ROW_CLASS =
   "border-b border-[var(--scry-line2)] transition-colors hover:bg-[var(--scry-hover)]";
 
-export const TITLE_TABLE_SELECTED_ROW_CLASS =
-  "bg-[rgba(var(--scry-accent-rgb),0.12)] shadow-[inset_3px_0_0_var(--scry-accent-ring)]";
-
 export const TITLE_TABLE_ACTION_BUTTON_CLASS = "h-7 w-[30px] rounded-[7px]";
 
 export const COMPACT_TITLE_TABLE_ACTION_BUTTON_CLASS = "size-7 rounded-[7px]";

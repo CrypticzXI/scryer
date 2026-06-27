@@ -102,19 +102,38 @@ async fn set_title_sort_title(ctx: &TestContext, title_id: &str, sort_title: &st
 }
 
 #[tokio::test]
-async fn graphql_title_sort_uses_visible_name_ignoring_articles() {
+async fn graphql_title_sort_uses_visible_name_ignoring_multilingual_articles_and_cjk_width() {
     let ctx = TestContext::new().await;
+    let akira_id = add_test_title_with_tvdb_id(&ctx, "ＡＫＩＲＡ", "anime", "900000").await;
     let apothecary_id =
         add_test_title_with_tvdb_id(&ctx, "The Apothecary Diaries", "anime", "900001").await;
-    let better_id = add_test_title_with_tvdb_id(&ctx, "A Better Tomorrow", "movie", "900002").await;
-    let education_id = add_test_title_with_tvdb_id(&ctx, "An Education", "movie", "900003").await;
+    let arc_id = add_test_title_with_tvdb_id(&ctx, "L’Arc-en-Ciel", "movie", "900002").await;
+    let auto_id =
+        add_test_title_with_tvdb_id(&ctx, "O Auto da Compadecida", "movie", "900003").await;
+    let avventura_id = add_test_title_with_tvdb_id(&ctx, "L'Avventura", "movie", "900004").await;
+    let better_id = add_test_title_with_tvdb_id(&ctx, "A Better Tomorrow", "movie", "900005").await;
+    let cercle_id = add_test_title_with_tvdb_id(&ctx, "Le Cercle Rouge", "movie", "900006").await;
+    let dorado_id = add_test_title_with_tvdb_id(&ctx, "El Dorado", "movie", "900007").await;
+    let education_id = add_test_title_with_tvdb_id(&ctx, "An Education", "movie", "900008").await;
     let fullmetal_id =
-        add_test_title_with_tvdb_id(&ctx, "Fullmetal Alchemist: Brotherhood", "anime", "900004")
+        add_test_title_with_tvdb_id(&ctx, "Fullmetal Alchemist: Brotherhood", "anime", "900009")
             .await;
+    let himmel_id = add_test_title_with_tvdb_id(&ctx, "Der Himmel", "movie", "900010").await;
+    let jetee_id = add_test_title_with_tvdb_id(&ctx, "La Jetée", "movie", "900011").await;
+    let matrix_id = add_test_title_with_tvdb_id(&ctx, "Ｔｈｅ　Matrix", "movie", "900012").await;
+    set_title_sort_title(&ctx, &akira_id, "zzzzzz").await;
     set_title_sort_title(&ctx, &apothecary_id, "zzzz").await;
+    set_title_sort_title(&ctx, &arc_id, "yyyy").await;
+    set_title_sort_title(&ctx, &auto_id, "xxxx").await;
+    set_title_sort_title(&ctx, &avventura_id, "wwww").await;
     set_title_sort_title(&ctx, &better_id, "mmmm").await;
+    set_title_sort_title(&ctx, &cercle_id, "llll").await;
+    set_title_sort_title(&ctx, &dorado_id, "kkkk").await;
     set_title_sort_title(&ctx, &education_id, "aaaa").await;
     set_title_sort_title(&ctx, &fullmetal_id, "鋼の錬金術師 fullmetal alchemist").await;
+    set_title_sort_title(&ctx, &himmel_id, "iiii").await;
+    set_title_sort_title(&ctx, &jetee_id, "hhhh").await;
+    set_title_sort_title(&ctx, &matrix_id, "gggg").await;
 
     let body = gql(
         &ctx,
@@ -125,7 +144,7 @@ async fn graphql_title_sort_uses_visible_name_ignoring_articles() {
             }
         }"#,
         json!({
-            "limit": 4,
+            "limit": 13,
             "offset": 0,
             "sort": { "key": "title", "direction": "asc" }
         }),
@@ -141,10 +160,19 @@ async fn graphql_title_sort_uses_visible_name_ignoring_articles() {
     assert_eq!(
         names,
         vec![
+            "ＡＫＩＲＡ",
             "The Apothecary Diaries",
+            "L’Arc-en-Ciel",
+            "O Auto da Compadecida",
+            "L'Avventura",
             "A Better Tomorrow",
+            "Le Cercle Rouge",
+            "El Dorado",
             "An Education",
             "Fullmetal Alchemist: Brotherhood",
+            "Der Himmel",
+            "La Jetée",
+            "Ｔｈｅ　Matrix",
         ]
     );
 }

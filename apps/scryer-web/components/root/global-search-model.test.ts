@@ -103,9 +103,9 @@ test("getVisibleCatalogResults interleaves all-tab library results and preserves
 
   assert.deepEqual(
     allRows.map(({ facet, title: entry }) => `${facet}:${entry.id}`),
-    ["movie:m1", "series:s1", "anime:a1"],
+    ["movie:m1", "series:s1", "anime:a1", "movie:m2"],
   );
-  assert.equal(countHiddenCatalogResults("all", 4, allRows), 1);
+  assert.equal(countHiddenCatalogResults("all", 4, allRows), 0);
 
   const movieRows = getVisibleCatalogResults({
     activeTab: "movie",
