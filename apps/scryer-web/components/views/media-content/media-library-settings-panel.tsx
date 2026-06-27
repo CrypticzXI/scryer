@@ -35,6 +35,7 @@ import { cn } from "@/lib/utils";
 import { selectorId } from "@/lib/utils/dom-ids";
 import { DownloadClientRoutingPanel } from "@/components/views/media-content/download-client-routing-panel";
 import {
+  LIBRARY_FOOTER_SLOT_ID,
   LIBRARY_HEADER_ACTIONS_SLOT_ID,
   LIBRARY_SECONDARY_NAV_SLOT_ID,
 } from "@/components/views/media-content/facet-settings-section";
@@ -317,11 +318,15 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
     React.useState<HTMLElement | null>(null);
   const [headerActionsTarget, setHeaderActionsTarget] =
     React.useState<HTMLElement | null>(null);
+  const [footerTarget, setFooterTarget] = React.useState<HTMLElement | null>(
+    null,
+  );
   React.useEffect(() => {
     setSecondaryNavTarget(document.getElementById(LIBRARY_SECONDARY_NAV_SLOT_ID));
     setHeaderActionsTarget(
       document.getElementById(LIBRARY_HEADER_ACTIONS_SLOT_ID),
     );
+    setFooterTarget(document.getElementById(LIBRARY_FOOTER_SLOT_ID));
   }, []);
   React.useEffect(() => {
     onWideLayoutChange?.(draftDownloadClientRoutingMode === "custom");
@@ -1642,60 +1647,74 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
 
             </div>
           ) : null}
-          {mode === "new" || activeLibrary ? (
-            <div className="sticky bottom-0 z-10 mt-2 flex flex-wrap items-center gap-2 border-t border-[var(--scry-border2)] bg-[var(--scry-surf)] py-4">
-              {mode !== "new" && activeLibrary && !activeLibrary.isDefault ? (
-                <Button
-                  type="button"
-                  variant="destructive"
-                  onClick={handleDeleteLibrary}
-                  disabled={actionBusy}
-                >
-                  <Trash2 className="mr-1.5 h-4 w-4" />
-                  {t("settings.libraryDeleteButton")}
-                </Button>
-              ) : null}
-              {hasDraftChanges ? (
-                <span className="text-xs text-[var(--scry-muted3)]">
-                  {t("settings.libraryUnsavedChanges")}
-                </span>
-              ) : null}
-              <Button
-                id="media-library-save"
-                type="button"
-                variant="outline"
-                onClick={handleSaveLibrary}
-                disabled={
-                  settingsBusy ||
-                  downloadClientRoutingBusy ||
-                  !draftName.trim() ||
-                  !hasDraftChanges ||
-                  hasRootFolderConflicts ||
-                  hasInvalidRootFolderPaths
-                }
-                className="ml-auto"
-              >
-                {t("settings.librarySaveOnlyButton")}
-              </Button>
-              <Button
-                id="media-library-save-scan"
-                type="button"
-                variant="primary"
-                onClick={handleSaveAndScanLibrary}
-                disabled={
-                  settingsBusy ||
-                  downloadClientRoutingBusy ||
-                  !draftName.trim() ||
-                  !hasDraftChanges ||
-                  hasRootFolderConflicts ||
-                  hasInvalidRootFolderPaths
-                }
-              >
-                <Save className="mr-1.5 h-4 w-4" />
-                {t("settings.librarySaveAndScanButton")}
-              </Button>
-            </div>
-          ) : null}
+          {footerTarget && (mode === "new" || activeLibrary)
+            ? createPortal(
+                <div className="border-t border-[var(--scry-border2)] bg-[var(--scry-surf)]">
+                  <div
+                    className={cn(
+                      "mx-auto flex w-full flex-wrap items-center gap-2 px-4 py-3.5 sm:px-6 md:px-[30px]",
+                      draftDownloadClientRoutingMode === "custom"
+                        ? "max-w-[1280px]"
+                        : "max-w-[920px]",
+                    )}
+                  >
+                    {mode !== "new" &&
+                    activeLibrary &&
+                    !activeLibrary.isDefault ? (
+                      <Button
+                        type="button"
+                        variant="destructive"
+                        onClick={handleDeleteLibrary}
+                        disabled={actionBusy}
+                      >
+                        <Trash2 className="mr-1.5 h-4 w-4" />
+                        {t("settings.libraryDeleteButton")}
+                      </Button>
+                    ) : null}
+                    {hasDraftChanges ? (
+                      <span className="text-xs text-[var(--scry-muted3)]">
+                        {t("settings.libraryUnsavedChanges")}
+                      </span>
+                    ) : null}
+                    <Button
+                      id="media-library-save"
+                      type="button"
+                      variant="outline"
+                      onClick={handleSaveLibrary}
+                      disabled={
+                        settingsBusy ||
+                        downloadClientRoutingBusy ||
+                        !draftName.trim() ||
+                        !hasDraftChanges ||
+                        hasRootFolderConflicts ||
+                        hasInvalidRootFolderPaths
+                      }
+                      className="ml-auto"
+                    >
+                      {t("settings.librarySaveOnlyButton")}
+                    </Button>
+                    <Button
+                      id="media-library-save-scan"
+                      type="button"
+                      variant="primary"
+                      onClick={handleSaveAndScanLibrary}
+                      disabled={
+                        settingsBusy ||
+                        downloadClientRoutingBusy ||
+                        !draftName.trim() ||
+                        !hasDraftChanges ||
+                        hasRootFolderConflicts ||
+                        hasInvalidRootFolderPaths
+                      }
+                    >
+                      <Save className="mr-1.5 h-4 w-4" />
+                      {t("settings.librarySaveAndScanButton")}
+                    </Button>
+                  </div>
+                </div>,
+                footerTarget,
+              )
+            : null}
       </div>
       <FolderBrowserDialog
         open={browserOpen}

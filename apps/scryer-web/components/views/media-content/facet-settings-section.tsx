@@ -46,6 +46,9 @@ export const LIBRARY_SECONDARY_NAV_SLOT_ID = "facet-library-secondary-nav";
 /** DOM id of the header-actions slot. The per-library scan button is portaled here
  * so it sits on the same row as the page header. */
 export const LIBRARY_HEADER_ACTIONS_SLOT_ID = "facet-library-header-actions";
+/** DOM id of the pane footer slot. The per-library save bar is portaled here so it
+ * pins to the bottom of the content pane instead of floating after short content. */
+export const LIBRARY_FOOTER_SLOT_ID = "facet-library-footer";
 
 type FacetSettingsSectionProps = {
   /** The active facet view (movies/series/anime), used to build sub-page links. */
@@ -149,10 +152,11 @@ export function FacetSettingsSection({
           className="w-full shrink-0 border-b border-[var(--scry-border3)] bg-[var(--scry-surfF)] p-3 md:h-full md:w-[220px] md:overflow-y-auto md:border-b-0 md:border-r md:p-[22px_14px]"
         />
       ) : null}
-      <div
-        data-slot="facet-settings-scroll"
-        className="min-h-0 min-w-0 flex-1 overflow-y-auto bg-transparent"
-      >
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-transparent">
+        <div
+          data-slot="facet-settings-scroll"
+          className="min-h-0 flex-1 overflow-y-auto"
+        >
         <div
           className={cn(
             "mx-auto w-full px-4 py-5 sm:px-6 md:px-[30px] md:py-[26px] md:pb-[60px]",
@@ -211,6 +215,10 @@ export function FacetSettingsSection({
           </div>
           {children}
         </div>
+        </div>
+        {showSecondaryNav ? (
+          <div id={LIBRARY_FOOTER_SLOT_ID} data-slot="facet-footer" />
+        ) : null}
       </div>
     </div>
   );
