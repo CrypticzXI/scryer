@@ -101,6 +101,9 @@ export const DiscoveryContainer = memo(function DiscoveryContainer({
   const t = useTranslate();
   const client = useClient();
   const setGlobalStatus = useGlobalStatus();
+  const clientRef = useRef(client);
+  const setGlobalStatusRef = useRef(setGlobalStatus);
+  const tRef = useRef(t);
   const {
     addMetadataSearchResultToCatalog,
     catalogConfigLoading,
@@ -123,6 +126,13 @@ export const DiscoveryContainer = memo(function DiscoveryContainer({
   const cacheKeyRef = useRef<string | null>(null);
 
   useEffect(() => {
+    clientRef.current = client;
+    setGlobalStatusRef.current = setGlobalStatus;
+    tRef.current = t;
+  }, [client, setGlobalStatus, t]);
+
+  useEffect(() => {
+    mountedRef.current = true;
     return () => {
       mountedRef.current = false;
       refreshRequestIdRef.current += 1;
@@ -152,7 +162,7 @@ export const DiscoveryContainer = memo(function DiscoveryContainer({
     setLoading(true);
     setError(null);
     try {
-      const { data, error: queryError } = await client
+      const { data, error: queryError } = await clientRef.current
         .query(
           discoveryHomeQuery,
           { input: DISCOVERY_HOME_INPUT },
@@ -179,15 +189,17 @@ export const DiscoveryContainer = memo(function DiscoveryContainer({
         return;
       }
       const message =
-        caught instanceof Error ? caught.message : t("discovery.failedToLoad");
+        caught instanceof Error
+          ? caught.message
+          : tRef.current("discovery.failedToLoad");
       setError(message);
-      setGlobalStatus(message);
+      setGlobalStatusRef.current(message);
     } finally {
       if (mountedRef.current && refreshRequestIdRef.current === requestId) {
         setLoading(false);
       }
     }
-  }, [client, setGlobalStatus, t, uiLanguage, userId]);
+  }, [uiLanguage, userId]);
 
   useEffect(() => {
     void refresh();

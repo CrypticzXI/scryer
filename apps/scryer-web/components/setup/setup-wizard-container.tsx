@@ -1388,12 +1388,16 @@ export function SetupWizardContainer({
   const isWideImportStep =
     currentStep === 0 ||
     (wizardPath === "import" && (currentStep === 1 || currentStep === 2));
+  const isPersonaStep = wizardPath === "fresh" && currentStep === 1;
+  const shellMaxWidth = isWideImportStep
+    ? "max-w-6xl"
+    : isPersonaStep
+      ? "max-w-3xl"
+      : "max-w-2xl";
 
   return (
     <div
-      className={`mx-auto flex min-h-screen w-full flex-col items-center justify-center px-4 py-10 ${
-        isWideImportStep ? "max-w-6xl" : "max-w-2xl"
-      }`}
+      className={`mx-auto flex min-h-screen w-full flex-col items-center justify-center px-4 py-10 ${shellMaxWidth}`}
     >
       <div className="mb-8 flex items-center gap-2.5">
         <ScryerLogo className="h-9 w-9" />

@@ -1,5 +1,6 @@
-import { Check, Loader2, X } from "lucide-react";
+import { Check, Loader2, Search, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { SetupPanel, SetupStepHeader, SETUP_PRIMARY_CTA } from "./setup-chrome";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input, signedIntegerInputProps } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -208,11 +209,12 @@ export function SetupIndexerView({
   const canProceed = saved;
 
   return (
-    <div id="setup-indexer-view" className="flex flex-col gap-6">
-      <div className="text-center">
-        <h2 className="text-xl font-semibold">{t("setup.indexerTitle")}</h2>
-        <p className="mt-1 text-sm text-muted-foreground">{t("setup.indexerDescription")}</p>
-      </div>
+    <SetupPanel id="setup-indexer-view" className="flex flex-col gap-6">
+      <SetupStepHeader
+        icon={Search}
+        title={t("setup.indexerTitle")}
+        subtitle={t("setup.indexerDescription")}
+      />
       <div className="mx-auto flex w-full max-w-md flex-col gap-4">
         <div className="space-y-2">
           <Label htmlFor="setup-indexer-name">{t("label.name")}</Label>
@@ -306,11 +308,11 @@ export function SetupIndexerView({
               {t("setup.skip")}
             </Button>
           )}
-          <Button id="setup-indexer-next" onClick={onNext} disabled={!canProceed || saving}>
+          <Button id="setup-indexer-next" className={SETUP_PRIMARY_CTA} onClick={onNext} disabled={!canProceed || saving}>
             {saving ? t("label.saving") : t("setup.next")}
           </Button>
         </div>
       </div>
-    </div>
+    </SetupPanel>
   );
 }

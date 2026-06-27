@@ -4,12 +4,14 @@ import {
   Ban,
   Check,
   FolderOpen,
+  ListChecks,
   Loader2,
   Trash2,
 } from "lucide-react";
 
 import { FolderBrowserDialog } from "@/components/setup/folder-browser-dialog";
 import { Button } from "@/components/ui/button";
+import { SetupPanel, SetupStepHeader, SETUP_PRIMARY_CTA } from "./setup-chrome";
 import { Checkbox } from "@/components/ui/checkbox";
 import type { ConfigFieldDef } from "@/lib/types";
 import type { ExternalImportPreview } from "@/lib/types/external-import";
@@ -155,13 +157,12 @@ export function SetupImportReviewView({
   };
 
   return (
-    <div id="setup-import-review-view" className="w-full space-y-6">
-      <div className="text-center">
-        <h2 className="mb-2 text-xl font-semibold">{t("setup.reviewTitle")}</h2>
-        <p className="text-sm text-muted-foreground">
-          {t("setup.reviewDescription")}
-        </p>
-      </div>
+    <SetupPanel id="setup-import-review-view" className="w-full space-y-6">
+      <SetupStepHeader
+        icon={ListChecks}
+        title={t("setup.reviewTitle")}
+        subtitle={t("setup.reviewDescription")}
+      />
 
       <div className="flex items-center justify-center gap-3">
         {preview.sonarrConnected ? (
@@ -471,6 +472,7 @@ export function SetupImportReviewView({
         </Button>
         <Button
           id="setup-import-review-import"
+          className={SETUP_PRIMARY_CTA}
           onClick={onImport}
           disabled={!hasAnySelection || importing}
         >
@@ -490,7 +492,7 @@ export function SetupImportReviewView({
         initialPath={browserInitialPath}
         title={`${t("settings.rootFolderAdd")} · ${browserTitle}`}
       />
-    </div>
+    </SetupPanel>
   );
 }
 

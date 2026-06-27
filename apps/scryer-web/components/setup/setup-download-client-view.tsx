@@ -1,6 +1,7 @@
-import { Check, Loader2, X } from "lucide-react";
+import { Check, Download, Loader2, X } from "lucide-react";
 import { DownloadClientRemotePathMappingsField } from "@/components/common/download-client-remote-path-mappings-field";
 import { Button } from "@/components/ui/button";
+import { SetupPanel, SetupStepHeader, SETUP_PRIMARY_CTA } from "./setup-chrome";
 import { Input, integerInputProps, sanitizeDigits } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -107,11 +108,12 @@ export function SetupDownloadClientView({
   const canProceed = saved && areRemotePathMappingsValid;
 
   return (
-    <div id="setup-download-client-view" className="flex flex-col gap-6">
-      <div className="text-center">
-        <h2 className="text-xl font-semibold">{t("setup.downloadClientTitle")}</h2>
-        <p className="mt-1 text-sm text-muted-foreground">{t("setup.downloadClientDescription")}</p>
-      </div>
+    <SetupPanel id="setup-download-client-view" className="flex flex-col gap-6">
+      <SetupStepHeader
+        icon={Download}
+        title={t("setup.downloadClientTitle")}
+        subtitle={t("setup.downloadClientDescription")}
+      />
       <div className="mx-auto flex w-full max-w-md flex-col gap-4">
         <div className="space-y-2">
           <Label htmlFor="setup-download-client-name">{t("label.name")}</Label>
@@ -315,11 +317,11 @@ export function SetupDownloadClientView({
               {t("setup.skip")}
             </Button>
           )}
-          <Button id="setup-download-client-next" onClick={onNext} disabled={!canProceed || saving}>
+          <Button id="setup-download-client-next" className={SETUP_PRIMARY_CTA} onClick={onNext} disabled={!canProceed || saving}>
             {saving ? t("label.saving") : t("setup.next")}
           </Button>
         </div>
       </div>
-    </div>
+    </SetupPanel>
   );
 }

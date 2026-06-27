@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { FolderBrowserDialog } from "./folder-browser-dialog";
+import { SetupPanel, SetupStepHeader, SETUP_PRIMARY_CTA } from "./setup-chrome";
 
 interface SetupMediaPathsViewProps {
   t: (key: string) => string;
@@ -55,11 +56,12 @@ export function SetupMediaPathsView({
   }
 
   return (
-    <div id="setup-media-paths-view" className="flex flex-col gap-6">
-      <div className="text-center">
-        <h2 className="text-xl font-semibold">{t("setup.mediaPathsTitle")}</h2>
-        <p className="mt-1 text-sm text-muted-foreground">{t("setup.mediaPathsDescription")}</p>
-      </div>
+    <SetupPanel id="setup-media-paths-view" className="flex flex-col gap-6">
+      <SetupStepHeader
+        icon={FolderOpen}
+        title={t("setup.mediaPathsTitle")}
+        subtitle={t("setup.mediaPathsDescription")}
+      />
       <div className="mx-auto flex w-full max-w-md flex-col gap-4">
         <div className="space-y-2">
           <Label htmlFor="setup-media-paths-movies-path">
@@ -153,7 +155,7 @@ export function SetupMediaPathsView({
               {t("setup.skip")}
             </Button>
           )}
-          <Button id="setup-media-paths-next" onClick={onNext} disabled={!canProceed || saving}>
+          <Button id="setup-media-paths-next" className={SETUP_PRIMARY_CTA} onClick={onNext} disabled={!canProceed || saving}>
             {saving ? t("label.saving") : t("setup.next")}
           </Button>
         </div>
@@ -166,6 +168,6 @@ export function SetupMediaPathsView({
         initialPath={browseInitialPath || "/"}
         title={t("setup.browse")}
       />
-    </div>
+    </SetupPanel>
   );
 }

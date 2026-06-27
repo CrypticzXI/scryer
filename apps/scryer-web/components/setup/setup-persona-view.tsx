@@ -1,5 +1,6 @@
-import { Headphones, Scale, Zap, MonitorSmartphone } from "lucide-react";
+import { Headphones, Scale, SlidersHorizontal, Zap, MonitorSmartphone } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { SetupPanel, SetupStepHeader, SETUP_PRIMARY_CTA } from "./setup-chrome";
 import type {
   ScoringPersonaId,
   QualityTargetId,
@@ -24,7 +25,7 @@ const PERSONAS: { id: ScoringPersonaId; icon: typeof Scale; labelKey: string; de
   { id: "compatible", icon: MonitorSmartphone, labelKey: "qualityProfile.personaCompatible", descKey: "setup.personaCompatibleDesc" },
 ];
 
-const QUALITY_TARGETS: QualityTargetId[] = ["8k", "4k", "1080p"];
+const QUALITY_TARGETS: QualityTargetId[] = ["4k", "1080p"];
 
 const FACETS: { id: ViewCategoryId; labelKey: string }[] = [
   { id: "movie", labelKey: "setup.facetMovies" },
@@ -42,13 +43,12 @@ export function SetupPersonaView({
   saving,
 }: SetupPersonaViewProps) {
   return (
-    <div id="setup-persona-view" className="flex flex-col gap-6">
-      <div className="text-center">
-        <h2 className="text-xl font-semibold">{t("setup.personaTitle")}</h2>
-        <p className="mt-1 text-sm text-muted-foreground">
-          {t("setup.personaDescription")}
-        </p>
-      </div>
+    <SetupPanel id="setup-persona-view" className="flex flex-col gap-6">
+      <SetupStepHeader
+        icon={SlidersHorizontal}
+        title={t("setup.personaTitle")}
+        subtitle={t("setup.personaDescription")}
+      />
 
       {/* Persona reference */}
       <div className="grid grid-cols-2 gap-x-6 gap-y-1 rounded-lg border border-border bg-muted/30 px-4 py-3 text-xs text-muted-foreground">
@@ -149,12 +149,17 @@ export function SetupPersonaView({
               {t("setup.skip")}
             </button>
           )}
-          <Button id="setup-persona-next" onClick={onNext} disabled={saving}>
+          <Button
+            id="setup-persona-next"
+            className={SETUP_PRIMARY_CTA}
+            onClick={onNext}
+            disabled={saving}
+          >
             {saving ? t("label.saving") : t("setup.next")}
           </Button>
         </div>
       </div>
-    </div>
+    </SetupPanel>
   );
 }
 

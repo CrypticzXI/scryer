@@ -1,5 +1,5 @@
 import { Fragment } from "react";
-import { Download, Loader2, PlugZap, RefreshCw, Trash2 } from "lucide-react";
+import { Blocks, Download, Loader2, PlugZap, RefreshCw, Trash2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
@@ -17,6 +17,7 @@ import type {
   RegistryPluginRecord,
 } from "@/components/views/settings/settings-plugins-section";
 import { selectorId } from "@/lib/utils/dom-ids";
+import { SetupPanel, SetupStepHeader, SETUP_PRIMARY_CTA } from "./setup-chrome";
 
 interface SetupPluginsViewProps {
   t: (
@@ -163,13 +164,12 @@ export function SetupPluginsView({
   );
 
   return (
-    <div id="setup-plugins-view" className="flex flex-col gap-6">
-      <div className="text-center">
-        <h2 className="text-xl font-semibold">{t("setup.pluginsTitle")}</h2>
-        <p className="mt-1 text-sm text-muted-foreground">
-          {t("setup.pluginsDescription")}
-        </p>
-      </div>
+    <SetupPanel id="setup-plugins-view" className="flex flex-col gap-6">
+      <SetupStepHeader
+        icon={Blocks}
+        title={t("setup.pluginsTitle")}
+        subtitle={t("setup.pluginsDescription")}
+      />
 
       <div className="mx-auto w-full max-w-5xl rounded-xl border border-dashed border-border bg-muted/30 px-4 py-3 text-sm">
         <span className="font-medium">{t("setup.pluginsBuiltInTitle")}:</span>{" "}
@@ -365,11 +365,11 @@ export function SetupPluginsView({
         <Button id="setup-plugins-back" variant="ghost" onClick={onBack}>
           {t("setup.back")}
         </Button>
-        <Button id="setup-plugins-next" onClick={onNext}>
+        <Button id="setup-plugins-next" className={SETUP_PRIMARY_CTA} onClick={onNext}>
           <PlugZap className="mr-2 h-4 w-4" />
           {t("setup.next")}
         </Button>
       </div>
-    </div>
+    </SetupPanel>
   );
 }

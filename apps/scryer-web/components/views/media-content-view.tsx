@@ -3037,7 +3037,9 @@ export function MediaContentView({
           canManageLibrarySettings={canManageLibrarySettings}
           showSecondaryNav={facetSettingsSection === "library"}
           contentWidth={
-            facetSettingsSection === "library" && libraryRoutingWide
+            facetSettingsSection === "renaming"
+              ? "reference"
+              : facetSettingsSection === "library" && libraryRoutingWide
               ? "wide"
               : "default"
           }

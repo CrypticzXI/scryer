@@ -1,6 +1,7 @@
-import { ArrowLeft, ExternalLink, Loader2 } from "lucide-react";
+import { ArrowLeft, ArrowRightLeft, ExternalLink, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { SetupPanel, SetupStepHeader, SETUP_PRIMARY_CTA } from "./setup-chrome";
 
 interface SetupImportConnectViewProps {
   t: (key: string) => string;
@@ -92,11 +93,12 @@ export function SetupImportConnectView({
   const prowlarrSettingsUrl = settingsUrl(prowlarrUrl);
 
   return (
-    <div id="setup-import-connect-view" className="w-full space-y-6">
-      <div className="text-center">
-        <h2 className="mb-2 text-xl font-semibold">{t("setup.connectTitle")}</h2>
-        <p className="text-sm text-muted-foreground">{t("setup.connectDescription")}</p>
-      </div>
+    <SetupPanel id="setup-import-connect-view" className="w-full space-y-6">
+      <SetupStepHeader
+        icon={ArrowRightLeft}
+        title={t("setup.connectTitle")}
+        subtitle={t("setup.connectDescription")}
+      />
 
       <div className="grid gap-6 xl:grid-cols-3">
         {/* Sonarr */}
@@ -266,6 +268,7 @@ export function SetupImportConnectView({
         </Button>
         <Button
           id="setup-import-connect-next"
+          className={SETUP_PRIMARY_CTA}
           onClick={onConnect}
           disabled={!canConnect || connecting}
         >
@@ -273,6 +276,6 @@ export function SetupImportConnectView({
           {t("setup.connectAndScan")}
         </Button>
       </div>
-    </div>
+    </SetupPanel>
   );
 }

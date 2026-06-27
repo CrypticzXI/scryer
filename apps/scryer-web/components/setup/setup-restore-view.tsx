@@ -1,6 +1,7 @@
 import * as React from "react";
-import { ArrowLeft, Loader2, LockKeyhole, RotateCcw, Upload } from "lucide-react";
+import { ArrowLeft, DatabaseBackup, Loader2, LockKeyhole, RotateCcw, Upload } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { SetupPanel, SetupStepHeader, SETUP_PRIMARY_CTA } from "./setup-chrome";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import {
@@ -282,11 +283,12 @@ export function SetupRestoreView({
   }, [onBackendRestarting, password, summary, t, uploadId]);
 
   return (
-    <div className="w-full space-y-6">
-      <div className="text-center">
-        <h2 className="mb-2 text-xl font-semibold">{t("setup.restoreTitle")}</h2>
-        <p className="text-sm text-muted-foreground">{t("setup.restoreDescription")}</p>
-      </div>
+    <SetupPanel className="w-full space-y-6">
+      <SetupStepHeader
+        icon={DatabaseBackup}
+        title={t("setup.restoreTitle")}
+        subtitle={t("setup.restoreDescription")}
+      />
 
       {!summary ? (
         <Card>
@@ -518,7 +520,7 @@ export function SetupRestoreView({
           ) : null}
 
           {summary ? (
-            <Button id="setup-restore-apply" type="button" onClick={() => void handleApply()} disabled={applying}>
+            <Button id="setup-restore-apply" type="button" className={SETUP_PRIMARY_CTA} onClick={() => void handleApply()} disabled={applying}>
               {applying ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
               {t("setup.restoreApply")}
             </Button>
@@ -539,6 +541,6 @@ export function SetupRestoreView({
           )}
         </div>
       </div>
-    </div>
+    </SetupPanel>
   );
 }

@@ -1,5 +1,6 @@
-import { Check } from "lucide-react";
+import { Check, ClipboardCheck } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { SetupPanel, SetupStepHeader, SETUP_PRIMARY_CTA } from "./setup-chrome";
 import { Card, CardContent } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import type {
@@ -167,11 +168,12 @@ export function SetupSummaryView({
   }
 
   return (
-    <div className="flex flex-col gap-6">
-      <div className="text-center">
-        <h2 className="text-xl font-semibold">{t("setup.summaryTitle")}</h2>
-        <p className="mt-1 text-sm text-muted-foreground">{t("setup.summaryDescription")}</p>
-      </div>
+    <SetupPanel className="flex flex-col gap-6">
+      <SetupStepHeader
+        icon={ClipboardCheck}
+        title={t("setup.summaryTitle")}
+        subtitle={t("setup.summaryDescription")}
+      />
       <Card className="mx-auto w-full max-w-md">
         <CardContent className="flex flex-col gap-3 p-5">
           {items.map((item) => (
@@ -249,11 +251,11 @@ export function SetupSummaryView({
             </Button>
           </div>
         ) : (
-          <Button id="setup-summary-finish" onClick={onFinish} disabled={finishing}>
+          <Button id="setup-summary-finish" className={SETUP_PRIMARY_CTA} onClick={onFinish} disabled={finishing}>
             {finishing ? t("label.saving") : t("setup.finish")}
           </Button>
         )}
       </div>
-    </div>
+    </SetupPanel>
   );
 }

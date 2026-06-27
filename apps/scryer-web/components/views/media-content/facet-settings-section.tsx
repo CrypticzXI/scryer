@@ -49,6 +49,8 @@ export const LIBRARY_HEADER_ACTIONS_SLOT_ID = "facet-library-header-actions";
 /** DOM id of the pane footer slot. The per-library save bar is portaled here so it
  * pins to the bottom of the content pane instead of floating after short content. */
 export const LIBRARY_FOOTER_SLOT_ID = "facet-library-footer";
+/** DOM id of the right reference rail for settings pages with contextual help. */
+export const FACET_REFERENCE_SLOT_ID = "facet-settings-reference";
 
 type FacetSettingsSectionProps = {
   /** The active facet view (movies/series/anime), used to build sub-page links. */
@@ -67,8 +69,8 @@ type FacetSettingsSectionProps = {
   headerStatus?: ReactNode;
   /** When true, render an empty secondary-nav column (portal target) beside the sub-nav. */
   showSecondaryNav?: boolean;
-  /** Content column width. "wide" (1280px) suits dense tables; defaults to 920px. */
-  contentWidth?: "default" | "wide";
+  /** Content column width. "wide" suits dense tables; "reference" keeps a form column plus side reference. */
+  contentWidth?: "default" | "wide" | "reference";
   /** Optional trailing breadcrumb segment (e.g. the active library name). */
   trailingCrumb?: string;
 };
@@ -104,6 +106,61 @@ export function FacetSettingsSection({
       ? SECTION_ORDER.filter((id) => id === "library")
       : [];
   const showSubnav = availableSections.length > 1;
+  const pageContent = (
+    <>
+      <div className="mb-4 flex items-center gap-1.5 text-[12.5px] text-[var(--scry-faint)]">
+        <span>{facetLabel}</span>
+        <ChevronRight className="h-3.5 w-3.5" />
+        <span>{t("nav.settings")}</span>
+        <ChevronRight className="h-3.5 w-3.5" />
+        <span
+          className={cn(
+            "font-semibold",
+            trailingCrumb
+              ? "text-[var(--scry-muted)]"
+              : "text-[var(--scry-accent-text)]",
+          )}
+        >
+          {sectionLabel}
+        </span>
+        {trailingCrumb ? (
+          <>
+            <ChevronRight className="h-3.5 w-3.5" />
+            <span className="font-semibold text-[var(--scry-accent-text)]">
+              {trailingCrumb}
+            </span>
+          </>
+        ) : null}
+      </div>
+      <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div className="flex min-w-0 items-start gap-4">
+          <div className="flex h-[46px] w-[46px] shrink-0 items-center justify-center rounded-[13px] border border-[var(--scry-baccent)] bg-[linear-gradient(135deg,rgba(var(--scry-accent-rgb),0.35),rgba(123,91,255,0.22))] text-[var(--scry-accent-text)]">
+            <Icon className="h-[23px] w-[23px]" />
+          </div>
+          <div className="min-w-0">
+            <h1 className="text-[25px] font-bold tracking-normal text-[var(--scry-ink2)]">
+              {sectionLabel}
+            </h1>
+            <p className="mt-1 max-w-[640px] text-[13.5px] text-[var(--scry-muted)]">
+              {t("settings.sectionTitle", { section: sectionLabel })}
+            </p>
+          </div>
+        </div>
+        {headerStatus || showSecondaryNav ? (
+          <div className="flex shrink-0 items-center gap-2.5">
+            {headerStatus}
+            {showSecondaryNav ? (
+              <div
+                id={LIBRARY_HEADER_ACTIONS_SLOT_ID}
+                className="flex items-center gap-2.5"
+              />
+            ) : null}
+          </div>
+        ) : null}
+      </div>
+      {children}
+    </>
+  );
 
   return (
     <div className="flex min-h-0 w-full flex-1 flex-col overflow-hidden bg-transparent md:flex-row">
@@ -160,60 +217,25 @@ export function FacetSettingsSection({
         <div
           className={cn(
             "mx-auto w-full px-4 py-5 sm:px-6 md:px-[30px] md:py-[26px] md:pb-[60px]",
-            contentWidth === "wide" ? "max-w-[1280px]" : "max-w-[920px]",
+            contentWidth === "reference"
+              ? "max-w-[1780px]"
+              : contentWidth === "wide"
+                ? "max-w-[1280px]"
+                : "max-w-[920px]",
           )}
         >
-          <div className="mb-4 flex items-center gap-1.5 text-[12.5px] text-[var(--scry-faint)]">
-            <span>{facetLabel}</span>
-            <ChevronRight className="h-3.5 w-3.5" />
-            <span>{t("nav.settings")}</span>
-            <ChevronRight className="h-3.5 w-3.5" />
-            <span
-              className={cn(
-                "font-semibold",
-                trailingCrumb
-                  ? "text-[var(--scry-muted)]"
-                  : "text-[var(--scry-accent-text)]",
-              )}
-            >
-              {sectionLabel}
-            </span>
-            {trailingCrumb ? (
-              <>
-                <ChevronRight className="h-3.5 w-3.5" />
-                <span className="font-semibold text-[var(--scry-accent-text)]">
-                  {trailingCrumb}
-                </span>
-              </>
-            ) : null}
-          </div>
-          <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-            <div className="flex min-w-0 items-start gap-4">
-              <div className="flex h-[46px] w-[46px] shrink-0 items-center justify-center rounded-[13px] border border-[var(--scry-baccent)] bg-[linear-gradient(135deg,rgba(var(--scry-accent-rgb),0.35),rgba(123,91,255,0.22))] text-[var(--scry-accent-text)]">
-                <Icon className="h-[23px] w-[23px]" />
-              </div>
-              <div className="min-w-0">
-                <h1 className="text-[25px] font-bold tracking-normal text-[var(--scry-ink2)]">
-                  {sectionLabel}
-                </h1>
-                <p className="mt-1 max-w-[640px] text-[13.5px] text-[var(--scry-muted)]">
-                  {t("settings.sectionTitle", { section: sectionLabel })}
-                </p>
-              </div>
+          {contentWidth === "reference" ? (
+            <div className="grid gap-5 xl:grid-cols-[minmax(0,920px)_minmax(28rem,1fr)] 2xl:grid-cols-[minmax(0,920px)_minmax(42rem,1fr)] xl:items-start">
+              <div className="min-w-0">{pageContent}</div>
+              <aside
+                id={FACET_REFERENCE_SLOT_ID}
+                data-slot="facet-reference"
+                className="min-w-0 xl:sticky xl:top-[26px]"
+              />
             </div>
-            {headerStatus || showSecondaryNav ? (
-              <div className="flex shrink-0 items-center gap-2.5">
-                {headerStatus}
-                {showSecondaryNav ? (
-                  <div
-                    id={LIBRARY_HEADER_ACTIONS_SLOT_ID}
-                    className="flex items-center gap-2.5"
-                  />
-                ) : null}
-              </div>
-            ) : null}
-          </div>
-          {children}
+          ) : (
+            pageContent
+          )}
         </div>
         </div>
         {showSecondaryNav ? (

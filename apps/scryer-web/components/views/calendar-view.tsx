@@ -12,6 +12,7 @@ import type {
   MoreLinkContentArg,
 } from "@fullcalendar/core";
 import { LibraryMultiSelect } from "@/components/common/library-multi-select";
+import { CalendarClock } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { useIsMobile } from "@/lib/hooks/use-mobile";
 import type { LibraryRecord } from "@/lib/types";
@@ -43,11 +44,29 @@ type CalendarViewProps = {
   onEpisodeClick?: (episode: CalendarEpisodeItem) => void;
 };
 
+// Facet brand colors sourced from the design handoff (CalendarView.dc.html).
+// `FACET_COLORS` drives the dot / left-accent-bar; `FACET_GRADIENTS` is the
+// 135° two-tone chip fill.
 const FACET_COLORS: Record<string, string> = {
-  anime: "#8b5cf6",
-  movie: "#f59e0b",
-  series: "#3b82f6",
+  anime: "#9b6bff",
+  movie: "#e0a64a",
+  series: "#5b8cff",
 };
+
+const FACET_GRADIENTS: Record<string, string> = {
+  anime: "linear-gradient(135deg,#7c5cff,#9b6bff)",
+  movie: "linear-gradient(135deg,#d9962f,#eab308)",
+  series: "linear-gradient(135deg,#3b6ef6,#5b8cff)",
+};
+
+const FACET_GLOWS: Record<string, string> = {
+  anime: "rgba(155,107,255,.7)",
+  movie: "rgba(234,179,8,.7)",
+  series: "rgba(91,140,255,.7)",
+};
+
+// Handoff orders the filter pills Anime · Movie · Series.
+const FACET_ORDER = ["anime", "movie", "series"] as const;
 
 const FACET_LABELS: Record<string, string> = {
   anime: "Anime",
@@ -88,6 +107,14 @@ function formatEpisodeBadge(ep: CalendarEpisodeItem): string | null {
     return `E${ep.episodeNumber}`;
   }
   return ep.titleFacet === "movie" ? "Movie" : null;
+}
+
+// The comp chip shows an air time next to the code badge. Only render it when
+// the air date actually carries a time component (otherwise it's date-only).
+function formatAirTime(airDate: string | null): string | null {
+  if (!airDate || !airDate.includes("T")) return null;
+  const time = airDate.slice(11, 16);
+  return /^\d{2}:\d{2}$/.test(time) ? time : null;
 }
 
 function formatDateKey(date: Date): string {
@@ -173,8 +200,11 @@ export function CalendarView({
   const handleEventDidMount = useCallback((arg: EventMountArg) => {
     const ep = arg.event.extendedProps as CalendarEpisodeItem;
     const facetColor = FACET_COLORS[ep.titleFacet] ?? "#6b7280";
+    const facetGradient = FACET_GRADIENTS[ep.titleFacet] ?? facetColor;
     arg.el.setAttribute("title", formatTooltip(ep));
     arg.el.style.setProperty("--scryer-event-color", facetColor);
+    arg.el.style.setProperty("--scryer-event-accent", facetColor);
+    arg.el.style.setProperty("--scryer-event-gradient", facetGradient);
     arg.el.style.setProperty("--scryer-event-rgb", hexToRgbChannels(facetColor));
     arg.el.style.setProperty("--fc-event-text-color", "#f8fbff");
   }, []);
@@ -182,16 +212,17 @@ export function CalendarView({
   const renderEventContent = useCallback((arg: EventContentArg) => {
     const ep = arg.event.extendedProps as CalendarEpisodeItem;
     const badge = formatEpisodeBadge(ep);
-    const subtitle = arg.view.type === "dayGridWeek" ? ep.episodeTitle : null;
+    const time = formatAirTime(ep.airDate);
 
     return (
       <div className="fc-scryer-event-card">
-        <div className="fc-scryer-event-row">
-          <span className="fc-scryer-event-title">{ep.titleName}</span>
-          {badge ? <span className="fc-scryer-event-badge">{badge}</span> : null}
-        </div>
-        <div className="fc-scryer-event-subtitle">{ep.libraryName ?? ep.libraryId}</div>
-        {subtitle ? <div className="fc-scryer-event-subtitle">{subtitle}</div> : null}
+        <div className="fc-scryer-event-title">{ep.titleName}</div>
+        {badge || time ? (
+          <div className="fc-scryer-event-meta">
+            {badge ? <span className="fc-scryer-event-badge">{badge}</span> : null}
+            {time ? <span className="fc-scryer-event-time">{time}</span> : null}
+          </div>
+        ) : null}
       </div>
     );
   }, []);
@@ -227,38 +258,56 @@ export function CalendarView({
   return (
     <Card className="flex min-h-0 flex-1 flex-col rounded-none border-0 bg-[var(--scry-surfE)] shadow-none">
       <CardContent className="flex min-h-0 flex-1 flex-col px-4 py-5 sm:px-6 lg:px-7">
-        <div className="mb-3 flex flex-wrap items-center gap-2">
+        <div className="mb-4 flex flex-wrap items-center gap-3">
           <LibraryMultiSelect
             libraries={libraries}
             selectedLibraryIds={selectedLibraryIds}
             onSelectedLibraryIdsChange={onSelectedLibraryIdsChange}
             disabled={librariesLoading || libraries.length === 0}
-            triggerClassName="h-8 w-[180px] text-xs"
+            triggerClassName="h-10 w-[188px] rounded-[11px] text-[13px]"
           />
-          {Object.entries(FACET_LABELS).map(([facet, label]) => {
-            const active = facetFilter.includes(facet);
-            return (
-              <button
-                key={facet}
-                type="button"
-                onClick={() => handleFacetChange(
-                  active
-                    ? facetFilter.filter((f) => f !== facet)
-                    : [...facetFilter, facet],
-                )}
-                className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium transition-opacity ${
-                  active ? "opacity-100" : "opacity-40"
-                }`}
-                style={{ backgroundColor: `${FACET_COLORS[facet]}22`, color: FACET_COLORS[facet] }}
-              >
-                <span
-                  className="inline-block h-2 w-2 rounded-full"
-                  style={{ backgroundColor: FACET_COLORS[facet] }}
-                />
-                {label}
-              </button>
-            );
-          })}
+          <div className="flex items-center gap-2">
+            {FACET_ORDER.map((facet) => {
+              const active = facetFilter.includes(facet);
+              const color = FACET_COLORS[facet];
+              return (
+                <button
+                  key={facet}
+                  type="button"
+                  onClick={() =>
+                    handleFacetChange(
+                      active
+                        ? facetFilter.filter((f) => f !== facet)
+                        : [...facetFilter, facet],
+                    )
+                  }
+                  className="flex h-9 items-center gap-2 rounded-[10px] border px-3.5 text-[12.5px] font-semibold transition"
+                  style={{
+                    borderColor: active ? color : "var(--scry-border2)",
+                    background: active ? "rgba(255,255,255,0.04)" : "transparent",
+                    color: active ? "var(--scry-ink2)" : "var(--scry-faint)",
+                  }}
+                >
+                  <span
+                    className="h-[9px] w-[9px] rounded-full"
+                    style={{
+                      background: color,
+                      opacity: active ? 1 : 0.35,
+                      boxShadow: active ? `0 0 7px ${FACET_GLOWS[facet]}` : "none",
+                    }}
+                  />
+                  {FACET_LABELS[facet]}
+                </button>
+              );
+            })}
+          </div>
+          <div className="ml-auto flex items-center gap-2 text-[12.5px] text-[var(--scry-muted3)]">
+            <CalendarClock className="h-[15px] w-[15px] text-[var(--scry-faint)]" />
+            <span className="font-semibold text-[var(--scry-text4)]">
+              {filteredEpisodes.length}
+            </span>
+            airings this month
+          </div>
         </div>
         {loading && (
           <p className="mb-2 text-sm text-muted-foreground">
@@ -298,6 +347,13 @@ export function CalendarView({
             }}
             moreLinkClassNames={() => ["fc-scryer-more-link"]}
             moreLinkContent={renderMoreLinkContent}
+            buttonText={{
+              today: "Today",
+              month: "Month",
+              week: "Week",
+              dayGridMonth: "Month",
+              dayGridWeek: "Week",
+            }}
             headerToolbar={
               isMobile
                 ? {

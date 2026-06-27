@@ -467,9 +467,6 @@ export function RenameSettingsForm({
               </Select>
             </label>
           </div>
-          <p className="text-xs text-muted-foreground">
-            {t("settings.renamePolicyHelp")}
-          </p>
 
           {activeQualityScopeId === "anime" && (
             <div className="grid gap-4 md:grid-cols-2">
