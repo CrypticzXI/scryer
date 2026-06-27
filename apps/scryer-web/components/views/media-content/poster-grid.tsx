@@ -1,14 +1,12 @@
 import * as React from "react";
 import { useLocation } from "react-router-dom";
 import { useTranslate } from "@/lib/context/translate-context";
-import { Eye, EyeOff } from "lucide-react";
 import type { OverviewTitleTarget, ViewId } from "@/components/root/types";
 import { persistOverviewWindowScroll } from "@/lib/hooks/use-overview-window-scroll-restoration";
 import type { TitleRecord } from "@/lib/types";
 import { selectPosterVariantUrl } from "@/lib/utils/poster-images";
-import { TitlePosterSlot } from "@/components/title-poster-slot";
+import { TitleCard } from "@/components/title-card";
 import { titleOverviewOpenButtonId } from "@/lib/utils/dom-ids";
-import { cn } from "@/lib/utils";
 import {
   TitleCollectionEmptyState,
   TitleCollectionLoadingState,
@@ -117,12 +115,6 @@ const PosterCard = React.memo(function PosterCard({
   const location = useLocation();
   const t = useTranslate();
   const posterUrl = selectPosterVariantUrl(title.posterUrl, "w250");
-  const posterClassName = cn(
-    "h-full w-full object-cover transition-transform duration-150",
-    "group-hover:scale-105 group-hover:blur-md group-hover:brightness-[0.78] group-hover:saturate-[0.9]",
-    "group-focus-within:scale-105 group-focus-within:blur-md group-focus-within:brightness-[0.78] group-focus-within:saturate-[0.9]",
-    selected && "scale-105 blur-md brightness-[0.78] saturate-[0.9]",
-  );
   const contextPanelControlsId =
     selected && onSelectTitle ? contextPanelId : undefined;
   const handleActivate = React.useCallback(() => {
@@ -142,82 +134,24 @@ const PosterCard = React.memo(function PosterCard({
   ]);
 
   return (
-    <div
-      className={cn(
-        "cv-auto-poster group",
-      )}
-    >
-      <div
-        className={cn(
-          "overflow-hidden rounded-[12px] border bg-[var(--scry-card2)]",
-          selected
-            ? "border-[var(--scry-accent-ring)]"
-            : "border-[var(--scry-border2)]",
-        )}
-      >
-        <div className="relative">
-          <button
-            id={titleOverviewOpenButtonId(title.id)}
-            type="button"
-            onClick={handleActivate}
-            aria-current={selected ? "true" : undefined}
-            aria-controls={contextPanelControlsId}
-            className="block w-full overflow-hidden rounded-[11px] bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            aria-label={title.name}
-          >
-            <div className="relative isolate aspect-[2/3] overflow-hidden rounded-[11px]">
-              <TitlePosterSlot
-                src={posterUrl}
-                sourceSrc={title.posterSourceUrl}
-                metadataFetchedAt={title.metadataFetchedAt}
-                createdAt={title.createdAt}
-                alt={t("media.posterAlt", { name: title.name })}
-                className={posterClassName}
-                placeholderClassName="flex h-full w-full items-center justify-center text-sm text-muted-foreground"
-                emptyLabel={t("label.noArt")}
-                loading="lazy"
-                decoding="async"
-              />
-
-              <div
-                className={cn(
-                  "pointer-events-none absolute inset-0 z-10 overflow-hidden rounded-[calc(var(--radius)-1px)] opacity-0 transition-opacity duration-200 group-hover:opacity-100 group-focus-within:opacity-100",
-                  selected && "opacity-100",
-                )}
-              >
-                <div
-                  aria-hidden="true"
-                  className="absolute inset-0 rounded-[11px] border border-white/15 bg-gradient-to-t from-black/55 via-black/24 to-white/18"
-                />
-              </div>
-              <div
-                className={cn(
-                  "pointer-events-none absolute inset-0 z-20 flex items-center justify-center rounded-[11px] px-3 opacity-0 transition-opacity duration-200 group-hover:opacity-100 group-focus-within:opacity-100",
-                  selected && "opacity-100",
-                )}
-              >
-                <p
-                  className="line-clamp-3 origin-center text-center text-lg font-semibold leading-tight tracking-tight text-white drop-shadow-md transition-transform duration-200 group-hover:scale-[1.05] group-focus-within:scale-[1.05]"
-                  style={{
-                    fontFamily:
-                      "var(--font-space-grotesk), var(--font-inter), ui-sans-serif, system-ui, -apple-system, sans-serif",
-                  }}
-                >
-                  {title.name}
-                </p>
-              </div>
-
-              <div className="absolute left-[7px] top-[7px] z-20 flex h-[25px] w-[25px] items-center justify-center rounded-[7px] border border-white/10 bg-black/65 backdrop-blur-[4px]">
-                {title.monitored ? (
-                  <Eye className="h-3.5 w-3.5 text-emerald-400" />
-                ) : (
-                  <EyeOff className="h-3.5 w-3.5 text-[var(--scry-faint2)]" />
-                )}
-              </div>
-            </div>
-          </button>
-        </div>
-      </div>
+    <div className="cv-auto-poster">
+      <TitleCard
+        title={title.name}
+        year={title.year ?? null}
+        posterUrl={posterUrl}
+        posterSourceUrl={title.posterSourceUrl}
+        metadataFetchedAt={title.metadataFetchedAt}
+        createdAt={title.createdAt}
+        monitored={title.monitored}
+        selected={selected}
+        emptyLabel={t("label.noArt")}
+        onOpen={handleActivate}
+        interactiveProps={{
+          id: titleOverviewOpenButtonId(title.id),
+          "aria-current": selected ? "true" : undefined,
+          "aria-controls": contextPanelControlsId,
+        }}
+      />
     </div>
   );
 });

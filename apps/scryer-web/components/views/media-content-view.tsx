@@ -3,7 +3,6 @@ import { useLocation } from "react-router-dom";
 import {
   ArrowDown,
   ArrowUp,
-  Check,
   ChevronDown,
   ChevronRight,
   ClipboardList,
@@ -17,10 +16,8 @@ import {
   Loader2,
   PanelLeftOpen,
   Pencil,
-  Plus,
   RefreshCw,
   Search,
-  Send,
   Sparkles,
   Table as TableIcon,
   Trash2,
@@ -873,49 +870,23 @@ function TitleContextMoreLikeThisStrip({
             typeof item.year === "number" && Number.isFinite(item.year)
               ? String(item.year)
               : null;
-          const genreLabel =
-            item.genres?.find((candidate) => candidate.trim().length > 0) ??
-            null;
           const titleLabel = discoveryItemDisplayTitle(item);
           const owned = item.ownedInInput;
-          const ActionIcon = owned ? Check : canManageTitle ? Plus : Send;
-          const actionLabel = owned
-            ? t("discovery.inLibrary")
-            : canManageTitle
-              ? t("discovery.add")
-              : t("discovery.request");
-          const actionDisabled = owned || (!canManageTitle && !canRequestMedia);
+          const addable = !owned && canManageTitle;
+          const requestable = !owned && !canManageTitle && canRequestMedia;
 
           return (
-            <div key={item.id} className="group w-24 shrink-0 text-left">
-              <div className="relative h-[142px] w-24 overflow-hidden rounded-[9px] border border-[var(--scry-border2)] bg-[var(--scry-soft)] shadow-[0_6px_16px_rgba(0,0,0,0.4)] transition group-hover:border-[var(--scry-bhover2)] group-hover:shadow-[0_10px_22px_rgba(0,0,0,0.55)]">
-                <TitlePosterSlot
-                  src={posterUrl}
-                  alt={t("media.posterAlt", { name: titleLabel })}
-                  className="h-full w-full object-cover"
-                  placeholderClassName="flex h-full w-full items-center justify-center px-2 text-center text-[10px] text-[var(--scry-muted3)]"
-                  emptyLabel={t("label.noArt")}
-                  loading="lazy"
-                  decoding="async"
-                />
-                <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(180deg,transparent_55%,rgba(4,6,12,0.82))]" />
-                <button
-                  type="button"
-                  className="absolute right-1.5 top-1.5 flex size-6 items-center justify-center rounded-[7px] border border-white/15 bg-slate-950/70 text-[var(--scry-text2)] backdrop-blur-sm transition hover:bg-[var(--scry-accent)] hover:text-white disabled:cursor-default disabled:opacity-60"
-                  aria-label={`${actionLabel}: ${titleLabel}`}
-                  disabled={actionDisabled}
-                  onClick={() => onAction(item)}
-                >
-                  <ActionIcon className="h-3.5 w-3.5" />
-                </button>
-              </div>
-              <p className="mt-2 truncate text-[12px] font-semibold text-[var(--scry-body)]">
-                {titleLabel}
-              </p>
-              <p className="truncate text-[11px] text-[var(--scry-faint)]">
-                {[yearLabel, genreLabel].filter(Boolean).join(" / ") ||
-                  mediaTitleLabel(view, t)}
-              </p>
+            <div key={item.id} className="w-24 shrink-0">
+              <TitleCard
+                title={titleLabel}
+                year={yearLabel ?? mediaTitleLabel(view, t)}
+                posterUrl={posterUrl}
+                addable={addable}
+                requestable={requestable}
+                compact
+                onAdd={addable ? () => onAction(item) : undefined}
+                onRequest={requestable ? () => onAction(item) : undefined}
+              />
             </div>
           );
         })}

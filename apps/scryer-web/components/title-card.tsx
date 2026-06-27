@@ -1,7 +1,7 @@
 import * as React from "react";
 import { Clock, Eye, EyeOff, Plus, Send } from "lucide-react";
 import type { Facet } from "@/lib/types/titles";
-import { TitlePoster } from "@/components/title-poster";
+import { TitlePosterSlot } from "@/components/title-poster-slot";
 import { useTranslate } from "@/lib/context/translate-context";
 import { cn } from "@/lib/utils";
 
@@ -38,6 +38,11 @@ export type TitleCardProps = {
   facetLabel?: string | null;
   posterUrl?: string | null;
   posterSourceUrl?: string | null;
+  /** Hydration hints so a still-fetching poster shows a brief spinner, not empty art. */
+  metadataFetchedAt?: string | null;
+  createdAt?: string | null;
+  /** Placeholder text when there's no poster art. Defaults to the localized "No art". */
+  emptyLabel?: string;
   /** Operator with library access can add it → centered "+" action on hover. */
   addable?: boolean;
   /** Member without direct access can request it → centered paper-airplane on hover. */
@@ -87,6 +92,9 @@ function TitleCardImpl({
   facetLabel,
   posterUrl,
   posterSourceUrl,
+  metadataFetchedAt,
+  createdAt,
+  emptyLabel,
   addable = false,
   requestable = false,
   requested = false,
@@ -154,11 +162,15 @@ function TitleCardImpl({
     >
       {/* Poster (sharp by default; frosts on hover) */}
       <div className="absolute inset-0">
-        <TitlePoster
+        <TitlePosterSlot
           src={posterUrl}
           sourceSrc={posterSourceUrl}
+          metadataFetchedAt={metadataFetchedAt}
+          createdAt={createdAt}
           alt={title}
           className={posterClass}
+          placeholderClassName="flex h-full w-full items-center justify-center px-2 text-center text-sm text-[var(--scry-muted3)]"
+          emptyLabel={emptyLabel ?? t("label.noArt")}
           loading="lazy"
           decoding="async"
         />

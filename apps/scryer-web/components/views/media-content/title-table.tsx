@@ -161,13 +161,19 @@ export function TitleTable({
   const dateTimeFormat = useUiDateTimeFormat();
   const isMovieView = view === "movies";
   const overviewTargetView: ViewId = resolveOverviewTargetView(view);
-  const showLibraryColumn = visibleColumns.library;
-  const showMonitoredColumn = visibleColumns.monitored;
-  const showQualityColumn = visibleColumns.quality;
-  const showEpisodesColumn = !isMovieView && visibleColumns.episodes;
-  const showSizeColumn = visibleColumns.size;
-  const showAddedColumn = visibleColumns.added;
+  const [tableWidth, setTableWidth] = React.useState<number | null>(null);
+  // Drop lower-priority columns as the table narrows so the Name column stays
+  // usable and the table never overflows (which would cut off row highlights).
+  const columnWidthBudget = tableWidth ?? Number.POSITIVE_INFINITY;
   const showActionsColumn = visibleColumns.actions;
+  const showMonitoredColumn =
+    visibleColumns.monitored && columnWidthBudget >= 480;
+  const showQualityColumn = visibleColumns.quality && columnWidthBudget >= 600;
+  const showEpisodesColumn =
+    !isMovieView && visibleColumns.episodes && columnWidthBudget >= 640;
+  const showSizeColumn = visibleColumns.size && columnWidthBudget >= 700;
+  const showLibraryColumn = visibleColumns.library && columnWidthBudget >= 810;
+  const showAddedColumn = visibleColumns.added && columnWidthBudget >= 930;
   const columnCount =
     2 +
     (showLibraryColumn ? 1 : 0) +
@@ -187,16 +193,6 @@ export function TitleTable({
     : selectedVisibleCount > 0
       ? "indeterminate"
       : false;
-  const titleTableMinWidthRem =
-    3 +
-    12 +
-    (showLibraryColumn ? 7 : 0) +
-    (showMonitoredColumn ? 5.25 : 0) +
-    (showQualityColumn ? 8 : 0) +
-    (showEpisodesColumn ? 9.5 : 0) +
-    (showSizeColumn ? 6 : 0) +
-    (showAddedColumn ? 7.5 : 0) +
-    (showActionsColumn ? 9.5 : 0);
   const titleTableColGroup = (
     <colgroup>
       <col style={{ width: "3rem" }} />
@@ -234,6 +230,20 @@ export function TitleTable({
   >({});
 
   const titleTableScrollRef = React.useRef<HTMLDivElement>(null);
+  React.useLayoutEffect(() => {
+    const element = titleTableScrollRef.current;
+    if (!element || typeof ResizeObserver === "undefined") {
+      return;
+    }
+    const updateWidth = () => {
+      const next = Math.round(element.getBoundingClientRect().width);
+      setTableWidth((current) => (current === next ? current : next));
+    };
+    updateWidth();
+    const observer = new ResizeObserver(updateWidth);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
   const sortedTitles = titles;
   const scrollStorageKeySuffix = selectedPaneMode
     ? "poster-table-selected"
@@ -943,7 +953,6 @@ export function TitleTable({
         data-ui="title-table"
         data-view={view}
         className="w-full table-fixed caption-bottom text-sm"
-        style={{ minWidth: `${titleTableMinWidthRem}rem` }}
       >
         {titleTableColGroup}
         {titleTableHeader}
