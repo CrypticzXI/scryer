@@ -216,6 +216,43 @@ fn normalize_structured_dispatch_query(query: &str, absolute_episode: Option<u32
     tokens.join(" ").trim().to_string()
 }
 
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+enum StructuredDispatchQueryShape {
+    AbsoluteEpisode,
+    SeasonEpisode,
+    Season,
+    Other,
+}
+
+fn structured_dispatch_query_shape(
+    query: &str,
+    absolute_episode: Option<u32>,
+) -> StructuredDispatchQueryShape {
+    let Some(last) = query.split_whitespace().last() else {
+        return StructuredDispatchQueryShape::Other;
+    };
+    let trimmed = last.trim_matches(|ch: char| !ch.is_ascii_alphanumeric());
+    if trimmed.is_empty() {
+        return StructuredDispatchQueryShape::Other;
+    }
+
+    if absolute_episode.is_some_and(|value| {
+        trimmed.chars().all(|ch| ch.is_ascii_digit()) && trimmed.parse::<u32>().ok() == Some(value)
+    }) {
+        return StructuredDispatchQueryShape::AbsoluteEpisode;
+    }
+
+    let upper = trimmed.to_ascii_uppercase();
+    if upper.starts_with('S') && upper.contains('E') {
+        return StructuredDispatchQueryShape::SeasonEpisode;
+    }
+    if upper.starts_with('S') || upper == "OVA" || upper == "SPECIAL" {
+        return StructuredDispatchQueryShape::Season;
+    }
+
+    StructuredDispatchQueryShape::Other
+}
+
 fn dedupe_structured_dispatch_queries(
     queries: Vec<String>,
     season: Option<u32>,
@@ -237,6 +274,38 @@ fn dedupe_structured_dispatch_queries(
             normalized.as_str()
         };
         if seen.insert(key_source.to_ascii_lowercase()) {
+            deduped.push(query);
+        }
+    }
+
+    deduped
+}
+
+fn dedupe_text_safe_structured_dispatch_queries(
+    queries: Vec<String>,
+    season: Option<u32>,
+    episode: Option<u32>,
+    absolute_episode: Option<u32>,
+) -> Vec<String> {
+    if season.is_none() && episode.is_none() && absolute_episode.is_none() {
+        return queries;
+    }
+
+    let mut deduped = Vec::with_capacity(queries.len());
+    let mut seen = std::collections::HashSet::new();
+
+    for query in queries {
+        let normalized = normalize_structured_dispatch_query(&query, absolute_episode);
+        let key_source = if normalized.is_empty() {
+            query.trim()
+        } else {
+            normalized.as_str()
+        };
+        let key = (
+            key_source.to_ascii_lowercase(),
+            structured_dispatch_query_shape(&query, absolute_episode),
+        );
+        if seen.insert(key) {
             deduped.push(query);
         }
     }
@@ -875,11 +944,10 @@ impl AppUseCase {
             );
 
         // Auto mode normally conserves API calls by using the first query, but
-        // episode acquisition needs season/title fallbacks so packs and ranges
-        // can be considered for a single requested episode. Equivalent
-        // structured variants are only collapsed when the eligible search set
-        // is *nab-only, because non-*nab indexers may still need the full
-        // variant fanout.
+        // episode acquisition keeps season/title fallbacks so packs and ranges
+        // can be considered for a single requested episode. Broad structured
+        // collapse is only safe when provider dispatch uses season/episode
+        // parameters; text dispatch still needs distinct SxxEyy/Sxx/title forms.
         let effective_queries = match mode {
             SearchMode::Auto if search_subject_kind == ReleaseSearchSubjectKind::Episode => queries,
             SearchMode::Auto => queries.into_iter().take(1).collect(),
@@ -887,6 +955,15 @@ impl AppUseCase {
         };
         let effective_queries = if collapse_structured_queries {
             dedupe_structured_dispatch_queries(effective_queries, season, episode, absolute_episode)
+        } else if mode == SearchMode::Auto
+            && search_subject_kind == ReleaseSearchSubjectKind::Episode
+        {
+            dedupe_text_safe_structured_dispatch_queries(
+                effective_queries,
+                season,
+                episode,
+                absolute_episode,
+            )
         } else {
             effective_queries
         };
@@ -1753,6 +1830,44 @@ pub(crate) fn build_user_rule_input(
     context: crate::user_rule_input::SearchRuleInputContext<'_>,
 ) -> scryer_rules::UserRuleInput {
     crate::user_rule_input::build_search_rule_input(parsed, profile, result, decision, context)
+}
+
+#[cfg(test)]
+mod structured_dispatch_query_tests {
+    use super::*;
+
+    #[test]
+    fn text_safe_dedupe_preserves_distinct_episode_season_absolute_and_title_queries() {
+        let queries = vec![
+            "Silver Horizon 033".to_string(),
+            "Silver Horizon S02E05".to_string(),
+            "Silver Horizon S02".to_string(),
+            "Silver Horizon".to_string(),
+        ];
+
+        let deduped = dedupe_text_safe_structured_dispatch_queries(
+            queries.clone(),
+            Some(2),
+            Some(5),
+            Some(33),
+        );
+
+        assert_eq!(deduped, queries);
+    }
+
+    #[test]
+    fn broad_structured_dedupe_still_collapses_equivalent_parameterized_queries() {
+        let queries = vec![
+            "Silver Horizon 033".to_string(),
+            "Silver Horizon S02E05".to_string(),
+            "Silver Horizon S02".to_string(),
+            "Silver Horizon".to_string(),
+        ];
+
+        let deduped = dedupe_structured_dispatch_queries(queries, Some(2), Some(5), Some(33));
+
+        assert_eq!(deduped, vec!["Silver Horizon 033".to_string()]);
+    }
 }
 
 #[cfg(test)]

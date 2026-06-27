@@ -226,10 +226,16 @@ fn log_indexer_skip(
 }
 
 fn should_run_fallback_tier(
+    mode: SearchMode,
     collected_results: &[IndexerSearchResult],
     primary_attempted: bool,
+    primary_had_error: bool,
     fallback_strategies: &[SearchStrategy],
 ) -> bool {
+    if mode == SearchMode::Auto && primary_had_error {
+        return false;
+    }
+
     collected_results.is_empty() && primary_attempted && !fallback_strategies.is_empty()
 }
 
@@ -287,6 +293,42 @@ fn record_strategy_metrics(
     }
 }
 
+fn record_auto_strategy_selection(
+    indexer_name: &str,
+    caps_source: &'static str,
+    primary_strategies: &[SearchStrategy],
+    fallback_strategies: &[SearchStrategy],
+) {
+    let strategy_count = primary_strategies.len() + fallback_strategies.len();
+    let primary_labels = primary_strategies
+        .iter()
+        .map(|strategy| strategy.label.as_str())
+        .collect::<Vec<_>>();
+    let fallback_labels = fallback_strategies
+        .iter()
+        .map(|strategy| strategy.label.as_str())
+        .collect::<Vec<_>>();
+
+    metrics::histogram!(
+        "scryer_indexer_auto_strategy_count",
+        "indexer" => indexer_name.to_string(),
+        "caps_source" => caps_source.to_string()
+    )
+    .record(strategy_count as f64);
+
+    debug!(
+        indexer = indexer_name,
+        mode = "auto",
+        caps_source,
+        auto_strategy_count = strategy_count,
+        primary_strategy_count = primary_strategies.len(),
+        fallback_strategy_count = fallback_strategies.len(),
+        primary_strategies = ?primary_labels,
+        fallback_strategies = ?fallback_labels,
+        "selected automatic indexer search strategies"
+    );
+}
+
 fn preferred_anime_alias_query(
     query: &str,
     tagged_aliases: &[scryer_domain::TaggedAlias],
@@ -321,6 +363,10 @@ fn is_freetext_strategy_label(label: &str) -> bool {
     matches!(label, "freetext" | "freetext_alias")
 }
 
+fn is_title_query_strategy_label(label: &str) -> bool {
+    is_freetext_strategy_label(label) || label == "fallback"
+}
+
 fn should_defer_freetext_to_fallback(_facet: &str, strategies: &[SearchStrategy]) -> bool {
     strategies
         .iter()
@@ -331,9 +377,14 @@ fn should_defer_freetext_to_fallback(_facet: &str, strategies: &[SearchStrategy]
 }
 
 fn split_strategy_tiers(
+    mode: SearchMode,
     facet: &str,
     strategies: Vec<SearchStrategy>,
 ) -> (Vec<SearchStrategy>, Vec<SearchStrategy>) {
+    if mode == SearchMode::Auto {
+        return split_auto_strategy_tiers(strategies);
+    }
+
     if !should_defer_freetext_to_fallback(facet, &strategies) {
         return (strategies, Vec::new());
     }
@@ -356,6 +407,66 @@ fn split_strategy_tiers(
     }
 
     (primary, fallback)
+}
+
+fn split_auto_strategy_tiers(
+    strategies: Vec<SearchStrategy>,
+) -> (Vec<SearchStrategy>, Vec<SearchStrategy>) {
+    if strategies.len() <= 1 {
+        return (strategies, Vec::new());
+    }
+
+    let mut primary_candidates = Vec::new();
+    let mut fallback_candidates = Vec::new();
+
+    for strategy in strategies {
+        if is_title_query_strategy_label(&strategy.label) {
+            fallback_candidates.push(strategy);
+        } else {
+            primary_candidates.push(strategy);
+        }
+    }
+
+    if primary_candidates.is_empty() {
+        return (
+            take_best_auto_strategy(&mut fallback_candidates)
+                .into_iter()
+                .collect(),
+            Vec::new(),
+        );
+    }
+
+    let primary = take_best_auto_strategy(&mut primary_candidates)
+        .into_iter()
+        .collect();
+    let fallback = take_best_auto_strategy(&mut fallback_candidates)
+        .into_iter()
+        .collect();
+
+    (primary, fallback)
+}
+
+fn take_best_auto_strategy(strategies: &mut Vec<SearchStrategy>) -> Option<SearchStrategy> {
+    let index = strategies
+        .iter()
+        .enumerate()
+        .min_by_key(|(_, strategy)| auto_strategy_rank(strategy))
+        .map(|(index, _)| index)?;
+    Some(strategies.swap_remove(index))
+}
+
+fn auto_strategy_rank(strategy: &SearchStrategy) -> (u8, u8) {
+    match strategy.label.as_str() {
+        "ids_abs" => (0, 0),
+        "ids_sxex" => (0, 1),
+        "ids" => (0, 2),
+        "rss" => (0, 3),
+        "freetext" => (1, 0),
+        "freetext_alias" => (1, 1),
+        "fallback" => (1, 2),
+        _ if !strategy.ids.is_empty() => (0, 4),
+        _ => (1, 3),
+    }
 }
 
 fn strip_query_context(query: &str) -> &str {
@@ -1629,7 +1740,15 @@ impl IndexerClient for MultiIndexerSearchClient {
                 });
             }
             let (primary_strategies, fallback_strategies) =
-                split_strategy_tiers(&facet, strategies);
+                split_strategy_tiers(mode, &facet, strategies);
+            if mode == SearchMode::Auto {
+                record_auto_strategy_selection(
+                    config.name.as_str(),
+                    resolved_caps.caps_source,
+                    &primary_strategies,
+                    &fallback_strategies,
+                );
+            }
 
             for rss_category_request in rss_category_requests {
                 let indexer_id = config.id.clone();
@@ -1659,6 +1778,7 @@ impl IndexerClient for MultiIndexerSearchClient {
                     }
                     let mut collected_results = Vec::new();
                     let mut primary_attempted = false;
+                    let mut primary_had_error = false;
                     let mut batch_health = StrategyBatchHealth::default();
 
                     let primary_outcomes = Self::execute_strategy_tier(
@@ -1728,6 +1848,7 @@ impl IndexerClient for MultiIndexerSearchClient {
                                         Err(AppError::canceled("indexer search canceled")),
                                     );
                                 }
+                                primary_had_error = true;
                                 batch_health.mark_error(outcome.retry_after);
                                 debug!(
                                     indexer = indexer_name.as_str(),
@@ -1755,15 +1876,17 @@ impl IndexerClient for MultiIndexerSearchClient {
                     }
 
                     if should_run_fallback_tier(
+                        mode,
                         &collected_results,
                         primary_attempted,
+                        primary_had_error,
                         &fallback_strategies,
                     ) {
                         info!(
                             indexer = indexer_name.as_str(),
                             facet = facet.as_str(),
                             query = search_query.as_str(),
-                            reason = "zero_id_results",
+                            reason = "zero_usable_results",
                             "indexer search falling back to title tier"
                         );
 
@@ -5373,6 +5496,100 @@ mod tests {
         assert_eq!(strategies[1].label, "freetext");
         assert_eq!(strategies[1].absolute_episode, None);
         assert_eq!(strategies[1].episode, None);
+    }
+
+    fn strategy_with_label(label: &str) -> SearchStrategy {
+        SearchStrategy {
+            request_query: "Silver Horizon S02E05".into(),
+            request_facet: "anime".into(),
+            ids: if label.starts_with("ids") {
+                HashMap::from([("anidb_id".to_string(), "18886".to_string())])
+            } else {
+                HashMap::new()
+            },
+            season: Some(2),
+            episode: Some(5),
+            absolute_episode: if label == "ids_abs" { Some(33) } else { None },
+            generic_query_only: false,
+            label: label.into(),
+        }
+    }
+
+    #[test]
+    fn auto_strategy_tier_prefers_absolute_id_and_reserves_freetext() {
+        let (primary, fallback) = split_strategy_tiers(
+            SearchMode::Auto,
+            "anime",
+            vec![
+                strategy_with_label("ids_sxex"),
+                strategy_with_label("freetext"),
+                strategy_with_label("ids_abs"),
+            ],
+        );
+
+        assert_eq!(primary.len(), 1);
+        assert_eq!(primary[0].label, "ids_abs");
+        assert_eq!(fallback.len(), 1);
+        assert_eq!(fallback[0].label, "freetext");
+    }
+
+    #[test]
+    fn auto_strategy_tier_uses_single_text_strategy_without_ids() {
+        let (primary, fallback) = split_strategy_tiers(
+            SearchMode::Auto,
+            "anime",
+            vec![
+                strategy_with_label("freetext_alias"),
+                strategy_with_label("freetext"),
+            ],
+        );
+
+        assert_eq!(primary.len(), 1);
+        assert_eq!(primary[0].label, "freetext");
+        assert!(fallback.is_empty());
+    }
+
+    #[test]
+    fn interactive_strategy_tier_keeps_parallel_id_strategies() {
+        let (primary, fallback) = split_strategy_tiers(
+            SearchMode::Interactive,
+            "anime",
+            vec![
+                strategy_with_label("ids_abs"),
+                strategy_with_label("ids_sxex"),
+                strategy_with_label("freetext"),
+            ],
+        );
+
+        assert_eq!(
+            primary
+                .iter()
+                .map(|strategy| strategy.label.as_str())
+                .collect::<Vec<_>>(),
+            vec!["ids_abs", "ids_sxex"]
+        );
+        assert_eq!(fallback.len(), 1);
+        assert_eq!(fallback[0].label, "freetext");
+    }
+
+    #[test]
+    fn auto_fallback_tier_is_not_spent_after_primary_error() {
+        let fallback = vec![strategy_with_label("freetext")];
+
+        assert!(!should_run_fallback_tier(
+            SearchMode::Auto,
+            &[],
+            true,
+            true,
+            &fallback
+        ));
+        assert!(should_run_fallback_tier(
+            SearchMode::Interactive,
+            &[],
+            true,
+            true,
+            &fallback
+        ));
     }
 
     #[test]

@@ -115,28 +115,6 @@ function uninstallLabel(plugin: RegistryPluginRecord, t: SetupPluginsViewProps["
     : t("settings.pluginUninstall");
 }
 
-function installIsBlocked(plugin: RegistryPluginRecord): boolean {
-  return plugin.blockedReason === "no_compatible_release";
-}
-
-function blockedReasonLabel(
-  plugin: RegistryPluginRecord,
-  t: SetupPluginsViewProps["t"],
-): string | null {
-  switch (plugin.blockedReason) {
-    case "no_compatible_release":
-      return t("settings.pluginNoCompatibleRelease");
-    case "newer_release_requires_newer_scryer":
-      return plugin.latestVersion
-        ? t("settings.pluginNewerReleaseRequiresNewerScryerVersion", {
-          version: plugin.latestVersion,
-        })
-        : t("settings.pluginNewerReleaseRequiresNewerScryer");
-    default:
-      return null;
-  }
-}
-
 function isRunningPluginProgress(
   progress?: PluginInstallProgressRecord,
 ): progress is PluginInstallProgressRecord {
@@ -270,7 +248,6 @@ export function SetupPluginsView({
                       const runningProgress = isRunningPluginProgress(progress) ? progress : undefined;
                       const isBusy = mutatingPluginIds.includes(plugin.id) || plugin.installInProgress;
                       const actionError = pluginErrors[plugin.id];
-                      const blockedLabel = blockedReasonLabel(plugin, t);
                       const bytesLabel = formatPluginBytes(plugin.bytes);
                       return (
                         <TableRow
@@ -290,18 +267,11 @@ export function SetupPluginsView({
                               <p className="whitespace-normal break-words text-xs text-muted-foreground">
                                 {plugin.description}
                               </p>
-                              {(blockedLabel || actionError) && (
+                              {actionError && (
                                 <div className="space-y-1">
-                                  {blockedLabel && (
-                                    <p className="text-xs text-destructive">
-                                      {blockedLabel}
-                                    </p>
-                                  )}
-                                  {actionError && (
-                                    <p className="text-xs text-destructive">
-                                      {actionError}
-                                    </p>
-                                  )}
+                                  <p className="text-xs text-destructive">
+                                    {actionError}
+                                  </p>
                                 </div>
                               )}
                             </div>
@@ -354,7 +324,7 @@ export function SetupPluginsView({
                                   id={selectorId("setup-plugin-install", plugin.name)}
                                   variant="outline"
                                   size="sm"
-                                  disabled={isBusy || installIsBlocked(plugin)}
+                                  disabled={isBusy}
                                   onClick={() => onInstallPlugin(plugin)}
                                 >
                                   {isBusy ? (

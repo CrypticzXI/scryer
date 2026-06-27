@@ -242,6 +242,8 @@ export const SettingsPostProcessingSection = React.memo(
           {t("settings.pp.title")}
         </CardTitle>
 
+        <div className="flex flex-col gap-4 xl:flex-row xl:items-start">
+          <div className="min-w-0 flex-1 space-y-4">
         {/* Scripts Table */}
         <div className="rounded border border-border">
           <div className="flex items-center justify-between border-b border-border px-3 py-2">
@@ -716,9 +718,13 @@ export const SettingsPostProcessingSection = React.memo(
             </Button>
           </div>
         )}
+          </div>
+          <div className="@container w-full space-y-4 xl:w-[44%] xl:max-w-[880px] xl:shrink-0">
 
         {/* Environment Variables Reference */}
         <EnvVarsReference />
+          </div>
+        </div>
       </div>
     );
   },
@@ -726,7 +732,7 @@ export const SettingsPostProcessingSection = React.memo(
 
 function EnvVarsReference() {
   const t = useTranslate();
-  const [open, setOpen] = React.useState(false);
+  const [open, setOpen] = React.useState(true);
 
   return (
     <Card>

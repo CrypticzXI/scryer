@@ -135,7 +135,6 @@ impl AppUseCase {
             .plugin_installations
             .list_plugin_catalog_sources()
             .await?;
-        let supported_plugin_features = self.runtime_supported_plugin_required_features();
         let central = sources
             .iter()
             .find(|source| source.source_key == CENTRAL_CATALOG_SOURCE_KEY)
@@ -167,18 +166,12 @@ impl AppUseCase {
                     .unwrap_or_else(|| {
                         builtin_by_key
                             .contains_key(&builtin_lookup_key(&plugin_type, &entry.provider_type))
-                    });
+                });
                 let selected = resolved_by_id.get(&entry.id);
                 let selected_release = selected.map(|value| value.release.clone());
-                let latest_release = latest_catalog_release(&entry);
-                let blocked_release =
-                    latest_host_blocked_catalog_release(&entry, &supported_plugin_features);
                 let active_release =
                     inst.and_then(|installation| installed_catalog_release(&entry, installation));
-                let display_release = selected_release
-                    .clone()
-                    .or_else(|| active_release.clone())
-                    .or_else(|| latest_release.clone());
+                let display_release = selected_release.clone().or_else(|| active_release.clone());
 
                 if inst.is_none() && display_release.is_none() && !builtin {
                     continue;
@@ -189,29 +182,6 @@ impl AppUseCase {
                     .map(|release| release.version.clone())
                     .or_else(|| inst.map(|installation| installation.version.clone()))
                     .unwrap_or_default();
-                let latest_version = match (selected_release.as_ref(), latest_release.as_ref()) {
-                    (Some(selected), Some(latest)) => {
-                        let selected_version = parse_catalog_release_version(&entry.id, selected);
-                        let latest_semver = parse_catalog_release_version(&entry.id, latest);
-                        match selected_version.zip(latest_semver) {
-                            Some((selected_version, latest_semver))
-                                if latest_semver > selected_version =>
-                            {
-                                Some(latest.version.clone())
-                            }
-                            _ => None,
-                        }
-                    }
-                    (None, Some(latest)) => Some(latest.version.clone()),
-                    _ => None,
-                };
-                let blocked_reason = if blocked_release.is_some() {
-                    Some("newer_release_requires_newer_scryer".to_string())
-                } else if selected_release.is_none() && latest_release.is_some() {
-                    Some("no_compatible_release".to_string())
-                } else {
-                    None
-                };
                 let update_available = inst
                     .zip(selected)
                     .is_some_and(|(installation, resolved)| {
@@ -223,7 +193,7 @@ impl AppUseCase {
                     name: entry.name.clone(),
                     description: entry.description.clone(),
                     version,
-                    latest_version,
+                    latest_version: None,
                     plugin_type: plugin_type.clone(),
                     provider_type: entry.provider_type.clone(),
                     author: entry.publisher.clone(),
@@ -240,12 +210,11 @@ impl AppUseCase {
                     source_kind: inst
                         .map(|installation| source_kind_label(installation.source_kind))
                         .or_else(|| Some(source_kind_label(PluginSourceKind::Downloaded))),
-                    blocked_reason,
+                    blocked_reason: None,
                     wasm_url: selected.map(|value| value.artifact.url.clone()),
                     wasm_sha256: None,
                     min_scryer_version: selected_release
                         .as_ref()
-                        .or(blocked_release.as_ref())
                         .and_then(|release| release.min_scryer_version.clone()),
                     bytes: selected.map(|value| value.artifact.bytes),
                     default_base_url: self

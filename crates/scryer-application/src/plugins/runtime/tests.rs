@@ -530,15 +530,8 @@ mod catalog_artifact_selection_tests {
             RuntimePerformanceClass::Slow,
         )
         .expect("compatible release");
-        let blocked_release = latest_host_blocked_catalog_release(&plugin, &HashSet::new())
-            .expect("newer host-blocked release");
 
         assert_eq!(selected_release.version, "1.0.0");
-        assert_eq!(blocked_release.version, "2.0.0");
-        assert_eq!(
-            blocked_release.min_scryer_version,
-            Some("999.0.0".to_string())
-        );
     }
 }
 

@@ -220,6 +220,11 @@ pub(crate) async fn process_due_wanted_items_with_blocked_facets(
     // Track (title_id, season_num) for which a season pack was successfully grabbed this cycle.
     let mut season_pack_grabbed: std::collections::HashSet<(String, u32)> =
         std::collections::HashSet::new();
+    // Track seasons where a viable season-pack candidate was found but not
+    // definitively failed. This avoids spending per-episode searches behind a
+    // pack that is pending delay or waiting on transient download-client state.
+    let mut season_pack_viable: std::collections::HashSet<(String, u32)> =
+        std::collections::HashSet::new();
     let mut recent_failed_season_packs_by_title: std::collections::HashMap<String, HashSet<u32>> =
         std::collections::HashMap::new();
 
@@ -249,6 +254,7 @@ pub(crate) async fn process_due_wanted_items_with_blocked_facets(
             &mut grabbed_urls,
             &mut season_pack_attempted,
             &mut season_pack_grabbed,
+            &mut season_pack_viable,
             &mut recent_failed_season_packs_by_title,
             &season_due_counts,
             &dl_snapshot,
@@ -346,6 +352,7 @@ async fn process_single_wanted_item(
     grabbed_urls: &mut std::collections::HashSet<String>,
     season_pack_attempted: &mut std::collections::HashSet<(String, u32)>,
     season_pack_grabbed: &mut std::collections::HashSet<(String, u32)>,
+    season_pack_viable: &mut std::collections::HashSet<(String, u32)>,
     recent_failed_season_packs_by_title: &mut std::collections::HashMap<String, HashSet<u32>>,
     season_due_counts: &std::collections::HashMap<(String, u32), usize>,
     dl_snapshot: &DownloadClientSnapshot,
@@ -552,6 +559,13 @@ async fn process_single_wanted_item(
                 {
                     let decision_code = annotated_auto_decision_code(candidate);
                     record_release_decision(app, item, &title, candidate, decision_code, now).await;
+                    if matches!(
+                        decision_code,
+                        ReleaseAutoDecisionCode::PendingDelay
+                            | ReleaseAutoDecisionCode::AlreadyActive
+                    ) {
+                        season_pack_viable.insert(season_key.clone());
+                    }
                 }
 
                 if let Some(best_pack) = pack_results.iter().find(|candidate| {
@@ -705,8 +719,9 @@ async fn process_single_wanted_item(
                                                 client_item_id: Some(grab.job_id.as_str()),
                                                 accepted_info_hash: grab.info_hash.as_deref(),
                                             },
-                                        );
+                                    );
                                     season_pack_grabbed.insert(season_key.clone());
+                                    season_pack_viable.insert(season_key.clone());
                                     let _ = app
                                         .services
                                         .workflow
@@ -820,11 +835,19 @@ async fn process_single_wanted_item(
                                     );
                                 }
                                 Err(err) => {
+                                    let submit_unavailable =
+                                        is_download_submit_unavailable_error(&err);
+                                    if submit_unavailable {
+                                        season_pack_viable.insert(season_key.clone());
+                                    } else {
+                                        season_pack_viable.remove(&season_key);
+                                    }
                                     warn!(
                                         title = title.name.as_str(),
                                         season = season_num,
                                         error = %err,
-                                        "season pack grab failed, will fall back to individual episode search"
+                                        fallback_to_episode_search = !submit_unavailable,
+                                        "season pack grab failed"
                                     );
                                     let _ = app
                                         .services
@@ -834,7 +857,7 @@ async fn process_single_wanted_item(
                                             Some(title.id.clone()),
                                             pack_hint,
                                             pack_title_norm,
-                                            if is_download_submit_unavailable_error(&err) {
+                                            if submit_unavailable {
                                                 ReleaseDownloadAttemptOutcome::Pending
                                             } else {
                                                 ReleaseDownloadAttemptOutcome::Failed
@@ -851,9 +874,18 @@ async fn process_single_wanted_item(
             }
         }
 
-        // If a season pack was grabbed this cycle (by this item or an earlier
-        // item for the same season), skip the individual episode search.
+        // If a season pack was grabbed or remains viable this cycle (by this
+        // item or an earlier item for the same season), skip the individual
+        // episode search unless the pack submission definitively failed.
         if season_pack_grabbed.contains(&season_key) {
+            return Ok(());
+        }
+        if season_pack_viable.contains(&season_key) {
+            info!(
+                title = title.name.as_str(),
+                season = season_num,
+                "season pack candidate found; skipping individual episode search for this cycle"
+            );
             return Ok(());
         }
     }

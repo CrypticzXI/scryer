@@ -257,7 +257,9 @@ export const SettingsContainer = memo(function SettingsContainer({
         <div
           className={cn(
             "mx-auto w-full px-4 py-5 sm:px-6 md:px-[30px] md:py-[26px] md:pb-[60px]",
-            settingsSection === "rules" || settingsSection === "indexers"
+            settingsSection === "rules" ||
+            settingsSection === "indexers" ||
+            settingsSection === "post-processing"
               ? "max-w-none"
               : "max-w-[1280px]",
           )}
