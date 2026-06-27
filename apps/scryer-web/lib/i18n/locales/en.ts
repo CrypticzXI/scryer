@@ -394,6 +394,19 @@ const en: LocaleDictionary = {
   "settings.libraryScanAlreadyRunning":
     "{{facet}} library scan is already running.",
   "settings.libraryScanProgressCount": "{{current}} / {{total}}",
+  "settings.libraryScanScanningSubtitle":
+    "Found {{count}} titles · analyzing media…",
+  "settings.libraryScanDoneSubtitle": "Scan complete · {{count}} titles",
+  "settings.libraryScanIssuesSubtitle":
+    "Completed with issues · {{count}} titles",
+  "settings.libraryScanFailedSubtitle": "Scan failed",
+  "settings.libraryScanCanceledSubtitle": "Scan canceled",
+  "settings.libraryScanBadgeDone": "Done",
+  "settings.libraryScanBadgeReview": "Review",
+  "settings.libraryScanBadgeFailed": "Failed",
+  "settings.libraryScanBadgeCanceled": "Canceled",
+  "settings.libraryScanViewTitles": "View {{count}} titles",
+  "settings.libraryScanReviewUnmatched": "Review {{count}} unmatched",
   "settings.libraryScanCompleted": "Library scan complete.",
   "settings.libraryScanCompletedWithWarnings":
     "Library scan completed with warnings.",
@@ -1040,6 +1053,9 @@ const en: LocaleDictionary = {
   "title.viewModeTable": "Table view",
   "title.viewModePoster": "Poster view",
   "title.bulkSelectionCount": "{{count}} selected",
+  "title.bulkSelectionPanelTitle": "Bulk selection",
+  "title.bulkSelectionPanelHint":
+    "Choose an action for the selected titles, or clear the selection.",
   "title.bulkEditTitle": "Edit Selected Titles",
   "title.bulkEditDescription": "Apply changes to {{count}} selected titles.",
   "title.bulkDeleteTitle": "Delete Selected Titles",

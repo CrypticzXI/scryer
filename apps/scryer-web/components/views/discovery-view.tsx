@@ -411,40 +411,26 @@ function matchesAnySelectedValue(values: string[], selectedValues: string[]) {
   );
 }
 
-function itemPrimaryMediaKind(item: DiscoveryItem) {
-  return (item.contentType?.trim() || item.targetKind.trim()).toLowerCase();
+function normalizedDiscoveryContentType(
+  value: string | null | undefined,
+): DiscoveryContentType | null {
+  switch (value?.trim().toLowerCase()) {
+    case "anime":
+      return "anime";
+    case "series":
+      return "series";
+    case "movie":
+      return "movie";
+    default:
+      return null;
+  }
 }
 
 function itemContentType(item: DiscoveryItem): DiscoveryContentType | null {
-  const primaryKind = itemPrimaryMediaKind(item);
-  if (primaryKind.includes("anime")) {
-    return "anime";
-  }
-  if (primaryKind.includes("series") || primaryKind.includes("show")) {
-    return "series";
-  }
-  if (primaryKind.includes("movie") || primaryKind.includes("film")) {
-    return "movie";
-  }
-  const fallbackTerms = item.facetTerms.map((value) => value.toLowerCase());
-  if (fallbackTerms.some((value) => value.includes("anime"))) {
-    return "anime";
-  }
-  if (
-    fallbackTerms.some(
-      (value) => value.includes("series") || value.includes("show"),
-    )
-  ) {
-    return "series";
-  }
-  if (
-    fallbackTerms.some(
-      (value) => value.includes("movie") || value.includes("film"),
-    )
-  ) {
-    return "movie";
-  }
-  return null;
+  const contentType = item.contentType?.trim();
+  return contentType
+    ? normalizedDiscoveryContentType(contentType)
+    : normalizedDiscoveryContentType(item.targetKind);
 }
 
 type DiscoveryItemFilters = {

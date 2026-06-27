@@ -102,6 +102,7 @@ type TitleTableProps = {
   selectedTitleIds: ReadonlySet<string>;
   onToggleSelected: (titleId: string) => void;
   onToggleSelectAll: (checked: boolean) => void;
+  selectionMode?: boolean;
   bulkActionBusy: boolean;
   showScanLibraryAction?: boolean;
   showConfigureRootsAction?: boolean;
@@ -143,6 +144,7 @@ export function TitleTable({
   selectedTitleIds,
   onToggleSelected,
   onToggleSelectAll,
+  selectionMode = false,
   bulkActionBusy,
   showScanLibraryAction = false,
   showConfigureRootsAction = false,
@@ -367,6 +369,10 @@ export function TitleTable({
 
   const handleActivateTitle = React.useCallback(
     (item: TitleRecord) => {
+      if (selectionMode) {
+        onToggleSelected(item.id);
+        return;
+      }
       if (onSelectTitle) {
         persistOverviewScrollValue(
           location.pathname,
@@ -383,7 +389,9 @@ export function TitleTable({
       handleOpenOverview,
       location.pathname,
       onSelectTitle,
+      onToggleSelected,
       scrollStorageKeySuffix,
+      selectionMode,
       titleVirtualizer.scrollOffset,
     ],
   );
@@ -399,17 +407,22 @@ export function TitleTable({
 
   const handleTitleRowClick = React.useCallback(
     (event: React.MouseEvent<HTMLTableRowElement>, item: TitleRecord) => {
-      if (!onSelectTitle || isInteractiveTitleRowTarget(event.target)) {
+      if (isInteractiveTitleRowTarget(event.target)) {
         return;
       }
-      handleActivateTitle(item);
+      if (selectionMode || onSelectTitle) {
+        handleActivateTitle(item);
+      }
     },
-    [handleActivateTitle, isInteractiveTitleRowTarget, onSelectTitle],
+    [handleActivateTitle, isInteractiveTitleRowTarget, onSelectTitle, selectionMode],
   );
 
   const handleTitleRowKeyDown = React.useCallback(
     (event: React.KeyboardEvent<HTMLTableRowElement>, item: TitleRecord) => {
-      if (!onSelectTitle || isInteractiveTitleRowTarget(event.target)) {
+      if (isInteractiveTitleRowTarget(event.target)) {
+        return;
+      }
+      if (!selectionMode && !onSelectTitle) {
         return;
       }
 
@@ -420,7 +433,7 @@ export function TitleTable({
       event.preventDefault();
       handleActivateTitle(item);
     },
-    [handleActivateTitle, isInteractiveTitleRowTarget, onSelectTitle],
+    [handleActivateTitle, isInteractiveTitleRowTarget, onSelectTitle, selectionMode],
   );
 
   const handleSort = React.useCallback(
@@ -590,6 +603,10 @@ export function TitleTable({
             "h-[4.75rem]",
             TITLE_TABLE_ROW_CLASS,
             isSelected && TITLE_TABLE_SELECTED_ROW_CLASS,
+            selectionMode && "cursor-pointer",
+            selectionMode &&
+              selectedTitleIds.has(item.id) &&
+              TITLE_TABLE_SELECTED_ROW_CLASS,
           )}
         >
           <TableCell className="align-middle">
@@ -688,7 +705,10 @@ export function TitleTable({
             <TableCell className="text-center align-middle">
               <div
                 data-ui="row-actions"
-                className="inline-flex items-center justify-end gap-1.5"
+                className={cn(
+                  "inline-flex items-center justify-end gap-1.5",
+                  selectionMode && "pointer-events-none opacity-40",
+                )}
               >
                 <TitleTableLazyTooltipActionButton
                   id={titleOverviewSearchButtonId(item.id)}
@@ -914,7 +934,10 @@ export function TitleTable({
     <div
       data-slot="title-list-scroll"
       ref={titleTableScrollRef}
-      className="relative h-full min-h-[22rem] w-full overflow-auto rounded-[14px] border border-[var(--scry-border)] bg-[var(--scry-surfD)]"
+      className={cn(
+        "relative h-full min-h-[22rem] w-full overflow-auto rounded-[14px] border border-[var(--scry-border)]",
+        selectedPaneMode ? "bg-[var(--scry-card2)]" : "bg-[var(--scry-surfD)]",
+      )}
     >
       <table
         data-ui="title-table"

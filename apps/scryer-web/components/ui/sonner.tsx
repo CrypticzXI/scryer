@@ -10,9 +10,53 @@ import { useTheme } from "next-themes"
 import { Toaster as Sonner, toast, type ToasterProps } from "sonner"
 import { isDarkTheme } from "@/lib/theme"
 
-const Toaster = ({ ...props }: ToasterProps) => {
+const Toaster = ({ style, toastOptions, ...props }: ToasterProps) => {
   const { resolvedTheme } = useTheme()
   const isDark = isDarkTheme(resolvedTheme)
+
+  const themeStyle = (
+    isDark
+      ? {
+          "--normal-bg": "var(--popover)",
+          "--normal-text": "var(--popover-foreground)",
+          "--normal-border": "var(--border-color)",
+          "--normal-bg-hover": "var(--card)",
+          "--normal-border-hover": "var(--border-color)",
+          "--success-bg": "rgb(2, 23, 18)",
+          "--success-border": "rgb(16, 185, 129)",
+          "--success-text": "rgb(209, 250, 229)",
+          "--error-bg": "rgb(28, 7, 9)",
+          "--error-border": "rgb(239, 68, 68)",
+          "--error-text": "rgb(254, 226, 226)",
+          "--warning-bg": "rgb(36, 29, 6)",
+          "--warning-border": "rgb(251, 191, 36)",
+          "--warning-text": "rgb(254, 243, 199)",
+          "--info-bg": "rgb(7, 22, 42)",
+          "--info-border": "rgb(96, 165, 250)",
+          "--info-text": "rgb(219, 234, 254)",
+          "--border-radius": "var(--radius)",
+        }
+      : {
+          "--normal-bg": "var(--popover)",
+          "--normal-text": "var(--popover-foreground)",
+          "--normal-border": "var(--border-color)",
+          "--normal-bg-hover": "var(--card)",
+          "--normal-border-hover": "var(--border-color)",
+          "--success-bg": "rgb(240, 253, 244)",
+          "--success-border": "rgb(16, 185, 129)",
+          "--success-text": "rgb(5, 46, 22)",
+          "--error-bg": "rgb(254, 242, 242)",
+          "--error-border": "rgb(239, 68, 68)",
+          "--error-text": "rgb(69, 10, 10)",
+          "--warning-bg": "rgb(254, 252, 232)",
+          "--warning-border": "rgb(251, 191, 36)",
+          "--warning-text": "rgb(66, 32, 6)",
+          "--info-bg": "rgb(239, 246, 255)",
+          "--info-border": "rgb(96, 165, 250)",
+          "--info-text": "rgb(30, 58, 138)",
+          "--border-radius": "var(--radius)",
+        }
+  ) as React.CSSProperties
 
   return (
     <Sonner
@@ -28,6 +72,7 @@ const Toaster = ({ ...props }: ToasterProps) => {
           warning: "border-amber-400/55",
           info: "border-sky-400/55",
         },
+        ...toastOptions,
       }}
       icons={{
         success: <CircleCheckIcon className="size-4" />,
@@ -36,49 +81,7 @@ const Toaster = ({ ...props }: ToasterProps) => {
         error: <OctagonXIcon className="size-4" />,
         loading: <Loader2Icon className="size-4 animate-spin" />,
       }}
-      style={
-        isDark
-          ? {
-              "--normal-bg": "var(--popover)",
-              "--normal-text": "var(--popover-foreground)",
-              "--normal-border": "var(--border-color)",
-              "--normal-bg-hover": "var(--card)",
-              "--normal-border-hover": "var(--border-color)",
-              "--success-bg": "rgb(2, 23, 18)",
-              "--success-border": "rgb(16, 185, 129)",
-              "--success-text": "rgb(209, 250, 229)",
-              "--error-bg": "rgb(28, 7, 9)",
-              "--error-border": "rgb(239, 68, 68)",
-              "--error-text": "rgb(254, 226, 226)",
-              "--warning-bg": "rgb(36, 29, 6)",
-              "--warning-border": "rgb(251, 191, 36)",
-              "--warning-text": "rgb(254, 243, 199)",
-              "--info-bg": "rgb(7, 22, 42)",
-              "--info-border": "rgb(96, 165, 250)",
-              "--info-text": "rgb(219, 234, 254)",
-              "--border-radius": "var(--radius)",
-            } as React.CSSProperties
-          : {
-              "--normal-bg": "var(--popover)",
-              "--normal-text": "var(--popover-foreground)",
-              "--normal-border": "var(--border-color)",
-              "--normal-bg-hover": "var(--card)",
-              "--normal-border-hover": "var(--border-color)",
-              "--success-bg": "rgb(240, 253, 244)",
-              "--success-border": "rgb(16, 185, 129)",
-              "--success-text": "rgb(5, 46, 22)",
-              "--error-bg": "rgb(254, 242, 242)",
-              "--error-border": "rgb(239, 68, 68)",
-              "--error-text": "rgb(69, 10, 10)",
-              "--warning-bg": "rgb(254, 252, 232)",
-              "--warning-border": "rgb(251, 191, 36)",
-              "--warning-text": "rgb(66, 32, 6)",
-              "--info-bg": "rgb(239, 246, 255)",
-              "--info-border": "rgb(96, 165, 250)",
-              "--info-text": "rgb(30, 58, 138)",
-              "--border-radius": "var(--radius)",
-            } as React.CSSProperties
-      }
+      style={{ ...themeStyle, ...style } as React.CSSProperties}
       {...props}
     />
   )

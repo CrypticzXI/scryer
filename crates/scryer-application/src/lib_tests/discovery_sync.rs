@@ -260,6 +260,7 @@ async fn discovery_home_and_items_use_local_rows_and_library_view_rbac() {
     private_recommendation.matched_subject_titles_json =
         serde_json::json!(["SMG should not leak this"]).to_string();
     private_recommendation.matched_subject_count = 2;
+    let linked_subject_keys = serde_json::json!(["tmdb:movie:603"]).to_string();
     let top_context_terms = serde_json::json!(["weekly", "popular"]).to_string();
     let mut sci_fi_one = discovery_item_record(
         "context-run",
@@ -274,6 +275,7 @@ async fn discovery_home_and_items_use_local_rows_and_library_view_rbac() {
         false,
         true,
     );
+    sci_fi_one.matched_subject_keys_json = linked_subject_keys.clone();
     sci_fi_one.context_terms_json = top_context_terms.clone();
     let mut sci_fi_two = discovery_item_record(
         "context-run",
@@ -288,6 +290,7 @@ async fn discovery_home_and_items_use_local_rows_and_library_view_rbac() {
         false,
         true,
     );
+    sci_fi_two.matched_subject_keys_json = linked_subject_keys.clone();
     sci_fi_two.context_terms_json = top_context_terms.clone();
     let mut drama_one = discovery_item_record(
         "context-run",
@@ -302,6 +305,7 @@ async fn discovery_home_and_items_use_local_rows_and_library_view_rbac() {
         false,
         true,
     );
+    drama_one.matched_subject_keys_json = linked_subject_keys.clone();
     drama_one.context_terms_json = top_context_terms.clone();
     let mut drama_two = discovery_item_record(
         "context-run",
@@ -316,6 +320,7 @@ async fn discovery_home_and_items_use_local_rows_and_library_view_rbac() {
         false,
         true,
     );
+    drama_two.matched_subject_keys_json = linked_subject_keys.clone();
     drama_two.rating = Some(8.7);
     drama_two.status_tags_json = serde_json::json!(["Award Winning"]).to_string();
     let mut acclaimed_sci_fi = discovery_item_record(
@@ -331,8 +336,9 @@ async fn discovery_home_and_items_use_local_rows_and_library_view_rbac() {
         false,
         true,
     );
+    acclaimed_sci_fi.matched_subject_keys_json = linked_subject_keys.clone();
     acclaimed_sci_fi.rating = Some(9.1);
-    let horror_item = discovery_item_record(
+    let mut horror_item = discovery_item_record(
         "context-run",
         "context-run",
         None,
@@ -345,6 +351,7 @@ async fn discovery_home_and_items_use_local_rows_and_library_view_rbac() {
         false,
         true,
     );
+    horror_item.matched_subject_keys_json = linked_subject_keys.clone();
     let mut isekai_item = discovery_item_record(
         "context-run",
         "context-run",
@@ -358,6 +365,7 @@ async fn discovery_home_and_items_use_local_rows_and_library_view_rbac() {
         false,
         true,
     );
+    isekai_item.matched_subject_keys_json = linked_subject_keys.clone();
     isekai_item.source_tags_json =
         serde_json::json!([{"source": "mal", "category": "theme", "name": "Isekai"}]).to_string();
     let mut weekly_series_one = discovery_item_record(
@@ -416,6 +424,20 @@ async fn discovery_home_and_items_use_local_rows_and_library_view_rbac() {
         true,
     );
     weekly_anime_two.context_terms_json = top_context_terms.clone();
+    let mut acclaimed_mystery = discovery_item_record(
+        "context-run",
+        "context-run",
+        None,
+        "tmdb:movie:308",
+        "Acclaimed Mystery",
+        "movie",
+        82.5,
+        &["Mystery"],
+        &[],
+        false,
+        true,
+    );
+    acclaimed_mystery.rating = Some(9.2);
     let mut collection_signal_movie = discovery_item_record(
         "context-run",
         "context-run",
@@ -453,6 +475,7 @@ async fn discovery_home_and_items_use_local_rows_and_library_view_rbac() {
         acclaimed_sci_fi,
         horror_item,
         isekai_item,
+        acclaimed_mystery,
         weekly_series_one,
         weekly_series_two,
         weekly_anime_one,

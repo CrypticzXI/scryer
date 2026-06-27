@@ -1,6 +1,6 @@
 import type { DiscoveryHomeInput, DiscoveryHomePayload } from "@/lib/types";
 
-const DISCOVERY_HOME_CACHE_PREFIX = "scryer:discovery:dashboard-home:v1";
+const DISCOVERY_HOME_CACHE_PREFIX = "scryer:discovery:dashboard-home:v2";
 
 type NormalizedDiscoveryHomeInput = {
   includePublic: boolean | null;
@@ -110,12 +110,42 @@ function isDiscoverySyncStatus(value: unknown) {
   );
 }
 
+function isDiscoveryItem(value: unknown) {
+  if (!isRecord(value)) {
+    return false;
+  }
+  return (
+    typeof value.id === "string" &&
+    typeof value.targetKey === "string" &&
+    typeof value.targetKind === "string" &&
+    typeof value.displayTitle === "string" &&
+    Array.isArray(value.genres) &&
+    Array.isArray(value.statusTags) &&
+    Array.isArray(value.sourceTags) &&
+    Array.isArray(value.relationSubtypes) &&
+    Array.isArray(value.facetTerms) &&
+    Array.isArray(value.contextTerms) &&
+    typeof value.ownedInInput === "boolean"
+  );
+}
+
 function isDiscoverySection(value: unknown) {
   return (
     isRecord(value) &&
     typeof value.sectionId === "string" &&
     typeof value.sectionType === "string" &&
-    Array.isArray(value.items)
+    Array.isArray(value.items) &&
+    value.items.every(isDiscoveryItem)
+  );
+}
+
+function isDiscoveryFacet(value: unknown) {
+  return (
+    isRecord(value) &&
+    typeof value.name === "string" &&
+    typeof value.value === "string" &&
+    (typeof value.smgCount === "number" || value.smgCount === null) &&
+    (typeof value.localCount === "number" || value.localCount === null)
   );
 }
 
@@ -124,10 +154,13 @@ function isDiscoveryHomePayload(value: unknown): value is DiscoveryHomePayload {
     isRecord(value) &&
     isDiscoverySyncStatus(value.status) &&
     Array.isArray(value.publicSections) &&
+    value.publicSections.every(isDiscoverySection) &&
     Array.isArray(value.personalizedSections) &&
+    value.personalizedSections.every(isDiscoverySection) &&
     (value.completeCollection === null ||
       isDiscoverySection(value.completeCollection)) &&
     Array.isArray(value.facets) &&
+    value.facets.every(isDiscoveryFacet) &&
     typeof value.canViewPersonalized === "boolean"
   );
 }

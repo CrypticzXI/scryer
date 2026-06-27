@@ -212,7 +212,7 @@ function TitleCardImpl({
       {hasCenter ? (
         <div
           className={cn(
-            "pointer-events-none absolute inset-0 z-10 flex items-center justify-center gap-2.5",
+            "pointer-events-none absolute inset-0 z-20 flex items-center justify-center gap-2.5",
             revealClass,
           )}
         >

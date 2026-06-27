@@ -68,6 +68,7 @@ import {
   type ReleaseSearchSortKey,
 } from "@/components/common/release-search-results";
 import { TitlePosterSlot } from "@/components/title-poster-slot";
+import { TitleCard } from "@/components/title-card";
 import type {
   ContentSettingsSection,
   OverviewTitleTarget,
@@ -179,53 +180,12 @@ type ParsedQualityProfile = {
 };
 
 const TITLE_OVERVIEW_PANE_MIN_WIDTH = 700;
-const TITLE_OVERVIEW_PANE_MAX_WIDTH = 1030;
 const TITLE_WORKSPACE_PANE_GAP = 16;
 const TITLE_POSTER_GRID_MIN_COLUMN_WIDTH = 150;
 const SELECTED_POSTER_INLINE_MIN_WIDTH =
   TITLE_OVERVIEW_PANE_MIN_WIDTH +
   TITLE_WORKSPACE_PANE_GAP +
   TITLE_POSTER_GRID_MIN_COLUMN_WIDTH;
-
-function clampPaneWidth(width: number, minWidth: number, maxWidth: number) {
-  return Math.min(Math.max(width, minWidth), maxWidth);
-}
-
-function resolveTitleTablePaneWidth({
-  collectionViewMode,
-  contextPanelAvailable,
-  layoutWidth,
-  selectedTitleLayoutActive,
-  selectedTitleListInlineActive,
-  selectedTitlePosterLayoutActive,
-}: {
-  collectionViewMode: ContentViewMode;
-  contextPanelAvailable: boolean;
-  layoutWidth: number | null;
-  selectedTitleLayoutActive: boolean;
-  selectedTitleListInlineActive: boolean;
-  selectedTitlePosterLayoutActive: boolean;
-}) {
-  if (layoutWidth == null || collectionViewMode === "poster") {
-    return layoutWidth;
-  }
-
-  const panelInline = selectedTitleLayoutActive
-    ? selectedTitleListInlineActive || selectedTitlePosterLayoutActive
-    : contextPanelAvailable;
-
-  if (!panelInline) {
-    return layoutWidth;
-  }
-
-  const panelWidth = clampPaneWidth(
-    layoutWidth * 0.5,
-    TITLE_OVERVIEW_PANE_MIN_WIDTH,
-    TITLE_OVERVIEW_PANE_MAX_WIDTH,
-  );
-
-  return Math.max(layoutWidth - panelWidth - TITLE_WORKSPACE_PANE_GAP, 0);
-}
 
 type QualityProfileOption = {
   value: string;
@@ -645,19 +605,19 @@ function buildTitleContextRecommendationGroups(
     item: entry.item,
     reason,
   });
+  const usedRecommendationKeys = new Set<string>();
   const takeRecommendations = (
     entries: TitleContextRankedEntry[],
     reason: string,
     limit: number,
   ) => {
     const recommendations: TitleContextRecommendation[] = [];
-    const usedItemKeys = new Set<string>();
     for (const entry of entries) {
       const key = entry.item.targetKey || entry.item.id;
-      if (usedItemKeys.has(key)) {
+      if (usedRecommendationKeys.has(key)) {
         continue;
       }
-      usedItemKeys.add(key);
+      usedRecommendationKeys.add(key);
       recommendations.push(toRecommendation(entry, reason));
       if (recommendations.length >= limit) {
         break;
@@ -769,47 +729,24 @@ function TitleContextRecommendationButton({
       ? String(item.year)
       : null;
   const owned = item.ownedInInput;
-  const ActionIcon = owned ? Check : canManageTitle ? Plus : Send;
-  const actionLabel = owned
-    ? t("discovery.inLibrary")
-    : canManageTitle
-      ? t("discovery.add")
-      : t("discovery.request");
-  const actionDisabled = owned || (!canManageTitle && !canRequestMedia);
+  const addable = !owned && canManageTitle;
+  const requestable = !owned && !canManageTitle && canRequestMedia;
+  const handleAction = React.useCallback(
+    () => onAction(item),
+    [onAction, item],
+  );
 
   return (
-    <div className="group min-w-0 text-left">
-      <div className="relative aspect-[2/3] overflow-hidden rounded-[10px] border border-[var(--scry-border2)] bg-[var(--scry-soft)] shadow-[0_8px_20px_rgba(0,0,0,0.35)] transition group-hover:-translate-y-0.5 group-hover:border-[var(--scry-bhover2)] group-hover:shadow-[0_12px_26px_rgba(0,0,0,0.5)]">
-        <TitlePosterSlot
-          src={posterUrl}
-          alt={t("media.posterAlt", { name: titleLabel })}
-          className="h-full w-full object-cover"
-          placeholderClassName="flex h-full w-full items-center justify-center px-2 text-center text-[10px] text-[var(--scry-muted3)]"
-          emptyLabel={t("label.noArt")}
-          loading="lazy"
-          decoding="async"
-        />
-        <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(180deg,transparent_54%,rgba(4,6,12,0.88))]" />
-        <button
-          type="button"
-          className="absolute right-1.5 top-1.5 flex size-7 items-center justify-center rounded-[8px] border border-white/15 bg-slate-950/75 text-[var(--scry-text2)] backdrop-blur-sm transition hover:bg-[var(--scry-accent)] hover:text-white disabled:cursor-default disabled:opacity-60"
-          aria-label={`${actionLabel}: ${titleLabel}`}
-          disabled={actionDisabled}
-          onClick={() => onAction(item)}
-        >
-          <ActionIcon className="h-3.5 w-3.5" />
-        </button>
-      </div>
-      <p className="mt-2 overflow-hidden text-ellipsis text-[12.5px] font-semibold leading-snug text-[var(--scry-ink2)] [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:2]">
-        {titleLabel}
-      </p>
-      <p className="mt-1 truncate text-[11px] text-[var(--scry-faint)]">
-        {yearLabel ?? mediaTitleLabel(view, t)}
-      </p>
-      <p className="mt-1 overflow-hidden text-ellipsis text-[11px] leading-snug text-[var(--scry-muted3)] [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:2]">
-        {recommendation.reason}
-      </p>
-    </div>
+    <TitleCard
+      title={titleLabel}
+      year={yearLabel ?? mediaTitleLabel(view, t)}
+      posterUrl={posterUrl}
+      addable={addable}
+      requestable={requestable}
+      compact
+      onAdd={addable ? handleAction : undefined}
+      onRequest={requestable ? handleAction : undefined}
+    />
   );
 }
 
@@ -838,22 +775,36 @@ function titleSharedGenreCount(
   return shared;
 }
 
-function discoveryItemPrimaryMediaKind(item: DiscoveryItem) {
-  return (item.contentType?.trim() || item.targetKind.trim()).toLowerCase();
+function normalizedDiscoveryContentType(
+  value: string | null | undefined,
+): Facet | null {
+  switch (value?.trim().toLowerCase()) {
+    case "anime":
+      return "anime";
+    case "series":
+      return "series";
+    case "movie":
+      return "movie";
+    default:
+      return null;
+  }
+}
+
+function discoveryItemContentType(item: DiscoveryItem): Facet | null {
+  const contentType = item.contentType?.trim();
+  return contentType
+    ? normalizedDiscoveryContentType(contentType)
+    : normalizedDiscoveryContentType(item.targetKind);
 }
 
 function discoveryItemMatchesView(item: DiscoveryItem, view: ViewId): boolean {
-  const primaryKind = discoveryItemPrimaryMediaKind(item);
   if (view === "anime") {
-    return (
-      primaryKind.includes("anime") ||
-      item.facetTerms.some((term) => term.toLowerCase().includes("anime"))
-    );
+    return discoveryItemContentType(item) === "anime";
   }
   if (view === "series") {
-    return primaryKind.includes("series") || primaryKind.includes("show");
+    return discoveryItemContentType(item) === "series";
   }
-  return primaryKind.includes("movie") || primaryKind.includes("film");
+  return discoveryItemContentType(item) === "movie";
 }
 
 function buildTitleMoreLikeThisDiscoveryItems(
@@ -2686,14 +2637,6 @@ export function MediaContentView({
     : effectiveViewMode;
   const selectedTitlePosterLayoutActive =
     selectedTitleLayoutActive && collectionViewMode === "poster";
-  const titleTablePaneWidth = resolveTitleTablePaneWidth({
-    collectionViewMode,
-    contextPanelAvailable,
-    layoutWidth: titleLayoutWidth,
-    selectedTitleLayoutActive,
-    selectedTitleListInlineActive,
-    selectedTitlePosterLayoutActive,
-  });
   // The design never sheds table columns — the table always keeps the chosen
   // columns and scrolls horizontally when the overview pane squeezes it. The
   // narrow "compact drawer" (title/mon/size) is a separate width-gated layout,
@@ -2701,12 +2644,14 @@ export function MediaContentView({
   const effectiveVisibleTitleTableColumns = visibleTitleTableColumns;
   const showTitleTableColumnControls =
     effectiveViewMode !== "poster" && !selectedTitleCompactDrawerActive;
+  const multiSelectActive = selectedTitleIds.size > 0;
+  // In multi-select mode the bulk actions live in the side panel; the inline
+  // bar is only a fallback for widths too narrow to show the panel.
   const showTitleBulkSelectionBar =
-    !selectedTitleCompactLayoutActive &&
-    compactSelectedVisibleCount > 0 &&
+    multiSelectActive &&
+    !contextPanelAvailable &&
     (collectionViewMode === "compact" ||
-      collectionViewMode === "poster-table") &&
-    (titleTablePaneWidth == null || titleTablePaneWidth >= 780);
+      collectionViewMode === "poster-table");
 
   React.useEffect(() => {
     if (
@@ -3456,10 +3401,8 @@ export function MediaContentView({
             </div>
             <div
               className={cn(
-                "flex min-h-0 flex-1 flex-col bg-transparent",
-                selectedTitleLayoutActive
-                  ? "overflow-hidden p-2 sm:p-3 lg:p-4"
-                  : "p-3 sm:p-4 lg:p-5",
+                "flex min-h-0 flex-1 flex-col bg-transparent p-3 sm:p-4 lg:p-5",
+                selectedTitleLayoutActive && "overflow-hidden",
               )}
             >
               {(() => {
@@ -3556,6 +3499,7 @@ export function MediaContentView({
                       selectedTitleIds={selectedTitleIds}
                       onToggleSelected={toggleTitleSelection}
                       onToggleSelectAll={toggleAllVisibleTitles}
+                      selectionMode={multiSelectActive}
                       bulkActionBusy={bulkActionBusy}
                       showScanLibraryAction={
                         showEmptyStateActions && showInitialScanAction
@@ -3606,6 +3550,7 @@ export function MediaContentView({
                       selectedTitleIds={selectedTitleIds}
                       onToggleSelected={toggleTitleSelection}
                       onToggleSelectAll={toggleAllVisibleTitles}
+                      selectionMode={multiSelectActive}
                       bulkActionBusy={bulkActionBusy}
                       showScanLibraryAction={
                         showEmptyStateActions && showInitialScanAction
@@ -3671,8 +3616,75 @@ export function MediaContentView({
                         ? "sticky top-4 flex max-h-[calc(100vh-11rem)]"
                         : "flex h-full"
                       : "hidden";
-                const titleOverviewPane =
-                  activeOverviewTitle && view !== "movies" ? (
+                const titleOverviewPane = multiSelectActive ? (
+                  <section
+                    id={selectedTitleContextPanelId}
+                    aria-label={t("title.bulkSelectionPanelTitle")}
+                    className={cn(
+                      "min-h-0 w-full min-w-0 flex-col overflow-hidden rounded-[16px] border border-[var(--scry-border2)] bg-[var(--scry-surfD)]",
+                      titleOverviewPaneClassName,
+                    )}
+                  >
+                    <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-6 p-6 text-center">
+                      <div className="space-y-1">
+                        <div className="text-[17px] font-semibold text-[var(--scry-ink2)]">
+                          {t("title.bulkSelectionCount", {
+                            count: selectedTitleIds.size,
+                          })}
+                        </div>
+                        <p className="max-w-[18rem] text-[13px] text-[var(--scry-muted3)]">
+                          {t("title.bulkSelectionPanelHint")}
+                        </p>
+                      </div>
+                      <div className="flex w-full max-w-[18rem] flex-col gap-2">
+                        <Button
+                          onClick={() => void bulkMonitorTitles(true)}
+                          disabled={bulkActionBusy}
+                          className="justify-start gap-2"
+                        >
+                          <Eye className="h-4 w-4" />
+                          {t("title.monitorAction")}
+                        </Button>
+                        <Button
+                          variant="outline"
+                          onClick={() => void bulkMonitorTitles(false)}
+                          disabled={bulkActionBusy}
+                          className="justify-start gap-2"
+                        >
+                          <EyeOff className="h-4 w-4" />
+                          {t("title.unmonitorAction")}
+                        </Button>
+                        <Button
+                          variant="outline"
+                          onClick={openBulkTitleEdit}
+                          disabled={bulkActionBusy}
+                          className="justify-start gap-2"
+                        >
+                          <Pencil className="h-4 w-4" />
+                          {t("label.edit")}
+                        </Button>
+                        <Button
+                          variant="destructive"
+                          onClick={openBulkTitleDelete}
+                          disabled={bulkActionBusy}
+                          className="justify-start gap-2"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                          {t("label.delete")}
+                        </Button>
+                      </div>
+                      <Button
+                        variant="ghost"
+                        onClick={clearSelectedTitles}
+                        disabled={bulkActionBusy}
+                        className="gap-2 text-[var(--scry-muted2)]"
+                      >
+                        <X className="h-4 w-4" />
+                        {t("label.clear")}
+                      </Button>
+                    </div>
+                  </section>
+                ) : activeOverviewTitle && view !== "movies" ? (
                     <section
                       id={selectedTitleContextPanelId}
                       aria-label={t("title.contextPanelTitle")}
@@ -3825,7 +3837,7 @@ export function MediaContentView({
                           (selectedTitleListInlineActive
                             ? "block min-h-0"
                             : selectedTitleListDrawerOpen
-                              ? "absolute bottom-3 left-3 top-3 z-30 flex w-[min(360px,82%)] min-w-0 flex-col overflow-hidden rounded-[14px] border border-[var(--scry-border2)] bg-[var(--scry-surfD)] p-2 shadow-[0_24px_70px_rgba(0,0,0,0.62)] motion-safe:animate-in motion-safe:fade-in-0 motion-safe:slide-in-from-left-3"
+                              ? "absolute bottom-3 left-3 top-3 z-30 flex w-[min(360px,82%)] min-w-0 flex-col overflow-hidden rounded-[14px] border border-[var(--scry-border2)] bg-[var(--scry-card2)] p-2 shadow-[0_24px_70px_rgba(0,0,0,0.62)] motion-safe:animate-in motion-safe:fade-in-0 motion-safe:slide-in-from-left-3"
                               : "hidden"),
                       )}
                     >

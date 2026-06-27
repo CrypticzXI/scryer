@@ -222,7 +222,11 @@ impl IndexerSearchLearningRepository for IndexerSearchLearningStore {
                        AND facet = {}
                        AND strategy_key = {}
                        AND suppressed = {}
-                       AND (updated_at IS NULL OR updated_at < {})",
+                       AND (
+                            updated_at IS NULL
+                            OR strftime('%s', updated_at) IS NULL
+                            OR updated_at < {}
+                       )",
                     &[
                         SqlArg::Text(sqlite_timestamp(now)),
                         SqlArg::Text(key.indexer_id.clone()),
@@ -397,6 +401,26 @@ mod tests {
                 .try_claim_suppressed_reprobe(&key, Utc::now() - chrono::Duration::days(7))
                 .await
                 .expect("claimed suppression should not be claimed twice")
+        );
+
+        sqlx::query(
+            "UPDATE indexer_search_learning
+             SET updated_at = ?
+             WHERE indexer_id = ? AND title_id = ? AND facet = ? AND strategy_key = ?",
+        )
+        .bind("not-a-timestamp")
+        .bind(&key.indexer_id)
+        .bind(&key.title_id)
+        .bind(&key.facet)
+        .bind(&key.strategy_key)
+        .execute(&pool)
+        .await
+        .expect("learning row should accept legacy malformed timestamp");
+        assert!(
+            store
+                .try_claim_suppressed_reprobe(&key, Utc::now() - chrono::Duration::days(7))
+                .await
+                .expect("malformed timestamp should be claimed for self-healing")
         );
 
         let usable_record = store

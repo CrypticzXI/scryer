@@ -643,6 +643,28 @@ body {
   }
 }
 
+/* Library scan toast — active phase-bar shimmer sweep */
+@keyframes scry-shimmer {
+  0% {
+    transform: translateX(-100%);
+  }
+
+  100% {
+    transform: translateX(220%);
+  }
+}
+
+/* Library scan toast — auto-dismiss countdown fill (depletes left→right) */
+@keyframes scry-deplete {
+  from {
+    transform: scaleX(1);
+  }
+
+  to {
+    transform: scaleX(0);
+  }
+}
+
 .dark [data-slot="dialog-content"],
 .dark [data-slot="sheet-content"],
 .dark [data-slot="select-content"] {

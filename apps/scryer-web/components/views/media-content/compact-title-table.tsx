@@ -103,6 +103,7 @@ type CompactTitleTableProps = {
   selectedTitleIds: ReadonlySet<string>;
   onToggleSelected: (titleId: string) => void;
   onToggleSelectAll: (checked: boolean) => void;
+  selectionMode?: boolean;
   bulkActionBusy: boolean;
   showScanLibraryAction?: boolean;
   showConfigureRootsAction?: boolean;
@@ -145,6 +146,7 @@ export function CompactTitleTable({
   selectedTitleIds,
   onToggleSelected,
   onToggleSelectAll,
+  selectionMode = false,
   bulkActionBusy,
   showScanLibraryAction = false,
   showConfigureRootsAction = false,
@@ -163,14 +165,26 @@ export function CompactTitleTable({
   const overviewTargetView: ViewId = resolveOverviewTargetView(view);
   const selectedPaneMode =
     selectedTitleId !== null && onSelectTitle !== undefined;
-  const showLibraryColumn = !selectedDrawerMode && visibleColumns.library;
-  const showMonitoredColumn = !selectedDrawerMode && visibleColumns.monitored;
-  const showQualityColumn = !selectedDrawerMode && visibleColumns.quality;
-  const showEpisodesColumn =
-    !selectedDrawerMode && !isMovieView && visibleColumns.episodes;
-  const showSizeColumn = !selectedDrawerMode && visibleColumns.size;
-  const showAddedColumn = !selectedDrawerMode && visibleColumns.added;
+  const [tableWidth, setTableWidth] = React.useState<number | null>(null);
+  // Drop lower-priority columns as the table narrows (e.g. when it shares space
+  // with the title panel) so the Name column is never squeezed to nothing.
+  const columnWidthBudget = tableWidth ?? Number.POSITIVE_INFINITY;
   const showActionsColumn = !selectedDrawerMode && visibleColumns.actions;
+  const showMonitoredColumn =
+    !selectedDrawerMode && visibleColumns.monitored && columnWidthBudget >= 430;
+  const showQualityColumn =
+    !selectedDrawerMode && visibleColumns.quality && columnWidthBudget >= 540;
+  const showEpisodesColumn =
+    !selectedDrawerMode &&
+    !isMovieView &&
+    visibleColumns.episodes &&
+    columnWidthBudget >= 600;
+  const showSizeColumn =
+    !selectedDrawerMode && visibleColumns.size && columnWidthBudget >= 650;
+  const showLibraryColumn =
+    !selectedDrawerMode && visibleColumns.library && columnWidthBudget >= 760;
+  const showAddedColumn =
+    !selectedDrawerMode && visibleColumns.added && columnWidthBudget >= 870;
   const columnCount = selectedDrawerMode
     ? 3
     : 2 +
@@ -201,13 +215,13 @@ export function CompactTitleTable({
     <colgroup>
       <col style={{ width: "3rem" }} />
       <col />
-      {showLibraryColumn ? <col style={{ width: "8rem" }} /> : null}
-      {showMonitoredColumn ? <col style={{ width: "5.5rem" }} /> : null}
-      {showQualityColumn ? <col style={{ width: "9rem" }} /> : null}
-      {showEpisodesColumn ? <col style={{ width: "8.5rem" }} /> : null}
-      {showSizeColumn ? <col style={{ width: "7.5rem" }} /> : null}
-      {showAddedColumn ? <col style={{ width: "7.5rem" }} /> : null}
-      {showActionsColumn ? <col style={{ width: "10rem" }} /> : null}
+      {showLibraryColumn ? <col style={{ width: "7rem" }} /> : null}
+      {showMonitoredColumn ? <col style={{ width: "4rem" }} /> : null}
+      {showQualityColumn ? <col style={{ width: "7rem" }} /> : null}
+      {showEpisodesColumn ? <col style={{ width: "7.5rem" }} /> : null}
+      {showSizeColumn ? <col style={{ width: "6.5rem" }} /> : null}
+      {showAddedColumn ? <col style={{ width: "6.5rem" }} /> : null}
+      {showActionsColumn ? <col style={{ width: "8rem" }} /> : null}
     </colgroup>
   );
   const visibleColumnSignature = selectedDrawerMode
@@ -236,6 +250,20 @@ export function CompactTitleTable({
   >({});
 
   const titleTableScrollRef = React.useRef<HTMLDivElement>(null);
+  React.useLayoutEffect(() => {
+    const element = titleTableScrollRef.current;
+    if (!element || typeof ResizeObserver === "undefined") {
+      return;
+    }
+    const updateWidth = () => {
+      const next = Math.round(element.getBoundingClientRect().width);
+      setTableWidth((current) => (current === next ? current : next));
+    };
+    updateWidth();
+    const observer = new ResizeObserver(updateWidth);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
   const sortedTitles = titles;
   const scrollStorageKeySuffix = selectedPaneMode
     ? "compact-selected"
@@ -373,6 +401,10 @@ export function CompactTitleTable({
 
   const handleActivateTitle = React.useCallback(
     (item: TitleRecord) => {
+      if (selectionMode) {
+        onToggleSelected(item.id);
+        return;
+      }
       if (onSelectTitle) {
         persistOverviewScrollValue(
           location.pathname,
@@ -389,7 +421,9 @@ export function CompactTitleTable({
       handleOpenOverview,
       location.pathname,
       onSelectTitle,
+      onToggleSelected,
       scrollStorageKeySuffix,
+      selectionMode,
       titleVirtualizer.scrollOffset,
     ],
   );
@@ -405,17 +439,22 @@ export function CompactTitleTable({
 
   const handleTitleRowClick = React.useCallback(
     (event: React.MouseEvent<HTMLTableRowElement>, item: TitleRecord) => {
-      if (!onSelectTitle || isInteractiveTitleRowTarget(event.target)) {
+      if (isInteractiveTitleRowTarget(event.target)) {
         return;
       }
-      handleActivateTitle(item);
+      if (selectionMode || onSelectTitle) {
+        handleActivateTitle(item);
+      }
     },
-    [handleActivateTitle, isInteractiveTitleRowTarget, onSelectTitle],
+    [handleActivateTitle, isInteractiveTitleRowTarget, onSelectTitle, selectionMode],
   );
 
   const handleTitleRowKeyDown = React.useCallback(
     (event: React.KeyboardEvent<HTMLTableRowElement>, item: TitleRecord) => {
-      if (!onSelectTitle || isInteractiveTitleRowTarget(event.target)) {
+      if (isInteractiveTitleRowTarget(event.target)) {
+        return;
+      }
+      if (!selectionMode && !onSelectTitle) {
         return;
       }
 
@@ -426,7 +465,7 @@ export function CompactTitleTable({
       event.preventDefault();
       handleActivateTitle(item);
     },
-    [handleActivateTitle, isInteractiveTitleRowTarget, onSelectTitle],
+    [handleActivateTitle, isInteractiveTitleRowTarget, onSelectTitle, selectionMode],
   );
 
   const handleSort = React.useCallback(
@@ -718,6 +757,10 @@ export function CompactTitleTable({
             "h-12",
             TITLE_TABLE_ROW_CLASS,
             isSelected && TITLE_TABLE_SELECTED_ROW_CLASS,
+            selectionMode && "cursor-pointer",
+            selectionMode &&
+              selectedTitleIds.has(item.id) &&
+              TITLE_TABLE_SELECTED_ROW_CLASS,
           )}
         >
           <TableCell className="align-middle">
@@ -796,7 +839,10 @@ export function CompactTitleTable({
             <TableCell className="text-center align-middle py-1.5">
               <div
                 data-ui="row-actions"
-                className="inline-flex items-center justify-end gap-1"
+                className={cn(
+                  "inline-flex items-center justify-end gap-1",
+                  selectionMode && "pointer-events-none opacity-40",
+                )}
               >
                 <TitleTableLazyTooltipActionButton
                   id={titleOverviewSearchButtonId(item.id)}
@@ -1050,7 +1096,8 @@ export function CompactTitleTable({
         data-slot="title-list-scroll"
         ref={titleTableScrollRef}
         className={cn(
-          "relative flex-1 overflow-auto rounded-[14px] border border-[var(--scry-border)] bg-[var(--scry-surfD)]",
+          "relative flex-1 overflow-auto rounded-[14px] border border-[var(--scry-border)]",
+          selectedPaneMode ? "bg-[var(--scry-card2)]" : "bg-[var(--scry-surfD)]",
           selectedDrawerMode ? "min-h-0" : "min-h-[22rem]",
         )}
       >

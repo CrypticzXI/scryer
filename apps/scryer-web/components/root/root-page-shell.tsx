@@ -678,6 +678,8 @@ function MainContent({
   return (
     <MediaContentContainer
       key={`${view}-${effectiveContentSettingsSection}`}
+      userId={userId}
+      uiLanguage={uiLanguage}
       view={view}
       contentSettingsSection={effectiveContentSettingsSection}
       canManageConfig={canManageConfig}
