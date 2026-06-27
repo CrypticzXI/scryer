@@ -1405,6 +1405,7 @@ async fn graphql_traverses_core_graph_relationships() {
         background_url: None,
         background_source_url: None,
         sort_title: None,
+        catalog_sort_key: String::new(),
         slug: None,
         imdb_id: None,
         runtime_minutes: Some(24),

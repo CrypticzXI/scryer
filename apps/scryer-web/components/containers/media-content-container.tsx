@@ -210,11 +210,6 @@ const TITLE_CONTEXT_DISCOVERY_TARGET_KINDS: Record<Facet, string[]> = {
   series: ["series"],
   anime: ["anime"],
 };
-const TITLE_CONTEXT_PUBLIC_TOP_SECTION_TYPES: Record<Facet, string> = {
-  movie: "TOP_MOVIES_THIS_WEEK",
-  series: "TOP_SERIES_THIS_WEEK",
-  anime: "TOP_ANIME_THIS_WEEK",
-};
 const TITLE_CONTEXT_DISCOVERY_CACHE_PREFIX =
   "scryer:discovery:library-home:v2";
 
@@ -264,11 +259,44 @@ function titleContextPublicTopItemsFromHome(
   home: DiscoveryHomePayload | null | undefined,
   facet: Facet,
 ): DiscoveryItem[] {
-  const sectionType = TITLE_CONTEXT_PUBLIC_TOP_SECTION_TYPES[facet];
-  return (
-    home?.publicSections.find((section) => section.sectionType === sectionType)
-      ?.items ?? []
+  const seen = new Set<string>();
+  return (home?.publicSections ?? []).flatMap((section) =>
+    section.items.filter((item) => {
+      if (titleContextDiscoveryItemContentType(item) !== facet) {
+        return false;
+      }
+      const key = item.targetKey?.trim() || item.id;
+      if (seen.has(key)) {
+        return false;
+      }
+      seen.add(key);
+      return true;
+    }),
   );
+}
+
+function titleContextDiscoveryContentType(
+  value: string | null | undefined,
+): Facet | null {
+  switch (value?.trim().toLowerCase()) {
+    case "anime":
+      return "anime";
+    case "series":
+      return "series";
+    case "movie":
+      return "movie";
+    default:
+      return null;
+  }
+}
+
+function titleContextDiscoveryItemContentType(
+  item: DiscoveryItem,
+): Facet | null {
+  const contentType = item.contentType?.trim();
+  return contentType
+    ? titleContextDiscoveryContentType(contentType)
+    : titleContextDiscoveryContentType(item.targetKind);
 }
 
 function normalizeTitleContextScopeValue(value: string | null | undefined) {

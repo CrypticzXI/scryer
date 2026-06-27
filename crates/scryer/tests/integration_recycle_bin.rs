@@ -175,6 +175,7 @@ async fn seed_title_with_folder_path(
         background_url: None,
         background_source_url: None,
         sort_title: None,
+        catalog_sort_key: String::new(),
         slug: None,
         imdb_id: None,
         runtime_minutes: None,

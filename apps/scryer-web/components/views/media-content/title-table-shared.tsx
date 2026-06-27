@@ -73,7 +73,7 @@ export const TITLE_TABLE_HEADER_CELL_CLASS =
 export const TITLE_TABLE_ROW_CLASS =
   "border-b border-[var(--scry-line2)] transition-colors hover:bg-[var(--scry-hover)]";
 
-export const TITLE_TABLE_ACTION_BUTTON_CLASS = "h-7 w-[30px] rounded-[7px]";
+export const TITLE_TABLE_ACTION_BUTTON_CLASS = "h-9 w-9 rounded-[8px]";
 
 export const COMPACT_TITLE_TABLE_ACTION_BUTTON_CLASS = "size-7 rounded-[7px]";
 

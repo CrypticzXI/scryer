@@ -122,6 +122,7 @@ async fn background_series_refresh_skips_non_relinked_titles_and_completes_job_r
             background_url: None,
             background_source_url: None,
             sort_title: Some("Pending Series".to_string()),
+            catalog_sort_key: String::new(),
             slug: Some("pending-series".to_string()),
             imdb_id: None,
             runtime_minutes: None,

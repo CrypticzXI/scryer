@@ -136,72 +136,6 @@ export function filterTitlesByQuickFilters(
   });
 }
 
-function QuickFilterTab({
-  selected,
-  icon,
-  label,
-  count,
-  onClick,
-  tone = "neutral",
-}: {
-  selected: boolean;
-  icon?: ReactNode;
-  label: string;
-  count?: number;
-  onClick?: () => void;
-  tone?: "neutral" | "success" | "danger" | "muted";
-}) {
-  return (
-    <button
-      type="button"
-      aria-label={label}
-      aria-pressed={selected}
-      onClick={onClick}
-      className={cn(
-        "relative inline-flex h-10 shrink-0 items-center gap-2 px-3.5 py-2.5 text-[13.5px] font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--scry-focus)]",
-        selected
-          ? "text-white"
-          : "text-[var(--scry-muted)] hover:text-[var(--scry-ink2)]",
-      )}
-    >
-      {icon ? (
-        <span
-          className={cn(
-            "shrink-0",
-            selected
-              ? "text-[var(--scry-accent-text)]"
-              : tone === "success"
-                ? "text-emerald-500"
-                : tone === "danger"
-                  ? "text-rose-500"
-                  : tone === "muted"
-                    ? "text-zinc-400"
-                    : "text-[var(--scry-muted2)]",
-          )}
-        >
-          {icon}
-        </span>
-      ) : null}
-      <span className="whitespace-nowrap">{label}</span>
-      {typeof count === "number" ? (
-        <span
-          className={cn(
-            "inline-flex min-w-[6ch] justify-center rounded-[6px] px-1.5 py-0.5 text-[11px] font-bold leading-none tabular-nums",
-            selected
-              ? "bg-[rgba(var(--scry-accent-rgb),0.18)] text-[var(--scry-accent-text)]"
-              : "bg-[var(--scry-chip)] text-[var(--scry-muted2)]",
-          )}
-        >
-          {count.toLocaleString()}
-        </span>
-      ) : null}
-      {selected ? (
-        <span className="absolute bottom-[-1px] left-2 right-2 h-[2.5px] rounded-full bg-[var(--scry-accent-ring)]" />
-      ) : null}
-    </button>
-  );
-}
-
 export function TitleQuickFilterBar({
   view,
   filters,
@@ -230,13 +164,13 @@ export function TitleQuickFilterBar({
         aria-label={t("label.filters")}
         className="relative top-px flex min-h-10 min-w-0 max-w-full flex-1 flex-wrap items-center justify-start gap-x-5 gap-y-1 border-0 bg-transparent p-0 shadow-none"
       >
-        <QuickFilterTab
+        <UnderlineFilterButton
           selected={allSelected}
           onClick={onClear}
           label={t("activity.historyFilter.all")}
           count={counts?.all}
         />
-        <QuickFilterTab
+        <UnderlineFilterButton
           selected={filters.monitored}
           onClick={() => onToggleMonitoring("monitored")}
           icon={<Eye className="h-3.5 w-3.5" />}
@@ -244,7 +178,7 @@ export function TitleQuickFilterBar({
           count={counts?.monitored}
           tone="success"
         />
-        <QuickFilterTab
+        <UnderlineFilterButton
           selected={filters.unmonitored}
           onClick={() => onToggleMonitoring("unmonitored")}
           icon={<EyeOff className="h-3.5 w-3.5" />}
@@ -254,7 +188,7 @@ export function TitleQuickFilterBar({
         />
         {showStatusFilters ? (
           <>
-            <QuickFilterTab
+            <UnderlineFilterButton
               selected={filters.continuing}
               onClick={() => onToggleStatus("continuing")}
               icon={<Play className="h-3.5 w-3.5" />}
@@ -262,7 +196,7 @@ export function TitleQuickFilterBar({
               count={counts?.continuing}
               tone="success"
             />
-            <QuickFilterTab
+            <UnderlineFilterButton
               selected={filters.ended}
               onClick={() => onToggleStatus("ended")}
               icon={<Square className="h-3.5 w-3.5" />}

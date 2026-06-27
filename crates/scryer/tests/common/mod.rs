@@ -5,12 +5,14 @@ use std::{collections::HashMap, sync::Arc};
 use async_graphql_axum::GraphQLRequest;
 use async_trait::async_trait;
 use axum::Router;
+use axum::body::{Body, to_bytes};
 use axum::extract::State;
-use axum::http::{HeaderMap, StatusCode, header};
+use axum::http::{HeaderMap, Request as HttpRequest, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use serde_json::{Value, json};
 use tokio::net::TcpListener;
+use tower::ServiceExt as _;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
@@ -846,6 +848,39 @@ impl TestContext {
     /// Build a reqwest client suitable for hitting the test server.
     pub fn http_client(&self) -> reqwest::Client {
         scryer_outbound_http::generic_reqwest_client()
+    }
+
+    pub async fn graphql_json(&self, query: &str, variables: Value, token: Option<&str>) -> Value {
+        let body = serde_json::to_vec(&json!({ "query": query, "variables": variables }))
+            .expect("serialize graphql request");
+        let mut request = HttpRequest::builder()
+            .method("POST")
+            .uri("/graphql")
+            .header(header::CONTENT_TYPE, "application/json");
+        if let Some(token) = token {
+            request = request.header(header::AUTHORIZATION, format!("Bearer {token}"));
+        }
+
+        let app = self.app.clone();
+        let schema = self.schema.clone();
+        let auth_runtime = self.auth_runtime.clone();
+        let request = request
+            .body(Body::from(body))
+            .expect("build graphql request");
+        let response = tokio::spawn(async move {
+            build_test_router(app, schema, auth_runtime)
+                .oneshot(request)
+                .await
+        })
+        .await
+        .expect("graphql request task should finish")
+        .expect("graphql request should succeed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read graphql response body");
+        serde_json::from_slice(&bytes).expect("should be valid JSON")
     }
 }
 

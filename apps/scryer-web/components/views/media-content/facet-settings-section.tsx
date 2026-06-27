@@ -40,6 +40,13 @@ const SECTION_META: Record<
   routing: { labelKey: "facetSettings.routing", icon: Route },
 };
 
+/** DOM id of the optional secondary-nav column. The per-library list gutter is
+ * portaled into this slot so it stacks beside the section sub-nav. */
+export const LIBRARY_SECONDARY_NAV_SLOT_ID = "facet-library-secondary-nav";
+/** DOM id of the header-actions slot. The per-library scan button is portaled here
+ * so it sits on the same row as the page header. */
+export const LIBRARY_HEADER_ACTIONS_SLOT_ID = "facet-library-header-actions";
+
 type FacetSettingsSectionProps = {
   /** The active facet view (movies/series/anime), used to build sub-page links. */
   view: ViewId;
@@ -53,6 +60,14 @@ type FacetSettingsSectionProps = {
   canManageLibrarySettings: boolean;
   /** The existing settings form/panel for this section. */
   children: ReactNode;
+  /** Optional status node rendered at the right of the page header (e.g. a live scan pill). */
+  headerStatus?: ReactNode;
+  /** When true, render an empty secondary-nav column (portal target) beside the sub-nav. */
+  showSecondaryNav?: boolean;
+  /** Content column width. "wide" (1280px) suits dense tables; defaults to 920px. */
+  contentWidth?: "default" | "wide";
+  /** Optional trailing breadcrumb segment (e.g. the active library name). */
+  trailingCrumb?: string;
 };
 
 /**
@@ -69,6 +84,10 @@ export function FacetSettingsSection({
   canManageConfig,
   canManageLibrarySettings,
   children,
+  headerStatus,
+  showSecondaryNav = false,
+  contentWidth = "default",
+  trailingCrumb,
 }: FacetSettingsSectionProps) {
   const t = useTranslate();
   const meta = SECTION_META[section];
@@ -123,19 +142,46 @@ export function FacetSettingsSection({
           </nav>
         </aside>
       ) : null}
+      {showSecondaryNav ? (
+        <aside
+          id={LIBRARY_SECONDARY_NAV_SLOT_ID}
+          data-slot="facet-secondary-nav"
+          className="w-full shrink-0 border-b border-[var(--scry-border3)] bg-[var(--scry-surfF)] p-3 md:h-full md:w-[220px] md:overflow-y-auto md:border-b-0 md:border-r md:p-[22px_14px]"
+        />
+      ) : null}
       <div
         data-slot="facet-settings-scroll"
         className="min-h-0 min-w-0 flex-1 overflow-y-auto bg-transparent"
       >
-        <div className="mx-auto w-full max-w-[1280px] px-4 py-5 sm:px-6 md:px-[30px] md:py-[26px] md:pb-[60px]">
+        <div
+          className={cn(
+            "mx-auto w-full px-4 py-5 sm:px-6 md:px-[30px] md:py-[26px] md:pb-[60px]",
+            contentWidth === "wide" ? "max-w-[1280px]" : "max-w-[920px]",
+          )}
+        >
           <div className="mb-4 flex items-center gap-1.5 text-[12.5px] text-[var(--scry-faint)]">
             <span>{facetLabel}</span>
             <ChevronRight className="h-3.5 w-3.5" />
             <span>{t("nav.settings")}</span>
             <ChevronRight className="h-3.5 w-3.5" />
-            <span className="font-semibold text-[var(--scry-accent-text)]">
+            <span
+              className={cn(
+                "font-semibold",
+                trailingCrumb
+                  ? "text-[var(--scry-muted)]"
+                  : "text-[var(--scry-accent-text)]",
+              )}
+            >
               {sectionLabel}
             </span>
+            {trailingCrumb ? (
+              <>
+                <ChevronRight className="h-3.5 w-3.5" />
+                <span className="font-semibold text-[var(--scry-accent-text)]">
+                  {trailingCrumb}
+                </span>
+              </>
+            ) : null}
           </div>
           <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
             <div className="flex min-w-0 items-start gap-4">
@@ -151,6 +197,17 @@ export function FacetSettingsSection({
                 </p>
               </div>
             </div>
+            {headerStatus || showSecondaryNav ? (
+              <div className="flex shrink-0 items-center gap-2.5">
+                {headerStatus}
+                {showSecondaryNav ? (
+                  <div
+                    id={LIBRARY_HEADER_ACTIONS_SLOT_ID}
+                    className="flex items-center gap-2.5"
+                  />
+                ) : null}
+              </div>
+            ) : null}
           </div>
           {children}
         </div>

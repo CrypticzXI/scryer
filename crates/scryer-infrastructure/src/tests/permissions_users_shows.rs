@@ -253,6 +253,7 @@ async fn sqlite_show_queries_roundtrip() {
         background_url: None,
         background_source_url: None,
         sort_title: None,
+        catalog_sort_key: String::new(),
         slug: None,
         imdb_id: None,
         runtime_minutes: None,

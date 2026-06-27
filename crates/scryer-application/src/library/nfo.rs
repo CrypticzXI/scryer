@@ -826,6 +826,7 @@ mod tests {
             background_url: None,
             background_source_url: None,
             sort_title: None,
+            catalog_sort_key: String::new(),
             slug: None,
             imdb_id: Some("tt0133093".into()),
             runtime_minutes: Some(136),

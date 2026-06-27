@@ -398,6 +398,7 @@ pub(super) fn make_due_hydration_title(id: &str, facet: MediaFacet, tvdb_id: i64
         background_url: None,
         background_source_url: None,
         sort_title: None,
+        catalog_sort_key: String::new(),
         slug: None,
         imdb_id: None,
         runtime_minutes: None,

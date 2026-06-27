@@ -112,6 +112,7 @@ async fn add_movie_title(ctx: &TestContext, id: &str, name: &str, media_root: &s
         background_url: None,
         background_source_url: None,
         sort_title: None,
+        catalog_sort_key: String::new(),
         slug: None,
         imdb_id: None,
         // These integration fixtures use tiny synthetic videos; mark them as
@@ -175,6 +176,7 @@ async fn add_series_title_with_runtime(
         background_url: None,
         background_source_url: None,
         sort_title: None,
+        catalog_sort_key: String::new(),
         slug: None,
         imdb_id: None,
         runtime_minutes,

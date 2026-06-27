@@ -615,6 +615,46 @@ file = "postgres/migrations/0143_discovery_sync_transient_failure_count.sql"
 engine = "postgres"
 scope = "all"
 
+[[migration]]
+version = 144
+description = "indexer search learning"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0144_indexer_search_learning.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0144_indexer_search_learning.sql"
+engine = "postgres"
+scope = "all"
+
+[[migration]]
+version = 145
+description = "title catalog sort key"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0145_title_catalog_sort_key.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0145_title_catalog_sort_key.sql"
+engine = "postgres"
+scope = "all"
+
+[[migration.steps]]
+kind = "rust"
+hook_id = "migrate_title_catalog_sort_keys"
+engine = "all"
+scope = "all"
+
 [[baseline]]
 through_version = 122
 file = "baselines/0122_baseline.sql"

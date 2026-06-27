@@ -100,10 +100,12 @@ impl AppUseCase {
             .resolve_title_root_folder_id_for_library(&library_id, request.root_folder_id.as_deref())
             .await?;
 
+        let name = request.name.trim().to_string();
+        let catalog_sort_key = scryer_domain::title_catalog_sort_key(&name, None);
         let title = Title {
             id: Id::new().0,
             library_id: library_id.clone(),
-            name: request.name.trim().to_string(),
+            name,
             facet: request.facet,
             monitored: request.monitored,
             tags: normalize_tags(&request.tags),
@@ -118,6 +120,7 @@ impl AppUseCase {
             background_url: None,
             background_source_url: None,
             sort_title: request.sort_title,
+            catalog_sort_key,
             slug: request.slug,
             imdb_id: None,
             runtime_minutes: request.runtime_minutes,

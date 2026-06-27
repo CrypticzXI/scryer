@@ -161,6 +161,7 @@ async fn seed_series_title(
         background_url: None,
         background_source_url: None,
         sort_title: None,
+        catalog_sort_key: String::new(),
         slug: None,
         imdb_id: None,
         runtime_minutes: None,

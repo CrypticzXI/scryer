@@ -22,6 +22,7 @@ import {
   routeCommandDisplayLabel,
   type RouteCommandItem,
 } from "@/components/common/route-command-types";
+import { UnderlineFilterButton } from "@/components/common/underline-filter-button";
 import {
   SearchCatalogResultButton,
   SearchEmptyState,
@@ -29,24 +30,27 @@ import {
   SearchMetadataPosterButton,
   SearchRouteCommandButton,
   SearchSectionLoading,
-  SearchTabButton,
 } from "@/components/root/global-search-parts";
 import {
   buildCatalogSearchSections,
   buildGlobalSearchTabs,
   buildMetadataResultCounts,
   buildMetadataSearchActionState,
-  countHiddenCatalogResults,
-  countHiddenRouteCommandResults,
+  countHiddenCatalogResultsForFilters,
+  countHiddenRouteCommandResultsForFilters,
   countMetadataResults,
   countVisibleCatalogResults,
   filterGlobalSearchRouteCommands,
   GLOBAL_SEARCH_ALL_CATALOG_RESULT_LIMIT,
   GLOBAL_SEARCH_ALL_ROUTE_COMMAND_DESKTOP_LIMIT,
-  getMetadataSectionFacets,
-  getVisibleCatalogFacets,
-  getVisibleCatalogResults,
-  getVisibleRouteCommandResults,
+  getMetadataSectionFacetsForFilters,
+  getVisibleCatalogFacetsForFilters,
+  getVisibleCatalogResultsForFilters,
+  getVisibleRouteCommandResultsForFilters,
+  isGlobalSearchFilterSelected,
+  normalizeGlobalSearchFilterSelection,
+  toggleGlobalSearchFilterSelection,
+  type GlobalSearchFilterKey,
   type GlobalSearchTabKey,
 } from "@/components/root/global-search-model";
 import { useTranslate } from "@/lib/context/translate-context";
@@ -180,8 +184,9 @@ export const RootHeader = React.memo(function RootHeader({
   >({});
   const lastScrollYRef = React.useRef(0);
   const [accountMenuOpen, setAccountMenuOpen] = React.useState(false);
-  const [desktopSearchTab, setDesktopSearchTab] =
-    React.useState<GlobalSearchTabKey>("all");
+  const [desktopSearchFilters, setDesktopSearchFilters] = React.useState<
+    GlobalSearchFilterKey[]
+  >([]);
   const [mobileHeaderHeight, setMobileHeaderHeight] = React.useState(0);
   const [isMobileHeaderVisible, setIsMobileHeaderVisible] =
     React.useState(true);
@@ -215,25 +220,25 @@ export const RootHeader = React.memo(function RootHeader({
   );
   const visibleRouteCommandResults = React.useMemo(
     () =>
-      getVisibleRouteCommandResults(
-        desktopSearchTab,
+      getVisibleRouteCommandResultsForFilters(
+        desktopSearchFilters,
         routeCommandResults,
         GLOBAL_SEARCH_ALL_ROUTE_COMMAND_DESKTOP_LIMIT,
       ),
-    [desktopSearchTab, routeCommandResults],
+    [desktopSearchFilters, routeCommandResults],
   );
   const visibleCatalogFacets = React.useMemo(
-    () => getVisibleCatalogFacets(desktopSearchTab, canViewCatalog),
-    [canViewCatalog, desktopSearchTab],
+    () => getVisibleCatalogFacetsForFilters(desktopSearchFilters, canViewCatalog),
+    [canViewCatalog, desktopSearchFilters],
   );
   const metadataSectionFacets = React.useMemo(
     () =>
-      getMetadataSectionFacets({
-        activeTab: desktopSearchTab,
+      getMetadataSectionFacetsForFilters({
+        selectedFilters: desktopSearchFilters,
         metadataSearchLoading,
         metadataResultCounts,
       }),
-    [desktopSearchTab, metadataResultCounts, metadataSearchLoading],
+    [desktopSearchFilters, metadataResultCounts, metadataSearchLoading],
   );
   const visibleCatalogCount = React.useMemo(
     () =>
@@ -244,32 +249,29 @@ export const RootHeader = React.memo(function RootHeader({
     ? catalogSearchResults.length
     : 0;
   const visibleCatalogResults = React.useMemo(() => {
-    return getVisibleCatalogResults({
-      activeTab: desktopSearchTab,
+    return getVisibleCatalogResultsForFilters({
+      selectedFilters: desktopSearchFilters,
       canViewCatalog,
       catalogSearchSections,
       visibleCatalogFacets,
-      allLimit:
-        desktopSearchTab === "all"
-          ? GLOBAL_SEARCH_ALL_CATALOG_RESULT_LIMIT
-          : Number.POSITIVE_INFINITY,
+      allLimit: GLOBAL_SEARCH_ALL_CATALOG_RESULT_LIMIT,
     });
   }, [
     canViewCatalog,
     catalogSearchSections,
-    desktopSearchTab,
+    desktopSearchFilters,
     visibleCatalogFacets,
   ]);
-  const hiddenCatalogResultCount = countHiddenCatalogResults(
-    desktopSearchTab,
+  const hiddenCatalogResultCount = countHiddenCatalogResultsForFilters(
+    desktopSearchFilters,
     visibleCatalogCount,
     visibleCatalogResults,
   );
   const showCatalogSection =
     canViewCatalog && (catalogSearchLoading || visibleCatalogCount > 0);
   const showRouteCommandSection = visibleRouteCommandResults.length > 0;
-  const hiddenRouteCommandResultCount = countHiddenRouteCommandResults(
-    desktopSearchTab,
+  const hiddenRouteCommandResultCount = countHiddenRouteCommandResultsForFilters(
+    desktopSearchFilters,
     routeCommandResults,
     visibleRouteCommandResults,
   );
@@ -737,14 +739,26 @@ export const RootHeader = React.memo(function RootHeader({
     ],
   );
 
-  const focusDesktopSearchTab = React.useCallback(
+  const focusDesktopSearchFilter = React.useCallback(
     (nextTab: GlobalSearchTabKey) => {
-      setDesktopSearchTab(nextTab);
       const nextTabElement = desktopSearchTabRefs.current[nextTab];
       nextTabElement?.focus();
       nextTabElement?.scrollIntoView({ block: "nearest", inline: "nearest" });
     },
     [],
+  );
+
+  const toggleDesktopSearchFilter = React.useCallback(
+    (key: GlobalSearchTabKey) => {
+      setDesktopSearchFilters((selectedFilters) =>
+        toggleGlobalSearchFilterSelection(
+          selectedFilters,
+          key,
+          desktopSearchTabs,
+        ),
+      );
+    },
+    [desktopSearchTabs],
   );
 
   const handleDesktopSearchTabKeyDown = React.useCallback(
@@ -777,20 +791,20 @@ export const RootHeader = React.memo(function RootHeader({
       }
 
       event.preventDefault();
-      focusDesktopSearchTab(nextTab);
+      focusDesktopSearchFilter(nextTab);
     },
-    [desktopSearchTabs, focusDesktopSearchTab],
+    [desktopSearchTabs, focusDesktopSearchFilter],
   );
 
   React.useEffect(() => {
-    if (!desktopSearchTabs.some((tab) => tab.key === desktopSearchTab)) {
-      setDesktopSearchTab("all");
-    }
-  }, [desktopSearchTab, desktopSearchTabs]);
+    setDesktopSearchFilters((selectedFilters) =>
+      normalizeGlobalSearchFilterSelection(selectedFilters, desktopSearchTabs),
+    );
+  }, [desktopSearchTabs]);
 
   React.useEffect(() => {
     if (!isGlobalSearchPanelOpen) {
-      setDesktopSearchTab("all");
+      setDesktopSearchFilters([]);
     }
   }, [isGlobalSearchPanelOpen]);
 
@@ -805,7 +819,7 @@ export const RootHeader = React.memo(function RootHeader({
       return;
     }
     searchResultsRef.current?.scrollTo({ left: 0, top: 0 });
-  }, [desktopSearchTab, globalSearch, isGlobalSearchPanelOpen, isMobile]);
+  }, [desktopSearchFilters, globalSearch, isGlobalSearchPanelOpen, isMobile]);
 
   React.useEffect(() => {
     if (!isGlobalSearchPanelOpen || isMobile) {
@@ -975,8 +989,6 @@ export const RootHeader = React.memo(function RootHeader({
         const posterUrl = selectPosterVariantUrl(title.posterUrl, "w70");
         const facetLabel = sectionLabelForFacet(t, facet);
         const libraryLabel = title.libraryName?.trim() || null;
-        const qualityLabel =
-          title.currentQualityTier?.trim() || title.qualityTier?.trim() || null;
         const statusLabel = title.contentStatus?.trim() || null;
         const secondaryParts = [
           title.year ? String(title.year) : null,
@@ -1006,7 +1018,6 @@ export const RootHeader = React.memo(function RootHeader({
             externalIds={title.externalIds}
             facet={facet}
             facetLabel={facetLabel}
-            inLibraryLabel={t("search.inLibrary")}
             metadataFetchedAt={title.metadataFetchedAt}
             monitoredLabel={
               title.monitored ? t("search.monitored") : t("search.unmonitored")
@@ -1014,7 +1025,6 @@ export const RootHeader = React.memo(function RootHeader({
             posterAlt={t("media.posterAlt", { name: title.name })}
             posterSourceUrl={title.posterSourceUrl}
             posterUrl={posterUrl}
-            qualityLabel={qualityLabel}
             resultAttribute="data-global-search-result"
             secondaryParts={secondaryParts}
             surface="desktop"
@@ -1334,23 +1344,28 @@ export const RootHeader = React.memo(function RootHeader({
                         </div>
                         <div
                           className="flex gap-x-5 gap-y-1 overflow-x-auto border-b border-[var(--scry-border)] px-[18px] py-2 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
-                          role="tablist"
+                          role="group"
                           aria-label={t("search.title")}
                         >
                           {desktopSearchTabs.map((tab) => (
-                            <SearchTabButton
+                            <UnderlineFilterButton
                               id={`global-search-tab-${tab.key}`}
                               key={tab.key}
                               ref={(node) => {
                                 desktopSearchTabRefs.current[tab.key] = node;
                               }}
-                              active={desktopSearchTab === tab.key}
-                              controlsId="global-search-results-panel"
-                              onSelect={() => setDesktopSearchTab(tab.key)}
+                              selected={isGlobalSearchFilterSelected(
+                                desktopSearchFilters,
+                                tab.key,
+                              )}
+                              label={tab.label}
+                              count={tab.count}
+                              aria-controls="global-search-results-panel"
+                              onMouseDown={(event) => event.preventDefault()}
+                              onClick={() => toggleDesktopSearchFilter(tab.key)}
                               onKeyDown={(event) =>
                                 handleDesktopSearchTabKeyDown(event, tab.key)
                               }
-                              tab={tab}
                             />
                           ))}
                         </div>
@@ -1358,8 +1373,8 @@ export const RootHeader = React.memo(function RootHeader({
                           ref={searchResultsRef}
                           id="global-search-results-panel"
                           data-slot="global-search-results"
-                          role="tabpanel"
-                          aria-labelledby={`global-search-tab-${desktopSearchTab}`}
+                          role="region"
+                          aria-label={t("search.title")}
                           className="min-h-0 flex-1 overflow-y-auto p-[18px] [scrollbar-color:var(--scry-border2)_transparent] [scrollbar-width:thin] [&::-webkit-scrollbar]:w-2.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:border-[3px] [&::-webkit-scrollbar-thumb]:border-transparent [&::-webkit-scrollbar-thumb]:bg-[var(--scry-border2)] [&::-webkit-scrollbar-thumb]:bg-clip-content"
                         >
                           {showSectionResults ? (
@@ -1380,7 +1395,6 @@ export const RootHeader = React.memo(function RootHeader({
                                     </div>
                                     <div className="flex shrink-0 items-center gap-3">
                                       {!catalogSearchLoading &&
-                                      desktopSearchTab !== "library" &&
                                       hiddenCatalogResultCount > 0 ? (
                                         <button
                                           type="button"
@@ -1388,9 +1402,12 @@ export const RootHeader = React.memo(function RootHeader({
                                           onMouseDown={(event) =>
                                             event.preventDefault()
                                           }
-                                          onClick={() =>
-                                            focusDesktopSearchTab("library")
-                                          }
+                                          onClick={() => {
+                                            setDesktopSearchFilters([
+                                              "library",
+                                            ]);
+                                            focusDesktopSearchFilter("library");
+                                          }}
                                           aria-label={`${t("search.viewAll")} ${t("search.inLibrary")}`}
                                         >
                                           {t("search.viewAll")}
@@ -1506,9 +1523,10 @@ export const RootHeader = React.memo(function RootHeader({
                                         onMouseDown={(event) =>
                                           event.preventDefault()
                                         }
-                                        onClick={() =>
-                                          focusDesktopSearchTab("actions")
-                                        }
+                                        onClick={() => {
+                                          setDesktopSearchFilters(["actions"]);
+                                          focusDesktopSearchFilter("actions");
+                                        }}
                                         aria-label={`${t("search.viewAll")} ${t("search.actionsAndSettings")}`}
                                       >
                                         {t("search.viewAll")}

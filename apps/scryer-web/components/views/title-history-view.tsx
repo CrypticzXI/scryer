@@ -3,7 +3,7 @@ import { LibraryMultiSelect } from "@/components/common/library-multi-select";
 import { TitleAutocompletePicker } from "@/components/common/title-autocomplete-picker";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { FilterChipButton } from "@/components/common/filter-chip-button";
+import { UnderlineFilterButton } from "@/components/common/underline-filter-button";
 import { HistoryEventTable } from "@/components/common/history-event-table";
 import type { LibraryRecord, TitleHistoryEvent, TitleRecord } from "@/lib/types";
 import { useTranslate } from "@/lib/context/translate-context";
@@ -117,25 +117,22 @@ export function TitleHistoryView({
               triggerClassName="h-10 w-full rounded-[10px] border-[var(--scry-border2)] bg-[var(--scry-inset)] text-[13px] text-[var(--scry-body)] shadow-none sm:w-[200px]"
             />
           </div>
-          <div className="flex flex-wrap gap-2">
-            <FilterChipButton
+          <div className="relative top-px flex min-h-10 min-w-0 max-w-full flex-wrap items-center justify-start gap-x-5 gap-y-1 border-0 bg-transparent p-0 shadow-none">
+            <UnderlineFilterButton
               selected={activeFilters.length === 0}
               onClick={onClearFilters}
-              className="text-xs"
-            >
-              {t("history.allEvents")}
-            </FilterChipButton>
+              label={t("history.allEvents")}
+            />
             {availableFilters.map((eventType) => {
               const isActive = activeFilters.includes(eventType);
               return (
-                <FilterChipButton
+                <UnderlineFilterButton
                   key={eventType}
                   selected={isActive}
                   onClick={() => onToggleFilter(eventType)}
                   icon={<HistoryEventIcon eventType={eventType} size={14} />}
-                >
-                  {getTitleHistoryFilterLabel(eventType, t)}
-                </FilterChipButton>
+                  label={getTitleHistoryFilterLabel(eventType, t)}
+                />
               );
             })}
           </div>

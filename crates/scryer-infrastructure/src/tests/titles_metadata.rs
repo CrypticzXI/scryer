@@ -355,6 +355,82 @@ async fn title_update_metadata_keeps_validation_and_not_found_errors() {
 }
 
 #[tokio::test]
+async fn title_writes_generate_and_refresh_catalog_sort_key_sqlite() {
+    let (services, db) = temp_services("scryer_title_catalog_sort_key").await;
+    let catalog = title_store(&services);
+
+    let mut title = make_test_title("title-catalog-sort-key", None);
+    title.name = "The Matrix".to_string();
+    title.metadata_language = Some("eng".to_string());
+    let created = TitleRepository::create(&catalog, title.clone())
+        .await
+        .expect("title should insert");
+    let expected_created_key = scryer_domain::title_catalog_sort_key("The Matrix", Some("eng"));
+    assert_eq!(created.catalog_sort_key, expected_created_key);
+    assert_eq!(
+        stored_catalog_sort_key(&services, &title.id).await,
+        expected_created_key
+    );
+
+    let renamed = TitleRepository::update_metadata(
+        &catalog,
+        &title.id,
+        Some("An Education".to_string()),
+        None,
+        None,
+        None,
+    )
+    .await
+    .expect("title name update should succeed");
+    let expected_renamed_key = scryer_domain::title_catalog_sort_key("An Education", Some("eng"));
+    assert_eq!(renamed.catalog_sort_key, expected_renamed_key);
+    assert_eq!(
+        stored_catalog_sort_key(&services, &title.id).await,
+        expected_renamed_key
+    );
+
+    let hydrated = TitleRepository::update_title_hydrated_metadata(
+        &catalog,
+        &title.id,
+        TitleMetadataUpdate {
+            name: Some("鋼の錬金術師".to_string()),
+            year: None,
+            overview: None,
+            poster_url: None,
+            background_url: None,
+            sort_title: None,
+            slug: None,
+            imdb_id: None,
+            runtime_minutes: None,
+            genres: vec![],
+            content_status: None,
+            language: None,
+            first_aired: None,
+            network: None,
+            studio: None,
+            country: None,
+            aliases: vec![],
+            tagged_aliases: vec![],
+            metadata_language: Some("jpn".to_string()),
+            metadata_fetched_at: Some(Utc::now().to_rfc3339()),
+            digital_release_date: None,
+            extra_external_ids: vec![],
+            extra_tags: vec![],
+        },
+    )
+    .await
+    .expect("hydrated metadata update should succeed");
+    let expected_hydrated_key = scryer_domain::title_catalog_sort_key("鋼の錬金術師", Some("jpn"));
+    assert_eq!(hydrated.catalog_sort_key, expected_hydrated_key);
+    assert_eq!(
+        stored_catalog_sort_key(&services, &title.id).await,
+        expected_hydrated_key
+    );
+
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
 async fn title_queries_change_local_version_when_cached_poster_changes() {
     let db = std::env::temp_dir().join(format!(
         "scryer_title_poster_version_{}.db",
@@ -411,6 +487,14 @@ async fn title_queries_change_local_version_when_cached_poster_changes() {
     );
 
     let _ = std::fs::remove_file(db);
+}
+
+async fn stored_catalog_sort_key(services: &SqliteServices, title_id: &str) -> String {
+    sqlx::query_scalar("SELECT catalog_sort_key FROM titles WHERE id = ?")
+        .bind(title_id)
+        .fetch_one(services.pool())
+        .await
+        .expect("stored catalog sort key should load")
 }
 
 #[tokio::test]

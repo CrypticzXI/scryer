@@ -30,6 +30,7 @@ fn sample_title() -> Title {
         background_url: None,
         background_source_url: None,
         sort_title: None,
+        catalog_sort_key: String::new(),
         slug: None,
         imdb_id: Some("tt456".to_string()),
         runtime_minutes: None,

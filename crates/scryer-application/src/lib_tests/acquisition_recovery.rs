@@ -5383,6 +5383,7 @@ async fn monitored_series_movie_link_reconciles_stale_episode_wanted_items() {
             background_url: None,
             background_source_url: None,
             sort_title: None,
+            catalog_sort_key: String::new(),
             slug: None,
             imdb_id: None,
             runtime_minutes: None,

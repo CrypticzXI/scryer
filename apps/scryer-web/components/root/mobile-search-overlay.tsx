@@ -11,6 +11,7 @@ import {
   routeCommandDisplayLabel,
   type RouteCommandItem,
 } from "@/components/common/route-command-types";
+import { UnderlineFilterButton } from "@/components/common/underline-filter-button";
 import {
   SearchCatalogResultButton,
   SearchEmptyState,
@@ -18,25 +19,28 @@ import {
   SearchMetadataPosterButton,
   SearchRouteCommandButton,
   SearchSectionLoading,
-  SearchTabButton,
 } from "@/components/root/global-search-parts";
 import {
   buildCatalogSearchSections,
   buildGlobalSearchTabs,
   buildMetadataResultCounts,
   buildMetadataSearchActionState,
-  countHiddenCatalogResults,
-  countHiddenMetadataResults,
-  countHiddenRouteCommandResults,
+  countHiddenCatalogResultsForFilters,
+  countHiddenMetadataResultsForFilters,
+  countHiddenRouteCommandResultsForFilters,
   countMetadataResults,
   countVisibleCatalogResults,
   filterGlobalSearchRouteCommands,
   GLOBAL_SEARCH_ALL_CATALOG_RESULT_LIMIT,
-  getMetadataSectionFacets,
-  getVisibleCatalogFacets,
-  getVisibleCatalogResults,
-  getVisibleMetadataResults,
-  getVisibleRouteCommandResults,
+  getMetadataSectionFacetsForFilters,
+  getVisibleCatalogFacetsForFilters,
+  getVisibleCatalogResultsForFilters,
+  getVisibleMetadataResultsForFilters,
+  getVisibleRouteCommandResultsForFilters,
+  isGlobalSearchFilterSelected,
+  normalizeGlobalSearchFilterSelection,
+  toggleGlobalSearchFilterSelection,
+  type GlobalSearchFilterKey,
   type GlobalSearchTabKey,
 } from "@/components/root/global-search-model";
 import { useTranslate } from "@/lib/context/translate-context";
@@ -117,7 +121,9 @@ export function MobileSearchOverlay({
   const mobileSearchTabRefs = React.useRef<
     Partial<Record<GlobalSearchTabKey, HTMLButtonElement | null>>
   >({});
-  const [activeTab, setActiveTab] = React.useState<GlobalSearchTabKey>("all");
+  const [activeFilters, setActiveFilters] = React.useState<
+    GlobalSearchFilterKey[]
+  >([]);
   const [addDialogTarget, setAddDialogTarget] = React.useState<{
     result: MetadataTvdbSearchItem;
     facet: Facet;
@@ -172,21 +178,25 @@ export function MobileSearchOverlay({
     [globalSearch, routeCommandItems],
   );
   const visibleRouteCommandResults = React.useMemo(
-    () => getVisibleRouteCommandResults(activeTab, routeCommandResults),
-    [activeTab, routeCommandResults],
+    () =>
+      getVisibleRouteCommandResultsForFilters(
+        activeFilters,
+        routeCommandResults,
+      ),
+    [activeFilters, routeCommandResults],
   );
   const visibleCatalogFacets = React.useMemo(
-    () => getVisibleCatalogFacets(activeTab, canViewCatalog),
-    [activeTab, canViewCatalog],
+    () => getVisibleCatalogFacetsForFilters(activeFilters, canViewCatalog),
+    [activeFilters, canViewCatalog],
   );
   const metadataSectionFacets = React.useMemo(
     () =>
-      getMetadataSectionFacets({
-        activeTab,
+      getMetadataSectionFacetsForFilters({
+        selectedFilters: activeFilters,
         metadataSearchLoading,
         metadataResultCounts,
       }),
-    [activeTab, metadataResultCounts, metadataSearchLoading],
+    [activeFilters, metadataResultCounts, metadataSearchLoading],
   );
 
   const visibleCatalogCount = React.useMemo(
@@ -196,22 +206,19 @@ export function MobileSearchOverlay({
   );
 
   const visibleCatalogResults = React.useMemo(() => {
-    return getVisibleCatalogResults({
-      activeTab,
+    return getVisibleCatalogResultsForFilters({
+      selectedFilters: activeFilters,
       canViewCatalog,
       catalogSearchSections,
       visibleCatalogFacets,
-      allLimit:
-        activeTab === "all"
-          ? GLOBAL_SEARCH_ALL_CATALOG_RESULT_LIMIT
-          : Number.POSITIVE_INFINITY,
+      allLimit: GLOBAL_SEARCH_ALL_CATALOG_RESULT_LIMIT,
     });
-  }, [activeTab, canViewCatalog, catalogSearchSections, visibleCatalogFacets]);
+  }, [activeFilters, canViewCatalog, catalogSearchSections, visibleCatalogFacets]);
   const visibleCatalogResultCount = canViewCatalog
     ? catalogSearchResults.length
     : 0;
-  const hiddenCatalogResultCount = countHiddenCatalogResults(
-    activeTab,
+  const hiddenCatalogResultCount = countHiddenCatalogResultsForFilters(
+    activeFilters,
     visibleCatalogCount,
     visibleCatalogResults,
   );
@@ -280,14 +287,26 @@ export function MobileSearchOverlay({
     visibleCatalogResultCount,
   ]);
 
-  const focusMobileSearchTab = React.useCallback(
+  const focusMobileSearchFilter = React.useCallback(
     (nextTab: GlobalSearchTabKey) => {
-      setActiveTab(nextTab);
       const nextTabElement = mobileSearchTabRefs.current[nextTab];
       nextTabElement?.focus();
       nextTabElement?.scrollIntoView({ block: "nearest", inline: "nearest" });
     },
     [],
+  );
+
+  const toggleMobileSearchFilter = React.useCallback(
+    (key: GlobalSearchTabKey) => {
+      setActiveFilters((selectedFilters) =>
+        toggleGlobalSearchFilterSelection(
+          selectedFilters,
+          key,
+          mobileSearchTabs,
+        ),
+      );
+    },
+    [mobileSearchTabs],
   );
 
   const handleMobileSearchTabKeyDown = React.useCallback(
@@ -320,20 +339,20 @@ export function MobileSearchOverlay({
       }
 
       event.preventDefault();
-      focusMobileSearchTab(nextTab);
+      focusMobileSearchFilter(nextTab);
     },
-    [focusMobileSearchTab, mobileSearchTabs],
+    [focusMobileSearchFilter, mobileSearchTabs],
   );
 
   React.useEffect(() => {
-    if (!mobileSearchTabs.some((tab) => tab.key === activeTab)) {
-      setActiveTab("all");
-    }
-  }, [activeTab, mobileSearchTabs]);
+    setActiveFilters((selectedFilters) =>
+      normalizeGlobalSearchFilterSelection(selectedFilters, mobileSearchTabs),
+    );
+  }, [mobileSearchTabs]);
 
   React.useEffect(() => {
     mobileSearchResultsRef.current?.scrollTo({ left: 0, top: 0 });
-  }, [activeTab, globalSearch]);
+  }, [activeFilters, globalSearch]);
 
   const {
     catalogConfigLoading,
@@ -696,8 +715,6 @@ export function MobileSearchOverlay({
       const posterUrl = selectPosterVariantUrl(title.posterUrl, "w70");
       const facetLabel = sectionLabelForFacet(t, facet);
       const libraryLabel = title.libraryName?.trim() || null;
-      const qualityLabel =
-        title.currentQualityTier?.trim() || title.qualityTier?.trim() || null;
       const statusLabel = title.contentStatus?.trim() || null;
       const secondaryParts = [
         title.year ? String(title.year) : null,
@@ -727,7 +744,6 @@ export function MobileSearchOverlay({
           externalIds={title.externalIds}
           facet={facet}
           facetLabel={facetLabel}
-          inLibraryLabel={t("search.inLibrary")}
           metadataFetchedAt={title.metadataFetchedAt}
           monitoredLabel={
             title.monitored ? t("search.monitored") : t("search.unmonitored")
@@ -735,7 +751,6 @@ export function MobileSearchOverlay({
           posterAlt={t("media.posterAlt", { name: title.name })}
           posterSourceUrl={title.posterSourceUrl}
           posterUrl={posterUrl}
-          qualityLabel={qualityLabel}
           resultAttribute="data-mobile-global-search-result"
           secondaryParts={secondaryParts}
           surface="mobile"
@@ -829,9 +844,12 @@ export function MobileSearchOverlay({
     loading: boolean,
   ) => {
     if (!loading && items.length === 0) return null;
-    const visibleItems = getVisibleMetadataResults(activeTab, items);
-    const hiddenItemCount = countHiddenMetadataResults(
-      activeTab,
+    const visibleItems = getVisibleMetadataResultsForFilters(
+      activeFilters,
+      items,
+    );
+    const hiddenItemCount = countHiddenMetadataResultsForFilters(
+      activeFilters,
       items,
       visibleItems,
     );
@@ -860,7 +878,10 @@ export function MobileSearchOverlay({
               type="button"
               className="text-xs font-medium text-[var(--scry-accent-ring)]"
               onMouseDown={(event) => event.preventDefault()}
-              onClick={() => focusMobileSearchTab(facet)}
+              onClick={() => {
+                setActiveFilters([facet]);
+                focusMobileSearchFilter(facet);
+              }}
               aria-label={viewAllFacetLabel}
             >
               {viewAllFacetLabel}
@@ -880,11 +901,10 @@ export function MobileSearchOverlay({
 
   const showCatalogSection =
     canViewCatalog && (catalogSearchLoading || visibleCatalogCount > 0);
-  const showMetadataSection =
-    activeTab !== "library" && metadataSectionFacets.length > 0;
+  const showMetadataSection = metadataSectionFacets.length > 0;
   const showRouteCommandSection = visibleRouteCommandResults.length > 0;
-  const hiddenRouteCommandResultCount = countHiddenRouteCommandResults(
-    activeTab,
+  const hiddenRouteCommandResultCount = countHiddenRouteCommandResultsForFilters(
+    activeFilters,
     routeCommandResults,
     visibleRouteCommandResults,
   );
@@ -978,23 +998,25 @@ export function MobileSearchOverlay({
         <div
           data-slot="mobile-global-search-tabs"
           className="flex gap-x-5 gap-y-1 overflow-x-auto border-b border-[var(--scry-border)] px-[14px] py-2 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
-          role="tablist"
+          role="group"
           aria-label={t("search.title")}
         >
           {mobileSearchTabs.map((tab) => (
-            <SearchTabButton
+            <UnderlineFilterButton
               id={`mobile-global-search-tab-${tab.key}`}
               key={tab.key}
               ref={(node) => {
                 mobileSearchTabRefs.current[tab.key] = node;
               }}
-              active={activeTab === tab.key}
-              controlsId="mobile-global-search-results-panel"
-              onSelect={() => setActiveTab(tab.key)}
+              selected={isGlobalSearchFilterSelected(activeFilters, tab.key)}
+              label={tab.label}
+              count={tab.count}
+              aria-controls="mobile-global-search-results-panel"
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => toggleMobileSearchFilter(tab.key)}
               onKeyDown={(event) =>
                 handleMobileSearchTabKeyDown(event, tab.key)
               }
-              tab={tab}
             />
           ))}
         </div>
@@ -1004,8 +1026,8 @@ export function MobileSearchOverlay({
           ref={mobileSearchResultsRef}
           id="mobile-global-search-results-panel"
           data-slot="mobile-global-search-results"
-          role="tabpanel"
-          aria-labelledby={`mobile-global-search-tab-${activeTab}`}
+          role="region"
+          aria-label={t("search.title")}
           className="min-h-0 flex-1 overflow-y-auto px-[14px] py-[18px] [scrollbar-color:var(--scry-border2)_transparent] [scrollbar-width:thin] [&::-webkit-scrollbar]:w-2.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:border-[3px] [&::-webkit-scrollbar-thumb]:border-transparent [&::-webkit-scrollbar-thumb]:bg-[var(--scry-border2)] [&::-webkit-scrollbar-thumb]:bg-clip-content"
         >
           {showSectionResults ? (
@@ -1023,13 +1045,15 @@ export function MobileSearchOverlay({
                     </div>
                     <div className="flex shrink-0 items-center gap-3">
                       {!catalogSearchLoading &&
-                      activeTab !== "library" &&
                       hiddenCatalogResultCount > 0 ? (
                         <button
                           type="button"
                           className="text-xs font-medium text-[var(--scry-accent-ring)]"
                           onMouseDown={(event) => event.preventDefault()}
-                          onClick={() => focusMobileSearchTab("library")}
+                          onClick={() => {
+                            setActiveFilters(["library"]);
+                            focusMobileSearchFilter("library");
+                          }}
                           aria-label={`${t("search.viewAll")} ${t("search.inLibrary")}`}
                         >
                           {t("search.viewAll")}
@@ -1094,7 +1118,10 @@ export function MobileSearchOverlay({
                         type="button"
                         className="shrink-0 text-xs font-medium text-[var(--scry-accent-ring)]"
                         onMouseDown={(event) => event.preventDefault()}
-                        onClick={() => focusMobileSearchTab("actions")}
+                        onClick={() => {
+                          setActiveFilters(["actions"]);
+                          focusMobileSearchFilter("actions");
+                        }}
                         aria-label={`${t("search.viewAll")} ${t("search.actionsAndSettings")}`}
                       >
                         {t("search.viewAll")}

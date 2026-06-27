@@ -648,6 +648,45 @@ async fn discovery_home_and_items_use_local_rows_and_library_view_rbac() {
 }
 
 #[tokio::test]
+async fn discovery_home_uses_live_public_feed_when_snapshot_and_public_generation_are_missing() {
+    let gateway = Arc::new(SnapshotMetadataGateway::default());
+    let (app, admin, _titles) = bootstrap_with_metadata_gateway_and_titles(gateway.clone());
+    let discovery = Arc::new(RecordingDiscoveryRepository::default());
+    let app = app.with_test_overrides(|builder| builder.with_discovery_store(discovery.clone()));
+    let (_viewer, viewer_actor) = create_authenticated_user(
+        &app,
+        &admin,
+        "discovery-live-public-viewer",
+        "password",
+        vec![TestPermissionPreset::CatalogView],
+    )
+    .await;
+
+    let result = app
+        .discovery_home(
+            &viewer_actor,
+            DiscoveryHomeQuery {
+                include_public: true,
+                include_personalized: true,
+                include_unresolved: true,
+                limit_per_section: 18,
+            },
+        )
+        .await
+        .expect("discovery home should load live public feed");
+
+    assert_eq!(result.public_sections.len(), 1);
+    assert_eq!(result.public_sections[0].section_type, "TRENDING_NOW");
+    assert_eq!(result.public_sections[0].items.len(), 1);
+    assert!(result.personalized_sections.is_empty());
+    assert!(result.complete_collection.is_none());
+    assert!(result.status.state.last_success_generation_id.is_none());
+    assert!(result.status.state.last_public_feed_generation_id.is_none());
+    assert_eq!(gateway.public_feed_inputs.lock().await.len(), 1);
+    assert!(discovery.public_feed_commits.lock().await.is_empty());
+}
+
+#[tokio::test]
 async fn discovery_sync_initial_snapshot_submits_smg_and_commits_local_generation() {
     let gateway = Arc::new(SnapshotMetadataGateway::default());
     let (app, _admin, titles) = bootstrap_with_metadata_gateway_and_titles(gateway.clone());
@@ -1705,19 +1744,10 @@ async fn discovery_sync_public_feed_runs_while_scan_and_context_backoff_are_acti
 
     let public_feed_inputs = gateway.public_feed_inputs.lock().await;
     assert_eq!(public_feed_inputs.len(), 1);
-    for section_type in [
-        "TOP_MOVIES_THIS_WEEK",
-        "TOP_SERIES_THIS_WEEK",
-        "TOP_ANIME_THIS_WEEK",
-    ] {
-        assert!(
-            public_feed_inputs[0]
-                .section_types
-                .iter()
-                .any(|candidate| candidate == section_type),
-            "public feed input should request {section_type}"
-        );
-    }
+    assert!(
+        public_feed_inputs[0].section_types.is_empty(),
+        "public feed input should let SMG choose its public default sections"
+    );
     drop(public_feed_inputs);
     assert!(gateway.submitted_inputs.lock().await.is_empty());
     assert!(gateway.change_inputs.lock().await.is_empty());
@@ -3441,6 +3471,7 @@ fn test_title(id: &str, name: &str, facet: MediaFacet, external_ids: Vec<(&str, 
         background_url: None,
         background_source_url: None,
         sort_title: None,
+        catalog_sort_key: String::new(),
         slug: None,
         imdb_id: None,
         runtime_minutes: None,

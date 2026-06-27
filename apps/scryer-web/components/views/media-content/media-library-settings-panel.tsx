@@ -1,10 +1,24 @@
 import * as React from "react";
-import { FolderOpen, Pencil, Plus, RefreshCw, Save, Trash2 } from "lucide-react";
+import { createPortal } from "react-dom";
+import {
+  FileText,
+  Folder,
+  FolderOpen,
+  FolderPlus,
+  HardDrive,
+  Import as ImportIcon,
+  Pencil,
+  Plus,
+  RefreshCw,
+  Save,
+  Send,
+  SlidersVertical,
+  Trash2,
+} from "lucide-react";
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
 import { SubtitleLanguagePicker } from "@/components/common/subtitle-language-picker";
 import { FolderBrowserDialog } from "@/components/setup/folder-browser-dialog";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -21,9 +35,9 @@ import { cn } from "@/lib/utils";
 import { selectorId } from "@/lib/utils/dom-ids";
 import { DownloadClientRoutingPanel } from "@/components/views/media-content/download-client-routing-panel";
 import {
-  boxedActionButtonBaseClass,
-  boxedActionButtonToneClass,
-} from "@/lib/utils/action-button-styles";
+  LIBRARY_HEADER_ACTIONS_SLOT_ID,
+  LIBRARY_SECONDARY_NAV_SLOT_ID,
+} from "@/components/views/media-content/facet-settings-section";
 import type {
   DownloadClientRecord,
   DownloadClientRoutingEntry,
@@ -107,9 +121,53 @@ type MediaLibrarySettingsPanelProps = {
   onUpdateLibrary: (libraryId: string, input: LibraryMutationInput) => Promise<LibraryRecord | null | void> | LibraryRecord | null | void;
   onDeleteLibrary: (libraryId: string) => Promise<boolean | void> | boolean | void;
   onScan: (libraryId: string) => Promise<void> | void;
+  /** Reports whether the content column should widen (dense routing table). */
+  onWideLayoutChange?: (wide: boolean) => void;
+  /** Reports the active library name for the page breadcrumb (null when creating). */
+  onActiveLibraryNameChange?: (name: string | null) => void;
 };
 
 const NEW_LIBRARY_VALUE = "__new_library__";
+
+type SectionIcon = React.ComponentType<{ className?: string }>;
+
+/** Titled settings card matching the Library settings design (icon + heading,
+ * optional description, then content). Used to group each section. */
+function LibrarySettingsSection({
+  icon: Icon,
+  title,
+  description,
+  children,
+}: {
+  icon: SectionIcon;
+  title: string;
+  description?: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  return (
+    <section className="rounded-[16px] border border-[var(--scry-border)] bg-[var(--scry-surf)] p-5 sm:p-6">
+      <div className="flex items-center gap-2.5">
+        <Icon className="h-[17px] w-[17px] text-[var(--scry-accent-text)]" />
+        <h2 className="text-[16px] font-bold text-[var(--scry-ink2)]">{title}</h2>
+      </div>
+      {description ? (
+        <p className="mt-1.5 text-[12.5px] leading-relaxed text-[var(--scry-muted3)]">
+          {description}
+        </p>
+      ) : null}
+      <div className="mt-5 space-y-5">{children}</div>
+    </section>
+  );
+}
+
+/** Small "Effective <value>" chip shown beneath each inherit/override control. */
+function EffectiveChip({ children }: { children: React.ReactNode }) {
+  return (
+    <span className="inline-flex items-center gap-1.5 rounded-[7px] border border-[var(--scry-border2)] bg-[var(--scry-chip)] px-2.5 py-[3px] text-[11px] font-semibold text-[var(--scry-text2)]">
+      {children}
+    </span>
+  );
+}
 
 function rootsFromLibrary(library: LibraryRecord | null): RootFolderOption[] {
   return (library?.roots ?? []).map((root) => ({
@@ -220,6 +278,8 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
   onUpdateLibrary,
   onDeleteLibrary,
   onScan,
+  onWideLayoutChange,
+  onActiveLibraryNameChange,
 }: MediaLibrarySettingsPanelProps) {
   const t = useTranslate();
   const [mode, setMode] = React.useState<"existing" | "new">("existing");
@@ -253,11 +313,27 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
   const [browserOpen, setBrowserOpen] = React.useState(false);
   const [editingIndex, setEditingIndex] = React.useState<number | null>(null);
   const lastHydratedRoutingKeyRef = React.useRef<string | null>(null);
+  const [secondaryNavTarget, setSecondaryNavTarget] =
+    React.useState<HTMLElement | null>(null);
+  const [headerActionsTarget, setHeaderActionsTarget] =
+    React.useState<HTMLElement | null>(null);
+  React.useEffect(() => {
+    setSecondaryNavTarget(document.getElementById(LIBRARY_SECONDARY_NAV_SLOT_ID));
+    setHeaderActionsTarget(
+      document.getElementById(LIBRARY_HEADER_ACTIONS_SLOT_ID),
+    );
+  }, []);
+  React.useEffect(() => {
+    onWideLayoutChange?.(draftDownloadClientRoutingMode === "custom");
+  }, [draftDownloadClientRoutingMode, onWideLayoutChange]);
 
   const activeLibrary = React.useMemo(
     () => libraries.find((library) => library.id === activeLibraryId) ?? null,
     [activeLibraryId, libraries],
   );
+  React.useEffect(() => {
+    onActiveLibraryNameChange?.(activeLibrary?.name ?? null);
+  }, [activeLibrary, onActiveLibraryNameChange]);
   React.useEffect(() => {
     if (canCreateLibrary || mode !== "new") {
       return;
@@ -899,56 +975,90 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
 
   return (
     <>
-      <Card id="media-library-settings-panel">
-        <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-          <CardTitle>{settingsTitle}</CardTitle>
-          <Button
-            type="button"
-            variant="default"
-            onClick={handleScan}
-            disabled={libraryScanDisabled}
-          >
-            <RefreshCw className={`mr-1.5 h-4 w-4${scanLoading ? " animate-spin" : ""}`} />
-            {scanLoading
-              ? t("settings.libraryScanRunning")
-              : t("settings.libraryScanButton")}
-          </Button>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-            <Select
-              value={selectedValue}
-              onValueChange={handleSelectLibrary}
-              disabled={actionBusy || libraries.length === 0}
+      {secondaryNavTarget
+        ? createPortal(
+            <div>
+              <div className="mb-2 px-1 text-[11px] font-bold uppercase tracking-[0.05em] text-[var(--scry-faint2)]">
+                {t("settings.librariesLabel")}
+              </div>
+              <ul className="space-y-1">
+                {libraries.map((library) => {
+                  const active = mode !== "new" && selectedValue === library.id;
+                  return (
+                    <li key={library.id}>
+                      <button
+                        id={selectorId("media-library-list-item", library.id)}
+                        type="button"
+                        onClick={() => handleSelectLibrary(library.id)}
+                        disabled={actionBusy}
+                        aria-current={active ? "true" : undefined}
+                        className={cn(
+                          "flex w-full items-center gap-2 rounded-[10px] border border-transparent px-3 py-2 text-left text-[13px] font-medium text-[var(--scry-muted)] transition hover:bg-[var(--scry-hover)] hover:text-[var(--scry-ink2)] disabled:opacity-60",
+                          active &&
+                            "border-[var(--scry-baccent)] bg-[rgba(var(--scry-accent-rgb),0.12)] text-[var(--scry-ink2)]",
+                        )}
+                      >
+                        <Folder
+                          className={cn(
+                            "h-4 w-4 shrink-0 text-[var(--scry-faint)]",
+                            active && "text-[var(--scry-accent-text)]",
+                          )}
+                        />
+                        <span className="min-w-0 flex-1 truncate">
+                          {library.name}
+                        </span>
+                        {library.isDefault ? (
+                          <span className="shrink-0 rounded-[6px] border border-[var(--scry-baccent)] bg-[rgba(var(--scry-accent-rgb),0.12)] px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[0.05em] text-[var(--scry-accent-text)]">
+                            {t("label.default")}
+                          </span>
+                        ) : null}
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+              {canCreateLibrary ? (
+                <Button
+                  id="media-library-new"
+                  type="button"
+                  variant="outline"
+                  onClick={handleNewLibrary}
+                  disabled={actionBusy}
+                  aria-current={mode === "new" ? "true" : undefined}
+                  className={cn(
+                    "mt-2 w-full justify-start gap-2",
+                    mode === "new" &&
+                      "border-[var(--scry-baccent)] bg-[rgba(var(--scry-accent-rgb),0.12)] text-[var(--scry-ink2)]",
+                  )}
+                >
+                  <Plus className="h-4 w-4" />
+                  {t("settings.libraryNewButton")}
+                </Button>
+              ) : null}
+            </div>,
+            secondaryNavTarget,
+          )
+        : null}
+      {headerActionsTarget && activeLibrary && mode !== "new"
+        ? createPortal(
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={handleScan}
+              disabled={libraryScanDisabled}
             >
-              <SelectTrigger id="media-library-select" className="w-full sm:w-[260px]">
-                <SelectValue placeholder={t("settings.librariesLabel")} />
-              </SelectTrigger>
-              <SelectContent>
-                {canCreateLibrary && mode === "new" ? (
-                  <SelectItem value={NEW_LIBRARY_VALUE}>{t("settings.libraryNew")}</SelectItem>
-                ) : null}
-                {libraries.map((library) => (
-                  <SelectItem key={library.id} value={library.id}>
-                    {library.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            {canCreateLibrary ? (
-              <Button
-                id="media-library-new"
-                type="button"
-                variant="outline"
-                onClick={handleNewLibrary}
-                disabled={actionBusy}
-              >
-                <Plus className="mr-1.5 h-4 w-4" />
-                {t("settings.libraryNewButton")}
-              </Button>
-            ) : null}
-          </div>
-
+              <RefreshCw
+                className={`mr-1.5 h-4 w-4${scanLoading ? " animate-spin" : ""}`}
+              />
+              {scanLoading
+                ? t("settings.libraryScanRunning")
+                : t("settings.libraryScanButton")}
+            </Button>,
+            headerActionsTarget,
+          )
+        : null}
+      <div id="media-library-settings-panel" className="space-y-[18px]">
           {scanSummary ? (
             <p className="text-xs text-muted-foreground">{libraryScanSummaryText}</p>
           ) : null}
@@ -963,18 +1073,20 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
           ) : null}
 
           {mode === "new" || activeLibrary ? (
-            <div className="space-y-4">
-              <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(12rem,16rem)]">
-                <div className="space-y-2">
-                  <Label htmlFor="media-library-name">{t("settings.libraryNameLabel")}</Label>
-                  <Input
-                    id="media-library-name"
-                    value={draftName}
-                    onChange={(event) => setDraftName(event.target.value)}
-                    placeholder={t("settings.libraryNamePlaceholder")}
-                    disabled={actionBusy}
-                  />
-                </div>
+            <div className="space-y-[18px]">
+              <LibrarySettingsSection
+                icon={HardDrive}
+                title={t("settings.identityStorageTitle")}
+              >
+              <div className="space-y-2">
+                <Label htmlFor="media-library-name">{t("settings.libraryNameLabel")}</Label>
+                <Input
+                  id="media-library-name"
+                  value={draftName}
+                  onChange={(event) => setDraftName(event.target.value)}
+                  placeholder={t("settings.libraryNamePlaceholder")}
+                  disabled={actionBusy}
+                />
               </div>
 
               <div className="space-y-3">
@@ -994,12 +1106,13 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
                         id={selectorId("media-library-root-row", rf.path)}
                         className="space-y-1"
                       >
-                        <div className="flex items-center gap-2">
-                          <code className="flex-1 truncate rounded-md border border-border bg-muted/50 px-3 py-1.5 font-mono text-sm">
+                        <div className="flex items-center gap-2.5 rounded-[11px] border border-[var(--scry-border2)] bg-[var(--scry-bg)] py-1.5 pl-3.5 pr-2">
+                          <FolderOpen className="h-4 w-4 shrink-0 text-[var(--scry-faint)]" />
+                          <span className="flex-1 truncate font-mono text-[13.5px] text-[var(--scry-text2)]">
                             {rf.path}
-                          </code>
+                          </span>
                           {rf.isDefault ? (
-                            <span className="shrink-0 rounded-md bg-muted px-2 py-1 text-xs text-muted-foreground">
+                            <span className="shrink-0 rounded-[7px] border border-[var(--scry-baccent)] bg-[rgba(var(--scry-accent-rgb),0.12)] px-2 py-0.5 text-[10.5px] font-bold uppercase tracking-[0.06em] text-[var(--scry-accent-text)]">
                               {t("label.default")}
                             </span>
                           ) : (
@@ -1016,28 +1129,21 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
                           <Button
                             id={selectorId("media-library-root-edit", rf.path)}
                             type="button"
-                            variant="secondary"
+                            variant="outline"
                             size="icon-sm"
-                            className={cn(
-                              boxedActionButtonBaseClass,
-                              boxedActionButtonToneClass.edit,
-                            )}
                             onClick={() => openEdit(index)}
                             disabled={actionBusy}
                             aria-label={t("label.edit")}
                             title={t("label.edit")}
+                            className="border-[var(--scry-baccent)] bg-[rgba(var(--scry-accent-rgb),0.12)] text-[var(--scry-accent-text)] hover:bg-[rgba(var(--scry-accent-rgb),0.2)] hover:text-[var(--scry-accent-text)]"
                           >
                             <Pencil className="h-4 w-4" />
                           </Button>
                           <Button
                             id={selectorId("media-library-root-delete", rf.path)}
                             type="button"
-                            variant="secondary"
+                            variant="destructive"
                             size="icon-sm"
-                            className={cn(
-                              boxedActionButtonBaseClass,
-                              boxedActionButtonToneClass.delete,
-                            )}
                             onClick={() => handleRemovePath(index)}
                             disabled={actionBusy}
                             aria-label={t("label.delete")}
@@ -1068,15 +1174,22 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
                   variant="outline"
                   onClick={openAdd}
                   disabled={actionBusy}
+                  className="border-dashed border-[var(--scry-border2)] bg-transparent"
                 >
-                  <FolderOpen className="mr-1.5 h-4 w-4" />
+                  <FolderPlus className="mr-1.5 h-4 w-4 text-[var(--scry-accent-text)]" />
                   {t("settings.rootFolderAdd")}
                 </Button>
                 <p className="text-xs text-muted-foreground">
                   {loading ? t("label.loading") : t("settings.rootFoldersHelp")}
                 </p>
               </div>
+              </LibrarySettingsSection>
 
+              <LibrarySettingsSection
+                icon={SlidersVertical}
+                title={t("settings.mediaProfilesTitle")}
+                description={t("settings.mediaProfilesHelp")}
+              >
               <div className="grid gap-3 md:grid-cols-3">
                 <div className="space-y-2">
                   <Label>{t("settings.libraryRequiredAudioLabel")}</Label>
@@ -1086,40 +1199,12 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
                     disabled={settingsBusy}
                   />
                   {savedSettings ? (
-                    <p className="text-xs text-muted-foreground">
+                    <EffectiveChip>
                       {t("settings.libraryEffectiveAudio", {
                         value: savedSettings.requiredAudioLanguages.join(", ") || t("label.none"),
                       })}
-                    </p>
+                    </EffectiveChip>
                   ) : null}
-                  <div className="space-y-2 rounded-md border border-border/70 p-2">
-                    <Label>{t("settings.libraryRequestQualityProfilesLabel")}</Label>
-                    {qualityProfiles.map((profile) => {
-                      const checked = draftRequestQualityProfileIds.includes(profile.id);
-                      return (
-                        <label
-                          key={profile.id}
-                          className="flex items-center gap-2 text-xs text-muted-foreground"
-                        >
-                          <Checkbox
-                            checked={checked}
-                            disabled={settingsBusy}
-                            onCheckedChange={(value) => {
-                              setDraftRequestQualityProfileIds((current) =>
-                                value
-                                  ? [...current, profile.id]
-                                  : current.filter((profileId) => profileId !== profile.id),
-                              );
-                            }}
-                          />
-                          <span>{profile.name}</span>
-                        </label>
-                      );
-                    })}
-                    <p className="text-xs text-muted-foreground">
-                      {t("settings.libraryRequestQualityProfilesHelp")}
-                    </p>
-                  </div>
                 </div>
                 <div className="space-y-2">
                   <Label>{t("settings.libraryQualityProfileLabel")}</Label>
@@ -1143,14 +1228,14 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
                     </SelectContent>
                   </Select>
                   {savedSettings ? (
-                    <p className="text-xs text-muted-foreground">
+                    <EffectiveChip>
                       {t("settings.libraryEffectiveProfile", {
                         value:
                           qualityProfiles.find(
                             (profile) => profile.id === savedSettings.qualityProfileId,
                           )?.name ?? savedSettings.qualityProfileId,
                       })}
-                    </p>
+                    </EffectiveChip>
                   ) : null}
                 </div>
                 <div className="space-y-2">
@@ -1175,7 +1260,7 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
                     </SelectContent>
                   </Select>
                   {savedSettings ? (
-                    <p className="text-xs text-muted-foreground">
+                    <EffectiveChip>
                       {t("settings.libraryEffectivePersona", {
                         value: t(
                           SCORING_PERSONA_CHOICES.find(
@@ -1183,13 +1268,64 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
                           )?.labelKey ?? "qualityProfile.personaBalanced",
                         ),
                       })}
-                    </p>
+                    </EffectiveChip>
                   ) : null}
                 </div>
               </div>
 
-              <div className="rounded-lg border border-border/70 bg-muted/10 p-4">
-                <div className="max-w-md space-y-2">
+              <div className="rounded-[12px] border border-[var(--scry-border)] bg-[var(--scry-card2)] p-4">
+                <div className="mb-3 flex items-center gap-2">
+                  <Send className="h-[15px] w-[15px] text-[var(--scry-accent-text)]" />
+                  <span className="text-[13.5px] font-semibold text-[var(--scry-body)]">
+                    {t("settings.libraryRequestQualityProfilesLabel")}
+                  </span>
+                </div>
+                <div className="flex flex-wrap gap-2.5">
+                  {qualityProfiles.map((profile) => {
+                    const checked = draftRequestQualityProfileIds.includes(profile.id);
+                    return (
+                      <label
+                        key={profile.id}
+                        className={cn(
+                          "flex h-[42px] cursor-pointer items-center gap-2.5 rounded-[10px] border px-3.5 text-[13px] font-semibold transition",
+                          checked
+                            ? "border-[var(--scry-baccent)] bg-[rgba(var(--scry-accent-rgb),0.1)] text-[var(--scry-ink2)]"
+                            : "border-[var(--scry-border2)] bg-[var(--scry-bg)] text-[var(--scry-text2)]",
+                        )}
+                      >
+                        <Checkbox
+                          checked={checked}
+                          disabled={settingsBusy}
+                          onCheckedChange={(value) => {
+                            setDraftRequestQualityProfileIds((current) =>
+                              value
+                                ? [...current, profile.id]
+                                : current.filter((profileId) => profileId !== profile.id),
+                            );
+                          }}
+                        />
+                        <span>{profile.name}</span>
+                      </label>
+                    );
+                  })}
+                </div>
+                <p className="mt-3 text-xs text-[var(--scry-muted3)]">
+                  {t("settings.libraryRequestQualityProfilesHelp")}
+                </p>
+              </div>
+              </LibrarySettingsSection>
+
+              <LibrarySettingsSection
+                icon={ImportIcon}
+                title={t("settings.importBehaviorTitle")}
+              >
+              <div
+                className={cn(
+                  "grid gap-5",
+                  canManageDownloadClientRouting && "md:grid-cols-2",
+                )}
+              >
+                <div className="space-y-2">
                   <Label>{t("settings.importModeLabel")}</Label>
                   <Select
                     value={draftImportMode}
@@ -1211,21 +1347,15 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
                       ))}
                     </SelectContent>
                   </Select>
-                  <p className="text-xs text-muted-foreground">
-                    {t("settings.importModeDescription")}
-                  </p>
                   {savedSettings ? (
-                    <p className="text-xs text-muted-foreground">
+                    <EffectiveChip>
                       {t("settings.libraryEffectiveProfile", {
                         value: t(importModeLabelKey(savedSettings.importMode)),
                       })}
-                    </p>
+                    </EffectiveChip>
                   ) : null}
                 </div>
-              </div>
-
-              {canManageDownloadClientRouting ? (
-                <div className="space-y-3">
+                {canManageDownloadClientRouting ? (
                   <div className="space-y-2">
                     <Label>{t("settings.downloadClientRouting")}</Label>
                     <Select
@@ -1250,31 +1380,32 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
                       </SelectContent>
                     </Select>
                   </div>
-                  {draftDownloadClientRoutingMode === "custom" ? (
-                    <DownloadClientRoutingPanel
-                      scopeLabel={activeLibrary?.name ?? settingsTitle}
-                      downloadClients={downloadClients}
-                      activeScopeRouting={draftDownloadClientRouting}
-                      activeScopeRoutingOrder={draftDownloadClientRoutingOrder}
-                      downloadClientRoutingLoading={downloadClientRoutingBusy}
-                      downloadClientRoutingSaving={saving}
-                      updateDownloadClientRoutingForScope={
-                        updateDownloadClientRoutingDraft
-                      }
-                      moveDownloadClientInScope={moveDownloadClientRoutingDraft}
-                    />
-                  ) : null}
-                </div>
+                ) : null}
+              </div>
+              {canManageDownloadClientRouting &&
+              draftDownloadClientRoutingMode === "custom" ? (
+                <DownloadClientRoutingPanel
+                  scopeLabel={activeLibrary?.name ?? settingsTitle}
+                  downloadClients={downloadClients}
+                  activeScopeRouting={draftDownloadClientRouting}
+                  activeScopeRoutingOrder={draftDownloadClientRoutingOrder}
+                  downloadClientRoutingLoading={downloadClientRoutingBusy}
+                  downloadClientRoutingSaving={saving}
+                  updateDownloadClientRoutingForScope={
+                    updateDownloadClientRoutingDraft
+                  }
+                  moveDownloadClientInScope={moveDownloadClientRoutingDraft}
+                />
               ) : null}
+              </LibrarySettingsSection>
 
-              <div className="rounded-lg border border-border/70 bg-muted/10 p-4">
-                <div className="space-y-1">
-                  <h3 className="text-sm font-medium text-card-foreground">
-                    {t("settings.sidecarFilesTitle")}
-                  </h3>
-                </div>
+              <LibrarySettingsSection
+                icon={FileText}
+                title={t("settings.sidecarFilesTitle")}
+              >
+              <div>
                 <div
-                  className={`mt-4 grid gap-3 ${showPlexmatch ? "md:grid-cols-2" : "md:grid-cols-1"}`}
+                  className={`grid gap-3 ${showPlexmatch ? "md:grid-cols-2" : "md:grid-cols-1"}`}
                 >
                   <div className="space-y-2">
                     <Label>{t("settings.nfoWriteOnImportLabel")}</Label>
@@ -1298,7 +1429,7 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
                       {t("settings.nfoWriteOnImportDescription")}
                     </p>
                     {savedSettings ? (
-                      <p className="text-xs text-muted-foreground">
+                      <EffectiveChip>
                         {t("settings.libraryEffectiveProfile", {
                           value: t(
                             savedSettings.nfoWriteOnImport
@@ -1306,7 +1437,7 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
                               : "label.disabled",
                           ),
                         })}
-                      </p>
+                      </EffectiveChip>
                     ) : null}
                   </div>
                   {showPlexmatch ? (
@@ -1332,7 +1463,7 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
                         {t("settings.plexmatchWriteOnImportDescription")}
                       </p>
                       {savedSettings?.plexmatchWriteOnImport != null ? (
-                        <p className="text-xs text-muted-foreground">
+                        <EffectiveChip>
                           {t("settings.libraryEffectiveProfile", {
                             value: t(
                               savedSettings.plexmatchWriteOnImport
@@ -1340,21 +1471,20 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
                                 : "label.disabled",
                             ),
                           })}
-                        </p>
+                        </EffectiveChip>
                       ) : null}
                     </div>
                   ) : null}
                 </div>
               </div>
+              </LibrarySettingsSection>
 
               {isAnimeFacet ? (
-                <div className="rounded-lg border border-border/70 bg-muted/10 p-4">
-                  <div className="space-y-1">
-                    <h3 className="text-sm font-medium text-card-foreground">
-                      {t("settings.animeSettings")}
-                    </h3>
-                  </div>
-                  <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                <LibrarySettingsSection
+                  icon={SlidersVertical}
+                  title={t("settings.animeSettings")}
+                >
+                  <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
                     <div className="space-y-2">
                       <Label>{t("settings.fillerPolicyLabel")}</Label>
                       <Select
@@ -1504,63 +1634,69 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
                       ) : null}
                     </div>
                   </div>
-                </div>
+                </LibrarySettingsSection>
               ) : null}
               {settingsError ? (
                 <p className="text-xs text-destructive">{settingsError}</p>
               ) : null}
 
-              <div className="flex flex-wrap items-center gap-2">
-                <Button
-                  id="media-library-save-scan"
-                  type="button"
-                  variant="primary"
-                  onClick={handleSaveAndScanLibrary}
-                  disabled={
-                    settingsBusy ||
-                    downloadClientRoutingBusy ||
-                    !draftName.trim() ||
-                    !hasDraftChanges ||
-                    hasRootFolderConflicts ||
-                    hasInvalidRootFolderPaths
-                  }
-                >
-                  <Save className="mr-1.5 h-4 w-4" />
-                  {t("settings.librarySaveAndScanButton")}
-                </Button>
-                <Button
-                  id="media-library-save"
-                  type="button"
-                  variant="outline"
-                  onClick={handleSaveLibrary}
-                  disabled={
-                    settingsBusy ||
-                    downloadClientRoutingBusy ||
-                    !draftName.trim() ||
-                    !hasDraftChanges ||
-                    hasRootFolderConflicts ||
-                    hasInvalidRootFolderPaths
-                  }
-                >
-                  {t("settings.librarySaveOnlyButton")}
-                </Button>
-                {mode !== "new" && activeLibrary && !activeLibrary.isDefault ? (
-                  <Button
-                    type="button"
-                    variant="outline"
-                    onClick={handleDeleteLibrary}
-                    disabled={actionBusy}
-                    className={boxedActionButtonToneClass.delete}
-                  >
-                    <Trash2 className="mr-1.5 h-4 w-4" />
-                    {t("settings.libraryDeleteButton")}
-                  </Button>
-                ) : null}
-              </div>
             </div>
           ) : null}
-        </CardContent>
-      </Card>
+          {mode === "new" || activeLibrary ? (
+            <div className="sticky bottom-0 z-10 mt-2 flex flex-wrap items-center gap-2 border-t border-[var(--scry-border2)] bg-[var(--scry-surf)] py-4">
+              {mode !== "new" && activeLibrary && !activeLibrary.isDefault ? (
+                <Button
+                  type="button"
+                  variant="destructive"
+                  onClick={handleDeleteLibrary}
+                  disabled={actionBusy}
+                >
+                  <Trash2 className="mr-1.5 h-4 w-4" />
+                  {t("settings.libraryDeleteButton")}
+                </Button>
+              ) : null}
+              {hasDraftChanges ? (
+                <span className="text-xs text-[var(--scry-muted3)]">
+                  {t("settings.libraryUnsavedChanges")}
+                </span>
+              ) : null}
+              <Button
+                id="media-library-save"
+                type="button"
+                variant="outline"
+                onClick={handleSaveLibrary}
+                disabled={
+                  settingsBusy ||
+                  downloadClientRoutingBusy ||
+                  !draftName.trim() ||
+                  !hasDraftChanges ||
+                  hasRootFolderConflicts ||
+                  hasInvalidRootFolderPaths
+                }
+                className="ml-auto"
+              >
+                {t("settings.librarySaveOnlyButton")}
+              </Button>
+              <Button
+                id="media-library-save-scan"
+                type="button"
+                variant="primary"
+                onClick={handleSaveAndScanLibrary}
+                disabled={
+                  settingsBusy ||
+                  downloadClientRoutingBusy ||
+                  !draftName.trim() ||
+                  !hasDraftChanges ||
+                  hasRootFolderConflicts ||
+                  hasInvalidRootFolderPaths
+                }
+              >
+                <Save className="mr-1.5 h-4 w-4" />
+                {t("settings.librarySaveAndScanButton")}
+              </Button>
+            </div>
+          ) : null}
+      </div>
       <FolderBrowserDialog
         open={browserOpen}
         onOpenChange={setBrowserOpen}

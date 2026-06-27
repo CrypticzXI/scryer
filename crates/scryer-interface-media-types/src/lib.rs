@@ -1621,6 +1621,7 @@ pub struct DiscoveryItemsInput {
     pub facet_terms: Option<Vec<String>>,
     pub include_owned: Option<bool>,
     pub include_unresolved: Option<bool>,
+    pub include_public: Option<bool>,
     pub limit: Option<i32>,
     pub offset: Option<i32>,
 }

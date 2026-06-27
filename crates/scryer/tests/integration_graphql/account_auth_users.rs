@@ -1809,6 +1809,7 @@ async fn delete_media_file_honors_custom_library_permissions_after_library_refac
         background_url: None,
         background_source_url: None,
         sort_title: Some("Scoped Delete Movie".to_string()),
+        catalog_sort_key: String::new(),
         slug: Some("scoped-delete-movie".to_string()),
         imdb_id: Some("tt9988776".to_string()),
         runtime_minutes: Some(90),

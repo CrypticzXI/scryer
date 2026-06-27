@@ -11,8 +11,11 @@ import {
   buildMetadataSearchActionState,
   buildMetadataResultCounts,
   countHiddenCatalogResults,
+  countHiddenCatalogResultsForFilters,
   countHiddenMetadataResults,
+  countHiddenMetadataResultsForFilters,
   countHiddenRouteCommandResults,
+  countHiddenRouteCommandResultsForFilters,
   countMetadataResults,
   filterGlobalSearchRouteCommands,
   GLOBAL_SEARCH_ALL_CATALOG_RESULT_LIMIT,
@@ -20,9 +23,16 @@ import {
   GLOBAL_SEARCH_ALL_ROUTE_COMMAND_DESKTOP_LIMIT,
   GLOBAL_SEARCH_ALL_ROUTE_COMMAND_LIMIT,
   getVisibleCatalogFacets,
+  getVisibleCatalogFacetsForFilters,
   getVisibleCatalogResults,
+  getVisibleCatalogResultsForFilters,
   getVisibleMetadataResults,
+  getVisibleMetadataResultsForFilters,
   getVisibleRouteCommandResults,
+  getVisibleRouteCommandResultsForFilters,
+  isGlobalSearchFilterSelected,
+  normalizeGlobalSearchFilterSelection,
+  toggleGlobalSearchFilterSelection,
 } from "./global-search-model.ts";
 
 const t: Translate = (key) => key;
@@ -122,6 +132,84 @@ test("getVisibleCatalogResults interleaves all-tab library results and preserves
   assert.equal(countHiddenCatalogResults("movie", 2, movieRows), 0);
 });
 
+test("global search filter selection is additive with All as clear", () => {
+  const tabs = buildGlobalSearchTabs({
+    canViewCatalog: true,
+    catalogSearchSections: {
+      movie: [],
+      series: [],
+      anime: [],
+    },
+    metadataResultCount: 0,
+    metadataResultCounts: { movie: 0, series: 0, anime: 0 },
+    routeCommandResultCount: 2,
+    visibleCatalogResultCount: 0,
+    t,
+  });
+
+  let selected = toggleGlobalSearchFilterSelection([], "movie", tabs);
+  selected = toggleGlobalSearchFilterSelection(selected, "actions", tabs);
+
+  assert.deepEqual(selected, ["movie", "actions"]);
+  assert.equal(isGlobalSearchFilterSelected(selected, "all"), false);
+  assert.equal(isGlobalSearchFilterSelected(selected, "movie"), true);
+  assert.equal(isGlobalSearchFilterSelected(selected, "actions"), true);
+
+  selected = toggleGlobalSearchFilterSelection(selected, "movie", tabs);
+  assert.deepEqual(selected, ["actions"]);
+  assert.deepEqual(toggleGlobalSearchFilterSelection(selected, "all", tabs), []);
+
+  assert.deepEqual(
+    normalizeGlobalSearchFilterSelection(["movie", "actions"], [
+      { key: "all", label: "All", count: 0 },
+      { key: "movie", label: "Movies", count: 0 },
+    ]),
+    ["movie"],
+  );
+});
+
+test("selection-aware catalog results add selected filters", () => {
+  const sections = buildCatalogSearchSections(
+    [
+      title("m1", "Movie One", "movie"),
+      title("m2", "Movie Two", "movie"),
+      title("s1", "Series One", "series"),
+      title("a1", "Anime One", "anime"),
+    ],
+    "",
+  );
+
+  const movieSeriesFacets = getVisibleCatalogFacetsForFilters(
+    ["movie", "series"],
+    true,
+  );
+  const selectedRows = getVisibleCatalogResultsForFilters({
+    selectedFilters: ["movie", "series"],
+    canViewCatalog: true,
+    catalogSearchSections: sections,
+    visibleCatalogFacets: movieSeriesFacets,
+    allLimit: GLOBAL_SEARCH_ALL_CATALOG_RESULT_LIMIT,
+  });
+
+  assert.deepEqual(
+    selectedRows.map(({ facet, title: entry }) => `${facet}:${entry.id}`),
+    ["movie:m1", "series:s1", "movie:m2"],
+  );
+  assert.equal(
+    countHiddenCatalogResultsForFilters(
+      ["movie", "series"],
+      3,
+      selectedRows,
+    ),
+    0,
+  );
+
+  assert.deepEqual(
+    getVisibleCatalogFacetsForFilters(["actions"], true).map((f) => f.id),
+    [],
+  );
+});
+
 test("getVisibleRouteCommandResults previews commands in All and shows all commands in Actions", () => {
   const commands: RouteCommandItem[] = Array.from(
     { length: 8 },
@@ -186,6 +274,20 @@ test("getVisibleRouteCommandResults previews commands in All and shows all comma
     countHiddenRouteCommandResults("movie", commands, []),
     0,
   );
+  assert.deepEqual(
+    getVisibleRouteCommandResultsForFilters(["movie", "actions"], commands).map(
+      (command) => command.id,
+    ),
+    commands.map((command) => command.id),
+  );
+  assert.equal(
+    countHiddenRouteCommandResultsForFilters(
+      ["movie", "actions"],
+      commands,
+      commands,
+    ),
+    0,
+  );
 });
 
 test("filterGlobalSearchRouteCommands keeps command shortcuts available before typing", () => {
@@ -238,6 +340,15 @@ test("getVisibleMetadataResults previews rails in All and expands type tabs", ()
   );
   assert.equal(
     countHiddenMetadataResults("series", results, results),
+    0,
+  );
+  assert.deepEqual(
+    getVisibleMetadataResultsForFilters(["movie", "series"], results),
+    results,
+  );
+  assert.deepEqual(getVisibleMetadataResultsForFilters(["library"], results), []);
+  assert.equal(
+    countHiddenMetadataResultsForFilters(["movie"], results, results),
     0,
   );
 });

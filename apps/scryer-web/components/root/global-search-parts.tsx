@@ -2,14 +2,12 @@ import * as React from "react";
 import type { LucideIcon } from "lucide-react";
 import {
   ArrowRight,
-  CircleCheck,
   Eye,
   Info,
   Loader2,
   Search,
   SearchX,
 } from "lucide-react";
-import type { GlobalSearchTab } from "@/components/root/global-search-model";
 import {
   Popover,
   PopoverContent,
@@ -131,59 +129,6 @@ export function SearchSectionLoading({
   );
 }
 
-type SearchTabButtonProps = {
-  active: boolean;
-  controlsId: string;
-  id: string;
-  onKeyDown: React.KeyboardEventHandler<HTMLButtonElement>;
-  onSelect: () => void;
-  tab: GlobalSearchTab;
-};
-
-export const SearchTabButton = React.forwardRef<
-  HTMLButtonElement,
-  SearchTabButtonProps
->(function SearchTabButton(
-  { active, controlsId, id, onKeyDown, onSelect, tab },
-  ref,
-) {
-  return (
-    <button
-      id={id}
-      ref={ref}
-      type="button"
-      role="tab"
-      aria-selected={active}
-      aria-controls={controlsId}
-      tabIndex={active ? 0 : -1}
-      className={cn(
-        "relative inline-flex h-10 shrink-0 items-center gap-2 px-0 py-2.5 text-[13.5px] font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--scry-focus)]",
-        active
-          ? "text-white"
-          : "text-[var(--scry-muted)] hover:text-[var(--scry-ink2)]",
-      )}
-      onMouseDown={(event) => event.preventDefault()}
-      onClick={onSelect}
-      onKeyDown={onKeyDown}
-    >
-      <span className="whitespace-nowrap">{tab.label}</span>
-      <span
-        className={cn(
-          "inline-flex min-w-[6ch] justify-center rounded-[6px] px-1.5 py-0.5 text-[11px] font-bold leading-none tabular-nums",
-          active
-            ? "bg-[rgba(var(--scry-accent-rgb),0.18)] text-[var(--scry-accent-text)]"
-            : "bg-[var(--scry-chip)] text-[var(--scry-muted2)]",
-        )}
-      >
-        {tab.count}
-      </span>
-      {active ? (
-        <span className="absolute bottom-[-1px] left-2 right-2 h-[2.5px] rounded-full bg-[var(--scry-accent-ring)]" />
-      ) : null}
-    </button>
-  );
-});
-
 type SearchRouteCommandButtonProps = {
   ariaLabel: string;
   description: string;
@@ -266,7 +211,6 @@ type SearchCatalogResultButtonProps = {
   facet: Facet;
   facetLabel: string;
   id?: string;
-  inLibraryLabel: string;
   metadataFetchedAt?: string | null;
   monitoredLabel: string;
   onClick: () => void;
@@ -274,7 +218,6 @@ type SearchCatalogResultButtonProps = {
   posterAlt: string;
   posterSourceUrl?: string | null;
   posterUrl?: string | null;
-  qualityLabel?: string | null;
   resultAttribute: SearchResultDataAttribute;
   secondaryParts: Array<string | null | undefined>;
   surface: SearchSurface;
@@ -292,7 +235,6 @@ export function SearchCatalogResultButton({
   facet,
   facetLabel,
   id,
-  inLibraryLabel,
   metadataFetchedAt,
   monitoredLabel,
   onClick,
@@ -300,7 +242,6 @@ export function SearchCatalogResultButton({
   posterAlt,
   posterSourceUrl,
   posterUrl,
-  qualityLabel,
   resultAttribute,
   secondaryParts,
   surface,
@@ -379,15 +320,6 @@ export function SearchCatalogResultButton({
             )}
           >
             {facetLabel}
-          </span>
-          <span
-            className={cn(
-              "inline-flex min-w-0 items-center gap-1 text-[11px] font-medium text-emerald-600 dark:text-emerald-300",
-              isDesktop ? "max-w-[9rem]" : "max-w-[8rem]",
-            )}
-          >
-            <CircleCheck className="h-3 w-3 shrink-0" />
-            <span className="truncate">{qualityLabel ?? inLibraryLabel}</span>
           </span>
         </div>
       </div>

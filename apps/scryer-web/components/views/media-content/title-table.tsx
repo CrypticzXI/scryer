@@ -202,7 +202,7 @@ export function TitleTable({
       {showEpisodesColumn ? <col style={{ width: "9.5rem" }} /> : null}
       {showSizeColumn ? <col style={{ width: "6rem" }} /> : null}
       {showAddedColumn ? <col style={{ width: "7.5rem" }} /> : null}
-      {showActionsColumn ? <col style={{ width: "9.5rem" }} /> : null}
+      {showActionsColumn ? <col style={{ width: "12rem" }} /> : null}
     </colgroup>
   );
   const visibleColumnSignature = [
@@ -257,7 +257,7 @@ export function TitleTable({
     count: sortedTitles.length,
     getScrollElement: () => titleTableScrollRef.current,
     getItemKey: (index) => sortedTitles[index]?.id ?? index,
-    estimateSize: () => 76,
+    estimateSize: () => 100,
     initialOffset: initialScrollOffset,
     overscan: 5,
   });
@@ -583,7 +583,7 @@ export function TitleTable({
     const deleteLoading = isDeletingById[item.id] === true;
     const monitorToggleLoading = isTogglingMonitoredById?.[item.id] === true;
     const posterThumbUrl = selectPosterVariantUrl(item.posterUrl, "w70");
-    const posterActionIconClassName = "h-3.5 w-3.5";
+    const posterActionIconClassName = "h-[18px] w-[18px]";
     const isSelected = selectedTitleId === item.id;
     const isRowHighlighted =
       isSelected || (selectionMode && selectedTitleIds.has(item.id));
@@ -611,7 +611,7 @@ export function TitleTable({
           onClick={(event) => handleTitleRowClick(event, item)}
           onKeyDown={(event) => handleTitleRowKeyDown(event, item)}
           className={cn(
-            "h-[4.75rem]",
+            "h-[100px]",
             TITLE_TABLE_ROW_CLASS,
             selectionMode && "cursor-pointer",
           )}
@@ -638,7 +638,7 @@ export function TitleTable({
             >
               <span
                 data-ui="poster-thumb"
-                className="relative h-[47px] w-8 shrink-0 overflow-hidden rounded-[5px] border border-[var(--scry-border2)] bg-[var(--scry-soft)]"
+                className="relative h-[71px] w-12 shrink-0 overflow-hidden rounded-[7px] border border-[var(--scry-border2)] bg-[var(--scry-soft)]"
               >
                 <TitlePosterSlot
                   src={posterThumbUrl}
@@ -942,8 +942,7 @@ export function TitleTable({
       data-slot="title-list-scroll"
       ref={titleTableScrollRef}
       className={cn(
-        "relative h-full min-h-[22rem] w-full overflow-auto rounded-[14px] border border-[var(--scry-border)]",
-        selectedPaneMode ? "bg-[var(--scry-card2)]" : "bg-[var(--scry-surfD)]",
+        "relative h-full min-h-[22rem] w-full overflow-x-hidden overflow-y-auto rounded-[14px] border border-[var(--scry-border)] bg-[var(--scry-surfD)]",
       )}
     >
       <table

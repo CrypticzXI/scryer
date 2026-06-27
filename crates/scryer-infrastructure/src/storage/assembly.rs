@@ -2463,6 +2463,7 @@ mod tests {
             background_url: None,
             background_source_url: None,
             sort_title: Some("Backup Lattice Movie".to_string()),
+            catalog_sort_key: String::new(),
             slug: Some("backup-lattice-movie".to_string()),
             imdb_id: Some("tt4242420".to_string()),
             runtime_minutes: Some(101),

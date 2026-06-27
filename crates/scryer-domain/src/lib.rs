@@ -4,6 +4,12 @@ use std::collections::{HashMap, HashSet};
 use thiserror::Error;
 use uuid::Uuid;
 
+mod title_sort;
+pub use title_sort::{
+    TITLE_CATALOG_SORT_KEY_VERSION, title_catalog_name_tie_key, title_catalog_sort_input,
+    title_catalog_sort_key, title_catalog_sort_key_for_title,
+};
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Id(pub String);
 
@@ -653,6 +659,7 @@ pub struct Title {
     pub background_url: Option<String>,
     pub background_source_url: Option<String>,
     pub sort_title: Option<String>,
+    pub catalog_sort_key: String,
     pub slug: Option<String>,
     pub imdb_id: Option<String>,
     pub runtime_minutes: Option<i32>,

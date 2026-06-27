@@ -206,6 +206,7 @@ mod tests {
             background_url: Some("https://example.com/background.jpg".to_string()),
             background_source_url: None,
             sort_title: Some("Example".to_string()),
+            catalog_sort_key: String::new(),
             slug: Some("example".to_string()),
             imdb_id: Some("tt123".to_string()),
             runtime_minutes: Some(120),

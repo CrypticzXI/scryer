@@ -1216,9 +1216,14 @@ mod tests {
     }
 
     fn postgres_0122_baseline_columns() -> BTreeMap<String, BTreeSet<String>> {
-        parse_create_table_columns(include_str!(
+        let mut columns = parse_create_table_columns(include_str!(
             "../../../../scryer/src/db/postgres/baselines/0122_baseline.sql"
-        ))
+        ));
+        columns
+            .entry("titles".to_string())
+            .or_default()
+            .insert("catalog_sort_key".to_string());
+        columns
     }
 
     fn parse_create_table_columns(sql: &str) -> BTreeMap<String, BTreeSet<String>> {
@@ -1383,6 +1388,7 @@ mod tests {
             background_url: None,
             background_source_url: None,
             sort_title: None,
+            catalog_sort_key: String::new(),
             slug: Some("postgres-blank-install-smoke".to_string()),
             imdb_id: None,
             runtime_minutes: None,

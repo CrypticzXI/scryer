@@ -9,7 +9,7 @@ use scryer_application::{
         PersistedTitleDecodeOptions, PersistedTitleReadMode, finalize_persisted_title,
     },
 };
-use scryer_domain::{ExternalId, MediaFacet, Title};
+use scryer_domain::{ExternalId, MediaFacet, Title, title_catalog_sort_key};
 use serde::de::DeserializeOwned;
 use serde_json::Value as JsonValue;
 use sqlx::{QueryBuilder, Row, Sqlite, postgres::PgRow};
@@ -29,14 +29,14 @@ use crate::title_images::normalized_base_path_from_env;
 
 const TITLE_INSERT_SQL: &str = "INSERT INTO titles (
     id, library_id, name, facet, monitored, tags, external_ids, root_folder_id, created_by, created_at,
-    year, overview, poster_url, background_url, sort_title, slug, imdb_id,
+    year, overview, poster_url, background_url, sort_title, catalog_sort_key, slug, imdb_id,
     runtime_minutes, genres, content_status, language, first_aired, network, studio,
     country, aliases, metadata_language, metadata_fetched_at, min_availability,
     digital_release_date, folder_path, tagged_aliases_json,
     metadata_hydration_next_attempt_at, metadata_hydration_attempt_count
 ) VALUES (
     {}, {}, {}, {}, {}, {}, {}, {}, {}, {},
-    {}, {}, {}, {}, {}, {}, {},
+    {}, {}, {}, {}, {}, {}, {}, {},
     {}, {}, {}, {}, {}, {}, {},
     {}, {}, {}, {}, {},
     {}, {}, {}, {}, {}
@@ -44,14 +44,14 @@ const TITLE_INSERT_SQL: &str = "INSERT INTO titles (
 
 const TITLE_UPSERT_SQL: &str = "INSERT INTO titles (
     id, library_id, name, facet, monitored, tags, external_ids, root_folder_id, created_by, created_at,
-    year, overview, poster_url, background_url, sort_title, slug, imdb_id,
+    year, overview, poster_url, background_url, sort_title, catalog_sort_key, slug, imdb_id,
     runtime_minutes, genres, content_status, language, first_aired, network, studio,
     country, aliases, metadata_language, metadata_fetched_at, min_availability,
     digital_release_date, folder_path, tagged_aliases_json,
     metadata_hydration_next_attempt_at, metadata_hydration_attempt_count
 ) VALUES (
     {}, {}, {}, {}, {}, {}, {}, {}, {}, {},
-    {}, {}, {}, {}, {}, {}, {},
+    {}, {}, {}, {}, {}, {}, {}, {},
     {}, {}, {}, {}, {}, {}, {},
     {}, {}, {}, {}, {},
     {}, {}, {}, {}, {}
@@ -79,6 +79,7 @@ ON CONFLICT (id) DO UPDATE SET
     END,
     background_url = excluded.background_url,
     sort_title = excluded.sort_title,
+    catalog_sort_key = excluded.catalog_sort_key,
     slug = excluded.slug,
     imdb_id = excluded.imdb_id,
     runtime_minutes = excluded.runtime_minutes,
@@ -648,6 +649,7 @@ impl TitleRepository for TitleStore {
                     }
 
                     create_title_tx(tx, &title).await?;
+                    let title = load_title_tx_or_not_found(tx, &title.id, true).await?;
                     Ok(CreateTitleOutcome {
                         title,
                         reused_existing: false,
@@ -680,6 +682,7 @@ impl TitleRepository for TitleStore {
             let title = title.clone();
             Box::pin(async move {
                 create_title_tx(tx, &title).await?;
+                let title = load_title_tx_or_not_found(tx, &title.id, true).await?;
                 Ok(title)
             })
         })
@@ -1377,6 +1380,7 @@ where
         background_url: row.opt_text("background_url")?,
         background_source_url: None,
         sort_title: row.opt_text("sort_title")?,
+        catalog_sort_key: row.text("catalog_sort_key")?,
         slug: row.opt_text("slug")?,
         imdb_id: row.opt_text("imdb_id")?,
         runtime_minutes: row.opt_i32("runtime_minutes")?,
@@ -1708,10 +1712,9 @@ fn build_title_catalog_order_sql(
     };
     match sort.key {
         TitleCatalogSortKey::Title => {
-            let title_expression = title_catalog_name_sort_expression_sql();
             let title_tie_expression = title_catalog_normalized_name_tie_expression_sql();
             format!(
-                "ORDER BY {title_expression} {direction}, {title_tie_expression} {direction}, \
+                "ORDER BY catalog_sort_key {direction}, {title_tie_expression} {direction}, \
                  CASE WHEN year IS NULL THEN 1 ELSE 0 END ASC, year {direction}, id {direction}"
             )
         }
@@ -1768,15 +1771,6 @@ fn build_title_catalog_order_sql(
     }
 }
 
-const TITLE_CATALOG_WORD_ARTICLES: &[&str] = &[
-    "a", "an", "the", "el", "la", "lo", "los", "las", "un", "una", "unos", "unas", "le", "les",
-    "une", "des", "il", "gli", "uno", "der", "die", "das", "den", "dem", "ein", "eine", "einen",
-    "einem", "einer", "eines", "de", "het", "een", "o", "os", "as", "um", "uma", "uns", "umas",
-    "en", "et", "ett", "det", "els", "unes",
-];
-
-const TITLE_CATALOG_PREFIX_ARTICLES: &[&str] = &["l'", "l’", "al-"];
-
 fn sql_string_literal(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
 }
@@ -1809,32 +1803,11 @@ fn title_catalog_normalized_name_tie_expression_sql() -> String {
     )
 }
 
-fn title_catalog_name_sort_expression_sql() -> String {
-    let normalized_name = title_catalog_normalized_name_tie_expression_sql();
-    let mut expression = String::from("CASE");
-    for article in TITLE_CATALOG_WORD_ARTICLES {
-        let start = article.chars().count() + 2;
-        expression.push_str(&format!(
-            " WHEN {normalized_name} LIKE {} THEN TRIM(SUBSTR({normalized_name}, {start}))",
-            sql_string_literal(&format!("{article} %")),
-        ));
-    }
-    for article in TITLE_CATALOG_PREFIX_ARTICLES {
-        let start = article.chars().count() + 1;
-        expression.push_str(&format!(
-            " WHEN {normalized_name} LIKE {} THEN TRIM(SUBSTR({normalized_name}, {start}))",
-            sql_string_literal(&format!("{article}%")),
-        ));
-    }
-    expression.push_str(&format!(" ELSE {normalized_name} END"));
-    expression
-}
-
 fn title_catalog_ascending_tie_order_sql() -> String {
     format!(
         "{} ASC, {} ASC, \
          CASE WHEN year IS NULL THEN 1 ELSE 0 END ASC, year ASC, id ASC",
-        title_catalog_name_sort_expression_sql(),
+        "catalog_sort_key",
         title_catalog_normalized_name_tie_expression_sql()
     )
 }
@@ -2201,6 +2174,10 @@ fn title_write_args(
         SqlArg::OptText(title.poster_url.clone()),
         SqlArg::OptText(title.background_url.clone()),
         SqlArg::OptText(title.sort_title.clone()),
+        SqlArg::Text(title_catalog_sort_key(
+            &title.name,
+            title.metadata_language.as_deref(),
+        )),
         SqlArg::OptText(title.slug.clone()),
         SqlArg::OptText(title.imdb_id.clone()),
         SqlArg::OptI64(title.runtime_minutes.map(i64::from)),

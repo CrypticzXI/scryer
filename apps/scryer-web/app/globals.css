@@ -568,24 +568,20 @@ body {
   border-color: color-mix(in srgb, var(--border-color) 72%, transparent);
 }
 
-[data-ui="title-table-row"]:hover > [data-slot="table-cell"],
-[data-ui="compact-title-table-row"]:hover > [data-slot="table-cell"] {
+/*
+ * Row hover + selected highlight. Applied to the row (not per-cell) so the
+ * fill — and the dark-mode gradient hover below — spans the whole row as one
+ * continuous band instead of restarting in each cell. The catalog tables
+ * width-budget their columns to fit, so the row never scrolls horizontally.
+ */
+[data-ui="title-table-row"]:hover,
+[data-ui="compact-title-table-row"]:hover {
   background: color-mix(in srgb, var(--accent) 42%, transparent);
 }
 
-/*
- * Selected / multi-selected row highlight. Applied per-cell (not on the <tr>)
- * so it spans the full row even when the table overflows horizontally — a
- * <tr> background only paints to the table's visible width, while cells extend
- * across the full scrolled content. This mirrors the per-cell hover above.
- */
-[data-ui="title-table-row"][data-selected="true"] > [data-slot="table-cell"],
-[data-ui="compact-title-table-row"][data-selected="true"] > [data-slot="table-cell"] {
+[data-ui="title-table-row"][data-selected="true"],
+[data-ui="compact-title-table-row"][data-selected="true"] {
   background: rgba(var(--scry-accent-rgb), 0.12);
-}
-
-[data-ui="title-table-row"][data-selected="true"] > [data-slot="table-cell"]:first-child,
-[data-ui="compact-title-table-row"][data-selected="true"] > [data-slot="table-cell"]:first-child {
   box-shadow: inset 3px 0 0 var(--scry-accent-ring);
 }
 
@@ -602,7 +598,15 @@ body {
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
 }
 
-.dark [data-slot="table-body"] [data-slot="table-row"]:hover > [data-slot="table-cell"] {
+/* Standard tables keep the original per-cell dark hover gradient. The catalog
+ * tables (excluded here) span the same gradient across the whole row below. */
+.dark [data-slot="table-body"] [data-slot="table-row"]:not([data-ui="title-table-row"]):not([data-ui="compact-title-table-row"]):hover > [data-slot="table-cell"] {
+  background:
+    linear-gradient(90deg, rgba(91, 100, 255, 0.02), rgba(56, 189, 248, 0.012) 72%, transparent 100%);
+}
+
+.dark [data-slot="table-body"] [data-ui="title-table-row"]:hover,
+.dark [data-slot="table-body"] [data-ui="compact-title-table-row"]:hover {
   background:
     linear-gradient(90deg, rgba(91, 100, 255, 0.02), rgba(56, 189, 248, 0.012) 72%, transparent 100%);
 }

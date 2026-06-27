@@ -1,6 +1,7 @@
 pub mod assets;
 pub mod hook_ids;
 pub(crate) mod notification_targets;
+pub(crate) mod title_catalog_sort_keys;
 pub(crate) mod title_root_folder_ids;
 
 use crate::encryption::EncryptionKey;
@@ -730,6 +731,9 @@ async fn run_rust_hook(
         }
         "migrate_title_root_folder_ids" => {
             title_root_folder_ids::migrate_title_root_folder_ids_sqlite(tx).await
+        }
+        "migrate_title_catalog_sort_keys" => {
+            title_catalog_sort_keys::migrate_title_catalog_sort_keys_sqlite(tx).await
         }
         #[cfg(test)]
         "test_insert_hook_marker" => {

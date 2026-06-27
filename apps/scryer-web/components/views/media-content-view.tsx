@@ -3015,6 +3015,8 @@ export function MediaContentView({
     `${bytesToReadable(totalManagedBytes)} managed`,
   ].join(" · ");
 
+  const [libraryRoutingWide, setLibraryRoutingWide] = React.useState(false);
+  const [libraryCrumb, setLibraryCrumb] = React.useState<string | null>(null);
   const facetSettingsSection =
     effectiveContentSettingsSection === "library" ||
     effectiveContentSettingsSection === "general" ||
@@ -3033,6 +3035,17 @@ export function MediaContentView({
           facetLabel={mediaTitle}
           canManageConfig={canManageConfig}
           canManageLibrarySettings={canManageLibrarySettings}
+          showSecondaryNav={facetSettingsSection === "library"}
+          contentWidth={
+            facetSettingsSection === "library" && libraryRoutingWide
+              ? "wide"
+              : "default"
+          }
+          trailingCrumb={
+            facetSettingsSection === "library"
+              ? (libraryCrumb ?? undefined)
+              : undefined
+          }
         >
           {effectiveContentSettingsSection === "quality" ? (
         <QualitySettingsPanel
@@ -3125,6 +3138,8 @@ export function MediaContentView({
             settingsTitle={mediaLibrarySettingsTitle}
             libraries={libraries}
             librariesLoading={librariesLoading}
+            onWideLayoutChange={setLibraryRoutingWide}
+            onActiveLibraryNameChange={setLibraryCrumb}
             rootValidationLibraries={rootValidationLibraries}
             rootValidationLibrariesLoading={rootValidationLibrariesLoading}
             preferredLibraryId={

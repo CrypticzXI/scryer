@@ -440,6 +440,7 @@ mod title_image_cache_refresh_tests {
             background_url: Some("https://old.example/background.jpg".to_string()),
             background_source_url: None,
             sort_title: None,
+            catalog_sort_key: String::new(),
             slug: None,
             imdb_id: None,
             runtime_minutes: None,

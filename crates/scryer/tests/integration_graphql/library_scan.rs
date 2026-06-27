@@ -1469,6 +1469,7 @@ async fn library_series_scan_existing_unhydrated_title_without_episodes_complete
             background_url: None,
             background_source_url: None,
             sort_title: Some("Pending Series".to_string()),
+            catalog_sort_key: String::new(),
             slug: Some("pending-series".to_string()),
             imdb_id: None,
             runtime_minutes: None,

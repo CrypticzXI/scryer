@@ -1606,7 +1606,7 @@ pub fn discovery_items_query_from_input(input: Option<DiscoveryItemsInput>) -> D
         facet_terms: input.facet_terms.unwrap_or_default(),
         include_owned: input.include_owned.unwrap_or(false),
         include_unresolved: input.include_unresolved.unwrap_or(false),
-        include_public: false,
+        include_public: input.include_public.unwrap_or(false),
         limit: input.limit.map(|value| value.max(1) as usize).unwrap_or(50),
         offset: input.offset.map(|value| value.max(0) as usize).unwrap_or(0),
     }

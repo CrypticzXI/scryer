@@ -2245,6 +2245,12 @@ const en: LocaleDictionary = {
   "settings.importModeHardlinkCopy": "Hardlink / Copy",
   "settings.importModeMove": "Move",
   "settings.sidecarFilesTitle": "Sidecar Files",
+  "settings.identityStorageTitle": "Identity & storage",
+  "settings.mediaProfilesTitle": "Media profiles",
+  "settings.mediaProfilesHelp":
+    "Leave on Inherit catalog default to follow the catalog, or override per library. The resolved value is shown beneath each control.",
+  "settings.importBehaviorTitle": "Import behavior",
+  "settings.libraryUnsavedChanges": "Unsaved changes",
   "settings.nfoWriteOnImportLabel": "Write NFO on Import",
   "settings.nfoWriteOnImportDescription":
     "Write Kodi/Jellyfin/Emby-compatible .nfo metadata files alongside imported media",

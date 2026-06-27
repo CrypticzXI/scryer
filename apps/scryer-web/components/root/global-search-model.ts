@@ -11,11 +11,18 @@ import type { MetadataSearchResults } from "../../lib/hooks/use-global-search.ts
 import type { Facet, TitleRecord } from "../../lib/types/titles.ts";
 
 export type GlobalSearchTabKey = "all" | "library" | "actions" | Facet;
+export type GlobalSearchFilterKey = Exclude<GlobalSearchTabKey, "all">;
 
 export const GLOBAL_SEARCH_ALL_CATALOG_RESULT_LIMIT = 4;
 export const GLOBAL_SEARCH_ALL_METADATA_RESULT_LIMIT = 6;
 export const GLOBAL_SEARCH_ALL_ROUTE_COMMAND_LIMIT = 4;
 export const GLOBAL_SEARCH_ALL_ROUTE_COMMAND_DESKTOP_LIMIT = 6;
+
+const GLOBAL_SEARCH_FILTER_ORDER: GlobalSearchFilterKey[] = [
+  "library",
+  ...FACET_REGISTRY.map((f) => f.id),
+  "actions",
+];
 
 export type GlobalSearchTab = {
   key: GlobalSearchTabKey;
@@ -40,8 +47,81 @@ export type MetadataSearchActionState = {
   inlineActionLabel: string;
 };
 
+export function isGlobalSearchFilterKey(
+  key: GlobalSearchTabKey,
+): key is GlobalSearchFilterKey {
+  return key !== "all";
+}
+
+export function isGlobalSearchFilterSelected(
+  selectedFilters: readonly GlobalSearchFilterKey[],
+  key: GlobalSearchTabKey,
+): boolean {
+  return key === "all"
+    ? selectedFilters.length === 0
+    : selectedFilters.includes(key);
+}
+
+export function normalizeGlobalSearchFilterSelection(
+  selectedFilters: readonly GlobalSearchFilterKey[],
+  availableTabs?: readonly GlobalSearchTab[],
+): GlobalSearchFilterKey[] {
+  const availableKeys = new Set<GlobalSearchFilterKey>(
+    (availableTabs?.map((tab) => tab.key) ?? [
+      "all",
+      ...GLOBAL_SEARCH_FILTER_ORDER,
+    ]).filter(isGlobalSearchFilterKey),
+  );
+  const selected = new Set(
+    selectedFilters.filter((key) => availableKeys.has(key)),
+  );
+  return GLOBAL_SEARCH_FILTER_ORDER.filter(
+    (key) => availableKeys.has(key) && selected.has(key),
+  );
+}
+
+export function toggleGlobalSearchFilterSelection(
+  selectedFilters: readonly GlobalSearchFilterKey[],
+  key: GlobalSearchTabKey,
+  availableTabs?: readonly GlobalSearchTab[],
+): GlobalSearchFilterKey[] {
+  if (key === "all") {
+    return [];
+  }
+  const normalized = normalizeGlobalSearchFilterSelection(
+    selectedFilters,
+    availableTabs,
+  );
+  const selected = new Set(normalized);
+  if (selected.has(key)) {
+    selected.delete(key);
+  } else {
+    selected.add(key);
+  }
+  return normalizeGlobalSearchFilterSelection([...selected], availableTabs);
+}
+
 export function catalogFacetFromString(facet: string): Facet {
   return facet === "movie" ? "movie" : facet === "anime" ? "anime" : "series";
+}
+
+function filterKeyToFacet(key: GlobalSearchFilterKey): Facet | null {
+  return FACET_REGISTRY.some((f) => f.id === key) ? (key as Facet) : null;
+}
+
+function selectedFacetFilters(
+  selectedFilters: readonly GlobalSearchFilterKey[],
+): Facet[] {
+  return selectedFilters.flatMap((key) => {
+    const facet = filterKeyToFacet(key);
+    return facet ? [facet] : [];
+  });
+}
+
+function filtersFromActiveTab(
+  activeTab: GlobalSearchTabKey,
+): GlobalSearchFilterKey[] {
+  return activeTab === "all" ? [] : [activeTab];
 }
 
 export function buildMetadataSearchActionState({
@@ -148,10 +228,22 @@ export function getVisibleRouteCommandResults(
   routeCommandResults: RouteCommandItem[],
   allLimit = GLOBAL_SEARCH_ALL_ROUTE_COMMAND_LIMIT,
 ): RouteCommandItem[] {
-  if (activeTab === "all") {
+  return getVisibleRouteCommandResultsForFilters(
+    filtersFromActiveTab(activeTab),
+    routeCommandResults,
+    allLimit,
+  );
+}
+
+export function getVisibleRouteCommandResultsForFilters(
+  selectedFilters: readonly GlobalSearchFilterKey[],
+  routeCommandResults: RouteCommandItem[],
+  allLimit = GLOBAL_SEARCH_ALL_ROUTE_COMMAND_LIMIT,
+): RouteCommandItem[] {
+  if (selectedFilters.length === 0) {
     return routeCommandResults.slice(0, allLimit);
   }
-  if (activeTab === "actions") {
+  if (selectedFilters.includes("actions")) {
     return routeCommandResults;
   }
   return [];
@@ -162,7 +254,19 @@ export function countHiddenRouteCommandResults(
   routeCommandResults: RouteCommandItem[],
   visibleRouteCommandResults: RouteCommandItem[],
 ): number {
-  if (activeTab !== "all") {
+  return countHiddenRouteCommandResultsForFilters(
+    filtersFromActiveTab(activeTab),
+    routeCommandResults,
+    visibleRouteCommandResults,
+  );
+}
+
+export function countHiddenRouteCommandResultsForFilters(
+  selectedFilters: readonly GlobalSearchFilterKey[],
+  routeCommandResults: RouteCommandItem[],
+  visibleRouteCommandResults: RouteCommandItem[],
+): number {
+  if (selectedFilters.length !== 0) {
     return 0;
   }
   return Math.max(
@@ -176,10 +280,22 @@ export function getVisibleMetadataResults<T>(
   metadataResults: T[],
   allLimit = GLOBAL_SEARCH_ALL_METADATA_RESULT_LIMIT,
 ): T[] {
-  if (activeTab === "all") {
+  return getVisibleMetadataResultsForFilters(
+    filtersFromActiveTab(activeTab),
+    metadataResults,
+    allLimit,
+  );
+}
+
+export function getVisibleMetadataResultsForFilters<T>(
+  selectedFilters: readonly GlobalSearchFilterKey[],
+  metadataResults: T[],
+  allLimit = GLOBAL_SEARCH_ALL_METADATA_RESULT_LIMIT,
+): T[] {
+  if (selectedFilters.length === 0) {
     return metadataResults.slice(0, allLimit);
   }
-  if (activeTab === "library" || activeTab === "actions") {
+  if (selectedFacetFilters(selectedFilters).length === 0) {
     return [];
   }
   return metadataResults;
@@ -190,7 +306,19 @@ export function countHiddenMetadataResults<T>(
   metadataResults: T[],
   visibleMetadataResults: T[],
 ): number {
-  if (activeTab !== "all") {
+  return countHiddenMetadataResultsForFilters(
+    filtersFromActiveTab(activeTab),
+    metadataResults,
+    visibleMetadataResults,
+  );
+}
+
+export function countHiddenMetadataResultsForFilters<T>(
+  selectedFilters: readonly GlobalSearchFilterKey[],
+  metadataResults: T[],
+  visibleMetadataResults: T[],
+): number {
+  if (selectedFilters.length !== 0) {
     return 0;
   }
   return Math.max(metadataResults.length - visibleMetadataResults.length, 0);
@@ -201,7 +329,19 @@ export function countHiddenCatalogResults(
   visibleCatalogCount: number,
   visibleCatalogResults: VisibleCatalogResult[],
 ): number {
-  if (activeTab !== "all") {
+  return countHiddenCatalogResultsForFilters(
+    filtersFromActiveTab(activeTab),
+    visibleCatalogCount,
+    visibleCatalogResults,
+  );
+}
+
+export function countHiddenCatalogResultsForFilters(
+  selectedFilters: readonly GlobalSearchFilterKey[],
+  visibleCatalogCount: number,
+  visibleCatalogResults: VisibleCatalogResult[],
+): number {
+  if (selectedFilters.length !== 0) {
     return 0;
   }
   return Math.max(visibleCatalogCount - visibleCatalogResults.length, 0);
@@ -211,29 +351,43 @@ export function getVisibleCatalogFacets(
   activeTab: GlobalSearchTabKey,
   canViewCatalog: boolean,
 ): FacetDefinition[] {
+  return getVisibleCatalogFacetsForFilters(
+    filtersFromActiveTab(activeTab),
+    canViewCatalog,
+  );
+}
+
+export function getVisibleCatalogFacetsForFilters(
+  selectedFilters: readonly GlobalSearchFilterKey[],
+  canViewCatalog: boolean,
+): FacetDefinition[] {
   if (!canViewCatalog) {
     return [];
   }
 
-  if (activeTab === "actions") {
-    return [];
+  if (selectedFilters.length === 0 || selectedFilters.includes("library")) {
+    return FACET_REGISTRY;
   }
 
-  return activeTab === "all" || activeTab === "library"
-    ? FACET_REGISTRY
-    : FACET_REGISTRY.filter((f) => f.id === activeTab);
+  const selectedFacets = new Set(selectedFacetFilters(selectedFilters));
+  return FACET_REGISTRY.filter((f) => selectedFacets.has(f.id));
 }
 
 export function getVisibleMetadataFacets(
   activeTab: GlobalSearchTabKey,
 ): FacetDefinition[] {
-  if (activeTab === "library" || activeTab === "actions") {
-    return [];
+  return getVisibleMetadataFacetsForFilters(filtersFromActiveTab(activeTab));
+}
+
+export function getVisibleMetadataFacetsForFilters(
+  selectedFilters: readonly GlobalSearchFilterKey[],
+): FacetDefinition[] {
+  if (selectedFilters.length === 0) {
+    return FACET_REGISTRY;
   }
 
-  return activeTab === "all"
-    ? FACET_REGISTRY
-    : FACET_REGISTRY.filter((f) => f.id === activeTab);
+  const selectedFacets = new Set(selectedFacetFilters(selectedFilters));
+  return FACET_REGISTRY.filter((f) => selectedFacets.has(f.id));
 }
 
 export function getMetadataSectionFacets({
@@ -245,7 +399,24 @@ export function getMetadataSectionFacets({
   metadataSearchLoading: boolean;
   metadataResultCounts: Record<Facet, number>;
 }): FacetDefinition[] {
-  const visibleMetadataFacets = getVisibleMetadataFacets(activeTab);
+  return getMetadataSectionFacetsForFilters({
+    selectedFilters: filtersFromActiveTab(activeTab),
+    metadataSearchLoading,
+    metadataResultCounts,
+  });
+}
+
+export function getMetadataSectionFacetsForFilters({
+  selectedFilters,
+  metadataSearchLoading,
+  metadataResultCounts,
+}: {
+  selectedFilters: readonly GlobalSearchFilterKey[];
+  metadataSearchLoading: boolean;
+  metadataResultCounts: Record<Facet, number>;
+}): FacetDefinition[] {
+  const visibleMetadataFacets =
+    getVisibleMetadataFacetsForFilters(selectedFilters);
   return metadataSearchLoading
     ? visibleMetadataFacets
     : visibleMetadataFacets.filter((f) => metadataResultCounts[f.id] > 0);
@@ -274,27 +445,44 @@ export function getVisibleCatalogResults({
   visibleCatalogFacets: FacetDefinition[];
   allLimit: number;
 }): VisibleCatalogResult[] {
+  return getVisibleCatalogResultsForFilters({
+    selectedFilters: filtersFromActiveTab(activeTab),
+    canViewCatalog,
+    catalogSearchSections,
+    visibleCatalogFacets,
+    allLimit,
+  });
+}
+
+export function getVisibleCatalogResultsForFilters({
+  selectedFilters,
+  canViewCatalog,
+  catalogSearchSections,
+  visibleCatalogFacets,
+  allLimit,
+}: {
+  selectedFilters: readonly GlobalSearchFilterKey[];
+  canViewCatalog: boolean;
+  catalogSearchSections: CatalogSearchSections;
+  visibleCatalogFacets: FacetDefinition[];
+  allLimit: number;
+}): VisibleCatalogResult[] {
   const picked: VisibleCatalogResult[] = [];
   if (!canViewCatalog) {
     return picked;
   }
 
-  if (activeTab === "actions") {
+  if (visibleCatalogFacets.length === 0) {
     return picked;
   }
 
-  if (activeTab !== "all" && activeTab !== "library") {
-    return (catalogSearchSections[activeTab] ?? []).map((title) => ({
-      facet: activeTab,
-      title,
-    }));
-  }
-
   const indices: Record<string, number> = {};
-  while (picked.length < allLimit) {
+  const limit =
+    selectedFilters.length === 0 ? allLimit : Number.POSITIVE_INFINITY;
+  while (picked.length < limit) {
     let added = false;
     for (const f of visibleCatalogFacets) {
-      if (picked.length >= allLimit) break;
+      if (picked.length >= limit) break;
       const bucket = catalogSearchSections[f.id] ?? [];
       const idx = indices[f.id] ?? 0;
       if (idx < bucket.length) {

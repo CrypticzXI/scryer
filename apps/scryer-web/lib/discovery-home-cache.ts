@@ -1,6 +1,6 @@
 import type { DiscoveryHomeInput, DiscoveryHomePayload } from "@/lib/types";
 
-const DISCOVERY_HOME_CACHE_PREFIX = "scryer:discovery:dashboard-home:v2";
+const DISCOVERY_HOME_CACHE_PREFIX = "scryer:discovery:dashboard-home:v3";
 
 type NormalizedDiscoveryHomeInput = {
   includePublic: boolean | null;

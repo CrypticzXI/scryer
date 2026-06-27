@@ -138,28 +138,11 @@ fn schema_sdl(ctx: &TestContext) -> String {
 
 /// Helper to execute a GraphQL query and return the parsed JSON body.
 async fn gql(ctx: &TestContext, query: &str, variables: Value) -> Value {
-    let client = ctx.http_client();
-    let resp = client
-        .post(ctx.graphql_url())
-        .json(&json!({ "query": query, "variables": variables }))
-        .send()
-        .await
-        .expect("request should succeed");
-    assert_eq!(resp.status(), 200);
-    resp.json().await.expect("should be valid JSON")
+    ctx.graphql_json(query, variables, None).await
 }
 
 async fn gql_with_token(ctx: &TestContext, query: &str, variables: Value, token: &str) -> Value {
-    let client = ctx.http_client();
-    let resp = client
-        .post(ctx.graphql_url())
-        .bearer_auth(token)
-        .json(&json!({ "query": query, "variables": variables }))
-        .send()
-        .await
-        .expect("request should succeed");
-    assert_eq!(resp.status(), 200);
-    resp.json().await.expect("should be valid JSON")
+    ctx.graphql_json(query, variables, Some(token)).await
 }
 
 /// Assert no GraphQL errors in response body.
@@ -1465,6 +1448,7 @@ async fn create_series_scan_title(
         background_url: None,
         background_source_url: None,
         sort_title: None,
+        catalog_sort_key: String::new(),
         slug: None,
         imdb_id: None,
         runtime_minutes: Some(24),
@@ -1534,6 +1518,7 @@ async fn create_catalog_title(
         background_url: Some("https://example.com/old-background.jpg".to_string()),
         background_source_url: None,
         sort_title: Some(name.to_string()),
+        catalog_sort_key: String::new(),
         slug: Some("old-slug".to_string()),
         imdb_id: Some("tt0000001".to_string()),
         runtime_minutes: Some(100),

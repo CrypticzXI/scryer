@@ -42,26 +42,17 @@ const DISCOVERY_HOME_INPUT: DiscoveryHomeInput = {
 };
 
 function facetForDiscoveryItem(item: DiscoveryItem): Facet {
-  const primaryKind = (
-    item.contentType?.trim() || item.targetKind.trim()
-  ).toLowerCase();
-  if (primaryKind.includes("anime")) {
-    return "anime";
+  const primaryKind = item.contentType?.trim() || item.targetKind.trim();
+  switch (primaryKind.toLowerCase()) {
+    case "anime":
+      return "anime";
+    case "series":
+      return "series";
+    case "movie":
+      return "movie";
+    default:
+      return "movie";
   }
-  if (primaryKind.includes("series") || primaryKind.includes("show")) {
-    return "series";
-  }
-  if (primaryKind.includes("movie") || primaryKind.includes("film")) {
-    return "movie";
-  }
-  const fallbackTerms = item.facetTerms.join(" ").toLowerCase();
-  if (fallbackTerms.includes("anime")) {
-    return "anime";
-  }
-  if (fallbackTerms.includes("series") || fallbackTerms.includes("show")) {
-    return "series";
-  }
-  return "movie";
 }
 
 function externalIdsForDiscoveryItem(item: DiscoveryItem): ExternalId[] {

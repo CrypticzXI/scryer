@@ -476,6 +476,10 @@ async fn run_postgres_rust_hook(
             crate::migrations::title_root_folder_ids::migrate_title_root_folder_ids_postgres(tx)
                 .await
         }
+        "migrate_title_catalog_sort_keys" => {
+            crate::migrations::title_catalog_sort_keys::migrate_title_catalog_sort_keys_postgres(tx)
+                .await
+        }
         #[cfg(test)]
         "test_insert_hook_marker" => {
             let marker = match install_kind {

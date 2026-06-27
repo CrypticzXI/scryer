@@ -20,6 +20,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use std::cmp::Ordering;
 use std::collections::{BTreeSet, HashMap, HashSet};
+use tracing::warn;
 
 pub(crate) const DISCOVERY_CONTEXT_CHANGES_MAX_CHANGED_SUBJECTS: usize = 250;
 const DISCOVERY_DERIVED_SECTION_MINIMUM_ITEMS: usize = 2;
@@ -57,33 +58,12 @@ impl DiscoveryContextDefaults {
         DiscoveryPublicFeedInput {
             region: self.region.clone(),
             language: self.language.clone(),
-            section_types: DISCOVERY_PUBLIC_FEED_SECTION_TYPES
-                .iter()
-                .map(|section_type| (*section_type).to_string())
-                .collect(),
+            section_types: Vec::new(),
             limit_per_section: 25,
             include_unresolved: self.include_unresolved,
         }
     }
 }
-
-const DISCOVERY_PUBLIC_FEED_SECTION_TYPES: &[&str] = &[
-    "TOP_MOVIES_THIS_WEEK",
-    "TOP_SERIES_THIS_WEEK",
-    "TOP_ANIME_THIS_WEEK",
-    "TRENDING_NOW",
-    "POPULAR_RIGHT_NOW",
-    "POPULAR_MOVIES",
-    "POPULAR_SERIES",
-    "UPCOMING_MOVIES",
-    "UPCOMING_SERIES",
-    "UPCOMING_NEXT_SEASON",
-    "POPULAR_WITH_ANIME_FANS",
-    "ANIME_THIS_WEEK",
-    "ANIME_SEASON_STANDOUTS",
-    "MOST_ANTICIPATED_ANIME",
-    "EVERGREEN_POPULAR",
-];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct DiscoveryLibraryContext {
@@ -165,6 +145,11 @@ impl AppUseCase {
                 public_sections =
                     public_section_results(sections, public_items, include_unresolved, limit);
             }
+            if public_sections.is_empty() && status.state.last_success_generation_id.is_none() {
+                public_sections = self
+                    .live_public_section_results(include_unresolved, limit)
+                    .await?;
+            }
         }
 
         let mut personalized_sections = Vec::new();
@@ -220,6 +205,41 @@ impl AppUseCase {
             facets,
             can_view_personalized,
         })
+    }
+
+    async fn live_public_section_results(
+        &self,
+        include_unresolved: bool,
+        limit: usize,
+    ) -> AppResult<Vec<DiscoverySectionResult>> {
+        let defaults = DiscoveryContextDefaults {
+            include_unresolved,
+            ..DiscoveryContextDefaults::default()
+        };
+        let input = defaults.public_feed_input();
+        let result = match self
+            .services
+            .library
+            .metadata_gateway
+            .discover_public_feed(&input)
+            .await
+        {
+            Ok(result) => result,
+            Err(error) => {
+                warn!(error = %error, "discovery live public feed fallback failed");
+                return Ok(Vec::new());
+            }
+        };
+        let run_id = format!("public-feed-live-{}", uuid::Uuid::new_v4());
+        let now = self.runtime.environment.now();
+        let sections = public_feed_section_records(&run_id, &result, now)?;
+        let items = public_feed_item_records(&run_id, &result, now)?;
+        Ok(public_section_results(
+            sections,
+            items,
+            include_unresolved,
+            limit,
+        ))
     }
 
     pub async fn discovery_items(
@@ -2569,6 +2589,7 @@ mod tests {
             background_url: None,
             background_source_url: None,
             sort_title: None,
+            catalog_sort_key: String::new(),
             slug: None,
             imdb_id: None,
             runtime_minutes: None,
