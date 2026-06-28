@@ -25,6 +25,15 @@ import {
 } from "@/lib/utils/action-button-styles";
 import { selectorId } from "@/lib/utils/dom-ids";
 
+const USERS_PANEL_CLASS =
+  "overflow-hidden rounded-[14px] border border-[var(--scry-border)] bg-[var(--scry-surf)] shadow-[0_10px_24px_rgba(0,0,0,0.16)]";
+const USERS_PANEL_HEADER_CLASS =
+  "border-b border-[var(--scry-border3)] bg-[linear-gradient(180deg,rgba(255,255,255,0.035),rgba(255,255,255,0))] px-4 py-3";
+const USERS_PANEL_TITLE_CLASS =
+  "text-[15px] font-semibold text-[var(--scry-ink2)]";
+const USERS_INSET_CLASS =
+  "rounded-[12px] border border-[var(--scry-line2)] bg-[var(--scry-card2)] p-3";
+
 type SettingsUsersSectionProps = {
   settingsUsers: UserRecord[];
   libraries: LibraryRecord[];
@@ -70,9 +79,12 @@ function CollapsiblePermissionSection({
   children: React.ReactNode;
 }) {
   return (
-    <details id={id} className="group rounded border border-border bg-background/40 p-2">
-      <summary className="flex cursor-pointer list-none items-center gap-2 text-sm font-medium text-card-foreground [&::-webkit-details-marker]:hidden">
-        <ChevronRight className="h-4 w-4 text-muted-foreground transition-transform group-open:rotate-90" />
+    <details
+      id={id}
+      className="group rounded-[10px] border border-[var(--scry-line2)] bg-[var(--scry-card2)] p-2.5"
+    >
+      <summary className="flex cursor-pointer list-none items-center gap-2 text-sm font-medium text-[var(--scry-ink2)] [&::-webkit-details-marker]:hidden">
+        <ChevronRight className="h-4 w-4 text-[var(--scry-muted3)] transition-transform group-open:rotate-90" />
         <span>{title}</span>
       </summary>
       <div className="mt-2">{children}</div>
@@ -85,10 +97,10 @@ function AuthFactorStatusBadge({ enabled }: { enabled: boolean }) {
   return (
     <span
       className={cn(
-        "inline-flex min-w-24 items-center justify-center rounded border px-2 py-1 text-xs font-medium",
+        "inline-flex min-w-24 items-center justify-center rounded-full border px-2 py-1 text-xs font-medium",
         enabled
           ? "border-emerald-500/35 bg-emerald-500/10 text-emerald-700 dark:text-emerald-200"
-          : "border-border bg-background text-muted-foreground",
+          : "border-[var(--scry-border3)] bg-[var(--scry-inset)] text-[var(--scry-muted3)]",
       )}
     >
       {enabled ? t("settings.setUp") : t("settings.notSetUp")}
@@ -130,11 +142,14 @@ export function SettingsUsersSection({
   const [isCreateUserOpen, setIsCreateUserOpen] = React.useState(false);
   return (
     <div id="settings-users-section" className="space-y-4 text-sm">
-      <div className="rounded border border-border">
-        <div className="border-b border-border px-3 py-2">
-          <CardTitle className="text-base">{t("settings.knownUsers")}</CardTitle>
+      <div className={USERS_PANEL_CLASS}>
+        <div className={USERS_PANEL_HEADER_CLASS}>
+          <CardTitle className={USERS_PANEL_TITLE_CLASS}>
+            {t("settings.knownUsers")}
+          </CardTitle>
         </div>
-        <Table id="settings-users-table">
+        <div className="overflow-x-auto">
+          <Table id="settings-users-table">
           <TableHeader>
             <TableRow>
               <TableHead className="min-w-40">{t("settings.username")}</TableHead>
@@ -148,7 +163,7 @@ export function SettingsUsersSection({
           <TableBody>
             {settingsUsers.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={6} className="text-muted-foreground">
+                <TableCell colSpan={6} className="text-[var(--scry-muted3)]">
                   {t("settings.noUsers")}
                 </TableCell>
               </TableRow>
@@ -170,7 +185,9 @@ export function SettingsUsersSection({
                 return (
                   <TableRow key={user.id} id={selectorId("settings-user-row", user.username)}>
                     <TableCell className="align-top">
-                      <div className="text-lg font-semibold text-foreground">{user.username}</div>
+                      <div className="text-lg font-semibold text-[var(--scry-ink2)]">
+                        {user.username}
+                      </div>
                     </TableCell>
                     <TableCell className="align-top">
                       <CollapsiblePermissionSection
@@ -233,11 +250,13 @@ export function SettingsUsersSection({
                             disabled={mutatingUserId === user.id || isOwnUser}
                           >
                             <KeyRound className="h-3.5 w-3.5" />
-                            {mutatingUserId === user.id ? t("label.saving") : t("settings.updatePassword")}
+                            {mutatingUserId === user.id
+                              ? t("label.saving")
+                              : t("settings.updatePassword")}
                           </Button>
                         </div>
                       ) : (
-                        <span className="text-sm text-muted-foreground">
+                        <span className="text-sm text-[var(--scry-muted3)]">
                           {t("settings.passwordManagedExternally")}
                         </span>
                       )}
@@ -285,15 +304,18 @@ export function SettingsUsersSection({
               })
             )}
           </TableBody>
-        </Table>
+          </Table>
+        </div>
       </div>
 
       {isCreateUserOpen ? (
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base">{t("settings.createUser")}</CardTitle>
+        <Card className={USERS_PANEL_CLASS}>
+          <CardHeader className={USERS_PANEL_HEADER_CLASS}>
+            <CardTitle className={USERS_PANEL_TITLE_CLASS}>
+              {t("settings.createUser")}
+            </CardTitle>
           </CardHeader>
-          <CardContent>
+          <CardContent className="p-4 sm:p-5">
             <form id="settings-user-create-form" className="space-y-4" onSubmit={createUser}>
               <div className="grid gap-3 md:grid-cols-2">
                 <div>
@@ -325,8 +347,10 @@ export function SettingsUsersSection({
                 </div>
               </div>
               {canManagePermissions ? (
-                <div className="rounded border border-border bg-background/40 p-3">
-                  <Label className="mb-2 block">{t("settings.permissions")}</Label>
+                <div className={USERS_INSET_CLASS}>
+                  <Label className="mb-2 block text-[var(--scry-ink2)]">
+                    {t("settings.permissions")}
+                  </Label>
                   <PermissionDropdowns
                     libraries={libraries}
                     appPermissions={appPermissions}

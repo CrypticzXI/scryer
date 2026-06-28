@@ -103,8 +103,6 @@ const pt_BR: LocaleDictionary = {
   "settings.profile": "Perfil",
   "settings.general": "Geral",
   "settings.security": "Security",
-  "settings.securityDescription":
-    "Choose whether Scryer requires a signed-in user session.",
   "settings.securityEnableFormLogin": "Form login",
   "settings.securityEnableFormLoginHelp":
     "When enabled, Scryer requires an authenticated user session. When disabled, requests resolve as the default admin user.",

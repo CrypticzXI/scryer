@@ -41,6 +41,24 @@ export const SETTINGS_SECTION_PATH: Record<SettingsSection, string> = {
   recycleBin: "recycle-bin",
 };
 
+const AUTOMATION_SETTINGS_SECTION_PATH: Partial<Record<SettingsSection, string>> = {
+  rules: "rules",
+  "post-processing": "post-procesing",
+};
+
+const INTEGRATIONS_SETTINGS_SECTION_PATH: Partial<Record<SettingsSection, string>> = {
+  indexers: "indexers",
+  downloadClients: "download-clients",
+  mediaServers: "media-servers",
+  notifications: "notifications",
+};
+
+const SYSTEM_SETTINGS_SECTION_PATH: Partial<Record<SettingsSection, string>> = {
+  users: "users",
+  security: "security",
+  backups: "backup",
+};
+
 export const CONTENT_SECTION_PATH: Record<ContentSettingsSection, string> = {
   overview: "overview",
   import: "import",
@@ -83,6 +101,18 @@ export function buildViewPath(
 ) {
   const base = `/${nextView}`;
   if (nextView === "settings" && nextSettingsSection) {
+    const automationPath = AUTOMATION_SETTINGS_SECTION_PATH[nextSettingsSection];
+    if (automationPath) {
+      return `/automation/${automationPath}`;
+    }
+    const integrationsPath = INTEGRATIONS_SETTINGS_SECTION_PATH[nextSettingsSection];
+    if (integrationsPath) {
+      return `/integrations/${integrationsPath}`;
+    }
+    const systemPath = SYSTEM_SETTINGS_SECTION_PATH[nextSettingsSection];
+    if (systemPath) {
+      return `/system/${systemPath}`;
+    }
     return `${base}/${SETTINGS_SECTION_PATH[nextSettingsSection]}`;
   }
   if (nextView === "system" && nextSystemSection && nextSystemSection !== "overview") {
@@ -103,7 +133,7 @@ export function buildViewPath(
     return base;
   }
   if (nextView === "wanted") {
-    return `${base}/${WANTED_SECTION_PATH[nextWantedSection ?? "wanted"]}`;
+    return `/automation/wanted/${WANTED_SECTION_PATH[nextWantedSection ?? "wanted"]}`;
   }
   if (isMediaView(nextView)) {
     if (nextContentSection && nextContentSection !== "overview") {

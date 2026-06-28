@@ -11,6 +11,7 @@ import {
   Puzzle,
   Server,
   Settings2,
+  ShieldCheck,
   SlidersHorizontal,
   Timer,
   User,
@@ -210,7 +211,7 @@ export const SettingsContainer = memo(function SettingsContainer({
     settingsSection === "indexers" ||
     settingsSection === "mediaServers" ||
     settingsSection === "notifications";
-  const usesAccessHeader = settingsSection === "users";
+  const usesAccessHeader = settingsSection === "security" || settingsSection === "users";
   const SettingsSectionIcon = (() => {
     switch (settingsSection) {
       case "rules":
@@ -225,6 +226,8 @@ export const SettingsContainer = memo(function SettingsContainer({
         return Server;
       case "notifications":
         return Bell;
+      case "security":
+        return ShieldCheck;
       case "users":
         return Users;
       default:

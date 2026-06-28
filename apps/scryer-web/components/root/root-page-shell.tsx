@@ -17,6 +17,7 @@ import {
   Download,
   ListChecks,
   Loader2,
+  Monitor,
   Settings,
   CircleFadingArrowUp,
   WifiOff,
@@ -819,14 +820,91 @@ function AuthenticatedHomePage({
     parsedWantedSection: wantedSection,
     parsedOverviewLibrarySlug,
     parsedOverviewSlug,
+    parsedCanonicalRoutePath,
   } = useMemo(() => {
     const trimmed = pathname.replace(/^\/+|\/+$/g, "");
     const segments = trimmed ? trimmed.split("/") : [];
     const normalizedSegments = segments.map((segment) => segment.toLowerCase());
-    const parsedView = parseViewFromPath(normalizedSegments[0]);
+    const routeRoot = normalizedSegments[0] ?? null;
+    const routeSection = normalizedSegments[1] ?? null;
+    let settingsPathSegment = routeSection;
+    let systemPathSegment = routeSection;
+    let wantedPathSegment = routeSection;
+    let parsedView = parseViewFromPath(routeRoot);
+    let canonicalRoutePath: string | null = null;
+
+    if (routeRoot === "automation") {
+      if (routeSection === "wanted") {
+        parsedView = "wanted";
+        wantedPathSegment = normalizedSegments[2] ?? null;
+        canonicalRoutePath = buildViewPath(
+          "wanted",
+          undefined,
+          undefined,
+          undefined,
+          parseWantedSectionFromPath(wantedPathSegment),
+        );
+      } else {
+        parsedView = "settings";
+        settingsPathSegment = routeSection;
+        if (["rules", "post-procesing", "post-processing"].includes(routeSection ?? "")) {
+          canonicalRoutePath = buildViewPath(
+            "settings",
+            parseSettingsSectionFromPath(settingsPathSegment),
+          );
+        }
+      }
+    } else if (routeRoot === "integrations") {
+      parsedView = "settings";
+      settingsPathSegment = routeSection;
+      if (["indexers", "download-clients", "media-servers", "notifications"].includes(routeSection ?? "")) {
+        canonicalRoutePath = buildViewPath(
+          "settings",
+          parseSettingsSectionFromPath(settingsPathSegment),
+        );
+      }
+    } else if (routeRoot === "system") {
+      if (["users", "security", "backup", "backups"].includes(routeSection ?? "")) {
+        parsedView = "settings";
+        settingsPathSegment = routeSection;
+        canonicalRoutePath = buildViewPath(
+          "settings",
+          parseSettingsSectionFromPath(settingsPathSegment),
+        );
+      } else {
+        parsedView = "system";
+        systemPathSegment = routeSection;
+      }
+    } else if (routeRoot === "wanted") {
+      canonicalRoutePath = buildViewPath(
+        "wanted",
+        undefined,
+        undefined,
+        undefined,
+        parseWantedSectionFromPath(wantedPathSegment),
+      );
+    } else if (routeRoot === "settings" && routeSection) {
+      const settingsSection = parseSettingsSectionFromPath(settingsPathSegment);
+      if (
+        [
+          "rules",
+          "post-processing",
+          "indexers",
+          "downloadClients",
+          "mediaServers",
+          "notifications",
+          "users",
+          "security",
+          "backups",
+        ].includes(settingsSection)
+      ) {
+        canonicalRoutePath = buildViewPath("settings", settingsSection);
+      }
+    }
+
     const parsedSettingsSection: SettingsSection =
       parsedView === "settings"
-        ? parseSettingsSectionFromPath(normalizedSegments[1] ?? null)
+        ? parseSettingsSectionFromPath(settingsPathSegment)
         : "general";
     const parsedContentSection: ContentSettingsSection = isMediaView(parsedView)
       ? parseContentSectionFromPath(
@@ -836,7 +914,7 @@ function AuthenticatedHomePage({
       : "overview";
     const parsedSystemSection: SystemSection =
       parsedView === "system"
-        ? parseSystemSectionFromPath(normalizedSegments[1] ?? null)
+        ? parseSystemSectionFromPath(systemPathSegment)
         : "overview";
     const parsedLogsSection: LogsSection =
       parsedView === "logs"
@@ -848,7 +926,7 @@ function AuthenticatedHomePage({
         : "activity";
     const parsedWantedSection: WantedSection =
       parsedView === "wanted"
-        ? parseWantedSectionFromPath(normalizedSegments[1] ?? null)
+        ? parseWantedSectionFromPath(wantedPathSegment)
         : "wanted";
     const parsedOverviewTarget =
       isMediaView(parsedView) && parsedContentSection === "overview"
@@ -868,6 +946,7 @@ function AuthenticatedHomePage({
       parsedWantedSection,
       parsedOverviewLibrarySlug: parsedOverviewTarget.librarySlug,
       parsedOverviewSlug: parsedOverviewTarget.titleSlug,
+      parsedCanonicalRoutePath: canonicalRoutePath,
     };
   }, [pathname]);
 
@@ -880,6 +959,19 @@ function AuthenticatedHomePage({
       return null;
     return searchParams.get("id")?.trim() || null;
   }, [view, contentSettingsSection, parsedOverviewSlug, searchParams]);
+
+  useEffect(() => {
+    if (!parsedCanonicalRoutePath) {
+      return;
+    }
+    const nextQuery = searchParams.toString();
+    const nextPathWithQuery = `${parsedCanonicalRoutePath}${nextQuery ? `?${nextQuery}` : ""}`;
+    const currentPathWithQuery = `${pathname}${nextQuery ? `?${nextQuery}` : ""}`;
+
+    if (nextPathWithQuery !== currentPathWithQuery) {
+      navigate(nextPathWithQuery, { replace: true });
+    }
+  }, [navigate, parsedCanonicalRoutePath, pathname, searchParams]);
 
   useEffect(() => {
     if (view !== "history") {
@@ -1314,6 +1406,7 @@ function AuthenticatedHomePage({
         icon: CalendarDays,
       },
       { id: "wanted" as ViewId, label: t("nav.wanted"), icon: ListChecks },
+      { id: "system" as ViewId, label: t("system.title"), icon: Monitor },
       { id: "settings" as ViewId, label: t("nav.settings"), icon: Settings },
     ],
     [t],

@@ -1,4 +1,5 @@
 import * as React from "react";
+import { Link } from "react-router-dom";
 import { Check, ChevronsUpDown, Loader2, Plus, Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -79,6 +80,7 @@ type ExternalAccountInvitesPanelProps = {
   createExternalAccountInvite: (
     event: React.FormEvent<HTMLFormElement>,
   ) => Promise<void> | void;
+  showMediaServersLink?: boolean;
 };
 
 function providerLabel(provider: ExternalAccountProvider): string {
@@ -402,7 +404,8 @@ function inviteStatus(
 
   return {
     label: t("settings.externalAccountInviteStatusActive"),
-    className: "border-border bg-background text-muted-foreground",
+    className:
+      "border-[var(--scry-border3)] bg-[var(--scry-inset)] text-[var(--scry-muted3)]",
   };
 }
 
@@ -418,6 +421,7 @@ export function ExternalAccountInvitesPanel({
   externalInviteSubmitting,
   updateExternalInviteDraft,
   createExternalAccountInvite,
+  showMediaServersLink = false,
 }: ExternalAccountInvitesPanelProps) {
   const t = useTranslate();
   const dateTimeFormat = useUiDateTimeFormat();
@@ -467,18 +471,27 @@ export function ExternalAccountInvitesPanel({
     : null;
 
   return (
-    <div className="space-y-4 rounded-lg border border-border bg-card/50 p-4">
-      <div className="flex items-center gap-2">
-        <h3 className="text-base font-medium">
-          {t("settings.externalAccountInvites")}
-        </h3>
-        {loading ? (
-          <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+    <div className="space-y-4 rounded-[14px] border border-[var(--scry-border)] bg-[var(--scry-surf)] p-4 shadow-[0_10px_24px_rgba(0,0,0,0.16)]">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div className="flex items-center gap-2">
+          <h3 className="text-[15px] font-semibold text-[var(--scry-ink2)]">
+            {t("settings.externalAccountInvites")}
+          </h3>
+          {loading ? (
+            <Loader2 className="h-4 w-4 animate-spin text-[var(--scry-muted3)]" />
+          ) : null}
+        </div>
+        {showMediaServersLink ? (
+          <Button asChild variant="primary" className="w-fit shrink-0">
+            <Link to="/settings/media-servers">
+              {t("settings.openMediaServers")}
+            </Link>
+          </Button>
         ) : null}
       </div>
 
       {inviteUnavailable ? (
-        <p className="text-muted-foreground">
+        <p className="text-[var(--scry-muted3)]">
           {t("settings.externalAccountInvitesUnavailable")}
         </p>
       ) : (
@@ -591,10 +604,10 @@ export function ExternalAccountInvitesPanel({
       )}
 
       <div className="space-y-3">
-        <h4 className="text-sm font-medium">
+        <h4 className="text-sm font-medium text-[var(--scry-ink2)]">
           {t("settings.previousExternalAccountInvites")}
         </h4>
-        <div className="rounded border border-border">
+        <div className="overflow-hidden rounded-[12px] border border-[var(--scry-line2)] bg-[var(--scry-card2)]">
           <div className="overflow-x-auto">
             <Table id="settings-external-account-invites-table">
               <TableHeader>

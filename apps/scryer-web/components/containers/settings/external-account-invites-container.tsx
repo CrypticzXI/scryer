@@ -55,7 +55,13 @@ function visibleExternalAccountInvites(
   );
 }
 
-export function ExternalAccountInvitesContainer() {
+type ExternalAccountInvitesContainerProps = {
+  showMediaServersLink?: boolean;
+};
+
+export function ExternalAccountInvitesContainer({
+  showMediaServersLink = false,
+}: ExternalAccountInvitesContainerProps = {}) {
   const setGlobalStatus = useGlobalStatus();
   const t = useTranslate();
   const client = useClient();
@@ -304,6 +310,7 @@ export function ExternalAccountInvitesContainer() {
       externalInviteSubmitting={externalInviteSubmitting}
       updateExternalInviteDraft={updateExternalInviteDraft}
       createExternalAccountInvite={createExternalAccountInvite}
+      showMediaServersLink={showMediaServersLink}
     />
   );
 }

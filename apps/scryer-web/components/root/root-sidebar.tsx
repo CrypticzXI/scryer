@@ -47,6 +47,7 @@ import {
   Server,
   Settings2,
   Shield,
+  ShieldCheck,
   SlidersHorizontal,
   Sun,
   Timer,
@@ -183,6 +184,7 @@ const TOP_NAV_GROUPS: TopNavGroupDefinition[] = [
     labelKey: "nav.group.system",
     items: [
       { kind: "view", id: "system" },
+      { kind: "system", id: "jobs", labelKey: "system.jobsTitle", icon: Timer },
       {
         kind: "settings",
         id: "users",
@@ -273,6 +275,7 @@ const settingsEntries: Array<{
   {
     id: "security",
     label: (t) => t("settings.security"),
+    icon: ShieldCheck,
     requiredAnyAppPermission: [APP_PERMISSIONS.manageUsers],
   },
   {
@@ -377,7 +380,6 @@ const MEDIA_SETTINGS_SUB_PAGES: Array<{
 
 const SYSTEM_SUB_PAGES: Array<{ id: SystemSection; labelKey: string }> = [
   { id: "overview", labelKey: "system.title" },
-  { id: "jobs", labelKey: "system.jobsTitle" },
 ];
 
 const LOGS_SUB_PAGES: Array<{ id: LogsSection; labelKey: string }> = [
@@ -1112,7 +1114,7 @@ function RootSidebarContent({
                   const isActiveSystemSection =
                     isSystemTop &&
                     view === "system" &&
-                    systemSection !== "audit";
+                    systemSection === "overview";
                   const isActiveActivitySection =
                     isActivityTop && view === "activity";
                   const mediaFacetImportBadgeCount = isMediaSection

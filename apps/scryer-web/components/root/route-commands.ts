@@ -15,6 +15,7 @@ import {
   Server,
   Settings,
   Shield,
+  ShieldCheck,
   SlidersHorizontal,
   Trash2,
   User,
@@ -335,7 +336,7 @@ export function buildRouteCommands({
           description: t("settings.security"),
           groupLabel: systemGroupLabel,
           keywords: ["settings", "security", "auth", "login", "password"],
-          icon: Shield,
+          icon: ShieldCheck,
           onSelect: buildNavigate(onNavigate, "settings", "security"),
         } satisfies RouteCommand]
       : []),

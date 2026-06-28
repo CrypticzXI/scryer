@@ -311,7 +311,6 @@ export function SettingsSecurityContainer() {
       }
 
       setEnableConfirmOpen(false);
-      setConfirmUsername("");
       setConfirmPassword("");
       setConfirmError(null);
     } catch (error) {
@@ -615,7 +614,9 @@ export function SettingsSecurityContainer() {
       onMfaPasswordLoginChange={handleMfaPasswordLoginChange}
       onTotpJellyfinLoginChange={handleTotpJellyfinLoginChange}
       externalAccountInvitesPanel={
-        canManageExternalInvites ? <ExternalAccountInvitesContainer /> : null
+        canManageExternalInvites ? (
+          <ExternalAccountInvitesContainer showMediaServersLink />
+        ) : null
       }
     />
   );
