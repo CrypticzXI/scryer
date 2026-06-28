@@ -60,9 +60,13 @@ import { discoveryItemDisplayTitle } from "@/lib/utils/discovery-display";
 import { toProfileOptions } from "@/lib/utils/quality-profiles";
 import {
   normalizeLibraryFilterSelection,
-  selectedLibraryIdsToQueryValue,
   singleSelectedLibraryId,
 } from "@/lib/utils/library-filter";
+import {
+  EMPTY_TITLE_QUICK_FILTERS,
+  buildTitleCatalogQueryVariables,
+  titleCatalogQueryKey,
+} from "@/lib/utils/title-catalog-query";
 import { releaseQueueScopeInput } from "@/lib/utils/release-queue-scope";
 import { useBulkDelete } from "@/lib/hooks/use-bulk-delete";
 import { useDownloadClientRouting } from "@/lib/hooks/use-download-client-routing";
@@ -92,7 +96,6 @@ import type {
   RuleSetRecord,
 } from "@/lib/types";
 import type { ExternalSubtitleRecord } from "@/lib/types/subtitles";
-import type { ViewCategoryId } from "@/lib/types/quality-profiles";
 import type { DeletePreview } from "@/lib/types/delete-preview";
 import { Checkbox } from "@/components/ui/checkbox";
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
@@ -144,12 +147,6 @@ const TITLE_DELETION_JOB_FALLBACK_DELAYS_MS = [
 ] as const;
 const TITLE_CATALOG_PAGE_SIZE = 300;
 const ALL_LIBRARIES_VALUE = "__all__";
-const EMPTY_TITLE_QUICK_FILTERS: TitleQuickFilters = {
-  monitored: false,
-  unmonitored: false,
-  continuing: false,
-  ended: false,
-};
 
 type MediaContentContainerProps = {
   userId: string | null | undefined;
@@ -653,30 +650,6 @@ function metadataResultForDiscoveryItem(
   };
 }
 
-function titleCatalogSortInput(sort: TitleCatalogSortState) {
-  const key =
-    sort.key === "name"
-      ? "title"
-      : sort.key === "library"
-        ? "library"
-      : sort.key === "monitored"
-        ? "monitored"
-        : sort.key === "quality"
-          ? "quality"
-          : sort.key === "episodes"
-            ? "episodes"
-            : sort.key === "status"
-              ? "status"
-              : sort.key === "added"
-                ? "added"
-                : "size";
-
-  return {
-    key,
-    direction: sort.direction,
-  };
-}
-
 type ActiveCatalogListFilters = {
   facet: TitleRecord["facet"];
   query: string;
@@ -931,48 +904,11 @@ function sameIdSet(
   return true;
 }
 
-function titleCatalogFilterInput(filters: TitleQuickFilters) {
-  const monitored =
-    filters.monitored === filters.unmonitored
-      ? null
-      : filters.monitored
-        ? true
-        : false;
-  const contentStatuses = [
-    filters.continuing ? "continuing" : null,
-    filters.ended ? "ended" : null,
-  ].filter((value): value is string => Boolean(value));
-
-  if (monitored === null && contentStatuses.length === 0) {
-    return null;
-  }
-
-  return {
-    monitored,
-    contentStatuses,
-  };
-}
-
-function titleCatalogQueryKey({
-  facet,
-  query,
-  libraryIds,
-  filters,
-  sort,
-}: {
-  facet: ViewCategoryId;
-  query: string;
-  libraryIds: string[];
-  filters: TitleQuickFilters;
-  sort: TitleCatalogSortState;
-}) {
-  return JSON.stringify({
-    facet,
-    query: query.trim(),
-    libraryIds: [...libraryIds].sort(),
-    filter: titleCatalogFilterInput(filters),
-    sort: titleCatalogSortInput(sort),
-  });
+function sameStringArray(left: string[], right: string[]): boolean {
+  return (
+    left.length === right.length &&
+    left.every((value, index) => value === right[index])
+  );
 }
 
 function batchItemAlias(index: number): string {
@@ -1595,9 +1531,23 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     () => new Map(libraries.map((library) => [library.id, library.slug])),
     [libraries],
   );
-  const titleContextTitlesWithLibraries = React.useMemo(
+  const activeCatalogListFilters = React.useMemo(
     () =>
-      titleContextTitles.map((title) => ({
+      buildActiveCatalogListFilters(
+        activeFacet,
+        debouncedTitleFilter,
+        selectedLibraryIds,
+      ),
+    [activeFacet, debouncedTitleFilter, selectedLibraryIds],
+  );
+  const catalogSourceTitlesWithLibraries = React.useMemo(
+    () =>
+      appendCatalogTitlesPreservingImages(
+        monitoredTitles,
+        titleContextTitles.filter((title) =>
+          catalogTitleMatchesActiveListFilters(title, activeCatalogListFilters),
+        ),
+      ).map((title) => ({
         ...title,
         libraryName:
           title.libraryName ??
@@ -1606,15 +1556,21 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
         librarySlug:
           title.librarySlug ?? librarySlugById.get(title.libraryId) ?? null,
       })),
-    [libraryNameById, librarySlugById, titleContextTitles],
+    [
+      activeCatalogListFilters,
+      libraryNameById,
+      librarySlugById,
+      monitoredTitles,
+      titleContextTitles,
+    ],
   );
   const titleContextSourceTitles = React.useMemo(
     () =>
-      titleContextTitlesWithLibraries.filter(
+      catalogSourceTitlesWithLibraries.filter(
         (title) =>
           title.facet === activeFacet && !pendingDeletedTitleIds.has(title.id),
       ),
-    [activeFacet, pendingDeletedTitleIds, titleContextTitlesWithLibraries],
+    [activeFacet, catalogSourceTitlesWithLibraries, pendingDeletedTitleIds],
   );
   const titleQuickFilterView =
     activeFacet === "movie"
@@ -2064,13 +2020,11 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
       setTitleStatus(t("title.loading"));
       const query = (queryOverride ?? activeCatalogQueryRef.current).trim();
       const libraryIds = libraryIdsOverride ?? selectedLibraryIds;
-      const filter = null;
-      const sort = titleCatalogSortInput(effectiveTitleCatalogSort);
       const queryKey = titleCatalogQueryKey({
         facet: activeFacet,
         query,
         libraryIds,
-        filters: EMPTY_TITLE_QUICK_FILTERS,
+        filters: effectiveTitleQuickFilters,
         sort: effectiveTitleCatalogSort,
       });
       activeCatalogListFiltersRef.current = buildActiveCatalogListFilters(
@@ -2087,15 +2041,15 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
         const { data, error } = await client
           .query(
             titlesQuery,
-            {
+            buildTitleCatalogQueryVariables({
               facet: activeFacet,
-              libraryIds: selectedLibraryIdsToQueryValue(libraryIds),
-              query: query || null,
-              filter,
-              sort,
+              libraryIds,
+              query,
+              filters: effectiveTitleQuickFilters,
+              sort: effectiveTitleCatalogSort,
               limit: TITLE_CATALOG_PAGE_SIZE,
               offset: 0,
-            },
+            }),
             { requestPolicy: "network-only" },
           )
           .toPromise();
@@ -2154,6 +2108,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     [
       activeFacet,
       client,
+      effectiveTitleQuickFilters,
       effectiveTitleCatalogSort,
       mergeTitleContextTitles,
       selectedLibraryIds,
@@ -2223,13 +2178,11 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
 
     const requestSeq = catalogTitleRequestSeqRef.current;
     const query = activeCatalogQueryRef.current.trim();
-    const filter = null;
-    const sort = titleCatalogSortInput(effectiveTitleCatalogSort);
     const queryKey = titleCatalogQueryKey({
       facet: activeFacet,
       query,
       libraryIds: selectedLibraryIds,
-      filters: EMPTY_TITLE_QUICK_FILTERS,
+      filters: effectiveTitleQuickFilters,
       sort: effectiveTitleCatalogSort,
     });
     if (catalogPaginationState.queryKey !== queryKey) {
@@ -2243,15 +2196,15 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
       const { data, error } = await client
         .query(
           titlesQuery,
-          {
+          buildTitleCatalogQueryVariables({
             facet: activeFacet,
-            libraryIds: selectedLibraryIdsToQueryValue(selectedLibraryIds),
-            query: query || null,
-            filter,
-            sort,
+            libraryIds: selectedLibraryIds,
+            query,
+            filters: effectiveTitleQuickFilters,
+            sort: effectiveTitleCatalogSort,
             limit: TITLE_CATALOG_PAGE_SIZE,
             offset,
-          },
+          }),
           { requestPolicy: "network-only" },
         )
         .toPromise();
@@ -2313,6 +2266,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     catalogPaginationState.queryKey,
     catalogPaginationState.totalCount,
     client,
+    effectiveTitleQuickFilters,
     effectiveTitleCatalogSort,
     mergeTitleContextTitles,
     selectedLibraryIds,
@@ -4456,18 +4410,33 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
         };
 
         const librariesPromise = refreshLibraries();
-        void reloadTitles(debouncedTitleFilter, []).then((nextTitles) => {
+        void (async () => {
+          await reloadTitles(debouncedTitleFilter, []);
           if (catalogBootstrapRequestSeqRef.current !== requestSeq) {
             return;
           }
 
-          if ((nextTitles?.length ?? 0) > 0) {
-            finalizeBootstrap();
+          const nextLibraries = await librariesPromise;
+          if (catalogBootstrapRequestSeqRef.current !== requestSeq) {
             return;
           }
 
-          void librariesPromise.finally(finalizeBootstrap);
-        });
+          const normalizedSelectedLibraryIds = nextLibraries
+            ? normalizeLibraryFilterSelection(selectedLibraryIds, nextLibraries)
+            : [];
+          setSelectedLibraryIds((current) =>
+            sameStringArray(current, normalizedSelectedLibraryIds)
+              ? current
+              : normalizedSelectedLibraryIds,
+          );
+
+          await reloadTitles(debouncedTitleFilter, normalizedSelectedLibraryIds);
+          if (catalogBootstrapRequestSeqRef.current !== requestSeq) {
+            return;
+          }
+          finalizeBootstrap();
+        })();
+        setRoutingInitLoading(false);
         return;
       }
 
@@ -4539,6 +4508,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     refreshRuleSets,
     debouncedTitleFilter,
     reloadTitles,
+    selectedLibraryIds,
     setGlobalStatus,
     shouldLoadCatalogTitles,
     t,

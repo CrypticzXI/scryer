@@ -5,6 +5,7 @@ import { toast } from "@/components/ui/sonner";
 import { useTranslate } from "@/lib/context/translate-context";
 import {
   activeJobRunsQuery,
+  jobRunsQuery,
   jobRunEventsSubscription,
 } from "@/lib/graphql/queries";
 import { useDeferredWsSubscription } from "@/lib/hooks/use-deferred-ws-subscription";
@@ -16,6 +17,8 @@ import {
 import type { JobKey, JobRun } from "@/lib/types";
 
 const TERMINAL_TOAST_DURATION_MS = 6_000;
+const INTERACTIVE_JOB_RECONCILE_DELAYS_MS = [1_000, 5_000, 15_000] as const;
+const INTERACTIVE_JOB_RECONCILE_LIMIT = 25;
 
 type JobRunToastContextValue = {
   registerInteractiveJobRun: (run: JobRun) => void;
@@ -39,6 +42,7 @@ export function JobRunProvider({ children }: { children: React.ReactNode }) {
   const t = useTranslate();
   const [runsById, setRunsById] = React.useState<Record<string, JobRun>>({});
   const dismissTimersRef = React.useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  const reconcileTimersRef = React.useRef<Record<string, ReturnType<typeof setTimeout>[]>>({});
   const interactiveRunIdsRef = React.useRef(new Set<string>());
 
   const upsertRun = React.useCallback((run: JobRun) => {
@@ -48,10 +52,76 @@ export function JobRunProvider({ children }: { children: React.ReactNode }) {
     }));
   }, []);
 
+  const clearReconcileTimers = React.useCallback((runId: string) => {
+    const timers = reconcileTimersRef.current[runId];
+    if (!timers) {
+      return;
+    }
+
+    for (const timer of timers) {
+      clearTimeout(timer);
+    }
+    delete reconcileTimersRef.current[runId];
+  }, []);
+
+  const reconcileInteractiveRun = React.useCallback(
+    async (run: JobRun) => {
+      if (!interactiveRunIdsRef.current.has(run.id)) {
+        clearReconcileTimers(run.id);
+        return;
+      }
+
+      try {
+        const { data, error } = await client
+          .query<{ jobRuns?: unknown[] }>(
+            jobRunsQuery,
+            { jobKey: run.jobKey, limit: INTERACTIVE_JOB_RECONCILE_LIMIT },
+            { requestPolicy: "network-only" },
+          )
+          .toPromise();
+        if (error) {
+          throw error;
+        }
+
+        const authoritativeRun = (Array.isArray(data?.jobRuns) ? data.jobRuns : [])
+          .map(normalizeJobRun)
+          .find((candidate): candidate is JobRun => candidate?.id === run.id);
+        if (!authoritativeRun) {
+          return;
+        }
+
+        upsertRun(authoritativeRun);
+        if (isTerminalJobRunStatus(authoritativeRun.status)) {
+          clearReconcileTimers(authoritativeRun.id);
+        }
+      } catch (error) {
+        console.error("[job-runs] failed to reconcile interactive job:", error);
+      }
+    },
+    [clearReconcileTimers, client, upsertRun],
+  );
+
+  const scheduleInteractiveRunReconciliation = React.useCallback(
+    (run: JobRun) => {
+      clearReconcileTimers(run.id);
+      if (isTerminalJobRunStatus(run.status)) {
+        return;
+      }
+
+      reconcileTimersRef.current[run.id] = INTERACTIVE_JOB_RECONCILE_DELAYS_MS.map((delayMs) =>
+        setTimeout(() => {
+          void reconcileInteractiveRun(run);
+        }, delayMs),
+      );
+    },
+    [clearReconcileTimers, reconcileInteractiveRun],
+  );
+
   const registerInteractiveJobRun = React.useCallback((run: JobRun) => {
     interactiveRunIdsRef.current.add(run.id);
     upsertRun(run);
-  }, [upsertRun]);
+    scheduleInteractiveRunReconciliation(run);
+  }, [scheduleInteractiveRunReconciliation, upsertRun]);
 
   React.useEffect(() => {
     let cancelled = false;
@@ -101,6 +171,10 @@ export function JobRunProvider({ children }: { children: React.ReactNode }) {
     const idsToPrune: string[] = [];
 
     for (const run of Object.values(runsById)) {
+      if (isTerminalJobRunStatus(run.status)) {
+        clearReconcileTimers(run.id);
+      }
+
       const isInteractiveRun = interactiveRunIdsRef.current.has(run.id);
       const shouldRender =
         isInteractiveRun && !usesDedicatedLibraryScanToast(run.jobKey);
@@ -181,13 +255,19 @@ export function JobRunProvider({ children }: { children: React.ReactNode }) {
         return next;
       });
     }
-  }, [runsById, t]);
+  }, [clearReconcileTimers, runsById, t]);
 
   React.useEffect(
     () => () => {
       for (const timer of Object.values(dismissTimersRef.current)) {
         clearTimeout(timer);
       }
+      for (const timers of Object.values(reconcileTimersRef.current)) {
+        for (const timer of timers) {
+          clearTimeout(timer);
+        }
+      }
+      reconcileTimersRef.current = {};
     },
     [],
   );

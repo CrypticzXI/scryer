@@ -15,6 +15,15 @@ import {
   type LucideIcon,
 } from "lucide-react";
 
+import {
+  AnidbExternalLink,
+  AnilistExternalLink,
+  ImdbExternalLink,
+  MalExternalLink,
+  TmdbExternalLink,
+  TvdbMovieExternalLink,
+  TvdbSeriesExternalLink,
+} from "@/components/common/external-media-links";
 import { LibraryMultiSelect } from "@/components/common/library-multi-select";
 import { UnderlineFilterButton } from "@/components/common/underline-filter-button";
 import { TitlePoster } from "@/components/title-poster";
@@ -314,6 +323,16 @@ function requestCountByFacet(
   return requests.filter((request) => request.facet === facet).length;
 }
 
+function requestCountByStatus(
+  requests: MediaRequestRecord[],
+  status: RequestStatusFilter,
+): number {
+  if (status === "all") {
+    return requests.length;
+  }
+  return requests.filter((request) => request.status === status).length;
+}
+
 export function RequestsView({
   mode,
   canShowAdminMode,
@@ -471,6 +490,19 @@ export function RequestsView({
       selectPosterVariantUrl(request.posterUrl, "original") ?? posterUrl;
     const requesters = requesterLabel(request);
     const externalIds = requestExternalIdLabel(request);
+    const imdbId = requestExternalIdValue(request, "imdb");
+    const tvdbId = requestExternalIdValue(request, "tvdb");
+    const tmdbId = requestExternalIdValue(request, "tmdb");
+    const malId = requestExternalIdValue(request, "mal");
+    const anilistId = requestExternalIdValue(request, "anilist");
+    const anidbId = requestExternalIdValue(request, "anidb");
+    const hasExternalLink =
+      Boolean(imdbId) ||
+      Boolean(tvdbId) ||
+      Boolean(tmdbId) ||
+      Boolean(malId) ||
+      Boolean(anilistId) ||
+      Boolean(anidbId);
     const isResolving = actionRequestId === request.id;
     const actionsDisabled = loading || actionRequestId !== null;
     const approveDisabled = loading || actionRequestId !== null;
@@ -506,17 +538,17 @@ export function RequestsView({
         {backgroundPosterUrl ? (
           <div
             aria-hidden="true"
-            className="absolute inset-0 scale-105 bg-cover bg-center opacity-35 blur-[1px]"
+            className="absolute inset-0 scale-105 bg-cover bg-center opacity-60"
             style={{ backgroundImage: `url(${backgroundPosterUrl})` }}
           />
         ) : null}
         <div
           aria-hidden="true"
-          className="absolute inset-0 bg-[linear-gradient(90deg,var(--scry-surf)_0%,rgba(7,11,24,0.94)_38%,rgba(7,11,24,0.76)_100%)]"
+          className="absolute inset-0 bg-[linear-gradient(90deg,var(--scry-surf)_0%,rgba(7,11,24,0.84)_38%,rgba(7,11,24,0.52)_100%)]"
         />
         <div
           aria-hidden="true"
-          className="absolute inset-0 bg-[linear-gradient(0deg,rgba(4,7,16,0.92)_0%,rgba(4,7,16,0.42)_58%,rgba(255,255,255,0.05)_100%)]"
+          className="absolute inset-0 bg-[linear-gradient(0deg,rgba(4,7,16,0.76)_0%,rgba(4,7,16,0.22)_58%,rgba(255,255,255,0.04)_100%)]"
         />
         <div className="relative z-10 flex flex-col sm:flex-row">
           <div className="w-full shrink-0 bg-[var(--scry-inset)] sm:w-[150px]">
@@ -627,6 +659,32 @@ export function RequestsView({
                 {request.overview}
               </p>
             ) : null}
+            {hasExternalLink ? (
+              <div className="flex flex-wrap items-center gap-2">
+                <ImdbExternalLink imdbId={imdbId} size="compact" />
+                {request.facet === "movie" ? (
+                  <TvdbMovieExternalLink
+                    tvdbId={tvdbId}
+                    slug={request.slug}
+                    size="compact"
+                  />
+                ) : (
+                  <TvdbSeriesExternalLink
+                    tvdbId={tvdbId}
+                    slug={request.slug}
+                    size="compact"
+                  />
+                )}
+                <TmdbExternalLink
+                  mediaType={request.facet === "movie" ? "movie" : "tv"}
+                  tmdbId={tmdbId}
+                  size="compact"
+                />
+                <MalExternalLink malId={malId} size="compact" />
+                <AnilistExternalLink anilistId={anilistId} size="compact" />
+                <AnidbExternalLink anidbId={anidbId} size="compact" />
+              </div>
+            ) : null}
             <div className="grid gap-2 text-xs text-[var(--scry-muted3)] sm:grid-cols-2 xl:grid-cols-4">
               <div className="rounded-[10px] border border-[var(--scry-border3)] bg-[var(--scry-inset)] px-3 py-2">
                 <div className="mb-1 flex items-center gap-1.5 text-[var(--scry-faint)]">
@@ -717,7 +775,7 @@ export function RequestsView({
             ) : null}
             {mode === "admin"
               ? ([
-                  ["movie", t("search.facetMovies")],
+                  ["movie", "Movie"],
                   ["series", t("search.facetSeries")],
                   ["anime", t("search.facetAnime")],
                 ] as Array<[RequestFacetFilter, string]>).map(([facet, label]) => (
@@ -741,6 +799,7 @@ export function RequestsView({
                 key={filter.value}
                 selected={statusFilter === filter.value}
                 label={filter.label}
+                count={requestCountByStatus(requests, filter.value)}
                 onClick={() => onStatusFilterChange(filter.value)}
               />
             ))}

@@ -2256,8 +2256,9 @@ const en: LocaleDictionary = {
     "Choose whether Scryer preserves the download-side file or removes it after a verified library import.",
   "settings.importModeHardlinkCopy": "Hardlink / Copy",
   "settings.importModeMove": "Move",
-  "settings.setPermissionsLinuxLabel": "Set Linux permissions",
-  "settings.setPermissionsLinuxDescription": "Apply configured file mode and group on import",
+  "settings.setPermissionsLinuxLabel": "Set Unix permissions",
+  "settings.setPermissionsLinuxDescription":
+    "Apply configured file mode and group on Unix imports. Numeric groups are treated as GIDs.",
   "settings.fileChmodLabel": "File chmod",
   "settings.folderChmodLabel": "Folder chmod",
   "settings.chownGroupLabel": "Group owner",

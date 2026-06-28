@@ -642,6 +642,13 @@ fn file_permission_metadata_changes(_permissions: &ImportFilePermissions) -> boo
 
 #[cfg(unix)]
 fn resolve_group_id(group: &str) -> io::Result<libc::gid_t> {
+    if group.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "group cannot be empty",
+        ));
+    }
+
     if group.bytes().all(|byte| byte.is_ascii_digit()) {
         let parsed = group
             .parse::<u32>()
@@ -2101,6 +2108,13 @@ mod tests {
         let metadata = std::fs::metadata(&dest).expect("dest metadata");
         assert_eq!(metadata.uid(), effective_uid());
         assert_eq!(metadata.gid(), egid);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn empty_group_is_invalid_input() {
+        let error = resolve_group_id("").expect_err("empty group should be rejected");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
     }
 
     #[test]
