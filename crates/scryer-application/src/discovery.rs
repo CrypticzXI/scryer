@@ -76,6 +76,7 @@ impl DiscoveryContextDefaults {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct DiscoveryLibraryContext {
     pub(crate) subjects: Vec<DiscoveryLibrarySubject>,
+    pub(crate) subject_provenance: Vec<DiscoveryLibrarySubject>,
     pub(crate) fingerprint: String,
 }
 
@@ -1306,17 +1307,25 @@ pub(crate) fn build_discovery_library_context(
     titles: &[Title],
     defaults: DiscoveryContextDefaults,
 ) -> DiscoveryLibraryContext {
-    let mut subjects = titles
+    let mut subject_provenance = titles
         .iter()
         .filter_map(build_discovery_library_subject)
         .collect::<Vec<_>>();
 
-    subjects.sort_by(|left, right| {
+    subject_provenance.sort_by(|left, right| {
         left.subject_key
             .cmp(&right.subject_key)
             .then_with(|| left.canonical.cmp(&right.canonical))
+            .then_with(|| left.library_id.cmp(&right.library_id))
             .then_with(|| left.title_id.cmp(&right.title_id))
     });
+    subject_provenance.dedup_by(|left, right| {
+        left.subject_key == right.subject_key
+            && left.title_id == right.title_id
+            && left.library_id == right.library_id
+    });
+
+    let mut subjects = subject_provenance.clone();
     subjects.dedup_by(|left, right| left.subject_key == right.subject_key);
 
     let canonical_subjects = subjects
@@ -1326,6 +1335,7 @@ pub(crate) fn build_discovery_library_context(
 
     DiscoveryLibraryContext {
         subjects,
+        subject_provenance,
         fingerprint: discovery_context_fingerprint(&defaults, &canonical_subjects),
     }
 }
@@ -1390,7 +1400,7 @@ impl DiscoveryLibraryContext {
         &self,
         run_id: &str,
     ) -> AppResult<Vec<DiscoverySubmittedSubjectRecord>> {
-        self.subjects
+        self.subject_provenance
             .iter()
             .map(|subject| {
                 let external_ids_json = serde_json::to_string(&subject.subject.external_ids)
@@ -1412,20 +1422,21 @@ impl DiscoveryLibraryContext {
             .collect()
     }
 
-    pub(crate) fn subject_provenance_by_key(&self) -> HashMap<String, DiscoveryLibraryProvenance> {
-        self.subjects
-            .iter()
-            .map(|subject| {
-                (
-                    subject.subject_key.clone(),
-                    DiscoveryLibraryProvenance {
-                        subject_key: subject.subject_key.clone(),
-                        title_id: Some(subject.title_id.clone()),
-                        library_id: subject.library_id.clone(),
-                    },
-                )
-            })
-            .collect()
+    pub(crate) fn subject_provenance_by_key(
+        &self,
+    ) -> HashMap<String, Vec<DiscoveryLibraryProvenance>> {
+        let mut provenance_by_key = HashMap::<String, Vec<DiscoveryLibraryProvenance>>::new();
+        for subject in &self.subject_provenance {
+            provenance_by_key
+                .entry(subject.subject_key.clone())
+                .or_default()
+                .push(DiscoveryLibraryProvenance {
+                    subject_key: subject.subject_key.clone(),
+                    title_id: Some(subject.title_id.clone()),
+                    library_id: subject.library_id.clone(),
+                });
+        }
+        provenance_by_key
     }
 }
 
@@ -1871,7 +1882,7 @@ pub(crate) fn snapshot_item_records(
     run_id: &str,
     base_generation_id: &str,
     items: &[DiscoveryTitle],
-    provenance_by_subject_key: &HashMap<String, DiscoveryLibraryProvenance>,
+    provenance_by_subject_key: &HashMap<String, Vec<DiscoveryLibraryProvenance>>,
     now: DateTime<Utc>,
 ) -> AppResult<Vec<DiscoveryItemRecord>> {
     items
@@ -1896,7 +1907,7 @@ pub(crate) fn incremental_item_records(
     run_id: &str,
     base_generation_id: &str,
     items: &[DiscoveryTitle],
-    provenance_by_subject_key: &HashMap<String, DiscoveryLibraryProvenance>,
+    provenance_by_subject_key: &HashMap<String, Vec<DiscoveryLibraryProvenance>>,
     now: DateTime<Utc>,
 ) -> AppResult<Vec<DiscoveryItemRecord>> {
     items
@@ -1934,7 +1945,7 @@ pub(crate) fn public_feed_item_records(
     now: DateTime<Utc>,
 ) -> AppResult<Vec<DiscoveryItemRecord>> {
     let mut records = Vec::new();
-    let empty_provenance = HashMap::new();
+    let empty_provenance = HashMap::<String, Vec<DiscoveryLibraryProvenance>>::new();
     for (section_index, section) in public_feed_sections(result).enumerate() {
         for (item_index, item) in section.items.iter().enumerate() {
             let mut record = discovery_item_record(
@@ -2029,7 +2040,7 @@ fn discovery_item_record(
     section_id: Option<String>,
     index: usize,
     item: &DiscoveryTitle,
-    provenance_by_subject_key: &HashMap<String, DiscoveryLibraryProvenance>,
+    provenance_by_subject_key: &HashMap<String, Vec<DiscoveryLibraryProvenance>>,
     now: DateTime<Utc>,
 ) -> AppResult<DiscoveryItemRecord> {
     let library_provenance_json =
@@ -2092,7 +2103,7 @@ fn discovery_item_record(
 
 fn discovery_item_library_provenance_json(
     item: &DiscoveryTitle,
-    provenance_by_subject_key: &HashMap<String, DiscoveryLibraryProvenance>,
+    provenance_by_subject_key: &HashMap<String, Vec<DiscoveryLibraryProvenance>>,
 ) -> AppResult<String> {
     let mut provenance = Vec::new();
     let mut seen = BTreeSet::new();
@@ -2101,15 +2112,17 @@ fn discovery_item_library_provenance_json(
         if subject_key.is_empty() {
             return;
         }
-        let Some(entry) = provenance_by_subject_key.get(subject_key) else {
+        let Some(entries) = provenance_by_subject_key.get(subject_key) else {
             return;
         };
-        if seen.insert((
-            entry.subject_key.clone(),
-            entry.title_id.clone(),
-            entry.library_id.clone(),
-        )) {
-            provenance.push(entry.clone());
+        for entry in entries {
+            if seen.insert((
+                entry.subject_key.clone(),
+                entry.title_id.clone(),
+                entry.library_id.clone(),
+            )) {
+                provenance.push(entry.clone());
+            }
         }
     };
 

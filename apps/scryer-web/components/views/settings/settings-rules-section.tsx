@@ -9,6 +9,7 @@ import {
   Trash2,
 } from "lucide-react";
 import { useClient } from "urql";
+import { AddNewButton } from "@/components/common/add-new-button";
 import {
   RULE_TEMPLATES,
   RULE_TEMPLATE_CATEGORIES,
@@ -990,33 +991,25 @@ export function SettingsRulesSection({
           </Card>
           {editorMode === "edit" ? (
             <div className="flex justify-center">
-              <Button
+              <AddNewButton
                 id="settings-rule-create-new"
-                type="button"
-                size="lg"
+                icon={Plus}
+                label={t("settings.ruleCreateNew")}
                 onClick={startCreateRuleSet}
                 disabled={mutatingRuleSetId !== null}
-                className="h-12 border border-emerald-500/30 bg-emerald-500/15 px-5 text-base font-semibold text-emerald-100 hover:bg-emerald-500/25 hover:text-emerald-50"
-              >
-                <Plus className="h-5 w-5" />
-                {t("settings.ruleCreateNew")}
-              </Button>
+              />
             </div>
           ) : null}
         </>
       ) : (
         <div className="flex justify-center">
-          <Button
+          <AddNewButton
             id="settings-rule-create"
-            type="button"
-            size="lg"
+            icon={Plus}
+            label={t("settings.ruleCreateNew")}
             onClick={startCreateRuleSet}
             disabled={mutatingRuleSetId !== null}
-            className="h-12 border border-emerald-500/30 bg-emerald-500/15 px-5 text-base font-semibold text-emerald-100 hover:bg-emerald-500/25 hover:text-emerald-50"
-          >
-            <Plus className="h-5 w-5" />
-            {t("settings.ruleCreateNew")}
-          </Button>
+          />
         </div>
       )}
         </div>

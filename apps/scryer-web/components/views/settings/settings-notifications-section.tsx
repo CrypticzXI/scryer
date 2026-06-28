@@ -2,6 +2,7 @@
 import * as React from "react";
 import { Bell, ChevronDown, Edit, Loader2, Plus, Power, PowerOff, Send, Trash2 } from "lucide-react";
 import { Link } from "react-router-dom";
+import { AddNewButton } from "@/components/common/add-new-button";
 import { InfoHelp } from "@/components/common/info-help";
 import { TitleAutocompletePicker } from "@/components/common/title-autocomplete-picker";
 import { LocalRemotePathMappingsField } from "@/components/common/local-remote-path-mappings-field";
@@ -890,32 +891,24 @@ export function SettingsNotificationsSection({
           </Card>
           {isEditingChannel ? (
             <div className="flex justify-center">
-              <Button
+              <AddNewButton
                 id="settings-notification-channel-create"
-                type="button"
-                size="lg"
+                icon={Plus}
+                label={t("settings.notificationChannelCreateNew")}
                 onClick={startCreateChannel}
                 disabled={mutatingChannelId !== null}
-                className="h-12 border border-emerald-500/30 bg-emerald-500/15 px-5 text-base font-semibold text-emerald-100 hover:bg-emerald-500/25 hover:text-emerald-50"
-              >
-                <Plus className="h-5 w-5" />
-                {t("settings.notificationChannelCreateNew")}
-              </Button>
+              />
             </div>
           ) : null}
         </>
       ) : (
         <div className="flex justify-center">
-          <Button
+          <AddNewButton
             id="settings-notification-channel-create"
-            type="button"
-            size="lg"
+            icon={Plus}
+            label={t("settings.notificationChannelCreateNew")}
             onClick={startCreateChannel}
-            className="h-12 border border-emerald-500/30 bg-emerald-500/15 px-5 text-base font-semibold text-emerald-100 hover:bg-emerald-500/25 hover:text-emerald-50"
-          >
-            <Plus className="h-5 w-5" />
-            {t("settings.notificationChannelCreateNew")}
-          </Button>
+          />
         </div>
       )}
 
@@ -1260,32 +1253,24 @@ export function SettingsNotificationsSection({
           </Card>
           {isEditingSubscription ? (
             <div className="flex justify-center">
-              <Button
+              <AddNewButton
                 id="settings-notification-subscription-create"
-                type="button"
-                size="lg"
+                icon={Plus}
+                label={t("settings.notificationSubscriptionCreateNew")}
                 onClick={() => startCreateSubscription()}
                 disabled={mutatingSubscriptionId !== null}
-                className="h-12 border border-emerald-500/30 bg-emerald-500/15 px-5 text-base font-semibold text-emerald-100 hover:bg-emerald-500/25 hover:text-emerald-50"
-              >
-                <Plus className="h-5 w-5" />
-                {t("settings.notificationSubscriptionCreateNew")}
-              </Button>
+              />
             </div>
           ) : null}
         </>
       ) : (
         <div className="flex justify-center">
-          <Button
+          <AddNewButton
             id="settings-notification-subscription-create"
-            type="button"
-            size="lg"
+            icon={Plus}
+            label={t("settings.notificationSubscriptionCreateNew")}
             onClick={() => startCreateSubscription()}
-            className="h-12 border border-emerald-500/30 bg-emerald-500/15 px-5 text-base font-semibold text-emerald-100 hover:bg-emerald-500/25 hover:text-emerald-50"
-          >
-            <Plus className="h-5 w-5" />
-            {t("settings.notificationSubscriptionCreateNew")}
-          </Button>
+          />
         </div>
       )}
     </div>

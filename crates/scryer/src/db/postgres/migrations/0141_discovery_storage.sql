@@ -73,9 +73,11 @@ CREATE TABLE IF NOT EXISTS discovery_submitted_subjects (
     title_kind TEXT,
     display_title TEXT,
     external_ids_json JSONB NOT NULL DEFAULT '[]'::jsonb,
-    raw_subject_json JSONB NOT NULL,
-    PRIMARY KEY (run_id, subject_key)
+    raw_subject_json JSONB NOT NULL
 );
+
+CREATE INDEX IF NOT EXISTS idx_discovery_submitted_subjects_run_key
+    ON discovery_submitted_subjects (run_id, subject_key, library_id, title_id);
 
 CREATE TABLE IF NOT EXISTS discovery_pending_context_changes (
     id TEXT PRIMARY KEY NOT NULL,

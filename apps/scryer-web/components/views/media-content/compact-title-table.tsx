@@ -47,6 +47,7 @@ import {
   resolveDisplayedQualityLabel,
   resolveOverviewTargetView,
   TitleEpisodeProgressBar,
+  TitleCollectionEmptyState,
   TitleTableActionButton,
   TitleTableEmptyState,
   TitleTableLazyTooltipActionButton,
@@ -1082,6 +1083,32 @@ export function CompactTitleTable({
   const bottomSpacerHeight = lastVirtualItem
     ? Math.max(totalVirtualSize - lastVirtualItem.end, 0)
     : 0;
+
+  if (
+    !titleLoading &&
+    sortedTitles.length === 0 &&
+    showConfigureRootsAction &&
+    configureRootsHref
+  ) {
+    return (
+      <div className="flex h-full min-h-0 flex-col gap-3">
+        <div
+          data-slot="compact-title-list-root-config-empty"
+          className={cn(
+            "flex flex-1 items-start justify-center px-4 pt-12",
+            selectedDrawerMode ? "min-h-[18rem]" : "min-h-[22rem]",
+          )}
+        >
+          <TitleCollectionEmptyState
+            t={t}
+            showConfigureRootsAction={showConfigureRootsAction}
+            configureRootsReason={configureRootsReason}
+            configureRootsHref={configureRootsHref}
+          />
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-3">

@@ -476,7 +476,7 @@ impl DiscoveryRepository for DiscoveryStore {
                     external_ids_json, raw_subject_json
              FROM discovery_submitted_subjects
              WHERE run_id = {}
-             ORDER BY subject_key ASC",
+             ORDER BY subject_key ASC, library_id ASC, title_id ASC",
             &[SqlArg::Text(run_id.to_string())],
         )
         .await?;
@@ -1675,17 +1675,30 @@ mod tests {
         store
             .replace_discovery_submitted_subjects(
                 "run-1",
-                &[DiscoverySubmittedSubjectRecord {
-                    run_id: "run-1".to_string(),
-                    subject_key: "tvdb:series:1".to_string(),
-                    title_id: None,
-                    library_id: Some("series-library".to_string()),
-                    library_facet: Some("series".to_string()),
-                    title_kind: Some("series".to_string()),
-                    display_title: Some("Example Series".to_string()),
-                    external_ids_json: json!([{"source": "tvdb", "value": "1"}]).to_string(),
-                    raw_subject_json: json!({"key": "tvdb:series:1"}).to_string(),
-                }],
+                &[
+                    DiscoverySubmittedSubjectRecord {
+                        run_id: "run-1".to_string(),
+                        subject_key: "tvdb:series:1".to_string(),
+                        title_id: None,
+                        library_id: Some("series-library-a".to_string()),
+                        library_facet: Some("series".to_string()),
+                        title_kind: Some("series".to_string()),
+                        display_title: Some("Example Series A".to_string()),
+                        external_ids_json: json!([{"source": "tvdb", "value": "1"}]).to_string(),
+                        raw_subject_json: json!({"key": "tvdb:series:1"}).to_string(),
+                    },
+                    DiscoverySubmittedSubjectRecord {
+                        run_id: "run-1".to_string(),
+                        subject_key: "tvdb:series:1".to_string(),
+                        title_id: None,
+                        library_id: Some("series-library-b".to_string()),
+                        library_facet: Some("series".to_string()),
+                        title_kind: Some("series".to_string()),
+                        display_title: Some("Example Series B".to_string()),
+                        external_ids_json: json!([{"source": "tvdb", "value": "1"}]).to_string(),
+                        raw_subject_json: json!({"key": "tvdb:series:1"}).to_string(),
+                    },
+                ],
             )
             .await
             .expect("submitted subjects should replace");
@@ -1693,11 +1706,15 @@ mod tests {
             .list_discovery_submitted_subjects("run-1")
             .await
             .expect("submitted subjects should list");
-        assert_eq!(read_subjects.len(), 1);
+        assert_eq!(read_subjects.len(), 2);
         assert_eq!(read_subjects[0].subject_key, "tvdb:series:1");
         assert_eq!(
             read_subjects[0].library_id.as_deref(),
-            Some("series-library")
+            Some("series-library-a")
+        );
+        assert_eq!(
+            read_subjects[1].library_id.as_deref(),
+            Some("series-library-b")
         );
         store
             .replace_discovery_sections(
@@ -1764,7 +1781,7 @@ mod tests {
                     library_provenance_json: json!([{
                         "subjectKey": "tvdb:series:1",
                         "titleId": null,
-                        "libraryId": "series-library"
+                        "libraryId": "series-library-a"
                     }])
                     .to_string(),
                     tmdb_collection_id: None,
@@ -1814,7 +1831,7 @@ mod tests {
             json!([{
                 "subjectKey": "tvdb:series:1",
                 "titleId": null,
-                "libraryId": "series-library"
+                "libraryId": "series-library-a"
             }])
             .to_string()
         );

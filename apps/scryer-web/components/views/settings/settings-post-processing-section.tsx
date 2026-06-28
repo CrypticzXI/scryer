@@ -9,6 +9,7 @@ import {
   Terminal,
   Trash2,
 } from "lucide-react";
+import { AddNewButton } from "@/components/common/add-new-button";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -684,33 +685,25 @@ export const SettingsPostProcessingSection = React.memo(
         </Card>
         {editorMode === "edit" ? (
           <div className="flex justify-center">
-            <Button
+            <AddNewButton
               id="settings-post-processing-create-new"
-              type="button"
-              size="lg"
+              icon={Plus}
+              label={t("settings.pp.createNewScript")}
               onClick={startCreateScript}
               disabled={mutatingScriptId !== null}
-              className="h-12 border border-emerald-500/30 bg-emerald-500/15 px-5 text-base font-semibold text-emerald-100 hover:bg-emerald-500/25 hover:text-emerald-50"
-            >
-              <Plus className="h-5 w-5" />
-              {t("settings.pp.createNewScript")}
-            </Button>
+            />
           </div>
         ) : null}
           </>
         ) : (
           <div className="flex justify-center">
-          <Button
-            id="settings-post-processing-create"
-            type="button"
-              size="lg"
+            <AddNewButton
+              id="settings-post-processing-create"
+              icon={Plus}
+              label={t("settings.pp.createNewScript")}
               onClick={startCreateScript}
               disabled={mutatingScriptId !== null}
-              className="h-12 border border-emerald-500/30 bg-emerald-500/15 px-5 text-base font-semibold text-emerald-100 hover:bg-emerald-500/25 hover:text-emerald-50"
-            >
-              <Plus className="h-5 w-5" />
-              {t("settings.pp.createNewScript")}
-            </Button>
+            />
           </div>
         )}
           </div>

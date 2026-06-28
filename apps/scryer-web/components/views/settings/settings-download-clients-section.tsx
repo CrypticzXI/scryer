@@ -1,6 +1,7 @@
 
 import * as React from "react";
 import { ChevronDown, ChevronUp, Edit, Plus, Power, PowerOff, Server, Trash2 } from "lucide-react";
+import { AddNewButton } from "@/components/common/add-new-button";
 import { DownloadClientRemotePathMappingsField } from "@/components/common/download-client-remote-path-mappings-field";
 import { QBitTorrentIcon, SabnzbdIcon, WeaverIcon } from "@/components/common/download-client-type-logo";
 import { InfoHelp } from "@/components/common/info-help";
@@ -1075,32 +1076,24 @@ export function SettingsDownloadClientsSection({
           </Card>
           {isEditing ? (
             <div className="flex justify-center">
-              <Button
+              <AddNewButton
                 id="settings-download-client-create"
-                type="button"
-                size="lg"
+                icon={Plus}
+                label={t("settings.downloadClientCreateNew")}
                 onClick={startCreateDownloadClient}
                 disabled={mutatingDownloadClientId !== null}
-                className="h-12 border border-emerald-500/30 bg-emerald-500/15 px-5 text-base font-semibold text-emerald-100 hover:bg-emerald-500/25 hover:text-emerald-50"
-              >
-                <Plus className="h-5 w-5" />
-                {t("settings.downloadClientCreateNew")}
-              </Button>
+              />
             </div>
           ) : null}
         </>
       ) : (
         <div className="flex justify-center">
-          <Button
+          <AddNewButton
             id="settings-download-client-create"
-            type="button"
-            size="lg"
+            icon={Plus}
+            label={t("settings.downloadClientCreateNew")}
             onClick={startCreateDownloadClient}
-            className="h-12 border border-emerald-500/30 bg-emerald-500/15 px-5 text-base font-semibold text-emerald-100 hover:bg-emerald-500/25 hover:text-emerald-50"
-          >
-            <Plus className="h-5 w-5" />
-            {t("settings.downloadClientCreateNew")}
-          </Button>
+          />
         </div>
       )}
     </div>

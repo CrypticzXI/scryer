@@ -1,5 +1,6 @@
 use super::support_bootstrap_fixtures::{
     TestPermissionPreset, bootstrap_with_metadata_gateway_and_titles, create_authenticated_user,
+    library_permission_user,
 };
 use crate::{
     AppError, AppResult, BulkMetadataResult, DiscoveryContextChangeType,
@@ -709,6 +710,135 @@ async fn discovery_home_and_items_use_local_rows_and_library_view_rbac() {
         .expect("public discovery items should load");
     assert_eq!(public_items.total_count, 1);
     assert_eq!(public_items.items[0].display_title, "Public Movie");
+}
+
+#[tokio::test]
+async fn discovery_provenance_keeps_duplicate_subject_keys_across_libraries() {
+    let gateway = Arc::new(SnapshotMetadataGateway::default());
+    let (app, _admin, titles) = bootstrap_with_metadata_gateway_and_titles(gateway);
+    let discovery = Arc::new(RecordingDiscoveryRepository::default());
+    let app = app.with_test_overrides(|builder| builder.with_discovery_store(discovery.clone()));
+    let observed_at = Utc.timestamp_opt(2_000, 0).unwrap();
+    let movie_library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Movie);
+    let series_library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Series);
+
+    let mut movie_copy = test_title(
+        "shared-movie-title",
+        "Movie Library Copy",
+        MediaFacet::Movie,
+        vec![("tmdb_movie", "777")],
+    );
+    movie_copy.library_id = movie_library_id.clone();
+    let mut series_copy = test_title(
+        "shared-series-library-title",
+        "Series Library Copy",
+        MediaFacet::Movie,
+        vec![("tmdb_movie", "777")],
+    );
+    series_copy.library_id = series_library_id.clone();
+    titles
+        .store
+        .lock()
+        .await
+        .extend([movie_copy.clone(), series_copy.clone()]);
+
+    let library_context = crate::discovery::build_discovery_library_context(
+        &[movie_copy, series_copy],
+        crate::discovery::DiscoveryContextDefaults::default(),
+    );
+    let subject_provenance = library_context.subject_provenance_by_key();
+    assert_eq!(
+        subject_provenance
+            .get("tmdb:movie:777")
+            .expect("shared subject provenance should exist")
+            .len(),
+        2
+    );
+    let recommendation = DiscoveryTitle {
+        target_key: "tmdb:movie:778".to_string(),
+        target_kind: "movie".to_string(),
+        content_type: "movie".to_string(),
+        resolved: true,
+        display_title: "Shared Recommendation".to_string(),
+        matched_subject_keys: vec!["tmdb:movie:777".to_string()],
+        ..DiscoveryTitle::default()
+    };
+    let item = crate::discovery::snapshot_item_records(
+        "context-run",
+        "context-run",
+        &[recommendation],
+        &subject_provenance,
+        observed_at,
+    )
+    .expect("snapshot item should build")
+    .into_iter()
+    .next()
+    .expect("snapshot item should exist");
+    assert_eq!(
+        serde_json::from_str::<Vec<serde_json::Value>>(&item.library_provenance_json)
+            .expect("item provenance should decode")
+            .len(),
+        2
+    );
+
+    *discovery.state.lock().await = Some(DiscoverySyncStateRecord {
+        last_success_generation_id: Some("context-run".to_string()),
+        updated_at: observed_at,
+        ..DiscoverySyncStateRecord::default()
+    });
+    discovery.submitted_subjects.lock().await.extend(
+        library_context
+            .submitted_subject_records("context-run")
+            .unwrap(),
+    );
+    discovery.items.lock().await.push(item);
+
+    let movie_actor = library_permission_user(
+        "movie-library-viewer",
+        &movie_library_id,
+        &[scryer_domain::LibraryPermission::View],
+    );
+    let series_actor = library_permission_user(
+        "series-library-viewer",
+        &series_library_id,
+        &[scryer_domain::LibraryPermission::View],
+    );
+
+    let movie_items = app
+        .discovery_items(
+            &movie_actor,
+            DiscoveryItemsQuery {
+                query: Some("Shared Recommendation".to_string()),
+                ..DiscoveryItemsQuery::default()
+            },
+        )
+        .await
+        .expect("movie viewer discovery items should load");
+    assert_eq!(movie_items.total_count, 1);
+    assert_eq!(movie_items.items[0].matched_subject_count, 1);
+    assert_eq!(
+        serde_json::from_str::<Vec<String>>(&movie_items.items[0].matched_subject_titles_json)
+            .expect("movie matched titles should decode"),
+        vec!["Movie Library Copy".to_string()]
+    );
+
+    let series_items = app
+        .discovery_items(
+            &series_actor,
+            DiscoveryItemsQuery {
+                query: Some("Shared Recommendation".to_string()),
+                ..DiscoveryItemsQuery::default()
+            },
+        )
+        .await
+        .expect("series viewer discovery items should load");
+    assert_eq!(series_items.total_count, 1);
+    assert_eq!(series_items.items[0].matched_subject_count, 1);
+    assert_eq!(
+        serde_json::from_str::<Vec<String>>(&series_items.items[0].matched_subject_titles_json)
+            .expect("series matched titles should decode"),
+        vec!["Series Library Copy".to_string()]
+    );
 }
 
 #[tokio::test]

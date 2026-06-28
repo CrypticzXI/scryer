@@ -3634,8 +3634,18 @@ async fn graphql_introspection_external_import_warmup_uses_session_ids() {
             .unwrap_or_else(|| panic!("{field_name}.{arg_name} should exist"))
             .clone()
     };
+    let root_has_field = |root_alias: &str, field_name: &str| {
+        body["data"][root_alias]["fields"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{root_alias} should expose fields"))
+            .iter()
+            .any(|field| field["name"] == field_name)
+    };
+    assert!(
+        !root_has_field("queryRoot", "externalImportMonitorWarmupStatus"),
+        "legacy externalImportMonitorWarmupStatus query should not exist"
+    );
     for (root_alias, field_name) in [
-        ("queryRoot", "externalImportMonitorWarmupStatus"),
         ("queryRoot", "externalImportArrSourceWarmupStatus"),
         ("subscriptionRoot", "externalImportMonitorWarmupProgress"),
     ] {

@@ -845,6 +845,9 @@ impl ExternalImportMonitorWarmupOrchestrator {
             let Some(handle) = state.sessions_by_id.get(&session_id) else {
                 continue;
             };
+            if !handle.connection_fingerprint.starts_with("arr-source=") {
+                continue;
+            }
             let snapshot = handle.tx.borrow().clone();
             if !snapshot.status.is_terminal() {
                 continue;
@@ -3299,6 +3302,49 @@ mod tests {
 
         assert!(second.created);
         assert_ne!(second.snapshot.session_id, first.snapshot.session_id);
+    }
+
+    #[tokio::test]
+    async fn external_import_warmup_prune_only_removes_arr_source_sessions() {
+        let orchestrator = ExternalImportMonitorWarmupOrchestrator::default();
+        let source = orchestrator
+            .begin(
+                "user-1",
+                "arr-source=sonarr|http://sonarr|key",
+                ExternalImportMonitorWarmupProgressSnapshot::new("source-session".into()),
+            )
+            .await;
+        let apply = orchestrator
+            .begin(
+                "user-1",
+                crate::EXTERNAL_IMPORT_MONITOR_APPLY_SESSION_ID,
+                ExternalImportMonitorWarmupProgressSnapshot::new(
+                    crate::EXTERNAL_IMPORT_MONITOR_APPLY_SESSION_ID.to_string(),
+                ),
+            )
+            .await;
+        let old_updated_at = (Utc::now() - chrono::Duration::hours(3)).to_rfc3339();
+
+        for snapshot in [&source.snapshot, &apply.snapshot] {
+            let mut completed = snapshot.clone();
+            completed.status = ExternalImportMonitorWarmupStatus::Completed;
+            completed.updated_at = old_updated_at.clone();
+            let session_id = completed.session_id.clone();
+            assert!(orchestrator.update(&session_id, completed).await);
+        }
+
+        let removed = orchestrator
+            .prune_terminal_older_than(chrono::Duration::hours(2))
+            .await;
+
+        assert_eq!(removed, vec!["source-session".to_string()]);
+        assert!(
+            orchestrator
+                .snapshot("user-1", crate::EXTERNAL_IMPORT_MONITOR_APPLY_SESSION_ID)
+                .await
+                .is_some(),
+            "apply session should not be pruned as a source session"
+        );
     }
 
     #[tokio::test]

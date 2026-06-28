@@ -1,5 +1,6 @@
 import * as React from "react";
 import { Edit, Lock, Plus, Power, PowerOff, RefreshCw, Trash2 } from "lucide-react";
+import { AddNewButton } from "@/components/common/add-new-button";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -847,32 +848,24 @@ export function SettingsIndexersSection({
           </Card>
           {isEditing ? (
             <div className="flex justify-center">
-              <Button
+              <AddNewButton
                 id="settings-indexer-create"
-                type="button"
-                size="lg"
+                icon={Plus}
+                label={t("settings.indexerCreateNew")}
                 onClick={startCreateIndexer}
                 disabled={mutatingIndexerId !== null}
-                className="h-12 border border-emerald-500/30 bg-emerald-500/15 px-5 text-base font-semibold text-emerald-100 hover:bg-emerald-500/25 hover:text-emerald-50"
-              >
-                <Plus className="h-5 w-5" />
-                {t("settings.indexerCreateNew")}
-              </Button>
+              />
             </div>
           ) : null}
         </>
       ) : (
         <div className="flex justify-center">
-          <Button
+          <AddNewButton
             id="settings-indexer-create"
-            type="button"
-            size="lg"
+            icon={Plus}
+            label={t("settings.indexerCreateNew")}
             onClick={startCreateIndexer}
-            className="h-12 border border-emerald-500/30 bg-emerald-500/15 px-5 text-base font-semibold text-emerald-100 hover:bg-emerald-500/25 hover:text-emerald-50"
-          >
-            <Plus className="h-5 w-5" />
-            {t("settings.indexerCreateNew")}
-          </Button>
+          />
         </div>
       )}
     </div>

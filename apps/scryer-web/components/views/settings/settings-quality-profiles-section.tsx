@@ -1,6 +1,7 @@
 
 import * as React from "react";
 import { ArrowLeft, ArrowRight, Edit, Plus, Trash2 } from "lucide-react";
+import { AddNewButton } from "@/components/common/add-new-button";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
@@ -1271,35 +1272,25 @@ export function SettingsQualityProfilesSection({
       </section>
       {editorMode === "edit" ? (
         <div className="flex justify-center">
-          <Button
+          <AddNewButton
             id="settings-quality-profile-create"
-            type="button"
-            size="lg"
+            icon={Plus}
+            label={t("qualityProfile.createNewProfile")}
             onClick={handleStartCreateProfile}
             disabled={mediaSettingsLoading || qualityProfilesSaving}
-            variant="primary"
-            className="h-12 px-5 text-base font-semibold"
-          >
-            <Plus className="h-5 w-5" />
-            {t("qualityProfile.createNewProfile")}
-          </Button>
+          />
         </div>
       ) : null}
         </>
       ) : (
         <div className="flex justify-center">
-          <Button
+          <AddNewButton
             id="settings-quality-profile-create"
-            type="button"
-            size="lg"
+            icon={Plus}
+            label={t("qualityProfile.createNewProfile")}
             onClick={handleStartCreateProfile}
             disabled={mediaSettingsLoading || qualityProfilesSaving}
-            variant="primary"
-            className="h-12 px-5 text-base font-semibold"
-          >
-            <Plus className="h-5 w-5" />
-            {t("qualityProfile.createNewProfile")}
-          </Button>
+          />
         </div>
       )}
 

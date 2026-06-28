@@ -47,6 +47,7 @@ import {
   resolveDisplayedQualityLabel,
   resolveOverviewTargetView,
   TitleEpisodeProgressBar,
+  TitleCollectionEmptyState,
   TitleTableActionButton,
   TitleTableEmptyState,
   TitleTableLazyTooltipActionButton,
@@ -936,6 +937,27 @@ export function TitleTable({
   const bottomSpacerHeight = lastVirtualItem
     ? Math.max(totalVirtualSize - lastVirtualItem.end, 0)
     : 0;
+
+  if (
+    !titleLoading &&
+    sortedTitles.length === 0 &&
+    showConfigureRootsAction &&
+    configureRootsHref
+  ) {
+    return (
+      <div
+        data-slot="title-list-root-config-empty"
+        className="flex h-full min-h-[22rem] w-full items-start justify-center px-4 pt-12"
+      >
+        <TitleCollectionEmptyState
+          t={t}
+          showConfigureRootsAction={showConfigureRootsAction}
+          configureRootsReason={configureRootsReason}
+          configureRootsHref={configureRootsHref}
+        />
+      </div>
+    );
+  }
 
   return (
     <div

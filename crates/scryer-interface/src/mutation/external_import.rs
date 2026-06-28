@@ -38,7 +38,6 @@ const SONARR_EPISODE_FETCH_CONCURRENCY_PER_INSTANCE: usize = 16;
 const SONARR_ACTIVE_EPISODE_INSTANCE_CONCURRENCY: usize = 2;
 const SNAPSHOT_CHUNK_FLUSH_BYTES: usize = 4 * 1024 * 1024;
 const SOURCE_CHUNK_READ_BATCH_SIZE: i32 = 32;
-const EXTERNAL_IMPORT_TERMINAL_SESSION_TTL_HOURS: i64 = 2;
 
 static SONARR_ACTIVE_EPISODE_INSTANCE_SEMAPHORE: OnceLock<Arc<Semaphore>> = OnceLock::new();
 
@@ -127,14 +126,18 @@ impl SnapshotChunkWriter {
     }
 }
 
-async fn read_external_import_source_chunk_entries<T: DeserializeOwned>(
+async fn process_external_import_source_chunk_entries<T, F>(
     app: &scryer_application::AppUseCase,
     actor: &scryer_domain::User,
     session_id: &str,
     facet: MediaFacet,
     entry_kind: ExternalImportMonitorSnapshotEntryKind,
-) -> scryer_application::AppResult<Vec<T>> {
-    let mut entries = Vec::new();
+    mut process_entry: F,
+) -> scryer_application::AppResult<()>
+where
+    T: DeserializeOwned,
+    F: FnMut(T) -> scryer_application::AppResult<()>,
+{
     let mut after_chunk_index = None;
 
     loop {
@@ -165,12 +168,12 @@ async fn read_external_import_source_chunk_entries<T: DeserializeOwned>(
                         "failed to parse external import source chunk entry: {err}"
                     ))
                 })?;
-                entries.push(entry);
+                process_entry(entry)?;
             }
         }
     }
 
-    Ok(entries)
+    Ok(())
 }
 
 async fn clear_external_import_monitor_apply_target(
@@ -705,9 +708,7 @@ impl ExternalImportMutations {
         require_app_permission(ctx, AppPermission::ManageCatalogSettings).await?;
         let actor = actor_from_ctx(ctx)?;
         let app = app_from_ctx(ctx)?;
-        app.clear_stale_external_import_arr_source_chunks_once(&actor)
-            .await?;
-        prune_terminal_external_import_source_sessions(&app, &actor).await;
+        maintain_external_import_source_sessions(&app, &actor).await?;
         let source = source_from_input(input.kind, input.connection).map_err(to_gql_error)?;
         let fingerprint = format!("arr-source={}", source_connection_fingerprint(&source));
         let begin = app
@@ -763,8 +764,7 @@ impl ExternalImportMutations {
         require_app_permission(ctx, AppPermission::ManageCatalogSettings).await?;
         let actor = actor_from_ctx(ctx)?;
         let app = app_from_ctx(ctx)?;
-        app.clear_stale_external_import_arr_source_chunks_once(&actor)
-            .await?;
+        maintain_external_import_source_sessions(&app, &actor).await?;
         let session_id_string = session_id.to_string();
         let canceled = app
             .cancel_external_import_monitor_warmup(&actor, &session_id_string)
@@ -789,9 +789,7 @@ impl ExternalImportMutations {
         require_app_permission(ctx, AppPermission::ManageCatalogSettings).await?;
         let actor = actor_from_ctx(ctx)?;
         let app = app_from_ctx(ctx)?;
-        app.clear_stale_external_import_arr_source_chunks_once(&actor)
-            .await?;
-        prune_terminal_external_import_source_sessions(&app, &actor).await;
+        maintain_external_import_source_sessions(&app, &actor).await?;
 
         if input.source_warmup_session_ids.is_empty() && input.prowlarr.is_none() {
             return Err(to_gql_error(AppError::Validation(
@@ -931,9 +929,7 @@ impl ExternalImportMutations {
         require_app_permission(ctx, AppPermission::ManageCatalogSettings).await?;
         let actor = actor_from_ctx(ctx)?;
         let app = app_from_ctx(ctx)?;
-        app.clear_stale_external_import_arr_source_chunks_once(&actor)
-            .await?;
-        prune_terminal_external_import_source_sessions(&app, &actor).await;
+        maintain_external_import_source_sessions(&app, &actor).await?;
 
         let mut source_results = BTreeMap::<String, ExternalImportArrSourceWarmupResult>::new();
         for session_id in &input.source_warmup_session_ids {
@@ -1101,121 +1097,120 @@ impl ExternalImportMutations {
                 .expect("source order references loaded source");
             match source_result.kind {
                 AppArrSourceKind::Radarr => {
-                    let movies = read_external_import_source_chunk_entries::<ArrMovie>(
+                    process_external_import_source_chunk_entries::<ArrMovie, _>(
                         &app,
                         &actor,
                         session_id,
                         MediaFacet::Movie,
                         ExternalImportMonitorSnapshotEntryKind::Movie,
+                        |movie| {
+                            let key = mapping_key(
+                                session_id,
+                                &source_result.source_key,
+                                &movie.root_folder_path,
+                            );
+                            let Some(mapping) = mappings.get(&key) else {
+                                return Err(AppError::Validation(format!(
+                                    "missing mapping for source {} root '{}'",
+                                    source_result.source_key, movie.root_folder_path
+                                )));
+                            };
+                            let mut remapped = movie.clone();
+                            remapped.path = remap_import_path(
+                                remapped.path,
+                                &mapping.arr_root_path,
+                                &mapping.scryer_root_path,
+                            );
+                            remapped.file_path = remap_import_path(
+                                remapped.file_path,
+                                &mapping.arr_root_path,
+                                &mapping.scryer_root_path,
+                            );
+                            if let Some(hint) = movie_scan_hint_from_arr(&remapped) {
+                                scan_hints.push(hint);
+                            }
+                            let entry = movie_monitor_entry_from_arr(&remapped);
+                            let merge_key = movie_monitor_merge_key_for_source(
+                                &entry,
+                                &source_result.source_key,
+                                movie.id,
+                            );
+                            movie_entries
+                                .entry(merge_key)
+                                .and_modify(|existing| existing.monitored |= entry.monitored)
+                                .or_insert(entry);
+                            Ok(())
+                        },
                     )
-                    .await?;
-                    for movie in movies {
-                        let key = mapping_key(
-                            session_id,
-                            &source_result.source_key,
-                            &movie.root_folder_path,
-                        );
-                        let Some(mapping) = mappings.get(&key) else {
-                            return Err(to_gql_error(AppError::Validation(format!(
-                                "missing mapping for source {} root '{}'",
-                                source_result.source_key, movie.root_folder_path
-                            ))));
-                        };
-                        let mut remapped = movie.clone();
-                        remapped.path = remap_import_path(
-                            remapped.path,
-                            &mapping.arr_root_path,
-                            &mapping.scryer_root_path,
-                        );
-                        remapped.file_path = remap_import_path(
-                            remapped.file_path,
-                            &mapping.arr_root_path,
-                            &mapping.scryer_root_path,
-                        );
-                        if let Some(hint) = movie_scan_hint_from_arr(&remapped) {
-                            scan_hints.push(hint);
-                        }
-                        let entry = movie_monitor_entry_from_arr(&remapped);
-                        let merge_key = movie_monitor_merge_key_for_source(
-                            &entry,
-                            &source_result.source_key,
-                            movie.id,
-                        );
-                        movie_entries
-                            .entry(merge_key)
-                            .and_modify(|existing| existing.monitored |= entry.monitored)
-                            .or_insert(entry);
-                    }
+                    .await
+                    .map_err(to_gql_error)?;
                 }
                 AppArrSourceKind::Sonarr => {
-                    let series_source_entries = read_external_import_source_chunk_entries::<
+                    process_external_import_source_chunk_entries::<
                         ExternalImportArrSourceSeriesEntry,
+                        _,
                     >(
                         &app,
                         &actor,
                         session_id,
                         MediaFacet::Series,
                         ExternalImportMonitorSnapshotEntryKind::Series,
+                        |series_entry| {
+                            let key = mapping_key(
+                                session_id,
+                                &source_result.source_key,
+                                &series_entry.series.root_folder_path,
+                            );
+                            let Some(mapping) = mappings.get(&key) else {
+                                return Err(AppError::Validation(format!(
+                                    "missing mapping for source {} root '{}'",
+                                    source_result.source_key, series_entry.series.root_folder_path
+                                )));
+                            };
+                            let mut remapped_series = series_entry.series.clone();
+                            remapped_series.path = remap_import_path(
+                                remapped_series.path,
+                                &mapping.arr_root_path,
+                                &mapping.scryer_root_path,
+                            );
+                            let remapped_episodes = series_entry
+                                .episodes
+                                .iter()
+                                .cloned()
+                                .map(|mut episode| {
+                                    episode.file_path = remap_import_path(
+                                        episode.file_path,
+                                        &mapping.arr_root_path,
+                                        &mapping.scryer_root_path,
+                                    );
+                                    episode
+                                })
+                                .collect::<Vec<_>>();
+                            push_sonarr_scan_hints_for_mapping(
+                                &mut scan_hints,
+                                &mapping.facet,
+                                &remapped_series,
+                                &remapped_episodes,
+                            );
+                            let entry =
+                                series_monitor_entry_from_arr(remapped_series, remapped_episodes);
+                            let merge_key = series_monitor_merge_key_for_source(
+                                &mapping.facet,
+                                &entry,
+                                &source_result.source_key,
+                                series_entry.series.id,
+                            );
+                            series_entries
+                                .entry(merge_key)
+                                .and_modify(|(_, existing)| {
+                                    merge_series_monitor_entry(existing, entry.clone())
+                                })
+                                .or_insert((mapping.facet.clone(), entry));
+                            Ok(())
+                        },
                     )
-                    .await?;
-                    for series_entry in series_source_entries {
-                        let key = mapping_key(
-                            session_id,
-                            &source_result.source_key,
-                            &series_entry.series.root_folder_path,
-                        );
-                        let Some(mapping) = mappings.get(&key) else {
-                            return Err(to_gql_error(AppError::Validation(format!(
-                                "missing mapping for source {} root '{}'",
-                                source_result.source_key, series_entry.series.root_folder_path
-                            ))));
-                        };
-                        let mut remapped_series = series_entry.series.clone();
-                        remapped_series.path = remap_import_path(
-                            remapped_series.path,
-                            &mapping.arr_root_path,
-                            &mapping.scryer_root_path,
-                        );
-                        let remapped_episodes = series_entry
-                            .episodes
-                            .iter()
-                            .cloned()
-                            .map(|mut episode| {
-                                episode.file_path = remap_import_path(
-                                    episode.file_path,
-                                    &mapping.arr_root_path,
-                                    &mapping.scryer_root_path,
-                                );
-                                episode
-                            })
-                            .collect::<Vec<_>>();
-                        if mapping.facet == MediaFacet::Series {
-                            if let Some(hint) = series_folder_scan_hint_from_arr(&remapped_series) {
-                                scan_hints.push(hint);
-                            }
-                            for episode in &remapped_episodes {
-                                if let Some(hint) =
-                                    series_episode_scan_hint_from_arr(&remapped_series, episode)
-                                {
-                                    scan_hints.push(hint);
-                                }
-                            }
-                        }
-                        let entry =
-                            series_monitor_entry_from_arr(remapped_series, remapped_episodes);
-                        let merge_key = series_monitor_merge_key_for_source(
-                            &mapping.facet,
-                            &entry,
-                            &source_result.source_key,
-                            series_entry.series.id,
-                        );
-                        series_entries
-                            .entry(merge_key)
-                            .and_modify(|(_, existing)| {
-                                merge_series_monitor_entry(existing, entry.clone())
-                            })
-                            .or_insert((mapping.facet.clone(), entry));
-                    }
+                    .await
+                    .map_err(to_gql_error)?;
                 }
             }
         }
@@ -1758,6 +1753,25 @@ fn series_episode_scan_hint_from_arr(
     })
 }
 
+fn push_sonarr_scan_hints_for_mapping(
+    scan_hints: &mut LibraryScanHintSet,
+    facet: &MediaFacet,
+    series: &ArrSeries,
+    episodes: &[ArrEpisode],
+) {
+    if !matches!(facet, MediaFacet::Series | MediaFacet::Anime) {
+        return;
+    }
+    if let Some(hint) = series_folder_scan_hint_from_arr(series) {
+        scan_hints.push(hint);
+    }
+    for episode in episodes {
+        if let Some(hint) = series_episode_scan_hint_from_arr(series, episode) {
+            scan_hints.push(hint);
+        }
+    }
+}
+
 fn movie_monitor_entry_from_arr(movie: &ArrMovie) -> ExternalImportMonitorMovieEntry {
     ExternalImportMonitorMovieEntry {
         tmdb_id: movie.tmdb_id.clone(),
@@ -1862,23 +1876,12 @@ async fn clear_external_import_arr_source_snapshot_chunks(
         .await
 }
 
-async fn prune_terminal_external_import_source_sessions(
+pub(crate) async fn maintain_external_import_source_sessions(
     app: &scryer_application::AppUseCase,
     actor: &scryer_domain::User,
-) {
-    let Ok(removed_session_ids) = app
-        .prune_terminal_external_import_warmup_sessions(
-            actor,
-            chrono::Duration::hours(EXTERNAL_IMPORT_TERMINAL_SESSION_TTL_HOURS),
-        )
+) -> scryer_application::AppResult<()> {
+    app.maintain_external_import_arr_source_sessions(actor)
         .await
-    else {
-        return;
-    };
-
-    for session_id in removed_session_ids {
-        let _ = clear_external_import_arr_source_snapshot_chunks(app, actor, &session_id).await;
-    }
 }
 
 async fn capture_external_import_arr_source_warmup(
@@ -2150,19 +2153,21 @@ mod tests {
         ArrDownloadClient, ArrEpisode, ArrIndexer, ArrMovie, ArrSeries, ArrSeriesStatistics,
     };
     use scryer_application::{
-        ExternalIdProvider, LibraryScanHintFacet, LibraryScanHintSource,
+        ExternalIdProvider, LibraryScanHintFacet, LibraryScanHintSet, LibraryScanHintSource,
         library_scan_file_full_path_key, library_scan_file_leaf_key,
         library_scan_folder_full_path_key, library_scan_folder_leaf_key,
     };
-    use scryer_domain::{ConfigFieldDef, ConfigFieldRole, ConfigFieldType, ConfigFieldValueSource};
+    use scryer_domain::{
+        ConfigFieldDef, ConfigFieldRole, ConfigFieldType, ConfigFieldValueSource, MediaFacet,
+    };
     use serde_json::Value;
 
     use super::{
         SONARR_ACTIVE_EPISODE_INSTANCE_CONCURRENCY, SONARR_EPISODE_FETCH_CONCURRENCY_PER_INSTANCE,
         detect_imported_prowlarr_proxy_indexer, imported_indexer_config_json, map_download_client,
         map_indexer, merge_direct_prowlarr_group, merge_prowlarr_group, movie_scan_hint_from_arr,
-        prowlarr_dedup_key, remap_import_path, series_episode_scan_hint_from_arr,
-        series_folder_scan_hint_from_arr,
+        prowlarr_dedup_key, push_sonarr_scan_hints_for_mapping, remap_import_path,
+        series_episode_scan_hint_from_arr, series_folder_scan_hint_from_arr,
     };
 
     #[test]
@@ -2309,6 +2314,77 @@ mod tests {
                 .iter()
                 .any(|id| { id.provider == ExternalIdProvider::Tvdb && id.value == "366972" })
         );
+    }
+
+    #[test]
+    fn sonarr_mapping_scan_hints_include_series_and_anime_facets() {
+        let series_path = "/srv/media/tv/Foundation (2021)";
+        let episode_path = "/srv/media/tv/Foundation (2021)/Season 01/Foundation.S01E01.mkv";
+        let series = ArrSeries {
+            id: 1,
+            root_folder_path: "/srv/media/tv".into(),
+            path: Some(series_path.into()),
+            tvdb_id: Some("366972".into()),
+            monitored: true,
+            seasons: Vec::new(),
+            statistics: ArrSeriesStatistics {
+                total_episode_count: None,
+                monitored_episode_count: None,
+            },
+        };
+        let episode = ArrEpisode {
+            id: 1,
+            series_id: 1,
+            tvdb_id: Some("777001".into()),
+            season_number: 1,
+            episode_number: 1,
+            file_path: Some(episode_path.into()),
+            monitored: true,
+        };
+
+        for facet in [MediaFacet::Series, MediaFacet::Anime] {
+            let mut scan_hints = LibraryScanHintSet::new();
+            push_sonarr_scan_hints_for_mapping(
+                &mut scan_hints,
+                &facet,
+                &series,
+                &[episode.clone()],
+            );
+
+            let folder_key = library_scan_folder_leaf_key(series_path).expect("folder key");
+            let folder_full_path =
+                library_scan_folder_full_path_key(series_path).expect("folder full path key");
+            let folder_hint = scan_hints
+                .hint_for_scan_path(
+                    LibraryScanHintFacet::Series,
+                    &folder_key,
+                    Some(&folder_full_path),
+                )
+                .expect("folder hint");
+            assert!(
+                folder_hint
+                    .ids
+                    .iter()
+                    .any(|id| id.provider == ExternalIdProvider::Tvdb && id.value == "366972")
+            );
+
+            let episode_key = library_scan_file_leaf_key(episode_path).expect("episode key");
+            let episode_full_path =
+                library_scan_file_full_path_key(episode_path).expect("episode full path key");
+            let episode_hint = scan_hints
+                .hint_for_scan_path(
+                    LibraryScanHintFacet::Series,
+                    &episode_key,
+                    Some(&episode_full_path),
+                )
+                .expect("episode hint");
+            assert!(
+                episode_hint
+                    .ids
+                    .iter()
+                    .any(|id| id.provider == ExternalIdProvider::Tvdb && id.value == "366972")
+            );
+        }
     }
 
     #[test]

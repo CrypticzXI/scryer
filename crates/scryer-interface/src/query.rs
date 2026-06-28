@@ -918,24 +918,6 @@ impl ActivityQueries {
         Ok(session.map(from_library_scan_session))
     }
 
-    async fn external_import_monitor_warmup_status(
-        &self,
-        ctx: &Context<'_>,
-        session_id: ID,
-    ) -> GqlResult<ExternalImportMonitorWarmupProgressPayload> {
-        let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
-        app.clear_stale_external_import_arr_source_chunks_once(&actor)
-            .await
-            .map_err(to_gql_error)?;
-        let session_id = String::from(session_id);
-        let snapshot = app
-            .get_external_import_monitor_warmup_status(&actor, &session_id)
-            .await
-            .map_err(to_gql_error)?;
-        Ok(from_external_import_monitor_warmup_progress(snapshot))
-    }
-
     async fn external_import_arr_source_warmup_status(
         &self,
         ctx: &Context<'_>,
@@ -943,6 +925,9 @@ impl ActivityQueries {
     ) -> GqlResult<ExternalImportMonitorWarmupProgressPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
+        app.maintain_external_import_arr_source_sessions(&actor)
+            .await
+            .map_err(to_gql_error)?;
         let session_id = String::from(session_id);
         let snapshot = app
             .get_external_import_monitor_warmup_status(&actor, &session_id)
@@ -958,7 +943,7 @@ impl ActivityQueries {
     ) -> GqlResult<ExternalImportAggregateWarmupProgressPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        app.clear_stale_external_import_arr_source_chunks_once(&actor)
+        app.maintain_external_import_arr_source_sessions(&actor)
             .await
             .map_err(to_gql_error)?;
         if input.source_warmup_session_ids.is_empty() {

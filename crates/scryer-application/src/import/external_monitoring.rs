@@ -80,6 +80,9 @@ impl AppUseCase {
         actor: &User,
         session_id: &str,
     ) -> AppResult<()> {
+        if session_id == crate::EXTERNAL_IMPORT_MONITOR_APPLY_SESSION_ID {
+            return Ok(());
+        }
         for facet in [MediaFacet::Movie, MediaFacet::Series, MediaFacet::Anime] {
             self.clear_external_import_monitor_snapshot_chunks_for_session(
                 actor, session_id, facet,
@@ -150,6 +153,25 @@ impl AppUseCase {
             .external_import_warmup_orchestrator
             .prune_terminal_older_than(max_age)
             .await)
+    }
+
+    pub async fn maintain_external_import_arr_source_sessions(
+        &self,
+        actor: &User,
+    ) -> AppResult<()> {
+        self.clear_stale_external_import_arr_source_chunks_once(actor)
+            .await?;
+
+        let terminal_ttl = chrono::Duration::hours(2);
+        let removed_session_ids = self
+            .prune_terminal_external_import_warmup_sessions(actor, terminal_ttl)
+            .await?;
+        for session_id in removed_session_ids {
+            self.clear_external_import_arr_source_session_chunks(actor, &session_id)
+                .await?;
+        }
+
+        Ok(())
     }
 
     pub async fn get_external_import_monitor_warmup_status(
