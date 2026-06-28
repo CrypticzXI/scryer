@@ -169,6 +169,7 @@ async fn anime_hybrid_movie_mapping_creates_series_movie_link() {
                     runtime_minutes: 117,
                     sort_title: "Mugen Train".into(),
                     imdb_id: "tt11032374".into(),
+                    tmdb_id: None,
                     anidb_id: None,
                     genres: vec!["Action".into(), "Anime".into()],
                     studio: "ufotable".into(),

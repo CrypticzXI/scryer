@@ -31,6 +31,7 @@ impl ExternalImportMonitorSnapshotRepository for MockExternalImportMonitorSnapsh
 
     async fn list_external_import_monitor_snapshot_chunk_batch(
         &self,
+        session_id: &str,
         facet: MediaFacet,
         entry_kind: ExternalImportMonitorSnapshotEntryKind,
         after_chunk_index: Option<i32>,
@@ -40,7 +41,8 @@ impl ExternalImportMonitorSnapshotRepository for MockExternalImportMonitorSnapsh
         let mut matched = chunks
             .iter()
             .filter(|chunk| {
-                chunk.facet == facet
+                chunk.session_id == session_id
+                    && chunk.facet == facet
                     && chunk.entry_kind == entry_kind
                     && after_chunk_index
                         .map(|after| chunk.chunk_index > after)
@@ -55,10 +57,20 @@ impl ExternalImportMonitorSnapshotRepository for MockExternalImportMonitorSnapsh
 
     async fn delete_external_import_monitor_snapshot_chunks(
         &self,
+        session_id: &str,
         facet: MediaFacet,
     ) -> AppResult<()> {
         let mut chunks = self.chunks.lock().await;
-        chunks.retain(|chunk| chunk.facet != facet);
+        chunks.retain(|chunk| chunk.session_id != session_id || chunk.facet != facet);
+        Ok(())
+    }
+
+    async fn delete_external_import_monitor_snapshot_chunks_except_session(
+        &self,
+        preserved_session_id: &str,
+    ) -> AppResult<()> {
+        let mut chunks = self.chunks.lock().await;
+        chunks.retain(|chunk| chunk.session_id == preserved_session_id);
         Ok(())
     }
 }
@@ -77,6 +89,7 @@ pub(super) async fn append_series_monitor_snapshot_chunk(
     app.append_external_import_monitor_snapshot_chunk(
         user,
         ExternalImportMonitorSnapshotChunk {
+            session_id: crate::EXTERNAL_IMPORT_MONITOR_APPLY_SESSION_ID.to_string(),
             facet,
             entry_kind: ExternalImportMonitorSnapshotEntryKind::Series,
             chunk_index: 0,

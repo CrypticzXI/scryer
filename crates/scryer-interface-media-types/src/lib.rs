@@ -4306,10 +4306,27 @@ pub struct ExternalImportConnectionInput {
     pub api_key: String,
 }
 
+#[derive(Enum, Copy, Clone, Eq, PartialEq)]
+#[graphql(rename_items = "snake_case")]
+pub enum ExternalArrSourceKind {
+    Sonarr,
+    Radarr,
+}
+
+#[derive(InputObject)]
+pub struct StartExternalImportArrSourceWarmupInput {
+    pub kind: ExternalArrSourceKind,
+    pub connection: ExternalImportConnectionInput,
+}
+
+#[derive(InputObject)]
+pub struct ExternalImportAggregateWarmupProgressInput {
+    pub source_warmup_session_ids: Vec<ID>,
+}
+
 #[derive(InputObject)]
 pub struct PreviewExternalImportInput {
-    pub sonarr: Option<ExternalImportConnectionInput>,
-    pub radarr: Option<ExternalImportConnectionInput>,
+    pub source_warmup_session_ids: Vec<ID>,
     pub prowlarr: Option<ExternalImportConnectionInput>,
 }
 
@@ -4340,12 +4357,8 @@ pub struct IndexerApiKeyOverrideInput {
 
 #[derive(InputObject)]
 pub struct ExecuteExternalImportInput {
-    pub sonarr: Option<ExternalImportConnectionInput>,
-    pub radarr: Option<ExternalImportConnectionInput>,
+    pub source_warmup_session_ids: Vec<ID>,
     pub prowlarr: Option<ExternalImportConnectionInput>,
-    pub selected_movies_paths: Vec<String>,
-    pub selected_series_paths: Vec<String>,
-    pub selected_anime_paths: Vec<String>,
     pub selected_download_client_dedup_keys: Vec<String>,
     pub selected_indexer_dedup_keys: Vec<String>,
     /// User-supplied API keys for download clients whose keys were masked by
@@ -4360,25 +4373,35 @@ pub struct ExecuteExternalImportInput {
 }
 
 #[derive(InputObject)]
-pub struct StartExternalImportMonitorWarmupInput {
-    pub sonarr: Option<ExternalImportConnectionInput>,
-    pub radarr: Option<ExternalImportConnectionInput>,
+pub struct ExternalImportSourceLibraryMappingInput {
+    pub source_warmup_session_id: ID,
+    pub source_key: String,
+    pub kind: ExternalArrSourceKind,
+    pub arr_root_path: String,
+    pub scryer_root_path: String,
+    pub library_id: ID,
+    pub facet: MediaFacetValue,
 }
 
 #[derive(InputObject)]
 pub struct FinalizeExternalImportInput {
-    pub sonarr: Option<ExternalImportConnectionInput>,
-    pub radarr: Option<ExternalImportConnectionInput>,
-    pub monitor_warmup_session_id: Option<ID>,
-    pub selected_movies_paths: Vec<String>,
-    pub selected_series_paths: Vec<String>,
-    pub selected_anime_paths: Vec<String>,
+    pub source_warmup_session_ids: Vec<ID>,
+    pub mappings: Vec<ExternalImportSourceLibraryMappingInput>,
 }
 
 #[derive(SimpleObject, Clone)]
 pub struct CancelExternalImportMonitorWarmupPayload {
     pub session_id: ID,
     pub canceled: bool,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct ExternalImportAggregateWarmupProgressPayload {
+    pub status: ExternalImportMonitorWarmupStatusValue,
+    pub titles_total_known: bool,
+    pub titles_fetched: i32,
+    pub titles_total: i32,
+    pub error_message: Option<String>,
 }
 
 #[derive(SimpleObject, Clone)]
@@ -4449,29 +4472,38 @@ pub struct ExternalImportMonitorWarmupProgressPayload {
 
 #[derive(SimpleObject, Clone)]
 pub struct ExternalImportPreviewPayload {
-    pub sonarr_connected: bool,
-    pub radarr_connected: bool,
     pub prowlarr_connected: bool,
-    pub sonarr_version: Option<String>,
-    pub radarr_version: Option<String>,
     pub prowlarr_version: Option<String>,
-    pub sonarr_error: Option<String>,
-    pub radarr_error: Option<String>,
     pub prowlarr_error: Option<String>,
+    pub arr_sources: Vec<ExternalImportArrSourcePayload>,
     pub root_folders: Vec<ExternalImportRootFolderPayload>,
     pub download_clients: Vec<ExternalImportDownloadClientPayload>,
     pub indexers: Vec<ExternalImportIndexerPayload>,
 }
 
 #[derive(SimpleObject, Clone)]
+pub struct ExternalImportArrSourcePayload {
+    pub session_id: ID,
+    pub source_key: String,
+    pub kind: ExternalArrSourceKind,
+    pub base_url: String,
+    pub connected: bool,
+    pub version: Option<String>,
+    pub status: ExternalImportMonitorWarmupStatusValue,
+    pub error: Option<String>,
+}
+
+#[derive(SimpleObject, Clone)]
 pub struct ExternalImportRootFolderPayload {
-    pub source: String,
-    pub path: String,
+    pub source_warmup_session_id: ID,
+    pub source_key: String,
+    pub kind: ExternalArrSourceKind,
+    pub arr_root_path: String,
 }
 
 #[derive(SimpleObject, Clone)]
 pub struct ExternalImportDownloadClientPayload {
-    pub sources: Vec<String>,
+    pub source_keys: Vec<String>,
     pub name: String,
     pub implementation: String,
     pub scryer_client_type: Option<String>,
@@ -4488,7 +4520,7 @@ pub struct ExternalImportDownloadClientPayload {
 
 #[derive(SimpleObject, Clone)]
 pub struct ExternalImportIndexerPayload {
-    pub sources: Vec<String>,
+    pub source_keys: Vec<String>,
     pub name: String,
     pub implementation: String,
     pub scryer_provider_type: Option<String>,

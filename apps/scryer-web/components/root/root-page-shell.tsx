@@ -26,6 +26,7 @@ import {
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth, type AuthUser } from "@/lib/hooks/use-auth";
 import { usePermissions } from "@/lib/hooks/use-permissions";
+import { authorizationCacheSignature } from "@/lib/utils/permissions";
 import { useSmgNotices } from "@/lib/hooks/use-smg-notices";
 import { useNavigationBadges } from "@/lib/hooks/use-navigation-badges";
 import { useAutoBackupNotice } from "@/lib/hooks/use-auto-backup-notice";
@@ -478,6 +479,7 @@ function MainContent({
   username,
   selectedLanguage,
   uiLanguage,
+  discoveryAuthorizationSignature,
   setLanguagePreferenceFromShell,
   contentSettingsSection,
   systemSection,
@@ -508,6 +510,7 @@ function MainContent({
   username: string | undefined;
   selectedLanguage: LanguageOption;
   uiLanguage: LocaleCode;
+  discoveryAuthorizationSignature: string;
   setLanguagePreferenceFromShell: (code: string) => void;
   contentSettingsSection: ContentSettingsSection;
   systemSection: SystemSection;
@@ -552,6 +555,7 @@ function MainContent({
         key="discovery"
         userId={userId}
         uiLanguage={uiLanguage}
+        authorizationSignature={discoveryAuthorizationSignature}
         canManageTitle={canManageTitle}
         canRequestMedia={canRequestMedia}
       />
@@ -681,6 +685,7 @@ function MainContent({
       key={`${view}-${effectiveContentSettingsSection}`}
       userId={userId}
       uiLanguage={uiLanguage}
+      discoveryAuthorizationSignature={discoveryAuthorizationSignature}
       view={view}
       contentSettingsSection={effectiveContentSettingsSection}
       canManageConfig={canManageConfig}
@@ -1425,6 +1430,10 @@ function AuthenticatedHomePage({
     canManageLibrarySettings,
     canAccessRecycleBin,
   } = usePermissions(authenticatedUser);
+  const discoveryAuthorizationSignature = useMemo(
+    () => authorizationCacheSignature(authenticatedUser),
+    [authenticatedUser],
+  );
   const {
     pendingImportCounts,
     pendingMediaRequestCounts,
@@ -1953,6 +1962,9 @@ function AuthenticatedHomePage({
                                   username={authenticatedUser.username}
                                   selectedLanguage={selectedLanguage}
                                   uiLanguage={uiLanguage}
+                                  discoveryAuthorizationSignature={
+                                    discoveryAuthorizationSignature
+                                  }
                                   setLanguagePreferenceFromShell={
                                     setLanguagePreferenceFromShell
                                   }

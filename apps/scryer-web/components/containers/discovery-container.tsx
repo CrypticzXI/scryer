@@ -30,6 +30,7 @@ import type {
 type DiscoveryContainerProps = {
   userId: string | null | undefined;
   uiLanguage: LocaleCode;
+  authorizationSignature: string;
   canManageTitle: boolean;
   canRequestMedia: boolean;
 };
@@ -95,6 +96,7 @@ function metadataResultForDiscoveryItem(
 export const DiscoveryContainer = memo(function DiscoveryContainer({
   userId,
   uiLanguage,
+  authorizationSignature,
   canManageTitle,
   canRequestMedia,
 }: DiscoveryContainerProps) {
@@ -145,6 +147,7 @@ export const DiscoveryContainer = memo(function DiscoveryContainer({
     const cacheScope = {
       userId,
       uiLanguage,
+      authorizationSignature,
       input: DISCOVERY_HOME_INPUT,
     };
     const cacheKey = discoveryHomeCacheKey(cacheScope);
@@ -199,7 +202,7 @@ export const DiscoveryContainer = memo(function DiscoveryContainer({
         setLoading(false);
       }
     }
-  }, [uiLanguage, userId]);
+  }, [authorizationSignature, uiLanguage, userId]);
 
   useEffect(() => {
     void refresh();

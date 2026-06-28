@@ -1953,6 +1953,7 @@ fn merge_bulk_metadata_partial(
                         runtime_minutes: m.runtime_minutes,
                         sort_title: m.sort_title,
                         imdb_id: m.imdb_id,
+                        tmdb_id: m.tmdb_id,
                         anidb_id: m.anidb_id,
                         genres: m.genres,
                         studio: m.studio,
@@ -3063,6 +3064,35 @@ mod tests {
             br#"{ "error": "version_incompatible" }"#
         ));
     }
+
+    #[test]
+    fn movie_response_deserializes_tmdb_id() {
+        let data: super::MovieResponse = serde_json::from_value(json!({
+            "movie": {
+                "movie": {
+                    "tvdb_id": 91_001,
+                    "name": "External Movie",
+                    "slug": "external-movie",
+                    "year": 2026,
+                    "status": "Released",
+                    "overview": "External Movie overview",
+                    "poster_url": "https://example.com/poster.jpg",
+                    "language": "eng",
+                    "runtime_minutes": 100,
+                    "sort_title": "External Movie",
+                    "imdb_id": "tt9100100",
+                    "tmdb_id": 810_010,
+                    "anidb_id": null,
+                    "genres": ["Drama"],
+                    "studio": "Test Studio",
+                    "tmdb_release_date": "2026-01-01"
+                }
+            }
+        }))
+        .expect("movie response should deserialize");
+
+        assert_eq!(data.movie.movie.tmdb_id, Some(810_010));
+    }
 }
 
 #[derive(Deserialize)]
@@ -3264,6 +3294,8 @@ struct MovieItem {
     runtime_minutes: i32,
     sort_title: String,
     imdb_id: String,
+    #[serde(default)]
+    tmdb_id: Option<i64>,
     #[serde(default)]
     anidb_id: Option<i64>,
     genres: Vec<String>,
@@ -3766,6 +3798,7 @@ impl MetadataGateway for MetadataGatewayClient {
             runtime_minutes: m.runtime_minutes,
             sort_title: m.sort_title,
             imdb_id: m.imdb_id,
+            tmdb_id: m.tmdb_id,
             anidb_id: m.anidb_id,
             genres: m.genres,
             studio: m.studio,

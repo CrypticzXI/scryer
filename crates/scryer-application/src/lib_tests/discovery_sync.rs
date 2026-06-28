@@ -59,7 +59,7 @@ async fn discovery_sync_status_returns_state_recent_runs_and_pending_count() {
         MediaFacet::Movie,
         vec![("tmdb_movie", "605")],
     );
-    owned_sci_fi.library_id = visible_movie_library_id;
+    owned_sci_fi.library_id = visible_movie_library_id.clone();
     owned_sci_fi.genres = vec!["Sci-Fi".to_string()];
     owned_sci_fi.tags = vec!["isekai".to_string()];
     titles
@@ -161,6 +161,7 @@ async fn discovery_home_and_items_use_local_rows_and_library_view_rbac() {
     .await;
     let observed_at = Utc.timestamp_opt(1_000, 0).unwrap();
     let visible_movie_library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Movie);
+    let hidden_movie_library_id = "hidden-movie-library".to_string();
     let mut owned_drama_sci_fi = test_title(
         "title-603",
         "Owned Drama Sci-Fi",
@@ -185,7 +186,7 @@ async fn discovery_home_and_items_use_local_rows_and_library_view_rbac() {
         MediaFacet::Movie,
         vec![("tmdb_movie", "605")],
     );
-    owned_sci_fi.library_id = visible_movie_library_id;
+    owned_sci_fi.library_id = visible_movie_library_id.clone();
     owned_sci_fi.genres = vec!["Sci-Fi".to_string()];
     owned_sci_fi.tags = vec!["isekai".to_string()];
     titles
@@ -215,6 +216,7 @@ async fn discovery_home_and_items_use_local_rows_and_library_view_rbac() {
             run_id: "context-run".to_string(),
             subject_key: "tmdb:movie:603".to_string(),
             title_id: Some("title-603".to_string()),
+            library_id: Some(visible_movie_library_id.clone()),
             library_facet: Some("movie".to_string()),
             title_kind: Some("movie".to_string()),
             display_title: Some("Local Example Movie".to_string()),
@@ -225,6 +227,7 @@ async fn discovery_home_and_items_use_local_rows_and_library_view_rbac() {
             run_id: "context-run".to_string(),
             subject_key: "tmdb:movie:604".to_string(),
             title_id: Some("owned-2".to_string()),
+            library_id: Some(visible_movie_library_id.clone()),
             library_facet: Some("movie".to_string()),
             title_kind: Some("movie".to_string()),
             display_title: Some("Owned Drama".to_string()),
@@ -235,11 +238,23 @@ async fn discovery_home_and_items_use_local_rows_and_library_view_rbac() {
             run_id: "context-run".to_string(),
             subject_key: "tmdb:movie:605".to_string(),
             title_id: Some("owned-3".to_string()),
+            library_id: Some(visible_movie_library_id.clone()),
             library_facet: Some("movie".to_string()),
             title_kind: Some("movie".to_string()),
             display_title: Some("Owned Sci-Fi".to_string()),
             external_ids_json: serde_json::json!([{"source": "tmdb", "value": "605"}]).to_string(),
             raw_subject_json: serde_json::json!({"tmdbId": 605}).to_string(),
+        },
+        DiscoverySubmittedSubjectRecord {
+            run_id: "context-run".to_string(),
+            subject_key: "tmdb:movie:999".to_string(),
+            title_id: Some("hidden-title".to_string()),
+            library_id: Some(hidden_movie_library_id.clone()),
+            library_facet: Some("movie".to_string()),
+            title_kind: Some("movie".to_string()),
+            display_title: Some("Hidden Movie".to_string()),
+            external_ids_json: serde_json::json!([{"source": "tmdb", "value": "999"}]).to_string(),
+            raw_subject_json: serde_json::json!({"tmdbId": 999}).to_string(),
         },
     ]);
     let mut private_recommendation = discovery_item_record(
@@ -256,10 +271,23 @@ async fn discovery_home_and_items_use_local_rows_and_library_view_rbac() {
         true,
     );
     private_recommendation.matched_subject_keys_json =
-        serde_json::json!(["tmdb:movie:603", "tmdb:movie:missing"]).to_string();
+        serde_json::json!(["tmdb:movie:603", "tmdb:movie:999"]).to_string();
     private_recommendation.matched_subject_titles_json =
         serde_json::json!(["SMG should not leak this"]).to_string();
     private_recommendation.matched_subject_count = 2;
+    private_recommendation.library_provenance_json = serde_json::json!([
+        {
+            "subjectKey": "tmdb:movie:603",
+            "titleId": "title-603",
+            "libraryId": visible_movie_library_id,
+        },
+        {
+            "subjectKey": "tmdb:movie:999",
+            "titleId": "hidden-title",
+            "libraryId": hidden_movie_library_id,
+        },
+    ])
+    .to_string();
     let linked_subject_keys = serde_json::json!(["tmdb:movie:603"]).to_string();
     let top_context_terms = serde_json::json!(["weekly", "popular"]).to_string();
     let mut sci_fi_one = discovery_item_record(
@@ -453,6 +481,29 @@ async fn discovery_home_and_items_use_local_rows_and_library_view_rbac() {
     );
     collection_signal_movie.tmdb_collection_id = None;
     collection_signal_movie.tmdb_collection_name = None;
+    let mut hidden_recommendation = discovery_item_record(
+        "context-run",
+        "context-run",
+        None,
+        "tmdb:movie:998",
+        "Hidden Recommendation",
+        "movie",
+        96.0,
+        &["Drama"],
+        &[],
+        false,
+        true,
+    );
+    hidden_recommendation.matched_subject_keys_json =
+        serde_json::json!(["tmdb:movie:999"]).to_string();
+    hidden_recommendation.library_provenance_json = serde_json::json!([
+        {
+            "subjectKey": "tmdb:movie:999",
+            "titleId": "hidden-title",
+            "libraryId": "hidden-movie-library",
+        },
+    ])
+    .to_string();
     discovery.items.lock().await.extend([
         discovery_item_record(
             "public-run",
@@ -481,6 +532,7 @@ async fn discovery_home_and_items_use_local_rows_and_library_view_rbac() {
         weekly_anime_one,
         weekly_anime_two,
         collection_signal_movie,
+        hidden_recommendation,
         discovery_item_record(
             "context-run",
             "context-run",
@@ -632,6 +684,18 @@ async fn discovery_home_and_items_use_local_rows_and_library_view_rbac() {
             .expect("matched titles should decode"),
         vec!["Local Example Movie".to_string()]
     );
+
+    let hidden_context = app
+        .discovery_items(
+            &viewer_actor,
+            DiscoveryItemsQuery {
+                query: Some("Hidden".to_string()),
+                ..DiscoveryItemsQuery::default()
+            },
+        )
+        .await
+        .expect("viewer hidden context should load");
+    assert_eq!(hidden_context.total_count, 0);
 
     let public_items = app
         .discovery_items(
@@ -3365,6 +3429,16 @@ fn discovery_item_record(
     resolved: bool,
 ) -> DiscoveryItemRecord {
     let observed_at = Utc.timestamp_opt(1_000, 0).unwrap();
+    let library_provenance_json = if run_id == base_generation_id && run_id.starts_with("public") {
+        "[]".to_string()
+    } else {
+        serde_json::json!([{
+            "subjectKey": "tmdb:movie:603",
+            "titleId": "title-603",
+            "libraryId": scryer_domain::default_library_id_for_facet(&MediaFacet::Movie),
+        }])
+        .to_string()
+    };
     DiscoveryItemRecord {
         id: format!("{run_id}:item:{target_key}"),
         run_id: run_id.to_string(),
@@ -3408,6 +3482,7 @@ fn discovery_item_record(
         matched_subject_keys_json: "[]".to_string(),
         matched_subject_titles_json: "[]".to_string(),
         matched_subject_count: 0,
+        library_provenance_json,
         tmdb_collection_id: relation_subtypes
             .contains(&"tmdb.collection")
             .then(|| "123".to_string()),

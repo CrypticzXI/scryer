@@ -151,6 +151,7 @@ const ALL_LIBRARIES_VALUE = "__all__";
 type MediaContentContainerProps = {
   userId: string | null | undefined;
   uiLanguage: string;
+  discoveryAuthorizationSignature: string;
   view: ViewId;
   contentSettingsSection: ContentSettingsSection;
   canManageConfig: boolean;
@@ -208,11 +209,12 @@ const TITLE_CONTEXT_DISCOVERY_TARGET_KINDS: Record<Facet, string[]> = {
   anime: ["anime"],
 };
 const TITLE_CONTEXT_DISCOVERY_CACHE_PREFIX =
-  "scryer:discovery:library-home:v2";
+  "scryer:discovery:library-home:v3";
 
 type TitleContextDiscoveryCachePayload = {
   userId: string;
   uiLanguage: string;
+  authorizationSignature: string;
   facet: Facet;
   discoveryItemsInput: NormalizedTitleContextDiscoveryItemsInput;
   discoveryHomeInput: NormalizedTitleContextDiscoveryHomeInput;
@@ -247,6 +249,7 @@ type NormalizedTitleContextDiscoveryHomeInput = {
 type TitleContextDiscoveryCacheScope = {
   userId: string | null | undefined;
   uiLanguage: string;
+  authorizationSignature: string;
   facet: Facet;
   discoveryItemsInput: DiscoveryItemsInput;
   discoveryHomeInput: DiscoveryHomeInput;
@@ -359,6 +362,7 @@ function titleContextDiscoveryCacheKey(
     TITLE_CONTEXT_DISCOVERY_CACHE_PREFIX,
     encodeURIComponent(userId),
     encodeURIComponent(uiLanguage),
+    encodeURIComponent(scope.authorizationSignature),
     scope.facet,
     encodeURIComponent(
       JSON.stringify(
@@ -474,6 +478,7 @@ function isTitleContextDiscoveryCachePayload(
     uiLanguage !== null &&
     candidate.userId === userId &&
     candidate.uiLanguage === uiLanguage &&
+    candidate.authorizationSignature === scope.authorizationSignature &&
     candidate.facet === scope.facet &&
     isNormalizedTitleContextDiscoveryItemsInput(
       candidate.discoveryItemsInput,
@@ -540,6 +545,7 @@ function writeTitleContextDiscoveryCache(
       JSON.stringify({
         userId,
         uiLanguage,
+        authorizationSignature: scope.authorizationSignature,
         facet: scope.facet,
         discoveryItemsInput: normalizeTitleContextDiscoveryItemsInput(
           scope.discoveryItemsInput,
@@ -1121,6 +1127,7 @@ function aggregateDeletePreviews(
 export const MediaContentContainer = React.memo(function MediaContentContainer({
   userId,
   uiLanguage,
+  discoveryAuthorizationSignature,
   view,
   contentSettingsSection,
   canManageConfig,
@@ -1225,6 +1232,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     const cacheScope = {
       userId,
       uiLanguage,
+      authorizationSignature: discoveryAuthorizationSignature,
       facet: activeFacet,
       discoveryItemsInput,
       discoveryHomeInput,
@@ -1294,7 +1302,14 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
         nextPublicTopItems,
       );
     }
-  }, [activeFacet, client, shouldLoadCatalogTitles, uiLanguage, userId]);
+  }, [
+    activeFacet,
+    client,
+    discoveryAuthorizationSignature,
+    shouldLoadCatalogTitles,
+    uiLanguage,
+    userId,
+  ]);
 
   React.useEffect(() => {
     void refreshTitleContextDiscovery();

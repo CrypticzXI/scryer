@@ -383,6 +383,7 @@ pub struct MovieMetadata {
     pub runtime_minutes: i32,
     pub sort_title: String,
     pub imdb_id: String,
+    pub tmdb_id: Option<i64>,
     pub anidb_id: Option<i64>,
     pub genres: Vec<String>,
     pub studio: String,

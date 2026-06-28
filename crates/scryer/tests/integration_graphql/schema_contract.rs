@@ -3243,6 +3243,19 @@ async fn graphql_introspection_external_import_finalize_uses_payload_results() {
             }
           }
           cancelInput: __type(name: "CancelExternalImportMonitorWarmupInput") { name }
+          sourceWarmupInput: __type(name: "StartExternalImportArrSourceWarmupInput") {
+            inputFields {
+              name
+              type {
+                kind
+                name
+                ofType {
+                  kind
+                  name
+                }
+              }
+            }
+          }
           cancelPayload: __type(name: "CancelExternalImportMonitorWarmupPayload") {
             fields { name }
           }
@@ -3267,18 +3280,34 @@ async fn graphql_introspection_external_import_finalize_uses_payload_results() {
             .find(|field| field["name"] == name)
             .expect("mutation field should exist")
     };
+    let mutation_arg = |field_name: &str, arg_name: &str| {
+        mutation(field_name)["args"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{field_name} should expose args"))
+            .iter()
+            .find(|arg| arg["name"] == arg_name)
+            .unwrap_or_else(|| panic!("{field_name}.{arg_name} should exist"))
+            .clone()
+    };
 
-    let cancel = mutation("cancelExternalImportMonitorWarmup");
+    let start = mutation("startExternalImportArrSourceWarmup");
+    assert_eq!(
+        start["type"]["ofType"]["name"],
+        "ExternalImportMonitorWarmupProgressPayload"
+    );
+    let start_input_arg = mutation_arg("startExternalImportArrSourceWarmup", "input");
+    assert_eq!(start_input_arg["type"]["kind"], "NON_NULL");
+    assert_eq!(
+        start_input_arg["type"]["ofType"]["name"],
+        "StartExternalImportArrSourceWarmupInput"
+    );
+
+    let cancel = mutation("cancelExternalImportArrSourceWarmup");
     assert_eq!(
         cancel["type"]["ofType"]["name"],
         "CancelExternalImportMonitorWarmupPayload"
     );
-    let session_id_arg = cancel["args"]
-        .as_array()
-        .expect("cancelExternalImportMonitorWarmup should expose args")
-        .iter()
-        .find(|arg| arg["name"] == "sessionId")
-        .expect("sessionId arg should exist");
+    let session_id_arg = mutation_arg("cancelExternalImportArrSourceWarmup", "sessionId");
     assert_eq!(session_id_arg["type"]["kind"], "NON_NULL");
     assert_eq!(session_id_arg["type"]["ofType"]["name"], "ID");
 
@@ -3286,6 +3315,34 @@ async fn graphql_introspection_external_import_finalize_uses_payload_results() {
     assert_eq!(
         finalize["type"]["ofType"]["name"],
         "FinalizeExternalImportPayload"
+    );
+    let finalize_input_arg = mutation_arg("finalizeExternalImport", "input");
+    assert_eq!(finalize_input_arg["type"]["kind"], "NON_NULL");
+    assert_eq!(
+        finalize_input_arg["type"]["ofType"]["name"],
+        "FinalizeExternalImportInput"
+    );
+
+    let source_warmup_fields = body["data"]["sourceWarmupInput"]["inputFields"]
+        .as_array()
+        .expect("StartExternalImportArrSourceWarmupInput should expose fields");
+    let source_warmup_field = |name: &str| {
+        source_warmup_fields
+            .iter()
+            .find(|field| field["name"] == name)
+            .unwrap_or_else(|| {
+                panic!("StartExternalImportArrSourceWarmupInput.{name} should exist")
+            })
+            .clone()
+    };
+    let kind = source_warmup_field("kind");
+    assert_eq!(kind["type"]["kind"], "NON_NULL");
+    assert_eq!(kind["type"]["ofType"]["name"], "ExternalArrSourceKind");
+    let connection = source_warmup_field("connection");
+    assert_eq!(connection["type"]["kind"], "NON_NULL");
+    assert_eq!(
+        connection["type"]["ofType"]["name"],
+        "ExternalImportConnectionInput"
     );
 
     let cancel_fields: Vec<&str> = body["data"]["cancelPayload"]["fields"]
@@ -3313,10 +3370,46 @@ async fn graphql_introspection_external_import_does_not_project_api_keys() {
         r#"
         {
           downloadClient: __type(name: "ExternalImportDownloadClientPayload") {
-            fields { name type { kind name ofType { kind name } } }
+            fields {
+              name
+              type {
+                kind
+                name
+                ofType {
+                  kind
+                  name
+                  ofType {
+                    kind
+                    name
+                    ofType {
+                      kind
+                      name
+                    }
+                  }
+                }
+              }
+            }
           }
           indexer: __type(name: "ExternalImportIndexerPayload") {
-            fields { name type { kind name ofType { kind name } } }
+            fields {
+              name
+              type {
+                kind
+                name
+                ofType {
+                  kind
+                  name
+                  ofType {
+                    kind
+                    name
+                    ofType {
+                      kind
+                      name
+                    }
+                  }
+                }
+              }
+            }
           }
         }
         "#,
@@ -3355,6 +3448,23 @@ async fn graphql_introspection_external_import_does_not_project_api_keys() {
             api_key_present["type"]["ofType"]["name"], "Boolean",
             "{type_alias}.apiKeyPresent"
         );
+        let source_keys = field(type_alias, "sourceKeys");
+        assert_eq!(
+            source_keys["type"]["kind"], "NON_NULL",
+            "{type_alias}.sourceKeys"
+        );
+        assert_eq!(
+            source_keys["type"]["ofType"]["kind"], "LIST",
+            "{type_alias}.sourceKeys"
+        );
+        assert_eq!(
+            source_keys["type"]["ofType"]["ofType"]["kind"], "NON_NULL",
+            "{type_alias}.sourceKeys"
+        );
+        assert_eq!(
+            source_keys["type"]["ofType"]["ofType"]["ofType"]["name"], "String",
+            "{type_alias}.sourceKeys"
+        );
     }
 }
 
@@ -3366,15 +3476,141 @@ async fn graphql_introspection_external_import_warmup_uses_session_ids() {
         r#"
         {
           queryRoot: __type(name: "QueryRoot") {
-            fields { name args { name type { kind name ofType { kind name } } } }
+            fields {
+              name
+              args {
+                name
+                type {
+                  kind
+                  name
+                  ofType {
+                    kind
+                    name
+                    ofType {
+                      kind
+                      name
+                      ofType {
+                        kind
+                        name
+                      }
+                    }
+                  }
+                }
+              }
+            }
           }
           subscriptionRoot: __type(name: "SubscriptionRoot") {
             fields { name args { name type { kind name ofType { kind name } } } }
           }
+          previewInput: __type(name: "PreviewExternalImportInput") {
+            inputFields {
+              name
+              type {
+                kind
+                name
+                ofType {
+                  kind
+                  name
+                  ofType {
+                    kind
+                    name
+                    ofType {
+                      kind
+                      name
+                    }
+                  }
+                }
+              }
+            }
+          }
+          executeInput: __type(name: "ExecuteExternalImportInput") {
+            inputFields {
+              name
+              type {
+                kind
+                name
+                ofType {
+                  kind
+                  name
+                  ofType {
+                    kind
+                    name
+                    ofType {
+                      kind
+                      name
+                    }
+                  }
+                }
+              }
+            }
+          }
           finalizeInput: __type(name: "FinalizeExternalImportInput") {
-            inputFields { name type { kind name ofType { kind name } } }
+            inputFields {
+              name
+              type {
+                kind
+                name
+                ofType {
+                  kind
+                  name
+                  ofType {
+                    kind
+                    name
+                    ofType {
+                      kind
+                      name
+                    }
+                  }
+                }
+              }
+            }
+          }
+          aggregateProgressInput: __type(name: "ExternalImportAggregateWarmupProgressInput") {
+            inputFields {
+              name
+              type {
+                kind
+                name
+                ofType {
+                  kind
+                  name
+                  ofType {
+                    kind
+                    name
+                    ofType {
+                      kind
+                      name
+                    }
+                  }
+                }
+              }
+            }
+          }
+          mappingInput: __type(name: "ExternalImportSourceLibraryMappingInput") {
+            inputFields {
+              name
+              type {
+                kind
+                name
+                ofType {
+                  kind
+                  name
+                  ofType {
+                    kind
+                    name
+                    ofType {
+                      kind
+                      name
+                    }
+                  }
+                }
+              }
+            }
           }
           progressPayload: __type(name: "ExternalImportMonitorWarmupProgressPayload") {
+            fields { name type { kind name ofType { kind name } } }
+          }
+          aggregateProgressPayload: __type(name: "ExternalImportAggregateWarmupProgressPayload") {
             fields { name type { kind name ofType { kind name } } }
           }
         }
@@ -3400,6 +3636,7 @@ async fn graphql_introspection_external_import_warmup_uses_session_ids() {
     };
     for (root_alias, field_name) in [
         ("queryRoot", "externalImportMonitorWarmupStatus"),
+        ("queryRoot", "externalImportArrSourceWarmupStatus"),
         ("subscriptionRoot", "externalImportMonitorWarmupProgress"),
     ] {
         let arg = root_arg(root_alias, field_name, "sessionId");
@@ -3407,14 +3644,99 @@ async fn graphql_introspection_external_import_warmup_uses_session_ids() {
         assert_eq!(arg["type"]["ofType"]["name"], "ID", "{field_name}");
     }
 
-    let finalize_field = body["data"]["finalizeInput"]["inputFields"]
-        .as_array()
-        .expect("FinalizeExternalImportInput should expose input fields")
-        .iter()
-        .find(|field| field["name"] == "monitorWarmupSessionId")
-        .expect("monitorWarmupSessionId should exist");
-    assert_eq!(finalize_field["type"]["kind"], "SCALAR");
-    assert_eq!(finalize_field["type"]["name"], "ID");
+    let aggregate_arg = root_arg(
+        "queryRoot",
+        "externalImportAggregateWarmupProgress",
+        "input",
+    );
+    assert_eq!(aggregate_arg["type"]["kind"], "NON_NULL");
+    assert_eq!(
+        aggregate_arg["type"]["ofType"]["name"],
+        "ExternalImportAggregateWarmupProgressInput"
+    );
+
+    let input_field = |type_alias: &str, field_name: &str| {
+        body["data"][type_alias]["inputFields"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{type_alias} should expose input fields"))
+            .iter()
+            .find(|field| field["name"] == field_name)
+            .unwrap_or_else(|| panic!("{type_alias}.{field_name} should exist"))
+            .clone()
+    };
+    let assert_non_null_id = |field: Value, label: &str| {
+        assert_eq!(field["type"]["kind"], "NON_NULL", "{label}");
+        assert_eq!(field["type"]["ofType"]["name"], "ID", "{label}");
+    };
+    let assert_non_null_string = |field: Value, label: &str| {
+        assert_eq!(field["type"]["kind"], "NON_NULL", "{label}");
+        assert_eq!(field["type"]["ofType"]["name"], "String", "{label}");
+    };
+    let assert_non_null_named = |field: Value, label: &str, name: &str| {
+        assert_eq!(field["type"]["kind"], "NON_NULL", "{label}");
+        assert_eq!(field["type"]["ofType"]["name"], name, "{label}");
+    };
+    let assert_non_null_list = |field: Value, label: &str, item_name: &str| {
+        assert_eq!(field["type"]["kind"], "NON_NULL", "{label}");
+        assert_eq!(field["type"]["ofType"]["kind"], "LIST", "{label}");
+        assert_eq!(
+            field["type"]["ofType"]["ofType"]["kind"], "NON_NULL",
+            "{label}"
+        );
+        assert_eq!(
+            field["type"]["ofType"]["ofType"]["ofType"]["name"], item_name,
+            "{label}"
+        );
+    };
+
+    for type_alias in [
+        "previewInput",
+        "executeInput",
+        "finalizeInput",
+        "aggregateProgressInput",
+    ] {
+        assert_non_null_list(
+            input_field(type_alias, "sourceWarmupSessionIds"),
+            &format!("{type_alias}.sourceWarmupSessionIds"),
+            "ID",
+        );
+    }
+    assert_non_null_list(
+        input_field("finalizeInput", "mappings"),
+        "finalizeInput.mappings",
+        "ExternalImportSourceLibraryMappingInput",
+    );
+
+    assert_non_null_id(
+        input_field("mappingInput", "sourceWarmupSessionId"),
+        "mappingInput.sourceWarmupSessionId",
+    );
+    assert_non_null_string(
+        input_field("mappingInput", "sourceKey"),
+        "mappingInput.sourceKey",
+    );
+    assert_non_null_named(
+        input_field("mappingInput", "kind"),
+        "mappingInput.kind",
+        "ExternalArrSourceKind",
+    );
+    assert_non_null_string(
+        input_field("mappingInput", "arrRootPath"),
+        "mappingInput.arrRootPath",
+    );
+    assert_non_null_string(
+        input_field("mappingInput", "scryerRootPath"),
+        "mappingInput.scryerRootPath",
+    );
+    assert_non_null_id(
+        input_field("mappingInput", "libraryId"),
+        "mappingInput.libraryId",
+    );
+    assert_non_null_named(
+        input_field("mappingInput", "facet"),
+        "mappingInput.facet",
+        "MediaFacetValue",
+    );
 
     let payload_field = body["data"]["progressPayload"]["fields"]
         .as_array()
@@ -3424,6 +3746,23 @@ async fn graphql_introspection_external_import_warmup_uses_session_ids() {
         .expect("sessionId should exist");
     assert_eq!(payload_field["type"]["kind"], "NON_NULL");
     assert_eq!(payload_field["type"]["ofType"]["name"], "ID");
+
+    let aggregate_payload_fields: Vec<&str> = body["data"]["aggregateProgressPayload"]["fields"]
+        .as_array()
+        .expect("ExternalImportAggregateWarmupProgressPayload should expose fields")
+        .iter()
+        .filter_map(|field| field["name"].as_str())
+        .collect();
+    assert_eq!(
+        aggregate_payload_fields,
+        vec![
+            "status",
+            "titlesTotalKnown",
+            "titlesFetched",
+            "titlesTotal",
+            "errorMessage"
+        ]
+    );
 }
 
 #[tokio::test]

@@ -1,6 +1,6 @@
 import type { DiscoveryHomeInput, DiscoveryHomePayload } from "@/lib/types";
 
-const DISCOVERY_HOME_CACHE_PREFIX = "scryer:discovery:dashboard-home:v3";
+const DISCOVERY_HOME_CACHE_PREFIX = "scryer:discovery:dashboard-home:v4";
 
 type NormalizedDiscoveryHomeInput = {
   includePublic: boolean | null;
@@ -12,12 +12,14 @@ type NormalizedDiscoveryHomeInput = {
 type DiscoveryHomeCacheScope = {
   userId: string | null | undefined;
   uiLanguage: string;
+  authorizationSignature: string;
   input: DiscoveryHomeInput;
 };
 
 type DiscoveryHomeCacheEntry = {
   userId: string;
   uiLanguage: string;
+  authorizationSignature: string;
   input: NormalizedDiscoveryHomeInput;
   cachedAt: number;
   home: DiscoveryHomePayload;
@@ -62,6 +64,7 @@ export function discoveryHomeCacheKey(scope: DiscoveryHomeCacheScope) {
     DISCOVERY_HOME_CACHE_PREFIX,
     encodeURIComponent(userId),
     encodeURIComponent(uiLanguage),
+    encodeURIComponent(scope.authorizationSignature),
     encodeURIComponent(discoveryHomeInputKey(scope.input)),
   ].join(":");
 }
@@ -180,6 +183,7 @@ function isDiscoveryHomeCacheEntry(
     uiLanguage !== null &&
     value.userId === userId &&
     value.uiLanguage === uiLanguage &&
+    value.authorizationSignature === scope.authorizationSignature &&
     typeof value.cachedAt === "number" &&
     Number.isFinite(value.cachedAt) &&
     isNormalizedDiscoveryHomeInput(value.input) &&
@@ -235,6 +239,7 @@ export function writeDiscoveryHomeCache(
       JSON.stringify({
         userId,
         uiLanguage,
+        authorizationSignature: scope.authorizationSignature,
         input: normalizeDiscoveryHomeInput(scope.input),
         cachedAt: Date.now(),
         home,

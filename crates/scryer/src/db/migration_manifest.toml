@@ -672,6 +672,23 @@ file = "postgres/migrations/0146_job_run_listing_indexes.sql"
 engine = "postgres"
 scope = "all"
 
+[[migration]]
+version = 147
+description = "external import monitor source sessions"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0147_external_import_monitor_source_sessions.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0147_external_import_monitor_source_sessions.sql"
+engine = "postgres"
+scope = "all"
+
 [[baseline]]
 through_version = 122
 file = "baselines/0122_baseline.sql"

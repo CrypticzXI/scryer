@@ -1,5 +1,6 @@
 import { useTranslate } from "@/lib/context/translate-context";
 import { cn } from "@/lib/utils";
+import { buildTvdbMovieUrl, buildTvdbSeriesUrl } from "@/lib/utils/external-media-links";
 
 const imdbLogoUrl = `${import.meta.env.BASE_URL}media-sites/imdb.svg`;
 const tvdbLogoUrl = `${import.meta.env.BASE_URL}media-sites/tvdb.svg`;
@@ -86,7 +87,7 @@ export function TvdbMovieExternalLink({
 } & ExternalMediaLinkSizeProps) {
   return (
     <ExternalMediaLinkButton
-      href={tvdbMovieUrl(tvdbId, slug)}
+      href={buildTvdbMovieUrl(tvdbId, slug)}
       site="TVDB"
       logoSrc={tvdbLogoUrl}
       size={size}
@@ -104,7 +105,7 @@ export function TvdbSeriesExternalLink({
 } & ExternalMediaLinkSizeProps) {
   return (
     <ExternalMediaLinkButton
-      href={tvdbSeriesUrl(slug, tvdbId)}
+      href={buildTvdbSeriesUrl(slug, tvdbId)}
       site="TVDB"
       logoSrc={tvdbLogoUrl}
       size={size}
@@ -182,31 +183,6 @@ function imdbTitleUrl(imdbId: string | null | undefined) {
     return `https://www.imdb.com/title/${trimmed}`;
   }
   return `https://www.imdb.com/find?q=${encodeURIComponent(trimmed)}&s=tt`;
-}
-
-function tvdbMovieUrl(tvdbIdValue: string | null | undefined, slugValue?: string | null) {
-  const tvdbId = tvdbIdValue?.trim();
-  if (!tvdbId) {
-    return null;
-  }
-  const slug = slugValue?.trim();
-  const base = "https://www.thetvdb.com";
-  if (slug) {
-    return `${base}/movies/${encodeURIComponent(slug)}`;
-  }
-  return `${base}/?id=${encodeURIComponent(tvdbId)}`;
-}
-
-function tvdbSeriesUrl(slugValue?: string | null, tvdbIdValue?: string | null) {
-  const slug = slugValue?.trim();
-  if (slug) {
-    return `https://thetvdb.com/series/${slug}`;
-  }
-  const tvdbId = tvdbIdValue?.trim();
-  if (!tvdbId) {
-    return null;
-  }
-  return `https://thetvdb.com/?id=${encodeURIComponent(tvdbId)}`;
 }
 
 function tmdbUrl(tmdbId: string | null | undefined, mediaType: "movie" | "tv") {

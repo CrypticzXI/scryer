@@ -429,6 +429,11 @@ fn embedded_migration_bundle_includes_external_import_monitor_snapshot_chunk_tab
             .any(|key| key == "0117_external_import_monitor_snapshot_chunks"),
         "embedded migration bundle is missing 0117_external_import_monitor_snapshot_chunks: {keys:?}"
     );
+    assert!(
+        keys.iter()
+            .any(|key| key == "0147_external_import_monitor_source_sessions"),
+        "embedded migration bundle is missing 0147_external_import_monitor_source_sessions: {keys:?}"
+    );
 }
 
 #[tokio::test]

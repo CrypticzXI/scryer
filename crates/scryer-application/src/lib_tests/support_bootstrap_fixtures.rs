@@ -433,6 +433,7 @@ pub(super) fn make_movie_metadata(tvdb_id: i64, name: &str) -> MovieMetadata {
         runtime_minutes: 100,
         sort_title: name.to_string(),
         imdb_id: format!("tt{tvdb_id:07}"),
+        tmdb_id: None,
         anidb_id: None,
         genres: vec!["Drama".to_string()],
         studio: "Test Studio".to_string(),

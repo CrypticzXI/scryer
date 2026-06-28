@@ -65,7 +65,7 @@ impl AppUseCase {
             return Err(AppError::Validation("request title is required".into()));
         }
 
-        let external_ids = normalize_media_request_external_ids(input.external_ids)?;
+        let mut external_ids = normalize_media_request_external_ids(input.external_ids)?;
         if external_ids.is_empty() {
             return Err(AppError::Validation(
                 "media requests must include SMG external identifiers".into(),
@@ -96,6 +96,10 @@ impl AppUseCase {
 
         self.require_library_permission(actor, &library.id, LibraryPermission::Request)
             .await?;
+        let metadata_enrichment = self
+            .enrich_media_request_metadata(&input.facet, external_ids)
+            .await;
+        external_ids = metadata_enrichment.external_ids;
         self.ensure_request_subject_is_not_in_library(&library.id, &external_ids)
             .await?;
         let (requested_quality_profile_id, requested_quality_profile_name) = self
@@ -106,9 +110,7 @@ impl AppUseCase {
             .await?;
         let requested_monitor_type =
             normalize_requested_monitor_type(&input.facet, input.requested_monitor_type)?;
-        let poster_url = self
-            .smg_media_request_poster_url(&input.facet, &external_ids)
-            .await;
+        let poster_url = metadata_enrichment.poster_url;
 
         let request = NewMediaRequest {
             id: Id::new().0,
@@ -853,7 +855,7 @@ impl AppUseCase {
     }
 }
 
-fn normalize_media_request_external_ids(
+pub(crate) fn normalize_media_request_external_ids(
     external_ids: Vec<ExternalId>,
 ) -> AppResult<Vec<ExternalId>> {
     let mut seen = BTreeSet::new();
@@ -929,44 +931,73 @@ fn is_smg_request_correlation_external_id(external_id: &ExternalId) -> bool {
     matches!(external_id.source.as_str(), "tvdb" | "imdb" | "tmdb")
 }
 
+struct MediaRequestMetadataEnrichment {
+    external_ids: Vec<ExternalId>,
+    poster_url: Option<String>,
+}
+
 impl AppUseCase {
-    async fn smg_media_request_poster_url(
+    async fn enrich_media_request_metadata(
         &self,
         facet: &MediaFacet,
-        external_ids: &[ExternalId],
-    ) -> Option<String> {
-        let tvdb_id = external_ids
+        external_ids: Vec<ExternalId>,
+    ) -> MediaRequestMetadataEnrichment {
+        let Some(tvdb_id) = external_ids
             .iter()
             .find(|external_id| external_id.source == "tvdb")
-            .and_then(|external_id| external_id.value.trim().parse::<i64>().ok())?;
-        let language = self.metadata_language().await;
-        let result = match facet {
-            MediaFacet::Movie => self
-                .services
-                .library
-                .metadata_gateway
-                .get_movie(tvdb_id, &language)
-                .await
-                .map(|metadata| metadata.poster_url),
-            MediaFacet::Series | MediaFacet::Anime => self
-                .services
-                .library
-                .metadata_gateway
-                .get_series(tvdb_id, &language)
-                .await
-                .map(|metadata| metadata.poster_url),
+            .and_then(|external_id| external_id.value.trim().parse::<i64>().ok())
+        else {
+            return MediaRequestMetadataEnrichment {
+                external_ids,
+                poster_url: None,
+            };
         };
 
-        match result {
-            Ok(poster_url) => normalized_optional_string(Some(poster_url)),
+        let language = self.metadata_language().await;
+        let Some(handler) = self.facet_registry.get(facet) else {
+            tracing::warn!(
+                tvdb_id,
+                facet = facet.as_str(),
+                "failed to enrich media request external IDs because facet handler is missing"
+            );
+            return MediaRequestMetadataEnrichment {
+                external_ids,
+                poster_url: None,
+            };
+        };
+        match handler
+            .hydrate_metadata(
+                self.services.library.metadata_gateway.as_ref(),
+                tvdb_id,
+                &language,
+            )
+            .await
+        {
+            Ok(result) => {
+                let poster_url =
+                    normalized_optional_string(result.metadata_update.poster_url.clone());
+                let enriched =
+                    crate::catalog::facets::handler::external_ids_from_hydration_metadata(
+                        external_ids.clone(),
+                        &result.metadata_update,
+                    );
+                MediaRequestMetadataEnrichment {
+                    external_ids: normalize_media_request_external_ids(enriched)
+                        .unwrap_or(external_ids),
+                    poster_url,
+                }
+            }
             Err(error) => {
                 tracing::warn!(
                     error = %error,
                     tvdb_id,
                     facet = facet.as_str(),
-                    "failed to resolve media request poster from SMG metadata"
+                    "failed to enrich media request external IDs from hydrated metadata"
                 );
-                None
+                MediaRequestMetadataEnrichment {
+                    external_ids,
+                    poster_url: None,
+                }
             }
         }
     }

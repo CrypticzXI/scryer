@@ -1212,6 +1212,7 @@ pub(crate) fn snapshot_chunk_from_row(
     let facet_raw = row.text("facet")?;
     let entry_kind_raw = row.text("entry_kind")?;
     Ok(ExternalImportMonitorSnapshotChunk {
+        session_id: row.text("session_id")?,
         facet: MediaFacet::parse(&facet_raw).ok_or_else(|| {
             AppError::Repository(format!("invalid monitor snapshot chunk facet: {facet_raw}"))
         })?,

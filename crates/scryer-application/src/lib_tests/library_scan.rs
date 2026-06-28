@@ -3196,6 +3196,7 @@ async fn resolve_pending_import_creates_unmonitored_movie_title_and_clears_item(
                     runtime_minutes: 101,
                     sort_title: "Matched Movie".into(),
                     imdb_id: "tt0123456".into(),
+                    tmdb_id: None,
                     anidb_id: None,
                     genres: vec!["Drama".into()],
                     studio: "Test Studio".into(),
@@ -3281,6 +3282,7 @@ async fn resolve_ignored_pending_import_creates_unmonitored_movie_title_and_clea
                     runtime_minutes: 101,
                     sort_title: "Matched Movie".into(),
                     imdb_id: "tt0123456".into(),
+                    tmdb_id: None,
                     anidb_id: None,
                     genres: vec!["Drama".into()],
                     studio: "Test Studio".into(),
@@ -3401,6 +3403,7 @@ async fn hydrate_titles_bulk_updates_title_name_for_selected_metadata_language()
                     runtime_minutes: 155,
                     sort_title: "デューン".into(),
                     imdb_id: "tt1160419".into(),
+                    tmdb_id: None,
                     anidb_id: None,
                     genres: vec!["Science Fiction".into()],
                     studio: "Legendary".into(),
@@ -3462,6 +3465,59 @@ async fn hydrate_titles_bulk_updates_title_name_for_selected_metadata_language()
         .expect("list titles");
     assert_eq!(persisted[0].name, "デューン");
     assert_eq!(persisted[0].metadata_language.as_deref(), Some("jpn"));
+}
+
+#[tokio::test]
+async fn hydrate_titles_bulk_persists_movie_tmdb_external_id() {
+    let mut movie = make_movie_metadata(91_501, "Hydrated Movie");
+    movie.imdb_id = "tt9150100".to_string();
+    movie.tmdb_id = Some(815_010);
+    movie.anidb_id = Some(715_010);
+    let metadata_gateway = Arc::new(MockMetadataGateway {
+        movies: HashMap::from([(movie.tvdb_id, movie)]),
+    });
+    let (app, _user, titles) = bootstrap_with_metadata_gateway_and_titles(metadata_gateway);
+    let title = make_due_hydration_title("movie-tmdb-hydration", MediaFacet::Movie, 91_501);
+
+    TitleRepository::create(&*titles, title.clone())
+        .await
+        .expect("seed due movie title");
+
+    let mut outcome = app
+        .hydrate_titles_bulk(vec![crate::catalog_workflow::HydrationTarget {
+            title: title.clone(),
+            requested_tvdb_id: None,
+            sync_wanted_after_completion: false,
+            source: crate::catalog_workflow::HydrationSource::Interactive,
+        }])
+        .await
+        .expect("hydrate title");
+
+    let hydrated = outcome
+        .hydrated_titles
+        .remove(&title.id)
+        .expect("hydrated title should be returned");
+    assert!(
+        hydrated
+            .external_ids
+            .iter()
+            .any(|external_id| { external_id.source == "tmdb" && external_id.value == "815010" })
+    );
+
+    let persisted = app
+        .services
+        .catalog
+        .titles
+        .get_by_id(&title.id)
+        .await
+        .expect("load hydrated title")
+        .expect("hydrated title should exist");
+    assert!(
+        persisted
+            .external_ids
+            .iter()
+            .any(|external_id| { external_id.source == "tmdb" && external_id.value == "815010" })
+    );
 }
 
 #[tokio::test]

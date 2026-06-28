@@ -341,12 +341,13 @@ fn metadata_identity_hint_from_library_scan_hint(
     identity_hint.has_external_ids().then_some(identity_hint)
 }
 
-fn external_import_identity_hint_for_leaf_key(
+fn external_import_identity_hint_for_scan_path(
     scan_hints: Option<&LibraryScanHintSet>,
     facet: LibraryScanHintFacet,
     leaf_key: Option<&str>,
+    full_path_key: Option<&str>,
 ) -> Option<MetadataIdentityHint> {
-    let scan_hint = scan_hints?.hint_for_stored_path(facet, leaf_key?)?;
+    let scan_hint = scan_hints?.hint_for_scan_path(facet, leaf_key?, full_path_key)?;
     metadata_identity_hint_from_library_scan_hint(Some(scan_hint))
 }
 
@@ -1549,16 +1550,18 @@ async fn build_prepared_movie_library_scan_candidate(
         fallback_year: extracted_year_hint,
     });
     let leaf_key = crate::library_scan_file_leaf_key(&file.path);
+    let full_path_key = crate::library_scan_file_full_path_key(&file.path);
     let identity_hint = if local_identity_hint
         .as_ref()
         .is_some_and(MetadataIdentityHint::has_external_ids)
     {
         local_identity_hint
     } else {
-        external_import_identity_hint_for_leaf_key(
+        external_import_identity_hint_for_scan_path(
             scan_hints,
             LibraryScanHintFacet::Movie,
             leaf_key.as_deref(),
+            full_path_key.as_deref(),
         )
         .or(local_identity_hint)
     };
@@ -1678,17 +1681,20 @@ async fn prepare_series_library_scan_candidate(
         fallback_query: &fallback_query,
         fallback_year: extracted_year_hint,
     });
-    let folder_key = crate::library_scan_folder_leaf_key(folder.to_string_lossy().as_ref());
+    let folder_path = folder.to_string_lossy();
+    let folder_key = crate::library_scan_folder_leaf_key(folder_path.as_ref());
+    let full_path_key = crate::library_scan_folder_full_path_key(folder_path.as_ref());
     let identity_hint = if local_identity_hint
         .as_ref()
         .is_some_and(MetadataIdentityHint::has_external_ids)
     {
         local_identity_hint
     } else {
-        external_import_identity_hint_for_leaf_key(
+        external_import_identity_hint_for_scan_path(
             scan_hints,
             LibraryScanHintFacet::Series,
             folder_key.as_deref(),
+            full_path_key.as_deref(),
         )
         .or(local_identity_hint)
     };
@@ -1784,16 +1790,18 @@ pub(crate) async fn prepare_series_library_scan_candidate_from_file(
         fallback_year: year_hint,
     });
     let leaf_key = crate::library_scan_file_leaf_key(&file.path);
+    let full_path_key = crate::library_scan_file_full_path_key(&file.path);
     let identity_hint = if local_identity_hint
         .as_ref()
         .is_some_and(MetadataIdentityHint::has_external_ids)
     {
         local_identity_hint
     } else {
-        external_import_identity_hint_for_leaf_key(
+        external_import_identity_hint_for_scan_path(
             scan_hints,
             LibraryScanHintFacet::Series,
             leaf_key.as_deref(),
+            full_path_key.as_deref(),
         )
         .or(local_identity_hint)
     };
@@ -2302,6 +2310,7 @@ mod tests {
             source: LibraryScanHintSource::ExternalImportRadarr,
             facet: LibraryScanHintFacet::Movie,
             path_key: path_to_stored_string(Path::new("/movies/The Bourne Supremacy (2004)")),
+            full_path_key: None,
             ids: vec![ExternalIdHint {
                 provider: ExternalIdProvider::Tmdb,
                 value: "2502".to_string(),
@@ -2369,6 +2378,7 @@ mod tests {
             source: LibraryScanHintSource::ExternalImportRadarr,
             facet: LibraryScanHintFacet::Movie,
             path_key: crate::library_scan_file_leaf_key(arr_file_path).expect("leaf key"),
+            full_path_key: None,
             ids: vec![ExternalIdHint {
                 provider: ExternalIdProvider::Tmdb,
                 value: "2502".to_string(),
@@ -2434,6 +2444,7 @@ mod tests {
             facet: LibraryScanHintFacet::Series,
             path_key: crate::library_scan_folder_leaf_key(r"D:\Series\Foundation (2021)")
                 .expect("leaf key"),
+            full_path_key: None,
             ids: vec![ExternalIdHint {
                 provider: ExternalIdProvider::Tvdb,
                 value: "366972".to_string(),
@@ -2470,6 +2481,7 @@ mod tests {
                 r"D:\Series\Foundation (2021)\Season 01\Foundation.S01E01.mkv",
             )
             .expect("leaf key"),
+            full_path_key: None,
             ids: vec![ExternalIdHint {
                 provider: ExternalIdProvider::Tvdb,
                 value: "366972".to_string(),

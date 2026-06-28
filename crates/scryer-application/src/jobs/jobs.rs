@@ -2316,7 +2316,14 @@ impl AppUseCase {
             .iter()
             .flat_map(|page| page.items.iter().cloned())
             .collect::<Vec<_>>();
-        let items = snapshot_item_records(&run_id, &run_id, &snapshot_titles, completed_at)?;
+        let subject_provenance = library_context.subject_provenance_by_key();
+        let items = snapshot_item_records(
+            &run_id,
+            &run_id,
+            &snapshot_titles,
+            &subject_provenance,
+            completed_at,
+        )?;
         let facets = snapshot_facet_records(&run_id, &pages)?;
         let submitted_subjects = library_context.submitted_subject_records(&run_id)?;
 
@@ -2544,8 +2551,14 @@ impl AppUseCase {
             });
         }
 
-        let items =
-            incremental_item_records(&run_id, &base_generation_id, &result.items, completed_at)?;
+        let subject_provenance = library_context.subject_provenance_by_key();
+        let items = incremental_item_records(
+            &run_id,
+            &base_generation_id,
+            &result.items,
+            &subject_provenance,
+            completed_at,
+        )?;
         let mut tombstone_target_keys = result
             .affected_target_keys
             .iter()

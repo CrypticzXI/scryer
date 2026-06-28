@@ -460,6 +460,21 @@ impl AppUseCase {
             .await
     }
 
+    pub async fn external_import_library(
+        &self,
+        actor: &User,
+        library_id: &str,
+    ) -> AppResult<Library> {
+        self.require_app_permission(actor, AppPermission::ManageCatalogSettings)
+            .await?;
+        self.services
+            .catalog
+            .libraries
+            .get_by_id(library_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("library {library_id}")))
+    }
+
     pub async fn create_library(
         &self,
         actor: &User,

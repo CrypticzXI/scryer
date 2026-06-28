@@ -392,10 +392,11 @@ pub use quality_profile::{
     evaluate_against_profile, parse_profile_catalog_from_json,
 };
 pub use services::{
-    AppServices, AppServicesBuilder, AppUseCase, ExternalImportMonitorWarmupBeginResult,
-    ExternalImportMonitorWarmupPhase, ExternalImportMonitorWarmupPhaseProgress,
-    ExternalImportMonitorWarmupProgressSnapshot, ExternalImportMonitorWarmupStatus,
-    ProviderCatalogFamily,
+    AppServices, AppServicesBuilder, AppUseCase, ExternalImportArrSourceKind,
+    ExternalImportArrSourceSeriesEntry, ExternalImportArrSourceWarmupResult,
+    ExternalImportMonitorWarmupBeginResult, ExternalImportMonitorWarmupPhase,
+    ExternalImportMonitorWarmupPhaseProgress, ExternalImportMonitorWarmupProgressSnapshot,
+    ExternalImportMonitorWarmupStatus, ProviderCatalogFamily,
 };
 pub use settings::keys::{
     ANIME_FILLER_POLICY_KEY, ANIME_INTER_SEASON_MOVIES_KEY, ANIME_MONITOR_FILLER_MOVIES_KEY,
@@ -471,11 +472,12 @@ pub use types::{
     WebauthnChallengeStart, WebauthnChallengeType, WebauthnCredentialRecord,
 };
 pub use types::{
-    ExternalIdHint, ExternalIdProvider, ExternalImportMonitorEpisodeEntry,
-    ExternalImportMonitorMovieEntry, ExternalImportMonitorSeasonEntry,
-    ExternalImportMonitorSeriesEntry, ExternalImportMonitorSnapshotChunk,
-    ExternalImportMonitorSnapshotEntryKind, LibraryScanHint, LibraryScanHintFacet,
-    LibraryScanHintSet, LibraryScanHintSource, library_scan_file_leaf_key,
+    EXTERNAL_IMPORT_MONITOR_APPLY_SESSION_ID, ExternalIdHint, ExternalIdProvider,
+    ExternalImportMonitorEpisodeEntry, ExternalImportMonitorMovieEntry,
+    ExternalImportMonitorSeasonEntry, ExternalImportMonitorSeriesEntry,
+    ExternalImportMonitorSnapshotChunk, ExternalImportMonitorSnapshotEntryKind, LibraryScanHint,
+    LibraryScanHintFacet, LibraryScanHintSet, LibraryScanHintSource,
+    library_scan_file_full_path_key, library_scan_file_leaf_key, library_scan_folder_full_path_key,
     library_scan_folder_leaf_key,
 };
 pub use types::{

@@ -1,4 +1,5 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::{Arc, OnceLock};
 
 use async_graphql::{Context, ID, Object, Result as GqlResult};
 use chrono::Utc;
@@ -7,17 +8,19 @@ use scryer_application::external_import::{
     ExternalArrClient,
 };
 use scryer_application::{
-    AppError, ExternalIdHint, ExternalIdProvider, ExternalImportLibraryPathsSelection,
+    AppError, ExternalIdHint, ExternalIdProvider, ExternalImportArrSourceKind as AppArrSourceKind,
+    ExternalImportArrSourceSeriesEntry, ExternalImportArrSourceWarmupResult,
     ExternalImportMonitorEpisodeEntry, ExternalImportMonitorMovieEntry,
     ExternalImportMonitorSeasonEntry, ExternalImportMonitorSeriesEntry,
     ExternalImportMonitorSnapshotChunk, ExternalImportMonitorSnapshotEntryKind,
     ExternalImportMonitorWarmupPhase, ExternalImportMonitorWarmupProgressSnapshot,
     ExternalImportMonitorWarmupStatus, IndexerConfigUpdate, LibraryScanHint, LibraryScanHintFacet,
-    LibraryScanHintSet, LibraryScanHintSource, library_scan_file_leaf_key,
-    library_scan_folder_leaf_key,
+    LibraryScanHintSet, LibraryScanHintSource, library_scan_file_full_path_key,
+    library_scan_file_leaf_key, library_scan_folder_full_path_key, library_scan_folder_leaf_key,
 };
 use scryer_domain::{AppPermission, MediaFacet, NewDownloadClientConfig, NewIndexerConfig};
-use serde::Serialize;
+use serde::{Serialize, de::DeserializeOwned};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
@@ -31,18 +34,32 @@ use crate::types::*;
 #[derive(Default)]
 pub(crate) struct ExternalImportMutations;
 
-const SONARR_EPISODE_FETCH_CONCURRENCY: usize = 32;
+const SONARR_EPISODE_FETCH_CONCURRENCY_PER_INSTANCE: usize = 16;
+const SONARR_ACTIVE_EPISODE_INSTANCE_CONCURRENCY: usize = 2;
 const SNAPSHOT_CHUNK_FLUSH_BYTES: usize = 4 * 1024 * 1024;
+const SOURCE_CHUNK_READ_BATCH_SIZE: i32 = 32;
+const EXTERNAL_IMPORT_TERMINAL_SESSION_TTL_HOURS: i64 = 2;
+
+static SONARR_ACTIVE_EPISODE_INSTANCE_SEMAPHORE: OnceLock<Arc<Semaphore>> = OnceLock::new();
+
+fn sonarr_active_episode_instance_semaphore() -> Arc<Semaphore> {
+    SONARR_ACTIVE_EPISODE_INSTANCE_SEMAPHORE
+        .get_or_init(|| Arc::new(Semaphore::new(SONARR_ACTIVE_EPISODE_INSTANCE_CONCURRENCY)))
+        .clone()
+}
 
 #[derive(Clone)]
-struct ExternalImportWarmupConnections {
-    sonarr: Option<ExternalImportConnectionInput>,
-    radarr: Option<ExternalImportConnectionInput>,
+struct ExternalArrImportSource {
+    kind: AppArrSourceKind,
+    source_key: String,
+    base_url: String,
+    api_key: String,
 }
 
 struct SnapshotChunkWriter {
     app: scryer_application::AppUseCase,
     actor: scryer_domain::User,
+    session_id: String,
     facet: MediaFacet,
     entry_kind: ExternalImportMonitorSnapshotEntryKind,
     chunk_index: i32,
@@ -53,12 +70,14 @@ impl SnapshotChunkWriter {
     fn new(
         app: scryer_application::AppUseCase,
         actor: scryer_domain::User,
+        session_id: String,
         facet: MediaFacet,
         entry_kind: ExternalImportMonitorSnapshotEntryKind,
     ) -> Self {
         Self {
             app,
             actor,
+            session_id,
             facet,
             entry_kind,
             chunk_index: 0,
@@ -87,6 +106,7 @@ impl SnapshotChunkWriter {
 
         let payload_ndjson = std::mem::take(&mut self.buffered_ndjson);
         let chunk = ExternalImportMonitorSnapshotChunk {
+            session_id: self.session_id.clone(),
             facet: self.facet.clone(),
             entry_kind: self.entry_kind.clone(),
             chunk_index: self.chunk_index,
@@ -107,6 +127,52 @@ impl SnapshotChunkWriter {
     }
 }
 
+async fn read_external_import_source_chunk_entries<T: DeserializeOwned>(
+    app: &scryer_application::AppUseCase,
+    actor: &scryer_domain::User,
+    session_id: &str,
+    facet: MediaFacet,
+    entry_kind: ExternalImportMonitorSnapshotEntryKind,
+) -> scryer_application::AppResult<Vec<T>> {
+    let mut entries = Vec::new();
+    let mut after_chunk_index = None;
+
+    loop {
+        let chunks = app
+            .list_external_import_monitor_snapshot_chunks_for_session(
+                actor,
+                session_id,
+                facet.clone(),
+                entry_kind.clone(),
+                after_chunk_index,
+                SOURCE_CHUNK_READ_BATCH_SIZE,
+            )
+            .await?;
+        if chunks.is_empty() {
+            break;
+        }
+
+        for chunk in chunks {
+            after_chunk_index = Some(chunk.chunk_index);
+            for line in chunk
+                .payload_ndjson
+                .lines()
+                .map(str::trim)
+                .filter(|line| !line.is_empty())
+            {
+                let entry = serde_json::from_str::<T>(line).map_err(|err| {
+                    AppError::Repository(format!(
+                        "failed to parse external import source chunk entry: {err}"
+                    ))
+                })?;
+                entries.push(entry);
+            }
+        }
+    }
+
+    Ok(entries)
+}
+
 async fn clear_external_import_monitor_apply_target(
     app: &scryer_application::AppUseCase,
     actor: &scryer_domain::User,
@@ -124,6 +190,293 @@ async fn clear_external_import_monitor_apply_targets(
         clear_external_import_monitor_apply_target(app, actor, facet).await?;
     }
     Ok(())
+}
+
+fn app_arr_source_kind(kind: ExternalArrSourceKind) -> AppArrSourceKind {
+    match kind {
+        ExternalArrSourceKind::Sonarr => AppArrSourceKind::Sonarr,
+        ExternalArrSourceKind::Radarr => AppArrSourceKind::Radarr,
+    }
+}
+
+fn gql_arr_source_kind(kind: AppArrSourceKind) -> ExternalArrSourceKind {
+    match kind {
+        AppArrSourceKind::Sonarr => ExternalArrSourceKind::Sonarr,
+        AppArrSourceKind::Radarr => ExternalArrSourceKind::Radarr,
+    }
+}
+
+fn normalized_external_arr_source_key(
+    kind: AppArrSourceKind,
+    base_url: &str,
+) -> scryer_application::AppResult<String> {
+    let trimmed = base_url.trim().trim_end_matches('/').to_ascii_lowercase();
+    if trimmed.is_empty() {
+        return Err(AppError::Validation("Arr base URL is required".into()));
+    }
+    Ok(format!("{}:{trimmed}", kind.as_str()))
+}
+
+fn source_from_input(
+    kind: ExternalArrSourceKind,
+    connection: ExternalImportConnectionInput,
+) -> scryer_application::AppResult<ExternalArrImportSource> {
+    let kind = app_arr_source_kind(kind);
+    let source_key = normalized_external_arr_source_key(kind, &connection.base_url)?;
+    Ok(ExternalArrImportSource {
+        kind,
+        source_key,
+        base_url: connection.base_url,
+        api_key: connection.api_key,
+    })
+}
+
+fn client_for_arr_source(
+    source: &ExternalArrImportSource,
+) -> scryer_application::AppResult<ExternalArrClient> {
+    match source.kind {
+        AppArrSourceKind::Sonarr => {
+            ExternalArrClient::for_sonarr_v4(source.base_url.clone(), source.api_key.clone())
+        }
+        AppArrSourceKind::Radarr => {
+            ExternalArrClient::for_radarr_v6(source.base_url.clone(), source.api_key.clone())
+        }
+    }
+}
+
+fn source_connection_fingerprint(source: &ExternalArrImportSource) -> String {
+    format!(
+        "{}|{}|{}",
+        source.kind.as_str(),
+        source
+            .base_url
+            .trim()
+            .trim_end_matches('/')
+            .to_ascii_lowercase(),
+        source.api_key.trim()
+    )
+}
+
+fn gql_warmup_status(
+    status: ExternalImportMonitorWarmupStatus,
+) -> ExternalImportMonitorWarmupStatusValue {
+    match status {
+        ExternalImportMonitorWarmupStatus::Queued => ExternalImportMonitorWarmupStatusValue::Queued,
+        ExternalImportMonitorWarmupStatus::Running => {
+            ExternalImportMonitorWarmupStatusValue::Running
+        }
+        ExternalImportMonitorWarmupStatus::Completed => {
+            ExternalImportMonitorWarmupStatusValue::Completed
+        }
+        ExternalImportMonitorWarmupStatus::Canceled => {
+            ExternalImportMonitorWarmupStatusValue::Canceled
+        }
+        ExternalImportMonitorWarmupStatus::Failed => ExternalImportMonitorWarmupStatusValue::Failed,
+    }
+}
+
+fn normalize_import_path_key(path: &str) -> String {
+    path.trim()
+        .replace('\\', "/")
+        .trim_end_matches('/')
+        .to_ascii_lowercase()
+}
+
+fn remap_import_path(path: Option<String>, arr_root: &str, scryer_root: &str) -> Option<String> {
+    let path = path?;
+    let trimmed_path = path.trim();
+    let arr_root_trimmed = arr_root.trim().trim_end_matches('/').trim_end_matches('\\');
+    let scryer_root_trimmed = scryer_root
+        .trim()
+        .trim_end_matches('/')
+        .trim_end_matches('\\');
+    if trimmed_path.is_empty() || arr_root_trimmed.is_empty() || scryer_root_trimmed.is_empty() {
+        return Some(path);
+    }
+    let path_key = normalize_import_path_key(trimmed_path);
+    let root_key = normalize_import_path_key(arr_root_trimmed);
+    if path_key == root_key {
+        return Some(scryer_root_trimmed.to_string());
+    }
+    let slash_prefix = format!("{root_key}/");
+    let backslash_prefix = format!("{root_key}\\");
+    let suffix = if path_key.starts_with(&slash_prefix) {
+        trimmed_path.get(arr_root_trimmed.len() + 1..)
+    } else if path_key.starts_with(&backslash_prefix) {
+        trimmed_path.get(arr_root_trimmed.len() + 1..)
+    } else {
+        None
+    };
+    let Some(suffix) = suffix else {
+        return Some(path);
+    };
+    let separator = if scryer_root_trimmed.contains('\\') && !scryer_root_trimmed.contains('/') {
+        "\\"
+    } else {
+        "/"
+    };
+    Some(format!("{scryer_root_trimmed}{separator}{suffix}"))
+}
+
+#[derive(Clone)]
+struct ResolvedSourceMapping {
+    arr_root_path: String,
+    scryer_root_path: String,
+    facet: MediaFacet,
+}
+
+fn mapping_key(session_id: &str, source_key: &str, arr_root_path: &str) -> String {
+    format!(
+        "{}|{}|{}",
+        session_id,
+        source_key,
+        normalize_import_path_key(arr_root_path)
+    )
+}
+
+fn source_mapping_root_paths(source: &ExternalImportArrSourceWarmupResult) -> Vec<String> {
+    let mut roots = BTreeMap::<String, String>::new();
+    for root in &source.root_folders {
+        let key = normalize_import_path_key(&root.path);
+        if !key.is_empty() {
+            roots.entry(key).or_insert_with(|| root.path.clone());
+        }
+    }
+    for root_path in &source.title_root_paths {
+        let key = normalize_import_path_key(root_path);
+        if !key.is_empty() {
+            roots.entry(key).or_insert_with(|| root_path.clone());
+        }
+    }
+    roots.into_values().collect()
+}
+
+fn movie_monitor_merge_key(entry: &ExternalImportMonitorMovieEntry) -> String {
+    entry
+        .tmdb_id
+        .as_deref()
+        .map(|value| format!("tmdb:{value}"))
+        .or_else(|| {
+            entry
+                .imdb_id
+                .as_deref()
+                .map(|value| format!("imdb:{value}"))
+        })
+        .or_else(|| entry.path.as_deref().map(|value| format!("path:{value}")))
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+fn movie_monitor_merge_key_for_source(
+    entry: &ExternalImportMonitorMovieEntry,
+    source_key: &str,
+    arr_movie_id: i64,
+) -> String {
+    let key = movie_monitor_merge_key(entry);
+    if key == "unknown" {
+        format!("source:{source_key}:movie:{arr_movie_id}")
+    } else {
+        key
+    }
+}
+
+fn series_monitor_merge_key(entry: &ExternalImportMonitorSeriesEntry) -> String {
+    entry
+        .tvdb_id
+        .as_deref()
+        .map(|value| format!("tvdb:{value}"))
+        .or_else(|| entry.path.as_deref().map(|value| format!("path:{value}")))
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+fn series_monitor_merge_key_for_source(
+    facet: &MediaFacet,
+    entry: &ExternalImportMonitorSeriesEntry,
+    source_key: &str,
+    arr_series_id: i64,
+) -> String {
+    let key = series_monitor_merge_key(entry);
+    if key == "unknown" {
+        format!(
+            "facet:{}:source:{source_key}:series:{arr_series_id}",
+            facet.as_str()
+        )
+    } else {
+        format!("facet:{}:{key}", facet.as_str())
+    }
+}
+
+fn merge_series_monitor_entry(
+    existing: &mut ExternalImportMonitorSeriesEntry,
+    incoming: ExternalImportMonitorSeriesEntry,
+) {
+    existing.monitored |= incoming.monitored;
+    let mut seasons = existing
+        .seasons
+        .iter()
+        .map(|season| (season.season_number, season.monitored))
+        .collect::<HashMap<_, _>>();
+    for season in incoming.seasons {
+        seasons
+            .entry(season.season_number)
+            .and_modify(|monitored| *monitored |= season.monitored)
+            .or_insert(season.monitored);
+    }
+    let mut season_entries = seasons
+        .into_iter()
+        .map(
+            |(season_number, monitored)| ExternalImportMonitorSeasonEntry {
+                season_number,
+                monitored,
+            },
+        )
+        .collect::<Vec<_>>();
+    season_entries.sort_by_key(|season| season.season_number);
+    existing.seasons = season_entries;
+
+    let mut episodes = existing
+        .episodes
+        .iter()
+        .map(|episode| {
+            (
+                episode
+                    .tvdb_id
+                    .as_deref()
+                    .map(|value| format!("tvdb:{value}"))
+                    .unwrap_or_else(|| {
+                        format!(
+                            "number:{}:{}",
+                            episode.season_number, episode.episode_number
+                        )
+                    }),
+                episode.clone(),
+            )
+        })
+        .collect::<HashMap<_, _>>();
+    for episode in incoming.episodes {
+        let key = episode
+            .tvdb_id
+            .as_deref()
+            .map(|value| format!("tvdb:{value}"))
+            .unwrap_or_else(|| {
+                format!(
+                    "number:{}:{}",
+                    episode.season_number, episode.episode_number
+                )
+            });
+        episodes
+            .entry(key)
+            .and_modify(|existing| existing.monitored |= episode.monitored)
+            .or_insert(episode);
+    }
+    let mut episode_entries = episodes.into_values().collect::<Vec<_>>();
+    episode_entries.sort_by_key(|episode| {
+        (
+            episode.season_number,
+            episode.episode_number,
+            episode.tvdb_id.clone(),
+        )
+    });
+    existing.episodes = episode_entries;
 }
 
 #[derive(Debug, Clone)]
@@ -175,7 +528,7 @@ impl ProwlarrImportGroup {
 
     fn to_payload(&self) -> ExternalImportIndexerPayload {
         ExternalImportIndexerPayload {
-            sources: self.sources.clone(),
+            source_keys: self.sources.clone(),
             name: prowlarr_display_name(&self.base_url),
             implementation: "Prowlarr".to_string(),
             scryer_provider_type: Some("prowlarr".to_string()),
@@ -344,6 +697,89 @@ fn imported_indexer_config_json(
 
 #[Object]
 impl ExternalImportMutations {
+    async fn start_external_import_arr_source_warmup(
+        &self,
+        ctx: &Context<'_>,
+        input: StartExternalImportArrSourceWarmupInput,
+    ) -> GqlResult<ExternalImportMonitorWarmupProgressPayload> {
+        require_app_permission(ctx, AppPermission::ManageCatalogSettings).await?;
+        let actor = actor_from_ctx(ctx)?;
+        let app = app_from_ctx(ctx)?;
+        app.clear_stale_external_import_arr_source_chunks_once(&actor)
+            .await?;
+        prune_terminal_external_import_source_sessions(&app, &actor).await;
+        let source = source_from_input(input.kind, input.connection).map_err(to_gql_error)?;
+        let fingerprint = format!("arr-source={}", source_connection_fingerprint(&source));
+        let begin = app
+            .begin_external_import_monitor_warmup(&actor, &fingerprint)
+            .await?;
+
+        if let Some(replaced_session_id) = begin.replaced_session_id.as_deref() {
+            let _ =
+                clear_external_import_arr_source_snapshot_chunks(&app, &actor, replaced_session_id)
+                    .await;
+        }
+
+        if begin.created {
+            let session_id = begin.snapshot.session_id.clone();
+            app.set_external_import_arr_source_warmup_result(
+                &session_id,
+                ExternalImportArrSourceWarmupResult {
+                    source_key: source.source_key.clone(),
+                    kind: source.kind,
+                    base_url: source.base_url.clone(),
+                    version: None,
+                    root_folders: Vec::new(),
+                    title_root_paths: Vec::new(),
+                    download_clients: Vec::new(),
+                    indexers: Vec::new(),
+                },
+            )
+            .await;
+            let app_for_task = app.clone();
+            let actor_for_task = actor.clone();
+            let snapshot_for_task = begin.snapshot.clone();
+            tokio::spawn(async move {
+                run_external_import_arr_source_warmup_job(
+                    app_for_task,
+                    actor_for_task,
+                    session_id,
+                    source,
+                    begin.cancel_token,
+                    snapshot_for_task,
+                )
+                .await;
+            });
+        }
+
+        Ok(from_external_import_monitor_warmup_progress(begin.snapshot))
+    }
+
+    async fn cancel_external_import_arr_source_warmup(
+        &self,
+        ctx: &Context<'_>,
+        session_id: ID,
+    ) -> GqlResult<CancelExternalImportMonitorWarmupPayload> {
+        require_app_permission(ctx, AppPermission::ManageCatalogSettings).await?;
+        let actor = actor_from_ctx(ctx)?;
+        let app = app_from_ctx(ctx)?;
+        app.clear_stale_external_import_arr_source_chunks_once(&actor)
+            .await?;
+        let session_id_string = session_id.to_string();
+        let canceled = app
+            .cancel_external_import_monitor_warmup(&actor, &session_id_string)
+            .await?;
+        if canceled {
+            let _ =
+                clear_external_import_arr_source_snapshot_chunks(&app, &actor, &session_id_string)
+                    .await;
+        }
+        Ok(CancelExternalImportMonitorWarmupPayload {
+            session_id,
+            canceled,
+        })
+    }
+
     /// Connect to Sonarr and/or Radarr, fetch their configs, return a preview.
     async fn preview_external_import(
         &self,
@@ -353,23 +789,21 @@ impl ExternalImportMutations {
         require_app_permission(ctx, AppPermission::ManageCatalogSettings).await?;
         let actor = actor_from_ctx(ctx)?;
         let app = app_from_ctx(ctx)?;
+        app.clear_stale_external_import_arr_source_chunks_once(&actor)
+            .await?;
+        prune_terminal_external_import_source_sessions(&app, &actor).await;
 
-        if input.sonarr.is_none() && input.radarr.is_none() && input.prowlarr.is_none() {
+        if input.source_warmup_session_ids.is_empty() && input.prowlarr.is_none() {
             return Err(to_gql_error(AppError::Validation(
-                "at least one of sonarr, radarr, or prowlarr must be provided".to_string(),
+                "at least one Arr source warmup session or prowlarr must be provided".to_string(),
             )));
         }
 
         let mut payload = ExternalImportPreviewPayload {
-            sonarr_connected: false,
-            radarr_connected: false,
             prowlarr_connected: false,
-            sonarr_version: None,
-            radarr_version: None,
             prowlarr_version: None,
-            sonarr_error: None,
-            radarr_error: None,
             prowlarr_error: None,
+            arr_sources: Vec::new(),
             root_folders: Vec::new(),
             download_clients: Vec::new(),
             indexers: Vec::new(),
@@ -411,93 +845,70 @@ impl ExternalImportMutations {
             }
         }
 
-        for (conn_opt, source) in [(&input.sonarr, "sonarr"), (&input.radarr, "radarr")] {
-            let Some(conn) = conn_opt else { continue };
-            let client = if source == "sonarr" {
-                ExternalArrClient::for_sonarr_v4(conn.base_url.clone(), conn.api_key.clone())
-            } else {
-                ExternalArrClient::for_radarr_v6(conn.base_url.clone(), conn.api_key.clone())
-            };
-            let client = match client {
-                Ok(client) => client,
-                Err(error) => {
-                    if source == "sonarr" {
-                        payload.sonarr_error = Some(error.to_string());
-                    } else {
-                        payload.radarr_error = Some(error.to_string());
-                    }
+        for session_id in input.source_warmup_session_ids {
+            let session_id_string = session_id.to_string();
+            let snapshot = app
+                .get_external_import_monitor_warmup_status(&actor, &session_id_string)
+                .await
+                .map_err(to_gql_error)?;
+            let result = app
+                .external_import_arr_source_warmup_result(&actor, &session_id_string)
+                .await
+                .map_err(to_gql_error)?;
+            let kind = gql_arr_source_kind(result.kind);
+            payload.arr_sources.push(ExternalImportArrSourcePayload {
+                session_id: session_id.clone(),
+                source_key: result.source_key.clone(),
+                kind,
+                base_url: result.base_url.clone(),
+                connected: result.version.is_some(),
+                version: result.version.clone(),
+                status: gql_warmup_status(snapshot.status),
+                error: snapshot.error_message.clone(),
+            });
+
+            for arr_root_path in source_mapping_root_paths(&result) {
+                payload.root_folders.push(ExternalImportRootFolderPayload {
+                    source_warmup_session_id: session_id.clone(),
+                    source_key: result.source_key.clone(),
+                    kind,
+                    arr_root_path,
+                });
+            }
+
+            for dc in &result.download_clients {
+                let mapped = map_download_client(dc, &result.source_key);
+                if let Some(&existing) = dc_key_idx.get(&mapped.dedup_key) {
+                    push_unique(
+                        &mut payload.download_clients[existing].source_keys,
+                        result.source_key.clone(),
+                    );
+                } else {
+                    dc_key_idx.insert(mapped.dedup_key.clone(), payload.download_clients.len());
+                    payload.download_clients.push(mapped);
+                }
+            }
+
+            for idx in &result.indexers {
+                if external_import::should_skip_imported_indexer(idx) {
                     continue;
                 }
-            };
-            match client.test_connection().await {
-                Ok((_app_name, version)) => {
-                    if source == "sonarr" {
-                        payload.sonarr_connected = true;
-                        payload.sonarr_version = Some(version);
-                    } else {
-                        payload.radarr_connected = true;
-                        payload.radarr_version = Some(version);
-                    }
-
-                    if let Ok(folders) = client.list_root_folders().await {
-                        for folder in folders {
-                            payload.root_folders.push(ExternalImportRootFolderPayload {
-                                source: source.to_string(),
-                                path: folder.path,
-                            });
-                        }
-                    }
-
-                    if let Ok(clients) = client.list_download_clients().await {
-                        for dc in clients {
-                            let mapped = map_download_client(&dc, source);
-                            if let Some(&existing) = dc_key_idx.get(&mapped.dedup_key) {
-                                payload.download_clients[existing]
-                                    .sources
-                                    .push(source.to_string());
-                            } else {
-                                dc_key_idx.insert(
-                                    mapped.dedup_key.clone(),
-                                    payload.download_clients.len(),
-                                );
-                                payload.download_clients.push(mapped);
-                            }
-                        }
-                    }
-
-                    if let Ok(indexers) = client.list_indexers().await {
-                        for idx in indexers {
-                            if external_import::should_skip_imported_indexer(&idx) {
-                                continue;
-                            }
-                            if let Some(detected) = detect_imported_prowlarr_proxy_indexer(
-                                &idx,
-                                linked_prowlarr_base_url,
-                            ) {
-                                merge_prowlarr_group(&mut prowlarr_groups, detected, source);
-                                continue;
-                            }
-
-                            let mapped = map_indexer(&idx, source);
-                            if let Some(&existing) = idx_key_idx.get(&mapped.dedup_key) {
-                                push_unique(
-                                    &mut payload.indexers[existing].sources,
-                                    source.to_string(),
-                                );
-                            } else {
-                                idx_key_idx
-                                    .insert(mapped.dedup_key.clone(), payload.indexers.len());
-                                payload.indexers.push(mapped);
-                            }
-                        }
-                    }
+                if let Some(detected) =
+                    detect_imported_prowlarr_proxy_indexer(idx, linked_prowlarr_base_url)
+                {
+                    merge_prowlarr_group(&mut prowlarr_groups, detected, &result.source_key);
+                    continue;
                 }
-                Err(error) => {
-                    if source == "sonarr" {
-                        payload.sonarr_error = Some(error.to_string());
-                    } else {
-                        payload.radarr_error = Some(error.to_string());
-                    }
+
+                let mapped = map_indexer(idx, &result.source_key);
+                if let Some(&existing) = idx_key_idx.get(&mapped.dedup_key) {
+                    push_unique(
+                        &mut payload.indexers[existing].source_keys,
+                        result.source_key.clone(),
+                    );
+                } else {
+                    idx_key_idx.insert(mapped.dedup_key.clone(), payload.indexers.len());
+                    payload.indexers.push(mapped);
                 }
             }
         }
@@ -512,69 +923,6 @@ impl ExternalImportMutations {
         Ok(payload)
     }
 
-    async fn start_external_import_monitor_warmup(
-        &self,
-        ctx: &Context<'_>,
-        input: StartExternalImportMonitorWarmupInput,
-    ) -> GqlResult<ExternalImportMonitorWarmupProgressPayload> {
-        require_app_permission(ctx, AppPermission::ManageCatalogSettings).await?;
-        let actor = actor_from_ctx(ctx)?;
-        let app = app_from_ctx(ctx)?;
-
-        let fingerprint =
-            external_import_connection_fingerprint(input.sonarr.as_ref(), input.radarr.as_ref());
-        let begin = app
-            .begin_external_import_monitor_warmup(&actor, &fingerprint)
-            .await?;
-
-        if begin.created {
-            let session_id = begin.snapshot.session_id.clone();
-            let connections = ExternalImportWarmupConnections {
-                sonarr: input.sonarr,
-                radarr: input.radarr,
-            };
-            let app_for_task = app.clone();
-            let actor_for_task = actor.clone();
-            let snapshot_for_task = begin.snapshot.clone();
-            tokio::spawn(async move {
-                run_external_import_monitor_warmup_job(
-                    app_for_task,
-                    actor_for_task,
-                    session_id,
-                    connections,
-                    begin.cancel_token,
-                    snapshot_for_task,
-                )
-                .await;
-            });
-        }
-
-        Ok(from_external_import_monitor_warmup_progress(begin.snapshot))
-    }
-
-    async fn cancel_external_import_monitor_warmup(
-        &self,
-        ctx: &Context<'_>,
-        session_id: ID,
-    ) -> GqlResult<CancelExternalImportMonitorWarmupPayload> {
-        require_app_permission(ctx, AppPermission::ManageCatalogSettings).await?;
-        let actor = actor_from_ctx(ctx)?;
-        let app = app_from_ctx(ctx)?;
-
-        let session_id_string = session_id.to_string();
-        let canceled = app
-            .cancel_external_import_monitor_warmup(&actor, &session_id_string)
-            .await?;
-        if canceled {
-            let _ = clear_external_import_monitor_apply_targets(&app, &actor).await;
-        }
-
-        Ok(CancelExternalImportMonitorWarmupPayload {
-            session_id,
-            canceled,
-        })
-    }
-
     async fn finalize_external_import(
         &self,
         ctx: &Context<'_>,
@@ -583,35 +931,322 @@ impl ExternalImportMutations {
         require_app_permission(ctx, AppPermission::ManageCatalogSettings).await?;
         let actor = actor_from_ctx(ctx)?;
         let app = app_from_ctx(ctx)?;
+        app.clear_stale_external_import_arr_source_chunks_once(&actor)
+            .await?;
+        prune_terminal_external_import_source_sessions(&app, &actor).await;
 
-        let connections = ExternalImportWarmupConnections {
-            sonarr: input.sonarr.clone(),
-            radarr: input.radarr.clone(),
-        };
-        let monitor_warmup_session_id = input.monitor_warmup_session_id.map(String::from);
-        let session_id = ensure_external_import_monitor_warmup_completed(
-            &app,
-            &actor,
-            connections,
-            monitor_warmup_session_id.as_deref(),
-        )
-        .await?;
-
-        if input.radarr.is_none() || input.selected_movies_paths.is_empty() {
-            clear_external_import_monitor_apply_target(&app, &actor, MediaFacet::Movie).await?;
+        let mut source_results = BTreeMap::<String, ExternalImportArrSourceWarmupResult>::new();
+        for session_id in &input.source_warmup_session_ids {
+            let session_id_string = session_id.to_string();
+            let snapshot = app
+                .get_external_import_monitor_warmup_status(&actor, &session_id_string)
+                .await?;
+            if snapshot.status != ExternalImportMonitorWarmupStatus::Completed {
+                return Err(to_gql_error(AppError::Validation(format!(
+                    "source warmup session {session_id_string} is not completed"
+                ))));
+            }
+            let result = app
+                .external_import_arr_source_warmup_result(&actor, &session_id_string)
+                .await?;
+            source_results.insert(session_id_string, result);
+        }
+        if source_results.is_empty() {
+            return Err(to_gql_error(AppError::Validation(
+                "at least one source warmup session is required".into(),
+            )));
         }
 
-        if input.sonarr.is_none() || input.selected_series_paths.is_empty() {
-            clear_external_import_monitor_apply_target(&app, &actor, MediaFacet::Series).await?;
+        let mut source_order = source_results.keys().cloned().collect::<Vec<_>>();
+        source_order.sort_by(|left, right| {
+            let left_source = source_results
+                .get(left)
+                .map(|source| source.source_key.as_str())
+                .unwrap_or_default();
+            let right_source = source_results
+                .get(right)
+                .map(|source| source.source_key.as_str())
+                .unwrap_or_default();
+            left_source.cmp(right_source).then_with(|| left.cmp(right))
+        });
+        let source_roots = source_results
+            .iter()
+            .map(|(session_id, source)| (session_id.clone(), source_mapping_root_paths(source)))
+            .collect::<HashMap<_, _>>();
+        let mut mappings = HashMap::<String, ResolvedSourceMapping>::new();
+        for mapping in input.mappings {
+            let session_id = mapping.source_warmup_session_id.to_string();
+            let Some(source_result) = source_results.get(&session_id) else {
+                return Err(to_gql_error(AppError::Validation(format!(
+                    "mapping references unselected source warmup session {session_id}"
+                ))));
+            };
+            let kind = app_arr_source_kind(mapping.kind);
+            let facet = mapping.facet.into_domain();
+            if kind != source_result.kind || mapping.source_key != source_result.source_key {
+                return Err(to_gql_error(AppError::Validation(format!(
+                    "mapping for session {session_id} does not match warmed source"
+                ))));
+            }
+            let Some(known_roots) = source_roots.get(&session_id) else {
+                return Err(to_gql_error(AppError::Validation(format!(
+                    "mapping references unselected source warmup session {session_id}"
+                ))));
+            };
+            let mapping_root_key = normalize_import_path_key(&mapping.arr_root_path);
+            if !known_roots
+                .iter()
+                .any(|root| normalize_import_path_key(root) == mapping_root_key)
+            {
+                return Err(to_gql_error(AppError::Validation(format!(
+                    "mapping references unknown source root '{}'",
+                    mapping.arr_root_path
+                ))));
+            }
+            match (kind, &facet) {
+                (AppArrSourceKind::Radarr, MediaFacet::Movie)
+                | (AppArrSourceKind::Sonarr, MediaFacet::Series)
+                | (AppArrSourceKind::Sonarr, MediaFacet::Anime) => {}
+                _ => {
+                    return Err(to_gql_error(AppError::Validation(format!(
+                        "mapping facet {} is not compatible with {}",
+                        facet.as_str(),
+                        kind.as_str()
+                    ))));
+                }
+            }
+
+            let library_id = mapping.library_id.to_string();
+            let library = app.external_import_library(&actor, &library_id).await?;
+            if library.facet != facet {
+                return Err(to_gql_error(AppError::Validation(format!(
+                    "library {library_id} has facet {}, not {}",
+                    library.facet.as_str(),
+                    facet.as_str()
+                ))));
+            }
+            let scryer_root_key =
+                scryer_domain::normalize_library_root_path(mapping.scryer_root_path.as_str());
+            if !library.roots.iter().any(|root| {
+                scryer_domain::normalize_library_root_path(&root.path) == scryer_root_key
+            }) {
+                return Err(to_gql_error(AppError::Validation(format!(
+                    "root '{}' does not belong to library {library_id}",
+                    mapping.scryer_root_path
+                ))));
+            }
+
+            let key = mapping_key(&session_id, &mapping.source_key, &mapping.arr_root_path);
+            if mappings
+                .insert(
+                    key,
+                    ResolvedSourceMapping {
+                        arr_root_path: mapping.arr_root_path,
+                        scryer_root_path: mapping.scryer_root_path,
+                        facet,
+                    },
+                )
+                .is_some()
+            {
+                return Err(to_gql_error(AppError::Validation(
+                    "duplicate source root mapping".into(),
+                )));
+            }
         }
 
-        if input.sonarr.is_none() || input.selected_anime_paths.is_empty() {
-            clear_external_import_monitor_apply_target(&app, &actor, MediaFacet::Anime).await?;
+        for (session_id, source_result) in &source_results {
+            for root_path in source_roots.get(session_id).into_iter().flatten() {
+                let key = mapping_key(session_id, &source_result.source_key, root_path);
+                if !mappings.contains_key(&key) {
+                    return Err(to_gql_error(AppError::Validation(format!(
+                        "missing mapping for source {} root '{}'",
+                        source_result.source_key, root_path
+                    ))));
+                }
+            }
+        }
+
+        let _apply_guard = app.acquire_external_import_apply_guard().await;
+        clear_external_import_monitor_apply_targets(&app, &actor).await?;
+        let apply_session_id = scryer_application::EXTERNAL_IMPORT_MONITOR_APPLY_SESSION_ID;
+        let mut movie_writer = SnapshotChunkWriter::new(
+            app.clone(),
+            actor.clone(),
+            apply_session_id.to_string(),
+            MediaFacet::Movie,
+            ExternalImportMonitorSnapshotEntryKind::Movie,
+        );
+        let mut series_writer = SnapshotChunkWriter::new(
+            app.clone(),
+            actor.clone(),
+            apply_session_id.to_string(),
+            MediaFacet::Series,
+            ExternalImportMonitorSnapshotEntryKind::Series,
+        );
+        let mut anime_writer = SnapshotChunkWriter::new(
+            app.clone(),
+            actor.clone(),
+            apply_session_id.to_string(),
+            MediaFacet::Anime,
+            ExternalImportMonitorSnapshotEntryKind::Series,
+        );
+        let mut scan_hints = LibraryScanHintSet::new();
+        let mut movie_entries = BTreeMap::<String, ExternalImportMonitorMovieEntry>::new();
+        let mut series_entries =
+            BTreeMap::<String, (MediaFacet, ExternalImportMonitorSeriesEntry)>::new();
+
+        for session_id in &source_order {
+            let source_result = source_results
+                .get(session_id)
+                .expect("source order references loaded source");
+            match source_result.kind {
+                AppArrSourceKind::Radarr => {
+                    let movies = read_external_import_source_chunk_entries::<ArrMovie>(
+                        &app,
+                        &actor,
+                        session_id,
+                        MediaFacet::Movie,
+                        ExternalImportMonitorSnapshotEntryKind::Movie,
+                    )
+                    .await?;
+                    for movie in movies {
+                        let key = mapping_key(
+                            session_id,
+                            &source_result.source_key,
+                            &movie.root_folder_path,
+                        );
+                        let Some(mapping) = mappings.get(&key) else {
+                            return Err(to_gql_error(AppError::Validation(format!(
+                                "missing mapping for source {} root '{}'",
+                                source_result.source_key, movie.root_folder_path
+                            ))));
+                        };
+                        let mut remapped = movie.clone();
+                        remapped.path = remap_import_path(
+                            remapped.path,
+                            &mapping.arr_root_path,
+                            &mapping.scryer_root_path,
+                        );
+                        remapped.file_path = remap_import_path(
+                            remapped.file_path,
+                            &mapping.arr_root_path,
+                            &mapping.scryer_root_path,
+                        );
+                        if let Some(hint) = movie_scan_hint_from_arr(&remapped) {
+                            scan_hints.push(hint);
+                        }
+                        let entry = movie_monitor_entry_from_arr(&remapped);
+                        let merge_key = movie_monitor_merge_key_for_source(
+                            &entry,
+                            &source_result.source_key,
+                            movie.id,
+                        );
+                        movie_entries
+                            .entry(merge_key)
+                            .and_modify(|existing| existing.monitored |= entry.monitored)
+                            .or_insert(entry);
+                    }
+                }
+                AppArrSourceKind::Sonarr => {
+                    let series_source_entries = read_external_import_source_chunk_entries::<
+                        ExternalImportArrSourceSeriesEntry,
+                    >(
+                        &app,
+                        &actor,
+                        session_id,
+                        MediaFacet::Series,
+                        ExternalImportMonitorSnapshotEntryKind::Series,
+                    )
+                    .await?;
+                    for series_entry in series_source_entries {
+                        let key = mapping_key(
+                            session_id,
+                            &source_result.source_key,
+                            &series_entry.series.root_folder_path,
+                        );
+                        let Some(mapping) = mappings.get(&key) else {
+                            return Err(to_gql_error(AppError::Validation(format!(
+                                "missing mapping for source {} root '{}'",
+                                source_result.source_key, series_entry.series.root_folder_path
+                            ))));
+                        };
+                        let mut remapped_series = series_entry.series.clone();
+                        remapped_series.path = remap_import_path(
+                            remapped_series.path,
+                            &mapping.arr_root_path,
+                            &mapping.scryer_root_path,
+                        );
+                        let remapped_episodes = series_entry
+                            .episodes
+                            .iter()
+                            .cloned()
+                            .map(|mut episode| {
+                                episode.file_path = remap_import_path(
+                                    episode.file_path,
+                                    &mapping.arr_root_path,
+                                    &mapping.scryer_root_path,
+                                );
+                                episode
+                            })
+                            .collect::<Vec<_>>();
+                        if mapping.facet == MediaFacet::Series {
+                            if let Some(hint) = series_folder_scan_hint_from_arr(&remapped_series) {
+                                scan_hints.push(hint);
+                            }
+                            for episode in &remapped_episodes {
+                                if let Some(hint) =
+                                    series_episode_scan_hint_from_arr(&remapped_series, episode)
+                                {
+                                    scan_hints.push(hint);
+                                }
+                            }
+                        }
+                        let entry =
+                            series_monitor_entry_from_arr(remapped_series, remapped_episodes);
+                        let merge_key = series_monitor_merge_key_for_source(
+                            &mapping.facet,
+                            &entry,
+                            &source_result.source_key,
+                            series_entry.series.id,
+                        );
+                        series_entries
+                            .entry(merge_key)
+                            .and_modify(|(_, existing)| {
+                                merge_series_monitor_entry(existing, entry.clone())
+                            })
+                            .or_insert((mapping.facet.clone(), entry));
+                    }
+                }
+            }
+        }
+
+        for entry in movie_entries.into_values() {
+            movie_writer.push(&entry).await?;
+        }
+
+        for (facet, entry) in series_entries.into_values() {
+            match facet {
+                MediaFacet::Series => series_writer.push(&entry).await?,
+                MediaFacet::Anime => anime_writer.push(&entry).await?,
+                MediaFacet::Movie => {}
+            }
+        }
+        movie_writer.finish().await?;
+        series_writer.finish().await?;
+        anime_writer.finish().await?;
+        app.set_external_import_monitor_warmup_scan_hints(&actor, apply_session_id, scan_hints)
+            .await;
+        for session_id in &source_order {
+            let _ =
+                clear_external_import_arr_source_snapshot_chunks(&app, &actor, session_id).await;
+            let _ = app
+                .remove_external_import_monitor_warmup_session(&actor, session_id)
+                .await;
         }
 
         Ok(FinalizeExternalImportPayload {
             finalized: true,
-            monitor_warmup_session_id: ID::from(session_id),
+            monitor_warmup_session_id: ID::from(apply_session_id),
         })
     }
 
@@ -654,24 +1289,6 @@ impl ExternalImportMutations {
             errors: Vec::new(),
         };
 
-        // ── Save media paths ──────────────────────────────────────────────
-        match app
-            .save_external_import_library_paths(
-                &actor,
-                ExternalImportLibraryPathsSelection {
-                    movie_paths: input.selected_movies_paths.clone(),
-                    series_paths: input.selected_series_paths.clone(),
-                    anime_paths: input.selected_anime_paths.clone(),
-                },
-            )
-            .await
-        {
-            Ok(saved) => result.media_paths_saved = saved,
-            Err(err) => result
-                .errors
-                .push(format!("failed to save selected media paths: {err}")),
-        }
-
         // ── Collect download clients + indexers from external apps ─────────
         let mut all_download_clients: Vec<(ArrDownloadClient, String)> = Vec::new();
         let mut all_indexers: Vec<(ArrIndexer, String)> = Vec::new();
@@ -692,65 +1309,52 @@ impl ExternalImportMutations {
             }
         }
 
-        for (conn_opt, source) in [(&input.sonarr, "sonarr"), (&input.radarr, "radarr")] {
-            let Some(conn) = conn_opt else { continue };
-            let client = if source == "sonarr" {
-                ExternalArrClient::for_sonarr_v4(conn.base_url.clone(), conn.api_key.clone())
-            } else {
-                ExternalArrClient::for_radarr_v6(conn.base_url.clone(), conn.api_key.clone())
-            };
-            let client = match client {
-                Ok(client) => client,
-                Err(error) => {
-                    result
-                        .errors
-                        .push(format!("failed to connect to {source}: {error}"));
-                    continue;
-                }
-            };
-
-            if let Err(error) = client.test_connection().await {
-                result
-                    .errors
-                    .push(format!("failed to connect to {source}: {error}"));
+        for session_id in input.source_warmup_session_ids {
+            let session_id_string = session_id.to_string();
+            let snapshot = app
+                .get_external_import_monitor_warmup_status(&actor, &session_id_string)
+                .await?;
+            if snapshot.status != ExternalImportMonitorWarmupStatus::Completed {
+                result.errors.push(format!(
+                    "source warmup session {session_id_string} is not completed"
+                ));
                 continue;
             }
+            let warmup = app
+                .external_import_arr_source_warmup_result(&actor, &session_id_string)
+                .await?;
 
-            if let Ok(clients) = client.list_download_clients().await {
-                for dc in clients {
-                    let mapped = map_download_client(&dc, source);
-                    if mapped.supported
-                        && seen_dc_keys.insert(mapped.dedup_key.clone())
-                        && selected_dc_keys.contains(&mapped.dedup_key)
-                    {
-                        all_download_clients.push((dc, source.to_string()));
-                    }
+            for dc in warmup.download_clients {
+                let mapped = map_download_client(&dc, &warmup.source_key);
+                if mapped.supported
+                    && seen_dc_keys.insert(mapped.dedup_key.clone())
+                    && selected_dc_keys.contains(&mapped.dedup_key)
+                {
+                    all_download_clients.push((dc, warmup.source_key.clone()));
                 }
             }
 
-            if let Ok(indexers) = client.list_indexers().await {
-                for idx in indexers {
-                    if external_import::should_skip_imported_indexer(&idx) {
-                        continue;
-                    }
+            for idx in warmup.indexers {
+                if external_import::should_skip_imported_indexer(&idx) {
+                    continue;
+                }
 
-                    if let Some(detected) =
-                        detect_imported_prowlarr_proxy_indexer(&idx, linked_prowlarr_base_url)
-                    {
-                        let dedup_key = prowlarr_dedup_key(&detected.base_url);
-                        if selected_idx_keys.contains(&dedup_key) {
-                            merge_prowlarr_group(&mut prowlarr_groups, detected, source);
-                        }
-                        continue;
+                if let Some(detected) =
+                    detect_imported_prowlarr_proxy_indexer(&idx, linked_prowlarr_base_url)
+                {
+                    let dedup_key = prowlarr_dedup_key(&detected.base_url);
+                    if selected_idx_keys.contains(&dedup_key) {
+                        merge_prowlarr_group(&mut prowlarr_groups, detected, &warmup.source_key);
                     }
+                    continue;
+                }
 
-                    let mapped = map_indexer(&idx, source);
-                    if mapped.supported
-                        && seen_idx_keys.insert(mapped.dedup_key.clone())
-                        && selected_idx_keys.contains(&mapped.dedup_key)
-                    {
-                        all_indexers.push((idx, source.to_string()));
-                    }
+                let mapped = map_indexer(&idx, &warmup.source_key);
+                if mapped.supported
+                    && seen_idx_keys.insert(mapped.dedup_key.clone())
+                    && selected_idx_keys.contains(&mapped.dedup_key)
+                {
+                    all_indexers.push((idx, warmup.source_key.clone()));
                 }
             }
         }
@@ -1085,7 +1689,9 @@ impl ExternalImportMutations {
 }
 
 fn movie_scan_hint_from_arr(movie: &ArrMovie) -> Option<LibraryScanHint> {
-    let path_key = library_scan_file_leaf_key(movie.file_path.as_deref()?)?;
+    let file_path = movie.file_path.as_deref()?;
+    let path_key = library_scan_file_leaf_key(file_path)?;
+    let full_path_key = library_scan_file_full_path_key(file_path);
     let mut ids = Vec::new();
     if let Some(tmdb_id) = movie
         .tmdb_id
@@ -1106,12 +1712,15 @@ fn movie_scan_hint_from_arr(movie: &ArrMovie) -> Option<LibraryScanHint> {
         source: LibraryScanHintSource::ExternalImportRadarr,
         facet: LibraryScanHintFacet::Movie,
         path_key,
+        full_path_key,
         ids,
     })
 }
 
 fn series_folder_scan_hint_from_arr(series: &ArrSeries) -> Option<LibraryScanHint> {
-    let path_key = library_scan_folder_leaf_key(series.path.as_deref()?)?;
+    let series_path = series.path.as_deref()?;
+    let path_key = library_scan_folder_leaf_key(series_path)?;
+    let full_path_key = library_scan_folder_full_path_key(series_path);
     let ids = series
         .tvdb_id
         .as_deref()
@@ -1122,6 +1731,7 @@ fn series_folder_scan_hint_from_arr(series: &ArrSeries) -> Option<LibraryScanHin
         source: LibraryScanHintSource::ExternalImportSonarr,
         facet: LibraryScanHintFacet::Series,
         path_key,
+        full_path_key,
         ids,
     })
 }
@@ -1130,7 +1740,9 @@ fn series_episode_scan_hint_from_arr(
     series: &ArrSeries,
     episode: &ArrEpisode,
 ) -> Option<LibraryScanHint> {
-    let path_key = library_scan_file_leaf_key(episode.file_path.as_deref()?)?;
+    let file_path = episode.file_path.as_deref()?;
+    let path_key = library_scan_file_leaf_key(file_path)?;
+    let full_path_key = library_scan_file_full_path_key(file_path);
     let ids = series
         .tvdb_id
         .as_deref()
@@ -1141,6 +1753,7 @@ fn series_episode_scan_hint_from_arr(
         source: LibraryScanHintSource::ExternalImportSonarr,
         facet: LibraryScanHintFacet::Series,
         path_key,
+        full_path_key,
         ids,
     })
 }
@@ -1197,32 +1810,6 @@ fn series_monitor_entry_from_arr(
     }
 }
 
-fn external_import_connection_fingerprint(
-    sonarr: Option<&ExternalImportConnectionInput>,
-    radarr: Option<&ExternalImportConnectionInput>,
-) -> String {
-    let normalize = |connection: &ExternalImportConnectionInput| {
-        format!(
-            "{}|{}",
-            connection
-                .base_url
-                .trim()
-                .trim_end_matches('/')
-                .to_ascii_lowercase(),
-            connection.api_key.trim(),
-        )
-    };
-
-    [
-        sonarr.map(|connection| format!("sonarr={}", normalize(connection))),
-        radarr.map(|connection| format!("radarr={}", normalize(connection))),
-    ]
-    .into_iter()
-    .flatten()
-    .collect::<Vec<_>>()
-    .join(";")
-}
-
 fn should_publish_progress(count: i32) -> bool {
     count <= 10 || count % 25 == 0
 }
@@ -1266,250 +1853,204 @@ async fn publish_warmup_progress(
         .await;
 }
 
-async fn wait_for_external_import_monitor_warmup(
+async fn clear_external_import_arr_source_snapshot_chunks(
     app: &scryer_application::AppUseCase,
     actor: &scryer_domain::User,
     session_id: &str,
-) -> scryer_application::AppResult<ExternalImportMonitorWarmupProgressSnapshot> {
-    let mut receiver = app
-        .subscribe_external_import_monitor_warmup_progress(actor, session_id)
-        .await?;
+) -> scryer_application::AppResult<()> {
+    app.clear_external_import_arr_source_session_chunks(actor, session_id)
+        .await
+}
 
-    loop {
-        let snapshot = receiver.borrow().clone();
-        if snapshot.status.is_terminal() {
-            return Ok(snapshot);
-        }
+async fn prune_terminal_external_import_source_sessions(
+    app: &scryer_application::AppUseCase,
+    actor: &scryer_domain::User,
+) {
+    let Ok(removed_session_ids) = app
+        .prune_terminal_external_import_warmup_sessions(
+            actor,
+            chrono::Duration::hours(EXTERNAL_IMPORT_TERMINAL_SESSION_TTL_HOURS),
+        )
+        .await
+    else {
+        return;
+    };
 
-        receiver.changed().await.map_err(|err| {
-            AppError::Repository(format!("warmup progress subscription closed: {err}"))
-        })?;
+    for session_id in removed_session_ids {
+        let _ = clear_external_import_arr_source_snapshot_chunks(app, actor, &session_id).await;
     }
 }
 
-async fn capture_external_import_monitor_warmup(
+async fn capture_external_import_arr_source_warmup(
     app: &scryer_application::AppUseCase,
     actor: &scryer_domain::User,
     session_id: &str,
-    connections: &ExternalImportWarmupConnections,
+    source: &ExternalArrImportSource,
     cancel_token: &CancellationToken,
     snapshot: &mut ExternalImportMonitorWarmupProgressSnapshot,
 ) -> scryer_application::AppResult<()> {
-    clear_external_import_monitor_apply_targets(app, actor).await?;
-
-    let mut scan_hints = LibraryScanHintSet::new();
-    let mut movie_writer = SnapshotChunkWriter::new(
-        app.clone(),
-        actor.clone(),
-        MediaFacet::Movie,
-        ExternalImportMonitorSnapshotEntryKind::Movie,
-    );
-    let mut series_writer = SnapshotChunkWriter::new(
-        app.clone(),
-        actor.clone(),
-        MediaFacet::Series,
-        ExternalImportMonitorSnapshotEntryKind::Series,
-    );
-    let mut anime_writer = SnapshotChunkWriter::new(
-        app.clone(),
-        actor.clone(),
-        MediaFacet::Anime,
-        ExternalImportMonitorSnapshotEntryKind::Series,
-    );
+    clear_external_import_arr_source_snapshot_chunks(app, actor, session_id).await?;
 
     snapshot.status = ExternalImportMonitorWarmupStatus::Running;
-    snapshot.movies_total_known = connections.radarr.is_none();
-    snapshot.phase = if connections.radarr.is_some() {
-        ExternalImportMonitorWarmupPhase::LoadingMovies
-    } else if connections.sonarr.is_some() {
-        ExternalImportMonitorWarmupPhase::LoadingSeries
-    } else {
-        ExternalImportMonitorWarmupPhase::BuildingSnapshot
+    snapshot.phase = match source.kind {
+        AppArrSourceKind::Radarr => ExternalImportMonitorWarmupPhase::LoadingMovies,
+        AppArrSourceKind::Sonarr => ExternalImportMonitorWarmupPhase::LoadingSeries,
     };
     publish_warmup_progress(app, session_id, snapshot).await;
 
-    if let Some(radarr) = connections.radarr.as_ref() {
-        let client =
-            ExternalArrClient::for_radarr_v6(radarr.base_url.clone(), radarr.api_key.clone())?;
-        let movies = client.list_movies().await?;
-        let movie_total = i32::try_from(movies.len()).unwrap_or(i32::MAX);
-        snapshot.movies_total_known = true;
-        snapshot.movies_progress.total = movie_total;
-        snapshot.snapshot_build_total_known = true;
-        snapshot.snapshot_build_progress.total = movie_total;
-        snapshot.matched_movie_count = movie_total;
-        publish_warmup_progress(app, session_id, snapshot).await;
+    let client = client_for_arr_source(source)?;
+    let (_app_name, version) = client.test_connection().await?;
+    let root_folders = client.list_root_folders().await.unwrap_or_default();
+    let download_clients = client.list_download_clients().await.unwrap_or_default();
+    let indexers = client.list_indexers().await.unwrap_or_default();
+    let mut result = ExternalImportArrSourceWarmupResult {
+        source_key: source.source_key.clone(),
+        kind: source.kind,
+        base_url: source.base_url.clone(),
+        version: Some(version),
+        root_folders,
+        title_root_paths: Vec::new(),
+        download_clients,
+        indexers,
+    };
+    app.set_external_import_arr_source_warmup_result(session_id, result.clone())
+        .await;
 
-        for movie in movies {
-            if cancel_token.is_cancelled() {
-                return Ok(());
-            }
+    match source.kind {
+        AppArrSourceKind::Radarr => {
+            let mut movie_writer = SnapshotChunkWriter::new(
+                app.clone(),
+                actor.clone(),
+                session_id.to_string(),
+                MediaFacet::Movie,
+                ExternalImportMonitorSnapshotEntryKind::Movie,
+            );
+            let movies = client.list_movies().await?;
+            let total = i32::try_from(movies.len()).unwrap_or(i32::MAX);
+            snapshot.movies_total_known = true;
+            snapshot.movies_progress.total = total;
+            snapshot.matched_movie_count = total;
+            publish_warmup_progress(app, session_id, snapshot).await;
 
-            if let Some(hint) = movie_scan_hint_from_arr(&movie) {
-                scan_hints.push(hint);
-            }
-            movie_writer
-                .push(&movie_monitor_entry_from_arr(&movie))
-                .await?;
-            snapshot.movies_progress.completed =
-                snapshot.movies_progress.completed.saturating_add(1);
-            snapshot.snapshot_build_progress.completed =
-                snapshot.snapshot_build_progress.completed.saturating_add(1);
-
-            if should_publish_progress(snapshot.movies_progress.completed) {
-                publish_warmup_progress(app, session_id, snapshot).await;
-            }
-        }
-    } else {
-        snapshot.movies_total_known = true;
-    }
-
-    if connections.sonarr.is_some() {
-        snapshot.phase = ExternalImportMonitorWarmupPhase::LoadingSeries;
-        publish_warmup_progress(app, session_id, snapshot).await;
-    }
-
-    if let Some(sonarr) = connections.sonarr.as_ref() {
-        let client =
-            ExternalArrClient::for_sonarr_v4(sonarr.base_url.clone(), sonarr.api_key.clone())?;
-        let all_series = client.list_series().await?;
-        let series_total = i32::try_from(all_series.len()).unwrap_or(i32::MAX);
-        snapshot.series_total_known = true;
-        snapshot.series_progress.total = series_total;
-        snapshot.series_progress.completed = series_total;
-        snapshot.matched_series_count = series_total;
-        snapshot.snapshot_build_total_known = true;
-        snapshot.snapshot_build_progress.total = snapshot
-            .snapshot_build_progress
-            .total
-            .saturating_add(series_total);
-
-        let all_totals_known = all_series
-            .iter()
-            .all(|series| series.statistics.total_episode_count.is_some());
-        let expected_episode_total = all_series
-            .iter()
-            .filter_map(|series| series.statistics.total_episode_count)
-            .fold(0_i32, |acc, value| acc.saturating_add(value));
-        let expected_monitored_total = all_series
-            .iter()
-            .filter_map(|series| series.statistics.monitored_episode_count)
-            .fold(0_i32, |acc, value| acc.saturating_add(value));
-
-        snapshot.episode_fetch_total_known = all_totals_known;
-        snapshot.episode_fetch_expected_total =
-            (expected_episode_total > 0).then_some(expected_episode_total);
-        snapshot.episode_fetch_expected_monitored_total =
-            (expected_monitored_total > 0).then_some(expected_monitored_total);
-        snapshot.episode_fetch_progress.total = expected_episode_total;
-        publish_warmup_progress(app, session_id, snapshot).await;
-
-        snapshot.phase = ExternalImportMonitorWarmupPhase::LoadingEpisodes;
-        publish_warmup_progress(app, session_id, snapshot).await;
-
-        let mut pending_series = all_series.into_iter();
-        let mut join_set = JoinSet::new();
-
-        let spawn_episode_fetch = |join_set: &mut JoinSet<(
-            ArrSeries,
-            scryer_application::AppResult<Vec<ArrEpisode>>,
-        )>,
-                                   client: &ExternalArrClient,
-                                   series: ArrSeries| {
-            let client = client.clone();
-            join_set.spawn(async move {
-                let series_path = series.path.clone();
-                let result = client
-                    .list_episodes_for_series(series.id, series_path.as_deref())
-                    .await;
-                (series, result)
-            });
-        };
-
-        for _ in 0..SONARR_EPISODE_FETCH_CONCURRENCY {
-            let Some(series) = pending_series.next() else {
-                break;
-            };
-            spawn_episode_fetch(&mut join_set, &client, series);
-        }
-
-        while let Some(join_result) = join_set.join_next().await {
-            if cancel_token.is_cancelled() {
-                return Ok(());
-            }
-
-            let (series, episodes_result) = join_result.map_err(|err| {
-                AppError::Repository(format!("failed to join Sonarr episode fetch task: {err}"))
-            })?;
-            let episodes = episodes_result?;
-            let episode_count = i32::try_from(episodes.len()).unwrap_or(i32::MAX);
-            if let Some(hint) = series_folder_scan_hint_from_arr(&series) {
-                scan_hints.push(hint);
-            }
-            for episode in &episodes {
-                if let Some(hint) = series_episode_scan_hint_from_arr(&series, episode) {
-                    scan_hints.push(hint);
+            for movie in movies {
+                if cancel_token.is_cancelled() {
+                    return Ok(());
+                }
+                movie_writer.push(&movie).await?;
+                push_unique(&mut result.title_root_paths, movie.root_folder_path.clone());
+                snapshot.movies_progress.completed =
+                    snapshot.movies_progress.completed.saturating_add(1);
+                if should_publish_progress(snapshot.movies_progress.completed) {
+                    publish_warmup_progress(app, session_id, snapshot).await;
                 }
             }
-            let entry = series_monitor_entry_from_arr(series, episodes);
-            series_writer.push(&entry).await?;
-            anime_writer.push(&entry).await?;
-
-            snapshot.episode_fetch_progress.completed = snapshot
-                .episode_fetch_progress
-                .completed
-                .saturating_add(episode_count);
-            snapshot.snapshot_build_progress.completed =
-                snapshot.snapshot_build_progress.completed.saturating_add(1);
-
-            if should_publish_progress(snapshot.snapshot_build_progress.completed)
-                || should_publish_progress(snapshot.episode_fetch_progress.completed)
-            {
-                publish_warmup_progress(app, session_id, snapshot).await;
-            }
-
-            if let Some(next_series) = pending_series.next() {
-                spawn_episode_fetch(&mut join_set, &client, next_series);
-            }
+            movie_writer.finish().await?;
         }
-    } else {
-        snapshot.series_total_known = true;
-        snapshot.episode_fetch_total_known = true;
+        AppArrSourceKind::Sonarr => {
+            let all_series = client.list_series().await?;
+            let total = i32::try_from(all_series.len()).unwrap_or(i32::MAX);
+            snapshot.series_total_known = true;
+            snapshot.series_progress.total = total;
+            snapshot.matched_series_count = total;
+            publish_warmup_progress(app, session_id, snapshot).await;
+
+            snapshot.phase = ExternalImportMonitorWarmupPhase::LoadingEpisodes;
+            publish_warmup_progress(app, session_id, snapshot).await;
+
+            let _active_instance_permit: OwnedSemaphorePermit =
+                sonarr_active_episode_instance_semaphore()
+                    .acquire_owned()
+                    .await
+                    .map_err(|err| {
+                        AppError::Repository(format!(
+                            "failed to acquire Sonarr episode warmup slot: {err}"
+                        ))
+                    })?;
+            let mut series_writer = SnapshotChunkWriter::new(
+                app.clone(),
+                actor.clone(),
+                session_id.to_string(),
+                MediaFacet::Series,
+                ExternalImportMonitorSnapshotEntryKind::Series,
+            );
+            let mut pending_series = all_series.into_iter();
+            let mut join_set = JoinSet::new();
+
+            let spawn_episode_fetch = |join_set: &mut JoinSet<(
+                ArrSeries,
+                scryer_application::AppResult<Vec<ArrEpisode>>,
+            )>,
+                                       client: &ExternalArrClient,
+                                       series: ArrSeries| {
+                let client = client.clone();
+                join_set.spawn(async move {
+                    let series_path = series.path.clone();
+                    let result = client
+                        .list_episodes_for_series(series.id, series_path.as_deref())
+                        .await;
+                    (series, result)
+                });
+            };
+
+            for _ in 0..SONARR_EPISODE_FETCH_CONCURRENCY_PER_INSTANCE {
+                let Some(series) = pending_series.next() else {
+                    break;
+                };
+                spawn_episode_fetch(&mut join_set, &client, series);
+            }
+
+            while let Some(join_result) = join_set.join_next().await {
+                if cancel_token.is_cancelled() {
+                    return Ok(());
+                }
+                let (series, episodes_result) = join_result.map_err(|err| {
+                    AppError::Repository(format!("failed to join Sonarr episode fetch task: {err}"))
+                })?;
+                let episodes = episodes_result?;
+                push_unique(
+                    &mut result.title_root_paths,
+                    series.root_folder_path.clone(),
+                );
+                let entry = ExternalImportArrSourceSeriesEntry { series, episodes };
+                series_writer.push(&entry).await?;
+                snapshot.series_progress.completed =
+                    snapshot.series_progress.completed.saturating_add(1);
+                if should_publish_progress(snapshot.series_progress.completed) {
+                    publish_warmup_progress(app, session_id, snapshot).await;
+                }
+                if let Some(next_series) = pending_series.next() {
+                    spawn_episode_fetch(&mut join_set, &client, next_series);
+                }
+            }
+            series_writer.finish().await?;
+        }
     }
 
-    snapshot.phase = ExternalImportMonitorWarmupPhase::BuildingSnapshot;
-    publish_warmup_progress(app, session_id, snapshot).await;
-
-    movie_writer.finish().await?;
-    series_writer.finish().await?;
-    anime_writer.finish().await?;
-    app.set_external_import_monitor_warmup_scan_hints(session_id, scan_hints)
+    app.set_external_import_arr_source_warmup_result(session_id, result)
         .await;
-    snapshot.snapshot_build_progress.completed = snapshot.snapshot_build_progress.total;
-
     Ok(())
 }
 
-async fn run_external_import_monitor_warmup_job(
+async fn run_external_import_arr_source_warmup_job(
     app: scryer_application::AppUseCase,
     actor: scryer_domain::User,
     session_id: String,
-    connections: ExternalImportWarmupConnections,
+    source: ExternalArrImportSource,
     cancel_token: CancellationToken,
     mut snapshot: ExternalImportMonitorWarmupProgressSnapshot,
 ) {
-    let outcome = capture_external_import_monitor_warmup(
+    let outcome = capture_external_import_arr_source_warmup(
         &app,
         &actor,
         &session_id,
-        &connections,
+        &source,
         &cancel_token,
         &mut snapshot,
     )
     .await;
 
     if cancel_token.is_cancelled() {
-        let _ = clear_external_import_monitor_apply_targets(&app, &actor).await;
+        let _ = clear_external_import_arr_source_snapshot_chunks(&app, &actor, &session_id).await;
         snapshot.status = ExternalImportMonitorWarmupStatus::Canceled;
         snapshot.phase = ExternalImportMonitorWarmupPhase::Ready;
         snapshot.error_message = None;
@@ -1524,97 +2065,14 @@ async fn run_external_import_monitor_warmup_job(
             publish_warmup_progress(&app, &session_id, &mut snapshot).await;
         }
         Err(err) => {
-            let _ = clear_external_import_monitor_apply_targets(&app, &actor).await;
+            let _ =
+                clear_external_import_arr_source_snapshot_chunks(&app, &actor, &session_id).await;
             snapshot.status = ExternalImportMonitorWarmupStatus::Failed;
+            snapshot.phase = ExternalImportMonitorWarmupPhase::Ready;
             snapshot.error_message = Some(err.to_string());
             publish_warmup_progress(&app, &session_id, &mut snapshot).await;
         }
     }
-}
-
-async fn ensure_external_import_monitor_warmup_completed(
-    app: &scryer_application::AppUseCase,
-    actor: &scryer_domain::User,
-    connections: ExternalImportWarmupConnections,
-    preferred_session_id: Option<&str>,
-) -> scryer_application::AppResult<String> {
-    let fingerprint = external_import_connection_fingerprint(
-        connections.sonarr.as_ref(),
-        connections.radarr.as_ref(),
-    );
-
-    if let Some(session_id) = preferred_session_id.filter(|session_id| !session_id.is_empty()) {
-        let matches_fingerprint = match app
-            .external_import_monitor_warmup_connection_fingerprint(actor, session_id)
-            .await
-        {
-            Ok(existing_fingerprint) => existing_fingerprint == fingerprint,
-            Err(AppError::NotFound(_)) => false,
-            Err(err) => return Err(err),
-        };
-
-        if matches_fingerprint
-            && let Some(completed_session_id) =
-                try_complete_external_import_monitor_warmup_session(app, actor, session_id).await?
-        {
-            return Ok(completed_session_id);
-        }
-    }
-
-    for _ in 0..2 {
-        let begin = app
-            .begin_external_import_monitor_warmup(actor, &fingerprint)
-            .await?;
-        let session_id = begin.snapshot.session_id.clone();
-
-        if begin.created {
-            run_external_import_monitor_warmup_job(
-                app.clone(),
-                actor.clone(),
-                session_id.clone(),
-                connections.clone(),
-                begin.cancel_token,
-                begin.snapshot.clone(),
-            )
-            .await;
-        }
-
-        if let Some(completed_session_id) =
-            try_complete_external_import_monitor_warmup_session(app, actor, &session_id).await?
-        {
-            return Ok(completed_session_id);
-        }
-    }
-
-    Err(AppError::Repository(
-        "external import monitor warmup did not complete successfully".into(),
-    ))
-}
-
-async fn try_complete_external_import_monitor_warmup_session(
-    app: &scryer_application::AppUseCase,
-    actor: &scryer_domain::User,
-    session_id: &str,
-) -> scryer_application::AppResult<Option<String>> {
-    let claimed_snapshot = match app
-        .claim_external_import_monitor_warmup(actor, session_id)
-        .await
-    {
-        Ok(snapshot) => snapshot,
-        Err(AppError::NotFound(_)) => return Ok(None),
-        Err(err) => return Err(err),
-    };
-
-    let completed_snapshot = if claimed_snapshot.status.is_terminal() {
-        claimed_snapshot
-    } else {
-        wait_for_external_import_monitor_warmup(app, actor, session_id).await?
-    };
-
-    Ok(
-        (completed_snapshot.status == ExternalImportMonitorWarmupStatus::Completed)
-            .then(|| session_id.to_string()),
-    )
 }
 
 fn map_download_client(
@@ -1640,7 +2098,7 @@ fn map_download_client(
     );
 
     ExternalImportDownloadClientPayload {
-        sources: vec![source.to_string()],
+        source_keys: vec![source.to_string()],
         name: dc.name.clone(),
         implementation: dc.implementation.clone(),
         scryer_client_type: scryer_type.map(str::to_string),
@@ -1669,7 +2127,7 @@ fn map_indexer(idx: &ArrIndexer, source: &str) -> ExternalImportIndexerPayload {
     );
 
     ExternalImportIndexerPayload {
-        sources: vec![source.to_string()],
+        source_keys: vec![source.to_string()],
         name: idx.name.clone(),
         implementation: idx.implementation.clone(),
         scryer_provider_type: scryer_type.map(str::to_string),
@@ -1693,15 +2151,18 @@ mod tests {
     };
     use scryer_application::{
         ExternalIdProvider, LibraryScanHintFacet, LibraryScanHintSource,
-        library_scan_file_leaf_key, library_scan_folder_leaf_key,
+        library_scan_file_full_path_key, library_scan_file_leaf_key,
+        library_scan_folder_full_path_key, library_scan_folder_leaf_key,
     };
     use scryer_domain::{ConfigFieldDef, ConfigFieldRole, ConfigFieldType, ConfigFieldValueSource};
     use serde_json::Value;
 
     use super::{
+        SONARR_ACTIVE_EPISODE_INSTANCE_CONCURRENCY, SONARR_EPISODE_FETCH_CONCURRENCY_PER_INSTANCE,
         detect_imported_prowlarr_proxy_indexer, imported_indexer_config_json, map_download_client,
         map_indexer, merge_direct_prowlarr_group, merge_prowlarr_group, movie_scan_hint_from_arr,
-        prowlarr_dedup_key, series_episode_scan_hint_from_arr, series_folder_scan_hint_from_arr,
+        prowlarr_dedup_key, remap_import_path, series_episode_scan_hint_from_arr,
+        series_folder_scan_hint_from_arr,
     };
 
     #[test]
@@ -1724,6 +2185,10 @@ mod tests {
         assert_eq!(
             hint.path_key,
             library_scan_file_leaf_key(file_path).unwrap()
+        );
+        assert_eq!(
+            hint.full_path_key,
+            library_scan_file_full_path_key(file_path)
         );
         assert!(
             hint.ids
@@ -1809,6 +2274,7 @@ mod tests {
         assert_eq!(hint.source, LibraryScanHintSource::ExternalImportSonarr);
         assert_eq!(hint.facet, LibraryScanHintFacet::Series);
         assert_eq!(hint.path_key, library_scan_folder_leaf_key(path).unwrap());
+        assert_eq!(hint.full_path_key, library_scan_folder_full_path_key(path));
         assert!(
             hint.ids
                 .iter()
@@ -1832,6 +2298,10 @@ mod tests {
         assert_eq!(
             episode_hint.path_key,
             library_scan_file_leaf_key(episode_path).unwrap()
+        );
+        assert_eq!(
+            episode_hint.full_path_key,
+            library_scan_file_full_path_key(episode_path)
         );
         assert!(
             episode_hint
@@ -1859,6 +2329,7 @@ mod tests {
         assert!(payload.supported);
         assert_eq!(payload.scryer_client_type.as_deref(), Some("qbittorrent"));
         assert_eq!(payload.dedup_key, "qbittorrent:qb.local:8080");
+        assert_eq!(payload.source_keys, vec!["sonarr".to_string()]);
     }
 
     #[test]
@@ -1879,6 +2350,62 @@ mod tests {
         assert!(payload.supported);
         assert_eq!(payload.scryer_provider_type.as_deref(), Some("torznab"));
         assert_eq!(payload.dedup_key, "torznab:https://torznab.example");
+        assert_eq!(payload.source_keys, vec!["sonarr".to_string()]);
+    }
+
+    #[test]
+    fn arr_path_remap_replaces_root_prefix_and_normalizes_trailing_slashes() {
+        assert_eq!(
+            remap_import_path(
+                Some("/arr/movies/Foo (2024)/Foo.mkv".into()),
+                "/arr/movies/",
+                "/srv/media/movies/"
+            ),
+            Some("/srv/media/movies/Foo (2024)/Foo.mkv".to_string())
+        );
+        assert_eq!(
+            remap_import_path(
+                Some(r"C:\Arr\Series\Show\Season 01\Episode.mkv".into()),
+                r"c:\arr\series\",
+                r"D:\Media\TV\"
+            ),
+            Some(r"D:\Media\TV\Show\Season 01\Episode.mkv".to_string())
+        );
+        assert_eq!(
+            remap_import_path(
+                Some("C:/Arr/Series/Show/Season 01/Episode.mkv".into()),
+                r"c:\arr\series\",
+                "/srv/media/tv/"
+            ),
+            Some("/srv/media/tv/Show/Season 01/Episode.mkv".to_string())
+        );
+        assert_eq!(
+            remap_import_path(
+                Some("/arr/movies".into()),
+                "/arr/movies/",
+                "/srv/media/movies/"
+            ),
+            Some("/srv/media/movies".to_string())
+        );
+        assert_eq!(
+            remap_import_path(
+                Some("/other/Foo.mkv".into()),
+                "/arr/movies",
+                "/srv/media/movies"
+            ),
+            Some("/other/Foo.mkv".to_string())
+        );
+    }
+
+    #[test]
+    fn sonarr_episode_fetch_concurrency_is_capped_per_instance_and_globally() {
+        assert_eq!(SONARR_EPISODE_FETCH_CONCURRENCY_PER_INSTANCE, 16);
+        assert_eq!(SONARR_ACTIVE_EPISODE_INSTANCE_CONCURRENCY, 2);
+        assert_eq!(
+            SONARR_EPISODE_FETCH_CONCURRENCY_PER_INSTANCE
+                * SONARR_ACTIVE_EPISODE_INSTANCE_CONCURRENCY,
+            32
+        );
     }
 
     #[test]

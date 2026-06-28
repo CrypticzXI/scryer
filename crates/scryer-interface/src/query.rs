@@ -2,8 +2,9 @@ use async_graphql::{Context, ID, MergedObject, Object, Result as GqlResult};
 
 use chrono::{DateTime, Utc};
 use scryer_application::{
-    AppError, DownloadImportFilter, JwtSessionScope, MediaRequestCounts, OAuthAuthorizationSource,
-    PendingImportCounts, RuntimePathStyle, SCRYER_VERSION, SortDirection,
+    AppError, DownloadImportFilter, ExternalImportArrSourceKind as AppArrSourceKind,
+    ExternalImportMonitorWarmupStatus, JwtSessionScope, MediaRequestCounts,
+    OAuthAuthorizationSource, PendingImportCounts, RuntimePathStyle, SCRYER_VERSION, SortDirection,
     TitleCatalogContentStatus, TitleCatalogFilter, TitleCatalogSort, TitleCatalogSortKey,
     TitleHistoryFilter, WantedItemsQuery, is_supported_title_history_event_type,
     supported_title_history_event_types,
@@ -924,12 +925,112 @@ impl ActivityQueries {
     ) -> GqlResult<ExternalImportMonitorWarmupProgressPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
+        app.clear_stale_external_import_arr_source_chunks_once(&actor)
+            .await
+            .map_err(to_gql_error)?;
         let session_id = String::from(session_id);
         let snapshot = app
             .get_external_import_monitor_warmup_status(&actor, &session_id)
             .await
             .map_err(to_gql_error)?;
         Ok(from_external_import_monitor_warmup_progress(snapshot))
+    }
+
+    async fn external_import_arr_source_warmup_status(
+        &self,
+        ctx: &Context<'_>,
+        session_id: ID,
+    ) -> GqlResult<ExternalImportMonitorWarmupProgressPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let session_id = String::from(session_id);
+        let snapshot = app
+            .get_external_import_monitor_warmup_status(&actor, &session_id)
+            .await
+            .map_err(to_gql_error)?;
+        Ok(from_external_import_monitor_warmup_progress(snapshot))
+    }
+
+    async fn external_import_aggregate_warmup_progress(
+        &self,
+        ctx: &Context<'_>,
+        input: ExternalImportAggregateWarmupProgressInput,
+    ) -> GqlResult<ExternalImportAggregateWarmupProgressPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        app.clear_stale_external_import_arr_source_chunks_once(&actor)
+            .await
+            .map_err(to_gql_error)?;
+        if input.source_warmup_session_ids.is_empty() {
+            return Ok(ExternalImportAggregateWarmupProgressPayload {
+                status: ExternalImportMonitorWarmupStatusValue::Completed,
+                titles_total_known: true,
+                titles_fetched: 0,
+                titles_total: 0,
+                error_message: None,
+            });
+        }
+
+        let mut status = ExternalImportMonitorWarmupStatusValue::Completed;
+        let mut titles_total_known = true;
+        let mut titles_fetched = 0i32;
+        let mut titles_total = 0i32;
+        let mut error_message = None;
+
+        for session_id in input.source_warmup_session_ids {
+            let session_id_string = session_id.to_string();
+            let snapshot = app
+                .get_external_import_monitor_warmup_status(&actor, &session_id_string)
+                .await
+                .map_err(to_gql_error)?;
+            let source = app
+                .external_import_arr_source_warmup_result(&actor, &session_id_string)
+                .await
+                .map_err(to_gql_error)?;
+            let (known, fetched, total) = match source.kind {
+                AppArrSourceKind::Radarr => (
+                    snapshot.movies_total_known,
+                    snapshot.movies_progress.completed,
+                    snapshot.movies_progress.total,
+                ),
+                AppArrSourceKind::Sonarr => (
+                    snapshot.series_total_known,
+                    snapshot.series_progress.completed,
+                    snapshot.series_progress.total,
+                ),
+            };
+            titles_total_known &= known;
+            titles_fetched = titles_fetched.saturating_add(fetched);
+            titles_total = titles_total.saturating_add(total);
+
+            match snapshot.status {
+                ExternalImportMonitorWarmupStatus::Failed => {
+                    status = ExternalImportMonitorWarmupStatusValue::Failed;
+                    error_message = snapshot.error_message;
+                }
+                ExternalImportMonitorWarmupStatus::Canceled
+                    if status != ExternalImportMonitorWarmupStatusValue::Failed =>
+                {
+                    status = ExternalImportMonitorWarmupStatusValue::Canceled;
+                    error_message = snapshot.error_message;
+                }
+                ExternalImportMonitorWarmupStatus::Queued
+                | ExternalImportMonitorWarmupStatus::Running
+                    if matches!(status, ExternalImportMonitorWarmupStatusValue::Completed) =>
+                {
+                    status = ExternalImportMonitorWarmupStatusValue::Running;
+                }
+                _ => {}
+            }
+        }
+
+        Ok(ExternalImportAggregateWarmupProgressPayload {
+            status,
+            titles_total_known,
+            titles_fetched,
+            titles_total,
+            error_message,
+        })
     }
 
     async fn pending_import_counts(

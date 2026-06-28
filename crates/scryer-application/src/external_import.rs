@@ -7,19 +7,19 @@ use scryer_outbound_http::{
     OutboundHttpClient, OutboundHttpError, RateLimitRegistry, RequestPolicy,
     external_arr_reqwest_client, validate_operator_http_url,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::RwLock;
 
 /// Root folder discovered from a Sonarr/Radarr instance.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ArrRootFolder {
     pub id: i64,
     pub path: String,
 }
 
 /// Download client discovered from a Sonarr/Radarr instance.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ArrDownloadClient {
     pub id: i64,
     pub name: String,
@@ -28,7 +28,7 @@ pub struct ArrDownloadClient {
 }
 
 /// Indexer discovered from a Sonarr/Radarr instance.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ArrIndexer {
     pub id: i64,
     pub name: String,
@@ -43,7 +43,7 @@ pub struct DetectedProwlarrIndexer {
     pub child_name: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ArrMovie {
     pub id: i64,
     pub root_folder_path: String,
@@ -54,19 +54,19 @@ pub struct ArrMovie {
     pub monitored: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ArrSeriesSeason {
     pub season_number: i32,
     pub monitored: bool,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ArrSeriesStatistics {
     pub total_episode_count: Option<i32>,
     pub monitored_episode_count: Option<i32>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ArrSeries {
     pub id: i64,
     pub root_folder_path: String,
@@ -77,7 +77,7 @@ pub struct ArrSeries {
     pub statistics: ArrSeriesStatistics,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ArrEpisode {
     pub id: i64,
     pub series_id: i64,

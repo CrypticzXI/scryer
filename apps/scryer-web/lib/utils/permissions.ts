@@ -27,6 +27,23 @@ export type PermissionUser = {
   libraryPermissions: LibraryPermissionGrant[];
 };
 
+export function authorizationCacheSignature(
+  user: PermissionUser | null | undefined,
+): string {
+  const appPermissions = Array.from(new Set(user?.appPermissions ?? []))
+    .sort()
+    .join(",");
+  const libraryPermissions = (user?.libraryPermissions ?? [])
+    .map((grant) => {
+      const libraryId = grant.libraryId.trim();
+      const permissions = Array.from(new Set(grant.permissions)).sort().join(",");
+      return `${libraryId}:${permissions}`;
+    })
+    .sort()
+    .join("|");
+  return `app=${appPermissions};libraries=${libraryPermissions}`;
+}
+
 export function hasAppPermission(user: PermissionUser | null | undefined, permission: AppPermission): boolean {
   return user?.appPermissions.includes(permission) === true;
 }

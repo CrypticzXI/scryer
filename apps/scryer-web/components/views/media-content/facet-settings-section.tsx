@@ -132,18 +132,15 @@ export function FacetSettingsSection({
           </>
         ) : null}
       </div>
-      <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+      <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex min-w-0 items-center gap-4">
           <div className="flex h-[46px] w-[46px] shrink-0 items-center justify-center rounded-[13px] border border-[var(--scry-baccent)] bg-[linear-gradient(135deg,rgba(var(--scry-accent-rgb),0.35),rgba(123,91,255,0.22))] text-[var(--scry-accent-text)]">
             <Icon className="h-[23px] w-[23px]" />
           </div>
           <div className="min-w-0">
-            <h1 className="text-[25px] font-bold tracking-normal text-[var(--scry-ink2)]">
+            <h1 className="text-[25px] font-bold leading-none tracking-normal text-[var(--scry-ink2)]">
               {sectionLabel}
             </h1>
-            <p className="mt-1 max-w-[640px] text-[13.5px] text-[var(--scry-muted)]">
-              {t("settings.sectionTitle", { section: sectionLabel })}
-            </p>
           </div>
         </div>
         {headerStatus || showSecondaryNav ? (

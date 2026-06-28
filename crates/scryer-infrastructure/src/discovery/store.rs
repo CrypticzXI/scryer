@@ -93,6 +93,7 @@ const ITEM_COLUMNS: &[&str] = &[
     "matched_subject_keys_json",
     "matched_subject_titles_json",
     "matched_subject_count",
+    "library_provenance_json",
     "tmdb_collection_id",
     "tmdb_collection_name",
     "owned_in_input",
@@ -471,7 +472,7 @@ impl DiscoveryRepository for DiscoveryStore {
     ) -> AppResult<Vec<DiscoverySubmittedSubjectRecord>> {
         let rows = SqlRuntime::fetch_all(
             self.datastore.read_exec(),
-            "SELECT run_id, subject_key, title_id, library_facet, title_kind, display_title,
+            "SELECT run_id, subject_key, title_id, library_id, library_facet, title_kind, display_title,
                     external_ids_json, raw_subject_json
              FROM discovery_submitted_subjects
              WHERE run_id = {}
@@ -1224,6 +1225,7 @@ fn item_from_row(row: &SqlRow) -> AppResult<DiscoveryItemRecord> {
         matched_subject_keys_json: json_text(row, "matched_subject_keys_json")?,
         matched_subject_titles_json: json_text(row, "matched_subject_titles_json")?,
         matched_subject_count: row.i32("matched_subject_count")?,
+        library_provenance_json: json_text(row, "library_provenance_json")?,
         tmdb_collection_id: row.opt_text("tmdb_collection_id")?,
         tmdb_collection_name: row.opt_text("tmdb_collection_name")?,
         owned_in_input: row.bool("owned_in_input")?,
@@ -1255,6 +1257,7 @@ fn submitted_subject_from_row(row: &SqlRow) -> AppResult<DiscoverySubmittedSubje
         run_id: row.text("run_id")?,
         subject_key: row.text("subject_key")?,
         title_id: row.opt_text("title_id")?,
+        library_id: row.opt_text("library_id")?,
         library_facet: row.opt_text("library_facet")?,
         title_kind: row.opt_text("title_kind")?,
         display_title: row.opt_text("display_title")?,
@@ -1278,13 +1281,14 @@ async fn insert_submitted_subject_tx(
     SqlRuntime::execute(
         SqlExec::Tx(tx),
         "INSERT INTO discovery_submitted_subjects
-         (run_id, subject_key, title_id, library_facet, title_kind, display_title,
+         (run_id, subject_key, title_id, library_id, library_facet, title_kind, display_title,
           external_ids_json, raw_subject_json)
-         VALUES ({}, {}, {}, {}, {}, {}, {}, {})",
+         VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {})",
         &[
             SqlArg::Text(subject.run_id.clone()),
             SqlArg::Text(subject.subject_key.clone()),
             SqlArg::OptText(subject.title_id.clone()),
+            SqlArg::OptText(subject.library_id.clone()),
             SqlArg::OptText(subject.library_facet.clone()),
             SqlArg::OptText(subject.title_kind.clone()),
             SqlArg::OptText(subject.display_title.clone()),
@@ -1406,6 +1410,7 @@ fn item_args(datastore: &StoreDatastore, item: &DiscoveryItemRecord) -> AppResul
         json_arg(datastore, &item.matched_subject_keys_json)?,
         json_arg(datastore, &item.matched_subject_titles_json)?,
         SqlArg::I32(item.matched_subject_count),
+        json_arg(datastore, &item.library_provenance_json)?,
         SqlArg::OptText(item.tmdb_collection_id.clone()),
         SqlArg::OptText(item.tmdb_collection_name.clone()),
         SqlArg::Bool(item.owned_in_input),
@@ -1674,6 +1679,7 @@ mod tests {
                     run_id: "run-1".to_string(),
                     subject_key: "tvdb:series:1".to_string(),
                     title_id: None,
+                    library_id: Some("series-library".to_string()),
                     library_facet: Some("series".to_string()),
                     title_kind: Some("series".to_string()),
                     display_title: Some("Example Series".to_string()),
@@ -1689,6 +1695,10 @@ mod tests {
             .expect("submitted subjects should list");
         assert_eq!(read_subjects.len(), 1);
         assert_eq!(read_subjects[0].subject_key, "tvdb:series:1");
+        assert_eq!(
+            read_subjects[0].library_id.as_deref(),
+            Some("series-library")
+        );
         store
             .replace_discovery_sections(
                 "run-1",
@@ -1751,6 +1761,12 @@ mod tests {
                     matched_subject_keys_json: json!(["tvdb:series:1"]).to_string(),
                     matched_subject_titles_json: json!(["Example Series"]).to_string(),
                     matched_subject_count: 1,
+                    library_provenance_json: json!([{
+                        "subjectKey": "tvdb:series:1",
+                        "titleId": null,
+                        "libraryId": "series-library"
+                    }])
+                    .to_string(),
                     tmdb_collection_id: None,
                     tmdb_collection_name: None,
                     owned_in_input: false,
@@ -1793,6 +1809,15 @@ mod tests {
             .expect("items should list");
         assert_eq!(read_items.len(), 1);
         assert_eq!(read_items[0].target_key, "tmdb:movie:10");
+        assert_eq!(
+            read_items[0].library_provenance_json,
+            json!([{
+                "subjectKey": "tvdb:series:1",
+                "titleId": null,
+                "libraryId": "series-library"
+            }])
+            .to_string()
+        );
         let read_facets = store
             .list_discovery_facets("run-1")
             .await
@@ -1879,6 +1904,7 @@ mod tests {
                     run_id: "run-2".to_string(),
                     subject_key: "tmdb:movie:603".to_string(),
                     title_id: None,
+                    library_id: Some("movie-library".to_string()),
                     library_facet: Some("movie".to_string()),
                     title_kind: Some("movie".to_string()),
                     display_title: Some("Example Movie".to_string()),
@@ -2404,6 +2430,7 @@ mod tests {
             matched_subject_keys_json: "[]".to_string(),
             matched_subject_titles_json: "[]".to_string(),
             matched_subject_count: 0,
+            library_provenance_json: "[]".to_string(),
             tmdb_collection_id: None,
             tmdb_collection_name: None,
             owned_in_input: false,

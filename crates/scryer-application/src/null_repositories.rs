@@ -342,6 +342,7 @@ impl ExternalImportMonitorSnapshotRepository for NullExternalImportMonitorSnapsh
 
     async fn list_external_import_monitor_snapshot_chunk_batch(
         &self,
+        _: &str,
         _: crate::MediaFacet,
         _: crate::ExternalImportMonitorSnapshotEntryKind,
         _: Option<i32>,
@@ -352,7 +353,15 @@ impl ExternalImportMonitorSnapshotRepository for NullExternalImportMonitorSnapsh
 
     async fn delete_external_import_monitor_snapshot_chunks(
         &self,
+        _: &str,
         _: crate::MediaFacet,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn delete_external_import_monitor_snapshot_chunks_except_session(
+        &self,
+        _: &str,
     ) -> AppResult<()> {
         Ok(())
     }

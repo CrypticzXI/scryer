@@ -10,6 +10,7 @@ fragment MovieFields on TvdbMovie {
   runtime_minutes
   sort_title
   imdb_id
+  tmdb_id
   anidb_id
   genres
   studio

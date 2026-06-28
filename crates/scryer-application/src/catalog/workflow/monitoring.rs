@@ -182,6 +182,7 @@ impl AppUseCase {
                 .workflow
                 .external_import_monitor_snapshots
                 .list_external_import_monitor_snapshot_chunk_batch(
+                    crate::EXTERNAL_IMPORT_MONITOR_APPLY_SESSION_ID,
                     MediaFacet::Movie,
                     ExternalImportMonitorSnapshotEntryKind::Movie,
                     after_chunk_index,
@@ -410,6 +411,7 @@ impl AppUseCase {
                 .workflow
                 .external_import_monitor_snapshots
                 .list_external_import_monitor_snapshot_chunk_batch(
+                    crate::EXTERNAL_IMPORT_MONITOR_APPLY_SESSION_ID,
                     facet.clone(),
                     ExternalImportMonitorSnapshotEntryKind::Series,
                     after_chunk_index,
@@ -471,6 +473,7 @@ impl AppUseCase {
         &self,
         facet: &MediaFacet,
     ) -> AppResult<bool> {
+        let _apply_guard = self.acquire_external_import_apply_guard().await;
         let now = Utc::now();
         let chunk_entry_kind = match facet {
             MediaFacet::Movie => ExternalImportMonitorSnapshotEntryKind::Movie,
@@ -483,6 +486,7 @@ impl AppUseCase {
             .workflow
             .external_import_monitor_snapshots
             .list_external_import_monitor_snapshot_chunk_batch(
+                crate::EXTERNAL_IMPORT_MONITOR_APPLY_SESSION_ID,
                 facet.clone(),
                 chunk_entry_kind,
                 None,
@@ -507,7 +511,10 @@ impl AppUseCase {
         self.services
             .workflow
             .external_import_monitor_snapshots
-            .delete_external_import_monitor_snapshot_chunks(facet.clone())
+            .delete_external_import_monitor_snapshot_chunks(
+                crate::EXTERNAL_IMPORT_MONITOR_APPLY_SESSION_ID,
+                facet.clone(),
+            )
             .await?;
 
         Ok(true)

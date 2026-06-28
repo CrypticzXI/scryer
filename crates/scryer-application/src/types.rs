@@ -196,12 +196,15 @@ impl ExternalImportMonitorSnapshotEntryKind {
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ExternalImportMonitorSnapshotChunk {
+    pub session_id: String,
     pub facet: scryer_domain::MediaFacet,
     pub entry_kind: ExternalImportMonitorSnapshotEntryKind,
     pub chunk_index: i32,
     pub payload_ndjson: String,
     pub created_at: String,
 }
+
+pub const EXTERNAL_IMPORT_MONITOR_APPLY_SESSION_ID: &str = "external-import-monitor-apply";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum LibraryScanHintSource {
@@ -255,6 +258,7 @@ pub struct LibraryScanHint {
     pub source: LibraryScanHintSource,
     pub facet: LibraryScanHintFacet,
     pub path_key: String,
+    pub full_path_key: Option<String>,
     pub ids: Vec<ExternalIdHint>,
 }
 
@@ -275,6 +279,10 @@ impl LibraryScanHintSet {
         if let Some(existing) = self.hints.iter_mut().find(|existing| {
             existing.facet == hint.facet
                 && stored_path_keys_match(&existing.path_key, &hint.path_key)
+                && optional_stored_path_keys_match(
+                    existing.full_path_key.as_deref(),
+                    hint.full_path_key.as_deref(),
+                )
         }) {
             if existing.ids.is_empty() || !external_ids_overlap(&existing.ids, &hint.ids) {
                 existing.ids.clear();
@@ -312,9 +320,54 @@ impl LibraryScanHintSet {
         facet: LibraryScanHintFacet,
         candidate_path_key: &str,
     ) -> Option<&LibraryScanHint> {
-        self.hints.iter().find(|hint| {
-            hint.facet == facet && stored_path_keys_match(&hint.path_key, candidate_path_key)
-        })
+        self.hint_for_scan_path(facet, candidate_path_key, None)
+    }
+
+    pub fn hint_for_scan_path(
+        &self,
+        facet: LibraryScanHintFacet,
+        candidate_path_key: &str,
+        candidate_full_path_key: Option<&str>,
+    ) -> Option<&LibraryScanHint> {
+        let leaf_matches = self
+            .hints
+            .iter()
+            .filter(|hint| {
+                hint.facet == facet
+                    && !hint.ids.is_empty()
+                    && stored_path_keys_match(&hint.path_key, candidate_path_key)
+            })
+            .collect::<Vec<_>>();
+        let first = leaf_matches.first().copied()?;
+        if leaf_matches
+            .iter()
+            .all(|hint| external_ids_overlap(&first.ids, &hint.ids))
+        {
+            return Some(first);
+        }
+
+        let full_path_key = candidate_full_path_key?;
+        let full_matches = leaf_matches
+            .into_iter()
+            .filter(|hint| {
+                hint.full_path_key
+                    .as_deref()
+                    .is_some_and(|hint_key| stored_path_keys_match(hint_key, full_path_key))
+            })
+            .collect::<Vec<_>>();
+        let first = full_matches.first().copied()?;
+        full_matches
+            .iter()
+            .all(|hint| external_ids_overlap(&first.ids, &hint.ids))
+            .then_some(first)
+    }
+}
+
+fn optional_stored_path_keys_match(left: Option<&str>, right: Option<&str>) -> bool {
+    match (left, right) {
+        (Some(left), Some(right)) => stored_path_keys_match(left, right),
+        (None, None) => true,
+        _ => false,
     }
 }
 
@@ -343,6 +396,28 @@ pub fn library_scan_folder_leaf_key(path: &str) -> Option<String> {
     let components = leaf_path_components(path);
     let folder = components.last()?;
     Some(format!("folder:{}", normalize_leaf_path_component(folder)))
+}
+
+pub fn library_scan_file_full_path_key(path: &str) -> Option<String> {
+    full_path_key("file-path", path)
+}
+
+pub fn library_scan_folder_full_path_key(path: &str) -> Option<String> {
+    full_path_key("folder-path", path)
+}
+
+fn full_path_key(prefix: &str, path: &str) -> Option<String> {
+    let components = leaf_path_components(path);
+    (!components.is_empty()).then(|| {
+        format!(
+            "{prefix}:{}",
+            components
+                .into_iter()
+                .map(normalize_leaf_path_component)
+                .collect::<Vec<_>>()
+                .join("/")
+        )
+    })
 }
 
 fn leaf_path_components(path: &str) -> Vec<&str> {
@@ -2095,8 +2170,8 @@ impl UiSettings {
 mod tests {
     use super::{
         ExternalIdHint, ExternalIdProvider, LibraryScanHint, LibraryScanHintFacet,
-        LibraryScanHintSet, LibraryScanHintSource, library_scan_file_leaf_key,
-        library_scan_folder_leaf_key,
+        LibraryScanHintSet, LibraryScanHintSource, library_scan_file_full_path_key,
+        library_scan_file_leaf_key, library_scan_folder_leaf_key,
     };
 
     #[test]
@@ -2116,16 +2191,16 @@ mod tests {
     }
 
     #[test]
-    fn library_scan_hint_set_marks_conflicting_leaf_key_ambiguous() {
-        let path_key = library_scan_file_leaf_key(
-            "/mnt/media/Foundation (2021)/Season 01/Foundation.S01E01.mkv",
-        )
-        .expect("leaf key");
+    fn library_scan_hint_set_resolves_conflicting_leaf_key_by_full_path() {
+        let first_path = "/mnt/media/Foundation (2021)/Season 01/Foundation.S01E01.mkv";
+        let second_path = "/other/Foundation (2021)/Season 01/Foundation.S01E01.mkv";
+        let path_key = library_scan_file_leaf_key(first_path).expect("leaf key");
         let mut hints = LibraryScanHintSet::new();
         hints.push(LibraryScanHint {
             source: LibraryScanHintSource::ExternalImportSonarr,
             facet: LibraryScanHintFacet::Series,
             path_key: path_key.clone(),
+            full_path_key: library_scan_file_full_path_key(first_path),
             ids: vec![ExternalIdHint {
                 provider: ExternalIdProvider::Tvdb,
                 value: "366972".to_string(),
@@ -2135,15 +2210,25 @@ mod tests {
             source: LibraryScanHintSource::ExternalImportSonarr,
             facet: LibraryScanHintFacet::Series,
             path_key: path_key.clone(),
+            full_path_key: library_scan_file_full_path_key(second_path),
             ids: vec![ExternalIdHint {
                 provider: ExternalIdProvider::Tvdb,
                 value: "999999".to_string(),
             }],
         });
 
+        assert!(
+            hints
+                .hint_for_stored_path(LibraryScanHintFacet::Series, &path_key)
+                .is_none()
+        );
         let hint = hints
-            .hint_for_stored_path(LibraryScanHintFacet::Series, &path_key)
-            .expect("ambiguous hint remains addressable");
-        assert!(hint.ids.is_empty());
+            .hint_for_scan_path(
+                LibraryScanHintFacet::Series,
+                &path_key,
+                library_scan_file_full_path_key(first_path).as_deref(),
+            )
+            .expect("full path resolves conflict");
+        assert_eq!(hint.ids[0].value, "366972");
     }
 }

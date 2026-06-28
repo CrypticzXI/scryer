@@ -529,11 +529,45 @@ impl ExternalImportMonitorWarmupProgressSnapshot {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub enum ExternalImportArrSourceKind {
+    Sonarr,
+    Radarr,
+}
+
+impl ExternalImportArrSourceKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Sonarr => "sonarr",
+            Self::Radarr => "radarr",
+        }
+    }
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct ExternalImportArrSourceSeriesEntry {
+    pub series: crate::external_import::ArrSeries,
+    pub episodes: Vec<crate::external_import::ArrEpisode>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ExternalImportArrSourceWarmupResult {
+    pub source_key: String,
+    pub kind: ExternalImportArrSourceKind,
+    pub base_url: String,
+    pub version: Option<String>,
+    pub root_folders: Vec<crate::external_import::ArrRootFolder>,
+    pub title_root_paths: Vec<String>,
+    pub download_clients: Vec<crate::external_import::ArrDownloadClient>,
+    pub indexers: Vec<crate::external_import::ArrIndexer>,
+}
+
 #[derive(Clone)]
 pub struct ExternalImportMonitorWarmupBeginResult {
     pub snapshot: ExternalImportMonitorWarmupProgressSnapshot,
     pub created: bool,
     pub cancel_token: tokio_util::sync::CancellationToken,
+    pub replaced_session_id: Option<String>,
 }
 
 #[derive(Clone)]
@@ -544,6 +578,7 @@ struct ExternalImportMonitorWarmupSessionHandle {
     cancel_token: tokio_util::sync::CancellationToken,
     tx: tokio::sync::watch::Sender<ExternalImportMonitorWarmupProgressSnapshot>,
     scan_hints: Option<crate::LibraryScanHintSet>,
+    arr_source_result: Option<ExternalImportArrSourceWarmupResult>,
 }
 
 #[derive(Default)]
@@ -569,6 +604,7 @@ impl ExternalImportMonitorWarmupOrchestrator {
             connection_fingerprint.to_string(),
         );
         let mut state = self.state.lock().await;
+        let mut replaced_session_id = None;
 
         if let Some(existing_session_id) = state
             .session_ids_by_actor_fingerprint
@@ -586,37 +622,14 @@ impl ExternalImportMonitorWarmupOrchestrator {
                         snapshot: existing_snapshot,
                         created: false,
                         cancel_token: existing_handle.cancel_token.clone(),
+                        replaced_session_id: None,
                     };
                 }
             }
 
             state.session_ids_by_actor_fingerprint.remove(&actor_key);
-        }
-
-        for ((session_actor_user_id, session_fingerprint), session_id) in
-            state.session_ids_by_actor_fingerprint.clone()
-        {
-            if session_actor_user_id != actor_user_id
-                || session_fingerprint == connection_fingerprint
-            {
-                continue;
-            }
-
-            if let Some(handle) = state.sessions_by_id.get_mut(&session_id)
-                && !handle.claimed
-            {
-                let mut snapshot = handle.tx.borrow().clone();
-                if !snapshot.status.is_terminal() {
-                    snapshot.status = ExternalImportMonitorWarmupStatus::Canceled;
-                    snapshot.error_message = None;
-                    snapshot.touch();
-                    handle.tx.send_replace(snapshot);
-                }
-                handle.cancel_token.cancel();
-            }
-            state
-                .session_ids_by_actor_fingerprint
-                .remove(&(session_actor_user_id, session_fingerprint));
+            state.sessions_by_id.remove(&existing_session_id);
+            replaced_session_id = Some(existing_session_id);
         }
 
         let cancel_token = tokio_util::sync::CancellationToken::new();
@@ -633,6 +646,7 @@ impl ExternalImportMonitorWarmupOrchestrator {
                 cancel_token: cancel_token.clone(),
                 tx,
                 scan_hints: None,
+                arr_source_result: None,
             },
         );
 
@@ -640,6 +654,7 @@ impl ExternalImportMonitorWarmupOrchestrator {
             snapshot: initial_snapshot,
             created: true,
             cancel_token,
+            replaced_session_id,
         }
     }
 
@@ -680,13 +695,39 @@ impl ExternalImportMonitorWarmupOrchestrator {
 
     pub async fn set_scan_hints(
         &self,
+        actor_user_id: &str,
         session_id: &str,
         scan_hints: crate::LibraryScanHintSet,
     ) -> bool {
         let mut state = self.state.lock().await;
+        if !state.sessions_by_id.contains_key(session_id) {
+            if scan_hints.is_empty() {
+                return false;
+            }
+            let mut snapshot =
+                ExternalImportMonitorWarmupProgressSnapshot::new(session_id.to_string());
+            snapshot.status = ExternalImportMonitorWarmupStatus::Completed;
+            snapshot.phase = ExternalImportMonitorWarmupPhase::Ready;
+            let (tx, _rx) = tokio::sync::watch::channel(snapshot);
+            state.sessions_by_id.insert(
+                session_id.to_string(),
+                ExternalImportMonitorWarmupSessionHandle {
+                    actor_user_id: actor_user_id.to_string(),
+                    connection_fingerprint: session_id.to_string(),
+                    claimed: true,
+                    cancel_token: tokio_util::sync::CancellationToken::new(),
+                    tx,
+                    scan_hints: None,
+                    arr_source_result: None,
+                },
+            );
+        }
         let Some(handle) = state.sessions_by_id.get_mut(session_id) else {
             return false;
         };
+        if handle.actor_user_id != actor_user_id {
+            return false;
+        }
         handle.scan_hints = (!scan_hints.is_empty()).then_some(scan_hints);
         true
     }
@@ -700,6 +741,32 @@ impl ExternalImportMonitorWarmupOrchestrator {
         state.sessions_by_id.get(session_id).and_then(|handle| {
             (handle.actor_user_id == actor_user_id)
                 .then(|| handle.scan_hints.clone())
+                .flatten()
+        })
+    }
+
+    pub async fn set_arr_source_result(
+        &self,
+        session_id: &str,
+        result: ExternalImportArrSourceWarmupResult,
+    ) -> bool {
+        let mut state = self.state.lock().await;
+        let Some(handle) = state.sessions_by_id.get_mut(session_id) else {
+            return false;
+        };
+        handle.arr_source_result = Some(result);
+        true
+    }
+
+    pub async fn arr_source_result(
+        &self,
+        actor_user_id: &str,
+        session_id: &str,
+    ) -> Option<ExternalImportArrSourceWarmupResult> {
+        let state = self.state.lock().await;
+        state.sessions_by_id.get(session_id).and_then(|handle| {
+            (handle.actor_user_id == actor_user_id)
+                .then(|| handle.arr_source_result.clone())
                 .flatten()
         })
     }
@@ -751,6 +818,52 @@ impl ExternalImportMonitorWarmupOrchestrator {
         state.sessions_by_id.get(session_id).and_then(|handle| {
             (handle.actor_user_id == actor_user_id).then(|| handle.connection_fingerprint.clone())
         })
+    }
+
+    pub async fn remove(&self, actor_user_id: &str, session_id: &str) -> bool {
+        let mut state = self.state.lock().await;
+        let Some(handle) = state.sessions_by_id.get(session_id) else {
+            return false;
+        };
+        if handle.actor_user_id != actor_user_id {
+            return false;
+        }
+        state.sessions_by_id.remove(session_id);
+        state
+            .session_ids_by_actor_fingerprint
+            .retain(|_, existing_session_id| existing_session_id != session_id);
+        true
+    }
+
+    pub async fn prune_terminal_older_than(&self, max_age: chrono::Duration) -> Vec<String> {
+        let mut state = self.state.lock().await;
+        let now = Utc::now();
+        let mut removed = Vec::new();
+        let session_ids = state.sessions_by_id.keys().cloned().collect::<Vec<_>>();
+
+        for session_id in session_ids {
+            let Some(handle) = state.sessions_by_id.get(&session_id) else {
+                continue;
+            };
+            let snapshot = handle.tx.borrow().clone();
+            if !snapshot.status.is_terminal() {
+                continue;
+            }
+            let Ok(updated_at) = chrono::DateTime::parse_from_rfc3339(&snapshot.updated_at) else {
+                continue;
+            };
+            if now.signed_duration_since(updated_at.with_timezone(&Utc)) < max_age {
+                continue;
+            }
+
+            state.sessions_by_id.remove(&session_id);
+            state
+                .session_ids_by_actor_fingerprint
+                .retain(|_, existing_session_id| existing_session_id != &session_id);
+            removed.push(session_id);
+        }
+
+        removed
     }
 }
 
@@ -833,6 +946,8 @@ pub(crate) struct ReleaseCandidatePasswordTicket {
 #[derive(Clone)]
 pub struct AppRuntimeImportState {
     pub external_import_warmup_orchestrator: ExternalImportMonitorWarmupOrchestrator,
+    pub external_import_apply_lock: Arc<tokio::sync::Mutex<()>>,
+    pub external_import_source_chunk_cleanup_done: Arc<tokio::sync::Mutex<bool>>,
     pub(crate) same_path_upgrade_guard_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
@@ -1044,6 +1159,8 @@ impl AppRuntimeState {
             imports: AppRuntimeImportState {
                 external_import_warmup_orchestrator:
                     ExternalImportMonitorWarmupOrchestrator::default(),
+                external_import_apply_lock: Arc::new(tokio::sync::Mutex::new(())),
+                external_import_source_chunk_cleanup_done: Arc::new(tokio::sync::Mutex::new(false)),
                 same_path_upgrade_guard_lock: Arc::new(tokio::sync::Mutex::new(())),
             },
             library: AppRuntimeLibraryState {

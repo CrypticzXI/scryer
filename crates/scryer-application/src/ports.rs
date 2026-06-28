@@ -255,6 +255,7 @@ pub struct DiscoverySubmittedSubjectRecord {
     pub run_id: String,
     pub subject_key: String,
     pub title_id: Option<String>,
+    pub library_id: Option<String>,
     pub library_facet: Option<String>,
     pub title_kind: Option<String>,
     pub display_title: Option<String>,
@@ -336,6 +337,7 @@ pub struct DiscoveryItemRecord {
     pub matched_subject_keys_json: String,
     pub matched_subject_titles_json: String,
     pub matched_subject_count: i32,
+    pub library_provenance_json: String,
     pub tmdb_collection_id: Option<String>,
     pub tmdb_collection_name: Option<String>,
     pub owned_in_input: bool,
@@ -2059,6 +2061,7 @@ pub trait ExternalImportMonitorSnapshotRepository: Send + Sync {
 
     async fn list_external_import_monitor_snapshot_chunk_batch(
         &self,
+        session_id: &str,
         facet: MediaFacet,
         entry_kind: crate::ExternalImportMonitorSnapshotEntryKind,
         after_chunk_index: Option<i32>,
@@ -2067,7 +2070,13 @@ pub trait ExternalImportMonitorSnapshotRepository: Send + Sync {
 
     async fn delete_external_import_monitor_snapshot_chunks(
         &self,
+        session_id: &str,
         facet: MediaFacet,
+    ) -> AppResult<()>;
+
+    async fn delete_external_import_monitor_snapshot_chunks_except_session(
+        &self,
+        preserved_session_id: &str,
     ) -> AppResult<()>;
 }
 

@@ -481,6 +481,12 @@ impl TitleRepository for MockTitleRepo {
         title.tagged_aliases = metadata.tagged_aliases;
         title.metadata_language = metadata.metadata_language;
         title.metadata_fetched_at = Some(chrono::Utc::now());
+        for external_id in metadata.extra_external_ids {
+            title
+                .external_ids
+                .retain(|candidate| candidate.source != external_id.source);
+            title.external_ids.push(external_id);
+        }
         Ok(title.clone())
     }
 

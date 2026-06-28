@@ -41,6 +41,14 @@ struct DiscoverySourceTagValue {
     name: Option<String>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DiscoveryLibraryProvenance {
+    pub(crate) subject_key: String,
+    pub(crate) title_id: Option<String>,
+    pub(crate) library_id: String,
+}
+
 impl Default for DiscoveryContextDefaults {
     fn default() -> Self {
         Self {
@@ -74,6 +82,7 @@ pub(crate) struct DiscoveryLibraryContext {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct DiscoveryLibrarySubject {
     pub(crate) title_id: String,
+    pub(crate) library_id: String,
     pub(crate) title_name: String,
     pub(crate) facet: String,
     pub(crate) subject_key: String,
@@ -120,7 +129,8 @@ impl AppUseCase {
         actor: &User,
         query: DiscoveryHomeQuery,
     ) -> AppResult<DiscoveryHomeResult> {
-        let can_view_personalized = self.discovery_actor_can_view_personalized(actor).await?;
+        let readable_library_ids = self.discovery_readable_library_ids(actor).await?;
+        let can_view_personalized = !readable_library_ids.is_empty();
         let status = self
             .load_discovery_sync_status_for_visibility(can_view_personalized)
             .await?;
@@ -163,15 +173,23 @@ impl AppUseCase {
                     .discovery
                     .list_discovery_items_for_generation(context_run_id)
                     .await?;
+                personalized_items = filter_personalized_discovery_items_for_libraries(
+                    personalized_items,
+                    &readable_library_ids,
+                );
                 let submitted_subjects = self
                     .services
                     .library
                     .discovery
                     .list_discovery_submitted_subjects(context_run_id)
                     .await?;
+                let submitted_subjects = filter_submitted_subjects_for_libraries(
+                    &submitted_subjects,
+                    &readable_library_ids,
+                );
                 resolve_discovery_matched_subjects(&mut personalized_items, &submitted_subjects)?;
                 let library_profile = self
-                    .discovery_library_affinity_profile(actor, &submitted_subjects)
+                    .discovery_library_affinity_profile(&readable_library_ids, &submitted_subjects)
                     .await?;
                 complete_collection =
                     complete_collection_section(&personalized_items, include_unresolved, limit);
@@ -189,9 +207,14 @@ impl AppUseCase {
                     .list_discovery_facets(context_run_id)
                     .await?
                     .into_iter()
-                    .map(|mut facet| {
-                        facet.local_count = Some(local_count_for_facet(&facet_counts, &facet));
-                        facet
+                    .filter_map(|mut facet| {
+                        let local_count = local_count_for_facet(&facet_counts, &facet);
+                        if local_count == 0 {
+                            return None;
+                        }
+                        facet.local_count = Some(local_count);
+                        facet.smg_count = None;
+                        Some(facet)
                     })
                     .collect();
             }
@@ -247,7 +270,8 @@ impl AppUseCase {
         actor: &User,
         query: DiscoveryItemsQuery,
     ) -> AppResult<DiscoveryItemsResult> {
-        let can_view_personalized = self.discovery_actor_can_view_personalized(actor).await?;
+        let readable_library_ids = self.discovery_readable_library_ids(actor).await?;
+        let can_view_personalized = !readable_library_ids.is_empty();
         let state = self
             .services
             .library
@@ -265,12 +289,20 @@ impl AppUseCase {
                     .discovery
                     .list_discovery_items_for_generation(context_run_id)
                     .await?;
+                personalized_items = filter_personalized_discovery_items_for_libraries(
+                    personalized_items,
+                    &readable_library_ids,
+                );
                 let submitted_subjects = self
                     .services
                     .library
                     .discovery
                     .list_discovery_submitted_subjects(context_run_id)
                     .await?;
+                let submitted_subjects = filter_submitted_subjects_for_libraries(
+                    &submitted_subjects,
+                    &readable_library_ids,
+                );
                 resolve_discovery_matched_subjects(&mut personalized_items, &submitted_subjects)?;
                 items.extend(personalized_items);
             }
@@ -312,11 +344,12 @@ impl AppUseCase {
         })
     }
 
-    async fn discovery_actor_can_view_personalized(&self, actor: &User) -> AppResult<bool> {
-        Ok(!self
+    async fn discovery_readable_library_ids(&self, actor: &User) -> AppResult<HashSet<String>> {
+        Ok(self
             .authorized_library_ids(actor, None, LibraryPermission::View)
             .await?
-            .is_empty())
+            .into_iter()
+            .collect())
     }
 
     async fn load_discovery_sync_status_for_visibility(
@@ -372,13 +405,11 @@ impl AppUseCase {
 impl AppUseCase {
     async fn discovery_library_affinity_profile(
         &self,
-        actor: &User,
+        allowed_library_ids: &HashSet<String>,
         submitted_subjects: &[DiscoverySubmittedSubjectRecord],
     ) -> AppResult<DiscoveryLibraryAffinityProfile> {
-        let library_ids = self
-            .authorized_library_ids(actor, None, LibraryPermission::View)
-            .await?;
-        let allowed_library_ids = library_ids.iter().collect::<HashSet<_>>();
+        let mut library_ids = allowed_library_ids.iter().cloned().collect::<Vec<_>>();
+        library_ids.sort();
         let mut titles = Vec::new();
         let mut seen_title_ids = HashSet::new();
         for title_id in submitted_subjects
@@ -1022,6 +1053,49 @@ fn resolve_discovery_matched_subjects(
     Ok(())
 }
 
+fn filter_submitted_subjects_for_libraries(
+    submitted_subjects: &[DiscoverySubmittedSubjectRecord],
+    readable_library_ids: &HashSet<String>,
+) -> Vec<DiscoverySubmittedSubjectRecord> {
+    submitted_subjects
+        .iter()
+        .filter(|subject| {
+            subject
+                .library_id
+                .as_deref()
+                .is_some_and(|library_id| readable_library_ids.contains(library_id))
+        })
+        .cloned()
+        .collect()
+}
+
+fn filter_personalized_discovery_items_for_libraries(
+    items: Vec<DiscoveryItemRecord>,
+    readable_library_ids: &HashSet<String>,
+) -> Vec<DiscoveryItemRecord> {
+    items
+        .into_iter()
+        .filter(|item| discovery_item_has_readable_provenance(item, readable_library_ids))
+        .collect()
+}
+
+fn discovery_item_has_readable_provenance(
+    item: &DiscoveryItemRecord,
+    readable_library_ids: &HashSet<String>,
+) -> bool {
+    discovery_item_library_provenance(item).iter().any(|entry| {
+        let library_id = entry.library_id.trim();
+        !library_id.is_empty() && readable_library_ids.contains(library_id)
+    })
+}
+
+fn discovery_item_library_provenance(
+    item: &DiscoveryItemRecord,
+) -> Vec<DiscoveryLibraryProvenance> {
+    serde_json::from_str::<Vec<DiscoveryLibraryProvenance>>(&item.library_provenance_json)
+        .unwrap_or_default()
+}
+
 fn item_matches_discovery_items_query(
     item: &DiscoveryItemRecord,
     query: &DiscoveryItemsQuery,
@@ -1327,12 +1401,29 @@ impl DiscoveryLibraryContext {
                     run_id: run_id.to_string(),
                     subject_key: subject.subject_key.clone(),
                     title_id: Some(subject.title_id.clone()),
+                    library_id: Some(subject.library_id.clone()),
                     library_facet: Some(subject.facet.clone()),
                     title_kind: subject.subject.kind.clone(),
                     display_title: Some(subject.title_name.clone()),
                     external_ids_json,
                     raw_subject_json,
                 })
+            })
+            .collect()
+    }
+
+    pub(crate) fn subject_provenance_by_key(&self) -> HashMap<String, DiscoveryLibraryProvenance> {
+        self.subjects
+            .iter()
+            .map(|subject| {
+                (
+                    subject.subject_key.clone(),
+                    DiscoveryLibraryProvenance {
+                        subject_key: subject.subject_key.clone(),
+                        title_id: Some(subject.title_id.clone()),
+                        library_id: subject.library_id.clone(),
+                    },
+                )
             })
             .collect()
     }
@@ -1378,6 +1469,7 @@ fn build_discovery_library_subject(title: &Title) -> Option<DiscoveryLibrarySubj
         build_discovery_subject_parts(&title.facet, normalized_supported_external_ids(title))?;
     Some(DiscoveryLibrarySubject {
         title_id: title.id.clone(),
+        library_id: title.library_id.clone(),
         title_name: title.name.clone(),
         facet: parts.facet,
         subject_key: parts.subject_key,
@@ -1779,6 +1871,7 @@ pub(crate) fn snapshot_item_records(
     run_id: &str,
     base_generation_id: &str,
     items: &[DiscoveryTitle],
+    provenance_by_subject_key: &HashMap<String, DiscoveryLibraryProvenance>,
     now: DateTime<Utc>,
 ) -> AppResult<Vec<DiscoveryItemRecord>> {
     items
@@ -1792,6 +1885,7 @@ pub(crate) fn snapshot_item_records(
                 None,
                 index,
                 item,
+                provenance_by_subject_key,
                 now,
             )
         })
@@ -1802,6 +1896,7 @@ pub(crate) fn incremental_item_records(
     run_id: &str,
     base_generation_id: &str,
     items: &[DiscoveryTitle],
+    provenance_by_subject_key: &HashMap<String, DiscoveryLibraryProvenance>,
     now: DateTime<Utc>,
 ) -> AppResult<Vec<DiscoveryItemRecord>> {
     items
@@ -1815,6 +1910,7 @@ pub(crate) fn incremental_item_records(
                 None,
                 index,
                 item,
+                provenance_by_subject_key,
                 now,
             )
         })
@@ -1838,6 +1934,7 @@ pub(crate) fn public_feed_item_records(
     now: DateTime<Utc>,
 ) -> AppResult<Vec<DiscoveryItemRecord>> {
     let mut records = Vec::new();
+    let empty_provenance = HashMap::new();
     for (section_index, section) in public_feed_sections(result).enumerate() {
         for (item_index, item) in section.items.iter().enumerate() {
             let mut record = discovery_item_record(
@@ -1847,11 +1944,13 @@ pub(crate) fn public_feed_item_records(
                 Some(section.section_id.clone()),
                 section_index * 10_000 + item_index,
                 item,
+                &empty_provenance,
                 now,
             )?;
             record.matched_subject_keys_json = "[]".to_string();
             record.matched_subject_titles_json = "[]".to_string();
             record.matched_subject_count = 0;
+            record.library_provenance_json = "[]".to_string();
             records.push(record);
         }
     }
@@ -1930,8 +2029,11 @@ fn discovery_item_record(
     section_id: Option<String>,
     index: usize,
     item: &DiscoveryTitle,
+    provenance_by_subject_key: &HashMap<String, DiscoveryLibraryProvenance>,
     now: DateTime<Utc>,
 ) -> AppResult<DiscoveryItemRecord> {
+    let library_provenance_json =
+        discovery_item_library_provenance_json(item, provenance_by_subject_key)?;
     Ok(DiscoveryItemRecord {
         id: format!("{run_id}:item:{index}"),
         run_id: run_id.to_string(),
@@ -1972,6 +2074,7 @@ fn discovery_item_record(
         matched_subject_keys_json: discovery_json_array(&item.matched_subject_keys)?,
         matched_subject_titles_json: discovery_json_array(&item.matched_subject_titles)?,
         matched_subject_count: item.matched_subject_count,
+        library_provenance_json,
         tmdb_collection_id: item.tmdb_collection_id.map(|id| id.to_string()),
         tmdb_collection_name: non_empty_string(&item.tmdb_collection_name),
         owned_in_input: item.owned_in_input,
@@ -1985,6 +2088,45 @@ fn discovery_item_record(
         created_at: now,
         updated_at: now,
     })
+}
+
+fn discovery_item_library_provenance_json(
+    item: &DiscoveryTitle,
+    provenance_by_subject_key: &HashMap<String, DiscoveryLibraryProvenance>,
+) -> AppResult<String> {
+    let mut provenance = Vec::new();
+    let mut seen = BTreeSet::new();
+    let mut push_subject_key = |subject_key: &str| {
+        let subject_key = subject_key.trim();
+        if subject_key.is_empty() {
+            return;
+        }
+        let Some(entry) = provenance_by_subject_key.get(subject_key) else {
+            return;
+        };
+        if seen.insert((
+            entry.subject_key.clone(),
+            entry.title_id.clone(),
+            entry.library_id.clone(),
+        )) {
+            provenance.push(entry.clone());
+        }
+    };
+
+    for subject_key in &item.matched_subject_keys {
+        push_subject_key(subject_key);
+    }
+    for subject_key in &item.change_subject_keys {
+        push_subject_key(subject_key);
+    }
+    for subject_key in &item.removed_subject_keys {
+        push_subject_key(subject_key);
+    }
+    if item.owned_in_input {
+        push_subject_key(&item.target_key);
+    }
+
+    serde_json::to_string(&provenance).map_err(discovery_json_error)
 }
 
 pub(crate) fn pending_context_changes_need_snapshot_reconciliation(
@@ -2377,7 +2519,7 @@ mod tests {
             ..DiscoveryTitle::default()
         };
 
-        let records = snapshot_item_records("run-1", "run-1", &[item], now)
+        let records = snapshot_item_records("run-1", "run-1", &[item], &HashMap::new(), now)
             .expect("discovery item records should build");
 
         assert_eq!(records.len(), 1);
@@ -2655,6 +2797,7 @@ mod tests {
             matched_subject_keys_json: "[]".to_string(),
             matched_subject_titles_json: "[]".to_string(),
             matched_subject_count: 0,
+            library_provenance_json: "[]".to_string(),
             tmdb_collection_id: None,
             tmdb_collection_name: None,
             owned_in_input: false,

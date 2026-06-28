@@ -57,6 +57,10 @@ import {
   mediaRequestStatusId,
 } from "@/lib/utils/dom-ids";
 import { selectPosterVariantUrl } from "@/lib/utils/poster-images";
+import {
+  formatExternalIdSourceLabel,
+  getRawRequestExternalIds,
+} from "@/lib/utils/request-external-ids";
 import { cn } from "@/lib/utils";
 
 type QualityProfileOption = {
@@ -496,6 +500,7 @@ export function RequestsView({
     const malId = requestExternalIdValue(request, "mal");
     const anilistId = requestExternalIdValue(request, "anilist");
     const anidbId = requestExternalIdValue(request, "anidb");
+    const rawExternalIds = getRawRequestExternalIds(request.externalIds);
     const hasExternalLink =
       Boolean(imdbId) ||
       Boolean(tvdbId) ||
@@ -503,6 +508,7 @@ export function RequestsView({
       Boolean(malId) ||
       Boolean(anilistId) ||
       Boolean(anidbId);
+    const hasExternalIds = hasExternalLink || rawExternalIds.length > 0;
     const isResolving = actionRequestId === request.id;
     const actionsDisabled = loading || actionRequestId !== null;
     const approveDisabled = loading || actionRequestId !== null;
@@ -659,7 +665,7 @@ export function RequestsView({
                 {request.overview}
               </p>
             ) : null}
-            {hasExternalLink ? (
+            {hasExternalIds ? (
               <div className="flex flex-wrap items-center gap-2">
                 <ImdbExternalLink imdbId={imdbId} size="compact" />
                 {request.facet === "movie" ? (
@@ -683,6 +689,19 @@ export function RequestsView({
                 <MalExternalLink malId={malId} size="compact" />
                 <AnilistExternalLink anilistId={anilistId} size="compact" />
                 <AnidbExternalLink anidbId={anidbId} size="compact" />
+                {rawExternalIds.map((externalId) => (
+                  <span
+                    key={`${externalId.source}:${externalId.value}`}
+                    className="inline-flex h-8 items-center gap-1.5 rounded-md border border-[var(--scry-border3)] bg-[rgba(6,10,22,0.68)] px-2.5 py-1 text-xs font-semibold text-[var(--scry-muted2)]"
+                  >
+                    <span className="text-[var(--scry-faint2)]">
+                      {formatExternalIdSourceLabel(externalId.source)}
+                    </span>
+                    <span className="font-mono text-[var(--scry-ink2)]">
+                      {externalId.value}
+                    </span>
+                  </span>
+                ))}
               </div>
             ) : null}
             <div className="grid gap-2 text-xs text-[var(--scry-muted3)] sm:grid-cols-2 xl:grid-cols-4">
