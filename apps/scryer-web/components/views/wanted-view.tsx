@@ -11,7 +11,7 @@ import { buildViewPath } from "@/lib/utils/routing";
 import { formatUiDateTime } from "@/lib/utils/date-format";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
@@ -568,14 +568,13 @@ export function WantedView({
       icon: History,
     },
   ];
+  const activeWantedNavItem =
+    wantedNav.find((item) => item.section === section) ?? wantedNav[0]!;
+  const ActiveWantedIcon = activeWantedNavItem.icon;
 
   return (
     <div className="md:flex md:h-full md:min-h-0 md:flex-row">
       <aside className="w-full shrink-0 border-b border-[var(--scry-border3)] bg-[var(--scry-surfF)] p-3 md:h-full md:w-[218px] md:overflow-y-auto md:border-b-0 md:border-r md:p-[22px_14px]">
-        <div className="mb-3 flex items-center gap-2 px-2 text-[var(--scry-ink2)] md:mb-4">
-          <ListChecks className="h-[18px] w-[18px] text-[var(--scry-accent-text)]" />
-          <span className="text-[16px] font-bold">{t("nav.wanted")}</span>
-        </div>
         <nav
           className="flex gap-2 overflow-x-auto pb-1 md:flex-col md:overflow-visible md:pb-0"
           aria-label={t("nav.wanted")}
@@ -615,18 +614,41 @@ export function WantedView({
           })}
         </nav>
       </aside>
-      <main className="space-y-4 md:flex md:h-full md:min-h-0 md:min-w-0 md:flex-1 md:flex-col md:gap-4 md:space-y-0">
-        {section === "history" ? (
-          historyContent ?? (
-            <WantedItemsCard state={wantedState} onOpenOverview={onOpenOverview} />
-          )
-        ) : section === "cutoff" ? (
-          <CutoffUnmetView state={cutoffState} />
-        ) : section === "pending" ? (
-          <PendingReleasesCard state={pendingState} />
-        ) : (
-          <WantedItemsCard state={wantedState} onOpenOverview={onOpenOverview} />
-        )}
+      <main className="min-w-0 flex-1 overflow-y-auto bg-transparent">
+        <div className="mx-auto flex min-h-full w-full max-w-none flex-col px-4 py-5 sm:px-6 md:px-[30px] md:py-[26px] md:pb-[60px]">
+          <div className="mb-4 flex items-center gap-1.5 text-[12.5px] text-[var(--scry-faint)]">
+            <span>{t("nav.group.automation")}</span>
+            <ChevronRight className="h-3.5 w-3.5" />
+            <span className="font-semibold text-[var(--scry-accent-text)]">
+              {activeWantedNavItem.label}
+            </span>
+          </div>
+          <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
+            <div className="flex min-w-0 items-center gap-4">
+              <div className="flex h-[46px] w-[46px] shrink-0 items-center justify-center rounded-[13px] border border-[var(--scry-baccent)] bg-[linear-gradient(135deg,rgba(var(--scry-accent-rgb),0.35),rgba(123,91,255,0.22))] text-[var(--scry-accent-text)]">
+                <ActiveWantedIcon className="h-[23px] w-[23px]" />
+              </div>
+              <div className="min-w-0">
+                <h1 className="text-[25px] font-bold tracking-normal text-[var(--scry-ink2)]">
+                  {activeWantedNavItem.label}
+                </h1>
+              </div>
+            </div>
+          </div>
+          <div className="min-h-0 flex-1">
+            {section === "history" ? (
+              historyContent ?? (
+                <WantedItemsCard state={wantedState} onOpenOverview={onOpenOverview} />
+              )
+            ) : section === "cutoff" ? (
+              <CutoffUnmetView state={cutoffState} />
+            ) : section === "pending" ? (
+              <PendingReleasesCard state={pendingState} />
+            ) : (
+              <WantedItemsCard state={wantedState} onOpenOverview={onOpenOverview} />
+            )}
+          </div>
+        </div>
       </main>
     </div>
   );
@@ -721,10 +743,7 @@ function WantedItemsCard({
       }
     >
       <CardHeader className="border-b border-[var(--scry-border3)] bg-[linear-gradient(180deg,var(--scry-surfD),transparent)] px-4 py-4 sm:px-5">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <CardTitle className="text-[22px] font-bold tracking-normal text-[var(--scry-ink2)]">
-            {t("wanted.title")}
-          </CardTitle>
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-end">
           <Button
             className="h-10 w-full rounded-[10px] border-[var(--scry-border2)] bg-[var(--scry-inset)] px-3 text-[13px] text-[var(--scry-body)] shadow-none hover:bg-[var(--scry-hover)] sm:w-auto"
             size="sm"
@@ -1342,10 +1361,7 @@ function PendingReleasesCard({ state }: { state: PendingViewState }) {
   return (
     <Card className="overflow-hidden rounded-none border-0 bg-transparent shadow-none">
       <CardHeader className="border-b border-[var(--scry-border3)] bg-[linear-gradient(180deg,var(--scry-surfD),transparent)] px-4 py-4 sm:px-5">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <CardTitle className="text-[22px] font-bold tracking-normal text-[var(--scry-ink2)]">
-            {t("pending.title")}
-          </CardTitle>
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-end">
           <Button
             className="h-10 w-full rounded-[10px] border-[var(--scry-border2)] bg-[var(--scry-inset)] px-3 text-[13px] text-[var(--scry-body)] shadow-none hover:bg-[var(--scry-hover)] sm:w-auto"
             size="sm"

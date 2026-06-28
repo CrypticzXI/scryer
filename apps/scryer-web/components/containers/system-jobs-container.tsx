@@ -6,7 +6,6 @@ import { useJobRunToasts } from "@/components/root/job-run-provider";
 import { useGlobalStatus } from "@/lib/context/global-status-context";
 import { useTranslate } from "@/lib/context/translate-context";
 import {
-  activeJobRunsQuery,
   jobRunEventsSubscription,
   jobRunsQuery,
   jobsQuery,
@@ -106,17 +105,15 @@ export const SystemJobsContainer = memo(function SystemJobsContainer() {
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const [{ data: jobsData, error: jobsError }, { data: activeData, error: activeError }, { data: recentData, error: recentError }] =
-        await Promise.all([
-          client.query(jobsQuery, {}).toPromise(),
-          client.query(activeJobRunsQuery, {}).toPromise(),
-          client.query(recentJobRunsQuery, { limit: 50 }).toPromise(),
-        ]);
+      const [{ data: jobsData, error: jobsError }, { data: recentData, error: recentError }] = await Promise.all([
+        client.query(jobsQuery, {}).toPromise(),
+        client.query(recentJobRunsQuery, { limit: 50 }).toPromise(),
+      ]);
 
       if (cancelled) {
         return;
       }
-      const firstError = jobsError ?? activeError ?? recentError;
+      const firstError = jobsError ?? recentError;
       if (firstError) {
         setGlobalStatus(firstError.message);
         return;
@@ -126,14 +123,6 @@ export const SystemJobsContainer = memo(function SystemJobsContainer() {
         ((Array.isArray(jobsData?.jobs) ? jobsData.jobs : []) as unknown[])
           .map(normalizeJobDefinition)
           .filter((job): job is JobDefinition => job !== null),
-      );
-      setActiveRunsById(
-        Object.fromEntries(
-          ((Array.isArray(activeData?.activeJobRuns) ? activeData.activeJobRuns : []) as unknown[])
-            .map(normalizeJobRun)
-            .filter((run): run is JobRun => run !== null)
-            .map((run) => [run.id, run]),
-        ),
       );
       setRecentRuns(
         ((Array.isArray(recentData?.recentJobRuns) ? recentData.recentJobRuns : []) as unknown[])

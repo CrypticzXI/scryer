@@ -247,11 +247,6 @@ export function SettingsMediaServersSection({
 
   return (
     <div id="settings-media-servers-section" className="space-y-4 text-sm">
-      <CardTitle className="flex items-center gap-2 text-base">
-        <Server className="h-4 w-4" />
-        {t("settings.mediaServersSection")}
-      </CardTitle>
-
       <div id="settings-media-servers-table-card" className="rounded border border-border">
         <div className="overflow-x-auto">
           <Table id="settings-media-servers-table">

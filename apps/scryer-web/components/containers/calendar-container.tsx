@@ -1,6 +1,5 @@
 import { lazy, memo, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { useClient } from "urql";
-import { Card, CardContent } from "@/components/ui/card";
 import { calendarEpisodesQuery, librariesQuery } from "@/lib/graphql/queries";
 import { FACETS_BY_ID } from "@/lib/facets/registry";
 import type { OverviewTitleTarget, ViewId } from "@/components/root/types";
@@ -133,29 +132,27 @@ export const CalendarContainer = memo(function CalendarContainer({
   }
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
-      <Suspense
-        fallback={
-          <div className="flex min-h-0 flex-1 flex-col bg-[var(--scry-surfE)] px-4 py-5 sm:px-6 lg:px-7">
-            <Card className="rounded-none border-0 bg-transparent shadow-none">
-              <CardContent className="p-0 text-center text-muted-foreground">
-                {t("label.loading")}
-              </CardContent>
-            </Card>
-          </div>
-        }
-      >
-        <CalendarView
-          episodes={calendarEpisodes}
-          loading={calendarLoading}
-          libraries={libraries}
-          librariesLoading={librariesLoading}
-          selectedLibraryIds={selectedLibraryIds}
-          onSelectedLibraryIdsChange={setSelectedLibraryIds}
-          onDateRangeChange={refreshCalendar}
-          onEpisodeClick={handleCalendarEpisodeClick}
-        />
-      </Suspense>
+    <div className="flex min-h-0 flex-1 flex-col overflow-y-auto bg-transparent">
+      <div className="mx-auto flex min-h-0 w-full max-w-none flex-1 flex-col px-4 py-5 sm:px-6 md:px-[30px] md:py-[26px] md:pb-[60px]">
+        <Suspense
+          fallback={
+            <div className="py-6 text-sm text-[var(--scry-muted3)]">
+              {t("label.loading")}
+            </div>
+          }
+        >
+          <CalendarView
+            episodes={calendarEpisodes}
+            loading={calendarLoading}
+            libraries={libraries}
+            librariesLoading={librariesLoading}
+            selectedLibraryIds={selectedLibraryIds}
+            onSelectedLibraryIdsChange={setSelectedLibraryIds}
+            onDateRangeChange={refreshCalendar}
+            onEpisodeClick={handleCalendarEpisodeClick}
+          />
+        </Suspense>
+      </div>
     </div>
   );
 });

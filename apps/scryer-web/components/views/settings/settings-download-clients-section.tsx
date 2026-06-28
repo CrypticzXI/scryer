@@ -592,11 +592,6 @@ export function SettingsDownloadClientsSection({
 
   return (
     <div id="settings-download-clients-section" className="space-y-4 text-sm">
-      <CardTitle className="flex items-center gap-2 text-base">
-        <Server className="h-4 w-4" />
-        {t("settings.downloadClientSection")}
-      </CardTitle>
-
       <div id="settings-download-clients-table-card" className="rounded border border-border">
         <div className="overflow-x-auto">
           <Table id="settings-download-clients-table">

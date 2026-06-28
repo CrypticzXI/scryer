@@ -6,7 +6,6 @@ import {
   Library,
   Plus,
   Power,
-  SlidersHorizontal,
   Trash2,
 } from "lucide-react";
 import { useClient } from "urql";
@@ -676,11 +675,6 @@ export function SettingsRulesSection({
   const t = useTranslate();
   return (
     <div id="settings-rules-section" className="space-y-4 text-sm">
-      <CardTitle className="flex items-center gap-2 text-base">
-        <SlidersHorizontal className="h-4 w-4" />
-        {t("settings.rulesSection")}
-      </CardTitle>
-
       <div className="flex flex-col gap-4 xl:flex-row xl:items-start">
         <div className="min-w-0 flex-1 space-y-4">
       <div className="rounded border border-border">

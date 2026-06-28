@@ -2,14 +2,19 @@
 import { lazy, memo, Suspense, useCallback, useState } from "react";
 import { Link } from "react-router-dom";
 import {
+  Bell,
   Captions,
   ChevronRight,
+  Database,
+  Download,
   FolderCog,
   Puzzle,
+  Server,
   Settings2,
   SlidersHorizontal,
   Timer,
   User,
+  Users,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { SettingsSection } from "@/components/root/types";
@@ -198,16 +203,42 @@ export const SettingsContainer = memo(function SettingsContainer({
   const showPrimarySettingsSubnav = primarySettingsNav.some(
     (item) => item.section === settingsSection,
   );
-  const SettingsSectionIcon =
-    settingsSection === "rules"
-      ? SlidersHorizontal
-      : settingsSection === "post-processing"
-        ? FolderCog
-        : primarySettingsNav.find((item) => item.section === settingsSection)?.icon ??
-          Settings2;
+  const usesAutomationHeader =
+    settingsSection === "rules" || settingsSection === "post-processing";
+  const usesIntegrationsHeader =
+    settingsSection === "downloadClients" ||
+    settingsSection === "indexers" ||
+    settingsSection === "mediaServers" ||
+    settingsSection === "notifications";
+  const usesAccessHeader = settingsSection === "users";
+  const SettingsSectionIcon = (() => {
+    switch (settingsSection) {
+      case "rules":
+        return SlidersHorizontal;
+      case "post-processing":
+        return FolderCog;
+      case "indexers":
+        return Database;
+      case "downloadClients":
+        return Download;
+      case "mediaServers":
+        return Server;
+      case "notifications":
+        return Bell;
+      case "users":
+        return Users;
+      default:
+        return (
+          primarySettingsNav.find((item) => item.section === settingsSection)?.icon ??
+          Settings2
+        );
+    }
+  })();
   const breadcrumbRootLabel =
-    settingsSection === "rules" || settingsSection === "post-processing"
+    usesAutomationHeader
       ? t("nav.group.automation")
+      : usesIntegrationsHeader
+        ? t("nav.group.integrations")
       : t("nav.settings");
 
   useProviderCatalogSubscription(
@@ -297,7 +328,7 @@ export const SettingsContainer = memo(function SettingsContainer({
             <span className="font-semibold text-[var(--scry-accent-text)]">{settingsSectionLabel}</span>
           </div>
           <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-            <div className="flex min-w-0 items-start gap-4">
+            <div className="flex min-w-0 items-center gap-4">
               <div className="flex h-[46px] w-[46px] shrink-0 items-center justify-center rounded-[13px] border border-[var(--scry-baccent)] bg-[linear-gradient(135deg,rgba(var(--scry-accent-rgb),0.35),rgba(123,91,255,0.22))] text-[var(--scry-accent-text)]">
                 <SettingsSectionIcon className="h-[23px] w-[23px]" />
               </div>
@@ -305,7 +336,7 @@ export const SettingsContainer = memo(function SettingsContainer({
                 <h1 className="text-[25px] font-bold tracking-normal text-[var(--scry-ink2)]">
                   {settingsSectionLabel}
                 </h1>
-                {settingsSection !== "rules" && settingsSection !== "post-processing" ? (
+                {!usesAutomationHeader && !usesIntegrationsHeader && !usesAccessHeader ? (
                   <p className="mt-1 max-w-[640px] text-[13.5px] text-[var(--scry-muted)]">
                     {t("settings.sectionTitle", { section: settingsSectionLabel })}
                   </p>

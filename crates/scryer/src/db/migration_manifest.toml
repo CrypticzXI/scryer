@@ -655,6 +655,23 @@ hook_id = "migrate_title_catalog_sort_keys"
 engine = "all"
 scope = "all"
 
+[[migration]]
+version = 146
+description = "job run listing indexes"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0146_job_run_listing_indexes.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0146_job_run_listing_indexes.sql"
+engine = "postgres"
+scope = "all"
+
 [[baseline]]
 through_version = 122
 file = "baselines/0122_baseline.sql"

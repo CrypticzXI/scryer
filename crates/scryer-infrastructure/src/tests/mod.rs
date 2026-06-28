@@ -40,6 +40,7 @@ mod title_images;
 mod titles_metadata;
 mod tracked_download_identity;
 mod wanted_items_and_search;
+mod workflow_operation;
 
 fn test_descriptor_json(
     plugin_id: &str,

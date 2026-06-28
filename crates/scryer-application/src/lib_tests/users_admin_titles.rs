@@ -1,5 +1,31 @@
 use super::*;
 
+fn test_job_run_record(
+    id: &str,
+    job_key: JobKey,
+    status: JobRunStatus,
+    started_at: chrono::DateTime<chrono::Utc>,
+    actor_user_id: Option<String>,
+) -> JobRunRecord {
+    let completed_at = status.is_terminal().then_some(started_at);
+    JobRunRecord {
+        id: id.to_string(),
+        job_key,
+        operation_type: format!("{}:test", job_key.as_str()),
+        status,
+        trigger_source: JobTriggerSource::Manual,
+        actor_user_id,
+        progress_json: None,
+        summary_json: None,
+        summary_text: None,
+        error_text: None,
+        started_at,
+        completed_at,
+        created_at: started_at,
+        updated_at: started_at,
+    }
+}
+
 #[tokio::test]
 async fn create_user_and_list_users() {
     let (app, user) = bootstrap();
@@ -336,6 +362,230 @@ async fn title_deletion_job_runs_are_visible_to_actor_without_system_settings() 
         .collect::<HashSet<_>>();
     assert!(admin_run_ids.contains("own-title-delete"));
     assert!(admin_run_ids.contains("other-title-delete"));
+}
+
+#[tokio::test]
+async fn active_job_runs_use_persisted_rows_without_domain_event_replay() {
+    let job_runs = Arc::new(RecordingJobRunRepo::default());
+    let domain_events = Arc::new(MockDomainEventRepo::default());
+    let (base_app, admin) = bootstrap();
+    let app = base_app.with_test_overrides(|services| {
+        services
+            .with_job_runs(job_runs.clone())
+            .with_domain_events(domain_events.clone())
+    });
+    let now = chrono::Utc::now();
+
+    job_runs
+        .seed(test_job_run_record(
+            "active-library-scan",
+            JobKey::LibraryScanMovies,
+            JobRunStatus::Running,
+            now,
+            Some(admin.id.clone()),
+        ))
+        .await;
+    app.runtime
+        .library
+        .library_scan_tracker
+        .start_session_with_id(
+            "active-library-scan".to_string(),
+            MediaFacet::Movie,
+            LibraryScanMode::Full,
+        )
+        .await
+        .expect("start library scan session");
+
+    let runs = app
+        .active_job_runs(&admin)
+        .await
+        .expect("list active job runs");
+
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].id, "active-library-scan");
+    assert_eq!(runs[0].status, JobRunStatus::Discovering);
+    assert_eq!(
+        runs[0]
+            .library_scan_progress
+            .as_ref()
+            .map(|session| session.session_id.as_str()),
+        Some("active-library-scan")
+    );
+    assert_eq!(
+        job_runs.list_active_job_runs_calls.load(Ordering::SeqCst),
+        1
+    );
+    assert_eq!(domain_events.list_calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn active_job_runs_prefer_in_memory_tracker_rows() {
+    let job_runs = Arc::new(RecordingJobRunRepo::default());
+    let domain_events = Arc::new(MockDomainEventRepo::default());
+    let (base_app, admin) = bootstrap();
+    let app = base_app.with_test_overrides(|services| {
+        services
+            .with_job_runs(job_runs.clone())
+            .with_domain_events(domain_events.clone())
+    });
+    let now = chrono::Utc::now();
+    app.runtime
+        .jobs
+        .job_run_tracker
+        .upsert_active_run(JobRun::from_record(
+            &test_job_run_record(
+                "tracked-housekeeping",
+                JobKey::Housekeeping,
+                JobRunStatus::Running,
+                now,
+                Some(admin.id.clone()),
+            ),
+            None,
+        ))
+        .await;
+
+    let runs = app
+        .active_job_runs(&admin)
+        .await
+        .expect("list active job runs");
+
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].id, "tracked-housekeeping");
+    assert_eq!(
+        job_runs.list_active_job_runs_calls.load(Ordering::SeqCst),
+        0
+    );
+    assert_eq!(domain_events.list_calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn job_history_reads_do_not_replay_domain_events_when_tracker_is_empty() {
+    let job_runs = Arc::new(RecordingJobRunRepo::default());
+    let domain_events = Arc::new(MockDomainEventRepo::default());
+    let (base_app, admin) = bootstrap();
+    let app = base_app.with_test_overrides(|services| {
+        services
+            .with_job_runs(job_runs.clone())
+            .with_domain_events(domain_events.clone())
+    });
+    let now = chrono::Utc::now();
+
+    job_runs
+        .seed(test_job_run_record(
+            "older-housekeeping",
+            JobKey::Housekeeping,
+            JobRunStatus::Completed,
+            now - chrono::Duration::seconds(30),
+            Some(admin.id.clone()),
+        ))
+        .await;
+    job_runs
+        .seed(test_job_run_record(
+            "newer-housekeeping",
+            JobKey::Housekeeping,
+            JobRunStatus::Completed,
+            now,
+            Some(admin.id.clone()),
+        ))
+        .await;
+
+    let recent_runs = app
+        .list_recent_job_runs(&admin, 50)
+        .await
+        .expect("list recent job runs");
+    let job_runs_for_key = app
+        .list_job_runs(&admin, JobKey::Housekeeping, 10)
+        .await
+        .expect("list per-job runs");
+
+    assert_eq!(
+        recent_runs
+            .iter()
+            .map(|run| run.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["newer-housekeeping", "older-housekeeping"]
+    );
+    assert_eq!(
+        job_runs_for_key
+            .iter()
+            .map(|run| run.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["newer-housekeeping", "older-housekeeping"]
+    );
+    assert_eq!(job_runs.list_job_runs_calls.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        job_runs
+            .list_job_runs_for_actor_calls
+            .load(Ordering::SeqCst),
+        0
+    );
+    assert_eq!(domain_events.list_calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn actor_scoped_job_history_reads_do_not_replay_domain_events() {
+    let job_runs = Arc::new(RecordingJobRunRepo::default());
+    let domain_events = Arc::new(MockDomainEventRepo::default());
+    let (base_app, admin) = bootstrap();
+    let app = base_app.with_test_overrides(|services| {
+        services
+            .with_job_runs(job_runs.clone())
+            .with_domain_events(domain_events.clone())
+    });
+    let manager = create_user_with_permissions(
+        &app,
+        &admin,
+        "title-history-manager",
+        "password123",
+        vec![TestPermissionPreset::TitleManagement],
+    )
+    .await
+    .expect("create manager");
+    let other_manager = create_user_with_permissions(
+        &app,
+        &admin,
+        "title-history-other-manager",
+        "password123",
+        vec![TestPermissionPreset::TitleManagement],
+    )
+    .await
+    .expect("create other manager");
+    let now = chrono::Utc::now();
+
+    job_runs
+        .seed(test_job_run_record(
+            "manager-title-delete",
+            JobKey::TitleDeletion,
+            JobRunStatus::Completed,
+            now,
+            Some(manager.id.clone()),
+        ))
+        .await;
+    job_runs
+        .seed(test_job_run_record(
+            "other-title-delete",
+            JobKey::TitleDeletion,
+            JobRunStatus::Completed,
+            now,
+            Some(other_manager.id.clone()),
+        ))
+        .await;
+
+    let manager_runs = app
+        .list_job_runs(&manager, JobKey::TitleDeletion, 10)
+        .await
+        .expect("manager can list own title deletion runs");
+
+    assert_eq!(manager_runs.len(), 1);
+    assert_eq!(manager_runs[0].id, "manager-title-delete");
+    assert_eq!(job_runs.list_job_runs_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        job_runs
+            .list_job_runs_for_actor_calls
+            .load(Ordering::SeqCst),
+        1
+    );
+    assert_eq!(domain_events.list_calls.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test]

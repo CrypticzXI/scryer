@@ -2,7 +2,7 @@ import { Loader2 } from "lucide-react";
 import { LibraryMultiSelect } from "@/components/common/library-multi-select";
 import { TitleAutocompletePicker } from "@/components/common/title-autocomplete-picker";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { UnderlineFilterButton } from "@/components/common/underline-filter-button";
 import { HistoryEventTable } from "@/components/common/history-event-table";
 import type { LibraryRecord, TitleHistoryEvent, TitleRecord } from "@/lib/types";
@@ -64,9 +64,6 @@ export function TitleHistoryView({
       <CardHeader className="border-b border-[var(--scry-border3)] bg-[linear-gradient(180deg,var(--scry-surfD),transparent)] px-4 py-4 sm:px-5">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div className="space-y-1">
-            <CardTitle className="text-[22px] font-bold tracking-normal text-[var(--scry-ink2)]">
-              {`${t("nav.wanted")} ${t("history.title")}`}
-            </CardTitle>
             <p className="text-[12.5px] text-[var(--scry-muted3)]">
               {t("pendingImports.pageRange", {
                 start: pageStart,

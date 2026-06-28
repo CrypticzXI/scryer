@@ -182,6 +182,7 @@ const TOP_NAV_GROUPS: TopNavGroupDefinition[] = [
     id: "system",
     labelKey: "nav.group.system",
     items: [
+      { kind: "view", id: "system" },
       {
         kind: "settings",
         id: "users",

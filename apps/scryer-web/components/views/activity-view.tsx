@@ -982,8 +982,8 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
           setBulkDeleteConfirmItems([]);
         }}
       />
-      <div className="flex min-h-0 flex-1 flex-col bg-[var(--scry-surfE)] px-4 py-5 sm:px-6 lg:px-7">
-        <div className="mx-auto flex min-h-0 w-full max-w-none flex-1 flex-col">
+      <div className="min-w-0 flex-1 overflow-y-auto bg-transparent">
+        <div className="mx-auto flex min-h-0 w-full max-w-none flex-1 flex-col px-4 py-5 sm:px-6 md:px-[30px] md:py-[26px] md:pb-[60px]">
           <div className="mb-4 flex items-center gap-1.5 text-[12.5px] text-[var(--scry-faint)]">
             <span>{t("nav.group.automation")}</span>
             <ChevronRight className="h-3.5 w-3.5" />
@@ -992,7 +992,7 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
             </span>
           </div>
           <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
-            <div className="flex min-w-0 items-start gap-4">
+            <div className="flex min-w-0 items-center gap-4">
               <div className="flex h-[46px] w-[46px] shrink-0 items-center justify-center rounded-[13px] border border-[var(--scry-baccent)] bg-[linear-gradient(135deg,rgba(var(--scry-accent-rgb),0.35),rgba(123,91,255,0.22))] text-[var(--scry-accent-text)]">
                 <ActivitySquare className="h-[23px] w-[23px]" />
               </div>

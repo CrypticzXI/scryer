@@ -256,8 +256,8 @@ export function CalendarView({
   }, []);
 
   return (
-    <Card className="flex min-h-0 flex-1 flex-col rounded-none border-0 bg-[var(--scry-surfE)] shadow-none">
-      <CardContent className="flex min-h-0 flex-1 flex-col px-4 py-5 sm:px-6 lg:px-7">
+    <Card className="flex min-h-0 flex-1 flex-col rounded-none border-0 bg-transparent shadow-none">
+      <CardContent className="flex min-h-0 flex-1 flex-col p-0">
         <div className="mb-4 flex flex-wrap items-center gap-3">
           <LibraryMultiSelect
             libraries={libraries}
@@ -318,7 +318,7 @@ export function CalendarView({
           <FullCalendar
             key={isMobile ? "calendar-mobile" : "calendar-desktop"}
             plugins={[dayGridPlugin]}
-            initialView={isMobile ? "dayGridMonth" : "dayGridWeek"}
+            initialView="dayGridMonth"
             events={events}
             eventClick={handleEventClick}
             eventDidMount={handleEventDidMount}

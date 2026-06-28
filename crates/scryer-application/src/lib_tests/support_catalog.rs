@@ -20,6 +20,9 @@ pub(super) struct MockTitleRepo {
 #[derive(Default)]
 pub(super) struct RecordingJobRunRepo {
     pub(super) runs: Arc<Mutex<Vec<JobRunRecord>>>,
+    pub(super) list_job_runs_calls: AtomicUsize,
+    pub(super) list_job_runs_for_actor_calls: AtomicUsize,
+    pub(super) list_active_job_runs_calls: AtomicUsize,
 }
 
 impl RecordingJobRunRepo {
@@ -61,6 +64,7 @@ impl JobRunRepository for RecordingJobRunRepo {
         job_key: Option<JobKey>,
         limit: usize,
     ) -> AppResult<Vec<JobRunRecord>> {
+        self.list_job_runs_calls.fetch_add(1, Ordering::SeqCst);
         Ok(sorted_limited_job_runs(
             self.runs
                 .lock()
@@ -79,6 +83,8 @@ impl JobRunRepository for RecordingJobRunRepo {
         actor_user_id: &str,
         limit: usize,
     ) -> AppResult<Vec<JobRunRecord>> {
+        self.list_job_runs_for_actor_calls
+            .fetch_add(1, Ordering::SeqCst);
         Ok(sorted_limited_job_runs(
             self.runs
                 .lock()
@@ -93,6 +99,8 @@ impl JobRunRepository for RecordingJobRunRepo {
     }
 
     async fn list_active_job_runs(&self) -> AppResult<Vec<JobRunRecord>> {
+        self.list_active_job_runs_calls
+            .fetch_add(1, Ordering::SeqCst);
         Ok(self
             .runs
             .lock()

@@ -7,7 +7,7 @@ use crate::discovery::{
     snapshot_facet_records, snapshot_item_records, snapshot_raw_page_record,
 };
 use crate::domain_events::{DomainEventActor, new_job_run_domain_event};
-use crate::event_views::{replay_active_job_runs, replay_library_scan_state};
+use crate::event_views::replay_library_scan_state;
 use chrono::{DateTime, Utc};
 use scryer_domain::{
     DomainEvent, DomainEventFilter, DomainEventPayload, DomainEventType,
@@ -15,7 +15,7 @@ use scryer_domain::{
     JobRunStartedEventData,
 };
 use serde_json::json;
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::broadcast;
 use tracing::{info, warn};
@@ -35,6 +35,21 @@ const DISCOVERY_DIRTY_REASON_TITLE_CHANGE: i64 = 1 << 0;
 const DISCOVERY_DIRTY_REASON_SCAN_BOUNDARY: i64 = 1 << 1;
 const DISCOVERY_PUBLIC_FEED_REQUEST_TIMEOUT_SECONDS: u64 = 30;
 const SCHEDULER_INSTANCE_ID_KEY: &str = "scheduler.instance_id";
+
+fn apply_library_scan_session_to_job_run(run: &mut JobRun, session: LibraryScanSession) {
+    run.library_scan_progress = Some(session.clone());
+    run.status = match session.status {
+        LibraryScanStatus::Discovering => JobRunStatus::Discovering,
+        LibraryScanStatus::Running => JobRunStatus::Running,
+        LibraryScanStatus::Completed => JobRunStatus::Completed,
+        LibraryScanStatus::Canceled => JobRunStatus::Warning,
+        LibraryScanStatus::Warning => JobRunStatus::Warning,
+        LibraryScanStatus::Failed => JobRunStatus::Failed,
+    };
+    if run.status.is_terminal() {
+        run.completed_at = Some(session.updated_at);
+    }
+}
 
 fn is_background_library_refresh_job(job_key: JobKey) -> bool {
     matches!(
@@ -429,51 +444,48 @@ impl JobExecutionOutcome {
 }
 
 impl AppUseCase {
-    async fn load_active_job_run_projection(&self) -> AppResult<Vec<JobRun>> {
-        let mut events = Vec::new();
-        let mut after_sequence = 0i64;
-
-        loop {
-            let batch = self
-                .services
-                .events
-                .domain_events
-                .list(&DomainEventFilter {
-                    after_sequence: Some(after_sequence),
-                    event_types: Some(vec![
-                        DomainEventType::JobRunStarted,
-                        DomainEventType::JobRunCompleted,
-                        DomainEventType::JobRunFailed,
-                        DomainEventType::LibraryScanStarted,
-                        DomainEventType::LibraryScanProgressed,
-                        DomainEventType::LibraryScanCompleted,
-                        DomainEventType::LibraryScanCanceled,
-                        DomainEventType::LibraryScanFailed,
-                    ]),
-                    limit: 500,
-                    ..DomainEventFilter::default()
-                })
-                .await?;
-            if batch.is_empty() {
-                break;
-            }
-
-            after_sequence = batch
-                .last()
-                .map(|event| event.sequence)
-                .unwrap_or(after_sequence);
-            let count = batch.len();
-            events.extend(batch);
-            if count < 500 {
-                break;
-            }
+    async fn load_active_job_runs_for_listing(&self) -> AppResult<Vec<JobRun>> {
+        let tracker_runs = self.runtime.jobs.job_run_tracker.list_active().await;
+        if !tracker_runs.is_empty() {
+            return Ok(self.attach_active_library_scan_sessions(tracker_runs).await);
         }
 
-        let mut runs = replay_active_job_runs(&events)
-            .into_values()
+        let scan_sessions = self.active_library_scan_sessions_by_id().await;
+        let mut runs = self
+            .services
+            .events
+            .job_runs
+            .list_active_job_runs()
+            .await?
+            .into_iter()
+            .map(|record| JobRun::from_record(&record, scan_sessions.get(&record.id).cloned()))
             .collect::<Vec<_>>();
         runs.sort_by_key(|run| run.started_at);
         Ok(runs)
+    }
+
+    async fn attach_active_library_scan_sessions(&self, mut runs: Vec<JobRun>) -> Vec<JobRun> {
+        let scan_sessions = self.active_library_scan_sessions_by_id().await;
+        if scan_sessions.is_empty() {
+            return runs;
+        }
+        for run in &mut runs {
+            if let Some(session) = scan_sessions.get(&run.id) {
+                apply_library_scan_session_to_job_run(run, session.clone());
+            }
+        }
+        runs
+    }
+
+    async fn active_library_scan_sessions_by_id(&self) -> HashMap<String, LibraryScanSession> {
+        self.runtime
+            .library
+            .library_scan_tracker
+            .list_active()
+            .await
+            .into_iter()
+            .map(|session| (session.session_id.clone(), session))
+            .collect()
     }
 
     async fn active_library_scan_run_count(&self) -> AppResult<usize> {
@@ -541,12 +553,7 @@ impl AppUseCase {
     pub async fn active_job_runs(&self, actor: &User) -> AppResult<Vec<JobRun>> {
         self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
             .await?;
-        let runs = self.runtime.jobs.job_run_tracker.list_active().await;
-        if runs.is_empty() {
-            self.load_active_job_run_projection().await
-        } else {
-            Ok(runs)
-        }
+        self.load_active_job_runs_for_listing().await
     }
 
     pub async fn list_job_runs(
@@ -563,14 +570,7 @@ impl AppUseCase {
                 "You do not have permission to perform this action".to_string(),
             ));
         }
-        let active_runs = {
-            let runs = self.runtime.jobs.job_run_tracker.list_active().await;
-            if runs.is_empty() {
-                self.load_active_job_run_projection().await?
-            } else {
-                runs
-            }
-        };
+        let active_runs = self.runtime.jobs.job_run_tracker.list_active().await;
         let active_runs_by_id = active_runs
             .into_iter()
             .map(|run| (run.id.clone(), run))
@@ -604,14 +604,7 @@ impl AppUseCase {
     pub async fn list_recent_job_runs(&self, actor: &User, limit: usize) -> AppResult<Vec<JobRun>> {
         self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
             .await?;
-        let active_runs = {
-            let runs = self.runtime.jobs.job_run_tracker.list_active().await;
-            if runs.is_empty() {
-                self.load_active_job_run_projection().await?
-            } else {
-                runs
-            }
-        };
+        let active_runs = self.runtime.jobs.job_run_tracker.list_active().await;
         let active_runs_by_id = active_runs
             .into_iter()
             .map(|run| (run.id.clone(), run))
@@ -676,16 +669,13 @@ impl AppUseCase {
         let app = self.clone();
         tokio::spawn(async move {
             let mut receiver = app.runtime.jobs.job_run_tracker.subscribe();
-            let mut initial_runs = app.runtime.jobs.job_run_tracker.list_active().await;
-            if initial_runs.is_empty() {
-                initial_runs = match app.load_active_job_run_projection().await {
-                    Ok(runs) => runs,
-                    Err(error) => {
-                        tracing::warn!("job run subscription initial load failed: {error}");
-                        return;
-                    }
-                };
-            }
+            let initial_runs = match app.load_active_job_runs_for_listing().await {
+                Ok(runs) => runs,
+                Err(error) => {
+                    tracing::warn!("job run subscription initial load failed: {error}");
+                    return;
+                }
+            };
             for run in initial_runs {
                 if tx.send(run).is_err() {
                     return;

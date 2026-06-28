@@ -1,6 +1,6 @@
 import { Fragment } from "react";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { LibraryMultiSelect } from "@/components/common/library-multi-select";
 import { SearchResultBuckets } from "@/components/common/release-search-results";
 import {
@@ -243,10 +243,7 @@ export function CutoffUnmetView({ state }: { state: CutoffUnmetViewState }) {
   return (
     <Card className="overflow-hidden rounded-none border-0 bg-transparent shadow-none">
       <CardHeader className="border-b border-[var(--scry-border3)] bg-[linear-gradient(180deg,var(--scry-surfD),transparent)] px-4 py-4 sm:px-5">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <CardTitle className="text-[22px] font-bold tracking-normal text-[var(--scry-ink2)]">
-            {t("cutoff.title")}
-          </CardTitle>
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-end">
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
             {bulkSearching && bulkProgress ? (
               <>

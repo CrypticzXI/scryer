@@ -133,7 +133,7 @@ export function FacetSettingsSection({
         ) : null}
       </div>
       <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-        <div className="flex min-w-0 items-start gap-4">
+        <div className="flex min-w-0 items-center gap-4">
           <div className="flex h-[46px] w-[46px] shrink-0 items-center justify-center rounded-[13px] border border-[var(--scry-baccent)] bg-[linear-gradient(135deg,rgba(var(--scry-accent-rgb),0.35),rgba(123,91,255,0.22))] text-[var(--scry-accent-text)]">
             <Icon className="h-[23px] w-[23px]" />
           </div>

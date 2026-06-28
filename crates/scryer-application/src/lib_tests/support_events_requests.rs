@@ -5,6 +5,7 @@ pub(super) struct MockDomainEventRepo {
     pub(super) events: Arc<Mutex<Vec<DomainEvent>>>,
     pub(super) subscriber_offsets: Arc<Mutex<HashMap<String, i64>>>,
     pub(super) delete_operation_log: OptionalDeleteOperationLog,
+    pub(super) list_calls: AtomicUsize,
 }
 
 impl MockDomainEventRepo {
@@ -123,6 +124,7 @@ impl DomainEventRepository for MockDomainEventRepo {
     }
 
     async fn list(&self, filter: &DomainEventFilter) -> AppResult<Vec<DomainEvent>> {
+        self.list_calls.fetch_add(1, Ordering::SeqCst);
         let events = self.events.lock().await;
         let limit = if filter.limit == 0 {
             usize::MAX

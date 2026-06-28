@@ -1,5 +1,5 @@
 import * as React from "react";
-import { Edit, Lock, MonitorCog, Plus, Power, PowerOff, RefreshCw, Trash2 } from "lucide-react";
+import { Edit, Lock, Plus, Power, PowerOff, RefreshCw, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -472,11 +472,6 @@ export function SettingsIndexersSection({
 
   return (
     <div id="settings-indexers-section" className="space-y-4 text-sm">
-      <CardTitle className="flex items-center gap-2 text-base">
-        <MonitorCog className="h-4 w-4" />
-        {t("settings.indexerProviderSection")}
-      </CardTitle>
-
       <div id="settings-indexers-table-card" className="rounded border border-border">
         <div className="flex items-center justify-between border-b border-border px-3 py-2">
           <CardTitle className="text-base">

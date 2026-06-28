@@ -1,5 +1,5 @@
-import type * as React from "react";
-import { ChevronRight, KeyRound, Plus, ShieldOff, Trash2, User2 } from "lucide-react";
+import * as React from "react";
+import { ChevronRight, KeyRound, Plus, ShieldOff, Trash2 } from "lucide-react";
 import {
   PermissionDropdowns,
   type LibraryPermissionDrafts,
@@ -127,76 +127,9 @@ export function SettingsUsersSection({
   externalAccountInvitesPanel,
 }: SettingsUsersSectionProps) {
   const t = useTranslate();
+  const [isCreateUserOpen, setIsCreateUserOpen] = React.useState(false);
   return (
     <div id="settings-users-section" className="space-y-4 text-sm">
-      <CardTitle className="flex items-center gap-2 text-base">
-        <User2 className="h-4 w-4" />
-        {t("settings.knownUsers")}
-      </CardTitle>
-
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">{t("settings.createUser")}</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <form id="settings-user-create-form" className="space-y-4" onSubmit={createUser}>
-            <div className="grid gap-3 md:grid-cols-2">
-              <div>
-                <Label htmlFor="settings-user-username" className="mb-2 block">
-                  {t("settings.username")}
-                </Label>
-                <Input
-                  id="settings-user-username"
-                  value={newUsername}
-                  onChange={(event) => setNewUsername(event.target.value)}
-                  placeholder={t("form.usernamePlaceholder")}
-                  autoComplete="off"
-                  required
-                />
-              </div>
-              <div>
-                <Label htmlFor="settings-user-password" className="mb-2 block">
-                  {t("settings.password")}
-                </Label>
-                <Input
-                  id="settings-user-password"
-                  value={newPassword}
-                  onChange={(event) => setNewPassword(event.target.value)}
-                  placeholder={t("form.passwordPlaceholder")}
-                  type="password"
-                  autoComplete="new-password"
-                  required
-                />
-              </div>
-            </div>
-            {canManagePermissions ? (
-              <div className="rounded border border-border bg-background/40 p-3">
-                <Label className="mb-2 block">{t("settings.permissions")}</Label>
-                <PermissionDropdowns
-                  libraries={libraries}
-                  appPermissions={appPermissions}
-                  libraryPermissions={libraryPermissions}
-                  selectedAppPermissions={newAppPermissions}
-                  selectedLibraryPermissions={newLibraryPermissionDrafts}
-                  onAppChange={(_nextPermissions, permission) =>
-                    toggleNewAppPermission(permission)
-                  }
-                  onLibraryChange={(libraryId, _nextPermissions, permission) =>
-                    toggleNewLibraryPermission(libraryId, permission)
-                  }
-                />
-              </div>
-            ) : null}
-            <Button id="settings-user-create" type="submit" className="min-w-40">
-              <Plus className="h-4 w-4" />
-              {t("settings.createUser")}
-            </Button>
-          </form>
-        </CardContent>
-      </Card>
-
-      {externalAccountInvitesPanel}
-
       <div className="rounded border border-border">
         <div className="border-b border-border px-3 py-2">
           <CardTitle className="text-base">{t("settings.knownUsers")}</CardTitle>
@@ -354,6 +287,93 @@ export function SettingsUsersSection({
           </TableBody>
         </Table>
       </div>
+
+      {isCreateUserOpen ? (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">{t("settings.createUser")}</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <form id="settings-user-create-form" className="space-y-4" onSubmit={createUser}>
+              <div className="grid gap-3 md:grid-cols-2">
+                <div>
+                  <Label htmlFor="settings-user-username" className="mb-2 block">
+                    {t("settings.username")}
+                  </Label>
+                  <Input
+                    id="settings-user-username"
+                    value={newUsername}
+                    onChange={(event) => setNewUsername(event.target.value)}
+                    placeholder={t("form.usernamePlaceholder")}
+                    autoComplete="off"
+                    required
+                  />
+                </div>
+                <div>
+                  <Label htmlFor="settings-user-password" className="mb-2 block">
+                    {t("settings.password")}
+                  </Label>
+                  <Input
+                    id="settings-user-password"
+                    value={newPassword}
+                    onChange={(event) => setNewPassword(event.target.value)}
+                    placeholder={t("form.passwordPlaceholder")}
+                    type="password"
+                    autoComplete="new-password"
+                    required
+                  />
+                </div>
+              </div>
+              {canManagePermissions ? (
+                <div className="rounded border border-border bg-background/40 p-3">
+                  <Label className="mb-2 block">{t("settings.permissions")}</Label>
+                  <PermissionDropdowns
+                    libraries={libraries}
+                    appPermissions={appPermissions}
+                    libraryPermissions={libraryPermissions}
+                    selectedAppPermissions={newAppPermissions}
+                    selectedLibraryPermissions={newLibraryPermissionDrafts}
+                    onAppChange={(_nextPermissions, permission) =>
+                      toggleNewAppPermission(permission)
+                    }
+                    onLibraryChange={(libraryId, _nextPermissions, permission) =>
+                      toggleNewLibraryPermission(libraryId, permission)
+                    }
+                  />
+                </div>
+              ) : null}
+              <div className="flex flex-wrap gap-2">
+                <Button id="settings-user-create" type="submit" className="min-w-40">
+                  <Plus className="h-4 w-4" />
+                  {t("settings.createUser")}
+                </Button>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  onClick={() => setIsCreateUserOpen(false)}
+                >
+                  {t("label.cancel")}
+                </Button>
+              </div>
+            </form>
+          </CardContent>
+        </Card>
+      ) : (
+        <div className="flex justify-center">
+          <Button
+            id="settings-user-create-open"
+            type="button"
+            size="lg"
+            onClick={() => setIsCreateUserOpen(true)}
+            className="h-12 border border-emerald-500/30 bg-emerald-500/15 px-5 text-base font-semibold text-emerald-100 hover:bg-emerald-500/25 hover:text-emerald-50"
+          >
+            <Plus className="h-5 w-5" />
+            {t("settings.createUser")}
+          </Button>
+        </div>
+      )}
+
+      {externalAccountInvitesPanel}
     </div>
   );
 }
