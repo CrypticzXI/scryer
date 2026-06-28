@@ -255,6 +255,14 @@ export type LibrarySettingsRecord = {
   plexmatchWriteOnImport: boolean | null;
   importModeOverride: ImportMode | null;
   importMode: ImportMode;
+  setPermissionsLinuxOverride: boolean | null;
+  setPermissionsLinux: boolean;
+  fileChmodOverride: string | null;
+  fileChmod: string | null;
+  folderChmodOverride: string | null;
+  folderChmod: string | null;
+  chownGroupOverride: string | null;
+  chownGroup: string | null;
   indexerRoutingOverride: unknown[] | null;
   downloadClientRoutingOverride: DownloadClientRoutingEntry[] | null;
 };
@@ -272,6 +280,10 @@ export type LibrarySettingsDraft = {
   nfoWriteOnImport: boolean | null;
   plexmatchWriteOnImport: boolean | null;
   importMode: ImportMode | null;
+  setPermissionsLinux: boolean | null;
+  fileChmod: string | null;
+  folderChmod: string | null;
+  chownGroup: string | null;
   indexerRouting?: unknown[] | null;
   downloadClientRouting?: DownloadClientRoutingEntry[] | null;
 };

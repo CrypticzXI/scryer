@@ -41,6 +41,10 @@ export const NFO_WRITE_ON_IMPORT_ANIME_KEY = "nfo.write_on_import.anime";
 export const PLEXMATCH_WRITE_ON_IMPORT_SERIES_KEY = "plexmatch.write_on_import.series";
 export const PLEXMATCH_WRITE_ON_IMPORT_ANIME_KEY = "plexmatch.write_on_import.anime";
 export const IMPORT_MODE_KEY = "import.mode";
+export const SET_PERMISSIONS_LINUX_KEY = "permissions.set_linux";
+export const FILE_CHMOD_KEY = "permissions.file_chmod";
+export const FOLDER_CHMOD_KEY = "permissions.folder_chmod";
+export const CHOWN_GROUP_KEY = "permissions.chown_group";
 
 // --- Derived from registry ---
 

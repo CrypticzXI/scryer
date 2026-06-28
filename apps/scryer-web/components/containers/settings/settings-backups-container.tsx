@@ -17,7 +17,6 @@ import { InfoHelp } from "@/components/common/info-help";
 import { FolderBrowserDialog } from "@/components/setup/folder-browser-dialog";
 import { SettingsToggleSwitch } from "@/components/common/settings-toggle-switch";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
@@ -138,6 +137,16 @@ const DEFAULT_BACKUP_SETTINGS: BackupSettings = {
   effectiveBackupPath: "",
 };
 const AUTO_BACKUP_KEY_MIN_LENGTH = 8;
+const BACKUPS_PANEL_CLASS =
+  "overflow-hidden rounded-[14px] border border-[var(--scry-border)] bg-[var(--scry-surf)] shadow-[0_10px_24px_rgba(0,0,0,0.16)]";
+const BACKUPS_PANEL_HEADER_CLASS =
+  "border-b border-[var(--scry-border3)] bg-[linear-gradient(180deg,rgba(255,255,255,0.035),rgba(255,255,255,0))] px-4 py-3";
+const BACKUPS_PANEL_TITLE_CLASS =
+  "text-[15px] font-semibold text-[var(--scry-ink2)]";
+const BACKUPS_PANEL_BODY_CLASS = "p-4 sm:p-5";
+const BACKUPS_INSET_CLASS =
+  "rounded-[12px] border border-[var(--scry-line2)] bg-[var(--scry-card2)]";
+const BACKUPS_MUTED_TEXT_CLASS = "text-[var(--scry-muted3)]";
 
 type SaveFilePickerWindow = Window & {
   showSaveFilePicker?: (options: {
@@ -690,7 +699,7 @@ export function SettingsBackupsContainer() {
 
   if (pageLoading) {
     return (
-      <div className="flex items-center gap-2 text-sm text-muted-foreground">
+      <div className={`flex items-center gap-2 text-sm ${BACKUPS_MUTED_TEXT_CLASS}`}>
         <Loader2 className="h-4 w-4 animate-spin" />
         {t("label.loading")}
       </div>
@@ -699,46 +708,53 @@ export function SettingsBackupsContainer() {
 
   return (
     <>
-      <div className="space-y-6 text-sm">
-        <Card>
-          <CardHeader className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-            <button
-              type="button"
-              className="flex min-w-0 flex-1 items-start gap-3 text-left"
-              onClick={() => setAutoBackupExpanded((current) => !current)}
-              aria-expanded={autoBackupExpanded}
-            >
-              <div className="min-w-0 flex-1 space-y-1">
-                <CardTitle>{t("settings.autoBackupsTitle")}</CardTitle>
-                <p className="text-sm text-muted-foreground">
-                  {t("settings.autoBackupsDescription")}
-                </p>
+      <div className="space-y-4 text-sm">
+        <section className={BACKUPS_PANEL_CLASS}>
+          <div className={BACKUPS_PANEL_HEADER_CLASS}>
+            <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+              <button
+                type="button"
+                className="flex min-w-0 flex-1 items-start gap-3 text-left"
+                onClick={() => setAutoBackupExpanded((current) => !current)}
+                aria-expanded={autoBackupExpanded}
+              >
+                <div className="min-w-0 flex-1 space-y-1">
+                  <h2 className={BACKUPS_PANEL_TITLE_CLASS}>
+                    {t("settings.autoBackupsTitle")}
+                  </h2>
+                  <p className={`text-sm ${BACKUPS_MUTED_TEXT_CLASS}`}>
+                    {t("settings.autoBackupsDescription")}
+                  </p>
+                </div>
+              </button>
+              <div className="flex shrink-0 justify-end sm:pt-1">
+                <SettingsToggleSwitch
+                  checked={autoBackupSettings.enabled}
+                  disabled={autoBackupSaving}
+                  size="lg"
+                  ariaLabel={
+                    autoBackupSettings.enabled
+                      ? t("label.enabled")
+                      : t("label.disabled")
+                  }
+                  onChange={(nextValue) =>
+                    setAutoBackupSettings((current) => ({
+                      ...current,
+                      enabled: nextValue,
+                    }))
+                  }
+                />
               </div>
-            </button>
-            <div className="flex shrink-0 justify-end sm:pt-1">
-              <SettingsToggleSwitch
-                checked={autoBackupSettings.enabled}
-                disabled={autoBackupSaving}
-                size="lg"
-                ariaLabel={
-                  autoBackupSettings.enabled
-                    ? t("label.enabled")
-                    : t("label.disabled")
-                }
-                onChange={(nextValue) =>
-                  setAutoBackupSettings((current) => ({
-                    ...current,
-                    enabled: nextValue,
-                  }))
-                }
-              />
             </div>
-          </CardHeader>
+          </div>
           {autoBackupExpanded ? (
-            <CardContent className="space-y-4">
+            <div className={`${BACKUPS_PANEL_BODY_CLASS} space-y-4`}>
               <div className="grid gap-4 md:grid-cols-2 md:items-stretch">
-                <div className="flex h-full min-h-32 flex-col rounded-lg border border-border bg-muted/20 p-4">
-                  <Label htmlFor="auto-backups-time" className="text-sm font-medium">
+                <div className={`flex h-full min-h-32 flex-col p-4 ${BACKUPS_INSET_CLASS}`}>
+                  <Label
+                    htmlFor="auto-backups-time"
+                    className="text-sm font-medium text-[var(--scry-ink2)]"
+                  >
                     {t("settings.autoBackupsTime")}
                   </Label>
                   <div className="mt-3">
@@ -756,15 +772,19 @@ export function SettingsBackupsContainer() {
                       }
                     />
                   </div>
-                  <p className="mt-auto pt-4 text-xs text-muted-foreground">
+                  <p className={`mt-auto pt-4 text-xs ${BACKUPS_MUTED_TEXT_CLASS}`}>
                     {t("settings.autoBackupsTimeHelp")}
                   </p>
                 </div>
 
-                <div className="flex h-full min-h-32 flex-col rounded-lg border border-border bg-muted/20 p-4">
-                  <p className="text-sm font-medium">{t("settings.autoBackupsNextRun")}</p>
-                  <p className="mt-3 text-base font-medium text-foreground">{autoBackupNextRunLabel}</p>
-                  <p className="mt-auto pt-4 text-xs text-muted-foreground">
+                <div className={`flex h-full min-h-32 flex-col p-4 ${BACKUPS_INSET_CLASS}`}>
+                  <p className="text-sm font-medium text-[var(--scry-ink2)]">
+                    {t("settings.autoBackupsNextRun")}
+                  </p>
+                  <p className="mt-3 text-base font-medium text-[var(--scry-ink2)]">
+                    {autoBackupNextRunLabel}
+                  </p>
+                  <p className={`mt-auto pt-4 text-xs ${BACKUPS_MUTED_TEXT_CLASS}`}>
                     {t("settings.autoBackupsNextRunHelp")}
                   </p>
                 </div>
@@ -772,7 +792,9 @@ export function SettingsBackupsContainer() {
 
               <div className="space-y-2 text-sm">
                 <div className="flex items-center gap-2">
-                  <span className="font-medium">{t("settings.autoBackupsKeyLabel")}</span>
+                  <span className="font-medium text-[var(--scry-ink2)]">
+                    {t("settings.autoBackupsKeyLabel")}
+                  </span>
                   <InfoHelp
                     text={t("settings.autoBackupsKeyHelp", {
                       count: AUTO_BACKUP_KEY_MIN_LENGTH,
@@ -825,6 +847,7 @@ export function SettingsBackupsContainer() {
                   <div className="flex shrink-0 flex-wrap items-center gap-3 sm:min-w-64">
                     <Button
                       type="button"
+                      variant="primary"
                       onClick={() => void handleSaveAutoBackupSettings()}
                       disabled={!canSaveAutoBackupSettings}
                     >
@@ -833,7 +856,7 @@ export function SettingsBackupsContainer() {
                     </Button>
 
                     {autoBackupSettings.autoBackupKeyPresent ? (
-                      <div className="flex min-w-0 items-center gap-3 rounded-lg border border-border bg-muted/20 px-4 py-3 sm:max-w-xl">
+                      <div className={`flex min-w-0 items-center gap-3 px-4 py-3 sm:max-w-xl ${BACKUPS_INSET_CLASS}`}>
                         <Checkbox
                           id="auto-backups-clear-key"
                           className="size-5 rounded-md"
@@ -851,7 +874,10 @@ export function SettingsBackupsContainer() {
                           }}
                         />
                         <div className="flex min-w-0 items-center gap-2">
-                          <Label htmlFor="auto-backups-clear-key" className="truncate">
+                          <Label
+                            htmlFor="auto-backups-clear-key"
+                            className="truncate text-[var(--scry-ink2)]"
+                          >
                             {t("settings.autoBackupsClearKey")}
                           </Label>
                           <InfoHelp
@@ -864,21 +890,23 @@ export function SettingsBackupsContainer() {
                   </div>
                 </div>
               </div>
-            </CardContent>
+            </div>
           ) : null}
-        </Card>
+        </section>
 
-        <Card>
-          <CardHeader>
-            <CardTitle>{t("settings.backupLocationTitle")}</CardTitle>
-            <p className="text-sm text-muted-foreground">
+        <section className={BACKUPS_PANEL_CLASS}>
+          <div className={BACKUPS_PANEL_HEADER_CLASS}>
+            <h2 className={BACKUPS_PANEL_TITLE_CLASS}>
+              {t("settings.backupLocationTitle")}
+            </h2>
+            <p className={`mt-1 text-sm ${BACKUPS_MUTED_TEXT_CLASS}`}>
               {t("settings.backupLocationDescription")}
             </p>
-          </CardHeader>
-          <CardContent className="space-y-4">
+          </div>
+          <div className={`${BACKUPS_PANEL_BODY_CLASS} space-y-4`}>
             <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(18rem,0.75fr)]">
               <div className="space-y-2">
-                <Label htmlFor="backup-location-path">
+                <Label htmlFor="backup-location-path" className="text-[var(--scry-ink2)]">
                   {t("settings.backupLocationCustomPath")}
                 </Label>
                 <div className="flex flex-col gap-2 sm:flex-row">
@@ -902,23 +930,24 @@ export function SettingsBackupsContainer() {
                 </div>
               </div>
 
-              <div className="space-y-2 rounded-lg border border-border bg-muted/20 p-4">
-                <p className="text-xs font-medium uppercase text-muted-foreground">
+              <div className={`space-y-2 p-4 ${BACKUPS_INSET_CLASS}`}>
+                <p className={`text-xs font-medium uppercase ${BACKUPS_MUTED_TEXT_CLASS}`}>
                   {t("settings.backupLocationEffectivePath")}
                 </p>
-                <p className="break-all font-mono text-sm text-foreground">
+                <p className="break-all font-mono text-sm text-[var(--scry-ink2)]">
                   {savedBackupSettings.effectiveBackupPath || savedBackupSettings.defaultBackupPath}
                 </p>
               </div>
             </div>
 
-            <p className="text-xs text-muted-foreground">
+            <p className={`text-xs ${BACKUPS_MUTED_TEXT_CLASS}`}>
               {t("settings.backupLocationHelp")}
             </p>
 
             <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
               <Button
                 type="button"
+                variant="primary"
                 onClick={() => void handleSaveBackupSettings()}
                 disabled={!canSaveBackupSettings}
               >
@@ -935,150 +964,169 @@ export function SettingsBackupsContainer() {
                 {t("settings.backupLocationReset")}
               </Button>
             </div>
-          </CardContent>
-        </Card>
-
-        <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
-          <div className="space-y-1">
-            <p className="text-muted-foreground">{t("settings.backupsSection")}</p>
           </div>
-          <Button
-            id={selectorId("settings-backups-create-open")}
-            type="button"
-            className="shrink-0"
-            onClick={() => setCreateDialogOpen(true)}
-            disabled={hasCreatingManualBackup}
-          >
-            <Plus className="h-4 w-4" />
-            {t("settings.backupsCreate")}
-          </Button>
-        </div>
+        </section>
 
-        {backups.length === 0 ? (
-          <div className="rounded-lg border border-dashed border-border px-4 py-8 text-center text-sm text-muted-foreground">
-            {t("settings.backupsEmpty")}
+        <section className={BACKUPS_PANEL_CLASS}>
+          <div className={BACKUPS_PANEL_HEADER_CLASS}>
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <h2 className={BACKUPS_PANEL_TITLE_CLASS}>
+                {t("settings.backupsSection")}
+              </h2>
+              <Button
+                id={selectorId("settings-backups-create-open")}
+                type="button"
+                variant="primary"
+                className="shrink-0"
+                onClick={() => setCreateDialogOpen(true)}
+                disabled={hasCreatingManualBackup}
+              >
+                <Plus className="h-4 w-4" />
+                {t("settings.backupsCreate")}
+              </Button>
+            </div>
           </div>
-        ) : (
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Bundle</TableHead>
-                <TableHead>Created</TableHead>
-                <TableHead>{t("label.status")}</TableHead>
-                <TableHead>Size</TableHead>
-                <TableHead className="text-right">{t("label.actions")}</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {backups.map((backup) => {
-                const isDeleting = deletingFilename === backup.filename;
-                const isDownloading = downloadingFilename === backup.filename;
-                const disableActions = backup.status === "creating" || isDeleting;
-                const statusLabel =
-                  backup.status === "creating"
-                    ? t("settings.backupsCreating")
-                    : backup.status === "invalid"
-                      ? t("settings.backupsInvalid")
-                    : backup.status === "failed"
-                      ? t("settings.backupsFailed")
-                      : t("settings.backupsReady");
-
-                return (
-                  <TableRow
-                    key={backup.filename}
-                    id={selectorId("settings-backup-row", "created-at", backup.createdAt)}
-                  >
-                    <TableCell className="align-top">
-                      <div className="space-y-1">
-                        <div className="font-medium">{backup.filename}</div>
-                        <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                          <span className="rounded-full border border-border px-2 py-0.5">
-                            {backup.encrypted
-                              ? t("settings.backupsEncrypted")
-                              : t("settings.backupsPlaintext")}
-                          </span>
-                          <span className="rounded-full border border-border px-2 py-0.5">
-                            {autoBackupTriggerLabel(backup.trigger)}
-                          </span>
-                          <span>{backup.formatVersion}</span>
-                          <span>{backup.sourceEngine}</span>
-                          {backup.sourceMigrationKey ? <span>{backup.sourceMigrationKey}</span> : null}
-                        </div>
-                        {backup.errorMessage ? (
-                          <p className="text-xs text-destructive">{backup.errorMessage}</p>
-                        ) : null}
-                      </div>
-                    </TableCell>
-                    <TableCell className="whitespace-nowrap text-muted-foreground">
-                      {formatDateTime(backup.createdAt, dateTimeFormat)}
-                    </TableCell>
-                    <TableCell>
-                      <BackupStatusBadge
-                        id={selectorId(
-                          "settings-backup-status",
-                          backup.status,
-                          "created-at",
-                          backup.createdAt,
-                        )}
-                        status={backup.status}
-                        label={statusLabel}
-                      />
-                    </TableCell>
-                    <TableCell className="align-middle text-xs text-muted-foreground">
-                      {formatBytes(backup.sizeBytes)}
-                    </TableCell>
-                    <TableCell>
-                      <div className="flex items-center justify-end gap-1">
-                        {backup.status === "ready" ? (
-                          <Button
-                            id={selectorId("settings-backup-download", "created-at", backup.createdAt)}
-                            type="button"
-                            variant="secondary"
-                            size="icon-sm"
-                            className={cn(
-                              boxedActionButtonBaseClass,
-                              boxedActionButtonToneClass.install,
-                            )}
-                            disabled={isDownloading || isDeleting}
-                            onClick={() => void handleDownloadBackup(backup)}
-                            title={t("settings.backupsDownload")}
-                            aria-label={t("settings.backupsDownload")}
-                          >
-                            {isDownloading ? (
-                              <Loader2 className="h-4 w-4 animate-spin" />
-                            ) : (
-                              <Download className="h-4 w-4" />
-                            )}
-                          </Button>
-                        ) : null}
-                        <Button
-                          id={selectorId("settings-backup-delete", "created-at", backup.createdAt)}
-                          type="button"
-                          variant="secondary"
-                          size="icon-sm"
-                          className={cn(
-                            boxedActionButtonBaseClass,
-                            boxedActionButtonToneClass.delete,
-                          )}
-                          disabled={disableActions}
-                          onClick={() => setPendingDelete(backup)}
-                          title={t("settings.backupsDelete")}
-                          aria-label={t("settings.backupsDelete")}
-                        >
-                          {isDeleting ? (
-                            <Loader2 className="h-4 w-4 animate-spin" />
-                          ) : (
-                            <Trash2 className="h-4 w-4" />
-                          )}
-                        </Button>
-                      </div>
-                    </TableCell>
+          {backups.length === 0 ? (
+            <div className={`${BACKUPS_PANEL_BODY_CLASS}`}>
+              <div className={`rounded-[12px] border border-dashed border-[var(--scry-border3)] px-4 py-8 text-center text-sm ${BACKUPS_MUTED_TEXT_CLASS}`}>
+                {t("settings.backupsEmpty")}
+              </div>
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <Table>
+                <TableHeader>
+                  <TableRow className="border-[var(--scry-border3)] bg-[var(--scry-inset)] hover:bg-[var(--scry-inset)]">
+                    <TableHead className={`font-semibold ${BACKUPS_MUTED_TEXT_CLASS}`}>Bundle</TableHead>
+                    <TableHead className={`font-semibold ${BACKUPS_MUTED_TEXT_CLASS}`}>Created</TableHead>
+                    <TableHead className={`font-semibold ${BACKUPS_MUTED_TEXT_CLASS}`}>
+                      {t("label.status")}
+                    </TableHead>
+                    <TableHead className={`font-semibold ${BACKUPS_MUTED_TEXT_CLASS}`}>Size</TableHead>
+                    <TableHead className={`text-right font-semibold ${BACKUPS_MUTED_TEXT_CLASS}`}>
+                      {t("label.actions")}
+                    </TableHead>
                   </TableRow>
-                );
-              })}
-            </TableBody>
-          </Table>
-        )}
+                </TableHeader>
+                <TableBody>
+                  {backups.map((backup) => {
+                    const isDeleting = deletingFilename === backup.filename;
+                    const isDownloading = downloadingFilename === backup.filename;
+                    const disableActions = backup.status === "creating" || isDeleting;
+                    const statusLabel =
+                      backup.status === "creating"
+                        ? t("settings.backupsCreating")
+                        : backup.status === "invalid"
+                          ? t("settings.backupsInvalid")
+                        : backup.status === "failed"
+                          ? t("settings.backupsFailed")
+                          : t("settings.backupsReady");
+
+                    return (
+                      <TableRow
+                        key={backup.filename}
+                        id={selectorId("settings-backup-row", "created-at", backup.createdAt)}
+                        className="border-[var(--scry-border3)] hover:bg-[var(--scry-hover)]"
+                      >
+                        <TableCell className="align-top">
+                          <div className="space-y-1">
+                            <div className="font-medium text-[var(--scry-ink2)]">
+                              {backup.filename}
+                            </div>
+                            <div className={`flex flex-wrap items-center gap-2 text-xs ${BACKUPS_MUTED_TEXT_CLASS}`}>
+                              <span className="rounded-full border border-[var(--scry-border3)] bg-[var(--scry-inset)] px-2 py-0.5">
+                                {backup.encrypted
+                                  ? t("settings.backupsEncrypted")
+                                  : t("settings.backupsPlaintext")}
+                              </span>
+                              <span className="rounded-full border border-[var(--scry-border3)] bg-[var(--scry-inset)] px-2 py-0.5">
+                                {autoBackupTriggerLabel(backup.trigger)}
+                              </span>
+                              <span>{backup.formatVersion}</span>
+                              <span>{backup.sourceEngine}</span>
+                              {backup.sourceMigrationKey ? <span>{backup.sourceMigrationKey}</span> : null}
+                            </div>
+                            {backup.errorMessage ? (
+                              <p className="text-xs text-destructive">{backup.errorMessage}</p>
+                            ) : null}
+                          </div>
+                        </TableCell>
+                        <TableCell className={`whitespace-nowrap ${BACKUPS_MUTED_TEXT_CLASS}`}>
+                          {formatDateTime(backup.createdAt, dateTimeFormat)}
+                        </TableCell>
+                        <TableCell>
+                          <BackupStatusBadge
+                            id={selectorId(
+                              "settings-backup-status",
+                              backup.status,
+                              "created-at",
+                              backup.createdAt,
+                            )}
+                            status={backup.status}
+                            label={statusLabel}
+                          />
+                        </TableCell>
+                        <TableCell className={`align-middle text-xs ${BACKUPS_MUTED_TEXT_CLASS}`}>
+                          {formatBytes(backup.sizeBytes)}
+                        </TableCell>
+                        <TableCell>
+                          <div className="flex items-center justify-end gap-1">
+                            {backup.status === "ready" ? (
+                              <Button
+                                id={selectorId(
+                                  "settings-backup-download",
+                                  "created-at",
+                                  backup.createdAt,
+                                )}
+                                type="button"
+                                variant="secondary"
+                                size="icon-sm"
+                                className={cn(
+                                  boxedActionButtonBaseClass,
+                                  boxedActionButtonToneClass.install,
+                                )}
+                                disabled={isDownloading || isDeleting}
+                                onClick={() => void handleDownloadBackup(backup)}
+                                title={t("settings.backupsDownload")}
+                                aria-label={t("settings.backupsDownload")}
+                              >
+                                {isDownloading ? (
+                                  <Loader2 className="h-4 w-4 animate-spin" />
+                                ) : (
+                                  <Download className="h-4 w-4" />
+                                )}
+                              </Button>
+                            ) : null}
+                            <Button
+                              id={selectorId("settings-backup-delete", "created-at", backup.createdAt)}
+                              type="button"
+                              variant="secondary"
+                              size="icon-sm"
+                              className={cn(
+                                boxedActionButtonBaseClass,
+                                boxedActionButtonToneClass.delete,
+                              )}
+                              disabled={disableActions}
+                              onClick={() => setPendingDelete(backup)}
+                              title={t("settings.backupsDelete")}
+                              aria-label={t("settings.backupsDelete")}
+                            >
+                              {isDeleting ? (
+                                <Loader2 className="h-4 w-4 animate-spin" />
+                              ) : (
+                                <Trash2 className="h-4 w-4" />
+                              )}
+                            </Button>
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
+                </TableBody>
+              </Table>
+            </div>
+          )}
+        </section>
       </div>
 
       <FolderBrowserDialog

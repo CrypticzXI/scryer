@@ -1,16 +1,18 @@
 import * as React from "react";
+import { createPortal } from "react-dom";
 import { Loader2, Subtitles } from "lucide-react";
 import { useClient } from "urql";
 import { toast } from "sonner";
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
 import { SettingsToggleSwitch } from "@/components/common/settings-toggle-switch";
+import { SETTINGS_REFERENCE_SLOT_ID } from "@/components/containers/settings/settings-container";
+import { FilteredPluginList } from "@/components/views/settings/filtered-plugin-list";
 import { SettingsSubtitleProvidersSection } from "@/components/views/settings/settings-subtitle-providers-section";
 import { SettingsSubtitlesSection } from "@/components/views/settings/settings-subtitles-section";
 import type {
   PluginInstallProgressRecord,
   RegistryPluginRecord,
 } from "@/components/views/settings/settings-plugins-section";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   pluginInstallProgressSubscription,
   pluginsQuery,
@@ -57,6 +59,14 @@ const DEFAULTS: SubtitleSettings = {
 
 const ENHANCED_SUBTITLE_SYNC_PLUGIN_ID = "enhanced-subtitle-sync";
 const ENHANCED_SUBTITLE_SYNC_PLUGIN_NAME = "Enhanced Subtitle Sync";
+const SUBTITLES_PANEL_CLASS =
+  "overflow-hidden rounded-[14px] border border-[var(--scry-border)] bg-[var(--scry-surf)] shadow-[0_10px_24px_rgba(0,0,0,0.16)]";
+const SUBTITLES_PANEL_HEADER_CLASS =
+  "flex flex-col gap-4 border-b border-[var(--scry-border3)] bg-[linear-gradient(180deg,rgba(255,255,255,0.035),rgba(255,255,255,0))] px-4 py-3 sm:flex-row sm:items-center sm:justify-between";
+const SUBTITLES_PANEL_TITLE_CLASS =
+  "text-[15px] font-semibold text-[var(--scry-ink2)]";
+const SUBTITLES_PANEL_BODY_CLASS = "p-4 sm:p-5";
+const SUBTITLES_MUTED_TEXT_CLASS = "text-[var(--scry-muted3)]";
 
 type PluginInstallProgressSubscriptionResult = {
   data?: {
@@ -202,6 +212,7 @@ export function SettingsSubtitlesContainer({
   const [saving, setSaving] = React.useState(false);
   const [loading, setLoading] = React.useState(true);
   const [plugins, setPlugins] = React.useState<RegistryPluginRecord[]>([]);
+  const [pluginsTarget, setPluginsTarget] = React.useState<HTMLElement | null>(null);
   const [pluginsLoading, setPluginsLoading] = React.useState(true);
   const [syncPluginInstallError, setSyncPluginInstallError] = React.useState<string | null>(
     null,
@@ -237,6 +248,10 @@ export function SettingsSubtitlesContainer({
   const syncPluginProgressSubscriptionRef = React.useRef<(() => void) | null>(
     null,
   );
+
+  React.useEffect(() => {
+    setPluginsTarget(document.getElementById(SETTINGS_REFERENCE_SLOT_ID));
+  }, []);
 
   const resetProviderDraft = React.useCallback(() => {
     setEditingProviderId(null);
@@ -978,9 +993,18 @@ export function SettingsSubtitlesContainer({
 
   return (
     <>
-      <div className="space-y-6">
-        <Card>
-          <CardHeader className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+      {pluginsTarget
+        ? createPortal(
+            <FilteredPluginList
+              family="subtitle"
+              refreshProviderOptions={refreshProviderTypes}
+            />,
+            pluginsTarget,
+          )
+        : null}
+      <div className="space-y-4">
+        <section className={SUBTITLES_PANEL_CLASS}>
+          <div className={SUBTITLES_PANEL_HEADER_CLASS}>
             <button
               type="button"
               className="flex min-w-0 flex-1 items-start gap-3 text-left"
@@ -988,19 +1012,19 @@ export function SettingsSubtitlesContainer({
               aria-expanded={subtitlesExpanded}
             >
               <div className="min-w-0 flex-1 space-y-1">
-                <CardTitle className="flex items-center gap-2">
+                <h2 className={`flex items-center gap-2 ${SUBTITLES_PANEL_TITLE_CLASS}`}>
                   <Subtitles className="h-4 w-4" />
                   {t("settings.subtitles")}
                   {saving ? (
-                    <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
+                    <Loader2 className={`h-3.5 w-3.5 animate-spin ${SUBTITLES_MUTED_TEXT_CLASS}`} />
                   ) : null}
-                </CardTitle>
-                <p className="text-sm text-muted-foreground">
+                </h2>
+                <p className={`text-sm ${SUBTITLES_MUTED_TEXT_CLASS}`}>
                   {t("settings.subtitlesDescription")}
                 </p>
               </div>
             </button>
-            <div className="flex shrink-0 justify-end sm:pt-1">
+            <div className="flex shrink-0 justify-end">
               <SettingsToggleSwitch
                 checked={settings.enabled}
                 disabled={loading}
@@ -1013,9 +1037,9 @@ export function SettingsSubtitlesContainer({
                 }
               />
             </div>
-          </CardHeader>
+          </div>
           {subtitlesExpanded ? (
-            <CardContent className="space-y-6">
+            <div className={`${SUBTITLES_PANEL_BODY_CLASS} space-y-6`}>
               <SettingsSubtitlesSection
                 settings={settings}
                 setSettings={setSettings}
@@ -1050,9 +1074,9 @@ export function SettingsSubtitlesContainer({
                   startCreateProvider={requestCreateProviderEditor}
                 />
               ) : null}
-            </CardContent>
+            </div>
           ) : null}
-        </Card>
+        </section>
       </div>
       <ConfirmDialog
         open={pendingProviderEditorAction !== null}

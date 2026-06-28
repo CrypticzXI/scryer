@@ -1901,6 +1901,14 @@ pub struct LibrarySettingsPayload {
     pub plexmatch_write_on_import: Option<bool>,
     pub import_mode_override: Option<String>,
     pub import_mode: String,
+    pub set_permissions_linux_override: Option<bool>,
+    pub set_permissions_linux: bool,
+    pub file_chmod_override: Option<String>,
+    pub file_chmod: Option<String>,
+    pub folder_chmod_override: Option<String>,
+    pub folder_chmod: Option<String>,
+    pub chown_group_override: Option<String>,
+    pub chown_group: Option<String>,
     pub indexer_routing_override: Option<Vec<IndexerRoutingEntryPayload>>,
     pub download_client_routing_override: Option<Vec<DownloadClientRoutingEntryPayload>>,
 }
@@ -2544,6 +2552,10 @@ pub struct MediaSettingsPayload {
     pub nfo_write_on_import: bool,
     pub plexmatch_write_on_import: Option<bool>,
     pub import_mode: String,
+    pub set_permissions_linux: bool,
+    pub file_chmod: Option<String>,
+    pub folder_chmod: Option<String>,
+    pub chown_group: Option<String>,
 }
 
 #[derive(SimpleObject, Clone)]
@@ -2838,6 +2850,10 @@ pub struct UpdateMediaSettingsInput {
     pub nfo_write_on_import: Option<bool>,
     pub plexmatch_write_on_import: Option<bool>,
     pub import_mode: Option<String>,
+    pub set_permissions_linux: Option<bool>,
+    pub file_chmod: Option<String>,
+    pub folder_chmod: Option<String>,
+    pub chown_group: Option<String>,
 }
 
 #[derive(InputObject, Clone)]
@@ -3465,6 +3481,10 @@ pub struct LibrarySettingsInput {
     pub nfo_write_on_import: Option<bool>,
     pub plexmatch_write_on_import: Option<bool>,
     pub import_mode: Option<String>,
+    pub set_permissions_linux: Option<bool>,
+    pub file_chmod: Option<String>,
+    pub folder_chmod: Option<String>,
+    pub chown_group: Option<String>,
     pub indexer_routing: Option<Vec<IndexerRoutingEntryInput>>,
     pub download_client_routing: Option<Vec<DownloadClientRoutingEntryInput>>,
 }

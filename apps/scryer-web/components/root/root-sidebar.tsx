@@ -46,10 +46,10 @@ import {
   Puzzle,
   Server,
   Settings2,
-  Shield,
   ShieldCheck,
   SlidersHorizontal,
   Sun,
+  TextSearch,
   Timer,
   User,
   Users,
@@ -191,7 +191,7 @@ const TOP_NAV_GROUPS: TopNavGroupDefinition[] = [
         labelKey: "nav.usersAccess",
         icon: Users,
       },
-      { kind: "settings", id: "security", icon: Shield },
+      { kind: "settings", id: "security", icon: ShieldCheck },
       { kind: "settings", id: "backups", icon: Archive },
       { kind: "view", id: "settings" },
     ],
@@ -201,7 +201,7 @@ const TOP_NAV_GROUPS: TopNavGroupDefinition[] = [
     labelKey: "nav.logs",
     items: [
       { kind: "logs", id: "logs", labelKey: "nav.serviceLogs", icon: FileText },
-      { kind: "logs", id: "audit", labelKey: "nav.auditLogs", icon: Shield },
+      { kind: "logs", id: "audit", labelKey: "nav.auditLogs", icon: TextSearch },
     ],
   },
 ];
@@ -958,7 +958,7 @@ function RootSidebarContent({
         collapsible={isMobile ? "offcanvas" : "none"}
         mobileTitle={t("nav.mobileTitle")}
         mobileDescription={t("nav.mobileDescription")}
-        className="overflow-hidden border-r border-[var(--scry-border3)] [background:var(--scry-shell-side-bg)] shadow-[12px_0_40px_rgba(2,6,23,0.22)] backdrop-blur min-[981px]:sticky min-[981px]:top-[var(--root-shell-top-offset,0px)] min-[981px]:h-[calc(100dvh-var(--root-shell-top-offset,0px))] min-[981px]:max-h-[calc(100dvh-var(--root-shell-top-offset,0px))] min-[981px]:self-start"
+        className="overflow-hidden border-r border-[var(--scry-border3)] bg-[var(--scry-bg)] shadow-[12px_0_40px_rgba(2,6,23,0.22)] min-[981px]:sticky min-[981px]:top-[var(--root-shell-top-offset,0px)] min-[981px]:h-[calc(100dvh-var(--root-shell-top-offset,0px))] min-[981px]:max-h-[calc(100dvh-var(--root-shell-top-offset,0px))] min-[981px]:self-start"
       >
         <SidebarHeader className="px-5 pb-3 pt-5">
           <div className="flex items-center gap-3">
@@ -1120,13 +1120,14 @@ function RootSidebarContent({
                   const mediaFacetImportBadgeCount = isMediaSection
                     ? pendingImportCountForNavView(item.id)
                     : 0;
+                  const hasVisibleSystemSubnav = SYSTEM_SUB_PAGES.length > 1;
                   const shouldShowChildren =
                     isActiveMediaSection ||
-                    isActiveSystemSection ||
+                    (isActiveSystemSection && hasVisibleSystemSubnav) ||
                     (isActiveActivitySection && hasVisibleActivitySubnav);
                   const hasExpandableChildren =
                     isMediaSection ||
-                    isSystemTop ||
+                    (isSystemTop && hasVisibleSystemSubnav) ||
                     (isActivityTop && hasVisibleActivitySubnav);
                   if (
                     !isMediaSection &&

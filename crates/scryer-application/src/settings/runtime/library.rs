@@ -880,6 +880,26 @@ impl AppUseCase {
         let import_mode = self
             .resolve_import_mode(Some(&library.id), &library.facet)
             .await?;
+        let set_permissions_linux_override = self
+            .read_setting_bool_value_explicit(SET_PERMISSIONS_LINUX_KEY, Some(&library.id))
+            .await?;
+        let import_permissions = self
+            .resolve_import_file_permissions(Some(&library.id), &library.facet)
+            .await?;
+        let file_chmod_override = normalize_chmod_setting(
+            self.read_setting_string_value_explicit(FILE_CHMOD_KEY, Some(&library.id))
+                .await?,
+            FILE_CHMOD_KEY,
+        )?;
+        let folder_chmod_override = normalize_chmod_setting(
+            self.read_setting_string_value_explicit(FOLDER_CHMOD_KEY, Some(&library.id))
+                .await?,
+            FOLDER_CHMOD_KEY,
+        )?;
+        let chown_group_override = normalize_chown_group_setting(
+            self.read_setting_string_value_explicit(CHOWN_GROUP_KEY, Some(&library.id))
+                .await?,
+        )?;
         let indexer_routing_override = self.load_indexer_routing_override(&library.id).await?;
         let download_client_routing_override = self
             .load_download_client_routing_override(&library.id)
@@ -911,6 +931,14 @@ impl AppUseCase {
             plexmatch_write_on_import,
             import_mode_override,
             import_mode,
+            set_permissions_linux_override,
+            set_permissions_linux: import_permissions.set_permissions_linux,
+            file_chmod_override,
+            file_chmod: import_permissions.file_chmod,
+            folder_chmod_override,
+            folder_chmod: import_permissions.folder_chmod,
+            chown_group_override,
+            chown_group: import_permissions.chown_group,
             indexer_routing_override,
             download_client_routing_override,
         })
@@ -1135,6 +1163,58 @@ impl AppUseCase {
             .await?;
         } else {
             self.delete_scoped_system_setting(IMPORT_MODE_KEY, &library.id)
+                .await?;
+        }
+
+        if let Some(value) = settings.set_permissions_linux {
+            self.upsert_scoped_system_setting_json(
+                SET_PERMISSIONS_LINUX_KEY,
+                &library.id,
+                &value,
+                Some(actor.id.clone()),
+            )
+            .await?;
+        } else {
+            self.delete_scoped_system_setting(SET_PERMISSIONS_LINUX_KEY, &library.id)
+                .await?;
+        }
+
+        if let Some(value) = normalize_chmod_setting(settings.file_chmod, FILE_CHMOD_KEY)? {
+            self.upsert_scoped_system_setting_json(
+                FILE_CHMOD_KEY,
+                &library.id,
+                &value,
+                Some(actor.id.clone()),
+            )
+            .await?;
+        } else {
+            self.delete_scoped_system_setting(FILE_CHMOD_KEY, &library.id)
+                .await?;
+        }
+
+        if let Some(value) = normalize_chmod_setting(settings.folder_chmod, FOLDER_CHMOD_KEY)? {
+            self.upsert_scoped_system_setting_json(
+                FOLDER_CHMOD_KEY,
+                &library.id,
+                &value,
+                Some(actor.id.clone()),
+            )
+            .await?;
+        } else {
+            self.delete_scoped_system_setting(FOLDER_CHMOD_KEY, &library.id)
+                .await?;
+        }
+
+        if let Some(value) = normalize_chown_group_setting(settings.chown_group)? {
+            self.upsert_scoped_system_setting_json(
+                CHOWN_GROUP_KEY,
+                &library.id,
+                &value,
+                Some(actor.id.clone()),
+            )
+            .await?;
+        } else {
+            self.delete_scoped_system_setting(CHOWN_GROUP_KEY, &library.id)
                 .await?;
         }
 

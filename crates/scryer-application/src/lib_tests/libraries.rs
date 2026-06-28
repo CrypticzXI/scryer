@@ -1,6 +1,71 @@
 use super::*;
 
 #[tokio::test]
+async fn title_slug_lookup_short_route_uses_default_library() {
+    let (app, user) = bootstrap();
+    let movie_library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Movie);
+    let movie_library = app
+        .services
+        .catalog
+        .libraries
+        .get_by_id(&movie_library_id)
+        .await
+        .expect("movie library should load")
+        .expect("movie library should exist");
+
+    app.services
+        .catalog
+        .libraries
+        .update(
+            &movie_library_id,
+            movie_library.name.clone(),
+            "custom-default-movies".to_string(),
+            vec![LibraryRootDraft {
+                path: "/Volumes/Media/Movies".to_string(),
+                is_default: true,
+            }],
+        )
+        .await
+        .expect("default movie library should update");
+
+    let created = app
+        .create_title_without_hydration_in_library(
+            &user,
+            NewTitle {
+                name: "Short Route Movie".into(),
+                facet: MediaFacet::Movie,
+                monitored: false,
+                tags: vec![],
+                external_ids: vec![],
+                min_availability: None,
+                slug: Some("short-route-movie".to_string()),
+                ..Default::default()
+            },
+            movie_library_id,
+        )
+        .await
+        .expect("title should be created");
+    let slug = created
+        .title
+        .slug
+        .as_deref()
+        .expect("created title should have a slug");
+
+    let found = app
+        .get_title_by_slug(
+            &user,
+            MediaFacet::Movie,
+            None,
+            Some(scryer_domain::default_library_slug_for_facet(&MediaFacet::Movie).to_string()),
+            slug,
+        )
+        .await
+        .expect("slug lookup should succeed");
+
+    assert_eq!(found.map(|title| title.id), Some(created.title.id));
+}
+
+#[tokio::test]
 async fn create_library_rejects_root_used_by_other_facet_library() {
     let (app, user) = bootstrap();
     let series_library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Series);
@@ -557,6 +622,103 @@ async fn library_sidecar_settings_resolve_facet_defaults_and_library_overrides()
     assert!(!overridden.nfo_write_on_import);
     assert_eq!(overridden.plexmatch_write_on_import_override, Some(false));
     assert_eq!(overridden.plexmatch_write_on_import, Some(false));
+}
+
+#[tokio::test]
+async fn library_import_permission_settings_resolve_facet_defaults_and_library_overrides() {
+    let (app, user) = bootstrap();
+    let series_library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Series);
+
+    app.update_media_settings(
+        &user,
+        MediaFacet::Series,
+        UpdateMediaSettings {
+            set_permissions_linux: Some(true),
+            folder_chmod: Some("775".to_string()),
+            chown_group: Some("media".to_string()),
+            ..empty_update_media_settings()
+        },
+    )
+    .await
+    .expect("series media settings should update");
+
+    let baseline = app
+        .get_library_settings(&user, &series_library_id)
+        .await
+        .expect("series library settings should load");
+    assert_eq!(baseline.set_permissions_linux_override, None);
+    assert!(baseline.set_permissions_linux);
+    assert_eq!(baseline.file_chmod_override, None);
+    assert_eq!(baseline.file_chmod, None);
+    assert_eq!(baseline.folder_chmod_override, None);
+    assert_eq!(baseline.folder_chmod.as_deref(), Some("775"));
+    assert_eq!(baseline.chown_group_override, None);
+    assert_eq!(baseline.chown_group.as_deref(), Some("media"));
+
+    app.update_library_settings(
+        &user,
+        &series_library_id,
+        LibrarySettingsOverrideDraft {
+            set_permissions_linux: Some(false),
+            file_chmod: Some("640".to_string()),
+            folder_chmod: Some("750".to_string()),
+            chown_group: Some("staff".to_string()),
+            ..empty_library_settings_override()
+        },
+    )
+    .await
+    .expect("series library overrides should save");
+
+    let overridden = app
+        .get_library_settings(&user, &series_library_id)
+        .await
+        .expect("series library settings should reload");
+    assert_eq!(overridden.set_permissions_linux_override, Some(false));
+    assert!(!overridden.set_permissions_linux);
+    assert_eq!(overridden.file_chmod_override.as_deref(), Some("640"));
+    assert_eq!(overridden.file_chmod.as_deref(), Some("640"));
+    assert_eq!(overridden.folder_chmod_override.as_deref(), Some("750"));
+    assert_eq!(overridden.folder_chmod.as_deref(), Some("750"));
+    assert_eq!(overridden.chown_group_override.as_deref(), Some("staff"));
+    assert_eq!(overridden.chown_group.as_deref(), Some("staff"));
+}
+
+#[tokio::test]
+async fn import_permission_settings_validate_chmod_and_normalize_empty_group() {
+    let (app, user) = bootstrap();
+
+    let error = app
+        .update_media_settings(
+            &user,
+            MediaFacet::Movie,
+            UpdateMediaSettings {
+                file_chmod: Some("888".to_string()),
+                ..empty_update_media_settings()
+            },
+        )
+        .await
+        .expect_err("invalid chmod should be rejected");
+    assert!(matches!(error, AppError::Validation(_)));
+
+    app.update_media_settings(
+        &user,
+        MediaFacet::Movie,
+        UpdateMediaSettings {
+            set_permissions_linux: Some(true),
+            chown_group: Some("  ".to_string()),
+            ..empty_update_media_settings()
+        },
+    )
+    .await
+    .expect("empty group should clear setting");
+
+    let settings = app
+        .get_media_settings(&user, MediaFacet::Movie)
+        .await
+        .expect("movie media settings should load");
+    assert!(settings.set_permissions_linux);
+    assert_eq!(settings.chown_group, None);
+    assert_eq!(settings.folder_chmod.as_deref(), Some("755"));
 }
 
 #[tokio::test]

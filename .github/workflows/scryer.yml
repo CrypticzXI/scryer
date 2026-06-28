@@ -1305,6 +1305,12 @@ jobs:
           RELEASE_TAG="${{ github.ref_name }}"
           echo "tag_name=${RELEASE_TAG}" >> "$GITHUB_OUTPUT"
 
+      - name: Checkout release notes
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ steps.release_meta.outputs.tag_name }}
+          fetch-depth: 1
+
       - name: Download release artifacts
         uses: actions/download-artifact@v8
         with:
@@ -1316,17 +1322,20 @@ jobs:
         working-directory: release-artifacts
         run: shasum -a 256 scryer-*.tar.gz scryer-*.zip > scryer-checksums.txt
 
+      - name: Verify release notes
+        run: test -s "release-notes/${{ steps.release_meta.outputs.tag_name }}.md"
+
       - name: Publish release
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ steps.release_meta.outputs.tag_name }}
           name: ${{ steps.release_meta.outputs.tag_name }}
+          body_path: release-notes/${{ steps.release_meta.outputs.tag_name }}.md
           files: |
             release-artifacts/scryer-*.tar.gz
             release-artifacts/scryer-*.zip
             release-artifacts/scryer-checksums.txt
           fail_on_unmatched_files: true
-          generate_release_notes: true
 
       - name: Update Homebrew tap
         env:

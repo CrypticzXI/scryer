@@ -1131,10 +1131,18 @@ async fn execute_manual_series_movie_import(
     let import_mode = app
         .resolve_import_mode(Some(&title.library_id), &title.facet)
         .await?;
-    let file_result =
-        match import_file_with_record_progress(app, import_id, source, &dest_path, import_mode, None)
-            .await
-        {
+    let file_result = match import_file_with_record_progress(
+        app,
+        import_id,
+        &title.library_id,
+        &title.facet,
+        source,
+        &dest_path,
+        import_mode,
+        None,
+    )
+    .await
+    {
             Ok(file_result) => file_result,
             Err(error) => {
                 let message = error.to_string();

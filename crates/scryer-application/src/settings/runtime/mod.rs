@@ -4,6 +4,7 @@ use super::keys::{
 };
 use super::*;
 use crate::acquisition_policy::AcquisitionThresholds;
+use crate::ports::ImportFilePermissions;
 use crate::scoring_weights::ScoringPersona;
 use crate::subtitles::{normalize_subtitle_language_code, wanted::SubtitleLanguagePref};
 use crate::{

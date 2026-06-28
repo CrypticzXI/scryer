@@ -55,11 +55,16 @@ fn should_persist_import_transfer_progress(
 async fn import_file_with_record_progress(
     app: &AppUseCase,
     import_id: &str,
+    library_id: &str,
+    facet: &scryer_domain::MediaFacet,
     source: &Path,
     dest: &Path,
     mode: scryer_domain::ImportMode,
     expected_source: Option<&scryer_domain::ImportSourceSnapshot>,
 ) -> AppResult<scryer_domain::ImportFileResult> {
+    let permissions = app
+        .resolve_import_file_permissions(Some(library_id), facet)
+        .await?;
     let (progress_tx, mut progress_rx) = tokio::sync::mpsc::unbounded_channel();
     let progress_app = app.clone();
     let progress_import_id = import_id.to_string();
@@ -104,7 +109,14 @@ async fn import_file_with_record_progress(
         .services
         .workflow
         .file_importer
-        .import_file_with_progress(source, dest, mode, expected_source, Some(progress_tx))
+        .import_file_with_progress_and_permissions(
+            source,
+            dest,
+            mode,
+            expected_source,
+            Some(progress_tx),
+            &permissions,
+        )
         .await;
 
     if let Err(error) = progress_task.await {

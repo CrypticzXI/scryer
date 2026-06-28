@@ -2,7 +2,6 @@
 import * as React from "react";
 import { ArrowLeft, ArrowRight, Edit, Plus, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
 import { Input, signedIntegerInputProps } from "@/components/ui/input";
@@ -33,6 +32,17 @@ import {
   boxedActionButtonToneClass,
   type BoxedActionButtonTone,
 } from "@/lib/utils/action-button-styles";
+
+const QUALITY_PANEL_CLASS =
+  "overflow-hidden rounded-[14px] border border-[var(--scry-border)] bg-[var(--scry-surf)] shadow-[0_10px_24px_rgba(0,0,0,0.16)]";
+const QUALITY_PANEL_HEADER_CLASS =
+  "border-b border-[var(--scry-border3)] bg-[linear-gradient(180deg,rgba(255,255,255,0.035),rgba(255,255,255,0))] px-4 py-3";
+const QUALITY_PANEL_TITLE_CLASS =
+  "text-[15px] font-semibold text-[var(--scry-ink2)]";
+const QUALITY_PANEL_BODY_CLASS = "p-4 sm:p-5";
+const QUALITY_INSET_CLASS =
+  "rounded-[12px] border border-[var(--scry-line2)] bg-[var(--scry-card2)]";
+const QUALITY_MUTED_TEXT_CLASS = "text-[var(--scry-muted3)]";
 
 type ViewCategoryId = "movie" | "series" | "anime";
 
@@ -299,8 +309,8 @@ function ProfileListEditor({
   );
 
   return (
-    <details className="rounded-xl border border-border bg-card p-3">
-      <summary className="cursor-pointer select-none text-sm font-medium text-card-foreground">
+    <details className={`${QUALITY_INSET_CLASS} p-3`}>
+      <summary className="cursor-pointer select-none text-sm font-medium text-[var(--scry-ink2)]">
         <span className="inline-flex items-center gap-2">
           <span>{title}</span>
           {info ? (
@@ -310,15 +320,17 @@ function ProfileListEditor({
       </summary>
       <div className="mt-3 grid gap-3 md:grid-cols-2">
         <div>
-          <Label className="mb-2 block">Allowed</Label>
-          <div className="max-h-56 overflow-auto rounded border border-border p-2">
+          <Label className="mb-2 block text-[var(--scry-ink2)]">Allowed</Label>
+          <div className="max-h-56 overflow-auto rounded-[10px] border border-[var(--scry-border3)] bg-[var(--scry-inset)] p-2">
             {sortedAllowed.length === 0 ? (
-              <p className="text-xs text-muted-foreground">{t("qualityProfile.noSelectedItems")}</p>
+              <p className={`text-xs ${QUALITY_MUTED_TEXT_CLASS}`}>
+                {t("qualityProfile.noSelectedItems")}
+              </p>
             ) : (
               sortedAllowed.map((option) => (
                 <div
                   key={option.value}
-                  className="mb-1 flex items-center justify-between rounded border border-emerald-400 bg-card px-2 py-1.5 border-opacity-35 hover:border-opacity-60 ring-1 ring-inset ring-emerald-500/30"
+                  className="mb-1 flex items-center justify-between rounded-[9px] border border-emerald-400/35 bg-emerald-500/10 px-2 py-1.5 text-[var(--scry-ink2)] ring-1 ring-inset ring-emerald-500/20 hover:border-emerald-400/60"
                 >
                   <span className="text-xs">{option.label}</span>
                   <Button
@@ -336,17 +348,17 @@ function ProfileListEditor({
           </div>
         </div>
         <div>
-          <Label className="mb-2 block">Denied</Label>
-          <div className="max-h-56 overflow-auto rounded border border-border p-2">
+          <Label className="mb-2 block text-[var(--scry-ink2)]">Denied</Label>
+          <div className="max-h-56 overflow-auto rounded-[10px] border border-[var(--scry-border3)] bg-[var(--scry-inset)] p-2">
             {sortedDenied.length === 0 ? (
-              <p className="text-xs text-muted-foreground">
+              <p className={`text-xs ${QUALITY_MUTED_TEXT_CLASS}`}>
                 {emptyStateMessage ?? t("qualityProfile.noSelectedItems")}
               </p>
             ) : (
               sortedDenied.map((option) => (
                 <div
                   key={option.value}
-                  className="mb-1 flex items-center justify-between rounded border border-rose-500 bg-card px-2 py-1.5 border-opacity-35 hover:border-opacity-60 ring-1 ring-inset ring-rose-500/30"
+                  className="mb-1 flex items-center justify-between rounded-[9px] border border-rose-500/35 bg-rose-500/10 px-2 py-1.5 text-[var(--scry-ink2)] ring-1 ring-inset ring-rose-500/20 hover:border-rose-500/60"
                 >
                   <span className="text-xs">{option.label}</span>
                   <Button
@@ -680,24 +692,29 @@ export function SettingsQualityProfilesSection({
         event.preventDefault();
       }}
     >
-      <div className="space-y-2">
-        <div id="settings-quality-profiles-table-card" className="rounded border border-border">
+      <section id="settings-quality-profiles-table-card" className={QUALITY_PANEL_CLASS}>
+        <div className={QUALITY_PANEL_HEADER_CLASS}>
+          <h2 className={QUALITY_PANEL_TITLE_CLASS}>
+            {t("settings.qualityProfiles")}
+          </h2>
+        </div>
+        <div className="overflow-x-auto">
           <Table id="settings-quality-profiles-table">
             <TableHeader>
-              <TableRow>
-                <TableHead>{t("label.name")}</TableHead>
-                <TableHead className="max-w-72">{t("qualityProfile.qualityTiers")}</TableHead>
-                <TableHead className="w-28">{t("qualityProfile.archivalQuality")}</TableHead>
-                <TableHead className="w-24 text-center">{t("qualityProfile.allowBdDisk")}</TableHead>
-                <TableHead className="w-24 text-center">{t("qualityProfile.allowHdr")}</TableHead>
-                <TableHead className="w-16 text-center">{t("qualityProfile.allowDv")}</TableHead>
-                <TableHead className="w-28">{t("label.actions")}</TableHead>
+              <TableRow className="border-[var(--scry-border3)] bg-[var(--scry-inset)] hover:bg-[var(--scry-inset)]">
+                <TableHead className={`font-semibold ${QUALITY_MUTED_TEXT_CLASS}`}>{t("label.name")}</TableHead>
+                <TableHead className={`max-w-72 font-semibold ${QUALITY_MUTED_TEXT_CLASS}`}>{t("qualityProfile.qualityTiers")}</TableHead>
+                <TableHead className={`w-28 font-semibold ${QUALITY_MUTED_TEXT_CLASS}`}>{t("qualityProfile.archivalQuality")}</TableHead>
+                <TableHead className={`w-24 text-center font-semibold ${QUALITY_MUTED_TEXT_CLASS}`}>{t("qualityProfile.allowBdDisk")}</TableHead>
+                <TableHead className={`w-24 text-center font-semibold ${QUALITY_MUTED_TEXT_CLASS}`}>{t("qualityProfile.allowHdr")}</TableHead>
+                <TableHead className={`w-16 text-center font-semibold ${QUALITY_MUTED_TEXT_CLASS}`}>{t("qualityProfile.allowDv")}</TableHead>
+                <TableHead className={`w-28 font-semibold ${QUALITY_MUTED_TEXT_CLASS}`}>{t("label.actions")}</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {qualityProfiles.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={7} className="text-sm text-muted-foreground">
+                  <TableCell colSpan={7} className={`text-sm ${QUALITY_MUTED_TEXT_CLASS}`}>
                     {t("qualityProfile.noProfilesFound")}
                   </TableCell>
                 </TableRow>
@@ -706,8 +723,9 @@ export function SettingsQualityProfilesSection({
                   <TableRow
                     key={profile.id}
                     id={selectorId("settings-quality-profile-row", profile.name)}
+                    className="border-[var(--scry-border3)] hover:bg-[var(--scry-hover)]"
                   >
-                    <TableCell>{profile.name}</TableCell>
+                    <TableCell className="font-medium text-[var(--scry-ink2)]">{profile.name}</TableCell>
                     <TableCell>
                       <div className="flex flex-wrap gap-1">
                         {(() => {
@@ -718,12 +736,12 @@ export function SettingsQualityProfilesSection({
                             sortStringByNumericDesc,
                           );
                           if (tiers.length === 0) {
-                            return <span className="text-xs text-muted-foreground">—</span>;
+                            return <span className={`text-xs ${QUALITY_MUTED_TEXT_CLASS}`}>—</span>;
                           }
                           return tiers.map((tier) => (
                             <span
                               key={`${profile.id}-${tier}`}
-                              className="rounded border border-border bg-muted px-2 py-0.5 text-[10px] text-card-foreground"
+                              className="rounded-full border border-[var(--scry-border3)] bg-[var(--scry-inset)] px-2 py-0.5 text-[10px] text-[var(--scry-ink2)]"
                             >
                               {getQualityTierLabel(tier)}
                             </span>
@@ -737,7 +755,7 @@ export function SettingsQualityProfilesSection({
                           | QualityProfileCriteriaPayload
                           | undefined;
                         return (
-                          <span className="inline-flex rounded border border-border bg-muted px-2 py-0.5 text-[10px] text-card-foreground">
+                          <span className="inline-flex rounded-full border border-[var(--scry-border3)] bg-[var(--scry-inset)] px-2 py-0.5 text-[10px] text-[var(--scry-ink2)]">
                             {getQualityTierLabel(
                               typeof criteria?.archival_quality === "string" &&
                                 criteria?.archival_quality?.trim().length
@@ -821,22 +839,22 @@ export function SettingsQualityProfilesSection({
             </TableBody>
           </Table>
         </div>
-      </div>
+      </section>
 
       {isEditorOpen ? (
         <>
-      <Card id="settings-quality-profile-editor">
-        <CardHeader>
-          <CardTitle className="text-lg">
+      <section id="settings-quality-profile-editor" className={QUALITY_PANEL_CLASS}>
+        <div className={QUALITY_PANEL_HEADER_CLASS}>
+          <h2 className={QUALITY_PANEL_TITLE_CLASS}>
             {editorMode === "create"
               ? t("qualityProfile.createNewProfile")
               : t("qualityProfile.editProfile")}
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">
+          </h2>
+        </div>
+        <div className={`${QUALITY_PANEL_BODY_CLASS} space-y-4`}>
           <div className="grid gap-3">
             <label>
-              <Label className="mb-2 block" htmlFor="settings-quality-profile-name">{t("qualityProfile.profileNameLabel")}</Label>
+              <Label className="mb-2 block text-[var(--scry-ink2)]" htmlFor="settings-quality-profile-name">{t("qualityProfile.profileNameLabel")}</Label>
               <Input
                 id="settings-quality-profile-name"
                 value={qualityProfileDraft.name}
@@ -845,21 +863,21 @@ export function SettingsQualityProfilesSection({
             </label>
           </div>
 
-          <details className="rounded-xl border border-border bg-card p-3" open>
-            <summary className="cursor-pointer select-none text-sm font-medium text-card-foreground">
+          <details className={`${QUALITY_INSET_CLASS} p-3`} open>
+            <summary className="cursor-pointer select-none text-sm font-medium text-[var(--scry-ink2)]">
               {t("qualityProfile.qualityTiersAndArchival")}
             </summary>
             <div className="mt-3 grid gap-3 md:grid-cols-[1fr_auto_1fr]">
               <div>
-                <Label className="mb-2 block">{t("qualityProfile.allowedQualityTiers")}</Label>
-                <div className="max-h-56 overflow-auto rounded border border-border p-2">
+                <Label className="mb-2 block text-[var(--scry-ink2)]">{t("qualityProfile.allowedQualityTiers")}</Label>
+                <div className="max-h-56 overflow-auto rounded-[10px] border border-[var(--scry-border3)] bg-[var(--scry-inset)] p-2">
                   {activeQualityProfileTierOptions.length === 0 ? (
-                    <p className="text-xs text-muted-foreground">{t("qualityProfile.noQualityTiersSelected")}</p>
+                    <p className={`text-xs ${QUALITY_MUTED_TEXT_CLASS}`}>{t("qualityProfile.noQualityTiersSelected")}</p>
                   ) : (
                     activeQualityProfileTierOptions.map((qualityTier) => (
                       <div
                         key={qualityTier}
-                        className="mb-1 flex items-center justify-between rounded border border-transparent bg-card px-2 py-1.5 hover:border-border"
+                        className="mb-1 flex items-center justify-between rounded-[9px] border border-[var(--scry-border3)] bg-[var(--scry-card2)] px-2 py-1.5 text-[var(--scry-ink2)] hover:bg-[var(--scry-hover)]"
                       >
                         <span className="text-xs">{getQualityTierLabel(qualityTier)}</span>
                         <Button
@@ -879,20 +897,20 @@ export function SettingsQualityProfilesSection({
                 </div>
               </div>
               <div className="hidden items-center justify-center md:flex">
-                <div className="rounded-full border border-border bg-muted/80 p-3 text-card-foreground shadow-md">
+                <div className="rounded-full border border-[var(--scry-border3)] bg-[var(--scry-inset)] p-3 text-[var(--scry-ink2)] shadow-md">
                   <ArrowLeft className="h-6 w-6" />
                 </div>
               </div>
               <div>
-                <Label className="mb-2 block">{t("qualityProfile.availableQualityTiers")}</Label>
-                <div className="max-h-56 overflow-auto rounded border border-border p-2">
+                <Label className="mb-2 block text-[var(--scry-ink2)]">{t("qualityProfile.availableQualityTiers")}</Label>
+                <div className="max-h-56 overflow-auto rounded-[10px] border border-[var(--scry-border3)] bg-[var(--scry-inset)] p-2">
                   {availableQualityTiers.length === 0 ? (
-                    <p className="text-xs text-muted-foreground">{t("qualityProfile.allQualityTiersSelected")}</p>
+                    <p className={`text-xs ${QUALITY_MUTED_TEXT_CLASS}`}>{t("qualityProfile.allQualityTiersSelected")}</p>
                   ) : (
                     availableQualityTiers.map((option) => (
                       <div
                         key={option.value}
-                        className="mb-1 flex items-center justify-between rounded border border-transparent bg-card px-2 py-1.5 hover:border-border"
+                        className="mb-1 flex items-center justify-between rounded-[9px] border border-[var(--scry-border3)] bg-[var(--scry-card2)] px-2 py-1.5 text-[var(--scry-ink2)] hover:bg-[var(--scry-hover)]"
                       >
                         <span className="text-xs">{option.label}</span>
                         <Button
@@ -900,7 +918,7 @@ export function SettingsQualityProfilesSection({
                           variant="secondary"
                           size="sm"
                           onClick={() => addQualityTier(option.value)}
-                          className="bg-emerald-600 dark:bg-emerald-700 text-emerald-800 dark:text-emerald-100 hover:bg-emerald-600 hover:text-foreground"
+                          className="border border-emerald-500/35 bg-emerald-500/15 text-emerald-100 hover:bg-emerald-500/25 hover:text-emerald-50"
                           aria-label={t("qualityProfile.addQualityTier", { value: option.label })}
                         >
                           <Plus className="h-4 w-4" />
@@ -936,8 +954,8 @@ export function SettingsQualityProfilesSection({
             </div>
           </details>
 
-          <details className="rounded-xl border border-border bg-card p-3" open>
-            <summary className="cursor-pointer select-none text-sm font-medium text-card-foreground">
+          <details className={`${QUALITY_INSET_CLASS} p-3`} open>
+            <summary className="cursor-pointer select-none text-sm font-medium text-[var(--scry-ink2)]">
               <span className="inline-flex items-center gap-2">
                 {t("qualityProfile.scoringAndPreferences")}
                 <InfoHelp
@@ -1050,8 +1068,8 @@ export function SettingsQualityProfilesSection({
               </div>
 
               {/* Scoring overrides */}
-              <details className="rounded-lg border border-border/50 p-2">
-                <summary className="cursor-pointer select-none text-xs font-medium text-muted-foreground">
+              <details className="rounded-[10px] border border-[var(--scry-border3)] bg-[var(--scry-inset)] p-3">
+                <summary className={`cursor-pointer select-none text-xs font-medium ${QUALITY_MUTED_TEXT_CLASS}`}>
                   <span className="inline-flex items-center gap-2">
                     {t("qualityProfile.scoringOverrides")}
                     <InfoHelp
@@ -1249,8 +1267,8 @@ export function SettingsQualityProfilesSection({
               {qualityProfileParseError}
             </p>
           ) : null}
-        </CardContent>
-      </Card>
+        </div>
+      </section>
       {editorMode === "edit" ? (
         <div className="flex justify-center">
           <Button
@@ -1259,7 +1277,8 @@ export function SettingsQualityProfilesSection({
             size="lg"
             onClick={handleStartCreateProfile}
             disabled={mediaSettingsLoading || qualityProfilesSaving}
-            className="h-12 border border-emerald-500/30 bg-emerald-500/15 px-5 text-base font-semibold text-emerald-100 hover:bg-emerald-500/25 hover:text-emerald-50"
+            variant="primary"
+            className="h-12 px-5 text-base font-semibold"
           >
             <Plus className="h-5 w-5" />
             {t("qualityProfile.createNewProfile")}
@@ -1275,7 +1294,8 @@ export function SettingsQualityProfilesSection({
             size="lg"
             onClick={handleStartCreateProfile}
             disabled={mediaSettingsLoading || qualityProfilesSaving}
-            className="h-12 border border-emerald-500/30 bg-emerald-500/15 px-5 text-base font-semibold text-emerald-100 hover:bg-emerald-500/25 hover:text-emerald-50"
+            variant="primary"
+            className="h-12 px-5 text-base font-semibold"
           >
             <Plus className="h-5 w-5" />
             {t("qualityProfile.createNewProfile")}
@@ -1283,11 +1303,13 @@ export function SettingsQualityProfilesSection({
         </div>
       )}
 
-      <Card id="settings-quality-profiles-defaults-card">
-        <CardHeader>
-          <CardTitle className="text-lg">{t("qualityProfile.defaultCategoryProfiles")}</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-6">
+      <section id="settings-quality-profiles-defaults-card" className={QUALITY_PANEL_CLASS}>
+        <div className={QUALITY_PANEL_HEADER_CLASS}>
+          <h2 className={QUALITY_PANEL_TITLE_CLASS}>
+            {t("qualityProfile.defaultCategoryProfiles")}
+          </h2>
+        </div>
+        <div className={`${QUALITY_PANEL_BODY_CLASS} space-y-6`}>
           <label className="space-y-2">
             <Label className="inline-flex items-center gap-2">
               {t("settings.qualityProfileGlobalLabel")}
@@ -1371,23 +1393,23 @@ export function SettingsQualityProfilesSection({
           </label>
 
           <div className="space-y-5">
-            <CardTitle className="inline-flex items-center gap-2 text-base">
+            <h3 className="inline-flex items-center gap-2 text-base font-semibold text-[var(--scry-ink2)]">
               {t("settings.qualityProfileOverridesLabel")}
               <InfoHelp
                 text={t("settings.qualityProfileOverrideHelp")}
                 ariaLabel={t("settings.qualityProfileOverrideHelp")}
               />
-            </CardTitle>
+            </h3>
             <div className="hidden gap-2 sm:grid sm:grid-cols-2">
-              <span className="text-xs text-muted-foreground">{t("qualityProfile.editProfile")}</span>
-              <span className="text-xs text-muted-foreground">{t("qualityProfile.scoringPersona")}</span>
+              <span className={`text-xs ${QUALITY_MUTED_TEXT_CLASS}`}>{t("qualityProfile.editProfile")}</span>
+              <span className={`text-xs ${QUALITY_MUTED_TEXT_CLASS}`}>{t("qualityProfile.scoringPersona")}</span>
             </div>
             {Object.keys(qualityCategoryLabels).map((scopeKey) => {
               const scopeId = scopeKey as ViewCategoryId;
               const overridePersona = categoryPersonaDrafts[scopeId];
               return (
                 <div key={scopeId} className="space-y-2">
-                  <Label>{qualityCategoryLabels[scopeId]}</Label>
+                  <Label className="text-[var(--scry-ink2)]">{qualityCategoryLabels[scopeId]}</Label>
                   <div className="grid gap-2 sm:grid-cols-2">
                     <Select
                       value={categoryQualityProfileDrafts[scopeId]}
@@ -1506,8 +1528,8 @@ export function SettingsQualityProfilesSection({
               );
             })}
           </div>
-        </CardContent>
-      </Card>
+        </div>
+      </section>
     </form>
     <ConfirmDialog
       open={pendingEditorAction !== null}

@@ -2,7 +2,6 @@ import { ArrowDown, ArrowUp } from "lucide-react";
 import { useCallback, useMemo, useState } from "react";
 
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Sheet,
   SheetContent,
@@ -19,6 +18,15 @@ import type { UiDateTimeFormat } from "@/lib/types/settings";
 import { formatUiDate, formatUiDateTime, formatUiTime } from "@/lib/utils/date-format";
 import { isTerminalJobRunStatus } from "@/lib/utils/job-runs";
 import { cn } from "@/lib/utils";
+
+const JOBS_PANEL_CLASS =
+  "overflow-hidden rounded-[14px] border border-[var(--scry-border)] bg-[var(--scry-surf)] shadow-[0_10px_24px_rgba(0,0,0,0.16)]";
+const JOBS_PANEL_HEADER_CLASS =
+  "border-b border-[var(--scry-border3)] bg-[linear-gradient(180deg,rgba(255,255,255,0.035),rgba(255,255,255,0))] px-4 py-3";
+const JOBS_PANEL_TITLE_CLASS = "text-[15px] font-semibold text-[var(--scry-ink2)]";
+const JOBS_INSET_CLASS =
+  "rounded-[12px] border border-[var(--scry-line2)] bg-[var(--scry-card2)]";
+const JOBS_MUTED_TEXT_CLASS = "text-[var(--scry-muted3)]";
 
 type SystemJobsViewState = {
   jobs: JobDefinition[];
@@ -399,7 +407,7 @@ export function SystemJobsView({ state }: { state: SystemJobsViewState }) {
     >
       <button
         type="button"
-        className="inline-flex w-full items-center gap-1 text-left font-medium text-foreground transition-colors hover:text-foreground/80"
+        className="inline-flex w-full items-center gap-1 text-left font-semibold text-[var(--scry-muted2)] transition-colors hover:text-[var(--scry-ink2)]"
         onClick={() => handleSort(key)}
       >
         <span>{label}</span>
@@ -474,22 +482,22 @@ export function SystemJobsView({ state }: { state: SystemJobsViewState }) {
     rows.map(({ job, lastRun, status, isDisabled }) => (
       <TableRow
         key={job.key}
-        className="cursor-pointer hover:bg-muted/30"
+        className="cursor-pointer border-[var(--scry-border3)] hover:bg-[var(--scry-hover)]"
         onClick={() => onSelectJob(job.key)}
       >
         <TableCell>
           <div className="space-y-1">
-            <p className="font-medium text-foreground">{job.displayName}</p>
-            <p className="text-xs text-muted-foreground">{job.description}</p>
+            <p className="font-medium text-[var(--scry-ink2)]">{job.displayName}</p>
+            <p className={`text-xs ${JOBS_MUTED_TEXT_CLASS}`}>{job.description}</p>
           </div>
         </TableCell>
-        <TableCell className="w-[14rem] max-w-[14rem] text-muted-foreground">
+        <TableCell className={`w-[14rem] max-w-[14rem] ${JOBS_MUTED_TEXT_CLASS}`}>
           {job.schedule.description}
         </TableCell>
-        <TableCell className="w-[10.5rem] min-w-[10.5rem] text-muted-foreground">
+        <TableCell className={`w-[10.5rem] min-w-[10.5rem] ${JOBS_MUTED_TEXT_CLASS}`}>
           {renderTableDateTime(job.schedule.nextRunAt, t, dateTimeFormat)}
         </TableCell>
-        <TableCell className="w-[10.5rem] min-w-[10.5rem] text-muted-foreground">
+        <TableCell className={`w-[10.5rem] min-w-[10.5rem] ${JOBS_MUTED_TEXT_CLASS}`}>
           {renderTableDateTime(
             lastRun?.completedAt ?? lastRun?.startedAt ?? null,
             t,
@@ -503,7 +511,7 @@ export function SystemJobsView({ state }: { state: SystemJobsViewState }) {
           {job.manualTriggerAllowed ? (
             <Button
               size="sm"
-              variant="default"
+              variant="primary"
               disabled={isDisabled}
               onClick={(event) => {
                 event.stopPropagation();
@@ -521,7 +529,7 @@ export function SystemJobsView({ state }: { state: SystemJobsViewState }) {
     rows.map(({ job, lastRun, status, isDisabled }) => (
       <div
         key={job.key}
-        className="rounded-xl border border-border bg-card/55 p-4"
+        className={`${JOBS_INSET_CLASS} p-4`}
       >
         <div
           className="cursor-pointer space-y-3"
@@ -537,12 +545,16 @@ export function SystemJobsView({ state }: { state: SystemJobsViewState }) {
         >
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0 space-y-1">
-              <p className="text-sm font-semibold text-foreground">{job.displayName}</p>
-              <p className="text-xs leading-relaxed text-muted-foreground">{job.description}</p>
+              <p className="text-sm font-semibold text-[var(--scry-ink2)]">
+                {job.displayName}
+              </p>
+              <p className={`text-xs leading-relaxed ${JOBS_MUTED_TEXT_CLASS}`}>
+                {job.description}
+              </p>
             </div>
             <span
               className={cn(
-                "shrink-0 rounded-full border border-border px-2.5 py-1 text-[11px] font-medium",
+                "shrink-0 rounded-full border border-[var(--scry-border3)] bg-[var(--scry-inset)] px-2.5 py-1 text-[11px] font-medium",
                 runStatusTone(status),
               )}
             >
@@ -552,24 +564,24 @@ export function SystemJobsView({ state }: { state: SystemJobsViewState }) {
 
           <div className="grid gap-3 sm:grid-cols-3">
             <div className="space-y-1">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
+              <p className={`text-[11px] font-semibold uppercase tracking-[0.12em] ${JOBS_MUTED_TEXT_CLASS}`}>
                 {t("jobs.column.schedule")}
               </p>
-              <p className="text-sm text-foreground/85">{job.schedule.description}</p>
+              <p className="text-sm text-[var(--scry-ink2)]">{job.schedule.description}</p>
             </div>
             <div className="space-y-1">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
+              <p className={`text-[11px] font-semibold uppercase tracking-[0.12em] ${JOBS_MUTED_TEXT_CLASS}`}>
                 {t("jobs.column.nextRun")}
               </p>
-              <p className="text-sm text-foreground/85">
+              <p className="text-sm text-[var(--scry-ink2)]">
                 {formatDate(job.schedule.nextRunAt, t, dateTimeFormat)}
               </p>
             </div>
             <div className="space-y-1">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
+              <p className={`text-[11px] font-semibold uppercase tracking-[0.12em] ${JOBS_MUTED_TEXT_CLASS}`}>
                 {t("jobs.column.lastRun")}
               </p>
-              <p className="text-sm text-foreground/85">
+              <p className="text-sm text-[var(--scry-ink2)]">
                 {formatDate(
                   lastRun?.completedAt ?? lastRun?.startedAt ?? null,
                   t,
@@ -580,10 +592,10 @@ export function SystemJobsView({ state }: { state: SystemJobsViewState }) {
           </div>
         </div>
 
-        <div className="mt-4 flex items-center justify-between gap-3 border-t border-border pt-3">
+        <div className="mt-4 flex items-center justify-between gap-3 border-t border-[var(--scry-border3)] pt-3">
           <button
             type="button"
-            className="text-xs font-medium text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
+            className={`text-xs font-medium underline-offset-4 hover:text-[var(--scry-ink2)] hover:underline ${JOBS_MUTED_TEXT_CLASS}`}
             onClick={() => onSelectJob(job.key)}
           >
             {t("jobs.recentRuns")}
@@ -591,7 +603,7 @@ export function SystemJobsView({ state }: { state: SystemJobsViewState }) {
           {job.manualTriggerAllowed ? (
             <Button
               size="sm"
-              variant="default"
+              variant="primary"
               disabled={isDisabled}
               onClick={(event) => {
                 event.stopPropagation();
@@ -607,62 +619,53 @@ export function SystemJobsView({ state }: { state: SystemJobsViewState }) {
 
   return (
     <>
-      <div className="space-y-6">
-        <Card>
-          <CardHeader>
-            <CardTitle>{t("jobs.title")}</CardTitle>
-          </CardHeader>
-          <CardContent>
+      <div className="space-y-4 text-sm">
+        <section className={JOBS_PANEL_CLASS}>
+          <div className={JOBS_PANEL_HEADER_CLASS}>
+            <h2 className={JOBS_PANEL_TITLE_CLASS}>Job schedule</h2>
+          </div>
+          <div className="p-4 sm:p-5 md:p-0">
             <div className="space-y-3 md:hidden">
               <div className="flex flex-wrap gap-2">
-                <Button
-                  type="button"
-                  size="xs"
-                  variant={sortKey === "name" ? "secondary" : "outline"}
-                  onClick={() => handleSort("name")}
-                >
-                  {t("jobs.column.name")}
-                  {renderSortIcon("name")}
-                </Button>
-                <Button
-                  type="button"
-                  size="xs"
-                  variant={sortKey === "nextRun" ? "secondary" : "outline"}
-                  onClick={() => handleSort("nextRun")}
-                >
-                  {t("jobs.column.nextRun")}
-                  {renderSortIcon("nextRun")}
-                </Button>
-                <Button
-                  type="button"
-                  size="xs"
-                  variant={sortKey === "lastRun" ? "secondary" : "outline"}
-                  onClick={() => handleSort("lastRun")}
-                >
-                  {t("jobs.column.lastRun")}
-                  {renderSortIcon("lastRun")}
-                </Button>
-                <Button
-                  type="button"
-                  size="xs"
-                  variant={sortKey === "status" ? "secondary" : "outline"}
-                  onClick={() => handleSort("status")}
-                >
-                  {t("jobs.column.status")}
-                  {renderSortIcon("status")}
-                </Button>
+                {([
+                  ["name", t("jobs.column.name")],
+                  ["nextRun", t("jobs.column.nextRun")],
+                  ["lastRun", t("jobs.column.lastRun")],
+                  ["status", t("jobs.column.status")],
+                ] as const).map(([key, label]) => (
+                  <Button
+                    key={key}
+                    type="button"
+                    size="xs"
+                    variant={sortKey === key ? "secondary" : "outline"}
+                    onClick={() => handleSort(key)}
+                  >
+                    {label}
+                    {renderSortIcon(key)}
+                  </Button>
+                ))}
               </div>
               <div className="space-y-3">{renderMobileCards(sortedJobRows)}</div>
             </div>
 
-            <div className="hidden md:block">
+            <div className="hidden overflow-x-auto md:block">
               <Table>
                 <TableHeader>
-                  <TableRow>
+                  <TableRow className="border-[var(--scry-border3)] bg-[var(--scry-inset)] hover:bg-[var(--scry-inset)]">
                     {renderSortableHeader("name", t("jobs.column.name"))}
-                    <TableHead className="w-[14rem]">{t("jobs.column.schedule")}</TableHead>
-                    {renderSortableHeader("nextRun", t("jobs.column.nextRun"), "w-[10.5rem]")}
-                    {renderSortableHeader("lastRun", t("jobs.column.lastRun"), "w-[10.5rem]")}
+                    <TableHead className={`w-[14rem] font-semibold ${JOBS_MUTED_TEXT_CLASS}`}>
+                      {t("jobs.column.schedule")}
+                    </TableHead>
+                    {renderSortableHeader(
+                      "nextRun",
+                      t("jobs.column.nextRun"),
+                      "w-[10.5rem]",
+                    )}
+                    {renderSortableHeader(
+                      "lastRun",
+                      t("jobs.column.lastRun"),
+                      "w-[10.5rem]",
+                    )}
                     {renderSortableHeader("status", t("jobs.column.status"))}
                     <TableHead />
                   </TableRow>
@@ -670,26 +673,38 @@ export function SystemJobsView({ state }: { state: SystemJobsViewState }) {
                 <TableBody>{renderRows(sortedJobRows)}</TableBody>
               </Table>
             </div>
-          </CardContent>
-        </Card>
+          </div>
+        </section>
       </div>
 
-      <Sheet open={Boolean(selectedJob)} onOpenChange={(open) => onSelectJob(open ? selectedJobKey : null)}>
-        <SheetContent side="right" className="sm:max-w-xl">
+      <Sheet
+        open={Boolean(selectedJob)}
+        onOpenChange={(open) => onSelectJob(open ? selectedJobKey : null)}
+      >
+        <SheetContent
+          side="right"
+          className="border-l border-[var(--scry-border)] bg-[var(--scry-surf)] text-[var(--scry-ink2)] sm:max-w-2xl"
+        >
           {selectedJob ? (
             <>
-              <SheetHeader>
-                <SheetTitle>{selectedJob.displayName}</SheetTitle>
-                <SheetDescription>{selectedJob.description}</SheetDescription>
+              <SheetHeader className="border-b border-[var(--scry-border3)] bg-[linear-gradient(180deg,rgba(255,255,255,0.035),rgba(255,255,255,0))]">
+                <SheetTitle className="text-[var(--scry-ink2)]">
+                  {selectedJob.displayName}
+                </SheetTitle>
+                <SheetDescription className={JOBS_MUTED_TEXT_CLASS}>
+                  {selectedJob.description}
+                </SheetDescription>
               </SheetHeader>
 
               <div className="flex-1 space-y-4 overflow-y-auto px-4 pb-4">
-                <div className="rounded-lg border border-border bg-muted/20 p-3">
-                  <p className="text-xs uppercase tracking-wide text-muted-foreground">
+                <div className={`${JOBS_INSET_CLASS} p-3`}>
+                  <p className={`text-xs uppercase tracking-wide ${JOBS_MUTED_TEXT_CLASS}`}>
                     {t("jobs.schedule")}
                   </p>
-                  <p className="mt-1 text-sm text-foreground">{selectedJob.schedule.description}</p>
-                  <p className="mt-1 text-xs text-muted-foreground">
+                  <p className="mt-1 text-sm text-[var(--scry-ink2)]">
+                    {selectedJob.schedule.description}
+                  </p>
+                  <p className={`mt-1 text-xs ${JOBS_MUTED_TEXT_CLASS}`}>
                     {t("jobs.nextRunPrefix", {
                       value: formatDate(selectedJob.schedule.nextRunAt, t, dateTimeFormat),
                     })}
@@ -720,7 +735,7 @@ export function SystemJobsView({ state }: { state: SystemJobsViewState }) {
 
                     return (
                       <Button
-                        variant="default"
+                        variant="primary"
                         onClick={() => onTriggerJob(selectedJob.key)}
                         disabled={isDisabled}
                       >
@@ -731,58 +746,66 @@ export function SystemJobsView({ state }: { state: SystemJobsViewState }) {
                 </div>
 
                 <div className="space-y-2">
-                  <p className="text-sm font-medium text-foreground">{t("jobs.recentRuns")}</p>
+                  <p className="text-sm font-medium text-[var(--scry-ink2)]">
+                    {t("jobs.recentRuns")}
+                  </p>
                   {jobHistoryLoading ? (
-                    <p className="text-sm text-muted-foreground">{t("jobs.loadingRecentRuns")}</p>
+                    <p className={`text-sm ${JOBS_MUTED_TEXT_CLASS}`}>
+                      {t("jobs.loadingRecentRuns")}
+                    </p>
                   ) : selectedJobHistory.length === 0 ? (
-                    <p className="text-sm text-muted-foreground">{t("jobs.noRunsYet")}</p>
+                    <p className={`text-sm ${JOBS_MUTED_TEXT_CLASS}`}>
+                      {t("jobs.noRunsYet")}
+                    </p>
                   ) : (
                     <div className="space-y-2">
                       {selectedJobHistory.map((run) => {
                         const healthCheckIssues = parseHealthCheckIssues(run);
 
                         return (
-                          <div key={run.id} className="rounded-lg border border-border p-3">
+                          <div key={run.id} className={`${JOBS_INSET_CLASS} p-3`}>
                             <div className="flex items-start justify-between gap-3">
                               <div className="space-y-1">
                                 <p className={runStatusTone(run.status)}>
                                   {runStatusLabel(run.status, t)}
                                 </p>
-                                <p className="text-xs text-muted-foreground">
+                                <p className={`text-xs ${JOBS_MUTED_TEXT_CLASS}`}>
                                   {t("jobs.startedAt", {
                                     value: formatDate(run.startedAt, t, dateTimeFormat),
                                   })}
                                 </p>
-                                <p className="text-xs text-muted-foreground">
+                                <p className={`text-xs ${JOBS_MUTED_TEXT_CLASS}`}>
                                   {t("jobs.completedAt", {
                                     value: formatDate(run.completedAt, t, dateTimeFormat),
                                   })}
                                 </p>
                                 {run.summaryText ? (
-                                  <p className="text-sm text-foreground">{run.summaryText}</p>
+                                  <p className="text-sm text-[var(--scry-ink2)]">
+                                    {run.summaryText}
+                                  </p>
                                 ) : null}
                                 {run.errorText ? (
                                   <p className="text-sm text-red-400">{run.errorText}</p>
                                 ) : null}
                               </div>
-                              <p className="text-xs text-muted-foreground">
+                              <p className={`text-xs ${JOBS_MUTED_TEXT_CLASS}`}>
                                 {triggerSourceLabel(run.triggerSource, t)}
                               </p>
                             </div>
 
                             {healthCheckIssues.length > 0 ? (
-                              <div className="mt-3 rounded-lg border border-border bg-muted/20 p-3">
-                                <p className="text-xs uppercase tracking-wide text-muted-foreground">
+                              <div className="mt-3 rounded-[10px] border border-[var(--scry-border3)] bg-[var(--scry-inset)] p-3">
+                                <p className={`text-xs uppercase tracking-wide ${JOBS_MUTED_TEXT_CLASS}`}>
                                   {t("jobs.healthCheckIssues")}
                                 </p>
                                 <div className="mt-2 space-y-2">
                                   {healthCheckIssues.map((issue, index) => (
                                     <div
                                       key={`${run.id}-${issue.source}-${index}`}
-                                      className="rounded-md border border-border/80 bg-background/40 p-2"
+                                      className="rounded-[9px] border border-[var(--scry-border3)] bg-[var(--scry-card2)] p-2"
                                     >
                                       <div className="flex items-start justify-between gap-3">
-                                        <p className="text-sm font-medium text-foreground">
+                                        <p className="text-sm font-medium text-[var(--scry-ink2)]">
                                           {formatHealthCheckSource(issue.source)}
                                         </p>
                                         <span
@@ -791,7 +814,7 @@ export function SystemJobsView({ state }: { state: SystemJobsViewState }) {
                                           {formatHealthCheckStatus(issue.status)}
                                         </span>
                                       </div>
-                                      <p className="mt-1 text-sm text-muted-foreground">
+                                      <p className={`mt-1 text-sm ${JOBS_MUTED_TEXT_CLASS}`}>
                                         {issue.message}
                                       </p>
                                     </div>

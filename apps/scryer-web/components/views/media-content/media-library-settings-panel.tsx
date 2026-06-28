@@ -15,6 +15,7 @@ import {
   SlidersVertical,
   Trash2,
 } from "lucide-react";
+import { AddNewButton } from "@/components/common/add-new-button";
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
 import { SubtitleLanguagePicker } from "@/components/common/subtitle-language-picker";
 import { FolderBrowserDialog } from "@/components/setup/folder-browser-dialog";
@@ -302,6 +303,10 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
   const [draftNfoWriteOnImport, setDraftNfoWriteOnImport] = React.useState(INHERIT_VALUE);
   const [draftPlexmatchWriteOnImport, setDraftPlexmatchWriteOnImport] = React.useState(INHERIT_VALUE);
   const [draftImportMode, setDraftImportMode] = React.useState(INHERIT_VALUE);
+  const [draftSetPermissionsLinux, setDraftSetPermissionsLinux] = React.useState(INHERIT_VALUE);
+  const [draftFileChmod, setDraftFileChmod] = React.useState("");
+  const [draftFolderChmod, setDraftFolderChmod] = React.useState("");
+  const [draftChownGroup, setDraftChownGroup] = React.useState("");
   const [draftDownloadClientRoutingMode, setDraftDownloadClientRoutingMode] =
     React.useState<"inherit" | "custom">("inherit");
   const [draftDownloadClientRouting, setDraftDownloadClientRouting] =
@@ -384,6 +389,12 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
         booleanOverrideSelectValue(settings?.plexmatchWriteOnImportOverride),
       );
       setDraftImportMode(settings?.importModeOverride ?? INHERIT_VALUE);
+      setDraftSetPermissionsLinux(
+        booleanOverrideSelectValue(settings?.setPermissionsLinuxOverride),
+      );
+      setDraftFileChmod(settings?.fileChmodOverride ?? "");
+      setDraftFolderChmod(settings?.folderChmodOverride ?? "");
+      setDraftChownGroup(settings?.chownGroupOverride ?? "");
     },
     [],
   );
@@ -426,6 +437,10 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
       setDraftNfoWriteOnImport(INHERIT_VALUE);
       setDraftPlexmatchWriteOnImport(INHERIT_VALUE);
       setDraftImportMode(INHERIT_VALUE);
+      setDraftSetPermissionsLinux(INHERIT_VALUE);
+      setDraftFileChmod("");
+      setDraftFolderChmod("");
+      setDraftChownGroup("");
       setDraftDownloadClientRoutingMode("inherit");
       setDraftDownloadClientRouting({});
       setDraftDownloadClientRoutingOrder([]);
@@ -613,6 +628,10 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
           : null,
         importMode:
           draftImportMode === INHERIT_VALUE ? null : (draftImportMode as ImportMode),
+        setPermissionsLinux: booleanOverrideFromSelectValue(draftSetPermissionsLinux),
+        fileChmod: draftFileChmod.trim() === "" ? null : draftFileChmod.trim(),
+        folderChmod: draftFolderChmod.trim() === "" ? null : draftFolderChmod.trim(),
+        chownGroup: draftChownGroup.trim() === "" ? null : draftChownGroup.trim(),
         indexerRouting: savedSettings?.indexerRoutingOverride ?? null,
       };
       if (canManageDownloadClientRouting) {
@@ -624,6 +643,9 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
       canManageDownloadClientRouting,
       draftDownloadClientRoutingEntries,
       draftFillerPolicy,
+      draftChownGroup,
+      draftFileChmod,
+      draftFolderChmod,
       draftImportMode,
       draftInterSeasonMovies,
       draftMonitorFillerMovies,
@@ -635,6 +657,7 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
       draftRecapPolicy,
       draftRequiredAudioLanguages,
       draftScoringPersona,
+      draftSetPermissionsLinux,
       isAnimeFacet,
       savedSettings,
       showPlexmatch,
@@ -659,6 +682,10 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
         settingsDraft.plexmatchWriteOnImport !==
           savedSettings.plexmatchWriteOnImportOverride ||
         settingsDraft.importMode !== savedSettings.importModeOverride ||
+        settingsDraft.setPermissionsLinux !== savedSettings.setPermissionsLinuxOverride ||
+        settingsDraft.fileChmod !== savedSettings.fileChmodOverride ||
+        settingsDraft.folderChmod !== savedSettings.folderChmodOverride ||
+        settingsDraft.chownGroup !== savedSettings.chownGroupOverride ||
         (canManageDownloadClientRouting &&
           ((draftDownloadClientRoutingMode === "custom") !==
             Boolean(savedDownloadClientRoutingEntries) ||
@@ -700,6 +727,10 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
       setDraftNfoWriteOnImport(INHERIT_VALUE);
       setDraftPlexmatchWriteOnImport(INHERIT_VALUE);
       setDraftImportMode(INHERIT_VALUE);
+      setDraftSetPermissionsLinux(INHERIT_VALUE);
+      setDraftFileChmod("");
+      setDraftFolderChmod("");
+      setDraftChownGroup("");
       setDraftDownloadClientRoutingMode("inherit");
       setDraftDownloadClientRouting({});
       setDraftDownloadClientRoutingOrder([]);
@@ -783,6 +814,10 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
     setDraftNfoWriteOnImport(INHERIT_VALUE);
     setDraftPlexmatchWriteOnImport(INHERIT_VALUE);
     setDraftImportMode(INHERIT_VALUE);
+    setDraftSetPermissionsLinux(INHERIT_VALUE);
+    setDraftFileChmod("");
+    setDraftFolderChmod("");
+    setDraftChownGroup("");
     setDraftDownloadClientRoutingMode("inherit");
     setDraftDownloadClientRouting({});
     setDraftDownloadClientRoutingOrder([]);
@@ -1173,17 +1208,13 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
                     );
                   })}
                 </ul>
-                <Button
+                <AddNewButton
                   id="media-library-add-root"
-                  type="button"
-                  variant="outline"
+                  icon={FolderPlus}
+                  label={t("settings.rootFolderAdd")}
                   onClick={openAdd}
                   disabled={actionBusy}
-                  className="border-dashed border-[var(--scry-border2)] bg-transparent"
-                >
-                  <FolderPlus className="mr-1.5 h-4 w-4 text-[var(--scry-accent-text)]" />
-                  {t("settings.rootFolderAdd")}
-                </Button>
+                />
                 <p className="text-xs text-muted-foreground">
                   {loading ? t("label.loading") : t("settings.rootFoldersHelp")}
                 </p>
@@ -1359,6 +1390,84 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
                       })}
                     </EffectiveChip>
                   ) : null}
+                  <div className="grid gap-3 pt-2 sm:grid-cols-2">
+                    <div className="space-y-2">
+                      <Label>{t("settings.setPermissionsLinuxLabel")}</Label>
+                      <Select
+                        value={draftSetPermissionsLinux}
+                        onValueChange={setDraftSetPermissionsLinux}
+                        disabled={settingsBusy}
+                      >
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {BOOLEAN_OVERRIDE_OPTIONS.map((option) => (
+                            <SelectItem key={option.value} value={option.value}>
+                              {t(option.labelKey)}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      {savedSettings ? (
+                        <EffectiveChip>
+                          {t("settings.libraryEffectiveProfile", {
+                            value: savedSettings.setPermissionsLinux
+                              ? t("label.enabled")
+                              : t("label.disabled"),
+                          })}
+                        </EffectiveChip>
+                      ) : null}
+                    </div>
+                    <div className="space-y-2">
+                      <Label>{t("settings.fileChmodLabel")}</Label>
+                      <Input
+                        value={draftFileChmod}
+                        onChange={(event) => setDraftFileChmod(event.target.value)}
+                        disabled={settingsBusy}
+                        placeholder={savedSettings?.fileChmod ?? t("settings.libraryInheritFacet")}
+                      />
+                      {savedSettings ? (
+                        <EffectiveChip>
+                          {t("settings.libraryEffectiveProfile", {
+                            value: savedSettings.fileChmod ?? t("label.none"),
+                          })}
+                        </EffectiveChip>
+                      ) : null}
+                    </div>
+                    <div className="space-y-2">
+                      <Label>{t("settings.folderChmodLabel")}</Label>
+                      <Input
+                        value={draftFolderChmod}
+                        onChange={(event) => setDraftFolderChmod(event.target.value)}
+                        disabled={settingsBusy}
+                        placeholder={savedSettings?.folderChmod ?? t("settings.libraryInheritFacet")}
+                      />
+                      {savedSettings ? (
+                        <EffectiveChip>
+                          {t("settings.libraryEffectiveProfile", {
+                            value: savedSettings.folderChmod ?? t("label.none"),
+                          })}
+                        </EffectiveChip>
+                      ) : null}
+                    </div>
+                    <div className="space-y-2">
+                      <Label>{t("settings.chownGroupLabel")}</Label>
+                      <Input
+                        value={draftChownGroup}
+                        onChange={(event) => setDraftChownGroup(event.target.value)}
+                        disabled={settingsBusy}
+                        placeholder={savedSettings?.chownGroup ?? t("settings.libraryInheritFacet")}
+                      />
+                      {savedSettings ? (
+                        <EffectiveChip>
+                          {t("settings.libraryEffectiveProfile", {
+                            value: savedSettings.chownGroup ?? t("label.none"),
+                          })}
+                        </EffectiveChip>
+                      ) : null}
+                    </div>
+                  </div>
                 </div>
                 {canManageDownloadClientRouting ? (
                   <div className="space-y-2">

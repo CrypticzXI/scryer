@@ -1,7 +1,8 @@
-import type { ComponentType, ReactNode } from "react";
+import { useEffect, useState, type ComponentType, type ReactNode } from "react";
 import { FileText, Import as ImportIcon, SlidersVertical } from "lucide-react";
 import { useTranslate } from "@/lib/context/translate-context";
 import { SettingsToggleSwitch } from "@/components/common/settings-toggle-switch";
+import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import type { ImportMode } from "@/lib/types/settings";
@@ -21,6 +22,11 @@ const IMPORT_MODE_OPTIONS: { value: ImportMode; label: string }[] = [
   { value: "hardlink_or_copy", label: "settings.importModeHardlinkCopy" },
   { value: "move", label: "settings.importModeMove" },
 ];
+
+function chmodDraftIsValid(value: string): boolean {
+  const trimmed = value.trim();
+  return trimmed === "" || /^[0-7]{3,4}$/.test(trimmed);
+}
 
 type SectionIcon = ComponentType<{ className?: string }>;
 
@@ -103,6 +109,14 @@ export function GeneralSettingsPanel({
   handlePlexmatchWriteChange,
   importMode,
   handleImportModeChange,
+  setPermissionsLinux,
+  handleSetPermissionsLinuxChange,
+  fileChmod,
+  handleFileChmodChange,
+  folderChmod,
+  handleFolderChmodChange,
+  chownGroup,
+  handleChownGroupChange,
 }: {
   activeQualityScopeId: ViewCategoryId;
   mediaSettingsLoading: boolean;
@@ -122,11 +136,75 @@ export function GeneralSettingsPanel({
   handlePlexmatchWriteChange: (checked: boolean) => void;
   importMode: Record<ViewCategoryId, ImportMode>;
   handleImportModeChange: (value: ImportMode) => void;
+  setPermissionsLinux: Record<ViewCategoryId, string>;
+  handleSetPermissionsLinuxChange: (checked: boolean) => void;
+  fileChmod: Record<ViewCategoryId, string>;
+  handleFileChmodChange: (value: string) => void;
+  folderChmod: Record<ViewCategoryId, string>;
+  handleFolderChmodChange: (value: string) => void;
+  chownGroup: Record<ViewCategoryId, string>;
+  handleChownGroupChange: (value: string) => void;
 }) {
   const t = useTranslate();
   const showAnimePolicies = activeQualityScopeId === "anime";
   const showPlexmatch =
     activeQualityScopeId === "series" || activeQualityScopeId === "anime";
+  const [fileChmodDraft, setFileChmodDraft] = useState(
+    fileChmod[activeQualityScopeId] ?? "",
+  );
+  const [folderChmodDraft, setFolderChmodDraft] = useState(
+    folderChmod[activeQualityScopeId] ?? "",
+  );
+  const [chownGroupDraft, setChownGroupDraft] = useState(
+    chownGroup[activeQualityScopeId] ?? "",
+  );
+  const [fileChmodError, setFileChmodError] = useState<string | null>(null);
+  const [folderChmodError, setFolderChmodError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setFileChmodDraft(fileChmod[activeQualityScopeId] ?? "");
+    setFileChmodError(null);
+  }, [activeQualityScopeId, fileChmod]);
+
+  useEffect(() => {
+    setFolderChmodDraft(folderChmod[activeQualityScopeId] ?? "");
+    setFolderChmodError(null);
+  }, [activeQualityScopeId, folderChmod]);
+
+  useEffect(() => {
+    setChownGroupDraft(chownGroup[activeQualityScopeId] ?? "");
+  }, [activeQualityScopeId, chownGroup]);
+
+  const commitFileChmod = () => {
+    if (!chmodDraftIsValid(fileChmodDraft)) {
+      setFileChmodError(t("settings.chmodValidation"));
+      return;
+    }
+    const normalized = fileChmodDraft.trim();
+    setFileChmodError(null);
+    if (normalized !== (fileChmod[activeQualityScopeId] ?? "")) {
+      handleFileChmodChange(normalized);
+    }
+  };
+
+  const commitFolderChmod = () => {
+    if (!chmodDraftIsValid(folderChmodDraft)) {
+      setFolderChmodError(t("settings.chmodValidation"));
+      return;
+    }
+    const normalized = folderChmodDraft.trim();
+    setFolderChmodError(null);
+    if (normalized !== (folderChmod[activeQualityScopeId] ?? "")) {
+      handleFolderChmodChange(normalized);
+    }
+  };
+
+  const commitChownGroup = () => {
+    const normalized = chownGroupDraft.trim();
+    if (normalized !== (chownGroup[activeQualityScopeId] ?? "")) {
+      handleChownGroupChange(normalized);
+    }
+  };
 
   return (
     <div className="space-y-[18px]">
@@ -153,6 +231,81 @@ export function GeneralSettingsPanel({
               ))}
             </SelectContent>
           </Select>
+        </div>
+        <div className="grid max-w-xl gap-4 sm:grid-cols-2">
+          <ToggleSettingRow
+            label={t("settings.setPermissionsLinuxLabel")}
+            description={t("settings.setPermissionsLinuxDescription")}
+            checked={setPermissionsLinux[activeQualityScopeId] === "true"}
+            disabled={mediaSettingsLoading}
+            onChange={handleSetPermissionsLinuxChange}
+          />
+          <div className="space-y-2">
+            <Label>{t("settings.fileChmodLabel")}</Label>
+            <Input
+              value={fileChmodDraft}
+              onChange={(event) => {
+                setFileChmodDraft(event.target.value);
+                if (fileChmodError) {
+                  setFileChmodError(null);
+                }
+              }}
+              onBlur={commitFileChmod}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  commitFileChmod();
+                }
+              }}
+              disabled={mediaSettingsLoading}
+              placeholder={t("label.none")}
+              aria-invalid={fileChmodError ? true : undefined}
+            />
+            {fileChmodError ? (
+              <p className="text-xs text-destructive">{fileChmodError}</p>
+            ) : null}
+          </div>
+          <div className="space-y-2">
+            <Label>{t("settings.folderChmodLabel")}</Label>
+            <Input
+              value={folderChmodDraft}
+              onChange={(event) => {
+                setFolderChmodDraft(event.target.value);
+                if (folderChmodError) {
+                  setFolderChmodError(null);
+                }
+              }}
+              onBlur={commitFolderChmod}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  commitFolderChmod();
+                }
+              }}
+              disabled={mediaSettingsLoading}
+              placeholder="755"
+              aria-invalid={folderChmodError ? true : undefined}
+            />
+            {folderChmodError ? (
+              <p className="text-xs text-destructive">{folderChmodError}</p>
+            ) : null}
+          </div>
+          <div className="space-y-2">
+            <Label>{t("settings.chownGroupLabel")}</Label>
+            <Input
+              value={chownGroupDraft}
+              onChange={(event) => setChownGroupDraft(event.target.value)}
+              onBlur={commitChownGroup}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  commitChownGroup();
+                }
+              }}
+              disabled={mediaSettingsLoading}
+              placeholder={t("label.none")}
+            />
+          </div>
         </div>
       </GeneralSettingsSection>
 

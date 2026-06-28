@@ -493,6 +493,14 @@ pub fn from_library_settings(settings: LibrarySettings) -> LibrarySettingsPayloa
             .import_mode_override
             .map(|mode| mode.as_str().to_string()),
         import_mode: settings.import_mode.as_str().to_string(),
+        set_permissions_linux_override: settings.set_permissions_linux_override,
+        set_permissions_linux: settings.set_permissions_linux,
+        file_chmod_override: settings.file_chmod_override,
+        file_chmod: settings.file_chmod,
+        folder_chmod_override: settings.folder_chmod_override,
+        folder_chmod: settings.folder_chmod,
+        chown_group_override: settings.chown_group_override,
+        chown_group: settings.chown_group,
         indexer_routing_override: settings.indexer_routing_override.map(|entries| {
             entries
                 .into_iter()
@@ -571,6 +579,10 @@ pub fn from_media_settings(
         nfo_write_on_import: settings.nfo_write_on_import,
         plexmatch_write_on_import: settings.plexmatch_write_on_import,
         import_mode: settings.import_mode.as_str().to_string(),
+        set_permissions_linux: settings.set_permissions_linux,
+        file_chmod: settings.file_chmod,
+        folder_chmod: settings.folder_chmod,
+        chown_group: settings.chown_group,
     }
 }
 

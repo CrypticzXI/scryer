@@ -1,9 +1,11 @@
 import { useState, useMemo, useRef } from "react";
+import { createPortal } from "react-dom";
 import { ArrowUpCircle, Download, ExternalLink, Loader2, Power, PowerOff, RefreshCw, Trash2, Upload } from "lucide-react";
 import { RenderBooleanIcon } from "@/components/common/boolean-icon";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
 import {
   Select,
@@ -28,6 +30,17 @@ import {
   boxedActionButtonToneClass,
   type BoxedActionButtonTone,
 } from "@/lib/utils/action-button-styles";
+
+const PLUGIN_PANEL_CLASS =
+  "overflow-hidden rounded-[14px] border border-[var(--scry-border)] bg-[var(--scry-surf)] shadow-[0_10px_24px_rgba(0,0,0,0.16)]";
+const PLUGIN_PANEL_HEADER_CLASS =
+  "border-b border-[var(--scry-border3)] bg-[linear-gradient(180deg,rgba(255,255,255,0.035),rgba(255,255,255,0))] px-4 py-3";
+const PLUGIN_PANEL_TITLE_CLASS =
+  "text-[15px] font-semibold text-[var(--scry-ink2)]";
+const PLUGIN_PANEL_BODY_CLASS = "p-4 sm:p-5";
+const PLUGIN_INSET_CLASS =
+  "rounded-[12px] border border-[var(--scry-line2)] bg-[var(--scry-card2)]";
+const PLUGIN_MUTED_TEXT_CLASS = "text-[var(--scry-muted3)]";
 
 export type RegistryPluginRecord = {
   id: string;
@@ -97,6 +110,7 @@ type SettingsPluginsSectionProps = {
   manualPreview: ManualPluginPreviewRecord | null;
   manualBusy: boolean;
   showManualInstall: boolean;
+  headerActionsTarget?: HTMLElement | null;
   remoteActionsBlocked: {
     refresh: boolean;
     install: boolean;
@@ -282,7 +296,7 @@ function PluginFilters({
         value={filters.category}
         onValueChange={(v) => onChange({ ...filters, category: v })}
       >
-        <SelectTrigger className="h-8 w-44 text-sm">
+        <SelectTrigger className="h-9 w-44 rounded-[10px] border-[var(--scry-border3)] bg-[var(--scry-inset)] text-[13px]">
           <SelectValue />
         </SelectTrigger>
         <SelectContent>
@@ -294,7 +308,7 @@ function PluginFilters({
           ))}
         </SelectContent>
       </Select>
-      <label className="flex cursor-pointer select-none items-center gap-1.5 text-sm text-muted-foreground">
+      <label className={`flex cursor-pointer select-none items-center gap-1.5 text-sm ${PLUGIN_MUTED_TEXT_CLASS}`}>
         <Checkbox
           checked={filters.officialOnly}
           onCheckedChange={(checked) => onChange({ ...filters, officialOnly: !!checked })}
@@ -341,26 +355,26 @@ function PluginTable({
   const actionsColumnClass =
     showActions === "installed" ? "w-32 text-right" : "w-48 text-right";
   if (plugins.length === 0) {
-    return <p className="py-4 text-sm text-muted-foreground">{emptyMessage}</p>;
+    return <p className={`${PLUGIN_PANEL_BODY_CLASS} text-sm ${PLUGIN_MUTED_TEXT_CLASS}`}>{emptyMessage}</p>;
   }
 
   return (
-    <div className="overflow-hidden rounded-xl border border-border/70 bg-card/20">
+    <div className="overflow-x-auto">
       <Table
         id={showActions === "installed" ? "settings-plugins-installed-table" : "settings-plugins-available-table"}
-        className="table-fixed"
+        className="min-w-[1080px] table-fixed"
       >
         <TableHeader>
-          <TableRow>
-            <TableHead className={nameColumnClass}>{t("label.name")}</TableHead>
-            <TableHead className={typeColumnClass}>{t("label.type")}</TableHead>
-            <TableHead className={versionColumnClass}>{t("label.version")}</TableHead>
-            <TableHead className={sizeColumnClass}>{t("queue.size")}</TableHead>
-            <TableHead className={statusColumnClass}>{t("label.status")}</TableHead>
+          <TableRow className="border-[var(--scry-border3)] bg-[var(--scry-inset)] hover:bg-[var(--scry-inset)]">
+            <TableHead className={cn(nameColumnClass, "font-semibold", PLUGIN_MUTED_TEXT_CLASS)}>{t("label.name")}</TableHead>
+            <TableHead className={cn(typeColumnClass, "font-semibold", PLUGIN_MUTED_TEXT_CLASS)}>{t("label.type")}</TableHead>
+            <TableHead className={cn(versionColumnClass, "font-semibold", PLUGIN_MUTED_TEXT_CLASS)}>{t("label.version")}</TableHead>
+            <TableHead className={cn(sizeColumnClass, "font-semibold", PLUGIN_MUTED_TEXT_CLASS)}>{t("queue.size")}</TableHead>
+            <TableHead className={cn(statusColumnClass, "font-semibold", PLUGIN_MUTED_TEXT_CLASS)}>{t("label.status")}</TableHead>
             {showActions === "installed" && (
-              <TableHead className="w-20 text-center">{t("label.enabled")}</TableHead>
+              <TableHead className={cn("w-20 text-center font-semibold", PLUGIN_MUTED_TEXT_CLASS)}>{t("label.enabled")}</TableHead>
             )}
-            <TableHead className={actionsColumnClass}>{t("label.actions")}</TableHead>
+            <TableHead className={cn(actionsColumnClass, "font-semibold", PLUGIN_MUTED_TEXT_CLASS)}>{t("label.actions")}</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -394,11 +408,12 @@ function PluginTable({
                 data-plugin-installed={plugin.isInstalled ? "true" : "false"}
                 data-plugin-enabled={plugin.isEnabled ? "true" : "false"}
                 data-plugin-update-available={plugin.updateAvailable ? "true" : "false"}
+                className="border-[var(--scry-border3)] hover:bg-[var(--scry-hover)]"
               >
                 <TableCell className={nameColumnClass}>
                   <div>
-                    <div className="font-medium">{plugin.name}</div>
-                    <div className="max-w-[300px] whitespace-normal break-words text-xs text-muted-foreground">
+                    <div className="font-medium text-[var(--scry-ink2)]">{plugin.name}</div>
+                    <div className={`max-w-[300px] whitespace-normal break-words text-xs ${PLUGIN_MUTED_TEXT_CLASS}`}>
                       {plugin.description}
                     </div>
                     {(sourceLink || showDocsLink) && (
@@ -429,7 +444,7 @@ function PluginTable({
                     )}
                   </div>
                 </TableCell>
-                <TableCell className={cn(typeColumnClass, "text-sm")}>{categoryLabel(plugin.pluginType, t)}</TableCell>
+                <TableCell className={cn(typeColumnClass, "text-sm text-[var(--scry-ink2)]")}>{categoryLabel(plugin.pluginType, t)}</TableCell>
                 <TableCell className={cn(versionColumnClass, "text-sm")}>
                   {t("settings.pluginVersion", { version: displayVersion })}
                   {plugin.updateAvailable && (
@@ -446,13 +461,13 @@ function PluginTable({
                 )}
                 </TableCell>
                 <TableCell
-                  className={cn(sizeColumnClass, "text-sm text-muted-foreground")}
+                  className={cn(sizeColumnClass, "text-sm", PLUGIN_MUTED_TEXT_CLASS)}
                   title={plugin.bytes != null ? `${plugin.bytes} bytes` : undefined}
                 >
                   {bytesLabel ?? "—"}
                 </TableCell>
                 <TableCell className={statusColumnClass}>
-                  <div className="flex items-center gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
                     {plugin.builtin && (
                       <Badge tone="info">{t("settings.pluginBuiltin")}</Badge>
                     )}
@@ -587,6 +602,7 @@ export function SettingsPluginsSection({
   manualPreview,
   manualBusy,
   showManualInstall,
+  headerActionsTarget,
   remoteActionsBlocked,
   onManualRepoUrlChange,
   onToggleManualInstall,
@@ -638,49 +654,51 @@ export function SettingsPluginsSection({
   );
 
   const upgradeCount = installed.filter((p) => p.updateAvailable).length;
+  const toolbar = (
+    <div className="flex flex-wrap items-center justify-end gap-2">
+      <Button
+        id="settings-plugins-upgrade-all"
+        variant="outline"
+        size="sm"
+        disabled={upgradingAll || remoteActionsBlocked.upgrade || upgradeCount === 0}
+        onClick={onUpgradeAllPlugins}
+      >
+        <ArrowUpCircle className={`mr-2 h-4 w-4 ${upgradingAll ? "animate-spin" : ""}`} />
+        {upgradingAll ? t("settings.pluginsUpdatingAll") : t("settings.pluginsUpdateAll")}
+        {upgradeCount > 0 ? (
+          <Badge tone="info" className="ml-2 h-5 min-w-5 rounded-full px-1.5 text-[11px]">
+            {upgradeCount}
+          </Badge>
+        ) : null}
+      </Button>
+      <Button
+        id="settings-plugins-manual-toggle"
+        variant="outline"
+        size="sm"
+        onClick={onToggleManualInstall}
+      >
+        {t("settings.pluginInstallManually")}
+      </Button>
+      <Button
+        id="settings-plugins-refresh"
+        variant="outline"
+        size="sm"
+        disabled={refreshing || remoteActionsBlocked.refresh}
+        onClick={onRefreshRegistry}
+      >
+        <RefreshCw className={`mr-2 h-4 w-4 ${refreshing ? "animate-spin" : ""}`} />
+        {refreshing ? t("label.refreshing") : t("settings.pluginsRefresh")}
+      </Button>
+    </div>
+  );
 
   return (
-    <div className="space-y-8">
-      <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-        <div className="flex items-center gap-2">
-          <p className="text-sm text-muted-foreground">{t("settings.pluginsSection")}</p>
-          {upgradeCount > 0 && (
-            <Badge tone="info" className="h-5 min-w-5 rounded-full px-1.5 text-[11px]">
-              {upgradeCount}
-            </Badge>
-          )}
-        </div>
-        <div className="flex items-center gap-2">
-          <Button
-            id="settings-plugins-upgrade-all"
-            variant="outline"
-            size="sm"
-            disabled={upgradingAll || remoteActionsBlocked.upgrade || upgradeCount === 0}
-            onClick={onUpgradeAllPlugins}
-          >
-            <ArrowUpCircle className={`mr-2 h-4 w-4 ${upgradingAll ? "animate-spin" : ""}`} />
-            {upgradingAll ? t("settings.pluginsUpdatingAll") : t("settings.pluginsUpdateAll")}
-          </Button>
-          <Button
-            id="settings-plugins-manual-toggle"
-            variant="outline"
-            size="sm"
-            onClick={onToggleManualInstall}
-          >
-            {t("settings.pluginInstallManually")}
-          </Button>
-          <Button
-            id="settings-plugins-refresh"
-            variant="outline"
-            size="sm"
-            disabled={refreshing || remoteActionsBlocked.refresh}
-            onClick={onRefreshRegistry}
-          >
-            <RefreshCw className={`mr-2 h-4 w-4 ${refreshing ? "animate-spin" : ""}`} />
-            {refreshing ? t("label.refreshing") : t("settings.pluginsRefresh")}
-          </Button>
-        </div>
-      </div>
+    <div className="space-y-4 text-sm">
+      {headerActionsTarget ? (
+        createPortal(toolbar, headerActionsTarget)
+      ) : (
+        <div className="flex justify-end">{toolbar}</div>
+      )}
 
       {catalogStatus?.outageMessage && (
         <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-100">
@@ -700,21 +718,26 @@ export function SettingsPluginsSection({
       )}
 
       {initialLoading ? (
-        <div className="flex min-h-48 items-center justify-center rounded-xl border border-border/70 bg-card/40">
-          <div className="flex items-center gap-3 text-sm text-muted-foreground">
+        <div className={`${PLUGIN_PANEL_CLASS} flex min-h-48 items-center justify-center`}>
+          <div className={`flex items-center gap-3 text-sm ${PLUGIN_MUTED_TEXT_CLASS}`}>
             <Loader2 className="h-5 w-5 animate-spin" />
             <span>{t("label.loading")}</span>
           </div>
         </div>
       ) : null}
 
-      {!initialLoading && showManualInstall && (
-        <div className="rounded-xl border border-border bg-card/60 p-4">
-          <div className="space-y-5">
-            <div className="space-y-3">
+      {!initialLoading && showManualInstall ? (
+        <section className={PLUGIN_PANEL_CLASS}>
+          <div className={PLUGIN_PANEL_HEADER_CLASS}>
+            <h2 className={PLUGIN_PANEL_TITLE_CLASS}>
+              {t("settings.pluginInstallManually")}
+            </h2>
+          </div>
+          <div className={`${PLUGIN_PANEL_BODY_CLASS} space-y-4`}>
+            <div className={`${PLUGIN_INSET_CLASS} p-4`}>
               <div className="space-y-1">
-                <h3 className="text-sm font-medium">{t("settings.pluginManualUploadTitle")}</h3>
-                <p className="text-sm text-muted-foreground">
+                <h3 className="text-sm font-semibold text-[var(--scry-ink2)]">{t("settings.pluginManualUploadTitle")}</h3>
+                <p className={`text-sm ${PLUGIN_MUTED_TEXT_CLASS}`}>
                   {t("settings.pluginManualUploadHelp")}
                 </p>
               </div>
@@ -726,7 +749,7 @@ export function SettingsPluginsSection({
                 className="hidden"
                 onChange={onManualPluginFileChange}
               />
-              <div className="flex flex-col gap-3 md:flex-row md:items-center">
+              <div className="mt-3 flex flex-col gap-3 md:flex-row md:items-center">
                 <Button
                   id="settings-plugins-manual-file-select"
                   type="button"
@@ -746,7 +769,7 @@ export function SettingsPluginsSection({
                   {manualBusy ? t("label.loading") : t("settings.pluginManualUploadInstall")}
                 </Button>
               </div>
-              <div className="space-y-1 text-sm text-muted-foreground">
+              <div className={`mt-3 space-y-1 text-sm ${PLUGIN_MUTED_TEXT_CLASS}`}>
                 <p id="settings-plugins-manual-file-name">
                   {manualFileName ?? t("settings.pluginManualUploadNoFile")}
                 </p>
@@ -757,131 +780,128 @@ export function SettingsPluginsSection({
               )}
             </div>
 
-            <div className="border-t border-border pt-5">
-              <div className="space-y-3">
-                <div className="space-y-1">
-                  <h3 className="text-sm font-medium">{t("settings.pluginManualRepoTitle")}</h3>
-                  <p className="text-sm text-muted-foreground">
-                    {t("settings.pluginManualRepoHelp")}
-                  </p>
-                </div>
-                <div className="flex flex-col gap-3 md:flex-row md:items-end">
-                  <label className="flex-1 space-y-1 text-sm">
-                    <span className="font-medium">{t("settings.pluginManualRepoUrl")}</span>
-                    <input
-                      id="settings-plugins-manual-repo-url"
-                      value={manualRepoUrl}
-                      onChange={(event) => onManualRepoUrlChange(event.target.value)}
-                      placeholder="https://github.com/example/scryer-plugin-example"
-                      className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
-                    />
-                  </label>
-                  <Button
-                    id="settings-plugins-manual-repo-inspect"
-                    type="button"
-                    disabled={manualBusy || remoteActionsBlocked.inspectManual || !manualRepoUrl.trim()}
-                    onClick={onInspectManualPluginRepo}
-                  >
-                    {manualBusy ? t("label.loading") : t("settings.pluginInspectManual")}
-                  </Button>
-                </div>
+            <div className={`${PLUGIN_INSET_CLASS} p-4`}>
+              <div className="space-y-1">
+                <h3 className="text-sm font-semibold text-[var(--scry-ink2)]">{t("settings.pluginManualRepoTitle")}</h3>
+                <p className={`text-sm ${PLUGIN_MUTED_TEXT_CLASS}`}>
+                  {t("settings.pluginManualRepoHelp")}
+                </p>
+              </div>
+              <div className="mt-3 flex flex-col gap-3 md:flex-row md:items-end">
+                <label className="flex-1 space-y-1 text-sm">
+                  <span className="font-medium text-[var(--scry-ink2)]">{t("settings.pluginManualRepoUrl")}</span>
+                  <Input
+                    id="settings-plugins-manual-repo-url"
+                    value={manualRepoUrl}
+                    onChange={(event) => onManualRepoUrlChange(event.target.value)}
+                    placeholder="https://github.com/example/scryer-plugin-example"
+                  />
+                </label>
+                <Button
+                  id="settings-plugins-manual-repo-inspect"
+                  type="button"
+                  disabled={manualBusy || remoteActionsBlocked.inspectManual || !manualRepoUrl.trim()}
+                  onClick={onInspectManualPluginRepo}
+                >
+                  {manualBusy ? t("label.loading") : t("settings.pluginInspectManual")}
+                </Button>
               </div>
             </div>
+            {pluginErrors.__manual ? (
+              <p className="text-sm text-destructive">{pluginErrors.__manual}</p>
+            ) : null}
+            {manualPreview ? (
+              <div className={`${PLUGIN_INSET_CLASS} flex flex-col gap-3 p-4 md:flex-row md:items-center md:justify-between`}>
+                <div>
+                  <div className="font-medium text-[var(--scry-ink2)]">{manualPreview.plugin.name}</div>
+                  <div className={`text-sm ${PLUGIN_MUTED_TEXT_CLASS}`}>
+                    {manualPreview.plugin.description}
+                  </div>
+                  <div className="mt-1 text-xs text-amber-300">
+                    {t("settings.pluginUnverified")}
+                  </div>
+                </div>
+                <Button
+                  id="settings-plugins-manual-repo-install"
+                  type="button"
+                  disabled={manualBusy || remoteActionsBlocked.installManual}
+                  onClick={onInstallManualPlugin}
+                >
+                  {t("settings.pluginInstall")}
+                </Button>
+              </div>
+            ) : null}
           </div>
-          {pluginErrors.__manual && (
-            <p className="mt-2 text-sm text-destructive">{pluginErrors.__manual}</p>
-          )}
-          {manualPreview && (
-            <div className="mt-3 flex flex-col gap-3 rounded-lg border border-border p-3 md:flex-row md:items-center md:justify-between">
-              <div>
-                <div className="font-medium">{manualPreview.plugin.name}</div>
-                <div className="text-sm text-muted-foreground">
-                  {manualPreview.plugin.description}
-                </div>
-                <div className="mt-1 text-xs text-amber-300">
-                  {t("settings.pluginUnverified")}
-                </div>
-              </div>
-              <Button
-                id="settings-plugins-manual-repo-install"
-                type="button"
-                disabled={manualBusy || remoteActionsBlocked.installManual}
-                onClick={onInstallManualPlugin}
-              >
-                {t("settings.pluginInstall")}
-              </Button>
-            </div>
-          )}
-        </div>
-      )}
+        </section>
+      ) : null}
 
       {!initialLoading && plugins.length === 0 ? (
-        <p className="py-4 text-sm text-muted-foreground">{t("settings.pluginsNoPlugins")}</p>
+        <div className={PLUGIN_PANEL_CLASS}>
+          <p className={`${PLUGIN_PANEL_BODY_CLASS} text-sm ${PLUGIN_MUTED_TEXT_CLASS}`}>
+            {t("settings.pluginsNoPlugins")}
+          </p>
+        </div>
       ) : !initialLoading ? (
         <>
-          <div className="space-y-3">
-            <div className="flex items-center justify-between">
-              <h3 className="text-lg font-semibold">{t("settings.pluginsInstalled")}</h3>
+          <section className={PLUGIN_PANEL_CLASS}>
+            <div className={`${PLUGIN_PANEL_HEADER_CLASS} flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between`}>
+              <div className="flex flex-wrap items-baseline gap-2">
+                <h2 className={PLUGIN_PANEL_TITLE_CLASS}>{t("settings.pluginsInstalled")}</h2>
+                <span
+                  id="settings-plugins-runtime-memory-estimate"
+                  className={`rounded-full border border-[var(--scry-border3)] bg-[var(--scry-inset)] px-2 py-0.5 text-[11px] font-medium ${PLUGIN_MUTED_TEXT_CLASS}`}
+                  title={`${runtimeMemoryBytes} bytes`}
+                >
+                  {t("settings.pluginRuntimeMemoryEstimate")}:{" "}
+                  <span className="text-[var(--scry-ink2)]">{runtimeMemoryLabel}</span>
+                </span>
+              </div>
               <PluginFilters
                 filters={installedFilters}
                 categories={allCategories}
-                leadingContent={(
-                  <div className="flex items-baseline gap-2 rounded-md border border-border/70 bg-card/40 px-3 py-1.5">
-                    <span className="text-xl font-semibold leading-none tracking-normal text-muted-foreground">
-                      {t("settings.pluginRuntimeMemoryEstimate")}
-                    </span>
-                    <span
-                      id="settings-plugins-runtime-memory-estimate"
-                      className="text-xl font-semibold leading-none tracking-normal text-foreground"
-                      title={`${runtimeMemoryBytes} bytes`}
-                    >
-                      {runtimeMemoryLabel}
-                    </span>
-                  </div>
-                )}
                 onChange={setInstalledFilters}
               />
             </div>
-              <PluginTable
-                plugins={filteredInstalled}
-                mutatingPluginIds={mutatingPluginIds}
-                pluginProgress={pluginProgress}
-                pluginErrors={pluginErrors}
-                showActions="installed"
-                onTogglePlugin={onTogglePlugin}
-                onInstallPlugin={onInstallPlugin}
-                onUninstallPlugin={onUninstallPlugin}
-                onUpgradePlugin={onUpgradePlugin}
-                installBlocked={remoteActionsBlocked.install}
-                upgradeBlocked={remoteActionsBlocked.upgrade}
-                emptyMessage={t("settings.pluginsNoInstalled")}
-              />
-          </div>
+            <PluginTable
+              plugins={filteredInstalled}
+              mutatingPluginIds={mutatingPluginIds}
+              pluginProgress={pluginProgress}
+              pluginErrors={pluginErrors}
+              showActions="installed"
+              onTogglePlugin={onTogglePlugin}
+              onInstallPlugin={onInstallPlugin}
+              onUninstallPlugin={onUninstallPlugin}
+              onUpgradePlugin={onUpgradePlugin}
+              installBlocked={remoteActionsBlocked.install}
+              upgradeBlocked={remoteActionsBlocked.upgrade}
+              emptyMessage={t("settings.pluginsNoInstalled")}
+            />
+          </section>
 
-          <div className="space-y-3">
-            <div className="flex items-center justify-between">
-              <h3 className="text-lg font-semibold">{t("settings.pluginsAvailable")}</h3>
+          <section className={PLUGIN_PANEL_CLASS}>
+            <div className={`${PLUGIN_PANEL_HEADER_CLASS} flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between`}>
+              <h2 className={PLUGIN_PANEL_TITLE_CLASS}>{t("settings.pluginsAvailable")}</h2>
               <PluginFilters
                 filters={availableFilters}
                 categories={allCategories}
                 onChange={setAvailableFilters}
               />
             </div>
-              <PluginTable
-                plugins={filteredAvailable}
-                mutatingPluginIds={mutatingPluginIds}
-                pluginProgress={pluginProgress}
-                pluginErrors={pluginErrors}
-                showActions="available"
-                onTogglePlugin={onTogglePlugin}
-                onInstallPlugin={onInstallPlugin}
-                onUninstallPlugin={onUninstallPlugin}
-                onUpgradePlugin={onUpgradePlugin}
-                installBlocked={remoteActionsBlocked.install}
-                upgradeBlocked={remoteActionsBlocked.upgrade}
-                emptyMessage={t("settings.pluginsNoAvailable")}
-              />
-          </div>
+            <PluginTable
+              plugins={filteredAvailable}
+              mutatingPluginIds={mutatingPluginIds}
+              pluginProgress={pluginProgress}
+              pluginErrors={pluginErrors}
+              showActions="available"
+              onTogglePlugin={onTogglePlugin}
+              onInstallPlugin={onInstallPlugin}
+              onUninstallPlugin={onUninstallPlugin}
+              onUpgradePlugin={onUpgradePlugin}
+              installBlocked={remoteActionsBlocked.install}
+              upgradeBlocked={remoteActionsBlocked.upgrade}
+              emptyMessage={t("settings.pluginsNoAvailable")}
+            />
+          </section>
         </>
       ) : null}
     </div>

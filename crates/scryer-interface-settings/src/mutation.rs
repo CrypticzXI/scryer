@@ -1060,6 +1060,10 @@ impl SettingsMutations {
                 nfo_write_on_import: input.nfo_write_on_import,
                 plexmatch_write_on_import: input.plexmatch_write_on_import,
                 import_mode,
+                set_permissions_linux: input.set_permissions_linux,
+                file_chmod: input.file_chmod,
+                folder_chmod: input.folder_chmod,
+                chown_group: input.chown_group,
             },
         )
         .await

@@ -2139,6 +2139,14 @@ pub struct ImportFileTransferProgress {
 pub type ImportFileTransferProgressSender =
     tokio::sync::mpsc::UnboundedSender<ImportFileTransferProgress>;
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ImportFilePermissions {
+    pub set_permissions_linux: bool,
+    pub file_chmod: Option<String>,
+    pub folder_chmod: Option<String>,
+    pub chown_group: Option<String>,
+}
+
 #[async_trait]
 pub trait FileImporter: Send + Sync {
     async fn snapshot_import_source(
@@ -2164,6 +2172,20 @@ pub trait FileImporter: Send + Sync {
     ) -> AppResult<ImportFileResult> {
         let _ = progress;
         self.import_file(source, dest, mode, expected_source).await
+    }
+
+    async fn import_file_with_progress_and_permissions(
+        &self,
+        source: &Path,
+        dest: &Path,
+        mode: scryer_domain::ImportMode,
+        expected_source: Option<&scryer_domain::ImportSourceSnapshot>,
+        progress: Option<ImportFileTransferProgressSender>,
+        permissions: &ImportFilePermissions,
+    ) -> AppResult<ImportFileResult> {
+        let _ = permissions;
+        self.import_file_with_progress(source, dest, mode, expected_source, progress)
+            .await
     }
 
     async fn remove_import_source_after_verified_import(

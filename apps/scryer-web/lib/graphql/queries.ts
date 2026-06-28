@@ -1082,6 +1082,14 @@ export const librarySettingsQuery = `query LibrarySettings($libraryId: ID!) {
     plexmatchWriteOnImport
     importModeOverride
     importMode
+    setPermissionsLinuxOverride
+    setPermissionsLinux
+    fileChmodOverride
+    fileChmod
+    folderChmodOverride
+    folderChmod
+    chownGroupOverride
+    chownGroup
     indexerRoutingOverride {
       indexerId
       enabled
@@ -1817,7 +1825,11 @@ const mediaSettingsFieldSelection = `
     monitorFillerMovies
     nfoWriteOnImport
     plexmatchWriteOnImport
-    importMode`;
+    importMode
+    setPermissionsLinux
+    fileChmod
+    folderChmod
+    chownGroup`;
 
 const libraryPathsFieldSelection = `
     moviePath

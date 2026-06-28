@@ -1427,6 +1427,10 @@ pub(super) fn empty_update_media_settings_with_roots(
         nfo_write_on_import: None,
         plexmatch_write_on_import: None,
         import_mode: None,
+        set_permissions_linux: None,
+        file_chmod: None,
+        folder_chmod: None,
+        chown_group: None,
     }
 }
 
@@ -1448,6 +1452,10 @@ pub(super) fn empty_update_media_settings() -> UpdateMediaSettings {
         nfo_write_on_import: None,
         plexmatch_write_on_import: None,
         import_mode: None,
+        set_permissions_linux: None,
+        file_chmod: None,
+        folder_chmod: None,
+        chown_group: None,
     }
 }
 
@@ -1465,6 +1473,10 @@ pub(super) fn empty_library_settings_override() -> LibrarySettingsOverrideDraft 
         nfo_write_on_import: None,
         plexmatch_write_on_import: None,
         import_mode: None,
+        set_permissions_linux: None,
+        file_chmod: None,
+        folder_chmod: None,
+        chown_group: None,
         indexer_routing: None,
         download_client_routing: None,
     }

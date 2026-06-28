@@ -1,5 +1,5 @@
 import * as React from "react";
-import { ChevronDown, ChevronUp, Loader2, RefreshCcw } from "lucide-react";
+import { ChevronDown, ChevronUp, Loader2, RefreshCcw, TextSearch } from "lucide-react";
 import { useClient } from "urql";
 
 import { Button } from "@/components/ui/button";
@@ -21,6 +21,14 @@ import type { UiDateTimeFormat } from "@/lib/types/settings";
 import { formatUiDateTime } from "@/lib/utils/date-format";
 
 const PAGE_SIZE = 100;
+const AUDIT_PANEL_CLASS =
+  "overflow-hidden rounded-[14px] border border-[var(--scry-border)] bg-[var(--scry-surf)] shadow-[0_10px_24px_rgba(0,0,0,0.16)]";
+const AUDIT_PANEL_HEADER_CLASS =
+  "border-b border-[var(--scry-border3)] bg-[linear-gradient(180deg,rgba(255,255,255,0.035),rgba(255,255,255,0))] px-4 py-3";
+const AUDIT_PANEL_TITLE_CLASS =
+  "text-[15px] font-semibold text-[var(--scry-ink2)]";
+const AUDIT_PANEL_BODY_CLASS = "p-4 sm:p-5";
+const AUDIT_MUTED_TEXT_CLASS = "text-[var(--scry-muted3)]";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -143,125 +151,140 @@ export const SystemAuditContainer = React.memo(function SystemAuditContainer() {
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-normal">{t("system.auditTitle")}</h1>
+      <section className={AUDIT_PANEL_CLASS}>
+        <div className={AUDIT_PANEL_HEADER_CLASS}>
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="min-w-0 space-y-1">
+              <h2 className={`flex items-center gap-2 ${AUDIT_PANEL_TITLE_CLASS}`}>
+                <TextSearch className="h-4 w-4 text-[var(--scry-accent-text)]" />
+                {t("system.auditTitle")}
+              </h2>
+              <p className={`text-sm ${AUDIT_MUTED_TEXT_CLASS}`}>
+                {events.length} events loaded
+              </p>
+            </div>
+            <Button
+              type="button"
+              variant="primary"
+              size="sm"
+              className="w-full sm:w-auto"
+              onClick={() => void refreshAuditEvents()}
+              disabled={loading}
+            >
+              {loading ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <RefreshCcw className="h-4 w-4" />
+              )}
+              {t("label.refresh")}
+            </Button>
+          </div>
         </div>
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          onClick={() => void refreshAuditEvents()}
-          disabled={loading}
-        >
-          {loading ? (
-            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-          ) : (
-            <RefreshCcw className="mr-2 h-4 w-4" />
-          )}
-          {t("label.refresh")}
-        </Button>
-      </div>
 
-      <div className="overflow-x-auto rounded-md border border-border">
-        <Table className="min-w-[1120px]">
-          <TableHeader>
-            <TableRow>
-              <TableHead className="w-10" />
-              <TableHead className="w-48">{t("history.date")}</TableHead>
-              <TableHead className="w-52">{t("history.event")}</TableHead>
-              <TableHead className="w-40">{t("history.actor")}</TableHead>
-              <TableHead className="w-52">{t("system.auditTarget")}</TableHead>
-              <TableHead>{t("system.auditStream")}</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {events.length === 0 && !loading ? (
-              <TableRow>
-                <TableCell colSpan={6} className="py-6 text-sm text-muted-foreground">
-                  {t("system.auditEmpty")}
-                </TableCell>
-              </TableRow>
-            ) : null}
-            {events.map((event) => {
-              const isExpanded = expanded[event.eventId] ?? false;
-              return (
-                <React.Fragment key={event.eventId}>
+        <div className={AUDIT_PANEL_BODY_CLASS}>
+          <div className="overflow-x-auto rounded-[12px] border border-[var(--scry-line2)] bg-[var(--scry-bg)]">
+            <Table className="min-w-[1120px]">
+              <TableHeader>
+                <TableRow className="border-[var(--scry-border3)] bg-[var(--scry-inset)] hover:bg-[var(--scry-inset)]">
+                  <TableHead className="w-10" />
+                  <TableHead className={`w-48 font-semibold ${AUDIT_MUTED_TEXT_CLASS}`}>{t("history.date")}</TableHead>
+                  <TableHead className={`w-52 font-semibold ${AUDIT_MUTED_TEXT_CLASS}`}>{t("history.event")}</TableHead>
+                  <TableHead className={`w-40 font-semibold ${AUDIT_MUTED_TEXT_CLASS}`}>{t("history.actor")}</TableHead>
+                  <TableHead className={`w-52 font-semibold ${AUDIT_MUTED_TEXT_CLASS}`}>{t("system.auditTarget")}</TableHead>
+                  <TableHead className={`font-semibold ${AUDIT_MUTED_TEXT_CLASS}`}>{t("system.auditStream")}</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {events.length === 0 && !loading ? (
                   <TableRow>
-                    <TableCell>
-                      <button
-                        type="button"
-                        className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-border/60 bg-card/80 text-muted-foreground transition hover:text-foreground"
-                        onClick={() => toggleExpanded(event.eventId)}
-                        aria-label={
-                          isExpanded
-                            ? t("history.collapseDetails")
-                            : t("history.expandDetails")
-                        }
-                      >
-                        {isExpanded ? (
-                          <ChevronUp className="h-4 w-4" />
-                        ) : (
-                          <ChevronDown className="h-4 w-4" />
-                        )}
-                      </button>
-                    </TableCell>
-                    <TableCell className="align-top text-sm text-muted-foreground">
-                      {formatTimestamp(event.occurredAt, dateTimeFormat)}
-                    </TableCell>
-                    <TableCell className="align-top">
-                      <div className="text-sm font-medium text-foreground">
-                        {formatLabel(event.eventType)}
-                      </div>
-                      <div className="mt-1 text-xs text-muted-foreground">
-                        #{event.sequence}
-                      </div>
-                    </TableCell>
-                    <TableCell className="align-top">
-                      <div className="text-sm text-foreground">{event.actorDisplayName}</div>
-                      <div className="mt-1 text-xs text-muted-foreground">
-                        {formatLabel(event.actorKind)}
-                      </div>
-                    </TableCell>
-                    <TableCell className="align-top text-sm text-muted-foreground">
-                      {event.titleId ?? event.facet ?? "\u2014"}
-                    </TableCell>
-                    <TableCell className="align-top text-sm text-muted-foreground">
-                      {event.streamKind}
-                      {event.streamId ? ` / ${event.streamId}` : ""}
+                    <TableCell colSpan={6} className={`py-6 text-sm ${AUDIT_MUTED_TEXT_CLASS}`}>
+                      {t("system.auditEmpty")}
                     </TableCell>
                   </TableRow>
-                  {isExpanded ? (
-                    <TableRow>
-                      <TableCell colSpan={6} className="bg-card/30">
-                        <pre
-                          className="max-h-[420px] overflow-auto whitespace-pre-wrap rounded-md border border-border/60 bg-background/60 p-4 text-xs text-foreground"
-                          style={{ fontFamily: CODE_FONT }}
-                        >
-                          {payloadText(event.payloadJson)}
-                        </pre>
-                      </TableCell>
-                    </TableRow>
-                  ) : null}
-                </React.Fragment>
-              );
-            })}
-          </TableBody>
-        </Table>
-      </div>
+                ) : null}
+                {events.map((event) => {
+                  const isExpanded = expanded[event.eventId] ?? false;
+                  return (
+                    <React.Fragment key={event.eventId}>
+                      <TableRow className="border-[var(--scry-border3)] hover:bg-[var(--scry-hover)]">
+                        <TableCell>
+                          <button
+                            type="button"
+                            className="inline-flex h-8 w-8 items-center justify-center rounded-[9px] border border-[var(--scry-border3)] bg-[var(--scry-inset)] text-[var(--scry-muted3)] transition hover:border-[var(--scry-bhover2)] hover:text-[var(--scry-ink2)]"
+                            onClick={() => toggleExpanded(event.eventId)}
+                            aria-label={
+                              isExpanded
+                                ? t("history.collapseDetails")
+                                : t("history.expandDetails")
+                            }
+                          >
+                            {isExpanded ? (
+                              <ChevronUp className="h-4 w-4" />
+                            ) : (
+                              <ChevronDown className="h-4 w-4" />
+                            )}
+                          </button>
+                        </TableCell>
+                        <TableCell className={`align-top text-sm ${AUDIT_MUTED_TEXT_CLASS}`}>
+                          {formatTimestamp(event.occurredAt, dateTimeFormat)}
+                        </TableCell>
+                        <TableCell className="align-top">
+                          <div className="text-sm font-medium text-[var(--scry-ink2)]">
+                            {formatLabel(event.eventType)}
+                          </div>
+                          <div className={`mt-1 text-xs ${AUDIT_MUTED_TEXT_CLASS}`}>
+                            #{event.sequence}
+                          </div>
+                        </TableCell>
+                        <TableCell className="align-top">
+                          <div className="text-sm text-[var(--scry-ink2)]">
+                            {event.actorDisplayName}
+                          </div>
+                          <div className={`mt-1 text-xs ${AUDIT_MUTED_TEXT_CLASS}`}>
+                            {formatLabel(event.actorKind)}
+                          </div>
+                        </TableCell>
+                        <TableCell className={`align-top text-sm ${AUDIT_MUTED_TEXT_CLASS}`}>
+                          {event.titleId ?? event.facet ?? "\u2014"}
+                        </TableCell>
+                        <TableCell className={`align-top text-sm ${AUDIT_MUTED_TEXT_CLASS}`}>
+                          {event.streamKind}
+                          {event.streamId ? ` / ${event.streamId}` : ""}
+                        </TableCell>
+                      </TableRow>
+                      {isExpanded ? (
+                        <TableRow className="border-[var(--scry-border3)]">
+                          <TableCell colSpan={6} className="bg-[var(--scry-card2)] p-3">
+                            <pre
+                              className="max-h-[420px] overflow-auto whitespace-pre-wrap rounded-[10px] border border-[var(--scry-border3)] bg-[var(--scry-bg)] p-4 text-xs text-[var(--scry-ink2)]"
+                              style={{ fontFamily: CODE_FONT }}
+                            >
+                              {payloadText(event.payloadJson)}
+                            </pre>
+                          </TableCell>
+                        </TableRow>
+                      ) : null}
+                    </React.Fragment>
+                  );
+                })}
+              </TableBody>
+            </Table>
+          </div>
 
-      <div className="flex justify-end">
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          disabled={!hasMore || loadingOlder}
-          onClick={() => void loadOlderAuditEvents()}
-        >
-          {loadingOlder ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-          {t("history.loadMore")}
-        </Button>
-      </div>
+          <div className="mt-4 flex justify-end">
+            <Button
+              type="button"
+              variant="secondary"
+              size="sm"
+              disabled={!hasMore || loadingOlder}
+              onClick={() => void loadOlderAuditEvents()}
+            >
+              {loadingOlder ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+              {t("history.loadMore")}
+            </Button>
+          </div>
+        </div>
+      </section>
     </div>
   );
 });

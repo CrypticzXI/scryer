@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 
 import { LibraryMultiSelect } from "@/components/common/library-multi-select";
+import { UnderlineFilterButton } from "@/components/common/underline-filter-button";
 import { TitlePoster } from "@/components/title-poster";
 import { Button } from "@/components/ui/button";
 import {
@@ -341,7 +342,7 @@ export function RequestsView({
   const headingTitle = mode === "admin" ? "Request Queue" : "My Requests";
   const headingCopy =
     mode === "admin"
-      ? "Approve or dismiss member requests. Approved titles are added to the library and start searching."
+      ? null
       : "Track the titles you've asked Scryer to grab. You'll be notified when they're available.";
   const filters = statusFilterOptions(mode);
   const [adminFacetFilters, setAdminFacetFilters] = React.useState<
@@ -464,6 +465,215 @@ export function RequestsView({
     closeEditDialog();
   };
 
+  const renderRequestCard = (request: MediaRequestRecord) => {
+    const posterUrl = selectPosterVariantUrl(request.posterUrl, "w250");
+    const backgroundPosterUrl =
+      selectPosterVariantUrl(request.posterUrl, "original") ?? posterUrl;
+    const requesters = requesterLabel(request);
+    const externalIds = requestExternalIdLabel(request);
+    const isResolving = actionRequestId === request.id;
+    const actionsDisabled = loading || actionRequestId !== null;
+    const approveDisabled = loading || actionRequestId !== null;
+    const statusMeta = requestStatusTone(t, request.status);
+    const StatusIcon = statusMeta.Icon;
+    const canResolveRequest = mode === "admin" && request.status === "pending";
+    const canEditOwnRequest = mode === "mine" && request.status === "pending";
+    const libraryLabel =
+      libraries.find((library) => library.id === request.libraryId)?.name ??
+      request.libraryId;
+    const requestedProfile =
+      profileLabel(
+        request.requestedQualityProfileId,
+        request.requestedQualityProfileName,
+        qualityProfileOptions,
+      ) ?? t("requests.libraryDefaultProfile");
+    const requestedMonitorType = request.requestedMonitorType
+      ? monitorTypeLabel(t, request.requestedMonitorType)
+      : null;
+
+    return (
+      <article
+        key={request.id}
+        id={mediaRequestRowId(request.id)}
+        data-request-status={request.status}
+        data-request-title={request.title}
+        data-request-facet={request.facet}
+        data-request-imdb-id={requestExternalIdValue(request, "imdb")}
+        data-request-tvdb-id={requestExternalIdValue(request, "tvdb")}
+        data-request-tmdb-id={requestExternalIdValue(request, "tmdb")}
+        className="relative overflow-hidden rounded-[14px] border border-[var(--scry-border)] bg-[var(--scry-surf)] shadow-[0_10px_24px_rgba(0,0,0,0.16)]"
+      >
+        {backgroundPosterUrl ? (
+          <div
+            aria-hidden="true"
+            className="absolute inset-0 scale-105 bg-cover bg-center opacity-35 blur-[1px]"
+            style={{ backgroundImage: `url(${backgroundPosterUrl})` }}
+          />
+        ) : null}
+        <div
+          aria-hidden="true"
+          className="absolute inset-0 bg-[linear-gradient(90deg,var(--scry-surf)_0%,rgba(7,11,24,0.94)_38%,rgba(7,11,24,0.76)_100%)]"
+        />
+        <div
+          aria-hidden="true"
+          className="absolute inset-0 bg-[linear-gradient(0deg,rgba(4,7,16,0.92)_0%,rgba(4,7,16,0.42)_58%,rgba(255,255,255,0.05)_100%)]"
+        />
+        <div className="relative z-10 flex flex-col sm:flex-row">
+          <div className="w-full shrink-0 bg-[var(--scry-inset)] sm:w-[150px]">
+            <div className="aspect-[2/3] w-full overflow-hidden sm:h-full sm:min-h-[225px]">
+              {posterUrl ? (
+                <TitlePoster
+                  src={posterUrl}
+                  alt={t("media.posterAlt", { name: request.title })}
+                  className="h-full w-full object-cover"
+                  loading="lazy"
+                />
+              ) : (
+                <div className="flex h-full min-h-[180px] w-full items-center justify-center text-xs text-[var(--scry-muted3)]">
+                  {t("label.noArt")}
+                </div>
+              )}
+            </div>
+          </div>
+          <div className="flex min-w-0 flex-1 flex-col gap-4 p-4 sm:p-5">
+            <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <h2 className="text-[19px] font-semibold leading-tight text-[var(--scry-ink2)]">
+                    {request.title}
+                  </h2>
+                  <span
+                    id={mediaRequestStatusId(request.id)}
+                    data-request-status={request.status}
+                    className={cn(
+                      "inline-flex items-center gap-1.5 rounded-[7px] border px-2 py-1 text-[11px] font-bold uppercase",
+                      statusMeta.className,
+                    )}
+                  >
+                    <StatusIcon className="h-3 w-3" />
+                    {statusMeta.label}
+                  </span>
+                </div>
+                <p className="mt-1 text-xs text-[var(--scry-muted3)]">
+                  {request.year ?? t("label.yearUnknown")}
+                  {externalIds ? ` · ${externalIds}` : ""}
+                </p>
+              </div>
+              <div className="flex flex-wrap gap-2 xl:justify-end">
+                {canResolveRequest ? (
+                  <>
+                    <Button
+                      id={mediaRequestApproveId(request.id)}
+                      type="button"
+                      size="sm"
+                      variant="primary"
+                      onClick={() => openApprovalDialog(request)}
+                      disabled={approveDisabled}
+                    >
+                      {isResolving ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <Check className="h-4 w-4" />
+                      )}
+                      {t("requests.approve")}
+                    </Button>
+                    <Button
+                      id={mediaRequestDismissId(request.id)}
+                      type="button"
+                      size="sm"
+                      variant="secondary"
+                      onClick={() => onDismiss(request)}
+                      disabled={actionsDisabled}
+                    >
+                      <X className="h-4 w-4" />
+                      {t("requests.dismiss")}
+                    </Button>
+                  </>
+                ) : null}
+                {canEditOwnRequest ? (
+                  <>
+                    <Button
+                      id={mediaRequestEditId(request.id)}
+                      type="button"
+                      size="sm"
+                      variant="secondary"
+                      onClick={() => openEditDialog(request)}
+                      disabled={actionsDisabled}
+                    >
+                      <Pencil className="h-4 w-4" />
+                      {t("requests.modify")}
+                    </Button>
+                    <Button
+                      id={mediaRequestCancelId(request.id)}
+                      type="button"
+                      size="sm"
+                      variant="secondary"
+                      onClick={() => onCancelRequest(request)}
+                      disabled={actionsDisabled}
+                    >
+                      {isResolving ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <X className="h-4 w-4" />
+                      )}
+                      {t("requests.cancelRequest")}
+                    </Button>
+                  </>
+                ) : null}
+              </div>
+            </div>
+            {request.overview ? (
+              <p className="line-clamp-4 max-w-[80ch] text-sm leading-6 text-[var(--scry-muted2)]">
+                {request.overview}
+              </p>
+            ) : null}
+            <div className="grid gap-2 text-xs text-[var(--scry-muted3)] sm:grid-cols-2 xl:grid-cols-4">
+              <div className="rounded-[10px] border border-[var(--scry-border3)] bg-[var(--scry-inset)] px-3 py-2">
+                <div className="mb-1 flex items-center gap-1.5 text-[var(--scry-faint)]">
+                  <User className="h-3.5 w-3.5" />
+                  {t("requests.requesters")}
+                </div>
+                <div className="flex items-center gap-1.5 text-[var(--scry-ink2)]">
+                  <RequesterAvatarStack request={request} />
+                  <span>{requesters || t("label.unknown")}</span>
+                </div>
+              </div>
+              <div className="rounded-[10px] border border-[var(--scry-border3)] bg-[var(--scry-inset)] px-3 py-2">
+                <div className="mb-1 text-[var(--scry-faint)]">Library</div>
+                <div className="text-[var(--scry-ink2)]">{libraryLabel}</div>
+              </div>
+              <div className="rounded-[10px] border border-[var(--scry-border3)] bg-[var(--scry-inset)] px-3 py-2">
+                <div className="mb-1 flex items-center gap-1.5 text-[var(--scry-faint)]">
+                  <Gem className="h-3.5 w-3.5" />
+                  {t("requests.requestedQualityProfile")}
+                </div>
+                <div className="text-[var(--scry-ink2)]">{requestedProfile}</div>
+              </div>
+              <div className="rounded-[10px] border border-[var(--scry-border3)] bg-[var(--scry-inset)] px-3 py-2">
+                <div className="mb-1 flex items-center gap-1.5 text-[var(--scry-faint)]">
+                  <History className="h-3.5 w-3.5" />
+                  {t("requests.updated")}
+                </div>
+                <div className="text-[var(--scry-ink2)]">
+                  {formatUiDateTime(request.updatedAt, dateTimeFormat)}
+                </div>
+              </div>
+              {requestedMonitorType ? (
+                <div className="rounded-[10px] border border-[var(--scry-border3)] bg-[var(--scry-inset)] px-3 py-2 sm:col-span-2 xl:col-span-4">
+                  <div className="mb-1 flex items-center gap-1.5 text-[var(--scry-faint)]">
+                    <CircleCheck className="h-3.5 w-3.5" />
+                    {t("requests.requestedMonitorType")}
+                  </div>
+                  <div className="text-[var(--scry-ink2)]">{requestedMonitorType}</div>
+                </div>
+              ) : null}
+            </div>
+          </div>
+        </div>
+      </article>
+    );
+  };
+
   return (
     <section className="scry-scroll flex min-h-0 flex-1 overflow-y-auto bg-[var(--scry-surfE)]">
       <div className="mx-auto flex w-full max-w-[1240px] flex-col gap-4 px-4 py-6 sm:px-6 lg:px-8">
@@ -475,385 +685,100 @@ export function RequestsView({
             <h1 className="font-display text-[25px] font-bold leading-tight text-[var(--scry-ink)]">
               {headingTitle}
             </h1>
-            <p className="mt-1 max-w-2xl text-[13.5px] text-[var(--scry-muted)]">
-              {headingCopy}
-            </p>
+            {headingCopy ? (
+              <p className="mt-1 max-w-2xl text-[13.5px] text-[var(--scry-muted)]">
+                {headingCopy}
+              </p>
+            ) : null}
           </div>
         </div>
 
-        <div className="flex flex-wrap items-center gap-3">
-          {showModeSwitch ? (
-            <div className="inline-flex h-10 rounded-[9px] border border-border bg-background p-1">
-              <Button
-                id="requests-mode-admin"
-                type="button"
-                variant={mode === "admin" ? "default" : "ghost"}
-                size="sm"
-                className="h-8 rounded-[7px]"
-                onClick={() => onModeChange("admin")}
-              >
-                {t("requests.mode.admin")}
-              </Button>
-              <Button
-                id="requests-mode-mine"
-                type="button"
-                variant={mode === "mine" ? "default" : "ghost"}
-                size="sm"
-                className="h-8 rounded-[7px]"
-                onClick={() => onModeChange("mine")}
-              >
-                {t("requests.mode.mine")}
-              </Button>
-            </div>
-          ) : null}
-          <LibraryMultiSelect
-            libraries={libraries}
-            selectedLibraryIds={selectedLibraryIds}
-            onSelectedLibraryIdsChange={onSelectedLibraryIdsChange}
-            triggerClassName="h-10 min-w-56 rounded-[11px]"
-          />
-          {mode === "mine" ? (
-            <Button
-              type="button"
-              variant="outline"
-              className="h-10 w-10 rounded-[11px] p-0"
-              onClick={onRefresh}
-              disabled={loading}
-              aria-label="Refresh requests"
-            >
-              <RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} />
-            </Button>
-          ) : null}
-          <div className="ml-auto flex flex-wrap items-center gap-2">
+        <div className="flex flex-wrap items-end justify-between gap-3 border-b border-[var(--scry-border3)]">
+          <div
+            role="group"
+            aria-label="Request filters"
+            className="relative top-px flex min-h-10 min-w-0 max-w-full flex-1 flex-wrap items-center justify-start gap-x-5 gap-y-1 border-0 bg-transparent p-0 shadow-none"
+          >
+            {showModeSwitch ? (
+              <>
+                <UnderlineFilterButton
+                  id="requests-mode-admin"
+                  selected={mode === "admin"}
+                  label={t("requests.mode.admin")}
+                  onClick={() => onModeChange("admin")}
+                />
+                <UnderlineFilterButton
+                  id="requests-mode-mine"
+                  selected={mode === "mine"}
+                  label={t("requests.mode.mine")}
+                  onClick={() => onModeChange("mine")}
+                />
+              </>
+            ) : null}
             {mode === "admin"
               ? ([
                   ["movie", t("search.facetMovies")],
                   ["series", t("search.facetSeries")],
                   ["anime", t("search.facetAnime")],
                 ] as Array<[RequestFacetFilter, string]>).map(([facet, label]) => (
-                  <Button
+                  <UnderlineFilterButton
                     key={facet}
-                    type="button"
-                    size="sm"
+                    selected={adminFacetFilters[facet]}
+                    label={label}
+                    count={requestCountByFacet(requests, facet)}
                     aria-pressed={adminFacetFilters[facet]}
-                    variant={adminFacetFilters[facet] ? "default" : "outline"}
-                    className="h-9 rounded-[9px] px-3 text-xs font-semibold"
                     onClick={() =>
                       setAdminFacetFilters((current) => ({
                         ...current,
                         [facet]: !current[facet],
                       }))
                     }
-                  >
-                    {label}
-                    <span className="ml-1 opacity-80">
-                      {requestCountByFacet(requests, facet)}
-                    </span>
-                  </Button>
+                  />
                 ))
               : null}
             {filters.map((filter) => (
-              <Button
+              <UnderlineFilterButton
                 key={filter.value}
-                type="button"
-                size="sm"
-                variant={statusFilter === filter.value ? "default" : "outline"}
-                className="h-9 rounded-[9px] px-3 text-xs font-semibold"
+                selected={statusFilter === filter.value}
+                label={filter.label}
                 onClick={() => onStatusFilterChange(filter.value)}
-              >
-                {filter.label}
-              </Button>
+              />
             ))}
+          </div>
+          <div className="mb-3 flex w-full shrink-0 items-center justify-end gap-2 sm:w-auto">
+            <LibraryMultiSelect
+              libraries={libraries}
+              selectedLibraryIds={selectedLibraryIds}
+              onSelectedLibraryIdsChange={onSelectedLibraryIdsChange}
+              triggerClassName="h-10 min-w-56 rounded-[11px]"
+            />
+            {mode === "mine" ? (
+              <Button
+                type="button"
+                variant="outline"
+                className="h-10 w-10 rounded-[11px] p-0"
+                onClick={onRefresh}
+                disabled={loading}
+                aria-label="Refresh requests"
+              >
+                <RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} />
+              </Button>
+            ) : null}
           </div>
         </div>
 
-        <div className="grid gap-3">
-        {displayedRequests.length === 0 && !loading ? (
-          <div
-            id={mode === "admin" ? "requests-empty-admin" : "requests-empty-mine"}
-            className="rounded-lg border border-dashed border-border bg-card/40 px-4 py-8 text-center text-sm text-muted-foreground"
-          >
-            {mode === "admin" ? t("requests.empty") : t("requests.emptyMine")}
-          </div>
-        ) : null}
-
-        {mode === "admin" && displayedRequests.length > 0 ? (
-          <div className="overflow-hidden rounded-[13px] border border-[var(--scry-border)] bg-[var(--scry-surf)]">
-            <div className="overflow-x-auto">
-              <table className="min-w-[920px] w-full border-collapse text-left text-sm">
-                <thead className="border-b border-[var(--scry-border2)] bg-[var(--scry-inset)] text-[11px] font-bold uppercase tracking-[0.06em] text-[var(--scry-faint2)]">
-                  <tr>
-                    <th className="px-4 py-3">Title</th>
-                    <th className="px-3 py-3">Requester</th>
-                    <th className="px-3 py-3">Library</th>
-                    <th className="px-3 py-3">Quality</th>
-                    <th className="px-3 py-3">Updated</th>
-                    <th className="px-3 py-3">Status</th>
-                    <th className="px-4 py-3 text-right">Actions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {displayedRequests.map((request) => {
-                    const posterUrl = selectPosterVariantUrl(request.posterUrl, "w70");
-                    const requesters = requesterLabel(request);
-                    const externalIds = requestExternalIdLabel(request);
-                    const isResolving = actionRequestId === request.id;
-                    const approveDisabled = loading || actionRequestId !== null;
-                    const actionsDisabled = loading || actionRequestId !== null;
-                    const statusMeta = requestStatusTone(t, request.status);
-                    const StatusIcon = statusMeta.Icon;
-                    const canResolveRequest = request.status === "pending";
-                    const libraryLabel =
-                      libraries.find((library) => library.id === request.libraryId)
-                        ?.name ?? request.libraryId;
-                    return (
-                      <tr
-                        key={request.id}
-                        id={mediaRequestRowId(request.id)}
-                        data-request-status={request.status}
-                        data-request-title={request.title}
-                        data-request-facet={request.facet}
-                        data-request-imdb-id={requestExternalIdValue(request, "imdb")}
-                        data-request-tvdb-id={requestExternalIdValue(request, "tvdb")}
-                        data-request-tmdb-id={requestExternalIdValue(request, "tmdb")}
-                        className="border-b border-[var(--scry-line2)] last:border-b-0 hover:bg-[var(--scry-hover)]"
-                      >
-                        <td className="px-4 py-3">
-                          <div className="flex min-w-0 items-center gap-3">
-                            <div className="h-12 w-8 flex-none overflow-hidden rounded-[6px] border border-border bg-muted">
-                              {posterUrl ? (
-                                <TitlePoster
-                                  src={posterUrl}
-                                  alt={t("media.posterAlt", { name: request.title })}
-                                  className="h-full w-full object-cover"
-                                  loading="lazy"
-                                />
-                              ) : (
-                                <div className="flex h-full w-full items-center justify-center text-[9px] text-muted-foreground">
-                                  {t("label.noArt")}
-                                </div>
-                              )}
-                            </div>
-                            <div className="min-w-0">
-                              <div className="truncate font-semibold text-[var(--scry-ink)]">
-                                {request.title}
-                              </div>
-                              <div className="truncate text-xs text-muted-foreground">
-                                {request.year ?? t("label.yearUnknown")}
-                                {externalIds ? ` - ${externalIds}` : ""}
-                              </div>
-                            </div>
-                          </div>
-                        </td>
-                        <td className="px-3 py-3 text-xs text-[var(--scry-body)]">
-                          <span className="inline-flex items-center gap-1.5">
-                            <RequesterAvatarStack request={request} />
-                            <span>{requesters || t("label.unknown")}</span>
-                          </span>
-                        </td>
-                        <td className="px-3 py-3 text-xs text-muted-foreground">
-                          {libraryLabel}
-                        </td>
-                        <td className="px-3 py-3 text-xs text-muted-foreground">
-                          {profileLabel(
-                            request.requestedQualityProfileId,
-                            request.requestedQualityProfileName,
-                            qualityProfileOptions,
-                          ) ?? t("requests.libraryDefaultProfile")}
-                        </td>
-                        <td className="px-3 py-3 text-xs text-muted-foreground">
-                          {formatUiDateTime(request.updatedAt, dateTimeFormat)}
-                        </td>
-                        <td className="px-3 py-3">
-                          <span
-                            id={mediaRequestStatusId(request.id)}
-                            data-request-status={request.status}
-                            className={cn(
-                              "inline-flex items-center gap-1.5 rounded-[7px] border px-2 py-1 text-[11px] font-bold uppercase",
-                              statusMeta.className,
-                            )}
-                          >
-                            <StatusIcon className="h-3 w-3" />
-                            {statusMeta.label}
-                          </span>
-                        </td>
-                        <td className="px-4 py-3">
-                          <div className="flex justify-end gap-2">
-                            {canResolveRequest ? (
-                              <>
-                                <Button
-                                  id={mediaRequestApproveId(request.id)}
-                                  type="button"
-                                  size="sm"
-                                  className="h-8"
-                                  onClick={() => openApprovalDialog(request)}
-                                  disabled={approveDisabled}
-                                >
-                                  {isResolving ? (
-                                    <Loader2 className="h-4 w-4 animate-spin" />
-                                  ) : (
-                                    <Check className="h-4 w-4" />
-                                  )}
-                                  {t("requests.approve")}
-                                </Button>
-                                <Button
-                                  id={mediaRequestDismissId(request.id)}
-                                  type="button"
-                                  size="sm"
-                                  variant="outline"
-                                  className="h-8"
-                                  onClick={() => onDismiss(request)}
-                                  disabled={actionsDisabled}
-                                >
-                                  <X className="h-4 w-4" />
-                                  {t("requests.dismiss")}
-                                </Button>
-                              </>
-                            ) : (
-                              <span className="text-xs text-muted-foreground">-</span>
-                            )}
-                          </div>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        ) : null}
-
-        {mode === "mine" ? displayedRequests.map((request) => {
-          const posterUrl = selectPosterVariantUrl(request.posterUrl, "w70");
-          const requesters = requesterLabel(request);
-          const externalIds = requestExternalIdLabel(request);
-          const isResolving = actionRequestId === request.id;
-          const actionsDisabled = loading || actionRequestId !== null;
-          const statusMeta = requestStatusTone(t, request.status);
-          const StatusIcon = statusMeta.Icon;
-          const canEditOwnRequest = mode === "mine" && request.status === "pending";
-          return (
-            <article
-              key={request.id}
-              id={mediaRequestRowId(request.id)}
-              data-request-status={request.status}
-              data-request-title={request.title}
-              data-request-facet={request.facet}
-              data-request-imdb-id={requestExternalIdValue(request, "imdb")}
-              data-request-tvdb-id={requestExternalIdValue(request, "tvdb")}
-              data-request-tmdb-id={requestExternalIdValue(request, "tmdb")}
-              className="rounded-[14px] border border-[var(--scry-border)] bg-[var(--scry-surf)] p-4"
+        <div className="grid gap-4">
+          {displayedRequests.length === 0 && !loading ? (
+            <div
+              id={mode === "admin" ? "requests-empty-admin" : "requests-empty-mine"}
+              className="rounded-[14px] border border-dashed border-[var(--scry-border2)] bg-[var(--scry-surf)] px-4 py-8 text-center text-sm text-[var(--scry-muted3)]"
             >
-              <div className="flex gap-4">
-                <div className="h-[90px] w-[60px] flex-none overflow-hidden rounded-[9px] border border-border bg-muted">
-                  {posterUrl ? (
-                    <TitlePoster
-                      src={posterUrl}
-                      alt={t("media.posterAlt", { name: request.title })}
-                      className="h-full w-full object-cover"
-                      loading="lazy"
-                    />
-                  ) : (
-                    <div className="flex h-full w-full items-center justify-center text-xs text-muted-foreground">
-                      {t("label.noArt")}
-                    </div>
-                  )}
-                </div>
-                <div className="min-w-0 flex-1">
-                  <div className="flex flex-wrap items-start justify-between gap-2">
-                    <div className="min-w-0">
-                      <h2 className="truncate text-base font-semibold text-foreground">
-                        {request.title}
-                      </h2>
-                      <p className="text-xs text-muted-foreground">
-                        {request.year ?? t("label.yearUnknown")}
-                        {externalIds ? ` • ${externalIds}` : ""}
-                      </p>
-                    </div>
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span
-                        id={mediaRequestStatusId(request.id)}
-                        data-request-status={request.status}
-                        className={cn(
-                          "inline-flex items-center gap-1.5 rounded-[7px] border px-2 py-1 text-[11px] font-bold uppercase",
-                          statusMeta.className,
-                        )}
-                      >
-                        <StatusIcon className="h-3 w-3" />
-                        {statusMeta.label}
-                      </span>
-                      {canEditOwnRequest ? (
-                        <>
-                          <Button
-                            id={mediaRequestEditId(request.id)}
-                            type="button"
-                            size="sm"
-                            variant="outline"
-                            onClick={() => openEditDialog(request)}
-                            disabled={actionsDisabled}
-                          >
-                            <Pencil className="h-4 w-4" />
-                            {t("requests.modify")}
-                          </Button>
-                          <Button
-                            id={mediaRequestCancelId(request.id)}
-                            type="button"
-                            size="sm"
-                            variant="outline"
-                            onClick={() => onCancelRequest(request)}
-                            disabled={actionsDisabled}
-                          >
-                            {isResolving ? (
-                              <Loader2 className="h-4 w-4 animate-spin" />
-                            ) : (
-                              <X className="h-4 w-4" />
-                            )}
-                            {t("requests.cancelRequest")}
-                          </Button>
-                        </>
-                      ) : null}
-                    </div>
-                  </div>
-                  {request.overview ? (
-                    <p className="mt-2 line-clamp-2 text-sm text-muted-foreground">
-                      {request.overview}
-                    </p>
-                  ) : null}
-                  <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
-                    <span className="inline-flex items-center gap-1.5">
-                      <User className="h-3.5 w-3.5" />
-                      {t("requests.requesters")}:{" "}
-                      <RequesterAvatarStack request={request} />
-                      <span>{requesters || t("label.unknown")}</span>
-                    </span>
-                    <span className="inline-flex items-center gap-1.5">
-                      <Gem className="h-3.5 w-3.5" />
-                      {t("requests.requestedQualityProfile")}:{" "}
-                      {profileLabel(
-                        request.requestedQualityProfileId,
-                        request.requestedQualityProfileName,
-                        qualityProfileOptions,
-                      ) ?? t("requests.libraryDefaultProfile")}
-                    </span>
-                    {request.requestedMonitorType ? (
-                      <span className="inline-flex items-center gap-1.5">
-                        <CircleCheck className="h-3.5 w-3.5" />
-                        {t("requests.requestedMonitorType")}:{" "}
-                        {monitorTypeLabel(t, request.requestedMonitorType)}
-                      </span>
-                    ) : null}
-                    <span className="inline-flex items-center gap-1.5">
-                      <History className="h-3.5 w-3.5" />
-                      {t("requests.updated")}:{" "}
-                      {formatUiDateTime(request.updatedAt, dateTimeFormat)}
-                    </span>
-                  </div>
-                </div>
-              </div>
-            </article>
-          );
-        }) : null}
-      </div>
+              {mode === "admin" ? t("requests.empty") : t("requests.emptyMine")}
+            </div>
+          ) : null}
+
+          {displayedRequests.map(renderRequestCard)}
+        </div>
       </div>
       <Dialog open={approvalRequest !== null} onOpenChange={(open) => { if (!open) closeApprovalDialog(); }}>
         <DialogContent id="approve-media-request-dialog" className="sm:max-w-sm">

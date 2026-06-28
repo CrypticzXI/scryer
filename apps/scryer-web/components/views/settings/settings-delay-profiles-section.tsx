@@ -6,7 +6,7 @@ import {
   boxedActionButtonBaseClass,
   boxedActionButtonToneClass,
 } from "@/lib/utils/action-button-styles";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { RenderBooleanIcon } from "@/components/common/boolean-icon";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input, integerInputProps, sanitizeDigits } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -51,6 +51,15 @@ const FACET_LABELS: Record<string, string> = {
   anime: "Anime",
 };
 
+const DELAY_PANEL_CLASS =
+  "overflow-hidden rounded-[14px] border border-[var(--scry-border)] bg-[var(--scry-surf)] shadow-[0_10px_24px_rgba(0,0,0,0.16)]";
+const DELAY_PANEL_HEADER_CLASS =
+  "border-b border-[var(--scry-border3)] bg-[linear-gradient(180deg,rgba(255,255,255,0.035),rgba(255,255,255,0))] px-4 py-3";
+const DELAY_PANEL_TITLE_CLASS =
+  "text-[15px] font-semibold text-[var(--scry-ink2)]";
+const DELAY_PANEL_BODY_CLASS = "p-4 sm:p-5";
+const DELAY_MUTED_TEXT_CLASS = "text-[var(--scry-muted3)]";
+
 export function SettingsDelayProfilesSection({
   loading,
   saving,
@@ -92,123 +101,133 @@ export function SettingsDelayProfilesSection({
   }
 
   return (
-    <div id="settings-delay-profiles-section" className="space-y-6">
+    <div id="settings-delay-profiles-section" className="space-y-4 text-sm">
       {parseError && (
-        <div className="rounded border border-rose-500/30 bg-rose-500/10 p-3 text-sm text-rose-300">
+        <div className="rounded-[12px] border border-rose-500/35 bg-rose-500/10 p-3 text-sm text-rose-200">
           {parseError}
         </div>
       )}
 
-      {/* Existing profiles table */}
-      <Card className="bg-card border-border">
-        <CardHeader>
-          <CardTitle className="text-base">{t("settings.delayProfileExisting")}</CardTitle>
-        </CardHeader>
-        <CardContent>
+      <section className={DELAY_PANEL_CLASS}>
+        <div className={DELAY_PANEL_HEADER_CLASS}>
+          <h2 className={DELAY_PANEL_TITLE_CLASS}>{t("settings.delayProfileExisting")}</h2>
+        </div>
+        <div>
           {loading ? (
-            <p className="text-muted-foreground text-sm">{t("label.loading")}</p>
+            <p className={`${DELAY_PANEL_BODY_CLASS} text-sm ${DELAY_MUTED_TEXT_CLASS}`}>
+              {t("label.loading")}
+            </p>
           ) : profiles.length === 0 ? (
-            <p className="text-muted-foreground text-sm">{t("settings.delayProfileNone")}</p>
+            <p className={`${DELAY_PANEL_BODY_CLASS} text-sm ${DELAY_MUTED_TEXT_CLASS}`}>
+              {t("settings.delayProfileNone")}
+            </p>
           ) : (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>{t("settings.delayProfileNameLabel")}</TableHead>
-                  <TableHead>{t("settings.delayProfileUsenetDelay")}</TableHead>
-                  <TableHead>{t("settings.delayProfileTorrentDelay")}</TableHead>
-                  <TableHead>{t("settings.delayProfilePreferred")}</TableHead>
-                  <TableHead>{t("settings.delayProfileMinAge")}</TableHead>
-                  <TableHead>{t("settings.delayProfileBypassLabel")}</TableHead>
-                  <TableHead>{t("settings.delayProfileFacetsLabel")}</TableHead>
-                  <TableHead>{t("settings.delayProfilePriorityLabel")}</TableHead>
-                  <TableHead>{t("settings.delayProfileEnabledLabel")}</TableHead>
-                  <TableHead className="w-24" />
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {profiles.map((profile) => (
-                  <TableRow
-                    key={profile.id}
-                    id={selectorId("settings-delay-profile-row", profile.id)}
-                  >
-                    <TableCell className="font-medium">{profile.name}</TableCell>
-                    <TableCell>{profile.usenet_delay_minutes}m</TableCell>
-                    <TableCell>{profile.torrent_delay_minutes}m</TableCell>
-                    <TableCell>{profile.preferred_protocol}</TableCell>
-                    <TableCell>{profile.min_age_minutes > 0 ? `${profile.min_age_minutes}m` : "—"}</TableCell>
-                    <TableCell>
-                      {profile.bypass_score_threshold != null
-                        ? `≥ ${profile.bypass_score_threshold}`
-                        : "—"}
-                    </TableCell>
-                    <TableCell>
-                      {profile.applies_to_facets.length === 0
-                        ? t("settings.delayProfileAllFacets")
-                        : profile.applies_to_facets
-                            .map((f) => FACET_LABELS[f] ?? f)
-                            .join(", ")}
-                    </TableCell>
-                    <TableCell>{profile.priority}</TableCell>
-                    <TableCell>{profile.enabled ? "✓" : "✗"}</TableCell>
-                    <TableCell>
-                      <div className="flex gap-1">
-                        <Button
-                          id={selectorId("settings-delay-profile-edit", profile.id)}
-                          type="button"
-                          size="icon-sm"
-                          variant="secondary"
-                          onClick={() => loadProfileById(profile.id)}
-                          title={t("label.load")}
-                          aria-label={t("label.edit")}
-                          className={cn(
-                            boxedActionButtonBaseClass,
-                            boxedActionButtonToneClass.edit,
-                          )}
-                        >
-                          <Edit className="h-4 w-4" />
-                        </Button>
-                        <Button
-                          id={selectorId("settings-delay-profile-delete", profile.id)}
-                          type="button"
-                          size="icon-sm"
-                          variant="secondary"
-                          onClick={() => deleteProfile(profile.id)}
-                          disabled={saving}
-                          title={t("label.delete")}
-                          aria-label={t("label.delete")}
-                          className={cn(
-                            boxedActionButtonBaseClass,
-                            boxedActionButtonToneClass.delete,
-                          )}
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </Button>
-                      </div>
-                    </TableCell>
+            <div className="overflow-x-auto">
+              <Table className="min-w-[1180px]">
+                <TableHeader>
+                  <TableRow className="border-[var(--scry-border3)] bg-[var(--scry-inset)] hover:bg-[var(--scry-inset)]">
+                    <TableHead className={`font-semibold ${DELAY_MUTED_TEXT_CLASS}`}>{t("settings.delayProfileNameLabel")}</TableHead>
+                    <TableHead className={`font-semibold ${DELAY_MUTED_TEXT_CLASS}`}>{t("settings.delayProfileUsenetDelay")}</TableHead>
+                    <TableHead className={`font-semibold ${DELAY_MUTED_TEXT_CLASS}`}>{t("settings.delayProfileTorrentDelay")}</TableHead>
+                    <TableHead className={`font-semibold ${DELAY_MUTED_TEXT_CLASS}`}>{t("settings.delayProfilePreferred")}</TableHead>
+                    <TableHead className={`font-semibold ${DELAY_MUTED_TEXT_CLASS}`}>{t("settings.delayProfileMinAge")}</TableHead>
+                    <TableHead className={`font-semibold ${DELAY_MUTED_TEXT_CLASS}`}>{t("settings.delayProfileBypassLabel")}</TableHead>
+                    <TableHead className={`font-semibold ${DELAY_MUTED_TEXT_CLASS}`}>{t("settings.delayProfileFacetsLabel")}</TableHead>
+                    <TableHead className={`font-semibold ${DELAY_MUTED_TEXT_CLASS}`}>{t("settings.delayProfilePriorityLabel")}</TableHead>
+                    <TableHead className={`text-center font-semibold ${DELAY_MUTED_TEXT_CLASS}`}>{t("settings.delayProfileEnabledLabel")}</TableHead>
+                    <TableHead className="w-24" />
                   </TableRow>
-                ))}
-              </TableBody>
-            </Table>
+                </TableHeader>
+                <TableBody>
+                  {profiles.map((profile) => (
+                    <TableRow
+                      key={profile.id}
+                      id={selectorId("settings-delay-profile-row", profile.id)}
+                      className="border-[var(--scry-border3)] hover:bg-[var(--scry-hover)]"
+                    >
+                      <TableCell className="font-medium text-[var(--scry-ink2)]">{profile.name}</TableCell>
+                      <TableCell className={DELAY_MUTED_TEXT_CLASS}>{profile.usenet_delay_minutes}m</TableCell>
+                      <TableCell className={DELAY_MUTED_TEXT_CLASS}>{profile.torrent_delay_minutes}m</TableCell>
+                      <TableCell className="capitalize text-[var(--scry-ink2)]">{profile.preferred_protocol}</TableCell>
+                      <TableCell>{profile.min_age_minutes > 0 ? `${profile.min_age_minutes}m` : "—"}</TableCell>
+                      <TableCell>
+                        {profile.bypass_score_threshold != null
+                          ? `≥ ${profile.bypass_score_threshold}`
+                          : "—"}
+                      </TableCell>
+                      <TableCell>
+                        {profile.applies_to_facets.length === 0
+                          ? t("settings.delayProfileAllFacets")
+                          : profile.applies_to_facets
+                              .map((f) => FACET_LABELS[f] ?? f)
+                              .join(", ")}
+                      </TableCell>
+                      <TableCell>{profile.priority}</TableCell>
+                      <TableCell className="text-center">
+                        <RenderBooleanIcon
+                          value={profile.enabled}
+                          label={`${t("settings.delayProfileEnabledLabel")}: ${profile.name}`}
+                        />
+                      </TableCell>
+                      <TableCell>
+                        <div className="flex justify-end gap-1">
+                          <Button
+                            id={selectorId("settings-delay-profile-edit", profile.id)}
+                            type="button"
+                            size="icon-sm"
+                            variant="secondary"
+                            onClick={() => loadProfileById(profile.id)}
+                            title={t("label.load")}
+                            aria-label={t("label.edit")}
+                            className={cn(
+                              boxedActionButtonBaseClass,
+                              boxedActionButtonToneClass.edit,
+                            )}
+                          >
+                            <Edit className="h-4 w-4" />
+                          </Button>
+                          <Button
+                            id={selectorId("settings-delay-profile-delete", profile.id)}
+                            type="button"
+                            size="icon-sm"
+                            variant="secondary"
+                            onClick={() => deleteProfile(profile.id)}
+                            disabled={saving}
+                            title={t("label.delete")}
+                            aria-label={t("label.delete")}
+                            className={cn(
+                              boxedActionButtonBaseClass,
+                              boxedActionButtonToneClass.delete,
+                            )}
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
           )}
-        </CardContent>
-      </Card>
+        </div>
+      </section>
 
       {isEditorOpen ? (
         <>
-      {/* Draft editor */}
-      <Card className="bg-card border-border">
-        <CardHeader>
-          <CardTitle className="text-base">
-            {isEditing
-              ? t("settings.delayProfileEdit")
-              : t("settings.delayProfileCreate")}
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          <form onSubmit={saveProfile} className="space-y-4">
+          <section className={DELAY_PANEL_CLASS}>
+            <div className={DELAY_PANEL_HEADER_CLASS}>
+              <h2 className={DELAY_PANEL_TITLE_CLASS}>
+                {isEditing
+                  ? t("settings.delayProfileEdit")
+                  : t("settings.delayProfileCreate")}
+              </h2>
+            </div>
+            <div className={DELAY_PANEL_BODY_CLASS}>
+              <form onSubmit={saveProfile} className="space-y-4">
             {/* Name */}
             <div className="space-y-1.5">
-              <Label htmlFor="dp-name">{t("settings.delayProfileNameLabel")}</Label>
+              <Label className="text-[var(--scry-ink2)]" htmlFor="dp-name">{t("settings.delayProfileNameLabel")}</Label>
               <Input
                 id="dp-name"
                 value={draft.name}
@@ -218,28 +237,28 @@ export function SettingsDelayProfilesSection({
             </div>
 
             {/* Protocol delays */}
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid gap-4 sm:grid-cols-2">
               <div className="space-y-1.5">
-                <Label htmlFor="dp-usenet-delay">{t("settings.delayProfileUsenetDelay")}</Label>
+                <Label className="text-[var(--scry-ink2)]" htmlFor="dp-usenet-delay">{t("settings.delayProfileUsenetDelay")}</Label>
                 <Input
                   id="dp-usenet-delay"
                   {...integerInputProps}
                   value={draft.usenet_delay_minutes}
                   onChange={(e) => updateField("usenet_delay_minutes", parseIntegerInput(e.target.value))}
                 />
-                <p className="text-muted-foreground text-xs">
+                <p className={`text-xs ${DELAY_MUTED_TEXT_CLASS}`}>
                   {t("settings.delayProfileUsenetDelayHelp")}
                 </p>
               </div>
               <div className="space-y-1.5">
-                <Label htmlFor="dp-torrent-delay">{t("settings.delayProfileTorrentDelay")}</Label>
+                <Label className="text-[var(--scry-ink2)]" htmlFor="dp-torrent-delay">{t("settings.delayProfileTorrentDelay")}</Label>
                 <Input
                   id="dp-torrent-delay"
                   {...integerInputProps}
                   value={draft.torrent_delay_minutes}
                   onChange={(e) => updateField("torrent_delay_minutes", parseIntegerInput(e.target.value))}
                 />
-                <p className="text-muted-foreground text-xs">
+                <p className={`text-xs ${DELAY_MUTED_TEXT_CLASS}`}>
                   {t("settings.delayProfileTorrentDelayHelp")}
                 </p>
               </div>
@@ -247,9 +266,9 @@ export function SettingsDelayProfilesSection({
 
             {/* Preferred protocol */}
             <div className="space-y-1.5">
-              <Label>{t("settings.delayProfilePreferred")}</Label>
+              <Label className="text-[var(--scry-ink2)]">{t("settings.delayProfilePreferred")}</Label>
               <RadioGroup
-                className="flex gap-4"
+                className="flex flex-wrap gap-4"
                 value={draft.preferred_protocol}
                 onValueChange={(value) =>
                   updateField(
@@ -265,7 +284,7 @@ export function SettingsDelayProfilesSection({
                       "settings-delay-profile-preferred",
                       proto,
                     )}
-                    className="flex items-center gap-2 text-sm"
+                    className="flex items-center gap-2 text-sm text-[var(--scry-ink2)]"
                   >
                     <RadioGroupItem
                       id={selectorId("settings-delay-profile-preferred", proto)}
@@ -275,28 +294,28 @@ export function SettingsDelayProfilesSection({
                   </label>
                 ))}
               </RadioGroup>
-              <p className="text-muted-foreground text-xs">
+              <p className={`text-xs ${DELAY_MUTED_TEXT_CLASS}`}>
                 {t("settings.delayProfilePreferredHelp")}
               </p>
             </div>
 
             {/* Minimum age (usenet) */}
             <div className="space-y-1.5">
-              <Label htmlFor="dp-min-age">{t("settings.delayProfileMinAge")}</Label>
+              <Label className="text-[var(--scry-ink2)]" htmlFor="dp-min-age">{t("settings.delayProfileMinAge")}</Label>
               <Input
                 id="dp-min-age"
                 {...integerInputProps}
                 value={draft.min_age_minutes}
                 onChange={(e) => updateField("min_age_minutes", parseIntegerInput(e.target.value))}
               />
-              <p className="text-muted-foreground text-xs">
+              <p className={`text-xs ${DELAY_MUTED_TEXT_CLASS}`}>
                 {t("settings.delayProfileMinAgeHelp")}
               </p>
             </div>
 
             {/* Bypass score threshold */}
             <div className="space-y-1.5">
-              <Label htmlFor="dp-bypass">{t("settings.delayProfileBypassLabel")}</Label>
+              <Label className="text-[var(--scry-ink2)]" htmlFor="dp-bypass">{t("settings.delayProfileBypassLabel")}</Label>
               <Input
                 id="dp-bypass"
                 {...integerInputProps}
@@ -310,17 +329,17 @@ export function SettingsDelayProfilesSection({
                 }}
                 placeholder={t("settings.delayProfileBypassPlaceholder")}
               />
-              <p className="text-muted-foreground text-xs">
+              <p className={`text-xs ${DELAY_MUTED_TEXT_CLASS}`}>
                 {t("settings.delayProfileBypassHelp")}
               </p>
             </div>
 
             {/* Applies to facets */}
             <div className="space-y-1.5">
-              <Label>{t("settings.delayProfileFacetsLabel")}</Label>
-              <div className="flex gap-4">
+              <Label className="text-[var(--scry-ink2)]">{t("settings.delayProfileFacetsLabel")}</Label>
+              <div className="flex flex-wrap gap-4">
                 {FACET_OPTIONS.map((facet) => (
-                  <label key={facet} className="flex items-center gap-2 text-sm">
+                  <label key={facet} className="flex items-center gap-2 text-sm text-[var(--scry-ink2)]">
                     <Checkbox
                       id={selectorId("settings-delay-profile-facet", facet)}
                       checked={draft.applies_to_facets.includes(facet)}
@@ -330,14 +349,14 @@ export function SettingsDelayProfilesSection({
                   </label>
                 ))}
               </div>
-              <p className="text-muted-foreground text-xs">
+              <p className={`text-xs ${DELAY_MUTED_TEXT_CLASS}`}>
                 {t("settings.delayProfileFacetsHelp")}
               </p>
             </div>
 
             {/* Tags */}
             <div className="space-y-1.5">
-              <Label htmlFor="dp-tags">{t("settings.delayProfileTagsLabel")}</Label>
+              <Label className="text-[var(--scry-ink2)]" htmlFor="dp-tags">{t("settings.delayProfileTagsLabel")}</Label>
               <Input
                 id="dp-tags"
                 value={draft.tags.join(", ")}
@@ -352,27 +371,27 @@ export function SettingsDelayProfilesSection({
                 }
                 placeholder={t("settings.delayProfileTagsPlaceholder")}
               />
-              <p className="text-muted-foreground text-xs">
+              <p className={`text-xs ${DELAY_MUTED_TEXT_CLASS}`}>
                 {t("settings.delayProfileTagsHelp")}
               </p>
             </div>
 
             {/* Priority */}
             <div className="space-y-1.5">
-              <Label htmlFor="dp-priority">{t("settings.delayProfilePriorityLabel")}</Label>
+              <Label className="text-[var(--scry-ink2)]" htmlFor="dp-priority">{t("settings.delayProfilePriorityLabel")}</Label>
               <Input
                 id="dp-priority"
                 {...integerInputProps}
                 value={draft.priority}
                 onChange={(e) => updateField("priority", parseIntegerInput(e.target.value))}
               />
-              <p className="text-muted-foreground text-xs">
+              <p className={`text-xs ${DELAY_MUTED_TEXT_CLASS}`}>
                 {t("settings.delayProfilePriorityHelp")}
               </p>
             </div>
 
             {/* Enabled */}
-            <label className="flex items-center gap-2 text-sm">
+            <label className="flex items-center gap-2 text-sm text-[var(--scry-ink2)]">
               <Checkbox
                 id="settings-delay-profile-enabled"
                 checked={draft.enabled}
@@ -384,7 +403,7 @@ export function SettingsDelayProfilesSection({
             </label>
 
             {/* Actions */}
-            <div className="flex gap-2 pt-2">
+            <div className="flex flex-wrap gap-2 pt-2">
               <Button id="settings-delay-profile-save" type="submit" disabled={saving}>
                 {saving
                   ? t("label.saving")
@@ -397,8 +416,8 @@ export function SettingsDelayProfilesSection({
               </Button>
             </div>
           </form>
-        </CardContent>
-      </Card>
+        </div>
+      </section>
       {editorMode === "edit" ? (
         <div className="flex justify-center">
           <Button

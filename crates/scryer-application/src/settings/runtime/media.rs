@@ -16,6 +16,10 @@ pub struct MediaSettings {
     pub nfo_write_on_import: bool,
     pub plexmatch_write_on_import: Option<bool>,
     pub import_mode: ImportMode,
+    pub set_permissions_linux: bool,
+    pub file_chmod: Option<String>,
+    pub folder_chmod: Option<String>,
+    pub chown_group: Option<String>,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UpdateMediaSettings {
@@ -35,6 +39,10 @@ pub struct UpdateMediaSettings {
     pub nfo_write_on_import: Option<bool>,
     pub plexmatch_write_on_import: Option<bool>,
     pub import_mode: Option<ImportMode>,
+    pub set_permissions_linux: Option<bool>,
+    pub file_chmod: Option<String>,
+    pub folder_chmod: Option<String>,
+    pub chown_group: Option<String>,
 }
 fn rename_template_global_key(facet: &MediaFacet) -> &'static str {
     match facet {
@@ -89,6 +97,44 @@ fn parse_import_mode_setting(raw: Option<String>) -> AppResult<Option<ImportMode
     })
     .transpose()
 }
+
+fn normalize_chmod_setting(raw: Option<String>, key_name: &str) -> AppResult<Option<String>> {
+    let Some(value) = normalize_optional_string(raw) else {
+        return Ok(None);
+    };
+    validate_chmod_setting(&value, key_name)?;
+    Ok(Some(value))
+}
+
+fn validate_chmod_setting(value: &str, key_name: &str) -> AppResult<()> {
+    let len = value.len();
+    if !(len == 3 || len == 4) || !value.bytes().all(|byte| (b'0'..=b'7').contains(&byte)) {
+        return Err(AppError::Validation(format!(
+            "invalid {key_name} setting value '{value}': expected a 3 or 4 digit octal mask"
+        )));
+    }
+    Ok(())
+}
+
+fn normalize_chown_group_setting(raw: Option<String>) -> AppResult<Option<String>> {
+    let Some(value) = normalize_optional_string(raw) else {
+        return Ok(None);
+    };
+    if value.contains('\0') {
+        return Err(AppError::Validation(
+            "invalid permissions.chown_group setting value: group cannot contain NUL".to_string(),
+        ));
+    }
+    if value.chars().all(|ch| ch.is_ascii_digit()) {
+        value.parse::<u32>().map_err(|_| {
+            AppError::Validation(format!(
+                "invalid permissions.chown_group setting value '{value}': numeric gid is outside range"
+            ))
+        })?;
+    }
+    Ok(Some(value))
+}
+
 fn extract_languages_from_required_audio_rego(rego: &str) -> Vec<String> {
     for line in rego.lines() {
         let trimmed = line.trim();
@@ -216,6 +262,78 @@ impl AppUseCase {
         }
 
         Ok(ImportMode::HardlinkOrCopy)
+    }
+
+    async fn resolve_import_permission_string_setting(
+        &self,
+        key_name: &str,
+        library_id: Option<&str>,
+        facet: &MediaFacet,
+    ) -> AppResult<Option<String>> {
+        if let Some(library_id) = library_id
+            && let Some(value) = self
+                .read_setting_string_value_explicit(key_name, Some(library_id))
+                .await?
+        {
+            return Ok(Some(value));
+        }
+
+        if let Some(value) = self
+            .read_setting_string_value_explicit(key_name, Some(facet.as_str()))
+            .await?
+        {
+            return Ok(Some(value));
+        }
+
+        self.read_setting_string_value(key_name, None).await
+    }
+
+    pub(crate) async fn resolve_import_file_permissions(
+        &self,
+        library_id: Option<&str>,
+        facet: &MediaFacet,
+    ) -> AppResult<ImportFilePermissions> {
+        let set_permissions_linux = if let Some(library_id) = library_id
+            && let Some(value) = self
+                .read_setting_bool_value_explicit(SET_PERMISSIONS_LINUX_KEY, Some(library_id))
+                .await?
+        {
+            value
+        } else if let Some(value) = self
+            .read_setting_bool_value_explicit(SET_PERMISSIONS_LINUX_KEY, Some(facet.as_str()))
+            .await?
+        {
+            value
+        } else {
+            self.read_setting_bool_value(SET_PERMISSIONS_LINUX_KEY, None)
+                .await?
+                .unwrap_or(false)
+        };
+
+        let file_chmod = normalize_chmod_setting(
+            self.resolve_import_permission_string_setting(FILE_CHMOD_KEY, library_id, facet)
+                .await?,
+            FILE_CHMOD_KEY,
+        )?;
+        let mut folder_chmod = normalize_chmod_setting(
+            self.resolve_import_permission_string_setting(FOLDER_CHMOD_KEY, library_id, facet)
+                .await?,
+            FOLDER_CHMOD_KEY,
+        )?;
+        if set_permissions_linux && folder_chmod.is_none() {
+            folder_chmod = Some("755".to_string());
+        }
+        let chown_group = normalize_chown_group_setting(
+            self.resolve_import_permission_string_setting(CHOWN_GROUP_KEY, library_id, facet)
+                .await?,
+        )?;
+
+        Ok(ImportFilePermissions {
+            set_permissions_linux,
+            file_chmod,
+            folder_chmod,
+            chown_group,
+        })
     }
 }
 impl AppUseCase {
@@ -354,6 +472,7 @@ impl AppUseCase {
             .or(global_missing_metadata_policy)
             .or(legacy_missing_metadata_policy)
             .unwrap_or_else(|| DEFAULT_RENAME_MISSING_METADATA_POLICY.to_string());
+        let import_permissions = self.resolve_import_file_permissions(None, &facet).await?;
 
         Ok(MediaSettings {
             library_path,
@@ -430,6 +549,10 @@ impl AppUseCase {
                 None => None,
             },
             import_mode: self.resolve_import_mode(None, &facet).await?,
+            set_permissions_linux: import_permissions.set_permissions_linux,
+            file_chmod: import_permissions.file_chmod,
+            folder_chmod: import_permissions.folder_chmod,
+            chown_group: import_permissions.chown_group,
         })
     }
 }
@@ -628,6 +751,115 @@ impl AppUseCase {
                 )
                 .await?;
             changed_keys.push(IMPORT_MODE_KEY.to_string());
+        }
+
+        if let Some(value) = input.set_permissions_linux {
+            self.services
+                .config
+                .settings
+                .upsert_setting_json(
+                    SETTINGS_SCOPE_SYSTEM,
+                    SET_PERMISSIONS_LINUX_KEY,
+                    Some(facet.as_str().to_string()),
+                    encode_setting_json(&value)?,
+                    SETTINGS_SOURCE_TYPED_GRAPHQL,
+                    Some(actor.id.clone()),
+                )
+                .await?;
+            changed_keys.push(SET_PERMISSIONS_LINUX_KEY.to_string());
+        }
+
+        if input.file_chmod.is_some() {
+            match normalize_chmod_setting(input.file_chmod, FILE_CHMOD_KEY)? {
+                Some(value) => {
+                    self.services
+                        .config
+                        .settings
+                        .upsert_setting_json(
+                            SETTINGS_SCOPE_SYSTEM,
+                            FILE_CHMOD_KEY,
+                            Some(facet.as_str().to_string()),
+                            encode_setting_json(&value)?,
+                            SETTINGS_SOURCE_TYPED_GRAPHQL,
+                            Some(actor.id.clone()),
+                        )
+                        .await?;
+                }
+                None => {
+                    self.services
+                        .config
+                        .settings
+                        .delete_setting_value(
+                            SETTINGS_SCOPE_SYSTEM,
+                            FILE_CHMOD_KEY,
+                            Some(facet.as_str().to_string()),
+                        )
+                        .await?;
+                }
+            }
+            changed_keys.push(FILE_CHMOD_KEY.to_string());
+        }
+
+        if input.folder_chmod.is_some() {
+            match normalize_chmod_setting(input.folder_chmod, FOLDER_CHMOD_KEY)? {
+                Some(value) => {
+                    self.services
+                        .config
+                        .settings
+                        .upsert_setting_json(
+                            SETTINGS_SCOPE_SYSTEM,
+                            FOLDER_CHMOD_KEY,
+                            Some(facet.as_str().to_string()),
+                            encode_setting_json(&value)?,
+                            SETTINGS_SOURCE_TYPED_GRAPHQL,
+                            Some(actor.id.clone()),
+                        )
+                        .await?;
+                }
+                None => {
+                    self.services
+                        .config
+                        .settings
+                        .delete_setting_value(
+                            SETTINGS_SCOPE_SYSTEM,
+                            FOLDER_CHMOD_KEY,
+                            Some(facet.as_str().to_string()),
+                        )
+                        .await?;
+                }
+            }
+            changed_keys.push(FOLDER_CHMOD_KEY.to_string());
+        }
+
+        if input.chown_group.is_some() {
+            match normalize_chown_group_setting(input.chown_group)? {
+                Some(value) => {
+                    self.services
+                        .config
+                        .settings
+                        .upsert_setting_json(
+                            SETTINGS_SCOPE_SYSTEM,
+                            CHOWN_GROUP_KEY,
+                            Some(facet.as_str().to_string()),
+                            encode_setting_json(&value)?,
+                            SETTINGS_SOURCE_TYPED_GRAPHQL,
+                            Some(actor.id.clone()),
+                        )
+                        .await?;
+                }
+                None => {
+                    self.services
+                        .config
+                        .settings
+                        .delete_setting_value(
+                            SETTINGS_SCOPE_SYSTEM,
+                            CHOWN_GROUP_KEY,
+                            Some(facet.as_str().to_string()),
+                        )
+                        .await?;
+                }
+            }
+            changed_keys.push(CHOWN_GROUP_KEY.to_string());
         }
 
         if facet == MediaFacet::Anime {

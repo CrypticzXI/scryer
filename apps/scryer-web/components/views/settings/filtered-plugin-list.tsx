@@ -18,8 +18,16 @@ import {
 import { useTranslate } from "@/lib/context/translate-context";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
+
+const FILTERED_PLUGIN_PANEL_CLASS =
+  "flex min-h-0 flex-col overflow-hidden rounded-[14px] border border-[var(--scry-border)] bg-[var(--scry-surf)] shadow-[0_10px_24px_rgba(0,0,0,0.16)]";
+const FILTERED_PLUGIN_HEADER_CLASS =
+  "flex flex-row items-center justify-between gap-2 border-b border-[var(--scry-border3)] bg-[linear-gradient(180deg,rgba(255,255,255,0.035),rgba(255,255,255,0))] px-4 py-3";
+const FILTERED_PLUGIN_TITLE_CLASS =
+  "text-[15px] font-semibold text-[var(--scry-ink2)]";
+const FILTERED_PLUGIN_BODY_CLASS = "space-y-2 p-4";
+const FILTERED_PLUGIN_MUTED_CLASS = "text-[var(--scry-muted3)]";
 
 /** Plugin `pluginType` values that belong to each provider-catalog family. */
 const FAMILY_PLUGIN_TYPES: Record<ProviderCatalogFamily, string[]> = {
@@ -83,11 +91,11 @@ export function FilteredPluginList({
   );
 
   return (
-    <Card className={cn("flex min-h-0 flex-col", className)}>
-      <CardHeader className="flex flex-row items-center justify-between gap-2 space-y-0">
-        <CardTitle className="text-base">
+    <section className={cn(FILTERED_PLUGIN_PANEL_CLASS, className)}>
+      <div className={FILTERED_PLUGIN_HEADER_CLASS}>
+        <h2 className={FILTERED_PLUGIN_TITLE_CLASS}>
           {title ?? t("settings.plugins")}
-        </CardTitle>
+        </h2>
         <Button
           type="button"
           variant="secondary"
@@ -101,18 +109,18 @@ export function FilteredPluginList({
             className={cn("h-4 w-4", pluginsRefreshing && "animate-spin")}
           />
         </Button>
-      </CardHeader>
-      <CardContent className="space-y-2">
+      </div>
+      <div className={FILTERED_PLUGIN_BODY_CLASS}>
         {pluginsError ? (
           <p className="text-xs text-red-400">{pluginsError}</p>
         ) : null}
         {pluginsLoading ? (
-          <div className="flex items-center gap-2 py-6 text-sm text-muted-foreground">
+          <div className={`flex items-center gap-2 py-6 text-sm ${FILTERED_PLUGIN_MUTED_CLASS}`}>
             <Loader2 className="h-4 w-4 animate-spin" />
             {t("label.loading")}
           </div>
         ) : familyPlugins.length === 0 ? (
-          <p className="py-6 text-sm text-muted-foreground">
+          <p className={`py-6 text-sm ${FILTERED_PLUGIN_MUTED_CLASS}`}>
             {t("settings.pluginsNoAvailable")}
           </p>
         ) : (
@@ -133,7 +141,7 @@ export function FilteredPluginList({
             return (
               <div
                 key={plugin.id}
-                className="rounded-[10px] border border-[var(--scry-border2)] bg-[var(--scry-inset)] p-3"
+                className="rounded-[12px] border border-[var(--scry-line2)] bg-[var(--scry-card2)] p-3"
               >
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0">
@@ -149,7 +157,7 @@ export function FilteredPluginList({
                       </span>
                     </div>
                     {plugin.description ? (
-                      <p className="mt-0.5 line-clamp-2 text-[11.5px] leading-snug text-[var(--scry-muted)]">
+                      <p className={`mt-0.5 line-clamp-2 text-[11.5px] leading-snug ${FILTERED_PLUGIN_MUTED_CLASS}`}>
                         {plugin.description}
                       </p>
                     ) : null}
@@ -271,7 +279,7 @@ export function FilteredPluginList({
             );
           })
         )}
-      </CardContent>
-    </Card>
+      </div>
+    </section>
   );
 }

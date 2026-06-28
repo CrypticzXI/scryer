@@ -11,6 +11,9 @@ import { mediaSettingsInitQuery } from "@/lib/graphql/queries";
 import {
   DEFAULT_MOVIE_LIBRARY_PATH,
   DEFAULT_SERIES_LIBRARY_PATH,
+  CHOWN_GROUP_KEY,
+  FILE_CHMOD_KEY,
+  FOLDER_CHMOD_KEY,
   IMPORT_MODE_KEY,
   NFO_WRITE_ON_IMPORT_ANIME_KEY,
   NFO_WRITE_ON_IMPORT_MOVIE_KEY,
@@ -22,6 +25,7 @@ import {
   QUALITY_PROFILE_INHERIT_VALUE,
   RENAME_ENABLED_KEY,
   SCORING_PERSONA_KEY,
+  SET_PERMISSIONS_LINUX_KEY,
   QUALITY_PROFILE_SCOPE_IDS,
 } from "@/lib/constants/settings";
 import type { ViewId } from "@/components/root/types";
@@ -134,6 +138,16 @@ export type UseMediaSettingsResult = {
   setImportMode: React.Dispatch<
     React.SetStateAction<Record<ViewCategoryId, ImportMode>>
   >;
+  setPermissionsLinux: Record<ViewCategoryId, string>;
+  setSetPermissionsLinux: React.Dispatch<
+    React.SetStateAction<Record<ViewCategoryId, string>>
+  >;
+  fileChmod: Record<ViewCategoryId, string>;
+  setFileChmod: React.Dispatch<React.SetStateAction<Record<ViewCategoryId, string>>>;
+  folderChmod: Record<ViewCategoryId, string>;
+  setFolderChmod: React.Dispatch<React.SetStateAction<Record<ViewCategoryId, string>>>;
+  chownGroup: Record<ViewCategoryId, string>;
+  setChownGroup: React.Dispatch<React.SetStateAction<Record<ViewCategoryId, string>>>;
   saveSetting: (scope: string, scopeId: string | undefined, keyName: string, value: string) => void;
   saveCategoryQualityProfileOverride: (value: string) => Promise<void> | void;
   saveCategoryScoringPersonaOverride: (
@@ -307,6 +321,28 @@ export function useMediaSettings({
     series: "false",
     anime: "false",
   });
+  const [setPermissionsLinux, setSetPermissionsLinux] = React.useState<
+    Record<ViewCategoryId, string>
+  >({
+    movie: "false",
+    series: "false",
+    anime: "false",
+  });
+  const [fileChmod, setFileChmod] = React.useState<Record<ViewCategoryId, string>>({
+    movie: "",
+    series: "",
+    anime: "",
+  });
+  const [folderChmod, setFolderChmod] = React.useState<Record<ViewCategoryId, string>>({
+    movie: "",
+    series: "",
+    anime: "",
+  });
+  const [chownGroup, setChownGroup] = React.useState<Record<ViewCategoryId, string>>({
+    movie: "",
+    series: "",
+    anime: "",
+  });
 
   const saveRootFolders = React.useCallback(
     (folders: RootFolderOption[]) => {
@@ -394,6 +430,30 @@ export function useMediaSettings({
           input = {
             scope: (_scopeId ?? activeQualityScopeId) as ViewCategoryId,
             importMode: value,
+          };
+          break;
+        case SET_PERMISSIONS_LINUX_KEY:
+          input = {
+            scope: (_scopeId ?? activeQualityScopeId) as ViewCategoryId,
+            setPermissionsLinux: boolValue,
+          };
+          break;
+        case FILE_CHMOD_KEY:
+          input = {
+            scope: (_scopeId ?? activeQualityScopeId) as ViewCategoryId,
+            fileChmod: value,
+          };
+          break;
+        case FOLDER_CHMOD_KEY:
+          input = {
+            scope: (_scopeId ?? activeQualityScopeId) as ViewCategoryId,
+            folderChmod: value,
+          };
+          break;
+        case CHOWN_GROUP_KEY:
+          input = {
+            scope: (_scopeId ?? activeQualityScopeId) as ViewCategoryId,
+            chownGroup: value,
           };
           break;
         default:
@@ -678,6 +738,35 @@ export function useMediaSettings({
             ? previous
             : { ...previous, [mediaSettingsScopeId]: nextMode };
         });
+
+        setSetPermissionsLinux((previous) =>
+          updateFacetScopedStringRecord(
+            previous,
+            mediaSettingsScopeId,
+            mediaSettings.setPermissionsLinux ? "true" : "false",
+          ),
+        );
+        setFileChmod((previous) =>
+          updateFacetScopedStringRecord(
+            previous,
+            mediaSettingsScopeId,
+            mediaSettings.fileChmod ?? "",
+          ),
+        );
+        setFolderChmod((previous) =>
+          updateFacetScopedStringRecord(
+            previous,
+            mediaSettingsScopeId,
+            mediaSettings.folderChmod ?? "",
+          ),
+        );
+        setChownGroup((previous) =>
+          updateFacetScopedStringRecord(
+            previous,
+            mediaSettingsScopeId,
+            mediaSettings.chownGroup ?? "",
+          ),
+        );
       }
     },
     [
@@ -1129,6 +1218,10 @@ export function useMediaSettings({
         PLEXMATCH_WRITE_ON_IMPORT_SERIES_KEY,
         PLEXMATCH_WRITE_ON_IMPORT_ANIME_KEY,
         IMPORT_MODE_KEY,
+        SET_PERMISSIONS_LINUX_KEY,
+        FILE_CHMOD_KEY,
+        FOLDER_CHMOD_KEY,
+        CHOWN_GROUP_KEY,
         ...FACET_REGISTRY.map((f) => f.rootFoldersKey),
         ...FACET_REGISTRY.map((f) => f.folderSettingKey),
       ]),
@@ -1191,6 +1284,14 @@ export function useMediaSettings({
     setPlexmatchWriteOnImport,
     importMode,
     setImportMode,
+    setPermissionsLinux,
+    setSetPermissionsLinux,
+    fileChmod,
+    setFileChmod,
+    folderChmod,
+    setFolderChmod,
+    chownGroup,
+    setChownGroup,
     saveSetting,
     saveCategoryQualityProfileOverride,
     saveCategoryScoringPersonaOverride,

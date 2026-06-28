@@ -272,6 +272,10 @@ export type MediaSettings = {
   nfoWriteOnImport: boolean;
   plexmatchWriteOnImport: boolean | null;
   importMode: ImportMode;
+  setPermissionsLinux: boolean;
+  fileChmod: string | null;
+  folderChmod: string | null;
+  chownGroup: string | null;
 };
 
 export type LibraryPaths = {

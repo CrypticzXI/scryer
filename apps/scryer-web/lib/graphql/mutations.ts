@@ -955,7 +955,11 @@ const mediaSettingsFieldSelection = `
     monitorFillerMovies
     nfoWriteOnImport
     plexmatchWriteOnImport
-    importMode`;
+    importMode
+    setPermissionsLinux
+    fileChmod
+    folderChmod
+    chownGroup`;
 
 const libraryPathsFieldSelection = `
     moviePath

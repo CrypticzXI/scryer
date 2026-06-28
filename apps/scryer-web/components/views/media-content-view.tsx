@@ -2003,6 +2003,16 @@ export function MediaContentView({
     setImportMode: React.Dispatch<
       React.SetStateAction<Record<ViewCategoryId, ImportMode>>
     >;
+    setPermissionsLinux: Record<ViewCategoryId, string>;
+    setSetPermissionsLinux: React.Dispatch<
+      React.SetStateAction<Record<ViewCategoryId, string>>
+    >;
+    fileChmod: Record<ViewCategoryId, string>;
+    setFileChmod: React.Dispatch<React.SetStateAction<Record<ViewCategoryId, string>>>;
+    folderChmod: Record<ViewCategoryId, string>;
+    setFolderChmod: React.Dispatch<React.SetStateAction<Record<ViewCategoryId, string>>>;
+    chownGroup: Record<ViewCategoryId, string>;
+    setChownGroup: React.Dispatch<React.SetStateAction<Record<ViewCategoryId, string>>>;
     qualityProfileInheritValue: string;
     toProfileOptions: (
       profiles: ParsedQualityProfile[],
@@ -2255,6 +2265,14 @@ export function MediaContentView({
     setPlexmatchWriteOnImport,
     importMode,
     setImportMode,
+    setPermissionsLinux,
+    setSetPermissionsLinux,
+    fileChmod,
+    setFileChmod,
+    folderChmod,
+    setFolderChmod,
+    chownGroup,
+    setChownGroup,
     qualityProfileInheritValue,
     toProfileOptions,
     handleFacetPersonaSave,
@@ -2913,6 +2931,51 @@ export function MediaContentView({
     [activeQualityScopeId, saveSetting, setImportMode],
   );
 
+  const handleSetPermissionsLinuxChange = React.useCallback(
+    (checked: boolean) => {
+      const value = checked ? "true" : "false";
+      setSetPermissionsLinux((previous) => ({
+        ...previous,
+        [activeQualityScopeId]: value,
+      }));
+      saveSetting("system", activeQualityScopeId, "permissions.set_linux", value);
+    },
+    [activeQualityScopeId, saveSetting, setSetPermissionsLinux],
+  );
+
+  const handleFileChmodChange = React.useCallback(
+    (value: string) => {
+      setFileChmod((previous) => ({
+        ...previous,
+        [activeQualityScopeId]: value,
+      }));
+      saveSetting("system", activeQualityScopeId, "permissions.file_chmod", value);
+    },
+    [activeQualityScopeId, saveSetting, setFileChmod],
+  );
+
+  const handleFolderChmodChange = React.useCallback(
+    (value: string) => {
+      setFolderChmod((previous) => ({
+        ...previous,
+        [activeQualityScopeId]: value,
+      }));
+      saveSetting("system", activeQualityScopeId, "permissions.folder_chmod", value);
+    },
+    [activeQualityScopeId, saveSetting, setFolderChmod],
+  );
+
+  const handleChownGroupChange = React.useCallback(
+    (value: string) => {
+      setChownGroup((previous) => ({
+        ...previous,
+        [activeQualityScopeId]: value,
+      }));
+      saveSetting("system", activeQualityScopeId, "permissions.chown_group", value);
+    },
+    [activeQualityScopeId, saveSetting, setChownGroup],
+  );
+
   const handleIndexerCategoriesChange = React.useCallback(
     (indexerId: string, categories: string[]) => {
       void updateIndexerRoutingForScope(indexerId, {
@@ -3195,6 +3258,14 @@ export function MediaContentView({
           handlePlexmatchWriteChange={handlePlexmatchWriteChange}
           importMode={importMode}
           handleImportModeChange={handleImportModeChange}
+          setPermissionsLinux={setPermissionsLinux}
+          handleSetPermissionsLinuxChange={handleSetPermissionsLinuxChange}
+          fileChmod={fileChmod}
+          handleFileChmodChange={handleFileChmodChange}
+          folderChmod={folderChmod}
+          handleFolderChmodChange={handleFolderChmodChange}
+          chownGroup={chownGroup}
+          handleChownGroupChange={handleChownGroupChange}
         />
           ) : null}
         </FacetSettingsSection>

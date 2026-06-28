@@ -103,6 +103,10 @@ pub const NFO_WRITE_ON_IMPORT_ANIME_KEY: &str = "nfo.write_on_import.anime";
 pub const PLEXMATCH_WRITE_ON_IMPORT_SERIES_KEY: &str = "plexmatch.write_on_import.series";
 pub const PLEXMATCH_WRITE_ON_IMPORT_ANIME_KEY: &str = "plexmatch.write_on_import.anime";
 pub const IMPORT_MODE_KEY: &str = "import.mode";
+pub const SET_PERMISSIONS_LINUX_KEY: &str = "permissions.set_linux";
+pub const FILE_CHMOD_KEY: &str = "permissions.file_chmod";
+pub const FOLDER_CHMOD_KEY: &str = "permissions.folder_chmod";
+pub const CHOWN_GROUP_KEY: &str = "permissions.chown_group";
 
 pub const POST_PROCESSING_SCRIPT_MOVIE_KEY: &str = "post_processing.script.movie";
 pub const POST_PROCESSING_SCRIPT_SERIES_KEY: &str = "post_processing.script.series";

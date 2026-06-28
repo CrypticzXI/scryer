@@ -1064,8 +1064,14 @@ impl AppUseCase {
         }
         if let Some(requested_library_slug) = library_slug {
             let normalized_slug = requested_library_slug.trim();
-            authorized_libraries
-                .retain(|library| library.slug.eq_ignore_ascii_case(normalized_slug));
+            if normalized_slug
+                .eq_ignore_ascii_case(scryer_domain::default_library_slug_for_facet(&facet))
+            {
+                authorized_libraries.retain(|library| library.is_default);
+            } else {
+                authorized_libraries
+                    .retain(|library| library.slug.eq_ignore_ascii_case(normalized_slug));
+            }
         }
         let library_ids = authorized_libraries
             .into_iter()

@@ -191,7 +191,7 @@ function Sidebar({
           data-sidebar="sidebar"
           data-slot="sidebar"
           data-mobile="true"
-          className="bg-sidebar text-sidebar-foreground w-(--sidebar-width) p-0 pt-safe-comfort [&>button]:hidden"
+          className="w-(--sidebar-width) bg-[var(--scry-bg)] p-0 pt-safe-comfort text-sidebar-foreground [&>button]:hidden"
           style={
             {
               "--sidebar-width": SIDEBAR_WIDTH_MOBILE,
@@ -203,7 +203,9 @@ function Sidebar({
             <SheetTitle>{mobileTitle}</SheetTitle>
             <SheetDescription>{mobileDescription}</SheetDescription>
           </SheetHeader>
-          <div className="flex h-full w-full flex-col">{children}</div>
+          <div className="flex h-full w-full flex-col bg-[var(--scry-bg)]">
+            {children}
+          </div>
         </SheetContent>
       </Sheet>
     )

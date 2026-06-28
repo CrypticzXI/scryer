@@ -431,6 +431,8 @@ async fn import_additional_movie_download(
     let file_result = import_file_with_record_progress(
         app,
         import_id,
+        &title.library_id,
+        &title.facet,
         source_video,
         &dest_path,
         import_mode,
@@ -945,6 +947,8 @@ async fn import_movie_download(
     let file_result = import_file_with_record_progress(
         app,
         import_id,
+        &title.library_id,
+        &title.facet,
         &source_video,
         &dest_path,
         import_mode,
@@ -1641,6 +1645,8 @@ async fn import_series_movie_download(
     let file_result = import_file_with_record_progress(
         app,
         import_id,
+        &title.library_id,
+        &title.facet,
         &source_video,
         &dest_path,
         import_mode,

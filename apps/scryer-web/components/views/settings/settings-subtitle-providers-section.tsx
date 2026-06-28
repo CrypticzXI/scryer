@@ -10,7 +10,6 @@ import {
   Trash2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -73,6 +72,15 @@ const SUBTITLE_FACETS = [
   { value: "series", labelKey: "label.series" },
   { value: "anime", labelKey: "label.anime" },
 ] as const;
+
+const PROVIDER_PANEL_CLASS =
+  "overflow-hidden rounded-[14px] border border-[var(--scry-border)] bg-[var(--scry-surf)] shadow-[0_10px_24px_rgba(0,0,0,0.16)]";
+const PROVIDER_PANEL_HEADER_CLASS =
+  "border-b border-[var(--scry-border3)] bg-[linear-gradient(180deg,rgba(255,255,255,0.035),rgba(255,255,255,0))] px-4 py-3";
+const PROVIDER_PANEL_TITLE_CLASS =
+  "text-[15px] font-semibold text-[var(--scry-ink2)]";
+const PROVIDER_PANEL_BODY_CLASS = "p-4 sm:p-5";
+const PROVIDER_MUTED_TEXT_CLASS = "text-[var(--scry-muted3)]";
 
 function looksLikeSecretConfigKey(key: string): boolean {
   const normalized = key.trim().toLowerCase();
@@ -148,7 +156,7 @@ function SubtitleProviderStatusCell({
 }) {
   const t = useTranslate();
   if (!provider.isEnabled) {
-    return <span className="text-muted-foreground">{t("label.disabled")}</span>;
+    return <span className={PROVIDER_MUTED_TEXT_CLASS}>{t("label.disabled")}</span>;
   }
 
   if (provider.disabledUntil) {
@@ -179,7 +187,7 @@ function SubtitleProviderStatusCell({
           })}
         </span>
         {provider.lastError ? (
-          <p className="max-w-sm text-xs text-muted-foreground">
+          <p className={`max-w-sm text-xs ${PROVIDER_MUTED_TEXT_CLASS}`}>
             {provider.lastError}
           </p>
         ) : null}
@@ -189,14 +197,14 @@ function SubtitleProviderStatusCell({
 
   if (provider.lastHealthStatus) {
     return (
-      <span className="text-muted-foreground">
+      <span className={PROVIDER_MUTED_TEXT_CLASS}>
         {provider.lastHealthStatus}
       </span>
     );
   }
 
   return (
-    <span className="text-muted-foreground">
+    <span className={PROVIDER_MUTED_TEXT_CLASS}>
       {t("settings.subtitleProviderNoActivity")}
     </span>
   );
@@ -209,7 +217,7 @@ function SubtitleProviderFacetChips({
 }) {
   const t = useTranslate();
   if (facets.length === 0) {
-    return <span className="text-muted-foreground">-</span>;
+    return <span className={PROVIDER_MUTED_TEXT_CLASS}>-</span>;
   }
 
   return (
@@ -221,7 +229,7 @@ function SubtitleProviderFacetChips({
         return (
           <span
             key={facet}
-            className="rounded bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground"
+            className="rounded-full border border-[var(--scry-border3)] bg-[var(--scry-inset)] px-2 py-0.5 text-[11px] text-[var(--scry-ink2)]"
           >
             {t(labelKey)}
           </span>
@@ -253,7 +261,7 @@ function DynamicSubtitleConfigField({
 
   if (field.fieldType === "bool") {
     return (
-      <label className="flex items-center gap-2 rounded-lg border border-border/60 bg-card/40 px-3 py-2">
+      <label className="flex items-center gap-2 rounded-[10px] border border-[var(--scry-border3)] bg-[var(--scry-inset)] px-3 py-2">
         <Checkbox
           id={fieldId}
           checked={value === "true"}
@@ -262,12 +270,14 @@ function DynamicSubtitleConfigField({
           }
         />
         <div className="space-y-1">
-          <span className="inline-flex items-center gap-2 text-sm font-medium">
+          <span className="inline-flex items-center gap-2 text-sm font-medium text-[var(--scry-ink2)]">
             {field.label}
             {requiredMarker}
           </span>
           {field.helpText ? (
-            <p className="text-xs text-muted-foreground">{field.helpText}</p>
+            <p className={`text-xs ${PROVIDER_MUTED_TEXT_CLASS}`}>
+              {field.helpText}
+            </p>
           ) : null}
         </div>
       </label>
@@ -277,7 +287,10 @@ function DynamicSubtitleConfigField({
   if (field.fieldType === "select" && field.options.length > 0) {
     return (
       <label>
-        <Label htmlFor={fieldId} className="mb-2 inline-flex items-center gap-2">
+        <Label
+          htmlFor={fieldId}
+          className="mb-2 inline-flex items-center gap-2 text-[var(--scry-ink2)]"
+        >
           {field.label}
           {requiredMarker}
         </Label>
@@ -297,7 +310,9 @@ function DynamicSubtitleConfigField({
           </SelectContent>
         </Select>
         {field.helpText ? (
-          <p className="mt-1 text-xs text-muted-foreground">{field.helpText}</p>
+          <p className={`mt-1 text-xs ${PROVIDER_MUTED_TEXT_CLASS}`}>
+            {field.helpText}
+          </p>
         ) : null}
       </label>
     );
@@ -306,7 +321,10 @@ function DynamicSubtitleConfigField({
   if (field.fieldType === "multiline") {
     return (
       <label>
-        <Label htmlFor={fieldId} className="mb-2 inline-flex items-center gap-2">
+        <Label
+          htmlFor={fieldId}
+          className="mb-2 inline-flex items-center gap-2 text-[var(--scry-ink2)]"
+        >
           {field.label}
           {requiredMarker}
         </Label>
@@ -319,7 +337,9 @@ function DynamicSubtitleConfigField({
           rows={6}
         />
         {field.helpText ? (
-          <p className="mt-1 text-xs text-muted-foreground">{field.helpText}</p>
+          <p className={`mt-1 text-xs ${PROVIDER_MUTED_TEXT_CLASS}`}>
+            {field.helpText}
+          </p>
         ) : null}
       </label>
     );
@@ -330,7 +350,10 @@ function DynamicSubtitleConfigField({
 
   return (
     <label>
-      <Label htmlFor={fieldId} className="mb-2 inline-flex items-center gap-2">
+      <Label
+        htmlFor={fieldId}
+        className="mb-2 inline-flex items-center gap-2 text-[var(--scry-ink2)]"
+      >
         {field.label}
         {requiredMarker}
       </Label>
@@ -347,7 +370,9 @@ function DynamicSubtitleConfigField({
         }
       />
       {field.helpText ? (
-        <p className="mt-1 text-xs text-muted-foreground">{field.helpText}</p>
+        <p className={`mt-1 text-xs ${PROVIDER_MUTED_TEXT_CLASS}`}>
+          {field.helpText}
+        </p>
       ) : null}
     </label>
   );
@@ -485,28 +510,24 @@ export function SettingsSubtitleProvidersSection({
   );
 
   return (
-    <div id="settings-subtitle-providers-section" className="space-y-4 rounded-xl border border-border/60 bg-card/30 p-4">
-      <CardTitle className="flex items-center gap-2 text-base">
-        <PlugZap className="h-4 w-4" />
-        {t("settings.subtitleProviders")}
-      </CardTitle>
-
-      <div className="rounded border border-border">
-        <div className="border-b border-border px-3 py-2">
-          <CardTitle className="text-base">
+    <div id="settings-subtitle-providers-section" className="space-y-4">
+      <section className={PROVIDER_PANEL_CLASS}>
+        <div className={PROVIDER_PANEL_HEADER_CLASS}>
+          <h2 className={`flex items-center gap-2 ${PROVIDER_PANEL_TITLE_CLASS}`}>
+            <PlugZap className="h-4 w-4" />
             {t("settings.existingSubtitleProviders")}
-          </CardTitle>
+          </h2>
         </div>
         <div className="overflow-x-auto">
-          <Table>
+          <Table className="min-w-[920px]">
             <TableHeader>
-              <TableRow>
-                <TableHead>{t("label.name")}</TableHead>
-                <TableHead>{t("settings.subtitleProviderType")}</TableHead>
-                <TableHead className="text-center">{t("label.enabled")}</TableHead>
-                <TableHead>{t("settings.subtitleProviderFacets")}</TableHead>
-                <TableHead>{t("settings.subtitleProviderStatus")}</TableHead>
-                <TableHead className="text-right">{t("label.actions")}</TableHead>
+              <TableRow className="border-[var(--scry-border3)] bg-[var(--scry-inset)] hover:bg-[var(--scry-inset)]">
+                <TableHead className={`font-semibold ${PROVIDER_MUTED_TEXT_CLASS}`}>{t("label.name")}</TableHead>
+                <TableHead className={`font-semibold ${PROVIDER_MUTED_TEXT_CLASS}`}>{t("settings.subtitleProviderType")}</TableHead>
+                <TableHead className={`text-center font-semibold ${PROVIDER_MUTED_TEXT_CLASS}`}>{t("label.enabled")}</TableHead>
+                <TableHead className={`font-semibold ${PROVIDER_MUTED_TEXT_CLASS}`}>{t("settings.subtitleProviderFacets")}</TableHead>
+                <TableHead className={`font-semibold ${PROVIDER_MUTED_TEXT_CLASS}`}>{t("settings.subtitleProviderStatus")}</TableHead>
+                <TableHead className={`text-right font-semibold ${PROVIDER_MUTED_TEXT_CLASS}`}>{t("label.actions")}</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -514,7 +535,7 @@ export function SettingsSubtitleProvidersSection({
                 <TableRow>
                   <TableCell
                     colSpan={6}
-                    className="text-center text-sm text-muted-foreground"
+                    className={`text-center text-sm ${PROVIDER_MUTED_TEXT_CLASS}`}
                   >
                     {t("settings.subtitleProviderEmpty")}
                   </TableCell>
@@ -524,11 +545,14 @@ export function SettingsSubtitleProvidersSection({
                   <TableRow
                     key={provider.id}
                     id={selectorId("settings-subtitle-provider-row", provider.id)}
+                    className="border-[var(--scry-border3)] hover:bg-[var(--scry-hover)]"
                   >
-                    <TableCell className="font-medium">{provider.name}</TableCell>
-                    <TableCell>{provider.providerType}</TableCell>
+                    <TableCell className="font-medium text-[var(--scry-ink2)]">{provider.name}</TableCell>
+                    <TableCell className="text-[var(--scry-ink2)]">{provider.providerType}</TableCell>
                     <TableCell className="text-center">
-                      {provider.isEnabled ? t("label.enabled") : t("label.disabled")}
+                      <span className={provider.isEnabled ? "text-emerald-300" : PROVIDER_MUTED_TEXT_CLASS}>
+                        {provider.isEnabled ? t("label.enabled") : t("label.disabled")}
+                      </span>
                     </TableCell>
                     <TableCell>
                       <SubtitleProviderFacetChips facets={provider.enabledFacets ?? []} />
@@ -579,29 +603,30 @@ export function SettingsSubtitleProvidersSection({
             </TableBody>
           </Table>
         </div>
-      </div>
+      </section>
 
       {isEditorOpen ? (
         <>
           <form
             id="settings-subtitle-provider-form"
-            className="space-y-4 rounded-lg border border-border/60 p-4"
+            className={PROVIDER_PANEL_CLASS}
             onSubmit={submitProvider}
           >
-            <div className="flex items-center justify-between gap-3">
-              <CardTitle className="text-base">
+            <div className={`${PROVIDER_PANEL_HEADER_CLASS} flex items-center justify-between gap-3`}>
+              <h2 className={PROVIDER_PANEL_TITLE_CLASS}>
                 {isEditing
                   ? t("settings.subtitleProviderEdit")
                   : t("settings.subtitleProviderCreate")}
-              </CardTitle>
+              </h2>
               {mutatingProviderId ? (
-                <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+                <Loader2 className={`h-4 w-4 animate-spin ${PROVIDER_MUTED_TEXT_CLASS}`} />
               ) : null}
             </div>
 
+            <div className={`${PROVIDER_PANEL_BODY_CLASS} space-y-4`}>
             <div className="grid gap-4 md:grid-cols-2">
               <label>
-                <Label className="mb-2 block">{t("settings.subtitleProviderType")}</Label>
+                <Label className="mb-2 block text-[var(--scry-ink2)]">{t("settings.subtitleProviderType")}</Label>
                 <Select
                   value={normalizedProviderType}
                   onValueChange={handleProviderTypeChange}
@@ -620,7 +645,7 @@ export function SettingsSubtitleProvidersSection({
               </label>
 
               <label>
-                <Label className="mb-2 block">{t("label.name")}</Label>
+                <Label className="mb-2 block text-[var(--scry-ink2)]">{t("label.name")}</Label>
                 <Input
                   id="settings-subtitle-provider-name"
                   value={providerDraft.name}
@@ -636,7 +661,7 @@ export function SettingsSubtitleProvidersSection({
               </label>
             </div>
 
-            <label className="flex items-center gap-2">
+            <label className="flex items-center gap-2 text-[var(--scry-ink2)]">
               <Checkbox
                 id="settings-subtitle-provider-enabled"
                 checked={providerDraft.isEnabled}
@@ -651,12 +676,12 @@ export function SettingsSubtitleProvidersSection({
             </label>
 
             <div className="space-y-2">
-              <Label className="block">{t("settings.subtitleProviderFacets")}</Label>
+              <Label className="block text-[var(--scry-ink2)]">{t("settings.subtitleProviderFacets")}</Label>
               <div className="flex flex-wrap gap-3">
                 {SUBTITLE_FACETS.map((facet) => (
                   <label
                     key={facet.value}
-                    className="flex items-center gap-2 rounded-lg border border-border/60 bg-card/40 px-3 py-2 text-sm"
+                    className="flex items-center gap-2 rounded-[10px] border border-[var(--scry-border3)] bg-[var(--scry-inset)] px-3 py-2 text-sm text-[var(--scry-ink2)]"
                   >
                     <Checkbox
                       id={selectorId("settings-subtitle-provider-facet", facet.value)}
@@ -669,7 +694,7 @@ export function SettingsSubtitleProvidersSection({
                   </label>
                 ))}
               </div>
-              <p className="text-xs text-muted-foreground">
+              <p className={`text-xs ${PROVIDER_MUTED_TEXT_CLASS}`}>
                 {t("settings.subtitleProviderFacetsHelp")}
               </p>
             </div>
@@ -730,6 +755,7 @@ export function SettingsSubtitleProvidersSection({
               >
                 {t("label.cancel")}
               </Button>
+            </div>
             </div>
           </form>
           {isEditing ? (

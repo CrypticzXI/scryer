@@ -5800,6 +5800,7 @@ dependencies = [
  "image",
  "kamadak-exif",
  "keyring-core",
+ "libc",
  "libsqlite3-sys",
  "metrics",
  "ml-dsa",

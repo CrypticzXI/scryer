@@ -6,6 +6,7 @@ import {
   type PluginInstallProgressRecord,
   type RegistryPluginRecord,
 } from "@/components/views/settings/settings-plugins-section";
+import { SETTINGS_HEADER_ACTIONS_SLOT_ID } from "@/components/containers/settings/settings-container";
 import { useClient } from "urql";
 import { useTranslate } from "@/lib/context/translate-context";
 import { useGlobalStatus } from "@/lib/context/global-status-context";
@@ -150,6 +151,7 @@ export function SettingsPluginsContainer() {
   const [pendingManualUpload, setPendingManualUpload] = useState(false);
   const [manualUploadRiskAccepted, setManualUploadRiskAccepted] = useState(false);
   const [showManualInstall, setShowManualInstall] = useState(false);
+  const [headerActionsTarget, setHeaderActionsTarget] = useState<HTMLElement | null>(null);
 
   const setPlugins = useCallback((
     next:
@@ -165,6 +167,10 @@ export function SettingsPluginsContainer() {
   const [pendingUninstall, setPendingUninstall] = useState<RegistryPluginRecord | null>(null);
   const installProgressSubscriptionsRef = useRef(new Map<string, () => void>());
   const pluginProgressRef = useRef<Record<string, PluginInstallProgressRecord>>({});
+
+  useEffect(() => {
+    setHeaderActionsTarget(document.getElementById(SETTINGS_HEADER_ACTIONS_SLOT_ID));
+  }, []);
 
   useEffect(() => {
     pluginProgressRef.current = pluginProgress;
@@ -699,6 +705,7 @@ export function SettingsPluginsContainer() {
         manualPreview={manualPreview}
         manualBusy={manualBusy}
         showManualInstall={showManualInstall}
+        headerActionsTarget={headerActionsTarget}
         remoteActionsBlocked={{
           refresh: blockedRemoteActions.has("catalog_refresh"),
           install: blockedRemoteActions.has("install"),
