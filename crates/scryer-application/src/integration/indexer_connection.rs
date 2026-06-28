@@ -155,7 +155,7 @@ impl AppUseCase {
                 tokio_util::sync::CancellationToken::new(),
             )
             .await
-            .map_err(|e| AppError::Repository(format!("indexer connection test failed: {e}")))?;
+            .map_err(map_indexer_connection_test_error)?;
 
         let _ = self
             .refresh_caps_snapshot_json_best_effort(&temp_config, None)
@@ -290,6 +290,142 @@ fn validate_indexer_connection_result(result: crate::IndexerValidationResult) ->
     Err(AppError::Repository(format!(
         "indexer connection test failed: {message}"
     )))
+}
+
+fn map_indexer_connection_test_error(error: AppError) -> AppError {
+    match error {
+        AppError::Validation(_) => error,
+        error => {
+            let message = error.to_string();
+            if let Some(user_message) = known_newznab_error_message(&message) {
+                AppError::Validation(user_message)
+            } else {
+                AppError::Repository(format!("indexer connection test failed: {message}"))
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct NewznabApiError {
+    code: u16,
+    user_message: &'static str,
+}
+
+const KNOWN_NEWZNAB_API_ERRORS: &[NewznabApiError] = &[
+    NewznabApiError {
+        code: 100,
+        user_message: "Invalid API Key",
+    },
+    NewznabApiError {
+        code: 101,
+        user_message: "Account suspended",
+    },
+    NewznabApiError {
+        code: 102,
+        user_message: "Insufficient privileges",
+    },
+    NewznabApiError {
+        code: 103,
+        user_message: "Registration denied",
+    },
+    NewznabApiError {
+        code: 104,
+        user_message: "Registrations are closed",
+    },
+    NewznabApiError {
+        code: 105,
+        user_message: "Invalid registration",
+    },
+    NewznabApiError {
+        code: 106,
+        user_message: "Invalid registration email address",
+    },
+    NewznabApiError {
+        code: 107,
+        user_message: "Registration failed",
+    },
+    NewznabApiError {
+        code: 200,
+        user_message: "Missing parameter",
+    },
+    NewznabApiError {
+        code: 201,
+        user_message: "Incorrect parameter",
+    },
+    NewznabApiError {
+        code: 202,
+        user_message: "No such function",
+    },
+    NewznabApiError {
+        code: 203,
+        user_message: "Function not available",
+    },
+    NewznabApiError {
+        code: 300,
+        user_message: "No such item",
+    },
+    NewznabApiError {
+        code: 500,
+        user_message: "Request limit reached",
+    },
+    NewznabApiError {
+        code: 501,
+        user_message: "Download limit reached",
+    },
+    NewznabApiError {
+        code: 900,
+        user_message: "Unknown Newznab error",
+    },
+    NewznabApiError {
+        code: 910,
+        user_message: "Newznab API disabled",
+    },
+];
+
+fn known_newznab_error_message(message: &str) -> Option<String> {
+    let code = extract_newznab_error_code(message)?;
+    let known_error = KNOWN_NEWZNAB_API_ERRORS
+        .iter()
+        .find(|error| error.code == code)?;
+    let provider_message = extract_newznab_provider_message(message, code);
+
+    Some(match (known_error.code, provider_message) {
+        (100, Some(provider_message)) if mentions_api_key(&provider_message) => provider_message,
+        (_, Some(provider_message)) if !provider_message.is_empty() => provider_message,
+        _ => known_error.user_message.to_string(),
+    })
+}
+
+fn extract_newznab_error_code(message: &str) -> Option<u16> {
+    let lower = message.to_ascii_lowercase();
+    let marker = lower.find("newznab")?;
+    let after_marker = &message[marker..];
+    let lower_after_marker = &lower[marker..];
+    let error_marker = lower_after_marker.find("error")?;
+    let after_error = &after_marker[error_marker + "error".len()..];
+
+    after_error
+        .split(|c: char| !c.is_ascii_digit())
+        .find(|part| !part.is_empty())
+        .and_then(|part| part.parse::<u16>().ok())
+}
+
+fn extract_newznab_provider_message(message: &str, code: u16) -> Option<String> {
+    let code_text = code.to_string();
+    let code_index = message.find(&code_text)?;
+    message[code_index + code_text.len()..]
+        .trim_start_matches(|c: char| c.is_whitespace() || matches!(c, ':' | '-' | '.' | ')'))
+        .split(':')
+        .next()
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn mentions_api_key(message: &str) -> bool {
+    let normalized = message.to_ascii_lowercase();
+    normalized.contains("api key") || normalized.contains("apikey")
 }
 
 fn validate_test_flight_url(raw: &str) -> AppResult<url::Url> {
@@ -486,6 +622,29 @@ mod tests {
     use std::time::Duration;
     use tokio::sync::Mutex;
 
+    #[test]
+    fn known_newznab_errors_use_catalog_messages() {
+        assert_eq!(
+            known_newznab_error_message(
+                "plugin scryer_indexer_search() failed: Newznab API error 101: Account suspended",
+            )
+            .as_deref(),
+            Some("Account suspended")
+        );
+        assert_eq!(
+            known_newznab_error_message("Newznab API error 203").as_deref(),
+            Some("Function not available")
+        );
+    }
+
+    #[test]
+    fn unknown_newznab_errors_are_not_user_facing() {
+        assert_eq!(
+            known_newznab_error_message("Newznab API error 777: Provider-specific oddity"),
+            None
+        );
+    }
+
     #[derive(Clone, Debug, PartialEq, Eq)]
     struct RecordedSearchCall {
         query: String,
@@ -495,14 +654,19 @@ mod tests {
 
     struct RecordingIndexerClient {
         calls: Arc<std::sync::Mutex<Vec<RecordedSearchCall>>>,
-        fail_search: bool,
+        search_error: Option<String>,
     }
 
     impl RecordingIndexerClient {
         fn new(fail_search: bool) -> Self {
+            let search_error = fail_search.then(|| "forced failure".to_string());
+            Self::with_search_error(search_error)
+        }
+
+        fn with_search_error(search_error: Option<String>) -> Self {
             Self {
                 calls: Arc::new(std::sync::Mutex::new(Vec::new())),
-                fail_search,
+                search_error,
             }
         }
     }
@@ -531,8 +695,8 @@ mod tests {
                 .unwrap()
                 .push(RecordedSearchCall { query, ids, facet });
 
-            if self.fail_search {
-                return Err(AppError::Repository("forced failure".into()));
+            if let Some(error) = &self.search_error {
+                return Err(AppError::Repository(error.clone()));
             }
 
             Ok(IndexerSearchResponse {
@@ -1959,6 +2123,41 @@ mod tests {
             error.to_string(),
             "repository: indexer connection test failed: repository: forced failure"
         );
+    }
+
+    #[tokio::test]
+    async fn test_indexer_connection_surfaces_invalid_api_key_search_failures() {
+        let client = Arc::new(RecordingIndexerClient::with_search_error(Some(
+            "plugin scryer_indexer_search() failed: Newznab API key error 100: Invalid API Key"
+                .to_string(),
+        )));
+        let provider = Arc::new(RecordingPluginProvider::new(
+            "newznab",
+            vec![string_field(
+                "base_url",
+                "Base URL",
+                Some(scryer_domain::ConfigFieldRole::ConnectionUrl),
+            )],
+            searchable_capabilities(),
+            client,
+        ));
+        let app = test_app(
+            Arc::new(RecordingIndexerConfigRepo::new()),
+            Some(provider),
+            Arc::new(NullSettingsRepository),
+        );
+
+        let error = app
+            .test_indexer_connection(
+                &test_admin(),
+                "newznab",
+                Some(r#"{"base_url":"https://api.nzbgeek.info/"}"#),
+                None,
+            )
+            .await
+            .unwrap_err();
+
+        assert_eq!(error.to_string(), "validation: Invalid API Key");
     }
 
     #[tokio::test]

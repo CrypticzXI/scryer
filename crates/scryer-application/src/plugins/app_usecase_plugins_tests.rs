@@ -4105,3 +4105,53 @@ async fn recover_restored_plugins_skips_local_uploads_and_persists_warning() {
         ])
     );
 }
+
+#[tokio::test]
+async fn plugin_catalog_status_returns_cached_status_without_rewriting_it() {
+    let h = bootstrap_plugins(Some(MockPluginProvider::new()));
+    let checked_at = Utc::now() - chrono::Duration::minutes(10);
+    let cached_payload = serde_json::json!({
+        "githubAvailable": false,
+        "blockedActions": ["install", "upgrade"],
+        "message": "cached outage",
+        "restoreWarnings": ["cached restore warning"],
+        "lastError": "cached probe failure",
+    });
+    h.plugin_repo
+        .upsert_plugin_catalog_status(&scryer_domain::PluginCatalogStatusRecord {
+            status_key: CATALOG_STATUS_KEY.to_string(),
+            status_json: cached_payload.to_string(),
+            checked_at,
+        })
+        .await
+        .unwrap();
+
+    let status = h.app.plugin_catalog_status(&config_admin()).await.unwrap();
+    let checked_at_rfc3339 = checked_at.to_rfc3339();
+
+    assert_eq!(status.refresh_state, "degraded");
+    assert!(!status.github_available);
+    assert_eq!(
+        status.last_checked_at.as_deref(),
+        Some(checked_at_rfc3339.as_str())
+    );
+    assert_eq!(status.outage_message.as_deref(), Some("cached outage"));
+    assert_eq!(status.blocked_actions, vec!["install", "upgrade"]);
+    assert_eq!(
+        status.restore_warnings,
+        vec!["cached restore warning".to_string()]
+    );
+    assert_eq!(status.last_error.as_deref(), Some("cached probe failure"));
+
+    let stored = h
+        .plugin_repo
+        .get_plugin_catalog_status(CATALOG_STATUS_KEY)
+        .await
+        .unwrap()
+        .expect("stored plugin catalog status");
+    assert_eq!(stored.checked_at, checked_at);
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&stored.status_json).unwrap(),
+        cached_payload
+    );
+}

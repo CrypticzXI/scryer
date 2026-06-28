@@ -1,7 +1,9 @@
 
 import { type ComponentProps, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
 import { FilteredPluginList } from "@/components/views/settings/filtered-plugin-list";
+import { SETTINGS_REFERENCE_SLOT_ID } from "@/components/containers/settings/settings-container";
 import { SettingsDownloadClientsSection } from "@/components/views/settings/settings-download-clients-section";
 import {
   createDownloadClientMutation,
@@ -70,6 +72,10 @@ export function SettingsDownloadClientsContainer({
   const [settingsDownloadClients, setSettingsDownloadClients] = useState<SettingsDownloadClientsSectionProps["settingsDownloadClients"]>(
     [],
   );
+  const [pluginsTarget, setPluginsTarget] = useState<HTMLElement | null>(null);
+  useEffect(() => {
+    setPluginsTarget(document.getElementById(SETTINGS_REFERENCE_SLOT_ID));
+  }, []);
   const [downloadClientTypeOptions, setDownloadClientTypeOptions] = useState<DownloadClientTypeOption[]>(
     () => buildDownloadClientTypeOptions([]),
   );
@@ -571,8 +577,15 @@ export function SettingsDownloadClientsContainer({
 
   return (
     <>
-      <div className="flex flex-col gap-4 xl:flex-row xl:items-start">
-        <div className="min-w-0 flex-1 space-y-4">
+      {pluginsTarget
+        ? createPortal(
+            <FilteredPluginList
+              family="download_client"
+              refreshProviderOptions={refreshProviderTypes}
+            />,
+            pluginsTarget,
+          )
+        : null}
       <SettingsDownloadClientsSection
         editingDownloadClientId={editingDownloadClientId}
         downloadClientTypeOptions={availableDownloadClientTypeOptions}
@@ -595,14 +608,6 @@ export function SettingsDownloadClientsContainer({
       localPathStyle={localPathStyle}
       startCreateDownloadClient={requestCreateEditor}
     />
-        </div>
-        <div className="w-full xl:w-[40%] xl:max-w-[620px] xl:shrink-0">
-          <FilteredPluginList
-            family="download_client"
-            refreshProviderOptions={refreshProviderTypes}
-          />
-        </div>
-      </div>
       <ConfirmDialog
         open={pendingEditorAction !== null}
         title={t("settings.downloadClientConfirmDiscardTitle")}

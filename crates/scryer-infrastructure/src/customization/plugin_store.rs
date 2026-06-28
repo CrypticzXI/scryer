@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use scryer_application::{
     AppError, AppResult, PluginInstallationRepository,
-    persisted_records::external_plugin_installation_is_supported_shape,
+    persisted_records::external_plugin_installation_shape_is_supported,
 };
 use scryer_domain::{
     Id, PersistedPluginWasmPayload, PluginCatalogSource, PluginCatalogStatusRecord,
@@ -210,7 +210,7 @@ impl PluginStore {
 impl PluginInstallationRepository for PluginStore {
     async fn list_plugin_installations(&self) -> AppResult<Vec<PluginInstallation>> {
         let sql = format!(
-            "SELECT {PLUGIN_INSTALLATION_COLUMNS}, wasm_bytes
+            "SELECT {PLUGIN_INSTALLATION_COLUMNS}, wasm_bytes IS NOT NULL AS wasm_bytes_present
                FROM plugin_installations
               ORDER BY is_builtin DESC, name ASC, plugin_id ASC"
         );
@@ -759,7 +759,9 @@ fn row_is_incompatible_external_installation(
         return false;
     }
 
-    let wasm_bytes = row.opt_bytes("wasm_bytes").unwrap_or(None);
+    let wasm_bytes_present = row
+        .bool("wasm_bytes_present")
+        .unwrap_or_else(|_| row.opt_bytes("wasm_bytes").unwrap_or(None).is_some());
     let wasm_encoding = row
         .text("wasm_encoding")
         .unwrap_or_else(|_| "identity".to_string());
@@ -769,7 +771,7 @@ fn row_is_incompatible_external_installation(
         .unwrap_or(None)
         .is_some_and(|value| !value.trim().is_empty());
     if preserve_restored_recovery_targets
-        && wasm_bytes.is_none()
+        && !wasm_bytes_present
         && descriptor_supported
         && matches!(source_kind.as_str(), "downloaded" | "manual")
         && (source_kind == "downloaded"
@@ -781,8 +783,8 @@ fn row_is_incompatible_external_installation(
         return false;
     }
 
-    !external_plugin_installation_is_supported_shape(
-        wasm_bytes.as_deref(),
+    !external_plugin_installation_shape_is_supported(
+        wasm_bytes_present,
         &wasm_encoding,
         wasm_digest_algo.as_deref(),
         wasm_digest.as_deref(),

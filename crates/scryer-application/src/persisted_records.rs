@@ -50,7 +50,23 @@ pub fn external_plugin_installation_is_supported_shape(
     wasm_digest: Option<&str>,
     descriptor_present: bool,
 ) -> bool {
-    wasm_bytes.is_some()
+    external_plugin_installation_shape_is_supported(
+        wasm_bytes.is_some(),
+        wasm_encoding,
+        wasm_digest_algo,
+        wasm_digest,
+        descriptor_present,
+    )
+}
+
+pub fn external_plugin_installation_shape_is_supported(
+    wasm_bytes_present: bool,
+    wasm_encoding: &str,
+    wasm_digest_algo: Option<&str>,
+    wasm_digest: Option<&str>,
+    descriptor_present: bool,
+) -> bool {
+    wasm_bytes_present
         && matches!(wasm_encoding, "zstd" | "brotli")
         && matches!(
             wasm_digest_algo.map(|value| value.trim().to_ascii_lowercase()),

@@ -89,6 +89,8 @@ async fn test_indexer_search() {
             None,
             None,
             vec![],
+            None,
+            tokio_util::sync::CancellationToken::new(),
         )
         .await
         .unwrap()
@@ -289,6 +291,8 @@ async fn newznab_builtin_rss_search_uses_category_only_request() {
             None,
             None,
             vec![],
+            None,
+            tokio_util::sync::CancellationToken::new(),
         )
         .await
         .unwrap();
@@ -342,6 +346,8 @@ async fn newznab_builtin_search_extracts_password_hints() {
             None,
             None,
             vec![],
+            None,
+            tokio_util::sync::CancellationToken::new(),
         )
         .await
         .unwrap();
@@ -395,6 +401,8 @@ async fn newznab_builtin_search_treats_password_flags_as_protected_only() {
             None,
             None,
             vec![],
+            None,
+            tokio_util::sync::CancellationToken::new(),
         )
         .await
         .unwrap();
@@ -561,6 +569,8 @@ async fn newznab_builtin_full_search_canonicalizes_query_bearing_connection_urls
             None,
             None,
             vec![],
+            None,
+            tokio_util::sync::CancellationToken::new(),
         )
         .await
         .unwrap();
@@ -630,6 +640,8 @@ async fn run_newznab_builtin_full_search(additional_params: Option<&str>) -> Str
             None,
             None,
             vec![],
+            None,
+            tokio_util::sync::CancellationToken::new(),
         )
         .await
         .unwrap();

@@ -345,35 +345,69 @@ export function SeriesOverviewView({
     setHistoryOpen(true);
   }, []);
 
-  // Initialize expanded state when data arrives
-  const initializedRef = React.useRef(false);
-  React.useEffect(() => {
-    if (initializedRef.current) return;
+  const defaultExpandedRef = React.useRef(false);
+  const lastDeepLinkedEpisodeIdRef = React.useRef<string | null>(null);
 
-    // If we have an initialEpisodeId, find which collection it belongs to and expand that
-    if (initialEpisodeId && Object.keys(episodesByCollection).length > 0) {
-      for (const [collectionId, episodes] of Object.entries(episodesByCollection)) {
-        const match = episodes.find((ep) => ep.id === initialEpisodeId);
-        if (match) {
-          initializedRef.current = true;
-          setExpandedKeys(new Set([`s-${collectionId}`]));
-          // Scroll to the episode row after DOM updates
-          requestAnimationFrame(() => {
-            const el = document.querySelector(`[data-episode-id="${initialEpisodeId}"]`);
-            el?.scrollIntoView({ behavior: "smooth", block: "center" });
-          });
-          return;
-        }
+  React.useEffect(() => {
+    defaultExpandedRef.current = false;
+  }, [title?.id]);
+
+  React.useEffect(() => {
+    lastDeepLinkedEpisodeIdRef.current = null;
+  }, [initialEpisodeId, title?.id]);
+
+  React.useEffect(() => {
+    if (!initialEpisodeId) return;
+
+    let targetCollectionKey: string | null = null;
+    for (const [collectionId, episodes] of Object.entries(episodesByCollection)) {
+      if (episodes.some((episode) => episode.id === initialEpisodeId)) {
+        targetCollectionKey = `s-${collectionId}`;
+        break;
       }
     }
 
-    if (latestKey) {
-      initializedRef.current = true;
-      const nextExpanded = new Set<string>();
-      nextExpanded.add(latestKey);
-      setExpandedKeys(nextExpanded);
+    if (!targetCollectionKey) {
+      return;
     }
-  }, [latestKey, initialEpisodeId, episodesByCollection]);
+
+    setExpandedKeys((current) => {
+      if (current.has(targetCollectionKey)) {
+        return current;
+      }
+      const next = new Set(current);
+      next.add(targetCollectionKey);
+      return next;
+    });
+
+    if (lastDeepLinkedEpisodeIdRef.current === initialEpisodeId) {
+      return;
+    }
+
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        const episodeElement = Array.from(
+          document.querySelectorAll<HTMLElement>("[data-episode-id]"),
+        ).find((element) => element.dataset.episodeId === initialEpisodeId);
+        if (!episodeElement) {
+          return;
+        }
+        lastDeepLinkedEpisodeIdRef.current = initialEpisodeId;
+        episodeElement.scrollIntoView({ behavior: "smooth", block: "center" });
+      });
+    });
+  }, [expandedKeys, initialEpisodeId, episodesByCollection]);
+
+  React.useEffect(() => {
+    if (initialEpisodeId || defaultExpandedRef.current || !latestKey) {
+      return;
+    }
+
+    defaultExpandedRef.current = true;
+    const nextExpanded = new Set<string>();
+    nextExpanded.add(latestKey);
+    setExpandedKeys(nextExpanded);
+  }, [initialEpisodeId, latestKey]);
 
   const toggleKey = React.useCallback((key: string) => {
     setExpandedKeys((prev) => {

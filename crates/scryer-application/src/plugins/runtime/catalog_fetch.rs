@@ -7,6 +7,11 @@ struct CatalogPluginResolution {
     effective_support_tier: PluginSupportTier,
     github_repo: GitHubRepo,
 }
+#[derive(Clone, Debug, Default)]
+struct CatalogPluginSourceResolution {
+    central: Option<CatalogV3>,
+    resolved: Vec<CatalogPluginResolution>,
+}
 struct PreparedCatalogPluginInstall {
     plugin_id: String,
     expected_plugin_type: String,
@@ -779,7 +784,35 @@ impl AppUseCase {
 }
 impl AppUseCase {
     pub async fn refresh_plugin_catalog_internal(&self) -> AppResult<()> {
-        let (central, redirect_url, _) = self.fetch_verified_catalog_v3().await?;
+        let (central, redirect_url, _) = match self.fetch_verified_catalog_v3().await {
+            Ok(fetched) => fetched,
+            Err(error) => {
+                let stored_status = self
+                    .load_stored_plugin_catalog_status_payload()
+                    .await
+                    .unwrap_or_default();
+                let last_error = error.to_string();
+                if let Err(persist_error) = self
+                    .persist_plugin_catalog_status_payload(
+                        StoredPluginCatalogStatusPayload {
+                            github_available: false,
+                            blocked_actions: plugin_catalog_blocked_actions(),
+                            message: Some(PLUGIN_CATALOG_OUTAGE_MESSAGE.to_string()),
+                            restore_warnings: stored_status.restore_warnings,
+                            last_error: Some(last_error),
+                        },
+                        Utc::now(),
+                    )
+                    .await
+                {
+                    warn!(
+                        error = %persist_error,
+                        "failed to persist degraded plugin catalog status"
+                    );
+                }
+                return Err(error);
+            }
+        };
         let community_sources = central.community_sources.clone();
         let approved_community_source_keys = community_sources
             .iter()
@@ -804,6 +837,18 @@ impl AppUseCase {
                 updated_at: now,
             })
             .await?;
+        let stored_status = self.load_stored_plugin_catalog_status_payload().await?;
+        self.persist_plugin_catalog_status_payload(
+            StoredPluginCatalogStatusPayload {
+                github_available: true,
+                blocked_actions: Vec::new(),
+                message: None,
+                restore_warnings: stored_status.restore_warnings,
+                last_error: None,
+            },
+            now,
+        )
+        .await?;
 
         let sources = self
             .services
@@ -1057,6 +1102,16 @@ impl AppUseCase {
             .plugin_installations
             .list_plugin_catalog_sources()
             .await?;
+        Ok(self
+            .resolve_catalog_plugins_from_sources(&sources)
+            .await?
+            .resolved)
+    }
+
+    async fn resolve_catalog_plugins_from_sources(
+        &self,
+        sources: &[scryer_domain::PluginCatalogSource],
+    ) -> AppResult<CatalogPluginSourceResolution> {
         let supported_plugin_features = self.runtime_supported_plugin_required_features();
         let cpu_class = self.runtime_performance().await.cpu_class;
         let central = sources
@@ -1066,10 +1121,10 @@ impl AppUseCase {
             .and_then(|json| parse_and_validate_catalog_v3(json.as_bytes()).ok());
 
         let mut result = Vec::new();
-        if let Some(central) = central {
-            for entry in central.plugins {
+        if let Some(central) = central.as_ref() {
+            for entry in &central.plugins {
                 let Some((release, artifact)) = select_catalog_release_and_artifact(
-                    &entry,
+                    entry,
                     &supported_plugin_features,
                     cpu_class,
                 ) else {
@@ -1202,7 +1257,10 @@ impl AppUseCase {
             });
         }
 
-        Ok(result)
+        Ok(CatalogPluginSourceResolution {
+            central,
+            resolved: result,
+        })
     }
 }
 impl AppUseCase {

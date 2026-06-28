@@ -3,10 +3,10 @@ import {
   BookOpen,
   ChevronDown,
   Edit,
-  FileCode2,
   Library,
   Plus,
   Power,
+  SlidersHorizontal,
   Trash2,
 } from "lucide-react";
 import { useClient } from "urql";
@@ -677,7 +677,7 @@ export function SettingsRulesSection({
   return (
     <div id="settings-rules-section" className="space-y-4 text-sm">
       <CardTitle className="flex items-center gap-2 text-base">
-        <FileCode2 className="h-4 w-4" />
+        <SlidersHorizontal className="h-4 w-4" />
         {t("settings.rulesSection")}
       </CardTitle>
 

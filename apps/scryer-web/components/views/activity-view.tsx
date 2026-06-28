@@ -1,5 +1,6 @@
 
 import {
+  ActivitySquare,
   ArrowDown,
   ArrowDownToLine,
   ArrowUp,
@@ -943,6 +944,12 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
       ) : null}
     </>
   );
+  const activeActivityLabel =
+    activeTab === "import"
+      ? t("activity.import")
+      : activeTab === "history"
+        ? t("activity.history")
+        : t("activity.activity");
 
   return (
     <>
@@ -976,11 +983,31 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
         }}
       />
       <div className="flex min-h-0 flex-1 flex-col bg-[var(--scry-surfE)] px-4 py-5 sm:px-6 lg:px-7">
+        <div className="mx-auto flex min-h-0 w-full max-w-none flex-1 flex-col">
+          <div className="mb-4 flex items-center gap-1.5 text-[12.5px] text-[var(--scry-faint)]">
+            <span>{t("nav.group.automation")}</span>
+            <ChevronRight className="h-3.5 w-3.5" />
+            <span className="font-semibold text-[var(--scry-accent-text)]">
+              {activeActivityLabel}
+            </span>
+          </div>
+          <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
+            <div className="flex min-w-0 items-start gap-4">
+              <div className="flex h-[46px] w-[46px] shrink-0 items-center justify-center rounded-[13px] border border-[var(--scry-baccent)] bg-[linear-gradient(135deg,rgba(var(--scry-accent-rgb),0.35),rgba(123,91,255,0.22))] text-[var(--scry-accent-text)]">
+                <ActivitySquare className="h-[23px] w-[23px]" />
+              </div>
+              <div className="min-w-0">
+                <h1 className="text-[25px] font-bold tracking-normal text-[var(--scry-ink2)]">
+                  {activeActivityLabel}
+                </h1>
+              </div>
+            </div>
+          </div>
         <Card
           id={selectorId("activity-view", activeTab)}
           className="min-h-0 flex-1 rounded-none border-0 bg-transparent shadow-none"
         >
-          <CardContent className="space-y-4 p-0">
+          <CardContent className="space-y-3 p-0">
           {queueError ? (
             <p className="rounded border border-rose-500/40 bg-rose-950/40 p-2 text-sm text-rose-200">
               {queueError}
@@ -1167,6 +1194,7 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
           ) : null}
           </CardContent>
         </Card>
+        </div>
       </div>
     </>
   );

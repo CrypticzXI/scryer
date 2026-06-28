@@ -4,8 +4,7 @@ import { Button } from "@/components/ui/button";
 import { RenderBooleanIcon } from "@/components/common/boolean-icon";
 import { DownloadClientTypeLogo } from "@/components/common/download-client-type-logo";
 import { Checkbox } from "@/components/ui/checkbox";
-import { ChevronDown, ChevronUp, Power, PowerOff } from "lucide-react";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { ChevronDown, ChevronUp, Download, Power, PowerOff } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
@@ -209,16 +208,20 @@ export const DownloadClientRoutingPanel = React.memo(function DownloadClientRout
   );
 
   return (
-    <Card id="download-client-routing-panel">
-      <CardHeader>
-        <CardTitle>
+    <section
+      id="download-client-routing-panel"
+      className="rounded-[16px] border border-[var(--scry-border)] bg-[var(--scry-surf)] p-5 sm:p-6"
+    >
+      <div className="flex items-center gap-2.5">
+        <Download className="h-[17px] w-[17px] text-[var(--scry-accent-text)]" />
+        <h2 className="text-[16px] font-bold text-[var(--scry-ink2)]">
           {t("settings.downloadClientRoutingScope", {
             scope: scopeLabel,
           })}
-        </CardTitle>
-      </CardHeader>
-      <CardContent>
-        <div className="overflow-x-auto rounded border border-border">
+        </h2>
+      </div>
+      <div className="mt-5">
+        <div className="overflow-x-auto rounded-[12px] border border-[var(--scry-border)] bg-[var(--scry-card2)]">
           <Table>
             <TableHeader>
               <TableRow>
@@ -437,7 +440,7 @@ export const DownloadClientRoutingPanel = React.memo(function DownloadClientRout
             </TableBody>
           </Table>
         </div>
-      </CardContent>
-    </Card>
+      </div>
+    </section>
   );
 });

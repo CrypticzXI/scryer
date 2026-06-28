@@ -1,8 +1,8 @@
 import * as React from "react";
+import { Languages, SlidersVertical, Sparkles } from "lucide-react";
 import { useTranslate } from "@/lib/context/translate-context";
 import { InfoHelp } from "@/components/common/info-help";
 import { SubtitleLanguagePicker } from "@/components/common/subtitle-language-picker";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import {
   Select,
@@ -31,6 +31,35 @@ type QualityProfileOption = {
   value: string;
   label: string;
 };
+
+type SectionIcon = React.ComponentType<{ className?: string }>;
+
+function QualitySettingsSection({
+  icon: Icon,
+  title,
+  description,
+  children,
+}: {
+  icon: SectionIcon;
+  title: string;
+  description?: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  return (
+    <section className="rounded-[16px] border border-[var(--scry-border)] bg-[var(--scry-surf)] p-5 sm:p-6">
+      <div className="flex items-center gap-2.5">
+        <Icon className="h-[17px] w-[17px] text-[var(--scry-accent-text)]" />
+        <h2 className="text-[16px] font-bold text-[var(--scry-ink2)]">{title}</h2>
+      </div>
+      {description ? (
+        <p className="mt-1.5 text-[12.5px] leading-relaxed text-[var(--scry-muted3)]">
+          {description}
+        </p>
+      ) : null}
+      <div className="mt-5 space-y-5">{children}</div>
+    </section>
+  );
+}
 
 export function QualitySettingsPanel({
   contentSettingsLabel,
@@ -94,26 +123,75 @@ export function QualitySettingsPanel({
       ?.labelKey ?? "qualityProfile.personaBalanced";
 
   return (
-    <div className="space-y-4">
-      <Card>
-        <CardHeader>
-          <CardTitle>{t("settings.qualityProfileSection")}</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <label>
-            <Label className="mb-2 inline-flex items-center gap-2">
-              {t("settings.qualityProfileOverrideLabel", {
-                category: contentSettingsLabel.toLowerCase(),
-              })}
-              <InfoHelp
-                text={t("settings.qualityProfileOverrideHelp")}
-                ariaLabel={t("settings.qualityProfileOverrideHelp")}
-              />
+    <div className="space-y-[18px]">
+      <QualitySettingsSection
+        icon={SlidersVertical}
+        title={t("settings.qualityProfileSection")}
+        description={t("settings.qualityProfileOverrideHelp")}
+      >
+        <div className="max-w-xl space-y-2">
+          <Label>
+            {t("settings.qualityProfileOverrideLabel", {
+              category: contentSettingsLabel.toLowerCase(),
+            })}
+          </Label>
+          <Select
+            value={categoryQualityProfileOverrides[activeQualityScopeId]}
+            onValueChange={(value) => {
+              void saveCategoryQualityProfileOverride(value);
+            }}
+            disabled={mediaSettingsLoading || mediaSettingsSaving || personaSaving}
+          >
+            <SelectTrigger className="w-full">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={qualityProfileInheritValue}>
+                {t("settings.qualityProfileInheritLabel")}
+              </SelectItem>
+              {toProfileOptions(qualityProfiles).map((opt) => (
+                <SelectItem key={opt.value} value={opt.value}>
+                  {opt.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          {qualityProfileParseError ? (
+            <p className="rounded-[12px] border border-rose-500/60 bg-rose-500/10 p-3 text-xs text-rose-300">
+              {qualityProfileParseError}
+            </p>
+          ) : null}
+        </div>
+      </QualitySettingsSection>
+
+      <QualitySettingsSection
+        icon={Sparkles}
+        title={t("facetSettings.scoringPersona")}
+        description={t(PERSONA_DESCRIPTION_KEYS[resolvedPersona])}
+      >
+        <div className="space-y-5">
+          <div className="max-w-xl space-y-2">
+            <Label>
+              {t("facetSettings.scoringPersonaOverrideLabel")}
             </Label>
             <Select
-              value={categoryQualityProfileOverrides[activeQualityScopeId]}
-              onValueChange={(value) => {
-                void saveCategoryQualityProfileOverride(value);
+              value={selectedPersona}
+              onValueChange={async (value) => {
+                if (value === selectedPersona) {
+                  return;
+                }
+                const previousValue = selectedPersona;
+                setSelectedPersona(value);
+                setPersonaSaving(true);
+                try {
+                  const personaValue =
+                    value === "__default__" ? null : (value as ScoringPersonaId);
+                  await onFacetPersonaSave(personaValue);
+                } catch {
+                  setSelectedPersona(previousValue);
+                } finally {
+                  setPersonaSaving(false);
+                }
               }}
               disabled={mediaSettingsLoading || mediaSettingsSaving || personaSaving}
             >
@@ -121,112 +199,56 @@ export function QualitySettingsPanel({
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value={qualityProfileInheritValue}>
-                  {t("settings.qualityProfileInheritLabel")}
+                <SelectItem value="__default__">
+                  {t("facetSettings.scoringPersonaUseDefault")}
+                  {` (${t(globalScoringPersonaLabelKey)})`}
                 </SelectItem>
-                {toProfileOptions(qualityProfiles).map((opt) => (
-                  <SelectItem key={opt.value} value={opt.value}>
-                    {opt.label}
+                {SCORING_PERSONA_CHOICES.map((choice) => (
+                  <SelectItem key={choice.value} value={choice.value}>
+                    {t(choice.labelKey)}
                   </SelectItem>
                 ))}
               </SelectContent>
             </Select>
-            {qualityProfileParseError ? (
-              <p className="mt-2 rounded border border-rose-500/60 bg-rose-500/10 p-2 text-xs text-rose-300">
-                {qualityProfileParseError}
-              </p>
-            ) : null}
-          </label>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>{t("facetSettings.scoringPersona")}</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-6">
-          <div className="space-y-2">
-            <label>
-              <Label className="mb-2 inline-flex items-center gap-2">
-                {t("facetSettings.scoringPersonaOverrideLabel")}
-              </Label>
-              <Select
-                value={selectedPersona}
-                onValueChange={async (value) => {
-                  if (value === selectedPersona) {
-                    return;
-                  }
-                  const previousValue = selectedPersona;
-                  setSelectedPersona(value);
-                  setPersonaSaving(true);
-                  try {
-                    const personaValue =
-                      value === "__default__" ? null : (value as ScoringPersonaId);
-                    await onFacetPersonaSave(personaValue);
-                  } catch {
-                    setSelectedPersona(previousValue);
-                  } finally {
-                    setPersonaSaving(false);
-                  }
-                }}
-                disabled={mediaSettingsLoading || mediaSettingsSaving || personaSaving}
-              >
-                <SelectTrigger className="w-full">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="__default__">
-                    {t("facetSettings.scoringPersonaUseDefault")}
-                    {` (${t(globalScoringPersonaLabelKey)})`}
-                  </SelectItem>
-                  {SCORING_PERSONA_CHOICES.map((choice) => (
-                    <SelectItem key={choice.value} value={choice.value}>
-                      {t(choice.labelKey)}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </label>
-            <p className="text-sm text-muted-foreground">
-              {t(PERSONA_DESCRIPTION_KEYS[resolvedPersona])}
-            </p>
           </div>
 
-          <div className="space-y-2.5">
-            <Label className="inline-flex items-center gap-2 text-sm text-card-foreground">
+          <div className="rounded-[12px] border border-[var(--scry-border)] bg-[var(--scry-card2)] p-4">
+            <Label className="inline-flex items-center gap-2 text-[13.5px] font-semibold text-[var(--scry-body)]">
               {t("facetSettings.scoringBehavior")}
               <InfoHelp
                 text={t("facetSettings.scoringBehaviorHint")}
                 ariaLabel={t("facetSettings.scoringBehavior")}
               />
             </Label>
-            <ul className="grid gap-1 sm:grid-cols-2">
+            <ul className="mt-3 grid gap-2 sm:grid-cols-2">
               {traits.map((traitKey) => (
-                <li key={traitKey} className="text-xs text-muted-foreground">
+                <li
+                  key={traitKey}
+                  className="rounded-[9px] border border-[var(--scry-border2)] bg-[var(--scry-bg)] px-3 py-2 text-xs leading-relaxed text-[var(--scry-text2)]"
+                >
                   {t(traitKey)}
                 </li>
               ))}
             </ul>
           </div>
+        </div>
+      </QualitySettingsSection>
 
-          <div className="space-y-2">
-            <Label className="inline-flex items-center gap-2 text-sm text-card-foreground">
-              {t("title.requiredAudioLanguages")}
-              <InfoHelp
-                text={t("title.requiredAudioLanguagesFacetInfo")}
-                ariaLabel={t("title.requiredAudioLanguages")}
-              />
-            </Label>
-            <SubtitleLanguagePicker
-              value={categoryRequiredAudioLanguages[activeQualityScopeId] ?? []}
-              onChange={(languages) => {
-                void saveCategoryRequiredAudioLanguages(languages);
-              }}
-              disabled={mediaSettingsLoading || mediaSettingsSaving || personaSaving}
-            />
-          </div>
-        </CardContent>
-      </Card>
+      <QualitySettingsSection
+        icon={Languages}
+        title={t("title.requiredAudioLanguages")}
+        description={t("title.requiredAudioLanguagesFacetInfo")}
+      >
+        <div className="max-w-xl space-y-2">
+          <SubtitleLanguagePicker
+            value={categoryRequiredAudioLanguages[activeQualityScopeId] ?? []}
+            onChange={(languages) => {
+              void saveCategoryRequiredAudioLanguages(languages);
+            }}
+            disabled={mediaSettingsLoading || mediaSettingsSaving || personaSaving}
+          />
+        </div>
+      </QualitySettingsSection>
     </div>
   );
 }

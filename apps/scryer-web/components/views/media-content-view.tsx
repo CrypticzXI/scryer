@@ -3039,6 +3039,8 @@ export function MediaContentView({
           contentWidth={
             facetSettingsSection === "renaming"
               ? "reference"
+              : facetSettingsSection === "routing"
+                ? "wide"
               : facetSettingsSection === "library" && libraryRoutingWide
               ? "wide"
               : "default"
@@ -3100,7 +3102,7 @@ export function MediaContentView({
           }
         />
       ) : effectiveContentSettingsSection === "routing" ? (
-        <div className="space-y-4">
+        <div className="space-y-[18px]">
           <IndexerRoutingPanel
             scopeLabel={scopeLabel}
             activeQualityScopeId={activeQualityScopeId}

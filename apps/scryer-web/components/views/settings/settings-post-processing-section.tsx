@@ -3,6 +3,7 @@ import {
   ChevronDown,
   ChevronRight,
   Edit,
+  FolderCog,
   FolderOpen,
   Plus,
   Power,
@@ -238,7 +239,7 @@ export const SettingsPostProcessingSection = React.memo(
     return (
       <div id="settings-post-processing-section" className="space-y-4 text-sm">
         <CardTitle className="flex items-center gap-2 text-base">
-          <Terminal className="h-4 w-4" />
+          <FolderCog className="h-4 w-4" />
           {t("settings.pp.title")}
         </CardTitle>
 

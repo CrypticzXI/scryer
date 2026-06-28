@@ -1,87 +1,71 @@
 const CATALOG_STATUS_KEY: &str = "plugin_catalog_redirect";
+const PLUGIN_CATALOG_OUTAGE_MESSAGE: &str =
+    "Plugin catalog redirects are unavailable from both the primary CDN and the GitHub mirror.";
+
 impl AppUseCase {
     pub async fn plugin_catalog_status(&self, actor: &User) -> AppResult<PluginCatalogStatus> {
         self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
             .await?;
 
-        let now = Utc::now();
-        let stored_status = self.load_stored_plugin_catalog_status_payload().await?;
-        let primary_redirect_url = plugin_catalog_url();
-        let github_redirect_url = fallback_plugin_catalog_url().to_string();
-        let primary_probe = fetch_verified_catalog_redirect_candidate(
-            &primary_redirect_url,
-            "primary plugin catalog redirect",
-        )
-        .await;
-        let (primary_available, primary_error) = match primary_probe {
-            Ok(_) => (true, None),
-            Err(error) => (false, Some(error.to_string())),
-        };
-        let (github_available, github_error) = if primary_available {
-            (true, None)
-        } else {
-            match fetch_verified_catalog_redirect_candidate(
-                &github_redirect_url,
-                "GitHub plugin catalog redirect",
-            )
-            .await
-            {
-                Ok(_) => (true, None),
-                Err(error) => (false, Some(error.to_string())),
-            }
-        };
-        let both_down = !primary_available && !github_available;
-        let last_error = both_down
-            .then(|| {
-                combined_plugin_catalog_probe_error(
-                    primary_error.as_deref(),
-                    github_error.as_deref(),
-                )
-            })
-            .flatten();
-        let blocked_actions = if both_down {
-            vec![
-                "catalog_refresh".to_string(),
-                "install".to_string(),
-                "install_manual".to_string(),
-                "upgrade".to_string(),
-                "manual_repo_inspection".to_string(),
-            ]
-        } else {
-            Vec::new()
-        };
-        let outage_message = both_down.then(|| {
-            "Plugin catalog redirects are unavailable from both the primary CDN and the GitHub mirror."
-                .to_string()
+        let stored_status_record = self.load_stored_plugin_catalog_status().await?;
+        let (stored_status, stored_checked_at) = stored_status_record
+            .map(|(payload, checked_at)| (payload, Some(checked_at)))
+            .unwrap_or_default();
+        let central_source = self
+            .services
+            .customization
+            .plugin_installations
+            .get_plugin_catalog_source(CENTRAL_CATALOG_SOURCE_KEY)
+            .await?;
+        let central_last_seen = central_source
+            .as_ref()
+            .and_then(|source| source.last_success_at)
+            .or_else(|| central_source.as_ref().map(|source| source.updated_at));
+        let github_available = stored_status.github_available
+            || central_source
+                .as_ref()
+                .is_some_and(|source| source.last_success_at.is_some());
+        let last_error = stored_status.last_error.clone().or_else(|| {
+            central_source
+                .as_ref()
+                .and_then(|source| source.last_error.clone())
         });
-
-        self.persist_plugin_catalog_status_payload(
-            StoredPluginCatalogStatusPayload {
-                github_available,
-                blocked_actions: blocked_actions.clone(),
-                message: outage_message.clone(),
-                restore_warnings: stored_status.restore_warnings.clone(),
-            },
-            now,
-        )
-        .await?;
+        let degraded = !stored_status.blocked_actions.is_empty()
+            || stored_status.message.is_some()
+            || stored_status.last_error.is_some();
 
         Ok(PluginCatalogStatus {
-            refresh_state: if both_down {
+            refresh_state: if degraded {
                 "degraded".to_string()
             } else {
                 "ready".to_string()
             },
             github_available,
-            last_checked_at: Some(now.to_rfc3339()),
-            outage_message,
-            blocked_actions,
+            last_checked_at: stored_checked_at
+                .or(central_last_seen)
+                .map(|checked_at| checked_at.to_rfc3339()),
+            outage_message: stored_status.message,
+            blocked_actions: stored_status.blocked_actions,
             restore_warnings: stored_status.restore_warnings,
             last_error,
         })
     }
 }
 
+fn plugin_catalog_blocked_actions() -> Vec<String> {
+    [
+        "catalog_refresh",
+        "install",
+        "install_manual",
+        "upgrade",
+        "manual_repo_inspection",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect()
+}
+
+#[cfg(test)]
 fn combined_plugin_catalog_probe_error(
     primary_error: Option<&str>,
     github_error: Option<&str>,
@@ -101,9 +85,9 @@ fn combined_plugin_catalog_probe_error(
 }
 
 impl AppUseCase {
-    async fn load_stored_plugin_catalog_status_payload(
+    async fn load_stored_plugin_catalog_status(
         &self,
-    ) -> AppResult<StoredPluginCatalogStatusPayload> {
+    ) -> AppResult<Option<(StoredPluginCatalogStatusPayload, chrono::DateTime<Utc>)>> {
         let Some(record) = self
             .services
             .customization
@@ -111,15 +95,26 @@ impl AppUseCase {
             .get_plugin_catalog_status(CATALOG_STATUS_KEY)
             .await?
         else {
-            return Ok(StoredPluginCatalogStatusPayload::default());
+            return Ok(None);
         };
 
-        serde_json::from_str(&record.status_json).map_err(|error| {
+        let payload = serde_json::from_str(&record.status_json).map_err(|error| {
             AppError::Repository(format!(
                 "failed to parse stored plugin catalog status '{}': {error}",
                 record.status_key
             ))
-        })
+        })?;
+        Ok(Some((payload, record.checked_at)))
+    }
+
+    async fn load_stored_plugin_catalog_status_payload(
+        &self,
+    ) -> AppResult<StoredPluginCatalogStatusPayload> {
+        Ok(self
+            .load_stored_plugin_catalog_status()
+            .await?
+            .map(|(payload, _)| payload)
+            .unwrap_or_default())
     }
 }
 impl AppUseCase {

@@ -121,8 +121,7 @@ const fr: LocaleDictionary = {
   "settings.securityModeDisabled": "Open admin mode",
   "settings.securityConfirmTitle": "Enable form login?",
   "settings.securityConfirmDescription":
-    "Sign in with an account that can manage settings before Scryer starts requiring login.",
-  "settings.securityConfirmUsername": "Username",
+    "Enter your password before Scryer starts requiring login.",
   "settings.securityConfirmPassword": "Password",
   "settings.securityConfirmAction": "Enable",
   "settings.securityAdminPasswordRequiredTitle": "Set the admin password first",
@@ -133,7 +132,7 @@ const fr: LocaleDictionary = {
   "settings.securityDisableConfirmDescription":
     "Scryer will return to open admin mode after reload.",
   "settings.securityDisableConfirmAction": "Disable",
-  "settings.securityCredentialsInvalid": "Invalid username or password.",
+  "settings.securityCredentialsInvalid": "Invalid password.",
   "settings.securityCredentialsInsufficient":
     "That account cannot manage settings.",
   "settings.securityEnabledSuccess": "Form login enabled.",

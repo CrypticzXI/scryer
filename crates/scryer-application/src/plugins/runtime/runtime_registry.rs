@@ -135,12 +135,12 @@ impl AppUseCase {
             .plugin_installations
             .list_plugin_catalog_sources()
             .await?;
-        let central = sources
-            .iter()
-            .find(|source| source.source_key == CENTRAL_CATALOG_SOURCE_KEY)
-            .and_then(|source| source.catalog_json.as_deref())
-            .and_then(|json| parse_and_validate_catalog_v3(json.as_bytes()).ok());
-        let resolved = self.resolved_catalog_plugins().await.unwrap_or_default();
+        let catalog_resolution = self
+            .resolve_catalog_plugins_from_sources(&sources)
+            .await
+            .unwrap_or_default();
+        let central = catalog_resolution.central;
+        let resolved = catalog_resolution.resolved;
         let resolved_by_id = resolved
             .iter()
             .map(|resolved| (resolved.catalog_entry.id.clone(), resolved.clone()))

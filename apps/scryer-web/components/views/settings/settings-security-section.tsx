@@ -17,13 +17,11 @@ type SettingsSecuritySectionProps = {
   disableConfirmOpen: boolean;
   adminPasswordRequiredOpen: boolean;
   confirmBusy: boolean;
-  confirmUsername: string;
   confirmPassword: string;
   confirmError: string | null;
   passwordMinLengthDraft: string;
   minPasswordLength: number;
   onToggle: (enabled: boolean) => void;
-  onConfirmUsernameChange: (value: string) => void;
   onConfirmPasswordChange: (value: string) => void;
   onConfirmEnable: () => Promise<void> | void;
   onCancelEnable: () => void;
@@ -47,13 +45,11 @@ export function SettingsSecuritySection({
   disableConfirmOpen,
   adminPasswordRequiredOpen,
   confirmBusy,
-  confirmUsername,
   confirmPassword,
   confirmError,
   passwordMinLengthDraft,
   minPasswordLength,
   onToggle,
-  onConfirmUsernameChange,
   onConfirmPasswordChange,
   onConfirmEnable,
   onCancelEnable,
@@ -71,8 +67,7 @@ export function SettingsSecuritySection({
 }: SettingsSecuritySectionProps) {
   const t = useTranslate();
   const busy = loading || confirmBusy;
-  const confirmDisabled =
-    confirmUsername.trim().length === 0 || confirmPassword.trim().length === 0;
+  const confirmDisabled = confirmPassword.trim().length === 0;
 
   return (
     <>
@@ -323,17 +318,6 @@ export function SettingsSecuritySection({
         onCancel={onCancelEnable}
       >
         <div className="space-y-3">
-          <div className="space-y-1.5">
-            <Label htmlFor="security-confirm-username">
-              {t("settings.securityConfirmUsername")}
-            </Label>
-            <Input
-              id="security-confirm-username"
-              autoComplete="username"
-              value={confirmUsername}
-              onChange={(event) => onConfirmUsernameChange(event.target.value)}
-            />
-          </div>
           <div className="space-y-1.5">
             <Label htmlFor="security-confirm-password">
               {t("settings.securityConfirmPassword")}

@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::io::Read;
 use std::sync::{Arc, LazyLock, Mutex};
+use std::time::Instant;
 
 use extism::{CurrentPlugin, Error, Function, Manifest, UserData, Val, ValType};
 use extism_manifest::HttpRequest;
@@ -151,40 +152,73 @@ fn plugin_http_request(
     let host_state = state
         .get()
         .map_err(|error| Error::msg(format!("plugin HTTP host state unavailable: {error}")))?;
-    let mut host_state = host_state
-        .lock()
-        .map_err(|error| Error::msg(format!("plugin HTTP host state lock poisoned: {error}")))?;
-    host_state
-        .last_responses
-        .insert(plugin_id.clone(), PluginHttpLastResponse::default());
+    let (runtime, allowed_hosts, max_http_response_bytes) = {
+        let mut host_state = host_state.lock().map_err(|error| {
+            Error::msg(format!("plugin HTTP host state lock poisoned: {error}"))
+        })?;
+        host_state
+            .last_responses
+            .insert(plugin_id.clone(), PluginHttpLastResponse::default());
+        (
+            host_state.runtime.clone(),
+            host_state.allowed_hosts.clone(),
+            host_state.max_http_response_bytes,
+        )
+    };
 
-    enforce_allowed_hosts(host_state.allowed_hosts.as_deref(), &request.url)?;
+    enforce_allowed_hosts(allowed_hosts.as_deref(), &request.url)?;
 
-    let client = host_state.runtime.client()?;
+    let client = runtime.client()?;
     let timeout = current.time_remaining();
+    let started_at = Instant::now();
     let response = execute_request(&client, &request, body, timeout)?;
     let status_code = response.status().as_u16();
 
     if response.status().is_success() {
         let headers = response_headers(&response);
-        let body = read_response_body(response, host_state.max_http_response_bytes)?;
-        host_state.last_responses.insert(
-            plugin_id,
-            PluginHttpLastResponse {
-                status_code,
-                headers,
-            },
+        let body = read_response_body(response, max_http_response_bytes)?;
+        let response_bytes = body.len();
+        {
+            let mut host_state = host_state.lock().map_err(|error| {
+                Error::msg(format!("plugin HTTP host state lock poisoned: {error}"))
+            })?;
+            host_state.last_responses.insert(
+                plugin_id.clone(),
+                PluginHttpLastResponse {
+                    status_code,
+                    headers,
+                },
+            );
+        }
+        tracing::debug!(
+            plugin_id = plugin_id.as_str(),
+            status = status_code,
+            elapsed_ms = started_at.elapsed().as_millis() as u64,
+            response_bytes,
+            "plugin HTTP request completed"
         );
         current.memory_set_val(&mut output[0], body)?;
         return Ok(());
     }
 
-    host_state.last_responses.insert(
-        plugin_id,
-        PluginHttpLastResponse {
-            status_code,
-            headers: BTreeMap::new(),
-        },
+    {
+        let mut host_state = host_state.lock().map_err(|error| {
+            Error::msg(format!("plugin HTTP host state lock poisoned: {error}"))
+        })?;
+        host_state.last_responses.insert(
+            plugin_id.clone(),
+            PluginHttpLastResponse {
+                status_code,
+                headers: BTreeMap::new(),
+            },
+        );
+    }
+    tracing::debug!(
+        plugin_id = plugin_id.as_str(),
+        status = status_code,
+        elapsed_ms = started_at.elapsed().as_millis() as u64,
+        response_bytes = 0_u64,
+        "plugin HTTP request completed"
     );
     Ok(())
 }

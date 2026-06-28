@@ -4,6 +4,7 @@ import { Link } from "react-router-dom";
 import {
   Captions,
   ChevronRight,
+  FolderCog,
   Puzzle,
   Settings2,
   SlidersHorizontal,
@@ -70,6 +71,10 @@ const SettingsBackupsContainer = lazy(async () => ({
   default: (await import("@/components/containers/settings/settings-backups-container")).SettingsBackupsContainer,
 }));
 
+/** DOM id of the right reference rail. Inline plugin managers on the indexers /
+ * download-clients pages are portaled here so they anchor to the top of the pane. */
+export const SETTINGS_REFERENCE_SLOT_ID = "settings-content-reference";
+
 type SettingsContainerProps = {
   settingsSection: SettingsSection;
   userId?: string;
@@ -111,7 +116,15 @@ export const SettingsContainer = memo(function SettingsContainer({
   // Surfaces that embed the FilteredPluginList manage plugins inline, so they
   // don't need the shortcut to the standalone Plugins page.
   const showPluginsShortcut =
-    showPluginsLink && settingsSection !== "indexers";
+    showPluginsLink &&
+    settingsSection !== "indexers" &&
+    settingsSection !== "downloadClients" &&
+    settingsSection !== "notifications";
+  // Pages that render an inline plugins rail anchored to the top of the content pane.
+  const showReferenceRail =
+    settingsSection === "indexers" ||
+    settingsSection === "downloadClients" ||
+    settingsSection === "notifications";
   const settingsSectionLabel =
     settingsSection === "profile"
       ? t("settings.profile")
@@ -186,8 +199,16 @@ export const SettingsContainer = memo(function SettingsContainer({
     (item) => item.section === settingsSection,
   );
   const SettingsSectionIcon =
-    primarySettingsNav.find((item) => item.section === settingsSection)?.icon ??
-    Settings2;
+    settingsSection === "rules"
+      ? SlidersHorizontal
+      : settingsSection === "post-processing"
+        ? FolderCog
+        : primarySettingsNav.find((item) => item.section === settingsSection)?.icon ??
+          Settings2;
+  const breadcrumbRootLabel =
+    settingsSection === "rules" || settingsSection === "post-processing"
+      ? t("nav.group.automation")
+      : t("nav.settings");
 
   useProviderCatalogSubscription(
     useCallback((families: ProviderCatalogFamily[]) => {
@@ -252,15 +273,26 @@ export const SettingsContainer = memo(function SettingsContainer({
         <div
           className={cn(
             "mx-auto w-full px-4 py-5 sm:px-6 md:px-[30px] md:py-[26px] md:pb-[60px]",
-            settingsSection === "rules" ||
             settingsSection === "indexers" ||
-            settingsSection === "post-processing"
-              ? "max-w-none"
-              : "max-w-[1280px]",
+            settingsSection === "downloadClients" ||
+            settingsSection === "notifications"
+              ? "max-w-[1980px]"
+              : settingsSection === "rules" ||
+                  settingsSection === "post-processing"
+                ? "max-w-none"
+                : "max-w-[1280px]",
           )}
         >
+          <div
+            className={cn(
+              showReferenceRail
+                ? "grid gap-5 xl:grid-cols-[minmax(0,1280px)_620px] xl:items-start"
+                : "contents",
+            )}
+          >
+            <div className={cn(showReferenceRail ? "min-w-0" : "contents")}>
           <div className="mb-4 flex items-center gap-1.5 text-[12.5px] text-[var(--scry-faint)]">
-            <span>{t("nav.settings")}</span>
+            <span>{breadcrumbRootLabel}</span>
             <ChevronRight className="h-3.5 w-3.5" />
             <span className="font-semibold text-[var(--scry-accent-text)]">{settingsSectionLabel}</span>
           </div>
@@ -273,9 +305,11 @@ export const SettingsContainer = memo(function SettingsContainer({
                 <h1 className="text-[25px] font-bold tracking-normal text-[var(--scry-ink2)]">
                   {settingsSectionLabel}
                 </h1>
-                <p className="mt-1 max-w-[640px] text-[13.5px] text-[var(--scry-muted)]">
-                  {t("settings.sectionTitle", { section: settingsSectionLabel })}
-                </p>
+                {settingsSection !== "rules" && settingsSection !== "post-processing" ? (
+                  <p className="mt-1 max-w-[640px] text-[13.5px] text-[var(--scry-muted)]">
+                    {t("settings.sectionTitle", { section: settingsSectionLabel })}
+                  </p>
+                ) : null}
               </div>
             </div>
             {showPluginsShortcut ? (
@@ -335,6 +369,15 @@ export const SettingsContainer = memo(function SettingsContainer({
             <SettingsQualityProfilesContainer />
           )}
           </Suspense>
+            </div>
+            {showReferenceRail ? (
+              <aside
+                id={SETTINGS_REFERENCE_SLOT_ID}
+                data-slot="settings-reference"
+                className="min-w-0 xl:sticky xl:top-[26px]"
+              />
+            ) : null}
+          </div>
         </div>
       </main>
     </div>
