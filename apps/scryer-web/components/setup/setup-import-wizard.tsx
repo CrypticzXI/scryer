@@ -87,7 +87,16 @@ export function SetupImportWizard({
   onExit,
 }: SetupImportWizardProps) {
   const wizard = useExternalImportSetup({ client });
-  const { loadPreview, pollAggregateProgress } = wizard;
+  const {
+    loadPreview,
+    pollAggregateProgress,
+    warmupSessionLost,
+    recoverLostWarmup,
+    pendingReverify,
+    clearPendingReverify,
+    instances,
+    verifyInstance,
+  } = wizard;
 
   // Keep the latest preview in a ref so the polling loop below can read it
   // without re-subscribing (avoids a refetch-on-every-update tight loop).
@@ -174,6 +183,40 @@ export function SetupImportWizard({
     return () => clearInterval(id);
   }, [currentStep, wizard.warmupSettled, pollAggregateProgress]);
 
+  // A lost warmup session (pruned after a restart / TTL) can't be recovered in
+  // place — no retry or preview reload will work against a dead session. Force
+  // the user back to Connect from whatever step surfaced it, resetting the
+  // connections so re-verifying mints fresh sessions.
+  useEffect(() => {
+    if (!warmupSessionLost || currentStep <= 1) return;
+    recoverLostWarmup();
+    goToStep(1, "import");
+    toast.warning(t("setup.importWarmupSessionExpired"));
+  }, [warmupSessionLost, currentStep, recoverLostWarmup, goToStep, t]);
+
+  // After that recovery lands on Connect, auto-verify the restored connections
+  // once so a fresh warmup session starts without the operator having to
+  // manually re-blur each field. Instances missing a usable key are left for
+  // manual re-entry. Gated on pendingReverify so it never fires mid-typing.
+  useEffect(() => {
+    if (currentStep !== 1 || !pendingReverify) return;
+    clearPendingReverify();
+    for (const inst of instances) {
+      if (
+        /^https?:\/\/.+/.test(inst.baseUrl.trim()) &&
+        inst.apiKey.trim().length >= 6
+      ) {
+        void verifyInstance(inst.id);
+      }
+    }
+  }, [
+    currentStep,
+    pendingReverify,
+    clearPendingReverify,
+    instances,
+    verifyInstance,
+  ]);
+
   const goConnectContinue = useCallback(async () => {
     await loadPreview();
     goToStep(2, "import");
@@ -199,6 +242,13 @@ export function SetupImportWizard({
     }
     onExit();
   }, [wizard, t, onExit]);
+
+  // A lost warmup session can't be re-fetched — reset connections and route back
+  // to Connect, where re-verifying mints fresh sessions.
+  const reconnect = useCallback(() => {
+    wizard.recoverLostWarmup();
+    goToStep(1, "import");
+  }, [wizard, goToStep]);
 
   const chrome = STEP_CHROME[currentStep];
   if (!chrome) return null;
@@ -241,7 +291,9 @@ export function SetupImportWizard({
       onPrimary = () => void goSourcesContinue();
       break;
     case 5:
-      body = <SetupImportSummaryView wizard={wizard} t={t} />;
+      body = (
+        <SetupImportSummaryView wizard={wizard} t={t} onReconnect={reconnect} />
+      );;
       primaryLabel = t("setup.finishImport");
       primaryIcon = Check;
       // Finish needs the warmup complete AND a loaded preview whose every

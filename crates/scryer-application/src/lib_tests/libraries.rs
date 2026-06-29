@@ -722,6 +722,162 @@ async fn import_permission_settings_validate_chmod_and_normalize_empty_group() {
 }
 
 #[tokio::test]
+async fn external_import_auto_apply_respects_facet_permission_overrides() {
+    let (app, user) = bootstrap();
+    let series_library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Series);
+
+    app.update_media_settings(
+        &user,
+        MediaFacet::Series,
+        UpdateMediaSettings {
+            set_permissions_linux: Some(true),
+            folder_chmod: Some("775".to_string()),
+            ..empty_update_media_settings()
+        },
+    )
+    .await
+    .expect("series media settings should update");
+
+    let result = app
+        .apply_external_import_library_settings_auto_apply(
+            &user,
+            &series_library_id,
+            ExternalImportLibrarySettingsAutoApplyDraft {
+                set_permissions_linux: Some(false),
+                folder_chmod: Some("750".to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("external import auto-apply should skip explicit overrides");
+
+    assert!(result.changed_keys.is_empty());
+    assert!(
+        result
+            .skipped_keys
+            .iter()
+            .any(|skipped| skipped.key_name == SET_PERMISSIONS_LINUX_KEY)
+    );
+    assert!(
+        result
+            .skipped_keys
+            .iter()
+            .any(|skipped| skipped.key_name == FOLDER_CHMOD_KEY)
+    );
+
+    let settings = app
+        .get_library_settings(&user, &series_library_id)
+        .await
+        .expect("series library settings should reload");
+    assert!(settings.set_permissions_linux);
+    assert_eq!(settings.folder_chmod.as_deref(), Some("775"));
+}
+
+#[tokio::test]
+async fn external_import_auto_apply_skips_request_profiles_when_quality_profile_is_explicit() {
+    let settings = Arc::new(StoredSettingsRepo::default());
+    let quality_profiles = Arc::new(StoredQualityProfileRepo::default());
+    quality_profiles
+        .set_profiles(vec![
+            test_quality_profile("4k"),
+            test_quality_profile("hd-1080p"),
+        ])
+        .await;
+    let (app, user) = bootstrap_with_settings_repo_and_profiles(
+        settings,
+        quality_profiles,
+        Arc::new(MockIndexerClient),
+    );
+    let series_library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Series);
+
+    app.update_library_settings(
+        &user,
+        &series_library_id,
+        LibrarySettingsOverrideDraft {
+            quality_profile_id: Some("4k".to_string()),
+            ..empty_library_settings_override()
+        },
+    )
+    .await
+    .expect("series library quality profile override should save");
+
+    let result = app
+        .apply_external_import_library_settings_auto_apply(
+            &user,
+            &series_library_id,
+            ExternalImportLibrarySettingsAutoApplyDraft {
+                quality_profile_id: Some("hd-1080p".to_string()),
+                request_quality_profile_ids: Some(vec!["hd-1080p".to_string()]),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("external import auto-apply should skip explicit profile override");
+
+    assert!(result.changed_keys.is_empty());
+    assert!(
+        result
+            .skipped_keys
+            .iter()
+            .any(|skipped| skipped.key_name == QUALITY_PROFILE_ID_KEY)
+    );
+    assert!(result.skipped_keys.iter().any(|skipped| {
+        skipped.key_name == REQUEST_QUALITY_PROFILE_IDS_KEY
+            && skipped.reason.contains("quality profile")
+    }));
+
+    let settings = app
+        .get_library_settings(&user, &series_library_id)
+        .await
+        .expect("series library settings should reload");
+    assert_eq!(settings.quality_profile_id.as_str(), "4k");
+    assert_eq!(settings.request_quality_profile_ids, vec!["4k".to_string()]);
+}
+
+#[tokio::test]
+async fn external_import_auto_apply_skips_invalid_permission_values() {
+    let (app, user) = bootstrap();
+    let movie_library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Movie);
+
+    let result = app
+        .apply_external_import_library_settings_auto_apply(
+            &user,
+            &movie_library_id,
+            ExternalImportLibrarySettingsAutoApplyDraft {
+                set_permissions_linux: Some(true),
+                folder_chmod: Some("888".to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("invalid imported chmod should not fail auto-apply");
+
+    assert!(
+        result
+            .changed_keys
+            .iter()
+            .any(|key| key == SET_PERMISSIONS_LINUX_KEY)
+    );
+    let skipped = result
+        .skipped_keys
+        .iter()
+        .find(|skipped| skipped.key_name == FOLDER_CHMOD_KEY)
+        .expect("folder chmod should be skipped");
+    assert!(
+        skipped.reason.contains("invalid"),
+        "unexpected skip reason: {}",
+        skipped.reason
+    );
+
+    let settings = app
+        .get_library_settings(&user, &movie_library_id)
+        .await
+        .expect("movie library settings should reload");
+    assert!(settings.set_permissions_linux);
+    assert_eq!(settings.folder_chmod.as_deref(), Some("755"));
+}
+
+#[tokio::test]
 async fn import_mode_settings_resolve_default_facet_override_and_library_override() {
     let (app, user) = bootstrap();
     let movie_library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Movie);

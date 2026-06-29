@@ -176,6 +176,16 @@ function gqlError(error: unknown): string {
   return typeof message === "string" ? message : String(error);
 }
 
+/**
+ * A warmup session the client still references no longer exists on the server
+ * (the orchestrator is in-memory, so a restart or the terminal TTL drops it).
+ * This is unrecoverable in place — the only fix is to mint a fresh session by
+ * re-verifying the connection, so the wizard routes the user back to Connect.
+ */
+function isLostWarmupSessionError(message: string | null | undefined): boolean {
+  return typeof message === "string" && /no warmup session/i.test(message);
+}
+
 // ── Persistence ─────────────────────────────────────────────────────────────
 // Non-sensitive wizard state is persisted to sessionStorage so a page refresh
 // (or navigating away and back) doesn't discard connections, mappings,
@@ -475,6 +485,14 @@ export function useExternalImportSetup({ client }: UseExternalImportSetupArgs) {
   const [preview, setPreview] = useState<ExternalImportPreview | null>(null);
   const [previewing, setPreviewing] = useState(false);
   const [previewError, setPreviewError] = useState<string | null>(null);
+  // A referenced warmup session vanished server-side (restart / TTL). Unlike a
+  // transient failure this can't be retried in place — recovery is to re-verify
+  // on Connect, so the UI offers "Reconnect" instead of "Retry".
+  const [warmupSessionLost, setWarmupSessionLost] = useState(false);
+  // Set during lost-session recovery: tells the Connect step to auto-verify the
+  // restored connections once (so a fresh session starts without the operator
+  // having to manually re-blur each field).
+  const [pendingReverify, setPendingReverify] = useState(false);
 
   const loadPreview = useCallback(async () => {
     if (connectedArrSessionIds.length === 0 && !prowlarrConnectionInput) {
@@ -493,10 +511,13 @@ export function useExternalImportSetup({ client }: UseExternalImportSetupArgs) {
       .toPromise();
     setPreviewing(false);
     if (error || !data?.previewExternalImport) {
-      setPreviewError(gqlError(error) || "Failed to load preview");
+      const message = gqlError(error) || "Failed to load preview";
+      setPreviewError(message);
+      if (isLostWarmupSessionError(message)) setWarmupSessionLost(true);
       return;
     }
     setPreview(data.previewExternalImport as ExternalImportPreview);
+    setWarmupSessionLost(false);
   }, [client, connectedArrSessionIds, prowlarrConnectionInput]);
 
   // ── Mapping board: roots + manual roots + remaps + assign ──────────────────
@@ -1038,10 +1059,11 @@ export function useExternalImportSetup({ client }: UseExternalImportSetupArgs) {
     if (progress) {
       setAggregateProgress(progress);
       setAggregateProgressError(null);
+      setWarmupSessionLost(false);
     } else if (error) {
-      setAggregateProgressError(
-        gqlError(error) || "Failed to load warmup progress",
-      );
+      const message = gqlError(error) || "Failed to load warmup progress";
+      setAggregateProgressError(message);
+      if (isLostWarmupSessionError(message)) setWarmupSessionLost(true);
     }
   }, [client, connectedArrSessionIds]);
 
@@ -1115,6 +1137,35 @@ export function useExternalImportSetup({ client }: UseExternalImportSetupArgs) {
       );
     }
   }, [arrInstances, client, cancelInstanceWarmup]);
+
+  /**
+   * Recover from a lost warmup session: the referenced session is gone and can't
+   * be re-fetched, so reset every instance to unverified and drop all
+   * session-derived state. The caller then routes back to Connect, where the
+   * pending-reverify flag triggers a one-shot auto-verify that mints fresh
+   * sessions (the verify skip-guard only skips already-"connected" instances and
+   * keys off lastVerifiedRef, both cleared here).
+   */
+  const recoverLostWarmup = useCallback(() => {
+    lastVerifiedRef.current = {};
+    setInstances((prev) =>
+      prev.map((inst) => ({
+        ...inst,
+        status: "idle" as const,
+        warmupSessionId: null,
+        version: null,
+        error: null,
+      })),
+    );
+    setPreview(null);
+    setPreviewError(null);
+    setAggregateProgress(null);
+    setAggregateProgressError(null);
+    setWarmupSessionLost(false);
+    setPendingReverify(true);
+  }, []);
+
+  const clearPendingReverify = useCallback(() => setPendingReverify(false), []);
 
   // ── Finalize → complete → scan ─────────────────────────────────────────────
   const buildMappings = useCallback((): {
@@ -1525,7 +1576,11 @@ export function useExternalImportSetup({ client }: UseExternalImportSetupArgs) {
     warmupSettled,
     warmupFailed,
     warmupErrorMessage,
+    warmupSessionLost,
     retryWarmup,
+    recoverLostWarmup,
+    pendingReverify,
+    clearPendingReverify,
     finalizing,
     finalizeError,
     finalizeImport,

@@ -52,6 +52,13 @@ pub struct ExternalImportLibrarySettingsAutoApplyDraft {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ExternalImportLibrarySettingsAutoApplyResult {
     pub changed_keys: Vec<String>,
+    pub skipped_keys: Vec<ExternalImportSettingsAutoApplySkip>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExternalImportSettingsAutoApplySkip {
+    pub key_name: String,
+    pub reason: String,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LibrarySettings {

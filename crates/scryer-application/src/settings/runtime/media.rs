@@ -569,7 +569,11 @@ impl AppUseCase {
         let mut changed_keys = Vec::new();
         if let Some(value) = rename_enabled
             && self
-                .read_setting_bool_value_explicit(RENAME_ENABLED_KEY, Some(facet.as_str()))
+                .read_setting_string_value_explicit(RENAME_ENABLED_KEY, Some(facet.as_str()))
+                .await?
+                .is_none()
+            && self
+                .read_setting_string_value_explicit(RENAME_ENABLED_KEY, None)
                 .await?
                 .is_none()
         {

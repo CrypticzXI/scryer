@@ -50,9 +50,8 @@ import {
   resolveOverviewTargetView,
   TitleEpisodeProgressBar,
   TitleCollectionEmptyState,
-  TitleTableActionButton,
   TitleTableEmptyState,
-  TitleTableLazyTooltipActionButton,
+  TitleTableTooltipActionButton,
   TitleTableLoadingState,
   TITLE_TABLE_ACTION_BUTTON_CLASS,
   TITLE_TABLE_HEADER_CELL_CLASS,
@@ -720,7 +719,7 @@ export function TitleTable({
                   selectionMode && "pointer-events-none opacity-40",
                 )}
               >
-                <TitleTableLazyTooltipActionButton
+                <TitleTableTooltipActionButton
                   id={titleOverviewSearchButtonId(item.id)}
                   tone="auto"
                   label={t("label.search")}
@@ -739,8 +738,8 @@ export function TitleTable({
                   ) : (
                     <Zap className={posterActionIconClassName} />
                   )}
-                </TitleTableLazyTooltipActionButton>
-                <TitleTableLazyTooltipActionButton
+                </TitleTableTooltipActionButton>
+                <TitleTableTooltipActionButton
                   id={titleOverviewInteractiveSearchButtonId(item.id)}
                   tone="accent"
                   label={t("label.interactiveSearch")}
@@ -750,9 +749,9 @@ export function TitleTable({
                   className={TITLE_TABLE_ACTION_BUTTON_CLASS}
                 >
                   <Search className={posterActionIconClassName} />
-                </TitleTableLazyTooltipActionButton>
+                </TitleTableTooltipActionButton>
                 {onToggleMonitored ? (
-                  <TitleTableActionButton
+                  <TitleTableTooltipActionButton
                     tone="search"
                     label={t(
                       item.monitored
@@ -775,9 +774,9 @@ export function TitleTable({
                     ) : (
                       <Eye className={posterActionIconClassName} />
                     )}
-                  </TitleTableActionButton>
+                  </TitleTableTooltipActionButton>
                 ) : null}
-                <TitleTableActionButton
+                <TitleTableTooltipActionButton
                   tone="delete"
                   label={t("label.delete")}
                   onClick={() => onDelete(item)}
@@ -791,7 +790,7 @@ export function TitleTable({
                   ) : (
                     <Trash2 className={posterActionIconClassName} />
                   )}
-                </TitleTableActionButton>
+                </TitleTableTooltipActionButton>
               </div>
             </TableCell>
           ) : null}

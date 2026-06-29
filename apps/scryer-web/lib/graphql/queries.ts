@@ -1215,7 +1215,6 @@ export type ReactiveRefreshQueryActionPlan =
       key: string;
       kind: "titleOverviewNative";
       titleAlias: string;
-      titleAcquisitionDiagnosticsAlias: string;
       titleHistoryAlias: string;
       titleReleaseBlocklistAlias: string;
       externalSubtitlesAlias: string;
@@ -1269,7 +1268,6 @@ export function buildReactiveRefreshQuery(
         const titleIdVariableName = `titleOverviewId${index}`;
         const blocklistLimitVariableName = `titleOverviewBlocklistLimit${index}`;
         const titleAlias = `titleOverviewTitleAction${index}`;
-        const titleAcquisitionDiagnosticsAlias = `titleOverviewDiagnosticsAction${index}`;
         const titleHistoryAlias = `titleOverviewHistoryAction${index}`;
         const titleReleaseBlocklistAlias = `titleOverviewBlocklistAction${index}`;
         const externalSubtitlesAlias = `titleOverviewExternalSubtitlesAction${index}`;
@@ -1279,9 +1277,6 @@ export function buildReactiveRefreshQuery(
         variableDefinitions.push(`$${blocklistLimitVariableName}: Int`);
         fields.push(
           `  ${titleAlias}: title(id: $${titleIdVariableName}) {\n${TITLE_OVERVIEW_FIELDS}\n  }`,
-        );
-        fields.push(
-          `  ${titleAcquisitionDiagnosticsAlias}: titleAcquisitionDiagnostics(titleId: $${titleIdVariableName}) {\n    recentDecisions {\n      id\n      wantedItemId\n      titleId\n      releaseTitle\n      releaseUrl\n      releaseSizeBytes\n      decisionCode\n      candidateScore\n      currentScore\n      scoreDelta\n      explanationJson\n      createdAt\n    }\n    decisionCounts {\n      code\n      count\n    }\n    wantedStatusCounts {\n      status\n      count\n    }\n    pendingReleaseCounts {\n      status\n      count\n    }\n    mismatchRecoveryEligibleCount\n    latestDecisionAt\n    latestWantedSearchAt\n  }`,
         );
         fields.push(
           `  ${titleHistoryAlias}: titleHistory(filter: { titleIds: [$${titleIdVariableName}], limit: 50, offset: 0 }) {\n    records {\n${TITLE_EVENT_FIELDS}\n    }\n  }`,
@@ -1301,7 +1296,6 @@ export function buildReactiveRefreshQuery(
           key: action.key,
           kind: action.kind,
           titleAlias,
-          titleAcquisitionDiagnosticsAlias,
           titleHistoryAlias,
           titleReleaseBlocklistAlias,
           externalSubtitlesAlias,

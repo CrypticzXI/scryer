@@ -556,48 +556,45 @@ export function TitleTableActionButton({
   );
 }
 
-export function TitleTableLazyTooltipActionButton({
+export function TitleTableTooltipActionButton({
   tooltip,
   tooltipClassName,
   showTitleAttribute = false,
   ...buttonProps
 }: TitleTableActionButtonProps & {
-  tooltip: React.ReactNode;
+  tooltip?: React.ReactNode;
   tooltipClassName?: string;
 }) {
-  const [active, setActive] = React.useState(false);
-  const trigger = (
-    <span
-      className="inline-flex"
-      onPointerEnter={() => setActive(true)}
-      onPointerLeave={() => setActive(false)}
-      onFocus={() => setActive(true)}
-      onBlur={() => setActive(false)}
-    >
-      <TitleTableActionButton
-        {...buttonProps}
-        showTitleAttribute={showTitleAttribute}
-      />
-    </span>
-  );
-
-  if (!active) {
-    return trigger;
-  }
-
+  // A plain, uncontrolled shadcn/Radix tooltip. Radix owns open/close, hover +
+  // focus intent, dismissal (pointer-leave, scroll, blur, Escape) and
+  // collision-aware positioning — so it can't get stuck open or mis-placed the
+  // way a hand-rolled `open`-controlled hover box does inside a re-rendering
+  // table. The button is wrapped in a span so disabled buttons still trigger
+  // the tooltip (disabled elements don't emit pointer events themselves).
+  // `tooltip` defaults to the button's accessible label so short-label buttons
+  // (monitor, delete) get the same styled tooltip without repeating the text.
+  const content = tooltip ?? buttonProps.label;
   return (
-    <TooltipProvider>
-      <Tooltip open={active} onOpenChange={setActive}>
-        <TooltipTrigger asChild>{trigger}</TooltipTrigger>
+    <TooltipProvider delayDuration={300}>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span className="inline-flex">
+            <TitleTableActionButton
+              {...buttonProps}
+              showTitleAttribute={showTitleAttribute}
+            />
+          </span>
+        </TooltipTrigger>
         <TooltipContent
           side="top"
           sideOffset={8}
+          collisionPadding={8}
           className={cn(
             "max-w-[18rem] whitespace-normal break-words text-left text-sm leading-snug",
             tooltipClassName,
           )}
         >
-          {tooltip}
+          {content}
         </TooltipContent>
       </Tooltip>
     </TooltipProvider>

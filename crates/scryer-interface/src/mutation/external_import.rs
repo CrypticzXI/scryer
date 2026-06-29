@@ -746,12 +746,36 @@ fn push_bool_consensus_application<F>(
 ) where
     F: Fn(&ExternalImportSourceSettingSignal) -> Option<bool>,
 {
-    let values = accumulator
-        .sources
-        .values()
+    let sources = accumulator.sources.values().collect::<Vec<_>>();
+    let values = sources
+        .iter()
+        .copied()
         .filter_map(|source| value_for_source(source).map(|value| (source, value)))
         .collect::<Vec<_>>();
     if values.is_empty() {
+        if !sources.is_empty() {
+            applications.push(setting_application(
+                accumulator,
+                setting,
+                empty_setting_value(),
+                ExternalImportLibrarySettingConfidence::Low,
+                ExternalImportLibrarySettingDisposition::Skipped,
+                source_evidence(sources.iter().copied()),
+                Some("one or more contributing sources did not report this setting".to_string()),
+            ));
+        }
+        return;
+    }
+    if values.len() != sources.len() {
+        applications.push(setting_application(
+            accumulator,
+            setting,
+            empty_setting_value(),
+            ExternalImportLibrarySettingConfidence::Low,
+            ExternalImportLibrarySettingDisposition::Skipped,
+            source_evidence(sources.iter().copied()),
+            Some("one or more contributing sources did not report this setting".to_string()),
+        ));
         return;
     }
     let first = values[0].1;
@@ -793,9 +817,10 @@ fn push_string_consensus_application<F>(
 ) where
     F: Fn(&ExternalImportSourceSettingSignal) -> Option<&str>,
 {
-    let values = accumulator
-        .sources
-        .values()
+    let sources = accumulator.sources.values().collect::<Vec<_>>();
+    let values = sources
+        .iter()
+        .copied()
         .filter_map(|source| {
             value_for_source(source)
                 .map(str::trim)
@@ -804,6 +829,29 @@ fn push_string_consensus_application<F>(
         })
         .collect::<Vec<_>>();
     if values.is_empty() {
+        if !sources.is_empty() {
+            applications.push(setting_application(
+                accumulator,
+                setting,
+                empty_setting_value(),
+                ExternalImportLibrarySettingConfidence::Low,
+                ExternalImportLibrarySettingDisposition::Skipped,
+                source_evidence(sources.iter().copied()),
+                Some("one or more contributing sources did not report this setting".to_string()),
+            ));
+        }
+        return;
+    }
+    if values.len() != sources.len() {
+        applications.push(setting_application(
+            accumulator,
+            setting,
+            empty_setting_value(),
+            ExternalImportLibrarySettingConfidence::Low,
+            ExternalImportLibrarySettingDisposition::Skipped,
+            source_evidence(sources.iter().copied()),
+            Some("one or more contributing sources did not report this setting".to_string()),
+        ));
         return;
     }
     let first = values[0].1;
@@ -862,31 +910,40 @@ fn push_quality_profile_application(
         *mapped_counts.entry(profile_id).or_insert(0) += *count;
     }
 
-    let mapped_total = mapped_counts.values().copied().sum::<i32>();
-    if mapped_total < EXTERNAL_IMPORT_DERIVED_SETTING_MIN_SAMPLE {
-        return;
-    }
-    let Some((profile_id, count)) = mapped_counts
-        .iter()
-        .max_by(|left, right| left.1.cmp(right.1).then_with(|| left.0.cmp(right.0)))
-    else {
-        return;
-    };
-    if !meets_dominance_threshold(*count, mapped_total) {
+    if mapped_counts.is_empty() {
         applications.push(setting_application(
             accumulator,
             ExternalImportLibrarySettingKey::QualityProfileId,
             empty_setting_value(),
             ExternalImportLibrarySettingConfidence::Low,
             ExternalImportLibrarySettingDisposition::Skipped,
-            title_count_evidence(accumulator, *count, mapped_total),
-            Some("mapped Arr quality profiles are not dominant enough".to_string()),
+            title_count_evidence(accumulator, 0, accumulator.quality_profile_total),
+            Some("no Arr quality profile mapped unambiguously to Scryer".to_string()),
+        ));
+        return;
+    }
+
+    let Some((profile_id, count)) = mapped_counts
+        .iter()
+        .max_by(|left, right| left.1.cmp(right.1).then_with(|| left.0.cmp(right.0)))
+    else {
+        return;
+    };
+    if !meets_dominance_threshold(*count, accumulator.quality_profile_total) {
+        applications.push(setting_application(
+            accumulator,
+            ExternalImportLibrarySettingKey::QualityProfileId,
+            empty_setting_value(),
+            ExternalImportLibrarySettingConfidence::Low,
+            ExternalImportLibrarySettingDisposition::Skipped,
+            title_count_evidence(accumulator, *count, accumulator.quality_profile_total),
+            Some("dominant mapped Arr quality profile is below confidence threshold".to_string()),
         ));
         return;
     }
 
     let profile_id = profile_id.clone();
-    let evidence = title_count_evidence(accumulator, *count, mapped_total);
+    let evidence = title_count_evidence(accumulator, *count, accumulator.quality_profile_total);
     applications.push(setting_application(
         accumulator,
         ExternalImportLibrarySettingKey::QualityProfileId,
@@ -1199,13 +1256,19 @@ async fn apply_external_import_library_setting_applications(
     }
 
     for (library_id, draft) in library_drafts {
-        let changed_keys = app
+        let result = app
             .apply_external_import_library_settings_auto_apply(actor, &library_id, draft)
-            .await?
-            .changed_keys;
+            .await?;
+        let changed_keys = result.changed_keys;
+        let skipped_reasons = result
+            .skipped_keys
+            .into_iter()
+            .map(|skipped| (skipped.key_name, skipped.reason))
+            .collect::<BTreeMap<_, _>>();
         for application in applications.iter_mut().filter(|application| {
             application.library_id.to_string() == library_id
                 && application.disposition == ExternalImportLibrarySettingDisposition::AutoApplied
+                && is_external_import_library_auto_apply_setting(application.setting)
         }) {
             let Some(key_name) = external_import_application_setting_key_name(
                 application.setting,
@@ -1216,12 +1279,28 @@ async fn apply_external_import_library_setting_applications(
             if !changed_keys.iter().any(|key| key == key_name) {
                 application.disposition = ExternalImportLibrarySettingDisposition::Skipped;
                 application.reason =
-                    Some("target setting already has an explicit override".to_string());
+                    Some(skipped_reasons.get(key_name).cloned().unwrap_or_else(|| {
+                        "target setting already has an explicit override".to_string()
+                    }));
             }
         }
     }
 
     Ok(())
+}
+
+fn is_external_import_library_auto_apply_setting(setting: ExternalImportLibrarySettingKey) -> bool {
+    matches!(
+        setting,
+        ExternalImportLibrarySettingKey::NfoWriteOnImport
+            | ExternalImportLibrarySettingKey::PlexmatchWriteOnImport
+            | ExternalImportLibrarySettingKey::SetPermissionsLinux
+            | ExternalImportLibrarySettingKey::FolderChmod
+            | ExternalImportLibrarySettingKey::ChownGroup
+            | ExternalImportLibrarySettingKey::QualityProfileId
+            | ExternalImportLibrarySettingKey::RequestQualityProfileIds
+            | ExternalImportLibrarySettingKey::MonitorSpecials
+    )
 }
 
 fn external_import_application_setting_key_name(
@@ -3276,8 +3355,9 @@ mod tests {
         SONARR_EPISODE_FETCH_CONCURRENCY_PER_INSTANCE,
         build_external_import_library_setting_accumulators,
         derive_external_import_library_setting_applications,
-        detect_imported_prowlarr_proxy_indexer, imported_indexer_config_json, map_download_client,
-        map_indexer, merge_direct_prowlarr_group, merge_prowlarr_group, movie_scan_hint_from_arr,
+        detect_imported_prowlarr_proxy_indexer, imported_indexer_config_json,
+        is_external_import_library_auto_apply_setting, map_download_client, map_indexer,
+        merge_direct_prowlarr_group, merge_prowlarr_group, movie_scan_hint_from_arr,
         prowlarr_dedup_key, push_sonarr_scan_hints_for_mapping, record_series_setting_sample,
         remap_import_path, series_episode_scan_hint_from_arr, series_folder_scan_hint_from_arr,
     };
@@ -3523,6 +3603,68 @@ mod tests {
         }
     }
 
+    fn test_warmup_source(
+        source_key: &str,
+        root_path: &str,
+        naming_config: Option<ArrNamingConfig>,
+        quality_profiles: Vec<ArrQualityProfile>,
+    ) -> ExternalImportArrSourceWarmupResult {
+        ExternalImportArrSourceWarmupResult {
+            source_key: source_key.into(),
+            kind: ExternalImportArrSourceKind::Sonarr,
+            base_url: format!("http://{source_key}.local"),
+            version: Some("4.0.0".into()),
+            root_folders: Vec::new(),
+            title_root_paths: vec![root_path.into()],
+            naming_config,
+            media_management_config: None,
+            metadata_providers: Vec::new(),
+            quality_profiles,
+            signal_warnings: Vec::new(),
+            download_clients: Vec::new(),
+            indexers: Vec::new(),
+        }
+    }
+
+    fn test_source_mapping(
+        session_id: &str,
+        source_key: &str,
+        arr_root_path: &str,
+        library_id: &str,
+    ) -> (String, ResolvedSourceMapping) {
+        (
+            super::mapping_key(session_id, source_key, arr_root_path),
+            ResolvedSourceMapping {
+                library_id: library_id.into(),
+                source_warmup_session_id: Some(session_id.into()),
+                arr_root_path: arr_root_path.into(),
+                scryer_root_path: format!("/media/{library_id}"),
+                facet: MediaFacet::Anime,
+            },
+        )
+    }
+
+    fn test_arr_series(id: i64, root_path: &str, quality_profile_id: i64) -> ArrSeries {
+        ArrSeries {
+            id,
+            root_folder_path: root_path.into(),
+            path: Some(format!("{root_path}/Show {id}")),
+            tvdb_id: Some(format!("10{id}")),
+            monitored: true,
+            quality_profile_id: Some(quality_profile_id),
+            series_type: Some("anime".into()),
+            season_folder: Some(true),
+            monitor_new_items: Some("all".into()),
+            original_language: Some("Japanese".into()),
+            tags: Vec::new(),
+            seasons: vec![ArrSeriesSeason {
+                season_number: 0,
+                monitored: true,
+            }],
+            statistics: ArrSeriesStatistics::default(),
+        }
+    }
+
     #[test]
     fn external_import_setting_derivation_uses_warmed_arr_signals() {
         let session_id = "source-session";
@@ -3662,6 +3804,192 @@ mod tests {
 
         let monitor_specials = find(ExternalImportLibrarySettingKey::MonitorSpecials);
         assert_eq!(monitor_specials.value.bool_value, Some(true));
+    }
+
+    #[test]
+    fn external_import_setting_derivation_skips_missing_source_signal() {
+        let library_id = "anime-library";
+        let root_path = "/srv/anime";
+        let source_results = BTreeMap::from([
+            (
+                "source-a-session".to_string(),
+                test_warmup_source(
+                    "sonarr-a",
+                    root_path,
+                    Some(ArrNamingConfig {
+                        rename_enabled: Some(true),
+                        replace_illegal_characters: None,
+                        colon_replacement_format: None,
+                        standard_format: None,
+                        folder_format: None,
+                        season_folder_format: None,
+                        specials_folder_format: None,
+                    }),
+                    Vec::new(),
+                ),
+            ),
+            (
+                "source-b-session".to_string(),
+                test_warmup_source("sonarr-b", root_path, None, Vec::new()),
+            ),
+        ]);
+        let mappings = HashMap::from([
+            test_source_mapping("source-a-session", "sonarr-a", root_path, library_id),
+            test_source_mapping("source-b-session", "sonarr-b", root_path, library_id),
+        ]);
+        let accumulators =
+            build_external_import_library_setting_accumulators(&source_results, &mappings);
+
+        let applications = derive_external_import_library_setting_applications(
+            &accumulators,
+            &source_results,
+            &[],
+        );
+        let rename = applications
+            .iter()
+            .find(|application| {
+                application.setting == ExternalImportLibrarySettingKey::RenameEnabled
+            })
+            .expect("rename application");
+
+        assert_eq!(
+            rename.disposition,
+            ExternalImportLibrarySettingDisposition::Skipped
+        );
+        assert!(
+            rename
+                .reason
+                .as_deref()
+                .is_some_and(|reason| reason.contains("did not report"))
+        );
+    }
+
+    #[test]
+    fn external_import_setting_derivation_reports_all_missing_source_signal() {
+        let session_id = "source-session";
+        let library_id = "anime-library";
+        let root_path = "/srv/anime";
+        let source_results = BTreeMap::from([(
+            session_id.to_string(),
+            test_warmup_source("sonarr-main", root_path, None, Vec::new()),
+        )]);
+        let mappings = HashMap::from([test_source_mapping(
+            session_id,
+            "sonarr-main",
+            root_path,
+            library_id,
+        )]);
+        let accumulators =
+            build_external_import_library_setting_accumulators(&source_results, &mappings);
+
+        let applications = derive_external_import_library_setting_applications(
+            &accumulators,
+            &source_results,
+            &[],
+        );
+        let rename = applications
+            .iter()
+            .find(|application| {
+                application.setting == ExternalImportLibrarySettingKey::RenameEnabled
+            })
+            .expect("rename application");
+
+        assert_eq!(
+            rename.disposition,
+            ExternalImportLibrarySettingDisposition::Skipped
+        );
+        assert!(
+            rename
+                .reason
+                .as_deref()
+                .is_some_and(|reason| reason.contains("did not report"))
+        );
+    }
+
+    #[test]
+    fn external_import_quality_profile_dominance_counts_unmapped_profiles() {
+        let session_id = "source-session";
+        let library_id = "anime-library";
+        let root_path = "/srv/anime";
+        let source_results = BTreeMap::from([(
+            session_id.to_string(),
+            test_warmup_source(
+                "sonarr-main",
+                root_path,
+                None,
+                vec![
+                    ArrQualityProfile {
+                        id: 7,
+                        name: "HD 1080p".into(),
+                        language: None,
+                    },
+                    ArrQualityProfile {
+                        id: 8,
+                        name: "Imported 4K".into(),
+                        language: None,
+                    },
+                ],
+            ),
+        )]);
+        let mappings = HashMap::from([test_source_mapping(
+            session_id,
+            "sonarr-main",
+            root_path,
+            library_id,
+        )]);
+        let mut accumulators =
+            build_external_import_library_setting_accumulators(&source_results, &mappings);
+        let mapping = mappings.values().next().expect("mapping");
+        for id in 1..=3 {
+            record_series_setting_sample(
+                &mut accumulators,
+                mapping,
+                &test_arr_series(id, root_path, 7),
+            );
+        }
+        record_series_setting_sample(
+            &mut accumulators,
+            mapping,
+            &test_arr_series(4, root_path, 8),
+        );
+        let catalog_profiles = vec![QualityProfile {
+            id: "hd-1080p".into(),
+            name: "HD 1080p".into(),
+            criteria: QualityProfileCriteria::default(),
+        }];
+
+        let applications = derive_external_import_library_setting_applications(
+            &accumulators,
+            &source_results,
+            &catalog_profiles,
+        );
+        let profile = applications
+            .iter()
+            .find(|application| {
+                application.setting == ExternalImportLibrarySettingKey::QualityProfileId
+            })
+            .expect("quality profile application");
+
+        assert_eq!(
+            profile.disposition,
+            ExternalImportLibrarySettingDisposition::Skipped
+        );
+        assert!(
+            profile
+                .reason
+                .as_deref()
+                .is_some_and(|reason| reason.contains("below confidence"))
+        );
+    }
+
+    #[test]
+    fn external_import_library_reconciliation_does_not_claim_rename_setting() {
+        assert!(!is_external_import_library_auto_apply_setting(
+            ExternalImportLibrarySettingKey::RenameEnabled
+        ));
+        assert!(is_external_import_library_auto_apply_setting(
+            ExternalImportLibrarySettingKey::NfoWriteOnImport
+        ));
     }
 
     #[test]

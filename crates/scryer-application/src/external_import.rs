@@ -177,6 +177,20 @@ impl ExternalArrApiBucket {
         }
     }
 
+    fn naming_config_path(self, api_prefix: &str) -> &'static str {
+        match self {
+            Self::SonarrV4 if api_prefix.eq_ignore_ascii_case("v5") => "settings/naming",
+            Self::SonarrV4 | Self::RadarrV6 => "config/naming",
+        }
+    }
+
+    fn media_management_config_path(self, api_prefix: &str) -> &'static str {
+        match self {
+            Self::SonarrV4 if api_prefix.eq_ignore_ascii_case("v5") => "settings/mediamanagement",
+            Self::SonarrV4 | Self::RadarrV6 => "config/mediamanagement",
+        }
+    }
+
     fn validate_status(self, app_name: &str, version: &str) -> AppResult<()> {
         let app_name = app_name.trim();
         if !app_name.eq_ignore_ascii_case(self.expected_app_name()) {
@@ -477,7 +491,11 @@ impl ExternalArrClient {
     }
 
     pub async fn get_naming_config(&self) -> AppResult<ArrNamingConfig> {
-        let json = self.api_get("config/naming").await?;
+        self.ensure_supported_system_status().await?;
+        let api_prefix = self.ensure_supported_api_prefix().await?;
+        let json = self
+            .api_get_with_prefix(&api_prefix, self.api_bucket.naming_config_path(&api_prefix))
+            .await?;
         Ok(ArrNamingConfig {
             rename_enabled: value_bool(json.get(match self.api_bucket {
                 ExternalArrApiBucket::SonarrV4 => "renameEpisodes",
@@ -499,7 +517,14 @@ impl ExternalArrClient {
     }
 
     pub async fn get_media_management_config(&self) -> AppResult<ArrMediaManagementConfig> {
-        let json = self.api_get("config/mediamanagement").await?;
+        self.ensure_supported_system_status().await?;
+        let api_prefix = self.ensure_supported_api_prefix().await?;
+        let json = self
+            .api_get_with_prefix(
+                &api_prefix,
+                self.api_bucket.media_management_config_path(&api_prefix),
+            )
+            .await?;
         Ok(ArrMediaManagementConfig {
             set_permissions_linux: value_bool(json.get("setPermissionsLinux")),
             chmod_folder: value_trimmed_string(json.get("chmodFolder")),
@@ -1338,6 +1363,42 @@ mod tests {
         ExternalArrApiBucket::SonarrV4
             .validate_api_prefix("v5")
             .expect("newer Sonarr api prefix should be supported");
+    }
+
+    #[test]
+    fn sonarr_v4_bucket_uses_legacy_settings_routes_before_v5() {
+        assert_eq!(
+            ExternalArrApiBucket::SonarrV4.naming_config_path("v4"),
+            "config/naming"
+        );
+        assert_eq!(
+            ExternalArrApiBucket::SonarrV4.media_management_config_path("v4"),
+            "config/mediamanagement"
+        );
+    }
+
+    #[test]
+    fn sonarr_v4_bucket_uses_v5_settings_routes_for_v5_prefix() {
+        assert_eq!(
+            ExternalArrApiBucket::SonarrV4.naming_config_path("v5"),
+            "settings/naming"
+        );
+        assert_eq!(
+            ExternalArrApiBucket::SonarrV4.media_management_config_path("v5"),
+            "settings/mediamanagement"
+        );
+    }
+
+    #[test]
+    fn radarr_v6_bucket_uses_v3_config_settings_routes() {
+        assert_eq!(
+            ExternalArrApiBucket::RadarrV6.naming_config_path("v3"),
+            "config/naming"
+        );
+        assert_eq!(
+            ExternalArrApiBucket::RadarrV6.media_management_config_path("v3"),
+            "config/mediamanagement"
+        );
     }
 
     #[test]

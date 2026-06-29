@@ -50,9 +50,8 @@ import {
   resolveOverviewTargetView,
   TitleEpisodeProgressBar,
   TitleCollectionEmptyState,
-  TitleTableActionButton,
   TitleTableEmptyState,
-  TitleTableLazyTooltipActionButton,
+  TitleTableTooltipActionButton,
   TitleTableLoadingState,
   COMPACT_TITLE_TABLE_ACTION_BUTTON_CLASS,
   DEFAULT_TITLE_TABLE_VISIBLE_COLUMNS,
@@ -840,7 +839,7 @@ export function CompactTitleTable({
                   selectionMode && "pointer-events-none opacity-40",
                 )}
               >
-                <TitleTableLazyTooltipActionButton
+                <TitleTableTooltipActionButton
                   id={titleOverviewSearchButtonId(item.id)}
                   tone="auto"
                   label={t("label.search")}
@@ -854,8 +853,8 @@ export function CompactTitleTable({
                   ) : (
                     <Zap className="h-3.5 w-3.5" />
                   )}
-                </TitleTableLazyTooltipActionButton>
-                <TitleTableLazyTooltipActionButton
+                </TitleTableTooltipActionButton>
+                <TitleTableTooltipActionButton
                   id={titleOverviewInteractiveSearchButtonId(item.id)}
                   tone="accent"
                   label={t("label.interactiveSearch")}
@@ -865,9 +864,9 @@ export function CompactTitleTable({
                   className={COMPACT_TITLE_TABLE_ACTION_BUTTON_CLASS}
                 >
                   <Search className="h-3.5 w-3.5" />
-                </TitleTableLazyTooltipActionButton>
+                </TitleTableTooltipActionButton>
                 {onToggleMonitored ? (
-                  <TitleTableActionButton
+                  <TitleTableTooltipActionButton
                     tone="search"
                     label={t(
                       item.monitored
@@ -885,9 +884,9 @@ export function CompactTitleTable({
                     ) : (
                       <Eye className="h-3.5 w-3.5" />
                     )}
-                  </TitleTableActionButton>
+                  </TitleTableTooltipActionButton>
                 ) : null}
-                <TitleTableActionButton
+                <TitleTableTooltipActionButton
                   tone="delete"
                   label={t("label.delete")}
                   onClick={() => onDelete(item)}
@@ -899,7 +898,7 @@ export function CompactTitleTable({
                   ) : (
                     <Trash2 className="h-3.5 w-3.5" />
                   )}
-                </TitleTableActionButton>
+                </TitleTableTooltipActionButton>
               </div>
             </TableCell>
           ) : null}

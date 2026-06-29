@@ -162,8 +162,7 @@ function applyReactiveRefreshActionResult(
         | undefined;
       action.apply({
         title: payload[typedActionPlan.titleAlias] ?? null,
-        acquisitionDiagnostics:
-          payload[typedActionPlan.titleAcquisitionDiagnosticsAlias] ?? null,
+        acquisitionDiagnostics: null,
         titleHistory: (titleHistoryPage?.records ?? []) as TitleOverviewNativeSnapshot<
           unknown,
           unknown,
@@ -231,7 +230,6 @@ function reactiveRefreshActionAliases(
     case "titleOverviewNative":
       return [
         actionPlan.titleAlias,
-        actionPlan.titleAcquisitionDiagnosticsAlias,
         actionPlan.titleHistoryAlias,
         actionPlan.titleReleaseBlocklistAlias,
         actionPlan.externalSubtitlesAlias,

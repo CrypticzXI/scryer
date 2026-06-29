@@ -272,14 +272,14 @@ pub use security::external_accounts::{ExternalAuthRuntimeConnection, ExternalAut
 pub use settings::settings::{
     AcquisitionSettings, AutoBackupSettings, BackupSettings, DownloadClientRoutingSettingsEntry,
     ExternalImportLibraryPathsSelection, ExternalImportLibrarySettingsAutoApplyDraft,
-    ExternalImportLibrarySettingsAutoApplyResult, FacetScoringPersonaSelection, GeneralSettings,
-    IndexerRoutingSettingsEntry, LibraryPathsSettings, LibrarySettings,
-    LibrarySettingsOverrideDraft, MediaSettings, QualityProfileSelection, QualityProfileSettings,
-    RequestQualityProfileSettings, SaveQualityProfileSettings, SecuritySettings, ServiceSettings,
-    SubtitleSettings, UpdateAutoBackupSettings, UpdateBackupSettings,
-    UpdateFacetScoringPersonaSelection, UpdateGeneralSettings, UpdateLibraryPaths,
-    UpdateMediaSettings, UpdateQualityProfileSelection, UpdateSecuritySettings,
-    UpdateServiceSettings, UpdateSubtitleSettings,
+    ExternalImportLibrarySettingsAutoApplyResult, ExternalImportSettingsAutoApplySkip,
+    FacetScoringPersonaSelection, GeneralSettings, IndexerRoutingSettingsEntry,
+    LibraryPathsSettings, LibrarySettings, LibrarySettingsOverrideDraft, MediaSettings,
+    QualityProfileSelection, QualityProfileSettings, RequestQualityProfileSettings,
+    SaveQualityProfileSettings, SecuritySettings, ServiceSettings, SubtitleSettings,
+    UpdateAutoBackupSettings, UpdateBackupSettings, UpdateFacetScoringPersonaSelection,
+    UpdateGeneralSettings, UpdateLibraryPaths, UpdateMediaSettings, UpdateQualityProfileSelection,
+    UpdateSecuritySettings, UpdateServiceSettings, UpdateSubtitleSettings,
 };
 pub use subtitles::orchestration::{
     DownloadSubtitleForMediaFileRequest, spawn_subtitle_search_for_file,

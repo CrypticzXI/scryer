@@ -21,6 +21,8 @@ import type { UseExternalImportSetupReturn } from "@/lib/hooks/use-external-impo
 interface SetupImportSummaryViewProps {
   wizard: UseExternalImportSetupReturn;
   t: (key: string, values?: Record<string, unknown>) => string;
+  /** Reset connections and route back to Connect (lost-session recovery). */
+  onReconnect: () => void;
 }
 
 interface StatRow {
@@ -54,6 +56,7 @@ const cardStyle: CSSProperties = {
 export default function SetupImportSummaryView({
   wizard,
   t,
+  onReconnect,
 }: SetupImportSummaryViewProps) {
   const {
     summary,
@@ -61,6 +64,7 @@ export default function SetupImportSummaryView({
     warmupComplete,
     warmupFailed,
     warmupErrorMessage,
+    warmupSessionLost,
     retryWarmup,
     mappingReady,
     preview,
@@ -74,13 +78,14 @@ export default function SetupImportSummaryView({
   // failure rather than silently leaving Finish disabled with no explanation.
   const previewBlocked = !preview && Boolean(previewError);
   const showFailure = warmupFailed || previewBlocked;
-  // Map raw warmup/preview errors to actionable copy — raw GraphQL/transport
-  // strings (e.g. "[GraphQL] not found: no warmup session …", which means the
-  // session was pruned after a restart/idle) must never reach the UI.
+  // A lost session is unrecoverable in place → offer Reconnect (back to Connect)
+  // instead of Retry. Other failures are retried in place. Either way, raw
+  // GraphQL/transport strings (e.g. "no warmup session …") never reach the UI.
   const rawFailure = warmupErrorMessage ?? previewError;
-  const sessionExpired =
-    !!rawFailure && /no warmup session/i.test(rawFailure);
-  const failureDetail = sessionExpired
+  const failureTitle = warmupSessionLost
+    ? t("setup.importWarmupSessionExpiredTitle")
+    : t("setup.importWarmupFailedTitle");
+  const failureDetail = warmupSessionLost
     ? t("setup.importWarmupSessionExpired")
     : rawFailure?.replace(/^\[(?:GraphQL|Network)\]\s*/i, "").trim() ||
       t("setup.importWarmupFailedDetail");
@@ -234,30 +239,40 @@ export default function SetupImportSummaryView({
                 <div
                   style={{ fontSize: 14.5, fontWeight: 600, color: "#f1f5ff" }}
                 >
-                  {sessionExpired
-                    ? t("setup.importWarmupSessionExpiredTitle")
-                    : t("setup.importWarmupFailedTitle")}
+                  {failureTitle}
                 </div>
                 <div style={{ fontSize: 12.5, color: "var(--scry-muted3)" }}>
                   {failureDetail}
                 </div>
               </div>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                disabled={retrying}
-                onClick={() => void handleRetry()}
-              >
-                {retrying ? (
-                  <Loader className="h-4 w-4 animate-spin" />
-                ) : (
+              {warmupSessionLost ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={onReconnect}
+                >
                   <RotateCcw className="h-4 w-4" />
-                )}
-                {retrying
-                  ? t("setup.importWarmupRetrying")
-                  : t("setup.retry")}
-              </Button>
+                  {t("setup.importReconnect")}
+                </Button>
+              ) : (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={retrying}
+                  onClick={() => void handleRetry()}
+                >
+                  {retrying ? (
+                    <Loader className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <RotateCcw className="h-4 w-4" />
+                  )}
+                  {retrying
+                    ? t("setup.importWarmupRetrying")
+                    : t("setup.retry")}
+                </Button>
+              )}
             </div>
           </div>
         ) : (

@@ -3104,7 +3104,8 @@ const en: LocaleDictionary = {
   "setup.importWarmupRetrying": "Restarting sync…",
   "setup.importWarmupSessionExpiredTitle": "Import preparation expired",
   "setup.importWarmupSessionExpired":
-    "Your import preparation expired — Scryer may have restarted, or it sat idle too long. Use Retry to start it again.",
+    "Your import preparation is no longer available — Scryer may have restarted, or it sat idle too long. Reconnect to your instances to start a fresh import.",
+  "setup.importReconnect": "Reconnect",
   "setup.importUnmappedRootsNotice":
     "Some detected source folders still need a library. Go back to the Libraries step to map them before finishing.",
 
