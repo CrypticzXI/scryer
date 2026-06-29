@@ -4,6 +4,7 @@ import {
   ChevronRight,
   FolderMinus,
   Library,
+  Plus,
 } from "lucide-react";
 
 import {
@@ -14,11 +15,13 @@ import {
 } from "@/components/ui/sheet";
 import {
   effectiveRootPath,
+  facetsForKind,
   kindCompatibleWithFacet,
   type ImportLibraryDraft,
   type ImportRoot,
+  type WizardFacet,
 } from "@/lib/hooks/use-external-import-setup";
-import { facetLabelKey, facetStyle } from "./facet-style";
+import { facetLabelKey, facetPillStyle, facetStyle } from "./facet-style";
 
 import { ImportInstancePill } from "./import-instance-pill";
 
@@ -29,6 +32,7 @@ interface ImportAssignSheetProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onPick: (libraryId: string | null) => void;
+  onCreateLibrary?: (facet: WizardFacet) => void;
   t: (key: string, values?: Record<string, unknown>) => string;
 }
 
@@ -48,6 +52,7 @@ export function ImportAssignSheet({
   open,
   onOpenChange,
   onPick,
+  onCreateLibrary,
   t,
 }: ImportAssignSheetProps) {
   const compatible = root
@@ -229,6 +234,74 @@ export function ImportAssignSheet({
               </button>
             );
           })}
+
+          {/* Empty state: no compatible library — offer to create one. */}
+          {root && compatible.length === 0 ? (
+            <div
+              style={{
+                display: "flex",
+                flexDirection: "column",
+                gap: 8,
+              }}
+            >
+              <span
+                style={{
+                  fontSize: 13,
+                  color: "var(--scry-faint)",
+                  padding: "4px 2px",
+                }}
+              >
+                {t("setup.noCompatibleLibrary")}
+              </span>
+              {facetsForKind(root.kind).map((facet) => {
+                const facetName = facetStyle(facet);
+                return (
+                  <button
+                    key={facet}
+                    type="button"
+                    onClick={() => {
+                      onCreateLibrary?.(facet);
+                      onOpenChange(false);
+                    }}
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: 9,
+                      minHeight: 48,
+                      padding: "8px 14px",
+                      borderRadius: 12,
+                      textAlign: "left",
+                      cursor: "pointer",
+                      ...facetPillStyle(facet),
+                    }}
+                  >
+                    <span
+                      aria-hidden
+                      style={{
+                        display: "inline-flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        width: 30,
+                        height: 30,
+                        borderRadius: 8,
+                        background: facetName.bg,
+                        border: `1px solid ${facetName.border}`,
+                        color: facetName.text,
+                        flex: "none",
+                      }}
+                    >
+                      <Plus size={16} />
+                    </span>
+                    <span style={{ fontSize: 14, fontWeight: 600 }}>
+                      {t("setup.createFacetLibrary", {
+                        facet: t(facetLabelKey(facet)),
+                      })}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          ) : null}
         </div>
 
         {/* Move to unassigned */}

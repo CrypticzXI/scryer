@@ -17,7 +17,7 @@ fn test_job_run_record(
     created_at: chrono::DateTime<chrono::Utc>,
     actor_user_id: Option<&str>,
 ) -> JobRunRecord {
-    let completed_at = status.is_terminal().then(|| started_at.clone());
+    let completed_at = status.is_terminal().then_some(started_at);
     JobRunRecord {
         id: id.to_string(),
         job_key,
@@ -31,7 +31,7 @@ fn test_job_run_record(
         error_text: None,
         started_at,
         completed_at,
-        created_at: created_at.clone(),
+        created_at,
         updated_at: created_at,
     }
 }

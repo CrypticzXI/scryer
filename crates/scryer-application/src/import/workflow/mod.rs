@@ -52,6 +52,10 @@ fn should_persist_import_transfer_progress(
     last_emit.is_none_or(|instant| instant.elapsed() >= IMPORT_TRANSFER_PROGRESS_MIN_INTERVAL)
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "import progress wiring carries source, destination, library, and source validation context"
+)]
 async fn import_file_with_record_progress(
     app: &AppUseCase,
     import_id: &str,

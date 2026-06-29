@@ -3,7 +3,7 @@ import type { CSSProperties } from "react";
 import {
   CircleAlert,
   CircleCheckBig,
-  Info,
+  ExternalLink,
   KeyRound,
   Loader2,
   Pencil,
@@ -12,7 +12,10 @@ import {
 } from "lucide-react";
 
 import { Input } from "@/components/ui/input";
-import { instancePillColors } from "@/components/setup/import/import-instance-pill";
+import {
+  instancePillColors,
+  productLogoUrl,
+} from "@/components/setup/import/import-instance-pill";
 import type {
   ImportInstance,
   ImportInstanceKind,
@@ -105,17 +108,13 @@ export function SetupImportConnectView({
               data-slot="import-connect-column"
               data-kind={column.kind}
             >
-              {/* Column header — kind-colored product heading (no logo asset). */}
-              <div className="flex flex-col items-center gap-2 text-center">
-                <span
+              {/* Column header — product logo + name (design spec §3). */}
+              <div className="flex flex-col items-center gap-2.5 text-center">
+                <img
+                  src={productLogoUrl(column.kind) ?? undefined}
+                  alt=""
                   aria-hidden
-                  style={{
-                    width: 10,
-                    height: 10,
-                    borderRadius: "50%",
-                    background: column.headingColor,
-                    boxShadow: `0 0 0 4px ${column.headingColor}22`,
-                  }}
+                  style={{ width: 64, height: 64, objectFit: "contain" }}
                 />
                 <span
                   style={{
@@ -166,34 +165,21 @@ export function SetupImportConnectView({
           );
         })}
       </div>
-
-      {/* Read-only provenance note + at-least-one hint. */}
-      <div className="mt-6 flex flex-col items-center gap-2 text-center">
-        <p
-          className="flex items-center justify-center gap-1.5"
-          style={{
-            fontSize: 12.5,
-            color: "var(--scry-faint)",
-            maxWidth: 620,
-            lineHeight: 1.5,
-          }}
-        >
-          <Info className="h-3.5 w-3.5 shrink-0" />
-          {t("setup.atLeastOneRequired")}
-        </p>
-        <p
-          style={{
-            fontSize: 12,
-            color: "var(--scry-muted3)",
-            maxWidth: 620,
-            lineHeight: 1.5,
-          }}
-        >
-          {t("setup.connectReadOnlyNote")}
-        </p>
-      </div>
     </div>
   );
+}
+
+/** Deep-link to an instance's API-key settings page (Settings → General). */
+function settingsUrl(rawBaseUrl: string): string | null {
+  let url = rawBaseUrl.trim().replace(/\/+$/, "");
+  if (!url) return null;
+  if (!/^https?:\/\//i.test(url)) url = `http://${url}`;
+  try {
+    new URL(url);
+    return `${url}/settings/general`;
+  } catch {
+    return null;
+  }
 }
 
 interface InstanceCardProps {
@@ -217,6 +203,7 @@ function InstanceCard({
 }: InstanceCardProps) {
   const [editingName, setEditingName] = useState(false);
   const colors = instancePillColors(inst.kind);
+  const apiKeyHelpUrl = settingsUrl(inst.baseUrl);
 
   const named = inst.name.trim().length > 0;
   const nameDisplay = named ? inst.name : t("setup.unnamedInstance");
@@ -333,7 +320,22 @@ function InstanceCard({
 
       {/* API Key field. */}
       <div>
-        <label style={FIELD_LABEL_STYLE}>API Key</label>
+        <div className="mb-[5px] flex items-center justify-between gap-3">
+          <label style={{ ...FIELD_LABEL_STYLE, marginBottom: 0 }}>
+            API Key
+          </label>
+          {apiKeyHelpUrl ? (
+            <a
+              href={apiKeyHelpUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1 text-[11px] text-primary hover:underline"
+            >
+              {t("setup.findApiKey")}
+              <ExternalLink className="h-3 w-3" />
+            </a>
+          ) : null}
+        </div>
         <Input
           type="password"
           value={inst.apiKey}
@@ -386,13 +388,22 @@ function StatusRow({
           {t("setup.testing")}
         </span>
       ) : inst.status === "error" ? (
-        <span
-          className="flex items-center gap-1.5"
-          style={{ color: "#f87171" }}
-          title={inst.error ?? undefined}
-        >
-          <CircleAlert style={{ width: 15, height: 15 }} />
-          {t("setup.couldntConnect")}
+        <span className="flex flex-col gap-1">
+          <span
+            className="flex items-center gap-1.5"
+            style={{ color: "#f87171" }}
+          >
+            <CircleAlert style={{ width: 15, height: 15 }} />
+            {t("setup.couldntConnect")}
+          </span>
+          {inst.error ? (
+            <span
+              className="text-xs"
+              style={{ color: "var(--scry-faint)", lineHeight: 1.4 }}
+            >
+              {inst.error}
+            </span>
+          ) : null}
         </span>
       ) : (
         <span

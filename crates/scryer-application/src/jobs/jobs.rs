@@ -1462,20 +1462,13 @@ impl AppUseCase {
         let context_snapshot_due = if snapshot_resume_due {
             true
         } else if snapshot_can_submit && state.last_success_generation_id.is_none() {
-            if subject_context_changed {
-                // TODO: remove before going live; local testing shortcut to run the first discovery snapshot on startup.
-                true
-            } else {
-                false
-            }
-        } else if snapshot_can_submit
-            && (previous_context_gate.is_some_and(|gate| now >= gate)
-                || full_snapshot_reconciliation_due)
-            && state.last_success_generation_id.is_some()
-        {
-            true
+            // TODO: remove before going live; local testing shortcut to run the first discovery snapshot on startup.
+            subject_context_changed
         } else {
-            false
+            snapshot_can_submit
+                && (previous_context_gate.is_some_and(|gate| now >= gate)
+                    || full_snapshot_reconciliation_due)
+                && state.last_success_generation_id.is_some()
         };
 
         let context_snapshot = if context_snapshot_due {
@@ -1615,6 +1608,10 @@ impl AppUseCase {
         ))
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "deferred discovery sync records the observed state and scheduling reason explicitly"
+    )]
     async fn record_deferred_discovery_sync_run(
         &self,
         trigger_source: JobTriggerSource,

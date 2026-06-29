@@ -303,9 +303,7 @@ fn remap_import_path(path: Option<String>, arr_root: &str, scryer_root: &str) ->
     }
     let slash_prefix = format!("{root_key}/");
     let backslash_prefix = format!("{root_key}\\");
-    let suffix = if path_key.starts_with(&slash_prefix) {
-        trimmed_path.get(arr_root_trimmed.len() + 1..)
-    } else if path_key.starts_with(&backslash_prefix) {
+    let suffix = if path_key.starts_with(&slash_prefix) || path_key.starts_with(&backslash_prefix) {
         trimmed_path.get(arr_root_trimmed.len() + 1..)
     } else {
         None
@@ -2450,7 +2448,7 @@ mod tests {
                 &mut scan_hints,
                 &facet,
                 &series,
-                &[episode.clone()],
+                std::slice::from_ref(&episode),
             );
 
             let folder_key = library_scan_folder_leaf_key(series_path).expect("folder key");

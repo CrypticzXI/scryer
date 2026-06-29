@@ -3002,14 +3002,13 @@ impl DiscoveryRepository for RecordingDiscoveryRepository {
         now: DateTime<Utc>,
     ) -> AppResult<()> {
         let mut state = self.state.lock().await;
-        if let Some(existing) = state.as_mut() {
-            if existing.scope_key == scope_key
-                && existing.lease_owner_id.as_deref() == Some(owner_id)
-            {
-                existing.lease_owner_id = None;
-                existing.lease_expires_at = None;
-                existing.updated_at = now;
-            }
+        if let Some(existing) = state.as_mut()
+            && existing.scope_key == scope_key
+            && existing.lease_owner_id.as_deref() == Some(owner_id)
+        {
+            existing.lease_owner_id = None;
+            existing.lease_expires_at = None;
+            existing.updated_at = now;
         }
         Ok(())
     }
@@ -3513,6 +3512,10 @@ fn unused_gateway_call() -> AppError {
     AppError::Repository("unexpected metadata gateway call in discovery sync test".to_string())
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "test status fixture mirrors the SMG snapshot status fields under test"
+)]
 fn snapshot_status_result(
     request_id: &str,
     status: &str,
@@ -3955,6 +3958,10 @@ fn recording_item_identity_key(item: &DiscoveryItemRecord) -> &str {
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "test discovery item fixture keeps each varied assertion field explicit"
+)]
 fn discovery_item_record(
     run_id: &str,
     base_generation_id: &str,

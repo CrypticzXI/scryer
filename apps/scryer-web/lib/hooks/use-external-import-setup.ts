@@ -10,12 +10,14 @@ import {
   previewExternalImportMutation,
   scanLibraryMutation,
   startExternalImportArrSourceWarmupMutation,
+  updateLibraryMutation,
   validateExternalImportConnectionMutation,
   type ExecuteExternalImportInput,
   type ExternalImportSourceLibraryMappingInput,
 } from "@/lib/graphql/mutations";
 import {
   externalImportAggregateWarmupProgressQuery,
+  librariesQuery,
   wizardQualityProfilesQuery,
 } from "@/lib/graphql/queries";
 import type {
@@ -74,6 +76,11 @@ export interface ImportLibraryDraft {
   name: string;
   qualityProfileId: string | null;
   scoringPersona: ScoringPersonaValue;
+  /** Real backend library id when this draft is an existing library (the
+   *  per-facet defaults). null for a user-added library created at finalize. */
+  existingLibraryId: string | null;
+  /** Default per-facet library — always present and not removable. */
+  isDefault: boolean;
 }
 
 export type ScoringPersonaValue =
@@ -145,8 +152,14 @@ function tempId(prefix: string): string {
   return `${prefix}-${rand}-${tempIdSeq}`;
 }
 
-function rootIdFor(sourceKey: string, arrRootPath: string): string {
-  return `src:${sourceKey}::${arrRootPath}`;
+function rootIdFor(
+  sessionId: string,
+  sourceKey: string,
+  arrRootPath: string,
+): string {
+  // Include the warmup session id so the same Arr base URL added as two
+  // instances (distinct sessions sharing one sourceKey) yields distinct roots.
+  return `src:${sessionId}::${sourceKey}::${arrRootPath}`;
 }
 
 function arrKindOf(kind: ImportInstanceKind): ImportArrKind | null {
@@ -167,7 +180,15 @@ interface UseExternalImportSetupArgs {
 export function useExternalImportSetup({ client }: UseExternalImportSetupArgs) {
   // ── Connect step ──────────────────────────────────────────────────────────
   const [instances, setInstances] = useState<ImportInstance[]>([]);
-  // Per-instance manual-mapping of warmup overrides etc. handled via instances.
+  // Last successfully-verified {baseUrl, apiKey} per instance, so an incidental
+  // re-blur of an unchanged connected instance doesn't discard its finished
+  // warmup and re-run the full library fetch.
+  const lastVerifiedRef = useRef<
+    Record<string, { baseUrl: string; apiKey: string }>
+  >({});
+  // Libraries created during a finalize attempt, persisted across retries so a
+  // resumed finalize doesn't re-create (and conflict on) existing libraries.
+  const createdLibrariesRef = useRef<Map<string, string>>(new Map());
 
   const arrInstances = useMemo(
     () => instances.filter((inst) => inst.kind !== "prowlarr"),
@@ -234,17 +255,27 @@ export function useExternalImportSetup({ client }: UseExternalImportSetupArgs) {
     [patchInstance],
   );
 
-  /** Edit URL/key: reset verification state (re-verify happens on blur). */
+  /** Edit URL/key: reset verification state and tear down any prior warmup. */
   const setInstanceConnectionField = useCallback(
     (id: string, field: "baseUrl" | "apiKey", value: string) => {
-      patchInstance(id, {
-        [field]: value,
-        status: "idle",
-        version: null,
-        error: null,
-      } as Partial<ImportInstance>);
+      setInstances((prev) =>
+        prev.map((inst) => {
+          if (inst.id !== id) return inst;
+          // A connection edit invalidates the prior verify/warmup; cancel it so
+          // it isn't orphaned on the backend.
+          if (inst.warmupSessionId) cancelInstanceWarmup(inst.warmupSessionId);
+          return {
+            ...inst,
+            ...(field === "baseUrl" ? { baseUrl: value } : { apiKey: value }),
+            status: "idle" as const,
+            version: null,
+            error: null,
+            warmupSessionId: null,
+          };
+        }),
+      );
     },
-    [patchInstance],
+    [cancelInstanceWarmup],
   );
 
   const connectionReady = (inst: ImportInstance): boolean =>
@@ -259,12 +290,23 @@ export function useExternalImportSetup({ client }: UseExternalImportSetupArgs) {
     async (id: string) => {
       const inst = instances.find((entry) => entry.id === id);
       if (!inst || !connectionReady(inst)) return;
-      patchInstance(id, { status: "testing", error: null });
-
       const connection = {
         baseUrl: inst.baseUrl.trim(),
         apiKey: inst.apiKey.trim(),
       };
+      // Skip a redundant re-verify of an already-connected, unchanged instance
+      // (re-blur) — re-running would evict a finished warmup and re-fetch.
+      const lastVerified = lastVerifiedRef.current[id];
+      if (
+        inst.status === "connected" &&
+        lastVerified &&
+        lastVerified.baseUrl === connection.baseUrl &&
+        lastVerified.apiKey === connection.apiKey
+      ) {
+        return;
+      }
+      patchInstance(id, { status: "testing", error: null });
+
       const { data, error } = await client
         .mutation(validateExternalImportConnectionMutation, {
           input: { kind: inst.kind, connection },
@@ -296,6 +338,7 @@ export function useExternalImportSetup({ client }: UseExternalImportSetupArgs) {
         version: validation.version ?? null,
         error: null,
       });
+      lastVerifiedRef.current[id] = connection;
 
       // Kick off the warmup for arr instances (concurrent across instances).
       const arrKind = arrKindOf(inst.kind);
@@ -386,7 +429,11 @@ export function useExternalImportSetup({ client }: UseExternalImportSetupArgs) {
   const detectedRoots = useMemo<ImportRoot[]>(() => {
     if (!preview) return [];
     return preview.rootFolders.map((folder) => {
-      const id = rootIdFor(folder.sourceKey, folder.arrRootPath);
+      const id = rootIdFor(
+        folder.sourceWarmupSessionId,
+        folder.sourceKey,
+        folder.arrRootPath,
+      );
       const source = preview.arrSources.find(
         (s) => s.sourceKey === folder.sourceKey,
       );
@@ -473,6 +520,51 @@ export function useExternalImportSetup({ client }: UseExternalImportSetupArgs) {
 
   // ── Library drafts ─────────────────────────────────────────────────────────
   const [libraries, setLibraries] = useState<ImportLibraryDraft[]>([]);
+  const defaultsSeededRef = useRef(false);
+
+  // Seed the board with the existing per-facet default libraries (Movies /
+  // Series / Anime). They are always present and not removable; the operator
+  // maps roots into them and can add more libraries alongside.
+  useEffect(() => {
+    if (defaultsSeededRef.current) return;
+    defaultsSeededRef.current = true;
+    let cancelled = false;
+    void client
+      .query(librariesQuery, {})
+      .toPromise()
+      .then(({ data }) => {
+        if (cancelled) return;
+        const existing = (data?.libraries ?? []) as Array<{
+          id: string;
+          facet: WizardFacet;
+          name: string;
+          isDefault: boolean;
+        }>;
+        const order: WizardFacet[] = ["movie", "series", "anime"];
+        const defaults = order
+          .map((facet) =>
+            existing.find((lib) => lib.isDefault && lib.facet === facet),
+          )
+          .filter((lib): lib is NonNullable<typeof lib> => Boolean(lib))
+          .map<ImportLibraryDraft>((lib) => ({
+            id: lib.id,
+            facet: lib.facet,
+            name: lib.name,
+            qualityProfileId: null,
+            scoringPersona: "balanced",
+            existingLibraryId: lib.id,
+            isDefault: true,
+          }));
+        if (defaults.length === 0) return;
+        setLibraries((prev) => [
+          ...defaults,
+          ...prev.filter((lib) => !lib.isDefault),
+        ]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [client]);
 
   const addLibrary = useCallback((facet: WizardFacet, name?: string) => {
     const id = tempId("lib");
@@ -484,6 +576,8 @@ export function useExternalImportSetup({ client }: UseExternalImportSetupArgs) {
         name: name?.trim() || defaultLibraryName(facet, prev),
         qualityProfileId: null,
         scoringPersona: "balanced",
+        existingLibraryId: null,
+        isDefault: false,
       },
     ]);
     return id;
@@ -497,16 +591,21 @@ export function useExternalImportSetup({ client }: UseExternalImportSetupArgs) {
     );
   }, []);
 
-  const removeLibrary = useCallback((id: string) => {
-    setLibraries((prev) => prev.filter((lib) => lib.id !== id));
-    setAssign((prev) => {
-      const next = { ...prev };
-      for (const rootId of Object.keys(next)) {
-        if (next[rootId] === id) next[rootId] = null;
-      }
-      return next;
-    });
-  }, []);
+  const removeLibrary = useCallback(
+    (id: string) => {
+      const target = libraries.find((lib) => lib.id === id);
+      if (!target || target.isDefault) return; // defaults are not removable
+      setLibraries((prev) => prev.filter((lib) => lib.id !== id));
+      setAssign((prev) => {
+        const next = { ...prev };
+        for (const rootId of Object.keys(next)) {
+          if (next[rootId] === id) next[rootId] = null;
+        }
+        return next;
+      });
+    },
+    [libraries],
+  );
 
   const setLibraryQualityProfile = useCallback(
     (id: string, qualityProfileId: string | null) => {
@@ -637,7 +736,14 @@ export function useExternalImportSetup({ client }: UseExternalImportSetupArgs) {
     null,
   );
 
-  const executeSources = useCallback(async () => {
+  const executeSources = useCallback(async (): Promise<{
+    ok: boolean;
+    error: string | null;
+  }> => {
+    // Idempotent: clients/indexers are created exactly once per wizard session.
+    // Re-entering Sources (back→forward) must not duplicate them — the backend
+    // create path does not dedup — so short-circuit once a prior run succeeded.
+    if (executeResult) return { ok: true, error: null };
     setExecuting(true);
     setExecuteError(null);
     const input: ExecuteExternalImportInput = {
@@ -660,11 +766,12 @@ export function useExternalImportSetup({ client }: UseExternalImportSetupArgs) {
       .toPromise();
     setExecuting(false);
     if (error || !data?.executeExternalImport) {
-      setExecuteError(gqlError(error) || "Import failed");
-      return false;
+      const message = gqlError(error) || "Import failed";
+      setExecuteError(message);
+      return { ok: false, error: message };
     }
     setExecuteResult(data.executeExternalImport as ExternalImportResult);
-    return true;
+    return { ok: true, error: null };
   }, [
     client,
     connectedArrSessionIds,
@@ -674,6 +781,7 @@ export function useExternalImportSetup({ client }: UseExternalImportSetupArgs) {
     dcApiKeyOverrides,
     dcPasswordOverrides,
     idxApiKeyOverrides,
+    executeResult,
   ]);
 
   // ── Aggregate warmup progress (gates Summary) ──────────────────────────────
@@ -738,55 +846,102 @@ export function useExternalImportSetup({ client }: UseExternalImportSetupArgs) {
   const finalizeImport = useCallback(async (): Promise<{
     ok: boolean;
     scanErrors: string[];
+    error: string | null;
   }> => {
     setFinalizing(true);
     setFinalizeError(null);
     const scanErrors: string[] = [];
+    const fail = (message: string) => {
+      setFinalizing(false);
+      setFinalizeError(message);
+      return { ok: false, scanErrors, error: message };
+    };
+    const normPath = (p: string) =>
+      p.trim().replace(/[\\/]+$/, "").toLowerCase();
 
     const { librariesToCreate } = buildMappings();
-    const createdByDraftId = new Map<string, string>();
 
+    // Cross-library guard: the backend rejects a root path already owned by
+    // another library, so two drafts sharing an effective root path can't both
+    // be created. Surface it up front instead of failing mid-create.
+    const pathOwner = new Map<string, { id: string; name: string }>();
     for (const { draft, rootPaths } of librariesToCreate) {
-      const { data, error } = await client
-        .mutation(createLibraryMutation, {
-          input: {
-            facet: draft.facet,
-            name: draft.name,
-            roots: rootPaths.map((path, index) => ({
-              path,
-              isDefault: index === 0,
-            })),
-            settings: {
-              qualityProfileId: draft.qualityProfileId,
-              scoringPersona: draft.scoringPersona,
-            },
-          },
-        })
-        .toPromise();
-      const created = data?.createLibrary;
-      if (error || !created?.id) {
-        setFinalizing(false);
-        setFinalizeError(
-          `${gqlError(error) || "Failed to create library"}: ${draft.name}`,
-        );
-        return { ok: false, scanErrors };
+      for (const path of rootPaths) {
+        const owner = pathOwner.get(normPath(path));
+        if (owner && owner.id !== draft.id) {
+          return fail(
+            `Root "${path}" is mapped to more than one library (${owner.name} and ${draft.name}). A root can belong to only one library.`,
+          );
+        }
+        pathOwner.set(normPath(path), { id: draft.id, name: draft.name });
       }
-      createdByDraftId.set(draft.id, created.id as string);
     }
 
+    // Resumable: reuse libraries resolved on a prior (failed) attempt so a retry
+    // does only the pending work and never re-creates (and root-conflicts on)
+    // libraries that already exist. Existing/default libraries are UPDATED with
+    // their mapped roots; user-added libraries are CREATED.
+    const createdByDraftId = createdLibrariesRef.current;
+    for (const { draft, rootPaths } of librariesToCreate) {
+      if (createdByDraftId.has(draft.id)) continue;
+      const roots = rootPaths.map((path, index) => ({
+        path,
+        isDefault: index === 0,
+      }));
+      const settings = {
+        qualityProfileId: draft.qualityProfileId,
+        scoringPersona: draft.scoringPersona,
+      };
+      if (draft.existingLibraryId) {
+        const { data, error } = await client
+          .mutation(updateLibraryMutation, {
+            input: { libraryId: draft.existingLibraryId, roots, settings },
+          })
+          .toPromise();
+        if (error || !data?.updateLibrary?.id) {
+          return fail(
+            `${gqlError(error) || "Failed to update library"}: ${draft.name}`,
+          );
+        }
+        createdByDraftId.set(draft.id, draft.existingLibraryId);
+      } else {
+        const { data, error } = await client
+          .mutation(createLibraryMutation, {
+            input: { facet: draft.facet, name: draft.name, roots, settings },
+          })
+          .toPromise();
+        const created = data?.createLibrary;
+        if (error || !created?.id) {
+          return fail(
+            `${gqlError(error) || "Failed to create library"}: ${draft.name}`,
+          );
+        }
+        createdByDraftId.set(draft.id, created.id as string);
+      }
+    }
+
+    // Build mappings, deduped by the backend's mapping key so duplicate manual
+    // roots (same library + path) don't trip "duplicate source root mapping".
     const mappings: ExternalImportSourceLibraryMappingInput[] = [];
+    const seenMappingKey = new Set<string>();
     for (const root of roots) {
       const draftId = assign[root.id];
       if (!draftId) continue;
       const libraryId = createdByDraftId.get(draftId);
       const draft = libraries.find((lib) => lib.id === draftId);
       if (!libraryId || !draft) continue;
+      const scryerRootPath = effectiveRootPath(root);
+      const mappingKey = root.manual
+        ? `manual|${libraryId}|${normPath(scryerRootPath)}`
+        : `src|${root.sourceWarmupSessionId ?? ""}|${root.sourceKey ?? ""}|${normPath(root.arrRootPath)}`;
+      if (seenMappingKey.has(mappingKey)) continue;
+      seenMappingKey.add(mappingKey);
       mappings.push({
         sourceWarmupSessionId: root.sourceWarmupSessionId,
         sourceKey: root.sourceKey,
         kind: root.manual ? null : (root.kind as ExternalArrSourceKind),
         arrRootPath: root.arrRootPath,
-        scryerRootPath: effectiveRootPath(root),
+        scryerRootPath,
         libraryId,
         facet: draft.facet,
       });
@@ -802,9 +957,7 @@ export function useExternalImportSetup({ client }: UseExternalImportSetupArgs) {
       .toPromise();
     const finalized = finalizeData?.finalizeExternalImport;
     if (finalizeErr || !finalized?.finalized) {
-      setFinalizing(false);
-      setFinalizeError(gqlError(finalizeErr) || "Failed to finalize import");
-      return { ok: false, scanErrors };
+      return fail(gqlError(finalizeErr) || "Failed to finalize import");
     }
     const monitorWarmupSessionId = finalized.monitorWarmupSessionId as string;
 
@@ -812,9 +965,7 @@ export function useExternalImportSetup({ client }: UseExternalImportSetupArgs) {
       .mutation(completeSetupMutation, {})
       .toPromise();
     if (completeErr || !completeData?.completeSetup?.completed) {
-      setFinalizing(false);
-      setFinalizeError(gqlError(completeErr) || "Failed to complete setup");
-      return { ok: false, scanErrors };
+      return fail(gqlError(completeErr) || "Failed to complete setup");
     }
 
     // Scan each created library, passing the warmup session for import hints.
@@ -829,15 +980,8 @@ export function useExternalImportSetup({ client }: UseExternalImportSetupArgs) {
     }
 
     setFinalizing(false);
-    return { ok: true, scanErrors };
-  }, [
-    client,
-    buildMappings,
-    roots,
-    assign,
-    libraries,
-    connectedArrSessionIds,
-  ]);
+    return { ok: true, scanErrors, error: null };
+  }, [client, buildMappings, roots, assign, libraries, connectedArrSessionIds]);
 
   // ── Derived summary counts ─────────────────────────────────────────────────
   const summary = useMemo(() => {
@@ -894,6 +1038,67 @@ export function useExternalImportSetup({ client }: UseExternalImportSetupArgs) {
   );
   const mappingReady = allDetectedRootsMapped && !hasBlankAssignedManualRoot;
 
+  // Settled = nothing left to wait on: no arr sessions, or every connected arr
+  // source's warmup has reached a terminal state in the latest preview.
+  const previewSettled = useMemo(() => {
+    if (connectedArrSessionIds.length === 0) return true;
+    const sources = preview?.arrSources ?? [];
+    return (
+      sources.length > 0 &&
+      sources.every(
+        (s) =>
+          s.status === "completed" ||
+          s.status === "failed" ||
+          s.status === "canceled",
+      )
+    );
+  }, [preview, connectedArrSessionIds]);
+
+  // Every selected client/indexer that needs an operator-supplied secret has one.
+  const sourcesReady = useMemo(() => {
+    if (!preview) return true;
+    const apiKeyClientTypes = new Set(["sabnzbd", "weaver"]);
+    const dcOk = preview.downloadClients.every((dc) => {
+      if (!selectedDcKeys.has(dc.dedupKey)) return true;
+      const type = dc.scryerClientType?.trim().toLowerCase() ?? null;
+      const needsApiKey =
+        dc.supported &&
+        !dc.apiKeyPresent &&
+        type !== null &&
+        apiKeyClientTypes.has(type);
+      if (needsApiKey && !(dcApiKeyOverrides[dc.dedupKey] ?? "").trim()) {
+        return false;
+      }
+      if (
+        dc.supported &&
+        dc.requiresPasswordOverride &&
+        !(dcPasswordOverrides[dc.dedupKey] ?? "").trim()
+      ) {
+        return false;
+      }
+      return true;
+    });
+    if (!dcOk) return false;
+    return preview.indexers.every((idx) => {
+      if (!selectedIdxKeys.has(idx.dedupKey)) return true;
+      if (
+        idx.supported &&
+        idx.requiresApiKeyOverride &&
+        !(idxApiKeyOverrides[idx.dedupKey] ?? "").trim()
+      ) {
+        return false;
+      }
+      return true;
+    });
+  }, [
+    preview,
+    selectedDcKeys,
+    selectedIdxKeys,
+    dcApiKeyOverrides,
+    dcPasswordOverrides,
+    idxApiKeyOverrides,
+  ]);
+
   return {
     // connect
     instances,
@@ -925,6 +1130,7 @@ export function useExternalImportSetup({ client }: UseExternalImportSetupArgs) {
     removeManualRoot,
     allDetectedRootsMapped,
     mappingReady,
+    previewSettled,
     // libraries
     libraries,
     mappedLibraries,
@@ -946,6 +1152,7 @@ export function useExternalImportSetup({ client }: UseExternalImportSetupArgs) {
     setDownloadClientApiKeyOverride,
     setDownloadClientPasswordOverride,
     setIndexerApiKeyOverride,
+    sourcesReady,
     executing,
     executeError,
     executeResult,

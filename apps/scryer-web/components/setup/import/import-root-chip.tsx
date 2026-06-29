@@ -19,6 +19,7 @@ interface ImportRootChipProps {
   root: ImportRoot;
   variant: "tray" | "library";
   isMobile: boolean;
+  invalid?: boolean;
   onRemap?: () => void;
   onAssign?: () => void;
   onRemoveManual?: () => void;
@@ -45,6 +46,7 @@ export function ImportRootChip({
   root,
   variant,
   isMobile,
+  invalid,
   onRemap,
   onAssign,
   onRemoveManual,
@@ -65,6 +67,7 @@ export function ImportRootChip({
     <span
       data-rootchip
       data-slot="import-root-chip"
+      aria-label={`${root.instanceLabel} ${effective}`}
       style={{
         display: "inline-flex",
         alignItems: "center",
@@ -99,33 +102,36 @@ export function ImportRootChip({
         </span>
       ) : null}
 
-      {/* Assign button — mobile only */}
-      {isMobile ? (
-        <button
-          type="button"
-          title={
-            library
-              ? t("setup.moveToAnotherLibrary")
-              : t("setup.assignToLibrary")
-          }
-          onClick={onAssign}
-          style={{
-            display: "inline-flex",
-            alignItems: "center",
-            justifyContent: "center",
-            width: library ? 30 : 32,
-            height: library ? 30 : 32,
-            borderRadius: 8,
-            border: "1px solid var(--scry-baccent)",
-            background: "rgba(var(--scry-accent-rgb), 0.1)",
-            color: "var(--scry-accent-text)",
-            flex: "none",
-            cursor: "pointer",
-          }}
-        >
-          <FolderInput size={library ? 15 : 16} />
-        </button>
-      ) : null}
+      {/* Assign button — every chip (keyboard/non-pointer assignment path) */}
+      <button
+        type="button"
+        aria-label={
+          library
+            ? t("setup.moveToAnotherLibrary")
+            : t("setup.assignToLibrary")
+        }
+        title={
+          library
+            ? t("setup.moveToAnotherLibrary")
+            : t("setup.assignToLibrary")
+        }
+        onClick={onAssign}
+        style={{
+          display: "inline-flex",
+          alignItems: "center",
+          justifyContent: "center",
+          width: library ? 30 : 32,
+          height: library ? 30 : 32,
+          borderRadius: 8,
+          border: "1px solid var(--scry-baccent)",
+          background: "rgba(var(--scry-accent-rgb), 0.1)",
+          color: "var(--scry-accent-text)",
+          flex: "none",
+          cursor: "pointer",
+        }}
+      >
+        <FolderInput size={library ? 15 : 16} />
+      </button>
 
       {/* Instance pill */}
       <ImportInstancePill
@@ -140,6 +146,7 @@ export function ImportRootChip({
       {root.manual ? (
         <ManualPathRegion
           value={root.arrRootPath}
+          invalid={invalid}
           onChange={onManualPathChange}
           onRemove={onRemoveManual}
           t={t}
@@ -265,11 +272,13 @@ export function ImportRootChip({
 
 function ManualPathRegion({
   value,
+  invalid,
   onChange,
   onRemove,
   t,
 }: {
   value: string;
+  invalid?: boolean;
   onChange?: (path: string) => void;
   onRemove?: () => void;
   t: (key: string, values?: Record<string, unknown>) => string;
@@ -280,6 +289,8 @@ function ManualPathRegion({
         value={value}
         spellCheck={false}
         placeholder="/path/to/media"
+        aria-label={t("setup.manualRootPathAria")}
+        aria-invalid={invalid || undefined}
         onChange={(e) => onChange?.(e.target.value)}
         style={{
           ...MONO,
@@ -287,7 +298,10 @@ function ManualPathRegion({
           height: 28,
           padding: "0 8px",
           borderRadius: 7,
-          border: "1px solid var(--scry-border2)",
+          border: `1px solid ${invalid ? "var(--scry-baccent)" : "var(--scry-border2)"}`,
+          boxShadow: invalid
+            ? "0 0 0 1px rgba(var(--scry-accent-rgb), 0.4)"
+            : "none",
           background: "var(--scry-page2)",
           color: "var(--scry-ink2)",
           fontSize: 12.5,
@@ -296,7 +310,8 @@ function ManualPathRegion({
       />
       <button
         type="button"
-        title={t("setup.deleteLibrary")}
+        title={t("setup.removeSourceRoot")}
+        aria-label={t("setup.removeSourceRoot")}
         onClick={onRemove}
         style={{
           display: "inline-flex",

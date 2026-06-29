@@ -322,6 +322,9 @@ async fn ordered_export_tables(pool: &sqlx::SqlitePool) -> AppResult<Vec<String>
             if !export_tables.contains(&referenced) {
                 continue;
             }
+            if referenced == *table {
+                continue;
+            }
             if outgoing
                 .get_mut(&referenced)
                 .expect("known table")

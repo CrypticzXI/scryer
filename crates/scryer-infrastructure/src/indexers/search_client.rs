@@ -4868,10 +4868,7 @@ mod tests {
         assert_eq!(recorded.len(), 1);
         assert_eq!(
             recorded[0].ids,
-            HashMap::from([
-                ("imdb_id".to_string(), "tt12345678".to_string()),
-                ("tmdb_id".to_string(), "123456".to_string()),
-            ])
+            HashMap::from([("imdb_id".to_string(), "tt12345678".to_string())])
         );
         assert_eq!(recorded[0].facet.as_deref(), Some("movie"));
         assert!(recorded[0].categories.is_empty());

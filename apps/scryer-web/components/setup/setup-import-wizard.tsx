@@ -99,8 +99,14 @@ export function SetupImportWizard({
   // On the Libraries step, (re)load the preview until every connected arr
   // source's warmup has settled — root folders can lag the initial warmup
   // start, so a single fetch would leave the mapping tray empty.
+  const arrSessionCount = wizard.connectedArrSessionIds.length;
   useEffect(() => {
     if (currentStep !== 2) return;
+    // Prowlarr-only (no arr warmups): one fetch, nothing to poll for.
+    if (arrSessionCount === 0) {
+      void loadPreview();
+      return;
+    }
     const settled = () => {
       const sources = previewRef.current?.arrSources ?? [];
       return (
@@ -122,7 +128,7 @@ export function SetupImportWizard({
       void loadPreview();
     }, 3000);
     return () => clearInterval(id);
-  }, [currentStep, loadPreview]);
+  }, [currentStep, loadPreview, arrSessionCount]);
 
   // Poll aggregated warmup progress while on the Summary step until complete.
   useEffect(() => {
@@ -141,18 +147,18 @@ export function SetupImportWizard({
   }, [loadPreview, goToStep]);
 
   const goSourcesContinue = useCallback(async () => {
-    const ok = await wizard.executeSources();
+    const { ok, error } = await wizard.executeSources();
     if (!ok) {
-      toast.warning(wizard.executeError ?? t("setup.connectionFailed"));
+      toast.warning(error ?? t("setup.connectionFailed"));
       return;
     }
     goToStep(5, "import");
   }, [wizard, t, goToStep]);
 
   const finish = useCallback(async () => {
-    const { ok, scanErrors } = await wizard.finalizeImport();
+    const { ok, scanErrors, error } = await wizard.finalizeImport();
     if (!ok) {
-      toast.warning(wizard.finalizeError ?? t("setup.importFinalizeFailed"));
+      toast.warning(error ?? t("setup.importFinalizeFailed"));
       return;
     }
     for (const message of scanErrors) {
@@ -182,9 +188,10 @@ export function SetupImportWizard({
       break;
     case 2:
       body = <SetupImportLibrariesView wizard={wizard} t={t} />;
-      // Backend finalize requires every warmed root mapped (and no blank manual
-      // root), so block Continue until the board is complete.
-      primaryDisabled = !wizard.mappingReady;
+      // Block Continue until warmups have settled (roots discovered) AND every
+      // warmed root is mapped with no blank manual root — mirrors the backend's
+      // "every warmed root must be mapped" finalize rule.
+      primaryDisabled = !wizard.previewSettled || !wizard.mappingReady;
       onPrimary = () => goToStep(3, "import");
       break;
     case 3:
@@ -193,7 +200,9 @@ export function SetupImportWizard({
       break;
     case 4:
       body = <SetupImportSourcesView wizard={wizard} t={t} />;
-      primaryDisabled = wizard.executing;
+      // Block until every selected client/indexer that needs a user-supplied
+      // secret has one (otherwise execute creates non-functional configs).
+      primaryDisabled = wizard.executing || !wizard.sourcesReady;
       onPrimary = () => void goSourcesContinue();
       break;
     case 5:
@@ -206,8 +215,6 @@ export function SetupImportWizard({
   }
 
   const PrimaryIcon = primaryIcon;
-  const footNote =
-    currentStep === 1 ? t("setup.connectReadOnlyNote") : null;
 
   return (
     <SetupPanel id="setup-import-step">
@@ -218,12 +225,6 @@ export function SetupImportWizard({
       />
 
       <div className="mt-6">{body}</div>
-
-      {footNote ? (
-        <p className="mt-5 text-center text-xs text-[var(--scry-muted3)]">
-          {footNote}
-        </p>
-      ) : null}
 
       <div className="mt-6 flex items-center justify-between border-t border-[var(--scry-hover)] pt-5">
         <Button

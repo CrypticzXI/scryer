@@ -61,7 +61,7 @@ fn title_catalog_sort_key_inner(input: &str, language: Option<&str>) -> String {
     // with collator keys; the default-locale fallback keeps it effectively unreachable.
     let collator = collator_for_language(language).or_else(|| collator_for_language(None));
     if let Some(collator) = collator
-        && collator.write_sort_key_to(&input, &mut bytes).is_ok()
+        && collator.write_sort_key_to(input, &mut bytes).is_ok()
     {
         return lowercase_hex(&bytes);
     }
@@ -114,8 +114,7 @@ fn normalized_language_tag_or_default(language: Option<&str>) -> String {
 }
 
 fn normalized_locale_from_tag(tag: &str) -> Locale {
-    tag.parse::<Locale>()
-        .unwrap_or_else(|_| icu_locale::locale!("en"))
+    tag.parse::<Locale>().unwrap_or(icu_locale::locale!("en"))
 }
 
 fn normalized_language_tag(language: &str) -> Option<String> {

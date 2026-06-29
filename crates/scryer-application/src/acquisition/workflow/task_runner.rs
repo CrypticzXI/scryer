@@ -2144,11 +2144,10 @@ async fn run_discovery_sync_worker(app: AppUseCase, token: tokio_util::sync::Can
             .job_run_tracker
             .next_run_at(JobKey::DiscoverySync)
             .await
+            && next_run_at > Utc::now()
         {
-            if next_run_at > Utc::now() {
-                delay = discovery_sync_delay_until(next_run_at);
-                continue;
-            }
+            delay = discovery_sync_delay_until(next_run_at);
+            continue;
         }
 
         delay = run_discovery_sync_once(&app, JobTriggerSource::ScheduledInterval).await;

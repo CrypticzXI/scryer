@@ -813,12 +813,8 @@ async fn graphql_settings_mutations_require_config_step_up() {
             r#"mutation($input: ExecuteExternalImportInput!) { executeExternalImport(input: $input) { mediaPathsSaved } }"#,
             json!({
                 "input": {
-                    "sonarr": null,
-                    "radarr": null,
                     "prowlarr": null,
-                    "selectedMoviesPaths": [],
-                    "selectedSeriesPaths": [],
-                    "selectedAnimePaths": [],
+                    "sourceWarmupSessionIds": [],
                     "selectedDownloadClientDedupKeys": [],
                     "selectedIndexerDedupKeys": [],
                     "downloadClientApiKeyOverrides": [],
@@ -1128,12 +1124,8 @@ async fn graphql_config_step_up_token_satisfies_protected_settings_mutation() {
         r#"mutation($input: ExecuteExternalImportInput!) { executeExternalImport(input: $input) { mediaPathsSaved errors } }"#,
         json!({
             "input": {
-                "sonarr": null,
-                "radarr": null,
                 "prowlarr": null,
-                "selectedMoviesPaths": [],
-                "selectedSeriesPaths": [],
-                "selectedAnimePaths": [],
+                "sourceWarmupSessionIds": [],
                 "selectedDownloadClientDedupKeys": [],
                 "selectedIndexerDedupKeys": [],
                 "downloadClientApiKeyOverrides": [],

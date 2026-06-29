@@ -451,6 +451,7 @@ export function SetupWizardContainer({
           <SetupProgressBar
             currentStep={progressStep}
             stepLabels={stepLabels}
+            onStepClick={(i) => goToStep(i + 1, wizardPath)}
           />
         </div>
       )}

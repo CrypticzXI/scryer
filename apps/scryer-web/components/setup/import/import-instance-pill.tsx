@@ -38,6 +38,19 @@ const KIND_COLORS: Record<PillKind, KindColors> = {
   },
 };
 
+// Product logos live in public/ (served under import.meta.env.BASE_URL, which is
+// "./" in production builds). Sonarr/Radarr sit at the root; Prowlarr under
+// media-sites/.
+const PRODUCT_LOGOS: Partial<Record<PillKind, string>> = {
+  sonarr: `${import.meta.env.BASE_URL}sonarr.svg`,
+  radarr: `${import.meta.env.BASE_URL}radarr.svg`,
+  prowlarr: `${import.meta.env.BASE_URL}media-sites/prowlarr.svg`,
+};
+
+export function productLogoUrl(kind: PillKind): string | null {
+  return PRODUCT_LOGOS[kind] ?? null;
+}
+
 interface ImportInstancePillProps {
   kind: PillKind;
   label: string;
@@ -64,6 +77,7 @@ export function ImportInstancePill({
 }: ImportInstancePillProps) {
   const colors = KIND_COLORS[kind];
   const small = size === "sm";
+  const logoUrl = productLogoUrl(kind);
   return (
     <span
       title={title ?? label}
@@ -84,7 +98,19 @@ export function ImportInstancePill({
         ...style,
       }}
     >
-      {showDot ? (
+      {logoUrl ? (
+        <img
+          src={logoUrl}
+          alt=""
+          aria-hidden
+          style={{
+            width: small ? 14 : 16,
+            height: small ? 14 : 16,
+            objectFit: "contain",
+            flex: "none",
+          }}
+        />
+      ) : showDot ? (
         <span
           aria-hidden
           style={{

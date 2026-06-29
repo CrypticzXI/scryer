@@ -361,18 +361,6 @@ function normalizedTitleContextLabel(value: string) {
     .trim();
 }
 
-function simplifiedDiscoverySignal(value: string) {
-  const normalized = normalizedTitleContextLabel(value);
-  return (
-    normalized
-      .replace(/^mal genre /, "")
-      .replace(/^mal theme /, "")
-      .replace(/^tmdb genre /, "")
-      .replace(/^tvdb genre /, "")
-      .trim() || normalized
-  );
-}
-
 function uniqueTitleContextLabels(values: readonly string[] | undefined) {
   const seen = new Set<string>();
   return (values ?? [])
@@ -428,23 +416,46 @@ function discoveryItemSignalValues(item: DiscoveryItem) {
   ];
 }
 
-function discoveryItemMeaningfulLabelValues(item: DiscoveryItem) {
-  return [
-    ...canonicalDiscoveryFacetLabels(item, "genre"),
-    ...canonicalDiscoveryFacetLabels(item, "theme"),
-    ...item.relationSubtypes,
-  ];
-}
-
-function discoveryItemMatchesLibraryLabel(item: DiscoveryItem, label: string) {
-  const labelKey = normalizedTitleContextLabel(label);
+function discoveryItemMatchesCanonicalLabel(
+  item: DiscoveryItem,
+  label: string,
+  kind: "genre" | "theme",
+) {
+  const labelKey = canonicalDiscoveryLabelKey(label);
   if (!labelKey) {
     return false;
   }
-  return discoveryItemMeaningfulLabelValues(item).some((value) => {
-    const candidate = simplifiedDiscoverySignal(value);
-    return candidate === labelKey || candidate.includes(labelKey);
-  });
+  return canonicalDiscoveryFacetLabels(item, kind).some(
+    (candidate) => canonicalDiscoveryLabelKey(candidate) === labelKey,
+  );
+}
+
+function canonicalTitleContextLabelsForProfile(
+  entries: TitleContextRankedEntry[],
+  labels: string[],
+  kind: "genre" | "theme",
+) {
+  const canonicalByKey = new Map<string, string>();
+  for (const entry of entries) {
+    for (const label of canonicalDiscoveryFacetLabels(entry.item, kind)) {
+      const key = canonicalDiscoveryLabelKey(label);
+      if (key && !canonicalByKey.has(key)) {
+        canonicalByKey.set(key, label);
+      }
+    }
+  }
+
+  const resolvedLabels: string[] = [];
+  const seen = new Set<string>();
+  for (const label of labels) {
+    const key = canonicalDiscoveryLabelKey(label);
+    const canonicalLabel = canonicalByKey.get(key);
+    if (canonicalLabel && !seen.has(key)) {
+      seen.add(key);
+      resolvedLabels.push(canonicalLabel);
+    }
+  }
+  return resolvedLabels;
 }
 
 function discoveryItemHasAnySignal(item: DiscoveryItem, signals: string[]) {
@@ -666,26 +677,31 @@ function buildTitleContextRecommendationGroups(
     t("title.contextForYouReasonWeekly"),
   );
 
-  for (const genre of topLibraryTitleLabels(
-    libraryTitles,
-    (title) => title.genres,
+  for (const genre of canonicalTitleContextLabelsForProfile(
+    rankedEntries,
+    topLibraryTitleLabels(libraryTitles, (title) => title.genres),
+    "genre",
   )) {
     addGroup(
       `genre-${normalizedTitleContextLabel(genre).replaceAll(" ", "-")}`,
       t("title.contextForYouGenre", { genre }),
       rankedEntries.filter((entry) =>
-        discoveryItemMatchesLibraryLabel(entry.item, genre),
+        discoveryItemMatchesCanonicalLabel(entry.item, genre, "genre"),
       ),
       t("title.contextForYouReasonGenre", { genre }),
     );
   }
 
-  for (const tag of topLibraryTitleLabels(libraryTitles, (title) => title.tags)) {
+  for (const tag of canonicalTitleContextLabelsForProfile(
+    rankedEntries,
+    topLibraryTitleLabels(libraryTitles, (title) => title.tags),
+    "theme",
+  )) {
     addGroup(
       `tag-${normalizedTitleContextLabel(tag).replaceAll(" ", "-")}`,
       t("title.contextForYouTag", { tag }),
       rankedEntries.filter((entry) =>
-        discoveryItemMatchesLibraryLabel(entry.item, tag),
+        discoveryItemMatchesCanonicalLabel(entry.item, tag, "theme"),
       ),
       t("title.contextForYouReasonTag", { tag }),
     );

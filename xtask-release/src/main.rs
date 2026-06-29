@@ -836,6 +836,10 @@ fn codex_release_notes_command(output_path: &Path) -> Command {
     codex_release_notes_command_for(output_path, &model, &reasoning)
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "release notes command invocation passes explicit release context into the generator"
+)]
 fn run_release_notes_command_with_template(
     ctx: &TaskContext,
     context_path: &Path,
@@ -3377,13 +3381,27 @@ mod tests {
                 .is_ok()
         );
 
-        let error = require_builtin_descriptor_sdk_version("newznab", "3.1.0")
+        let current_sdk = Version::parse(scryer_plugin_sdk::SDK_VERSION).unwrap();
+        let mismatched_sdk = Version::new(current_sdk.major, current_sdk.minor + 1, 0).to_string();
+        let error = require_builtin_descriptor_sdk_version("newznab", &mismatched_sdk)
             .expect_err("newer catalog SDK must be rejected");
-        assert!(error.to_string().contains("expected 3.0.0"), "{error:#}");
+        assert!(
+            error
+                .to_string()
+                .contains(&format!("expected {}", scryer_plugin_sdk::SDK_VERSION)),
+            "{error:#}"
+        );
     }
 
     #[test]
     fn catalog_builtin_release_must_support_target_scryer_and_sdk() {
+        let current_sdk = Version::parse(scryer_plugin_sdk::SDK_VERSION).unwrap();
+        let next_sdk_minor_constraint = format!(
+            ">={}.{}.0, <{}.0.0",
+            current_sdk.major,
+            current_sdk.minor + 1,
+            current_sdk.major + 1
+        );
         let compatible = CatalogV3Release {
             version: "0.2.16".to_string(),
             min_scryer_version: Some("0.16.0".to_string()),
@@ -3399,7 +3417,7 @@ mod tests {
         let too_new_sdk = CatalogV3Release {
             version: "0.2.19".to_string(),
             min_scryer_version: Some("0.16.0".to_string()),
-            sdk_constraint: Some(">=3.2.0, <4.0.0".to_string()),
+            sdk_constraint: Some(next_sdk_minor_constraint),
             artifacts: vec![],
         };
         let target = Version::parse("0.16.6").unwrap();

@@ -321,6 +321,9 @@ async fn ordered_export_tables(pool: &PgPool) -> AppResult<Vec<String>> {
         if !export_tables.contains(&table) || !export_tables.contains(&referenced) {
             continue;
         }
+        if referenced == table {
+            continue;
+        }
         if outgoing
             .get_mut(&referenced)
             .expect("known table")

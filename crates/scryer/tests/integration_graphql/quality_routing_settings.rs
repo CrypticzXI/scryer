@@ -372,7 +372,9 @@ async fn graphql_introspection_exposes_plugin_config_field_metadata_enums() {
             "multiline",
             "bool",
             "select",
-            "number"
+            "number",
+            "path",
+            "tag"
         ]
     );
     assert_eq!(enum_names("valueSource"), vec!["user", "host_binding"]);

@@ -2468,9 +2468,8 @@ async fn list_uses_compatible_release_when_newer_release_requires_newer_host() {
         ],
     )]);
     h.plugin_repo
-        .store_catalog_fixture_json(&json)
-        .await
-        .unwrap();
+        .store_raw_catalog_source(CENTRAL_CATALOG_SOURCE_KEY, "central", Some(json))
+        .await;
 
     let result = h.app.list_available_plugins(&admin()).await.unwrap();
     assert_eq!(result.len(), 1);
@@ -2503,9 +2502,8 @@ async fn list_upgrades_to_compatible_release_when_newer_release_requires_newer_h
         ],
     )]);
     h.plugin_repo
-        .store_catalog_fixture_json(&json)
-        .await
-        .unwrap();
+        .store_raw_catalog_source(CENTRAL_CATALOG_SOURCE_KEY, "central", Some(json))
+        .await;
     h.plugin_repo
         .installations
         .lock()

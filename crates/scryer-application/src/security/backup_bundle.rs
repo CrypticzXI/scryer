@@ -452,6 +452,70 @@ pub const BACKUP_TABLE_CATALOG: &[BackupTableCatalogEntry] = &[
         classification: BackupTableClassification::Export,
     },
     BackupTableCatalogEntry {
+        table: "discovery_facets",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
+        table: "discovery_item_library_provenance",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
+        table: "discovery_item_rank_components",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
+        table: "discovery_item_ratings",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
+        table: "discovery_item_source_tag_values",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
+        table: "discovery_item_source_tags",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
+        table: "discovery_item_subject_links",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
+        table: "discovery_item_terms",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
+        table: "discovery_items",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
+        table: "discovery_pending_context_changes",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
+        table: "discovery_raw_pages",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
+        table: "discovery_section_items",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
+        table: "discovery_sections",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
+        table: "discovery_submitted_subjects",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
+        table: "discovery_sync_runs",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
+        table: "discovery_sync_state",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
         table: "domain_events",
         classification: BackupTableClassification::Export,
     },

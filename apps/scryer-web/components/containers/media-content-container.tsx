@@ -210,6 +210,7 @@ const TITLE_CONTEXT_DISCOVERY_TARGET_KINDS: Record<Facet, string[]> = {
 };
 const TITLE_CONTEXT_DISCOVERY_CACHE_PREFIX =
   "scryer:discovery:library-home:v5";
+const TITLE_CONTEXT_DISCOVERY_CACHE_ENABLED = false;
 
 type TitleContextDiscoveryCachePayload = {
   userId: string;
@@ -504,6 +505,9 @@ function isTitleContextDiscoveryCachePayload(
 function readTitleContextDiscoveryCache(
   scope: TitleContextDiscoveryCacheScope,
 ) {
+  if (!TITLE_CONTEXT_DISCOVERY_CACHE_ENABLED) {
+    return null;
+  }
   const key = titleContextDiscoveryCacheKey(scope);
   if (!key || typeof window === "undefined") {
     return null;
@@ -533,6 +537,9 @@ function writeTitleContextDiscoveryCache(
   discoveryItems: DiscoveryItem[],
   publicTopItems: DiscoveryItem[],
 ) {
+  if (!TITLE_CONTEXT_DISCOVERY_CACHE_ENABLED) {
+    return;
+  }
   const key = titleContextDiscoveryCacheKey(scope);
   const userId = normalizeTitleContextScopeValue(scope.userId);
   const uiLanguage = normalizeTitleContextScopeValue(scope.uiLanguage);

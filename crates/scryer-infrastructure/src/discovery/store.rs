@@ -1055,7 +1055,7 @@ async fn section_items_from_rows(
 
     let mut items_by_section = HashMap::<String, Vec<DiscoveryItemRecord>>::new();
     let mut totals_by_section = HashMap::<String, i64>::new();
-    for (item, (section_id, total_count)) in items.into_iter().zip(item_metadata.into_iter()) {
+    for (item, (section_id, total_count)) in items.into_iter().zip(item_metadata) {
         totals_by_section
             .entry(section_id.clone())
             .or_insert(total_count);
@@ -1164,6 +1164,7 @@ async fn fetch_personalized_facets(
         &format!(
             "SELECT t.term_value AS facet_term,
                     COUNT(DISTINCT i.id) AS local_count
+             FROM discovery_items i
              JOIN discovery_item_terms t
                ON t.item_id = i.id
              WHERE {}
@@ -2684,6 +2685,24 @@ mod tests {
         assert!(!values.contains(&"action".to_string()));
     }
 
+    #[test]
+    fn canonical_facet_display_value_accepts_only_genre_and_theme_terms() {
+        assert_eq!(
+            canonical_facet_display_value("canonical:genre:science_fiction"),
+            Some(("genre".to_string(), "Science Fiction".to_string()))
+        );
+        assert_eq!(
+            canonical_facet_display_value("canonical:theme:psychological"),
+            Some(("theme".to_string(), "Psychological".to_string()))
+        );
+        assert_eq!(canonical_facet_display_value("Drama"), None);
+        assert_eq!(
+            canonical_facet_display_value("mal:theme:psychological"),
+            None
+        );
+        assert_eq!(canonical_facet_display_value("canonical:source:tmdb"), None);
+    }
+
     #[tokio::test]
     async fn sqlite_store_round_trips_inflight_snapshot_and_discovery_lease() {
         let db = std::env::temp_dir().join(format!(
@@ -2965,85 +2984,152 @@ mod tests {
         store
             .replace_discovery_items(
                 "run-1",
-                &[DiscoveryItemRecord {
-                    id: "item-row-1".to_string(),
-                    run_id: "run-1".to_string(),
-                    base_generation_id: Some("run-1".to_string()),
-                    source_run_kind: "context_incremental".to_string(),
-                    section_id: Some("for_you".to_string()),
-                    sort_index: 0,
-                    target_key: "tmdb:movie:10".to_string(),
-                    target_kind: "movie".to_string(),
-                    resolved: true,
-                    resolved_title_id: None,
-                    display_title: "Example Movie".to_string(),
-                    original_title: None,
-                    sort_title: Some("Example Movie".to_string()),
-                    year: Some(2026),
-                    poster_path: None,
-                    poster_url: None,
-                    background_url: None,
-                    overview: None,
-                    content_type: Some(String::new()),
-                    genres: vec!["Drama".to_string(), "Drama".to_string()],
-                    rating: Some(7.5),
-                    rating_sources: vec!["tmdb".to_string(), "tmdb".to_string()],
-                    status_tags: vec!["available".to_string()],
-                    source_tags: vec![DiscoverySourceTagRecord {
-                        category: Some("theme".to_string()),
-                        name: Some("Isekai".to_string()),
-                        values: vec![
-                            "theme".to_string(),
-                            "Isekai".to_string(),
-                            "Isekai".to_string(),
+                &[
+                    DiscoveryItemRecord {
+                        id: "item-row-1".to_string(),
+                        run_id: "run-1".to_string(),
+                        base_generation_id: Some("run-1".to_string()),
+                        source_run_kind: "context_incremental".to_string(),
+                        section_id: Some("for_you".to_string()),
+                        sort_index: 0,
+                        target_key: "tmdb:movie:10".to_string(),
+                        target_kind: "movie".to_string(),
+                        resolved: true,
+                        resolved_title_id: None,
+                        display_title: "Example Movie".to_string(),
+                        original_title: None,
+                        sort_title: Some("Example Movie".to_string()),
+                        year: Some(2026),
+                        poster_path: None,
+                        poster_url: None,
+                        background_url: None,
+                        overview: None,
+                        content_type: Some(String::new()),
+                        genres: vec!["Drama".to_string(), "Drama".to_string()],
+                        rating: Some(7.5),
+                        rating_sources: vec!["tmdb".to_string(), "tmdb".to_string()],
+                        status_tags: vec!["available".to_string()],
+                        source_tags: vec![DiscoverySourceTagRecord {
+                            category: Some("theme".to_string()),
+                            name: Some("Isekai".to_string()),
+                            values: vec![
+                                "theme".to_string(),
+                                "Isekai".to_string(),
+                                "Isekai".to_string(),
+                            ],
+                        }],
+                        sources: vec!["smg".to_string()],
+                        best_source: None,
+                        relation_types: Vec::new(),
+                        relation_subtypes: Vec::new(),
+                        chart_signals: vec!["trending".to_string()],
+                        provider_signals: Vec::new(),
+                        rank_components: vec![DiscoveryRankComponentRecord {
+                            component_index: 0,
+                            component_name: Some("score".to_string()),
+                            component_value: Some("0.42".to_string()),
+                        }],
+                        source_count: Some(1),
+                        edge_count: Some(1),
+                        relation_count: Some(0),
+                        source_subject_count: Some(1),
+                        rank_score: Some(0.42),
+                        matched_subject_keys: vec![
+                            "tvdb:series:1".to_string(),
+                            "tvdb:series:1".to_string(),
                         ],
-                    }],
-                    sources: vec!["smg".to_string()],
-                    best_source: None,
-                    relation_types: Vec::new(),
-                    relation_subtypes: Vec::new(),
-                    chart_signals: vec!["trending".to_string()],
-                    provider_signals: Vec::new(),
-                    rank_components: vec![DiscoveryRankComponentRecord {
-                        component_index: 0,
-                        component_name: Some("score".to_string()),
-                        component_value: Some("0.42".to_string()),
-                    }],
-                    source_count: Some(1),
-                    edge_count: Some(1),
-                    relation_count: Some(0),
-                    source_subject_count: Some(1),
-                    rank_score: Some(0.42),
-                    matched_subject_keys: vec![
-                        "tvdb:series:1".to_string(),
-                        "tvdb:series:1".to_string(),
-                    ],
-                    matched_subject_titles: vec!["Example Series".to_string()],
-                    matched_subject_count: 1,
-                    library_provenance: vec![
-                        DiscoveryItemLibraryProvenanceRecord {
+                        matched_subject_titles: vec!["Example Series".to_string()],
+                        matched_subject_count: 1,
+                        library_provenance: vec![
+                            DiscoveryItemLibraryProvenanceRecord {
+                                subject_key: "tvdb:series:1".to_string(),
+                                title_id: None,
+                                library_id: Some("series-library-a".to_string()),
+                            },
+                            DiscoveryItemLibraryProvenanceRecord {
+                                subject_key: "tvdb:series:1".to_string(),
+                                title_id: None,
+                                library_id: Some("series-library-a".to_string()),
+                            },
+                        ],
+                        tmdb_collection_id: None,
+                        tmdb_collection_name: None,
+                        owned_in_input: false,
+                        facet_terms: vec![
+                            "Drama".to_string(),
+                            "canonical:genre:drama".to_string(),
+                            "mal:theme:psychological".to_string(),
+                            "canonical:theme:isekai".to_string(),
+                        ],
+                        context_terms: Vec::new(),
+                        change_subject_keys: vec!["tvdb:series:1".to_string()],
+                        removed_subject_keys: Vec::new(),
+                        tombstoned_by_run_id: None,
+                        tombstoned_at: None,
+                        created_at: now,
+                        updated_at: now,
+                    },
+                    DiscoveryItemRecord {
+                        id: "item-row-raw-only".to_string(),
+                        run_id: "run-1".to_string(),
+                        base_generation_id: Some("run-1".to_string()),
+                        source_run_kind: "context_incremental".to_string(),
+                        section_id: None,
+                        sort_index: 1,
+                        target_key: "tvdb:series:2".to_string(),
+                        target_kind: "series".to_string(),
+                        resolved: true,
+                        resolved_title_id: None,
+                        display_title: "Raw Label Series".to_string(),
+                        original_title: None,
+                        sort_title: Some("Raw Label Series".to_string()),
+                        year: Some(2026),
+                        poster_path: None,
+                        poster_url: None,
+                        background_url: None,
+                        overview: None,
+                        content_type: Some("series".to_string()),
+                        genres: vec!["Drama".to_string()],
+                        rating: None,
+                        rating_sources: Vec::new(),
+                        status_tags: Vec::new(),
+                        source_tags: Vec::new(),
+                        sources: vec!["smg".to_string()],
+                        best_source: None,
+                        relation_types: Vec::new(),
+                        relation_subtypes: Vec::new(),
+                        chart_signals: Vec::new(),
+                        provider_signals: Vec::new(),
+                        rank_components: Vec::new(),
+                        source_count: Some(1),
+                        edge_count: Some(0),
+                        relation_count: Some(0),
+                        source_subject_count: Some(1),
+                        rank_score: Some(0.1),
+                        matched_subject_keys: vec!["tvdb:series:1".to_string()],
+                        matched_subject_titles: vec!["Example Series".to_string()],
+                        matched_subject_count: 1,
+                        library_provenance: vec![DiscoveryItemLibraryProvenanceRecord {
                             subject_key: "tvdb:series:1".to_string(),
                             title_id: None,
                             library_id: Some("series-library-a".to_string()),
-                        },
-                        DiscoveryItemLibraryProvenanceRecord {
-                            subject_key: "tvdb:series:1".to_string(),
-                            title_id: None,
-                            library_id: Some("series-library-a".to_string()),
-                        },
-                    ],
-                    tmdb_collection_id: None,
-                    tmdb_collection_name: None,
-                    owned_in_input: false,
-                    facet_terms: vec!["Drama".to_string()],
-                    context_terms: Vec::new(),
-                    change_subject_keys: vec!["tvdb:series:1".to_string()],
-                    removed_subject_keys: Vec::new(),
-                    tombstoned_by_run_id: None,
-                    tombstoned_at: None,
-                    created_at: now,
-                    updated_at: now,
-                }],
+                        }],
+                        tmdb_collection_id: None,
+                        tmdb_collection_name: None,
+                        owned_in_input: false,
+                        facet_terms: vec![
+                            "Drama".to_string(),
+                            "mal:theme:psychological".to_string(),
+                        ],
+                        context_terms: Vec::new(),
+                        change_subject_keys: Vec::new(),
+                        removed_subject_keys: Vec::new(),
+                        tombstoned_by_run_id: None,
+                        tombstoned_at: None,
+                        created_at: now,
+                        updated_at: now,
+                    },
+                ],
             )
             .await
             .expect("items should replace");
@@ -3070,20 +3156,24 @@ mod tests {
             .list_discovery_items_for_generation("run-1")
             .await
             .expect("items should list");
-        assert_eq!(read_items.len(), 1);
-        assert_eq!(read_items[0].target_key, "tmdb:movie:10");
-        assert_eq!(read_items[0].genres, vec!["Drama".to_string()]);
-        assert_eq!(read_items[0].rating_sources, vec!["tmdb".to_string()]);
-        assert_eq!(read_items[0].source_tags.len(), 1);
+        assert_eq!(read_items.len(), 2);
+        let read_item = read_items
+            .iter()
+            .find(|item| item.id == "item-row-1")
+            .expect("canonical fixture item should round trip");
+        assert_eq!(read_item.target_key, "tmdb:movie:10");
+        assert_eq!(read_item.genres, vec!["Drama".to_string()]);
+        assert_eq!(read_item.rating_sources, vec!["tmdb".to_string()]);
+        assert_eq!(read_item.source_tags.len(), 1);
         assert_eq!(
-            read_items[0].source_tags[0].values,
+            read_item.source_tags[0].values,
             vec!["theme".to_string(), "Isekai".to_string()]
         );
-        assert_eq!(read_items[0].matched_subject_keys, vec!["tvdb:series:1"]);
-        assert_eq!(read_items[0].change_subject_keys, vec!["tvdb:series:1"]);
-        assert_eq!(read_items[0].library_provenance.len(), 1);
+        assert_eq!(read_item.matched_subject_keys, vec!["tvdb:series:1"]);
+        assert_eq!(read_item.change_subject_keys, vec!["tvdb:series:1"]);
+        assert_eq!(read_item.library_provenance.len(), 1);
         assert_eq!(
-            read_items[0].library_provenance[0].library_id.as_deref(),
+            read_item.library_provenance[0].library_id.as_deref(),
             Some("series-library-a")
         );
         let read_facets = store
@@ -3092,6 +3182,34 @@ mod tests {
             .expect("facets should list");
         assert_eq!(read_facets.len(), 1);
         assert_eq!(read_facets[0].facet_value, "Drama");
+        let personalized_facets = store
+            .list_personalized_discovery_facets("run-1", &["series-library-a".to_string()], false)
+            .await
+            .expect("personalized facets should list from canonical terms");
+        assert_eq!(personalized_facets.len(), 2);
+        assert!(personalized_facets.iter().all(|facet| {
+            facet.smg_count.is_none()
+                && facet.local_count == Some(1)
+                && !facet.facet_value.contains(':')
+        }));
+        assert!(
+            personalized_facets
+                .iter()
+                .any(|facet| facet.facet_name == "genre" && facet.facet_value == "Drama")
+        );
+        assert!(
+            personalized_facets
+                .iter()
+                .any(|facet| facet.facet_name == "theme" && facet.facet_value == "Isekai")
+        );
+        assert!(personalized_facets.iter().all(|facet| {
+            facet.facet_value != "mal:theme:psychological" && facet.facet_value != "Drama:"
+        }));
+        let hidden_library_facets = store
+            .list_personalized_discovery_facets("run-1", &["series-library-b".to_string()], false)
+            .await
+            .expect("personalized facets should apply library provenance");
+        assert!(hidden_library_facets.is_empty());
         let movie_page = store
             .query_discovery_items(&DiscoveryItemsStorageQuery {
                 context_run_id: Some("run-1".to_string()),

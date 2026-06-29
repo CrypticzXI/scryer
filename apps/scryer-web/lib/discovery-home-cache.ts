@@ -1,6 +1,7 @@
 import type { DiscoveryHomeInput, DiscoveryHomePayload } from "@/lib/types";
 
 const DISCOVERY_HOME_CACHE_PREFIX = "scryer:discovery:dashboard-home:v6";
+const DISCOVERY_HOME_CACHE_ENABLED = false;
 
 type NormalizedDiscoveryHomeInput = {
   includePublic: boolean | null;
@@ -201,6 +202,9 @@ function removeStorageItem(key: string) {
 }
 
 export function readDiscoveryHomeCache(scope: DiscoveryHomeCacheScope) {
+  if (!DISCOVERY_HOME_CACHE_ENABLED) {
+    return null;
+  }
   const key = discoveryHomeCacheKey(scope);
   if (!key || typeof window === "undefined") {
     return null;
@@ -226,6 +230,9 @@ export function writeDiscoveryHomeCache(
   scope: DiscoveryHomeCacheScope,
   home: DiscoveryHomePayload,
 ) {
+  if (!DISCOVERY_HOME_CACHE_ENABLED) {
+    return;
+  }
   const key = discoveryHomeCacheKey(scope);
   const userId = normalizeScopeValue(scope.userId);
   const uiLanguage = normalizeScopeValue(scope.uiLanguage);

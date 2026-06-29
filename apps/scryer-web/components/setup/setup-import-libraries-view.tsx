@@ -10,12 +10,16 @@ import {
   CheckCheck,
   FolderSymlink,
   Library,
+  Loader2,
   Plus,
+  RotateCw,
   Trash2,
+  TriangleAlert,
 } from "lucide-react";
 
 import { useIsMobile } from "@/lib/hooks/use-mobile";
 import {
+  effectiveRootPath,
   kindCompatibleWithFacet,
   type ImportRoot,
   type UseExternalImportSetupReturn,
@@ -55,7 +59,11 @@ export default function SetupImportLibrariesView({
   t,
 }: SetupImportLibrariesViewProps) {
   const {
+    roots,
     trayRoots,
+    previewing,
+    previewError,
+    loadPreview,
     libraries,
     rootsForLibrary,
     assign,
@@ -212,6 +220,11 @@ export default function SetupImportLibrariesView({
       root={root}
       variant={variant}
       isMobile={isMobile}
+      invalid={
+        root.manual &&
+        Boolean(assign[root.id]) &&
+        !effectiveRootPath(root).trim()
+      }
       draggable={!isMobile}
       onDragStart={(e) => onDragStart(e, root.id)}
       onDragEnd={onDragEnd}
@@ -281,6 +294,8 @@ export default function SetupImportLibrariesView({
         </div>
 
         <div
+          role="group"
+          aria-label={t("setup.sourceRoots")}
           style={{
             display: "flex",
             flexWrap: "wrap",
@@ -291,7 +306,68 @@ export default function SetupImportLibrariesView({
         >
           {trayRoots.length > 0 ? (
             trayRoots.map((root) => renderChip(root, "tray"))
-          ) : (
+          ) : previewError ? (
+            <div
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 10,
+                width: "100%",
+                minHeight: 46,
+                justifyContent: "center",
+                borderRadius: 11,
+                border: "1px dashed var(--scry-border2)",
+                color: "var(--scry-faint)",
+                fontSize: 12,
+              }}
+            >
+              <TriangleAlert size={16} style={{ flex: "none" }} />
+              {t("setup.previewError")}
+              <button
+                type="button"
+                onClick={() => void loadPreview()}
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 6,
+                  height: 28,
+                  padding: "0 12px",
+                  borderRadius: 8,
+                  border: "1px solid var(--scry-baccent)",
+                  background: "rgba(var(--scry-accent-rgb), 0.1)",
+                  color: "var(--scry-accent-text)",
+                  fontSize: 12.5,
+                  fontWeight: 600,
+                  cursor: "pointer",
+                }}
+              >
+                <RotateCw size={13} />
+                {t("setup.retry")}
+              </button>
+            </div>
+          ) : previewing && roots.length === 0 ? (
+            <div
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 8,
+                width: "100%",
+                minHeight: 46,
+                justifyContent: "center",
+                borderRadius: 11,
+                border: "1px dashed var(--scry-border2)",
+                color: "var(--scry-faint3)",
+                fontSize: 12,
+              }}
+            >
+              <Loader2
+                size={16}
+                style={{ flex: "none" }}
+                className="animate-spin"
+              />
+              {t("setup.previewLoading")}
+            </div>
+          ) : roots.length > 0 && trayRoots.length === 0 ? (
             <div
               style={{
                 display: "inline-flex",
@@ -309,7 +385,7 @@ export default function SetupImportLibrariesView({
               <CheckCheck size={16} />
               {t("setup.allRootsMapped")}
             </div>
-          )}
+          ) : null}
         </div>
       </div>
 
@@ -345,6 +421,7 @@ export default function SetupImportLibrariesView({
             <div
               key={lib.id}
               data-drop="library"
+              aria-label={lib.name}
               onDragOver={!isMobile ? (e) => libZoneOver(e, lib.facet) : undefined}
               onDragEnter={!isMobile ? (e) => libZoneEnter(e, lib.facet) : undefined}
               onDragLeave={!isMobile ? zoneLeave : undefined}
@@ -411,6 +488,7 @@ export default function SetupImportLibrariesView({
                   <button
                     type="button"
                     title={t("setup.renameLibrary")}
+                    aria-label={t("setup.renameLibraryAria", { name: lib.name })}
                     onClick={() => startRename(lib.id, lib.name)}
                     style={{
                       flex: 1,
@@ -431,26 +509,29 @@ export default function SetupImportLibrariesView({
                     {lib.name}
                   </button>
                 )}
-                <button
-                  type="button"
-                  title={t("setup.deleteLibrary")}
-                  onClick={() => removeLibrary(lib.id)}
-                  style={{
-                    display: "inline-flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    width: 28,
-                    height: 28,
-                    borderRadius: 7,
-                    border: "1px solid var(--scry-border2)",
-                    background: "transparent",
-                    color: "var(--scry-faint)",
-                    flex: "none",
-                    cursor: "pointer",
-                  }}
-                >
-                  <Trash2 size={13} />
-                </button>
+                {!lib.isDefault ? (
+                  <button
+                    type="button"
+                    title={t("setup.deleteLibrary")}
+                    aria-label={t("setup.deleteLibrary")}
+                    onClick={() => removeLibrary(lib.id)}
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      width: 28,
+                      height: 28,
+                      borderRadius: 7,
+                      border: "1px solid var(--scry-border2)",
+                      background: "transparent",
+                      color: "var(--scry-faint)",
+                      flex: "none",
+                      cursor: "pointer",
+                    }}
+                  >
+                    <Trash2 size={13} />
+                  </button>
+                ) : null}
               </div>
 
               {/* Facet pill */}
@@ -658,6 +739,11 @@ export default function SetupImportLibrariesView({
         }}
         onPick={(libId) => {
           if (assignSheetRootId) assignRoot(assignSheetRootId, libId);
+        }}
+        onCreateLibrary={(facet) => {
+          const id = addLibrary(facet);
+          if (assignSheetRootId) assignRoot(assignSheetRootId, id);
+          setAssignSheetRootId(null);
         }}
         t={t}
       />

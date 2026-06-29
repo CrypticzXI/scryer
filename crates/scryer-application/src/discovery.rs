@@ -167,70 +167,66 @@ impl AppUseCase {
         let mut personalized_sections = Vec::new();
         let mut complete_collection = None;
         let mut facets = Vec::new();
-        if can_view_personalized && query.include_personalized {
-            if let Some(context_run_id) = status.state.last_success_generation_id.as_deref() {
-                let mut personalized_items = self
-                    .services
-                    .library
-                    .discovery
-                    .list_personalized_discovery_home_items(
-                        context_run_id,
-                        &readable_library_id_list,
-                        include_unresolved,
-                        personalized_home_candidate_limit(limit) as i64,
-                    )
-                    .await?;
-                let submitted_subjects = self
-                    .services
-                    .library
-                    .discovery
-                    .list_discovery_submitted_subjects(context_run_id)
-                    .await?;
-                let submitted_subjects = filter_submitted_subjects_for_libraries(
-                    &submitted_subjects,
-                    &readable_library_ids,
-                );
-                resolve_discovery_matched_subjects(&mut personalized_items, &submitted_subjects)?;
-                let library_profile = self
-                    .discovery_library_affinity_profile(&readable_library_ids, &submitted_subjects)
-                    .await?;
-                let mut complete_collection_items = self
-                    .services
-                    .library
-                    .discovery
-                    .list_personalized_complete_collection_items(
-                        context_run_id,
-                        &readable_library_id_list,
-                        include_unresolved,
-                        complete_collection_candidate_limit(limit) as i64,
-                    )
-                    .await?;
-                resolve_discovery_matched_subjects(
-                    &mut complete_collection_items,
-                    &submitted_subjects,
-                )?;
-                complete_collection = complete_collection_section(
-                    &complete_collection_items,
+        if can_view_personalized
+            && query.include_personalized
+            && let Some(context_run_id) = status.state.last_success_generation_id.as_deref()
+        {
+            let mut personalized_items = self
+                .services
+                .library
+                .discovery
+                .list_personalized_discovery_home_items(
+                    context_run_id,
+                    &readable_library_id_list,
                     include_unresolved,
-                    limit,
-                );
-                personalized_sections = personalized_section_results(
-                    &personalized_items,
-                    &library_profile,
+                    personalized_home_candidate_limit(limit) as i64,
+                )
+                .await?;
+            let submitted_subjects = self
+                .services
+                .library
+                .discovery
+                .list_discovery_submitted_subjects(context_run_id)
+                .await?;
+            let submitted_subjects =
+                filter_submitted_subjects_for_libraries(&submitted_subjects, &readable_library_ids);
+            resolve_discovery_matched_subjects(&mut personalized_items, &submitted_subjects)?;
+            let library_profile = self
+                .discovery_library_affinity_profile(&readable_library_ids, &submitted_subjects)
+                .await?;
+            let mut complete_collection_items = self
+                .services
+                .library
+                .discovery
+                .list_personalized_complete_collection_items(
+                    context_run_id,
+                    &readable_library_id_list,
                     include_unresolved,
-                    limit,
-                );
-                facets = self
-                    .services
-                    .library
-                    .discovery
-                    .list_personalized_discovery_facets(
-                        context_run_id,
-                        &readable_library_id_list,
-                        include_unresolved,
-                    )
-                    .await?;
-            }
+                    complete_collection_candidate_limit(limit) as i64,
+                )
+                .await?;
+            resolve_discovery_matched_subjects(
+                &mut complete_collection_items,
+                &submitted_subjects,
+            )?;
+            complete_collection =
+                complete_collection_section(&complete_collection_items, include_unresolved, limit);
+            personalized_sections = personalized_section_results(
+                &personalized_items,
+                &library_profile,
+                include_unresolved,
+                limit,
+            );
+            facets = self
+                .services
+                .library
+                .discovery
+                .list_personalized_discovery_facets(
+                    context_run_id,
+                    &readable_library_id_list,
+                    include_unresolved,
+                )
+                .await?;
         }
 
         Ok(DiscoveryHomeResult {
@@ -589,23 +585,22 @@ fn canonical_affinity_labels_for_profile(
     profile_labels: &[String],
     canonical_kind: &str,
 ) -> Vec<String> {
-    let profile_keys = profile_labels
-        .iter()
-        .map(|label| normalize_discovery_affinity_key(label))
-        .filter(|label| !label.is_empty())
-        .collect::<HashSet<_>>();
-    if profile_keys.is_empty() {
-        return Vec::new();
+    let mut canonical_labels_by_key = HashMap::new();
+    for item in items {
+        for label in discovery_item_canonical_facet_labels(item, canonical_kind) {
+            let key = normalize_discovery_affinity_key(&label);
+            if !key.is_empty() {
+                canonical_labels_by_key.entry(key).or_insert(label);
+            }
+        }
     }
 
     let mut labels = Vec::new();
     let mut seen = HashSet::new();
-    for item in items {
-        for label in discovery_item_canonical_facet_labels(item, canonical_kind) {
-            let key = normalize_discovery_affinity_key(&label);
-            if profile_keys.contains(&key) {
-                push_unique_discovery_label(&mut labels, &mut seen, label);
-            }
+    for profile_label in profile_labels {
+        let key = normalize_discovery_affinity_key(profile_label);
+        if let Some(label) = canonical_labels_by_key.get(&key) {
+            push_unique_discovery_label(&mut labels, &mut seen, label.clone());
         }
     }
     labels
@@ -1213,7 +1208,7 @@ fn matches_optional_text_query(item: &DiscoveryItemRecord, query: Option<&str>) 
 fn dedupe_and_sort_discovery_items(items: &mut Vec<DiscoveryItemRecord>) {
     let mut seen = HashSet::new();
     items.retain(|item| seen.insert(discovery_item_identity_key(item).to_string()));
-    items.sort_by(|left, right| compare_discovery_items(left, right));
+    items.sort_by(compare_discovery_items);
 }
 
 fn dedupe_discovery_items_preserving_order(items: &mut Vec<DiscoveryItemRecord>) {
@@ -2015,6 +2010,10 @@ pub(crate) fn snapshot_facet_records(
     Ok(facets)
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "discovery item persistence maps explicit run and projection fields"
+)]
 fn discovery_item_record(
     run_id: &str,
     base_generation_id: &str,
