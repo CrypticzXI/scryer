@@ -416,20 +416,33 @@ export function useExternalImportSetup({ client }: UseExternalImportSetupArgs) {
         const sessionId = warmupData?.startExternalImportArrSourceWarmup
           ?.sessionId as string | undefined;
         if (sessionId) {
-          // The instance may have been removed during the round-trips; if so,
-          // cancel the freshly-started warmup rather than orphaning it.
-          let stillExists = false;
+          // Reconcile the freshly-started session against the latest state,
+          // cancelling any session that is now orphaned. Orphans starve the
+          // backend's scarce episode-warmup slots and leave the live warmup
+          // stuck at "loading episodes". Two orphan sources are handled here:
+          //   1. The instance was removed, or its connection changed while the
+          //      warmup was starting → the new session is for a stale config.
+          //   2. The instance already had a different session (a racing
+          //      re-verify the backend didn't dedup) → supersede the old one.
+          let toCancel: string | null = null;
           setInstances((prev) => {
-            stillExists = prev.some((entry) => entry.id === id);
-            return stillExists
-              ? prev.map((entry) =>
-                  entry.id === id
-                    ? { ...entry, warmupSessionId: sessionId }
-                    : entry,
-                )
-              : prev;
+            const current = prev.find((entry) => entry.id === id);
+            if (
+              !current ||
+              current.baseUrl.trim() !== connection.baseUrl ||
+              current.apiKey.trim() !== connection.apiKey
+            ) {
+              toCancel = sessionId;
+              return prev;
+            }
+            if (current.warmupSessionId && current.warmupSessionId !== sessionId) {
+              toCancel = current.warmupSessionId;
+            }
+            return prev.map((entry) =>
+              entry.id === id ? { ...entry, warmupSessionId: sessionId } : entry,
+            );
           });
-          if (!stillExists) cancelInstanceWarmup(sessionId);
+          if (toCancel) cancelInstanceWarmup(toCancel);
         }
       }
     },
@@ -692,6 +705,26 @@ export function useExternalImportSetup({ client }: UseExternalImportSetupArgs) {
       cancelled = true;
     };
   }, [client]);
+
+  // Every library needs a quality profile — there is no "none" option. As soon
+  // as profiles are available, default any library without a selection to the
+  // first profile. Reacting to `libraries` too covers user-added libraries.
+  useEffect(() => {
+    if (qualityProfiles.length === 0) return;
+    if (!libraries.some((lib) => !lib.qualityProfileId)) return;
+    const fallback = qualityProfiles[0].id;
+    setLibraries((prev) =>
+      prev.map((lib) =>
+        lib.qualityProfileId ? lib : { ...lib, qualityProfileId: fallback },
+      ),
+    );
+  }, [qualityProfiles, libraries]);
+
+  // The Quality step can't be left until every mapped library has a profile.
+  const qualityReady = useMemo(
+    () => mappedLibraries.every((lib) => Boolean(lib.qualityProfileId)),
+    [mappedLibraries],
+  );
 
   // ── Sources step: download client + indexer selection ──────────────────────
   const [selectedDcKeys, setSelectedDcKeys] = useState<Set<string>>(
@@ -973,9 +1006,16 @@ export function useExternalImportSetup({ client }: UseExternalImportSetupArgs) {
   // ── Aggregate warmup progress (gates Summary) ──────────────────────────────
   const [aggregateProgress, setAggregateProgress] =
     useState<ExternalImportAggregateWarmupProgress | null>(null);
+  // Separate from a backend "failed" status: set when the progress query itself
+  // fails (e.g. a pruned/expired session returns NotFound). Without surfacing
+  // this, the Summary spinner would spin forever on a dead session.
+  const [aggregateProgressError, setAggregateProgressError] = useState<
+    string | null
+  >(null);
 
   const pollAggregateProgress = useCallback(async () => {
     if (connectedArrSessionIds.length === 0) {
+      setAggregateProgressError(null);
       setAggregateProgress({
         status: "completed",
         titlesTotalKnown: true,
@@ -985,7 +1025,7 @@ export function useExternalImportSetup({ client }: UseExternalImportSetupArgs) {
       });
       return;
     }
-    const { data } = await client
+    const { data, error } = await client
       .query(
         externalImportAggregateWarmupProgressQuery,
         { input: { sourceWarmupSessionIds: connectedArrSessionIds } },
@@ -995,10 +1035,86 @@ export function useExternalImportSetup({ client }: UseExternalImportSetupArgs) {
     const progress = data?.externalImportAggregateWarmupProgress as
       | ExternalImportAggregateWarmupProgress
       | undefined;
-    if (progress) setAggregateProgress(progress);
+    if (progress) {
+      setAggregateProgress(progress);
+      setAggregateProgressError(null);
+    } else if (error) {
+      setAggregateProgressError(
+        gqlError(error) || "Failed to load warmup progress",
+      );
+    }
   }, [client, connectedArrSessionIds]);
 
   const warmupComplete = aggregateProgress?.status === "completed";
+  // The warmup failed (backend reported failed/canceled, or the progress query
+  // itself errored with no live progress to fall back on).
+  const warmupFailed =
+    aggregateProgress?.status === "failed" ||
+    aggregateProgress?.status === "canceled" ||
+    (aggregateProgressError !== null && aggregateProgress === null);
+  // Terminal either way — used to stop the Summary poll loop.
+  const warmupSettled = warmupComplete || warmupFailed;
+  const warmupErrorMessage =
+    aggregateProgress?.errorMessage ?? aggregateProgressError;
+
+  /**
+   * Re-start the per-instance warmups from the Summary step after a failure
+   * (failed/canceled status, or a pruned session). Clears the prior progress so
+   * the Summary poll picks up the freshly-created sessions.
+   */
+  const retryWarmup = useCallback(async () => {
+    setAggregateProgressError(null);
+    setAggregateProgress(null);
+    const targets = arrInstances.filter(
+      (inst) => inst.status === "connected" && inst.apiKey.trim().length > 0,
+    );
+    const started = await Promise.all(
+      targets.map(async (inst) => {
+        const arrKind = arrKindOf(inst.kind);
+        if (!arrKind) return false;
+        const connection = {
+          baseUrl: inst.baseUrl.trim(),
+          apiKey: inst.apiKey.trim(),
+        };
+        const { data } = await client
+          .mutation(startExternalImportArrSourceWarmupMutation, {
+            input: { kind: arrKind, connection },
+          })
+          .toPromise();
+        const sessionId = data?.startExternalImportArrSourceWarmup?.sessionId as
+          | string
+          | undefined;
+        if (!sessionId) return false;
+        let toCancel: string | null = null;
+        setInstances((prev) => {
+          const current = prev.find((entry) => entry.id === inst.id);
+          if (!current) {
+            toCancel = sessionId;
+            return prev;
+          }
+          if (current.warmupSessionId && current.warmupSessionId !== sessionId) {
+            toCancel = current.warmupSessionId;
+          }
+          return prev.map((entry) =>
+            entry.id === inst.id
+              ? { ...entry, warmupSessionId: sessionId }
+              : entry,
+          );
+        });
+        if (toCancel) cancelInstanceWarmup(toCancel);
+        return true;
+      }),
+    );
+    // If no instance produced a fresh session (every re-warm mutation failed, or
+    // there was nothing to restart), surface an error so the Summary keeps its
+    // failed + Retry state instead of freezing on a 0% spinner with no poll
+    // (connectedArrSessionIds wouldn't change, so the poll would never resume).
+    if (!started.some(Boolean)) {
+      setAggregateProgressError(
+        "Couldn’t restart the monitored-status sync. Check your connections and try again.",
+      );
+    }
+  }, [arrInstances, client, cancelInstanceWarmup]);
 
   // ── Finalize → complete → scan ─────────────────────────────────────────────
   const buildMappings = useCallback((): {
@@ -1044,6 +1160,19 @@ export function useExternalImportSetup({ client }: UseExternalImportSetupArgs) {
     };
     const normPath = (p: string) =>
       p.trim().replace(/[\\/]+$/, "").toLowerCase();
+
+    // Safety net: the backend requires a mapping for every source root it
+    // warmed (configured root folders AND the folders titles actually live in).
+    // If any detected root is still unmapped — e.g. the preview was reloaded
+    // after a refresh and surfaced a content root that wasn't mapped — finalize
+    // would fail server-side with a cryptic "missing mapping for source … root".
+    // Catch it here with actionable guidance instead.
+    const unmappedDetected = detectedRoots.filter((root) => !assign[root.id]);
+    if (connectedArrSessionIds.length > 0 && unmappedDetected.length > 0) {
+      return fail(
+        `Some detected source folders aren't mapped to a library yet (e.g. "${unmappedDetected[0].arrRootPath}"). Go back to the Libraries step to map them.`,
+      );
+    }
 
     const { librariesToCreate } = buildMappings();
 
@@ -1174,7 +1303,15 @@ export function useExternalImportSetup({ client }: UseExternalImportSetupArgs) {
       .mutation(clearExternalImportSetupSecretDraftMutation, {})
       .toPromise();
     return { ok: true, scanErrors, error: null };
-  }, [client, buildMappings, roots, assign, libraries, connectedArrSessionIds]);
+  }, [
+    client,
+    buildMappings,
+    roots,
+    detectedRoots,
+    assign,
+    libraries,
+    connectedArrSessionIds,
+  ]);
 
   // ── Derived summary counts ─────────────────────────────────────────────────
   const summary = useMemo(() => {
@@ -1362,6 +1499,7 @@ export function useExternalImportSetup({ client }: UseExternalImportSetupArgs) {
     removeLibrary,
     // quality
     qualityProfiles,
+    qualityReady,
     setLibraryQualityProfile,
     setLibraryPersona,
     // sources
@@ -1384,6 +1522,10 @@ export function useExternalImportSetup({ client }: UseExternalImportSetupArgs) {
     aggregateProgress,
     pollAggregateProgress,
     warmupComplete,
+    warmupSettled,
+    warmupFailed,
+    warmupErrorMessage,
+    retryWarmup,
     finalizing,
     finalizeError,
     finalizeImport,

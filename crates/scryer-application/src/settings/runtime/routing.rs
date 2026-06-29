@@ -36,6 +36,23 @@ pub struct LibrarySettingsOverrideDraft {
     pub indexer_routing: Option<Vec<IndexerRoutingSettingsEntry>>,
     pub download_client_routing: Option<Vec<DownloadClientRoutingSettingsEntry>>,
 }
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ExternalImportLibrarySettingsAutoApplyDraft {
+    pub quality_profile_id: Option<String>,
+    pub request_quality_profile_ids: Option<Vec<String>>,
+    pub monitor_specials: Option<bool>,
+    pub nfo_write_on_import: Option<bool>,
+    pub plexmatch_write_on_import: Option<bool>,
+    pub set_permissions_linux: Option<bool>,
+    pub folder_chmod: Option<String>,
+    pub chown_group: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ExternalImportLibrarySettingsAutoApplyResult {
+    pub changed_keys: Vec<String>,
+}
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LibrarySettings {
     pub required_audio_languages_override: Option<Vec<String>>,

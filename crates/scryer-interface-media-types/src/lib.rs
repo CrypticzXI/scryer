@@ -4497,10 +4497,72 @@ pub struct ExternalImportAggregateWarmupProgressPayload {
     pub error_message: Option<String>,
 }
 
+#[derive(Enum, Copy, Clone, Debug, Eq, PartialEq)]
+#[graphql(rename_items = "snake_case")]
+pub enum ExternalImportLibrarySettingKey {
+    RenameEnabled,
+    NfoWriteOnImport,
+    PlexmatchWriteOnImport,
+    SetPermissionsLinux,
+    FolderChmod,
+    ChownGroup,
+    QualityProfileId,
+    RequestQualityProfileIds,
+    MonitorSpecials,
+    RenameTemplate,
+    FolderTemplate,
+    RequiredAudioLanguages,
+}
+
+#[derive(Enum, Copy, Clone, Debug, Eq, PartialEq)]
+#[graphql(rename_items = "snake_case")]
+pub enum ExternalImportLibrarySettingConfidence {
+    High,
+    Medium,
+    Low,
+}
+
+#[derive(Enum, Copy, Clone, Debug, Eq, PartialEq)]
+#[graphql(rename_items = "snake_case")]
+pub enum ExternalImportLibrarySettingDisposition {
+    AutoApplied,
+    Suggested,
+    Skipped,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct ExternalImportLibrarySettingValuePayload {
+    pub bool_value: Option<bool>,
+    pub string_value: Option<String>,
+    pub string_list_value: Option<Vec<String>>,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct ExternalImportLibrarySettingEvidencePayload {
+    pub source_key: String,
+    pub source_kind: ExternalArrSourceKind,
+    pub matching_count: i32,
+    pub total_count: i32,
+    pub detail: Option<String>,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct ExternalImportLibrarySettingApplicationPayload {
+    pub library_id: ID,
+    pub facet: MediaFacetValue,
+    pub setting: ExternalImportLibrarySettingKey,
+    pub value: ExternalImportLibrarySettingValuePayload,
+    pub confidence: ExternalImportLibrarySettingConfidence,
+    pub disposition: ExternalImportLibrarySettingDisposition,
+    pub evidence: Vec<ExternalImportLibrarySettingEvidencePayload>,
+    pub reason: Option<String>,
+}
+
 #[derive(SimpleObject, Clone)]
 pub struct FinalizeExternalImportPayload {
     pub finalized: bool,
     pub monitor_warmup_session_id: ID,
+    pub library_setting_applications: Vec<ExternalImportLibrarySettingApplicationPayload>,
 }
 
 #[derive(InputObject)]

@@ -945,6 +945,214 @@ impl AppUseCase {
     }
 }
 impl AppUseCase {
+    pub async fn apply_external_import_library_settings_auto_apply(
+        &self,
+        actor: &User,
+        library_id: &str,
+        settings: ExternalImportLibrarySettingsAutoApplyDraft,
+    ) -> AppResult<ExternalImportLibrarySettingsAutoApplyResult> {
+        let library = self
+            .services
+            .catalog
+            .libraries
+            .get_by_id(library_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("library {library_id}")))?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageCatalogSettings)
+            .await?;
+
+        let is_anime_library = library.facet == MediaFacet::Anime;
+        if !is_anime_library && settings.monitor_specials.is_some() {
+            return Err(AppError::Validation(
+                "monitor_specials is only valid for anime libraries".to_string(),
+            ));
+        }
+        if library.facet == MediaFacet::Movie && settings.plexmatch_write_on_import.is_some() {
+            return Err(AppError::Validation(
+                "plexmatch_write_on_import is only valid for series and anime libraries"
+                    .to_string(),
+            ));
+        }
+
+        let mut changed_keys = Vec::new();
+
+        if let Some(profile_id) = normalize_optional_string(settings.quality_profile_id)
+            && self
+                .read_setting_string_value_explicit(QUALITY_PROFILE_ID_KEY, Some(&library.id))
+                .await?
+                .and_then(|value| normalize_optional_string(Some(value)))
+                .is_none()
+        {
+            let profile_settings = self.load_quality_profile_settings().await?;
+            if !profile_settings
+                .profiles
+                .iter()
+                .any(|profile| profile.id == profile_id)
+            {
+                return Err(AppError::Validation(format!(
+                    "unknown quality profile {profile_id}"
+                )));
+            }
+            self.upsert_scoped_system_setting_json(
+                QUALITY_PROFILE_ID_KEY,
+                &library.id,
+                &profile_id,
+                Some(actor.id.clone()),
+            )
+            .await?;
+            changed_keys.push(QUALITY_PROFILE_ID_KEY.to_string());
+        }
+
+        if let Some(profile_ids) = settings.request_quality_profile_ids
+            && self
+                .read_setting_string_value_explicit(
+                    REQUEST_QUALITY_PROFILE_IDS_KEY,
+                    Some(&library.id),
+                )
+                .await?
+                .is_none()
+        {
+            let normalized = normalize_request_quality_profile_ids(profile_ids);
+            if !normalized.is_empty() {
+                let profile_settings = self.load_quality_profile_settings().await?;
+                let catalog_profile_ids = profile_settings
+                    .profiles
+                    .iter()
+                    .map(|profile| profile.id.clone())
+                    .collect::<HashSet<_>>();
+                if let Some(missing_profile_id) = normalized
+                    .iter()
+                    .find(|profile_id| !catalog_profile_ids.contains(*profile_id))
+                {
+                    return Err(AppError::Validation(format!(
+                        "unknown request quality profile {missing_profile_id}"
+                    )));
+                }
+                self.upsert_scoped_system_setting_json(
+                    REQUEST_QUALITY_PROFILE_IDS_KEY,
+                    &library.id,
+                    &normalized,
+                    Some(actor.id.clone()),
+                )
+                .await?;
+                changed_keys.push(REQUEST_QUALITY_PROFILE_IDS_KEY.to_string());
+            }
+        }
+
+        if is_anime_library
+            && let Some(value) = settings.monitor_specials
+            && self
+                .read_setting_bool_value_explicit(ANIME_MONITOR_SPECIALS_KEY, Some(&library.id))
+                .await?
+                .is_none()
+        {
+            self.upsert_scoped_system_setting_json(
+                ANIME_MONITOR_SPECIALS_KEY,
+                &library.id,
+                &value,
+                Some(actor.id.clone()),
+            )
+            .await?;
+            changed_keys.push(ANIME_MONITOR_SPECIALS_KEY.to_string());
+        }
+
+        if let Some(value) = settings.nfo_write_on_import
+            && self
+                .read_setting_bool_value_explicit(nfo_write_on_import_key(&library.facet), Some(&library.id))
+                .await?
+                .is_none()
+        {
+            self.upsert_scoped_system_setting_json(
+                nfo_write_on_import_key(&library.facet),
+                &library.id,
+                &value,
+                Some(actor.id.clone()),
+            )
+            .await?;
+            changed_keys.push(nfo_write_on_import_key(&library.facet).to_string());
+        }
+
+        if let Some(key_name) = plexmatch_write_on_import_key(&library.facet)
+            && let Some(value) = settings.plexmatch_write_on_import
+            && self
+                .read_setting_bool_value_explicit(key_name, Some(&library.id))
+                .await?
+                .is_none()
+        {
+            self.upsert_scoped_system_setting_json(
+                key_name,
+                &library.id,
+                &value,
+                Some(actor.id.clone()),
+            )
+            .await?;
+            changed_keys.push(key_name.to_string());
+        }
+
+        if let Some(value) = settings.set_permissions_linux
+            && self
+                .read_setting_bool_value_explicit(SET_PERMISSIONS_LINUX_KEY, Some(&library.id))
+                .await?
+                .is_none()
+        {
+            self.upsert_scoped_system_setting_json(
+                SET_PERMISSIONS_LINUX_KEY,
+                &library.id,
+                &value,
+                Some(actor.id.clone()),
+            )
+            .await?;
+            changed_keys.push(SET_PERMISSIONS_LINUX_KEY.to_string());
+        }
+
+        if settings.folder_chmod.is_some()
+            && self
+                .read_setting_string_value_explicit(FOLDER_CHMOD_KEY, Some(&library.id))
+                .await?
+                .is_none()
+            && let Some(value) = normalize_chmod_setting(settings.folder_chmod, FOLDER_CHMOD_KEY)?
+        {
+            self.upsert_scoped_system_setting_json(
+                FOLDER_CHMOD_KEY,
+                &library.id,
+                &value,
+                Some(actor.id.clone()),
+            )
+            .await?;
+            changed_keys.push(FOLDER_CHMOD_KEY.to_string());
+        }
+
+        if settings.chown_group.is_some()
+            && self
+                .read_setting_string_value_explicit(CHOWN_GROUP_KEY, Some(&library.id))
+                .await?
+                .is_none()
+            && let Some(value) = normalize_chown_group_setting(settings.chown_group)?
+        {
+            self.upsert_scoped_system_setting_json(
+                CHOWN_GROUP_KEY,
+                &library.id,
+                &value,
+                Some(actor.id.clone()),
+            )
+            .await?;
+            changed_keys.push(CHOWN_GROUP_KEY.to_string());
+        }
+
+        if !changed_keys.is_empty() {
+            self.emit_settings_saved(
+                actor,
+                "external_import_library_settings",
+                Some(library.id.clone()),
+                changed_keys.clone(),
+            )
+            .await;
+        }
+
+        Ok(ExternalImportLibrarySettingsAutoApplyResult { changed_keys })
+    }
+}
+impl AppUseCase {
     pub async fn update_library_settings(
         &self,
         actor: &User,

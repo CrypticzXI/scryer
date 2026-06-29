@@ -1,4 +1,4 @@
-import type { CSSProperties } from "react";
+import { useState, type CSSProperties } from "react";
 import {
   ArrowLeftRight,
   CircleCheckBig,
@@ -6,12 +6,15 @@ import {
   Eye,
   Library,
   Loader,
+  RotateCcw,
   Route,
   Rss,
   Server,
+  TriangleAlert,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 
+import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import type { UseExternalImportSetupReturn } from "@/lib/hooks/use-external-import-setup";
 
@@ -52,7 +55,47 @@ export default function SetupImportSummaryView({
   wizard,
   t,
 }: SetupImportSummaryViewProps) {
-  const { summary, aggregateProgress, warmupComplete } = wizard;
+  const {
+    summary,
+    aggregateProgress,
+    warmupComplete,
+    warmupFailed,
+    warmupErrorMessage,
+    retryWarmup,
+    mappingReady,
+    preview,
+    previewError,
+    loadPreview,
+  } = wizard;
+
+  // The Summary also needs the preview loaded (it yields the root mappings for
+  // finalize). If that load fails — distinct endpoint from the warmup, so it can
+  // fail even when the warmup itself completed — treat it as a recoverable
+  // failure rather than silently leaving Finish disabled with no explanation.
+  const previewBlocked = !preview && Boolean(previewError);
+  const showFailure = warmupFailed || previewBlocked;
+  // Map raw warmup/preview errors to actionable copy — raw GraphQL/transport
+  // strings (e.g. "[GraphQL] not found: no warmup session …", which means the
+  // session was pruned after a restart/idle) must never reach the UI.
+  const rawFailure = warmupErrorMessage ?? previewError;
+  const sessionExpired =
+    !!rawFailure && /no warmup session/i.test(rawFailure);
+  const failureDetail = sessionExpired
+    ? t("setup.importWarmupSessionExpired")
+    : rawFailure?.replace(/^\[(?:GraphQL|Network)\]\s*/i, "").trim() ||
+      t("setup.importWarmupFailedDetail");
+
+  const [retrying, setRetrying] = useState(false);
+  const handleRetry = async () => {
+    setRetrying(true);
+    try {
+      // Warmup failure → re-warm; preview-only failure → just refetch preview.
+      if (warmupFailed) await retryWarmup();
+      else await loadPreview();
+    } finally {
+      setRetrying(false);
+    }
+  };
 
   const rows: StatRow[] = [
     {
@@ -174,6 +217,51 @@ export default function SetupImportSummaryView({
 
       {/* ── Monitored-status fetch card ────────────────────────────────── */}
       <div style={cardStyle}>
+        {showFailure && !retrying ? (
+          <div className="flex flex-col gap-3">
+            <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+              <div
+                style={{
+                  ...accentTileStyle,
+                  background: "rgba(248, 113, 113, 0.12)",
+                  border: "1px solid rgba(248, 113, 113, 0.4)",
+                  color: "#f87171",
+                }}
+              >
+                <TriangleAlert size={18} strokeWidth={2} aria-hidden />
+              </div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div
+                  style={{ fontSize: 14.5, fontWeight: 600, color: "#f1f5ff" }}
+                >
+                  {sessionExpired
+                    ? t("setup.importWarmupSessionExpiredTitle")
+                    : t("setup.importWarmupFailedTitle")}
+                </div>
+                <div style={{ fontSize: 12.5, color: "var(--scry-muted3)" }}>
+                  {failureDetail}
+                </div>
+              </div>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={retrying}
+                onClick={() => void handleRetry()}
+              >
+                {retrying ? (
+                  <Loader className="h-4 w-4 animate-spin" />
+                ) : (
+                  <RotateCcw className="h-4 w-4" />
+                )}
+                {retrying
+                  ? t("setup.importWarmupRetrying")
+                  : t("setup.retry")}
+              </Button>
+            </div>
+          </div>
+        ) : (
+          <>
         <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
           <div style={accentTileStyle}>
             <Eye size={18} strokeWidth={2} aria-hidden />
@@ -271,7 +359,33 @@ export default function SetupImportSummaryView({
             })}
           </div>
         </div>
+          </>
+        )}
       </div>
+
+      {/* Unmapped-root notice: finalize requires every detected source root to
+          be mapped, so explain a disabled Finish instead of failing later. */}
+      {warmupComplete && !mappingReady ? (
+        <div
+          style={{
+            ...cardStyle,
+            borderColor: "rgba(251, 191, 36, 0.4)",
+            display: "flex",
+            alignItems: "center",
+            gap: 10,
+            fontSize: 12.5,
+            color: "#fbbf24",
+          }}
+        >
+          <TriangleAlert
+            size={16}
+            strokeWidth={2}
+            aria-hidden
+            style={{ flex: "none" }}
+          />
+          <span>{t("setup.importUnmappedRootsNotice")}</span>
+        </div>
+      ) : null}
     </div>
   );
 }

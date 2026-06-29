@@ -8,8 +8,9 @@ use scryer_application::external_import::{
     ExternalArrClient,
 };
 use scryer_application::{
-    AppError, ExternalIdHint, ExternalIdProvider, ExternalImportArrSourceKind as AppArrSourceKind,
-    ExternalImportArrSourceSeriesEntry, ExternalImportArrSourceWarmupResult,
+    ANIME_MONITOR_SPECIALS_KEY, AppError, CHOWN_GROUP_KEY, ExternalIdHint, ExternalIdProvider,
+    ExternalImportArrSourceKind as AppArrSourceKind, ExternalImportArrSourceSeriesEntry,
+    ExternalImportArrSourceWarmupResult, ExternalImportLibrarySettingsAutoApplyDraft,
     ExternalImportMonitorEpisodeEntry, ExternalImportMonitorMovieEntry,
     ExternalImportMonitorSeasonEntry, ExternalImportMonitorSeriesEntry,
     ExternalImportMonitorSnapshotChunk, ExternalImportMonitorSnapshotEntryKind,
@@ -17,10 +18,13 @@ use scryer_application::{
     ExternalImportMonitorWarmupStatus, ExternalImportSetupInstanceApiKeyDraft,
     ExternalImportSetupSecretDraftInput as AppExternalImportSetupSecretDraftInput,
     ExternalImportSetupSecretDraftSaveResult, ExternalImportSetupSecretInstanceKind,
-    ExternalImportSetupSecretOverrideDraft, IndexerConfigUpdate, LibraryScanHint,
-    LibraryScanHintFacet, LibraryScanHintSet, LibraryScanHintSource,
-    library_scan_file_full_path_key, library_scan_file_leaf_key, library_scan_folder_full_path_key,
-    library_scan_folder_leaf_key,
+    ExternalImportSetupSecretOverrideDraft, FOLDER_CHMOD_KEY, IndexerConfigUpdate, LibraryScanHint,
+    LibraryScanHintFacet, LibraryScanHintSet, LibraryScanHintSource, NFO_WRITE_ON_IMPORT_ANIME_KEY,
+    NFO_WRITE_ON_IMPORT_MOVIE_KEY, NFO_WRITE_ON_IMPORT_SERIES_KEY,
+    PLEXMATCH_WRITE_ON_IMPORT_ANIME_KEY, PLEXMATCH_WRITE_ON_IMPORT_SERIES_KEY,
+    QUALITY_PROFILE_ID_KEY, RENAME_ENABLED_KEY, REQUEST_QUALITY_PROFILE_IDS_KEY,
+    SET_PERMISSIONS_LINUX_KEY, library_scan_file_full_path_key, library_scan_file_leaf_key,
+    library_scan_folder_full_path_key, library_scan_folder_leaf_key,
 };
 use scryer_domain::{AppPermission, MediaFacet, NewDownloadClientConfig, NewIndexerConfig};
 use serde::{Serialize, de::DeserializeOwned};
@@ -403,6 +407,8 @@ fn remap_import_path(path: Option<String>, arr_root: &str, scryer_root: &str) ->
 
 #[derive(Clone)]
 struct ResolvedSourceMapping {
+    library_id: String,
+    source_warmup_session_id: Option<String>,
     arr_root_path: String,
     scryer_root_path: String,
     facet: MediaFacet,
@@ -439,6 +445,813 @@ fn source_mapping_root_paths(source: &ExternalImportArrSourceWarmupResult) -> Ve
         }
     }
     roots.into_values().collect()
+}
+
+const EXTERNAL_IMPORT_DERIVED_SETTING_MIN_SAMPLE: i32 = 3;
+const EXTERNAL_IMPORT_DERIVED_SETTING_CONFIDENCE_NUMERATOR: i32 = 85;
+const EXTERNAL_IMPORT_DERIVED_SETTING_CONFIDENCE_DENOMINATOR: i32 = 100;
+
+#[derive(Clone)]
+struct ExternalImportSourceSettingSignal {
+    source_key: String,
+    source_kind: AppArrSourceKind,
+    title_count: i32,
+    rename_enabled: Option<bool>,
+    rename_template: Option<String>,
+    folder_template: Option<String>,
+    nfo_write_on_import: Option<bool>,
+    plexmatch_write_on_import: Option<bool>,
+    set_permissions_linux: Option<bool>,
+    folder_chmod: Option<String>,
+    chown_group: Option<String>,
+}
+
+struct ExternalImportLibrarySettingAccumulator {
+    library_id: String,
+    facet: MediaFacet,
+    sources: BTreeMap<String, ExternalImportSourceSettingSignal>,
+    quality_profile_counts: BTreeMap<(String, i64), i32>,
+    quality_profile_total: i32,
+    monitor_specials_true: i32,
+    monitor_specials_total: i32,
+}
+
+impl ExternalImportLibrarySettingAccumulator {
+    fn new(library_id: String, facet: MediaFacet) -> Self {
+        Self {
+            library_id,
+            facet,
+            sources: BTreeMap::new(),
+            quality_profile_counts: BTreeMap::new(),
+            quality_profile_total: 0,
+            monitor_specials_true: 0,
+            monitor_specials_total: 0,
+        }
+    }
+}
+
+fn build_external_import_library_setting_accumulators(
+    source_results: &BTreeMap<String, ExternalImportArrSourceWarmupResult>,
+    mappings: &HashMap<String, ResolvedSourceMapping>,
+) -> BTreeMap<String, ExternalImportLibrarySettingAccumulator> {
+    let mut accumulators = BTreeMap::<String, ExternalImportLibrarySettingAccumulator>::new();
+
+    for mapping in mappings.values() {
+        let Some(session_id) = mapping.source_warmup_session_id.as_deref() else {
+            continue;
+        };
+        let Some(source_result) = source_results.get(session_id) else {
+            continue;
+        };
+        let accumulator = accumulators
+            .entry(mapping.library_id.clone())
+            .or_insert_with(|| {
+                ExternalImportLibrarySettingAccumulator::new(
+                    mapping.library_id.clone(),
+                    mapping.facet.clone(),
+                )
+            });
+        accumulator
+            .sources
+            .entry(session_id.to_string())
+            .or_insert_with(|| external_import_source_setting_signal(source_result));
+    }
+
+    accumulators
+}
+
+fn external_import_source_setting_signal(
+    source_result: &ExternalImportArrSourceWarmupResult,
+) -> ExternalImportSourceSettingSignal {
+    ExternalImportSourceSettingSignal {
+        source_key: source_result.source_key.clone(),
+        source_kind: source_result.kind,
+        title_count: 0,
+        rename_enabled: source_result
+            .naming_config
+            .as_ref()
+            .and_then(|config| config.rename_enabled),
+        rename_template: source_result
+            .naming_config
+            .as_ref()
+            .and_then(|config| config.standard_format.clone()),
+        folder_template: source_result
+            .naming_config
+            .as_ref()
+            .and_then(|config| config.folder_format.clone()),
+        nfo_write_on_import: source_result_nfo_write_signal(source_result),
+        plexmatch_write_on_import: source_result_plexmatch_write_signal(source_result),
+        set_permissions_linux: source_result
+            .media_management_config
+            .as_ref()
+            .and_then(|config| config.set_permissions_linux),
+        folder_chmod: source_result
+            .media_management_config
+            .as_ref()
+            .and_then(|config| config.chmod_folder.clone()),
+        chown_group: source_result
+            .media_management_config
+            .as_ref()
+            .and_then(|config| config.chown_group.clone()),
+    }
+}
+
+fn source_result_nfo_write_signal(
+    source_result: &ExternalImportArrSourceWarmupResult,
+) -> Option<bool> {
+    if source_result.metadata_providers.is_empty() {
+        return None;
+    }
+    Some(source_result.metadata_providers.iter().any(|provider| {
+        if !provider.enable {
+            return false;
+        }
+        let implementation = provider.implementation.to_ascii_lowercase();
+        if !implementation.contains("xbmc") && !implementation.contains("kodi") {
+            return false;
+        }
+        match source_result.kind {
+            AppArrSourceKind::Radarr => {
+                external_import::field_bool(&provider.fields, "movieMetadata").unwrap_or(false)
+                    || external_import::field_bool(&provider.fields, "useMovieNfo").unwrap_or(false)
+            }
+            AppArrSourceKind::Sonarr => {
+                external_import::field_bool(&provider.fields, "seriesMetadata").unwrap_or(false)
+                    || external_import::field_bool(&provider.fields, "episodeMetadata")
+                        .unwrap_or(false)
+            }
+        }
+    }))
+}
+
+fn source_result_plexmatch_write_signal(
+    source_result: &ExternalImportArrSourceWarmupResult,
+) -> Option<bool> {
+    if source_result.metadata_providers.is_empty() {
+        return None;
+    }
+    Some(source_result.metadata_providers.iter().any(|provider| {
+        provider.enable
+            && provider
+                .implementation
+                .to_ascii_lowercase()
+                .contains("plex")
+    }))
+}
+
+fn record_movie_setting_sample(
+    accumulators: &mut BTreeMap<String, ExternalImportLibrarySettingAccumulator>,
+    mapping: &ResolvedSourceMapping,
+    movie: &ArrMovie,
+) {
+    let Some(session_id) = mapping.source_warmup_session_id.as_deref() else {
+        return;
+    };
+    let Some(accumulator) = accumulators.get_mut(&mapping.library_id) else {
+        return;
+    };
+    if let Some(source) = accumulator.sources.get_mut(session_id) {
+        source.title_count = source.title_count.saturating_add(1);
+    }
+    if let Some(profile_id) = movie.quality_profile_id {
+        accumulator.quality_profile_total = accumulator.quality_profile_total.saturating_add(1);
+        *accumulator
+            .quality_profile_counts
+            .entry((session_id.to_string(), profile_id))
+            .or_insert(0) += 1;
+    }
+}
+
+fn record_series_setting_sample(
+    accumulators: &mut BTreeMap<String, ExternalImportLibrarySettingAccumulator>,
+    mapping: &ResolvedSourceMapping,
+    series: &ArrSeries,
+) {
+    let Some(session_id) = mapping.source_warmup_session_id.as_deref() else {
+        return;
+    };
+    let Some(accumulator) = accumulators.get_mut(&mapping.library_id) else {
+        return;
+    };
+    if let Some(source) = accumulator.sources.get_mut(session_id) {
+        source.title_count = source.title_count.saturating_add(1);
+    }
+    if let Some(profile_id) = series.quality_profile_id {
+        accumulator.quality_profile_total = accumulator.quality_profile_total.saturating_add(1);
+        *accumulator
+            .quality_profile_counts
+            .entry((session_id.to_string(), profile_id))
+            .or_insert(0) += 1;
+    }
+    if mapping.facet == MediaFacet::Anime
+        && let Some(season_zero) = series
+            .seasons
+            .iter()
+            .find(|season| season.season_number == 0)
+    {
+        accumulator.monitor_specials_total = accumulator.monitor_specials_total.saturating_add(1);
+        if season_zero.monitored {
+            accumulator.monitor_specials_true = accumulator.monitor_specials_true.saturating_add(1);
+        }
+    }
+}
+
+fn derive_external_import_library_setting_applications(
+    accumulators: &BTreeMap<String, ExternalImportLibrarySettingAccumulator>,
+    source_results: &BTreeMap<String, ExternalImportArrSourceWarmupResult>,
+    catalog_profiles: &[scryer_application::QualityProfile],
+) -> Vec<ExternalImportLibrarySettingApplicationPayload> {
+    let mut applications = Vec::new();
+    for accumulator in accumulators.values() {
+        push_bool_consensus_application(
+            &mut applications,
+            accumulator,
+            ExternalImportLibrarySettingKey::RenameEnabled,
+            |source| source.rename_enabled,
+            true,
+            true,
+        );
+        push_string_consensus_application(
+            &mut applications,
+            accumulator,
+            ExternalImportLibrarySettingKey::RenameTemplate,
+            |source| source.rename_template.as_deref(),
+            false,
+        );
+        push_string_consensus_application(
+            &mut applications,
+            accumulator,
+            ExternalImportLibrarySettingKey::FolderTemplate,
+            |source| source.folder_template.as_deref(),
+            false,
+        );
+        push_bool_consensus_application(
+            &mut applications,
+            accumulator,
+            ExternalImportLibrarySettingKey::NfoWriteOnImport,
+            |source| source.nfo_write_on_import,
+            true,
+            false,
+        );
+        if accumulator.facet != MediaFacet::Movie {
+            push_bool_consensus_application(
+                &mut applications,
+                accumulator,
+                ExternalImportLibrarySettingKey::PlexmatchWriteOnImport,
+                |source| source.plexmatch_write_on_import,
+                true,
+                false,
+            );
+        }
+        push_bool_consensus_application(
+            &mut applications,
+            accumulator,
+            ExternalImportLibrarySettingKey::SetPermissionsLinux,
+            |source| source.set_permissions_linux,
+            true,
+            true,
+        );
+        push_string_consensus_application(
+            &mut applications,
+            accumulator,
+            ExternalImportLibrarySettingKey::FolderChmod,
+            |source| source.folder_chmod.as_deref(),
+            true,
+        );
+        push_string_consensus_application(
+            &mut applications,
+            accumulator,
+            ExternalImportLibrarySettingKey::ChownGroup,
+            |source| source.chown_group.as_deref(),
+            true,
+        );
+        push_quality_profile_application(
+            &mut applications,
+            accumulator,
+            source_results,
+            catalog_profiles,
+        );
+        push_monitor_specials_application(&mut applications, accumulator);
+    }
+    applications
+}
+
+fn push_bool_consensus_application<F>(
+    applications: &mut Vec<ExternalImportLibrarySettingApplicationPayload>,
+    accumulator: &ExternalImportLibrarySettingAccumulator,
+    setting: ExternalImportLibrarySettingKey,
+    value_for_source: F,
+    auto_apply: bool,
+    include_false: bool,
+) where
+    F: Fn(&ExternalImportSourceSettingSignal) -> Option<bool>,
+{
+    let values = accumulator
+        .sources
+        .values()
+        .filter_map(|source| value_for_source(source).map(|value| (source, value)))
+        .collect::<Vec<_>>();
+    if values.is_empty() {
+        return;
+    }
+    let first = values[0].1;
+    if values.iter().all(|(_, value)| *value == first) {
+        if first || include_false {
+            applications.push(setting_application(
+                accumulator,
+                setting,
+                bool_setting_value(first),
+                ExternalImportLibrarySettingConfidence::High,
+                if auto_apply {
+                    ExternalImportLibrarySettingDisposition::AutoApplied
+                } else {
+                    ExternalImportLibrarySettingDisposition::Suggested
+                },
+                source_evidence(values.iter().map(|(source, _)| *source)),
+                None,
+            ));
+        }
+    } else {
+        applications.push(setting_application(
+            accumulator,
+            setting,
+            empty_setting_value(),
+            ExternalImportLibrarySettingConfidence::Low,
+            ExternalImportLibrarySettingDisposition::Skipped,
+            source_evidence(values.iter().map(|(source, _)| *source)),
+            Some("contributing sources disagree".to_string()),
+        ));
+    }
+}
+
+fn push_string_consensus_application<F>(
+    applications: &mut Vec<ExternalImportLibrarySettingApplicationPayload>,
+    accumulator: &ExternalImportLibrarySettingAccumulator,
+    setting: ExternalImportLibrarySettingKey,
+    value_for_source: F,
+    auto_apply: bool,
+) where
+    F: Fn(&ExternalImportSourceSettingSignal) -> Option<&str>,
+{
+    let values = accumulator
+        .sources
+        .values()
+        .filter_map(|source| {
+            value_for_source(source)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(|value| (source, value))
+        })
+        .collect::<Vec<_>>();
+    if values.is_empty() {
+        return;
+    }
+    let first = values[0].1;
+    if values.iter().all(|(_, value)| *value == first) {
+        applications.push(setting_application(
+            accumulator,
+            setting,
+            string_setting_value(first.to_string()),
+            ExternalImportLibrarySettingConfidence::High,
+            if auto_apply {
+                ExternalImportLibrarySettingDisposition::AutoApplied
+            } else {
+                ExternalImportLibrarySettingDisposition::Suggested
+            },
+            source_evidence(values.iter().map(|(source, _)| *source)),
+            None,
+        ));
+    } else {
+        applications.push(setting_application(
+            accumulator,
+            setting,
+            empty_setting_value(),
+            ExternalImportLibrarySettingConfidence::Low,
+            ExternalImportLibrarySettingDisposition::Skipped,
+            source_evidence(values.iter().map(|(source, _)| *source)),
+            Some("contributing sources disagree".to_string()),
+        ));
+    }
+}
+
+fn push_quality_profile_application(
+    applications: &mut Vec<ExternalImportLibrarySettingApplicationPayload>,
+    accumulator: &ExternalImportLibrarySettingAccumulator,
+    source_results: &BTreeMap<String, ExternalImportArrSourceWarmupResult>,
+    catalog_profiles: &[scryer_application::QualityProfile],
+) {
+    if accumulator.quality_profile_total < EXTERNAL_IMPORT_DERIVED_SETTING_MIN_SAMPLE {
+        return;
+    }
+
+    let mut mapped_counts = BTreeMap::<String, i32>::new();
+    for ((session_id, arr_profile_id), count) in &accumulator.quality_profile_counts {
+        let Some(source_result) = source_results.get(session_id) else {
+            continue;
+        };
+        let Some(arr_profile) = source_result
+            .quality_profiles
+            .iter()
+            .find(|profile| profile.id == *arr_profile_id)
+        else {
+            continue;
+        };
+        let Some(profile_id) = resolve_arr_quality_profile_id(arr_profile, catalog_profiles) else {
+            continue;
+        };
+        *mapped_counts.entry(profile_id).or_insert(0) += *count;
+    }
+
+    let mapped_total = mapped_counts.values().copied().sum::<i32>();
+    if mapped_total < EXTERNAL_IMPORT_DERIVED_SETTING_MIN_SAMPLE {
+        return;
+    }
+    let Some((profile_id, count)) = mapped_counts
+        .iter()
+        .max_by(|left, right| left.1.cmp(right.1).then_with(|| left.0.cmp(right.0)))
+    else {
+        return;
+    };
+    if !meets_dominance_threshold(*count, mapped_total) {
+        applications.push(setting_application(
+            accumulator,
+            ExternalImportLibrarySettingKey::QualityProfileId,
+            empty_setting_value(),
+            ExternalImportLibrarySettingConfidence::Low,
+            ExternalImportLibrarySettingDisposition::Skipped,
+            title_count_evidence(accumulator, *count, mapped_total),
+            Some("mapped Arr quality profiles are not dominant enough".to_string()),
+        ));
+        return;
+    }
+
+    let profile_id = profile_id.clone();
+    let evidence = title_count_evidence(accumulator, *count, mapped_total);
+    applications.push(setting_application(
+        accumulator,
+        ExternalImportLibrarySettingKey::QualityProfileId,
+        string_setting_value(profile_id.clone()),
+        ExternalImportLibrarySettingConfidence::High,
+        ExternalImportLibrarySettingDisposition::AutoApplied,
+        evidence.clone(),
+        None,
+    ));
+    applications.push(setting_application(
+        accumulator,
+        ExternalImportLibrarySettingKey::RequestQualityProfileIds,
+        string_list_setting_value(vec![profile_id]),
+        ExternalImportLibrarySettingConfidence::High,
+        ExternalImportLibrarySettingDisposition::AutoApplied,
+        evidence,
+        None,
+    ));
+}
+
+fn push_monitor_specials_application(
+    applications: &mut Vec<ExternalImportLibrarySettingApplicationPayload>,
+    accumulator: &ExternalImportLibrarySettingAccumulator,
+) {
+    if accumulator.facet != MediaFacet::Anime
+        || accumulator.monitor_specials_total < EXTERNAL_IMPORT_DERIVED_SETTING_MIN_SAMPLE
+    {
+        return;
+    }
+
+    let true_count = accumulator.monitor_specials_true;
+    let false_count = accumulator
+        .monitor_specials_total
+        .saturating_sub(accumulator.monitor_specials_true);
+    let (value, matching_count) = if true_count >= false_count {
+        (true, true_count)
+    } else {
+        (false, false_count)
+    };
+    if !meets_dominance_threshold(matching_count, accumulator.monitor_specials_total) {
+        applications.push(setting_application(
+            accumulator,
+            ExternalImportLibrarySettingKey::MonitorSpecials,
+            empty_setting_value(),
+            ExternalImportLibrarySettingConfidence::Low,
+            ExternalImportLibrarySettingDisposition::Skipped,
+            title_count_evidence(
+                accumulator,
+                matching_count,
+                accumulator.monitor_specials_total,
+            ),
+            Some("season zero monitoring is not dominant enough".to_string()),
+        ));
+        return;
+    }
+
+    applications.push(setting_application(
+        accumulator,
+        ExternalImportLibrarySettingKey::MonitorSpecials,
+        bool_setting_value(value),
+        ExternalImportLibrarySettingConfidence::High,
+        ExternalImportLibrarySettingDisposition::AutoApplied,
+        title_count_evidence(
+            accumulator,
+            matching_count,
+            accumulator.monitor_specials_total,
+        ),
+        None,
+    ));
+}
+
+fn setting_application(
+    accumulator: &ExternalImportLibrarySettingAccumulator,
+    setting: ExternalImportLibrarySettingKey,
+    value: ExternalImportLibrarySettingValuePayload,
+    confidence: ExternalImportLibrarySettingConfidence,
+    disposition: ExternalImportLibrarySettingDisposition,
+    evidence: Vec<ExternalImportLibrarySettingEvidencePayload>,
+    reason: Option<String>,
+) -> ExternalImportLibrarySettingApplicationPayload {
+    ExternalImportLibrarySettingApplicationPayload {
+        library_id: ID::from(accumulator.library_id.clone()),
+        facet: MediaFacetValue::from_domain(accumulator.facet.clone()),
+        setting,
+        value,
+        confidence,
+        disposition,
+        evidence,
+        reason,
+    }
+}
+
+fn source_evidence<'a>(
+    sources: impl Iterator<Item = &'a ExternalImportSourceSettingSignal>,
+) -> Vec<ExternalImportLibrarySettingEvidencePayload> {
+    sources
+        .map(|source| {
+            let count = source.title_count.max(1);
+            ExternalImportLibrarySettingEvidencePayload {
+                source_key: source.source_key.clone(),
+                source_kind: gql_arr_source_kind(source.source_kind),
+                matching_count: count,
+                total_count: count,
+                detail: None,
+            }
+        })
+        .collect()
+}
+
+fn title_count_evidence(
+    accumulator: &ExternalImportLibrarySettingAccumulator,
+    matching_count: i32,
+    total_count: i32,
+) -> Vec<ExternalImportLibrarySettingEvidencePayload> {
+    accumulator
+        .sources
+        .values()
+        .map(|source| ExternalImportLibrarySettingEvidencePayload {
+            source_key: source.source_key.clone(),
+            source_kind: gql_arr_source_kind(source.source_kind),
+            matching_count,
+            total_count,
+            detail: None,
+        })
+        .collect()
+}
+
+fn empty_setting_value() -> ExternalImportLibrarySettingValuePayload {
+    ExternalImportLibrarySettingValuePayload {
+        bool_value: None,
+        string_value: None,
+        string_list_value: None,
+    }
+}
+
+fn bool_setting_value(value: bool) -> ExternalImportLibrarySettingValuePayload {
+    ExternalImportLibrarySettingValuePayload {
+        bool_value: Some(value),
+        string_value: None,
+        string_list_value: None,
+    }
+}
+
+fn string_setting_value(value: String) -> ExternalImportLibrarySettingValuePayload {
+    ExternalImportLibrarySettingValuePayload {
+        bool_value: None,
+        string_value: Some(value),
+        string_list_value: None,
+    }
+}
+
+fn string_list_setting_value(values: Vec<String>) -> ExternalImportLibrarySettingValuePayload {
+    ExternalImportLibrarySettingValuePayload {
+        bool_value: None,
+        string_value: None,
+        string_list_value: Some(values),
+    }
+}
+
+fn meets_dominance_threshold(matching_count: i32, total_count: i32) -> bool {
+    matching_count.saturating_mul(EXTERNAL_IMPORT_DERIVED_SETTING_CONFIDENCE_DENOMINATOR)
+        >= total_count.saturating_mul(EXTERNAL_IMPORT_DERIVED_SETTING_CONFIDENCE_NUMERATOR)
+}
+
+fn resolve_arr_quality_profile_id(
+    arr_profile: &scryer_application::external_import::ArrQualityProfile,
+    catalog_profiles: &[scryer_application::QualityProfile],
+) -> Option<String> {
+    let arr_id_key = normalize_quality_profile_match_key(&arr_profile.id.to_string());
+    let arr_name_key = normalize_quality_profile_match_key(&arr_profile.name);
+    let mut matches = catalog_profiles
+        .iter()
+        .filter(|profile| {
+            let id_key = normalize_quality_profile_match_key(&profile.id);
+            let name_key = normalize_quality_profile_match_key(&profile.name);
+            id_key == arr_id_key
+                || id_key == arr_name_key
+                || name_key == arr_id_key
+                || name_key == arr_name_key
+        })
+        .map(|profile| profile.id.clone())
+        .collect::<Vec<_>>();
+    matches.sort();
+    matches.dedup();
+    if matches.len() == 1 {
+        matches.into_iter().next()
+    } else {
+        None
+    }
+}
+
+fn normalize_quality_profile_match_key(value: &str) -> String {
+    value
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+async fn apply_external_import_library_setting_applications(
+    app: &scryer_application::AppUseCase,
+    actor: &scryer_domain::User,
+    applications: &mut [ExternalImportLibrarySettingApplicationPayload],
+) -> scryer_application::AppResult<()> {
+    let mut library_drafts = BTreeMap::<String, ExternalImportLibrarySettingsAutoApplyDraft>::new();
+    let mut rename_by_facet = BTreeMap::<String, (MediaFacet, bool)>::new();
+    let mut rename_conflict_facets = HashSet::<String>::new();
+
+    for application in applications.iter() {
+        if application.disposition != ExternalImportLibrarySettingDisposition::AutoApplied {
+            continue;
+        }
+        let library_id = application.library_id.to_string();
+        match application.setting {
+            ExternalImportLibrarySettingKey::RenameEnabled => {
+                let Some(value) = application.value.bool_value else {
+                    continue;
+                };
+                let facet = application.facet.into_domain();
+                let facet_key = facet.as_str().to_string();
+                match rename_by_facet.get(&facet_key) {
+                    Some((_, existing)) if *existing != value => {
+                        rename_conflict_facets.insert(facet_key);
+                    }
+                    Some(_) => {}
+                    None => {
+                        rename_by_facet.insert(facet_key, (facet, value));
+                    }
+                }
+            }
+            ExternalImportLibrarySettingKey::NfoWriteOnImport => {
+                library_drafts
+                    .entry(library_id)
+                    .or_default()
+                    .nfo_write_on_import = application.value.bool_value;
+            }
+            ExternalImportLibrarySettingKey::PlexmatchWriteOnImport => {
+                library_drafts
+                    .entry(library_id)
+                    .or_default()
+                    .plexmatch_write_on_import = application.value.bool_value;
+            }
+            ExternalImportLibrarySettingKey::SetPermissionsLinux => {
+                library_drafts
+                    .entry(library_id)
+                    .or_default()
+                    .set_permissions_linux = application.value.bool_value;
+            }
+            ExternalImportLibrarySettingKey::FolderChmod => {
+                library_drafts.entry(library_id).or_default().folder_chmod =
+                    application.value.string_value.clone();
+            }
+            ExternalImportLibrarySettingKey::ChownGroup => {
+                library_drafts.entry(library_id).or_default().chown_group =
+                    application.value.string_value.clone();
+            }
+            ExternalImportLibrarySettingKey::QualityProfileId => {
+                library_drafts
+                    .entry(library_id)
+                    .or_default()
+                    .quality_profile_id = application.value.string_value.clone();
+            }
+            ExternalImportLibrarySettingKey::RequestQualityProfileIds => {
+                library_drafts
+                    .entry(library_id)
+                    .or_default()
+                    .request_quality_profile_ids = application.value.string_list_value.clone();
+            }
+            ExternalImportLibrarySettingKey::MonitorSpecials => {
+                library_drafts
+                    .entry(library_id)
+                    .or_default()
+                    .monitor_specials = application.value.bool_value;
+            }
+            ExternalImportLibrarySettingKey::RenameTemplate
+            | ExternalImportLibrarySettingKey::FolderTemplate
+            | ExternalImportLibrarySettingKey::RequiredAudioLanguages => {}
+        }
+    }
+
+    for conflict_facet in rename_conflict_facets {
+        for application in applications.iter_mut().filter(|application| {
+            application.setting == ExternalImportLibrarySettingKey::RenameEnabled
+                && application.facet.as_scope_id() == conflict_facet
+                && application.disposition == ExternalImportLibrarySettingDisposition::AutoApplied
+        }) {
+            application.disposition = ExternalImportLibrarySettingDisposition::Skipped;
+            application.reason =
+                Some("facet-level rename signals disagree across selected libraries".to_string());
+        }
+        rename_by_facet.remove(&conflict_facet);
+    }
+
+    for (_, (facet, value)) in rename_by_facet {
+        let changed_keys = app
+            .apply_external_import_media_settings_auto_apply(actor, facet.clone(), Some(value))
+            .await?;
+        let changed = changed_keys.iter().any(|key| key == RENAME_ENABLED_KEY);
+        for application in applications.iter_mut().filter(|application| {
+            application.setting == ExternalImportLibrarySettingKey::RenameEnabled
+                && application.facet == MediaFacetValue::from_domain(facet.clone())
+                && application.disposition == ExternalImportLibrarySettingDisposition::AutoApplied
+        }) {
+            if !changed {
+                application.disposition = ExternalImportLibrarySettingDisposition::Skipped;
+                application.reason =
+                    Some("target setting already has an explicit override".to_string());
+            }
+        }
+    }
+
+    for (library_id, draft) in library_drafts {
+        let changed_keys = app
+            .apply_external_import_library_settings_auto_apply(actor, &library_id, draft)
+            .await?
+            .changed_keys;
+        for application in applications.iter_mut().filter(|application| {
+            application.library_id.to_string() == library_id
+                && application.disposition == ExternalImportLibrarySettingDisposition::AutoApplied
+        }) {
+            let Some(key_name) = external_import_application_setting_key_name(
+                application.setting,
+                application.facet.into_domain(),
+            ) else {
+                continue;
+            };
+            if !changed_keys.iter().any(|key| key == key_name) {
+                application.disposition = ExternalImportLibrarySettingDisposition::Skipped;
+                application.reason =
+                    Some("target setting already has an explicit override".to_string());
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn external_import_application_setting_key_name(
+    setting: ExternalImportLibrarySettingKey,
+    facet: MediaFacet,
+) -> Option<&'static str> {
+    match setting {
+        ExternalImportLibrarySettingKey::RenameEnabled => Some(RENAME_ENABLED_KEY),
+        ExternalImportLibrarySettingKey::NfoWriteOnImport => Some(match facet {
+            MediaFacet::Movie => NFO_WRITE_ON_IMPORT_MOVIE_KEY,
+            MediaFacet::Series => NFO_WRITE_ON_IMPORT_SERIES_KEY,
+            MediaFacet::Anime => NFO_WRITE_ON_IMPORT_ANIME_KEY,
+        }),
+        ExternalImportLibrarySettingKey::PlexmatchWriteOnImport => match facet {
+            MediaFacet::Movie => None,
+            MediaFacet::Series => Some(PLEXMATCH_WRITE_ON_IMPORT_SERIES_KEY),
+            MediaFacet::Anime => Some(PLEXMATCH_WRITE_ON_IMPORT_ANIME_KEY),
+        },
+        ExternalImportLibrarySettingKey::SetPermissionsLinux => Some(SET_PERMISSIONS_LINUX_KEY),
+        ExternalImportLibrarySettingKey::FolderChmod => Some(FOLDER_CHMOD_KEY),
+        ExternalImportLibrarySettingKey::ChownGroup => Some(CHOWN_GROUP_KEY),
+        ExternalImportLibrarySettingKey::QualityProfileId => Some(QUALITY_PROFILE_ID_KEY),
+        ExternalImportLibrarySettingKey::RequestQualityProfileIds => {
+            Some(REQUEST_QUALITY_PROFILE_IDS_KEY)
+        }
+        ExternalImportLibrarySettingKey::MonitorSpecials => Some(ANIME_MONITOR_SPECIALS_KEY),
+        ExternalImportLibrarySettingKey::RenameTemplate
+        | ExternalImportLibrarySettingKey::FolderTemplate
+        | ExternalImportLibrarySettingKey::RequiredAudioLanguages => None,
+    }
 }
 
 fn movie_monitor_merge_key(entry: &ExternalImportMonitorMovieEntry) -> String {
@@ -847,6 +1660,11 @@ impl ExternalImportMutations {
                     version: None,
                     root_folders: Vec::new(),
                     title_root_paths: Vec::new(),
+                    naming_config: None,
+                    media_management_config: None,
+                    metadata_providers: Vec::new(),
+                    quality_profiles: Vec::new(),
+                    signal_warnings: Vec::new(),
                     download_clients: Vec::new(),
                     indexers: Vec::new(),
                 },
@@ -1247,6 +2065,11 @@ impl ExternalImportMutations {
                 .insert(
                     dedup_key,
                     ResolvedSourceMapping {
+                        library_id,
+                        source_warmup_session_id: mapping
+                            .source_warmup_session_id
+                            .as_ref()
+                            .map(|session_id| session_id.to_string()),
                         arr_root_path: mapping.arr_root_path,
                         scryer_root_path: mapping.scryer_root_path,
                         facet,
@@ -1271,6 +2094,10 @@ impl ExternalImportMutations {
                 }
             }
         }
+
+        let quality_profile_settings = app.get_quality_profile_settings(&actor).await?;
+        let mut library_setting_accumulators =
+            build_external_import_library_setting_accumulators(&source_results, &mappings);
 
         let _apply_guard = app.acquire_external_import_apply_guard().await;
         clear_external_import_monitor_apply_targets(&app, &actor).await?;
@@ -1325,6 +2152,11 @@ impl ExternalImportMutations {
                                     source_result.source_key, movie.root_folder_path
                                 )));
                             };
+                            record_movie_setting_sample(
+                                &mut library_setting_accumulators,
+                                mapping,
+                                &movie,
+                            );
                             let mut remapped = movie.clone();
                             remapped.path = remap_import_path(
                                 remapped.path,
@@ -1377,6 +2209,11 @@ impl ExternalImportMutations {
                                     source_result.source_key, series_entry.series.root_folder_path
                                 )));
                             };
+                            record_series_setting_sample(
+                                &mut library_setting_accumulators,
+                                mapping,
+                                &series_entry.series,
+                            );
                             let mut remapped_series = series_entry.series.clone();
                             remapped_series.path = remap_import_path(
                                 remapped_series.path,
@@ -1441,6 +2278,18 @@ impl ExternalImportMutations {
         anime_writer.finish().await?;
         app.set_external_import_monitor_warmup_scan_hints(&actor, apply_session_id, scan_hints)
             .await;
+        let mut library_setting_applications = derive_external_import_library_setting_applications(
+            &library_setting_accumulators,
+            &source_results,
+            &quality_profile_settings.profiles,
+        );
+        apply_external_import_library_setting_applications(
+            &app,
+            &actor,
+            &mut library_setting_applications,
+        )
+        .await
+        .map_err(to_gql_error)?;
         for session_id in &source_order {
             let _ =
                 clear_external_import_arr_source_snapshot_chunks(&app, &actor, session_id).await;
@@ -1452,6 +2301,7 @@ impl ExternalImportMutations {
         Ok(FinalizeExternalImportPayload {
             finalized: true,
             monitor_warmup_session_id: ID::from(apply_session_id),
+            library_setting_applications,
         })
     }
 
@@ -2116,6 +2966,35 @@ async fn capture_external_import_arr_source_warmup(
     let root_folders = client.list_root_folders().await.unwrap_or_default();
     let download_clients = client.list_download_clients().await.unwrap_or_default();
     let indexers = client.list_indexers().await.unwrap_or_default();
+    let mut signal_warnings = Vec::new();
+    let naming_config = match client.get_naming_config().await {
+        Ok(config) => Some(config),
+        Err(error) => {
+            signal_warnings.push(format!("naming config unavailable: {error}"));
+            None
+        }
+    };
+    let media_management_config = match client.get_media_management_config().await {
+        Ok(config) => Some(config),
+        Err(error) => {
+            signal_warnings.push(format!("media management config unavailable: {error}"));
+            None
+        }
+    };
+    let metadata_providers = match client.list_metadata_providers().await {
+        Ok(providers) => providers,
+        Err(error) => {
+            signal_warnings.push(format!("metadata providers unavailable: {error}"));
+            Vec::new()
+        }
+    };
+    let quality_profiles = match client.list_quality_profiles().await {
+        Ok(profiles) => profiles,
+        Err(error) => {
+            signal_warnings.push(format!("quality profiles unavailable: {error}"));
+            Vec::new()
+        }
+    };
     let mut result = ExternalImportArrSourceWarmupResult {
         source_key: source.source_key.clone(),
         kind: source.kind,
@@ -2123,6 +3002,11 @@ async fn capture_external_import_arr_source_warmup(
         version: Some(version),
         root_folders,
         title_root_paths: Vec::new(),
+        naming_config,
+        media_management_config,
+        metadata_providers,
+        quality_profiles,
+        signal_warnings,
         download_clients,
         indexers,
     };
@@ -2170,15 +3054,26 @@ async fn capture_external_import_arr_source_warmup(
             snapshot.phase = ExternalImportMonitorWarmupPhase::LoadingEpisodes;
             publish_warmup_progress(app, session_id, snapshot).await;
 
-            let _active_instance_permit: OwnedSemaphorePermit =
-                sonarr_active_episode_instance_semaphore()
-                    .acquire_owned()
-                    .await
-                    .map_err(|err| {
+            // Episode fetching is throttled to a few instances at a time via a
+            // global semaphore. Acquire it cancellation-aware: a warmup that was
+            // superseded/cancelled (e.g. the operator edited the connection,
+            // spawning a fresh session) must NOT keep competing for — or briefly
+            // hold — one of the scarce permits, or it would starve the live
+            // warmup and leave it stuck at "loading episodes" forever.
+            if cancel_token.is_cancelled() {
+                return Ok(());
+            }
+            let _active_instance_permit: OwnedSemaphorePermit = tokio::select! {
+                biased;
+                () = cancel_token.cancelled() => return Ok(()),
+                permit = sonarr_active_episode_instance_semaphore().acquire_owned() => {
+                    permit.map_err(|err| {
                         AppError::Repository(format!(
                             "failed to acquire Sonarr episode warmup slot: {err}"
                         ))
-                    })?;
+                    })?
+                }
+            };
             let mut series_writer = SnapshotChunkWriter::new(
                 app.clone(),
                 actor.clone(),
@@ -2357,14 +3252,17 @@ fn map_indexer(idx: &ArrIndexer, source: &str) -> ExternalImportIndexerPayload {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use std::collections::{BTreeMap, HashMap};
 
     use scryer_application::external_import::{
-        ArrDownloadClient, ArrEpisode, ArrIndexer, ArrMovie, ArrSeries, ArrSeriesStatistics,
+        ArrDownloadClient, ArrEpisode, ArrIndexer, ArrMediaManagementConfig, ArrMetadataProvider,
+        ArrMovie, ArrNamingConfig, ArrQualityProfile, ArrSeries, ArrSeriesSeason,
+        ArrSeriesStatistics,
     };
     use scryer_application::{
-        ExternalIdProvider, LibraryScanHintFacet, LibraryScanHintSet, LibraryScanHintSource,
-        library_scan_file_full_path_key, library_scan_file_leaf_key,
+        ExternalIdProvider, ExternalImportArrSourceKind, ExternalImportArrSourceWarmupResult,
+        LibraryScanHintFacet, LibraryScanHintSet, LibraryScanHintSource, QualityProfile,
+        QualityProfileCriteria, library_scan_file_full_path_key, library_scan_file_leaf_key,
         library_scan_folder_full_path_key, library_scan_folder_leaf_key,
     };
     use scryer_domain::{
@@ -2373,11 +3271,15 @@ mod tests {
     use serde_json::Value;
 
     use super::{
-        SONARR_ACTIVE_EPISODE_INSTANCE_CONCURRENCY, SONARR_EPISODE_FETCH_CONCURRENCY_PER_INSTANCE,
+        ExternalImportLibrarySettingDisposition, ExternalImportLibrarySettingKey,
+        ResolvedSourceMapping, SONARR_ACTIVE_EPISODE_INSTANCE_CONCURRENCY,
+        SONARR_EPISODE_FETCH_CONCURRENCY_PER_INSTANCE,
+        build_external_import_library_setting_accumulators,
+        derive_external_import_library_setting_applications,
         detect_imported_prowlarr_proxy_indexer, imported_indexer_config_json, map_download_client,
         map_indexer, merge_direct_prowlarr_group, merge_prowlarr_group, movie_scan_hint_from_arr,
-        prowlarr_dedup_key, push_sonarr_scan_hints_for_mapping, remap_import_path,
-        series_episode_scan_hint_from_arr, series_folder_scan_hint_from_arr,
+        prowlarr_dedup_key, push_sonarr_scan_hints_for_mapping, record_series_setting_sample,
+        remap_import_path, series_episode_scan_hint_from_arr, series_folder_scan_hint_from_arr,
     };
 
     #[test]
@@ -2392,6 +3294,10 @@ mod tests {
             tmdb_id: Some("2502".into()),
             imdb_id: Some("tt0372183".into()),
             monitored: true,
+            quality_profile_id: None,
+            minimum_availability: None,
+            original_language: None,
+            tags: Vec::new(),
         })
         .expect("movie hint");
 
@@ -2427,6 +3333,10 @@ mod tests {
             tmdb_id: Some("9693".into()),
             imdb_id: Some("9693".into()),
             monitored: true,
+            quality_profile_id: None,
+            minimum_availability: None,
+            original_language: None,
+            tags: Vec::new(),
         })
         .expect("movie hint");
 
@@ -2453,6 +3363,10 @@ mod tests {
             tmdb_id: Some("9693".into()),
             imdb_id: Some("tt0206634-extra".into()),
             monitored: true,
+            quality_profile_id: None,
+            minimum_availability: None,
+            original_language: None,
+            tags: Vec::new(),
         })
         .expect("movie hint");
 
@@ -2478,6 +3392,12 @@ mod tests {
             path: Some(path.into()),
             tvdb_id: Some("366972".into()),
             monitored: true,
+            quality_profile_id: None,
+            series_type: None,
+            season_folder: None,
+            monitor_new_items: None,
+            original_language: None,
+            tags: Vec::new(),
             seasons: Vec::new(),
             statistics: ArrSeriesStatistics {
                 total_episode_count: None,
@@ -2536,6 +3456,12 @@ mod tests {
             path: Some(series_path.into()),
             tvdb_id: Some("366972".into()),
             monitored: true,
+            quality_profile_id: None,
+            series_type: None,
+            season_folder: None,
+            monitor_new_items: None,
+            original_language: None,
+            tags: Vec::new(),
             seasons: Vec::new(),
             statistics: ArrSeriesStatistics {
                 total_episode_count: None,
@@ -2595,6 +3521,147 @@ mod tests {
                     .any(|id| id.provider == ExternalIdProvider::Tvdb && id.value == "366972")
             );
         }
+    }
+
+    #[test]
+    fn external_import_setting_derivation_uses_warmed_arr_signals() {
+        let session_id = "source-session";
+        let library_id = "anime-library";
+        let source_result = ExternalImportArrSourceWarmupResult {
+            source_key: "sonarr-main".into(),
+            kind: ExternalImportArrSourceKind::Sonarr,
+            base_url: "http://sonarr.local".into(),
+            version: Some("4.0.0".into()),
+            root_folders: Vec::new(),
+            title_root_paths: vec!["/srv/anime".into()],
+            naming_config: Some(ArrNamingConfig {
+                rename_enabled: Some(true),
+                replace_illegal_characters: Some(true),
+                colon_replacement_format: Some("dash".into()),
+                standard_format: Some("{Series Title} - S{season:00}E{episode:00}".into()),
+                folder_format: Some("{Series Title} ({Release Year})".into()),
+                season_folder_format: None,
+                specials_folder_format: None,
+            }),
+            media_management_config: Some(ArrMediaManagementConfig {
+                set_permissions_linux: Some(true),
+                chmod_folder: Some("775".into()),
+                chown_group: Some("media".into()),
+            }),
+            metadata_providers: vec![ArrMetadataProvider {
+                id: 1,
+                name: "Kodi".into(),
+                implementation: "XbmcMetadata".into(),
+                enable: true,
+                fields: HashMap::from([
+                    ("seriesMetadata".into(), Value::Bool(true)),
+                    ("episodeMetadata".into(), Value::Bool(true)),
+                ]),
+            }],
+            quality_profiles: vec![ArrQualityProfile {
+                id: 7,
+                name: "HD 1080p".into(),
+                language: None,
+            }],
+            signal_warnings: Vec::new(),
+            download_clients: Vec::new(),
+            indexers: Vec::new(),
+        };
+        let source_results = BTreeMap::from([(session_id.to_string(), source_result)]);
+        let mappings = HashMap::from([(
+            super::mapping_key(session_id, "sonarr-main", "/srv/anime"),
+            ResolvedSourceMapping {
+                library_id: library_id.into(),
+                source_warmup_session_id: Some(session_id.into()),
+                arr_root_path: "/srv/anime".into(),
+                scryer_root_path: "/media/anime".into(),
+                facet: MediaFacet::Anime,
+            },
+        )]);
+        let mut accumulators =
+            build_external_import_library_setting_accumulators(&source_results, &mappings);
+        let mapping = mappings.values().next().expect("mapping");
+        for id in 1..=3 {
+            record_series_setting_sample(
+                &mut accumulators,
+                mapping,
+                &ArrSeries {
+                    id,
+                    root_folder_path: "/srv/anime".into(),
+                    path: Some(format!("/srv/anime/Show {id}")),
+                    tvdb_id: Some(format!("10{id}")),
+                    monitored: true,
+                    quality_profile_id: Some(7),
+                    series_type: Some("anime".into()),
+                    season_folder: Some(true),
+                    monitor_new_items: Some("all".into()),
+                    original_language: Some("Japanese".into()),
+                    tags: Vec::new(),
+                    seasons: vec![ArrSeriesSeason {
+                        season_number: 0,
+                        monitored: true,
+                    }],
+                    statistics: ArrSeriesStatistics::default(),
+                },
+            );
+        }
+        let catalog_profiles = vec![QualityProfile {
+            id: "hd-1080p".into(),
+            name: "HD 1080p".into(),
+            criteria: QualityProfileCriteria::default(),
+        }];
+
+        let applications = derive_external_import_library_setting_applications(
+            &accumulators,
+            &source_results,
+            &catalog_profiles,
+        );
+
+        let find = |setting| {
+            applications
+                .iter()
+                .find(|application| application.setting == setting)
+                .expect("setting application")
+        };
+        let rename = find(ExternalImportLibrarySettingKey::RenameEnabled);
+        assert_eq!(
+            rename.disposition,
+            ExternalImportLibrarySettingDisposition::AutoApplied
+        );
+        assert_eq!(rename.value.bool_value, Some(true));
+
+        let rename_template = find(ExternalImportLibrarySettingKey::RenameTemplate);
+        assert_eq!(
+            rename_template.disposition,
+            ExternalImportLibrarySettingDisposition::Suggested
+        );
+        assert_eq!(
+            rename_template.value.string_value.as_deref(),
+            Some("{Series Title} - S{season:00}E{episode:00}")
+        );
+
+        let nfo = find(ExternalImportLibrarySettingKey::NfoWriteOnImport);
+        assert_eq!(nfo.value.bool_value, Some(true));
+        assert_eq!(
+            nfo.disposition,
+            ExternalImportLibrarySettingDisposition::AutoApplied
+        );
+
+        let profile = find(ExternalImportLibrarySettingKey::QualityProfileId);
+        assert_eq!(profile.value.string_value.as_deref(), Some("hd-1080p"));
+        assert_eq!(
+            profile.disposition,
+            ExternalImportLibrarySettingDisposition::AutoApplied
+        );
+
+        let request_profiles = find(ExternalImportLibrarySettingKey::RequestQualityProfileIds);
+        assert_eq!(
+            request_profiles.value.string_list_value.as_deref(),
+            Some(&["hd-1080p".to_string()][..])
+        );
+
+        let monitor_specials = find(ExternalImportLibrarySettingKey::MonitorSpecials);
+        assert_eq!(monitor_specials.value.bool_value, Some(true));
     }
 
     #[test]

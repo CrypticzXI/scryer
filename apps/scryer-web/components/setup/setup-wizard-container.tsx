@@ -428,12 +428,19 @@ export function SetupWizardContainer({
   const isWideImportStep =
     currentStep === 0 ||
     (wizardPath === "import" && (currentStep === 1 || currentStep === 2));
+  // Quality (3) and Sources (4) are dense, multi-column tables — the narrow
+  // shell crushes the library identity column. Give them a comfortable
+  // mid-width so names and facet pills aren't truncated.
+  const isMediumImportStep =
+    wizardPath === "import" && (currentStep === 3 || currentStep === 4);
   const isPersonaStep = wizardPath === "fresh" && currentStep === 1;
   const shellMaxWidth = isWideImportStep
     ? "max-w-6xl"
-    : isPersonaStep
-      ? "max-w-3xl"
-      : "max-w-2xl";
+    : isMediumImportStep
+      ? "max-w-4xl"
+      : isPersonaStep
+        ? "max-w-3xl"
+        : "max-w-2xl";
 
   return (
     <div

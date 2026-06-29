@@ -3098,6 +3098,15 @@ const en: LocaleDictionary = {
     "Import can’t finish until the monitored-status sync completes.",
   "setup.importGateDoneHint": "Done — you can finish import now.",
   "setup.titlesFetched": "{{fetched}} / {{total}} titles",
+  "setup.importWarmupFailedTitle": "Monitored-status sync failed",
+  "setup.importWarmupFailedDetail":
+    "Scryer couldn’t finish pulling monitored state from your instances. Check the connections and try again.",
+  "setup.importWarmupRetrying": "Restarting sync…",
+  "setup.importWarmupSessionExpiredTitle": "Import preparation expired",
+  "setup.importWarmupSessionExpired":
+    "Your import preparation expired — Scryer may have restarted, or it sat idle too long. Use Retry to start it again.",
+  "setup.importUnmappedRootsNotice":
+    "Some detected source folders still need a library. Go back to the Libraries step to map them before finishing.",
 
   "settings.manageConfiguration": "Manage configuration",
   "settings.clearTitleImageCache": "Clear Title Image Cache",

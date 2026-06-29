@@ -558,6 +558,11 @@ pub struct ExternalImportArrSourceWarmupResult {
     pub version: Option<String>,
     pub root_folders: Vec<crate::external_import::ArrRootFolder>,
     pub title_root_paths: Vec<String>,
+    pub naming_config: Option<crate::external_import::ArrNamingConfig>,
+    pub media_management_config: Option<crate::external_import::ArrMediaManagementConfig>,
+    pub metadata_providers: Vec<crate::external_import::ArrMetadataProvider>,
+    pub quality_profiles: Vec<crate::external_import::ArrQualityProfile>,
+    pub signal_warnings: Vec<String>,
     pub download_clients: Vec<crate::external_import::ArrDownloadClient>,
     pub indexers: Vec<crate::external_import::ArrIndexer>,
 }

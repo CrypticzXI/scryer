@@ -557,6 +557,51 @@ impl AppUseCase {
     }
 }
 impl AppUseCase {
+    pub async fn apply_external_import_media_settings_auto_apply(
+        &self,
+        actor: &User,
+        facet: MediaFacet,
+        rename_enabled: Option<bool>,
+    ) -> AppResult<Vec<String>> {
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageCatalogSettings)
+            .await?;
+
+        let mut changed_keys = Vec::new();
+        if let Some(value) = rename_enabled
+            && self
+                .read_setting_bool_value_explicit(RENAME_ENABLED_KEY, Some(facet.as_str()))
+                .await?
+                .is_none()
+        {
+            self.services
+                .config
+                .settings
+                .upsert_setting_json(
+                    SETTINGS_SCOPE_SYSTEM,
+                    RENAME_ENABLED_KEY,
+                    Some(facet.as_str().to_string()),
+                    encode_setting_json(&value)?,
+                    SETTINGS_SOURCE_TYPED_GRAPHQL,
+                    Some(actor.id.clone()),
+                )
+                .await?;
+            changed_keys.push(RENAME_ENABLED_KEY.to_string());
+        }
+
+        if !changed_keys.is_empty() {
+            self.emit_settings_saved(
+                actor,
+                "external_import_media_settings",
+                Some(facet.as_str().to_string()),
+                changed_keys.clone(),
+            )
+            .await;
+        }
+
+        Ok(changed_keys)
+    }
+}
+impl AppUseCase {
     pub async fn update_media_settings(
         &self,
         actor: &User,

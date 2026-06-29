@@ -244,7 +244,11 @@ export function ImportRemapDialog({
           >
             {t("setup.cancel")}
           </Button>
-          <Button size="sm" className={SETUP_PRIMARY_CTA} onClick={handleSave}>
+          <Button
+            size="sm"
+            className={`${SETUP_PRIMARY_CTA} shadow-none`}
+            onClick={handleSave}
+          >
             {t("setup.remapSave")}
           </Button>
         </div>

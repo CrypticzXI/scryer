@@ -130,16 +130,49 @@ export function SetupImportWizard({
     return () => clearInterval(id);
   }, [currentStep, loadPreview, arrSessionCount]);
 
-  // Poll aggregated warmup progress while on the Summary step until complete.
+  // Steps after Libraries rely on the preview-derived root mappings, but the
+  // preview is in-memory while the step lives in the URL. Two cases must keep it
+  // in sync, or finalize sends an incomplete root set (backend then rejects
+  // "missing mapping for source … root …"):
+  //   • a refresh restores a later step with no preview at all;
+  //   • a Retry warms NEW sessions whose final root set (title_root_paths) only
+  //     lands once the warmup completes.
+  // So: load it whenever it's missing, and refresh it once the warmup completes
+  // for the current session set (tracked by signature to load at most once).
+  const previewSyncedSigRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (currentStep < 3 || arrSessionCount === 0) return;
+    const sig = wizard.connectedArrSessionIds.join("|");
+    if (!wizard.preview) {
+      if (wizard.warmupComplete) previewSyncedSigRef.current = sig;
+      void loadPreview();
+      return;
+    }
+    if (wizard.warmupComplete && previewSyncedSigRef.current !== sig) {
+      previewSyncedSigRef.current = sig;
+      void loadPreview();
+    }
+  }, [
+    currentStep,
+    arrSessionCount,
+    wizard.preview,
+    wizard.warmupComplete,
+    wizard.connectedArrSessionIds,
+    loadPreview,
+  ]);
+
+  // Poll aggregated warmup progress while on the Summary step until it reaches a
+  // terminal state (completed OR failed/canceled) — otherwise a failed warmup
+  // would re-poll forever.
   useEffect(() => {
     if (currentStep !== 5) return;
     void pollAggregateProgress();
-    if (wizard.warmupComplete) return;
+    if (wizard.warmupSettled) return;
     const id = setInterval(() => {
       void pollAggregateProgress();
     }, 3000);
     return () => clearInterval(id);
-  }, [currentStep, wizard.warmupComplete, pollAggregateProgress]);
+  }, [currentStep, wizard.warmupSettled, pollAggregateProgress]);
 
   const goConnectContinue = useCallback(async () => {
     await loadPreview();
@@ -196,6 +229,8 @@ export function SetupImportWizard({
       break;
     case 3:
       body = <SetupImportQualityView wizard={wizard} t={t} />;
+      // Can't proceed until every mapped library has a quality profile.
+      primaryDisabled = !wizard.qualityReady;
       onPrimary = () => goToStep(4, "import");
       break;
     case 4:
@@ -209,7 +244,14 @@ export function SetupImportWizard({
       body = <SetupImportSummaryView wizard={wizard} t={t} />;
       primaryLabel = t("setup.finishImport");
       primaryIcon = Check;
-      primaryDisabled = !wizard.warmupComplete || wizard.finalizing;
+      // Finish needs the warmup complete AND a loaded preview whose every
+      // detected root is mapped — otherwise finalize would omit required
+      // source-root mappings (e.g. after a refresh that dropped the preview).
+      primaryDisabled =
+        !wizard.warmupComplete ||
+        !wizard.previewSettled ||
+        !wizard.mappingReady ||
+        wizard.finalizing;
       onPrimary = () => void finish();
       break;
   }
@@ -244,7 +286,7 @@ export function SetupImportWizard({
           type="button"
           onClick={onPrimary}
           disabled={primaryDisabled}
-          className={SETUP_PRIMARY_CTA}
+          className={`${SETUP_PRIMARY_CTA} shadow-none`}
         >
           {primaryLabel}
           <PrimaryIcon className="h-4 w-4" />

@@ -160,7 +160,8 @@ export default function SetupImportQualityView({
                 <SelectTrigger
                   id={selectorId("setup-import-quality-profile", lib.id)}
                   data-slot="setup-import-quality-profile-trigger"
-                  className="h-10 w-full"
+                  className="w-full text-left"
+                  style={{ minHeight: 56 }}
                 >
                   <SelectValue placeholder={t("setup.qualityProfile")} />
                 </SelectTrigger>
@@ -185,13 +186,28 @@ export default function SetupImportQualityView({
                 <SelectTrigger
                   id={selectorId("setup-import-persona", lib.id)}
                   data-slot="setup-import-persona-trigger"
-                  className="h-10 w-full"
+                  className="w-full text-left"
                   style={{
+                    minHeight: 56,
                     background: "rgba(var(--scry-accent-rgb), 0.06)",
                     borderColor: "var(--scry-baccent)",
                   }}
                 >
-                  <SelectValue placeholder={t("setup.persona")} />
+                  {/* Custom left-aligned value — SelectValue centers multi-line
+                      content awkwardly, so render the selected persona directly. */}
+                  <span className="flex min-w-0 flex-1 flex-col text-left">
+                    <span
+                      style={{ fontSize: 13, fontWeight: 600, color: "#f1f5ff" }}
+                    >
+                      {t(`setup.persona.${lib.scoringPersona}.name`)}
+                    </span>
+                    <span
+                      className="truncate"
+                      style={{ fontSize: 11, color: "var(--scry-muted3)" }}
+                    >
+                      {t(`setup.persona.${lib.scoringPersona}.desc`)}
+                    </span>
+                  </span>
                 </SelectTrigger>
                 <SelectContent position="popper">
                   {SCORING_PERSONA_VALUES.map((persona) => (

@@ -112,10 +112,10 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
     assert_eq!(query_field_count, 110);
     assert_eq!(mutation_field_count, 161);
     assert_eq!(subscription_field_count, 13);
-    assert_eq!(public_types.len(), 473);
-    assert_eq!(kind_count("OBJECT"), 244);
+    assert_eq!(public_types.len(), 479);
+    assert_eq!(kind_count("OBJECT"), 247);
     assert_eq!(kind_count("INPUT_OBJECT"), 147);
-    assert_eq!(kind_count("ENUM"), 72);
+    assert_eq!(kind_count("ENUM"), 75);
     assert_eq!(kind_count("SCALAR"), 10);
     assert!(query_field_names.contains(&"backupSettings"));
     assert!(query_field_names.contains(&"externalImportSetupSecretDraft"));
@@ -127,9 +127,96 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
     assert!(public_type_names.contains(&"BackupSettingsPayload"));
     assert!(public_type_names.contains(&"SaveExternalImportSetupSecretDraftInput"));
     assert!(public_type_names.contains(&"ExternalImportSetupSecretDraftPayload"));
+    assert!(public_type_names.contains(&"ExternalImportLibrarySettingApplicationPayload"));
+    assert!(public_type_names.contains(&"ExternalImportLibrarySettingKey"));
+    assert!(public_type_names.contains(&"ExternalImportLibrarySettingValuePayload"));
     assert!(public_type_names.contains(&"RuntimeInfoPayload"));
     assert!(public_type_names.contains(&"RuntimePathStyleValue"));
     assert!(public_type_names.contains(&"UpdateBackupSettingsInput"));
+}
+
+#[tokio::test]
+async fn graphql_introspection_external_import_finalize_settings_payload_is_typed() {
+    let ctx = TestContext::new().await;
+    let body = gql(
+        &ctx,
+        r#"
+        {
+          finalizePayload: __type(name: "FinalizeExternalImportPayload") {
+            fields { name }
+          }
+          applicationPayload: __type(name: "ExternalImportLibrarySettingApplicationPayload") {
+            fields { name }
+          }
+          valuePayload: __type(name: "ExternalImportLibrarySettingValuePayload") {
+            fields { name }
+          }
+          settingKey: __type(name: "ExternalImportLibrarySettingKey") {
+            enumValues { name }
+          }
+        }
+        "#,
+        json!({}),
+    )
+    .await;
+    assert_no_errors(&body);
+
+    let field_names = |type_name: &str| -> Vec<&str> {
+        body["data"][type_name]["fields"]
+            .as_array()
+            .expect("fields")
+            .iter()
+            .filter_map(|field| field["name"].as_str())
+            .collect()
+    };
+
+    let finalize_fields = field_names("finalizePayload");
+    assert!(finalize_fields.contains(&"librarySettingApplications"));
+
+    let application_fields = field_names("applicationPayload");
+    for expected in [
+        "libraryId",
+        "facet",
+        "setting",
+        "value",
+        "confidence",
+        "disposition",
+        "evidence",
+        "reason",
+    ] {
+        assert!(application_fields.contains(&expected));
+    }
+    assert!(
+        application_fields
+            .iter()
+            .all(|field| !field.to_ascii_lowercase().contains("json"))
+    );
+
+    let value_fields = field_names("valuePayload");
+    assert_eq!(
+        value_fields,
+        vec!["boolValue", "stringValue", "stringListValue"]
+    );
+    assert!(
+        value_fields
+            .iter()
+            .all(|field| !field.to_ascii_lowercase().contains("json"))
+    );
+
+    let setting_keys = body["data"]["settingKey"]["enumValues"]
+        .as_array()
+        .expect("setting key enum values")
+        .iter()
+        .filter_map(|value| value["name"].as_str())
+        .collect::<Vec<_>>();
+    for expected in [
+        "rename_enabled",
+        "nfo_write_on_import",
+        "quality_profile_id",
+        "monitor_specials",
+    ] {
+        assert!(setting_keys.contains(&expected));
+    }
 }
 
 #[tokio::test]

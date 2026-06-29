@@ -271,7 +271,8 @@ pub use security::backup_bundle::{
 pub use security::external_accounts::{ExternalAuthRuntimeConnection, ExternalAuthRuntimeSettings};
 pub use settings::settings::{
     AcquisitionSettings, AutoBackupSettings, BackupSettings, DownloadClientRoutingSettingsEntry,
-    ExternalImportLibraryPathsSelection, FacetScoringPersonaSelection, GeneralSettings,
+    ExternalImportLibraryPathsSelection, ExternalImportLibrarySettingsAutoApplyDraft,
+    ExternalImportLibrarySettingsAutoApplyResult, FacetScoringPersonaSelection, GeneralSettings,
     IndexerRoutingSettingsEntry, LibraryPathsSettings, LibrarySettings,
     LibrarySettingsOverrideDraft, MediaSettings, QualityProfileSelection, QualityProfileSettings,
     RequestQualityProfileSettings, SaveQualityProfileSettings, SecuritySettings, ServiceSettings,

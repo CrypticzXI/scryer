@@ -1217,6 +1217,58 @@ type ExternalImportIndexerPayload {
 	apiKeyHelpUrl: String
 }
 
+type ExternalImportLibrarySettingApplicationPayload {
+	libraryId: ID!
+	facet: MediaFacetValue!
+	setting: ExternalImportLibrarySettingKey!
+	value: ExternalImportLibrarySettingValuePayload!
+	confidence: ExternalImportLibrarySettingConfidence!
+	disposition: ExternalImportLibrarySettingDisposition!
+	evidence: [ExternalImportLibrarySettingEvidencePayload!]!
+	reason: String
+}
+
+enum ExternalImportLibrarySettingConfidence {
+	high
+	medium
+	low
+}
+
+enum ExternalImportLibrarySettingDisposition {
+	auto_applied
+	suggested
+	skipped
+}
+
+type ExternalImportLibrarySettingEvidencePayload {
+	sourceKey: String!
+	sourceKind: ExternalArrSourceKind!
+	matchingCount: Int!
+	totalCount: Int!
+	detail: String
+}
+
+enum ExternalImportLibrarySettingKey {
+	rename_enabled
+	nfo_write_on_import
+	plexmatch_write_on_import
+	set_permissions_linux
+	folder_chmod
+	chown_group
+	quality_profile_id
+	request_quality_profile_ids
+	monitor_specials
+	rename_template
+	folder_template
+	required_audio_languages
+}
+
+type ExternalImportLibrarySettingValuePayload {
+	boolValue: Boolean
+	stringValue: String
+	stringListValue: [String!]
+}
+
 enum ExternalImportMonitorWarmupPhaseValue {
 	loading_movies
 	loading_series
@@ -1389,6 +1441,7 @@ input FinalizeExternalImportInput {
 type FinalizeExternalImportPayload {
 	finalized: Boolean!
 	monitorWarmupSessionId: ID!
+	librarySettingApplications: [ExternalImportLibrarySettingApplicationPayload!]!
 }
 
 input FixTitleMatchInput {
