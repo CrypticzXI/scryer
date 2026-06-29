@@ -68,7 +68,7 @@ const FIELD_LABEL_STYLE: CSSProperties = {
 };
 
 const MONO_INPUT_CLASS =
-  "h-[38px] rounded-md font-mono text-[12.5px] text-[#dbe6fb]";
+  "h-[38px] rounded-md font-[var(--font-code)] text-[12.5px] text-[#dbe6fb]";
 
 export function SetupImportConnectView({
   wizard,
@@ -118,8 +118,7 @@ export function SetupImportConnectView({
                 />
                 <span
                   style={{
-                    fontFamily:
-                      "'Space Grotesk', 'Inter Variable', Inter, system-ui, sans-serif",
+                    fontFamily: "var(--font-space-grotesk)",
                     fontWeight: 700,
                     fontSize: 20,
                     color: "#fff",

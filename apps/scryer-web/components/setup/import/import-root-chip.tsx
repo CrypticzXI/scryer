@@ -3,6 +3,7 @@ import {
   ArrowLeftRight,
   ArrowRight,
   FolderInput,
+  FolderOpen,
   GripVertical,
   X,
 } from "lucide-react";
@@ -23,7 +24,7 @@ interface ImportRootChipProps {
   onRemap?: () => void;
   onAssign?: () => void;
   onRemoveManual?: () => void;
-  onManualPathChange?: (path: string) => void;
+  onBrowseManual?: () => void;
   draggable?: boolean;
   onDragStart?: (e: DragEvent) => void;
   onDragEnd?: (e: DragEvent) => void;
@@ -31,7 +32,7 @@ interface ImportRootChipProps {
 }
 
 const MONO: CSSProperties = {
-  fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+  fontFamily: "var(--font-code)",
 };
 
 /**
@@ -50,7 +51,7 @@ export function ImportRootChip({
   onRemap,
   onAssign,
   onRemoveManual,
-  onManualPathChange,
+  onBrowseManual,
   draggable,
   onDragStart,
   onDragEnd,
@@ -102,36 +103,38 @@ export function ImportRootChip({
         </span>
       ) : null}
 
-      {/* Assign button — every chip (keyboard/non-pointer assignment path) */}
-      <button
-        type="button"
-        aria-label={
-          library
-            ? t("setup.moveToAnotherLibrary")
-            : t("setup.assignToLibrary")
-        }
-        title={
-          library
-            ? t("setup.moveToAnotherLibrary")
-            : t("setup.assignToLibrary")
-        }
-        onClick={onAssign}
-        style={{
-          display: "inline-flex",
-          alignItems: "center",
-          justifyContent: "center",
-          width: library ? 30 : 32,
-          height: library ? 30 : 32,
-          borderRadius: 8,
-          border: "1px solid var(--scry-baccent)",
-          background: "rgba(var(--scry-accent-rgb), 0.1)",
-          color: "var(--scry-accent-text)",
-          flex: "none",
-          cursor: "pointer",
-        }}
-      >
-        <FolderInput size={library ? 15 : 16} />
-      </button>
+      {/* Assign button — touch/tablet only (replaces drag-and-drop ≤1024px). */}
+      {isMobile ? (
+        <button
+          type="button"
+          aria-label={
+            library
+              ? t("setup.moveToAnotherLibrary")
+              : t("setup.assignToLibrary")
+          }
+          title={
+            library
+              ? t("setup.moveToAnotherLibrary")
+              : t("setup.assignToLibrary")
+          }
+          onClick={onAssign}
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            justifyContent: "center",
+            width: library ? 30 : 32,
+            height: library ? 30 : 32,
+            borderRadius: 8,
+            border: "1px solid var(--scry-baccent)",
+            background: "rgba(var(--scry-accent-rgb), 0.1)",
+            color: "var(--scry-accent-text)",
+            flex: "none",
+            cursor: "pointer",
+          }}
+        >
+          <FolderInput size={library ? 15 : 16} />
+        </button>
+      ) : null}
 
       {/* Instance pill */}
       <ImportInstancePill
@@ -147,7 +150,7 @@ export function ImportRootChip({
         <ManualPathRegion
           value={root.arrRootPath}
           invalid={invalid}
-          onChange={onManualPathChange}
+          onBrowse={onBrowseManual}
           onRemove={onRemoveManual}
           t={t}
         />
@@ -273,41 +276,55 @@ export function ImportRootChip({
 function ManualPathRegion({
   value,
   invalid,
-  onChange,
+  onBrowse,
   onRemove,
   t,
 }: {
   value: string;
   invalid?: boolean;
-  onChange?: (path: string) => void;
+  onBrowse?: () => void;
   onRemove?: () => void;
   t: (key: string, values?: Record<string, unknown>) => string;
 }) {
   return (
     <>
-      <input
-        value={value}
-        spellCheck={false}
-        placeholder="/path/to/media"
+      {/* Folder-browser trigger — manual roots are chosen, never typed. */}
+      <button
+        type="button"
+        onClick={onBrowse}
         aria-label={t("setup.manualRootPathAria")}
         aria-invalid={invalid || undefined}
-        onChange={(e) => onChange?.(e.target.value)}
+        title={value || t("setup.chooseFolder")}
         style={{
           ...MONO,
-          width: 170,
+          display: "inline-flex",
+          alignItems: "center",
+          gap: 6,
+          maxWidth: 220,
           height: 28,
-          padding: "0 8px",
+          padding: "0 9px",
           borderRadius: 7,
           border: `1px solid ${invalid ? "var(--scry-baccent)" : "var(--scry-border2)"}`,
-          boxShadow: invalid
-            ? "0 0 0 1px rgba(var(--scry-accent-rgb), 0.4)"
-            : "none",
           background: "var(--scry-page2)",
-          color: "var(--scry-ink2)",
+          color: value ? "var(--scry-ink2)" : "var(--scry-faint)",
           fontSize: 12.5,
-          outline: "none",
+          cursor: "pointer",
         }}
-      />
+      >
+        <FolderOpen
+          size={13}
+          style={{ flex: "none", color: "var(--scry-faint)" }}
+        />
+        <span
+          style={{
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+        >
+          {value || t("setup.chooseFolder")}
+        </span>
+      </button>
       <button
         type="button"
         title={t("setup.removeSourceRoot")}

@@ -242,6 +242,78 @@ async fn queue_import_request_with_download_id_scopes_active_rows_by_client_and_
 }
 
 #[tokio::test]
+async fn stale_processing_recovery_respects_transfer_progress_heartbeat() {
+    let (pool, workflow) = import_store_test_harness(1).await;
+    let threshold_seconds = 45 * 60;
+
+    let stale_id = workflow
+        .queue_import_request(
+            DownloadSourceIdentity::new(Some("client-a"), "weaver", "stale-job"),
+            ImportType::MovieDownload.as_str().to_string(),
+            "{}".to_string(),
+        )
+        .await
+        .expect("stale import should queue");
+    workflow
+        .update_import_status(&stale_id, ImportStatus::Processing, None)
+        .await
+        .expect("stale import should start processing");
+
+    let heartbeat_id = workflow
+        .queue_import_request(
+            DownloadSourceIdentity::new(Some("client-a"), "weaver", "heartbeat-job"),
+            ImportType::MovieDownload.as_str().to_string(),
+            "{}".to_string(),
+        )
+        .await
+        .expect("heartbeat import should queue");
+    workflow
+        .update_import_status(&heartbeat_id, ImportStatus::Processing, None)
+        .await
+        .expect("heartbeat import should start processing");
+
+    let old_timestamp =
+        (Utc::now() - chrono::Duration::seconds(threshold_seconds + 60)).to_rfc3339();
+    sqlx::query("UPDATE imports SET updated_at = ? WHERE id IN (?, ?)")
+        .bind(&old_timestamp)
+        .bind(&stale_id)
+        .bind(&heartbeat_id)
+        .execute(&pool)
+        .await
+        .expect("imports should be aged");
+
+    workflow
+        .update_import_transfer_progress(
+            &heartbeat_id,
+            scryer_domain::ImportTransferPhase::Copying,
+            1024,
+            4096,
+        )
+        .await
+        .expect("heartbeat progress should update import freshness");
+
+    let recovered = workflow
+        .recover_stale_processing_imports(threshold_seconds)
+        .await
+        .expect("stale processing recovery should run");
+    assert_eq!(recovered, 1);
+
+    let stale = workflow
+        .get_import_by_id(&stale_id)
+        .await
+        .expect("stale import should load")
+        .expect("stale import should exist");
+    let heartbeat = workflow
+        .get_import_by_id(&heartbeat_id)
+        .await
+        .expect("heartbeat import should load")
+        .expect("heartbeat import should exist");
+
+    assert_eq!(stale.status, ImportStatus::Failed);
+    assert_eq!(heartbeat.status, ImportStatus::Processing);
+}
+
+#[tokio::test]
 async fn active_download_identity_unique_index_blocks_duplicate_active_rows() {
     let (pool, _) = import_store_test_harness(1).await;
     let now = Utc::now().to_rfc3339();

@@ -578,12 +578,11 @@ async fn try_import_completed_downloads_with_policy(
     items: &[DownloadQueueItem],
     fetch_policy: CompletedDownloadFetchPolicy,
 ) -> HashSet<String> {
-    // TODO: increase to 600 (10 minutes) for production — large NAS copies can take a while
     match app
         .services
         .workflow
         .imports
-        .recover_stale_processing_imports(120)
+        .recover_stale_processing_imports(IMPORT_STALE_RECOVERY_SECONDS)
         .await
     {
         Ok(recovered) if recovered > 0 => {

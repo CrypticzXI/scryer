@@ -392,14 +392,8 @@ async fn import_additional_movie_download(
             linked_episode_artifacts,
         )
         .await;
-        let skip_reason = Some(match code {
-            "duplicate_file" => ImportSkipReason::AlreadyImported,
-            "insufficient_disk_space" => ImportSkipReason::DiskFull,
-            "invalid_extension" | "sample_file" | "sample_directory" => {
-                ImportSkipReason::PolicyMismatch
-            }
-            _ => ImportSkipReason::PolicyMismatch,
-        });
+        let skip_reason =
+            Some(skip_reason_for_import_check_rejection(app, code, &dest_path).await?);
         let result = ImportResult {
             import_id: import_id.to_string(),
             decision: ImportDecision::Skipped,
@@ -756,14 +750,8 @@ async fn import_movie_download(
             &[],
         )
         .await;
-        let skip_reason = Some(match code {
-            "duplicate_file" => ImportSkipReason::AlreadyImported,
-            "insufficient_disk_space" => ImportSkipReason::DiskFull,
-            "invalid_extension" | "sample_file" | "sample_directory" => {
-                ImportSkipReason::PolicyMismatch
-            }
-            _ => ImportSkipReason::PolicyMismatch,
-        });
+        let skip_reason =
+            Some(skip_reason_for_import_check_rejection(app, code, &dest_path).await?);
         let result = ImportResult {
             import_id: import_id.to_string(),
             decision: ImportDecision::Skipped,

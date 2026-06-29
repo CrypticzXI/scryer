@@ -2401,7 +2401,7 @@ async fn import_completed_download_ignores_stale_item_id_import_when_request_ide
 }
 
 #[tokio::test]
-async fn import_series_download_skipped_by_import_checks_keeps_episode_id_and_reason() {
+async fn import_series_duplicate_destination_requires_catalog_for_already_imported() {
     let download_client = Arc::new(StubDownloadClient::default());
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
     let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
@@ -2543,7 +2543,7 @@ async fn import_series_download_skipped_by_import_checks_keeps_episode_id_and_re
         vec![episode.id.clone()],
         "unexpected import result: {result:?}"
     );
-    assert_eq!(result.skip_reason, Some(ImportSkipReason::AlreadyImported));
+    assert_eq!(result.skip_reason, Some(ImportSkipReason::DuplicateFile));
     assert!(
         result
             .error_message
@@ -2551,6 +2551,41 @@ async fn import_series_download_skipped_by_import_checks_keeps_episode_id_and_re
             .is_some_and(|message| message.contains("destination exists with identical size")),
         "expected duplicate destination message, got {:?}",
         result.error_message
+    );
+
+    app.services
+        .library
+        .media_files
+        .insert_media_file(&crate::InsertMediaFileInput {
+            title_id: title.id.clone(),
+            file_path: crate::stored_paths::path_to_stored_string(&dest_path),
+            size_bytes: duplicate_size as i64,
+            role: crate::MediaFileRole::Primary,
+            ..Default::default()
+        })
+        .await
+        .expect("insert catalog row for duplicate destination");
+
+    let mut cataloged_completed = completed.clone();
+    cataloged_completed.download_client_item_id = "series-skip-2".to_string();
+    let cataloged_result =
+        crate::import::import::import_completed_download(&app, &user, &cataloged_completed)
+            .await
+            .expect("cataloged completed series import should run");
+
+    assert_eq!(
+        cataloged_result.decision,
+        scryer_domain::ImportDecision::Skipped,
+        "unexpected import result: {cataloged_result:?}"
+    );
+    assert_eq!(
+        cataloged_result.episode_ids,
+        vec![episode.id.clone()],
+        "unexpected import result: {cataloged_result:?}"
+    );
+    assert_eq!(
+        cataloged_result.skip_reason,
+        Some(ImportSkipReason::AlreadyImported)
     );
 }
 

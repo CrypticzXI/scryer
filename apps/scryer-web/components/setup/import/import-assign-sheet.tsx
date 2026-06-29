@@ -37,7 +37,7 @@ interface ImportAssignSheetProps {
 }
 
 const MONO: CSSProperties = {
-  fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+  fontFamily: "var(--font-code)",
 };
 
 /**

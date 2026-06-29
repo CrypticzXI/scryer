@@ -158,8 +158,7 @@ export default function SetupImportSummaryView({
               <div
                 style={{
                   flex: "none",
-                  fontFamily:
-                    "'Space Grotesk', 'Inter Variable', Inter, system-ui, sans-serif",
+                  fontFamily: "var(--font-space-grotesk)",
                   fontWeight: 700,
                   fontSize: 22,
                   color: "#fff",
@@ -205,8 +204,7 @@ export default function SetupImportSummaryView({
           <div
             style={{
               flex: "none",
-              fontFamily:
-                "'Space Grotesk', 'Inter Variable', Inter, system-ui, sans-serif",
+              fontFamily: "var(--font-space-grotesk)",
               fontWeight: 700,
               fontSize: 22,
               color: warmupComplete ? "#4ade80" : "#fff",
@@ -261,7 +259,7 @@ export default function SetupImportSummaryView({
           <div
             style={{
               flex: "none",
-              fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+              fontFamily: "var(--font-code)",
               fontSize: 12.5,
               color: "var(--scry-faint)",
               whiteSpace: "nowrap",

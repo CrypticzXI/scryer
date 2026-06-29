@@ -3012,6 +3012,7 @@ const en: LocaleDictionary = {
   // Libraries / mapping board
   "setup.sourceRoots": "Source roots",
   "setup.addSourceRoot": "Add source root",
+  "setup.chooseFolder": "Choose folder…",
   "setup.unmappedCountOne": "1 unmapped",
   "setup.unmappedCountMany": "{{count}} unmapped",
   "setup.allRootsMapped":

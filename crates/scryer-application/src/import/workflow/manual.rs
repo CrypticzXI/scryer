@@ -1,5 +1,4 @@
 const MANUAL_IMPORT_POLLER_INTERVAL_SECONDS: u64 = 2;
-const MANUAL_IMPORT_STALE_RECOVERY_SECONDS: i64 = 120;
 const MANUAL_IMPORT_ALLOWED_ROOTS_ENV: &str = "SCRYER_MANUAL_IMPORT_ALLOWED_ROOTS";
 pub async fn start_background_manual_import_poller(
     app: AppUseCase,
@@ -25,7 +24,7 @@ pub async fn start_background_manual_import_poller(
             .imports
             .recover_stale_processing_imports_for_type(
                 ImportType::ManualImport,
-                MANUAL_IMPORT_STALE_RECOVERY_SECONDS,
+                IMPORT_STALE_RECOVERY_SECONDS,
             )
             .await
         {

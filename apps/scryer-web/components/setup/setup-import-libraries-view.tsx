@@ -26,6 +26,7 @@ import {
   type WizardFacet,
 } from "@/lib/hooks/use-external-import-setup";
 
+import { FolderBrowserDialog } from "./folder-browser-dialog";
 import { ImportAssignSheet } from "./import/import-assign-sheet";
 import { ImportRemapDialog } from "./import/import-remap-dialog";
 import { ImportRootChip } from "./import/import-root-chip";
@@ -42,7 +43,9 @@ interface SetupImportLibrariesViewProps {
 
 const FACET_PICKER: WizardFacet[] = ["movie", "series", "anime"];
 
-const MOBILE_BREAKPOINT = 761; // ≤760px → bottom-sheet flow
+// Drag-and-drop is desktop-only; at tablet width and below (≤1024px) the
+// click-to-place assign sheet replaces it (DnD is unreliable on touch).
+const MOBILE_BREAKPOINT = 1025;
 
 const SECTION_LABEL: CSSProperties = {
   fontSize: 11,
@@ -88,6 +91,17 @@ export default function SetupImportLibrariesView({
   const [addingLib, setAddingLib] = useState(false);
   const [editLibId, setEditLibId] = useState<string | null>(null);
   const [editLibVal, setEditLibVal] = useState("");
+  // Folder-browser target: a new manual root, or an existing one being changed.
+  const [browseTarget, setBrowseTarget] = useState<
+    { kind: "new" } | { kind: "manual"; rootId: string } | null
+  >(null);
+
+  const handleBrowseSelect = (path: string) => {
+    if (!browseTarget) return;
+    if (browseTarget.kind === "new") addManualRoot(path);
+    else setManualRootPath(browseTarget.rootId, path);
+    setBrowseTarget(null);
+  };
 
   const dragRootId = useRef<string | null>(null);
 
@@ -103,7 +117,20 @@ export default function SetupImportLibrariesView({
     const chip = (e.target as HTMLElement).closest<HTMLElement>(
       "[data-rootchip]",
     );
-    if (chip) chip.style.opacity = "0.4";
+    if (chip) {
+      // Drag the whole chip box (not just the grip) as the drag image,
+      // positioned so it stays under the cursor.
+      const rect = chip.getBoundingClientRect();
+      e.dataTransfer.setDragImage(
+        chip,
+        e.clientX - rect.left,
+        e.clientY - rect.top,
+      );
+      // Fade the live chip only after the ghost snapshot is captured.
+      requestAnimationFrame(() => {
+        chip.style.opacity = "0.4";
+      });
+    }
   }, []);
 
   const onDragEnd = useCallback((e: DragEvent) => {
@@ -231,7 +258,7 @@ export default function SetupImportLibrariesView({
       onRemap={() => setRemapRootId(root.id)}
       onAssign={() => setAssignSheetRootId(root.id)}
       onRemoveManual={() => removeManualRoot(root.id)}
-      onManualPathChange={(path) => setManualRootPath(root.id, path)}
+      onBrowseManual={() => setBrowseTarget({ kind: "manual", rootId: root.id })}
       t={t}
     />
   );
@@ -271,7 +298,7 @@ export default function SetupImportLibrariesView({
           </span>
           <button
             type="button"
-            onClick={addManualRoot}
+            onClick={() => setBrowseTarget({ kind: "new" })}
             style={{
               marginLeft: "auto",
               display: "inline-flex",
@@ -746,6 +773,21 @@ export default function SetupImportLibrariesView({
           setAssignSheetRootId(null);
         }}
         t={t}
+      />
+
+      {/* ── Folder browser for adding / changing manual source roots ── */}
+      <FolderBrowserDialog
+        open={browseTarget != null}
+        onOpenChange={(open) => {
+          if (!open) setBrowseTarget(null);
+        }}
+        onSelect={handleBrowseSelect}
+        title={t("setup.addSourceRoot")}
+        initialPath={
+          browseTarget?.kind === "manual"
+            ? rootById(browseTarget.rootId)?.arrRootPath || "/"
+            : "/"
+        }
       />
     </div>
   );

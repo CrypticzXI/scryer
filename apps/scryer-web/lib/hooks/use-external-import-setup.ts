@@ -17,7 +17,6 @@ import {
 } from "@/lib/graphql/mutations";
 import {
   externalImportAggregateWarmupProgressQuery,
-  librariesQuery,
   wizardQualityProfilesQuery,
 } from "@/lib/graphql/queries";
 import type {
@@ -484,7 +483,11 @@ export function useExternalImportSetup({ client }: UseExternalImportSetupArgs) {
     });
   }, []);
 
-  const addManualRoot = useCallback(() => {
+  // Manual roots are added via the folder browser (no free typing), so the path
+  // is supplied up front.
+  const addManualRoot = useCallback((path: string) => {
+    const trimmed = path.trim();
+    if (!trimmed) return;
     const id = tempId("manual-root");
     setManualRoots((prev) => [
       ...prev,
@@ -494,7 +497,7 @@ export function useExternalImportSetup({ client }: UseExternalImportSetupArgs) {
         sourceKey: null,
         sourceWarmupSessionId: null,
         instanceLabel: "Manual",
-        arrRootPath: "",
+        arrRootPath: trimmed,
         remap: null,
         manual: true,
       },
@@ -519,52 +522,13 @@ export function useExternalImportSetup({ client }: UseExternalImportSetupArgs) {
   }, []);
 
   // ── Library drafts ─────────────────────────────────────────────────────────
-  const [libraries, setLibraries] = useState<ImportLibraryDraft[]>([]);
-  const defaultsSeededRef = useRef(false);
-
-  // Seed the board with the existing per-facet default libraries (Movies /
-  // Series / Anime). They are always present and not removable; the operator
-  // maps roots into them and can add more libraries alongside.
-  useEffect(() => {
-    if (defaultsSeededRef.current) return;
-    defaultsSeededRef.current = true;
-    let cancelled = false;
-    void client
-      .query(librariesQuery, {})
-      .toPromise()
-      .then(({ data }) => {
-        if (cancelled) return;
-        const existing = (data?.libraries ?? []) as Array<{
-          id: string;
-          facet: WizardFacet;
-          name: string;
-          isDefault: boolean;
-        }>;
-        const order: WizardFacet[] = ["movie", "series", "anime"];
-        const defaults = order
-          .map((facet) =>
-            existing.find((lib) => lib.isDefault && lib.facet === facet),
-          )
-          .filter((lib): lib is NonNullable<typeof lib> => Boolean(lib))
-          .map<ImportLibraryDraft>((lib) => ({
-            id: lib.id,
-            facet: lib.facet,
-            name: lib.name,
-            qualityProfileId: null,
-            scoringPersona: "balanced",
-            existingLibraryId: lib.id,
-            isDefault: true,
-          }));
-        if (defaults.length === 0) return;
-        setLibraries((prev) => [
-          ...defaults,
-          ...prev.filter((lib) => !lib.isDefault),
-        ]);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [client]);
+  // The board always starts with the three per-facet default libraries
+  // (Movies / Series / Anime), which are not removable. Their `existingLibraryId`
+  // is the deterministic default id; at finalize each is updated in place if it
+  // already exists, otherwise created. The operator maps roots into them and can
+  // add more libraries alongside.
+  const [libraries, setLibraries] =
+    useState<ImportLibraryDraft[]>(defaultLibraryDrafts);
 
   const addLibrary = useCallback((facet: WizardFacet, name?: string) => {
     const id = tempId("lib");
@@ -892,19 +856,20 @@ export function useExternalImportSetup({ client }: UseExternalImportSetupArgs) {
         qualityProfileId: draft.qualityProfileId,
         scoringPersona: draft.scoringPersona,
       };
+      let resolvedId: string | null = null;
+      // Default libraries: update in place if they exist. The default may not
+      // exist yet during onboarding, so fall through to create on failure.
       if (draft.existingLibraryId) {
-        const { data, error } = await client
+        const { data } = await client
           .mutation(updateLibraryMutation, {
             input: { libraryId: draft.existingLibraryId, roots, settings },
           })
           .toPromise();
-        if (error || !data?.updateLibrary?.id) {
-          return fail(
-            `${gqlError(error) || "Failed to update library"}: ${draft.name}`,
-          );
+        if (data?.updateLibrary?.id) {
+          resolvedId = data.updateLibrary.id as string;
         }
-        createdByDraftId.set(draft.id, draft.existingLibraryId);
-      } else {
+      }
+      if (!resolvedId) {
         const { data, error } = await client
           .mutation(createLibraryMutation, {
             input: { facet: draft.facet, name: draft.name, roots, settings },
@@ -916,8 +881,9 @@ export function useExternalImportSetup({ client }: UseExternalImportSetupArgs) {
             `${gqlError(error) || "Failed to create library"}: ${draft.name}`,
           );
         }
-        createdByDraftId.set(draft.id, created.id as string);
+        resolvedId = created.id as string;
       }
+      createdByDraftId.set(draft.id, resolvedId);
     }
 
     // Build mappings, deduped by the backend's mapping key so duplicate manual
@@ -1176,6 +1142,23 @@ function defaultLibraryName(
     facet === "movie" ? "Movies" : facet === "series" ? "Series" : "Anime";
   const sameFacet = existing.filter((lib) => lib.facet === facet).length;
   return sameFacet === 0 ? base : `${base} ${sameFacet + 1}`;
+}
+
+/** The three per-facet default libraries the board always starts with. */
+function defaultLibraryDrafts(): ImportLibraryDraft[] {
+  const facets: WizardFacet[] = ["movie", "series", "anime"];
+  return facets.map((facet) => {
+    const id = `${facet}_default_library`;
+    return {
+      id,
+      facet,
+      name: facet === "movie" ? "Movies" : facet === "series" ? "Series" : "Anime",
+      qualityProfileId: null,
+      scoringPersona: "balanced",
+      existingLibraryId: id,
+      isDefault: true,
+    };
+  });
 }
 
 export type UseExternalImportSetupReturn = ReturnType<

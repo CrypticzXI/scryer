@@ -216,7 +216,7 @@ export default function SetupImportSourcesView({
                               e.target.value,
                             )
                           }
-                          className="h-8 font-mono text-xs"
+                          className="h-8 font-[var(--font-code)] text-xs"
                         />
                       </div>
                     ) : null}
@@ -238,7 +238,7 @@ export default function SetupImportSourcesView({
                               e.target.value,
                             )
                           }
-                          className="h-8 font-mono text-xs"
+                          className="h-8 font-[var(--font-code)] text-xs"
                         />
                       </div>
                     ) : null}
@@ -318,7 +318,7 @@ export default function SetupImportSourcesView({
                           onChange={(e) =>
                             setIndexerApiKeyOverride(idx.dedupKey, e.target.value)
                           }
-                          className="h-8 font-mono text-xs"
+                          className="h-8 font-[var(--font-code)] text-xs"
                         />
                         {idx.apiKeyHelpUrl ? (
                           <a

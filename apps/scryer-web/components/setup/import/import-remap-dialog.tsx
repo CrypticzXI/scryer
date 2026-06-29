@@ -1,5 +1,5 @@
 import { useEffect, useState, type CSSProperties } from "react";
-import { ArrowDown, ArrowLeftRight, RotateCcw } from "lucide-react";
+import { ArrowDown, ArrowLeftRight, FolderOpen, RotateCcw } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -8,6 +8,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { SETUP_PRIMARY_CTA } from "@/components/setup/setup-chrome";
+import { FolderBrowserDialog } from "../folder-browser-dialog";
 import {
   effectiveRootPath,
   isRootRemapped,
@@ -25,7 +26,7 @@ interface ImportRemapDialogProps {
 }
 
 const MONO: CSSProperties = {
-  fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+  fontFamily: "var(--font-code)",
 };
 
 const LABEL: CSSProperties = {
@@ -50,8 +51,9 @@ export function ImportRemapDialog({
   t,
 }: ImportRemapDialogProps) {
   const [value, setValue] = useState("");
+  const [browseOpen, setBrowseOpen] = useState(false);
 
-  // Seed the input from the root's effective path each time the dialog opens.
+  // Seed the value from the root's effective path each time the dialog opens.
   useEffect(() => {
     if (open && root) setValue(effectiveRootPath(root));
   }, [open, root]);
@@ -172,16 +174,17 @@ export function ImportRemapDialog({
           <ArrowDown size={16} />
         </div>
 
-        {/* Path on Scryer host (editable) */}
+        {/* Path on Scryer host — chosen via the folder browser, never typed. */}
         <span style={LABEL}>{t("setup.remapScryerHostPath")}</span>
-        <input
-          autoFocus
-          spellCheck={false}
-          value={value}
-          placeholder={root.arrRootPath}
-          onChange={(e) => setValue(e.target.value)}
+        <button
+          type="button"
+          onClick={() => setBrowseOpen(true)}
+          title={value || t("setup.chooseFolder")}
           style={{
             ...MONO,
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
             marginTop: 8,
             width: "100%",
             height: 42,
@@ -189,11 +192,27 @@ export function ImportRemapDialog({
             borderRadius: 10,
             border: "1px solid var(--scry-baccent)",
             background: "var(--scry-bg)",
-            color: "#fff",
+            color: value ? "#fff" : "var(--scry-faint)",
             fontSize: 14,
-            outline: "none",
+            cursor: "pointer",
+            textAlign: "left",
           }}
-        />
+        >
+          <FolderOpen
+            size={15}
+            style={{ flex: "none", color: "var(--scry-accent-text)" }}
+          />
+          <span
+            style={{
+              flex: 1,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {value || t("setup.chooseFolder")}
+          </span>
+        </button>
 
         {/* Footer */}
         <div
@@ -229,6 +248,14 @@ export function ImportRemapDialog({
             {t("setup.remapSave")}
           </Button>
         </div>
+
+        <FolderBrowserDialog
+          open={browseOpen}
+          onOpenChange={setBrowseOpen}
+          onSelect={(path) => setValue(path)}
+          title={t("setup.remapScryerHostPath")}
+          initialPath={value || root.arrRootPath || "/"}
+        />
       </DialogContent>
     </Dialog>
   );

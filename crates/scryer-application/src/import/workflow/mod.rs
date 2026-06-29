@@ -33,6 +33,8 @@ use std::time::{Duration, Instant};
 
 const IMPORT_TRANSFER_PROGRESS_MIN_INTERVAL: Duration = Duration::from_secs(1);
 const IMPORT_TRANSFER_PROGRESS_MIN_BYTES: u64 = 64 * 1024 * 1024;
+const IMPORT_TRANSFER_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
+const IMPORT_STALE_RECOVERY_SECONDS: i64 = 45 * 60;
 
 fn should_persist_import_transfer_progress(
     progress: &crate::ImportFileTransferProgress,
@@ -52,6 +54,10 @@ fn should_persist_import_transfer_progress(
     last_emit.is_none_or(|instant| instant.elapsed() >= IMPORT_TRANSFER_PROGRESS_MIN_INTERVAL)
 }
 
+fn should_persist_import_transfer_heartbeat(last_emit: Option<Instant>) -> bool {
+    last_emit.is_none_or(|instant| instant.elapsed() >= IMPORT_TRANSFER_HEARTBEAT_INTERVAL)
+}
+
 #[expect(
     clippy::too_many_arguments,
     reason = "import progress wiring carries source, destination, library, and source validation context"
@@ -69,41 +75,84 @@ async fn import_file_with_record_progress(
     let permissions = app
         .resolve_import_file_permissions(Some(library_id), facet)
         .await?;
-    let (progress_tx, mut progress_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (progress_tx, mut progress_rx) =
+        tokio::sync::mpsc::unbounded_channel::<crate::ImportFileTransferProgress>();
     let progress_app = app.clone();
     let progress_import_id = import_id.to_string();
     let progress_task = tokio::spawn(async move {
         let mut last_phase = None;
         let mut last_bytes = 0u64;
         let mut last_emit = None;
+        let mut last_progress: Option<crate::ImportFileTransferProgress> = None;
+        let mut heartbeat = tokio::time::interval(IMPORT_TRANSFER_HEARTBEAT_INTERVAL);
+        heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
-        while let Some(progress) = progress_rx.recv().await {
-            if !should_persist_import_transfer_progress(
-                &progress, last_phase, last_bytes, last_emit,
-            ) {
-                continue;
-            }
+        loop {
+            tokio::select! {
+                maybe_progress = progress_rx.recv() => {
+                    let Some(progress) = maybe_progress else {
+                        break;
+                    };
+                    last_progress = Some(progress.clone());
+                    if !should_persist_import_transfer_progress(
+                        &progress, last_phase, last_bytes, last_emit,
+                    ) {
+                        continue;
+                    }
 
-            match progress_app
-                .update_import_transfer_progress_and_notify(
-                    &progress_import_id,
-                    progress.phase,
-                    progress.bytes,
-                    progress.total_bytes,
-                )
-                .await
-            {
-                Ok(()) => {
-                    last_phase = Some(progress.phase);
-                    last_bytes = progress.bytes;
-                    last_emit = Some(Instant::now());
+                    match progress_app
+                        .update_import_transfer_progress_and_notify(
+                            &progress_import_id,
+                            progress.phase,
+                            progress.bytes,
+                            progress.total_bytes,
+                        )
+                        .await
+                    {
+                        Ok(()) => {
+                            last_phase = Some(progress.phase);
+                            last_bytes = progress.bytes;
+                            last_emit = Some(Instant::now());
+                        }
+                        Err(error) => {
+                            tracing::warn!(
+                                import_id = %progress_import_id,
+                                error = %error,
+                                "failed to persist import transfer progress"
+                            );
+                        }
+                    }
                 }
-                Err(error) => {
-                    tracing::warn!(
-                        import_id = %progress_import_id,
-                        error = %error,
-                        "failed to persist import transfer progress"
-                    );
+                _ = heartbeat.tick() => {
+                    if !should_persist_import_transfer_heartbeat(last_emit) {
+                        continue;
+                    }
+                    let Some(progress) = last_progress.clone() else {
+                        continue;
+                    };
+
+                    match progress_app
+                        .update_import_transfer_progress_and_notify(
+                            &progress_import_id,
+                            progress.phase,
+                            progress.bytes,
+                            progress.total_bytes,
+                        )
+                        .await
+                    {
+                        Ok(()) => {
+                            last_phase = Some(progress.phase);
+                            last_bytes = progress.bytes;
+                            last_emit = Some(Instant::now());
+                        }
+                        Err(error) => {
+                            tracing::warn!(
+                                import_id = %progress_import_id,
+                                error = %error,
+                                "failed to persist import transfer heartbeat"
+                            );
+                        }
+                    }
                 }
             }
         }

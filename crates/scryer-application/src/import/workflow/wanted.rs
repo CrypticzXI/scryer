@@ -122,7 +122,9 @@ async fn execute_resolved_episode_import(
             return Ok(EpisodeImportOutcome::Skipped {
                 message: reason,
                 reason_code: Some(code.to_string()),
-                skip_reason: Some(skip_reason_for_import_check_code(code)),
+                skip_reason: Some(
+                    skip_reason_for_import_check_rejection(app, code, &dest_path).await?,
+                ),
                 episode_ids: target_episode_ids.clone(),
             });
         }
@@ -276,7 +278,9 @@ async fn execute_resolved_episode_import(
         return Ok(EpisodeImportOutcome::Skipped {
             message: reason,
             reason_code: Some(code.to_string()),
-            skip_reason: Some(skip_reason_for_import_check_code(code)),
+            skip_reason: Some(
+                skip_reason_for_import_check_rejection(app, code, &precheck_dest_path).await?,
+            ),
             episode_ids: target_episode_ids.clone(),
         });
     }
