@@ -428,6 +428,26 @@ pub const BACKUP_TABLE_CATALOG: &[BackupTableCatalogEntry] = &[
         classification: BackupTableClassification::Ignore,
     },
     BackupTableCatalogEntry {
+        table: "external_import_setup_secret_drafts",
+        classification: BackupTableClassification::Ignore,
+    },
+    BackupTableCatalogEntry {
+        table: "external_import_setup_instance_api_keys",
+        classification: BackupTableClassification::Ignore,
+    },
+    BackupTableCatalogEntry {
+        table: "external_import_setup_download_client_api_key_overrides",
+        classification: BackupTableClassification::Ignore,
+    },
+    BackupTableCatalogEntry {
+        table: "external_import_setup_download_client_password_overrides",
+        classification: BackupTableClassification::Ignore,
+    },
+    BackupTableCatalogEntry {
+        table: "external_import_setup_indexer_api_key_overrides",
+        classification: BackupTableClassification::Ignore,
+    },
+    BackupTableCatalogEntry {
         table: "settings_definitions",
         classification: BackupTableClassification::Export,
     },

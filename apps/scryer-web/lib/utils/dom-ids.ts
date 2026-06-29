@@ -49,6 +49,16 @@ export function titleOverviewSearchButtonId(titleId: string): string {
   return selectorId("title-overview-search", titleId);
 }
 
+export function titleOverviewInteractiveSearchButtonId(
+  titleId: string,
+): string {
+  return selectorId("title-overview-interactive-search", titleId);
+}
+
+export function titleOverviewInteractiveSearchPanelId(titleId: string): string {
+  return selectorId("title-overview-interactive-search-panel", titleId);
+}
+
 export function titleOverviewOpenButtonId(titleId: string): string {
   return selectorId("title-overview-open", titleId);
 }

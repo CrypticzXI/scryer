@@ -2150,6 +2150,104 @@ pub trait ExternalImportMonitorSnapshotRepository: Send + Sync {
     ) -> AppResult<()>;
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExternalImportSetupSecretInstanceKind {
+    Sonarr,
+    Radarr,
+    Prowlarr,
+}
+
+impl ExternalImportSetupSecretInstanceKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Sonarr => "sonarr",
+            Self::Radarr => "radarr",
+            Self::Prowlarr => "prowlarr",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "sonarr" => Some(Self::Sonarr),
+            "radarr" => Some(Self::Radarr),
+            "prowlarr" => Some(Self::Prowlarr),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExternalImportSetupInstanceApiKeyDraft {
+    pub instance_id: String,
+    pub kind: ExternalImportSetupSecretInstanceKind,
+    pub api_key: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExternalImportSetupSecretOverrideDraft {
+    pub dedup_key: String,
+    pub secret: String,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ExternalImportSetupSecretDraftInput {
+    pub instance_api_keys: Vec<ExternalImportSetupInstanceApiKeyDraft>,
+    pub download_client_api_key_overrides: Vec<ExternalImportSetupSecretOverrideDraft>,
+    pub download_client_password_overrides: Vec<ExternalImportSetupSecretOverrideDraft>,
+    pub indexer_api_key_overrides: Vec<ExternalImportSetupSecretOverrideDraft>,
+}
+
+impl ExternalImportSetupSecretDraftInput {
+    pub fn is_empty(&self) -> bool {
+        self.instance_api_keys.is_empty()
+            && self.download_client_api_key_overrides.is_empty()
+            && self.download_client_password_overrides.is_empty()
+            && self.indexer_api_key_overrides.is_empty()
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExternalImportSetupSecretDraft {
+    pub owner_user_id: String,
+    pub updated_at: DateTime<Utc>,
+    pub secrets: ExternalImportSetupSecretDraftInput,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExternalImportSetupSecretDraftStatus {
+    pub has_draft: bool,
+    pub owned_by_current_user: bool,
+    pub updated_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExternalImportSetupSecretDraftSaveResult {
+    pub saved: bool,
+    pub overwrote_another_user_draft: bool,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[async_trait]
+pub trait ExternalImportSetupSecretDraftRepository: Send + Sync {
+    async fn get_for_owner(
+        &self,
+        owner_user_id: &str,
+    ) -> AppResult<Option<ExternalImportSetupSecretDraft>>;
+
+    async fn status_for_actor(
+        &self,
+        actor_user_id: &str,
+    ) -> AppResult<ExternalImportSetupSecretDraftStatus>;
+
+    async fn save_for_owner(
+        &self,
+        owner_user_id: &str,
+        draft: ExternalImportSetupSecretDraftInput,
+    ) -> AppResult<ExternalImportSetupSecretDraftSaveResult>;
+
+    async fn clear_for_owner(&self, owner_user_id: &str) -> AppResult<bool>;
+}
+
 #[async_trait]
 pub trait DownloadQueueCommandRepository: Send + Sync {
     async fn queue_delete_command(

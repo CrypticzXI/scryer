@@ -109,18 +109,24 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
         .filter_map(|ty| ty["name"].as_str())
         .collect();
 
-    assert_eq!(query_field_count, 108);
-    assert_eq!(mutation_field_count, 159);
+    assert_eq!(query_field_count, 110);
+    assert_eq!(mutation_field_count, 161);
     assert_eq!(subscription_field_count, 13);
-    assert_eq!(public_types.len(), 464);
-    assert_eq!(kind_count("OBJECT"), 237);
-    assert_eq!(kind_count("INPUT_OBJECT"), 145);
+    assert_eq!(public_types.len(), 473);
+    assert_eq!(kind_count("OBJECT"), 244);
+    assert_eq!(kind_count("INPUT_OBJECT"), 147);
     assert_eq!(kind_count("ENUM"), 72);
     assert_eq!(kind_count("SCALAR"), 10);
     assert!(query_field_names.contains(&"backupSettings"));
+    assert!(query_field_names.contains(&"externalImportSetupSecretDraft"));
+    assert!(query_field_names.contains(&"externalImportSetupSecretDraftStatus"));
     assert!(query_field_names.contains(&"runtimeInfo"));
+    assert!(mutation_field_names.contains(&"clearExternalImportSetupSecretDraft"));
+    assert!(mutation_field_names.contains(&"saveExternalImportSetupSecretDraft"));
     assert!(mutation_field_names.contains(&"updateBackupSettings"));
     assert!(public_type_names.contains(&"BackupSettingsPayload"));
+    assert!(public_type_names.contains(&"SaveExternalImportSetupSecretDraftInput"));
+    assert!(public_type_names.contains(&"ExternalImportSetupSecretDraftPayload"));
     assert!(public_type_names.contains(&"RuntimeInfoPayload"));
     assert!(public_type_names.contains(&"RuntimePathStyleValue"));
     assert!(public_type_names.contains(&"UpdateBackupSettingsInput"));
@@ -3360,6 +3366,260 @@ async fn graphql_introspection_external_import_finalize_uses_payload_results() {
         .filter_map(|field| field["name"].as_str())
         .collect();
     assert_eq!(finalize_fields, vec!["finalized", "monitorWarmupSessionId"]);
+}
+
+fn graphql_type_leaf_name(type_value: &Value) -> Option<&str> {
+    let mut current = type_value;
+    loop {
+        if let Some(name) = current["name"].as_str() {
+            return Some(name);
+        }
+        current = &current["ofType"];
+        if current.is_null() {
+            return None;
+        }
+    }
+}
+
+fn introspection_names(body: &Value, type_alias: &str, field_key: &str) -> Vec<String> {
+    body["data"][type_alias][field_key]
+        .as_array()
+        .unwrap_or_else(|| panic!("{type_alias} should expose {field_key}"))
+        .iter()
+        .filter_map(|field| field["name"].as_str().map(str::to_string))
+        .collect()
+}
+
+fn introspection_entry<'a>(
+    body: &'a Value,
+    type_alias: &str,
+    field_key: &str,
+    name: &str,
+) -> &'a Value {
+    body["data"][type_alias][field_key]
+        .as_array()
+        .unwrap_or_else(|| panic!("{type_alias} should expose {field_key}"))
+        .iter()
+        .find(|field| field["name"] == name)
+        .unwrap_or_else(|| panic!("{type_alias}.{name} should exist"))
+}
+
+#[tokio::test]
+async fn graphql_introspection_external_import_secret_draft_api_is_typed() {
+    let ctx = TestContext::new().await;
+    let body = gql(
+        &ctx,
+        r#"
+        {
+          queryRoot: __type(name: "QueryRoot") {
+            fields { name }
+          }
+          mutationRoot: __type(name: "MutationRoot") {
+            fields {
+              name
+              args {
+                name
+                type {
+                  kind
+                  name
+                  ofType {
+                    kind
+                    name
+                    ofType {
+                      kind
+                      name
+                    }
+                  }
+                }
+              }
+            }
+          }
+          saveInput: __type(name: "SaveExternalImportSetupSecretDraftInput") {
+            inputFields {
+              name
+              type {
+                kind
+                name
+                ofType {
+                  kind
+                  name
+                  ofType {
+                    kind
+                    name
+                    ofType {
+                      kind
+                      name
+                    }
+                  }
+                }
+              }
+            }
+          }
+          instanceInput: __type(name: "ExternalImportSetupInstanceApiKeyInput") {
+            inputFields { name }
+          }
+          draftPayload: __type(name: "ExternalImportSetupSecretDraftPayload") {
+            fields { name }
+          }
+          statusPayload: __type(name: "ExternalImportSetupSecretDraftStatusPayload") {
+            fields { name }
+          }
+          savePayload: __type(name: "SaveExternalImportSetupSecretDraftPayload") {
+            fields { name }
+          }
+          clearPayload: __type(name: "ClearExternalImportSetupSecretDraftPayload") {
+            fields { name }
+          }
+          instancePayload: __type(name: "ExternalImportSetupInstanceApiKeyPayload") {
+            fields { name }
+          }
+          apiKeyOverridePayload: __type(name: "ExternalImportSetupApiKeyOverridePayload") {
+            fields { name }
+          }
+          passwordOverridePayload: __type(name: "ExternalImportSetupPasswordOverridePayload") {
+            fields { name }
+          }
+        }
+        "#,
+        json!({}),
+    )
+    .await;
+    assert_no_errors(&body);
+
+    let query_names = introspection_names(&body, "queryRoot", "fields");
+    assert!(query_names.contains(&"externalImportSetupSecretDraft".to_string()));
+    assert!(query_names.contains(&"externalImportSetupSecretDraftStatus".to_string()));
+
+    let mutation_names = introspection_names(&body, "mutationRoot", "fields");
+    assert!(mutation_names.contains(&"saveExternalImportSetupSecretDraft".to_string()));
+    assert!(mutation_names.contains(&"clearExternalImportSetupSecretDraft".to_string()));
+
+    let save_mutation = introspection_entry(
+        &body,
+        "mutationRoot",
+        "fields",
+        "saveExternalImportSetupSecretDraft",
+    );
+    let save_input_arg = save_mutation["args"]
+        .as_array()
+        .expect("save mutation args")
+        .iter()
+        .find(|arg| arg["name"] == "input")
+        .expect("save input arg");
+    assert_eq!(
+        graphql_type_leaf_name(&save_input_arg["type"]),
+        Some("SaveExternalImportSetupSecretDraftInput")
+    );
+
+    let clear_mutation = introspection_entry(
+        &body,
+        "mutationRoot",
+        "fields",
+        "clearExternalImportSetupSecretDraft",
+    );
+    assert!(
+        clear_mutation["args"]
+            .as_array()
+            .expect("clear mutation args")
+            .is_empty()
+    );
+
+    assert_eq!(
+        introspection_names(&body, "saveInput", "inputFields"),
+        vec![
+            "instanceApiKeys",
+            "downloadClientApiKeyOverrides",
+            "downloadClientPasswordOverrides",
+            "indexerApiKeyOverrides",
+        ]
+    );
+    for (field_name, expected_item_type) in [
+        ("instanceApiKeys", "ExternalImportSetupInstanceApiKeyInput"),
+        (
+            "downloadClientApiKeyOverrides",
+            "DownloadClientApiKeyOverrideInput",
+        ),
+        (
+            "downloadClientPasswordOverrides",
+            "DownloadClientPasswordOverrideInput",
+        ),
+        ("indexerApiKeyOverrides", "IndexerApiKeyOverrideInput"),
+    ] {
+        let field = introspection_entry(&body, "saveInput", "inputFields", field_name);
+        assert_eq!(field["type"]["kind"], "NON_NULL", "{field}");
+        assert_eq!(field["type"]["ofType"]["kind"], "LIST", "{field}");
+        assert_eq!(
+            graphql_type_leaf_name(&field["type"]),
+            Some(expected_item_type)
+        );
+    }
+
+    assert_eq!(
+        introspection_names(&body, "instanceInput", "inputFields"),
+        vec!["instanceId", "kind", "apiKey"]
+    );
+    assert_eq!(
+        introspection_names(&body, "draftPayload", "fields"),
+        vec![
+            "instanceApiKeys",
+            "downloadClientApiKeyOverrides",
+            "downloadClientPasswordOverrides",
+            "indexerApiKeyOverrides",
+            "updatedAt",
+        ]
+    );
+    assert_eq!(
+        introspection_names(&body, "statusPayload", "fields"),
+        vec!["hasDraft", "ownedByCurrentUser", "updatedAt"]
+    );
+    assert_eq!(
+        introspection_names(&body, "savePayload", "fields"),
+        vec!["saved", "overwroteAnotherUserDraft", "updatedAt"]
+    );
+    assert_eq!(
+        introspection_names(&body, "clearPayload", "fields"),
+        vec!["cleared"]
+    );
+    assert_eq!(
+        introspection_names(&body, "instancePayload", "fields"),
+        vec!["instanceId", "kind", "apiKey"]
+    );
+    assert_eq!(
+        introspection_names(&body, "apiKeyOverridePayload", "fields"),
+        vec!["dedupKey", "apiKey"]
+    );
+    assert_eq!(
+        introspection_names(&body, "passwordOverridePayload", "fields"),
+        vec!["dedupKey", "password"]
+    );
+
+    for type_alias in [
+        "saveInput",
+        "instanceInput",
+        "draftPayload",
+        "statusPayload",
+        "savePayload",
+        "clearPayload",
+        "instancePayload",
+        "apiKeyOverridePayload",
+        "passwordOverridePayload",
+    ] {
+        let names = if body["data"][type_alias]["inputFields"].is_array() {
+            introspection_names(&body, type_alias, "inputFields")
+        } else {
+            introspection_names(&body, type_alias, "fields")
+        };
+        for name in names {
+            assert_ne!(
+                name, "draftJson",
+                "{type_alias} should not expose draftJson"
+            );
+            assert!(
+                !name.to_ascii_lowercase().contains("json"),
+                "{type_alias}.{name} should not expose opaque JSON fields"
+            );
+        }
+    }
 }
 
 #[tokio::test]

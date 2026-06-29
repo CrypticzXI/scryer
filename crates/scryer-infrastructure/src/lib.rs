@@ -265,7 +265,8 @@ pub mod sqlite {
     pub use crate::workflow::release_store::ReleaseStore;
     pub use crate::workflow::stores::{
         AcquisitionStore, DomainEventStore, DownloadQueueCommandStore, DownloadSubmissionStore,
-        ExternalImportMonitorStore, ImportStore, WorkflowOperationStore,
+        ExternalImportMonitorStore, ExternalImportSetupSecretDraftStore, ImportStore,
+        WorkflowOperationStore,
     };
 }
 
@@ -332,5 +333,6 @@ pub use workflow::file_importer::FsFileImporter;
 pub use workflow::release_store::ReleaseStore;
 pub use workflow::stores::{
     AcquisitionStore, DomainEventStore, DownloadQueueCommandStore, DownloadSubmissionStore,
-    ExternalImportMonitorStore, ImportStore, WorkflowOperationStore,
+    ExternalImportMonitorStore, ExternalImportSetupSecretDraftStore, ImportStore,
+    WorkflowOperationStore,
 };

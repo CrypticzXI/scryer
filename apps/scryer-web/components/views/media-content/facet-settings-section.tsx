@@ -12,6 +12,7 @@ import {
 import type { ViewId } from "@/components/root/types";
 import { useTranslate } from "@/lib/context/translate-context";
 import { cn } from "@/lib/utils";
+import { selectorId } from "@/lib/utils/dom-ids";
 import { buildViewPath } from "@/lib/utils/routing";
 
 export type FacetSettingsSectionId =
@@ -177,6 +178,7 @@ export function FacetSettingsSection({
               return (
                 <Link
                   key={id}
+                  id={selectorId("root-sidebar-media", view, id)}
                   to={buildViewPath(view, undefined, id)}
                   className={cn(
                     "flex h-9 shrink-0 items-center gap-2 rounded-[9px] px-3 text-[13px] font-medium text-[var(--scry-muted)] transition hover:bg-[var(--scry-hover)] hover:text-[var(--scry-ink2)] md:w-full",

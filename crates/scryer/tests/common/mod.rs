@@ -717,6 +717,12 @@ impl TestContext {
         let import_store = Arc::new(ImportStore::new(datastore.clone()));
         let external_import_monitor_store =
             Arc::new(ExternalImportMonitorStore::new(datastore.clone()));
+        let external_import_setup_secret_draft_store = Arc::new(
+            scryer_infrastructure::ExternalImportSetupSecretDraftStore::new(
+                datastore.clone(),
+                db.encryption_key_state(),
+            ),
+        );
         let download_queue_command_store =
             Arc::new(DownloadQueueCommandStore::new(datastore.clone()));
         let workflow_operation_store = Arc::new(WorkflowOperationStore::new(datastore.clone()));
@@ -763,6 +769,7 @@ impl TestContext {
         .with_download_queue_commands(download_queue_command_store)
         .with_download_submissions(download_submission_store)
         .with_external_import_monitor_snapshots(external_import_monitor_store)
+        .with_external_import_setup_secret_drafts(external_import_setup_secret_draft_store)
         .with_import_artifacts(import_store.clone())
         .with_imports(import_store)
         .with_job_runs(workflow_operation_store.clone())

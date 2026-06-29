@@ -1289,6 +1289,8 @@ pub struct AppIntegrationServices {
 pub struct AppWorkflowServices {
     pub(crate) imports: Arc<dyn ImportRepository>,
     pub(crate) external_import_monitor_snapshots: Arc<dyn ExternalImportMonitorSnapshotRepository>,
+    pub(crate) external_import_setup_secret_drafts:
+        Arc<dyn ExternalImportSetupSecretDraftRepository>,
     pub(crate) download_queue_commands: Arc<dyn DownloadQueueCommandRepository>,
     pub(crate) workflow_operations: Arc<dyn WorkflowOperationRepository>,
     pub(crate) file_importer: Arc<dyn FileImporter>,
@@ -1513,6 +1515,9 @@ impl AppServices {
                 imports: Arc::new(NullImportRepository),
                 external_import_monitor_snapshots: Arc::new(
                     null_repositories::NullExternalImportMonitorSnapshotRepository,
+                ),
+                external_import_setup_secret_drafts: Arc::new(
+                    null_repositories::NullExternalImportSetupSecretDraftRepository,
                 ),
                 download_queue_commands: Arc::new(
                     null_repositories::NullDownloadQueueCommandRepository,
@@ -1890,6 +1895,11 @@ impl AppServicesBuilder {
         with_external_import_monitor_snapshots,
         workflow.external_import_monitor_snapshots,
         Arc<dyn ExternalImportMonitorSnapshotRepository>
+    );
+    app_services_builder_setter!(
+        with_external_import_setup_secret_drafts,
+        workflow.external_import_setup_secret_drafts,
+        Arc<dyn ExternalImportSetupSecretDraftRepository>
     );
     app_services_builder_setter!(
         with_download_queue_commands,

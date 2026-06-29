@@ -2371,6 +2371,28 @@ export const wizardQualityProfilesQuery = `query WizardQualityProfiles {
   }
 }`;
 
+// Sensitive import-wizard draft (API keys / passwords) is stored server-side as
+// a single owner-scoped, encrypted draft; the rest of the wizard stays in
+// sessionStorage. Status never exposes secrets and is readable by anyone.
+export const externalImportSetupSecretDraftStatusQuery = `query ExternalImportSetupSecretDraftStatus {
+  externalImportSetupSecretDraftStatus {
+    hasDraft
+    ownedByCurrentUser
+    updatedAt
+  }
+}`;
+
+// Returns null when there is no draft or another user owns it.
+export const externalImportSetupSecretDraftQuery = `query ExternalImportSetupSecretDraft {
+  externalImportSetupSecretDraft {
+    updatedAt
+    instanceApiKeys { instanceId kind apiKey }
+    downloadClientApiKeyOverrides { dedupKey apiKey }
+    downloadClientPasswordOverrides { dedupKey password }
+    indexerApiKeyOverrides { dedupKey apiKey }
+  }
+}`;
+
 export const settingsChangedSubscription = `subscription SettingsChanged {
   settingsChanged
 }`;

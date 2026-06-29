@@ -28,6 +28,7 @@ use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
 use tokio::time::{Duration, timeout};
 
+mod external_import_setup_secret_drafts;
 mod imports_download_submissions;
 mod library_scan_unmatched;
 mod migrations;

@@ -510,6 +510,20 @@ impl MediaFileRepository for MockMediaFileRepo {
     }
 }
 
+fn import_record_counts_as_already_imported(record: &ImportRecord) -> bool {
+    match record.status {
+        ImportStatus::Completed => true,
+        ImportStatus::Skipped => record
+            .result_json
+            .as_deref()
+            .and_then(|json| serde_json::from_str::<scryer_domain::ImportResult>(json).ok())
+            .is_some_and(|result| {
+                result.skip_reason == Some(scryer_domain::ImportSkipReason::AlreadyImported)
+            }),
+        _ => false,
+    }
+}
+
 #[derive(Default, Clone)]
 pub(super) struct TrackingImportRepo {
     pub(super) records: Arc<Mutex<Vec<ImportRecord>>>,
@@ -716,12 +730,7 @@ impl ImportRepository for TrackingImportRepo {
                     && record.source_system == identity.client_type
                     && record.source_ref == identity.item_id
             })
-            .is_some_and(|record| {
-                matches!(
-                    record.status,
-                    ImportStatus::Completed | ImportStatus::Skipped
-                )
-            }))
+            .is_some_and(import_record_counts_as_already_imported))
     }
 
     async fn is_already_imported_by_download_id(
@@ -739,10 +748,7 @@ impl ImportRepository for TrackingImportRepo {
         };
         let records = self.records.lock().await;
         Ok(records.iter().rev().any(|record| {
-            if !matches!(
-                record.status,
-                ImportStatus::Completed | ImportStatus::Skipped
-            ) {
+            if !import_record_counts_as_already_imported(record) {
                 return false;
             }
             record.source_client_id.as_deref().unwrap_or("") == source_identity.client_id_or_empty()

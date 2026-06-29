@@ -12,6 +12,8 @@ mod auth_runtime_passkeys;
 mod backups;
 #[path = "integration_graphql/downloads_housekeeping_system.rs"]
 mod downloads_housekeeping_system;
+#[path = "integration_graphql/external_import_secret_drafts.rs"]
+mod external_import_secret_drafts;
 #[path = "integration_graphql/library_scan.rs"]
 mod library_scan;
 #[path = "integration_graphql/media_rename.rs"]

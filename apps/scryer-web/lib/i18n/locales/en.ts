@@ -3007,6 +3007,8 @@ const en: LocaleDictionary = {
   "setup.couldntConnect": "Couldn’t connect",
   "setup.enterUrlAndKey": "Enter URL & API key to verify",
   "setup.apiKeyHelpHint": "Settings → General",
+  "setup.secretDraftOtherUserWarning":
+    "Another user has a saved import draft. Entering your own keys here will replace their saved credentials.",
   "setup.instanceCountOne": "1 instance",
   "setup.instanceCountMany": "{{count}} instances",
   // Libraries / mapping board

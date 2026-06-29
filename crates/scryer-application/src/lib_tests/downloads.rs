@@ -2553,6 +2553,15 @@ async fn import_series_duplicate_destination_requires_catalog_for_already_import
         result.error_message
     );
 
+    let retry_result = crate::import::import::import_completed_download(&app, &user, &completed)
+        .await
+        .expect("uncataloged duplicate retry should run");
+    assert_eq!(
+        retry_result.skip_reason,
+        Some(ImportSkipReason::DuplicateFile),
+        "uncataloged duplicate retry should not become already imported: {retry_result:?}"
+    );
+
     app.services
         .library
         .media_files

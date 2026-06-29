@@ -3,7 +3,10 @@ use async_graphql::{Context, ID, MergedObject, Object, Result as GqlResult};
 use chrono::{DateTime, Utc};
 use scryer_application::{
     AppError, DownloadImportFilter, ExternalImportArrSourceKind as AppArrSourceKind,
-    ExternalImportMonitorWarmupStatus, JwtSessionScope, MediaRequestCounts,
+    ExternalImportMonitorWarmupStatus,
+    ExternalImportSetupSecretDraft as AppExternalImportSetupSecretDraft,
+    ExternalImportSetupSecretDraftStatus, ExternalImportSetupSecretInstanceKind,
+    ExternalImportSetupSecretOverrideDraft, JwtSessionScope, MediaRequestCounts,
     OAuthAuthorizationSource, PendingImportCounts, RuntimePathStyle, SCRYER_VERSION, SortDirection,
     TitleCatalogContentStatus, TitleCatalogFilter, TitleCatalogSort, TitleCatalogSortKey,
     TitleHistoryFilter, WantedItemsQuery, is_supported_title_history_event_type,
@@ -16,7 +19,8 @@ use std::{fs, io, path::Path};
 
 use crate::context::{
     actor_from_ctx, actor_has_any_library_permission, actor_has_app_permission, app_from_ctx,
-    current_user_from_ctx, mfa_verification_from_ctx, require_app_permission, to_gql_error,
+    current_user_from_ctx, mfa_verification_from_ctx, require_app_permission,
+    require_config_app_permission, to_gql_error,
 };
 use crate::mappers::{
     discovery_home_query_from_input, discovery_items_query_from_input, from_activity_event,
@@ -374,6 +378,9 @@ struct SystemQueries;
 struct AcquisitionQueries;
 
 #[derive(Default)]
+struct ExternalImportQueries;
+
+#[derive(Default)]
 struct UtilityQueries;
 
 #[derive(Default)]
@@ -387,10 +394,109 @@ pub struct QueryRoot(
     SettingsQueries,
     SystemQueries,
     AcquisitionQueries,
+    ExternalImportQueries,
     MetadataQueries,
     UtilityQueries,
     AccountQueries,
 );
+
+fn gql_secret_instance_kind_query(
+    kind: ExternalImportSetupSecretInstanceKind,
+) -> ExternalImportConnectionKind {
+    match kind {
+        ExternalImportSetupSecretInstanceKind::Sonarr => ExternalImportConnectionKind::Sonarr,
+        ExternalImportSetupSecretInstanceKind::Radarr => ExternalImportConnectionKind::Radarr,
+        ExternalImportSetupSecretInstanceKind::Prowlarr => ExternalImportConnectionKind::Prowlarr,
+    }
+}
+
+fn api_key_override_payload_query(
+    override_entry: ExternalImportSetupSecretOverrideDraft,
+) -> ExternalImportSetupApiKeyOverridePayload {
+    ExternalImportSetupApiKeyOverridePayload {
+        dedup_key: override_entry.dedup_key,
+        api_key: override_entry.secret,
+    }
+}
+
+fn password_override_payload_query(
+    override_entry: ExternalImportSetupSecretOverrideDraft,
+) -> ExternalImportSetupPasswordOverridePayload {
+    ExternalImportSetupPasswordOverridePayload {
+        dedup_key: override_entry.dedup_key,
+        password: override_entry.secret,
+    }
+}
+
+fn external_import_setup_secret_draft_payload_query(
+    draft: AppExternalImportSetupSecretDraft,
+) -> ExternalImportSetupSecretDraftPayload {
+    let secrets = draft.secrets;
+    ExternalImportSetupSecretDraftPayload {
+        instance_api_keys: secrets
+            .instance_api_keys
+            .into_iter()
+            .map(|entry| ExternalImportSetupInstanceApiKeyPayload {
+                instance_id: ID::from(entry.instance_id),
+                kind: gql_secret_instance_kind_query(entry.kind),
+                api_key: entry.api_key,
+            })
+            .collect(),
+        download_client_api_key_overrides: secrets
+            .download_client_api_key_overrides
+            .into_iter()
+            .map(api_key_override_payload_query)
+            .collect(),
+        download_client_password_overrides: secrets
+            .download_client_password_overrides
+            .into_iter()
+            .map(password_override_payload_query)
+            .collect(),
+        indexer_api_key_overrides: secrets
+            .indexer_api_key_overrides
+            .into_iter()
+            .map(api_key_override_payload_query)
+            .collect(),
+        updated_at: draft.updated_at,
+    }
+}
+
+fn external_import_setup_secret_status_payload_query(
+    status: ExternalImportSetupSecretDraftStatus,
+) -> ExternalImportSetupSecretDraftStatusPayload {
+    ExternalImportSetupSecretDraftStatusPayload {
+        has_draft: status.has_draft,
+        owned_by_current_user: status.owned_by_current_user,
+        updated_at: status.updated_at,
+    }
+}
+
+#[Object]
+impl ExternalImportQueries {
+    async fn external_import_setup_secret_draft(
+        &self,
+        ctx: &Context<'_>,
+    ) -> GqlResult<Option<ExternalImportSetupSecretDraftPayload>> {
+        let actor = require_config_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
+        let app = app_from_ctx(ctx)?;
+        app.get_external_import_setup_secret_draft(&actor)
+            .await
+            .map(|draft| draft.map(external_import_setup_secret_draft_payload_query))
+            .map_err(to_gql_error)
+    }
+
+    async fn external_import_setup_secret_draft_status(
+        &self,
+        ctx: &Context<'_>,
+    ) -> GqlResult<ExternalImportSetupSecretDraftStatusPayload> {
+        let actor = require_config_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
+        let app = app_from_ctx(ctx)?;
+        app.external_import_setup_secret_draft_status(&actor)
+            .await
+            .map(external_import_setup_secret_status_payload_query)
+            .map_err(to_gql_error)
+    }
+}
 
 #[Object]
 impl AccountQueries {

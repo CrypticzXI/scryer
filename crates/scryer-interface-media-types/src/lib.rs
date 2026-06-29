@@ -4332,6 +4332,68 @@ pub struct ValidateExternalImportConnectionInput {
 }
 
 #[derive(InputObject)]
+pub struct ExternalImportSetupInstanceApiKeyInput {
+    pub instance_id: ID,
+    pub kind: ExternalImportConnectionKind,
+    pub api_key: String,
+}
+
+#[derive(InputObject)]
+pub struct SaveExternalImportSetupSecretDraftInput {
+    pub instance_api_keys: Vec<ExternalImportSetupInstanceApiKeyInput>,
+    pub download_client_api_key_overrides: Vec<DownloadClientApiKeyOverrideInput>,
+    pub download_client_password_overrides: Vec<DownloadClientPasswordOverrideInput>,
+    pub indexer_api_key_overrides: Vec<IndexerApiKeyOverrideInput>,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct ExternalImportSetupInstanceApiKeyPayload {
+    pub instance_id: ID,
+    pub kind: ExternalImportConnectionKind,
+    pub api_key: String,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct ExternalImportSetupApiKeyOverridePayload {
+    pub dedup_key: String,
+    pub api_key: String,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct ExternalImportSetupPasswordOverridePayload {
+    pub dedup_key: String,
+    pub password: String,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct ExternalImportSetupSecretDraftPayload {
+    pub instance_api_keys: Vec<ExternalImportSetupInstanceApiKeyPayload>,
+    pub download_client_api_key_overrides: Vec<ExternalImportSetupApiKeyOverridePayload>,
+    pub download_client_password_overrides: Vec<ExternalImportSetupPasswordOverridePayload>,
+    pub indexer_api_key_overrides: Vec<ExternalImportSetupApiKeyOverridePayload>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct ExternalImportSetupSecretDraftStatusPayload {
+    pub has_draft: bool,
+    pub owned_by_current_user: bool,
+    pub updated_at: Option<DateTime<Utc>>,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct SaveExternalImportSetupSecretDraftPayload {
+    pub saved: bool,
+    pub overwrote_another_user_draft: bool,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct ClearExternalImportSetupSecretDraftPayload {
+    pub cleared: bool,
+}
+
+#[derive(InputObject)]
 pub struct StartExternalImportArrSourceWarmupInput {
     pub kind: ExternalArrSourceKind,
     pub connection: ExternalImportConnectionInput,

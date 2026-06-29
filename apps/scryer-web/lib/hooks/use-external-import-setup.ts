@@ -3,11 +3,13 @@ import type { Client } from "urql";
 
 import {
   cancelExternalImportArrSourceWarmupMutation,
+  clearExternalImportSetupSecretDraftMutation,
   createLibraryMutation,
   completeSetupMutation,
   executeExternalImportMutation,
   finalizeExternalImportMutation,
   previewExternalImportMutation,
+  saveExternalImportSetupSecretDraftMutation,
   scanLibraryMutation,
   startExternalImportArrSourceWarmupMutation,
   updateLibraryMutation,
@@ -17,6 +19,8 @@ import {
 } from "@/lib/graphql/mutations";
 import {
   externalImportAggregateWarmupProgressQuery,
+  externalImportSetupSecretDraftQuery,
+  externalImportSetupSecretDraftStatusQuery,
   wizardQualityProfilesQuery,
 } from "@/lib/graphql/queries";
 import type {
@@ -172,13 +176,75 @@ function gqlError(error: unknown): string {
   return typeof message === "string" ? message : String(error);
 }
 
+// ── Persistence ─────────────────────────────────────────────────────────────
+// Non-sensitive wizard state is persisted to sessionStorage so a page refresh
+// (or navigating away and back) doesn't discard connections, mappings,
+// libraries, or selections. SECRETS (instance API keys, client passwords,
+// indexer keys) are NOT stored here — they live in the server-side encrypted
+// draft (see the secret-draft sync below). Persisted instances have their
+// apiKey stripped; it is re-merged from the server draft on load.
+const IMPORT_WIZARD_STORAGE_KEY = "scryer:import-wizard:v1";
+
+interface PersistedImportWizardState {
+  instances: ImportInstance[]; // apiKey stripped — restored from the server draft
+  manualRoots: ImportRoot[];
+  remaps: Record<string, string>;
+  assign: Record<string, string | null>;
+  libraries: ImportLibraryDraft[];
+  selectedDcKeys: string[];
+  selectedIdxKeys: string[];
+  dcSelectionSeeded: boolean;
+  idxSelectionSeeded: boolean;
+  executeResult: ExternalImportResult | null;
+}
+
+function loadPersistedImportWizardState(): Partial<PersistedImportWizardState> | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.sessionStorage.getItem(IMPORT_WIZARD_STORAGE_KEY);
+    return raw
+      ? (JSON.parse(raw) as Partial<PersistedImportWizardState>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function savePersistedImportWizardState(
+  state: PersistedImportWizardState,
+): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.sessionStorage.setItem(
+      IMPORT_WIZARD_STORAGE_KEY,
+      JSON.stringify(state),
+    );
+  } catch {
+    // best-effort: sessionStorage may be unavailable or full.
+  }
+}
+
+function clearPersistedImportWizardState(): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.sessionStorage.removeItem(IMPORT_WIZARD_STORAGE_KEY);
+  } catch {
+    // ignore
+  }
+}
+
 interface UseExternalImportSetupArgs {
   client: Client;
 }
 
 export function useExternalImportSetup({ client }: UseExternalImportSetupArgs) {
+  // Snapshot of any persisted state, read once on mount to hydrate the wizard.
+  const initial = useMemo(loadPersistedImportWizardState, []);
+
   // ── Connect step ──────────────────────────────────────────────────────────
-  const [instances, setInstances] = useState<ImportInstance[]>([]);
+  const [instances, setInstances] = useState<ImportInstance[]>(
+    () => initial?.instances ?? [],
+  );
   // Last successfully-verified {baseUrl, apiKey} per instance, so an incidental
   // re-blur of an unchanged connected instance doesn't discard its finished
   // warmup and re-run the full library fetch.
@@ -421,9 +487,15 @@ export function useExternalImportSetup({ client }: UseExternalImportSetupArgs) {
   }, [client, connectedArrSessionIds, prowlarrConnectionInput]);
 
   // ── Mapping board: roots + manual roots + remaps + assign ──────────────────
-  const [manualRoots, setManualRoots] = useState<ImportRoot[]>([]);
-  const [remaps, setRemaps] = useState<Record<string, string>>({});
-  const [assign, setAssign] = useState<Record<string, string | null>>({});
+  const [manualRoots, setManualRoots] = useState<ImportRoot[]>(
+    () => initial?.manualRoots ?? [],
+  );
+  const [remaps, setRemaps] = useState<Record<string, string>>(
+    () => initial?.remaps ?? {},
+  );
+  const [assign, setAssign] = useState<Record<string, string | null>>(
+    () => initial?.assign ?? {},
+  );
 
   const detectedRoots = useMemo<ImportRoot[]>(() => {
     if (!preview) return [];
@@ -527,8 +599,9 @@ export function useExternalImportSetup({ client }: UseExternalImportSetupArgs) {
   // is the deterministic default id; at finalize each is updated in place if it
   // already exists, otherwise created. The operator maps roots into them and can
   // add more libraries alongside.
-  const [libraries, setLibraries] =
-    useState<ImportLibraryDraft[]>(defaultLibraryDrafts);
+  const [libraries, setLibraries] = useState<ImportLibraryDraft[]>(
+    () => initial?.libraries ?? defaultLibraryDrafts(),
+  );
 
   const addLibrary = useCallback((facet: WizardFacet, name?: string) => {
     const id = tempId("lib");
@@ -621,8 +694,14 @@ export function useExternalImportSetup({ client }: UseExternalImportSetupArgs) {
   }, [client]);
 
   // ── Sources step: download client + indexer selection ──────────────────────
-  const [selectedDcKeys, setSelectedDcKeys] = useState<Set<string>>(new Set());
-  const [selectedIdxKeys, setSelectedIdxKeys] = useState<Set<string>>(new Set());
+  const [selectedDcKeys, setSelectedDcKeys] = useState<Set<string>>(
+    () => new Set(initial?.selectedDcKeys ?? []),
+  );
+  const [selectedIdxKeys, setSelectedIdxKeys] = useState<Set<string>>(
+    () => new Set(initial?.selectedIdxKeys ?? []),
+  );
+  // Secret override maps are NOT persisted to sessionStorage — they are synced
+  // to the server-side encrypted draft and re-hydrated from it on load.
   const [dcApiKeyOverrides, setDcApiKeyOverrides] = useState<
     Record<string, string>
   >({});
@@ -632,8 +711,152 @@ export function useExternalImportSetup({ client }: UseExternalImportSetupArgs) {
   const [idxApiKeyOverrides, setIdxApiKeyOverrides] = useState<
     Record<string, string>
   >({});
-  const dcSelectionSeeded = useRef(false);
-  const idxSelectionSeeded = useRef(false);
+  // Restore the "defaults seeded" flags so a refresh after the operator
+  // customized selections doesn't re-seed everything back on.
+  const dcSelectionSeeded = useRef(initial?.dcSelectionSeeded ?? false);
+  const idxSelectionSeeded = useRef(initial?.idxSelectionSeeded ?? false);
+
+  // ── Server-side secret draft sync ──────────────────────────────────────────
+  // API keys / passwords are stored server-side (encrypted, owner-scoped
+  // singleton), never in sessionStorage. Hydrate from it on mount, debounce-save
+  // when secrets change, and clear it on finalize. `secretsHydrated` gates the
+  // save effect so it can't wipe the draft before the initial load completes.
+  const [secretDraftOwnedByOther, setSecretDraftOwnedByOther] = useState(false);
+  const [secretDraftOverwroteOther, setSecretDraftOverwroteOther] =
+    useState(false);
+  const [secretsHydrated, setSecretsHydrated] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const { data: statusData } = await client
+          .query(
+            externalImportSetupSecretDraftStatusQuery,
+            {},
+            { requestPolicy: "network-only" },
+          )
+          .toPromise();
+        const status = statusData?.externalImportSetupSecretDraftStatus;
+        if (cancelled) return;
+        if (status?.hasDraft && !status.ownedByCurrentUser) {
+          setSecretDraftOwnedByOther(true);
+        }
+        if (status?.hasDraft && status.ownedByCurrentUser) {
+          const { data } = await client
+            .query(
+              externalImportSetupSecretDraftQuery,
+              {},
+              { requestPolicy: "network-only" },
+            )
+            .toPromise();
+          const draft = data?.externalImportSetupSecretDraft;
+          if (!cancelled && draft) {
+            const keyByInstanceId = new Map<string, string>(
+              (
+                draft.instanceApiKeys as Array<{
+                  instanceId: string;
+                  apiKey: string;
+                }>
+              ).map((entry) => [entry.instanceId, entry.apiKey]),
+            );
+            setInstances((prev) =>
+              prev.map((inst) =>
+                keyByInstanceId.has(inst.id)
+                  ? { ...inst, apiKey: keyByInstanceId.get(inst.id) ?? "" }
+                  : inst,
+              ),
+            );
+            const toRecord = (
+              entries: Array<Record<string, string>>,
+              valueKey: string,
+            ): Record<string, string> =>
+              Object.fromEntries(
+                entries.map((e) => [e.dedupKey, e[valueKey] ?? ""]),
+              );
+            setDcApiKeyOverrides(
+              toRecord(draft.downloadClientApiKeyOverrides ?? [], "apiKey"),
+            );
+            setDcPasswordOverrides(
+              toRecord(draft.downloadClientPasswordOverrides ?? [], "password"),
+            );
+            setIdxApiKeyOverrides(
+              toRecord(draft.indexerApiKeyOverrides ?? [], "apiKey"),
+            );
+          }
+        }
+      } catch {
+        // best-effort: proceed without restored secrets.
+      } finally {
+        if (!cancelled) setSecretsHydrated(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [client]);
+
+  // Debounced save of secrets to the server draft. Gated on `secretsHydrated`
+  // so it can't wipe the draft before the initial load. Empty payload -> clear
+  // (the backend rejects empty saves).
+  useEffect(() => {
+    if (!secretsHydrated) return;
+    const instanceApiKeys = instances
+      .filter((inst) => inst.apiKey.trim())
+      .map((inst) => ({
+        instanceId: inst.id,
+        kind: inst.kind,
+        apiKey: inst.apiKey.trim(),
+      }));
+    const downloadClientApiKeyOverrides = Object.entries(dcApiKeyOverrides)
+      .filter(([, v]) => v.trim())
+      .map(([dedupKey, apiKey]) => ({ dedupKey, apiKey: apiKey.trim() }));
+    const downloadClientPasswordOverrides = Object.entries(dcPasswordOverrides)
+      .filter(([, v]) => v.trim())
+      .map(([dedupKey, password]) => ({ dedupKey, password: password.trim() }));
+    const indexerApiKeyOverrides = Object.entries(idxApiKeyOverrides)
+      .filter(([, v]) => v.trim())
+      .map(([dedupKey, apiKey]) => ({ dedupKey, apiKey: apiKey.trim() }));
+    const hasAny =
+      instanceApiKeys.length > 0 ||
+      downloadClientApiKeyOverrides.length > 0 ||
+      downloadClientPasswordOverrides.length > 0 ||
+      indexerApiKeyOverrides.length > 0;
+    const timer = setTimeout(() => {
+      if (hasAny) {
+        void client
+          .mutation(saveExternalImportSetupSecretDraftMutation, {
+            input: {
+              instanceApiKeys,
+              downloadClientApiKeyOverrides,
+              downloadClientPasswordOverrides,
+              indexerApiKeyOverrides,
+            },
+          })
+          .toPromise()
+          .then(({ data }) => {
+            if (
+              data?.saveExternalImportSetupSecretDraft?.overwroteAnotherUserDraft
+            ) {
+              setSecretDraftOverwroteOther(true);
+              setSecretDraftOwnedByOther(false);
+            }
+          });
+      } else {
+        void client
+          .mutation(clearExternalImportSetupSecretDraftMutation, {})
+          .toPromise();
+      }
+    }, 800);
+    return () => clearTimeout(timer);
+  }, [
+    secretsHydrated,
+    instances,
+    dcApiKeyOverrides,
+    dcPasswordOverrides,
+    idxApiKeyOverrides,
+    client,
+  ]);
 
   // Default all supported clients/indexers ON the first time a preview arrives.
   useEffect(() => {
@@ -696,9 +919,8 @@ export function useExternalImportSetup({ client }: UseExternalImportSetupArgs) {
 
   const [executing, setExecuting] = useState(false);
   const [executeError, setExecuteError] = useState<string | null>(null);
-  const [executeResult, setExecuteResult] = useState<ExternalImportResult | null>(
-    null,
-  );
+  const [executeResult, setExecuteResult] =
+    useState<ExternalImportResult | null>(() => initial?.executeResult ?? null);
 
   const executeSources = useCallback(async (): Promise<{
     ok: boolean;
@@ -946,6 +1168,11 @@ export function useExternalImportSetup({ client }: UseExternalImportSetupArgs) {
     }
 
     setFinalizing(false);
+    // Setup is complete — drop both the local draft and the server secret draft.
+    clearPersistedImportWizardState();
+    void client
+      .mutation(clearExternalImportSetupSecretDraftMutation, {})
+      .toPromise();
     return { ok: true, scanErrors, error: null };
   }, [client, buildMappings, roots, assign, libraries, connectedArrSessionIds]);
 
@@ -1065,6 +1292,33 @@ export function useExternalImportSetup({ client }: UseExternalImportSetupArgs) {
     idxApiKeyOverrides,
   ]);
 
+  // Persist NON-SENSITIVE user input so a refresh doesn't reset the wizard.
+  // Instance API keys are stripped here (secrets live in the server draft);
+  // server-derived state (preview, aggregate progress) is re-fetched.
+  useEffect(() => {
+    savePersistedImportWizardState({
+      instances: instances.map((inst) => ({ ...inst, apiKey: "" })),
+      manualRoots,
+      remaps,
+      assign,
+      libraries,
+      selectedDcKeys: [...selectedDcKeys],
+      selectedIdxKeys: [...selectedIdxKeys],
+      dcSelectionSeeded: dcSelectionSeeded.current,
+      idxSelectionSeeded: idxSelectionSeeded.current,
+      executeResult,
+    });
+  }, [
+    instances,
+    manualRoots,
+    remaps,
+    assign,
+    libraries,
+    selectedDcKeys,
+    selectedIdxKeys,
+    executeResult,
+  ]);
+
   return {
     // connect
     instances,
@@ -1079,6 +1333,9 @@ export function useExternalImportSetup({ client }: UseExternalImportSetupArgs) {
     connectionReady,
     canLeaveConnect,
     connectedArrSessionIds,
+    // server secret draft
+    secretDraftOwnedByOther,
+    secretDraftOverwroteOther,
     // preview / board
     preview,
     previewing,

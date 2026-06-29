@@ -91,6 +91,20 @@ export function SetupImportConnectView({
 
   return (
     <div data-slot="import-connect-view" className="w-full">
+      {wizard.secretDraftOwnedByOther ? (
+        <div
+          role="status"
+          className="mb-4 flex items-start gap-2 rounded-lg border px-3 py-2 text-xs"
+          style={{
+            background: "rgba(234, 179, 8, 0.1)",
+            borderColor: "rgba(234, 179, 8, 0.3)",
+            color: "#e7c66a",
+          }}
+        >
+          <CircleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+          <span>{t("setup.secretDraftOtherUserWarning")}</span>
+        </div>
+      ) : null}
       <div
         data-r="conngrid"
         className="grid items-start gap-4"

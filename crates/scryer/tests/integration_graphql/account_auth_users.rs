@@ -824,6 +824,31 @@ async fn graphql_settings_mutations_require_config_step_up() {
             }),
         ),
         (
+            "saveExternalImportSetupSecretDraft",
+            "saveExternalImportSetupSecretDraft",
+            r#"mutation($input: SaveExternalImportSetupSecretDraftInput!) { saveExternalImportSetupSecretDraft(input: $input) { saved } }"#,
+            json!({
+                "input": {
+                    "instanceApiKeys": [
+                        {
+                            "instanceId": "step-up-sonarr",
+                            "kind": "sonarr",
+                            "apiKey": "step-up-secret"
+                        }
+                    ],
+                    "downloadClientApiKeyOverrides": [],
+                    "downloadClientPasswordOverrides": [],
+                    "indexerApiKeyOverrides": []
+                }
+            }),
+        ),
+        (
+            "clearExternalImportSetupSecretDraft",
+            "clearExternalImportSetupSecretDraft",
+            r#"mutation { clearExternalImportSetupSecretDraft { cleared } }"#,
+            json!({}),
+        ),
+        (
             "createPostProcessingScript",
             "createPostProcessingScript",
             r#"mutation($input: CreatePostProcessingScriptInput!) { createPostProcessingScript(input: $input) { id } }"#,

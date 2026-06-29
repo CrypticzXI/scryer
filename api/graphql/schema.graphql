@@ -223,6 +223,10 @@ type CancelLibraryScanPayload {
 	accepted: Boolean!
 }
 
+type ClearExternalImportSetupSecretDraftPayload {
+	cleared: Boolean!
+}
+
 type ClearTitleImageCachePayload {
 	accepted: Boolean!
 }
@@ -1279,6 +1283,42 @@ type ExternalImportRootFolderPayload {
 	sourceKey: String!
 	kind: ExternalArrSourceKind!
 	arrRootPath: String!
+}
+
+type ExternalImportSetupApiKeyOverridePayload {
+	dedupKey: String!
+	apiKey: String!
+}
+
+input ExternalImportSetupInstanceApiKeyInput {
+	instanceId: ID!
+	kind: ExternalImportConnectionKind!
+	apiKey: String!
+}
+
+type ExternalImportSetupInstanceApiKeyPayload {
+	instanceId: ID!
+	kind: ExternalImportConnectionKind!
+	apiKey: String!
+}
+
+type ExternalImportSetupPasswordOverridePayload {
+	dedupKey: String!
+	password: String!
+}
+
+type ExternalImportSetupSecretDraftPayload {
+	instanceApiKeys: [ExternalImportSetupInstanceApiKeyPayload!]!
+	downloadClientApiKeyOverrides: [ExternalImportSetupApiKeyOverridePayload!]!
+	downloadClientPasswordOverrides: [ExternalImportSetupPasswordOverridePayload!]!
+	indexerApiKeyOverrides: [ExternalImportSetupApiKeyOverridePayload!]!
+	updatedAt: DateTime!
+}
+
+type ExternalImportSetupSecretDraftStatusPayload {
+	hasDraft: Boolean!
+	ownedByCurrentUser: Boolean!
+	updatedAt: DateTime
 }
 
 input ExternalImportSourceLibraryMappingInput {
@@ -2443,6 +2483,8 @@ type MutationRoot {
 	deleteBackup(input: DeleteBackupInput!): DeleteBackupPayload!
 	inspectRestoreBundle(bundleUpload: Upload!, password: String): RestoreInspectPayload!
 	applyRestoreBundle(uploadId: ID!, password: String): RestoreApplyPayload!
+	saveExternalImportSetupSecretDraft(input: SaveExternalImportSetupSecretDraftInput!): SaveExternalImportSetupSecretDraftPayload!
+	clearExternalImportSetupSecretDraft: ClearExternalImportSetupSecretDraftPayload!
 	startExternalImportArrSourceWarmup(input: StartExternalImportArrSourceWarmupInput!): ExternalImportMonitorWarmupProgressPayload!
 	cancelExternalImportArrSourceWarmup(sessionId: ID!): CancelExternalImportMonitorWarmupPayload!
 	"""
@@ -3106,6 +3148,8 @@ type QueryRoot {
 	indexerProviderTypes: [ProviderTypePayload!]!
 	downloadClientProviderTypes: [ProviderTypePayload!]!
 	subtitleProviderTypes: [ProviderTypePayload!]!
+	externalImportSetupSecretDraft: ExternalImportSetupSecretDraftPayload
+	externalImportSetupSecretDraftStatus: ExternalImportSetupSecretDraftStatusPayload!
 	searchMetadata(query: String!, type: MediaFacetValue!, limit: Int! = 25, language: String! = "eng", year: Int): [MetadataSearchItemPayload!]!
 	searchMetadataMulti(query: String!, limit: Int! = 25, language: String! = "eng"): MetadataSearchMultiPayload!
 	metadataMovie(input: MetadataMovieInput!): MetadataMoviePayload!
@@ -3422,6 +3466,19 @@ type RuntimeInfoPayload {
 enum RuntimePathStyleValue {
 	UNIX
 	WINDOWS
+}
+
+input SaveExternalImportSetupSecretDraftInput {
+	instanceApiKeys: [ExternalImportSetupInstanceApiKeyInput!]!
+	downloadClientApiKeyOverrides: [DownloadClientApiKeyOverrideInput!]!
+	downloadClientPasswordOverrides: [DownloadClientPasswordOverrideInput!]!
+	indexerApiKeyOverrides: [IndexerApiKeyOverrideInput!]!
+}
+
+type SaveExternalImportSetupSecretDraftPayload {
+	saved: Boolean!
+	overwroteAnotherUserDraft: Boolean!
+	updatedAt: DateTime!
 }
 
 input SaveQualityProfileSettingsInput {

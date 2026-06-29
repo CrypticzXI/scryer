@@ -37,6 +37,8 @@ import type { Release, TitleRecord } from "@/lib/types";
 import type { ParsedQualityProfile } from "@/lib/types/quality-profiles";
 import { cn } from "@/lib/utils";
 import {
+  titleOverviewInteractiveSearchButtonId,
+  titleOverviewInteractiveSearchPanelId,
   titleOverviewOpenButtonId,
   titleOverviewRowId,
   titleOverviewSearchButtonId,
@@ -854,6 +856,7 @@ export function CompactTitleTable({
                   )}
                 </TitleTableLazyTooltipActionButton>
                 <TitleTableLazyTooltipActionButton
+                  id={titleOverviewInteractiveSearchButtonId(item.id)}
                   tone="accent"
                   label={t("label.interactiveSearch")}
                   tooltip={t("help.interactiveSearchTooltip")}
@@ -902,7 +905,10 @@ export function CompactTitleTable({
           ) : null}
         </TableRow>
         {isPanelOpen ? (
-          <TableRow data-ui="compact-title-table-panel-row">
+          <TableRow
+            id={titleOverviewInteractiveSearchPanelId(item.id)}
+            data-ui="compact-title-table-panel-row"
+          >
             <TableCell
               colSpan={columnCount}
               className="border-t border-border bg-popover/40 p-0"

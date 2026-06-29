@@ -25,12 +25,12 @@ use crate::queries::sql_runtime::StoreDatastore;
 use crate::{
     AcquisitionStore, BlocklistStore, DomainEventStore, DownloadClientConfigStore,
     DownloadQueueCommandStore, DownloadSubmissionStore, ExternalImportMonitorStore,
-    FileSystemStagedNzbStore, HousekeepingStore, ImportStore, InMemoryIndexerStatsTracker,
-    IndexerConfigStore, IndexerSearchLearningStore, LibraryProbeStore, LibraryScanUnmatchedStore,
-    MediaFileStore, MediaRequestStore, MediaServerConnectionStore, MetadataGatewayClient,
-    MigrationMode, NotificationStore, OAuthStore, PendingReleaseStore, PluginStore,
-    PostProcessingScriptStore, QualityProfileStore, ReleaseStore, RuleSetStore, SettingsStore,
-    ShowStore, SmgEnrollmentConfig, SqliteLogicalBackupExporter, SqliteServices,
+    ExternalImportSetupSecretDraftStore, FileSystemStagedNzbStore, HousekeepingStore, ImportStore,
+    InMemoryIndexerStatsTracker, IndexerConfigStore, IndexerSearchLearningStore, LibraryProbeStore,
+    LibraryScanUnmatchedStore, MediaFileStore, MediaRequestStore, MediaServerConnectionStore,
+    MetadataGatewayClient, MigrationMode, NotificationStore, OAuthStore, PendingReleaseStore,
+    PluginStore, PostProcessingScriptStore, QualityProfileStore, ReleaseStore, RuleSetStore,
+    SettingsStore, ShowStore, SmgEnrollmentConfig, SqliteLogicalBackupExporter, SqliteServices,
     SubtitleDownloadStore, SubtitleProviderConfigStore, TitleImageStore, TitleStore, TotpStore,
     WantedStore, WebauthnStore, WorkflowOperationStore,
 };
@@ -647,6 +647,7 @@ enum DatastoreStores {
         download_submission_store: Arc<DownloadSubmissionStore>,
         import_store: Arc<ImportStore>,
         external_import_monitor_store: Arc<ExternalImportMonitorStore>,
+        external_import_setup_secret_draft_store: Arc<ExternalImportSetupSecretDraftStore>,
         download_queue_command_store: Arc<DownloadQueueCommandStore>,
         workflow_operation_store: Arc<WorkflowOperationStore>,
         discovery_store: Arc<DiscoveryStore>,
@@ -687,6 +688,7 @@ enum DatastoreStores {
         download_submission_store: Arc<DownloadSubmissionStore>,
         import_store: Arc<ImportStore>,
         external_import_monitor_store: Arc<ExternalImportMonitorStore>,
+        external_import_setup_secret_draft_store: Arc<ExternalImportSetupSecretDraftStore>,
         download_queue_command_store: Arc<DownloadQueueCommandStore>,
         workflow_operation_store: Arc<WorkflowOperationStore>,
         discovery_store: Arc<DiscoveryStore>,
@@ -770,6 +772,9 @@ impl DatastoreAssembly {
         let import_store = Arc::new(ImportStore::new(datastore.clone()));
         let external_import_monitor_store =
             Arc::new(ExternalImportMonitorStore::new(datastore.clone()));
+        let external_import_setup_secret_draft_store = Arc::new(
+            ExternalImportSetupSecretDraftStore::new(datastore.clone(), db.encryption_key_state()),
+        );
         let download_queue_command_store =
             Arc::new(DownloadQueueCommandStore::new(datastore.clone()));
         let workflow_operation_store = Arc::new(WorkflowOperationStore::new(datastore.clone()));
@@ -813,6 +818,7 @@ impl DatastoreAssembly {
             download_submission_store,
             import_store,
             external_import_monitor_store,
+            external_import_setup_secret_draft_store,
             download_queue_command_store,
             workflow_operation_store,
             discovery_store,
@@ -890,6 +896,9 @@ impl DatastoreAssembly {
         let import_store = Arc::new(ImportStore::new(datastore.clone()));
         let external_import_monitor_store =
             Arc::new(ExternalImportMonitorStore::new(datastore.clone()));
+        let external_import_setup_secret_draft_store = Arc::new(
+            ExternalImportSetupSecretDraftStore::new(datastore.clone(), db.encryption_key_state()),
+        );
         let download_queue_command_store =
             Arc::new(DownloadQueueCommandStore::new(datastore.clone()));
         let workflow_operation_store = Arc::new(WorkflowOperationStore::new(datastore.clone()));
@@ -931,6 +940,7 @@ impl DatastoreAssembly {
             download_submission_store,
             import_store,
             external_import_monitor_store,
+            external_import_setup_secret_draft_store,
             download_queue_command_store,
             workflow_operation_store,
             discovery_store,
@@ -1238,6 +1248,7 @@ impl DatastoreAssembly {
                 download_submission_store,
                 import_store,
                 external_import_monitor_store,
+                external_import_setup_secret_draft_store,
                 download_queue_command_store,
                 workflow_operation_store,
                 discovery_store,
@@ -1295,6 +1306,9 @@ impl DatastoreAssembly {
                 .with_download_submissions(download_submission_store.clone())
                 .with_download_queue_commands(download_queue_command_store.clone())
                 .with_external_import_monitor_snapshots(external_import_monitor_store.clone())
+                .with_external_import_setup_secret_drafts(
+                    external_import_setup_secret_draft_store.clone(),
+                )
                 .with_import_artifacts(import_store.clone())
                 .with_imports(import_store.clone())
                 .with_job_runs(workflow_operation_store.clone())
@@ -1335,6 +1349,7 @@ impl DatastoreAssembly {
                 download_submission_store,
                 import_store,
                 external_import_monitor_store,
+                external_import_setup_secret_draft_store,
                 download_queue_command_store,
                 workflow_operation_store,
                 discovery_store,
@@ -1390,6 +1405,9 @@ impl DatastoreAssembly {
                 .with_download_submissions(download_submission_store.clone())
                 .with_download_queue_commands(download_queue_command_store.clone())
                 .with_external_import_monitor_snapshots(external_import_monitor_store.clone())
+                .with_external_import_setup_secret_drafts(
+                    external_import_setup_secret_draft_store.clone(),
+                )
                 .with_import_artifacts(import_store.clone())
                 .with_imports(import_store.clone())
                 .with_job_runs(workflow_operation_store.clone())

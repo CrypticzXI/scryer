@@ -1903,6 +1903,22 @@ export const finalizeExternalImportMutation = `mutation FinalizeExternalImport($
   }
 }`;
 
+// Sensitive draft (API keys / passwords) — stored server-side, encrypted,
+// owner-scoped singleton. Requires ManageSystemSettings + config step-up.
+export const saveExternalImportSetupSecretDraftMutation = `mutation SaveExternalImportSetupSecretDraft($input: SaveExternalImportSetupSecretDraftInput!) {
+  saveExternalImportSetupSecretDraft(input: $input) {
+    saved
+    overwroteAnotherUserDraft
+    updatedAt
+  }
+}`;
+
+export const clearExternalImportSetupSecretDraftMutation = `mutation ClearExternalImportSetupSecretDraft {
+  clearExternalImportSetupSecretDraft {
+    cleared
+  }
+}`;
+
 export const rehydrateAllMetadataMutation = `mutation RehydrateAllMetadata($input: RehydrateAllMetadataInput!) {
   rehydrateAllMetadata(input: $input) {
     language
@@ -2005,6 +2021,19 @@ export type FinalizeExternalImportInput = {
 
 export type ExternalImportAggregateWarmupProgressInput = {
   sourceWarmupSessionIds: string[];
+};
+
+export type ExternalImportSetupInstanceApiKeyInput = {
+  instanceId: string;
+  kind: ExternalImportConnectionKind;
+  apiKey: string;
+};
+
+export type SaveExternalImportSetupSecretDraftInput = {
+  instanceApiKeys: ExternalImportSetupInstanceApiKeyInput[];
+  downloadClientApiKeyOverrides: DownloadClientApiKeyOverride[];
+  downloadClientPasswordOverrides: DownloadClientPasswordOverride[];
+  indexerApiKeyOverrides: IndexerApiKeyOverride[];
 };
 
 // ── Subtitle mutations ──────────────────────────────────────────────────────

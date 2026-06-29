@@ -37,6 +37,8 @@ import type { ParsedQualityProfile } from "@/lib/types/quality-profiles";
 import { selectPosterVariantUrl } from "@/lib/utils/poster-images";
 import { cn } from "@/lib/utils";
 import {
+  titleOverviewInteractiveSearchButtonId,
+  titleOverviewInteractiveSearchPanelId,
   titleOverviewOpenButtonId,
   titleOverviewRowId,
   titleOverviewSearchButtonId,
@@ -739,6 +741,7 @@ export function TitleTable({
                   )}
                 </TitleTableLazyTooltipActionButton>
                 <TitleTableLazyTooltipActionButton
+                  id={titleOverviewInteractiveSearchButtonId(item.id)}
                   tone="accent"
                   label={t("label.interactiveSearch")}
                   tooltip={t("help.interactiveSearchTooltip")}
@@ -794,7 +797,10 @@ export function TitleTable({
           ) : null}
         </TableRow>
         {isPanelOpen ? (
-          <TableRow data-ui="title-table-panel-row">
+          <TableRow
+            id={titleOverviewInteractiveSearchPanelId(item.id)}
+            data-ui="title-table-panel-row"
+          >
             <TableCell
               colSpan={columnCount}
               className="border-t border-border bg-popover/40 p-0"

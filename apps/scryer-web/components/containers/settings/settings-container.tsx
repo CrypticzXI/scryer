@@ -24,6 +24,7 @@ import type { SettingsSection } from "@/components/root/types";
 import type { LocaleCode, LanguageOption } from "@/lib/i18n";
 import { useTranslate } from "@/lib/context/translate-context";
 import { cn } from "@/lib/utils";
+import { selectorId } from "@/lib/utils/dom-ids";
 import { buildViewPath } from "@/lib/utils/routing";
 import {
   type ProviderCatalogFamily,
@@ -328,6 +329,7 @@ export const SettingsContainer = memo(function SettingsContainer({
               return (
                 <Link
                   key={item.section}
+                  id={selectorId("root-sidebar-settings", item.section)}
                   to={buildViewPath("settings", item.section)}
                   className={cn(
                     "flex h-9 shrink-0 items-center gap-2 rounded-[9px] px-3 text-[13px] font-medium text-[var(--scry-muted)] transition hover:bg-[var(--scry-hover)] hover:text-[var(--scry-ink2)] md:w-full",

@@ -32,17 +32,19 @@ use crate::{
     DiscoverySyncRunRecord, DiscoverySyncStateRecord, DomainEventRepository,
     DownloadQueueCommandRecord, DownloadQueueCommandRepository, DownloadSourceIdentity,
     DownloadSubmission, DownloadSubmissionRepository, ExternalIdentityVerifier,
-    ExternalImportMonitorSnapshotRepository, FileImporter, HousekeepingRepository, ImportArtifact,
-    ImportArtifactRepository, ImportRepository, IndexerQueryStats, IndexerSearchLearningKey,
-    IndexerSearchLearningRecord, IndexerSearchLearningRepository, IndexerStatsTracker, JobKey,
-    JobRunRecord, JobRunRepository, LibraryProbeRepository, LibraryProbeSignature,
-    LibraryRepository, LibraryRootDraft, LibraryScanUnmatchedItem,
-    LibraryScanUnmatchedItemRepository, MediaFileRepository, MediaRequestCounts, MediaRequestQuery,
-    MediaRequestRepository, MediaRequestResolution, NewBlocklistEntry, NewMediaRequest,
-    NotificationChannelRepository, NotificationSubscriptionRepository,
-    OAuthAuthorizationCodeRecord, OAuthConnectedAppRecord, OAuthRefreshGrantRecord,
-    OAuthRefreshRotationOutcome, OAuthRefreshTokenRecord, OAuthRepository, PendingRelease,
-    PendingReleaseRepository, PendingStagedNzb, PluginDescriptorLoader,
+    ExternalImportMonitorSnapshotRepository, ExternalImportSetupSecretDraft,
+    ExternalImportSetupSecretDraftInput, ExternalImportSetupSecretDraftRepository,
+    ExternalImportSetupSecretDraftSaveResult, ExternalImportSetupSecretDraftStatus, FileImporter,
+    HousekeepingRepository, ImportArtifact, ImportArtifactRepository, ImportRepository,
+    IndexerQueryStats, IndexerSearchLearningKey, IndexerSearchLearningRecord,
+    IndexerSearchLearningRepository, IndexerStatsTracker, JobKey, JobRunRecord, JobRunRepository,
+    LibraryProbeRepository, LibraryProbeSignature, LibraryRepository, LibraryRootDraft,
+    LibraryScanUnmatchedItem, LibraryScanUnmatchedItemRepository, MediaFileRepository,
+    MediaRequestCounts, MediaRequestQuery, MediaRequestRepository, MediaRequestResolution,
+    NewBlocklistEntry, NewMediaRequest, NotificationChannelRepository,
+    NotificationSubscriptionRepository, OAuthAuthorizationCodeRecord, OAuthConnectedAppRecord,
+    OAuthRefreshGrantRecord, OAuthRefreshRotationOutcome, OAuthRefreshTokenRecord, OAuthRepository,
+    PendingRelease, PendingReleaseRepository, PendingStagedNzb, PluginDescriptorLoader,
     PluginInstallationRepository, PostProcessingScriptRepository, ReleaseDecision,
     RuleSetRepository, SettingsRepository, StagedNzbRef, StagedNzbStore, SystemInfoProvider,
     TitleEpisodeProgressSummary, TitleImageBlob, TitleImageKind, TitleImageProcessor,
@@ -413,6 +415,38 @@ impl ExternalImportMonitorSnapshotRepository for NullExternalImportMonitorSnapsh
         _: &str,
     ) -> AppResult<()> {
         Ok(())
+    }
+}
+
+#[derive(Default)]
+pub struct NullExternalImportSetupSecretDraftRepository;
+
+#[async_trait]
+impl ExternalImportSetupSecretDraftRepository for NullExternalImportSetupSecretDraftRepository {
+    async fn get_for_owner(&self, _: &str) -> AppResult<Option<ExternalImportSetupSecretDraft>> {
+        Ok(None)
+    }
+
+    async fn status_for_actor(&self, _: &str) -> AppResult<ExternalImportSetupSecretDraftStatus> {
+        Ok(ExternalImportSetupSecretDraftStatus {
+            has_draft: false,
+            owned_by_current_user: false,
+            updated_at: None,
+        })
+    }
+
+    async fn save_for_owner(
+        &self,
+        _: &str,
+        _: ExternalImportSetupSecretDraftInput,
+    ) -> AppResult<ExternalImportSetupSecretDraftSaveResult> {
+        Err(AppError::Repository(
+            "external import setup secret draft repository is not configured".to_string(),
+        ))
+    }
+
+    async fn clear_for_owner(&self, _: &str) -> AppResult<bool> {
+        Ok(false)
     }
 }
 

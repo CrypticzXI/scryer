@@ -14,9 +14,13 @@ use scryer_application::{
     ExternalImportMonitorSeasonEntry, ExternalImportMonitorSeriesEntry,
     ExternalImportMonitorSnapshotChunk, ExternalImportMonitorSnapshotEntryKind,
     ExternalImportMonitorWarmupPhase, ExternalImportMonitorWarmupProgressSnapshot,
-    ExternalImportMonitorWarmupStatus, IndexerConfigUpdate, LibraryScanHint, LibraryScanHintFacet,
-    LibraryScanHintSet, LibraryScanHintSource, library_scan_file_full_path_key,
-    library_scan_file_leaf_key, library_scan_folder_full_path_key, library_scan_folder_leaf_key,
+    ExternalImportMonitorWarmupStatus, ExternalImportSetupInstanceApiKeyDraft,
+    ExternalImportSetupSecretDraftInput as AppExternalImportSetupSecretDraftInput,
+    ExternalImportSetupSecretDraftSaveResult, ExternalImportSetupSecretInstanceKind,
+    ExternalImportSetupSecretOverrideDraft, IndexerConfigUpdate, LibraryScanHint,
+    LibraryScanHintFacet, LibraryScanHintSet, LibraryScanHintSource,
+    library_scan_file_full_path_key, library_scan_file_leaf_key, library_scan_folder_full_path_key,
+    library_scan_folder_leaf_key,
 };
 use scryer_domain::{AppPermission, MediaFacet, NewDownloadClientConfig, NewIndexerConfig};
 use serde::{Serialize, de::DeserializeOwned};
@@ -206,6 +210,84 @@ fn gql_arr_source_kind(kind: AppArrSourceKind) -> ExternalArrSourceKind {
     match kind {
         AppArrSourceKind::Sonarr => ExternalArrSourceKind::Sonarr,
         AppArrSourceKind::Radarr => ExternalArrSourceKind::Radarr,
+    }
+}
+
+fn app_secret_instance_kind(
+    kind: ExternalImportConnectionKind,
+) -> ExternalImportSetupSecretInstanceKind {
+    match kind {
+        ExternalImportConnectionKind::Sonarr => ExternalImportSetupSecretInstanceKind::Sonarr,
+        ExternalImportConnectionKind::Radarr => ExternalImportSetupSecretInstanceKind::Radarr,
+        ExternalImportConnectionKind::Prowlarr => ExternalImportSetupSecretInstanceKind::Prowlarr,
+    }
+}
+
+fn secret_override_from_api_key_input(
+    input: DownloadClientApiKeyOverrideInput,
+) -> ExternalImportSetupSecretOverrideDraft {
+    ExternalImportSetupSecretOverrideDraft {
+        dedup_key: input.dedup_key,
+        secret: input.api_key,
+    }
+}
+
+fn secret_override_from_password_input(
+    input: DownloadClientPasswordOverrideInput,
+) -> ExternalImportSetupSecretOverrideDraft {
+    ExternalImportSetupSecretOverrideDraft {
+        dedup_key: input.dedup_key,
+        secret: input.password,
+    }
+}
+
+fn secret_override_from_indexer_api_key_input(
+    input: IndexerApiKeyOverrideInput,
+) -> ExternalImportSetupSecretOverrideDraft {
+    ExternalImportSetupSecretOverrideDraft {
+        dedup_key: input.dedup_key,
+        secret: input.api_key,
+    }
+}
+
+fn external_import_setup_secret_draft_input_from_gql(
+    input: SaveExternalImportSetupSecretDraftInput,
+) -> AppExternalImportSetupSecretDraftInput {
+    AppExternalImportSetupSecretDraftInput {
+        instance_api_keys: input
+            .instance_api_keys
+            .into_iter()
+            .map(|entry| ExternalImportSetupInstanceApiKeyDraft {
+                instance_id: entry.instance_id.to_string(),
+                kind: app_secret_instance_kind(entry.kind),
+                api_key: entry.api_key,
+            })
+            .collect(),
+        download_client_api_key_overrides: input
+            .download_client_api_key_overrides
+            .into_iter()
+            .map(secret_override_from_api_key_input)
+            .collect(),
+        download_client_password_overrides: input
+            .download_client_password_overrides
+            .into_iter()
+            .map(secret_override_from_password_input)
+            .collect(),
+        indexer_api_key_overrides: input
+            .indexer_api_key_overrides
+            .into_iter()
+            .map(secret_override_from_indexer_api_key_input)
+            .collect(),
+    }
+}
+
+fn save_external_import_setup_secret_draft_payload(
+    result: ExternalImportSetupSecretDraftSaveResult,
+) -> SaveExternalImportSetupSecretDraftPayload {
+    SaveExternalImportSetupSecretDraftPayload {
+        saved: result.saved,
+        overwrote_another_user_draft: result.overwrote_another_user_draft,
+        updated_at: result.updated_at,
     }
 }
 
@@ -705,6 +787,34 @@ fn imported_indexer_config_json(
 
 #[Object]
 impl ExternalImportMutations {
+    async fn save_external_import_setup_secret_draft(
+        &self,
+        ctx: &Context<'_>,
+        input: SaveExternalImportSetupSecretDraftInput,
+    ) -> GqlResult<SaveExternalImportSetupSecretDraftPayload> {
+        let actor = require_config_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
+        let app = app_from_ctx(ctx)?;
+        app.save_external_import_setup_secret_draft(
+            &actor,
+            external_import_setup_secret_draft_input_from_gql(input),
+        )
+        .await
+        .map(save_external_import_setup_secret_draft_payload)
+        .map_err(to_gql_error)
+    }
+
+    async fn clear_external_import_setup_secret_draft(
+        &self,
+        ctx: &Context<'_>,
+    ) -> GqlResult<ClearExternalImportSetupSecretDraftPayload> {
+        let actor = require_config_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
+        let app = app_from_ctx(ctx)?;
+        app.clear_external_import_setup_secret_draft(&actor)
+            .await
+            .map(|cleared| ClearExternalImportSetupSecretDraftPayload { cleared })
+            .map_err(to_gql_error)
+    }
+
     async fn start_external_import_arr_source_warmup(
         &self,
         ctx: &Context<'_>,
