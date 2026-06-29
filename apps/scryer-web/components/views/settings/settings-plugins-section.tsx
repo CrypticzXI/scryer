@@ -347,22 +347,30 @@ function PluginTable({
   emptyMessage: string;
 }) {
   const t = useTranslate();
-  const nameColumnClass = "w-[38%]";
-  const typeColumnClass = "w-[14%]";
-  const versionColumnClass = "w-[11%]";
-  const sizeColumnClass = "w-[10%]";
-  const statusColumnClass = "w-[14%]";
+  const nameColumnClass =
+    showActions === "installed" ? "w-[34%]" : "w-[38%]";
+  const typeColumnClass =
+    showActions === "installed" ? "w-[13%]" : "w-[14%]";
+  const versionColumnClass =
+    showActions === "installed" ? "w-[10%]" : "w-[11%]";
+  const sizeColumnClass =
+    showActions === "installed" ? "w-[8%]" : "w-[10%]";
+  const statusColumnClass =
+    showActions === "installed" ? "w-[13%]" : "w-[12%]";
+  const enabledColumnClass = "w-[8%] text-center";
   const actionsColumnClass =
-    showActions === "installed" ? "w-32 text-right" : "w-48 text-right";
+    showActions === "installed"
+      ? "w-[14%] overflow-hidden pl-4 pr-5 text-right"
+      : "w-[15%] overflow-hidden pl-4 pr-5 text-right";
   if (plugins.length === 0) {
     return <p className={`${PLUGIN_PANEL_BODY_CLASS} text-sm ${PLUGIN_MUTED_TEXT_CLASS}`}>{emptyMessage}</p>;
   }
 
   return (
-    <div className="overflow-x-auto">
+    <div className="overflow-hidden">
       <Table
         id={showActions === "installed" ? "settings-plugins-installed-table" : "settings-plugins-available-table"}
-        className="min-w-[1080px] table-fixed"
+        className="w-full table-fixed"
       >
         <TableHeader>
           <TableRow className="border-[var(--scry-border3)] bg-[var(--scry-inset)] hover:bg-[var(--scry-inset)]">
@@ -372,7 +380,7 @@ function PluginTable({
             <TableHead className={cn(sizeColumnClass, "font-semibold", PLUGIN_MUTED_TEXT_CLASS)}>{t("queue.size")}</TableHead>
             <TableHead className={cn(statusColumnClass, "font-semibold", PLUGIN_MUTED_TEXT_CLASS)}>{t("label.status")}</TableHead>
             {showActions === "installed" && (
-              <TableHead className={cn("w-20 text-center font-semibold", PLUGIN_MUTED_TEXT_CLASS)}>{t("label.enabled")}</TableHead>
+              <TableHead className={cn(enabledColumnClass, "font-semibold", PLUGIN_MUTED_TEXT_CLASS)}>{t("label.enabled")}</TableHead>
             )}
             <TableHead className={cn(actionsColumnClass, "font-semibold", PLUGIN_MUTED_TEXT_CLASS)}>{t("label.actions")}</TableHead>
           </TableRow>
@@ -491,7 +499,7 @@ function PluginTable({
                   </div>
                 </TableCell>
                 {showActions === "installed" && (
-                  <TableCell className="w-20 text-center">
+                  <TableCell className={enabledColumnClass}>
                     <RenderBooleanIcon
                       value={plugin.isEnabled}
                       label={`${t("label.enabled")}: ${plugin.name}`}
@@ -500,8 +508,8 @@ function PluginTable({
                 )}
                 <TableCell className={actionsColumnClass}>
                   {showActions === "installed" ? (
-                    <div className="ml-auto flex min-w-0 flex-col items-end gap-2 w-28">
-                      <div className="flex w-full items-center justify-end gap-1">
+                    <div className="ml-auto flex w-full max-w-32 min-w-0 flex-col items-end gap-2">
+                      <div className="flex w-full flex-wrap items-center justify-end gap-1">
                         <PluginActionButton
                           id={selectorId("settings-plugin-toggle", plugin.name)}
                           tone={plugin.isEnabled ? "disabled" : "enabled"}
@@ -555,7 +563,7 @@ function PluginTable({
                       )}
                     </div>
                   ) : (
-                    <div className="ml-auto grid w-44 grid-cols-[minmax(0,1fr)_auto] items-center gap-3">
+                    <div className="ml-auto grid w-full max-w-36 grid-cols-[minmax(0,1fr)_auto] items-center gap-2">
                       <div className="min-w-0">
                         {runningProgress ? (
                           <PluginInstallProgressBar progress={runningProgress} />

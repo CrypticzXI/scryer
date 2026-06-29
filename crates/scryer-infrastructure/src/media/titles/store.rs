@@ -1796,6 +1796,13 @@ fn title_catalog_normalized_name_expression_sql() -> String {
     expression
 }
 
+// Secondary tiebreak for titles that share a primary `catalog_sort_key` (primary strength is
+// case/accent-insensitive). Mirrors the Rust `title_catalog_name_tie_key`, but the case-folding
+// is engine-specific: SQLite `LOWER()` is ASCII-only while Postgres and the Rust comparator fold
+// full Unicode, so the tie order of equal-primary titles that differ only in non-ASCII case can
+// vary across engines. That is cosmetic — the trailing `id` ordering keeps every result set a
+// deterministic total order. Making the secondary order identical across all three would require
+// a precomputed tie-key column.
 fn title_catalog_normalized_name_tie_expression_sql() -> String {
     format!(
         "LOWER(TRIM({}))",

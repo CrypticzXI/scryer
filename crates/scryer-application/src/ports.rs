@@ -201,11 +201,34 @@ pub struct DiscoveryItemsResult {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+pub struct DiscoveryItemsPageRecord {
+    pub items: Vec<DiscoveryItemRecord>,
+    pub total_count: i64,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct DiscoveryItemsStorageQuery {
+    pub context_run_id: Option<String>,
+    pub public_run_id: Option<String>,
+    pub readable_library_ids: Vec<String>,
+    pub filters: DiscoveryItemsQuery,
+    pub limit: usize,
+    pub offset: usize,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct DiscoverySectionResult {
     pub section_id: String,
     pub section_type: String,
     pub title: String,
     pub surface: String,
+    pub total_count: i64,
+    pub items: Vec<DiscoveryItemRecord>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct DiscoverySectionItemsRecord {
+    pub section: DiscoverySectionRecord,
     pub total_count: i64,
     pub items: Vec<DiscoveryItemRecord>,
 }
@@ -289,12 +312,30 @@ pub struct DiscoverySectionRecord {
     pub section_type: String,
     pub surface: String,
     pub title: String,
-    pub source_signals_json: String,
-    pub facets_json: String,
     pub sort_index: i32,
-    pub raw_json: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DiscoverySourceTagRecord {
+    pub category: Option<String>,
+    pub name: Option<String>,
+    pub values: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DiscoveryRankComponentRecord {
+    pub component_index: i32,
+    pub component_name: Option<String>,
+    pub component_value: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DiscoveryItemLibraryProvenanceRecord {
+    pub subject_key: String,
+    pub title_id: Option<String>,
+    pub library_id: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -304,6 +345,7 @@ pub struct DiscoveryItemRecord {
     pub base_generation_id: Option<String>,
     pub source_run_kind: String,
     pub section_id: Option<String>,
+    pub sort_index: i32,
     pub target_key: String,
     pub target_kind: String,
     pub resolved: bool,
@@ -317,37 +359,36 @@ pub struct DiscoveryItemRecord {
     pub background_url: Option<String>,
     pub overview: Option<String>,
     pub content_type: Option<String>,
-    pub genres_json: String,
+    pub genres: Vec<String>,
     pub rating: Option<f64>,
-    pub rating_sources_json: String,
-    pub status_tags_json: String,
-    pub source_tags_json: String,
-    pub sources_json: String,
+    pub rating_sources: Vec<String>,
+    pub status_tags: Vec<String>,
+    pub source_tags: Vec<DiscoverySourceTagRecord>,
+    pub sources: Vec<String>,
     pub best_source: Option<String>,
-    pub relation_types_json: String,
-    pub relation_subtypes_json: String,
-    pub chart_signals_json: String,
-    pub provider_signals_json: String,
-    pub rank_components_json: String,
+    pub relation_types: Vec<String>,
+    pub relation_subtypes: Vec<String>,
+    pub chart_signals: Vec<String>,
+    pub provider_signals: Vec<String>,
+    pub rank_components: Vec<DiscoveryRankComponentRecord>,
     pub source_count: Option<i32>,
     pub edge_count: Option<i32>,
     pub relation_count: Option<i32>,
     pub source_subject_count: Option<i32>,
     pub rank_score: Option<f64>,
-    pub matched_subject_keys_json: String,
-    pub matched_subject_titles_json: String,
+    pub matched_subject_keys: Vec<String>,
+    pub matched_subject_titles: Vec<String>,
     pub matched_subject_count: i32,
-    pub library_provenance_json: String,
+    pub library_provenance: Vec<DiscoveryItemLibraryProvenanceRecord>,
     pub tmdb_collection_id: Option<String>,
     pub tmdb_collection_name: Option<String>,
     pub owned_in_input: bool,
-    pub facet_terms_json: String,
-    pub context_terms_json: String,
-    pub change_subject_keys_json: String,
-    pub removed_subject_keys_json: String,
+    pub facet_terms: Vec<String>,
+    pub context_terms: Vec<String>,
+    pub change_subject_keys: Vec<String>,
+    pub removed_subject_keys: Vec<String>,
     pub tombstoned_by_run_id: Option<String>,
     pub tombstoned_at: Option<DateTime<Utc>>,
-    pub raw_json: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -359,7 +400,6 @@ pub struct DiscoveryFacetRecord {
     pub facet_value: String,
     pub smg_count: Option<i64>,
     pub local_count: Option<i64>,
-    pub raw_json: String,
 }
 
 #[derive(Clone, Debug)]
@@ -471,6 +511,36 @@ pub trait DiscoveryRepository: Send + Sync {
         run_id: &str,
         surface: Option<&str>,
     ) -> AppResult<Vec<DiscoverySectionRecord>>;
+    async fn list_public_discovery_section_items(
+        &self,
+        run_id: &str,
+        include_unresolved: bool,
+        limit_per_section: i64,
+    ) -> AppResult<Vec<DiscoverySectionItemsRecord>>;
+    async fn list_personalized_discovery_home_items(
+        &self,
+        run_id: &str,
+        readable_library_ids: &[String],
+        include_unresolved: bool,
+        limit: i64,
+    ) -> AppResult<Vec<DiscoveryItemRecord>>;
+    async fn list_personalized_complete_collection_items(
+        &self,
+        run_id: &str,
+        readable_library_ids: &[String],
+        include_unresolved: bool,
+        limit: i64,
+    ) -> AppResult<Vec<DiscoveryItemRecord>>;
+    async fn list_personalized_discovery_facets(
+        &self,
+        run_id: &str,
+        readable_library_ids: &[String],
+        include_unresolved: bool,
+    ) -> AppResult<Vec<DiscoveryFacetRecord>>;
+    async fn query_discovery_items(
+        &self,
+        query: &DiscoveryItemsStorageQuery,
+    ) -> AppResult<DiscoveryItemsPageRecord>;
     async fn list_discovery_items_for_generation(
         &self,
         base_generation_id: &str,

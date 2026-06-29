@@ -1,0 +1,666 @@
+import {
+  useCallback,
+  useRef,
+  useState,
+  type CSSProperties,
+  type DragEvent,
+} from "react";
+import {
+  ArrowDown,
+  CheckCheck,
+  FolderSymlink,
+  Library,
+  Plus,
+  Trash2,
+} from "lucide-react";
+
+import { useIsMobile } from "@/lib/hooks/use-mobile";
+import {
+  kindCompatibleWithFacet,
+  type ImportRoot,
+  type UseExternalImportSetupReturn,
+  type WizardFacet,
+} from "@/lib/hooks/use-external-import-setup";
+
+import { ImportAssignSheet } from "./import/import-assign-sheet";
+import { ImportRemapDialog } from "./import/import-remap-dialog";
+import { ImportRootChip } from "./import/import-root-chip";
+import {
+  facetLabelKey,
+  facetPillStyle,
+  facetStyle,
+} from "./import/facet-style";
+
+interface SetupImportLibrariesViewProps {
+  wizard: UseExternalImportSetupReturn;
+  t: (key: string, values?: Record<string, unknown>) => string;
+}
+
+const FACET_PICKER: WizardFacet[] = ["movie", "series", "anime"];
+
+const MOBILE_BREAKPOINT = 761; // ≤760px → bottom-sheet flow
+
+const SECTION_LABEL: CSSProperties = {
+  fontSize: 11,
+  fontWeight: 700,
+  letterSpacing: "0.1em",
+  textTransform: "uppercase",
+  color: "var(--scry-faint2)",
+};
+
+const DROP_OUTLINE = "2px dashed var(--scry-accent)";
+
+export default function SetupImportLibrariesView({
+  wizard,
+  t,
+}: SetupImportLibrariesViewProps) {
+  const {
+    trayRoots,
+    libraries,
+    rootsForLibrary,
+    assign,
+    assignRoot,
+    addManualRoot,
+    setManualRootPath,
+    removeManualRoot,
+    addLibrary,
+    renameLibrary,
+    removeLibrary,
+    setRootRemap,
+    rootById,
+  } = wizard;
+
+  const isMobile = useIsMobile(MOBILE_BREAKPOINT);
+
+  // ── Local UI state ─────────────────────────────────────────────────────────
+  const [assignSheetRootId, setAssignSheetRootId] = useState<string | null>(
+    null,
+  );
+  const [remapRootId, setRemapRootId] = useState<string | null>(null);
+  const [addingLib, setAddingLib] = useState(false);
+  const [editLibId, setEditLibId] = useState<string | null>(null);
+  const [editLibVal, setEditLibVal] = useState("");
+
+  const dragRootId = useRef<string | null>(null);
+
+  const assignSheetRoot =
+    assignSheetRootId != null ? wizard.rootById(assignSheetRootId) : null;
+  const remapRoot = remapRootId != null ? wizard.rootById(remapRootId) : null;
+
+  // ── Desktop drag-and-drop (HTML5) ──────────────────────────────────────────
+  const onDragStart = useCallback((e: DragEvent, rootId: string) => {
+    dragRootId.current = rootId;
+    e.dataTransfer.effectAllowed = "move";
+    e.dataTransfer.setData("text/plain", rootId);
+    const chip = (e.target as HTMLElement).closest<HTMLElement>(
+      "[data-rootchip]",
+    );
+    if (chip) chip.style.opacity = "0.4";
+  }, []);
+
+  const onDragEnd = useCallback((e: DragEvent) => {
+    dragRootId.current = null;
+    const chip = (e.target as HTMLElement).closest<HTMLElement>(
+      "[data-rootchip]",
+    );
+    if (chip) chip.style.opacity = "";
+  }, []);
+
+  const zoneOver = useCallback((e: DragEvent) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+  }, []);
+
+  const zoneEnter = useCallback((e: DragEvent) => {
+    const el = e.currentTarget as HTMLElement & { _oc?: number };
+    el._oc = (el._oc ?? 0) + 1;
+    el.style.outline = DROP_OUTLINE;
+    el.style.outlineOffset = "2px";
+  }, []);
+
+  const zoneLeave = useCallback((e: DragEvent) => {
+    const el = e.currentTarget as HTMLElement & { _oc?: number };
+    el._oc = (el._oc ?? 0) - 1;
+    if (el._oc <= 0) {
+      el._oc = 0;
+      el.style.outline = "";
+      el.style.outlineOffset = "";
+    }
+  }, []);
+
+  // A root may only drop onto a library whose facet is compatible with the
+  // root's source kind (Radarr→movie, Sonarr→series|anime, manual→any). The
+  // tray (libraryId === null) always accepts (unassign).
+  const dropAllowed = useCallback(
+    (libFacet: WizardFacet) => {
+      const id = dragRootId.current;
+      if (!id) return true;
+      const root = rootById(id);
+      return !!root && kindCompatibleWithFacet(root.kind, libFacet);
+    },
+    [rootById],
+  );
+
+  const dropTo = useCallback(
+    (e: DragEvent, libraryId: string | null) => {
+      e.preventDefault();
+      const el = e.currentTarget as HTMLElement & { _oc?: number };
+      el._oc = 0;
+      el.style.outline = "";
+      el.style.outlineOffset = "";
+      const id = dragRootId.current ?? e.dataTransfer.getData("text/plain");
+      dragRootId.current = null;
+      if (!id) return;
+      if (libraryId === null) {
+        assignRoot(id, null);
+        return;
+      }
+      const root = rootById(id);
+      const lib = libraries.find((entry) => entry.id === libraryId);
+      if (root && lib && kindCompatibleWithFacet(root.kind, lib.facet)) {
+        assignRoot(id, libraryId);
+      }
+    },
+    [assignRoot, libraries, rootById],
+  );
+
+  // Facet-aware drag handlers for library cards: refuse the drop (and skip the
+  // highlight) when the dragged root's kind is incompatible with the facet.
+  const libZoneOver = useCallback(
+    (e: DragEvent, libFacet: WizardFacet) => {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = dropAllowed(libFacet) ? "move" : "none";
+    },
+    [dropAllowed],
+  );
+  const libZoneEnter = useCallback(
+    (e: DragEvent, libFacet: WizardFacet) => {
+      if (!dropAllowed(libFacet)) return;
+      zoneEnter(e);
+    },
+    [dropAllowed, zoneEnter],
+  );
+
+  // ── Inline library rename ──────────────────────────────────────────────────
+  const startRename = useCallback((libId: string, name: string) => {
+    setEditLibId(libId);
+    setEditLibVal(name);
+  }, []);
+
+  const commitRename = useCallback(() => {
+    if (editLibId) {
+      const trimmed = editLibVal.trim();
+      if (trimmed) renameLibrary(editLibId, trimmed); // keep old name if blank
+    }
+    setEditLibId(null);
+    setEditLibVal("");
+  }, [editLibId, editLibVal, renameLibrary]);
+
+  const cancelRename = useCallback(() => {
+    setEditLibId(null);
+    setEditLibVal("");
+  }, []);
+
+  const trayCountLabel =
+    trayRoots.length === 1
+      ? t("setup.unmappedCountOne", { count: 1 })
+      : t("setup.unmappedCountMany", { count: trayRoots.length });
+
+  const renderChip = (root: ImportRoot, variant: "tray" | "library") => (
+    <ImportRootChip
+      key={root.id}
+      root={root}
+      variant={variant}
+      isMobile={isMobile}
+      draggable={!isMobile}
+      onDragStart={(e) => onDragStart(e, root.id)}
+      onDragEnd={onDragEnd}
+      onRemap={() => setRemapRootId(root.id)}
+      onAssign={() => setAssignSheetRootId(root.id)}
+      onRemoveManual={() => removeManualRoot(root.id)}
+      onManualPathChange={(path) => setManualRootPath(root.id, path)}
+      t={t}
+    />
+  );
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 0 }}>
+      {/* ── Source Roots tray ── */}
+      <div
+        data-drop="tray"
+        onDragOver={!isMobile ? zoneOver : undefined}
+        onDragEnter={!isMobile ? zoneEnter : undefined}
+        onDragLeave={!isMobile ? zoneLeave : undefined}
+        onDrop={!isMobile ? (e) => dropTo(e, null) : undefined}
+        style={{
+          border: "1px solid var(--scry-border)",
+          borderRadius: 16,
+          background: "rgba(10, 17, 32, 0.5)",
+          padding: "18px 20px",
+        }}
+      >
+        <div
+          style={{
+            display: "flex",
+            flexWrap: "wrap",
+            alignItems: "center",
+            gap: 10,
+            marginBottom: 12,
+          }}
+        >
+          <FolderSymlink
+            size={17}
+            style={{ color: "var(--scry-faint2)", flex: "none" }}
+          />
+          <span style={SECTION_LABEL}>{t("setup.sourceRoots")}</span>
+          <span style={{ fontSize: 12, color: "var(--scry-faint)" }}>
+            {trayCountLabel}
+          </span>
+          <button
+            type="button"
+            onClick={addManualRoot}
+            style={{
+              marginLeft: "auto",
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 6,
+              height: 34,
+              padding: "0 12px",
+              borderRadius: 9,
+              border: "1px solid var(--scry-border2)",
+              background: "var(--scry-bg)",
+              color: "var(--scry-ink2)",
+              fontSize: 13,
+              fontWeight: 600,
+              cursor: "pointer",
+            }}
+          >
+            <Plus size={15} style={{ color: "var(--scry-accent-text)" }} />
+            {t("setup.addSourceRoot")}
+          </button>
+        </div>
+
+        <div
+          style={{
+            display: "flex",
+            flexWrap: "wrap",
+            gap: 9,
+            minHeight: 46,
+            alignItems: "flex-start",
+          }}
+        >
+          {trayRoots.length > 0 ? (
+            trayRoots.map((root) => renderChip(root, "tray"))
+          ) : (
+            <div
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 8,
+                width: "100%",
+                minHeight: 46,
+                justifyContent: "center",
+                borderRadius: 11,
+                border: "1px dashed var(--scry-border2)",
+                color: "var(--scry-faint3)",
+                fontSize: 12,
+              }}
+            >
+              <CheckCheck size={16} />
+              {t("setup.allRootsMapped")}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* ── Connector hint ── */}
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          gap: 7,
+          margin: "13px 0",
+          fontSize: 12,
+          color: "var(--scry-faint3)",
+        }}
+      >
+        <ArrowDown size={15} />
+        {t("setup.dragRootIntoLibrary")}
+      </div>
+
+      {/* ── Libraries grid ── */}
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fill, minmax(266px, 1fr))",
+          gap: 14,
+        }}
+      >
+        {libraries.map((lib) => {
+          const style = facetStyle(lib.facet);
+          const chips = rootsForLibrary(lib.id);
+          const editing = editLibId === lib.id;
+          return (
+            <div
+              key={lib.id}
+              data-drop="library"
+              onDragOver={!isMobile ? (e) => libZoneOver(e, lib.facet) : undefined}
+              onDragEnter={!isMobile ? (e) => libZoneEnter(e, lib.facet) : undefined}
+              onDragLeave={!isMobile ? zoneLeave : undefined}
+              onDrop={!isMobile ? (e) => dropTo(e, lib.id) : undefined}
+              style={{
+                display: "flex",
+                flexDirection: "column",
+                border: "1px solid var(--scry-border)",
+                borderRadius: 14,
+                background: "rgba(10, 17, 32, 0.5)",
+                padding: "14px 15px",
+                minHeight: 130,
+              }}
+            >
+              {/* Header */}
+              <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
+                <span
+                  aria-hidden
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    width: 30,
+                    height: 30,
+                    borderRadius: 8,
+                    background: style.bg,
+                    border: `1px solid ${style.border}`,
+                    color: style.text,
+                    flex: "none",
+                  }}
+                >
+                  <Library size={15} />
+                </span>
+                {editing ? (
+                  <input
+                    autoFocus
+                    value={editLibVal}
+                    onChange={(e) => setEditLibVal(e.target.value)}
+                    onFocus={(e) => e.target.select()}
+                    onBlur={commitRename}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        commitRename();
+                      } else if (e.key === "Escape") {
+                        e.preventDefault();
+                        cancelRename();
+                      }
+                    }}
+                    style={{
+                      width: 130,
+                      height: 26,
+                      padding: "0 8px",
+                      borderRadius: 7,
+                      border: "1px solid var(--scry-accent)",
+                      background: "var(--scry-bg)",
+                      color: "#fff",
+                      fontSize: 13.5,
+                      fontWeight: 600,
+                      outline: "none",
+                    }}
+                  />
+                ) : (
+                  <button
+                    type="button"
+                    title={t("setup.renameLibrary")}
+                    onClick={() => startRename(lib.id, lib.name)}
+                    style={{
+                      flex: 1,
+                      minWidth: 0,
+                      textAlign: "left",
+                      background: "transparent",
+                      border: "none",
+                      padding: 0,
+                      cursor: "text",
+                      fontSize: 14,
+                      fontWeight: 600,
+                      color: "#f1f5ff",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    {lib.name}
+                  </button>
+                )}
+                <button
+                  type="button"
+                  title={t("setup.deleteLibrary")}
+                  onClick={() => removeLibrary(lib.id)}
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    width: 28,
+                    height: 28,
+                    borderRadius: 7,
+                    border: "1px solid var(--scry-border2)",
+                    background: "transparent",
+                    color: "var(--scry-faint)",
+                    flex: "none",
+                    cursor: "pointer",
+                  }}
+                >
+                  <Trash2 size={13} />
+                </button>
+              </div>
+
+              {/* Facet pill */}
+              <span
+                style={{
+                  display: "inline-flex",
+                  alignSelf: "flex-start",
+                  alignItems: "center",
+                  gap: 5,
+                  margin: "10px 0",
+                  padding: "3px 9px",
+                  borderRadius: 7,
+                  fontSize: 10.5,
+                  fontWeight: 700,
+                  ...facetPillStyle(lib.facet),
+                }}
+              >
+                <span
+                  aria-hidden
+                  style={{
+                    width: 6,
+                    height: 6,
+                    borderRadius: "50%",
+                    background: style.dot,
+                  }}
+                />
+                {t(facetLabelKey(lib.facet))}
+              </span>
+
+              {/* Drop body */}
+              <div
+                style={{
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 8,
+                  flex: 1,
+                }}
+              >
+                {chips.length > 0 ? (
+                  chips.map((root) => renderChip(root, "library"))
+                ) : (
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      gap: 6,
+                      minHeight: 44,
+                      borderRadius: 10,
+                      border: "1px dashed var(--scry-border3)",
+                      color: "var(--scry-faint3)",
+                      fontSize: 12,
+                    }}
+                  >
+                    <Plus size={13} />
+                    {t("setup.dropRootsHere")}
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        })}
+
+        {/* Add-library card */}
+        {addingLib ? (
+          <div
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              gap: 8,
+              minHeight: 130,
+              borderRadius: 14,
+              border: "1px dashed var(--scry-baccent)",
+              background: "rgba(var(--scry-accent-rgb), 0.06)",
+              padding: "14px 15px",
+            }}
+          >
+            <span
+              style={{
+                fontSize: 12.5,
+                fontWeight: 600,
+                color: "var(--scry-muted2)",
+                marginBottom: 2,
+              }}
+            >
+              {t("setup.newLibraryFor")}
+            </span>
+            {FACET_PICKER.map((facet) => {
+              const style = facetStyle(facet);
+              return (
+                <button
+                  key={facet}
+                  type="button"
+                  onClick={() => {
+                    addLibrary(facet);
+                    setAddingLib(false);
+                  }}
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 7,
+                    height: 36,
+                    padding: "0 12px",
+                    borderRadius: 9,
+                    fontSize: 13,
+                    fontWeight: 600,
+                    cursor: "pointer",
+                    ...facetPillStyle(facet),
+                  }}
+                >
+                  <span
+                    aria-hidden
+                    style={{
+                      width: 6,
+                      height: 6,
+                      borderRadius: "50%",
+                      background: style.dot,
+                    }}
+                  />
+                  {t(facetLabelKey(facet))}
+                </button>
+              );
+            })}
+            <button
+              type="button"
+              onClick={() => setAddingLib(false)}
+              style={{
+                marginTop: "auto",
+                height: 30,
+                background: "transparent",
+                border: "none",
+                color: "var(--scry-faint)",
+                fontSize: 12.5,
+                fontWeight: 600,
+                cursor: "pointer",
+              }}
+            >
+              {t("setup.cancel")}
+            </button>
+          </div>
+        ) : (
+          <button
+            type="button"
+            onClick={() => setAddingLib(true)}
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: 10,
+              minHeight: 130,
+              borderRadius: 14,
+              border: "1px dashed var(--scry-border2)",
+              background: "transparent",
+              color: "var(--scry-faint)",
+              cursor: "pointer",
+            }}
+          >
+            <span
+              aria-hidden
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                justifyContent: "center",
+                width: 36,
+                height: 36,
+                borderRadius: 10,
+                background: "rgba(var(--scry-accent-rgb), 0.1)",
+                border: "1px solid var(--scry-baccent)",
+                color: "var(--scry-accent-text)",
+              }}
+            >
+              <Plus size={17} />
+            </span>
+            <span style={{ fontSize: 13, fontWeight: 600 }}>
+              {t("setup.addLibrary")}
+            </span>
+          </button>
+        )}
+      </div>
+
+      {/* ── Remap dialog ── */}
+      <ImportRemapDialog
+        root={remapRoot}
+        open={remapRootId != null}
+        onOpenChange={(open) => {
+          if (!open) setRemapRootId(null);
+        }}
+        onSave={(path) => {
+          if (remapRootId) setRootRemap(remapRootId, path);
+        }}
+        t={t}
+      />
+
+      {/* ── Mobile assign sheet ── */}
+      <ImportAssignSheet
+        root={assignSheetRoot}
+        libraries={libraries}
+        currentLibraryId={
+          assignSheetRootId ? assign[assignSheetRootId] ?? null : null
+        }
+        open={assignSheetRootId != null}
+        onOpenChange={(open) => {
+          if (!open) setAssignSheetRootId(null);
+        }}
+        onPick={(libId) => {
+          if (assignSheetRootId) assignRoot(assignSheetRootId, libId);
+        }}
+        t={t}
+      />
+    </div>
+  );
+}

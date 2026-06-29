@@ -10,6 +10,9 @@ chrono = { workspace = true }
 thiserror = { workspace = true }
 strum = { workspace = true }
 blake3 = "1"
+# NOTE: `catalog_sort_key` bytes depend on the icu/CLDR collation data version. Bumping these
+# (or their transitive `*_data` crates) can change stored sort keys and requires a new backfill
+# migration to regenerate existing rows — see crates/scryer-domain/src/title_sort.rs.
 icu_collator = "2.2"
 icu_locale = "2.2"
 unicode-normalization = "0.1"

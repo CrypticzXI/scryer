@@ -49,35 +49,6 @@ fn parse_optional_datetime(value: Option<String>, field: &str) -> Option<DateTim
     value.and_then(|value| parse_datetime(&value, field).ok())
 }
 
-fn json_text_values(raw: &str) -> Vec<String> {
-    serde_json::from_str::<Value>(raw)
-        .map(|value| {
-            let mut values = Vec::new();
-            collect_json_text_values(&value, &mut values);
-            values
-        })
-        .unwrap_or_default()
-}
-
-fn collect_json_text_values(value: &Value, values: &mut Vec<String>) {
-    match value {
-        Value::String(value) => values.push(value.clone()),
-        Value::Number(value) => values.push(value.to_string()),
-        Value::Bool(value) => values.push(value.to_string()),
-        Value::Array(items) => {
-            for item in items {
-                collect_json_text_values(item, values);
-            }
-        }
-        Value::Object(object) => {
-            for value in object.values() {
-                collect_json_text_values(value, values);
-            }
-        }
-        Value::Null => {}
-    }
-}
-
 fn provider_config_field_payload_options(
     field: &ConfigFieldDef,
 ) -> Vec<PluginConfigFieldOptionPayload> {
@@ -1681,26 +1652,36 @@ pub fn from_discovery_item(item: DiscoveryItemRecord) -> DiscoveryItemPayload {
         background_url: item.background_url,
         overview: item.overview,
         content_type: item.content_type,
-        genres: json_text_values(&item.genres_json),
+        genres: item.genres,
         rating: item.rating,
-        status_tags: json_text_values(&item.status_tags_json),
-        source_tags: json_text_values(&item.source_tags_json),
-        sources: json_text_values(&item.sources_json),
+        status_tags: item.status_tags,
+        source_tags: item
+            .source_tags
+            .into_iter()
+            .flat_map(|tag| {
+                tag.name
+                    .into_iter()
+                    .chain(tag.category)
+                    .chain(tag.values)
+                    .collect::<Vec<_>>()
+            })
+            .collect(),
+        sources: item.sources,
         best_source: item.best_source,
-        relation_types: json_text_values(&item.relation_types_json),
-        relation_subtypes: json_text_values(&item.relation_subtypes_json),
+        relation_types: item.relation_types,
+        relation_subtypes: item.relation_subtypes,
         source_count: item.source_count,
         edge_count: item.edge_count,
         relation_count: item.relation_count,
         source_subject_count: item.source_subject_count,
         rank_score: item.rank_score,
-        matched_subject_titles: json_text_values(&item.matched_subject_titles_json),
+        matched_subject_titles: item.matched_subject_titles,
         matched_subject_count: item.matched_subject_count,
         tmdb_collection_id: item.tmdb_collection_id,
         tmdb_collection_name: item.tmdb_collection_name,
         owned_in_input: item.owned_in_input,
-        facet_terms: json_text_values(&item.facet_terms_json),
-        context_terms: json_text_values(&item.context_terms_json),
+        facet_terms: item.facet_terms,
+        context_terms: item.context_terms,
     }
 }
 

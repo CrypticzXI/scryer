@@ -1,0 +1,976 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { Client } from "urql";
+
+import {
+  cancelExternalImportArrSourceWarmupMutation,
+  createLibraryMutation,
+  completeSetupMutation,
+  executeExternalImportMutation,
+  finalizeExternalImportMutation,
+  previewExternalImportMutation,
+  scanLibraryMutation,
+  startExternalImportArrSourceWarmupMutation,
+  validateExternalImportConnectionMutation,
+  type ExecuteExternalImportInput,
+  type ExternalImportSourceLibraryMappingInput,
+} from "@/lib/graphql/mutations";
+import {
+  externalImportAggregateWarmupProgressQuery,
+  wizardQualityProfilesQuery,
+} from "@/lib/graphql/queries";
+import type {
+  ExternalArrSourceKind,
+  ExternalImportConnectionKind,
+  ExternalImportConnectionValidation,
+  ExternalImportPreview,
+  ExternalImportAggregateWarmupProgress,
+  ExternalImportResult,
+} from "@/lib/types/external-import";
+
+// ── Wizard-internal model ───────────────────────────────────────────────────
+
+export type WizardFacet = "movie" | "series" | "anime";
+export type ImportArrKind = ExternalArrSourceKind; // "sonarr" | "radarr"
+export type ImportInstanceKind = ExternalImportConnectionKind; // + "prowlarr"
+export type ImportInstanceStatus = "idle" | "testing" | "connected" | "error";
+
+/** A single Sonarr/Radarr/Prowlarr connection the operator is configuring. */
+export interface ImportInstance {
+  id: string;
+  kind: ImportInstanceKind;
+  name: string;
+  baseUrl: string;
+  apiKey: string;
+  status: ImportInstanceStatus;
+  version: string | null;
+  error: string | null;
+  /** Warmup session id (Sonarr/Radarr only) once a connected verify kicks it off. */
+  warmupSessionId: string | null;
+}
+
+/**
+ * A source root in the mapping board. Detected roots come from a warmup; manual
+ * roots are operator-typed and carry no monitored-status snapshot.
+ */
+export interface ImportRoot {
+  id: string;
+  kind: ImportArrKind | "manual";
+  /** Stable per-source identity (null for manual). */
+  sourceKey: string | null;
+  sourceWarmupSessionId: string | null;
+  /** Short label for the source instance pill, e.g. "Main", "4K", "Manual". */
+  instanceLabel: string;
+  /** Provenance: the path the source instance reports (or the typed path for manual). */
+  arrRootPath: string;
+  /** Optional Scryer-host override (detected roots only). Effective path = remap ?? arrRootPath. */
+  remap: string | null;
+  manual: boolean;
+}
+
+/** A library the operator is assembling in the board (created at finalize time). */
+export interface ImportLibraryDraft {
+  id: string; // client-side temp id until createLibrary returns a real one
+  facet: WizardFacet;
+  name: string;
+  qualityProfileId: string | null;
+  scoringPersona: ScoringPersonaValue;
+}
+
+export type ScoringPersonaValue =
+  | "balanced"
+  | "audiophile"
+  | "efficient"
+  | "compatible";
+
+export const SCORING_PERSONA_VALUES: readonly ScoringPersonaValue[] = [
+  "balanced",
+  "audiophile",
+  "efficient",
+  "compatible",
+];
+
+export interface QualityProfileOption {
+  id: string;
+  name: string;
+}
+
+// ── Helpers (pure) ──────────────────────────────────────────────────────────
+
+export function effectiveRootPath(root: ImportRoot): string {
+  return (root.remap ?? "").trim() ? (root.remap as string) : root.arrRootPath;
+}
+
+export function isRootRemapped(root: ImportRoot): boolean {
+  const remap = (root.remap ?? "").trim();
+  return remap.length > 0 && remap !== root.arrRootPath;
+}
+
+export function facetsForKind(kind: ImportRoot["kind"]): WizardFacet[] {
+  switch (kind) {
+    case "radarr":
+      return ["movie"];
+    case "sonarr":
+      return ["series", "anime"];
+    default:
+      return ["movie", "series", "anime"]; // manual roots fit any library
+  }
+}
+
+export function kindCompatibleWithFacet(
+  kind: ImportRoot["kind"],
+  facet: WizardFacet,
+): boolean {
+  return facetsForKind(kind).includes(facet);
+}
+
+/** Short instance label from a source key like "sonarr:http://host:8989". */
+function shortInstanceLabel(instanceName: string, baseUrl: string): string {
+  const trimmed = instanceName.trim();
+  if (trimmed) return trimmed;
+  try {
+    const url = new URL(baseUrl);
+    return url.port ? `${url.hostname}:${url.port}` : url.hostname;
+  } catch {
+    return baseUrl;
+  }
+}
+
+let tempIdSeq = 0;
+function tempId(prefix: string): string {
+  tempIdSeq += 1;
+  const rand =
+    typeof crypto !== "undefined" && "randomUUID" in crypto
+      ? crypto.randomUUID().slice(0, 8)
+      : String(tempIdSeq);
+  return `${prefix}-${rand}-${tempIdSeq}`;
+}
+
+function rootIdFor(sourceKey: string, arrRootPath: string): string {
+  return `src:${sourceKey}::${arrRootPath}`;
+}
+
+function arrKindOf(kind: ImportInstanceKind): ImportArrKind | null {
+  return kind === "sonarr" || kind === "radarr" ? kind : null;
+}
+
+function gqlError(error: unknown): string {
+  if (!error) return "Unknown error";
+  if (error instanceof Error) return error.message;
+  const message = (error as { message?: unknown }).message;
+  return typeof message === "string" ? message : String(error);
+}
+
+interface UseExternalImportSetupArgs {
+  client: Client;
+}
+
+export function useExternalImportSetup({ client }: UseExternalImportSetupArgs) {
+  // ── Connect step ──────────────────────────────────────────────────────────
+  const [instances, setInstances] = useState<ImportInstance[]>([]);
+  // Per-instance manual-mapping of warmup overrides etc. handled via instances.
+
+  const arrInstances = useMemo(
+    () => instances.filter((inst) => inst.kind !== "prowlarr"),
+    [instances],
+  );
+  const prowlarrInstance = useMemo(
+    () => instances.find((inst) => inst.kind === "prowlarr") ?? null,
+    [instances],
+  );
+
+  const instancesByKind = useCallback(
+    (kind: ImportInstanceKind) => instances.filter((inst) => inst.kind === kind),
+    [instances],
+  );
+
+  const patchInstance = useCallback(
+    (id: string, patch: Partial<ImportInstance>) => {
+      setInstances((prev) =>
+        prev.map((inst) => (inst.id === id ? { ...inst, ...patch } : inst)),
+      );
+    },
+    [],
+  );
+
+  const addInstance = useCallback((kind: ImportInstanceKind) => {
+    setInstances((prev) => [
+      ...prev,
+      {
+        id: tempId(kind),
+        kind,
+        name: "",
+        baseUrl: "",
+        apiKey: "",
+        status: "idle",
+        version: null,
+        error: null,
+        warmupSessionId: null,
+      },
+    ]);
+  }, []);
+
+  const cancelInstanceWarmup = useCallback(
+    (sessionId: string) => {
+      void client
+        .mutation(cancelExternalImportArrSourceWarmupMutation, { sessionId })
+        .toPromise();
+    },
+    [client],
+  );
+
+  const removeInstance = useCallback(
+    (id: string) => {
+      setInstances((prev) => {
+        const target = prev.find((inst) => inst.id === id);
+        if (target?.warmupSessionId) cancelInstanceWarmup(target.warmupSessionId);
+        return prev.filter((inst) => inst.id !== id);
+      });
+    },
+    [cancelInstanceWarmup],
+  );
+
+  const setInstanceName = useCallback(
+    (id: string, name: string) => patchInstance(id, { name }),
+    [patchInstance],
+  );
+
+  /** Edit URL/key: reset verification state (re-verify happens on blur). */
+  const setInstanceConnectionField = useCallback(
+    (id: string, field: "baseUrl" | "apiKey", value: string) => {
+      patchInstance(id, {
+        [field]: value,
+        status: "idle",
+        version: null,
+        error: null,
+      } as Partial<ImportInstance>);
+    },
+    [patchInstance],
+  );
+
+  const connectionReady = (inst: ImportInstance): boolean =>
+    /^https?:\/\/.+/.test(inst.baseUrl.trim()) && inst.apiKey.trim().length >= 6;
+
+  /**
+   * Fire-on-blur verification. Validates connectivity via the lightweight probe,
+   * and on success (for Sonarr/Radarr) kicks off the warmup in the background so
+   * warmups run concurrently while the operator keeps adding instances.
+   */
+  const verifyInstance = useCallback(
+    async (id: string) => {
+      const inst = instances.find((entry) => entry.id === id);
+      if (!inst || !connectionReady(inst)) return;
+      patchInstance(id, { status: "testing", error: null });
+
+      const connection = {
+        baseUrl: inst.baseUrl.trim(),
+        apiKey: inst.apiKey.trim(),
+      };
+      const { data, error } = await client
+        .mutation(validateExternalImportConnectionMutation, {
+          input: { kind: inst.kind, connection },
+        })
+        .toPromise();
+
+      const validation = data?.validateExternalImportConnection as
+        | ExternalImportConnectionValidation
+        | undefined;
+      if (error || !validation) {
+        patchInstance(id, {
+          status: "error",
+          version: null,
+          error: gqlError(error) || "Connection failed",
+        });
+        return;
+      }
+      if (!validation.connected) {
+        patchInstance(id, {
+          status: "error",
+          version: null,
+          error: validation.error ?? "Could not connect",
+        });
+        return;
+      }
+
+      patchInstance(id, {
+        status: "connected",
+        version: validation.version ?? null,
+        error: null,
+      });
+
+      // Kick off the warmup for arr instances (concurrent across instances).
+      const arrKind = arrKindOf(inst.kind);
+      if (arrKind) {
+        const { data: warmupData } = await client
+          .mutation(startExternalImportArrSourceWarmupMutation, {
+            input: { kind: arrKind, connection },
+          })
+          .toPromise();
+        const sessionId = warmupData?.startExternalImportArrSourceWarmup
+          ?.sessionId as string | undefined;
+        if (sessionId) {
+          // The instance may have been removed during the round-trips; if so,
+          // cancel the freshly-started warmup rather than orphaning it.
+          let stillExists = false;
+          setInstances((prev) => {
+            stillExists = prev.some((entry) => entry.id === id);
+            return stillExists
+              ? prev.map((entry) =>
+                  entry.id === id
+                    ? { ...entry, warmupSessionId: sessionId }
+                    : entry,
+                )
+              : prev;
+          });
+          if (!stillExists) cancelInstanceWarmup(sessionId);
+        }
+      }
+    },
+    [client, instances, patchInstance, cancelInstanceWarmup],
+  );
+
+  const connectedArrSessionIds = useMemo(
+    () =>
+      arrInstances
+        .filter((inst) => inst.status === "connected" && inst.warmupSessionId)
+        .map((inst) => inst.warmupSessionId as string),
+    [arrInstances],
+  );
+
+  /** ≥1 connected Sonarr/Radarr (or a connected Prowlarr) is required to advance. */
+  const canLeaveConnect = useMemo(
+    () => instances.some((inst) => inst.status === "connected"),
+    [instances],
+  );
+
+  const prowlarrConnectionInput = useMemo(() => {
+    if (!prowlarrInstance || prowlarrInstance.status !== "connected") return null;
+    return {
+      baseUrl: prowlarrInstance.baseUrl.trim(),
+      apiKey: prowlarrInstance.apiKey.trim(),
+    };
+  }, [prowlarrInstance]);
+
+  // ── Preview (root folders, clients, indexers) ──────────────────────────────
+  const [preview, setPreview] = useState<ExternalImportPreview | null>(null);
+  const [previewing, setPreviewing] = useState(false);
+  const [previewError, setPreviewError] = useState<string | null>(null);
+
+  const loadPreview = useCallback(async () => {
+    if (connectedArrSessionIds.length === 0 && !prowlarrConnectionInput) {
+      setPreview(null);
+      return;
+    }
+    setPreviewing(true);
+    setPreviewError(null);
+    const { data, error } = await client
+      .mutation(previewExternalImportMutation, {
+        input: {
+          sourceWarmupSessionIds: connectedArrSessionIds,
+          prowlarr: prowlarrConnectionInput,
+        },
+      })
+      .toPromise();
+    setPreviewing(false);
+    if (error || !data?.previewExternalImport) {
+      setPreviewError(gqlError(error) || "Failed to load preview");
+      return;
+    }
+    setPreview(data.previewExternalImport as ExternalImportPreview);
+  }, [client, connectedArrSessionIds, prowlarrConnectionInput]);
+
+  // ── Mapping board: roots + manual roots + remaps + assign ──────────────────
+  const [manualRoots, setManualRoots] = useState<ImportRoot[]>([]);
+  const [remaps, setRemaps] = useState<Record<string, string>>({});
+  const [assign, setAssign] = useState<Record<string, string | null>>({});
+
+  const detectedRoots = useMemo<ImportRoot[]>(() => {
+    if (!preview) return [];
+    return preview.rootFolders.map((folder) => {
+      const id = rootIdFor(folder.sourceKey, folder.arrRootPath);
+      const source = preview.arrSources.find(
+        (s) => s.sourceKey === folder.sourceKey,
+      );
+      return {
+        id,
+        kind: folder.kind,
+        sourceKey: folder.sourceKey,
+        sourceWarmupSessionId: folder.sourceWarmupSessionId,
+        instanceLabel: shortInstanceLabel("", source?.baseUrl ?? folder.sourceKey),
+        arrRootPath: folder.arrRootPath,
+        remap: remaps[id] ?? null,
+        manual: false,
+      };
+    });
+  }, [preview, remaps]);
+
+  const roots = useMemo<ImportRoot[]>(
+    () => [...detectedRoots, ...manualRoots],
+    [detectedRoots, manualRoots],
+  );
+
+  const rootById = useCallback(
+    (id: string) => roots.find((root) => root.id === id) ?? null,
+    [roots],
+  );
+
+  const trayRoots = useMemo(
+    () => roots.filter((root) => !assign[root.id]),
+    [roots, assign],
+  );
+
+  const rootsForLibrary = useCallback(
+    (libraryId: string) => roots.filter((root) => assign[root.id] === libraryId),
+    [roots, assign],
+  );
+
+  const assignRoot = useCallback((rootId: string, libraryId: string | null) => {
+    setAssign((prev) => ({ ...prev, [rootId]: libraryId }));
+  }, []);
+
+  const setRootRemap = useCallback((rootId: string, scryerPath: string | null) => {
+    setRemaps((prev) => {
+      const next = { ...prev };
+      const value = (scryerPath ?? "").trim();
+      if (!value) delete next[rootId];
+      else next[rootId] = value;
+      return next;
+    });
+  }, []);
+
+  const addManualRoot = useCallback(() => {
+    const id = tempId("manual-root");
+    setManualRoots((prev) => [
+      ...prev,
+      {
+        id,
+        kind: "manual",
+        sourceKey: null,
+        sourceWarmupSessionId: null,
+        instanceLabel: "Manual",
+        arrRootPath: "",
+        remap: null,
+        manual: true,
+      },
+    ]);
+  }, []);
+
+  const setManualRootPath = useCallback((rootId: string, path: string) => {
+    setManualRoots((prev) =>
+      prev.map((root) =>
+        root.id === rootId ? { ...root, arrRootPath: path } : root,
+      ),
+    );
+  }, []);
+
+  const removeManualRoot = useCallback((rootId: string) => {
+    setManualRoots((prev) => prev.filter((root) => root.id !== rootId));
+    setAssign((prev) => {
+      const next = { ...prev };
+      delete next[rootId];
+      return next;
+    });
+  }, []);
+
+  // ── Library drafts ─────────────────────────────────────────────────────────
+  const [libraries, setLibraries] = useState<ImportLibraryDraft[]>([]);
+
+  const addLibrary = useCallback((facet: WizardFacet, name?: string) => {
+    const id = tempId("lib");
+    setLibraries((prev) => [
+      ...prev,
+      {
+        id,
+        facet,
+        name: name?.trim() || defaultLibraryName(facet, prev),
+        qualityProfileId: null,
+        scoringPersona: "balanced",
+      },
+    ]);
+    return id;
+  }, []);
+
+  const renameLibrary = useCallback((id: string, name: string) => {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    setLibraries((prev) =>
+      prev.map((lib) => (lib.id === id ? { ...lib, name: trimmed } : lib)),
+    );
+  }, []);
+
+  const removeLibrary = useCallback((id: string) => {
+    setLibraries((prev) => prev.filter((lib) => lib.id !== id));
+    setAssign((prev) => {
+      const next = { ...prev };
+      for (const rootId of Object.keys(next)) {
+        if (next[rootId] === id) next[rootId] = null;
+      }
+      return next;
+    });
+  }, []);
+
+  const setLibraryQualityProfile = useCallback(
+    (id: string, qualityProfileId: string | null) => {
+      setLibraries((prev) =>
+        prev.map((lib) =>
+          lib.id === id ? { ...lib, qualityProfileId } : lib,
+        ),
+      );
+    },
+    [],
+  );
+
+  const setLibraryPersona = useCallback(
+    (id: string, scoringPersona: ScoringPersonaValue) => {
+      setLibraries((prev) =>
+        prev.map((lib) => (lib.id === id ? { ...lib, scoringPersona } : lib)),
+      );
+    },
+    [],
+  );
+
+  /** Libraries that have at least one root mapped (shown in Quality step). */
+  const mappedLibraries = useMemo(
+    () =>
+      libraries.filter((lib) =>
+        roots.some((root) => assign[root.id] === lib.id),
+      ),
+    [libraries, roots, assign],
+  );
+
+  // ── Quality profiles ───────────────────────────────────────────────────────
+  const [qualityProfiles, setQualityProfiles] = useState<QualityProfileOption[]>(
+    [],
+  );
+  useEffect(() => {
+    let cancelled = false;
+    void client
+      .query(wizardQualityProfilesQuery, {})
+      .toPromise()
+      .then(({ data }) => {
+        if (cancelled) return;
+        const profiles = (data?.qualityProfileSettings?.profiles ??
+          []) as QualityProfileOption[];
+        setQualityProfiles(profiles);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [client]);
+
+  // ── Sources step: download client + indexer selection ──────────────────────
+  const [selectedDcKeys, setSelectedDcKeys] = useState<Set<string>>(new Set());
+  const [selectedIdxKeys, setSelectedIdxKeys] = useState<Set<string>>(new Set());
+  const [dcApiKeyOverrides, setDcApiKeyOverrides] = useState<
+    Record<string, string>
+  >({});
+  const [dcPasswordOverrides, setDcPasswordOverrides] = useState<
+    Record<string, string>
+  >({});
+  const [idxApiKeyOverrides, setIdxApiKeyOverrides] = useState<
+    Record<string, string>
+  >({});
+  const dcSelectionSeeded = useRef(false);
+  const idxSelectionSeeded = useRef(false);
+
+  // Default all supported clients/indexers ON the first time a preview arrives.
+  useEffect(() => {
+    if (!preview) return;
+    if (!dcSelectionSeeded.current) {
+      dcSelectionSeeded.current = true;
+      setSelectedDcKeys(
+        new Set(
+          preview.downloadClients
+            .filter((dc) => dc.supported)
+            .map((dc) => dc.dedupKey),
+        ),
+      );
+    }
+    if (!idxSelectionSeeded.current) {
+      idxSelectionSeeded.current = true;
+      setSelectedIdxKeys(
+        new Set(
+          preview.indexers
+            .filter((idx) => idx.supported)
+            .map((idx) => idx.dedupKey),
+        ),
+      );
+    }
+  }, [preview]);
+
+  const toggleDownloadClient = useCallback((dedupKey: string) => {
+    setSelectedDcKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(dedupKey)) next.delete(dedupKey);
+      else next.add(dedupKey);
+      return next;
+    });
+  }, []);
+
+  const toggleIndexer = useCallback((dedupKey: string) => {
+    setSelectedIdxKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(dedupKey)) next.delete(dedupKey);
+      else next.add(dedupKey);
+      return next;
+    });
+  }, []);
+
+  const setDownloadClientApiKeyOverride = useCallback(
+    (dedupKey: string, value: string) =>
+      setDcApiKeyOverrides((prev) => ({ ...prev, [dedupKey]: value })),
+    [],
+  );
+  const setDownloadClientPasswordOverride = useCallback(
+    (dedupKey: string, value: string) =>
+      setDcPasswordOverrides((prev) => ({ ...prev, [dedupKey]: value })),
+    [],
+  );
+  const setIndexerApiKeyOverride = useCallback(
+    (dedupKey: string, value: string) =>
+      setIdxApiKeyOverrides((prev) => ({ ...prev, [dedupKey]: value })),
+    [],
+  );
+
+  const [executing, setExecuting] = useState(false);
+  const [executeError, setExecuteError] = useState<string | null>(null);
+  const [executeResult, setExecuteResult] = useState<ExternalImportResult | null>(
+    null,
+  );
+
+  const executeSources = useCallback(async () => {
+    setExecuting(true);
+    setExecuteError(null);
+    const input: ExecuteExternalImportInput = {
+      sourceWarmupSessionIds: connectedArrSessionIds,
+      prowlarr: prowlarrConnectionInput,
+      selectedDownloadClientDedupKeys: [...selectedDcKeys],
+      selectedIndexerDedupKeys: [...selectedIdxKeys],
+      downloadClientApiKeyOverrides: Object.entries(dcApiKeyOverrides)
+        .filter(([, v]) => v.trim())
+        .map(([dedupKey, apiKey]) => ({ dedupKey, apiKey })),
+      downloadClientPasswordOverrides: Object.entries(dcPasswordOverrides)
+        .filter(([, v]) => v.trim())
+        .map(([dedupKey, password]) => ({ dedupKey, password })),
+      indexerApiKeyOverrides: Object.entries(idxApiKeyOverrides)
+        .filter(([, v]) => v.trim())
+        .map(([dedupKey, apiKey]) => ({ dedupKey, apiKey })),
+    };
+    const { data, error } = await client
+      .mutation(executeExternalImportMutation, { input })
+      .toPromise();
+    setExecuting(false);
+    if (error || !data?.executeExternalImport) {
+      setExecuteError(gqlError(error) || "Import failed");
+      return false;
+    }
+    setExecuteResult(data.executeExternalImport as ExternalImportResult);
+    return true;
+  }, [
+    client,
+    connectedArrSessionIds,
+    prowlarrConnectionInput,
+    selectedDcKeys,
+    selectedIdxKeys,
+    dcApiKeyOverrides,
+    dcPasswordOverrides,
+    idxApiKeyOverrides,
+  ]);
+
+  // ── Aggregate warmup progress (gates Summary) ──────────────────────────────
+  const [aggregateProgress, setAggregateProgress] =
+    useState<ExternalImportAggregateWarmupProgress | null>(null);
+
+  const pollAggregateProgress = useCallback(async () => {
+    if (connectedArrSessionIds.length === 0) {
+      setAggregateProgress({
+        status: "completed",
+        titlesTotalKnown: true,
+        titlesFetched: 0,
+        titlesTotal: 0,
+        errorMessage: null,
+      });
+      return;
+    }
+    const { data } = await client
+      .query(
+        externalImportAggregateWarmupProgressQuery,
+        { input: { sourceWarmupSessionIds: connectedArrSessionIds } },
+        { requestPolicy: "network-only" },
+      )
+      .toPromise();
+    const progress = data?.externalImportAggregateWarmupProgress as
+      | ExternalImportAggregateWarmupProgress
+      | undefined;
+    if (progress) setAggregateProgress(progress);
+  }, [client, connectedArrSessionIds]);
+
+  const warmupComplete = aggregateProgress?.status === "completed";
+
+  // ── Finalize → complete → scan ─────────────────────────────────────────────
+  const buildMappings = useCallback((): {
+    mappings: ExternalImportSourceLibraryMappingInput[];
+    librariesToCreate: {
+      draft: ImportLibraryDraft;
+      rootPaths: string[];
+    }[];
+  } => {
+    const librariesToCreate = libraries
+      .map((draft) => {
+        const assignedRoots = roots.filter((root) => assign[root.id] === draft.id);
+        const rootPaths = Array.from(
+          new Set(assignedRoots.map((root) => effectiveRootPath(root).trim())),
+        ).filter(Boolean);
+        return { draft, rootPaths };
+      })
+      .filter((entry) => entry.rootPaths.length > 0);
+
+    // Mappings are filled in after libraries are created (need real ids).
+    return { mappings: [], librariesToCreate };
+  }, [libraries, roots, assign]);
+
+  const [finalizing, setFinalizing] = useState(false);
+  const [finalizeError, setFinalizeError] = useState<string | null>(null);
+
+  /**
+   * Creates the mapped libraries, applies the monitored-status mappings, marks
+   * setup complete, and triggers a hinted scan per created library.
+   */
+  const finalizeImport = useCallback(async (): Promise<{
+    ok: boolean;
+    scanErrors: string[];
+  }> => {
+    setFinalizing(true);
+    setFinalizeError(null);
+    const scanErrors: string[] = [];
+
+    const { librariesToCreate } = buildMappings();
+    const createdByDraftId = new Map<string, string>();
+
+    for (const { draft, rootPaths } of librariesToCreate) {
+      const { data, error } = await client
+        .mutation(createLibraryMutation, {
+          input: {
+            facet: draft.facet,
+            name: draft.name,
+            roots: rootPaths.map((path, index) => ({
+              path,
+              isDefault: index === 0,
+            })),
+            settings: {
+              qualityProfileId: draft.qualityProfileId,
+              scoringPersona: draft.scoringPersona,
+            },
+          },
+        })
+        .toPromise();
+      const created = data?.createLibrary;
+      if (error || !created?.id) {
+        setFinalizing(false);
+        setFinalizeError(
+          `${gqlError(error) || "Failed to create library"}: ${draft.name}`,
+        );
+        return { ok: false, scanErrors };
+      }
+      createdByDraftId.set(draft.id, created.id as string);
+    }
+
+    const mappings: ExternalImportSourceLibraryMappingInput[] = [];
+    for (const root of roots) {
+      const draftId = assign[root.id];
+      if (!draftId) continue;
+      const libraryId = createdByDraftId.get(draftId);
+      const draft = libraries.find((lib) => lib.id === draftId);
+      if (!libraryId || !draft) continue;
+      mappings.push({
+        sourceWarmupSessionId: root.sourceWarmupSessionId,
+        sourceKey: root.sourceKey,
+        kind: root.manual ? null : (root.kind as ExternalArrSourceKind),
+        arrRootPath: root.arrRootPath,
+        scryerRootPath: effectiveRootPath(root),
+        libraryId,
+        facet: draft.facet,
+      });
+    }
+
+    const { data: finalizeData, error: finalizeErr } = await client
+      .mutation(finalizeExternalImportMutation, {
+        input: {
+          sourceWarmupSessionIds: connectedArrSessionIds,
+          mappings,
+        },
+      })
+      .toPromise();
+    const finalized = finalizeData?.finalizeExternalImport;
+    if (finalizeErr || !finalized?.finalized) {
+      setFinalizing(false);
+      setFinalizeError(gqlError(finalizeErr) || "Failed to finalize import");
+      return { ok: false, scanErrors };
+    }
+    const monitorWarmupSessionId = finalized.monitorWarmupSessionId as string;
+
+    const { data: completeData, error: completeErr } = await client
+      .mutation(completeSetupMutation, {})
+      .toPromise();
+    if (completeErr || !completeData?.completeSetup?.completed) {
+      setFinalizing(false);
+      setFinalizeError(gqlError(completeErr) || "Failed to complete setup");
+      return { ok: false, scanErrors };
+    }
+
+    // Scan each created library, passing the warmup session for import hints.
+    const createdLibraryIds = Array.from(new Set(createdByDraftId.values()));
+    for (const libraryId of createdLibraryIds) {
+      const { error: scanErr } = await client
+        .mutation(scanLibraryMutation, {
+          input: { libraryId, importWarmupSessionId: monitorWarmupSessionId },
+        })
+        .toPromise();
+      if (scanErr) scanErrors.push(gqlError(scanErr));
+    }
+
+    setFinalizing(false);
+    return { ok: true, scanErrors };
+  }, [
+    client,
+    buildMappings,
+    roots,
+    assign,
+    libraries,
+    connectedArrSessionIds,
+  ]);
+
+  // ── Derived summary counts ─────────────────────────────────────────────────
+  const summary = useMemo(() => {
+    const mappedRoots = roots.filter((root) => assign[root.id]);
+    const remappedRoots = roots.filter((root) => isRootRemapped(root));
+    const sonarrCount = arrInstances.filter(
+      (inst) => inst.kind === "sonarr" && inst.status === "connected",
+    ).length;
+    const radarrCount = arrInstances.filter(
+      (inst) => inst.kind === "radarr" && inst.status === "connected",
+    ).length;
+    const selectedDcCount = preview
+      ? preview.downloadClients.filter((dc) => selectedDcKeys.has(dc.dedupKey))
+          .length
+      : 0;
+    const selectedIdxCount = preview
+      ? preview.indexers.filter(
+          (idx) => idx.supported && selectedIdxKeys.has(idx.dedupKey),
+        ).length
+      : 0;
+    return {
+      libraryCount: mappedLibraries.length,
+      instancesConnected: sonarrCount + radarrCount,
+      sonarrCount,
+      radarrCount,
+      rootsMapped: mappedRoots.length,
+      pathsRemapped: remappedRoots.length,
+      downloadClients: selectedDcCount,
+      indexers: selectedIdxCount,
+    };
+  }, [
+    roots,
+    assign,
+    arrInstances,
+    mappedLibraries,
+    preview,
+    selectedDcKeys,
+    selectedIdxKeys,
+  ]);
+
+  // The backend rejects finalize unless EVERY warmed (detected) root is mapped,
+  // so the Libraries step can only advance once the tray has no detected roots
+  // left and every assigned manual root has a non-empty path.
+  const allDetectedRootsMapped = useMemo(
+    () => detectedRoots.every((root) => Boolean(assign[root.id])),
+    [detectedRoots, assign],
+  );
+  const hasBlankAssignedManualRoot = useMemo(
+    () =>
+      manualRoots.some(
+        (root) => Boolean(assign[root.id]) && !effectiveRootPath(root).trim(),
+      ),
+    [manualRoots, assign],
+  );
+  const mappingReady = allDetectedRootsMapped && !hasBlankAssignedManualRoot;
+
+  return {
+    // connect
+    instances,
+    arrInstances,
+    prowlarrInstance,
+    instancesByKind,
+    addInstance,
+    removeInstance,
+    setInstanceName,
+    setInstanceConnectionField,
+    verifyInstance,
+    connectionReady,
+    canLeaveConnect,
+    connectedArrSessionIds,
+    // preview / board
+    preview,
+    previewing,
+    previewError,
+    loadPreview,
+    roots,
+    rootById,
+    trayRoots,
+    rootsForLibrary,
+    assign,
+    assignRoot,
+    setRootRemap,
+    addManualRoot,
+    setManualRootPath,
+    removeManualRoot,
+    allDetectedRootsMapped,
+    mappingReady,
+    // libraries
+    libraries,
+    mappedLibraries,
+    addLibrary,
+    renameLibrary,
+    removeLibrary,
+    // quality
+    qualityProfiles,
+    setLibraryQualityProfile,
+    setLibraryPersona,
+    // sources
+    selectedDcKeys,
+    selectedIdxKeys,
+    toggleDownloadClient,
+    toggleIndexer,
+    dcApiKeyOverrides,
+    dcPasswordOverrides,
+    idxApiKeyOverrides,
+    setDownloadClientApiKeyOverride,
+    setDownloadClientPasswordOverride,
+    setIndexerApiKeyOverride,
+    executing,
+    executeError,
+    executeResult,
+    executeSources,
+    // summary / finalize
+    aggregateProgress,
+    pollAggregateProgress,
+    warmupComplete,
+    finalizing,
+    finalizeError,
+    finalizeImport,
+    summary,
+  };
+}
+
+function defaultLibraryName(
+  facet: WizardFacet,
+  existing: ImportLibraryDraft[],
+): string {
+  const base =
+    facet === "movie" ? "Movies" : facet === "series" ? "Series" : "Anime";
+  const sameFacet = existing.filter((lib) => lib.facet === facet).length;
+  return sameFacet === 0 ? base : `${base} ${sameFacet + 1}`;
+}
+
+export type UseExternalImportSetupReturn = ReturnType<
+  typeof useExternalImportSetup
+>;

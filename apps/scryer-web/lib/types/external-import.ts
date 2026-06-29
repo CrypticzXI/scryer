@@ -1,10 +1,46 @@
+// Result-type companions for the multi-instance external-import flow.
+// Keep in sync with the payload types in
+// crates/scryer-interface-media-types/src/lib.rs and the selection sets in
+// lib/graphql/{mutations,queries}.ts.
+
+export type ExternalArrSourceKind = "sonarr" | "radarr";
+export type ExternalImportConnectionKind = "sonarr" | "radarr" | "prowlarr";
+
+export type ExternalImportConnection = {
+  baseUrl: string;
+  apiKey: string;
+};
+
+export type ExternalImportConnectionValidation = {
+  kind: ExternalImportConnectionKind;
+  baseUrl: string;
+  connected: boolean;
+  version: string | null;
+  error: string | null;
+};
+
+/** One warmed Sonarr/Radarr instance as reflected by `previewExternalImport`. */
+export type ExternalImportArrSource = {
+  sessionId: string;
+  sourceKey: string;
+  kind: ExternalArrSourceKind;
+  baseUrl: string;
+  connected: boolean;
+  version: string | null;
+  status: ExternalImportMonitorWarmupStatus;
+  error: string | null;
+};
+
+/** A root folder discovered during a Sonarr/Radarr warmup. */
 export type ExternalImportRootFolder = {
-  source: string;
-  path: string;
+  sourceWarmupSessionId: string;
+  sourceKey: string;
+  kind: ExternalArrSourceKind;
+  arrRootPath: string;
 };
 
 export type ExternalImportDownloadClient = {
-  sources: string[];
+  sourceKeys: string[];
   name: string;
   implementation: string;
   scryerClientType: string | null;
@@ -20,7 +56,7 @@ export type ExternalImportDownloadClient = {
 };
 
 export type ExternalImportIndexer = {
-  sources: string[];
+  sourceKeys: string[];
   name: string;
   implementation: string;
   scryerProviderType: string | null;
@@ -35,15 +71,10 @@ export type ExternalImportIndexer = {
 };
 
 export type ExternalImportPreview = {
-  sonarrConnected: boolean;
-  radarrConnected: boolean;
   prowlarrConnected: boolean;
-  sonarrVersion: string | null;
-  radarrVersion: string | null;
   prowlarrVersion: string | null;
-  sonarrError: string | null;
-  radarrError: string | null;
   prowlarrError: string | null;
+  arrSources: ExternalImportArrSource[];
   rootFolders: ExternalImportRootFolder[];
   downloadClients: ExternalImportDownloadClient[];
   indexers: ExternalImportIndexer[];
@@ -55,11 +86,6 @@ export type ExternalImportResult = {
   indexersCreated: number;
   pluginsInstalled: string[];
   errors: string[];
-};
-
-export type ExternalImportConnection = {
-  baseUrl: string;
-  apiKey: string;
 };
 
 export type ExternalImportMonitorWarmupStatus =
@@ -106,5 +132,14 @@ export type ExternalImportMonitorWarmupProgress = {
   unmatchedSeriesCount: number;
   ambiguousMovieCount: number;
   ambiguousSeriesCount: number;
+  errorMessage: string | null;
+};
+
+/** Aggregated title-fetch progress across all per-instance warmup sessions. */
+export type ExternalImportAggregateWarmupProgress = {
+  status: ExternalImportMonitorWarmupStatus;
+  titlesTotalKnown: boolean;
+  titlesFetched: number;
+  titlesTotal: number;
   errorMessage: string | null;
 };

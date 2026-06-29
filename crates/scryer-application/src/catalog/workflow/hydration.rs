@@ -101,7 +101,6 @@ impl AppUseCase {
             .await?;
 
         let name = request.name.trim().to_string();
-        let catalog_sort_key = scryer_domain::title_catalog_sort_key(&name, None);
         let title = Title {
             id: Id::new().0,
             library_id: library_id.clone(),
@@ -120,7 +119,10 @@ impl AppUseCase {
             background_url: None,
             background_source_url: None,
             sort_title: request.sort_title,
-            catalog_sort_key,
+            // Recomputed by the title store on every write from (name, metadata_language); left
+            // empty here because metadata_language is not yet known at creation, and the store —
+            // not this struct field — is the source of truth for the persisted key.
+            catalog_sort_key: String::new(),
             slug: request.slug,
             imdb_id: None,
             runtime_minutes: request.runtime_minutes,

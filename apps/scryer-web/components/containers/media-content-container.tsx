@@ -209,7 +209,7 @@ const TITLE_CONTEXT_DISCOVERY_TARGET_KINDS: Record<Facet, string[]> = {
   anime: ["anime"],
 };
 const TITLE_CONTEXT_DISCOVERY_CACHE_PREFIX =
-  "scryer:discovery:library-home:v3";
+  "scryer:discovery:library-home:v5";
 
 type TitleContextDiscoveryCachePayload = {
   userId: string;
@@ -1382,11 +1382,48 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   const [invalidRootLibraryIds, setInvalidRootLibraryIds] = React.useState<
     string[]
   >([]);
+  const [validatedRootFolderSnapshotKey, setValidatedRootFolderSnapshotKey] =
+    React.useState<string | null>(null);
   const [librarySettingsSaving, setLibrarySettingsSaving] =
     React.useState(false);
   const [selectedLibraryIds, setSelectedLibraryIds] = React.useState<string[]>(
     [],
   );
+  const rootFolderValidationSnapshot = React.useMemo(() => {
+    if (!isMediaView || librariesLoading) {
+      return null;
+    }
+
+    const explicitSelectedLibraryIds = selectedLibraryIds.filter(
+      (libraryId) => libraryId !== ALL_LIBRARIES_VALUE,
+    );
+    const selectedLibraryIdSet =
+      explicitSelectedLibraryIds.length > 0
+        ? new Set(explicitSelectedLibraryIds)
+        : null;
+    const relevantLibraries = libraries.filter((library) =>
+      selectedLibraryIdSet ? selectedLibraryIdSet.has(library.id) : true,
+    );
+    const librariesWithConfiguredRoots = relevantLibraries.filter((library) =>
+      library.roots.some((root) => root.path.trim().length > 0),
+    );
+    const key = librariesWithConfiguredRoots
+      .map((library) => {
+        const rootsKey = library.roots
+          .map((root) => root.path.trim())
+          .filter((path) => path.length > 0)
+          .sort()
+          .join("\u001f");
+        return `${library.id}:${rootsKey}`;
+      })
+      .sort()
+      .join("\u001e");
+
+    return { key, librariesWithConfiguredRoots };
+  }, [isMediaView, libraries, librariesLoading, selectedLibraryIds]);
+  const rootFolderValidationLoading =
+    rootFolderValidationSnapshot !== null &&
+    validatedRootFolderSnapshotKey !== rootFolderValidationSnapshot.key;
   const activeCatalogQueryRef = React.useRef("");
   const interactiveSearchAbortRef = React.useRef<AbortController | null>(null);
   const activeCatalogListFiltersRef = React.useRef<ActiveCatalogListFilters>({
@@ -3639,27 +3676,18 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   );
 
   React.useEffect(() => {
-    if (!isMediaView || librariesLoading) {
+    if (rootFolderValidationSnapshot === null) {
       setInvalidRootLibraryIds([]);
+      setValidatedRootFolderSnapshotKey(null);
       return;
     }
 
-    const explicitSelectedLibraryIds = selectedLibraryIds.filter(
-      (libraryId) => libraryId !== ALL_LIBRARIES_VALUE,
-    );
-    const selectedLibraryIdSet =
-      explicitSelectedLibraryIds.length > 0
-        ? new Set(explicitSelectedLibraryIds)
-        : null;
-    const relevantLibraries = libraries.filter((library) =>
-      selectedLibraryIdSet ? selectedLibraryIdSet.has(library.id) : true,
-    );
-    const librariesWithConfiguredRoots = relevantLibraries.filter((library) =>
-      library.roots.some((root) => root.path.trim().length > 0),
-    );
+    const { key, librariesWithConfiguredRoots } =
+      rootFolderValidationSnapshot;
 
     if (librariesWithConfiguredRoots.length === 0) {
       setInvalidRootLibraryIds([]);
+      setValidatedRootFolderSnapshotKey(key);
       return;
     }
 
@@ -3698,6 +3726,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
 
       if (!cancelled) {
         setInvalidRootLibraryIds([...invalidIds]);
+        setValidatedRootFolderSnapshotKey(key);
       }
     };
 
@@ -3708,13 +3737,14 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
       );
       if (!cancelled) {
         setInvalidRootLibraryIds([]);
+        setValidatedRootFolderSnapshotKey(key);
       }
     });
 
     return () => {
       cancelled = true;
     };
-  }, [client, isMediaView, libraries, librariesLoading, selectedLibraryIds]);
+  }, [client, rootFolderValidationSnapshot]);
 
   const openBulkTitleEdit = React.useCallback(() => {
     if (selectedTitles.length === 0 || bulkActionBusy) {
@@ -4692,6 +4722,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
           libraryDownloadClientsLoading,
           rootValidationLibraries,
           rootValidationLibrariesLoading,
+          rootFolderValidationLoading,
           invalidRootLibraryIds,
           selectedLibraryIds,
           allLibrariesValue: ALL_LIBRARIES_VALUE,

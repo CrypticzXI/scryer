@@ -72,6 +72,10 @@ import type {
   Translate,
   ViewId,
 } from "@/components/root/types";
+import {
+  canonicalDiscoveryFacetLabels,
+  canonicalDiscoveryLabelKey,
+} from "@/lib/discovery-facets";
 import type { MetadataTvdbSearchItem } from "@/lib/graphql/smg-queries";
 import type {
   DownloadClientRecord,
@@ -115,6 +119,7 @@ import {
   TitleTableActionButton,
   DEFAULT_TITLE_TABLE_VISIBLE_COLUMNS,
   TITLE_TABLE_COLUMN_KEYS,
+  TitleCollectionLoadingState,
   bytesToReadable,
   formatTitleDate,
   resolveDisplayedQualityLabel,
@@ -423,12 +428,20 @@ function discoveryItemSignalValues(item: DiscoveryItem) {
   ];
 }
 
+function discoveryItemMeaningfulLabelValues(item: DiscoveryItem) {
+  return [
+    ...canonicalDiscoveryFacetLabels(item, "genre"),
+    ...canonicalDiscoveryFacetLabels(item, "theme"),
+    ...item.relationSubtypes,
+  ];
+}
+
 function discoveryItemMatchesLibraryLabel(item: DiscoveryItem, label: string) {
   const labelKey = normalizedTitleContextLabel(label);
   if (!labelKey) {
     return false;
   }
-  return discoveryItemSignalValues(item).some((value) => {
+  return discoveryItemMeaningfulLabelValues(item).some((value) => {
     const candidate = simplifiedDiscoverySignal(value);
     return candidate === labelKey || candidate.includes(labelKey);
   });
@@ -751,7 +764,7 @@ function TitleContextRecommendationButton({
 function titleNormalizedGenreSet(title: TitleRecord): Set<string> {
   return new Set(
     (title.genres ?? [])
-      .map((genre) => genre.trim().toLocaleLowerCase())
+      .map(canonicalDiscoveryLabelKey)
       .filter(Boolean),
   );
 }
@@ -765,8 +778,8 @@ function titleSharedGenreCount(
   }
 
   let shared = 0;
-  for (const genre of right.genres ?? []) {
-    if (leftGenres.has(genre.trim().toLocaleLowerCase())) {
+  for (const genre of canonicalDiscoveryFacetLabels(right, "genre")) {
+    if (leftGenres.has(canonicalDiscoveryLabelKey(genre))) {
       shared += 1;
     }
   }
@@ -2132,6 +2145,7 @@ export function MediaContentView({
     librariesLoading: boolean;
     rootValidationLibraries: LibraryRecord[];
     rootValidationLibrariesLoading: boolean;
+    rootFolderValidationLoading: boolean;
     invalidRootLibraryIds: string[];
     selectedLibraryIds: string[];
     allLibrariesValue: string;
@@ -2349,6 +2363,7 @@ export function MediaContentView({
     libraryDownloadClientsLoading,
     rootValidationLibraries,
     rootValidationLibrariesLoading,
+    rootFolderValidationLoading,
     invalidRootLibraryIds,
     selectedLibraryIds,
     allLibrariesValue,
@@ -3045,6 +3060,12 @@ export function MediaContentView({
     titleFilter.trim().length > 0 ||
     hasActiveTitleQuickFilters(titleQuickFilters, quickFilterView);
   const showEmptyStateActions = !hasActiveTitleDisplayFilters;
+  const rootConfigurationResolutionPending =
+    showEmptyStateActions &&
+    canManageLibrarySettings &&
+    catalogInitialLoadComplete &&
+    monitoredTitles.length === 0 &&
+    (librariesLoading || rootFolderValidationLoading);
 
   const handleDeleteCatalogTitle = React.useCallback(
     (title: TitleRecord) => {
@@ -3498,7 +3519,22 @@ export function MediaContentView({
                 })();
                 let titleCollectionView: React.ReactNode;
 
-                if (collectionViewMode === "poster") {
+                if (rootConfigurationResolutionPending) {
+                  titleCollectionView = (
+                    <div
+                      data-slot="title-list-root-config-loading"
+                      className={cn(
+                        "flex h-full w-full items-start justify-center px-4 pt-12",
+                        selectedTitleCompactLayoutActive &&
+                          !selectedTitleListInlineActive
+                          ? "min-h-[18rem]"
+                          : "min-h-[22rem]",
+                      )}
+                    >
+                      <TitleCollectionLoadingState />
+                    </div>
+                  );
+                } else if (collectionViewMode === "poster") {
                   titleCollectionView = (
                     <PosterGrid
                       key={`${view}-poster-grid`}

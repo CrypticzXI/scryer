@@ -6,9 +6,11 @@ use crate::library_scan::{
 };
 use crate::ports::{
     DISCOVERY_DEFAULT_SCOPE_KEY, DiscoveryFacetRecord, DiscoveryHomeQuery, DiscoveryHomeResult,
-    DiscoveryItemRecord, DiscoveryItemsQuery, DiscoveryItemsResult,
-    DiscoveryPendingContextChangeRecord, DiscoveryRawPageRecord, DiscoverySectionRecord,
-    DiscoverySectionResult, DiscoverySubmittedSubjectRecord, DiscoverySyncStatus,
+    DiscoveryItemLibraryProvenanceRecord, DiscoveryItemRecord, DiscoveryItemsQuery,
+    DiscoveryItemsResult, DiscoveryItemsStorageQuery, DiscoveryPendingContextChangeRecord,
+    DiscoveryRankComponentRecord, DiscoveryRawPageRecord, DiscoverySectionItemsRecord,
+    DiscoverySectionRecord, DiscoverySectionResult, DiscoverySourceTagRecord,
+    DiscoverySubmittedSubjectRecord, DiscoverySyncStatus,
 };
 use crate::{AppError, AppResult, AppUseCase};
 use chrono::{DateTime, Utc};
@@ -24,6 +26,10 @@ use tracing::warn;
 
 pub(crate) const DISCOVERY_CONTEXT_CHANGES_MAX_CHANGED_SUBJECTS: usize = 250;
 const DISCOVERY_DERIVED_SECTION_MINIMUM_ITEMS: usize = 2;
+const DISCOVERY_HOME_MIN_CANDIDATES: usize = 500;
+const DISCOVERY_HOME_MAX_CANDIDATES: usize = 2_000;
+const DISCOVERY_COMPLETE_COLLECTION_MIN_CANDIDATES: usize = 100;
+const DISCOVERY_COMPLETE_COLLECTION_MAX_CANDIDATES: usize = 500;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -33,12 +39,6 @@ pub(crate) struct DiscoveryContextDefaults {
     pub(crate) max_items: usize,
     pub(crate) include_owned: bool,
     pub(crate) include_unresolved: bool,
-}
-
-#[derive(Clone, Debug, Default, Deserialize)]
-struct DiscoverySourceTagValue {
-    category: Option<String>,
-    name: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -137,24 +137,25 @@ impl AppUseCase {
             .await?;
         let limit = discovery_section_limit(query.limit_per_section);
         let include_unresolved = query.include_unresolved;
+        let readable_library_id_list = sorted_discovery_library_ids(&readable_library_ids);
 
-        let mut public_sections = Vec::new();
+        let mut public_sections = Vec::<DiscoverySectionResult>::new();
         if query.include_public {
             if let Some(public_run_id) = status.state.last_public_feed_generation_id.as_deref() {
-                let sections = self
+                let public_section_items = self
                     .services
                     .library
                     .discovery
-                    .list_discovery_sections(public_run_id, Some("public"))
+                    .list_public_discovery_section_items(
+                        public_run_id,
+                        include_unresolved,
+                        limit as i64,
+                    )
                     .await?;
-                let public_items = self
-                    .services
-                    .library
-                    .discovery
-                    .list_discovery_items_for_generation(public_run_id)
-                    .await?;
-                public_sections =
-                    public_section_results(sections, public_items, include_unresolved, limit);
+                public_sections = public_section_items
+                    .into_iter()
+                    .filter_map(section_items_record_to_result)
+                    .collect();
             }
             if public_sections.is_empty() && status.state.last_success_generation_id.is_none() {
                 public_sections = self
@@ -172,12 +173,13 @@ impl AppUseCase {
                     .services
                     .library
                     .discovery
-                    .list_discovery_items_for_generation(context_run_id)
+                    .list_personalized_discovery_home_items(
+                        context_run_id,
+                        &readable_library_id_list,
+                        include_unresolved,
+                        personalized_home_candidate_limit(limit) as i64,
+                    )
                     .await?;
-                personalized_items = filter_personalized_discovery_items_for_libraries(
-                    personalized_items,
-                    &readable_library_ids,
-                );
                 let submitted_subjects = self
                     .services
                     .library
@@ -192,32 +194,42 @@ impl AppUseCase {
                 let library_profile = self
                     .discovery_library_affinity_profile(&readable_library_ids, &submitted_subjects)
                     .await?;
-                complete_collection =
-                    complete_collection_section(&personalized_items, include_unresolved, limit);
+                let mut complete_collection_items = self
+                    .services
+                    .library
+                    .discovery
+                    .list_personalized_complete_collection_items(
+                        context_run_id,
+                        &readable_library_id_list,
+                        include_unresolved,
+                        complete_collection_candidate_limit(limit) as i64,
+                    )
+                    .await?;
+                resolve_discovery_matched_subjects(
+                    &mut complete_collection_items,
+                    &submitted_subjects,
+                )?;
+                complete_collection = complete_collection_section(
+                    &complete_collection_items,
+                    include_unresolved,
+                    limit,
+                );
                 personalized_sections = personalized_section_results(
                     &personalized_items,
                     &library_profile,
                     include_unresolved,
                     limit,
                 );
-                let facet_counts = local_facet_counts(&personalized_items, include_unresolved);
                 facets = self
                     .services
                     .library
                     .discovery
-                    .list_discovery_facets(context_run_id)
-                    .await?
-                    .into_iter()
-                    .filter_map(|mut facet| {
-                        let local_count = local_count_for_facet(&facet_counts, &facet);
-                        if local_count == 0 {
-                            return None;
-                        }
-                        facet.local_count = Some(local_count);
-                        facet.smg_count = None;
-                        Some(facet)
-                    })
-                    .collect();
+                    .list_personalized_discovery_facets(
+                        context_run_id,
+                        &readable_library_id_list,
+                        include_unresolved,
+                    )
+                    .await?;
             }
         }
 
@@ -273,6 +285,7 @@ impl AppUseCase {
     ) -> AppResult<DiscoveryItemsResult> {
         let readable_library_ids = self.discovery_readable_library_ids(actor).await?;
         let can_view_personalized = !readable_library_ids.is_empty();
+        let readable_library_id_list = sorted_discovery_library_ids(&readable_library_ids);
         let state = self
             .services
             .library
@@ -280,67 +293,41 @@ impl AppUseCase {
             .get_discovery_sync_state(DISCOVERY_DEFAULT_SCOPE_KEY)
             .await?
             .unwrap_or_default();
-        let mut items = Vec::new();
-
-        if can_view_personalized {
-            if let Some(context_run_id) = state.last_success_generation_id.as_deref() {
-                let mut personalized_items = self
-                    .services
-                    .library
-                    .discovery
-                    .list_discovery_items_for_generation(context_run_id)
-                    .await?;
-                personalized_items = filter_personalized_discovery_items_for_libraries(
-                    personalized_items,
-                    &readable_library_ids,
-                );
-                let submitted_subjects = self
-                    .services
-                    .library
-                    .discovery
-                    .list_discovery_submitted_subjects(context_run_id)
-                    .await?;
-                let submitted_subjects = filter_submitted_subjects_for_libraries(
-                    &submitted_subjects,
-                    &readable_library_ids,
-                );
-                resolve_discovery_matched_subjects(&mut personalized_items, &submitted_subjects)?;
-                items.extend(personalized_items);
-            }
-            if query.include_public {
-                if let Some(public_run_id) = state.last_public_feed_generation_id.as_deref() {
-                    items.extend(
-                        self.services
-                            .library
-                            .discovery
-                            .list_discovery_items_for_generation(public_run_id)
-                            .await?,
-                    );
-                }
-            }
-        } else if let Some(public_run_id) = state.last_public_feed_generation_id.as_deref() {
-            items.extend(
-                self.services
-                    .library
-                    .discovery
-                    .list_discovery_items_for_generation(public_run_id)
-                    .await?,
-            );
+        let limit = discovery_items_limit(query.limit);
+        let offset = query.offset;
+        let storage_query = DiscoveryItemsStorageQuery {
+            context_run_id: can_view_personalized
+                .then(|| state.last_success_generation_id.clone())
+                .flatten(),
+            public_run_id: (query.include_public || !can_view_personalized)
+                .then(|| state.last_public_feed_generation_id.clone())
+                .flatten(),
+            readable_library_ids: readable_library_id_list,
+            filters: query,
+            limit,
+            offset,
+        };
+        let mut page = self
+            .services
+            .library
+            .discovery
+            .query_discovery_items(&storage_query)
+            .await?;
+        if let Some(context_run_id) = state.last_success_generation_id.as_deref() {
+            let submitted_subjects = self
+                .services
+                .library
+                .discovery
+                .list_discovery_submitted_subjects(context_run_id)
+                .await?;
+            let submitted_subjects =
+                filter_submitted_subjects_for_libraries(&submitted_subjects, &readable_library_ids);
+            resolve_discovery_matched_subjects(&mut page.items, &submitted_subjects)?;
         }
 
-        let mut items = items
-            .into_iter()
-            .filter(|item| item_matches_discovery_items_query(item, &query))
-            .collect::<Vec<_>>();
-        dedupe_and_sort_discovery_items(&mut items);
-        let total_count = items.len() as i64;
-        let offset = query.offset.min(items.len());
-        let limit = discovery_items_limit(query.limit);
-        let items = items.into_iter().skip(offset).take(limit).collect();
-
         Ok(DiscoveryItemsResult {
-            items,
-            total_count,
+            items: page.items,
+            total_count: page.total_count,
             can_view_personalized,
         })
     }
@@ -443,8 +430,41 @@ fn discovery_section_limit(limit: usize) -> usize {
     if limit == 0 { 25 } else { limit.clamp(1, 100) }
 }
 
+fn personalized_home_candidate_limit(section_limit: usize) -> usize {
+    (section_limit.max(25) * 40).clamp(DISCOVERY_HOME_MIN_CANDIDATES, DISCOVERY_HOME_MAX_CANDIDATES)
+}
+
+fn complete_collection_candidate_limit(section_limit: usize) -> usize {
+    (section_limit.max(25) * 8).clamp(
+        DISCOVERY_COMPLETE_COLLECTION_MIN_CANDIDATES,
+        DISCOVERY_COMPLETE_COLLECTION_MAX_CANDIDATES,
+    )
+}
+
 fn discovery_items_limit(limit: usize) -> usize {
     if limit == 0 { 50 } else { limit.clamp(1, 200) }
+}
+
+fn sorted_discovery_library_ids(library_ids: &HashSet<String>) -> Vec<String> {
+    let mut library_ids = library_ids.iter().cloned().collect::<Vec<_>>();
+    library_ids.sort();
+    library_ids
+}
+
+fn section_items_record_to_result(
+    record: DiscoverySectionItemsRecord,
+) -> Option<DiscoverySectionResult> {
+    if record.items.is_empty() {
+        return None;
+    }
+    Some(DiscoverySectionResult {
+        section_id: record.section.section_id,
+        section_type: record.section.section_type,
+        title: record.section.title,
+        surface: record.section.surface,
+        total_count: record.total_count,
+        items: record.items,
+    })
 }
 
 fn public_section_results(
@@ -504,6 +524,7 @@ fn personalized_section_results(
     sections.extend(label_affinity_sections(
         &visible_items,
         &library_profile.genre_labels,
+        "genre",
         "BECAUSE_YOU_LIKE_GENRE",
         "because_you_like_genre",
         limit,
@@ -512,6 +533,7 @@ fn personalized_section_results(
     sections.extend(label_affinity_sections(
         &visible_items,
         &library_profile.tag_labels,
+        "theme",
         "BECAUSE_YOU_LIKE_TAG",
         "because_you_like_tag",
         limit,
@@ -562,20 +584,49 @@ fn personalized_section_results(
     sections
 }
 
+fn canonical_affinity_labels_for_profile(
+    items: &[DiscoveryItemRecord],
+    profile_labels: &[String],
+    canonical_kind: &str,
+) -> Vec<String> {
+    let profile_keys = profile_labels
+        .iter()
+        .map(|label| normalize_discovery_affinity_key(label))
+        .filter(|label| !label.is_empty())
+        .collect::<HashSet<_>>();
+    if profile_keys.is_empty() {
+        return Vec::new();
+    }
+
+    let mut labels = Vec::new();
+    let mut seen = HashSet::new();
+    for item in items {
+        for label in discovery_item_canonical_facet_labels(item, canonical_kind) {
+            let key = normalize_discovery_affinity_key(&label);
+            if profile_keys.contains(&key) {
+                push_unique_discovery_label(&mut labels, &mut seen, label);
+            }
+        }
+    }
+    labels
+}
+
 fn label_affinity_sections(
     items: &[DiscoveryItemRecord],
     labels: &[String],
+    canonical_kind: &str,
     section_type: &str,
     section_id_prefix: &str,
     limit: usize,
     emitted_item_keys: &mut HashSet<String>,
 ) -> Vec<DiscoverySectionResult> {
     let mut sections = Vec::new();
-    for label in labels {
+    for label in canonical_affinity_labels_for_profile(items, labels, canonical_kind) {
         let mut section_items = items
             .iter()
             .filter(|item| {
-                item.matched_subject_count > 0 && discovery_item_matches_affinity_label(item, label)
+                item.matched_subject_count > 0
+                    && discovery_item_matches_affinity_label(item, &label, canonical_kind)
             })
             .cloned()
             .collect::<Vec<_>>();
@@ -584,7 +635,7 @@ fn label_affinity_sections(
             format!(
                 "{}_{}",
                 section_id_prefix,
-                slugify_discovery_section_part(label)
+                slugify_discovery_section_part(&label)
             ),
             section_type.to_string(),
             format!("Because You Like {}", label),
@@ -645,72 +696,59 @@ const ACCLAIMED_SIGNALS: &[&str] = &[
     "critically",
 ];
 
-const GENRE_SOURCE_TAG_CATEGORIES: &[&str] = &["genre", "theme"];
-
-fn discovery_item_genre_labels(item: &DiscoveryItemRecord) -> Vec<String> {
+fn discovery_item_canonical_facet_labels(item: &DiscoveryItemRecord, kind: &str) -> Vec<String> {
     let mut labels = Vec::new();
     let mut seen = HashSet::new();
-    for label in
-        json_text_values(&item.genres_json)
-            .into_iter()
-            .chain(source_tag_names_for_categories(
-                &item.source_tags_json,
-                GENRE_SOURCE_TAG_CATEGORIES,
-            ))
+    for label in item
+        .facet_terms
+        .iter()
+        .filter_map(|term| canonical_discovery_facet_label(term, kind))
     {
         push_unique_discovery_label(&mut labels, &mut seen, label);
     }
     labels
 }
 
-fn discovery_item_matches_affinity_label(item: &DiscoveryItemRecord, label: &str) -> bool {
+fn discovery_item_matches_affinity_label(
+    item: &DiscoveryItemRecord,
+    label: &str,
+    canonical_kind: &str,
+) -> bool {
     let label_key = normalize_discovery_affinity_key(label);
     if label_key.is_empty() {
         return false;
     }
-    discovery_item_affinity_values(item)
+    discovery_item_canonical_facet_labels(item, canonical_kind)
         .into_iter()
         .any(|candidate| affinity_value_matches_label(&candidate, &label_key))
-}
-
-fn discovery_item_affinity_values(item: &DiscoveryItemRecord) -> Vec<String> {
-    let mut values = discovery_item_genre_labels(item);
-    values.extend(json_text_values(&item.facet_terms_json));
-    values.extend(json_text_values(&item.context_terms_json));
-    values.extend(json_text_values(&item.relation_subtypes_json));
-    values
 }
 
 fn affinity_value_matches_label(value: &str, label_key: &str) -> bool {
     let value_key = normalize_discovery_affinity_key(value);
     value_key == label_key
-        || value_key
-            .strip_prefix("mal genre ")
-            .is_some_and(|tail| tail == label_key)
-        || value_key
-            .strip_prefix("mal theme ")
-            .is_some_and(|tail| tail == label_key)
-        || value_key
-            .strip_prefix("tmdb genre ")
-            .is_some_and(|tail| tail == label_key)
 }
 
-fn source_tag_names_for_categories(raw: &str, categories: &[&str]) -> Vec<String> {
-    serde_json::from_str::<Vec<DiscoverySourceTagValue>>(raw)
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(|tag| {
-            let category = tag.category?.trim().to_ascii_lowercase();
-            if !categories
-                .iter()
-                .any(|candidate| category.eq_ignore_ascii_case(candidate))
-            {
-                return None;
-            }
-            tag.name.map(|name| name.trim().to_string())
-        })
-        .filter(|name| !name.is_empty())
-        .collect()
+#[cfg(test)]
+fn discovery_item_matches_canonical_facet_filters(
+    item: &DiscoveryItemRecord,
+    kind: &str,
+    filters: &[String],
+) -> bool {
+    let mut filter_keys = filters
+        .iter()
+        .map(|filter| normalize_discovery_filter_value(filter))
+        .filter(|filter| !filter.is_empty())
+        .collect::<HashSet<_>>();
+    if filter_keys.is_empty() {
+        return true;
+    }
+    item.facet_terms.iter().any(|term| {
+        let Some(label) = canonical_discovery_facet_label(term, kind) else {
+            return false;
+        };
+        filter_keys.contains(&normalize_discovery_filter_value(term))
+            || filter_keys.remove(&normalize_discovery_filter_value(&label))
+    })
 }
 
 fn push_unique_discovery_label(
@@ -802,18 +840,38 @@ fn discovery_item_has_any_signal(item: &DiscoveryItemRecord, signals: &[&str]) -
 
 fn discovery_item_signal_values(item: &DiscoveryItemRecord) -> Vec<String> {
     let mut values = Vec::new();
-    values.extend(json_text_values(&item.status_tags_json));
-    values.extend(json_text_values(&item.source_tags_json));
-    values.extend(json_text_values(&item.sources_json));
-    values.extend(json_text_values(&item.relation_types_json));
-    values.extend(json_text_values(&item.relation_subtypes_json));
-    values.extend(json_text_values(&item.facet_terms_json));
-    values.extend(json_text_values(&item.context_terms_json));
+    values.extend(item.status_tags.iter().cloned());
+    values.extend(source_tag_text_values(&item.source_tags));
+    values.extend(item.sources.iter().cloned());
+    values.extend(item.relation_types.iter().cloned());
+    values.extend(item.relation_subtypes.iter().cloned());
+    values.extend(item.facet_terms.iter().cloned());
+    values.extend(item.context_terms.iter().cloned());
+    values.extend(item.chart_signals.iter().cloned());
+    values.extend(item.provider_signals.iter().cloned());
     if let Some(best_source) = item.best_source.as_deref() {
         values.push(best_source.to_string());
     }
     if let Some(collection_name) = item.tmdb_collection_name.as_deref() {
         values.push(collection_name.to_string());
+    }
+    values
+}
+
+fn source_tag_text_values(tags: &[DiscoverySourceTagRecord]) -> Vec<String> {
+    let mut values = Vec::new();
+    for tag in tags {
+        if let Some(category) = tag.category.as_deref().map(str::trim)
+            && !category.is_empty()
+        {
+            values.push(category.to_string());
+        }
+        if let Some(name) = tag.name.as_deref().map(str::trim)
+            && !name.is_empty()
+        {
+            values.push(name.to_string());
+        }
+        values.extend(tag.values.iter().cloned());
     }
     values
 }
@@ -928,9 +986,9 @@ fn discovery_item_has_collection_signal(item: &DiscoveryItemRecord) -> bool {
         return true;
     }
 
-    json_text_values(&item.relation_types_json)
-        .into_iter()
-        .chain(json_text_values(&item.relation_subtypes_json))
+    item.relation_types
+        .iter()
+        .chain(item.relation_subtypes.iter())
         .any(|value| {
             let value = value.trim().to_ascii_lowercase();
             value == "tmdb.collection"
@@ -1030,25 +1088,32 @@ fn resolve_discovery_matched_subjects(
     items: &mut [DiscoveryItemRecord],
     submitted_subjects: &[DiscoverySubmittedSubjectRecord],
 ) -> AppResult<()> {
-    let titles_by_subject_key = submitted_subjects
-        .iter()
-        .filter_map(|subject| {
-            let title = subject.display_title.as_deref()?.trim();
-            if title.is_empty() {
-                return None;
-            }
-            Some((subject.subject_key.as_str(), title.to_string()))
-        })
-        .collect::<HashMap<_, _>>();
+    let mut titles_by_subject_key = HashMap::<&str, Vec<String>>::new();
+    for subject in submitted_subjects {
+        let Some(title) = subject.display_title.as_deref().map(str::trim) else {
+            continue;
+        };
+        if !title.is_empty() {
+            titles_by_subject_key
+                .entry(subject.subject_key.as_str())
+                .or_default()
+                .push(title.to_string());
+        }
+    }
 
     for item in items {
-        let titles = json_text_values(&item.matched_subject_keys_json)
-            .into_iter()
-            .filter_map(|key| titles_by_subject_key.get(key.as_str()).cloned())
+        let titles = item
+            .matched_subject_keys
+            .iter()
+            .flat_map(|key| {
+                titles_by_subject_key
+                    .get(key.as_str())
+                    .cloned()
+                    .unwrap_or_default()
+            })
             .collect::<Vec<_>>();
-        item.matched_subject_titles_json =
-            serde_json::to_string(&titles).map_err(discovery_json_error)?;
-        item.matched_subject_count = titles.len() as i32;
+        item.matched_subject_titles = titles;
+        item.matched_subject_count = item.matched_subject_titles.len() as i32;
     }
 
     Ok(())
@@ -1070,33 +1135,7 @@ fn filter_submitted_subjects_for_libraries(
         .collect()
 }
 
-fn filter_personalized_discovery_items_for_libraries(
-    items: Vec<DiscoveryItemRecord>,
-    readable_library_ids: &HashSet<String>,
-) -> Vec<DiscoveryItemRecord> {
-    items
-        .into_iter()
-        .filter(|item| discovery_item_has_readable_provenance(item, readable_library_ids))
-        .collect()
-}
-
-fn discovery_item_has_readable_provenance(
-    item: &DiscoveryItemRecord,
-    readable_library_ids: &HashSet<String>,
-) -> bool {
-    discovery_item_library_provenance(item).iter().any(|entry| {
-        let library_id = entry.library_id.trim();
-        !library_id.is_empty() && readable_library_ids.contains(library_id)
-    })
-}
-
-fn discovery_item_library_provenance(
-    item: &DiscoveryItemRecord,
-) -> Vec<DiscoveryLibraryProvenance> {
-    serde_json::from_str::<Vec<DiscoveryLibraryProvenance>>(&item.library_provenance_json)
-        .unwrap_or_default()
-}
-
+#[cfg(test)]
 fn item_matches_discovery_items_query(
     item: &DiscoveryItemRecord,
     query: &DiscoveryItemsQuery,
@@ -1117,8 +1156,8 @@ fn item_matches_discovery_items_query(
         return false;
     }
     if !query.sources.is_empty()
-        && !json_or_text_contains_any(
-            &item.sources_json,
+        && !text_values_or_optional_contains_any(
+            &item.sources,
             item.best_source.as_deref(),
             &query.sources,
         )
@@ -1126,31 +1165,34 @@ fn item_matches_discovery_items_query(
         return false;
     }
     if !query.relation_types.is_empty()
-        && !json_contains_any(&item.relation_types_json, &query.relation_types)
+        && !text_values_contain_any(&item.relation_types, &query.relation_types)
     {
         return false;
     }
     if !query.relation_subtypes.is_empty()
-        && !json_contains_any(&item.relation_subtypes_json, &query.relation_subtypes)
+        && !text_values_contain_any(&item.relation_subtypes, &query.relation_subtypes)
     {
         return false;
     }
-    if !query.genres.is_empty() && !json_contains_any(&item.genres_json, &query.genres) {
+    if !query.genres.is_empty()
+        && !discovery_item_matches_canonical_facet_filters(item, "genre", &query.genres)
+    {
         return false;
     }
     if !query.status_tags.is_empty()
-        && !json_contains_any(&item.status_tags_json, &query.status_tags)
+        && !text_values_contain_any(&item.status_tags, &query.status_tags)
     {
         return false;
     }
     if !query.facet_terms.is_empty()
-        && !json_contains_any(&item.facet_terms_json, &query.facet_terms)
+        && !text_values_contain_any(&item.facet_terms, &query.facet_terms)
     {
         return false;
     }
     true
 }
 
+#[cfg(test)]
 fn matches_optional_text_query(item: &DiscoveryItemRecord, query: Option<&str>) -> bool {
     let Some(query) = query.map(str::trim).filter(|query| !query.is_empty()) else {
         return true;
@@ -1201,46 +1243,8 @@ fn compare_discovery_items(left: &DiscoveryItemRecord, right: &DiscoveryItemReco
         .then_with(|| left.target_key.cmp(&right.target_key))
 }
 
-#[derive(Default)]
-struct LocalFacetCounts {
-    genres: HashMap<String, i64>,
-    terms: HashMap<String, i64>,
-}
-
-fn local_facet_counts(items: &[DiscoveryItemRecord], include_unresolved: bool) -> LocalFacetCounts {
-    let mut counts = LocalFacetCounts::default();
-    for item in items
-        .iter()
-        .filter(|item| home_item_visible(item, include_unresolved))
-    {
-        for genre in normalized_json_text_values(&item.genres_json) {
-            *counts.genres.entry(genre).or_default() += 1;
-        }
-
-        let mut terms = HashSet::new();
-        terms.extend(normalized_json_text_values(&item.facet_terms_json));
-        terms.extend(normalized_json_text_values(&item.context_terms_json));
-        for term in terms {
-            *counts.terms.entry(term).or_default() += 1;
-        }
-    }
-    counts
-}
-
-fn local_count_for_facet(counts: &LocalFacetCounts, facet: &DiscoveryFacetRecord) -> i64 {
-    let value = normalize_discovery_filter_value(&facet.facet_value);
-    if value.is_empty() {
-        return 0;
-    }
-    if facet.facet_name.eq_ignore_ascii_case("genre") {
-        counts.genres.get(&value).copied().unwrap_or_default()
-    } else {
-        counts.terms.get(&value).copied().unwrap_or_default()
-    }
-}
-
-fn json_contains_any(raw: &str, filters: &[String]) -> bool {
-    let values = json_text_values(raw);
+#[cfg(test)]
+fn text_values_contain_any(values: &[String], filters: &[String]) -> bool {
     filters.iter().any(|filter| {
         values
             .iter()
@@ -1248,40 +1252,28 @@ fn json_contains_any(raw: &str, filters: &[String]) -> bool {
     })
 }
 
-fn json_or_text_contains_any(raw: &str, text: Option<&str>, filters: &[String]) -> bool {
+#[cfg(test)]
+fn text_values_or_optional_contains_any(
+    values: &[String],
+    text: Option<&str>,
+    filters: &[String],
+) -> bool {
     text.is_some_and(|text| {
         filters
             .iter()
             .any(|filter| text.eq_ignore_ascii_case(filter))
-    }) || json_contains_any(raw, filters)
-}
-
-fn normalized_json_text_values(raw: &str) -> Vec<String> {
-    json_text_values(raw)
-        .into_iter()
-        .map(|value| normalize_discovery_filter_value(&value))
-        .filter(|value| !value.is_empty())
-        .collect()
+    }) || text_values_contain_any(values, filters)
 }
 
 fn normalize_discovery_filter_value(value: &str) -> String {
     value.trim().to_ascii_lowercase()
 }
 
+#[cfg(test)]
 fn contains_case_insensitive(values: &[String], candidate: &str) -> bool {
     values
         .iter()
         .any(|value| value.eq_ignore_ascii_case(candidate))
-}
-
-fn json_text_values(raw: &str) -> Vec<String> {
-    serde_json::from_str::<JsonValue>(raw)
-        .map(|value| {
-            let mut values = Vec::new();
-            collect_json_text_values(&value, &mut values);
-            values
-        })
-        .unwrap_or_default()
 }
 
 fn collect_json_text_values(value: &JsonValue, values: &mut Vec<String>) {
@@ -1958,10 +1950,10 @@ pub(crate) fn public_feed_item_records(
                 &empty_provenance,
                 now,
             )?;
-            record.matched_subject_keys_json = "[]".to_string();
-            record.matched_subject_titles_json = "[]".to_string();
+            record.matched_subject_keys.clear();
+            record.matched_subject_titles.clear();
             record.matched_subject_count = 0;
-            record.library_provenance_json = "[]".to_string();
+            record.library_provenance.clear();
             records.push(record);
         }
     }
@@ -1996,10 +1988,7 @@ fn public_feed_section_record(
         section_type: section.section_type.clone(),
         surface: "public".to_string(),
         title: section.title.clone(),
-        source_signals_json: discovery_json_array(&section.source_signals)?,
-        facets_json: discovery_json_array(&section.facets)?,
         sort_index: index as i32,
-        raw_json: serde_json::to_string(section).map_err(discovery_json_error)?,
         created_at: now,
         updated_at: now,
     })
@@ -2013,19 +2002,12 @@ pub(crate) fn snapshot_facet_records(
     for page in pages {
         for group in &page.facets {
             for value in &group.values {
-                let raw_json = serde_json::to_string(&serde_json::json!({
-                    "name": group.name,
-                    "value": value.value,
-                    "count": value.count,
-                }))
-                .map_err(discovery_json_error)?;
                 facets.push(DiscoveryFacetRecord {
                     run_id: run_id.to_string(),
                     facet_name: group.name.clone(),
                     facet_value: value.value.clone(),
                     smg_count: Some(i64::from(value.count)),
                     local_count: None,
-                    raw_json,
                 });
             }
         }
@@ -2043,18 +2025,18 @@ fn discovery_item_record(
     provenance_by_subject_key: &HashMap<String, Vec<DiscoveryLibraryProvenance>>,
     now: DateTime<Utc>,
 ) -> AppResult<DiscoveryItemRecord> {
-    let library_provenance_json =
-        discovery_item_library_provenance_json(item, provenance_by_subject_key)?;
+    let library_provenance =
+        discovery_item_library_provenance_records(item, provenance_by_subject_key);
     Ok(DiscoveryItemRecord {
         id: format!("{run_id}:item:{index}"),
         run_id: run_id.to_string(),
         base_generation_id: Some(base_generation_id.to_string()),
         source_run_kind: source_run_kind.to_string(),
         section_id,
+        sort_index: index as i32,
         target_key: item.target_key.clone(),
         target_kind: item.target_kind.clone(),
         resolved: item.resolved,
-        // SMG does not know Scryer's local title ids; keep any SMG identifier in raw_json.
         resolved_title_id: None,
         display_title: item.display_title.clone(),
         original_title: non_empty_string(&item.original_title),
@@ -2065,46 +2047,45 @@ fn discovery_item_record(
         background_url: non_empty_string(&item.background_url),
         overview: non_empty_string(&item.overview),
         content_type: non_empty_string(&item.content_type),
-        genres_json: discovery_json_array(&item.genres)?,
+        genres: item.genres.clone(),
         rating: item.rating,
-        rating_sources_json: discovery_json_array(&item.rating_sources)?,
-        status_tags_json: discovery_json_array(&item.status_tags)?,
-        source_tags_json: discovery_json_array(&item.source_tags)?,
-        sources_json: discovery_json_array(&item.sources)?,
+        rating_sources: item.rating_sources.clone(),
+        status_tags: item.status_tags.clone(),
+        source_tags: discovery_source_tag_records(&item.source_tags),
+        sources: item.sources.clone(),
         best_source: non_empty_string(&item.best_source),
-        relation_types_json: discovery_json_array(&item.relation_types)?,
-        relation_subtypes_json: discovery_json_array(&item.relation_subtypes)?,
-        chart_signals_json: discovery_json_array(&item.chart_signals)?,
-        provider_signals_json: discovery_json_array(&item.provider_signals)?,
-        rank_components_json: discovery_json_array(&item.rank_components)?,
+        relation_types: item.relation_types.clone(),
+        relation_subtypes: item.relation_subtypes.clone(),
+        chart_signals: discovery_json_signal_values(&item.chart_signals),
+        provider_signals: discovery_json_signal_values(&item.provider_signals),
+        rank_components: discovery_rank_component_records(&item.rank_components),
         source_count: Some(item.source_count),
         edge_count: Some(item.edge_count),
         relation_count: Some(item.relation_count),
         source_subject_count: Some(item.source_subject_count),
         rank_score: Some(item.rank_score),
-        matched_subject_keys_json: discovery_json_array(&item.matched_subject_keys)?,
-        matched_subject_titles_json: discovery_json_array(&item.matched_subject_titles)?,
+        matched_subject_keys: item.matched_subject_keys.clone(),
+        matched_subject_titles: item.matched_subject_titles.clone(),
         matched_subject_count: item.matched_subject_count,
-        library_provenance_json,
+        library_provenance,
         tmdb_collection_id: item.tmdb_collection_id.map(|id| id.to_string()),
         tmdb_collection_name: non_empty_string(&item.tmdb_collection_name),
         owned_in_input: item.owned_in_input,
-        facet_terms_json: discovery_json_array(&item.facet_terms)?,
-        context_terms_json: discovery_json_array(&item.context_terms)?,
-        change_subject_keys_json: discovery_json_array(&item.change_subject_keys)?,
-        removed_subject_keys_json: discovery_json_array(&item.removed_subject_keys)?,
+        facet_terms: discovery_canonical_facet_terms(item),
+        context_terms: item.context_terms.clone(),
+        change_subject_keys: item.change_subject_keys.clone(),
+        removed_subject_keys: item.removed_subject_keys.clone(),
         tombstoned_by_run_id: None,
         tombstoned_at: None,
-        raw_json: serde_json::to_string(item).map_err(discovery_json_error)?,
         created_at: now,
         updated_at: now,
     })
 }
 
-fn discovery_item_library_provenance_json(
+fn discovery_item_library_provenance_records(
     item: &DiscoveryTitle,
     provenance_by_subject_key: &HashMap<String, Vec<DiscoveryLibraryProvenance>>,
-) -> AppResult<String> {
+) -> Vec<DiscoveryItemLibraryProvenanceRecord> {
     let mut provenance = Vec::new();
     let mut seen = BTreeSet::new();
     let mut push_subject_key = |subject_key: &str| {
@@ -2121,7 +2102,11 @@ fn discovery_item_library_provenance_json(
                 entry.title_id.clone(),
                 entry.library_id.clone(),
             )) {
-                provenance.push(entry.clone());
+                provenance.push(DiscoveryItemLibraryProvenanceRecord {
+                    subject_key: entry.subject_key.clone(),
+                    title_id: entry.title_id.clone(),
+                    library_id: Some(entry.library_id.clone()),
+                });
             }
         }
     };
@@ -2139,7 +2124,173 @@ fn discovery_item_library_provenance_json(
         push_subject_key(&item.target_key);
     }
 
-    serde_json::to_string(&provenance).map_err(discovery_json_error)
+    provenance
+}
+
+fn discovery_source_tag_records(values: &[JsonValue]) -> Vec<DiscoverySourceTagRecord> {
+    values
+        .iter()
+        .map(|value| {
+            let category = json_object_string(value, &["category", "type"]);
+            let name = json_object_string(value, &["name", "label", "value"]);
+            DiscoverySourceTagRecord {
+                category,
+                name,
+                values: unique_json_text_values(value),
+            }
+        })
+        .collect()
+}
+
+fn discovery_canonical_facet_terms(item: &DiscoveryTitle) -> Vec<String> {
+    let mut values = item.facet_terms.clone();
+    values.extend(
+        item.genres
+            .iter()
+            .filter_map(|value| canonical_discovery_term(value).map(str::to_string)),
+    );
+    for source_tag in &item.source_tags {
+        values.extend(
+            unique_json_text_values(source_tag)
+                .into_iter()
+                .filter_map(|value| canonical_discovery_term(&value).map(str::to_string)),
+        );
+    }
+    unique_discovery_text_terms(values)
+}
+
+fn unique_discovery_text_terms(values: Vec<String>) -> Vec<String> {
+    let mut seen = HashSet::new();
+    values
+        .into_iter()
+        .filter_map(|value| {
+            let value = value.trim().to_string();
+            if value.is_empty() {
+                return None;
+            }
+            seen.insert(normalize_discovery_filter_value(&value))
+                .then_some(value)
+        })
+        .collect()
+}
+
+fn canonical_discovery_term(value: &str) -> Option<&str> {
+    let value = value.trim();
+    if canonical_discovery_term_tail(value, "genre").is_some()
+        || canonical_discovery_term_tail(value, "theme").is_some()
+    {
+        Some(value)
+    } else {
+        None
+    }
+}
+
+fn canonical_discovery_term_tail<'a>(value: &'a str, kind: &str) -> Option<&'a str> {
+    let value = value.trim();
+    let mut parts = value.splitn(3, ':');
+    if !parts.next()?.eq_ignore_ascii_case("canonical") {
+        return None;
+    }
+    if !parts.next()?.eq_ignore_ascii_case(kind) {
+        return None;
+    }
+    let tail = parts.next()?.trim();
+    if tail.is_empty() {
+        return None;
+    }
+    Some(tail)
+}
+
+fn canonical_discovery_facet_label(value: &str, kind: &str) -> Option<String> {
+    canonical_discovery_term_tail(value, kind).map(format_canonical_discovery_label)
+}
+
+fn format_canonical_discovery_label(value: &str) -> String {
+    value
+        .split(|character: char| {
+            character == '-' || character == '_' || character == ':' || character.is_whitespace()
+        })
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            let mut characters = part.chars();
+            match characters.next() {
+                Some(first) => {
+                    let mut word = first.to_uppercase().collect::<String>();
+                    word.extend(characters.flat_map(char::to_lowercase));
+                    word
+                }
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn discovery_json_signal_values(values: &[JsonValue]) -> Vec<String> {
+    let mut signals = Vec::new();
+    let mut seen = HashSet::new();
+    for value in values {
+        for signal in unique_json_text_values(value) {
+            let key = normalize_discovery_filter_value(&signal);
+            if !key.is_empty() && seen.insert(key) {
+                signals.push(signal);
+            }
+        }
+    }
+    signals
+}
+
+fn discovery_rank_component_records(values: &[JsonValue]) -> Vec<DiscoveryRankComponentRecord> {
+    values
+        .iter()
+        .enumerate()
+        .map(|(index, value)| DiscoveryRankComponentRecord {
+            component_index: index as i32,
+            component_name: json_object_string(value, &["name", "key", "component", "type"]),
+            component_value: json_object_string(
+                value,
+                &["value", "score", "weight", "contribution"],
+            )
+            .or_else(|| unique_json_text_values(value).first().cloned()),
+        })
+        .collect()
+}
+
+fn json_object_string(value: &JsonValue, keys: &[&str]) -> Option<String> {
+    let object = value.as_object()?;
+    keys.iter().find_map(|key| {
+        object
+            .get(*key)
+            .and_then(json_scalar_string)
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+    })
+}
+
+fn json_scalar_string(value: &JsonValue) -> Option<String> {
+    match value {
+        JsonValue::String(value) => Some(value.clone()),
+        JsonValue::Number(value) => Some(value.to_string()),
+        JsonValue::Bool(value) => Some(value.to_string()),
+        JsonValue::Null | JsonValue::Array(_) | JsonValue::Object(_) => None,
+    }
+}
+
+fn unique_json_text_values(value: &JsonValue) -> Vec<String> {
+    let mut values = Vec::new();
+    collect_json_text_values(value, &mut values);
+    let mut seen = HashSet::new();
+    values
+        .into_iter()
+        .filter_map(|value| {
+            let value = value.trim().to_string();
+            if value.is_empty() {
+                return None;
+            }
+            let key = normalize_discovery_filter_value(&value);
+            seen.insert(key).then_some(value)
+        })
+        .collect()
 }
 
 pub(crate) fn pending_context_changes_need_snapshot_reconciliation(
@@ -2249,13 +2400,6 @@ fn discovery_change_type_from_str(value: &str) -> AppResult<DiscoveryContextChan
 fn non_empty_string(value: &str) -> Option<String> {
     let value = value.trim();
     (!value.is_empty()).then(|| value.to_string())
-}
-
-fn discovery_json_array<T>(value: &T) -> AppResult<String>
-where
-    T: Serialize,
-{
-    serde_json::to_string(value).map_err(discovery_json_error)
 }
 
 fn discovery_json_error(error: serde_json::Error) -> AppError {
@@ -2540,6 +2684,102 @@ mod tests {
     }
 
     #[test]
+    fn discovery_item_records_wire_canonical_genre_and_theme_terms() {
+        let now = Utc.timestamp_opt(0, 0).unwrap();
+        let item = DiscoveryTitle {
+            target_key: "tmdb:movie:603".to_string(),
+            target_kind: "movie".to_string(),
+            resolved: true,
+            display_title: "The Example".to_string(),
+            genres: vec![
+                "Drama".to_string(),
+                "action".to_string(),
+                "canonical:genre:action".to_string(),
+                "canonical:genre:drama".to_string(),
+                "canonical:genre:action".to_string(),
+            ],
+            source_tags: vec![
+                serde_json::json!({
+                    "source": "mal",
+                    "category": "theme",
+                    "name": "mal:theme:psychological",
+                    "canonical": "canonical:theme:psychological"
+                }),
+                serde_json::json!("canonical:theme:survival"),
+            ],
+            facet_terms: vec![
+                "raw:compat".to_string(),
+                "canonical:genre:drama".to_string(),
+            ],
+            ..DiscoveryTitle::default()
+        };
+
+        let records = snapshot_item_records("run-1", "run-1", &[item], &HashMap::new(), now)
+            .expect("discovery item records should build");
+
+        assert_eq!(records.len(), 1);
+        assert!(records[0].genres.contains(&"Drama".to_string()));
+        assert!(records[0].genres.contains(&"action".to_string()));
+        assert!(records[0].facet_terms.contains(&"raw:compat".to_string()));
+        assert!(
+            records[0]
+                .facet_terms
+                .contains(&"canonical:genre:action".to_string())
+        );
+        assert!(
+            records[0]
+                .facet_terms
+                .contains(&"canonical:genre:drama".to_string())
+        );
+        assert_eq!(
+            records[0]
+                .facet_terms
+                .iter()
+                .filter(|term| term.as_str() == "canonical:genre:action")
+                .count(),
+            1
+        );
+        assert!(
+            records[0]
+                .facet_terms
+                .contains(&"canonical:theme:psychological".to_string())
+        );
+        assert!(
+            records[0]
+                .facet_terms
+                .contains(&"canonical:theme:survival".to_string())
+        );
+        assert!(records[0].source_tags.iter().any(|source_tag| {
+            source_tag
+                .values
+                .iter()
+                .any(|value| value == "mal:theme:psychological")
+        }));
+    }
+
+    #[test]
+    fn discovery_item_genre_query_uses_canonical_facet_terms() {
+        fn matches_genre(item: &DiscoveryItemRecord, genre: &str) -> bool {
+            item_matches_discovery_items_query(
+                item,
+                &DiscoveryItemsQuery {
+                    genres: vec![genre.to_string()],
+                    include_unresolved: false,
+                    ..DiscoveryItemsQuery::default()
+                },
+            )
+        }
+
+        let mut item = test_discovery_item("canonical", "movie", Some("movie"));
+        item.genres = vec!["Drama".to_string(), "action".to_string()];
+        item.facet_terms = vec!["canonical:genre:action".to_string()];
+
+        assert!(matches_genre(&item, "Action"));
+        assert!(matches_genre(&item, "canonical:genre:action"));
+        assert!(!matches_genre(&item, "Drama"));
+    }
+
+    #[test]
     fn discovery_item_media_kind_uses_v1_content_type_contract() {
         fn matches_target_kind(item: &DiscoveryItemRecord, target_kind: &str) -> bool {
             item_matches_discovery_items_query(
@@ -2557,7 +2797,7 @@ mod tests {
         assert!(!matches_target_kind(&anime, "series"));
 
         let mut series = test_discovery_item("series", "series", Some("series"));
-        series.genres_json = serde_json::json!(["Animation", "Adventure"]).to_string();
+        series.genres = vec!["Animation".to_string(), "Adventure".to_string()];
         assert!(matches_target_kind(&series, "series"));
         assert!(!matches_target_kind(&series, "anime"));
 
@@ -2587,7 +2827,11 @@ mod tests {
             item.target_key = format!("tmdb:movie:{id}");
             item.display_title = title.to_string();
             item.sort_title = Some(title.to_string());
-            item.genres_json = serde_json::to_string(genres).expect("genres serialize");
+            item.genres = genres.iter().map(|genre| (*genre).to_string()).collect();
+            item.facet_terms = genres
+                .iter()
+                .map(|genre| format!("canonical:genre:{}", genre.to_ascii_lowercase()))
+                .collect();
             item.rank_score = Some(rank_score);
             item.matched_subject_count = matched_subject_count;
             item
@@ -2639,46 +2883,6 @@ mod tests {
                 item.display_title
             );
         }
-    }
-
-    #[test]
-    fn local_facet_counts_parse_item_json_once_per_item() {
-        let mut item = test_discovery_item("item-1", "series", Some("anime"));
-        item.genres_json = serde_json::json!(["Action"]).to_string();
-        item.facet_terms_json = serde_json::json!(["Most Popular Anime"]).to_string();
-        item.context_terms_json =
-            serde_json::json!(["Most Popular Anime", "Winter 2026"]).to_string();
-
-        let counts = local_facet_counts(&[item], false);
-
-        assert_eq!(
-            local_count_for_facet(
-                &counts,
-                &DiscoveryFacetRecord {
-                    run_id: "run-1".to_string(),
-                    facet_name: "genre".to_string(),
-                    facet_value: "action".to_string(),
-                    smg_count: None,
-                    local_count: None,
-                    raw_json: "{}".to_string(),
-                }
-            ),
-            1
-        );
-        assert_eq!(
-            local_count_for_facet(
-                &counts,
-                &DiscoveryFacetRecord {
-                    run_id: "run-1".to_string(),
-                    facet_name: "facet_term".to_string(),
-                    facet_value: "Most Popular Anime".to_string(),
-                    smg_count: None,
-                    local_count: None,
-                    raw_json: "{}".to_string(),
-                }
-            ),
-            1
-        );
     }
 
     fn test_pending_change(
@@ -2777,6 +2981,7 @@ mod tests {
             base_generation_id: Some("run-1".to_string()),
             source_run_kind: "context_snapshot".to_string(),
             section_id: None,
+            sort_index: 0,
             target_key: format!("{target_kind}:{id}"),
             target_kind: target_kind.to_string(),
             resolved: true,
@@ -2790,37 +2995,36 @@ mod tests {
             background_url: None,
             overview: None,
             content_type: content_type.map(str::to_string),
-            genres_json: "[]".to_string(),
+            genres: Vec::new(),
             rating: None,
-            rating_sources_json: "[]".to_string(),
-            status_tags_json: "[]".to_string(),
-            source_tags_json: "[]".to_string(),
-            sources_json: "[]".to_string(),
+            rating_sources: Vec::new(),
+            status_tags: Vec::new(),
+            source_tags: Vec::new(),
+            sources: Vec::new(),
             best_source: None,
-            relation_types_json: "[]".to_string(),
-            relation_subtypes_json: "[]".to_string(),
-            chart_signals_json: "[]".to_string(),
-            provider_signals_json: "[]".to_string(),
-            rank_components_json: "[]".to_string(),
+            relation_types: Vec::new(),
+            relation_subtypes: Vec::new(),
+            chart_signals: Vec::new(),
+            provider_signals: Vec::new(),
+            rank_components: Vec::new(),
             source_count: None,
             edge_count: None,
             relation_count: None,
             source_subject_count: None,
             rank_score: None,
-            matched_subject_keys_json: "[]".to_string(),
-            matched_subject_titles_json: "[]".to_string(),
+            matched_subject_keys: Vec::new(),
+            matched_subject_titles: Vec::new(),
             matched_subject_count: 0,
-            library_provenance_json: "[]".to_string(),
+            library_provenance: Vec::new(),
             tmdb_collection_id: None,
             tmdb_collection_name: None,
             owned_in_input: false,
-            facet_terms_json: "[]".to_string(),
-            context_terms_json: "[]".to_string(),
-            change_subject_keys_json: "[]".to_string(),
-            removed_subject_keys_json: "[]".to_string(),
+            facet_terms: Vec::new(),
+            context_terms: Vec::new(),
+            change_subject_keys: Vec::new(),
+            removed_subject_keys: Vec::new(),
             tombstoned_by_run_id: None,
             tombstoned_at: None,
-            raw_json: "{}".to_string(),
             created_at: now,
             updated_at: now,
         }

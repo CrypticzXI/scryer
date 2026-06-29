@@ -42,8 +42,22 @@ import type {
   MediaServerUserGroup,
   UiDateTimeFormat,
 } from "@/lib/types/settings";
+import { cn } from "@/lib/utils";
 import { formatUiDateTime } from "@/lib/utils/date-format";
 import { selectorId } from "@/lib/utils/dom-ids";
+
+const EXTERNAL_INVITES_PANEL_CLASS =
+  "overflow-hidden rounded-[14px] border border-[var(--scry-border)] bg-[var(--scry-surf)] shadow-[0_10px_24px_rgba(0,0,0,0.16)]";
+const EXTERNAL_INVITES_PANEL_HEADER_CLASS =
+  "border-b border-[var(--scry-border3)] bg-[linear-gradient(180deg,rgba(255,255,255,0.035),rgba(255,255,255,0))] px-4 py-3";
+const EXTERNAL_INVITES_PANEL_TITLE_CLASS =
+  "text-[15px] font-semibold text-[var(--scry-ink2)]";
+const EXTERNAL_INVITES_TABLE_SHELL_CLASS =
+  "overflow-hidden rounded-[12px] border border-[var(--scry-line2)] bg-[var(--scry-card2)]";
+const EXTERNAL_INVITES_TABLE_HEADER_ROW_CLASS =
+  "border-[var(--scry-border3)] bg-[var(--scry-inset)] hover:bg-[var(--scry-inset)]";
+const EXTERNAL_INVITES_TABLE_HEADER_CELL_CLASS =
+  "font-semibold text-[var(--scry-muted2)]";
 
 export type ExternalInviteDraft = {
   userId: string;
@@ -471,30 +485,33 @@ export function ExternalAccountInvitesPanel({
     : null;
 
   return (
-    <div className="space-y-4 rounded-[14px] border border-[var(--scry-border)] bg-[var(--scry-surf)] p-4 shadow-[0_10px_24px_rgba(0,0,0,0.16)]">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-        <div className="flex items-center gap-2">
-          <h3 className="text-[15px] font-semibold text-[var(--scry-ink2)]">
-            {t("settings.externalAccountInvites")}
-          </h3>
-          {loading ? (
-            <Loader2 className="h-4 w-4 animate-spin text-[var(--scry-muted3)]" />
+    <div className={EXTERNAL_INVITES_PANEL_CLASS}>
+      <div className={EXTERNAL_INVITES_PANEL_HEADER_CLASS}>
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex items-center gap-2">
+            <h3 className={EXTERNAL_INVITES_PANEL_TITLE_CLASS}>
+              {t("settings.externalAccountInvites")}
+            </h3>
+            {loading ? (
+              <Loader2 className="h-4 w-4 animate-spin text-[var(--scry-muted3)]" />
+            ) : null}
+          </div>
+          {showMediaServersLink ? (
+            <Button asChild variant="primary" className="w-fit shrink-0">
+              <Link to="/settings/media-servers">
+                {t("settings.openMediaServers")}
+              </Link>
+            </Button>
           ) : null}
         </div>
-        {showMediaServersLink ? (
-          <Button asChild variant="primary" className="w-fit shrink-0">
-            <Link to="/settings/media-servers">
-              {t("settings.openMediaServers")}
-            </Link>
-          </Button>
-        ) : null}
       </div>
 
-      {inviteUnavailable ? (
-        <p className="text-[var(--scry-muted3)]">
-          {t("settings.externalAccountInvitesUnavailable")}
-        </p>
-      ) : (
+      <div className="space-y-4 p-4 sm:p-5">
+        {inviteUnavailable ? (
+          <p className="text-[var(--scry-muted3)]">
+            {t("settings.externalAccountInvitesUnavailable")}
+          </p>
+        ) : (
         <form
           id="settings-external-account-invite-form"
           className="space-y-4"
@@ -607,22 +624,33 @@ export function ExternalAccountInvitesPanel({
         <h4 className="text-sm font-medium text-[var(--scry-ink2)]">
           {t("settings.previousExternalAccountInvites")}
         </h4>
-        <div className="overflow-hidden rounded-[12px] border border-[var(--scry-line2)] bg-[var(--scry-card2)]">
+        <div className={EXTERNAL_INVITES_TABLE_SHELL_CLASS}>
           <div className="overflow-x-auto">
-            <Table id="settings-external-account-invites-table">
+            <Table
+              id="settings-external-account-invites-table"
+              className="min-w-[1040px] table-fixed"
+            >
               <TableHeader>
-                <TableRow>
-                  <TableHead>{t("settings.user")}</TableHead>
-                  <TableHead>{t("settings.provider")}</TableHead>
-                  <TableHead>{t("profile.linkedAccountConnection")}</TableHead>
-                  <TableHead>
+                <TableRow className={EXTERNAL_INVITES_TABLE_HEADER_ROW_CLASS}>
+                  <TableHead className={cn("w-40", EXTERNAL_INVITES_TABLE_HEADER_CELL_CLASS)}>
+                    {t("settings.user")}
+                  </TableHead>
+                  <TableHead className={cn("w-32", EXTERNAL_INVITES_TABLE_HEADER_CELL_CLASS)}>
+                    {t("settings.provider")}
+                  </TableHead>
+                  <TableHead className={cn("w-44", EXTERNAL_INVITES_TABLE_HEADER_CELL_CLASS)}>
+                    {t("profile.linkedAccountConnection")}
+                  </TableHead>
+                  <TableHead className={cn("w-52", EXTERNAL_INVITES_TABLE_HEADER_CELL_CLASS)}>
                     {t("settings.externalAccountInviteProviderUser")}
                   </TableHead>
-                  <TableHead>{t("profile.linkedAccountStatus")}</TableHead>
-                  <TableHead>
+                  <TableHead className={cn("w-36", EXTERNAL_INVITES_TABLE_HEADER_CELL_CLASS)}>
+                    {t("profile.linkedAccountStatus")}
+                  </TableHead>
+                  <TableHead className={cn("w-36", EXTERNAL_INVITES_TABLE_HEADER_CELL_CLASS)}>
                     {t("settings.externalAccountInviteCreatedAt")}
                   </TableHead>
-                  <TableHead>
+                  <TableHead className={cn("w-36", EXTERNAL_INVITES_TABLE_HEADER_CELL_CLASS)}>
                     {t("settings.externalAccountInviteLastLogin")}
                   </TableHead>
                 </TableRow>
@@ -691,6 +719,7 @@ export function ExternalAccountInvitesPanel({
           </div>
         </div>
       </div>
+    </div>
     </div>
   );
 }

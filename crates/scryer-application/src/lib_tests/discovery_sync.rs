@@ -2,6 +2,10 @@ use super::support_bootstrap_fixtures::{
     TestPermissionPreset, bootstrap_with_metadata_gateway_and_titles, create_authenticated_user,
     library_permission_user,
 };
+use crate::ports::{
+    DiscoveryItemLibraryProvenanceRecord, DiscoveryItemsPageRecord, DiscoveryItemsStorageQuery,
+    DiscoverySectionItemsRecord, DiscoverySourceTagRecord,
+};
 use crate::{
     AppError, AppResult, BulkMetadataResult, DiscoveryContextChangeType,
     DiscoveryContextChangesInput, DiscoveryContextChangesResult, DiscoveryContextIncrementalCommit,
@@ -24,7 +28,7 @@ use scryer_domain::{
     DomainEventPayload, DomainExternalIds, ExternalId, JobRunStartedEventData,
     LibraryScanStartedEventData, MediaFacet, Title, TitleContextSnapshot, TitleUpdatedEventData,
 };
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -271,26 +275,24 @@ async fn discovery_home_and_items_use_local_rows_and_library_view_rbac() {
         false,
         true,
     );
-    private_recommendation.matched_subject_keys_json =
-        serde_json::json!(["tmdb:movie:603", "tmdb:movie:999"]).to_string();
-    private_recommendation.matched_subject_titles_json =
-        serde_json::json!(["SMG should not leak this"]).to_string();
+    private_recommendation.matched_subject_keys =
+        vec!["tmdb:movie:603".to_string(), "tmdb:movie:999".to_string()];
+    private_recommendation.matched_subject_titles = vec!["SMG should not leak this".to_string()];
     private_recommendation.matched_subject_count = 2;
-    private_recommendation.library_provenance_json = serde_json::json!([
-        {
-            "subjectKey": "tmdb:movie:603",
-            "titleId": "title-603",
-            "libraryId": visible_movie_library_id,
+    private_recommendation.library_provenance = vec![
+        DiscoveryItemLibraryProvenanceRecord {
+            subject_key: "tmdb:movie:603".to_string(),
+            title_id: Some("title-603".to_string()),
+            library_id: Some(visible_movie_library_id.clone()),
         },
-        {
-            "subjectKey": "tmdb:movie:999",
-            "titleId": "hidden-title",
-            "libraryId": hidden_movie_library_id,
+        DiscoveryItemLibraryProvenanceRecord {
+            subject_key: "tmdb:movie:999".to_string(),
+            title_id: Some("hidden-title".to_string()),
+            library_id: Some(hidden_movie_library_id.clone()),
         },
-    ])
-    .to_string();
-    let linked_subject_keys = serde_json::json!(["tmdb:movie:603"]).to_string();
-    let top_context_terms = serde_json::json!(["weekly", "popular"]).to_string();
+    ];
+    let linked_subject_keys = vec!["tmdb:movie:603".to_string()];
+    let top_context_terms = vec!["weekly".to_string(), "popular".to_string()];
     let mut sci_fi_one = discovery_item_record(
         "context-run",
         "context-run",
@@ -304,8 +306,8 @@ async fn discovery_home_and_items_use_local_rows_and_library_view_rbac() {
         false,
         true,
     );
-    sci_fi_one.matched_subject_keys_json = linked_subject_keys.clone();
-    sci_fi_one.context_terms_json = top_context_terms.clone();
+    sci_fi_one.matched_subject_keys = linked_subject_keys.clone();
+    sci_fi_one.context_terms = top_context_terms.clone();
     let mut sci_fi_two = discovery_item_record(
         "context-run",
         "context-run",
@@ -319,8 +321,8 @@ async fn discovery_home_and_items_use_local_rows_and_library_view_rbac() {
         false,
         true,
     );
-    sci_fi_two.matched_subject_keys_json = linked_subject_keys.clone();
-    sci_fi_two.context_terms_json = top_context_terms.clone();
+    sci_fi_two.matched_subject_keys = linked_subject_keys.clone();
+    sci_fi_two.context_terms = top_context_terms.clone();
     let mut drama_one = discovery_item_record(
         "context-run",
         "context-run",
@@ -334,8 +336,8 @@ async fn discovery_home_and_items_use_local_rows_and_library_view_rbac() {
         false,
         true,
     );
-    drama_one.matched_subject_keys_json = linked_subject_keys.clone();
-    drama_one.context_terms_json = top_context_terms.clone();
+    drama_one.matched_subject_keys = linked_subject_keys.clone();
+    drama_one.context_terms = top_context_terms.clone();
     let mut drama_two = discovery_item_record(
         "context-run",
         "context-run",
@@ -349,9 +351,9 @@ async fn discovery_home_and_items_use_local_rows_and_library_view_rbac() {
         false,
         true,
     );
-    drama_two.matched_subject_keys_json = linked_subject_keys.clone();
+    drama_two.matched_subject_keys = linked_subject_keys.clone();
     drama_two.rating = Some(8.7);
-    drama_two.status_tags_json = serde_json::json!(["Award Winning"]).to_string();
+    drama_two.status_tags = vec!["Award Winning".to_string()];
     let mut acclaimed_sci_fi = discovery_item_record(
         "context-run",
         "context-run",
@@ -365,7 +367,7 @@ async fn discovery_home_and_items_use_local_rows_and_library_view_rbac() {
         false,
         true,
     );
-    acclaimed_sci_fi.matched_subject_keys_json = linked_subject_keys.clone();
+    acclaimed_sci_fi.matched_subject_keys = linked_subject_keys.clone();
     acclaimed_sci_fi.rating = Some(9.1);
     let mut horror_item = discovery_item_record(
         "context-run",
@@ -380,7 +382,7 @@ async fn discovery_home_and_items_use_local_rows_and_library_view_rbac() {
         false,
         true,
     );
-    horror_item.matched_subject_keys_json = linked_subject_keys.clone();
+    horror_item.matched_subject_keys = linked_subject_keys.clone();
     let mut isekai_item = discovery_item_record(
         "context-run",
         "context-run",
@@ -394,9 +396,15 @@ async fn discovery_home_and_items_use_local_rows_and_library_view_rbac() {
         false,
         true,
     );
-    isekai_item.matched_subject_keys_json = linked_subject_keys.clone();
-    isekai_item.source_tags_json =
-        serde_json::json!([{"source": "mal", "category": "theme", "name": "Isekai"}]).to_string();
+    isekai_item.matched_subject_keys = linked_subject_keys.clone();
+    isekai_item
+        .facet_terms
+        .push("canonical:theme:isekai".to_string());
+    isekai_item.source_tags = vec![DiscoverySourceTagRecord {
+        category: Some("theme".to_string()),
+        name: Some("Isekai".to_string()),
+        values: vec!["mal".to_string(), "theme".to_string(), "Isekai".to_string()],
+    }];
     let mut weekly_series_one = discovery_item_record(
         "context-run",
         "context-run",
@@ -410,7 +418,7 @@ async fn discovery_home_and_items_use_local_rows_and_library_view_rbac() {
         false,
         true,
     );
-    weekly_series_one.context_terms_json = top_context_terms.clone();
+    weekly_series_one.context_terms = top_context_terms.clone();
     let mut weekly_series_two = discovery_item_record(
         "context-run",
         "context-run",
@@ -424,7 +432,7 @@ async fn discovery_home_and_items_use_local_rows_and_library_view_rbac() {
         false,
         true,
     );
-    weekly_series_two.context_terms_json = top_context_terms.clone();
+    weekly_series_two.context_terms = top_context_terms.clone();
     let mut weekly_anime_one = discovery_item_record(
         "context-run",
         "context-run",
@@ -438,7 +446,7 @@ async fn discovery_home_and_items_use_local_rows_and_library_view_rbac() {
         false,
         true,
     );
-    weekly_anime_one.context_terms_json = top_context_terms.clone();
+    weekly_anime_one.context_terms = top_context_terms.clone();
     let mut weekly_anime_two = discovery_item_record(
         "context-run",
         "context-run",
@@ -452,7 +460,7 @@ async fn discovery_home_and_items_use_local_rows_and_library_view_rbac() {
         false,
         true,
     );
-    weekly_anime_two.context_terms_json = top_context_terms.clone();
+    weekly_anime_two.context_terms = top_context_terms.clone();
     let mut acclaimed_mystery = discovery_item_record(
         "context-run",
         "context-run",
@@ -495,16 +503,12 @@ async fn discovery_home_and_items_use_local_rows_and_library_view_rbac() {
         false,
         true,
     );
-    hidden_recommendation.matched_subject_keys_json =
-        serde_json::json!(["tmdb:movie:999"]).to_string();
-    hidden_recommendation.library_provenance_json = serde_json::json!([
-        {
-            "subjectKey": "tmdb:movie:999",
-            "titleId": "hidden-title",
-            "libraryId": "hidden-movie-library",
-        },
-    ])
-    .to_string();
+    hidden_recommendation.matched_subject_keys = vec!["tmdb:movie:999".to_string()];
+    hidden_recommendation.library_provenance = vec![DiscoveryItemLibraryProvenanceRecord {
+        subject_key: "tmdb:movie:999".to_string(),
+        title_id: Some("hidden-title".to_string()),
+        library_id: Some("hidden-movie-library".to_string()),
+    }];
     discovery.items.lock().await.extend([
         discovery_item_record(
             "public-run",
@@ -567,7 +571,6 @@ async fn discovery_home_and_items_use_local_rows_and_library_view_rbac() {
         facet_value: "Drama".to_string(),
         smg_count: Some(20),
         local_count: None,
-        raw_json: serde_json::json!({"value": "Drama"}).to_string(),
     });
 
     let public_home = app
@@ -617,7 +620,30 @@ async fn discovery_home_and_items_use_local_rows_and_library_view_rbac() {
             && item.tmdb_collection_id.is_none()
             && item.tmdb_collection_name.is_none()
     }));
-    assert_eq!(viewer_home.facets[0].local_count, Some(3));
+    let drama_facet = viewer_home
+        .facets
+        .iter()
+        .find(|facet| facet.facet_name == "genre" && facet.facet_value == "Drama")
+        .expect("canonical drama facet should be present");
+    assert_eq!(drama_facet.local_count, Some(3));
+    assert_eq!(drama_facet.smg_count, None);
+    assert!(
+        viewer_home
+            .facets
+            .iter()
+            .any(|facet| facet.facet_name == "genre" && facet.facet_value == "Sci Fi")
+    );
+    assert!(
+        viewer_home
+            .facets
+            .iter()
+            .any(|facet| facet.facet_name == "theme" && facet.facet_value == "Isekai")
+    );
+    assert!(viewer_home.facets.iter().all(|facet| {
+        !facet.facet_value.contains(':')
+            && facet.facet_value != "Sci-Fi"
+            && facet.smg_count.is_none()
+    }));
     let personalized_section_types = viewer_home
         .personalized_sections
         .iter()
@@ -631,13 +657,13 @@ async fn discovery_home_and_items_use_local_rows_and_library_view_rbac() {
     assert!(personalized_section_types.contains(&"TOP_RATED_ACCLAIMED_NOT_IN_LIBRARY"));
     assert!(viewer_home.personalized_sections.iter().any(|section| {
         section.section_type == "BECAUSE_YOU_LIKE_GENRE"
-            && section.title == "Because You Like Sci-Fi"
+            && section.title == "Because You Like Sci Fi"
     }));
     assert!(viewer_home.personalized_sections.iter().any(|section| {
         section.section_type == "BECAUSE_YOU_LIKE_GENRE"
             && section.title == "Because You Like Drama"
     }));
-    assert!(viewer_home.personalized_sections.iter().any(|section| {
+    assert!(!viewer_home.personalized_sections.iter().any(|section| {
         section.section_type == "BECAUSE_YOU_LIKE_TAG" && section.title == "Because You Like Horror"
     }));
     assert!(viewer_home.personalized_sections.iter().any(|section| {
@@ -681,8 +707,7 @@ async fn discovery_home_and_items_use_local_rows_and_library_view_rbac() {
     assert_eq!(matched_context.total_count, 1);
     assert_eq!(matched_context.items[0].matched_subject_count, 1);
     assert_eq!(
-        serde_json::from_str::<Vec<String>>(&matched_context.items[0].matched_subject_titles_json)
-            .expect("matched titles should decode"),
+        matched_context.items[0].matched_subject_titles,
         vec!["Local Example Movie".to_string()]
     );
 
@@ -710,6 +735,11 @@ async fn discovery_home_and_items_use_local_rows_and_library_view_rbac() {
         .expect("public discovery items should load");
     assert_eq!(public_items.total_count, 1);
     assert_eq!(public_items.items[0].display_title, "Public Movie");
+    assert_eq!(
+        *discovery.generation_list_calls.lock().await,
+        0,
+        "normal discovery home/items reads should not hydrate full generations"
+    );
 }
 
 #[tokio::test]
@@ -774,12 +804,7 @@ async fn discovery_provenance_keeps_duplicate_subject_keys_across_libraries() {
     .into_iter()
     .next()
     .expect("snapshot item should exist");
-    assert_eq!(
-        serde_json::from_str::<Vec<serde_json::Value>>(&item.library_provenance_json)
-            .expect("item provenance should decode")
-            .len(),
-        2
-    );
+    assert_eq!(item.library_provenance.len(), 2);
 
     *discovery.state.lock().await = Some(DiscoverySyncStateRecord {
         last_success_generation_id: Some("context-run".to_string()),
@@ -817,8 +842,7 @@ async fn discovery_provenance_keeps_duplicate_subject_keys_across_libraries() {
     assert_eq!(movie_items.total_count, 1);
     assert_eq!(movie_items.items[0].matched_subject_count, 1);
     assert_eq!(
-        serde_json::from_str::<Vec<String>>(&movie_items.items[0].matched_subject_titles_json)
-            .expect("movie matched titles should decode"),
+        movie_items.items[0].matched_subject_titles,
         vec!["Movie Library Copy".to_string()]
     );
 
@@ -835,8 +859,7 @@ async fn discovery_provenance_keeps_duplicate_subject_keys_across_libraries() {
     assert_eq!(series_items.total_count, 1);
     assert_eq!(series_items.items[0].matched_subject_count, 1);
     assert_eq!(
-        serde_json::from_str::<Vec<String>>(&series_items.items[0].matched_subject_titles_json)
-            .expect("series matched titles should decode"),
+        series_items.items[0].matched_subject_titles,
         vec!["Series Library Copy".to_string()]
     );
 }
@@ -1954,8 +1977,8 @@ async fn discovery_sync_public_feed_runs_while_scan_and_context_backoff_are_acti
     assert_eq!(commit.sections[0].section_type, "TRENDING_NOW");
     assert_eq!(commit.items.len(), 1);
     assert_eq!(commit.items[0].source_run_kind, "public_feed");
-    assert_eq!(commit.items[0].matched_subject_keys_json, "[]");
-    assert_eq!(commit.items[0].matched_subject_titles_json, "[]");
+    assert!(commit.items[0].matched_subject_keys.is_empty());
+    assert!(commit.items[0].matched_subject_titles.is_empty());
     assert_eq!(commit.items[0].matched_subject_count, 0);
     assert_eq!(
         commit.state.last_public_feed_generation_id,
@@ -2911,6 +2934,7 @@ struct RecordingDiscoveryRepository {
     items: Mutex<Vec<DiscoveryItemRecord>>,
     facets: Mutex<Vec<DiscoveryFacetRecord>>,
     submitted_subjects: Mutex<Vec<DiscoverySubmittedSubjectRecord>>,
+    generation_list_calls: Mutex<usize>,
 }
 
 #[async_trait]
@@ -3307,10 +3331,142 @@ impl DiscoveryRepository for RecordingDiscoveryRepository {
             .collect())
     }
 
+    async fn list_public_discovery_section_items(
+        &self,
+        run_id: &str,
+        include_unresolved: bool,
+        limit_per_section: i64,
+    ) -> AppResult<Vec<DiscoverySectionItemsRecord>> {
+        let sections = self.list_discovery_sections(run_id, Some("public")).await?;
+        let all_items = self.items.lock().await.clone();
+        let mut records = Vec::new();
+        for section in sections {
+            if section
+                .section_type
+                .trim()
+                .eq_ignore_ascii_case("COMPLETE_THE_COLLECTION")
+            {
+                continue;
+            }
+            let mut items = all_items
+                .iter()
+                .filter(|item| item.base_generation_id.as_deref() == Some(run_id))
+                .filter(|item| item.tombstoned_at.is_none())
+                .filter(|item| item.section_id.as_deref() == Some(section.section_id.as_str()))
+                .filter(|item| !item.owned_in_input)
+                .filter(|item| include_unresolved || item.resolved)
+                .cloned()
+                .collect::<Vec<_>>();
+            recording_dedupe_preserving_order(&mut items);
+            let total_count = items.len() as i64;
+            items.truncate(limit_per_section.max(1) as usize);
+            if !items.is_empty() {
+                records.push(DiscoverySectionItemsRecord {
+                    section,
+                    total_count,
+                    items,
+                });
+            }
+        }
+        Ok(records)
+    }
+
+    async fn list_personalized_discovery_home_items(
+        &self,
+        run_id: &str,
+        readable_library_ids: &[String],
+        include_unresolved: bool,
+        limit: i64,
+    ) -> AppResult<Vec<DiscoveryItemRecord>> {
+        let mut items = recording_visible_personalized_items(
+            &self.items.lock().await,
+            run_id,
+            readable_library_ids,
+            include_unresolved,
+        )
+        .into_iter()
+        .filter(|item| !item.owned_in_input)
+        .collect::<Vec<_>>();
+        recording_dedupe_and_sort(&mut items);
+        items.truncate(limit.max(1) as usize);
+        Ok(items)
+    }
+
+    async fn list_personalized_complete_collection_items(
+        &self,
+        run_id: &str,
+        readable_library_ids: &[String],
+        include_unresolved: bool,
+        limit: i64,
+    ) -> AppResult<Vec<DiscoveryItemRecord>> {
+        let mut items = recording_visible_personalized_items(
+            &self.items.lock().await,
+            run_id,
+            readable_library_ids,
+            include_unresolved,
+        )
+        .into_iter()
+        .filter(|item| recording_item_media_kind(item) == Some("movie"))
+        .filter(|item| !item.owned_in_input)
+        .filter(recording_item_has_collection_signal)
+        .collect::<Vec<_>>();
+        recording_dedupe_and_sort(&mut items);
+        items.truncate(limit.max(1) as usize);
+        Ok(items)
+    }
+
+    async fn list_personalized_discovery_facets(
+        &self,
+        run_id: &str,
+        readable_library_ids: &[String],
+        include_unresolved: bool,
+    ) -> AppResult<Vec<DiscoveryFacetRecord>> {
+        let items = recording_visible_personalized_items(
+            &self.items.lock().await,
+            run_id,
+            readable_library_ids,
+            include_unresolved,
+        );
+        Ok(recording_canonical_facet_records(run_id, &items))
+    }
+
+    async fn query_discovery_items(
+        &self,
+        query: &DiscoveryItemsStorageQuery,
+    ) -> AppResult<DiscoveryItemsPageRecord> {
+        let all_items = self.items.lock().await.clone();
+        let mut items = Vec::new();
+        if let Some(context_run_id) = query.context_run_id.as_deref() {
+            items.extend(recording_visible_personalized_items(
+                &all_items,
+                context_run_id,
+                &query.readable_library_ids,
+                true,
+            ));
+        }
+        if let Some(public_run_id) = query.public_run_id.as_deref() {
+            items.extend(
+                all_items
+                    .iter()
+                    .filter(|item| item.base_generation_id.as_deref() == Some(public_run_id))
+                    .filter(|item| item.tombstoned_at.is_none())
+                    .cloned(),
+            );
+        }
+        items.retain(|item| recording_item_matches_query(item, &query.filters));
+        recording_dedupe_and_sort(&mut items);
+        let total_count = items.len() as i64;
+        let offset = query.offset.min(items.len());
+        let limit = query.limit.min(items.len().saturating_sub(offset));
+        let items = items.into_iter().skip(offset).take(limit).collect();
+        Ok(DiscoveryItemsPageRecord { items, total_count })
+    }
+
     async fn list_discovery_items_for_generation(
         &self,
         base_generation_id: &str,
     ) -> AppResult<Vec<DiscoveryItemRecord>> {
+        *self.generation_list_calls.lock().await += 1;
         Ok(self
             .items
             .lock()
@@ -3536,12 +3692,266 @@ fn discovery_section_record(
         section_type: section_type.to_string(),
         surface: surface.to_string(),
         title: section_id.to_string(),
-        source_signals_json: "[]".to_string(),
-        facets_json: "[]".to_string(),
         sort_index: 0,
-        raw_json: serde_json::json!({"sectionId": section_id}).to_string(),
         created_at: observed_at,
         updated_at: observed_at,
+    }
+}
+
+fn recording_visible_personalized_items(
+    items: &[DiscoveryItemRecord],
+    run_id: &str,
+    readable_library_ids: &[String],
+    include_unresolved: bool,
+) -> Vec<DiscoveryItemRecord> {
+    let readable_library_ids = readable_library_ids.iter().collect::<HashSet<_>>();
+    items
+        .iter()
+        .filter(|item| item.base_generation_id.as_deref() == Some(run_id))
+        .filter(|item| item.tombstoned_at.is_none())
+        .filter(|item| include_unresolved || item.resolved)
+        .filter(|item| {
+            item.library_provenance.iter().any(|provenance| {
+                provenance
+                    .library_id
+                    .as_ref()
+                    .is_some_and(|library_id| readable_library_ids.contains(library_id))
+            })
+        })
+        .cloned()
+        .collect()
+}
+
+fn recording_item_matches_query(item: &DiscoveryItemRecord, query: &DiscoveryItemsQuery) -> bool {
+    if !query.include_owned && item.owned_in_input {
+        return false;
+    }
+    if !query.include_unresolved && !item.resolved {
+        return false;
+    }
+    if let Some(query_text) = query
+        .query
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        let query_text = query_text.to_ascii_lowercase();
+        let matches_text = [
+            Some(item.display_title.as_str()),
+            item.original_title.as_deref(),
+            item.sort_title.as_deref(),
+            item.overview.as_deref(),
+            item.tmdb_collection_name.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        .any(|value| value.to_ascii_lowercase().contains(&query_text));
+        if !matches_text {
+            return false;
+        }
+    }
+    if !query.target_kinds.is_empty()
+        && !recording_item_media_kind(item).is_some_and(|kind| {
+            query
+                .target_kinds
+                .iter()
+                .any(|target_kind| target_kind.eq_ignore_ascii_case(kind))
+        })
+    {
+        return false;
+    }
+    recording_text_matches(&item.sources, item.best_source.as_deref(), &query.sources)
+        && recording_values_match(&item.relation_types, &query.relation_types)
+        && recording_values_match(&item.relation_subtypes, &query.relation_subtypes)
+        && recording_canonical_facet_values_match(item, "genre", &query.genres)
+        && recording_values_match(&item.status_tags, &query.status_tags)
+        && recording_values_match(&item.facet_terms, &query.facet_terms)
+}
+
+fn recording_values_match(values: &[String], filters: &[String]) -> bool {
+    filters.is_empty()
+        || filters.iter().any(|filter| {
+            values
+                .iter()
+                .any(|value| value.eq_ignore_ascii_case(filter))
+        })
+}
+
+fn recording_canonical_facet_values_match(
+    item: &DiscoveryItemRecord,
+    kind: &str,
+    filters: &[String],
+) -> bool {
+    filters.is_empty()
+        || filters.iter().any(|filter| {
+            let filter_key = recording_canonical_label_key(filter);
+            item.facet_terms.iter().any(|term| {
+                recording_canonical_facet_display_value(term).is_some_and(
+                    |(facet_name, facet_value)| {
+                        facet_name.eq_ignore_ascii_case(kind)
+                            && (term.eq_ignore_ascii_case(filter)
+                                || recording_canonical_label_key(&facet_value) == filter_key)
+                    },
+                )
+            })
+        })
+}
+
+fn recording_text_matches(values: &[String], text: Option<&str>, filters: &[String]) -> bool {
+    filters.is_empty()
+        || text.is_some_and(|text| {
+            filters
+                .iter()
+                .any(|filter| text.eq_ignore_ascii_case(filter))
+        })
+        || filters.iter().any(|filter| {
+            values
+                .iter()
+                .any(|value| value.eq_ignore_ascii_case(filter))
+        })
+}
+
+fn recording_item_media_kind(item: &DiscoveryItemRecord) -> Option<&str> {
+    recording_normalized_media_kind(item.content_type.as_deref())
+        .or_else(|| recording_normalized_media_kind(Some(item.target_kind.as_str())))
+}
+
+fn recording_normalized_media_kind(value: Option<&str>) -> Option<&'static str> {
+    match value?.trim().to_ascii_lowercase().as_str() {
+        "anime" => Some("anime"),
+        "movie" => Some("movie"),
+        "series" => Some("series"),
+        _ => None,
+    }
+}
+
+fn recording_item_has_collection_signal(item: &DiscoveryItemRecord) -> bool {
+    item.tmdb_collection_id.is_some()
+        || item
+            .tmdb_collection_name
+            .as_deref()
+            .is_some_and(|name| !name.trim().is_empty())
+        || item
+            .relation_types
+            .iter()
+            .chain(item.relation_subtypes.iter())
+            .any(|value| {
+                let value = value.trim().to_ascii_lowercase();
+                value == "tmdb.collection"
+                    || value.contains("collection")
+                    || value.contains("franchise")
+            })
+}
+
+fn recording_canonical_facet_records(
+    run_id: &str,
+    items: &[DiscoveryItemRecord],
+) -> Vec<DiscoveryFacetRecord> {
+    let mut counts = BTreeMap::<(String, String), i64>::new();
+    for item in items.iter().filter(|item| !item.owned_in_input) {
+        let mut seen_item_terms = HashSet::new();
+        for term in &item.facet_terms {
+            let Some((facet_name, facet_value)) = recording_canonical_facet_display_value(term)
+            else {
+                continue;
+            };
+            if seen_item_terms.insert((facet_name.clone(), facet_value.clone())) {
+                *counts.entry((facet_name, facet_value)).or_default() += 1;
+            }
+        }
+    }
+    counts
+        .into_iter()
+        .map(
+            |((facet_name, facet_value), local_count)| DiscoveryFacetRecord {
+                run_id: run_id.to_string(),
+                facet_name,
+                facet_value,
+                smg_count: None,
+                local_count: Some(local_count),
+            },
+        )
+        .collect()
+}
+
+fn recording_canonical_facet_display_value(value: &str) -> Option<(String, String)> {
+    let value = value.trim();
+    let mut parts = value.splitn(3, ':');
+    if !parts.next()?.eq_ignore_ascii_case("canonical") {
+        return None;
+    }
+    let kind = parts.next()?.trim();
+    if !kind.eq_ignore_ascii_case("genre") && !kind.eq_ignore_ascii_case("theme") {
+        return None;
+    }
+    let tail = parts.next()?.trim();
+    if tail.is_empty() {
+        return None;
+    }
+    Some((
+        kind.to_ascii_lowercase(),
+        recording_canonical_label_from_slug(tail),
+    ))
+}
+
+fn recording_canonical_label_key(value: &str) -> String {
+    value
+        .trim()
+        .to_ascii_lowercase()
+        .split(|character: char| !character.is_ascii_alphanumeric())
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn recording_canonical_label_from_slug(value: &str) -> String {
+    value
+        .split(|character: char| {
+            character == '-' || character == '_' || character == ':' || character.is_whitespace()
+        })
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            let mut characters = part.chars();
+            match characters.next() {
+                Some(first) => {
+                    let mut word = first.to_uppercase().collect::<String>();
+                    word.extend(characters.flat_map(char::to_lowercase));
+                    word
+                }
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn recording_dedupe_preserving_order(items: &mut Vec<DiscoveryItemRecord>) {
+    let mut seen = HashSet::new();
+    items.retain(|item| seen.insert(recording_item_identity_key(item).to_string()));
+}
+
+fn recording_dedupe_and_sort(items: &mut Vec<DiscoveryItemRecord>) {
+    recording_dedupe_preserving_order(items);
+    items.sort_by(|left, right| {
+        right
+            .rank_score
+            .partial_cmp(&left.rank_score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| {
+                left.sort_title
+                    .as_deref()
+                    .unwrap_or(&left.display_title)
+                    .cmp(right.sort_title.as_deref().unwrap_or(&right.display_title))
+            })
+            .then_with(|| left.target_key.cmp(&right.target_key))
+    });
+}
+
+fn recording_item_identity_key(item: &DiscoveryItemRecord) -> &str {
+    if item.target_key.trim().is_empty() {
+        item.id.as_str()
+    } else {
+        item.target_key.as_str()
     }
 }
 
@@ -3559,15 +3969,16 @@ fn discovery_item_record(
     resolved: bool,
 ) -> DiscoveryItemRecord {
     let observed_at = Utc.timestamp_opt(1_000, 0).unwrap();
-    let library_provenance_json = if run_id == base_generation_id && run_id.starts_with("public") {
-        "[]".to_string()
+    let library_provenance = if run_id == base_generation_id && run_id.starts_with("public") {
+        Vec::new()
     } else {
-        serde_json::json!([{
-            "subjectKey": "tmdb:movie:603",
-            "titleId": "title-603",
-            "libraryId": scryer_domain::default_library_id_for_facet(&MediaFacet::Movie),
-        }])
-        .to_string()
+        vec![DiscoveryItemLibraryProvenanceRecord {
+            subject_key: "tmdb:movie:603".to_string(),
+            title_id: Some("title-603".to_string()),
+            library_id: Some(scryer_domain::default_library_id_for_facet(
+                &MediaFacet::Movie,
+            )),
+        }]
     };
     DiscoveryItemRecord {
         id: format!("{run_id}:item:{target_key}"),
@@ -3579,6 +3990,7 @@ fn discovery_item_record(
             "context_snapshot".to_string()
         },
         section_id: section_id.map(str::to_string),
+        sort_index: 0,
         target_key: target_key.to_string(),
         target_kind: target_kind.to_string(),
         resolved,
@@ -3592,27 +4004,30 @@ fn discovery_item_record(
         background_url: None,
         overview: None,
         content_type: Some(target_kind.to_string()),
-        genres_json: serde_json::json!(genres).to_string(),
+        genres: genres.iter().map(|genre| (*genre).to_string()).collect(),
         rating: Some(7.5),
-        rating_sources_json: "[]".to_string(),
-        status_tags_json: "[]".to_string(),
-        source_tags_json: "[]".to_string(),
-        sources_json: serde_json::json!(["smg"]).to_string(),
+        rating_sources: Vec::new(),
+        status_tags: Vec::new(),
+        source_tags: Vec::new(),
+        sources: vec!["smg".to_string()],
         best_source: Some("smg".to_string()),
-        relation_types_json: "[]".to_string(),
-        relation_subtypes_json: serde_json::json!(relation_subtypes).to_string(),
-        chart_signals_json: "[]".to_string(),
-        provider_signals_json: "[]".to_string(),
-        rank_components_json: "[]".to_string(),
+        relation_types: Vec::new(),
+        relation_subtypes: relation_subtypes
+            .iter()
+            .map(|subtype| (*subtype).to_string())
+            .collect(),
+        chart_signals: Vec::new(),
+        provider_signals: Vec::new(),
+        rank_components: Vec::new(),
         source_count: Some(1),
         edge_count: Some(1),
         relation_count: Some(relation_subtypes.len() as i32),
         source_subject_count: Some(1),
         rank_score: Some(rank_score),
-        matched_subject_keys_json: "[]".to_string(),
-        matched_subject_titles_json: "[]".to_string(),
+        matched_subject_keys: Vec::new(),
+        matched_subject_titles: Vec::new(),
         matched_subject_count: 0,
-        library_provenance_json,
+        library_provenance,
         tmdb_collection_id: relation_subtypes
             .contains(&"tmdb.collection")
             .then(|| "123".to_string()),
@@ -3620,13 +4035,23 @@ fn discovery_item_record(
             .contains(&"tmdb.collection")
             .then(|| "Example Collection".to_string()),
         owned_in_input,
-        facet_terms_json: serde_json::json!(genres).to_string(),
-        context_terms_json: "[]".to_string(),
-        change_subject_keys_json: "[]".to_string(),
-        removed_subject_keys_json: "[]".to_string(),
+        facet_terms: genres
+            .iter()
+            .flat_map(|genre| {
+                [
+                    (*genre).to_string(),
+                    format!(
+                        "canonical:genre:{}",
+                        genre.trim().to_ascii_lowercase().replace(' ', "_")
+                    ),
+                ]
+            })
+            .collect(),
+        context_terms: Vec::new(),
+        change_subject_keys: Vec::new(),
+        removed_subject_keys: Vec::new(),
         tombstoned_by_run_id: None,
         tombstoned_at: None,
-        raw_json: serde_json::json!({"targetKey": target_key}).to_string(),
         created_at: observed_at,
         updated_at: observed_at,
     }

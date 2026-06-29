@@ -6,7 +6,6 @@ import {
   type LibraryPermissionDrafts,
 } from "@/components/common/permission-checkboxes";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -34,6 +33,12 @@ const USERS_PANEL_TITLE_CLASS =
   "text-[15px] font-semibold text-[var(--scry-ink2)]";
 const USERS_INSET_CLASS =
   "rounded-[12px] border border-[var(--scry-line2)] bg-[var(--scry-card2)] p-3";
+const USERS_TABLE_SHELL_CLASS =
+  "overflow-hidden rounded-[12px] border border-[var(--scry-line2)] bg-[var(--scry-card2)]";
+const USERS_TABLE_HEADER_ROW_CLASS =
+  "border-[var(--scry-border3)] bg-[var(--scry-inset)] hover:bg-[var(--scry-inset)]";
+const USERS_TABLE_HEADER_CELL_CLASS =
+  "font-semibold text-[var(--scry-muted2)]";
 
 type SettingsUsersSectionProps = {
   settingsUsers: UserRecord[];
@@ -145,46 +150,70 @@ export function SettingsUsersSection({
     <div id="settings-users-section" className="space-y-4 text-sm">
       <div className={USERS_PANEL_CLASS}>
         <div className={USERS_PANEL_HEADER_CLASS}>
-          <CardTitle className={USERS_PANEL_TITLE_CLASS}>
+          <h3 className={USERS_PANEL_TITLE_CLASS}>
             {t("settings.knownUsers")}
-          </CardTitle>
+          </h3>
         </div>
-        <div className="overflow-x-auto">
-          <Table id="settings-users-table">
-          <TableHeader>
-            <TableRow>
-              <TableHead className="min-w-40">{t("settings.username")}</TableHead>
-              <TableHead className="min-w-[520px]">Permissions</TableHead>
-              <TableHead className="w-32">{t("settings.mfa")}</TableHead>
-              <TableHead className="w-32">{t("settings.passkey")}</TableHead>
-              <TableHead className="min-w-72">{t("settings.newPassword")}</TableHead>
-              <TableHead className="w-44 text-right">{t("label.actions")}</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {settingsUsers.length === 0 ? (
-              <TableRow>
-                <TableCell colSpan={6} className="text-[var(--scry-muted3)]">
-                  {t("settings.noUsers")}
-                </TableCell>
-              </TableRow>
-            ) : (
-              settingsUsers.map((user) => {
-                const isOwnUser = currentUserId === user.id;
-                const canSetPassword = user.accountKind !== "external_auto_provisioned";
-                const permissionControlsDisabled =
-                  mutatingUserId === user.id || isOwnUser || !canManagePermissions;
-                const appSelected = userAppPermissionDrafts[user.id] ?? user.appPermissions;
-                const libraryDrafts =
-                  userLibraryPermissionDrafts[user.id] ??
-                  Object.fromEntries(
-                    user.libraryPermissions.map((grant) => [
-                      grant.libraryId,
-                      grant.permissions,
-                    ]),
-                  );
-                return (
-                  <TableRow key={user.id} id={selectorId("settings-user-row", user.username)}>
+        <div className="p-4 sm:p-5">
+          <div className={USERS_TABLE_SHELL_CLASS}>
+            <div className="overflow-x-auto">
+              <Table id="settings-users-table" className="min-w-[1180px] table-fixed">
+                <TableHeader>
+                  <TableRow className={USERS_TABLE_HEADER_ROW_CLASS}>
+                    <TableHead className={cn("w-44", USERS_TABLE_HEADER_CELL_CLASS)}>
+                      {t("settings.username")}
+                    </TableHead>
+                    <TableHead className={cn("w-[32rem]", USERS_TABLE_HEADER_CELL_CLASS)}>
+                      {t("settings.permissions")}
+                    </TableHead>
+                    <TableHead className={cn("w-28", USERS_TABLE_HEADER_CELL_CLASS)}>
+                      {t("settings.mfa")}
+                    </TableHead>
+                    <TableHead className={cn("w-28", USERS_TABLE_HEADER_CELL_CLASS)}>
+                      {t("settings.passkey")}
+                    </TableHead>
+                    <TableHead className={cn("w-72", USERS_TABLE_HEADER_CELL_CLASS)}>
+                      {t("settings.newPassword")}
+                    </TableHead>
+                    <TableHead className={cn("w-44 text-right", USERS_TABLE_HEADER_CELL_CLASS)}>
+                      {t("label.actions")}
+                    </TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {settingsUsers.length === 0 ? (
+                    <TableRow>
+                      <TableCell
+                        colSpan={6}
+                        className="py-5 text-[var(--scry-muted3)]"
+                      >
+                        {t("settings.noUsers")}
+                      </TableCell>
+                    </TableRow>
+                  ) : (
+                    settingsUsers.map((user) => {
+                      const isOwnUser = currentUserId === user.id;
+                      const canSetPassword =
+                        user.accountKind !== "external_auto_provisioned";
+                      const permissionControlsDisabled =
+                        mutatingUserId === user.id ||
+                        isOwnUser ||
+                        !canManagePermissions;
+                      const appSelected =
+                        userAppPermissionDrafts[user.id] ?? user.appPermissions;
+                      const libraryDrafts =
+                        userLibraryPermissionDrafts[user.id] ??
+                        Object.fromEntries(
+                          user.libraryPermissions.map((grant) => [
+                            grant.libraryId,
+                            grant.permissions,
+                          ]),
+                        );
+                      return (
+                        <TableRow
+                          key={user.id}
+                          id={selectorId("settings-user-row", user.username)}
+                        >
                     <TableCell className="align-top">
                       <div className="text-lg font-semibold text-[var(--scry-ink2)]">
                         {user.username}
@@ -300,23 +329,25 @@ export function SettingsUsersSection({
                         </Button>
                       </div>
                     </TableCell>
-                  </TableRow>
-                );
-              })
-            )}
-          </TableBody>
-          </Table>
+                        </TableRow>
+                      );
+                    })
+                  )}
+                </TableBody>
+              </Table>
+            </div>
+          </div>
         </div>
       </div>
 
       {isCreateUserOpen ? (
-        <Card className={USERS_PANEL_CLASS}>
-          <CardHeader className={USERS_PANEL_HEADER_CLASS}>
-            <CardTitle className={USERS_PANEL_TITLE_CLASS}>
+        <div className={USERS_PANEL_CLASS}>
+          <div className={USERS_PANEL_HEADER_CLASS}>
+            <h3 className={USERS_PANEL_TITLE_CLASS}>
               {t("settings.createUser")}
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="p-4 sm:p-5">
+            </h3>
+          </div>
+          <div className="p-4 sm:p-5">
             <form id="settings-user-create-form" className="space-y-4" onSubmit={createUser}>
               <div className="grid gap-3 md:grid-cols-2">
                 <div>
@@ -381,8 +412,8 @@ export function SettingsUsersSection({
                 </Button>
               </div>
             </form>
-          </CardContent>
-        </Card>
+          </div>
+        </div>
       ) : (
         <div className="flex justify-center">
           <AddNewButton

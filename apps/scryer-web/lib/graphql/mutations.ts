@@ -1814,25 +1814,60 @@ const EXTERNAL_IMPORT_MONITOR_WARMUP_PROGRESS_FIELDS = `
     errorMessage
 `;
 
+// Lightweight per-instance connection probe for the Connect step (fired on
+// blur). Does NOT start a warmup — the wizard starts that separately on success.
+export const validateExternalImportConnectionMutation = `mutation ValidateExternalImportConnection($input: ValidateExternalImportConnectionInput!) {
+  validateExternalImportConnection(input: $input) {
+    kind
+    baseUrl
+    connected
+    version
+    error
+  }
+}`;
+
+// Per-instance warmup. Runs concurrently across distinct instances; returns a
+// progress snapshot whose sessionId the wizard tracks per instance.
+export const startExternalImportArrSourceWarmupMutation = `mutation StartExternalImportArrSourceWarmup($input: StartExternalImportArrSourceWarmupInput!) {
+  startExternalImportArrSourceWarmup(input: $input) {${EXTERNAL_IMPORT_MONITOR_WARMUP_PROGRESS_FIELDS}
+  }
+}`;
+
+export const cancelExternalImportArrSourceWarmupMutation = `mutation CancelExternalImportArrSourceWarmup($sessionId: ID!) {
+  cancelExternalImportArrSourceWarmup(sessionId: $sessionId) {
+    sessionId
+    canceled
+  }
+}`;
+
 export const previewExternalImportMutation = `mutation PreviewExternalImport($input: PreviewExternalImportInput!) {
   previewExternalImport(input: $input) {
-    sonarrConnected
-    radarrConnected
     prowlarrConnected
-    sonarrVersion
-    radarrVersion
     prowlarrVersion
-    sonarrError
-    radarrError
     prowlarrError
-    rootFolders { source path }
+    arrSources {
+      sessionId
+      sourceKey
+      kind
+      baseUrl
+      connected
+      version
+      status
+      error
+    }
+    rootFolders {
+      sourceWarmupSessionId
+      sourceKey
+      kind
+      arrRootPath
+    }
     downloadClients {
-      sources name implementation scryerClientType
+      sourceKeys name implementation scryerClientType
       host port useSsl urlBase username apiKeyPresent
       dedupKey supported requiresPasswordOverride
     }
     indexers {
-      sources name implementation scryerProviderType
+      sourceKeys name implementation scryerProviderType
       baseUrl apiKeyPresent dedupKey supported
       childCount childNames requiresApiKeyOverride apiKeyHelpUrl
     }
@@ -1900,7 +1935,8 @@ export const togglePostProcessingScriptMutation = `mutation TogglePostProcessing
   togglePostProcessingScript(id: $id, inlineShellAcknowledged: $inlineShellAcknowledged) {${ppScriptFields}}
 }`;
 
-// Input type companion — keep in sync with ExecuteExternalImportInput on the backend.
+// Input type companions — keep in sync with the multi-instance external-import
+// inputs in crates/scryer-interface-media-types/src/lib.rs.
 export type DownloadClientApiKeyOverride = {
   dedupKey: string;
   apiKey: string;
@@ -1914,6 +1950,61 @@ export type DownloadClientPasswordOverride = {
 export type IndexerApiKeyOverride = {
   dedupKey: string;
   apiKey: string;
+};
+
+export type ExternalArrSourceKind = "sonarr" | "radarr";
+export type ExternalImportConnectionKind = "sonarr" | "radarr" | "prowlarr";
+
+export type ExternalImportConnectionInput = {
+  baseUrl: string;
+  apiKey: string;
+};
+
+export type ValidateExternalImportConnectionInput = {
+  kind: ExternalImportConnectionKind;
+  connection: ExternalImportConnectionInput;
+};
+
+export type StartExternalImportArrSourceWarmupInput = {
+  kind: ExternalArrSourceKind;
+  connection: ExternalImportConnectionInput;
+};
+
+export type PreviewExternalImportInput = {
+  sourceWarmupSessionIds: string[];
+  prowlarr?: ExternalImportConnectionInput | null;
+};
+
+export type ExecuteExternalImportInput = {
+  sourceWarmupSessionIds: string[];
+  prowlarr?: ExternalImportConnectionInput | null;
+  selectedDownloadClientDedupKeys: string[];
+  selectedIndexerDedupKeys: string[];
+  downloadClientApiKeyOverrides: DownloadClientApiKeyOverride[];
+  downloadClientPasswordOverrides: DownloadClientPasswordOverride[];
+  indexerApiKeyOverrides: IndexerApiKeyOverride[];
+};
+
+// `sourceWarmupSessionId`/`sourceKey`/`kind` are null for a manually-added root
+// (one no Sonarr/Radarr instance reported); such a root only registers its
+// Scryer-host path on the target library and carries no monitored status.
+export type ExternalImportSourceLibraryMappingInput = {
+  sourceWarmupSessionId?: string | null;
+  sourceKey?: string | null;
+  kind?: ExternalArrSourceKind | null;
+  arrRootPath: string;
+  scryerRootPath: string;
+  libraryId: string;
+  facet: "movie" | "series" | "anime";
+};
+
+export type FinalizeExternalImportInput = {
+  sourceWarmupSessionIds: string[];
+  mappings: ExternalImportSourceLibraryMappingInput[];
+};
+
+export type ExternalImportAggregateWarmupProgressInput = {
+  sourceWarmupSessionIds: string[];
 };
 
 // ── Subtitle mutations ──────────────────────────────────────────────────────

@@ -103,10 +103,7 @@ CREATE TABLE IF NOT EXISTS discovery_sections (
     section_type TEXT NOT NULL,
     surface TEXT NOT NULL,
     title TEXT NOT NULL,
-    source_signals_json JSONB NOT NULL DEFAULT '[]'::jsonb,
-    facets_json JSONB NOT NULL DEFAULT '[]'::jsonb,
     sort_index INTEGER NOT NULL DEFAULT 0,
-    raw_json JSONB NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -117,6 +114,7 @@ CREATE TABLE IF NOT EXISTS discovery_items (
     base_generation_id TEXT REFERENCES discovery_sync_runs(id) ON DELETE SET NULL,
     source_run_kind TEXT NOT NULL,
     section_id TEXT,
+    sort_index INTEGER NOT NULL DEFAULT 0,
     target_key TEXT NOT NULL,
     target_kind TEXT NOT NULL,
     resolved BOOLEAN NOT NULL DEFAULT FALSE,
@@ -130,39 +128,93 @@ CREATE TABLE IF NOT EXISTS discovery_items (
     background_url TEXT,
     overview TEXT,
     content_type TEXT,
-    genres_json JSONB NOT NULL DEFAULT '[]'::jsonb,
     rating DOUBLE PRECISION,
-    rating_sources_json JSONB NOT NULL DEFAULT '[]'::jsonb,
-    status_tags_json JSONB NOT NULL DEFAULT '[]'::jsonb,
-    source_tags_json JSONB NOT NULL DEFAULT '[]'::jsonb,
-    sources_json JSONB NOT NULL DEFAULT '[]'::jsonb,
     best_source TEXT,
-    relation_types_json JSONB NOT NULL DEFAULT '[]'::jsonb,
-    relation_subtypes_json JSONB NOT NULL DEFAULT '[]'::jsonb,
-    chart_signals_json JSONB NOT NULL DEFAULT '[]'::jsonb,
-    provider_signals_json JSONB NOT NULL DEFAULT '[]'::jsonb,
-    rank_components_json JSONB NOT NULL DEFAULT '[]'::jsonb,
     source_count INTEGER,
     edge_count INTEGER,
     relation_count INTEGER,
     source_subject_count INTEGER,
     rank_score DOUBLE PRECISION,
-    matched_subject_keys_json JSONB NOT NULL DEFAULT '[]'::jsonb,
-    matched_subject_titles_json JSONB NOT NULL DEFAULT '[]'::jsonb,
     matched_subject_count INTEGER NOT NULL DEFAULT 0,
-    library_provenance_json JSONB NOT NULL DEFAULT '[]'::jsonb,
     tmdb_collection_id TEXT,
     tmdb_collection_name TEXT,
     owned_in_input BOOLEAN NOT NULL DEFAULT FALSE,
-    facet_terms_json JSONB NOT NULL DEFAULT '[]'::jsonb,
-    context_terms_json JSONB NOT NULL DEFAULT '[]'::jsonb,
-    change_subject_keys_json JSONB NOT NULL DEFAULT '[]'::jsonb,
-    removed_subject_keys_json JSONB NOT NULL DEFAULT '[]'::jsonb,
     tombstoned_by_run_id TEXT REFERENCES discovery_sync_runs(id) ON DELETE SET NULL,
     tombstoned_at TIMESTAMPTZ,
-    raw_json JSONB NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS discovery_section_items (
+    run_id TEXT NOT NULL REFERENCES discovery_sync_runs(id) ON DELETE CASCADE,
+    section_id TEXT NOT NULL,
+    item_id TEXT NOT NULL REFERENCES discovery_items(id) ON DELETE CASCADE,
+    sort_index INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (run_id, section_id, item_id)
+);
+
+CREATE TABLE IF NOT EXISTS discovery_item_terms (
+    item_id TEXT NOT NULL REFERENCES discovery_items(id) ON DELETE CASCADE,
+    run_id TEXT NOT NULL REFERENCES discovery_sync_runs(id) ON DELETE CASCADE,
+    term_kind TEXT NOT NULL,
+    term_category TEXT NOT NULL DEFAULT '',
+    term_value TEXT NOT NULL,
+    sort_index INTEGER NOT NULL DEFAULT 0,
+    UNIQUE (item_id, term_kind, term_category, term_value)
+);
+
+CREATE TABLE IF NOT EXISTS discovery_item_source_tags (
+    item_id TEXT NOT NULL REFERENCES discovery_items(id) ON DELETE CASCADE,
+    run_id TEXT NOT NULL REFERENCES discovery_sync_runs(id) ON DELETE CASCADE,
+    category TEXT NOT NULL DEFAULT '',
+    name TEXT NOT NULL DEFAULT '',
+    sort_index INTEGER NOT NULL DEFAULT 0,
+    UNIQUE (item_id, sort_index, category, name)
+);
+
+CREATE TABLE IF NOT EXISTS discovery_item_source_tag_values (
+    item_id TEXT NOT NULL REFERENCES discovery_items(id) ON DELETE CASCADE,
+    run_id TEXT NOT NULL REFERENCES discovery_sync_runs(id) ON DELETE CASCADE,
+    source_tag_sort_index INTEGER NOT NULL,
+    source_tag_value TEXT NOT NULL,
+    value_sort_index INTEGER NOT NULL DEFAULT 0,
+    UNIQUE (item_id, source_tag_sort_index, source_tag_value)
+);
+
+CREATE TABLE IF NOT EXISTS discovery_item_ratings (
+    item_id TEXT NOT NULL REFERENCES discovery_items(id) ON DELETE CASCADE,
+    run_id TEXT NOT NULL REFERENCES discovery_sync_runs(id) ON DELETE CASCADE,
+    rating_source TEXT NOT NULL,
+    rating DOUBLE PRECISION,
+    sort_index INTEGER NOT NULL DEFAULT 0,
+    UNIQUE (item_id, rating_source)
+);
+
+CREATE TABLE IF NOT EXISTS discovery_item_rank_components (
+    item_id TEXT NOT NULL REFERENCES discovery_items(id) ON DELETE CASCADE,
+    run_id TEXT NOT NULL REFERENCES discovery_sync_runs(id) ON DELETE CASCADE,
+    component_index INTEGER NOT NULL,
+    component_name TEXT NOT NULL DEFAULT '',
+    component_value TEXT NOT NULL DEFAULT '',
+    UNIQUE (item_id, component_index)
+);
+
+CREATE TABLE IF NOT EXISTS discovery_item_subject_links (
+    item_id TEXT NOT NULL REFERENCES discovery_items(id) ON DELETE CASCADE,
+    run_id TEXT NOT NULL REFERENCES discovery_sync_runs(id) ON DELETE CASCADE,
+    link_type TEXT NOT NULL,
+    subject_key TEXT NOT NULL,
+    sort_index INTEGER NOT NULL DEFAULT 0,
+    UNIQUE (item_id, link_type, subject_key)
+);
+
+CREATE TABLE IF NOT EXISTS discovery_item_library_provenance (
+    item_id TEXT NOT NULL REFERENCES discovery_items(id) ON DELETE CASCADE,
+    run_id TEXT NOT NULL REFERENCES discovery_sync_runs(id) ON DELETE CASCADE,
+    subject_key TEXT NOT NULL,
+    title_id TEXT NOT NULL DEFAULT '',
+    library_id TEXT NOT NULL DEFAULT '',
+    UNIQUE (item_id, subject_key, title_id, library_id)
 );
 
 CREATE TABLE IF NOT EXISTS discovery_facets (
@@ -171,7 +223,6 @@ CREATE TABLE IF NOT EXISTS discovery_facets (
     facet_value TEXT NOT NULL,
     smg_count BIGINT,
     local_count BIGINT,
-    raw_json JSONB NOT NULL,
     PRIMARY KEY (run_id, facet_name, facet_value)
 );
 
@@ -192,6 +243,28 @@ CREATE INDEX IF NOT EXISTS idx_discovery_items_active_target
 CREATE INDEX IF NOT EXISTS idx_discovery_items_run
     ON discovery_items(run_id);
 CREATE INDEX IF NOT EXISTS idx_discovery_items_section
-    ON discovery_items(section_id, rank_score);
+    ON discovery_items(section_id, sort_index, rank_score);
 CREATE INDEX IF NOT EXISTS idx_discovery_items_target_kind
     ON discovery_items(target_kind, resolved, owned_in_input);
+CREATE INDEX IF NOT EXISTS idx_discovery_section_items_run_section
+    ON discovery_section_items(run_id, section_id, sort_index);
+CREATE INDEX IF NOT EXISTS idx_discovery_item_terms_run_kind_value
+    ON discovery_item_terms(run_id, term_kind, term_value, item_id);
+CREATE INDEX IF NOT EXISTS idx_discovery_item_terms_item
+    ON discovery_item_terms(item_id, term_kind, sort_index);
+CREATE INDEX IF NOT EXISTS idx_discovery_item_source_tags_item
+    ON discovery_item_source_tags(item_id, sort_index);
+CREATE INDEX IF NOT EXISTS idx_discovery_item_source_tag_values_item
+    ON discovery_item_source_tag_values(item_id, source_tag_sort_index, value_sort_index);
+CREATE INDEX IF NOT EXISTS idx_discovery_item_ratings_item
+    ON discovery_item_ratings(item_id, sort_index);
+CREATE INDEX IF NOT EXISTS idx_discovery_item_rank_components_item
+    ON discovery_item_rank_components(item_id, component_index);
+CREATE INDEX IF NOT EXISTS idx_discovery_item_subject_links_run_type_key
+    ON discovery_item_subject_links(run_id, link_type, subject_key, item_id);
+CREATE INDEX IF NOT EXISTS idx_discovery_item_subject_links_item
+    ON discovery_item_subject_links(item_id, link_type, sort_index);
+CREATE INDEX IF NOT EXISTS idx_discovery_item_library_provenance_library
+    ON discovery_item_library_provenance(run_id, library_id, item_id);
+CREATE INDEX IF NOT EXISTS idx_discovery_item_library_provenance_item
+    ON discovery_item_library_provenance(item_id, subject_key, library_id, title_id);

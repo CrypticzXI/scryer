@@ -109,13 +109,13 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
         .filter_map(|ty| ty["name"].as_str())
         .collect();
 
-    assert_eq!(query_field_count, 103);
-    assert_eq!(mutation_field_count, 157);
+    assert_eq!(query_field_count, 108);
+    assert_eq!(mutation_field_count, 159);
     assert_eq!(subscription_field_count, 13);
-    assert_eq!(public_types.len(), 435);
-    assert_eq!(kind_count("OBJECT"), 224);
-    assert_eq!(kind_count("INPUT_OBJECT"), 138);
-    assert_eq!(kind_count("ENUM"), 63);
+    assert_eq!(public_types.len(), 464);
+    assert_eq!(kind_count("OBJECT"), 237);
+    assert_eq!(kind_count("INPUT_OBJECT"), 145);
+    assert_eq!(kind_count("ENUM"), 72);
     assert_eq!(kind_count("SCALAR"), 10);
     assert!(query_field_names.contains(&"backupSettings"));
     assert!(query_field_names.contains(&"runtimeInfo"));
@@ -3698,6 +3698,12 @@ async fn graphql_introspection_external_import_warmup_uses_session_ids() {
             "{label}"
         );
     };
+    // Nullable (manual-root) fields surface the named type directly, not wrapped
+    // in NON_NULL.
+    let assert_nullable_named = |field: Value, label: &str, kind: &str, name: &str| {
+        assert_eq!(field["type"]["kind"], kind, "{label}");
+        assert_eq!(field["type"]["name"], name, "{label}");
+    };
 
     for type_alias in [
         "previewInput",
@@ -3717,17 +3723,24 @@ async fn graphql_introspection_external_import_warmup_uses_session_ids() {
         "ExternalImportSourceLibraryMappingInput",
     );
 
-    assert_non_null_id(
+    // Manual-root support: these three are nullable (absent for a manually
+    // added root that no warmup surfaced).
+    assert_nullable_named(
         input_field("mappingInput", "sourceWarmupSessionId"),
         "mappingInput.sourceWarmupSessionId",
+        "SCALAR",
+        "ID",
     );
-    assert_non_null_string(
+    assert_nullable_named(
         input_field("mappingInput", "sourceKey"),
         "mappingInput.sourceKey",
+        "SCALAR",
+        "String",
     );
-    assert_non_null_named(
+    assert_nullable_named(
         input_field("mappingInput", "kind"),
         "mappingInput.kind",
+        "ENUM",
         "ExternalArrSourceKind",
     );
     assert_non_null_string(

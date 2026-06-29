@@ -1,3 +1,21 @@
+//! Locale-aware catalog sort keys.
+//!
+//! [`title_catalog_sort_key`] turns a title into an ICU collation sort key, hex-encoded so that
+//! a plain byte-wise (`memcmp`) comparison of the strings reproduces the collator's order. The
+//! result is persisted in `titles.catalog_sort_key` and ordered directly in SQL.
+//!
+//! Two invariants the storage layer depends on:
+//!
+//! * **Byte-wise comparison.** Ordering correctness assumes the column compares byte-for-byte.
+//!   SQLite's default `BINARY` collation and Rust's `String` ordering both satisfy this. The
+//!   values are lowercase hex (`0-9a-f`), which also orders identically under Postgres' common
+//!   collations; a `COLLATE "C"` column would be the explicit guarantee if that ever changes.
+//! * **Regeneration on change.** The key bytes are a function of this module's normalization
+//!   (article lists, CJK width folding, collator strength) *and* the pinned `icu`/CLDR data.
+//!   Changing any of those changes the bytes, so already-stored rows and newly written rows
+//!   would sort inconsistently. Any such change MUST ship a new backfill migration that
+//!   recomputes every row (mirroring migration 0145's `migrate_title_catalog_sort_keys` hook).
+
 use icu_collator::{
     Collator, CollatorBorrowed,
     options::{CollatorOptions, Strength},
@@ -9,7 +27,6 @@ use unicode_normalization::UnicodeNormalization;
 
 use crate::Title;
 
-pub const TITLE_CATALOG_SORT_KEY_VERSION: u32 = 1;
 const DEFAULT_TITLE_CATALOG_SORT_LOCALE: &str = "en";
 static COLLATOR_CACHE: LazyLock<Mutex<HashMap<String, Arc<CollatorBorrowed<'static>>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
@@ -39,13 +56,19 @@ pub fn title_catalog_sort_key(name: &str, language: Option<&str>) -> String {
 
 fn title_catalog_sort_key_inner(input: &str, language: Option<&str>) -> String {
     let mut bytes = Vec::new();
-    if let Some(collator) = collator_for_language(language)
+    // Prefer the requested locale's collator, then the default locale, so every key stays in a
+    // single comparable ICU sort-key space. The raw-byte branch below is NOT order-comparable
+    // with collator keys; the default-locale fallback keeps it effectively unreachable.
+    let collator = collator_for_language(language).or_else(|| collator_for_language(None));
+    if let Some(collator) = collator
         && collator.write_sort_key_to(&input, &mut bytes).is_ok()
     {
         return lowercase_hex(&bytes);
     }
 
-    lowercase_hex(input.as_bytes())
+    // Last resort only (default collator failed to build): lowercase first so the key is at
+    // least case-insensitive, matching the primary-strength collator behavior above.
+    lowercase_hex(input.to_lowercase().as_bytes())
 }
 
 pub fn title_catalog_name_tie_key(name: &str) -> String {

@@ -4313,6 +4313,24 @@ pub enum ExternalArrSourceKind {
     Radarr,
 }
 
+/// Connection kind for the lightweight, pre-warmup connection probe used by the
+/// setup wizard's Connect step. Unlike [`ExternalArrSourceKind`] this also
+/// covers Prowlarr, which has no warmup of its own but can still be
+/// connection-tested before preview.
+#[derive(Enum, Copy, Clone, Eq, PartialEq)]
+#[graphql(rename_items = "snake_case")]
+pub enum ExternalImportConnectionKind {
+    Sonarr,
+    Radarr,
+    Prowlarr,
+}
+
+#[derive(InputObject)]
+pub struct ValidateExternalImportConnectionInput {
+    pub kind: ExternalImportConnectionKind,
+    pub connection: ExternalImportConnectionInput,
+}
+
 #[derive(InputObject)]
 pub struct StartExternalImportArrSourceWarmupInput {
     pub kind: ExternalArrSourceKind,
@@ -4374,9 +4392,13 @@ pub struct ExecuteExternalImportInput {
 
 #[derive(InputObject)]
 pub struct ExternalImportSourceLibraryMappingInput {
-    pub source_warmup_session_id: ID,
-    pub source_key: String,
-    pub kind: ExternalArrSourceKind,
+    /// Warmup session that surfaced this root. `None` for a manually-added root
+    /// that no Sonarr/Radarr instance reported: such a root carries no
+    /// monitored-status snapshot and simply registers its path on the target
+    /// library. When set, `source_key` and `kind` must also be set.
+    pub source_warmup_session_id: Option<ID>,
+    pub source_key: Option<String>,
+    pub kind: Option<ExternalArrSourceKind>,
     pub arr_root_path: String,
     pub scryer_root_path: String,
     pub library_id: ID,
@@ -4393,6 +4415,15 @@ pub struct FinalizeExternalImportInput {
 pub struct CancelExternalImportMonitorWarmupPayload {
     pub session_id: ID,
     pub canceled: bool,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct ExternalImportConnectionValidationPayload {
+    pub kind: ExternalImportConnectionKind,
+    pub base_url: String,
+    pub connected: bool,
+    pub version: Option<String>,
+    pub error: Option<String>,
 }
 
 #[derive(SimpleObject, Clone)]

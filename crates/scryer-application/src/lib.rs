@@ -96,14 +96,17 @@ pub use download_client_config::resolve_download_client_base_url_from_config_jso
 pub use import::completed_download as completed_download_handler;
 pub use ports::{
     DISCOVERY_DEFAULT_SCOPE_KEY, DiscoveryContextIncrementalCommit, DiscoveryContextSnapshotCommit,
-    DiscoveryFacetRecord, DiscoveryHomeQuery, DiscoveryHomeResult, DiscoveryItemRecord,
-    DiscoveryItemsQuery, DiscoveryItemsResult, DiscoveryPendingContextChangeRecord,
-    DiscoveryPruneReport, DiscoveryPublicFeedCommit, DiscoveryRawPageRecord, DiscoveryRepository,
-    DiscoverySectionRecord, DiscoverySectionResult, DiscoverySubmittedSubjectRecord,
-    DiscoverySyncRunRecord, DiscoverySyncStateRecord, DiscoverySyncStatus, EpisodeImageUrlUpdate,
-    MediaRequestResolution, MediaRequestResolutionResult, MediaRequestSubmissionResult,
-    MediaRequestUpdateResult, SubtitleSyncClient, SubtitleSyncJob, TitleArtworkUrlUpdate,
-    TitleDeletePreviewInfo, UserUiSettingsRepository,
+    DiscoveryFacetRecord, DiscoveryHomeQuery, DiscoveryHomeResult,
+    DiscoveryItemLibraryProvenanceRecord, DiscoveryItemRecord, DiscoveryItemsPageRecord,
+    DiscoveryItemsQuery, DiscoveryItemsResult, DiscoveryItemsStorageQuery,
+    DiscoveryPendingContextChangeRecord, DiscoveryPruneReport, DiscoveryPublicFeedCommit,
+    DiscoveryRankComponentRecord, DiscoveryRawPageRecord, DiscoveryRepository,
+    DiscoverySectionItemsRecord, DiscoverySectionRecord, DiscoverySectionResult,
+    DiscoverySourceTagRecord, DiscoverySubmittedSubjectRecord, DiscoverySyncRunRecord,
+    DiscoverySyncStateRecord, DiscoverySyncStatus, EpisodeImageUrlUpdate, MediaRequestResolution,
+    MediaRequestResolutionResult, MediaRequestSubmissionResult, MediaRequestUpdateResult,
+    SubtitleSyncClient, SubtitleSyncJob, TitleArtworkUrlUpdate, TitleDeletePreviewInfo,
+    UserUiSettingsRepository,
 };
 pub(crate) mod normalize;
 pub use events::retention::user_facing_domain_event_types;

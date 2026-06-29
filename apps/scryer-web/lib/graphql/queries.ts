@@ -2340,13 +2340,34 @@ const EXTERNAL_IMPORT_MONITOR_WARMUP_PROGRESS_FIELDS = `
     errorMessage
 `;
 
-export const externalImportMonitorWarmupStatusQuery = `query ExternalImportMonitorWarmupStatus($sessionId: ID!) {
-  externalImportMonitorWarmupStatus(sessionId: $sessionId) {${EXTERNAL_IMPORT_MONITOR_WARMUP_PROGRESS_FIELDS}
+export const externalImportArrSourceWarmupStatusQuery = `query ExternalImportArrSourceWarmupStatus($sessionId: ID!) {
+  externalImportArrSourceWarmupStatus(sessionId: $sessionId) {${EXTERNAL_IMPORT_MONITOR_WARMUP_PROGRESS_FIELDS}
+  }
+}`;
+
+// Aggregated title-fetch progress across every per-instance warmup session,
+// used to gate the Summary step.
+export const externalImportAggregateWarmupProgressQuery = `query ExternalImportAggregateWarmupProgress($input: ExternalImportAggregateWarmupProgressInput!) {
+  externalImportAggregateWarmupProgress(input: $input) {
+    status
+    titlesTotalKnown
+    titlesFetched
+    titlesTotal
+    errorMessage
   }
 }`;
 
 export const externalImportMonitorWarmupProgressSubscription = `subscription ExternalImportMonitorWarmupProgress($sessionId: ID!) {
   externalImportMonitorWarmupProgress(sessionId: $sessionId) {${EXTERNAL_IMPORT_MONITOR_WARMUP_PROGRESS_FIELDS}
+  }
+}`;
+
+// Minimal quality-profile list for the import wizard's per-library Quality step.
+export const wizardQualityProfilesQuery = `query WizardQualityProfiles {
+  qualityProfileSettings {
+    globalProfileId
+    globalScoringPersona
+    profiles { id name }
   }
 }`;
 

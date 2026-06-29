@@ -1,0 +1,106 @@
+import type { CSSProperties } from "react";
+
+import type { ImportInstanceKind } from "@/lib/hooks/use-external-import-setup";
+
+type PillKind = ImportInstanceKind | "manual";
+
+interface KindColors {
+  dot: string;
+  bg: string;
+  border: string;
+  text: string;
+}
+
+const KIND_COLORS: Record<PillKind, KindColors> = {
+  sonarr: {
+    dot: "#38bdf8",
+    bg: "rgba(56, 189, 248, 0.1)",
+    border: "rgba(56, 189, 248, 0.28)",
+    text: "#9bd6f5",
+  },
+  radarr: {
+    dot: "#e7c66a",
+    bg: "rgba(234, 179, 8, 0.1)",
+    border: "rgba(234, 179, 8, 0.28)",
+    text: "#e7c66a",
+  },
+  prowlarr: {
+    dot: "#a987ff",
+    bg: "rgba(155, 91, 255, 0.1)",
+    border: "rgba(155, 91, 255, 0.3)",
+    text: "#c4a3ff",
+  },
+  manual: {
+    dot: "var(--scry-faint)",
+    bg: "var(--scry-chip)",
+    border: "var(--scry-border2)",
+    text: "var(--scry-muted2)",
+  },
+};
+
+interface ImportInstancePillProps {
+  kind: PillKind;
+  label: string;
+  title?: string;
+  size?: "sm" | "md";
+  showDot?: boolean;
+  className?: string;
+  style?: CSSProperties;
+}
+
+/**
+ * Small instance-identity pill (colored dot + short name), keyed by source kind.
+ * Used in the Connect status, mapping board root chips, the assign sheet/remap
+ * dialog source rows, and the Summary instance list.
+ */
+export function ImportInstancePill({
+  kind,
+  label,
+  title,
+  size = "md",
+  showDot = true,
+  className,
+  style,
+}: ImportInstancePillProps) {
+  const colors = KIND_COLORS[kind];
+  const small = size === "sm";
+  return (
+    <span
+      title={title ?? label}
+      className={className}
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: small ? 5 : 6,
+        padding: small ? "3px 6px" : "3px 7px",
+        borderRadius: 7,
+        background: colors.bg,
+        border: `1px solid ${colors.border}`,
+        color: colors.text,
+        fontSize: small ? 10 : 10.5,
+        fontWeight: 600,
+        whiteSpace: "nowrap",
+        flex: "none",
+        ...style,
+      }}
+    >
+      {showDot ? (
+        <span
+          aria-hidden
+          style={{
+            width: 6,
+            height: 6,
+            borderRadius: "50%",
+            background: colors.dot,
+            flex: "none",
+          }}
+        />
+      ) : null}
+      {label}
+    </span>
+  );
+}
+
+export function instancePillColors(kind: PillKind): KindColors {
+  return KIND_COLORS[kind];
+}

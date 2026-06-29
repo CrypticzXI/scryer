@@ -337,6 +337,13 @@ fn mapping_key(session_id: &str, source_key: &str, arr_root_path: &str) -> Strin
     )
 }
 
+/// Dedup key for a manually-added root (one no warmup surfaced). Keyed by the
+/// target library + normalized Scryer-host path, since manual roots have no
+/// source session / source key to disambiguate them.
+fn manual_mapping_key(library_id: &str, scryer_root_key: &str) -> String {
+    format!("manual|{library_id}|{scryer_root_key}")
+}
+
 fn source_mapping_root_paths(source: &ExternalImportArrSourceWarmupResult) -> Vec<String> {
     let mut roots = BTreeMap::<String, String>::new();
     for root in &source.root_folders {
@@ -780,6 +787,78 @@ impl ExternalImportMutations {
         })
     }
 
+    /// Lightweight connection probe for the Connect step. Tests reachability +
+    /// credentials for a single Sonarr/Radarr/Prowlarr instance without kicking
+    /// off the (expensive) warmup that fetches the whole library. The wizard
+    /// fires this on field blur; on success it starts the per-instance warmup
+    /// separately so warmups run concurrently while the user keeps adding
+    /// connections.
+    async fn validate_external_import_connection(
+        &self,
+        ctx: &Context<'_>,
+        input: ValidateExternalImportConnectionInput,
+    ) -> GqlResult<ExternalImportConnectionValidationPayload> {
+        let kind = input.kind;
+        // Prowlarr validation routes through preview_managed_indexer_children,
+        // which requires ManageSystemSettings; Sonarr/Radarr only need
+        // ManageCatalogSettings (matching the warmup path).
+        let required_permission = match kind {
+            ExternalImportConnectionKind::Prowlarr => AppPermission::ManageSystemSettings,
+            ExternalImportConnectionKind::Sonarr | ExternalImportConnectionKind::Radarr => {
+                AppPermission::ManageCatalogSettings
+            }
+        };
+        require_app_permission(ctx, required_permission).await?;
+        let actor = actor_from_ctx(ctx)?;
+        let app = app_from_ctx(ctx)?;
+        let base_url = input.connection.base_url.clone();
+
+        let outcome: scryer_application::AppResult<Option<String>> = match kind {
+            ExternalImportConnectionKind::Sonarr | ExternalImportConnectionKind::Radarr => {
+                let arr_kind = if matches!(kind, ExternalImportConnectionKind::Radarr) {
+                    ExternalArrSourceKind::Radarr
+                } else {
+                    ExternalArrSourceKind::Sonarr
+                };
+                match source_from_input(arr_kind, input.connection)
+                    .and_then(|source| client_for_arr_source(&source))
+                {
+                    Ok(client) => client
+                        .test_connection()
+                        .await
+                        .map(|(_app_name, version)| Some(version)),
+                    Err(err) => Err(err),
+                }
+            }
+            ExternalImportConnectionKind::Prowlarr => {
+                let config_json = prowlarr_parent_config_json(
+                    &input.connection.base_url,
+                    &input.connection.api_key,
+                );
+                app.preview_managed_indexer_children(&actor, "prowlarr", Some(&config_json))
+                    .await
+                    .map(|(validation, _plan)| version_from_validation_result(&validation))
+            }
+        };
+
+        Ok(match outcome {
+            Ok(version) => ExternalImportConnectionValidationPayload {
+                kind,
+                base_url,
+                connected: true,
+                version,
+                error: None,
+            },
+            Err(err) => ExternalImportConnectionValidationPayload {
+                kind,
+                base_url,
+                connected: false,
+                version: None,
+                error: Some(err.to_string()),
+            },
+        })
+    }
+
     /// Connect to Sonarr and/or Radarr, fetch their configs, return a preview.
     async fn preview_external_import(
         &self,
@@ -947,9 +1026,9 @@ impl ExternalImportMutations {
                 .await?;
             source_results.insert(session_id_string, result);
         }
-        if source_results.is_empty() {
+        if source_results.is_empty() && input.mappings.is_empty() {
             return Err(to_gql_error(AppError::Validation(
-                "at least one source warmup session is required".into(),
+                "at least one source warmup session or mapping is required".into(),
             )));
         }
 
@@ -971,48 +1050,12 @@ impl ExternalImportMutations {
             .collect::<HashMap<_, _>>();
         let mut mappings = HashMap::<String, ResolvedSourceMapping>::new();
         for mapping in input.mappings {
-            let session_id = mapping.source_warmup_session_id.to_string();
-            let Some(source_result) = source_results.get(&session_id) else {
-                return Err(to_gql_error(AppError::Validation(format!(
-                    "mapping references unselected source warmup session {session_id}"
-                ))));
-            };
-            let kind = app_arr_source_kind(mapping.kind);
             let facet = mapping.facet.into_domain();
-            if kind != source_result.kind || mapping.source_key != source_result.source_key {
-                return Err(to_gql_error(AppError::Validation(format!(
-                    "mapping for session {session_id} does not match warmed source"
-                ))));
-            }
-            let Some(known_roots) = source_roots.get(&session_id) else {
-                return Err(to_gql_error(AppError::Validation(format!(
-                    "mapping references unselected source warmup session {session_id}"
-                ))));
-            };
-            let mapping_root_key = normalize_import_path_key(&mapping.arr_root_path);
-            if !known_roots
-                .iter()
-                .any(|root| normalize_import_path_key(root) == mapping_root_key)
-            {
-                return Err(to_gql_error(AppError::Validation(format!(
-                    "mapping references unknown source root '{}'",
-                    mapping.arr_root_path
-                ))));
-            }
-            match (kind, &facet) {
-                (AppArrSourceKind::Radarr, MediaFacet::Movie)
-                | (AppArrSourceKind::Sonarr, MediaFacet::Series)
-                | (AppArrSourceKind::Sonarr, MediaFacet::Anime) => {}
-                _ => {
-                    return Err(to_gql_error(AppError::Validation(format!(
-                        "mapping facet {} is not compatible with {}",
-                        facet.as_str(),
-                        kind.as_str()
-                    ))));
-                }
-            }
-
             let library_id = mapping.library_id.to_string();
+
+            // Common to sourced and manual roots: the target library must exist,
+            // its facet must match, and the Scryer-host path must be one of its
+            // roots (finalize never silently invents a library root).
             let library = app.external_import_library(&actor, &library_id).await?;
             if library.facet != facet {
                 return Err(to_gql_error(AppError::Validation(format!(
@@ -1032,10 +1075,69 @@ impl ExternalImportMutations {
                 ))));
             }
 
-            let key = mapping_key(&session_id, &mapping.source_key, &mapping.arr_root_path);
+            let dedup_key = match mapping.source_warmup_session_id.as_ref() {
+                // ── Sourced root: discovered by a Sonarr/Radarr warmup. Must
+                // identify a selected, warmed source root whose kind is
+                // compatible with the chosen facet. ──
+                Some(session_id_raw) => {
+                    let session_id = session_id_raw.to_string();
+                    let Some(source_result) = source_results.get(&session_id) else {
+                        return Err(to_gql_error(AppError::Validation(format!(
+                            "mapping references unselected source warmup session {session_id}"
+                        ))));
+                    };
+                    let (Some(source_key), Some(kind_value)) =
+                        (mapping.source_key.as_deref(), mapping.kind)
+                    else {
+                        return Err(to_gql_error(AppError::Validation(format!(
+                            "sourced mapping for session {session_id} must include sourceKey and kind"
+                        ))));
+                    };
+                    let kind = app_arr_source_kind(kind_value);
+                    if kind != source_result.kind || source_key != source_result.source_key {
+                        return Err(to_gql_error(AppError::Validation(format!(
+                            "mapping for session {session_id} does not match warmed source"
+                        ))));
+                    }
+                    let Some(known_roots) = source_roots.get(&session_id) else {
+                        return Err(to_gql_error(AppError::Validation(format!(
+                            "mapping references unselected source warmup session {session_id}"
+                        ))));
+                    };
+                    let mapping_root_key = normalize_import_path_key(&mapping.arr_root_path);
+                    if !known_roots
+                        .iter()
+                        .any(|root| normalize_import_path_key(root) == mapping_root_key)
+                    {
+                        return Err(to_gql_error(AppError::Validation(format!(
+                            "mapping references unknown source root '{}'",
+                            mapping.arr_root_path
+                        ))));
+                    }
+                    match (kind, &facet) {
+                        (AppArrSourceKind::Radarr, MediaFacet::Movie)
+                        | (AppArrSourceKind::Sonarr, MediaFacet::Series)
+                        | (AppArrSourceKind::Sonarr, MediaFacet::Anime) => {}
+                        _ => {
+                            return Err(to_gql_error(AppError::Validation(format!(
+                                "mapping facet {} is not compatible with {}",
+                                facet.as_str(),
+                                kind.as_str()
+                            ))));
+                        }
+                    }
+                    mapping_key(&session_id, source_key, &mapping.arr_root_path)
+                }
+                // ── Manual root: no warmup surfaced it, so there is no
+                // monitored-status snapshot to apply. It only registers its
+                // Scryer-host path on the target library (validated above) and
+                // is keyed by library + path for duplicate detection. ──
+                None => manual_mapping_key(&library_id, &scryer_root_key),
+            };
+
             if mappings
                 .insert(
-                    key,
+                    dedup_key,
                     ResolvedSourceMapping {
                         arr_root_path: mapping.arr_root_path,
                         scryer_root_path: mapping.scryer_root_path,

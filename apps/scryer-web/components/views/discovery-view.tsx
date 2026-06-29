@@ -30,6 +30,10 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { TitleCard } from "@/components/title-card";
+import {
+  canonicalDiscoveryFacetLabels,
+  canonicalDiscoveryFilterOptions,
+} from "@/lib/discovery-facets";
 import { discoveryItemDisplayTitle } from "@/lib/utils/discovery-display";
 import { cn } from "@/lib/utils";
 import type {
@@ -433,6 +437,10 @@ function itemContentType(item: DiscoveryItem): DiscoveryContentType | null {
     : normalizedDiscoveryContentType(item.targetKind);
 }
 
+function discoveryItemDisplayGenreLabels(item: DiscoveryItem): string[] {
+  return canonicalDiscoveryFacetLabels(item, "genre");
+}
+
 type DiscoveryItemFilters = {
   contentTypes: DiscoveryContentType[];
   genres: string[];
@@ -446,14 +454,16 @@ function itemMatchesDiscoveryFacetFilters(
   item: DiscoveryItem,
   filters: Omit<DiscoveryItemFilters, "contentTypes">,
 ) {
-  if (!matchesAnySelectedValue(item.genres, filters.genres)) {
+  if (
+    !matchesAnySelectedValue(
+      canonicalDiscoveryFacetLabels(item, "genre"),
+      filters.genres,
+    )
+  ) {
     return false;
   }
   if (
-    !matchesAnySelectedValue(
-      [...item.contextTerms, ...item.sourceTags, ...item.statusTags],
-      filters.tags,
-    )
+    !matchesAnySelectedValue(canonicalDiscoveryFacetLabels(item, "theme"), filters.tags)
   ) {
     return false;
   }
@@ -501,11 +511,8 @@ function findHeroRailSection(sections: DiscoverySection[]) {
 function buildGenreTiles(items: DiscoveryItem[]): GenreTile[] {
   const counts = new Map<string, number>();
   for (const item of items) {
-    for (const genre of item.genres) {
-      const label = genre.trim();
-      if (label) {
-        counts.set(label, (counts.get(label) ?? 0) + 1);
-      }
+    for (const label of canonicalDiscoveryFacetLabels(item, "genre")) {
+      counts.set(label, (counts.get(label) ?? 0) + 1);
     }
   }
   return [...counts.entries()]
@@ -689,7 +696,7 @@ function DiscoveryHero({
   const titleLabel = discoveryItemDisplayTitle(item);
   const score = formatScore(item.rating);
   const match = itemMatchScore(item);
-  const genres = item.genres.slice(0, 3);
+  const genres = discoveryItemDisplayGenreLabels(item).slice(0, 3);
   const statusLabel =
     item.statusTags
       .find((tag) => tag.trim().length > 0)
@@ -958,19 +965,8 @@ function DiscoveryFilters({
           : t("discovery.type.anime"),
     count: contentTypeCount(contentTypeCountItems, key),
   }));
-  const genres = [...new Set(items.flatMap((item) => item.genres).filter(Boolean))]
-    .sort((left, right) => left.localeCompare(right));
-  const tags = [
-    ...new Set(
-      items
-        .flatMap((item) => [
-          ...item.contextTerms,
-          ...item.sourceTags,
-          ...item.statusTags,
-        ])
-        .filter(Boolean),
-    ),
-  ].sort((left, right) => left.localeCompare(right));
+  const genres = canonicalDiscoveryFilterOptions(items, "genre");
+  const tags = canonicalDiscoveryFilterOptions(items, "theme");
   const minimumYearBound = DEFAULT_MINIMUM_YEAR;
   const maximumYearBound = defaultMaximumDiscoveryYear();
   const yearSpan = Math.max(1, maximumYearBound - minimumYearBound);

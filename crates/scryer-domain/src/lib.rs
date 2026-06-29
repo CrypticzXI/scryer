@@ -6,8 +6,8 @@ use uuid::Uuid;
 
 mod title_sort;
 pub use title_sort::{
-    TITLE_CATALOG_SORT_KEY_VERSION, title_catalog_name_tie_key, title_catalog_sort_input,
-    title_catalog_sort_key, title_catalog_sort_key_for_title,
+    title_catalog_name_tie_key, title_catalog_sort_input, title_catalog_sort_key,
+    title_catalog_sort_key_for_title,
 };
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]

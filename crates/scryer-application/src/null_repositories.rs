@@ -25,12 +25,13 @@ use scryer_domain::BlocklistEntry;
 use crate::{
     AppError, AppResult, BlocklistRepository, BuiltinDownloadClientConnectionTester,
     CutoffUnmetQualitySummary, DiscoveryContextIncrementalCommit, DiscoveryContextSnapshotCommit,
-    DiscoveryFacetRecord, DiscoveryItemRecord, DiscoveryPendingContextChangeRecord,
-    DiscoveryPruneReport, DiscoveryPublicFeedCommit, DiscoveryRawPageRecord, DiscoveryRepository,
-    DiscoverySectionRecord, DiscoverySubmittedSubjectRecord, DiscoverySyncRunRecord,
-    DiscoverySyncStateRecord, DomainEventRepository, DownloadQueueCommandRecord,
-    DownloadQueueCommandRepository, DownloadSourceIdentity, DownloadSubmission,
-    DownloadSubmissionRepository, ExternalIdentityVerifier,
+    DiscoveryFacetRecord, DiscoveryItemRecord, DiscoveryItemsPageRecord,
+    DiscoveryItemsStorageQuery, DiscoveryPendingContextChangeRecord, DiscoveryPruneReport,
+    DiscoveryPublicFeedCommit, DiscoveryRawPageRecord, DiscoveryRepository,
+    DiscoverySectionItemsRecord, DiscoverySectionRecord, DiscoverySubmittedSubjectRecord,
+    DiscoverySyncRunRecord, DiscoverySyncStateRecord, DomainEventRepository,
+    DownloadQueueCommandRecord, DownloadQueueCommandRepository, DownloadSourceIdentity,
+    DownloadSubmission, DownloadSubmissionRepository, ExternalIdentityVerifier,
     ExternalImportMonitorSnapshotRepository, FileImporter, HousekeepingRepository, ImportArtifact,
     ImportArtifactRepository, ImportRepository, IndexerQueryStats, IndexerSearchLearningKey,
     IndexerSearchLearningRecord, IndexerSearchLearningRepository, IndexerStatsTracker, JobKey,
@@ -240,6 +241,54 @@ impl DiscoveryRepository for NullDiscoveryRepository {
         _surface: Option<&str>,
     ) -> AppResult<Vec<DiscoverySectionRecord>> {
         Ok(Vec::new())
+    }
+
+    async fn list_public_discovery_section_items(
+        &self,
+        _run_id: &str,
+        _include_unresolved: bool,
+        _limit_per_section: i64,
+    ) -> AppResult<Vec<DiscoverySectionItemsRecord>> {
+        Ok(Vec::new())
+    }
+
+    async fn list_personalized_discovery_home_items(
+        &self,
+        _run_id: &str,
+        _readable_library_ids: &[String],
+        _include_unresolved: bool,
+        _limit: i64,
+    ) -> AppResult<Vec<DiscoveryItemRecord>> {
+        Ok(Vec::new())
+    }
+
+    async fn list_personalized_complete_collection_items(
+        &self,
+        _run_id: &str,
+        _readable_library_ids: &[String],
+        _include_unresolved: bool,
+        _limit: i64,
+    ) -> AppResult<Vec<DiscoveryItemRecord>> {
+        Ok(Vec::new())
+    }
+
+    async fn list_personalized_discovery_facets(
+        &self,
+        _run_id: &str,
+        _readable_library_ids: &[String],
+        _include_unresolved: bool,
+    ) -> AppResult<Vec<DiscoveryFacetRecord>> {
+        Ok(Vec::new())
+    }
+
+    async fn query_discovery_items(
+        &self,
+        _query: &DiscoveryItemsStorageQuery,
+    ) -> AppResult<DiscoveryItemsPageRecord> {
+        Ok(DiscoveryItemsPageRecord {
+            items: Vec::new(),
+            total_count: 0,
+        })
     }
 
     async fn list_discovery_items_for_generation(

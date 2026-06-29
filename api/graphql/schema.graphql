@@ -602,6 +602,154 @@ type DirectoryEntryPayload {
 	path: String!
 }
 
+type DiscoveryFacetPayload {
+	name: String!
+	value: String!
+	smgCount: Long
+	localCount: Long
+}
+
+input DiscoveryHomeInput {
+	includePublic: Boolean
+	includePersonalized: Boolean
+	includeUnresolved: Boolean
+	limitPerSection: Int
+}
+
+type DiscoveryHomePayload {
+	status: DiscoverySyncStatusPayload!
+	publicSections: [DiscoverySectionPayload!]!
+	personalizedSections: [DiscoverySectionPayload!]!
+	completeCollection: DiscoverySectionPayload
+	facets: [DiscoveryFacetPayload!]!
+	canViewPersonalized: Boolean!
+}
+
+type DiscoveryItemPayload {
+	id: ID!
+	targetKey: String!
+	targetKind: String!
+	resolved: Boolean!
+	resolvedTitleId: ID
+	displayTitle: String!
+	originalTitle: String
+	sortTitle: String
+	year: Int
+	posterUrl: String
+	backgroundUrl: String
+	overview: String
+	contentType: String
+	genres: [String!]!
+	rating: Float
+	statusTags: [String!]!
+	sourceTags: [String!]!
+	sources: [String!]!
+	bestSource: String
+	relationTypes: [String!]!
+	relationSubtypes: [String!]!
+	sourceCount: Int
+	edgeCount: Int
+	relationCount: Int
+	sourceSubjectCount: Int
+	rankScore: Float
+	matchedSubjectTitles: [String!]!
+	matchedSubjectCount: Int!
+	tmdbCollectionId: String
+	tmdbCollectionName: String
+	ownedInInput: Boolean!
+	facetTerms: [String!]!
+	contextTerms: [String!]!
+}
+
+input DiscoveryItemsInput {
+	query: String
+	targetKinds: [String!]
+	sources: [String!]
+	relationTypes: [String!]
+	relationSubtypes: [String!]
+	genres: [String!]
+	statusTags: [String!]
+	facetTerms: [String!]
+	includeOwned: Boolean
+	includeUnresolved: Boolean
+	includePublic: Boolean
+	limit: Int
+	offset: Int
+}
+
+type DiscoveryItemsPayload {
+	items: [DiscoveryItemPayload!]!
+	totalCount: Long!
+	canViewPersonalized: Boolean!
+}
+
+type DiscoverySectionPayload {
+	sectionId: String!
+	sectionType: String!
+	title: String!
+	surface: String!
+	totalCount: Long!
+	items: [DiscoveryItemPayload!]!
+}
+
+type DiscoverySyncRunPayload {
+	id: ID!
+	kind: String!
+	status: String!
+	triggerSource: String!
+	region: String!
+	language: String!
+	subjectCount: Long!
+	subjectFingerprint: String
+	previousSubjectFingerprint: String
+	baseGenerationId: ID
+	changedSubjectCount: Long!
+	affectedTargetCount: Long!
+	smgRequestId: String
+	smgStatus: String
+	discoveryIndexWatermark: String
+	pageCount: Int
+	itemCount: Long
+	facetCount: Long
+	errorText: String
+	startedAt: DateTime
+	completedAt: DateTime
+	createdAt: DateTime!
+	updatedAt: DateTime!
+}
+
+type DiscoverySyncStatePayload {
+	scopeKey: String!
+	lastSuccessGenerationId: ID
+	lastPublicFeedGenerationId: ID
+	lastSubjectFingerprint: String
+	lastContextSnapshotCompletedAt: DateTime
+	lastIncrementalReloadCompletedAt: DateTime
+	lastPublicFeedCompletedAt: DateTime
+	dirtySince: DateTime
+	dirtyReasonMask: Long!
+	bootstrapStartedAt: DateTime
+	bootstrapQuietUntil: DateTime
+	nextContextSnapshotEligibleAt: DateTime
+	nextIncrementalReloadEligibleAt: DateTime
+	nextPublicFeedEligibleAt: DateTime
+	backoffUntil: DateTime
+	startupJitterSeconds: Long!
+	contextJitterSeconds: Long!
+	incrementalReloadJitterSeconds: Long!
+	publicFeedJitterSeconds: Long!
+	lastSeenDomainEventSequence: Long
+	inflightSubjectFingerprint: String
+	inflightDomainEventSequence: Long
+	updatedAt: DateTime!
+}
+
+type DiscoverySyncStatusPayload {
+	state: DiscoverySyncStatePayload!
+	recentRuns: [DiscoverySyncRunPayload!]!
+	pendingContextChangeCount: Long!
+}
+
 type DismissPendingReleasePayload {
 	id: ID!
 	dismissed: Boolean!
@@ -925,12 +1073,8 @@ type EpisodePayload {
 }
 
 input ExecuteExternalImportInput {
-	sonarr: ExternalImportConnectionInput
-	radarr: ExternalImportConnectionInput
+	sourceWarmupSessionIds: [ID!]!
 	prowlarr: ExternalImportConnectionInput
-	selectedMoviesPaths: [String!]!
-	selectedSeriesPaths: [String!]!
-	selectedAnimePaths: [String!]!
 	selectedDownloadClientDedupKeys: [String!]!
 	selectedIndexerDedupKeys: [String!]!
 	"""
@@ -961,6 +1105,11 @@ enum ExternalAccountStatusValue {
 	disabled
 }
 
+enum ExternalArrSourceKind {
+	sonarr
+	radarr
+}
+
 type ExternalAuthRuntimeConnectionPayload {
 	id: ID!
 	provider: ExternalAccountProviderValue!
@@ -985,13 +1134,56 @@ type ExternalIdPayload {
 	value: String!
 }
 
+input ExternalImportAggregateWarmupProgressInput {
+	sourceWarmupSessionIds: [ID!]!
+}
+
+type ExternalImportAggregateWarmupProgressPayload {
+	status: ExternalImportMonitorWarmupStatusValue!
+	titlesTotalKnown: Boolean!
+	titlesFetched: Int!
+	titlesTotal: Int!
+	errorMessage: String
+}
+
+type ExternalImportArrSourcePayload {
+	sessionId: ID!
+	sourceKey: String!
+	kind: ExternalArrSourceKind!
+	baseUrl: String!
+	connected: Boolean!
+	version: String
+	status: ExternalImportMonitorWarmupStatusValue!
+	error: String
+}
+
 input ExternalImportConnectionInput {
 	baseUrl: String!
 	apiKey: String!
 }
 
+"""
+Connection kind for the lightweight, pre-warmup connection probe used by the
+setup wizard's Connect step. Unlike [`ExternalArrSourceKind`] this also
+covers Prowlarr, which has no warmup of its own but can still be
+connection-tested before preview.
+"""
+enum ExternalImportConnectionKind {
+	sonarr
+	radarr
+	prowlarr
+}
+
+type ExternalImportConnectionValidationPayload {
+	kind: ExternalImportConnectionKind!
+	baseUrl: String!
+	connected: Boolean!
+	version: String
+	error: String
+}
+
 type ExternalImportDownloadClientPayload {
-	sources: [String!]!
+	sourceKeys: [String!]!
 	name: String!
 	implementation: String!
 	scryerClientType: String
@@ -1007,7 +1199,7 @@ type ExternalImportDownloadClientPayload {
 }
 
 type ExternalImportIndexerPayload {
-	sources: [String!]!
+	sourceKeys: [String!]!
 	name: String!
 	implementation: String!
 	scryerProviderType: String
@@ -1065,15 +1257,10 @@ enum ExternalImportMonitorWarmupStatusValue {
 }
 
 type ExternalImportPreviewPayload {
-	sonarrConnected: Boolean!
-	radarrConnected: Boolean!
 	prowlarrConnected: Boolean!
-	sonarrVersion: String
-	radarrVersion: String
 	prowlarrVersion: String
-	sonarrError: String
-	radarrError: String
 	prowlarrError: String
+	arrSources: [ExternalImportArrSourcePayload!]!
 	rootFolders: [ExternalImportRootFolderPayload!]!
 	downloadClients: [ExternalImportDownloadClientPayload!]!
 	indexers: [ExternalImportIndexerPayload!]!
@@ -1088,8 +1275,26 @@ type ExternalImportResultPayload {
 }
 
 type ExternalImportRootFolderPayload {
-	source: String!
-	path: String!
+	sourceWarmupSessionId: ID!
+	sourceKey: String!
+	kind: ExternalArrSourceKind!
+	arrRootPath: String!
+}
+
+input ExternalImportSourceLibraryMappingInput {
+	"""
+	Warmup session that surfaced this root. `None` for a manually-added root
+	that no Sonarr/Radarr instance reported: such a root carries no
+	monitored-status snapshot and simply registers its path on the target
+	library. When set, `source_key` and `kind` must also be set.
+	"""
+	sourceWarmupSessionId: ID
+	sourceKey: String
+	kind: ExternalArrSourceKind
+	arrRootPath: String!
+	scryerRootPath: String!
+	libraryId: ID!
+	facet: MediaFacetValue!
 }
 
 type ExternalSubtitleBlocklistEntryPayload {
@@ -1137,12 +1342,8 @@ type FacetScoringPersonaSelectionPayload {
 }
 
 input FinalizeExternalImportInput {
-	sonarr: ExternalImportConnectionInput
-	radarr: ExternalImportConnectionInput
-	monitorWarmupSessionId: ID
-	selectedMoviesPaths: [String!]!
-	selectedSeriesPaths: [String!]!
-	selectedAnimePaths: [String!]!
+	sourceWarmupSessionIds: [ID!]!
+	mappings: [ExternalImportSourceLibraryMappingInput!]!
 }
 
 type FinalizeExternalImportPayload {
@@ -1413,6 +1614,7 @@ enum JobKeyValue {
 	wanted_sync
 	pending_release_processing
 	staged_nzb_prune
+	discovery_sync
 	title_image_cache_refresh
 	title_deletion
 }
@@ -1573,6 +1775,10 @@ input LibrarySettingsInput {
 	nfoWriteOnImport: Boolean
 	plexmatchWriteOnImport: Boolean
 	importMode: String
+	setPermissionsLinux: Boolean
+	fileChmod: String
+	folderChmod: String
+	chownGroup: String
 	indexerRouting: [IndexerRoutingEntryInput!]
 	downloadClientRouting: [DownloadClientRoutingEntryInput!]
 }
@@ -1603,6 +1809,14 @@ type LibrarySettingsPayload {
 	plexmatchWriteOnImport: Boolean
 	importModeOverride: String
 	importMode: String!
+	setPermissionsLinuxOverride: Boolean
+	setPermissionsLinux: Boolean!
+	fileChmodOverride: String
+	fileChmod: String
+	folderChmodOverride: String
+	folderChmod: String
+	chownGroupOverride: String
+	chownGroup: String
 	indexerRoutingOverride: [IndexerRoutingEntryPayload!]
 	downloadClientRoutingOverride: [DownloadClientRoutingEntryPayload!]
 }
@@ -1954,6 +2168,10 @@ type MediaSettingsPayload {
 	nfoWriteOnImport: Boolean!
 	plexmatchWriteOnImport: Boolean
 	importMode: String!
+	setPermissionsLinux: Boolean!
+	fileChmod: String
+	folderChmod: String
+	chownGroup: String
 }
 
 type MetadataEpisodePayload {
@@ -2119,6 +2337,7 @@ type MutationRoot {
 	testIndexerConnection(input: TestIndexerConnectionInput!): ProviderValidationPayload!
 	syncIndexerConfig(id: ID!): IndexerConfigSyncPayload!
 	triggerRssSync: RssSyncReportPayload!
+	setMyUiSettings(input: SetMyUiSettingsInput!): UiSettingsPayload!
 	updateSubtitleSettings(input: UpdateSubtitleSettingsInput!): SubtitleSettingsPayload!
 	updateAcquisitionSettings(input: UpdateAcquisitionSettingsInput!): AcquisitionSettingsPayload!
 	updateGeneralSettings(input: UpdateGeneralSettingsInput!): GeneralSettingsPayload!
@@ -2224,12 +2443,21 @@ type MutationRoot {
 	deleteBackup(input: DeleteBackupInput!): DeleteBackupPayload!
 	inspectRestoreBundle(bundleUpload: Upload!, password: String): RestoreInspectPayload!
 	applyRestoreBundle(uploadId: ID!, password: String): RestoreApplyPayload!
+	startExternalImportArrSourceWarmup(input: StartExternalImportArrSourceWarmupInput!): ExternalImportMonitorWarmupProgressPayload!
+	cancelExternalImportArrSourceWarmup(sessionId: ID!): CancelExternalImportMonitorWarmupPayload!
+	"""
+	Lightweight connection probe for the Connect step. Tests reachability +
+	credentials for a single Sonarr/Radarr/Prowlarr instance without kicking
+	off the (expensive) warmup that fetches the whole library. The wizard
+	fires this on field blur; on success it starts the per-instance warmup
+	separately so warmups run concurrently while the user keeps adding
+	connections.
+	"""
+	validateExternalImportConnection(input: ValidateExternalImportConnectionInput!): ExternalImportConnectionValidationPayload!
 	"""
 	Connect to Sonarr and/or Radarr, fetch their configs, return a preview.
 	"""
 	previewExternalImport(input: PreviewExternalImportInput!): ExternalImportPreviewPayload!
-	startExternalImportMonitorWarmup(input: StartExternalImportMonitorWarmupInput!): ExternalImportMonitorWarmupProgressPayload!
-	cancelExternalImportMonitorWarmup(sessionId: ID!): CancelExternalImportMonitorWarmupPayload!
 	finalizeExternalImport(input: FinalizeExternalImportInput!): FinalizeExternalImportPayload!
 	"""
 	Re-connect to Sonarr/Radarr, fetch configs, and create selected items in Scryer.
@@ -2526,6 +2754,8 @@ enum PluginConfigFieldTypeValue {
 	bool
 	select
 	number
+	path
+	tag
 }
 
 enum PluginConfigValueSourceValue {
@@ -2626,8 +2856,7 @@ input PrepareBackupDownloadInput {
 }
 
 input PreviewExternalImportInput {
-	sonarr: ExternalImportConnectionInput
-	radarr: ExternalImportConnectionInput
+	sourceWarmupSessionIds: [ID!]!
 	prowlarr: ExternalImportConnectionInput
 }
 
@@ -2797,7 +3026,8 @@ type QueryRoot {
 	auditLog(eventTypes: [DomainEventTypeValue!], titleId: ID, facet: MediaFacetValue, afterSequence: Long, beforeSequence: Long, limit: Int): [DomainEventEnvelopePayload!]!
 	activeLibraryScans: [LibraryScanProgressPayload!]!
 	libraryScanSession(sessionId: ID!): LibraryScanProgressPayload
-	externalImportMonitorWarmupStatus(sessionId: ID!): ExternalImportMonitorWarmupProgressPayload!
+	externalImportArrSourceWarmupStatus(sessionId: ID!): ExternalImportMonitorWarmupProgressPayload!
+	externalImportAggregateWarmupProgress(input: ExternalImportAggregateWarmupProgressInput!): ExternalImportAggregateWarmupProgressPayload!
 	pendingImportCounts: PendingImportCountsPayload!
 	navigationBadgeCounts: NavigationBadgeCountsPayload!
 	pendingImports(facet: MediaFacetValue!, libraryIds: [ID!], status: PendingImportStatusValue!, limit: Int! = 50, offset: Int! = 0): PendingImportConnectionPayload!
@@ -2806,6 +3036,9 @@ type QueryRoot {
 	activeJobRuns: [JobRunPayload!]!
 	jobRuns(jobKey: JobKeyValue!, limit: Int): [JobRunPayload!]!
 	recentJobRuns(limit: Int): [JobRunPayload!]!
+	discoveryHome(input: DiscoveryHomeInput): DiscoveryHomePayload!
+	discoveryItems(input: DiscoveryItemsInput): DiscoveryItemsPayload!
+	discoverySyncStatus: DiscoverySyncStatusPayload!
 	downloadQueue(includeAllActivity: Boolean, includeHistoryOnly: Boolean, includeImportActivity: Boolean, titleId: ID, activityFilter: DownloadActivityFilterValue): [DownloadQueueItemPayload!]!
 	downloadImport(limit: Int, offset: Int, filter: DownloadImportFilterValue): DownloadImportPagePayload!
 	downloadHistory(limit: Int, offset: Int, filters: [DownloadHistoryFilterValue!], clientIds: [ID!], scryerSubmittedOnly: Boolean, sortKey: DownloadHistorySortKeyValue, sortDirection: SortDirectionValue): DownloadHistoryPagePayload!
@@ -2815,6 +3048,7 @@ type QueryRoot {
 	recycleBinSettings: RecycleBinSettingsPayload!
 	autoBackupSettings: AutoBackupSettingsPayload!
 	backupSettings: BackupSettingsPayload!
+	myUiSettings: UiSettingsPayload!
 	securitySettings: SecuritySettingsPayload!
 	externalAuthRuntimeSettings: ExternalAuthRuntimeSettingsPayload!
 	mediaServerConnections(provider: MediaServerProviderValue): [MediaServerConnectionPayload!]!
@@ -3306,6 +3540,19 @@ input SetEpisodeMonitoredInput {
 	monitored: Boolean!
 }
 
+input SetMyUiSettingsInput {
+	theme: UiThemeValue!
+	dateTimeFormat: UiDateTimeFormatValue
+	highlightColor: String
+	secondaryColor: String
+	highContrastMode: Boolean!
+	reduceMotion: Boolean!
+	density: UiDensityValue!
+	sidebarMode: UiSidebarModeValue!
+	defaultLandingView: UiDefaultLandingViewValue!
+	tableColumns: [UiTableColumnSettingInput!]!
+}
+
 input SetPrimaryMovieFileInput {
 	titleId: ID!
 	fileId: ID!
@@ -3386,9 +3633,9 @@ enum SortDirectionValue {
 	desc
 }
 
-input StartExternalImportMonitorWarmupInput {
-	sonarr: ExternalImportConnectionInput
-	radarr: ExternalImportConnectionInput
+input StartExternalImportArrSourceWarmupInput {
+	kind: ExternalArrSourceKind!
+	connection: ExternalImportConnectionInput!
 }
 
 input SubmitMediaRequestInput {
@@ -3569,11 +3816,13 @@ input TitleCatalogSortInput {
 
 enum TitleCatalogSortKeyValue {
 	title
+	library
 	monitored
 	quality
 	episodes
 	status
 	size
+	added
 }
 
 type TitleHistoryEventPayload {
@@ -3875,6 +4124,83 @@ input TriggerWantedSearchInput {
 	replaceInProgress: Boolean
 }
 
+enum UiDateTimeFormatValue {
+	locale
+	iso24h
+}
+
+enum UiDefaultLandingViewValue {
+	movies
+	series
+	anime
+	activity
+	calendar
+	wanted
+	history
+	settings
+	system
+}
+
+enum UiDensityValue {
+	compact
+	comfortable
+}
+
+enum UiSettingsFacetValue {
+	movies
+	series
+	anime
+}
+
+type UiSettingsPayload {
+	userId: ID!
+	theme: UiThemeValue!
+	dateTimeFormat: UiDateTimeFormatValue!
+	highlightColor: String
+	secondaryColor: String
+	highContrastMode: Boolean!
+	reduceMotion: Boolean!
+	density: UiDensityValue!
+	sidebarMode: UiSidebarModeValue!
+	defaultLandingView: UiDefaultLandingViewValue!
+	tableColumns: [UiTableColumnSettingPayload!]!
+	createdAt: DateTime
+	updatedAt: DateTime
+}
+
+enum UiSidebarModeValue {
+	collapsed
+	expanded
+}
+
+input UiTableColumnSettingInput {
+	facet: UiSettingsFacetValue!
+	tableViewMode: UiTableViewModeValue!
+	columnId: String!
+	columnOrder: Int!
+	visible: Boolean!
+}
+
+type UiTableColumnSettingPayload {
+	facet: UiSettingsFacetValue!
+	tableViewMode: UiTableViewModeValue!
+	columnId: String!
+	columnOrder: Int!
+	visible: Boolean!
+}
+
+enum UiTableViewModeValue {
+	compact
+	posterTable
+}
+
+enum UiThemeValue {
+	light
+	dark
+	pride
+	system
+}
+
 type UninstallPluginPayload {
 	pluginId: ID!
 	uninstalled: Boolean!
@@ -4007,6 +4333,10 @@ input UpdateMediaSettingsInput {
 	nfoWriteOnImport: Boolean
 	plexmatchWriteOnImport: Boolean
 	importMode: String
+	setPermissionsLinux: Boolean
+	fileChmod: String
+	folderChmod: String
+	chownGroup: String
 }
 
 input UpdateNotificationChannelInput {
@@ -4126,6 +4456,11 @@ type UserPayload {
 	accountKind: UserAccountKindValue!
 	appPermissions: [AppPermissionValue!]!
 	libraryPermissions: [UserLibraryPermissionGrantPayload!]!
+}
+
+input ValidateExternalImportConnectionInput {
+	kind: ExternalImportConnectionKind!
+	connection: ExternalImportConnectionInput!
 }
 
 input ValidateRuleSetInput {
