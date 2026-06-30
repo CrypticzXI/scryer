@@ -176,6 +176,47 @@ pub struct DiscoveryHomeResult {
     pub can_view_personalized: bool,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CatalogDiscoveryQuery {
+    pub facet: MediaFacet,
+    pub library_ids: Vec<String>,
+    pub include_unresolved: bool,
+    pub limit_per_group: usize,
+    pub max_groups: usize,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct CatalogDiscoveryResult {
+    pub groups: Vec<CatalogDiscoveryGroup>,
+    pub can_view_personalized: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct CatalogDiscoveryGroup {
+    pub id: String,
+    pub kind: CatalogDiscoveryGroupKind,
+    pub surface: CatalogDiscoverySurface,
+    pub label_value: Option<String>,
+    pub total_count: i64,
+    pub items: Vec<DiscoveryItemRecord>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CatalogDiscoveryGroupKind {
+    PublicTop,
+    GenreAffinity,
+    ThemeAffinity,
+    Acclaimed,
+    CompleteCollection,
+    Fallback,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CatalogDiscoverySurface {
+    Public,
+    Personalized,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DiscoveryItemsQuery {
     pub query: Option<String>,
@@ -222,6 +263,12 @@ pub struct DiscoverySectionResult {
     pub section_type: String,
     pub title: String,
     pub surface: String,
+    pub total_count: i64,
+    pub items: Vec<DiscoveryItemRecord>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct CatalogDiscoveryCandidatesRecord {
     pub total_count: i64,
     pub items: Vec<DiscoveryItemRecord>,
 }
@@ -537,6 +584,21 @@ pub trait DiscoveryRepository: Send + Sync {
         readable_library_ids: &[String],
         include_unresolved: bool,
     ) -> AppResult<Vec<DiscoveryFacetRecord>>;
+    async fn list_title_context_public_discovery_items(
+        &self,
+        run_id: &str,
+        media_kind: &str,
+        include_unresolved: bool,
+        limit: i64,
+    ) -> AppResult<CatalogDiscoveryCandidatesRecord>;
+    async fn list_title_context_personalized_discovery_items(
+        &self,
+        run_id: &str,
+        readable_library_ids: &[String],
+        media_kind: &str,
+        include_unresolved: bool,
+        limit: i64,
+    ) -> AppResult<CatalogDiscoveryCandidatesRecord>;
     async fn query_discovery_items(
         &self,
         query: &DiscoveryItemsStorageQuery,

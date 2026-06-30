@@ -7,7 +7,7 @@ use scryer_application::{
     DiscoveryPruneReport, DiscoveryPublicFeedCommit, DiscoveryRankComponentRecord,
     DiscoveryRawPageRecord, DiscoveryRepository, DiscoverySectionItemsRecord,
     DiscoverySectionRecord, DiscoverySourceTagRecord, DiscoverySubmittedSubjectRecord,
-    DiscoverySyncRunRecord, DiscoverySyncStateRecord,
+    DiscoverySyncRunRecord, DiscoverySyncStateRecord, CatalogDiscoveryCandidatesRecord,
 };
 use serde_json::Value as JsonValue;
 use std::collections::{HashMap, HashSet};
@@ -750,6 +750,42 @@ impl DiscoveryRepository for DiscoveryStore {
         .await
     }
 
+    async fn list_title_context_public_discovery_items(
+        &self,
+        run_id: &str,
+        media_kind: &str,
+        include_unresolved: bool,
+        limit: i64,
+    ) -> AppResult<CatalogDiscoveryCandidatesRecord> {
+        fetch_title_context_public_items(
+            &self.datastore,
+            run_id,
+            media_kind,
+            include_unresolved,
+            limit.clamp(1, 200),
+        )
+        .await
+    }
+
+    async fn list_title_context_personalized_discovery_items(
+        &self,
+        run_id: &str,
+        readable_library_ids: &[String],
+        media_kind: &str,
+        include_unresolved: bool,
+        limit: i64,
+    ) -> AppResult<CatalogDiscoveryCandidatesRecord> {
+        fetch_title_context_personalized_items(
+            &self.datastore,
+            run_id,
+            readable_library_ids,
+            media_kind,
+            include_unresolved,
+            limit.clamp(1, 1_000),
+        )
+        .await
+    }
+
     async fn query_discovery_items(
         &self,
         query: &DiscoveryItemsStorageQuery,
@@ -1128,6 +1164,152 @@ async fn fetch_personalized_items(
         clauses.join(" AND ")
     );
     fetch_items_with_sql(datastore, &sql, &args).await
+}
+
+async fn fetch_title_context_public_items(
+    datastore: &StoreDatastore,
+    run_id: &str,
+    media_kind: &str,
+    include_unresolved: bool,
+    limit: i64,
+) -> AppResult<CatalogDiscoveryCandidatesRecord> {
+    let resolved_clause = if include_unresolved {
+        ""
+    } else {
+        " AND i.resolved = TRUE"
+    };
+    let sql = format!(
+        "WITH candidates AS (
+            SELECT {}, s.sort_index AS section_sort_index, si.sort_index AS section_item_sort_index,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY CASE WHEN TRIM(i.target_key) = '' THEN i.id ELSE i.target_key END
+                       ORDER BY s.sort_index ASC, si.sort_index ASC, i.id ASC
+                   ) AS identity_rank
+            FROM discovery_section_items si
+            JOIN discovery_sections s
+              ON s.run_id = si.run_id
+             AND s.section_id = si.section_id
+            JOIN discovery_items i
+              ON i.id = si.item_id
+            WHERE si.run_id = {{}}
+              AND i.base_generation_id = {{}}
+              AND i.tombstoned_at IS NULL
+              AND i.owned_in_input = FALSE
+              AND s.surface = 'public'
+              AND UPPER(TRIM(s.section_type)) <> 'COMPLETE_THE_COLLECTION'
+              AND {}
+              {resolved_clause}
+         ),
+         deduped AS (
+            SELECT * FROM candidates WHERE identity_rank = 1
+         ),
+         ranked AS (
+            SELECT *,
+                   COUNT(*) OVER () AS total_count
+            FROM deduped
+         )
+         SELECT {}, total_count
+         FROM ranked
+         ORDER BY section_sort_index ASC, section_item_sort_index ASC, id ASC
+         LIMIT {{}}",
+        qualified_columns("i", ITEM_COLUMNS),
+        authoritative_media_kind_clause("i", media_kind),
+        ITEM_COLUMNS.join(", ")
+    );
+    fetch_title_context_candidates_with_sql(
+        datastore,
+        &sql,
+        &[
+            SqlArg::Text(run_id.to_string()),
+            SqlArg::Text(run_id.to_string()),
+            SqlArg::I64(limit),
+        ],
+    )
+    .await
+}
+
+async fn fetch_title_context_personalized_items(
+    datastore: &StoreDatastore,
+    run_id: &str,
+    readable_library_ids: &[String],
+    media_kind: &str,
+    include_unresolved: bool,
+    limit: i64,
+) -> AppResult<CatalogDiscoveryCandidatesRecord> {
+    if readable_library_ids.is_empty() {
+        return Ok(CatalogDiscoveryCandidatesRecord {
+            total_count: 0,
+            items: Vec::new(),
+        });
+    }
+
+    let mut args = vec![SqlArg::Text(run_id.to_string())];
+    let mut clauses = vec![
+        "i.base_generation_id = {}".to_string(),
+        "i.tombstoned_at IS NULL".to_string(),
+        "i.owned_in_input = FALSE".to_string(),
+        authoritative_media_kind_clause("i", media_kind),
+    ];
+    if !include_unresolved {
+        clauses.push("i.resolved = TRUE".to_string());
+    }
+    clauses.push(library_provenance_exists_clause(
+        "i",
+        readable_library_ids,
+        &mut args,
+    ));
+    args.push(SqlArg::I64(limit));
+
+    let sql = format!(
+        "WITH candidates AS (
+            SELECT {},
+                   ROW_NUMBER() OVER (
+                       PARTITION BY CASE WHEN TRIM(i.target_key) = '' THEN i.id ELSE i.target_key END
+                       ORDER BY COALESCE(i.rank_score, -999999999.0) DESC,
+                                COALESCE(i.sort_title, i.display_title) ASC,
+                                i.target_key ASC
+                   ) AS identity_rank
+            FROM discovery_items i
+            WHERE {}
+         ),
+         deduped AS (
+            SELECT * FROM candidates WHERE identity_rank = 1
+         ),
+         ranked AS (
+            SELECT *,
+                   COUNT(*) OVER () AS total_count
+            FROM deduped
+         )
+         SELECT {}, total_count
+         FROM ranked
+         ORDER BY COALESCE(rank_score, -999999999.0) DESC,
+                  COALESCE(sort_title, display_title) ASC,
+                  target_key ASC
+         LIMIT {{}}",
+        qualified_columns("i", ITEM_COLUMNS),
+        clauses.join(" AND "),
+        ITEM_COLUMNS.join(", ")
+    );
+    fetch_title_context_candidates_with_sql(datastore, &sql, &args).await
+}
+
+async fn fetch_title_context_candidates_with_sql(
+    datastore: &StoreDatastore,
+    sql: &str,
+    args: &[SqlArg],
+) -> AppResult<CatalogDiscoveryCandidatesRecord> {
+    let rows = SqlRuntime::fetch_all(datastore.read_exec(), sql, args).await?;
+    let total_count = rows
+        .first()
+        .map(|row| row.i64("total_count"))
+        .transpose()?
+        .unwrap_or_default();
+    let mut items = rows
+        .iter()
+        .map(item_from_row)
+        .collect::<AppResult<Vec<_>>>()?;
+    hydrate_discovery_items(datastore, &mut items).await?;
+    Ok(CatalogDiscoveryCandidatesRecord { total_count, items })
 }
 
 async fn fetch_personalized_facets(

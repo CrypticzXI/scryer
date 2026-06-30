@@ -104,3 +104,55 @@ export type DiscoveryItemsPayload = {
   totalCount: number;
   canViewPersonalized: boolean;
 };
+
+export type CatalogDiscoveryInput = {
+  facet: "movie" | "series" | "anime";
+  titleId?: string | null;
+  includeUnresolved?: boolean | null;
+  limitPerGroup?: number | null;
+  maxGroups?: number | null;
+};
+
+export type CatalogDiscoveryItem = Pick<
+  DiscoveryItem,
+  | "id"
+  | "targetKey"
+  | "targetKind"
+  | "resolved"
+  | "resolvedTitleId"
+  | "displayTitle"
+  | "originalTitle"
+  | "sortTitle"
+  | "year"
+  | "posterUrl"
+  | "overview"
+  | "contentType"
+  | "statusTags"
+  | "rankScore"
+  | "ownedInInput"
+>;
+
+export type CatalogDiscoveryGroupKind =
+  | "PUBLIC_TOP"
+  | "GENRE_AFFINITY"
+  | "THEME_AFFINITY"
+  | "ACCLAIMED"
+  | "COMPLETE_COLLECTION"
+  | "FALLBACK"
+  | "MORE_LIKE_THIS";
+
+export type CatalogDiscoverySurface = "PUBLIC" | "PERSONALIZED";
+
+export type CatalogDiscoveryGroup = {
+  id: string;
+  kind: CatalogDiscoveryGroupKind;
+  surface: CatalogDiscoverySurface;
+  labelValue: string | null;
+  totalCount: number;
+  items: CatalogDiscoveryItem[];
+};
+
+export type CatalogDiscoveryPayload = {
+  canViewPersonalized: boolean;
+  groups: CatalogDiscoveryGroup[];
+};

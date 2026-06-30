@@ -1643,6 +1643,49 @@ pub struct DiscoveryItemsPayload {
     pub can_view_personalized: bool,
 }
 
+#[derive(InputObject, Clone)]
+pub struct CatalogDiscoveryInput {
+    pub facet: MediaFacetValue,
+    pub library_ids: Option<Vec<ID>>,
+    pub include_unresolved: Option<bool>,
+    pub limit_per_group: Option<i32>,
+    pub max_groups: Option<i32>,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct CatalogDiscoveryPayload {
+    pub can_view_personalized: bool,
+    pub groups: Vec<CatalogDiscoveryGroupPayload>,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct CatalogDiscoveryGroupPayload {
+    pub id: String,
+    pub kind: CatalogDiscoveryGroupKindValue,
+    pub surface: CatalogDiscoverySurfaceValue,
+    pub label_value: Option<String>,
+    pub total_count: Long,
+    pub items: Vec<DiscoveryItemPayload>,
+}
+
+#[derive(Enum, Copy, Clone, Eq, PartialEq)]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
+pub enum CatalogDiscoveryGroupKindValue {
+    PublicTop,
+    GenreAffinity,
+    ThemeAffinity,
+    Acclaimed,
+    CompleteCollection,
+    Fallback,
+}
+
+#[derive(Enum, Copy, Clone, Eq, PartialEq)]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
+pub enum CatalogDiscoverySurfaceValue {
+    Public,
+    Personalized,
+}
+
 #[derive(SimpleObject, Clone)]
 pub struct DiscoverySectionPayload {
     pub section_id: String,

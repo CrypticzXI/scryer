@@ -88,6 +88,14 @@ export const LOGS_SECTION_PATH: Record<LogsSection, string> = {
   audit: "audit",
 };
 
+export const SYSTEM_SECTION_PATH: Record<SystemSection, string> = {
+  overview: "overview",
+  jobs: "jobs",
+  logs: "logs",
+  audit: "audit",
+  recycleBin: "recycle-bin",
+};
+
 const MEDIA_RESERVED_OVERVIEW_SEGMENTS = new Set(["overview", "import", "requests", "settings"]);
 
 export function buildViewPath(
@@ -116,7 +124,7 @@ export function buildViewPath(
     return `${base}/${SETTINGS_SECTION_PATH[nextSettingsSection]}`;
   }
   if (nextView === "system" && nextSystemSection && nextSystemSection !== "overview") {
-    return `${base}/${nextSystemSection}`;
+    return `${base}/${SYSTEM_SECTION_PATH[nextSystemSection]}`;
   }
   if (nextView === "logs") {
     const logsSection = nextLogsSection ?? "logs";

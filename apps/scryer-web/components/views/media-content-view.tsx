@@ -72,10 +72,6 @@ import type {
   Translate,
   ViewId,
 } from "@/components/root/types";
-import {
-  canonicalDiscoveryFacetLabels,
-  canonicalDiscoveryLabelKey,
-} from "@/lib/discovery-facets";
 import type { MetadataTvdbSearchItem } from "@/lib/graphql/smg-queries";
 import type {
   DownloadClientRecord,
@@ -90,7 +86,8 @@ import type {
   Release,
   TitleReleaseBlocklistEntry,
   TitleRecord,
-  DiscoveryItem,
+  CatalogDiscoveryGroup,
+  CatalogDiscoveryItem,
 } from "@/lib/types";
 import type { ImportMode } from "@/lib/types/settings";
 import type { ExternalSubtitleRecord } from "@/lib/types/subtitles";
@@ -327,7 +324,7 @@ function titleExternalIdValue(
 }
 
 type TitleContextRecommendation = {
-  item: DiscoveryItem;
+  item: CatalogDiscoveryItem;
   reason: string;
 };
 
@@ -336,247 +333,6 @@ type TitleContextRecommendationGroup = {
   label: string;
   recommendations: TitleContextRecommendation[];
 };
-
-type TitleContextRankedEntry = {
-  item: DiscoveryItem;
-  score: number;
-};
-
-const TITLE_CONTEXT_RECOMMENDATION_LIMIT = 6;
-const TITLE_CONTEXT_AFFINITY_LABEL_LIMIT = 2;
-const TITLE_CONTEXT_ACCLAIMED_SIGNALS = [
-  "acclaim",
-  "award",
-  "best picture",
-  "top rated",
-  "favorite",
-  "critically",
-];
-
-function normalizedTitleContextLabel(value: string) {
-  return value
-    .trim()
-    .toLocaleLowerCase()
-    .replace(/[^a-z0-9]+/g, " ")
-    .trim();
-}
-
-function uniqueTitleContextLabels(values: readonly string[] | undefined) {
-  const seen = new Set<string>();
-  return (values ?? [])
-    .map((value) => value.trim())
-    .filter((value) => {
-      if (!value) {
-        return false;
-      }
-      const key = normalizedTitleContextLabel(value);
-      if (!key || seen.has(key)) {
-        return false;
-      }
-      seen.add(key);
-      return true;
-    });
-}
-
-function topLibraryTitleLabels(
-  titles: TitleRecord[],
-  selectLabels: (title: TitleRecord) => readonly string[] | undefined,
-) {
-  const counts = new Map<string, { label: string; count: number }>();
-  for (const title of titles) {
-    for (const label of uniqueTitleContextLabels(selectLabels(title))) {
-      const key = normalizedTitleContextLabel(label);
-      const current = counts.get(key);
-      counts.set(key, {
-        label: current?.label ?? label,
-        count: (current?.count ?? 0) + 1,
-      });
-    }
-  }
-  return [...counts.values()]
-    .sort((left, right) =>
-      right.count === left.count
-        ? left.label.localeCompare(right.label)
-        : right.count - left.count,
-    )
-    .slice(0, TITLE_CONTEXT_AFFINITY_LABEL_LIMIT)
-    .map(({ label }) => label);
-}
-
-function discoveryItemSignalValues(item: DiscoveryItem) {
-  return [
-    ...item.genres,
-    ...item.statusTags,
-    ...item.sourceTags,
-    ...item.facetTerms,
-    ...item.contextTerms,
-    ...item.relationTypes,
-    ...item.relationSubtypes,
-    ...item.sources,
-  ];
-}
-
-function discoveryItemMatchesCanonicalLabel(
-  item: DiscoveryItem,
-  label: string,
-  kind: "genre" | "theme",
-) {
-  const labelKey = canonicalDiscoveryLabelKey(label);
-  if (!labelKey) {
-    return false;
-  }
-  return canonicalDiscoveryFacetLabels(item, kind).some(
-    (candidate) => canonicalDiscoveryLabelKey(candidate) === labelKey,
-  );
-}
-
-function canonicalTitleContextLabelsForProfile(
-  entries: TitleContextRankedEntry[],
-  labels: string[],
-  kind: "genre" | "theme",
-) {
-  const canonicalByKey = new Map<string, string>();
-  for (const entry of entries) {
-    for (const label of canonicalDiscoveryFacetLabels(entry.item, kind)) {
-      const key = canonicalDiscoveryLabelKey(label);
-      if (key && !canonicalByKey.has(key)) {
-        canonicalByKey.set(key, label);
-      }
-    }
-  }
-
-  const resolvedLabels: string[] = [];
-  const seen = new Set<string>();
-  for (const label of labels) {
-    const key = canonicalDiscoveryLabelKey(label);
-    const canonicalLabel = canonicalByKey.get(key);
-    if (canonicalLabel && !seen.has(key)) {
-      seen.add(key);
-      resolvedLabels.push(canonicalLabel);
-    }
-  }
-  return resolvedLabels;
-}
-
-function discoveryItemHasAnySignal(item: DiscoveryItem, signals: string[]) {
-  return discoveryItemSignalValues(item).some((value) => {
-    const normalized = normalizedTitleContextLabel(value);
-    return signals.some((signal) => normalized.includes(signal));
-  });
-}
-
-function normalizeTitleContextOwnershipKey(value: string | null | undefined) {
-  return value?.trim().toLocaleLowerCase() || "";
-}
-
-function addTitleContextOwnershipKey(
-  keys: Set<string>,
-  value: string | null | undefined,
-) {
-  const key = normalizeTitleContextOwnershipKey(value);
-  if (key) {
-    keys.add(key);
-  }
-}
-
-function addTitleContextExternalOwnershipKeys(
-  keys: Set<string>,
-  source: string | null | undefined,
-  value: string | null | undefined,
-  facet: string,
-) {
-  const normalizedSource = normalizeTitleContextOwnershipKey(source);
-  const normalizedValue = normalizeTitleContextOwnershipKey(value);
-  if (!normalizedSource || !normalizedValue) {
-    return;
-  }
-  addTitleContextOwnershipKey(keys, `${normalizedSource}:${normalizedValue}`);
-  addTitleContextOwnershipKey(
-    keys,
-    `${normalizedSource}:${facet}:${normalizedValue}`,
-  );
-  if (facet === "anime") {
-    addTitleContextOwnershipKey(keys, `${normalizedSource}:series:${normalizedValue}`);
-    addTitleContextOwnershipKey(keys, `${normalizedSource}:anime:${normalizedValue}`);
-  }
-}
-
-function titleContextOwnedDiscoveryKeys(libraryTitles: TitleRecord[]) {
-  const keys = new Set<string>();
-  for (const title of libraryTitles) {
-    for (const externalId of title.externalIds ?? []) {
-      addTitleContextExternalOwnershipKeys(
-        keys,
-        externalId.source,
-        externalId.value,
-        title.facet,
-      );
-    }
-    addTitleContextExternalOwnershipKeys(keys, "imdb", title.imdbId, title.facet);
-  }
-  return keys;
-}
-
-function discoveryItemOwnershipKeys(item: DiscoveryItem) {
-  const keys = new Set<string>();
-  addTitleContextOwnershipKey(keys, item.targetKey);
-  const targetParts = item.targetKey
-    .split(":")
-    .map((part) => part.trim())
-    .filter(Boolean);
-  if (targetParts.length >= 3) {
-    addTitleContextOwnershipKey(keys, `${targetParts[0]}:${targetParts.slice(2).join(":")}`);
-  }
-  if (item.resolvedTitleId) {
-    const targetKind = normalizeTitleContextOwnershipKey(item.targetKind);
-    if (targetKind) {
-      addTitleContextOwnershipKey(keys, `tvdb:${targetKind}:${item.resolvedTitleId}`);
-      if (targetKind === "anime") {
-        addTitleContextOwnershipKey(keys, `tvdb:series:${item.resolvedTitleId}`);
-      }
-    }
-  }
-  return keys;
-}
-
-function discoveryItemIsOwnedByLibrary(
-  item: DiscoveryItem,
-  ownedKeys: ReadonlySet<string>,
-) {
-  if (item.ownedInInput) {
-    return true;
-  }
-  for (const key of discoveryItemOwnershipKeys(item)) {
-    if (ownedKeys.has(key)) {
-      return true;
-    }
-  }
-  return false;
-}
-
-function comparableDiscoveryRating(value: number | null | undefined) {
-  if (value == null || Number.isNaN(value)) {
-    return 0;
-  }
-  return value <= 1 ? value * 10 : value;
-}
-
-function discoveryItemIsAcclaimed(item: DiscoveryItem) {
-  return (
-    comparableDiscoveryRating(item.rating) >= 8 ||
-    discoveryItemHasAnySignal(item, TITLE_CONTEXT_ACCLAIMED_SIGNALS)
-  );
-}
-
-function discoveryItemHasCollectionSignal(item: DiscoveryItem) {
-  return (
-    Boolean(item.tmdbCollectionId || item.tmdbCollectionName?.trim()) ||
-    [...item.relationTypes, ...item.relationSubtypes].some((value) => {
-      const normalized = normalizedTitleContextLabel(value);
-      return normalized.includes("collection") || normalized.includes("franchise");
-    })
-  );
-}
 
 function titleContextWeeklyLabel(view: ViewId, t: Translate) {
   if (view === "series") {
@@ -588,149 +344,74 @@ function titleContextWeeklyLabel(view: ViewId, t: Translate) {
   return t("title.contextForYouTopMoviesThisWeek");
 }
 
-function buildTitleContextRecommendationGroups(
-  items: DiscoveryItem[],
-  publicTopItems: DiscoveryItem[],
-  libraryTitles: TitleRecord[],
+function catalogDiscoveryGroupLabel(
+  group: CatalogDiscoveryGroup,
+  view: ViewId,
+  t: Translate,
+) {
+  switch (group.kind) {
+    case "PUBLIC_TOP":
+      return titleContextWeeklyLabel(view, t);
+    case "GENRE_AFFINITY":
+      return t("title.contextForYouGenre", {
+        genre: group.labelValue ?? "",
+      });
+    case "THEME_AFFINITY":
+      return t("title.contextForYouTag", {
+        tag: group.labelValue ?? "",
+      });
+    case "ACCLAIMED":
+      return t("title.contextForYouAcclaimed");
+    case "COMPLETE_COLLECTION":
+      return t("title.contextForYouCompleteCollection");
+    case "FALLBACK":
+      return t("title.contextForYouTop");
+    case "MORE_LIKE_THIS":
+      return t("title.contextMoreLikeThis");
+  }
+}
+
+function catalogDiscoveryGroupReason(
+  group: CatalogDiscoveryGroup,
+  t: Translate,
+) {
+  switch (group.kind) {
+    case "PUBLIC_TOP":
+      return t("title.contextForYouReasonWeekly");
+    case "GENRE_AFFINITY":
+      return t("title.contextForYouReasonGenre", {
+        genre: group.labelValue ?? "",
+      });
+    case "THEME_AFFINITY":
+      return t("title.contextForYouReasonTag", {
+        tag: group.labelValue ?? "",
+      });
+    case "ACCLAIMED":
+      return t("title.contextForYouReasonAcclaimed");
+    case "COMPLETE_COLLECTION":
+      return t("title.contextForYouReasonCollection");
+    case "FALLBACK":
+    case "MORE_LIKE_THIS":
+      return t("title.contextForYouReasonTop");
+  }
+}
+
+function titleContextRecommendationGroupsFromPayload(
+  groups: CatalogDiscoveryGroup[],
   view: ViewId,
   t: Translate,
 ): TitleContextRecommendationGroup[] {
-  if (items.length === 0 && publicTopItems.length === 0) {
-    return [];
-  }
-
-  const ownedDiscoveryKeys = titleContextOwnedDiscoveryKeys(libraryTitles);
-  const publicTopEntries = publicTopItems
-    .filter((item) => !discoveryItemIsOwnedByLibrary(item, ownedDiscoveryKeys))
-    .map((item) => ({ item, score: item.rankScore ?? 0 }));
-  const rankedEntries = items
-    .filter((item) => !item.ownedInInput)
-    .map((item) => ({
-      item,
-      score:
-        (item.rankScore ?? 0) +
-        (item.sourceCount ?? 0) +
-        (item.relationCount ?? 0) +
-        (item.matchedSubjectCount ?? 0),
-    }))
-    .sort((left, right) =>
-      right.score === left.score
-        ? discoveryItemDisplayTitle(left.item).localeCompare(
-            discoveryItemDisplayTitle(right.item),
-          )
-        : right.score - left.score,
-    );
-  const toRecommendation = (
-    entry: TitleContextRankedEntry,
-    reason: string,
-  ): TitleContextRecommendation => ({
-    item: entry.item,
-    reason,
-  });
-  const usedRecommendationKeys = new Set<string>();
-  const takeRecommendations = (
-    entries: TitleContextRankedEntry[],
-    reason: string,
-    limit: number,
-  ) => {
-    const recommendations: TitleContextRecommendation[] = [];
-    for (const entry of entries) {
-      const key = entry.item.targetKey || entry.item.id;
-      if (usedRecommendationKeys.has(key)) {
-        continue;
-      }
-      usedRecommendationKeys.add(key);
-      recommendations.push(toRecommendation(entry, reason));
-      if (recommendations.length >= limit) {
-        break;
-      }
-    }
-    return recommendations;
-  };
-
-  const groups: TitleContextRecommendationGroup[] = [];
-  const addGroup = (
-    id: string,
-    label: string,
-    entries: TitleContextRankedEntry[],
-    reason: string,
-  ) => {
-    const recommendations = takeRecommendations(
-      entries,
-      reason,
-      TITLE_CONTEXT_RECOMMENDATION_LIMIT,
-    );
-    if (recommendations.length === 0) {
-      return;
-    }
-    groups.push({
-      id,
-      label,
-      recommendations,
+  return groups
+    .filter((group) => group.kind !== "MORE_LIKE_THIS")
+    .filter((group) => group.items.length > 0)
+    .map((group) => {
+      const reason = catalogDiscoveryGroupReason(group, t);
+      return {
+        id: group.id,
+        label: catalogDiscoveryGroupLabel(group, view, t),
+        recommendations: group.items.map((item) => ({ item, reason })),
+      };
     });
-  };
-
-  addGroup(
-    `top-${view}-this-week`,
-    titleContextWeeklyLabel(view, t),
-    publicTopEntries,
-    t("title.contextForYouReasonWeekly"),
-  );
-
-  for (const genre of canonicalTitleContextLabelsForProfile(
-    rankedEntries,
-    topLibraryTitleLabels(libraryTitles, (title) => title.genres),
-    "genre",
-  )) {
-    addGroup(
-      `genre-${normalizedTitleContextLabel(genre).replaceAll(" ", "-")}`,
-      t("title.contextForYouGenre", { genre }),
-      rankedEntries.filter((entry) =>
-        discoveryItemMatchesCanonicalLabel(entry.item, genre, "genre"),
-      ),
-      t("title.contextForYouReasonGenre", { genre }),
-    );
-  }
-
-  for (const tag of canonicalTitleContextLabelsForProfile(
-    rankedEntries,
-    topLibraryTitleLabels(libraryTitles, (title) => title.tags),
-    "theme",
-  )) {
-    addGroup(
-      `tag-${normalizedTitleContextLabel(tag).replaceAll(" ", "-")}`,
-      t("title.contextForYouTag", { tag }),
-      rankedEntries.filter((entry) =>
-        discoveryItemMatchesCanonicalLabel(entry.item, tag, "theme"),
-      ),
-      t("title.contextForYouReasonTag", { tag }),
-    );
-  }
-
-  addGroup(
-    "acclaimed-not-in-library",
-    t("title.contextForYouAcclaimed"),
-    rankedEntries.filter((entry) => discoveryItemIsAcclaimed(entry.item)),
-    t("title.contextForYouReasonAcclaimed"),
-  );
-
-  addGroup(
-    "complete-the-collection",
-    t("title.contextForYouCompleteCollection"),
-    rankedEntries.filter((entry) => discoveryItemHasCollectionSignal(entry.item)),
-    t("title.contextForYouReasonCollection"),
-  );
-
-  if (groups.length === 0) {
-    addGroup(
-      "top",
-      t("title.contextForYouTop"),
-      rankedEntries,
-      t("title.contextForYouReasonTop"),
-    );
-  }
-
-  return groups;
 }
 
 function TitleContextRecommendationButton({
@@ -746,7 +427,7 @@ function TitleContextRecommendationButton({
   t: Translate;
   canManageTitle: boolean;
   canRequestMedia: boolean;
-  onAction: (item: DiscoveryItem) => void;
+  onAction: (item: CatalogDiscoveryItem) => void;
 }) {
   const item = recommendation.item;
   const titleLabel = discoveryItemDisplayTitle(item);
@@ -777,97 +458,6 @@ function TitleContextRecommendationButton({
   );
 }
 
-function titleNormalizedGenreSet(title: TitleRecord): Set<string> {
-  return new Set(
-    (title.genres ?? [])
-      .map(canonicalDiscoveryLabelKey)
-      .filter(Boolean),
-  );
-}
-
-function titleSharedGenreCount(
-  leftGenres: ReadonlySet<string>,
-  right: DiscoveryItem,
-): number {
-  if (leftGenres.size === 0) {
-    return 0;
-  }
-
-  let shared = 0;
-  for (const genre of canonicalDiscoveryFacetLabels(right, "genre")) {
-    if (leftGenres.has(canonicalDiscoveryLabelKey(genre))) {
-      shared += 1;
-    }
-  }
-  return shared;
-}
-
-function normalizedDiscoveryContentType(
-  value: string | null | undefined,
-): Facet | null {
-  switch (value?.trim().toLowerCase()) {
-    case "anime":
-      return "anime";
-    case "series":
-      return "series";
-    case "movie":
-      return "movie";
-    default:
-      return null;
-  }
-}
-
-function discoveryItemContentType(item: DiscoveryItem): Facet | null {
-  const contentType = item.contentType?.trim();
-  return contentType
-    ? normalizedDiscoveryContentType(contentType)
-    : normalizedDiscoveryContentType(item.targetKind);
-}
-
-function discoveryItemMatchesView(item: DiscoveryItem, view: ViewId): boolean {
-  if (view === "anime") {
-    return discoveryItemContentType(item) === "anime";
-  }
-  if (view === "series") {
-    return discoveryItemContentType(item) === "series";
-  }
-  return discoveryItemContentType(item) === "movie";
-}
-
-function buildTitleMoreLikeThisDiscoveryItems(
-  title: TitleRecord,
-  items: DiscoveryItem[],
-  view: ViewId,
-): DiscoveryItem[] {
-  const titleGenres = titleNormalizedGenreSet(title);
-  return items
-    .filter(
-      (candidate) =>
-        !candidate.ownedInInput && discoveryItemMatchesView(candidate, view),
-    )
-    .map((candidate) => {
-      const sharedGenres = titleSharedGenreCount(titleGenres, candidate);
-      return {
-        candidate,
-        score:
-          sharedGenres * 8 +
-          (candidate.rankScore ?? 0) +
-          (candidate.relationCount ?? 0) +
-          (candidate.matchedSubjectCount ?? 0),
-      };
-    })
-    .sort((left, right) => {
-      const scoreDelta = right.score - left.score;
-      return scoreDelta !== 0
-        ? scoreDelta
-        : discoveryItemDisplayTitle(left.candidate).localeCompare(
-            discoveryItemDisplayTitle(right.candidate),
-          );
-    })
-    .slice(0, 5)
-    .map(({ candidate }) => candidate);
-}
-
 function TitleContextMoreLikeThisStrip({
   items,
   view,
@@ -875,11 +465,11 @@ function TitleContextMoreLikeThisStrip({
   canRequestMedia,
   onAction,
 }: {
-  items: DiscoveryItem[];
+  items: CatalogDiscoveryItem[];
   view: ViewId;
   canManageTitle: boolean;
   canRequestMedia: boolean;
-  onAction: (item: DiscoveryItem) => void;
+  onAction: (item: CatalogDiscoveryItem) => void;
 }) {
   const t = useTranslate();
 
@@ -926,33 +516,23 @@ function TitleContextMoreLikeThisStrip({
 }
 
 function TitleContextForYouPanel({
-  discoveryItems,
-  publicTopItems,
-  libraryTitles,
+  discoveryGroups,
   view,
   canManageTitle,
   canRequestMedia,
   onDiscoveryAction,
 }: {
-  discoveryItems: DiscoveryItem[];
-  publicTopItems: DiscoveryItem[];
-  libraryTitles: TitleRecord[];
+  discoveryGroups: CatalogDiscoveryGroup[];
   view: ViewId;
   canManageTitle: boolean;
   canRequestMedia: boolean;
-  onDiscoveryAction: (item: DiscoveryItem) => void;
+  onDiscoveryAction: (item: CatalogDiscoveryItem) => void;
 }) {
   const t = useTranslate();
   const recommendationGroups = React.useMemo(
     () =>
-      buildTitleContextRecommendationGroups(
-        discoveryItems,
-        publicTopItems,
-        libraryTitles,
-        view,
-        t,
-      ),
-    [discoveryItems, publicTopItems, libraryTitles, t, view],
+      titleContextRecommendationGroupsFromPayload(discoveryGroups, view, t),
+    [discoveryGroups, t, view],
   );
 
   return (
@@ -965,14 +545,8 @@ function TitleContextForYouPanel({
           <p className="text-[16px] font-semibold text-[var(--scry-ink2)]">
             {t("title.contextForYouTitle")}
           </p>
-          <p className="mt-0.5 text-[11.5px] text-[var(--scry-muted3)]">
-            {t("title.contextForYouSubtitle")}
-          </p>
         </div>
       </div>
-      <p className="mx-0.5 mt-3 text-[12px] leading-5 text-[var(--scry-faint)]">
-        {t("title.contextForYouBody")}
-      </p>
 
       {recommendationGroups.length === 0 ? (
         <div className="flex min-h-[16rem] flex-1 flex-col items-center justify-center gap-3 px-4 text-center">
@@ -1260,9 +834,7 @@ function TitleContextReleaseSearchPanel({
 function TitleContextPanel({
   id,
   title,
-  discoveryItems,
-  publicTopDiscoveryItems,
-  libraryTitles,
+  discoveryGroups,
   view,
   overviewTargetView,
   resolvedProfileName,
@@ -1297,9 +869,7 @@ function TitleContextPanel({
 }: {
   id?: string;
   title: TitleRecord | null;
-  discoveryItems: DiscoveryItem[];
-  publicTopDiscoveryItems: DiscoveryItem[];
-  libraryTitles: TitleRecord[];
+  discoveryGroups: CatalogDiscoveryGroup[];
   view: ViewId;
   overviewTargetView: ViewId;
   resolvedProfileName: string | null;
@@ -1348,7 +918,7 @@ function TitleContextPanel({
   onClearSelection: () => void;
   canManageTitle: boolean;
   canRequestMedia: boolean;
-  onDiscoveryAction: (item: DiscoveryItem) => void;
+  onDiscoveryAction: (item: CatalogDiscoveryItem) => void;
   titleListDisclosure?: React.ReactNode;
   className?: string;
 }) {
@@ -1379,9 +949,10 @@ function TitleContextPanel({
   const moreLikeThisItems = React.useMemo(
     () =>
       title
-        ? buildTitleMoreLikeThisDiscoveryItems(title, discoveryItems, view)
+        ? (discoveryGroups.find((group) => group.kind === "MORE_LIKE_THIS")
+            ?.items ?? [])
         : [],
-    [discoveryItems, title, view],
+    [discoveryGroups, title],
   );
   const titleMediaFiles = React.useMemo<MediaFileOnDisk[]>(
     () =>
@@ -1482,9 +1053,7 @@ function TitleContextPanel({
         className={panelClassName}
       >
         <TitleContextForYouPanel
-          discoveryItems={discoveryItems}
-          publicTopItems={publicTopDiscoveryItems}
-          libraryTitles={libraryTitles}
+          discoveryGroups={discoveryGroups}
           view={view}
           canManageTitle={canManageTitle}
           canRequestMedia={canRequestMedia}
@@ -2092,11 +1661,10 @@ export function MediaContentView({
     catalogInitialLoadComplete: boolean;
     monitoredTitles: TitleRecord[];
     titleContextTitles: TitleRecord[];
-    titleContextDiscoveryItems: DiscoveryItem[];
-    titleContextPublicTopItems: DiscoveryItem[];
+    catalogDiscoveryGroups: CatalogDiscoveryGroup[];
     canManageTitle: boolean;
     canRequestMedia: boolean;
-    onTitleContextDiscoveryAction: (item: DiscoveryItem) => void;
+    onCatalogDiscoveryAction: (item: CatalogDiscoveryItem) => void;
     titleQuickFilters: TitleQuickFilters;
     titleQuickFilterCounts: TitleQuickFilterCounts;
     toggleTitleQuickMonitoringFilter: (
@@ -2338,11 +1906,10 @@ export function MediaContentView({
     catalogInitialLoadComplete,
     monitoredTitles,
     titleContextTitles,
-    titleContextDiscoveryItems,
-    titleContextPublicTopItems,
+    catalogDiscoveryGroups,
     canManageTitle,
     canRequestMedia,
-    onTitleContextDiscoveryAction,
+    onCatalogDiscoveryAction,
     titleQuickFilters,
     titleQuickFilterCounts,
     toggleTitleQuickMonitoringFilter,
@@ -2418,11 +1985,8 @@ export function MediaContentView({
   const deferredMonitoredTitles = React.useDeferredValue(monitoredTitles);
   const deferredTitleContextTitles =
     React.useDeferredValue(titleContextTitles);
-  const deferredTitleContextDiscoveryItems = React.useDeferredValue(
-    titleContextDiscoveryItems,
-  );
-  const deferredTitleContextPublicTopItems = React.useDeferredValue(
-    titleContextPublicTopItems,
+  const deferredCatalogDiscoveryGroups = React.useDeferredValue(
+    catalogDiscoveryGroups,
   );
   const [visibleTitleTableColumns, setVisibleTitleTableColumns] =
     React.useState<TitleTableVisibleColumns>(() => ({
@@ -3842,11 +3406,7 @@ export function MediaContentView({
                     <TitleContextPanel
                       id={selectedTitleContextPanelId}
                       title={activeOverviewTitle}
-                      discoveryItems={deferredTitleContextDiscoveryItems}
-                      publicTopDiscoveryItems={
-                        deferredTitleContextPublicTopItems
-                      }
-                      libraryTitles={deferredTitleContextTitles}
+                      discoveryGroups={deferredCatalogDiscoveryGroups}
                       view={view}
                       overviewTargetView={overviewTargetView}
                       resolvedProfileName={resolvedProfileName}
@@ -3893,7 +3453,7 @@ export function MediaContentView({
                       onClearSelection={onCloseOverview}
                       canManageTitle={canManageTitle}
                       canRequestMedia={canRequestMedia}
-                      onDiscoveryAction={onTitleContextDiscoveryAction}
+                      onDiscoveryAction={onCatalogDiscoveryAction}
                       titleListDisclosure={titleListDisclosure}
                       className={titleOverviewPaneClassName}
                     />

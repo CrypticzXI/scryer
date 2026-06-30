@@ -145,6 +145,8 @@ export const SYSTEM_SECTION_PATH_TO_ID: Record<string, SystemSection> = {
   jobs: "jobs",
   logs: "logs",
   audit: "audit",
+  "recycle-bin": "recycleBin",
+  recycleBin: "recycleBin",
 };
 
 export const LOGS_SECTION_PATH_TO_ID: Record<string, LogsSection> = {

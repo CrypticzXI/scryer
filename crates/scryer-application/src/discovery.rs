@@ -10,12 +10,14 @@ use crate::ports::{
     DiscoveryItemsResult, DiscoveryItemsStorageQuery, DiscoveryPendingContextChangeRecord,
     DiscoveryRankComponentRecord, DiscoveryRawPageRecord, DiscoverySectionItemsRecord,
     DiscoverySectionRecord, DiscoverySectionResult, DiscoverySourceTagRecord,
-    DiscoverySubmittedSubjectRecord, DiscoverySyncStatus,
+    DiscoverySubmittedSubjectRecord, DiscoverySyncStatus, CatalogDiscoveryGroup,
+    CatalogDiscoveryGroupKind, CatalogDiscoveryQuery, CatalogDiscoveryResult,
+    CatalogDiscoverySurface,
 };
 use crate::{AppError, AppResult, AppUseCase};
 use chrono::{DateTime, Utc};
 use scryer_domain::{
-    DomainEvent, DomainEventPayload, DomainExternalIds, LibraryPermission, MediaFacet, Title,
+    DomainEvent, DomainEventPayload, DomainExternalIds, LibraryPermission, MediaFacet,
     TitleContextSnapshot, User,
 };
 use serde::{Deserialize, Serialize};
@@ -328,6 +330,132 @@ impl AppUseCase {
         })
     }
 
+    pub async fn catalog_discovery(
+        &self,
+        actor: &User,
+        query: CatalogDiscoveryQuery,
+    ) -> AppResult<CatalogDiscoveryResult> {
+        let readable_library_ids = self
+            .authorized_library_ids(actor, Some(query.facet.clone()), LibraryPermission::View)
+            .await?
+            .into_iter()
+            .collect::<HashSet<_>>();
+        let requested_library_ids = query
+            .library_ids
+            .iter()
+            .map(|library_id| library_id.trim())
+            .filter(|library_id| !library_id.is_empty())
+            .collect::<HashSet<_>>();
+        let effective_library_ids = if requested_library_ids.is_empty() {
+            readable_library_ids.clone()
+        } else {
+            readable_library_ids
+                .iter()
+                .filter(|library_id| requested_library_ids.contains(library_id.as_str()))
+                .cloned()
+                .collect()
+        };
+        let can_view_personalized = !effective_library_ids.is_empty();
+        let effective_library_id_list = sorted_discovery_library_ids(&effective_library_ids);
+        let state = self
+            .services
+            .library
+            .discovery
+            .get_discovery_sync_state(DISCOVERY_DEFAULT_SCOPE_KEY)
+            .await?
+            .unwrap_or_default();
+        let media_kind = discovery_media_kind_for_facet(query.facet.clone());
+        let limit = catalog_discovery_group_limit(query.limit_per_group);
+        let max_groups = catalog_discovery_max_groups(query.max_groups);
+        let candidate_limit = catalog_discovery_candidate_limit(limit, max_groups);
+        let owned_visibility = self
+            .title_context_owned_visibility(query.facet, &effective_library_id_list)
+            .await?;
+
+        let public_candidates =
+            if let Some(public_run_id) = state.last_public_feed_generation_id.as_deref() {
+                let mut candidates = self
+                    .services
+                    .library
+                    .discovery
+                    .list_catalog_public_discovery_items(
+                        public_run_id,
+                        media_kind,
+                        query.include_unresolved,
+                        candidate_limit as i64,
+                    )
+                    .await?;
+                candidates
+                    .items
+                    .retain(|item| !owned_visibility.item_is_owned(item));
+                candidates
+            } else {
+                Default::default()
+            };
+
+        let mut personalized_candidates = Vec::new();
+        let mut submitted_subjects = Vec::new();
+        if can_view_personalized
+            && let Some(context_run_id) = state.last_success_generation_id.as_deref()
+        {
+            let mut candidates = self
+                .services
+                .library
+                .discovery
+                .list_catalog_personalized_discovery_items(
+                    context_run_id,
+                    &effective_library_id_list,
+                    media_kind,
+                    query.include_unresolved,
+                    candidate_limit as i64,
+                )
+                .await?
+                .items;
+            candidates.retain(|item| !owned_visibility.item_is_owned(item));
+            submitted_subjects = self
+                .services
+                .library
+                .discovery
+                .list_discovery_submitted_subjects(context_run_id)
+                .await?;
+            submitted_subjects =
+                filter_submitted_subjects_for_libraries(&submitted_subjects, &effective_library_ids);
+            resolve_discovery_matched_subjects(&mut candidates, &submitted_subjects)?;
+            personalized_candidates = candidates;
+        }
+
+        let mut groups = Vec::new();
+        let mut emitted_item_keys = HashSet::new();
+        if let Some(group) = catalog_public_top_group(
+            public_candidates.items,
+            public_candidates.total_count,
+            media_kind,
+            limit,
+            &mut emitted_item_keys,
+        ) {
+            groups.push(group);
+        }
+
+        if !personalized_candidates.is_empty() && groups.len() < max_groups {
+            let library_profile = self
+                .discovery_library_affinity_profile(&effective_library_ids, &submitted_subjects)
+                .await?;
+            catalog_personalized_groups(
+                &mut groups,
+                &personalized_candidates,
+                &library_profile,
+                limit,
+                max_groups,
+                &mut emitted_item_keys,
+            );
+        }
+
+        Ok(CatalogDiscoveryResult {
+            groups,
+            can_view_personalized,
+        })
+    }
+
     async fn discovery_readable_library_ids(&self, actor: &User) -> AppResult<HashSet<String>> {
         Ok(self
             .authorized_library_ids(actor, None, LibraryPermission::View)
@@ -383,6 +511,41 @@ impl AppUseCase {
             recent_runs,
             pending_context_change_count,
         })
+    }
+
+    async fn title_context_owned_visibility(
+        &self,
+        facet: MediaFacet,
+        readable_library_ids: &[String],
+    ) -> AppResult<TitleContextOwnedVisibility> {
+        if readable_library_ids.is_empty() {
+            return Ok(TitleContextOwnedVisibility::default());
+        }
+        let titles = self
+            .services
+            .catalog
+            .titles
+            .list_for_libraries(Some(facet), readable_library_ids, None)
+            .await?;
+        Ok(TitleContextOwnedVisibility::from_titles(&titles))
+    }
+
+    async fn title_context_readable_title(
+        &self,
+        title_id: &str,
+        readable_library_ids: &HashSet<String>,
+    ) -> AppResult<Title> {
+        let title = self
+            .services
+            .catalog
+            .titles
+            .get_by_id(title_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("title {title_id}")))?;
+        if !readable_library_ids.contains(&title.library_id) {
+            return Err(AppError::Unauthorized(format!("title {title_id}")));
+        }
+        Ok(title)
     }
 }
 
@@ -680,6 +843,311 @@ fn acclaimed_not_in_library_section(
 struct DiscoveryLibraryAffinityProfile {
     genre_labels: Vec<String>,
     tag_labels: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct TitleContextOwnedVisibility {
+    title_ids: HashSet<String>,
+    keys: HashSet<String>,
+}
+
+impl TitleContextOwnedVisibility {
+    fn from_titles(titles: &[Title]) -> Self {
+        let mut visibility = Self::default();
+        for title in titles {
+            visibility.title_ids.insert(title.id.clone());
+            add_title_context_owned_external_keys(
+                &mut visibility.keys,
+                "imdb",
+                title.imdb_id.as_deref(),
+                title.facet.clone(),
+            );
+            for external_id in &title.external_ids {
+                add_title_context_owned_external_keys(
+                    &mut visibility.keys,
+                    &external_id.source,
+                    Some(external_id.value.as_str()),
+                    title.facet.clone(),
+                );
+            }
+        }
+        visibility
+    }
+
+    fn item_is_owned(&self, item: &DiscoveryItemRecord) -> bool {
+        if item.owned_in_input {
+            return true;
+        }
+        if item
+            .resolved_title_id
+            .as_deref()
+            .is_some_and(|title_id| self.title_ids.contains(title_id))
+        {
+            return true;
+        }
+        discovery_item_ownership_keys(item)
+            .into_iter()
+            .any(|key| self.keys.contains(&key))
+    }
+}
+
+fn add_title_context_owned_external_keys(
+    keys: &mut HashSet<String>,
+    source: &str,
+    value: Option<&str>,
+    facet: MediaFacet,
+) {
+    let source = normalize_title_context_owned_key(source);
+    let value = normalize_title_context_owned_key(value.unwrap_or_default());
+    if source.is_empty() || value.is_empty() {
+        return;
+    }
+    keys.insert(format!("{source}:{value}"));
+    keys.insert(format!("{source}:{}:{value}", facet.as_str()));
+    if facet == MediaFacet::Anime {
+        keys.insert(format!("{source}:series:{value}"));
+        keys.insert(format!("{source}:anime:{value}"));
+    }
+}
+
+fn discovery_item_ownership_keys(item: &DiscoveryItemRecord) -> HashSet<String> {
+    let mut keys = HashSet::new();
+    let target_key = normalize_title_context_owned_key(&item.target_key);
+    if !target_key.is_empty() {
+        keys.insert(target_key);
+    }
+    let target_parts = item
+        .target_key
+        .split(':')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>();
+    if target_parts.len() >= 3 {
+        let source = normalize_title_context_owned_key(target_parts[0]);
+        let value = normalize_title_context_owned_key(&target_parts[2..].join(":"));
+        if !source.is_empty() && !value.is_empty() {
+            keys.insert(format!("{source}:{value}"));
+        }
+    }
+    keys
+}
+
+fn normalize_title_context_owned_key(value: &str) -> String {
+    value.trim().to_ascii_lowercase()
+}
+
+fn discovery_media_kind_for_facet(facet: MediaFacet) -> &'static str {
+    match facet {
+        MediaFacet::Movie => "movie",
+        MediaFacet::Series => "series",
+        MediaFacet::Anime => "anime",
+    }
+}
+
+fn catalog_discovery_group_limit(limit: usize) -> usize {
+    if limit == 0 { 6 } else { limit.clamp(1, 12) }
+}
+
+fn catalog_discovery_max_groups(max_groups: usize) -> usize {
+    if max_groups == 0 {
+        6
+    } else {
+        max_groups.clamp(1, 10)
+    }
+}
+
+fn catalog_discovery_candidate_limit(limit: usize, max_groups: usize) -> usize {
+    (limit.max(6) * max_groups.max(4) * 8).clamp(48, 400)
+}
+
+fn catalog_public_top_group(
+    items: Vec<DiscoveryItemRecord>,
+    total_count: i64,
+    media_kind: &str,
+    limit: usize,
+    emitted_item_keys: &mut HashSet<String>,
+) -> Option<CatalogDiscoveryGroup> {
+    catalog_group_excluding_emitted(
+        format!("public_top_{media_kind}"),
+        CatalogDiscoveryGroupKind::PublicTop,
+        CatalogDiscoverySurface::Public,
+        None,
+        Some(total_count),
+        items,
+        limit,
+        emitted_item_keys,
+    )
+}
+
+fn catalog_personalized_groups(
+    groups: &mut Vec<CatalogDiscoveryGroup>,
+    items: &[DiscoveryItemRecord],
+    library_profile: &DiscoveryLibraryAffinityProfile,
+    limit: usize,
+    max_groups: usize,
+    emitted_item_keys: &mut HashSet<String>,
+) {
+    let personalized_group_start = groups.len();
+
+    for label in
+        canonical_affinity_labels_for_profile(items, &library_profile.genre_labels, "genre")
+    {
+        if groups.len() >= max_groups {
+            return;
+        }
+        let mut section_items = items
+            .iter()
+            .filter(|item| {
+                item.matched_subject_count > 0
+                    && discovery_item_matches_affinity_label(item, &label, "genre")
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        dedupe_and_sort_discovery_items(&mut section_items);
+        if let Some(group) = catalog_group_excluding_emitted(
+            format!("genre_{}", slugify_discovery_section_part(&label)),
+            CatalogDiscoveryGroupKind::GenreAffinity,
+            CatalogDiscoverySurface::Personalized,
+            Some(label),
+            None,
+            section_items,
+            limit,
+            emitted_item_keys,
+        ) {
+            groups.push(group);
+        }
+    }
+
+    for label in canonical_affinity_labels_for_profile(items, &library_profile.tag_labels, "theme")
+    {
+        if groups.len() >= max_groups {
+            return;
+        }
+        let mut section_items = items
+            .iter()
+            .filter(|item| {
+                item.matched_subject_count > 0
+                    && discovery_item_matches_affinity_label(item, &label, "theme")
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        dedupe_and_sort_discovery_items(&mut section_items);
+        if let Some(group) = catalog_group_excluding_emitted(
+            format!("theme_{}", slugify_discovery_section_part(&label)),
+            CatalogDiscoveryGroupKind::ThemeAffinity,
+            CatalogDiscoverySurface::Personalized,
+            Some(label),
+            None,
+            section_items,
+            limit,
+            emitted_item_keys,
+        ) {
+            groups.push(group);
+        }
+    }
+
+    if groups.len() < max_groups {
+        let mut section_items = items
+            .iter()
+            .filter(|item| discovery_item_is_acclaimed(item))
+            .cloned()
+            .collect::<Vec<_>>();
+        dedupe_and_sort_discovery_items(&mut section_items);
+        section_items.sort_by(|left, right| {
+            discovery_item_comparable_rating(right)
+                .partial_cmp(&discovery_item_comparable_rating(left))
+                .unwrap_or(Ordering::Equal)
+                .then_with(|| compare_discovery_items(left, right))
+        });
+        if let Some(group) = catalog_group_excluding_emitted(
+            "acclaimed_not_in_library".to_string(),
+            CatalogDiscoveryGroupKind::Acclaimed,
+            CatalogDiscoverySurface::Personalized,
+            None,
+            None,
+            section_items,
+            limit,
+            emitted_item_keys,
+        ) {
+            groups.push(group);
+        }
+    }
+
+    if groups.len() < max_groups {
+        let mut section_items = items
+            .iter()
+            .filter(|item| discovery_item_has_collection_signal(item))
+            .cloned()
+            .collect::<Vec<_>>();
+        dedupe_and_sort_discovery_items(&mut section_items);
+        if let Some(group) = catalog_group_excluding_emitted(
+            "complete_the_collection".to_string(),
+            CatalogDiscoveryGroupKind::CompleteCollection,
+            CatalogDiscoverySurface::Personalized,
+            None,
+            None,
+            section_items,
+            limit,
+            emitted_item_keys,
+        ) {
+            groups.push(group);
+        }
+    }
+
+    if groups.len() == personalized_group_start && groups.len() < max_groups {
+        let mut section_items = items.to_vec();
+        dedupe_and_sort_discovery_items(&mut section_items);
+        if let Some(group) = catalog_group_excluding_emitted(
+            "fallback".to_string(),
+            CatalogDiscoveryGroupKind::Fallback,
+            CatalogDiscoverySurface::Personalized,
+            None,
+            None,
+            section_items,
+            limit,
+            emitted_item_keys,
+        ) {
+            groups.push(group);
+        }
+    }
+}
+
+fn catalog_group_excluding_emitted(
+    id: String,
+    kind: CatalogDiscoveryGroupKind,
+    surface: CatalogDiscoverySurface,
+    label_value: Option<String>,
+    total_count: Option<i64>,
+    items: Vec<DiscoveryItemRecord>,
+    limit: usize,
+    emitted_item_keys: &mut HashSet<String>,
+) -> Option<CatalogDiscoveryGroup> {
+    let mut available = Vec::new();
+    for item in items {
+        let key = discovery_item_identity_key(&item).to_string();
+        if emitted_item_keys.contains(&key) {
+            continue;
+        }
+        available.push((key, item));
+    }
+    if available.is_empty() {
+        return None;
+    }
+
+    let available_count = available.len() as i64;
+    let mut items = Vec::new();
+    for (key, item) in available.into_iter().take(limit) {
+        emitted_item_keys.insert(key);
+        items.push(item);
+    }
+    Some(CatalogDiscoveryGroup {
+        id,
+        kind,
+        surface,
+        label_value,
+        total_count: total_count.unwrap_or(available_count),
+        items,
+    })
 }
 
 const ACCLAIMED_SIGNALS: &[&str] = &[

@@ -35,8 +35,7 @@ import {
   librarySettingsQuery,
   externalSubtitlesQuery,
   mediaRenamePreviewQuery,
-  discoveryHomeQuery,
-  discoveryItemsQuery,
+  catalogDiscoveryQuery,
   ruleSetsQuery,
   routingPageInitQuery,
   searchForTitleQuery,
@@ -87,11 +86,10 @@ import type {
   RootFolderOption,
   TitleReleaseBlocklistEntry,
   TitleRecord,
-  DiscoveryHomeInput,
-  DiscoveryHomePayload,
-  DiscoveryItemsInput,
-  DiscoveryItemsPayload,
-  DiscoveryItem,
+  CatalogDiscoveryGroup,
+  CatalogDiscoveryInput,
+  CatalogDiscoveryItem,
+  CatalogDiscoveryPayload,
   ExternalId,
   Facet,
   RuleSetRecord,
@@ -149,9 +147,6 @@ const TITLE_CATALOG_PAGE_SIZE = 300;
 const ALL_LIBRARIES_VALUE = "__all__";
 
 type MediaContentContainerProps = {
-  userId: string | null | undefined;
-  uiLanguage: string;
-  discoveryAuthorizationSignature: string;
   view: ViewId;
   contentSettingsSection: ContentSettingsSection;
   canManageConfig: boolean;
@@ -202,406 +197,8 @@ const defaultTitleCatalogSortState: TitleCatalogSortState = {
   direction: "asc",
 };
 
-const TITLE_CONTEXT_DISCOVERY_ITEMS_LIMIT = 120;
-const TITLE_CONTEXT_DISCOVERY_TARGET_KINDS: Record<Facet, string[]> = {
-  movie: ["movie"],
-  series: ["series"],
-  anime: ["anime"],
-};
-const TITLE_CONTEXT_DISCOVERY_CACHE_PREFIX =
-  "scryer:discovery:library-home:v5";
-const TITLE_CONTEXT_DISCOVERY_CACHE_ENABLED = false;
-
-type TitleContextDiscoveryCachePayload = {
-  userId: string;
-  uiLanguage: string;
-  authorizationSignature: string;
-  facet: Facet;
-  discoveryItemsInput: NormalizedTitleContextDiscoveryItemsInput;
-  discoveryHomeInput: NormalizedTitleContextDiscoveryHomeInput;
-  cachedAt: number;
-  discoveryItems: DiscoveryItem[];
-  publicTopItems: DiscoveryItem[];
-};
-
-type NormalizedTitleContextDiscoveryItemsInput = {
-  query: string | null;
-  targetKinds: string[] | null;
-  sources: string[] | null;
-  relationTypes: string[] | null;
-  relationSubtypes: string[] | null;
-  genres: string[] | null;
-  statusTags: string[] | null;
-  facetTerms: string[] | null;
-  includeOwned: boolean | null;
-  includeUnresolved: boolean | null;
-  includePublic: boolean | null;
-  limit: number | null;
-  offset: number | null;
-};
-
-type NormalizedTitleContextDiscoveryHomeInput = {
-  includePublic: boolean | null;
-  includePersonalized: boolean | null;
-  includeUnresolved: boolean | null;
-  limitPerSection: number | null;
-};
-
-type TitleContextDiscoveryCacheScope = {
-  userId: string | null | undefined;
-  uiLanguage: string;
-  authorizationSignature: string;
-  facet: Facet;
-  discoveryItemsInput: DiscoveryItemsInput;
-  discoveryHomeInput: DiscoveryHomeInput;
-};
-
-function titleContextPublicTopItemsFromHome(
-  home: DiscoveryHomePayload | null | undefined,
-  facet: Facet,
-): DiscoveryItem[] {
-  const seen = new Set<string>();
-  return (home?.publicSections ?? []).flatMap((section) =>
-    section.items.filter((item) => {
-      if (titleContextDiscoveryItemContentType(item) !== facet) {
-        return false;
-      }
-      const key = item.targetKey?.trim() || item.id;
-      if (seen.has(key)) {
-        return false;
-      }
-      seen.add(key);
-      return true;
-    }),
-  );
-}
-
-function titleContextDiscoveryContentType(
-  value: string | null | undefined,
-): Facet | null {
-  switch (value?.trim().toLowerCase()) {
-    case "anime":
-      return "anime";
-    case "series":
-      return "series";
-    case "movie":
-      return "movie";
-    default:
-      return null;
-  }
-}
-
-function titleContextDiscoveryItemContentType(
-  item: DiscoveryItem,
-): Facet | null {
-  const contentType = item.contentType?.trim();
-  return contentType
-    ? titleContextDiscoveryContentType(contentType)
-    : titleContextDiscoveryContentType(item.targetKind);
-}
-
-function normalizeTitleContextScopeValue(value: string | null | undefined) {
-  const normalized = value?.trim() ?? "";
-  return normalized || null;
-}
-
-function normalizeTitleContextStringArray(value: string[] | null | undefined) {
-  const normalized = (value ?? [])
-    .map((entry) => entry.trim())
-    .filter(Boolean);
-  return normalized.length > 0 ? normalized : null;
-}
-
-function normalizeTitleContextBoolean(value: boolean | null | undefined) {
-  return typeof value === "boolean" ? value : null;
-}
-
-function normalizeTitleContextNumber(value: number | null | undefined) {
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
-}
-
-function normalizeTitleContextDiscoveryItemsInput(
-  input: DiscoveryItemsInput,
-): NormalizedTitleContextDiscoveryItemsInput {
-  return {
-    query: normalizeTitleContextScopeValue(input.query),
-    targetKinds: normalizeTitleContextStringArray(input.targetKinds),
-    sources: normalizeTitleContextStringArray(input.sources),
-    relationTypes: normalizeTitleContextStringArray(input.relationTypes),
-    relationSubtypes: normalizeTitleContextStringArray(input.relationSubtypes),
-    genres: normalizeTitleContextStringArray(input.genres),
-    statusTags: normalizeTitleContextStringArray(input.statusTags),
-    facetTerms: normalizeTitleContextStringArray(input.facetTerms),
-    includeOwned: normalizeTitleContextBoolean(input.includeOwned),
-    includeUnresolved: normalizeTitleContextBoolean(input.includeUnresolved),
-    includePublic: normalizeTitleContextBoolean(input.includePublic),
-    limit: normalizeTitleContextNumber(input.limit),
-    offset: normalizeTitleContextNumber(input.offset),
-  };
-}
-
-function normalizeTitleContextDiscoveryHomeInput(
-  input: DiscoveryHomeInput,
-): NormalizedTitleContextDiscoveryHomeInput {
-  return {
-    includePublic: normalizeTitleContextBoolean(input.includePublic),
-    includePersonalized: normalizeTitleContextBoolean(input.includePersonalized),
-    includeUnresolved: normalizeTitleContextBoolean(input.includeUnresolved),
-    limitPerSection: normalizeTitleContextNumber(input.limitPerSection),
-  };
-}
-
-function titleContextDiscoveryCacheKey(
-  scope: TitleContextDiscoveryCacheScope,
-) {
-  const userId = normalizeTitleContextScopeValue(scope.userId);
-  const uiLanguage = normalizeTitleContextScopeValue(scope.uiLanguage);
-  if (!userId || !uiLanguage) {
-    return null;
-  }
-  return [
-    TITLE_CONTEXT_DISCOVERY_CACHE_PREFIX,
-    encodeURIComponent(userId),
-    encodeURIComponent(uiLanguage),
-    encodeURIComponent(scope.authorizationSignature),
-    scope.facet,
-    encodeURIComponent(
-      JSON.stringify(
-        normalizeTitleContextDiscoveryItemsInput(scope.discoveryItemsInput),
-      ),
-    ),
-    encodeURIComponent(
-      JSON.stringify(
-        normalizeTitleContextDiscoveryHomeInput(scope.discoveryHomeInput),
-      ),
-    ),
-  ].join(":");
-}
-
-function titleContextNormalizedDiscoveryItemsInputsEqual(
-  left: NormalizedTitleContextDiscoveryItemsInput,
-  right: NormalizedTitleContextDiscoveryItemsInput,
-) {
-  return JSON.stringify(left) === JSON.stringify(right);
-}
-
-function titleContextNormalizedDiscoveryHomeInputsEqual(
-  left: NormalizedTitleContextDiscoveryHomeInput,
-  right: NormalizedTitleContextDiscoveryHomeInput,
-) {
-  return JSON.stringify(left) === JSON.stringify(right);
-}
-
-function isTitleContextRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function isTitleContextDiscoveryItem(value: unknown) {
-  return (
-    isTitleContextRecord(value) &&
-    typeof value.id === "string" &&
-    typeof value.targetKey === "string" &&
-    typeof value.targetKind === "string" &&
-    typeof value.displayTitle === "string" &&
-    Array.isArray(value.genres) &&
-    Array.isArray(value.statusTags) &&
-    Array.isArray(value.sourceTags) &&
-    Array.isArray(value.relationSubtypes) &&
-    Array.isArray(value.facetTerms) &&
-    Array.isArray(value.contextTerms) &&
-    typeof value.ownedInInput === "boolean"
-  );
-}
-
-function isNormalizedTitleContextDiscoveryItemsInput(
-  value: unknown,
-): value is NormalizedTitleContextDiscoveryItemsInput {
-  if (!isTitleContextRecord(value)) {
-    return false;
-  }
-  return (
-    (typeof value.query === "string" || value.query === null) &&
-    (Array.isArray(value.targetKinds) || value.targetKinds === null) &&
-    (Array.isArray(value.sources) || value.sources === null) &&
-    (Array.isArray(value.relationTypes) || value.relationTypes === null) &&
-    (Array.isArray(value.relationSubtypes) ||
-      value.relationSubtypes === null) &&
-    (Array.isArray(value.genres) || value.genres === null) &&
-    (Array.isArray(value.statusTags) || value.statusTags === null) &&
-    (Array.isArray(value.facetTerms) || value.facetTerms === null) &&
-    (typeof value.includeOwned === "boolean" ||
-      value.includeOwned === null) &&
-    (typeof value.includeUnresolved === "boolean" ||
-      value.includeUnresolved === null) &&
-    (typeof value.includePublic === "boolean" ||
-      value.includePublic === null) &&
-    (typeof value.limit === "number" || value.limit === null) &&
-    (typeof value.offset === "number" || value.offset === null)
-  );
-}
-
-function isNormalizedTitleContextDiscoveryHomeInput(
-  value: unknown,
-): value is NormalizedTitleContextDiscoveryHomeInput {
-  if (!isTitleContextRecord(value)) {
-    return false;
-  }
-  return (
-    (typeof value.includePublic === "boolean" ||
-      value.includePublic === null) &&
-    (typeof value.includePersonalized === "boolean" ||
-      value.includePersonalized === null) &&
-    (typeof value.includeUnresolved === "boolean" ||
-      value.includeUnresolved === null) &&
-    (typeof value.limitPerSection === "number" ||
-      value.limitPerSection === null)
-  );
-}
-
-function isTitleContextDiscoveryCachePayload(
-  value: unknown,
-  scope: TitleContextDiscoveryCacheScope,
-): value is TitleContextDiscoveryCachePayload {
-  if (!isTitleContextRecord(value)) {
-    return false;
-  }
-  const candidate = value as Partial<TitleContextDiscoveryCachePayload>;
-  const userId = normalizeTitleContextScopeValue(scope.userId);
-  const uiLanguage = normalizeTitleContextScopeValue(scope.uiLanguage);
-  const discoveryItemsInput = normalizeTitleContextDiscoveryItemsInput(
-    scope.discoveryItemsInput,
-  );
-  const discoveryHomeInput = normalizeTitleContextDiscoveryHomeInput(
-    scope.discoveryHomeInput,
-  );
-  return (
-    userId !== null &&
-    uiLanguage !== null &&
-    candidate.userId === userId &&
-    candidate.uiLanguage === uiLanguage &&
-    candidate.authorizationSignature === scope.authorizationSignature &&
-    candidate.facet === scope.facet &&
-    isNormalizedTitleContextDiscoveryItemsInput(
-      candidate.discoveryItemsInput,
-    ) &&
-    titleContextNormalizedDiscoveryItemsInputsEqual(
-      candidate.discoveryItemsInput,
-      discoveryItemsInput,
-    ) &&
-    isNormalizedTitleContextDiscoveryHomeInput(candidate.discoveryHomeInput) &&
-    titleContextNormalizedDiscoveryHomeInputsEqual(
-      candidate.discoveryHomeInput,
-      discoveryHomeInput,
-    ) &&
-    typeof candidate.cachedAt === "number" &&
-    Number.isFinite(candidate.cachedAt) &&
-    Array.isArray(candidate.discoveryItems) &&
-    candidate.discoveryItems.every(isTitleContextDiscoveryItem) &&
-    Array.isArray(candidate.publicTopItems) &&
-    candidate.publicTopItems.every(isTitleContextDiscoveryItem)
-  );
-}
-
-function readTitleContextDiscoveryCache(
-  scope: TitleContextDiscoveryCacheScope,
-) {
-  if (!TITLE_CONTEXT_DISCOVERY_CACHE_ENABLED) {
-    return null;
-  }
-  const key = titleContextDiscoveryCacheKey(scope);
-  if (!key || typeof window === "undefined") {
-    return null;
-  }
-  try {
-    const raw = window.localStorage.getItem(key);
-    if (!raw) {
-      return null;
-    }
-    const parsed = JSON.parse(raw) as unknown;
-    if (isTitleContextDiscoveryCachePayload(parsed, scope)) {
-      return parsed;
-    }
-    window.localStorage.removeItem(key);
-  } catch {
-    try {
-      window.localStorage.removeItem(key);
-    } catch {
-      // Ignore persistence failures.
-    }
-  }
-  return null;
-}
-
-function writeTitleContextDiscoveryCache(
-  scope: TitleContextDiscoveryCacheScope,
-  discoveryItems: DiscoveryItem[],
-  publicTopItems: DiscoveryItem[],
-) {
-  if (!TITLE_CONTEXT_DISCOVERY_CACHE_ENABLED) {
-    return;
-  }
-  const key = titleContextDiscoveryCacheKey(scope);
-  const userId = normalizeTitleContextScopeValue(scope.userId);
-  const uiLanguage = normalizeTitleContextScopeValue(scope.uiLanguage);
-  if (!key || !userId || !uiLanguage || typeof window === "undefined") {
-    return;
-  }
-  try {
-    window.localStorage.setItem(
-      key,
-      JSON.stringify({
-        userId,
-        uiLanguage,
-        authorizationSignature: scope.authorizationSignature,
-        facet: scope.facet,
-        discoveryItemsInput: normalizeTitleContextDiscoveryItemsInput(
-          scope.discoveryItemsInput,
-        ),
-        discoveryHomeInput: normalizeTitleContextDiscoveryHomeInput(
-          scope.discoveryHomeInput,
-        ),
-        cachedAt: Date.now(),
-        discoveryItems,
-        publicTopItems,
-      } satisfies TitleContextDiscoveryCachePayload),
-    );
-  } catch {
-    // Ignore persistence failures.
-  }
-}
-
-function titleContextDiscoveryGenres(title: TitleRecord | null | undefined) {
-  const seen = new Set<string>();
-  return (title?.genres ?? [])
-    .map((genre) => genre.trim())
-    .filter((genre) => {
-      if (!genre) {
-        return false;
-      }
-      const key = genre.toLocaleLowerCase();
-      if (seen.has(key)) {
-        return false;
-      }
-      seen.add(key);
-      return true;
-    })
-    .slice(0, 8);
-}
-
-function titleContextDiscoveryItemsInput(
-  facet: Facet,
-  title?: TitleRecord | null,
-): DiscoveryItemsInput {
-  const genres = titleContextDiscoveryGenres(title);
-  return {
-    targetKinds: TITLE_CONTEXT_DISCOVERY_TARGET_KINDS[facet],
-    genres: genres.length > 0 ? genres : undefined,
-    includeOwned: false,
-    includeUnresolved: true,
-    includePublic: true,
-    limit: TITLE_CONTEXT_DISCOVERY_ITEMS_LIMIT,
-  };
-}
+const TITLE_CONTEXT_DISCOVERY_LIMIT_PER_GROUP = 6;
+const TITLE_CONTEXT_DISCOVERY_MAX_GROUPS = 6;
 
 function normalizedDiscoveryItemFacet(
   value: string | null | undefined,
@@ -618,14 +215,14 @@ function normalizedDiscoveryItemFacet(
   }
 }
 
-function discoveryItemFacet(item: DiscoveryItem): Facet | null {
+function discoveryItemFacet(item: CatalogDiscoveryItem): Facet | null {
   const contentType = item.contentType?.trim();
   return contentType
     ? normalizedDiscoveryItemFacet(contentType)
     : normalizedDiscoveryItemFacet(item.targetKind);
 }
 
-function externalIdsForDiscoveryItem(item: DiscoveryItem): ExternalId[] {
+function externalIdsForDiscoveryItem(item: CatalogDiscoveryItem): ExternalId[] {
   const parts = item.targetKey.split(":").map((part) => part.trim());
   const source = parts[0]?.toLowerCase() ?? "";
   const value =
@@ -638,7 +235,7 @@ function externalIdsForDiscoveryItem(item: DiscoveryItem): ExternalId[] {
 }
 
 function metadataResultForDiscoveryItem(
-  item: DiscoveryItem,
+  item: CatalogDiscoveryItem,
 ): MetadataTvdbSearchItem {
   const externalIds = externalIdsForDiscoveryItem(item);
   return {
@@ -1137,9 +734,6 @@ function aggregateDeletePreviews(
 }
 
 export const MediaContentContainer = React.memo(function MediaContentContainer({
-  userId,
-  uiLanguage,
-  discoveryAuthorizationSignature,
   view,
   contentSettingsSection,
   canManageConfig,
@@ -1192,15 +786,13 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   const [startedLibraryScanSessionId, setStartedLibraryScanSessionId] =
     React.useState<string | null>(null);
   const activeFacet = viewToFacet[view as keyof typeof viewToFacet] ?? "movie";
-  const titleContextDiscoveryRequestIdRef = React.useRef(0);
-  const [titleContextDiscoveryItems, setTitleContextDiscoveryItems] =
-    React.useState<DiscoveryItem[]>([]);
-  const [titleContextPublicTopItems, setTitleContextPublicTopItems] =
-    React.useState<DiscoveryItem[]>([]);
+  const catalogDiscoveryRequestIdRef = React.useRef(0);
+  const [catalogDiscoveryGroups, setCatalogDiscoveryGroups] =
+    React.useState<CatalogDiscoveryGroup[]>([]);
   const [
-    selectedTitleContextDiscoveryItems,
-    setSelectedTitleContextDiscoveryItems,
-  ] = React.useState<DiscoveryItem[]>([]);
+    selectedCatalogDiscoveryGroups,
+    setSelectedCatalogDiscoveryGroups,
+  ] = React.useState<CatalogDiscoveryGroup[]>([]);
   const [addDiscoveryDialogTarget, setAddDiscoveryDialogTarget] =
     React.useState<{ result: MetadataTvdbSearchItem; facet: Facet } | null>(
       null,
@@ -1230,106 +822,46 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     (contentSettingsSection === "library" ||
       contentSettingsSection === "general" ||
       contentSettingsSection === "routing");
-  const refreshTitleContextDiscovery = React.useCallback(async () => {
-    const requestId = titleContextDiscoveryRequestIdRef.current + 1;
-    titleContextDiscoveryRequestIdRef.current = requestId;
+  const refreshCatalogDiscovery = React.useCallback(async () => {
+    const requestId = catalogDiscoveryRequestIdRef.current + 1;
+    catalogDiscoveryRequestIdRef.current = requestId;
     if (!shouldLoadCatalogTitles) {
-      setTitleContextDiscoveryItems([]);
-      setTitleContextPublicTopItems([]);
+      setCatalogDiscoveryGroups([]);
       return;
     }
-    const discoveryItemsInput = titleContextDiscoveryItemsInput(activeFacet);
-    const discoveryHomeInput: DiscoveryHomeInput = {
-      includePublic: true,
-      includePersonalized: false,
-      includeUnresolved: true,
-      limitPerSection: TITLE_CONTEXT_DISCOVERY_ITEMS_LIMIT,
-    };
-    const cacheScope = {
-      userId,
-      uiLanguage,
-      authorizationSignature: discoveryAuthorizationSignature,
+    const input: CatalogDiscoveryInput = {
       facet: activeFacet,
-      discoveryItemsInput,
-      discoveryHomeInput,
+      includeUnresolved: true,
+      limitPerGroup: TITLE_CONTEXT_DISCOVERY_LIMIT_PER_GROUP,
+      maxGroups: TITLE_CONTEXT_DISCOVERY_MAX_GROUPS,
     };
-    const cachedDiscovery = readTitleContextDiscoveryCache(cacheScope);
-    if (cachedDiscovery) {
-      setTitleContextDiscoveryItems(cachedDiscovery.discoveryItems);
-      setTitleContextPublicTopItems(cachedDiscovery.publicTopItems);
-    } else {
-      setTitleContextDiscoveryItems([]);
-      setTitleContextPublicTopItems([]);
+    try {
+      const { data, error } = await client
+        .query<{ catalogDiscovery?: CatalogDiscoveryPayload }>(
+          catalogDiscoveryQuery,
+          { input },
+          { requestPolicy: "network-only" },
+        )
+        .toPromise();
+      if (error) {
+        throw error;
+      }
+      if (catalogDiscoveryRequestIdRef.current === requestId) {
+        setCatalogDiscoveryGroups(
+          data?.catalogDiscovery?.groups ?? [],
+        );
+      }
+    } catch (error) {
+      console.error("[catalog-discovery] refresh failed:", error);
+      if (catalogDiscoveryRequestIdRef.current === requestId) {
+        setCatalogDiscoveryGroups([]);
+      }
     }
-    const [discoveryItemsSettled, discoveryHomeSettled] =
-      await Promise.allSettled([
-        client
-          .query(
-            discoveryItemsQuery,
-            { input: discoveryItemsInput },
-            { requestPolicy: "network-only" },
-          )
-          .toPromise(),
-        client
-          .query(
-            discoveryHomeQuery,
-            { input: discoveryHomeInput },
-            { requestPolicy: "network-only" },
-          )
-          .toPromise(),
-      ]);
-    if (titleContextDiscoveryRequestIdRef.current !== requestId) {
-      return;
-    }
-    let nextDiscoveryItems: DiscoveryItem[] | null = null;
-    let nextPublicTopItems: DiscoveryItem[] | null = null;
-    if (
-      discoveryItemsSettled.status === "fulfilled" &&
-      !discoveryItemsSettled.value.error
-    ) {
-      nextDiscoveryItems =
-        ((discoveryItemsSettled.value.data?.discoveryItems ?? null) as
-          | DiscoveryItemsPayload
-          | null)?.items ?? [];
-      setTitleContextDiscoveryItems(
-        nextDiscoveryItems,
-      );
-    } else if (!cachedDiscovery) {
-      setTitleContextDiscoveryItems([]);
-    }
-    if (
-      discoveryHomeSettled.status === "fulfilled" &&
-      !discoveryHomeSettled.value.error
-    ) {
-      nextPublicTopItems = titleContextPublicTopItemsFromHome(
-        (discoveryHomeSettled.value.data?.discoveryHome ?? null) as
-          | DiscoveryHomePayload
-          | null,
-        activeFacet,
-      );
-      setTitleContextPublicTopItems(nextPublicTopItems);
-    } else if (!cachedDiscovery) {
-      setTitleContextPublicTopItems([]);
-    }
-    if (nextDiscoveryItems && nextPublicTopItems) {
-      writeTitleContextDiscoveryCache(
-        cacheScope,
-        nextDiscoveryItems,
-        nextPublicTopItems,
-      );
-    }
-  }, [
-    activeFacet,
-    client,
-    discoveryAuthorizationSignature,
-    shouldLoadCatalogTitles,
-    uiLanguage,
-    userId,
-  ]);
+  }, [activeFacet, client, shouldLoadCatalogTitles]);
 
   React.useEffect(() => {
-    void refreshTitleContextDiscovery();
-  }, [refreshTitleContextDiscovery]);
+    void refreshCatalogDiscovery();
+  }, [refreshCatalogDiscovery]);
 
   const [desktopViewModes, setDesktopViewModes] = React.useState<
     Partial<Record<ViewId, ContentViewMode>>
@@ -2196,8 +1728,8 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     [reloadTitles, titleFilter],
   );
 
-  const handleTitleContextDiscoveryAction = React.useCallback(
-    async (item: DiscoveryItem) => {
+  const handleCatalogDiscoveryAction = React.useCallback(
+    async (item: CatalogDiscoveryItem) => {
       if (item.ownedInInput) {
         return;
       }
@@ -2802,26 +2334,25 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
 
   React.useEffect(() => {
     if (!shouldLoadCatalogTitles || !selectedOverviewTitleForPanelHydration) {
-      setSelectedTitleContextDiscoveryItems([]);
-      return;
-    }
-    if (titleContextDiscoveryGenres(selectedOverviewTitleForPanelHydration).length === 0) {
-      setSelectedTitleContextDiscoveryItems([]);
+      setSelectedCatalogDiscoveryGroups([]);
       return;
     }
 
     let cancelled = false;
-    async function refreshSelectedTitleContextDiscovery() {
+    const selectedTitleId = selectedOverviewTitleForPanelHydration.id;
+    async function refreshSelectedCatalogDiscovery() {
+      const input: CatalogDiscoveryInput = {
+        facet: activeFacet,
+        titleId: selectedTitleId,
+        includeUnresolved: true,
+        limitPerGroup: TITLE_CONTEXT_DISCOVERY_LIMIT_PER_GROUP,
+        maxGroups: TITLE_CONTEXT_DISCOVERY_MAX_GROUPS,
+      };
       try {
         const { data, error } = await client
-          .query(
-            discoveryItemsQuery,
-            {
-              input: titleContextDiscoveryItemsInput(
-                activeFacet,
-                selectedOverviewTitleForPanelHydration,
-              ),
-            },
+          .query<{ catalogDiscovery?: CatalogDiscoveryPayload }>(
+            catalogDiscoveryQuery,
+            { input },
             { requestPolicy: "network-only" },
           )
           .toPromise();
@@ -2829,19 +2360,19 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
           throw error;
         }
         if (!cancelled) {
-          setSelectedTitleContextDiscoveryItems(
-            ((data?.discoveryItems ?? null) as DiscoveryItemsPayload | null)
-              ?.items ?? [],
+          setSelectedCatalogDiscoveryGroups(
+            data?.catalogDiscovery?.groups ?? [],
           );
         }
-      } catch {
+      } catch (error) {
+        console.error("[selected-catalog-discovery] refresh failed:", error);
         if (!cancelled) {
-          setSelectedTitleContextDiscoveryItems([]);
+          setSelectedCatalogDiscoveryGroups([]);
         }
       }
     }
 
-    void refreshSelectedTitleContextDiscovery();
+    void refreshSelectedCatalogDiscovery();
     return () => {
       cancelled = true;
     };
@@ -2852,11 +2383,10 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     shouldLoadCatalogTitles,
   ]);
 
-  const activeTitleContextDiscoveryItems =
-    selectedOverviewTitleForPanelHydration &&
-    selectedTitleContextDiscoveryItems.length > 0
-      ? selectedTitleContextDiscoveryItems
-      : titleContextDiscoveryItems;
+  const activeCatalogDiscoveryGroups =
+    selectedOverviewTitleForPanelHydration !== null
+      ? selectedCatalogDiscoveryGroups
+      : catalogDiscoveryGroups;
 
   const loadSelectedOverviewExternalSubtitles = React.useCallback(
     async (titleId: string) => {
@@ -4719,11 +4249,10 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
           catalogInitialLoadComplete,
           monitoredTitles: visibleTitles,
           titleContextTitles: titleContextSourceTitles,
-          titleContextDiscoveryItems: activeTitleContextDiscoveryItems,
-          titleContextPublicTopItems,
+          catalogDiscoveryGroups: activeCatalogDiscoveryGroups,
           canManageTitle,
           canRequestMedia,
-          onTitleContextDiscoveryAction: handleTitleContextDiscoveryAction,
+          onCatalogDiscoveryAction: handleCatalogDiscoveryAction,
           titleQuickFilters,
           titleQuickFilterCounts,
           toggleTitleQuickMonitoringFilter,
@@ -4830,7 +4359,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
             if (titleId) {
               await Promise.all([
                 refreshTitles(),
-                refreshTitleContextDiscovery(),
+                refreshCatalogDiscovery(),
               ]);
             }
             return titleId;
@@ -4856,7 +4385,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
             if (accepted) {
               await Promise.all([
                 refreshTitles(),
-                refreshTitleContextDiscovery(),
+                refreshCatalogDiscovery(),
               ]);
             }
             return accepted;

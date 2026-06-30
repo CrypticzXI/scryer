@@ -1173,6 +1173,11 @@ impl AppUseCase {
                     .await?
                 }
                 (LibraryScanMode::Full, MediaFacet::Series | MediaFacet::Anime) => {
+                    // Both Series and Anime route through scan_library_series and
+                    // look up hints under LibraryScanHintFacet::Series, which is how
+                    // BOTH Sonarr series and Sonarr anime import hints are stamped.
+                    // Previously Anime was passed None here, so anime imports lost
+                    // their arr identity and fell back to the filesystem parser.
                     scan_library_series(
                         self,
                         actor,
@@ -1182,11 +1187,7 @@ impl AppUseCase {
                         session_id,
                         finalize_discovery_on_drain,
                         cancel_token.clone(),
-                        if matches!(facet, MediaFacet::Series) {
-                            scan_hints.as_ref()
-                        } else {
-                            None
-                        },
+                        scan_hints.as_ref(),
                     )
                     .await?
                 }

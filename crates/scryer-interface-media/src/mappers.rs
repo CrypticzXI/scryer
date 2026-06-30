@@ -15,7 +15,9 @@ use scryer_application::{
     QualityProfileSettings, RegistryPlugin, RenameApplyItemResult, RenameApplyResult, RenamePlan,
     RenamePlanItem, ResolvePendingImportResult, RssSyncReport, ScoringEntry, ScoringSource,
     ServiceSettings, SmgScryerUpdateNotice, SmgVersionCompatibilityNotice, SubmissionScope,
-    SystemHealth, TitleHistoryPage, TitleReleaseBlocklistEntry,
+    SystemHealth, CatalogDiscoveryGroup, CatalogDiscoveryGroupKind,
+    CatalogDiscoveryQuery, CatalogDiscoveryResult, CatalogDiscoverySurface,
+    TitleHistoryPage, TitleReleaseBlocklistEntry,
 };
 use scryer_domain::{
     CalendarEpisode, Collection, ConfigFieldDef, ConfigFieldType, DomainEvent,
@@ -1595,6 +1597,29 @@ pub fn discovery_items_query_from_input(input: Option<DiscoveryItemsInput>) -> D
     }
 }
 
+pub fn catalog_discovery_query_from_input(
+    input: CatalogDiscoveryInput,
+) -> CatalogDiscoveryQuery {
+    CatalogDiscoveryQuery {
+        facet: input.facet.into_domain(),
+        library_ids: input
+            .library_ids
+            .unwrap_or_default()
+            .into_iter()
+            .map(|id| id.to_string())
+            .collect(),
+        include_unresolved: input.include_unresolved.unwrap_or(true),
+        limit_per_group: input
+            .limit_per_group
+            .map(|value| value.max(1) as usize)
+            .unwrap_or(6),
+        max_groups: input
+            .max_groups
+            .map(|value| value.max(1) as usize)
+            .unwrap_or(6),
+    }
+}
+
 pub fn from_discovery_home(result: DiscoveryHomeResult) -> DiscoveryHomePayload {
     DiscoveryHomePayload {
         status: from_discovery_sync_status(result.status),
@@ -1623,6 +1648,62 @@ pub fn from_discovery_items_result(result: DiscoveryItemsResult) -> DiscoveryIte
         items: result.items.into_iter().map(from_discovery_item).collect(),
         total_count: Long(result.total_count),
         can_view_personalized: result.can_view_personalized,
+    }
+}
+
+pub fn from_catalog_discovery(
+    result: CatalogDiscoveryResult,
+) -> CatalogDiscoveryPayload {
+    CatalogDiscoveryPayload {
+        can_view_personalized: result.can_view_personalized,
+        groups: result
+            .groups
+            .into_iter()
+            .map(from_catalog_discovery_group)
+            .collect(),
+    }
+}
+
+fn from_catalog_discovery_group(
+    group: CatalogDiscoveryGroup,
+) -> CatalogDiscoveryGroupPayload {
+    CatalogDiscoveryGroupPayload {
+        id: group.id,
+        kind: from_catalog_discovery_group_kind(group.kind),
+        surface: from_catalog_discovery_surface(group.surface),
+        label_value: group.label_value,
+        total_count: Long(group.total_count),
+        items: group.items.into_iter().map(from_discovery_item).collect(),
+    }
+}
+
+fn from_catalog_discovery_group_kind(
+    kind: CatalogDiscoveryGroupKind,
+) -> CatalogDiscoveryGroupKindValue {
+    match kind {
+        CatalogDiscoveryGroupKind::PublicTop => CatalogDiscoveryGroupKindValue::PublicTop,
+        CatalogDiscoveryGroupKind::GenreAffinity => {
+            CatalogDiscoveryGroupKindValue::GenreAffinity
+        }
+        CatalogDiscoveryGroupKind::ThemeAffinity => {
+            CatalogDiscoveryGroupKindValue::ThemeAffinity
+        }
+        CatalogDiscoveryGroupKind::Acclaimed => CatalogDiscoveryGroupKindValue::Acclaimed,
+        CatalogDiscoveryGroupKind::CompleteCollection => {
+            CatalogDiscoveryGroupKindValue::CompleteCollection
+        }
+        CatalogDiscoveryGroupKind::Fallback => CatalogDiscoveryGroupKindValue::Fallback,
+    }
+}
+
+fn from_catalog_discovery_surface(
+    surface: CatalogDiscoverySurface,
+) -> CatalogDiscoverySurfaceValue {
+    match surface {
+        CatalogDiscoverySurface::Public => CatalogDiscoverySurfaceValue::Public,
+        CatalogDiscoverySurface::Personalized => {
+            CatalogDiscoverySurfaceValue::Personalized
+        }
     }
 }
 

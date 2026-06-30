@@ -1,5 +1,5 @@
 import { lazy, Suspense, useState, useCallback, useMemo } from "react";
-import { ActivitySquare, CalendarDays, Clapperboard, Compass, FileText, Film, History, Inbox, ListChecks, Monitor, MonitorCog, Settings } from "lucide-react";
+import { ActivitySquare, CalendarDays, Clapperboard, FileText, Film, History, Inbox, ListChecks, Monitor, MonitorCog, Settings, Sparkles } from "lucide-react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { RootHeader } from "@/components/root/root-header";
 import { RootSidebar } from "@/components/root/root-sidebar";
@@ -34,7 +34,7 @@ const TOP_NAV_ICONS: Record<ViewId, typeof Film> = {
   movies: Film,
   series: Monitor,
   anime: Clapperboard,
-  discovery: Compass,
+  discovery: Sparkles,
   requests: Inbox,
   activity: ActivitySquare,
   calendar: CalendarDays,

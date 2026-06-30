@@ -1,7 +1,11 @@
-import type { DiscoveryItem } from "@/lib/types";
-
 const SOURCE_ID_PATTERN = /^[a-z][a-z0-9_+-]*:[a-z0-9_+-]+:/i;
 const NUMERIC_ID_PATTERN = /^\d+$/;
+
+type DiscoveryDisplayItem = {
+  displayTitle: string;
+  originalTitle: string | null;
+  targetKey: string;
+};
 
 function hasNonLatinTitleCharacters(value: string) {
   for (const character of value) {
@@ -23,7 +27,7 @@ function usefulAlternateTitle(value: string | null | undefined) {
   return title;
 }
 
-export function discoveryItemDisplayTitle(item: DiscoveryItem) {
+export function discoveryItemDisplayTitle(item: DiscoveryDisplayItem) {
   const displayTitle = item.displayTitle.trim();
   const alternateTitle = usefulAlternateTitle(item.originalTitle);
   if (

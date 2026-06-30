@@ -13,13 +13,13 @@ import {
   AlertOctagon,
   AlertTriangle,
   CalendarDays,
-  Compass,
   Download,
   ListChecks,
   Loader2,
   Monitor,
   Settings,
   CircleFadingArrowUp,
+  Sparkles,
   WifiOff,
   X,
 } from "lucide-react";
@@ -687,9 +687,6 @@ function MainContent({
   return (
     <MediaContentContainer
       key={`${view}-${effectiveContentSettingsSection}`}
-      userId={userId}
-      uiLanguage={uiLanguage}
-      discoveryAuthorizationSignature={discoveryAuthorizationSignature}
       view={view}
       contentSettingsSection={effectiveContentSettingsSection}
       canManageConfig={canManageConfig}
@@ -1402,7 +1399,7 @@ function AuthenticatedHomePage({
       {
         id: "discovery" as ViewId,
         label: t("nav.discovery"),
-        icon: Compass,
+        icon: Sparkles,
       },
       {
         id: "activity" as ViewId,

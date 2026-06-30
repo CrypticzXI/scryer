@@ -4,7 +4,7 @@ use super::support_bootstrap_fixtures::{
 };
 use crate::ports::{
     DiscoveryItemLibraryProvenanceRecord, DiscoveryItemsPageRecord, DiscoveryItemsStorageQuery,
-    DiscoverySectionItemsRecord, DiscoverySourceTagRecord,
+    DiscoverySectionItemsRecord, DiscoverySourceTagRecord, CatalogDiscoveryCandidatesRecord,
 };
 use crate::{
     AppError, AppResult, BulkMetadataResult, DiscoveryContextChangeType,
@@ -20,7 +20,8 @@ use crate::{
     DiscoverySyncStateRecord, DiscoveryTitle, DomainEventRepository, JobCategory, JobKey, JobRun,
     JobRunStatus, JobSection, JobTriggerSource, MetadataGateway, MetadataSearchItem,
     MetadataSearchQuery, MovieMetadata, MultiMetadataSearchResult, RichMetadataSearchItem,
-    SeriesMetadata,
+    SeriesMetadata, CatalogDiscoveryGroupKind, CatalogDiscoveryQuery,
+    CatalogDiscoverySurface,
 };
 use async_trait::async_trait;
 use chrono::{DateTime, TimeZone, Utc};
@@ -861,6 +862,71 @@ async fn discovery_provenance_keeps_duplicate_subject_keys_across_libraries() {
     assert_eq!(
         series_items.items[0].matched_subject_titles,
         vec!["Series Library Copy".to_string()]
+    );
+}
+
+#[tokio::test]
+async fn catalog_discovery_returns_public_groups_without_personalized_snapshot() {
+    let gateway = Arc::new(SnapshotMetadataGateway::default());
+    let (app, _admin, _titles) = bootstrap_with_metadata_gateway_and_titles(gateway);
+    let discovery = Arc::new(RecordingDiscoveryRepository::default());
+    let app = app.with_test_overrides(|builder| builder.with_discovery_store(discovery.clone()));
+    let observed_at = Utc.timestamp_opt(2_100, 0).unwrap();
+    let movie_library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Movie);
+    let viewer = library_permission_user(
+        "movie-library-viewer",
+        &movie_library_id,
+        &[scryer_domain::LibraryPermission::View],
+    );
+
+    *discovery.state.lock().await = Some(DiscoverySyncStateRecord {
+        last_public_feed_generation_id: Some("public-run".to_string()),
+        updated_at: observed_at,
+        ..DiscoverySyncStateRecord::default()
+    });
+    discovery.items.lock().await.push(discovery_item_record(
+        "public-run",
+        "public-run",
+        Some("trending_now"),
+        "tmdb:movie:999999",
+        "Public Movie",
+        "movie",
+        10.0,
+        &["Drama"],
+        &[],
+        false,
+        true,
+    ));
+
+    let result = app
+        .catalog_discovery(
+            &viewer,
+            CatalogDiscoveryQuery {
+                facet: MediaFacet::Movie,
+                title_id: None,
+                include_unresolved: true,
+                limit_per_group: 6,
+                max_groups: 6,
+            },
+        )
+        .await
+        .expect("title context discovery should return public data");
+
+    assert!(result.can_view_personalized);
+    assert_eq!(result.groups.len(), 1);
+    assert_eq!(
+        result.groups[0].kind,
+        CatalogDiscoveryGroupKind::PublicTop
+    );
+    assert_eq!(
+        result.groups[0].surface,
+        CatalogDiscoverySurface::Public
+    );
+    assert_eq!(result.groups[0].items[0].display_title, "Public Movie");
+    assert_eq!(
+        *discovery.generation_list_calls.lock().await,
+        0,
+        "catalog discovery should not hydrate full generations"
     );
 }
 
@@ -3429,6 +3495,56 @@ impl DiscoveryRepository for RecordingDiscoveryRepository {
         Ok(recording_canonical_facet_records(run_id, &items))
     }
 
+    async fn list_title_context_public_discovery_items(
+        &self,
+        run_id: &str,
+        media_kind: &str,
+        include_unresolved: bool,
+        limit: i64,
+    ) -> AppResult<CatalogDiscoveryCandidatesRecord> {
+        let mut items = self
+            .items
+            .lock()
+            .await
+            .iter()
+            .filter(|item| item.base_generation_id.as_deref() == Some(run_id))
+            .filter(|item| item.tombstoned_at.is_none())
+            .filter(|item| !item.owned_in_input)
+            .filter(|item| include_unresolved || item.resolved)
+            .filter(|item| recording_discovery_item_media_kind(item).as_deref() == Some(media_kind))
+            .cloned()
+            .collect::<Vec<_>>();
+        recording_dedupe_and_sort(&mut items);
+        let total_count = items.len() as i64;
+        let limit = limit.max(0) as usize;
+        items.truncate(limit);
+        Ok(CatalogDiscoveryCandidatesRecord { items, total_count })
+    }
+
+    async fn list_title_context_personalized_discovery_items(
+        &self,
+        run_id: &str,
+        readable_library_ids: &[String],
+        media_kind: &str,
+        include_unresolved: bool,
+        limit: i64,
+    ) -> AppResult<CatalogDiscoveryCandidatesRecord> {
+        let mut items = recording_visible_personalized_items(
+            &self.items.lock().await,
+            run_id,
+            readable_library_ids,
+            include_unresolved,
+        );
+        items.retain(|item| {
+            recording_discovery_item_media_kind(item).as_deref() == Some(media_kind)
+        });
+        recording_dedupe_and_sort(&mut items);
+        let total_count = items.len() as i64;
+        let limit = limit.max(0) as usize;
+        items.truncate(limit);
+        Ok(CatalogDiscoveryCandidatesRecord { items, total_count })
+    }
+
     async fn query_discovery_items(
         &self,
         query: &DiscoveryItemsStorageQuery,
@@ -3905,6 +4021,20 @@ fn recording_canonical_label_key(value: &str) -> String {
         .filter(|part| !part.is_empty())
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+fn recording_discovery_item_media_kind(item: &DiscoveryItemRecord) -> Option<String> {
+    item.content_type
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .or_else(|| Some(item.target_kind.trim()))
+        .and_then(|value| match value.to_ascii_lowercase().as_str() {
+            "anime" => Some("anime".to_string()),
+            "movie" => Some("movie".to_string()),
+            "series" => Some("series".to_string()),
+            _ => None,
+        })
 }
 
 fn recording_canonical_label_from_slug(value: &str) -> String {

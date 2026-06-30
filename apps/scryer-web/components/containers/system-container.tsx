@@ -1,10 +1,11 @@
 
 import { memo, type ReactNode, useCallback, useEffect, useState } from "react";
 import { useClient } from "urql";
-import { ChevronRight, ScrollText, Server, TextSearch, Timer, type LucideIcon } from "lucide-react";
+import { ChevronRight, Recycle, ScrollText, Server, TextSearch, Timer, type LucideIcon } from "lucide-react";
 import { SystemLogsView, SystemView } from "@/components/views/system-view";
 import { SystemAuditContainer } from "@/components/containers/system-audit-container";
 import { SystemJobsContainer } from "@/components/containers/system-jobs-container";
+import { SettingsRecycleBinContainer } from "@/components/containers/settings/settings-recycle-bin-container";
 import { systemHealthQuery } from "@/lib/graphql/queries";
 import type { SystemHealth } from "@/components/root/types";
 import { useTranslate } from "@/lib/context/translate-context";
@@ -121,6 +122,18 @@ export const SystemContainer = memo(function SystemContainer({
         title={t("nav.auditLogs")}
       >
         <SystemAuditContainer />
+      </SystemPageFrame>
+    );
+  }
+  if (systemSection === "recycleBin") {
+    return (
+      <SystemPageFrame
+        breadcrumbLabel={t("settings.recycleBin")}
+        icon={Recycle}
+        maxWidthClass="max-w-[1520px]"
+        title={t("settings.recycleBin")}
+      >
+        <SettingsRecycleBinContainer />
       </SystemPageFrame>
     );
   }

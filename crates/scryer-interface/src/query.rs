@@ -32,8 +32,9 @@ use crate::mappers::{
     from_media_request, from_media_request_counts, from_pending_import_connection,
     from_pending_import_counts, from_pending_release, from_provider_type, from_runtime_path_style,
     from_smg_scryer_update_notice, from_smg_version_compatibility_notice, from_system_health,
-    from_title, from_title_acquisition_diagnostics, from_title_history_page,
-    from_title_release_blocklist_entry, from_user_with_auth_factor_status, from_wanted_item,
+    from_title, from_title_acquisition_diagnostics, from_catalog_discovery,
+    from_title_history_page, from_title_release_blocklist_entry, from_user_with_auth_factor_status,
+    from_wanted_item, catalog_discovery_query_from_input,
 };
 use crate::types::*;
 
@@ -1369,6 +1370,20 @@ impl JobAndDownloadQueries {
             .await
             .map_err(to_gql_error)?;
         Ok(from_discovery_items_result(result))
+    }
+
+    async fn catalog_discovery(
+        &self,
+        ctx: &Context<'_>,
+        input: CatalogDiscoveryInput,
+    ) -> GqlResult<CatalogDiscoveryPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let result = app
+            .catalog_discovery(&actor, catalog_discovery_query_from_input(input))
+            .await
+            .map_err(to_gql_error)?;
+        Ok(from_catalog_discovery(result))
     }
 
     async fn discovery_sync_status(

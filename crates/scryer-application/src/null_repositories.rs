@@ -53,9 +53,9 @@ use crate::{
     UserExternalAccountRepository, UserUiSettingsRepository, VerifiedExternalIdentity, WantedItem,
     WantedItemRepository, WebauthnChallengeRecord, WebauthnCredentialRecord, WebauthnRepository,
     WorkflowOperationInfo, WorkflowOperationRepository, ports::DatastoreInfo,
-    ports::LogicalBackupExporter, ports::TotpRepository, types::TotpCredentialRecord,
-    types::TotpEnrollmentChallengeRecord, types::TotpFailedAttemptRecord,
-    types::TotpRecoveryCodeRecord,
+    ports::LogicalBackupExporter, ports::CatalogDiscoveryCandidatesRecord,
+    ports::TotpRepository, types::TotpCredentialRecord, types::TotpEnrollmentChallengeRecord,
+    types::TotpFailedAttemptRecord, types::TotpRecoveryCodeRecord,
 };
 
 #[derive(Default)]
@@ -281,6 +281,27 @@ impl DiscoveryRepository for NullDiscoveryRepository {
         _include_unresolved: bool,
     ) -> AppResult<Vec<DiscoveryFacetRecord>> {
         Ok(Vec::new())
+    }
+
+    async fn list_title_context_public_discovery_items(
+        &self,
+        _run_id: &str,
+        _media_kind: &str,
+        _include_unresolved: bool,
+        _limit: i64,
+    ) -> AppResult<CatalogDiscoveryCandidatesRecord> {
+        Ok(CatalogDiscoveryCandidatesRecord::default())
+    }
+
+    async fn list_title_context_personalized_discovery_items(
+        &self,
+        _run_id: &str,
+        _readable_library_ids: &[String],
+        _media_kind: &str,
+        _include_unresolved: bool,
+        _limit: i64,
+    ) -> AppResult<CatalogDiscoveryCandidatesRecord> {
+        Ok(CatalogDiscoveryCandidatesRecord::default())
     }
 
     async fn query_discovery_items(

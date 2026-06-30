@@ -52,6 +52,7 @@ import {
   Sun,
   TextSearch,
   Timer,
+  Recycle,
   User,
   Users,
 } from "lucide-react";
@@ -184,8 +185,6 @@ const TOP_NAV_GROUPS: TopNavGroupDefinition[] = [
     id: "system",
     labelKey: "nav.group.system",
     items: [
-      { kind: "view", id: "system" },
-      { kind: "system", id: "jobs", labelKey: "system.jobsTitle", icon: Timer },
       {
         kind: "settings",
         id: "users",
@@ -193,6 +192,14 @@ const TOP_NAV_GROUPS: TopNavGroupDefinition[] = [
         icon: Users,
       },
       { kind: "settings", id: "security", icon: ShieldCheck },
+      { kind: "view", id: "system" },
+      { kind: "system", id: "jobs", labelKey: "system.jobsTitle", icon: Timer },
+      {
+        kind: "system",
+        id: "recycleBin",
+        labelKey: "settings.recycleBin",
+        icon: Recycle,
+      },
       { kind: "settings", id: "backups", icon: Archive },
       { kind: "view", id: "settings" },
     ],

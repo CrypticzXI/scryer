@@ -88,6 +88,39 @@ ${DISCOVERY_ITEM_FIELDS}
   }
 }`;
 
+const TITLE_CONTEXT_DISCOVERY_ITEM_FIELDS = `
+    id
+    targetKey
+    targetKind
+    resolved
+    resolvedTitleId
+    displayTitle
+    originalTitle
+    sortTitle
+    year
+    posterUrl
+    overview
+    contentType
+    statusTags
+    rankScore
+    ownedInInput`;
+
+export const catalogDiscoveryQuery = `query CatalogDiscovery($input: CatalogDiscoveryInput!) {
+  catalogDiscovery(input: $input) {
+    canViewPersonalized
+    groups {
+      id
+      kind
+      surface
+      labelValue
+      totalCount
+      items {
+${TITLE_CONTEXT_DISCOVERY_ITEM_FIELDS}
+      }
+    }
+  }
+}`;
+
 export const TITLE_CORE_FIELDS = `
     id
     name

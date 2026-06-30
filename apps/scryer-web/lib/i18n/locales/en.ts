@@ -990,7 +990,7 @@ const en: LocaleDictionary = {
   "title.hideTitleList": "Hide list",
   "title.contextEmptyTitle": "No title selected",
   "title.contextEmptyBody": "There are no preview details to show.",
-  "title.contextForYouTitle": "For You",
+  "title.contextForYouTitle": "Discover",
   "title.contextForYouSubtitle": "Recommended from your library",
   "title.contextForYouBody":
     "Open a title workspace or explore picks tailored to what is already in your collection.",

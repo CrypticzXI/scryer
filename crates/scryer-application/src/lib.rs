@@ -105,8 +105,10 @@ pub use ports::{
     DiscoverySourceTagRecord, DiscoverySubmittedSubjectRecord, DiscoverySyncRunRecord,
     DiscoverySyncStateRecord, DiscoverySyncStatus, EpisodeImageUrlUpdate, MediaRequestResolution,
     MediaRequestResolutionResult, MediaRequestSubmissionResult, MediaRequestUpdateResult,
-    SubtitleSyncClient, SubtitleSyncJob, TitleArtworkUrlUpdate, TitleDeletePreviewInfo,
-    UserUiSettingsRepository,
+    SubtitleSyncClient, SubtitleSyncJob, TitleArtworkUrlUpdate,
+    TitleContextDiscoveryCandidatesRecord, TitleContextDiscoveryGroup,
+    TitleContextDiscoveryGroupKind, TitleContextDiscoveryQuery, TitleContextDiscoveryResult,
+    TitleContextDiscoverySurface, TitleDeletePreviewInfo, UserUiSettingsRepository,
 };
 pub(crate) mod normalize;
 pub use events::retention::user_facing_domain_event_types;
