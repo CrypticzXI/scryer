@@ -107,7 +107,7 @@ export type DiscoveryItemsPayload = {
 
 export type CatalogDiscoveryInput = {
   facet: "movie" | "series" | "anime";
-  titleId?: string | null;
+  libraryIds?: string[] | null;
   includeUnresolved?: boolean | null;
   limitPerGroup?: number | null;
   maxGroups?: number | null;
@@ -138,8 +138,7 @@ export type CatalogDiscoveryGroupKind =
   | "THEME_AFFINITY"
   | "ACCLAIMED"
   | "COMPLETE_COLLECTION"
-  | "FALLBACK"
-  | "MORE_LIKE_THIS";
+  | "FALLBACK";
 
 export type CatalogDiscoverySurface = "PUBLIC" | "PERSONALIZED";
 

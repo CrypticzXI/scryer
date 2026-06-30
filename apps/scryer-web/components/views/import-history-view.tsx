@@ -460,13 +460,13 @@ export function ImportHistoryView({
                       {record.sourcePath ? (
                         <p className="break-all">
                           <span className="font-medium text-foreground/80">From:</span>{" "}
-                          {record.sourcePath}
+                          <span className="font-[var(--font-code)]">{record.sourcePath}</span>
                         </p>
                       ) : null}
                       {record.destPath ? (
                         <p className="break-all">
                           <span className="font-medium text-foreground/80">To:</span>{" "}
-                          {record.destPath}
+                          <span className="font-[var(--font-code)]">{record.destPath}</span>
                         </p>
                       ) : null}
                     </div>
@@ -609,7 +609,7 @@ export function ImportHistoryView({
                                   <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
                                     Source path
                                   </p>
-                                  <p className="mt-1 break-all text-sm text-foreground">{record.sourcePath}</p>
+                                  <p className="mt-1 break-all font-[var(--font-code)] text-sm text-foreground">{record.sourcePath}</p>
                                 </div>
                               ) : null}
                               {record.destPath ? (
@@ -617,7 +617,7 @@ export function ImportHistoryView({
                                   <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
                                     Destination path
                                   </p>
-                                  <p className="mt-1 break-all text-sm text-foreground">{record.destPath}</p>
+                                  <p className="mt-1 break-all font-[var(--font-code)] text-sm text-foreground">{record.destPath}</p>
                                 </div>
                               ) : null}
                               {record.errorMessage ? (

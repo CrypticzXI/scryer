@@ -131,7 +131,7 @@ export const PendingImportCard = React.memo(function PendingImportCard({
       <CardContent className="space-y-3 text-sm">
         <div>
           <span className="font-medium text-foreground">{t("pendingImports.path")}:</span>{" "}
-          <span className="break-all text-muted-foreground">{item.path}</span>
+          <span className="break-all font-[var(--font-code)] text-muted-foreground">{item.path}</span>
         </div>
         {item.titleId ? (
           <div>

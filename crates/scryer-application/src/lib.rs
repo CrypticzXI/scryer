@@ -95,6 +95,8 @@ pub(crate) use rules::user_rule_input;
 pub use download_client_config::resolve_download_client_base_url_from_config_json;
 pub use import::completed_download as completed_download_handler;
 pub use ports::{
+    CatalogDiscoveryCandidatesRecord, CatalogDiscoveryGroup, CatalogDiscoveryGroupKind,
+    CatalogDiscoveryQuery, CatalogDiscoveryResult, CatalogDiscoverySurface,
     DISCOVERY_DEFAULT_SCOPE_KEY, DiscoveryContextIncrementalCommit, DiscoveryContextSnapshotCommit,
     DiscoveryFacetRecord, DiscoveryHomeQuery, DiscoveryHomeResult,
     DiscoveryItemLibraryProvenanceRecord, DiscoveryItemRecord, DiscoveryItemsPageRecord,
@@ -105,10 +107,8 @@ pub use ports::{
     DiscoverySourceTagRecord, DiscoverySubmittedSubjectRecord, DiscoverySyncRunRecord,
     DiscoverySyncStateRecord, DiscoverySyncStatus, EpisodeImageUrlUpdate, MediaRequestResolution,
     MediaRequestResolutionResult, MediaRequestSubmissionResult, MediaRequestUpdateResult,
-    SubtitleSyncClient, SubtitleSyncJob, TitleArtworkUrlUpdate,
-    TitleContextDiscoveryCandidatesRecord, TitleContextDiscoveryGroup,
-    TitleContextDiscoveryGroupKind, TitleContextDiscoveryQuery, TitleContextDiscoveryResult,
-    TitleContextDiscoverySurface, TitleDeletePreviewInfo, UserUiSettingsRepository,
+    SubtitleSyncClient, SubtitleSyncJob, TitleArtworkUrlUpdate, TitleDeletePreviewInfo,
+    UserUiSettingsRepository,
 };
 pub(crate) mod normalize;
 pub use events::retention::user_facing_domain_event_types;

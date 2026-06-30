@@ -23,8 +23,9 @@ use crate::context::{
     require_config_app_permission, to_gql_error,
 };
 use crate::mappers::{
-    discovery_home_query_from_input, discovery_items_query_from_input, from_activity_event,
-    from_backup_info, from_collection, from_delete_preview, from_delete_titles_preview,
+    catalog_discovery_query_from_input, discovery_home_query_from_input,
+    discovery_items_query_from_input, from_activity_event, from_backup_info,
+    from_catalog_discovery, from_collection, from_delete_preview, from_delete_titles_preview,
     from_discovery_home, from_discovery_items_result, from_discovery_sync_status,
     from_domain_event, from_download_queue_item, from_episode,
     from_external_import_monitor_warmup_progress, from_job_definition, from_job_run, from_library,
@@ -32,9 +33,8 @@ use crate::mappers::{
     from_media_request, from_media_request_counts, from_pending_import_connection,
     from_pending_import_counts, from_pending_release, from_provider_type, from_runtime_path_style,
     from_smg_scryer_update_notice, from_smg_version_compatibility_notice, from_system_health,
-    from_title, from_title_acquisition_diagnostics, from_catalog_discovery,
-    from_title_history_page, from_title_release_blocklist_entry, from_user_with_auth_factor_status,
-    from_wanted_item, catalog_discovery_query_from_input,
+    from_title, from_title_acquisition_diagnostics, from_title_history_page,
+    from_title_release_blocklist_entry, from_user_with_auth_factor_status, from_wanted_item,
 };
 use crate::types::*;
 

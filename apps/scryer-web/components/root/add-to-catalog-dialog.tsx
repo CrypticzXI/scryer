@@ -322,13 +322,13 @@ export function AddToCatalogDialog({
                 onValueChange={(v) => update({ rootFolderId: v })}
                 disabled={isSubmitting}
               >
-                <SelectTrigger id="add-to-catalog-root-folder" className="h-9 w-full">
+                <SelectTrigger id="add-to-catalog-root-folder" className="h-9 w-full font-[var(--font-code)]">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
                   {selectableRootFolders.map((rf) => (
                     <SelectItem key={rf.id} value={rf.id}>
-                      {rf.path}
+                      <span className="font-[var(--font-code)]">{rf.path}</span>
                     </SelectItem>
                   ))}
                 </SelectContent>

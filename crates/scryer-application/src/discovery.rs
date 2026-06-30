@@ -5,19 +5,19 @@ use crate::library_scan::{
     DiscoveryExternalIdInput, DiscoveryPublicFeedInput, DiscoverySubjectInput, DiscoveryTitle,
 };
 use crate::ports::{
-    DISCOVERY_DEFAULT_SCOPE_KEY, DiscoveryFacetRecord, DiscoveryHomeQuery, DiscoveryHomeResult,
+    CatalogDiscoveryGroup, CatalogDiscoveryGroupKind, CatalogDiscoveryQuery,
+    CatalogDiscoveryResult, CatalogDiscoverySurface, DISCOVERY_DEFAULT_SCOPE_KEY,
+    DiscoveryFacetRecord, DiscoveryHomeQuery, DiscoveryHomeResult,
     DiscoveryItemLibraryProvenanceRecord, DiscoveryItemRecord, DiscoveryItemsQuery,
     DiscoveryItemsResult, DiscoveryItemsStorageQuery, DiscoveryPendingContextChangeRecord,
     DiscoveryRankComponentRecord, DiscoveryRawPageRecord, DiscoverySectionItemsRecord,
     DiscoverySectionRecord, DiscoverySectionResult, DiscoverySourceTagRecord,
-    DiscoverySubmittedSubjectRecord, DiscoverySyncStatus, CatalogDiscoveryGroup,
-    CatalogDiscoveryGroupKind, CatalogDiscoveryQuery, CatalogDiscoveryResult,
-    CatalogDiscoverySurface,
+    DiscoverySubmittedSubjectRecord, DiscoverySyncStatus,
 };
 use crate::{AppError, AppResult, AppUseCase};
 use chrono::{DateTime, Utc};
 use scryer_domain::{
-    DomainEvent, DomainEventPayload, DomainExternalIds, LibraryPermission, MediaFacet,
+    DomainEvent, DomainEventPayload, DomainExternalIds, LibraryPermission, MediaFacet, Title,
     TitleContextSnapshot, User,
 };
 use serde::{Deserialize, Serialize};
@@ -420,8 +420,10 @@ impl AppUseCase {
                 .discovery
                 .list_discovery_submitted_subjects(context_run_id)
                 .await?;
-            submitted_subjects =
-                filter_submitted_subjects_for_libraries(&submitted_subjects, &effective_library_ids);
+            submitted_subjects = filter_submitted_subjects_for_libraries(
+                &submitted_subjects,
+                &effective_library_ids,
+            );
             resolve_discovery_matched_subjects(&mut candidates, &submitted_subjects)?;
             personalized_candidates = candidates;
         }
@@ -531,7 +533,6 @@ impl AppUseCase {
             .await?;
         Ok(CatalogOwnedVisibility::from_titles(&titles))
     }
-
 }
 
 impl AppUseCase {

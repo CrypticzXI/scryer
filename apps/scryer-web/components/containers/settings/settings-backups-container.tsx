@@ -916,6 +916,7 @@ export function SettingsBackupsContainer() {
                     placeholder={savedBackupSettings.defaultBackupPath}
                     disabled={backupSettingsSaving}
                     onChange={(event) => setBackupPathDraft(event.target.value)}
+                    className="font-[var(--font-code)]"
                   />
                   <Button
                     type="button"

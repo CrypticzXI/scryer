@@ -3,21 +3,21 @@ use async_graphql::ID;
 use chrono::{DateTime, Utc};
 use scryer_application::stored_paths::stored_path_to_path_buf;
 use scryer_application::{
-    ActivityEvent, BackupInfo, DeletePreview, DiscoveryFacetRecord, DiscoveryHomeQuery,
-    DiscoveryHomeResult, DiscoveryItemRecord, DiscoveryItemsQuery, DiscoveryItemsResult,
-    DiscoverySectionResult, DiscoverySyncRunRecord, DiscoverySyncStateRecord, DiscoverySyncStatus,
-    DownloadClientRoutingSettingsEntry, FacetScoringPersonaSelection, IgnorePendingImportResult,
-    IndexerRoutingSettingsEntry, IndexerSearchResult, JobDefinition, JobRun, LibraryPathsSettings,
-    LibraryScanSummary, LibrarySettings, ManualPluginPreview, MediaRequestCounts, MediaSettings,
-    ParsedEpisodeMetadata, ParsedReleaseMetadata, PendingImportConnection, PendingImportCounts,
-    PendingImportItem, PendingImportSearchAttempt, PendingRelease, PluginCatalogStatus,
-    QualityProfile, QualityProfileCriteria, QualityProfileDecision, QualityProfileSelection,
+    ActivityEvent, BackupInfo, CatalogDiscoveryGroup, CatalogDiscoveryGroupKind,
+    CatalogDiscoveryQuery, CatalogDiscoveryResult, CatalogDiscoverySurface, DeletePreview,
+    DiscoveryFacetRecord, DiscoveryHomeQuery, DiscoveryHomeResult, DiscoveryItemRecord,
+    DiscoveryItemsQuery, DiscoveryItemsResult, DiscoverySectionResult, DiscoverySyncRunRecord,
+    DiscoverySyncStateRecord, DiscoverySyncStatus, DownloadClientRoutingSettingsEntry,
+    FacetScoringPersonaSelection, IgnorePendingImportResult, IndexerRoutingSettingsEntry,
+    IndexerSearchResult, JobDefinition, JobRun, LibraryPathsSettings, LibraryScanSummary,
+    LibrarySettings, ManualPluginPreview, MediaRequestCounts, MediaSettings, ParsedEpisodeMetadata,
+    ParsedReleaseMetadata, PendingImportConnection, PendingImportCounts, PendingImportItem,
+    PendingImportSearchAttempt, PendingRelease, PluginCatalogStatus, QualityProfile,
+    QualityProfileCriteria, QualityProfileDecision, QualityProfileSelection,
     QualityProfileSettings, RegistryPlugin, RenameApplyItemResult, RenameApplyResult, RenamePlan,
     RenamePlanItem, ResolvePendingImportResult, RssSyncReport, ScoringEntry, ScoringSource,
     ServiceSettings, SmgScryerUpdateNotice, SmgVersionCompatibilityNotice, SubmissionScope,
-    SystemHealth, CatalogDiscoveryGroup, CatalogDiscoveryGroupKind,
-    CatalogDiscoveryQuery, CatalogDiscoveryResult, CatalogDiscoverySurface,
-    TitleHistoryPage, TitleReleaseBlocklistEntry,
+    SystemHealth, TitleHistoryPage, TitleReleaseBlocklistEntry,
 };
 use scryer_domain::{
     CalendarEpisode, Collection, ConfigFieldDef, ConfigFieldType, DomainEvent,
@@ -1597,9 +1597,7 @@ pub fn discovery_items_query_from_input(input: Option<DiscoveryItemsInput>) -> D
     }
 }
 
-pub fn catalog_discovery_query_from_input(
-    input: CatalogDiscoveryInput,
-) -> CatalogDiscoveryQuery {
+pub fn catalog_discovery_query_from_input(input: CatalogDiscoveryInput) -> CatalogDiscoveryQuery {
     CatalogDiscoveryQuery {
         facet: input.facet.into_domain(),
         library_ids: input
@@ -1651,9 +1649,7 @@ pub fn from_discovery_items_result(result: DiscoveryItemsResult) -> DiscoveryIte
     }
 }
 
-pub fn from_catalog_discovery(
-    result: CatalogDiscoveryResult,
-) -> CatalogDiscoveryPayload {
+pub fn from_catalog_discovery(result: CatalogDiscoveryResult) -> CatalogDiscoveryPayload {
     CatalogDiscoveryPayload {
         can_view_personalized: result.can_view_personalized,
         groups: result
@@ -1664,9 +1660,7 @@ pub fn from_catalog_discovery(
     }
 }
 
-fn from_catalog_discovery_group(
-    group: CatalogDiscoveryGroup,
-) -> CatalogDiscoveryGroupPayload {
+fn from_catalog_discovery_group(group: CatalogDiscoveryGroup) -> CatalogDiscoveryGroupPayload {
     CatalogDiscoveryGroupPayload {
         id: group.id,
         kind: from_catalog_discovery_group_kind(group.kind),
@@ -1682,12 +1676,8 @@ fn from_catalog_discovery_group_kind(
 ) -> CatalogDiscoveryGroupKindValue {
     match kind {
         CatalogDiscoveryGroupKind::PublicTop => CatalogDiscoveryGroupKindValue::PublicTop,
-        CatalogDiscoveryGroupKind::GenreAffinity => {
-            CatalogDiscoveryGroupKindValue::GenreAffinity
-        }
-        CatalogDiscoveryGroupKind::ThemeAffinity => {
-            CatalogDiscoveryGroupKindValue::ThemeAffinity
-        }
+        CatalogDiscoveryGroupKind::GenreAffinity => CatalogDiscoveryGroupKindValue::GenreAffinity,
+        CatalogDiscoveryGroupKind::ThemeAffinity => CatalogDiscoveryGroupKindValue::ThemeAffinity,
         CatalogDiscoveryGroupKind::Acclaimed => CatalogDiscoveryGroupKindValue::Acclaimed,
         CatalogDiscoveryGroupKind::CompleteCollection => {
             CatalogDiscoveryGroupKindValue::CompleteCollection
@@ -1701,9 +1691,7 @@ fn from_catalog_discovery_surface(
 ) -> CatalogDiscoverySurfaceValue {
     match surface {
         CatalogDiscoverySurface::Public => CatalogDiscoverySurfaceValue::Public,
-        CatalogDiscoverySurface::Personalized => {
-            CatalogDiscoverySurfaceValue::Personalized
-        }
+        CatalogDiscoverySurface::Personalized => CatalogDiscoverySurfaceValue::Personalized,
     }
 }
 

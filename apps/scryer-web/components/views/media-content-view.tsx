@@ -366,8 +366,6 @@ function catalogDiscoveryGroupLabel(
       return t("title.contextForYouCompleteCollection");
     case "FALLBACK":
       return t("title.contextForYouTop");
-    case "MORE_LIKE_THIS":
-      return t("title.contextMoreLikeThis");
   }
 }
 
@@ -391,7 +389,6 @@ function catalogDiscoveryGroupReason(
     case "COMPLETE_COLLECTION":
       return t("title.contextForYouReasonCollection");
     case "FALLBACK":
-    case "MORE_LIKE_THIS":
       return t("title.contextForYouReasonTop");
   }
 }
@@ -402,7 +399,6 @@ function titleContextRecommendationGroupsFromPayload(
   t: Translate,
 ): TitleContextRecommendationGroup[] {
   return groups
-    .filter((group) => group.kind !== "MORE_LIKE_THIS")
     .filter((group) => group.items.length > 0)
     .map((group) => {
       const reason = catalogDiscoveryGroupReason(group, t);
@@ -946,14 +942,7 @@ function TitleContextPanel({
     "min-h-0 w-full min-w-0 flex-col overflow-hidden rounded-[16px] border border-[var(--scry-border2)] bg-[var(--scry-surfD)]",
     className,
   );
-  const moreLikeThisItems = React.useMemo(
-    () =>
-      title
-        ? (discoveryGroups.find((group) => group.kind === "MORE_LIKE_THIS")
-            ?.items ?? [])
-        : [],
-    [discoveryGroups, title],
-  );
+  const moreLikeThisItems: CatalogDiscoveryItem[] = [];
   const titleMediaFiles = React.useMemo<MediaFileOnDisk[]>(
     () =>
       (title?.mediaFiles ?? []).flatMap((file) => {

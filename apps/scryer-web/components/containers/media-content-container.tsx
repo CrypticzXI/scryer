@@ -197,8 +197,8 @@ const defaultTitleCatalogSortState: TitleCatalogSortState = {
   direction: "asc",
 };
 
-const TITLE_CONTEXT_DISCOVERY_LIMIT_PER_GROUP = 6;
-const TITLE_CONTEXT_DISCOVERY_MAX_GROUPS = 6;
+const CATALOG_DISCOVERY_LIMIT_PER_GROUP = 6;
+const CATALOG_DISCOVERY_MAX_GROUPS = 6;
 
 function normalizedDiscoveryItemFacet(
   value: string | null | undefined,
@@ -786,13 +786,12 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   const [startedLibraryScanSessionId, setStartedLibraryScanSessionId] =
     React.useState<string | null>(null);
   const activeFacet = viewToFacet[view as keyof typeof viewToFacet] ?? "movie";
+  const [selectedLibraryIds, setSelectedLibraryIds] = React.useState<string[]>(
+    [],
+  );
   const catalogDiscoveryRequestIdRef = React.useRef(0);
   const [catalogDiscoveryGroups, setCatalogDiscoveryGroups] =
     React.useState<CatalogDiscoveryGroup[]>([]);
-  const [
-    selectedCatalogDiscoveryGroups,
-    setSelectedCatalogDiscoveryGroups,
-  ] = React.useState<CatalogDiscoveryGroup[]>([]);
   const [addDiscoveryDialogTarget, setAddDiscoveryDialogTarget] =
     React.useState<{ result: MetadataTvdbSearchItem; facet: Facet } | null>(
       null,
@@ -829,11 +828,15 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
       setCatalogDiscoveryGroups([]);
       return;
     }
+    const libraryIds = selectedLibraryIds.filter(
+      (libraryId) => libraryId !== ALL_LIBRARIES_VALUE,
+    );
     const input: CatalogDiscoveryInput = {
       facet: activeFacet,
+      libraryIds,
       includeUnresolved: true,
-      limitPerGroup: TITLE_CONTEXT_DISCOVERY_LIMIT_PER_GROUP,
-      maxGroups: TITLE_CONTEXT_DISCOVERY_MAX_GROUPS,
+      limitPerGroup: CATALOG_DISCOVERY_LIMIT_PER_GROUP,
+      maxGroups: CATALOG_DISCOVERY_MAX_GROUPS,
     };
     try {
       const { data, error } = await client
@@ -857,7 +860,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
         setCatalogDiscoveryGroups([]);
       }
     }
-  }, [activeFacet, client, shouldLoadCatalogTitles]);
+  }, [activeFacet, client, selectedLibraryIds, shouldLoadCatalogTitles]);
 
   React.useEffect(() => {
     void refreshCatalogDiscovery();
@@ -936,9 +939,6 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     React.useState<string | null>(null);
   const [librarySettingsSaving, setLibrarySettingsSaving] =
     React.useState(false);
-  const [selectedLibraryIds, setSelectedLibraryIds] = React.useState<string[]>(
-    [],
-  );
   const rootFolderValidationSnapshot = React.useMemo(() => {
     if (!isMediaView || librariesLoading) {
       return null;
@@ -2332,61 +2332,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
       ? !hasSelectedTitleEpisodeDetails(selectedOverviewTitleForPanelHydration)
       : false;
 
-  React.useEffect(() => {
-    if (!shouldLoadCatalogTitles || !selectedOverviewTitleForPanelHydration) {
-      setSelectedCatalogDiscoveryGroups([]);
-      return;
-    }
-
-    let cancelled = false;
-    const selectedTitleId = selectedOverviewTitleForPanelHydration.id;
-    async function refreshSelectedCatalogDiscovery() {
-      const input: CatalogDiscoveryInput = {
-        facet: activeFacet,
-        titleId: selectedTitleId,
-        includeUnresolved: true,
-        limitPerGroup: TITLE_CONTEXT_DISCOVERY_LIMIT_PER_GROUP,
-        maxGroups: TITLE_CONTEXT_DISCOVERY_MAX_GROUPS,
-      };
-      try {
-        const { data, error } = await client
-          .query<{ catalogDiscovery?: CatalogDiscoveryPayload }>(
-            catalogDiscoveryQuery,
-            { input },
-            { requestPolicy: "network-only" },
-          )
-          .toPromise();
-        if (error) {
-          throw error;
-        }
-        if (!cancelled) {
-          setSelectedCatalogDiscoveryGroups(
-            data?.catalogDiscovery?.groups ?? [],
-          );
-        }
-      } catch (error) {
-        console.error("[selected-catalog-discovery] refresh failed:", error);
-        if (!cancelled) {
-          setSelectedCatalogDiscoveryGroups([]);
-        }
-      }
-    }
-
-    void refreshSelectedCatalogDiscovery();
-    return () => {
-      cancelled = true;
-    };
-  }, [
-    activeFacet,
-    client,
-    selectedOverviewTitleForPanelHydration,
-    shouldLoadCatalogTitles,
-  ]);
-
-  const activeCatalogDiscoveryGroups =
-    selectedOverviewTitleForPanelHydration !== null
-      ? selectedCatalogDiscoveryGroups
-      : catalogDiscoveryGroups;
+  const activeCatalogDiscoveryGroups = catalogDiscoveryGroups;
 
   const loadSelectedOverviewExternalSubtitles = React.useCallback(
     async (titleId: string) => {

@@ -320,6 +320,7 @@ export function RouteCommandPalette({
               const displayLabel = routeCommandDisplayLabel(item);
               return (
                 <CommandItem
+                  id={`route-command-item-${item.id}`}
                   key={item.id}
                   value={item.id}
                   keywords={[

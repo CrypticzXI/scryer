@@ -12,6 +12,7 @@ import type { FacetQualityPrefs, ViewCategoryId } from "@/lib/types/quality-prof
 interface SummaryItem {
   label: string;
   value: string;
+  code?: boolean;
 }
 
 interface SetupSummaryViewProps {
@@ -146,7 +147,7 @@ export function SetupSummaryView({
 
   const items: SummaryItem[] = [
     { label: t("setup.summaryPersona"), value: formatFacetPrefs(facetPrefs, t) },
-    { label: t("setup.summaryMediaPaths"), value: mediaPathsSummary },
+    { label: t("setup.summaryMediaPaths"), value: mediaPathsSummary, code: true },
   ];
 
   if (isImportPath) {
@@ -181,7 +182,9 @@ export function SetupSummaryView({
               <Check className="mt-0.5 h-4 w-4 flex-none text-emerald-500" />
               <div>
                 <p className="text-sm font-medium">{item.label}</p>
-                <p className="text-sm text-muted-foreground">{item.value}</p>
+                <p className={item.code ? "font-[var(--font-code)] text-sm text-muted-foreground" : "text-sm text-muted-foreground"}>
+                  {item.value}
+                </p>
               </div>
             </div>
           ))}

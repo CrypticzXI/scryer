@@ -3,12 +3,14 @@ use super::support_bootstrap_fixtures::{
     library_permission_user,
 };
 use crate::ports::{
-    DiscoveryItemLibraryProvenanceRecord, DiscoveryItemsPageRecord, DiscoveryItemsStorageQuery,
-    DiscoverySectionItemsRecord, DiscoverySourceTagRecord, CatalogDiscoveryCandidatesRecord,
+    CatalogDiscoveryCandidatesRecord, DiscoveryItemLibraryProvenanceRecord,
+    DiscoveryItemsPageRecord, DiscoveryItemsStorageQuery, DiscoverySectionItemsRecord,
+    DiscoverySourceTagRecord,
 };
 use crate::{
-    AppError, AppResult, BulkMetadataResult, DiscoveryContextChangeType,
-    DiscoveryContextChangesInput, DiscoveryContextChangesResult, DiscoveryContextIncrementalCommit,
+    AppError, AppResult, BulkMetadataResult, CatalogDiscoveryGroupKind, CatalogDiscoveryQuery,
+    CatalogDiscoverySurface, DiscoveryContextChangeType, DiscoveryContextChangesInput,
+    DiscoveryContextChangesResult, DiscoveryContextIncrementalCommit,
     DiscoveryContextSnapshotAckResult, DiscoveryContextSnapshotCommit,
     DiscoveryContextSnapshotPageResult, DiscoveryContextSnapshotStatusResult,
     DiscoveryContextSnapshotSubmitInput, DiscoveryContextSnapshotSubmitResult,
@@ -20,8 +22,7 @@ use crate::{
     DiscoverySyncStateRecord, DiscoveryTitle, DomainEventRepository, JobCategory, JobKey, JobRun,
     JobRunStatus, JobSection, JobTriggerSource, MetadataGateway, MetadataSearchItem,
     MetadataSearchQuery, MovieMetadata, MultiMetadataSearchResult, RichMetadataSearchItem,
-    SeriesMetadata, CatalogDiscoveryGroupKind, CatalogDiscoveryQuery,
-    CatalogDiscoverySurface,
+    SeriesMetadata,
 };
 use async_trait::async_trait;
 use chrono::{DateTime, TimeZone, Utc};
@@ -736,6 +737,78 @@ async fn discovery_home_and_items_use_local_rows_and_library_view_rbac() {
         .expect("public discovery items should load");
     assert_eq!(public_items.total_count, 1);
     assert_eq!(public_items.items[0].display_title, "Public Movie");
+
+    let public_catalog = app
+        .catalog_discovery(
+            &public_actor,
+            CatalogDiscoveryQuery {
+                facet: MediaFacet::Movie,
+                library_ids: Vec::new(),
+                include_unresolved: false,
+                limit_per_group: 6,
+                max_groups: 6,
+            },
+        )
+        .await
+        .expect("public catalog discovery should load");
+    assert!(!public_catalog.can_view_personalized);
+    assert_eq!(public_catalog.groups.len(), 1);
+    assert_eq!(
+        public_catalog.groups[0].kind,
+        CatalogDiscoveryGroupKind::PublicTop
+    );
+    assert_eq!(
+        public_catalog.groups[0].items[0].display_title,
+        "Public Movie"
+    );
+
+    let visible_catalog = app
+        .catalog_discovery(
+            &viewer_actor,
+            CatalogDiscoveryQuery {
+                facet: MediaFacet::Movie,
+                library_ids: vec![visible_movie_library_id.clone()],
+                include_unresolved: false,
+                limit_per_group: 6,
+                max_groups: 6,
+            },
+        )
+        .await
+        .expect("visible catalog discovery should load");
+    assert!(visible_catalog.can_view_personalized);
+    let visible_catalog_titles = visible_catalog
+        .groups
+        .iter()
+        .flat_map(|group| group.items.iter().map(|item| item.display_title.as_str()))
+        .collect::<Vec<_>>();
+    assert!(visible_catalog_titles.contains(&"Private Recommendation"));
+    assert!(!visible_catalog_titles.contains(&"Hidden Recommendation"));
+
+    let hidden_catalog = app
+        .catalog_discovery(
+            &viewer_actor,
+            CatalogDiscoveryQuery {
+                facet: MediaFacet::Movie,
+                library_ids: vec![hidden_movie_library_id.clone()],
+                include_unresolved: false,
+                limit_per_group: 6,
+                max_groups: 6,
+            },
+        )
+        .await
+        .expect("hidden catalog discovery should load public data");
+    assert!(!hidden_catalog.can_view_personalized);
+    assert_eq!(hidden_catalog.groups.len(), 1);
+    assert_eq!(
+        hidden_catalog.groups[0].kind,
+        CatalogDiscoveryGroupKind::PublicTop
+    );
+    assert!(hidden_catalog.groups.iter().all(|group| {
+        group
+            .items
+            .iter()
+            .all(|item| item.display_title != "Hidden Recommendation")
+    }));
     assert_eq!(
         *discovery.generation_list_calls.lock().await,
         0,
@@ -903,25 +976,19 @@ async fn catalog_discovery_returns_public_groups_without_personalized_snapshot()
             &viewer,
             CatalogDiscoveryQuery {
                 facet: MediaFacet::Movie,
-                title_id: None,
+                library_ids: Vec::new(),
                 include_unresolved: true,
                 limit_per_group: 6,
                 max_groups: 6,
             },
         )
         .await
-        .expect("title context discovery should return public data");
+        .expect("catalog discovery should return public data");
 
     assert!(result.can_view_personalized);
     assert_eq!(result.groups.len(), 1);
-    assert_eq!(
-        result.groups[0].kind,
-        CatalogDiscoveryGroupKind::PublicTop
-    );
-    assert_eq!(
-        result.groups[0].surface,
-        CatalogDiscoverySurface::Public
-    );
+    assert_eq!(result.groups[0].kind, CatalogDiscoveryGroupKind::PublicTop);
+    assert_eq!(result.groups[0].surface, CatalogDiscoverySurface::Public);
     assert_eq!(result.groups[0].items[0].display_title, "Public Movie");
     assert_eq!(
         *discovery.generation_list_calls.lock().await,

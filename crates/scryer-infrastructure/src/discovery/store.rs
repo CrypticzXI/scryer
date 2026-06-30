@@ -1,13 +1,13 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use scryer_application::{
-    AppResult, DiscoveryContextIncrementalCommit, DiscoveryContextSnapshotCommit,
-    DiscoveryFacetRecord, DiscoveryItemLibraryProvenanceRecord, DiscoveryItemRecord,
-    DiscoveryItemsPageRecord, DiscoveryItemsStorageQuery, DiscoveryPendingContextChangeRecord,
-    DiscoveryPruneReport, DiscoveryPublicFeedCommit, DiscoveryRankComponentRecord,
-    DiscoveryRawPageRecord, DiscoveryRepository, DiscoverySectionItemsRecord,
-    DiscoverySectionRecord, DiscoverySourceTagRecord, DiscoverySubmittedSubjectRecord,
-    DiscoverySyncRunRecord, DiscoverySyncStateRecord, CatalogDiscoveryCandidatesRecord,
+    AppResult, CatalogDiscoveryCandidatesRecord, DiscoveryContextIncrementalCommit,
+    DiscoveryContextSnapshotCommit, DiscoveryFacetRecord, DiscoveryItemLibraryProvenanceRecord,
+    DiscoveryItemRecord, DiscoveryItemsPageRecord, DiscoveryItemsStorageQuery,
+    DiscoveryPendingContextChangeRecord, DiscoveryPruneReport, DiscoveryPublicFeedCommit,
+    DiscoveryRankComponentRecord, DiscoveryRawPageRecord, DiscoveryRepository,
+    DiscoverySectionItemsRecord, DiscoverySectionRecord, DiscoverySourceTagRecord,
+    DiscoverySubmittedSubjectRecord, DiscoverySyncRunRecord, DiscoverySyncStateRecord,
 };
 use serde_json::Value as JsonValue;
 use std::collections::{HashMap, HashSet};
@@ -1239,12 +1239,7 @@ async fn fetch_catalog_public_items(
         ITEM_COLUMNS.join(", ")
     );
     args.push(SqlArg::I64(limit));
-    fetch_catalog_candidates_with_sql(
-        datastore,
-        &sql,
-        &args,
-    )
-    .await
+    fetch_catalog_candidates_with_sql(datastore, &sql, &args).await
 }
 
 async fn fetch_catalog_personalized_items(
@@ -3383,6 +3378,29 @@ mod tests {
             .expect("facets should list");
         assert_eq!(read_facets.len(), 1);
         assert_eq!(read_facets[0].facet_value, "Drama");
+        let catalog_movie_candidates = store
+            .list_catalog_personalized_discovery_items(
+                "run-1",
+                &["series-library-a".to_string()],
+                "movie",
+                false,
+                10,
+            )
+            .await
+            .expect("catalog personalized candidates should apply provenance and media kind");
+        assert_eq!(catalog_movie_candidates.total_count, 1);
+        assert_eq!(catalog_movie_candidates.items[0].id, "item-row-1");
+        let hidden_catalog_candidates = store
+            .list_catalog_personalized_discovery_items(
+                "run-1",
+                &["series-library-b".to_string()],
+                "movie",
+                false,
+                10,
+            )
+            .await
+            .expect("catalog personalized candidates should apply library scope");
+        assert!(hidden_catalog_candidates.items.is_empty());
         let personalized_facets = store
             .list_personalized_discovery_facets("run-1", &["series-library-a".to_string()], false)
             .await

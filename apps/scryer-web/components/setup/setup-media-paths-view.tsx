@@ -76,6 +76,7 @@ export function SetupMediaPathsView({
               value={moviesPath}
               onChange={(e) => onMoviesPathChange(e.target.value)}
               placeholder="/data/movies"
+              className="font-[var(--font-code)]"
             />
             <Button
               id="setup-media-paths-movies-browse"
@@ -102,6 +103,7 @@ export function SetupMediaPathsView({
               value={seriesPath}
               onChange={(e) => onSeriesPathChange(e.target.value)}
               placeholder="/data/series"
+              className="font-[var(--font-code)]"
             />
             <Button
               id="setup-media-paths-series-browse"
@@ -128,6 +130,7 @@ export function SetupMediaPathsView({
               value={animePath}
               onChange={(e) => onAnimePathChange(e.target.value)}
               placeholder="/data/anime"
+              className="font-[var(--font-code)]"
             />
             <Button
               id="setup-media-paths-anime-browse"

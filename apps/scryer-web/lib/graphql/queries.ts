@@ -88,7 +88,7 @@ ${DISCOVERY_ITEM_FIELDS}
   }
 }`;
 
-const TITLE_CONTEXT_DISCOVERY_ITEM_FIELDS = `
+const CATALOG_DISCOVERY_ITEM_FIELDS = `
     id
     targetKey
     targetKind
@@ -115,7 +115,7 @@ export const catalogDiscoveryQuery = `query CatalogDiscovery($input: CatalogDisc
       labelValue
       totalCount
       items {
-${TITLE_CONTEXT_DISCOVERY_ITEM_FIELDS}
+${CATALOG_DISCOVERY_ITEM_FIELDS}
       }
     }
   }

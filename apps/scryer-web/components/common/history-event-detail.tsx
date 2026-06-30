@@ -1,5 +1,6 @@
 import type { TitleHistoryEvent } from "@/lib/types";
 import { formatSanitizedHistoryValue } from "@/lib/utils/history-redaction";
+import { cn } from "@/lib/utils";
 
 const friendlyKeys: Record<string, string> = {
   import_id: "Import ID",
@@ -121,7 +122,9 @@ export function HistoryEventDetailContent({ event }: { event: TitleHistoryEvent 
       {structuredDetails.map(({ key, value }) => (
         <div key={key} className="grid grid-cols-[auto_1fr] gap-x-3 text-xs">
           <span className="whitespace-nowrap text-muted-foreground">{formatKey(key)}</span>
-          <span className="break-all text-foreground">{formatValue(value, key)}</span>
+          <span className={cn("break-all text-foreground", key.endsWith("_path") && "font-[var(--font-code)]")}>
+            {formatValue(value, key)}
+          </span>
         </div>
       ))}
       {rawDetails.map(([key, value]) => (
