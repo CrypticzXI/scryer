@@ -197,7 +197,7 @@ const defaultTitleCatalogSortState: TitleCatalogSortState = {
   direction: "asc",
 };
 
-const CATALOG_DISCOVERY_LIMIT_PER_GROUP = 6;
+const CATALOG_DISCOVERY_LIMIT_PER_GROUP = 12;
 const CATALOG_DISCOVERY_MAX_GROUPS = 6;
 
 function normalizedDiscoveryItemFacet(
@@ -1268,7 +1268,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     setTitleQuickFilters(EMPTY_TITLE_QUICK_FILTERS);
     setSelectedTitleIds(new Set());
     setSelectedOverviewTitleId(null);
-    setSelectedLibraryIds([]);
+    setSelectedLibraryIds((current) => (current.length === 0 ? current : []));
     setTitleContextTitles([]);
   }, [activeFacet]);
 
@@ -3475,9 +3475,10 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
       if (error) throw error;
       const nextLibraries = (data?.libraries ?? []) as LibraryRecord[];
       setLibraries(nextLibraries);
-      setSelectedLibraryIds((current) =>
-        normalizeLibraryFilterSelection(current, nextLibraries),
-      );
+      setSelectedLibraryIds((current) => {
+        const normalized = normalizeLibraryFilterSelection(current, nextLibraries);
+        return sameStringArray(current, normalized) ? current : normalized;
+      });
       return nextLibraries;
     } catch (error) {
       setGlobalStatus(

@@ -204,6 +204,7 @@ pub struct CatalogDiscoveryGroup {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CatalogDiscoveryGroupKind {
     PublicTop,
+    PublicSection,
     GenreAffinity,
     ThemeAffinity,
     Acclaimed,
@@ -269,6 +270,15 @@ pub struct DiscoverySectionResult {
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct CatalogDiscoveryCandidatesRecord {
+    pub total_count: i64,
+    pub items: Vec<DiscoveryItemRecord>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct CatalogDiscoverySectionCandidatesRecord {
+    pub section_id: String,
+    pub section_type: String,
+    pub title: Option<String>,
     pub total_count: i64,
     pub items: Vec<DiscoveryItemRecord>,
 }
@@ -588,10 +598,20 @@ pub trait DiscoveryRepository: Send + Sync {
         &self,
         run_id: &str,
         owned_library_ids: &[String],
+        excluded_identity_keys: &[String],
         media_kind: &str,
         include_unresolved: bool,
         limit: i64,
     ) -> AppResult<CatalogDiscoveryCandidatesRecord>;
+    async fn list_catalog_public_discovery_sections(
+        &self,
+        run_id: &str,
+        owned_library_ids: &[String],
+        excluded_identity_keys: &[String],
+        media_kind: &str,
+        include_unresolved: bool,
+        limit_per_section: i64,
+    ) -> AppResult<Vec<CatalogDiscoverySectionCandidatesRecord>>;
     async fn list_catalog_personalized_discovery_items(
         &self,
         run_id: &str,

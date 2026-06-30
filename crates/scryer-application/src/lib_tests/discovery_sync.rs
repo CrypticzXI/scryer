@@ -1,11 +1,11 @@
 use super::support_bootstrap_fixtures::{
     TestPermissionPreset, bootstrap_with_metadata_gateway_and_titles, create_authenticated_user,
-    library_permission_user,
+    library_permission_user, library_permission_user_with_grants,
 };
 use crate::ports::{
-    CatalogDiscoveryCandidatesRecord, DiscoveryItemLibraryProvenanceRecord,
-    DiscoveryItemsPageRecord, DiscoveryItemsStorageQuery, DiscoverySectionItemsRecord,
-    DiscoverySourceTagRecord,
+    CatalogDiscoveryCandidatesRecord, CatalogDiscoverySectionCandidatesRecord,
+    DiscoveryItemLibraryProvenanceRecord, DiscoveryItemsPageRecord, DiscoveryItemsStorageQuery,
+    DiscoverySectionItemsRecord, DiscoverySourceTagRecord,
 };
 use crate::{
     AppError, AppResult, BulkMetadataResult, CatalogDiscoveryGroupKind, CatalogDiscoveryQuery,
@@ -20,9 +20,9 @@ use crate::{
     DiscoveryRepository, DiscoverySectionRecord, DiscoverySnapshotFacetGroup,
     DiscoverySnapshotFacetValue, DiscoverySubmittedSubjectRecord, DiscoverySyncRunRecord,
     DiscoverySyncStateRecord, DiscoveryTitle, DomainEventRepository, JobCategory, JobKey, JobRun,
-    JobRunStatus, JobSection, JobTriggerSource, MetadataGateway, MetadataSearchItem,
-    MetadataSearchQuery, MovieMetadata, MultiMetadataSearchResult, RichMetadataSearchItem,
-    SeriesMetadata,
+    JobRunStatus, JobSection, JobTriggerSource, LibraryRootDraft, MetadataGateway,
+    MetadataSearchItem, MetadataSearchQuery, MovieMetadata, MultiMetadataSearchResult,
+    RichMetadataSearchItem, SeriesMetadata,
 };
 use async_trait::async_trait;
 use chrono::{DateTime, TimeZone, Utc};
@@ -957,19 +957,38 @@ async fn catalog_discovery_returns_public_groups_without_personalized_snapshot()
         updated_at: observed_at,
         ..DiscoverySyncStateRecord::default()
     });
-    discovery.items.lock().await.push(discovery_item_record(
-        "public-run",
-        "public-run",
-        Some("trending_now"),
-        "tmdb:movie:999999",
-        "Public Movie",
-        "movie",
-        10.0,
-        &["Drama"],
-        &[],
-        false,
-        true,
-    ));
+    discovery.sections.lock().await.extend([
+        discovery_section_record("public-run", "trending_now", "TRENDING_NOW", "public"),
+        discovery_section_record("public-run", "popular_movies", "POPULAR_MOVIES", "public"),
+    ]);
+    discovery.items.lock().await.extend([
+        discovery_item_record(
+            "public-run",
+            "public-run",
+            Some("trending_now"),
+            "tmdb:movie:999999",
+            "Public Movie",
+            "movie",
+            10.0,
+            &["Drama"],
+            &[],
+            false,
+            true,
+        ),
+        discovery_item_record(
+            "public-run",
+            "public-run",
+            Some("popular_movies"),
+            "tmdb:movie:888888",
+            "Popular Public Movie",
+            "movie",
+            9.0,
+            &["Drama"],
+            &[],
+            false,
+            true,
+        ),
+    ]);
 
     let result = app
         .catalog_discovery(
@@ -986,15 +1005,258 @@ async fn catalog_discovery_returns_public_groups_without_personalized_snapshot()
         .expect("catalog discovery should return public data");
 
     assert!(result.can_view_personalized);
-    assert_eq!(result.groups.len(), 1);
+    assert_eq!(result.groups.len(), 2);
     assert_eq!(result.groups[0].kind, CatalogDiscoveryGroupKind::PublicTop);
     assert_eq!(result.groups[0].surface, CatalogDiscoverySurface::Public);
     assert_eq!(result.groups[0].items[0].display_title, "Public Movie");
+    assert_eq!(
+        result.groups[1].kind,
+        CatalogDiscoveryGroupKind::PublicSection
+    );
+    assert_eq!(result.groups[1].surface, CatalogDiscoverySurface::Public);
+    assert_eq!(
+        result.groups[1].label_value.as_deref(),
+        Some("popular_movies")
+    );
+    assert_eq!(
+        result.groups[1].items[0].display_title,
+        "Popular Public Movie"
+    );
     assert_eq!(
         *discovery.generation_list_calls.lock().await,
         0,
         "catalog discovery should not hydrate full generations"
     );
+}
+
+#[tokio::test]
+async fn catalog_discovery_excludes_public_rows_owned_by_normalized_external_id() {
+    let gateway = Arc::new(SnapshotMetadataGateway::default());
+    let (app, _admin, titles) = bootstrap_with_metadata_gateway_and_titles(gateway);
+    let discovery = Arc::new(RecordingDiscoveryRepository::default());
+    let app = app.with_test_overrides(|builder| builder.with_discovery_store(discovery.clone()));
+    let observed_at = Utc.timestamp_opt(2_200, 0).unwrap();
+    let movie_library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Movie);
+    let viewer = library_permission_user(
+        "movie-public-owned-viewer",
+        &movie_library_id,
+        &[scryer_domain::LibraryPermission::View],
+    );
+    let mut owned_movie = test_title(
+        "owned-matrix",
+        "The Matrix",
+        MediaFacet::Movie,
+        vec![("tmdb_movie", "603")],
+    );
+    owned_movie.library_id = movie_library_id.clone();
+    titles.store.lock().await.push(owned_movie);
+
+    *discovery.state.lock().await = Some(DiscoverySyncStateRecord {
+        last_public_feed_generation_id: Some("public-run".to_string()),
+        updated_at: observed_at,
+        ..DiscoverySyncStateRecord::default()
+    });
+    discovery
+        .sections
+        .lock()
+        .await
+        .push(discovery_section_record(
+            "public-run",
+            "trending_now",
+            "TRENDING_NOW",
+            "public",
+        ));
+    discovery.items.lock().await.extend([
+        discovery_item_record(
+            "public-run",
+            "public-run",
+            Some("trending_now"),
+            "tmdb:movie:603",
+            "Owned Public Movie",
+            "movie",
+            100.0,
+            &["Action"],
+            &[],
+            false,
+            true,
+        ),
+        discovery_item_record(
+            "public-run",
+            "public-run",
+            Some("trending_now"),
+            "tmdb:movie:999999",
+            "Fresh Public Movie",
+            "movie",
+            90.0,
+            &["Action"],
+            &[],
+            false,
+            true,
+        ),
+    ]);
+
+    let result = app
+        .catalog_discovery(
+            &viewer,
+            CatalogDiscoveryQuery {
+                facet: MediaFacet::Movie,
+                library_ids: Vec::new(),
+                include_unresolved: true,
+                limit_per_group: 1,
+                max_groups: 1,
+            },
+        )
+        .await
+        .expect("catalog discovery should exclude owned public rows");
+
+    assert_eq!(result.groups.len(), 1);
+    assert_eq!(result.groups[0].total_count, 1);
+    assert_eq!(result.groups[0].items.len(), 1);
+    assert_eq!(
+        result.groups[0].items[0].display_title,
+        "Fresh Public Movie"
+    );
+}
+
+#[tokio::test]
+async fn catalog_discovery_scopes_personalized_rows_to_selected_readable_library() {
+    let gateway = Arc::new(SnapshotMetadataGateway::default());
+    let (app, admin, titles) = bootstrap_with_metadata_gateway_and_titles(gateway);
+    let discovery = Arc::new(RecordingDiscoveryRepository::default());
+    let app = app.with_test_overrides(|builder| builder.with_discovery_store(discovery.clone()));
+    let observed_at = Utc.timestamp_opt(2_300, 0).unwrap();
+    let library_a_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Movie);
+    let library_b = app
+        .create_library(
+            &admin,
+            MediaFacet::Movie,
+            "Movie Library B".to_string(),
+            vec![LibraryRootDraft {
+                path: "/Volumes/Media/MoviesB".to_string(),
+                is_default: true,
+            }],
+            None,
+        )
+        .await
+        .expect("second movie library should be created");
+    let view_permissions = [scryer_domain::LibraryPermission::View];
+    let viewer = library_permission_user_with_grants(
+        "movie-multi-library-viewer",
+        &[
+            (library_a_id.as_str(), view_permissions.as_slice()),
+            (library_b.id.as_str(), view_permissions.as_slice()),
+        ],
+    );
+    let mut title_a = test_title(
+        "title-library-a",
+        "Library A Title",
+        MediaFacet::Movie,
+        vec![("tmdb_movie", "603")],
+    );
+    title_a.library_id = library_a_id.clone();
+    title_a.genres = vec!["Drama".to_string()];
+    let mut title_b = test_title(
+        "title-library-b",
+        "Library B Title",
+        MediaFacet::Movie,
+        vec![("tmdb_movie", "604")],
+    );
+    title_b.library_id = library_b.id.clone();
+    title_b.genres = vec!["Drama".to_string()];
+    titles.store.lock().await.extend([title_a, title_b]);
+
+    *discovery.state.lock().await = Some(DiscoverySyncStateRecord {
+        last_success_generation_id: Some("context-run".to_string()),
+        updated_at: observed_at,
+        ..DiscoverySyncStateRecord::default()
+    });
+    let mut library_a_recommendation = discovery_item_record(
+        "context-run",
+        "context-run",
+        None,
+        "tmdb:movie:700",
+        "Library A Recommendation",
+        "movie",
+        100.0,
+        &["Drama"],
+        &[],
+        false,
+        true,
+    );
+    library_a_recommendation.library_provenance = vec![DiscoveryItemLibraryProvenanceRecord {
+        subject_key: "tmdb:movie:603".to_string(),
+        title_id: Some("title-library-a".to_string()),
+        library_id: Some(library_a_id.clone()),
+    }];
+    library_a_recommendation.matched_subject_keys = vec!["tmdb:movie:603".to_string()];
+    library_a_recommendation.matched_subject_count = 1;
+    let mut library_b_recommendation = discovery_item_record(
+        "context-run",
+        "context-run",
+        None,
+        "tmdb:movie:800",
+        "Library B Recommendation",
+        "movie",
+        90.0,
+        &["Drama"],
+        &[],
+        false,
+        true,
+    );
+    library_b_recommendation.library_provenance = vec![DiscoveryItemLibraryProvenanceRecord {
+        subject_key: "tmdb:movie:604".to_string(),
+        title_id: Some("title-library-b".to_string()),
+        library_id: Some(library_b.id.clone()),
+    }];
+    library_b_recommendation.matched_subject_keys = vec!["tmdb:movie:604".to_string()];
+    library_b_recommendation.matched_subject_count = 1;
+    discovery
+        .items
+        .lock()
+        .await
+        .extend([library_a_recommendation, library_b_recommendation]);
+
+    let library_a_result = app
+        .catalog_discovery(
+            &viewer,
+            CatalogDiscoveryQuery {
+                facet: MediaFacet::Movie,
+                library_ids: vec![library_a_id],
+                include_unresolved: true,
+                limit_per_group: 6,
+                max_groups: 6,
+            },
+        )
+        .await
+        .expect("library A catalog discovery should load");
+    let library_a_titles = library_a_result
+        .groups
+        .iter()
+        .flat_map(|group| group.items.iter().map(|item| item.display_title.as_str()))
+        .collect::<Vec<_>>();
+    assert!(library_a_titles.contains(&"Library A Recommendation"));
+    assert!(!library_a_titles.contains(&"Library B Recommendation"));
+
+    let library_b_result = app
+        .catalog_discovery(
+            &viewer,
+            CatalogDiscoveryQuery {
+                facet: MediaFacet::Movie,
+                library_ids: vec![library_b.id],
+                include_unresolved: true,
+                limit_per_group: 6,
+                max_groups: 6,
+            },
+        )
+        .await
+        .expect("library B catalog discovery should load");
+    let library_b_titles = library_b_result
+        .groups
+        .iter()
+        .flat_map(|group| group.items.iter().map(|item| item.display_title.as_str()))
+        .collect::<Vec<_>>();
+    assert!(library_b_titles.contains(&"Library B Recommendation"));
+    assert!(!library_b_titles.contains(&"Library A Recommendation"));
 }
 
 #[tokio::test]
@@ -3566,10 +3828,15 @@ impl DiscoveryRepository for RecordingDiscoveryRepository {
         &self,
         run_id: &str,
         _owned_library_ids: &[String],
+        excluded_identity_keys: &[String],
         media_kind: &str,
         include_unresolved: bool,
         limit: i64,
     ) -> AppResult<CatalogDiscoveryCandidatesRecord> {
+        let excluded_identity_keys = excluded_identity_keys
+            .iter()
+            .map(String::as_str)
+            .collect::<HashSet<_>>();
         let mut items = self
             .items
             .lock()
@@ -3578,6 +3845,14 @@ impl DiscoveryRepository for RecordingDiscoveryRepository {
             .filter(|item| item.base_generation_id.as_deref() == Some(run_id))
             .filter(|item| item.tombstoned_at.is_none())
             .filter(|item| !item.owned_in_input)
+            .filter(|item| {
+                let identity_key = if item.target_key.trim().is_empty() {
+                    item.id.as_str()
+                } else {
+                    item.target_key.as_str()
+                };
+                !excluded_identity_keys.contains(identity_key.trim().to_ascii_lowercase().as_str())
+            })
             .filter(|item| include_unresolved || item.resolved)
             .filter(|item| recording_discovery_item_media_kind(item).as_deref() == Some(media_kind))
             .cloned()
@@ -3587,6 +3862,67 @@ impl DiscoveryRepository for RecordingDiscoveryRepository {
         let limit = limit.max(0) as usize;
         items.truncate(limit);
         Ok(CatalogDiscoveryCandidatesRecord { items, total_count })
+    }
+
+    async fn list_catalog_public_discovery_sections(
+        &self,
+        run_id: &str,
+        _owned_library_ids: &[String],
+        excluded_identity_keys: &[String],
+        media_kind: &str,
+        include_unresolved: bool,
+        limit_per_section: i64,
+    ) -> AppResult<Vec<CatalogDiscoverySectionCandidatesRecord>> {
+        let excluded_identity_keys = excluded_identity_keys
+            .iter()
+            .map(String::as_str)
+            .collect::<HashSet<_>>();
+        let sections = self.list_discovery_sections(run_id, Some("public")).await?;
+        let all_items = self.items.lock().await.clone();
+        let mut records = Vec::new();
+        for section in sections {
+            if section
+                .section_type
+                .trim()
+                .eq_ignore_ascii_case("COMPLETE_THE_COLLECTION")
+            {
+                continue;
+            }
+            let mut items = all_items
+                .iter()
+                .filter(|item| item.base_generation_id.as_deref() == Some(run_id))
+                .filter(|item| item.tombstoned_at.is_none())
+                .filter(|item| item.section_id.as_deref() == Some(section.section_id.as_str()))
+                .filter(|item| !item.owned_in_input)
+                .filter(|item| {
+                    let identity_key = if item.target_key.trim().is_empty() {
+                        item.id.as_str()
+                    } else {
+                        item.target_key.as_str()
+                    };
+                    !excluded_identity_keys
+                        .contains(identity_key.trim().to_ascii_lowercase().as_str())
+                })
+                .filter(|item| include_unresolved || item.resolved)
+                .filter(|item| {
+                    recording_discovery_item_media_kind(item).as_deref() == Some(media_kind)
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            recording_dedupe_preserving_order(&mut items);
+            let total_count = items.len() as i64;
+            items.truncate(limit_per_section.max(1) as usize);
+            if !items.is_empty() {
+                records.push(CatalogDiscoverySectionCandidatesRecord {
+                    section_id: section.section_id,
+                    section_type: section.section_type,
+                    title: Some(section.title),
+                    total_count,
+                    items,
+                });
+            }
+        }
+        Ok(records)
     }
 
     async fn list_catalog_personalized_discovery_items(

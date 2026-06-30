@@ -1,13 +1,14 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use scryer_application::{
-    AppResult, CatalogDiscoveryCandidatesRecord, DiscoveryContextIncrementalCommit,
-    DiscoveryContextSnapshotCommit, DiscoveryFacetRecord, DiscoveryItemLibraryProvenanceRecord,
-    DiscoveryItemRecord, DiscoveryItemsPageRecord, DiscoveryItemsStorageQuery,
-    DiscoveryPendingContextChangeRecord, DiscoveryPruneReport, DiscoveryPublicFeedCommit,
-    DiscoveryRankComponentRecord, DiscoveryRawPageRecord, DiscoveryRepository,
-    DiscoverySectionItemsRecord, DiscoverySectionRecord, DiscoverySourceTagRecord,
-    DiscoverySubmittedSubjectRecord, DiscoverySyncRunRecord, DiscoverySyncStateRecord,
+    AppResult, CatalogDiscoveryCandidatesRecord, CatalogDiscoverySectionCandidatesRecord,
+    DiscoveryContextIncrementalCommit, DiscoveryContextSnapshotCommit, DiscoveryFacetRecord,
+    DiscoveryItemLibraryProvenanceRecord, DiscoveryItemRecord, DiscoveryItemsPageRecord,
+    DiscoveryItemsStorageQuery, DiscoveryPendingContextChangeRecord, DiscoveryPruneReport,
+    DiscoveryPublicFeedCommit, DiscoveryRankComponentRecord, DiscoveryRawPageRecord,
+    DiscoveryRepository, DiscoverySectionItemsRecord, DiscoverySectionRecord,
+    DiscoverySourceTagRecord, DiscoverySubmittedSubjectRecord, DiscoverySyncRunRecord,
+    DiscoverySyncStateRecord,
 };
 use serde_json::Value as JsonValue;
 use std::collections::{HashMap, HashSet};
@@ -754,6 +755,7 @@ impl DiscoveryRepository for DiscoveryStore {
         &self,
         run_id: &str,
         owned_library_ids: &[String],
+        excluded_identity_keys: &[String],
         media_kind: &str,
         include_unresolved: bool,
         limit: i64,
@@ -762,9 +764,31 @@ impl DiscoveryRepository for DiscoveryStore {
             &self.datastore,
             run_id,
             owned_library_ids,
+            excluded_identity_keys,
             media_kind,
             include_unresolved,
             limit.clamp(1, 1_000),
+        )
+        .await
+    }
+
+    async fn list_catalog_public_discovery_sections(
+        &self,
+        run_id: &str,
+        owned_library_ids: &[String],
+        excluded_identity_keys: &[String],
+        media_kind: &str,
+        include_unresolved: bool,
+        limit_per_section: i64,
+    ) -> AppResult<Vec<CatalogDiscoverySectionCandidatesRecord>> {
+        fetch_catalog_public_sections(
+            &self.datastore,
+            run_id,
+            owned_library_ids,
+            excluded_identity_keys,
+            media_kind,
+            include_unresolved,
+            limit_per_section.clamp(1, 1_000),
         )
         .await
     }
@@ -1172,6 +1196,7 @@ async fn fetch_catalog_public_items(
     datastore: &StoreDatastore,
     run_id: &str,
     owned_library_ids: &[String],
+    excluded_identity_keys: &[String],
     media_kind: &str,
     include_unresolved: bool,
     limit: i64,
@@ -1199,6 +1224,15 @@ async fn fetch_catalog_public_items(
              )"
         )
     };
+    let excluded_identity_clause = if excluded_identity_keys.is_empty() {
+        String::new()
+    } else {
+        let placeholders = placeholders(excluded_identity_keys.len());
+        args.extend(excluded_identity_keys.iter().cloned().map(SqlArg::Text));
+        format!(
+            " AND CASE WHEN TRIM(i.target_key) = '' THEN LOWER(i.id) ELSE LOWER(TRIM(i.target_key)) END NOT IN ({placeholders})"
+        )
+    };
     let sql = format!(
         "WITH candidates AS (
             SELECT {}, s.sort_index AS section_sort_index, si.sort_index AS section_item_sort_index,
@@ -1220,6 +1254,7 @@ async fn fetch_catalog_public_items(
               AND UPPER(TRIM(s.section_type)) <> 'COMPLETE_THE_COLLECTION'
               AND {}
               {owned_clause}
+              {excluded_identity_clause}
               {resolved_clause}
          ),
          deduped AS (
@@ -1240,6 +1275,133 @@ async fn fetch_catalog_public_items(
     );
     args.push(SqlArg::I64(limit));
     fetch_catalog_candidates_with_sql(datastore, &sql, &args).await
+}
+
+async fn fetch_catalog_public_sections(
+    datastore: &StoreDatastore,
+    run_id: &str,
+    owned_library_ids: &[String],
+    excluded_identity_keys: &[String],
+    media_kind: &str,
+    include_unresolved: bool,
+    limit_per_section: i64,
+) -> AppResult<Vec<CatalogDiscoverySectionCandidatesRecord>> {
+    let resolved_clause = if include_unresolved {
+        ""
+    } else {
+        " AND i.resolved = TRUE"
+    };
+    let mut args = vec![
+        SqlArg::Text(run_id.to_string()),
+        SqlArg::Text(run_id.to_string()),
+    ];
+    let owned_clause = if owned_library_ids.is_empty() {
+        String::new()
+    } else {
+        let placeholders = placeholders(owned_library_ids.len());
+        args.extend(owned_library_ids.iter().cloned().map(SqlArg::Text));
+        format!(
+            " AND NOT EXISTS (
+                SELECT 1
+                FROM titles owned
+                WHERE owned.id = i.resolved_title_id
+                  AND owned.library_id IN ({placeholders})
+             )"
+        )
+    };
+    let excluded_identity_clause = if excluded_identity_keys.is_empty() {
+        String::new()
+    } else {
+        let placeholders = placeholders(excluded_identity_keys.len());
+        args.extend(excluded_identity_keys.iter().cloned().map(SqlArg::Text));
+        format!(
+            " AND CASE WHEN TRIM(i.target_key) = '' THEN LOWER(i.id) ELSE LOWER(TRIM(i.target_key)) END NOT IN ({placeholders})"
+        )
+    };
+    let sql = format!(
+        "WITH candidates AS (
+            SELECT {}, s.section_id AS result_section_id,
+                   s.section_type AS result_section_type,
+                   s.title AS result_section_title,
+                   s.sort_index AS section_sort_index,
+                   si.sort_index AS section_item_sort_index,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY s.section_id,
+                                    CASE WHEN TRIM(i.target_key) = '' THEN i.id ELSE i.target_key END
+                       ORDER BY si.sort_index ASC, i.id ASC
+                   ) AS identity_rank
+            FROM discovery_section_items si
+            JOIN discovery_sections s
+              ON s.run_id = si.run_id
+             AND s.section_id = si.section_id
+            JOIN discovery_items i
+              ON i.id = si.item_id
+            WHERE si.run_id = {{}}
+              AND i.base_generation_id = {{}}
+              AND i.tombstoned_at IS NULL
+              AND i.owned_in_input = FALSE
+              AND s.surface = 'public'
+              AND UPPER(TRIM(s.section_type)) <> 'COMPLETE_THE_COLLECTION'
+              AND {}
+              {owned_clause}
+              {excluded_identity_clause}
+              {resolved_clause}
+         ),
+         deduped AS (
+            SELECT * FROM candidates WHERE identity_rank = 1
+         ),
+         ranked AS (
+            SELECT *,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY result_section_id
+                       ORDER BY section_sort_index ASC, section_item_sort_index ASC, id ASC
+                   ) AS section_rank,
+                   COUNT(*) OVER (PARTITION BY result_section_id) AS section_total_count
+            FROM deduped
+         )
+         SELECT {}, result_section_id, result_section_type, result_section_title, section_total_count
+         FROM ranked
+         WHERE section_rank <= {{}}
+         ORDER BY section_sort_index ASC, section_rank ASC, id ASC",
+        qualified_columns("i", ITEM_COLUMNS),
+        authoritative_media_kind_clause("i", media_kind),
+        ITEM_COLUMNS.join(", ")
+    );
+    args.push(SqlArg::I64(limit_per_section));
+    let rows = SqlRuntime::fetch_all(datastore.read_exec(), &sql, &args).await?;
+    let mut item_metadata = Vec::new();
+    let mut items = Vec::new();
+    for row in rows {
+        item_metadata.push((
+            row.text("result_section_id")?,
+            row.text("result_section_type")?,
+            row.opt_text("result_section_title")?,
+            row.i64("section_total_count")?,
+        ));
+        items.push(item_from_row(&row)?);
+    }
+    hydrate_discovery_items(datastore, &mut items).await?;
+
+    let mut sections = Vec::<CatalogDiscoverySectionCandidatesRecord>::new();
+    for (item, (section_id, section_type, title, total_count)) in
+        items.into_iter().zip(item_metadata)
+    {
+        if let Some(section) = sections
+            .last_mut()
+            .filter(|section| section.section_id == section_id)
+        {
+            section.items.push(item);
+        } else {
+            sections.push(CatalogDiscoverySectionCandidatesRecord {
+                section_id,
+                section_type,
+                title,
+                total_count,
+                items: vec![item],
+            });
+        }
+    }
+    Ok(sections)
 }
 
 async fn fetch_catalog_personalized_items(

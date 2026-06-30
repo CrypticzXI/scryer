@@ -357,46 +357,18 @@ pub(super) fn episodic_title_work(
     }
 }
 
-async fn scan_title_files_for_library_scan_session(
-    library_scanner: Arc<dyn LibraryScanner>,
-    title_id: &str,
-    folder_path: &Path,
-) -> Vec<LibraryFile> {
-    let started_at = Instant::now();
-    let folder_path_display = folder_path.display().to_string();
-    let pre_scan = match scan_episodic_title_directory_for_progress_metrics(
-        library_scanner,
-        folder_path,
-    )
-    .await
-    {
-        Ok(result) => result,
-        Err(error) => {
-            warn!(
-                error = %error,
-                title_id = %title_id,
-                folder_path = %folder_path_display,
-                "failed to scan episodic title folder for library scan progress"
-            );
-            return Vec::new();
-        }
-    };
-
-    let files_count = pre_scan.files.len();
-
-    debug!(
-        title_id = %title_id,
-        path = %folder_path_display,
-        files = files_count,
-        walk_ms = pre_scan.walk_ms,
-        stat_ms = pre_scan.stat_ms,
-        analyze_ms = 0u64,
-        db_ms = 0u64,
-        elapsed_ms = elapsed_ms_u64(started_at),
-        "episodic title directory scan completed"
-    );
-
-    pre_scan.files
+fn deferred_episodic_title_work(
+    title: Title,
+    mode: LibraryScanTitleWalkMode,
+    created_in_scan: bool,
+) -> LibraryScanTitleWork {
+    LibraryScanTitleWork {
+        title,
+        facet_plan: LibraryScanTitleFacetPlan::Episodic,
+        discovered_files: None,
+        mode,
+        created_in_scan,
+    }
 }
 
 pub(super) async fn scan_episodic_title_directory_for_progress_metrics(
@@ -417,22 +389,10 @@ async fn merge_series_title_work_for_index(
     mode: LibraryScanTitleWalkMode,
     created_in_scan: bool,
 ) {
-    let title_id = existing_titles[index].id.clone();
-    let pre_scanned_files = scan_title_files_for_library_scan_session(
-        app.services.library.library_scanner.clone(),
-        &title_id,
-        folder_path,
-    )
-    .await;
     ensure_title_folder_path_if_missing(app, &mut existing_titles[index], folder_path).await;
     merge_library_scan_title_work(
         workset,
-        episodic_title_work(
-            existing_titles[index].clone(),
-            pre_scanned_files,
-            mode,
-            created_in_scan,
-        ),
+        deferred_episodic_title_work(existing_titles[index].clone(), mode, created_in_scan),
     );
 }
 
@@ -1394,6 +1354,8 @@ pub(super) async fn process_resolved_movie_refresh_candidate(
 mod tests {
     use super::*;
     use async_trait::async_trait;
+    use chrono::Utc;
+    use scryer_domain::MediaFacet;
     use std::sync::{Arc, Mutex};
 
     #[derive(Clone, Default)]
@@ -1474,6 +1436,109 @@ mod tests {
             source_signature_scheme: None,
             source_signature_value: None,
         }
+    }
+
+    fn build_series_title(id: &str) -> Title {
+        Title {
+            id: id.to_string(),
+            library_id: "library".to_string(),
+            name: "Test Series".to_string(),
+            facet: MediaFacet::Series,
+            monitored: true,
+            tags: Vec::new(),
+            external_ids: Vec::new(),
+            root_folder_id: "root".to_string(),
+            created_by: None,
+            created_at: Utc::now(),
+            year: None,
+            overview: None,
+            poster_url: None,
+            poster_source_url: None,
+            background_url: None,
+            background_source_url: None,
+            sort_title: None,
+            catalog_sort_key: "test series".to_string(),
+            slug: None,
+            imdb_id: None,
+            runtime_minutes: None,
+            genres: Vec::new(),
+            content_status: None,
+            language: None,
+            first_aired: None,
+            network: None,
+            studio: None,
+            country: None,
+            aliases: Vec::new(),
+            tagged_aliases: Vec::new(),
+            metadata_language: None,
+            metadata_fetched_at: None,
+            min_availability: None,
+            digital_release_date: None,
+            folder_path: None,
+        }
+    }
+
+    #[test]
+    fn deferred_episodic_title_work_requests_full_file_walk() {
+        let work = deferred_episodic_title_work(
+            build_series_title("title-1"),
+            LibraryScanTitleWalkMode::Full,
+            false,
+        );
+
+        assert!(work.discovered_files.is_none());
+    }
+
+    #[test]
+    fn merge_library_scan_title_work_preserves_full_walk_requirement() {
+        let title = build_series_title("title-1");
+        let mut workset = HashMap::new();
+
+        assert!(merge_library_scan_title_work(
+            &mut workset,
+            episodic_title_work(
+                title.clone(),
+                vec![build_library_file("/library/Show/loose.mkv")],
+                LibraryScanTitleWalkMode::Full,
+                false,
+            ),
+        ));
+        assert_eq!(
+            workset
+                .get("title-1")
+                .and_then(|work| work.discovered_files.as_ref())
+                .map(Vec::len),
+            Some(1),
+        );
+
+        assert!(merge_library_scan_title_work(
+            &mut workset,
+            deferred_episodic_title_work(title.clone(), LibraryScanTitleWalkMode::Full, false),
+        ));
+        assert!(
+            workset
+                .get("title-1")
+                .expect("merged title work")
+                .discovered_files
+                .is_none()
+        );
+
+        assert!(merge_library_scan_title_work(
+            &mut workset,
+            episodic_title_work(
+                title,
+                vec![build_library_file("/library/Show/another.mkv")],
+                LibraryScanTitleWalkMode::Full,
+                false,
+            ),
+        ));
+        assert!(
+            workset
+                .get("title-1")
+                .expect("merged title work")
+                .discovered_files
+                .is_none()
+        );
     }
 
     #[tokio::test]

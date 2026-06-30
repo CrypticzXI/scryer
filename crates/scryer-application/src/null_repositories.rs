@@ -287,11 +287,24 @@ impl DiscoveryRepository for NullDiscoveryRepository {
         &self,
         _run_id: &str,
         _owned_library_ids: &[String],
+        _excluded_identity_keys: &[String],
         _media_kind: &str,
         _include_unresolved: bool,
         _limit: i64,
     ) -> AppResult<CatalogDiscoveryCandidatesRecord> {
         Ok(CatalogDiscoveryCandidatesRecord::default())
+    }
+
+    async fn list_catalog_public_discovery_sections(
+        &self,
+        _run_id: &str,
+        _owned_library_ids: &[String],
+        _excluded_identity_keys: &[String],
+        _media_kind: &str,
+        _include_unresolved: bool,
+        _limit_per_section: i64,
+    ) -> AppResult<Vec<crate::ports::CatalogDiscoverySectionCandidatesRecord>> {
+        Ok(Vec::new())
     }
 
     async fn list_catalog_personalized_discovery_items(

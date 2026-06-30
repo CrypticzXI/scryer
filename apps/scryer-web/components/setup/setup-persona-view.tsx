@@ -1,6 +1,11 @@
 import { Headphones, Scale, SlidersHorizontal, Zap, MonitorSmartphone } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { SetupPanel, SetupStepHeader, SETUP_PRIMARY_CTA } from "./setup-chrome";
+import {
+  SetupBackButton,
+  SetupPanel,
+  SetupStepHeader,
+  SETUP_PRIMARY_CTA,
+} from "./setup-chrome";
 import type {
   ScoringPersonaId,
   QualityTargetId,
@@ -135,9 +140,9 @@ export function SetupPersonaView({
       </div>
 
       <div className="flex items-center justify-between pt-2">
-        <Button id="setup-persona-back" variant="ghost" onClick={onBack}>
+        <SetupBackButton id="setup-persona-back" onClick={onBack}>
           {t("setup.back")}
-        </Button>
+        </SetupBackButton>
         <div className="flex items-center gap-3">
           {onSkip && (
             <button

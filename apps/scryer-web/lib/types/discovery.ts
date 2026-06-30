@@ -134,6 +134,7 @@ export type CatalogDiscoveryItem = Pick<
 
 export type CatalogDiscoveryGroupKind =
   | "PUBLIC_TOP"
+  | "PUBLIC_SECTION"
   | "GENRE_AFFINITY"
   | "THEME_AFFINITY"
   | "ACCLAIMED"

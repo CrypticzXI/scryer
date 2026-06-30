@@ -206,9 +206,15 @@ fn merge_library_scan_title_work(
                 }
             }
 
-            if let Some(files) = work.discovered_files.take() {
-                let existing_files = existing.discovered_files.get_or_insert_with(Vec::new);
-                append_unique_library_files(existing_files, files);
+            match work.discovered_files.take() {
+                Some(files) => {
+                    if let Some(existing_files) = existing.discovered_files.as_mut() {
+                        append_unique_library_files(existing_files, files);
+                    }
+                }
+                None => {
+                    existing.discovered_files = None;
+                }
             }
 
             if let (

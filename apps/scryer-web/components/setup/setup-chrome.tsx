@@ -1,5 +1,6 @@
 import * as React from "react";
-import type { LucideIcon } from "lucide-react";
+import { ArrowLeft, type LucideIcon } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
 /**
@@ -9,6 +10,37 @@ import { cn } from "@/lib/utils";
  */
 export const SETUP_PRIMARY_CTA =
   "border-0 text-white [background-image:var(--scry-accent-grad)] shadow-[0_12px_28px_rgba(var(--scry-accent-rgb),0.35)] transition hover:brightness-110";
+
+export function SetupBackButton({
+  id,
+  onClick,
+  disabled,
+  className,
+  children,
+}: {
+  id?: string;
+  onClick: () => void;
+  disabled?: boolean;
+  className?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <Button
+      id={id}
+      type="button"
+      variant="ghost"
+      onClick={onClick}
+      disabled={disabled}
+      className={cn(
+        "gap-2 px-2 text-[var(--scry-muted2)] transition hover:bg-[var(--scry-hover)] hover:text-[var(--scry-ink2)]",
+        className,
+      )}
+    >
+      <ArrowLeft className="h-4 w-4" />
+      {children}
+    </Button>
+  );
+}
 
 /**
  * Glass card that wraps a setup step's content so steps read as surfaces on the

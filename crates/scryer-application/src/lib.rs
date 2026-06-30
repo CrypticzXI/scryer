@@ -96,9 +96,9 @@ pub use download_client_config::resolve_download_client_base_url_from_config_jso
 pub use import::completed_download as completed_download_handler;
 pub use ports::{
     CatalogDiscoveryCandidatesRecord, CatalogDiscoveryGroup, CatalogDiscoveryGroupKind,
-    CatalogDiscoveryQuery, CatalogDiscoveryResult, CatalogDiscoverySurface,
-    DISCOVERY_DEFAULT_SCOPE_KEY, DiscoveryContextIncrementalCommit, DiscoveryContextSnapshotCommit,
-    DiscoveryFacetRecord, DiscoveryHomeQuery, DiscoveryHomeResult,
+    CatalogDiscoveryQuery, CatalogDiscoveryResult, CatalogDiscoverySectionCandidatesRecord,
+    CatalogDiscoverySurface, DISCOVERY_DEFAULT_SCOPE_KEY, DiscoveryContextIncrementalCommit,
+    DiscoveryContextSnapshotCommit, DiscoveryFacetRecord, DiscoveryHomeQuery, DiscoveryHomeResult,
     DiscoveryItemLibraryProvenanceRecord, DiscoveryItemRecord, DiscoveryItemsPageRecord,
     DiscoveryItemsQuery, DiscoveryItemsResult, DiscoveryItemsStorageQuery,
     DiscoveryPendingContextChangeRecord, DiscoveryPruneReport, DiscoveryPublicFeedCommit,

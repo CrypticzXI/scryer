@@ -1610,7 +1610,7 @@ pub fn catalog_discovery_query_from_input(input: CatalogDiscoveryInput) -> Catal
         limit_per_group: input
             .limit_per_group
             .map(|value| value.max(1) as usize)
-            .unwrap_or(6),
+            .unwrap_or(12),
         max_groups: input
             .max_groups
             .map(|value| value.max(1) as usize)
@@ -1676,6 +1676,7 @@ fn from_catalog_discovery_group_kind(
 ) -> CatalogDiscoveryGroupKindValue {
     match kind {
         CatalogDiscoveryGroupKind::PublicTop => CatalogDiscoveryGroupKindValue::PublicTop,
+        CatalogDiscoveryGroupKind::PublicSection => CatalogDiscoveryGroupKindValue::PublicSection,
         CatalogDiscoveryGroupKind::GenreAffinity => CatalogDiscoveryGroupKindValue::GenreAffinity,
         CatalogDiscoveryGroupKind::ThemeAffinity => CatalogDiscoveryGroupKindValue::ThemeAffinity,
         CatalogDiscoveryGroupKind::Acclaimed => CatalogDiscoveryGroupKindValue::Acclaimed,

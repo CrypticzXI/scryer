@@ -4,7 +4,12 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { FolderBrowserDialog } from "./folder-browser-dialog";
-import { SetupPanel, SetupStepHeader, SETUP_PRIMARY_CTA } from "./setup-chrome";
+import {
+  SetupBackButton,
+  SetupPanel,
+  SetupStepHeader,
+  SETUP_PRIMARY_CTA,
+} from "./setup-chrome";
 
 interface SetupMediaPathsViewProps {
   t: (key: string) => string;
@@ -151,7 +156,9 @@ export function SetupMediaPathsView({
         )}
       </div>
       <div className="flex items-center justify-between pt-2">
-        <Button id="setup-media-paths-back" variant="ghost" onClick={onBack}>{t("setup.back")}</Button>
+        <SetupBackButton id="setup-media-paths-back" onClick={onBack}>
+          {t("setup.back")}
+        </SetupBackButton>
         <div className="flex items-center gap-3">
           {onSkip && (
             <Button id="setup-media-paths-skip" type="button" variant="link" onClick={onSkip}>

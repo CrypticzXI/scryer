@@ -352,6 +352,8 @@ function catalogDiscoveryGroupLabel(
   switch (group.kind) {
     case "PUBLIC_TOP":
       return titleContextWeeklyLabel(view, t);
+    case "PUBLIC_SECTION":
+      return group.labelValue ?? titleContextWeeklyLabel(view, t);
     case "GENRE_AFFINITY":
       return t("title.contextForYouGenre", {
         genre: group.labelValue ?? "",
@@ -375,6 +377,7 @@ function catalogDiscoveryGroupReason(
 ) {
   switch (group.kind) {
     case "PUBLIC_TOP":
+    case "PUBLIC_SECTION":
       return t("title.contextForYouReasonWeekly");
     case "GENRE_AFFINITY":
       return t("title.contextForYouReasonGenre", {
@@ -565,17 +568,21 @@ function TitleContextForYouPanel({
               <h3 className="mx-0.5 mb-2.5 text-[11px] font-bold uppercase tracking-[0.06em] text-[var(--scry-faint2)]">
                 {group.label}
               </h3>
-              <div className="grid grid-cols-[repeat(auto-fill,minmax(92px,1fr))] gap-3">
+              <div className="flex gap-[11px] overflow-x-auto pb-1 pr-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
                 {group.recommendations.map((recommendation) => (
-                  <TitleContextRecommendationButton
+                  <div
                     key={`${group.id}-${recommendation.item.id}`}
-                    recommendation={recommendation}
-                    view={view}
-                    t={t}
-                    canManageTitle={canManageTitle}
-                    canRequestMedia={canRequestMedia}
-                    onAction={onDiscoveryAction}
-                  />
+                    className="w-24 shrink-0"
+                  >
+                    <TitleContextRecommendationButton
+                      recommendation={recommendation}
+                      view={view}
+                      t={t}
+                      canManageTitle={canManageTitle}
+                      canRequestMedia={canRequestMedia}
+                      onAction={onDiscoveryAction}
+                    />
+                  </div>
                 ))}
               </div>
             </section>
@@ -3244,9 +3251,7 @@ export function MediaContentView({
                 }
                 const contextPanelGridTemplateColumns =
                   contextPanelAvailable && !selectedTitleLayoutActive
-                    ? collectionViewMode === "poster"
-                      ? "minmax(0,1fr) clamp(320px,30%,440px)"
-                      : "minmax(0,1fr) clamp(700px,50%,1030px)"
+                    ? "minmax(0,1fr) clamp(700px,50%,1030px)"
                     : undefined;
                 const selectedTitleGridTemplateColumns =
                   selectedTitleListInlineActive || selectedTitlePosterLayoutActive

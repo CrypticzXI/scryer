@@ -6,8 +6,8 @@ use crate::library_scan::{
 };
 use crate::ports::{
     CatalogDiscoveryGroup, CatalogDiscoveryGroupKind, CatalogDiscoveryQuery,
-    CatalogDiscoveryResult, CatalogDiscoverySurface, DISCOVERY_DEFAULT_SCOPE_KEY,
-    DiscoveryFacetRecord, DiscoveryHomeQuery, DiscoveryHomeResult,
+    CatalogDiscoveryResult, CatalogDiscoverySectionCandidatesRecord, CatalogDiscoverySurface,
+    DISCOVERY_DEFAULT_SCOPE_KEY, DiscoveryFacetRecord, DiscoveryHomeQuery, DiscoveryHomeResult,
     DiscoveryItemLibraryProvenanceRecord, DiscoveryItemRecord, DiscoveryItemsQuery,
     DiscoveryItemsResult, DiscoveryItemsStorageQuery, DiscoveryPendingContextChangeRecord,
     DiscoveryRankComponentRecord, DiscoveryRawPageRecord, DiscoverySectionItemsRecord,
@@ -371,26 +371,22 @@ impl AppUseCase {
         let owned_visibility = self
             .catalog_owned_visibility(query.facet, &effective_library_id_list)
             .await?;
+        let excluded_public_identity_keys = owned_visibility.excluded_discovery_identity_keys();
 
-        let public_candidates =
+        let public_sections =
             if let Some(public_run_id) = state.last_public_feed_generation_id.as_deref() {
-                let mut candidates = self
-                    .services
+                self.services
                     .library
                     .discovery
-                    .list_catalog_public_discovery_items(
+                    .list_catalog_public_discovery_sections(
                         public_run_id,
                         &effective_library_id_list,
+                        &excluded_public_identity_keys,
                         media_kind,
                         query.include_unresolved,
                         candidate_limit as i64,
                     )
-                    .await?;
-                candidates
-                    .items
-                    .retain(|item| !owned_visibility.item_is_owned(item));
-                candidates.total_count = candidates.items.len() as i64;
-                candidates
+                    .await?
             } else {
                 Default::default()
             };
@@ -430,15 +426,19 @@ impl AppUseCase {
 
         let mut groups = Vec::new();
         let mut emitted_item_keys = HashSet::new();
-        if let Some(group) = catalog_public_top_group(
-            public_candidates.items,
-            public_candidates.total_count,
-            media_kind,
-            limit,
-            &mut emitted_item_keys,
-        ) {
-            groups.push(group);
+        let mut public_sections = public_sections.into_iter();
+        if let Some(public_top_section) = public_sections.next() {
+            if let Some(group) = catalog_public_top_group(
+                public_top_section,
+                media_kind,
+                limit,
+                &mut emitted_item_keys,
+            ) {
+                groups.push(group);
+            }
         }
+        let remaining_public_sections = public_sections.collect::<Vec<_>>();
+        let personalized_group_start = groups.len();
 
         if !personalized_candidates.is_empty() && groups.len() < max_groups {
             let library_profile = self
@@ -452,6 +452,19 @@ impl AppUseCase {
                 max_groups,
                 &mut emitted_item_keys,
             );
+        }
+
+        if groups.len() == personalized_group_start {
+            for public_section in remaining_public_sections {
+                if groups.len() >= max_groups {
+                    break;
+                }
+                if let Some(group) =
+                    catalog_public_section_group(public_section, limit, &mut emitted_item_keys)
+                {
+                    groups.push(group);
+                }
+            }
         }
 
         Ok(CatalogDiscoveryResult {
@@ -835,6 +848,7 @@ struct DiscoveryLibraryAffinityProfile {
 struct CatalogOwnedVisibility {
     title_ids: HashSet<String>,
     keys: HashSet<String>,
+    identity_keys: HashSet<String>,
 }
 
 impl CatalogOwnedVisibility {
@@ -844,6 +858,7 @@ impl CatalogOwnedVisibility {
             visibility.title_ids.insert(title.id.clone());
             add_catalog_owned_external_keys(
                 &mut visibility.keys,
+                &mut visibility.identity_keys,
                 "imdb",
                 title.imdb_id.as_deref(),
                 title.facet.clone(),
@@ -851,6 +866,7 @@ impl CatalogOwnedVisibility {
             for external_id in &title.external_ids {
                 add_catalog_owned_external_keys(
                     &mut visibility.keys,
+                    &mut visibility.identity_keys,
                     &external_id.source,
                     Some(external_id.value.as_str()),
                     title.facet.clone(),
@@ -858,6 +874,12 @@ impl CatalogOwnedVisibility {
             }
         }
         visibility
+    }
+
+    fn excluded_discovery_identity_keys(&self) -> Vec<String> {
+        let mut keys = self.identity_keys.iter().cloned().collect::<Vec<_>>();
+        keys.sort();
+        keys
     }
 
     fn item_is_owned(&self, item: &DiscoveryItemRecord) -> bool {
@@ -879,21 +901,52 @@ impl CatalogOwnedVisibility {
 
 fn add_catalog_owned_external_keys(
     keys: &mut HashSet<String>,
+    identity_keys: &mut HashSet<String>,
     source: &str,
     value: Option<&str>,
     facet: MediaFacet,
 ) {
-    let source = normalize_catalog_owned_key(source);
-    let value = normalize_catalog_owned_key(value.unwrap_or_default());
-    if source.is_empty() || value.is_empty() {
+    let raw_source = normalize_catalog_owned_key(source);
+    let raw_value = normalize_catalog_owned_key(value.unwrap_or_default());
+    if raw_source.is_empty() || raw_value.is_empty() {
         return;
     }
-    keys.insert(format!("{source}:{value}"));
-    keys.insert(format!("{source}:{}:{value}", facet.as_str()));
-    if facet == MediaFacet::Anime {
-        keys.insert(format!("{source}:series:{value}"));
-        keys.insert(format!("{source}:anime:{value}"));
+
+    let mut source_aliases = HashSet::from([raw_source]);
+    if let Some(canonical_source) = normalize_supported_external_id_source(source) {
+        source_aliases.insert(canonical_source);
     }
+    let mut value_aliases = HashSet::from([raw_value]);
+    if let Some(canonical_value) = parse_positive_external_numeric_id(value.unwrap_or_default()) {
+        value_aliases.insert(canonical_value.to_string());
+    }
+
+    for source in source_aliases {
+        for value in &value_aliases {
+            insert_catalog_owned_key(keys, identity_keys, &source, value);
+            insert_catalog_owned_key(
+                keys,
+                identity_keys,
+                &source,
+                &format!("{}:{value}", facet.as_str()),
+            );
+            if facet == MediaFacet::Anime {
+                insert_catalog_owned_key(keys, identity_keys, &source, &format!("series:{value}"));
+                insert_catalog_owned_key(keys, identity_keys, &source, &format!("anime:{value}"));
+            }
+        }
+    }
+}
+
+fn insert_catalog_owned_key(
+    keys: &mut HashSet<String>,
+    identity_keys: &mut HashSet<String>,
+    source: &str,
+    value: &str,
+) {
+    let key = format!("{source}:{value}");
+    keys.insert(key.clone());
+    identity_keys.insert(key);
 }
 
 fn discovery_item_ownership_keys(item: &DiscoveryItemRecord) -> HashSet<String> {
@@ -931,7 +984,7 @@ fn discovery_media_kind_for_facet(facet: MediaFacet) -> &'static str {
 }
 
 fn catalog_discovery_group_limit(limit: usize) -> usize {
-    if limit == 0 { 6 } else { limit.clamp(1, 12) }
+    if limit == 0 { 12 } else { limit.clamp(1, 12) }
 }
 
 fn catalog_discovery_max_groups(max_groups: usize) -> usize {
@@ -947,8 +1000,7 @@ fn catalog_discovery_candidate_limit(limit: usize, max_groups: usize) -> usize {
 }
 
 fn catalog_public_top_group(
-    items: Vec<DiscoveryItemRecord>,
-    total_count: i64,
+    section: CatalogDiscoverySectionCandidatesRecord,
     media_kind: &str,
     limit: usize,
     emitted_item_keys: &mut HashSet<String>,
@@ -958,11 +1010,46 @@ fn catalog_public_top_group(
         CatalogDiscoveryGroupKind::PublicTop,
         CatalogDiscoverySurface::Public,
         None,
-        Some(total_count),
-        items,
+        Some(section.total_count),
+        section.items,
         limit,
         emitted_item_keys,
     )
+}
+
+fn catalog_public_section_group(
+    section: CatalogDiscoverySectionCandidatesRecord,
+    limit: usize,
+    emitted_item_keys: &mut HashSet<String>,
+) -> Option<CatalogDiscoveryGroup> {
+    let id = format!(
+        "public_section_{}",
+        normalized_catalog_group_id(&section.section_id)
+    );
+    let label_value = if section.section_id == "evergreen_popular" {
+        Some("Netflix Most Watched".to_string())
+    } else {
+        section.title.or_else(|| Some(section.section_type))
+    };
+    catalog_group_excluding_emitted(
+        id,
+        CatalogDiscoveryGroupKind::PublicSection,
+        CatalogDiscoverySurface::Public,
+        label_value,
+        Some(section.total_count),
+        section.items,
+        limit,
+        emitted_item_keys,
+    )
+}
+
+fn normalized_catalog_group_id(value: &str) -> String {
+    let normalized = normalize_discovery_affinity_key(value).replace(' ', "_");
+    if normalized.is_empty() {
+        "section".to_string()
+    } else {
+        normalized
+    }
 }
 
 fn catalog_personalized_groups(

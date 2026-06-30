@@ -1,6 +1,11 @@
 import { Check, Loader2, Search, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { SetupPanel, SetupStepHeader, SETUP_PRIMARY_CTA } from "./setup-chrome";
+import {
+  SetupBackButton,
+  SetupPanel,
+  SetupStepHeader,
+  SETUP_PRIMARY_CTA,
+} from "./setup-chrome";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input, signedIntegerInputProps } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -301,7 +306,9 @@ export function SetupIndexerView({
         )}
       </div>
       <div className="flex items-center justify-between pt-2">
-        <Button id="setup-indexer-back" variant="ghost" onClick={onBack}>{t("setup.back")}</Button>
+        <SetupBackButton id="setup-indexer-back" onClick={onBack}>
+          {t("setup.back")}
+        </SetupBackButton>
         <div className="flex items-center gap-3">
           {onSkip && (
             <Button id="setup-indexer-skip" type="button" variant="link" onClick={onSkip}>

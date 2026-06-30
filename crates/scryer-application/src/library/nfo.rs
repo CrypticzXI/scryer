@@ -117,9 +117,6 @@ fn parse_xml_nfo(content: &str, meta: &mut NfoMetadata) {
     let mut depth = 0usize;
     let mut uniqueid_type: Option<String> = None;
 
-    // Legacy <id> is lowest priority — only used if uniqueid/jellyfin tags don't
-    // provide the same ID. Defer until after the full parse.
-    let mut legacy_id: Option<String> = None;
     let mut url_fallback_text = String::new();
 
     loop {
@@ -224,9 +221,6 @@ fn parse_xml_nfo(content: &str, meta: &mut NfoMetadata) {
                         {
                             meta.tmdb_id = Some(text);
                         }
-                        "id" if legacy_id.is_none() => {
-                            legacy_id = Some(text);
-                        }
                         "title" if meta.title.is_none() => {
                             meta.title = Some(text);
                         }
@@ -248,24 +242,6 @@ fn parse_xml_nfo(content: &str, meta: &mut NfoMetadata) {
             Ok(Event::Eof) => break,
             Err(_) => break, // graceful on malformed XML
             _ => {}
-        }
-    }
-
-    // Apply legacy <id> only if higher-priority tags didn't provide the value.
-    // Numeric movie <id> values are intentionally ignored: too many tools have
-    // used that field for different providers, so it is not safe identity.
-    if root_kind != NfoRootKind::Episode
-        && let Some(id_val) = legacy_id
-    {
-        if id_val.starts_with("tt") && meta.imdb_id.is_none() {
-            meta.imdb_id = normalize_imdb(&id_val);
-        } else if looks_like_numeric_id(&id_val) {
-            match root_kind {
-                NfoRootKind::TvShow if meta.tvdb_id.is_none() => {
-                    meta.tvdb_id = Some(id_val);
-                }
-                _ => {}
-            }
         }
     }
 
@@ -913,10 +889,10 @@ mod tests {
     }
 
     #[test]
-    fn parse_legacy_id_imdb() {
+    fn ignore_bare_imdb_id_for_movie_root() {
         let nfo = "<movie><id>tt1234567</id></movie>";
         let meta = parse_nfo(nfo);
-        assert_eq!(meta.imdb_id, Some("tt1234567".into()));
+        assert_eq!(meta.imdb_id, None);
         assert_eq!(meta.tvdb_id, None);
     }
 
@@ -930,10 +906,18 @@ mod tests {
     }
 
     #[test]
-    fn parse_legacy_id_tvdb_for_tvshow_root() {
+    fn ignore_bare_numeric_id_for_tvshow_root() {
         let nfo = "<tvshow><id>12345</id></tvshow>";
         let meta = parse_nfo(nfo);
-        assert_eq!(meta.tvdb_id, Some("12345".into()));
+        assert_eq!(meta.tvdb_id, None);
+        assert_eq!(meta.imdb_id, None);
+    }
+
+    #[test]
+    fn ignore_bare_imdb_id_for_tvshow_root() {
+        let nfo = "<tvshow><id>tt0372183</id></tvshow>";
+        let meta = parse_nfo(nfo);
+        assert_eq!(meta.tvdb_id, None);
         assert_eq!(meta.imdb_id, None);
     }
 

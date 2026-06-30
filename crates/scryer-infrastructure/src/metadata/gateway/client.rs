@@ -3662,6 +3662,25 @@ impl MetadataGateway for MetadataGatewayClient {
                         auto_match_signals: entry.auto_match_signals,
                     })
                     .collect::<Vec<_>>();
+                // TEMP import-hint diagnostics (target=import_scan_hint_debug):
+                // per SMG request, shows whether it was id-anchored (empty query
+                // + ids) or a text search, and how many results came back (a
+                // single result ⇒ id-resolved; many ⇒ text list ranked by SMG).
+                // Remove once import title matching is verified.
+                tracing::info!(
+                    target: "import_scan_hint_debug",
+                    type_hint = %query_spec.type_hint,
+                    query = %query_spec.query,
+                    imdb = query_spec.imdb_id.as_deref().unwrap_or("-"),
+                    tmdb = query_spec.tmdb_id.as_deref().unwrap_or("-"),
+                    tvdb = query_spec.tvdb_id.as_deref().unwrap_or("-"),
+                    result_count = items.len(),
+                    top_name = items.first().map(|item| item.name.as_str()).unwrap_or("-"),
+                    top_tvdb = items.first().map(|item| item.tvdb_id.as_str()).unwrap_or("-"),
+                    top_auto_safe =
+                        items.first().map(|item| item.auto_match_safe).unwrap_or(false),
+                    "smg search result",
+                );
                 results.insert(query_spec, items);
             }
 

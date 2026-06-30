@@ -17,7 +17,12 @@ import type {
   RegistryPluginRecord,
 } from "@/components/views/settings/settings-plugins-section";
 import { selectorId } from "@/lib/utils/dom-ids";
-import { SetupPanel, SetupStepHeader, SETUP_PRIMARY_CTA } from "./setup-chrome";
+import {
+  SetupBackButton,
+  SetupPanel,
+  SetupStepHeader,
+  SETUP_PRIMARY_CTA,
+} from "./setup-chrome";
 
 interface SetupPluginsViewProps {
   t: (
@@ -362,9 +367,9 @@ export function SetupPluginsView({
       )}
 
       <div className="flex items-center justify-between pt-2">
-        <Button id="setup-plugins-back" variant="ghost" onClick={onBack}>
+        <SetupBackButton id="setup-plugins-back" onClick={onBack}>
           {t("setup.back")}
-        </Button>
+        </SetupBackButton>
         <Button id="setup-plugins-next" className={SETUP_PRIMARY_CTA} onClick={onNext}>
           <PlugZap className="mr-2 h-4 w-4" />
           {t("setup.next")}

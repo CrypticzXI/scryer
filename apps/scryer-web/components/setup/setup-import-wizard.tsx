@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef } from "react";
 import type { Client } from "urql";
 import {
-  ArrowLeft,
   ArrowLeftRight,
   ArrowRight,
   BadgeCheck,
@@ -17,7 +16,12 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { useExternalImportSetup } from "@/lib/hooks/use-external-import-setup";
 
-import { SETUP_PRIMARY_CTA, SetupPanel, SetupStepHeader } from "./setup-chrome";
+import {
+  SETUP_PRIMARY_CTA,
+  SetupBackButton,
+  SetupPanel,
+  SetupStepHeader,
+} from "./setup-chrome";
 import SetupImportConnectView from "./setup-import-connect-view";
 import SetupImportLibrariesView from "./setup-import-libraries-view";
 import SetupImportQualityView from "./setup-import-quality-view";
@@ -321,19 +325,9 @@ export function SetupImportWizard({
       <div className="mt-6">{body}</div>
 
       <div className="mt-6 flex items-center justify-between border-t border-[var(--scry-hover)] pt-5">
-        <Button
-          type="button"
-          variant="ghost"
-          onClick={back}
-          className="text-[var(--scry-ink2)]"
-          // Spec: Back is hidden (but still occupies space) on Connect + Libraries.
-          style={{ visibility: currentStep <= 2 ? "hidden" : "visible" }}
-          tabIndex={currentStep <= 2 ? -1 : undefined}
-          aria-hidden={currentStep <= 2 || undefined}
-        >
-          <ArrowLeft className="h-4 w-4" />
+        <SetupBackButton onClick={back}>
           {t("setup.back")}
-        </Button>
+        </SetupBackButton>
         <Button
           type="button"
           onClick={onPrimary}

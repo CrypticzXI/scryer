@@ -1672,6 +1672,7 @@ pub struct CatalogDiscoveryGroupPayload {
 #[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
 pub enum CatalogDiscoveryGroupKindValue {
     PublicTop,
+    PublicSection,
     GenreAffinity,
     ThemeAffinity,
     Acclaimed,

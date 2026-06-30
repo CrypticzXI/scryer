@@ -483,6 +483,42 @@ async fn execute_batch_metadata_searches(
             tvdb_id: key.tvdb_id.clone(),
         })
         .collect::<Vec<_>>();
+    // TEMP import-hint diagnostics (target=import_scan_hint_debug): shows exactly
+    // what the match phase sends to SMG — how many id-anchored (empty-query) vs
+    // text-search keys, and the ids attached to each. Remove once import title
+    // matching is verified.
+    {
+        let id_only = search_keys
+            .iter()
+            .filter(|key| key.query.trim().is_empty())
+            .count();
+        let with_ids = search_keys
+            .iter()
+            .filter(|key| {
+                key.imdb_id.is_some() || key.tmdb_id.is_some() || key.tvdb_id.is_some()
+            })
+            .count();
+        tracing::info!(
+            target: "import_scan_hint_debug",
+            total_keys = search_keys.len(),
+            id_only_keys = id_only,
+            text_query_keys = search_keys.len() - id_only,
+            keys_with_ids = with_ids,
+            "scan metadata batch dispatch",
+        );
+        for key in &search_keys {
+            tracing::info!(
+                target: "import_scan_hint_debug",
+                type_hint = key.type_hint,
+                query = %key.query,
+                year = ?key.year,
+                imdb = key.imdb_id.as_deref().unwrap_or("-"),
+                tmdb = key.tmdb_id.as_deref().unwrap_or("-"),
+                tvdb = key.tvdb_id.as_deref().unwrap_or("-"),
+                "scan metadata search key",
+            );
+        }
+    }
     let Some(batched_results) = await_cancellable_app_result(
         cancel_token,
         metadata_gateway.search_tvdb_batch(&search_queries, metadata_language),
@@ -1743,6 +1779,32 @@ async fn prepare_series_library_scan_candidate(
     } else {
         (Vec::new(), Vec::new())
     };
+
+    // TEMP import-hint diagnostics (target=import_scan_hint_debug): per series
+    // folder, shows where the identity came from (Nfo vs ExternalImportSonarr vs
+    // none), the resolved ids, whether the fast id-only path was taken, and the
+    // text query/candidate count. Remove once import title matching is verified.
+    tracing::info!(
+        target: "import_scan_hint_debug",
+        folder = folder_name.as_deref().unwrap_or("?"),
+        identity_source = ?identity_hint.as_ref().map(|hint| &hint.source),
+        tvdb = identity_hint
+            .as_ref()
+            .and_then(|hint| hint.tvdb_id.as_deref())
+            .unwrap_or("-"),
+        imdb = identity_hint
+            .as_ref()
+            .and_then(|hint| hint.imdb_id.as_deref())
+            .unwrap_or("-"),
+        tmdb = identity_hint
+            .as_ref()
+            .and_then(|hint| hint.tmdb_id.as_deref())
+            .unwrap_or("-"),
+        external_import_identity_only,
+        query = %query,
+        search_candidates = search_candidates.len(),
+        "series scan candidate identity",
+    );
 
     Ok(PreparedSeriesLibraryScanCandidate {
         folder_path: folder,

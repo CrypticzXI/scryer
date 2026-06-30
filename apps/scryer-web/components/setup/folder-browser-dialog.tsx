@@ -209,12 +209,17 @@ export function FolderBrowserDialog({
                     key={entry.path}
                     type="button"
                     onClick={() => browse(entry.path)}
-                    className="mb-1 flex w-full items-center gap-2.5 rounded-[10px] border border-transparent px-3 py-2 text-left text-sm transition-colors hover:border-[var(--scry-border3)] hover:bg-[var(--scry-hover)]"
+                    className="mb-1 flex w-full min-w-0 items-center gap-2.5 overflow-hidden rounded-[10px] border border-transparent px-3 py-2 text-left text-sm transition-colors hover:border-[var(--scry-border3)] hover:bg-[var(--scry-hover)]"
                   >
-                    <span className="grid h-8 w-8 place-items-center rounded-[9px] bg-[var(--scry-inset)] text-[var(--scry-accent-text)]">
+                    <span className="grid h-8 w-8 shrink-0 place-items-center rounded-[9px] bg-[var(--scry-inset)] text-[var(--scry-accent-text)]">
                       <Folder className="h-4 w-4 shrink-0" />
                     </span>
-                    <span className="truncate font-[var(--font-code)] text-[var(--scry-ink2)]">{entry.name}</span>
+                    <span
+                      className="block min-w-0 flex-1 truncate font-[var(--font-code)] text-[var(--scry-ink2)]"
+                      title={entry.name}
+                    >
+                      {entry.name}
+                    </span>
                   </button>
                 ))}
               </div>

@@ -1,6 +1,11 @@
 import { Check, ClipboardCheck } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { SetupPanel, SetupStepHeader, SETUP_PRIMARY_CTA } from "./setup-chrome";
+import {
+  SetupBackButton,
+  SetupPanel,
+  SetupStepHeader,
+  SETUP_PRIMARY_CTA,
+} from "./setup-chrome";
 import { Card, CardContent } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import type {
@@ -234,7 +239,9 @@ export function SetupSummaryView({
         </Card>
       ) : null}
       <div id="setup-summary-view" className="flex justify-between pt-2">
-        <Button id="setup-summary-back" variant="ghost" onClick={onBack}>{t("setup.back")}</Button>
+        <SetupBackButton id="setup-summary-back" onClick={onBack}>
+          {t("setup.back")}
+        </SetupBackButton>
         {isImportPath && onImportOnly && onImportAndScan ? (
           <div className="flex items-center gap-2">
             <Button

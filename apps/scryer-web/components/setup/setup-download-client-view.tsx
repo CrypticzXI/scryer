@@ -1,7 +1,12 @@
 import { Check, Download, Loader2, X } from "lucide-react";
 import { DownloadClientRemotePathMappingsField } from "@/components/common/download-client-remote-path-mappings-field";
 import { Button } from "@/components/ui/button";
-import { SetupPanel, SetupStepHeader, SETUP_PRIMARY_CTA } from "./setup-chrome";
+import {
+  SetupBackButton,
+  SetupPanel,
+  SetupStepHeader,
+  SETUP_PRIMARY_CTA,
+} from "./setup-chrome";
 import { Input, integerInputProps, sanitizeDigits } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -310,7 +315,9 @@ export function SetupDownloadClientView({
         )}
       </div>
       <div className="flex items-center justify-between pt-2">
-        <Button id="setup-download-client-back" variant="ghost" onClick={onBack}>{t("setup.back")}</Button>
+        <SetupBackButton id="setup-download-client-back" onClick={onBack}>
+          {t("setup.back")}
+        </SetupBackButton>
         <div className="flex items-center gap-3">
           {onSkip && (
             <Button id="setup-download-client-skip" type="button" variant="link" onClick={onSkip}>

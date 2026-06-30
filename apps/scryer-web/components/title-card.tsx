@@ -169,8 +169,12 @@ function TitleCardImpl({
           createdAt={createdAt}
           alt={title}
           className={posterClass}
-          placeholderClassName="flex h-full w-full items-center justify-center px-2 text-center text-sm text-[var(--scry-muted3)]"
+          placeholderClassName="h-full w-full"
           emptyLabel={emptyLabel ?? t("label.noArt")}
+          fallbackTitle={title}
+          fallbackSubtitle={hasYear ? year : null}
+          fallbackTone={facet ?? "neutral"}
+          fallbackShowText={false}
           loading="lazy"
           decoding="async"
         />
