@@ -11,9 +11,10 @@ use scryer_application::{
     ReleaseAttemptRepository, ReleaseDecision, ReleaseDownloadAttemptOutcome, ScopedExternalId,
     SettingsRepository, ShowRepository, SubmissionScope, SubtitleDownloadRepository,
     SubtitleProviderConfigRepository, SubtitleProviderConfigUpdate, TitleArtworkUrlUpdate,
-    TitleImageBlob, TitleImageKind, TitleImageRepository, TitleImageSourceResult,
-    TitleImageVariantRecord, TitleMetadataUpdate, TitleRepository, UserRepository, WantedItem,
-    WantedItemRepository, WantedItemsQuery, WantedStatus,
+    TitleExternalIdLookup, TitleExternalRating, TitleImageBlob, TitleImageKind,
+    TitleImageRepository, TitleImageSourceResult, TitleImageVariantRecord, TitleMetadataUpdate,
+    TitleRatingSummary, TitleRepository, UserRepository, WantedItem, WantedItemRepository,
+    WantedItemsQuery, WantedStatus,
     subtitles::{ExternalSubtitleDetectionSource, ExternalSubtitleProbeCacheEntry},
 };
 use scryer_domain::{

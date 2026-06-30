@@ -33,7 +33,11 @@ import { TitleSearchDownloadClientNotice } from "@/components/common/title-searc
 import { releaseSupportsAdditionalFileQueue } from "@/lib/utils/release-queue-scope";
 import { OverviewControlPanel } from "@/components/views/overview-control-panel";
 import { OverviewBackLink } from "@/components/views/overview-back-link";
-import { TitleMoreLikeThisStrip } from "@/components/views/title-more-like-this-strip";
+import {
+  TitleMoreLikeThisStrip,
+  type TitleMoreLikeThisStripActions,
+} from "@/components/views/title-more-like-this-strip";
+import { TitleRatingsStrip } from "@/components/views/title-ratings-strip";
 import {
   localizedTitleStatus,
   localizedWantedPhase,
@@ -449,6 +453,7 @@ type Props = {
   onMakePrimaryFile?: (fileId: string) => Promise<void> | void;
   onRefreshSubtitles?: () => void;
   onOpenFixMatch?: () => void;
+  moreLikeThisActions?: TitleMoreLikeThisStripActions;
 };
 
 export function MovieOverviewView({
@@ -502,6 +507,7 @@ export function MovieOverviewView({
   onMakePrimaryFile,
   onRefreshSubtitles,
   onOpenFixMatch,
+  moreLikeThisActions,
 }: Props) {
   const t = useTranslate();
   const dateTimeFormat = useUiDateTimeFormat();
@@ -787,6 +793,8 @@ export function MovieOverviewView({
                 </div>
               ) : null}
 
+              <TitleRatingsStrip ratings={title.ratings} />
+
               {overview ? (
                 <p className="mt-4 text-sm leading-relaxed text-foreground/70">{overview}</p>
               ) : null}
@@ -851,6 +859,7 @@ export function MovieOverviewView({
       <TitleMoreLikeThisStrip
         items={title.moreLikeThis ?? []}
         fallbackYearLabel={t("nav.movies")}
+        {...moreLikeThisActions}
       />
 
       {downloadQueueItems.length > 0 ? (

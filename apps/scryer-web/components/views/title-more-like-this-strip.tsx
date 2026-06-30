@@ -6,12 +6,26 @@ import type { CatalogDiscoveryItem } from "@/lib/types/discovery";
 import { discoveryItemDisplayTitle } from "@/lib/utils/discovery-display";
 import { selectPosterVariantUrl } from "@/lib/utils/poster-images";
 
-type Props = {
+export type TitleMoreLikeThisStripActions = {
+  canAddItem?: (item: CatalogDiscoveryItem) => boolean;
+  canRequestItem?: (item: CatalogDiscoveryItem) => boolean;
+  onOpenResolved?: (item: CatalogDiscoveryItem) => void;
+  onAction?: (item: CatalogDiscoveryItem) => void;
+};
+
+type Props = TitleMoreLikeThisStripActions & {
   items: CatalogDiscoveryItem[];
   fallbackYearLabel: string;
 };
 
-export function TitleMoreLikeThisStrip({ items, fallbackYearLabel }: Props) {
+export function TitleMoreLikeThisStrip({
+  items,
+  fallbackYearLabel,
+  canAddItem,
+  canRequestItem,
+  onOpenResolved,
+  onAction,
+}: Props) {
   const t = useTranslate();
 
   if (items.length === 0) {
@@ -34,12 +48,26 @@ export function TitleMoreLikeThisStrip({ items, fallbackYearLabel }: Props) {
             typeof item.year === "number" && Number.isFinite(item.year)
               ? String(item.year)
               : fallbackYearLabel;
+          const addable = !item.ownedInInput && (canAddItem?.(item) ?? false);
+          const requestable =
+            !item.ownedInInput && !addable && (canRequestItem?.(item) ?? false);
+          const handleAction =
+            addable || requestable ? () => onAction?.(item) : undefined;
+          const handleOpen =
+            item.resolvedTitleId && onOpenResolved
+              ? () => onOpenResolved(item)
+              : undefined;
           return (
             <div key={item.id} className="w-28 shrink-0">
               <TitleCard
                 title={discoveryItemDisplayTitle(item)}
                 year={year}
                 posterUrl={selectPosterVariantUrl(item.posterUrl, "w250")}
+                addable={addable}
+                requestable={requestable}
+                onAdd={addable ? handleAction : undefined}
+                onRequest={requestable ? handleAction : undefined}
+                onOpen={handleOpen}
                 compact
               />
             </div>

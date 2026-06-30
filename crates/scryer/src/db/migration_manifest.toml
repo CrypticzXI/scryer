@@ -706,6 +706,40 @@ file = "postgres/migrations/0148_external_import_setup_secret_drafts.sql"
 engine = "postgres"
 scope = "all"
 
+[[migration]]
+version = 149
+description = "title more like this discovery"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0149_title_more_like_this_discovery.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0149_title_more_like_this_discovery.sql"
+engine = "postgres"
+scope = "all"
+
+[[migration]]
+version = 150
+description = "title external ratings"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0150_title_external_ratings.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0150_title_external_ratings.sql"
+engine = "postgres"
+scope = "all"
+
 [[baseline]]
 through_version = 122
 file = "baselines/0122_baseline.sql"

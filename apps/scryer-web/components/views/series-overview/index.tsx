@@ -48,7 +48,11 @@ import {
 } from "./helpers";
 import { OverviewControlPanel } from "../overview-control-panel";
 import { OverviewBackLink } from "../overview-back-link";
-import { TitleMoreLikeThisStrip } from "../title-more-like-this-strip";
+import {
+  TitleMoreLikeThisStrip,
+  type TitleMoreLikeThisStripActions,
+} from "../title-more-like-this-strip";
+import { TitleRatingsStrip } from "../title-ratings-strip";
 import { TitleSettingsPanel } from "./title-settings-panel";
 import { SeasonSection, SeriesMovieTimelineSection } from "./season-section";
 import type { TitleOptionUpdates } from "@/lib/types/title-options";
@@ -176,6 +180,7 @@ type Props = {
   onMakePrimaryFile?: (fileId: string) => Promise<void> | void;
   primaryMovieFileUpdatingId?: string | null;
   onOpenFixMatch?: () => void;
+  moreLikeThisActions?: TitleMoreLikeThisStripActions;
 };
 
 export function SeriesOverviewView({
@@ -229,6 +234,7 @@ export function SeriesOverviewView({
   onMakePrimaryFile,
   primaryMovieFileUpdatingId = null,
   onOpenFixMatch,
+  moreLikeThisActions,
 }: Props) {
   const emptyEpisodes = React.useMemo<CollectionEpisode[]>(() => [], []);
   const setGlobalStatus = useGlobalStatus();
@@ -886,6 +892,8 @@ export function SeriesOverviewView({
                 </div>
               ) : null}
 
+              <TitleRatingsStrip ratings={title.ratings} />
+
               {title.overview ? (
                 <p className="mt-4 text-sm leading-relaxed text-foreground/70">
                   {title.overview}
@@ -967,6 +975,7 @@ export function SeriesOverviewView({
       <TitleMoreLikeThisStrip
         items={title.moreLikeThis ?? []}
         fallbackYearLabel={title.facet === "anime" ? t("nav.anime") : t("nav.series")}
+        {...moreLikeThisActions}
       />
 
       <div>

@@ -414,6 +414,7 @@ async fn title_writes_generate_and_refresh_catalog_sort_key_sqlite() {
             metadata_language: Some("jpn".to_string()),
             metadata_fetched_at: Some(Utc::now().to_rfc3339()),
             digital_release_date: None,
+            ratings: None,
             extra_external_ids: vec![],
             extra_tags: vec![],
         },
@@ -426,6 +427,91 @@ async fn title_writes_generate_and_refresh_catalog_sort_key_sqlite() {
         stored_catalog_sort_key(&services, &title.id).await,
         expected_hydrated_key
     );
+
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn hydrated_title_metadata_persists_external_ratings() {
+    let db = std::env::temp_dir().join(format!(
+        "scryer_title_external_ratings_{}.db",
+        chrono::Utc::now().timestamp_micros()
+    ));
+    let services = SqliteServices::new(db.to_string_lossy())
+        .await
+        .expect("db should initialize");
+    let catalog = title_store(&services);
+
+    let title = make_test_title("title-ratings", None);
+    TitleRepository::create(&catalog, title.clone())
+        .await
+        .expect("title should insert");
+
+    TitleRepository::update_title_hydrated_metadata(
+        &catalog,
+        &title.id,
+        TitleMetadataUpdate {
+            metadata_language: Some("eng".to_string()),
+            metadata_fetched_at: Some(Utc::now().to_rfc3339()),
+            ratings: Some(TitleRatingSummary {
+                rating: Some(82.5),
+                rating_sources: vec!["imdb".to_string(), "rottentomatoes".to_string()],
+                external_ratings: vec![
+                    TitleExternalRating {
+                        source: "imdb".to_string(),
+                        value: Some(8.2),
+                        score: Some(82.0),
+                        normalized: 8.2,
+                        votes: Some(123_456),
+                        url: "https://imdb.test/title/tt001".to_string(),
+                    },
+                    TitleExternalRating {
+                        source: "rottentomatoes".to_string(),
+                        value: None,
+                        score: Some(94.0),
+                        normalized: 9.4,
+                        votes: None,
+                        url: "https://rt.test/m/test".to_string(),
+                    },
+                ],
+            }),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("hydrated metadata should persist ratings");
+
+    let ratings = TitleRepository::get_title_ratings(&catalog, &title.id)
+        .await
+        .expect("ratings should load");
+    assert_eq!(ratings.rating, Some(82.5));
+    assert_eq!(
+        ratings.rating_sources,
+        vec!["imdb".to_string(), "rottentomatoes".to_string()]
+    );
+    assert_eq!(ratings.external_ratings.len(), 2);
+    assert_eq!(ratings.external_ratings[0].source, "imdb");
+    assert_eq!(ratings.external_ratings[0].value, Some(8.2));
+    assert_eq!(ratings.external_ratings[0].votes, Some(123_456));
+    assert_eq!(ratings.external_ratings[1].source, "rottentomatoes");
+    assert_eq!(ratings.external_ratings[1].score, Some(94.0));
+
+    TitleRepository::update_title_hydrated_metadata(
+        &catalog,
+        &title.id,
+        TitleMetadataUpdate {
+            metadata_fetched_at: Some(Utc::now().to_rfc3339()),
+            ratings: Some(TitleRatingSummary::default()),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("empty ratings update should clear rows");
+
+    let cleared = TitleRepository::get_title_ratings(&catalog, &title.id)
+        .await
+        .expect("cleared ratings should load");
+    assert_eq!(cleared, TitleRatingSummary::default());
 
     let _ = std::fs::remove_file(db);
 }
@@ -809,6 +895,63 @@ async fn title_queries_list_by_external_ids_preserve_request_order_for_unique_fi
         .await
         .expect("padded source batch lookup should succeed");
     assert!(padded_source_matches.is_empty());
+
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn title_queries_list_by_external_id_lookups_return_all_matching_titles() {
+    let db = std::env::temp_dir().join(format!(
+        "scryer_title_external_id_lookup_matches_{}.db",
+        chrono::Utc::now().timestamp_micros()
+    ));
+    let services = SqliteServices::new(db.to_string_lossy())
+        .await
+        .expect("db should initialize");
+    let catalog = title_store(&services);
+
+    let mut first = make_test_title("title-shared-a", Some("https://tvdb.example/a.jpg"));
+    first.library_id = "library-a".to_string();
+    first.external_ids = vec![ExternalId {
+        source: "tvdb".to_string(),
+        value: "123456".to_string(),
+    }];
+    TitleRepository::create(&catalog, first.clone())
+        .await
+        .expect("first title should insert");
+
+    let mut second = make_test_title("title-shared-b", Some("https://tvdb.example/b.jpg"));
+    second.library_id = "library-b".to_string();
+    second.external_ids = vec![ExternalId {
+        source: "tvdb_series".to_string(),
+        value: "123456".to_string(),
+    }];
+    TitleRepository::create(&catalog, second.clone())
+        .await
+        .expect("second title should insert");
+
+    let lookups = vec![
+        TitleExternalIdLookup {
+            lookup_index: 7,
+            source: "tvdb".to_string(),
+            external_id: "123456".to_string(),
+        },
+        TitleExternalIdLookup {
+            lookup_index: 9,
+            source: "tvdb_series".to_string(),
+            external_id: "123456".to_string(),
+        },
+    ];
+    let matches = catalog
+        .list_by_external_id_lookups(&lookups)
+        .await
+        .expect("lookup should succeed");
+
+    assert_eq!(matches.len(), 2);
+    assert_eq!(matches[0].lookup_index, 7);
+    assert_eq!(matches[0].title.id, first.id);
+    assert_eq!(matches[1].lookup_index, 9);
+    assert_eq!(matches[1].title.id, second.id);
 
     let _ = std::fs::remove_file(db);
 }

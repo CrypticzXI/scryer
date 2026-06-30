@@ -3517,6 +3517,57 @@ mod tests {
     }
 
     #[test]
+    fn title_recommendations_subject_prefers_tvdb_then_tmdb_then_imdb() {
+        let title = test_title(
+            "movie",
+            "Movie",
+            MediaFacet::Movie,
+            vec![("imdb", "tt0133093"), ("tmdb", "603"), ("tvdb", "78874")],
+        );
+
+        let (subject, source_target_keys) =
+            title_recommendations_subject(&title, &[]).expect("subject should build");
+
+        assert_eq!(subject.key.as_deref(), Some("tvdb:movie:78874"));
+        assert_eq!(subject.tvdb_id, Some(78874));
+        assert_eq!(subject.tmdb_id, Some(603));
+        assert!(
+            source_target_keys
+                .iter()
+                .any(|key| key == "imdb:title:tt0133093")
+        );
+        assert!(
+            subject
+                .external_ids
+                .iter()
+                .any(|external_id| external_id.source == "imdb")
+        );
+    }
+
+    #[test]
+    fn title_recommendations_subject_uses_anime_ids_after_tvdb_tmdb() {
+        let tvdb_title = test_title(
+            "anime-tvdb",
+            "Anime",
+            MediaFacet::Anime,
+            vec![("mal", "200"), ("anidb", "10"), ("tvdb", "100")],
+        );
+        let (subject, _) =
+            title_recommendations_subject(&tvdb_title, &[]).expect("subject should build");
+        assert_eq!(subject.key.as_deref(), Some("tvdb:series:100"));
+
+        let anime_id_title = test_title(
+            "anime-mal",
+            "Anime",
+            MediaFacet::Anime,
+            vec![("anidb", "10"), ("mal", "200"), ("anilist", "300")],
+        );
+        let (subject, _) =
+            title_recommendations_subject(&anime_id_title, &[]).expect("subject should build");
+        assert_eq!(subject.key.as_deref(), Some("mal:anime:200"));
+    }
+
+    #[test]
     fn discovery_item_records_do_not_persist_smg_resolved_title_id_as_local_fk() {
         let now = Utc.timestamp_opt(0, 0).unwrap();
         let item = DiscoveryTitle {

@@ -102,6 +102,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
 import { useDownloadConflictConfirmation } from "@/components/common/download-conflict-confirmation";
 import { DeletePreviewSummary } from "@/components/common/delete-preview-summary";
+import type { MetadataTvdbSearchItem } from "@/lib/graphql/smg-queries";
 import { userFacingGraphQlErrorMessage } from "@/lib/graphql/error-message";
 import { useTranslate } from "@/lib/context/translate-context";
 import { useGlobalStatus } from "@/lib/context/global-status-context";

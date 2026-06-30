@@ -12,6 +12,16 @@ fragment SeriesFields on TvdbSeries {
   poster_url
   country
   genres
+  rating
+  rating_sources
+  external_ratings {
+    source
+    value
+    score
+    normalized
+    votes
+    url
+  }
   aliases
   tagged_aliases {
     name

@@ -240,8 +240,12 @@ pub(super) async fn background_refresh_series(
         .titles
         .list_for_libraries(Some(facet.clone()), &library_ids, None)
         .await?;
-    let (mut existing_titles_by_name, mut existing_titles_by_tvdb_id) =
-        build_series_title_indexes(&existing_titles);
+    let (
+        mut existing_titles_by_name,
+        mut existing_titles_by_tvdb_id,
+        mut existing_titles_by_imdb_id,
+        mut existing_titles_by_tmdb_id,
+    ) = build_series_title_indexes(&existing_titles);
     let mut existing_titles_by_folder_path = build_series_title_folder_path_index(&existing_titles);
 
     let mut unknown_folders = Vec::new();
@@ -278,6 +282,8 @@ pub(super) async fn background_refresh_series(
                 &mut existing_titles,
                 &mut existing_titles_by_name,
                 &mut existing_titles_by_tvdb_id,
+                &mut existing_titles_by_imdb_id,
+                &mut existing_titles_by_tmdb_id,
                 &mut existing_titles_by_folder_path,
                 &mut summary,
             )
@@ -316,6 +322,8 @@ pub(super) async fn background_refresh_series(
                     &mut existing_titles,
                     &mut existing_titles_by_name,
                     &mut existing_titles_by_tvdb_id,
+                    &mut existing_titles_by_imdb_id,
+                    &mut existing_titles_by_tmdb_id,
                     &mut existing_titles_by_folder_path,
                     &mut summary,
                 )

@@ -17,7 +17,7 @@ use scryer_application::{
     QualityProfileSettings, RegistryPlugin, RenameApplyItemResult, RenameApplyResult, RenamePlan,
     RenamePlanItem, ResolvePendingImportResult, RssSyncReport, ScoringEntry, ScoringSource,
     ServiceSettings, SmgScryerUpdateNotice, SmgVersionCompatibilityNotice, SubmissionScope,
-    SystemHealth, TitleHistoryPage, TitleReleaseBlocklistEntry,
+    SystemHealth, TitleHistoryPage, TitleRatingSummary, TitleReleaseBlocklistEntry,
 };
 use scryer_domain::{
     CalendarEpisode, Collection, ConfigFieldDef, ConfigFieldType, DomainEvent,
@@ -1245,6 +1245,25 @@ pub fn from_title(title: Title) -> TitlePayload {
         episodes_monitored: None,
         episodes_total: None,
         preloaded_collections: None,
+    }
+}
+
+pub fn from_title_rating_summary(ratings: TitleRatingSummary) -> TitleRatingPayload {
+    TitleRatingPayload {
+        rating: ratings.rating,
+        rating_sources: ratings.rating_sources,
+        external_ratings: ratings
+            .external_ratings
+            .into_iter()
+            .map(|rating| TitleExternalRatingPayload {
+                source: rating.source,
+                value: rating.value,
+                score: rating.score,
+                normalized: rating.normalized,
+                votes: rating.votes,
+                url: rating.url,
+            })
+            .collect(),
     }
 }
 

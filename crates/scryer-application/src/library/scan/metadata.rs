@@ -1474,8 +1474,7 @@ async fn build_movie_entry_representative_file(
         discovered_files[0].clone()
     };
 
-    file.nfo_path =
-        directory_movie_nfo_path(&entry.path, &file.path, primary_candidate.as_deref()).await;
+    file.nfo_path = directory_movie_nfo_path(&entry.path, &file.path).await;
     Ok(file)
 }
 
@@ -1492,25 +1491,25 @@ async fn same_stem_movie_nfo_path(path: &Path) -> Option<String> {
     None
 }
 
-async fn directory_movie_nfo_path(
-    entry_path: &Path,
-    file_path: &str,
-    primary_candidate: Option<&str>,
-) -> Option<String> {
+async fn directory_movie_nfo_path(entry_path: &Path, file_path: &str) -> Option<String> {
     let file_path_buf = stored_path_to_path_buf(file_path);
     if let Some(nfo_path) = same_stem_movie_nfo_path(&file_path_buf).await {
         return Some(nfo_path);
     }
 
-    if primary_candidate == Some(file_path) {
-        let movie_nfo = entry_path.join("movie.nfo");
-        if tokio::fs::metadata(&movie_nfo)
-            .await
-            .map(|metadata| metadata.is_file())
-            .unwrap_or(false)
-        {
-            return Some(path_to_stored_string(&movie_nfo));
-        }
+    // Associate the folder-level movie.nfo with the entry's representative file
+    // unconditionally — matching the background-refresh path
+    // (matching_movie_nfo_path). The previous `primary_candidate == file_path`
+    // gate silently dropped the NFO (and its external ids) whenever the
+    // representative fell back to discovered_files[0] or primary detection
+    // returned None, leaving titles to a slow, id-less text search.
+    let movie_nfo = entry_path.join("movie.nfo");
+    if tokio::fs::metadata(&movie_nfo)
+        .await
+        .map(|metadata| metadata.is_file())
+        .unwrap_or(false)
+    {
+        return Some(path_to_stored_string(&movie_nfo));
     }
 
     None
@@ -1623,28 +1622,28 @@ async fn build_prepared_movie_library_scan_candidate(
     };
 
     let mut search_candidates = Vec::new();
-    let metadata_lookup_attempted = identity_hint
+    let has_external_ids = identity_hint
         .as_ref()
-        .is_some_and(MetadataIdentityHint::has_external_ids)
-        || !query.trim().is_empty();
+        .is_some_and(MetadataIdentityHint::has_external_ids);
+    let metadata_lookup_attempted = has_external_ids || !query.trim().is_empty();
 
     if metadata_lookup_attempted {
-        let raw_queries = if external_import_identity_only {
-            vec![String::new()]
-        } else {
-            query_variants
+        // Lead with an empty-query, id-anchored lookup whenever the hint carries
+        // external ids (NFO/plexmatch/arr-import) — SMG only resolves by id when
+        // the query is empty. The title-text variants follow as fallback, and
+        // selection takes the first auto-match-safe hit in this order, so a real
+        // id resolves confidently without depending on SMG's text ranking. An
+        // arr-import hint stays id-only (its parsed-filename title is noise).
+        if has_external_ids {
+            search_candidates.push(String::new());
+        }
+        if !external_import_identity_only {
+            let raw_queries = query_variants
                 .iter()
                 .cloned()
                 .chain(std::iter::once(query.clone()))
-                .collect::<Vec<_>>()
-        };
-        search_candidates = expand_search_candidates(&raw_queries);
-        if search_candidates.is_empty()
-            && identity_hint
-                .as_ref()
-                .is_some_and(MetadataIdentityHint::has_external_ids)
-        {
-            search_candidates.push(String::new());
+                .collect::<Vec<_>>();
+            search_candidates.extend(expand_search_candidates(&raw_queries));
         }
     }
 
@@ -1754,24 +1753,25 @@ async fn prepare_series_library_scan_candidate(
             .or(extracted_year_hint)
     };
 
-    let metadata_lookup_attempted = identity_hint
+    let has_external_ids = identity_hint
         .as_ref()
-        .is_some_and(MetadataIdentityHint::has_external_ids)
-        || !query.is_empty();
+        .is_some_and(MetadataIdentityHint::has_external_ids);
+    let metadata_lookup_attempted = has_external_ids || !query.is_empty();
     let (search_candidates, title_match_candidates) = if metadata_lookup_attempted {
         let raw_queries = if external_import_identity_only {
             vec![String::new()]
         } else {
             vec![query.clone()]
         };
-        let mut search_candidates = expand_search_candidates(&raw_queries);
-        if search_candidates.is_empty()
-            && identity_hint
-                .as_ref()
-                .is_some_and(MetadataIdentityHint::has_external_ids)
-        {
+        let mut search_candidates = Vec::new();
+        // Lead with an empty-query, id-anchored lookup whenever the hint carries
+        // external ids (NFO/plexmatch/arr-import) — SMG only resolves by id when
+        // the query is empty. Title variants follow as fallback; selection takes
+        // the first auto-match-safe hit in order.
+        if has_external_ids {
             search_candidates.push(String::new());
         }
+        search_candidates.extend(expand_search_candidates(&raw_queries));
         let title_match_candidates = build_title_match_candidates(&raw_queries);
         (search_candidates, title_match_candidates)
     } else {
@@ -1884,10 +1884,10 @@ pub(crate) async fn prepare_series_library_scan_candidate_from_file(
             .and_then(|hint| hint.year)
             .or(year_hint)
     };
-    let metadata_lookup_attempted = identity_hint
+    let has_external_ids = identity_hint
         .as_ref()
-        .is_some_and(MetadataIdentityHint::has_external_ids)
-        || !query.trim().is_empty();
+        .is_some_and(MetadataIdentityHint::has_external_ids);
+    let metadata_lookup_attempted = has_external_ids || !query.trim().is_empty();
     let (search_candidates, title_match_candidates) = if metadata_lookup_attempted {
         let raw_queries = if external_import_identity_only {
             vec![String::new()]
@@ -1898,14 +1898,15 @@ pub(crate) async fn prepare_series_library_scan_candidate_from_file(
                 .chain(std::iter::once(query.clone()))
                 .collect::<Vec<_>>()
         };
-        let mut search_candidates = expand_search_candidates(&raw_queries);
-        if search_candidates.is_empty()
-            && identity_hint
-                .as_ref()
-                .is_some_and(MetadataIdentityHint::has_external_ids)
-        {
+        let mut search_candidates = Vec::new();
+        // Lead with an empty-query, id-anchored lookup whenever the hint carries
+        // external ids — SMG only resolves by id when the query is empty. Title
+        // variants follow as fallback; selection takes the first auto-match-safe
+        // hit in order.
+        if has_external_ids {
             search_candidates.push(String::new());
         }
+        search_candidates.extend(expand_search_candidates(&raw_queries));
         let title_match_candidates = build_title_match_candidates(&raw_queries);
         (search_candidates, title_match_candidates)
     } else {
@@ -3613,9 +3614,16 @@ mod tests {
             Some("415677")
         );
         assert!(candidate.metadata_lookup_attempted);
+        // The tvshow.nfo carries a tvdb id, so the scan leads with an
+        // empty-query, id-anchored lookup (SMG resolves by id only when the
+        // query is empty) and keeps the title variants as fallback.
         assert_eq!(
             candidate.search_candidates,
-            vec!["Nightfall!!".to_string(), "nightfall".to_string()]
+            vec![
+                String::new(),
+                "Nightfall!!".to_string(),
+                "nightfall".to_string()
+            ]
         );
     }
 
@@ -4068,6 +4076,81 @@ mod tests {
         assert_eq!(
             primary.as_deref(),
             Some(path_to_stored_string(movie_path).as_str())
+        );
+    }
+
+    #[tokio::test]
+    async fn directory_movie_nfo_path_finds_folder_movie_nfo_without_same_stem() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let movie_dir = dir.path().join("Anastasia (1997)");
+        tokio::fs::create_dir_all(&movie_dir)
+            .await
+            .expect("movie dir");
+        let movie_path = movie_dir.join("Anastasia (1997) Bluray-1080p.mkv");
+        tokio::fs::write(&movie_path, b"movie")
+            .await
+            .expect("movie file");
+        let movie_nfo = movie_dir.join("movie.nfo");
+        tokio::fs::write(&movie_nfo, b"<movie><title>Anastasia</title></movie>")
+            .await
+            .expect("movie nfo");
+
+        // No same-stem `<file>.nfo` exists, so the folder-level movie.nfo must be
+        // associated unconditionally (the old primary-candidate gate dropped it).
+        let resolved =
+            directory_movie_nfo_path(&movie_dir, &path_to_stored_string(&movie_path)).await;
+
+        assert_eq!(
+            resolved.as_deref(),
+            Some(path_to_stored_string(&movie_nfo).as_str())
+        );
+    }
+
+    #[tokio::test]
+    async fn prepare_movie_candidate_leads_with_id_anchored_lookup_for_nfo_ids() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let folder = tempdir.path().join("Anastasia (1997)");
+        std::fs::create_dir_all(&folder).expect("create movie dir");
+        let movie_path = folder.join("Anastasia (1997) Bluray-1080p.mkv");
+        std::fs::write(&movie_path, b"movie").expect("write movie");
+        let movie_nfo = folder.join("movie.nfo");
+        std::fs::write(
+            &movie_nfo,
+            r#"<movie><title>Anastasia</title><year>1997</year><imdbid>tt0118617</imdbid><tvdbid>933</tvdbid><tmdbid>9444</tmdbid></movie>"#,
+        )
+        .expect("write movie nfo");
+
+        let candidate = prepare_movie_library_scan_candidate(
+            LibraryFile {
+                path: path_to_stored_string(&movie_path),
+                display_name: "Anastasia (1997) Bluray-1080p".into(),
+                nfo_path: Some(path_to_stored_string(&movie_nfo)),
+                size_bytes: None,
+                source_signature_scheme: None,
+                source_signature_value: None,
+            },
+            path_to_stored_string(tempdir.path()),
+        )
+        .await
+        .expect("prepare movie candidate");
+
+        let identity = candidate.identity_hint.as_ref().expect("identity hint");
+        assert_eq!(identity.tvdb_id.as_deref(), Some("933"));
+        assert_eq!(identity.imdb_id.as_deref(), Some("tt0118617"));
+        assert_eq!(identity.tmdb_id.as_deref(), Some("9444"));
+        // The NFO ids drive an empty-query, id-anchored lookup first; the title
+        // text variants follow as fallback.
+        assert_eq!(
+            candidate.search_candidates.first().map(String::as_str),
+            Some("")
+        );
+        assert!(
+            candidate
+                .search_candidates
+                .iter()
+                .any(|value| !value.trim().is_empty()),
+            "title fallback variants should follow the id-anchored lookup: {:?}",
+            candidate.search_candidates
         );
     }
 }

@@ -27,6 +27,7 @@ import {
 import type { DownloadQueueItem } from "@/lib/types/download-queue";
 import type { Release } from "@/lib/types";
 import type { CatalogDiscoveryItem } from "@/lib/types/discovery";
+import type { TitleRatings } from "@/components/views/title-ratings-strip";
 import { DEFAULT_SERIES_LIBRARY_PATH } from "@/lib/constants/settings";
 import { userFacingGraphQlErrorMessage } from "@/lib/graphql/error-message";
 import { qualityProfileSettingsToEntries } from "@/lib/utils/quality-profiles";
@@ -63,6 +64,7 @@ import type {
 import type { ExternalSubtitleRecord } from "@/lib/types/subtitles";
 import { useAuth } from "@/lib/hooks/use-auth";
 import { LIBRARY_PERMISSIONS, hasLibraryPermission } from "@/lib/utils/permissions";
+import { useTitleMoreLikeThisActions } from "@/lib/hooks/use-title-more-like-this-actions";
 
 export type TitleDetail = {
   id: string;
@@ -106,6 +108,7 @@ export type TitleDetail = {
   fillerPolicy?: string | null;
   recapPolicy?: string | null;
   seriesMovieLinks?: SeriesMovieLink[];
+  ratings?: TitleRatings | null;
   moreLikeThis?: CatalogDiscoveryItem[];
   createdAt: string;
 };
@@ -544,6 +547,9 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
     }
     void refreshDownloadFeedback();
   }, [applyNativeTitleDetailSnapshot, client, refreshDownloadFeedback, titleId]);
+  const moreLikeThisActions = useTitleMoreLikeThisActions({
+    onCatalogChanged: refreshTitleDetail,
+  });
   const refreshTitleDetailRef = React.useRef(refreshTitleDetail);
   React.useEffect(() => {
     refreshTitleDetailRef.current = refreshTitleDetail;
@@ -1312,7 +1318,9 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
         onMakePrimaryFile={canManageTitle ? handleMakePrimaryMovieFile : undefined}
         primaryMovieFileUpdatingId={primaryMovieFileUpdatingId}
         onOpenFixMatch={() => setFixMatchOpen(true)}
+        moreLikeThisActions={moreLikeThisActions.stripProps}
       />
+      {moreLikeThisActions.dialogs}
       <FixTitleMatchDialog
         open={fixMatchOpen}
         onOpenChange={setFixMatchOpen}

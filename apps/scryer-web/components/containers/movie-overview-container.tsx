@@ -35,6 +35,7 @@ import { useTitleDownloadQueue } from "@/lib/hooks/use-title-download-queue";
 import { handleFixTitleMatchComplete as applyFixTitleMatchCompletion } from "@/lib/fix-title-match";
 import type { Release, TitleAcquisitionDiagnostics, WantedItem } from "@/lib/types";
 import type { CatalogDiscoveryItem } from "@/lib/types/discovery";
+import type { TitleRatings } from "@/components/views/title-ratings-strip";
 import type { LibraryRootRecord } from "@/lib/types/titles";
 import type { DownloadQueueItem } from "@/lib/types/download-queue";
 import {
@@ -63,6 +64,7 @@ import type {
 import type { ExternalSubtitleRecord } from "@/lib/types/subtitles";
 import { useAuth } from "@/lib/hooks/use-auth";
 import { LIBRARY_PERMISSIONS, hasLibraryPermission } from "@/lib/utils/permissions";
+import { useTitleMoreLikeThisActions } from "@/lib/hooks/use-title-more-like-this-actions";
 
 export type TitleDetail = {
   id: string;
@@ -105,6 +107,7 @@ export type TitleDetail = {
   interSeasonMovies?: boolean | null;
   fillerPolicy?: string | null;
   recapPolicy?: string | null;
+  ratings?: TitleRatings | null;
   moreLikeThis?: CatalogDiscoveryItem[];
   createdAt: string;
 };
@@ -468,6 +471,9 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
     }
     void refreshDownloadFeedback();
   }, [applyNativeTitleDetailSnapshot, client, refreshDownloadFeedback, titleId]);
+  const moreLikeThisActions = useTitleMoreLikeThisActions({
+    onCatalogChanged: refreshTitleDetail,
+  });
 
   // Load title detail on mount
   React.useEffect(() => {
@@ -1171,7 +1177,9 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
         onMakePrimaryFile={canManageTitle ? handleMakePrimaryMovieFile : undefined}
         onRefreshSubtitles={() => { void refreshTitleDetail(); }}
         onOpenFixMatch={() => setFixMatchOpen(true)}
+        moreLikeThisActions={moreLikeThisActions.stripProps}
       />
+      {moreLikeThisActions.dialogs}
       <FixTitleMatchDialog
         open={fixMatchOpen}
         onOpenChange={setFixMatchOpen}

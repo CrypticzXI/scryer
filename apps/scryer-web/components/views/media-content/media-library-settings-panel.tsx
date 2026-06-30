@@ -67,6 +67,12 @@ import {
   isLocalPathFormatValidForStyle,
   type LocalPathStyle,
 } from "@/lib/utils/local-path-style";
+import {
+  FILE_CHMOD_PRESETS,
+  FOLDER_CHMOD_PRESETS,
+  formatChmodMode,
+  isChmodPresetValue,
+} from "@/lib/constants/chmod";
 
 const INHERIT_VALUE = "__inherit__";
 const BOOLEAN_TRUE_VALUE = "true";
@@ -594,6 +600,24 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
   const hasInvalidRootFolderPaths = invalidRootFolderPaths.size > 0;
   const actionBusy = loading || librariesLoading || rootValidationLibrariesLoading || saving;
   const settingsBusy = actionBusy || settingsLoading;
+  const effectiveDraftSetPermissionsLinux =
+    draftSetPermissionsLinux === INHERIT_VALUE
+      ? (savedSettings?.setPermissionsLinux ?? false)
+      : draftSetPermissionsLinux === BOOLEAN_TRUE_VALUE;
+  const permissionFieldsDisabled =
+    settingsBusy || !effectiveDraftSetPermissionsLinux;
+  const draftFileChmodSelectValue = draftFileChmod.trim() || INHERIT_VALUE;
+  const draftFolderChmodSelectValue = draftFolderChmod.trim() || INHERIT_VALUE;
+  const customFileChmod =
+    draftFileChmodSelectValue !== INHERIT_VALUE &&
+    !isChmodPresetValue(FILE_CHMOD_PRESETS, draftFileChmodSelectValue)
+      ? draftFileChmodSelectValue
+      : null;
+  const customFolderChmod =
+    draftFolderChmodSelectValue !== INHERIT_VALUE &&
+    !isChmodPresetValue(FOLDER_CHMOD_PRESETS, draftFolderChmodSelectValue)
+      ? draftFolderChmodSelectValue
+      : null;
   const downloadClientRoutingBusy =
     downloadClientsLoading || draftDownloadClientRoutingLoading;
   const savedRoots = React.useMemo(() => rootsFromLibrary(activeLibrary), [activeLibrary]);
@@ -1465,12 +1489,47 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
                     </div>
                     <div className="space-y-2">
                       <Label>{t("settings.fileChmodLabel")}</Label>
-                      <Input
-                        value={draftFileChmod}
-                        onChange={(event) => setDraftFileChmod(event.target.value)}
-                        disabled={settingsBusy}
-                        placeholder={savedSettings?.fileChmod ?? t("settings.libraryInheritFacet")}
-                      />
+                      <Select
+                        value={draftFileChmodSelectValue}
+                        onValueChange={(value) =>
+                          setDraftFileChmod(value === INHERIT_VALUE ? "" : value)
+                        }
+                        disabled={permissionFieldsDisabled}
+                      >
+                        <SelectTrigger className="w-full">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value={INHERIT_VALUE}>
+                            {t("settings.libraryInheritFacet")}
+                          </SelectItem>
+                          {FILE_CHMOD_PRESETS.map((option) => (
+                            <SelectItem key={option.value} value={option.value}>
+                              <span className="flex w-full items-center justify-between gap-4">
+                                <span>
+                                  {option.value} - {t(option.labelKey)}
+                                </span>
+                                <span className="font-[var(--font-code)] text-xs text-muted-foreground">
+                                  {formatChmodMode(option.value, "file")}
+                                </span>
+                              </span>
+                            </SelectItem>
+                          ))}
+                          {customFileChmod ? (
+                            <SelectItem value={customFileChmod}>
+                              <span className="flex w-full items-center justify-between gap-4">
+                                <span>
+                                  {customFileChmod} -{" "}
+                                  {t("settings.chmodPresetCustom")}
+                                </span>
+                                <span className="font-[var(--font-code)] text-xs text-muted-foreground">
+                                  {formatChmodMode(customFileChmod, "file")}
+                                </span>
+                              </span>
+                            </SelectItem>
+                          ) : null}
+                        </SelectContent>
+                      </Select>
                       {savedSettings ? (
                         <EffectiveChip>
                           {t("settings.libraryEffectiveProfile", {
@@ -1481,12 +1540,49 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
                     </div>
                     <div className="space-y-2">
                       <Label>{t("settings.folderChmodLabel")}</Label>
-                      <Input
-                        value={draftFolderChmod}
-                        onChange={(event) => setDraftFolderChmod(event.target.value)}
-                        disabled={settingsBusy}
-                        placeholder={savedSettings?.folderChmod ?? t("settings.libraryInheritFacet")}
-                      />
+                      <Select
+                        value={draftFolderChmodSelectValue}
+                        onValueChange={(value) =>
+                          setDraftFolderChmod(
+                            value === INHERIT_VALUE ? "" : value,
+                          )
+                        }
+                        disabled={permissionFieldsDisabled}
+                      >
+                        <SelectTrigger className="w-full">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value={INHERIT_VALUE}>
+                            {t("settings.libraryInheritFacet")}
+                          </SelectItem>
+                          {FOLDER_CHMOD_PRESETS.map((option) => (
+                            <SelectItem key={option.value} value={option.value}>
+                              <span className="flex w-full items-center justify-between gap-4">
+                                <span>
+                                  {option.value} - {t(option.labelKey)}
+                                </span>
+                                <span className="font-[var(--font-code)] text-xs text-muted-foreground">
+                                  {formatChmodMode(option.value, "folder")}
+                                </span>
+                              </span>
+                            </SelectItem>
+                          ))}
+                          {customFolderChmod ? (
+                            <SelectItem value={customFolderChmod}>
+                              <span className="flex w-full items-center justify-between gap-4">
+                                <span>
+                                  {customFolderChmod} -{" "}
+                                  {t("settings.chmodPresetCustom")}
+                                </span>
+                                <span className="font-[var(--font-code)] text-xs text-muted-foreground">
+                                  {formatChmodMode(customFolderChmod, "folder")}
+                                </span>
+                              </span>
+                            </SelectItem>
+                          ) : null}
+                        </SelectContent>
+                      </Select>
                       {savedSettings ? (
                         <EffectiveChip>
                           {t("settings.libraryEffectiveProfile", {
@@ -1500,7 +1596,7 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
                       <Input
                         value={draftChownGroup}
                         onChange={(event) => setDraftChownGroup(event.target.value)}
-                        disabled={settingsBusy}
+                        disabled={permissionFieldsDisabled}
                         placeholder={savedSettings?.chownGroup ?? t("settings.libraryInheritFacet")}
                       />
                       {savedSettings ? (

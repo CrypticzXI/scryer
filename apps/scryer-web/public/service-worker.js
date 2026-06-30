@@ -13,6 +13,7 @@ const STATIC_PATH_PREFIXES = [
   "/icons/",
   "/download-clients/",
   "/media-sites/",
+  "/rating-sources/",
 ];
 const STATIC_PATHS = new Set([
   "/",

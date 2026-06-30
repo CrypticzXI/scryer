@@ -108,7 +108,7 @@ pub use ports::{
     DiscoverySyncStateRecord, DiscoverySyncStatus, EpisodeImageUrlUpdate, MediaRequestResolution,
     MediaRequestResolutionResult, MediaRequestSubmissionResult, MediaRequestUpdateResult,
     SubtitleSyncClient, SubtitleSyncJob, TitleArtworkUrlUpdate, TitleDeletePreviewInfo,
-    UserUiSettingsRepository,
+    TitleExternalIdLookup, TitleExternalIdLookupMatch, UserUiSettingsRepository,
 };
 pub(crate) mod normalize;
 pub use events::retention::user_facing_domain_event_types;
@@ -477,17 +477,18 @@ pub use types::{
     RecycledItem, ReleaseDecision, ReleaseDownloadAttemptOutcome, ReleaseDownloadFailureSignature,
     ResolvePendingImportResult, RuntimePathStyle, ScopedExternalId, SortDirection, SystemHealth,
     TitleAcquisitionDiagnostics, TitleCatalogContentStatus, TitleCatalogFilter, TitleCatalogResult,
-    TitleCatalogSort, TitleCatalogSortKey, TitleEpisodeProgressSummary, TitleImageBlob,
-    TitleImageKind, TitleImageSourceResult, TitleImageSyncTask, TitleImageVariantRecord,
-    TitleImageVariantSpec, TitleMediaFile, TitleMediaSizeSummary, TitleMetadataUpdate,
-    TitleQualitySummary, TitleReleaseBlocklistEntry, TotpCredentialRecord,
-    TotpEnrollmentChallengeRecord, TotpEnrollmentComplete, TotpEnrollmentStart,
-    TotpFailedAttemptRecord, TotpRecoveryCodeRecord, TotpStatus, UiDateTimeFormat,
-    UiDefaultLandingView, UiDensity, UiSettings, UiSettingsFacet, UiSettingsUpdate, UiSidebarMode,
-    UiTableColumnSetting, UiTableViewMode, UiTheme, UpdateRecycleBinSettings, UserAuthFactorStatus,
-    WantedCompleteTransition, WantedGrabTransition, WantedItem, WantedPauseTransition,
-    WantedSearchTransition, WantedStatus, WantedStatusCount, WebauthnChallengeRecord,
-    WebauthnChallengeStart, WebauthnChallengeType, WebauthnCredentialRecord,
+    TitleCatalogSort, TitleCatalogSortKey, TitleEpisodeProgressSummary, TitleExternalRating,
+    TitleImageBlob, TitleImageKind, TitleImageSourceResult, TitleImageSyncTask,
+    TitleImageVariantRecord, TitleImageVariantSpec, TitleMediaFile, TitleMediaSizeSummary,
+    TitleMetadataUpdate, TitleQualitySummary, TitleRatingSummary, TitleReleaseBlocklistEntry,
+    TotpCredentialRecord, TotpEnrollmentChallengeRecord, TotpEnrollmentComplete,
+    TotpEnrollmentStart, TotpFailedAttemptRecord, TotpRecoveryCodeRecord, TotpStatus,
+    UiDateTimeFormat, UiDefaultLandingView, UiDensity, UiSettings, UiSettingsFacet,
+    UiSettingsUpdate, UiSidebarMode, UiTableColumnSetting, UiTableViewMode, UiTheme,
+    UpdateRecycleBinSettings, UserAuthFactorStatus, WantedCompleteTransition, WantedGrabTransition,
+    WantedItem, WantedPauseTransition, WantedSearchTransition, WantedStatus, WantedStatusCount,
+    WebauthnChallengeRecord, WebauthnChallengeStart, WebauthnChallengeType,
+    WebauthnCredentialRecord,
 };
 pub use types::{
     EXTERNAL_IMPORT_MONITOR_APPLY_SESSION_ID, ExternalIdHint, ExternalIdProvider,

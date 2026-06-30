@@ -41,11 +41,19 @@ fn index_series_title(
     index: usize,
     existing_titles_by_name: &mut HashMap<String, usize>,
     existing_titles_by_tvdb_id: &mut HashMap<String, usize>,
+    existing_titles_by_imdb_id: &mut HashMap<String, usize>,
+    existing_titles_by_tmdb_id: &mut HashMap<String, usize>,
 ) {
     existing_titles_by_name.insert(normalize_title_key(&title.name), index);
     for external_id in &title.external_ids {
         if external_id.source.eq_ignore_ascii_case("tvdb") {
             existing_titles_by_tvdb_id.insert(external_id.value.clone(), index);
+        } else if external_id.source.eq_ignore_ascii_case("imdb")
+            && let Some(imdb_id) = crate::normalize::normalize_imdb_id(&external_id.value)
+        {
+            existing_titles_by_imdb_id.insert(imdb_id, index);
+        } else if external_id.source.eq_ignore_ascii_case("tmdb") {
+            existing_titles_by_tmdb_id.insert(external_id.value.clone(), index);
         }
     }
 }
@@ -75,6 +83,8 @@ pub(crate) fn append_series_title(
     existing_titles: &mut Vec<Title>,
     existing_titles_by_name: &mut HashMap<String, usize>,
     existing_titles_by_tvdb_id: &mut HashMap<String, usize>,
+    existing_titles_by_imdb_id: &mut HashMap<String, usize>,
+    existing_titles_by_tmdb_id: &mut HashMap<String, usize>,
     title: Title,
 ) -> usize {
     let index = existing_titles.len();
@@ -84,6 +94,8 @@ pub(crate) fn append_series_title(
         index,
         existing_titles_by_name,
         existing_titles_by_tvdb_id,
+        existing_titles_by_imdb_id,
+        existing_titles_by_tmdb_id,
     );
     index
 }
@@ -151,11 +163,18 @@ pub(crate) fn build_movie_title_indexes(existing_titles: &[Title]) -> MovieTitle
     )
 }
 
-pub(crate) fn build_series_title_indexes(
-    existing_titles: &[Title],
-) -> (HashMap<String, usize>, HashMap<String, usize>) {
+pub(crate) type SeriesTitleIndexes = (
+    HashMap<String, usize>,
+    HashMap<String, usize>,
+    HashMap<String, usize>,
+    HashMap<String, usize>,
+);
+
+pub(crate) fn build_series_title_indexes(existing_titles: &[Title]) -> SeriesTitleIndexes {
     let mut existing_titles_by_name = HashMap::new();
     let mut existing_titles_by_tvdb_id = HashMap::new();
+    let mut existing_titles_by_imdb_id = HashMap::new();
+    let mut existing_titles_by_tmdb_id = HashMap::new();
 
     for (index, title) in existing_titles.iter().enumerate() {
         index_series_title(
@@ -163,10 +182,17 @@ pub(crate) fn build_series_title_indexes(
             index,
             &mut existing_titles_by_name,
             &mut existing_titles_by_tvdb_id,
+            &mut existing_titles_by_imdb_id,
+            &mut existing_titles_by_tmdb_id,
         );
     }
 
-    (existing_titles_by_name, existing_titles_by_tvdb_id)
+    (
+        existing_titles_by_name,
+        existing_titles_by_tvdb_id,
+        existing_titles_by_imdb_id,
+        existing_titles_by_tmdb_id,
+    )
 }
 
 pub(crate) fn build_series_title_folder_path_index(

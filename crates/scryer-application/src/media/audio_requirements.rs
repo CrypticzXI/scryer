@@ -349,12 +349,25 @@ pub(crate) fn classify_required_audio(
 #[cfg(test)]
 mod tests {
     use super::{
-        missing_required_audio_languages, normalize_required_audio_languages,
-        normalize_title_country_code, release_audio_language_hints_for_title,
-        required_audio_languages_match, title_audio_language_context,
+        RequiredAudioVerdict, classify_required_audio, missing_required_audio_languages,
+        normalize_required_audio_languages, normalize_title_country_code,
+        release_audio_language_hints_for_title, required_audio_languages_match,
+        resolve_audio_languages_from_track_title, title_audio_language_context,
     };
+    use crate::AudioStreamDetail;
     use crate::normalize_detected_audio_language_code;
     use crate::release_parser::parse_release_metadata;
+
+    fn audio_stream(language: Option<&str>, name: Option<&str>) -> AudioStreamDetail {
+        AudioStreamDetail {
+            codec: None,
+            profile: None,
+            channels: None,
+            language: language.map(str::to_string),
+            name: name.map(str::to_string),
+            bitrate_kbps: None,
+        }
+    }
 
     #[test]
     fn dual_audio_without_explicit_languages_implies_english_and_japanese() {
@@ -645,5 +658,100 @@ mod tests {
             &["jpn".to_string()],
             &actual
         ));
+    }
+
+    #[test]
+    fn track_title_resolves_language_tokens_and_ignores_codecs() {
+        assert_eq!(
+            resolve_audio_languages_from_track_title("English 5.1"),
+            vec!["eng".to_string()]
+        );
+        assert_eq!(
+            resolve_audio_languages_from_track_title("Eng DTS-HD MA"),
+            vec!["eng".to_string()]
+        );
+        assert_eq!(
+            resolve_audio_languages_from_track_title("Eng+Jpn"),
+            vec!["eng".to_string(), "jpn".to_string()]
+        );
+        // Pure codec / non-language titles must not resolve to a language.
+        assert!(resolve_audio_languages_from_track_title("DTS-HD MA").is_empty());
+        assert!(resolve_audio_languages_from_track_title("Commentary").is_empty());
+        assert!(resolve_audio_languages_from_track_title("").is_empty());
+    }
+
+    #[test]
+    fn classify_tagged_track_satisfies_requirement() {
+        let verdict = classify_required_audio(
+            &["eng".to_string()],
+            &[audio_stream(Some("eng"), None)],
+            &[],
+        );
+        assert_eq!(verdict, RequiredAudioVerdict::Satisfied);
+    }
+
+    #[test]
+    fn classify_untagged_track_resolved_by_title_is_satisfied() {
+        // English track tagged "und" (so language=None after normalization) but
+        // titled "English" must satisfy a required-English profile.
+        let verdict = classify_required_audio(
+            &["eng".to_string()],
+            &[audio_stream(None, Some("English"))],
+            &[],
+        );
+        assert_eq!(verdict, RequiredAudioVerdict::Satisfied);
+    }
+
+    #[test]
+    fn classify_all_tracks_known_but_missing_is_provable_absence() {
+        // Every track is tagged and none is English → provably absent → reject.
+        let verdict = classify_required_audio(
+            &["eng".to_string()],
+            &[audio_stream(Some("jpn"), None)],
+            &[],
+        );
+        assert_eq!(verdict, RequiredAudioVerdict::Missing(vec!["eng".to_string()]));
+    }
+
+    #[test]
+    fn classify_untagged_track_is_indeterminate_not_rejected() {
+        // One jpn track plus one untagged track: English can be neither confirmed
+        // nor proven absent → accept + flag, never a hard reject.
+        let verdict = classify_required_audio(
+            &["eng".to_string()],
+            &[audio_stream(Some("jpn"), None), audio_stream(None, None)],
+            &[],
+        );
+        assert_eq!(
+            verdict,
+            RequiredAudioVerdict::Indeterminate(vec!["eng".to_string()])
+        );
+    }
+
+    #[test]
+    fn classify_release_hints_resolve_untagged_tracks() {
+        // A DUAL release whose file is {jpn-tagged, untagged} satisfies required
+        // English via the release hint (the release claims eng).
+        let verdict = classify_required_audio(
+            &["eng".to_string()],
+            &[audio_stream(Some("jpn"), None), audio_stream(None, None)],
+            &["eng".to_string()],
+        );
+        assert_eq!(verdict, RequiredAudioVerdict::Satisfied);
+    }
+
+    #[test]
+    fn classify_zero_audio_streams_is_indeterminate() {
+        let verdict = classify_required_audio(&["eng".to_string()], &[], &[]);
+        assert_eq!(
+            verdict,
+            RequiredAudioVerdict::Indeterminate(vec!["eng".to_string()])
+        );
+    }
+
+    #[test]
+    fn classify_empty_required_is_satisfied() {
+        let verdict = classify_required_audio(&[], &[audio_stream(Some("jpn"), None)], &[]);
+        assert_eq!(verdict, RequiredAudioVerdict::Satisfied);
     }
 }

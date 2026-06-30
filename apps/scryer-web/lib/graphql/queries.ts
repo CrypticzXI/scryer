@@ -427,6 +427,18 @@ const TITLE_SERIES_OVERVIEW_FIELDS = `${TITLE_CORE_FIELDS}
       items {${WANTED_ITEM_FIELDS}
       }
     }
+    ratings {
+      rating
+      ratingSources
+      externalRatings {
+        source
+        value
+        score
+        normalized
+        votes
+        url
+      }
+    }
     moreLikeThis(limit: 12) {
 ${CATALOG_DISCOVERY_ITEM_FIELDS}
     }`;

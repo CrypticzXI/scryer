@@ -411,6 +411,7 @@ pub struct MovieMetadata {
     pub genres: Vec<String>,
     pub studio: String,
     pub tmdb_release_date: Option<String>,
+    pub ratings: crate::TitleRatingSummary,
 }
 
 #[derive(Debug, Clone)]
@@ -435,6 +436,7 @@ pub struct SeriesMetadata {
     pub episodes: Vec<EpisodeMetadata>,
     pub anime_mappings: Vec<AnimeMapping>,
     pub anime_movies: Vec<AnimeMovie>,
+    pub ratings: crate::TitleRatingSummary,
 }
 
 #[derive(Debug, Clone)]

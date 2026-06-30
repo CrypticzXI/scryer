@@ -3,8 +3,9 @@ use chrono::{DateTime, Utc};
 use scryer_application::{
     AppError, AppResult, CreateTitleOutcome, PendingTitleHydration, SortDirection,
     TitleArtworkUrlUpdate, TitleCatalogContentStatus, TitleCatalogFilter, TitleCatalogResult,
-    TitleCatalogSort, TitleCatalogSortKey, TitleDeletePreviewInfo, TitleMetadataUpdate,
-    TitleExternalIdLookup, TitleExternalIdLookupMatch, TitleRepository,
+    TitleCatalogSort, TitleCatalogSortKey, TitleDeletePreviewInfo, TitleExternalIdLookup,
+    TitleExternalIdLookupMatch, TitleExternalRating, TitleMetadataUpdate, TitleRatingSummary,
+    TitleRepository,
     persisted_records::{
         PersistedTitleDecodeOptions, PersistedTitleReadMode, finalize_persisted_title,
     },
@@ -506,15 +507,20 @@ impl TitleRepository for TitleStore {
         let sql = format!(
             "WITH requested(lookup_index, source, external_id) AS (
                  VALUES {requested_values}
+             ),
+             matched_title_ids AS (
+                 SELECT requested.lookup_index,
+                        title_external_ids.title_id
+                   FROM requested
+                   JOIN title_external_ids
+                     ON LOWER(title_external_ids.source) = LOWER(requested.source)
+                    AND title_external_ids.external_id = requested.external_id
              )
-             SELECT requested.lookup_index AS lookup_index,
+             SELECT matched_title_ids.lookup_index AS lookup_index,
                     {TITLE_COLUMNS}
-               FROM requested
-               JOIN title_external_ids
-                 ON LOWER(title_external_ids.source) = LOWER(requested.source)
-                AND title_external_ids.external_id = requested.external_id
-               JOIN titles ON titles.id = title_external_ids.title_id
-              ORDER BY requested.lookup_index ASC,
+               FROM titles
+               JOIN matched_title_ids ON matched_title_ids.title_id = titles.id
+              ORDER BY matched_title_ids.lookup_index ASC,
                        titles.id ASC"
         );
         let mut args = Vec::with_capacity(lookups.len() * 3);
@@ -556,6 +562,10 @@ impl TitleRepository for TitleStore {
 
     async fn get_by_id_without_external_ids(&self, id: &str) -> AppResult<Option<Title>> {
         self.get_by_id_internal(id, false).await
+    }
+
+    async fn get_title_ratings(&self, title_id: &str) -> AppResult<TitleRatingSummary> {
+        load_title_ratings(&self.datastore, title_id).await
     }
 
     async fn get_by_facet_and_slug(
@@ -1022,6 +1032,7 @@ impl TitleRepository for TitleStore {
                 let id = id.clone();
                 let metadata = metadata.clone();
                 Box::pin(async move {
+                    let ratings = metadata.ratings.clone();
                     let mut title = load_title_canonical_tx_or_not_found(tx, &id, true).await?;
                     apply_title_metadata_update(&mut title, metadata)?;
                     let hydration_state = if metadata_marks_fetched {
@@ -1030,6 +1041,9 @@ impl TitleRepository for TitleStore {
                         HydrationStateWrite::Preserve
                     };
                     persist_title_tx(tx, &title, hydration_state).await?;
+                    if let Some(ratings) = ratings {
+                        replace_title_ratings_tx(tx, &id, &ratings).await?;
+                    }
                     load_title_tx_or_not_found(tx, &id, true).await
                 })
             },
@@ -2256,6 +2270,169 @@ fn title_write_args(
         SqlArg::OptTimestamp(metadata_hydration_next_attempt_at),
         SqlArg::I64(metadata_hydration_attempt_count),
     ]
+}
+
+async fn load_title_ratings(
+    datastore: &StoreDatastore,
+    title_id: &str,
+) -> AppResult<TitleRatingSummary> {
+    let summary_row = SqlRuntime::fetch_optional(
+        datastore.read_exec(),
+        "SELECT rating FROM title_rating_summaries WHERE title_id = {}",
+        &[SqlArg::Text(title_id.to_string())],
+    )
+    .await?;
+    let rating = summary_row
+        .as_ref()
+        .map(|row| row.opt_f64("rating"))
+        .transpose()?
+        .flatten();
+
+    let source_rows = SqlRuntime::fetch_all(
+        datastore.read_exec(),
+        "SELECT source
+           FROM title_rating_sources
+          WHERE title_id = {}
+          ORDER BY sort_index ASC, source ASC",
+        &[SqlArg::Text(title_id.to_string())],
+    )
+    .await?;
+    let rating_sources = source_rows
+        .iter()
+        .map(|row| row.text("source"))
+        .collect::<AppResult<Vec<_>>>()?;
+
+    let external_rows = SqlRuntime::fetch_all(
+        datastore.read_exec(),
+        "SELECT source, value, score, normalized, votes, url
+           FROM title_external_ratings
+          WHERE title_id = {}
+          ORDER BY sort_index ASC, source ASC",
+        &[SqlArg::Text(title_id.to_string())],
+    )
+    .await?;
+    let external_ratings = external_rows
+        .iter()
+        .map(title_external_rating_from_row)
+        .collect::<AppResult<Vec<_>>>()?;
+
+    Ok(TitleRatingSummary {
+        rating,
+        rating_sources,
+        external_ratings,
+    })
+}
+
+fn title_external_rating_from_row(row: &SqlRow) -> AppResult<TitleExternalRating> {
+    Ok(TitleExternalRating {
+        source: row.text("source")?,
+        value: row.opt_f64("value")?,
+        score: row.opt_f64("score")?,
+        normalized: row.opt_f64("normalized")?.unwrap_or_default(),
+        votes: row
+            .opt_i64("votes")?
+            .and_then(|value| i32::try_from(value).ok()),
+        url: row.text("url")?,
+    })
+}
+
+async fn replace_title_ratings_tx(
+    tx: &mut SqlTx<'_>,
+    title_id: &str,
+    ratings: &TitleRatingSummary,
+) -> AppResult<()> {
+    SqlRuntime::execute(
+        SqlExec::Tx(tx),
+        "DELETE FROM title_external_ratings WHERE title_id = {}",
+        &[SqlArg::Text(title_id.to_string())],
+    )
+    .await?;
+    SqlRuntime::execute(
+        SqlExec::Tx(tx),
+        "DELETE FROM title_rating_sources WHERE title_id = {}",
+        &[SqlArg::Text(title_id.to_string())],
+    )
+    .await?;
+    SqlRuntime::execute(
+        SqlExec::Tx(tx),
+        "DELETE FROM title_rating_summaries WHERE title_id = {}",
+        &[SqlArg::Text(title_id.to_string())],
+    )
+    .await?;
+
+    let now = Utc::now();
+    if ratings.rating.is_some() {
+        SqlRuntime::execute(
+            SqlExec::Tx(tx),
+            "INSERT INTO title_rating_summaries (title_id, rating, created_at, updated_at)
+             VALUES ({}, {}, {}, {})",
+            &[
+                SqlArg::Text(title_id.to_string()),
+                SqlArg::OptF64(ratings.rating),
+                SqlArg::Timestamp(now),
+                SqlArg::Timestamp(now),
+            ],
+        )
+        .await?;
+    }
+
+    for (index, source) in ratings.rating_sources.iter().enumerate() {
+        let source = source.trim();
+        if source.is_empty() {
+            continue;
+        }
+        SqlRuntime::execute(
+            SqlExec::Tx(tx),
+            "INSERT INTO title_rating_sources
+             (title_id, source, sort_index, created_at, updated_at)
+             VALUES ({}, {}, {}, {}, {})
+             ON CONFLICT (title_id, source) DO NOTHING",
+            &[
+                SqlArg::Text(title_id.to_string()),
+                SqlArg::Text(source.to_string()),
+                SqlArg::I64(index as i64),
+                SqlArg::Timestamp(now),
+                SqlArg::Timestamp(now),
+            ],
+        )
+        .await?;
+    }
+
+    for (index, rating) in ratings.external_ratings.iter().enumerate() {
+        let source = rating.source.trim();
+        if source.is_empty() {
+            continue;
+        }
+        SqlRuntime::execute(
+            SqlExec::Tx(tx),
+            "INSERT INTO title_external_ratings
+             (title_id, source, sort_index, value, score, normalized, votes, url, created_at, updated_at)
+             VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {})
+             ON CONFLICT (title_id, source) DO UPDATE SET
+                sort_index = excluded.sort_index,
+                value = excluded.value,
+                score = excluded.score,
+                normalized = excluded.normalized,
+                votes = excluded.votes,
+                url = excluded.url,
+                updated_at = excluded.updated_at",
+            &[
+                SqlArg::Text(title_id.to_string()),
+                SqlArg::Text(source.to_string()),
+                SqlArg::I64(index as i64),
+                SqlArg::OptF64(rating.value),
+                SqlArg::OptF64(rating.score),
+                SqlArg::F64(rating.normalized),
+                SqlArg::OptI64(rating.votes.map(i64::from)),
+                SqlArg::Text(rating.url.trim().to_string()),
+                SqlArg::Timestamp(now),
+                SqlArg::Timestamp(now),
+            ],
+        )
+        .await?;
+    }
+
+    Ok(())
 }
 
 fn is_title_external_id_conflict_error(error: &AppError) -> bool {

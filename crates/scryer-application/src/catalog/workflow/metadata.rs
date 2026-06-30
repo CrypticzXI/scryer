@@ -98,6 +98,21 @@ impl AppUseCase {
             .filter(|v| !v.trim().is_empty())
             .unwrap_or_else(|| "eng".to_string())
     }
+
+    pub async fn title_ratings(
+        &self,
+        actor: &User,
+        title_id: &str,
+    ) -> AppResult<TitleRatingSummary> {
+        self.get_title(actor, title_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("title {title_id}")))?;
+        self.services
+            .catalog
+            .titles
+            .get_title_ratings(title_id)
+            .await
+    }
 }
 impl AppUseCase {
     pub(crate) async fn apply_title_metadata_update(

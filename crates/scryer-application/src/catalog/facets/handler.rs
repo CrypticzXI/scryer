@@ -171,6 +171,7 @@ pub fn movie_to_hydration_result(movie: MovieMetadata, language: &str) -> Hydrat
         metadata_language: Some(language.to_string()),
         metadata_fetched_at: Some(Utc::now().to_rfc3339()),
         digital_release_date: movie.tmdb_release_date,
+        ratings: Some(movie.ratings),
         extra_external_ids,
         ..Default::default()
     };
@@ -212,6 +213,7 @@ pub fn series_to_hydration_result(series: SeriesMetadata, language: &str) -> Hyd
         tagged_aliases: series.tagged_aliases,
         metadata_language: Some(language.to_string()),
         metadata_fetched_at: Some(Utc::now().to_rfc3339()),
+        ratings: Some(series.ratings),
         extra_external_ids,
         ..Default::default()
     };
@@ -315,6 +317,7 @@ mod tests {
             episodes: vec![],
             anime_mappings,
             anime_movies: vec![],
+            ratings: Default::default(),
         }
     }
 

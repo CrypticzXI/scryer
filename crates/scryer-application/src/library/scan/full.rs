@@ -114,6 +114,8 @@ async fn process_series_candidate_batch(
     existing_titles: &mut Vec<Title>,
     existing_titles_by_name: &mut HashMap<String, usize>,
     existing_titles_by_tvdb_id: &mut HashMap<String, usize>,
+    existing_titles_by_imdb_id: &mut HashMap<String, usize>,
+    existing_titles_by_tmdb_id: &mut HashMap<String, usize>,
     executor: &mut LibraryScanTitleWorkExecutor,
     summary: &mut LibraryScanSummary,
     unmatched_items: &mut Vec<LibraryScanUnmatchedItem>,
@@ -144,6 +146,8 @@ async fn process_series_candidate_batch(
             existing_titles,
             existing_titles_by_name,
             existing_titles_by_tvdb_id,
+            existing_titles_by_imdb_id,
+            existing_titles_by_tmdb_id,
             executor,
             summary,
             unmatched_items,
@@ -191,6 +195,8 @@ async fn process_series_candidate_batch(
                 existing_titles,
                 existing_titles_by_name,
                 existing_titles_by_tvdb_id,
+                existing_titles_by_imdb_id,
+                existing_titles_by_tmdb_id,
                 summary,
                 unmatched_items,
             )
@@ -462,8 +468,12 @@ pub(super) async fn scan_library_series(
         .titles
         .list_for_libraries(Some(facet.clone()), &library_ids, None)
         .await?;
-    let (mut existing_titles_by_name, mut existing_titles_by_tvdb_id) =
-        build_series_title_indexes(&existing_titles);
+    let (
+        mut existing_titles_by_name,
+        mut existing_titles_by_tvdb_id,
+        mut existing_titles_by_imdb_id,
+        mut existing_titles_by_tmdb_id,
+    ) = build_series_title_indexes(&existing_titles);
 
     let mut summary = LibraryScanSummary::default();
     let mut metadata_lookup_stats = MetadataLookupBatchStats::default();
@@ -501,6 +511,8 @@ pub(super) async fn scan_library_series(
             &mut existing_titles,
             &mut existing_titles_by_name,
             &mut existing_titles_by_tvdb_id,
+            &mut existing_titles_by_imdb_id,
+            &mut existing_titles_by_tmdb_id,
             &mut executor,
             &mut summary,
             &mut unmatched_items,
@@ -537,6 +549,8 @@ pub(super) async fn scan_library_series(
                 &mut existing_titles,
                 &mut existing_titles_by_name,
                 &mut existing_titles_by_tvdb_id,
+                &mut existing_titles_by_imdb_id,
+                &mut existing_titles_by_tmdb_id,
                 &mut executor,
                 &mut summary,
                 &mut unmatched_items,

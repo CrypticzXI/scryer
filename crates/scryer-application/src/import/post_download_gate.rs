@@ -519,11 +519,8 @@ pub(crate) async fn probe_and_validate(
                 });
             }
             crate::RequiredAudioVerdict::Indeterminate(unverified) => {
-                warn!(
-                    title_id = %title.id,
-                    unverified = %unverified.join(", "),
-                    "required audio language(s) could not be verified from file metadata; importing for review"
-                );
+                // Neither provably present nor provably absent (untagged tracks):
+                // accept rather than bury a possibly-good release, but flag it.
                 audio_language_warning = Some(format!(
                     "audio language(s) {} could not be verified from file metadata (untagged track(s)); imported for review",
                     unverified.join(", ")
@@ -745,6 +742,17 @@ pub(crate) async fn prepare_import_candidate(
                     path = %path.display(),
                     changes = ?rescore_changes,
                     "mediainfo rescore prepared import candidate"
+                );
+            }
+            // Surface a required-audio "could not verify" flag (untagged tracks):
+            // the file was accepted for review rather than falsely rejected.
+            if let Some(warning) = accepted.audio_language_warning.as_deref() {
+                warn!(
+                    title_id = %title.id,
+                    title = %title.name,
+                    path = %path.display(),
+                    warning,
+                    "imported file accepted with unverified required audio language(s) for review"
                 );
             }
 
@@ -1239,6 +1247,12 @@ async fn finalize_import_rejection(
         .await;
 }
 
+// Reschedules a wanted item for an immediate fresh search after a rejected
+// import. For a `language_mismatch` rejection this is intentional: the rejected
+// release is blocklisted by title (a provable absence — it genuinely lacks the
+// required audio), so the immediate retry seeks a *different*, correct candidate
+// rather than re-grabbing the same one. Trustworthy verdicts (see
+// `classify_required_audio`) keep this from churning on falsely-rejected files.
 async fn reset_wanted_items_for_retry(app: &AppUseCase, title_id: &str, episode_ids: &[String]) {
     let now_str = Utc::now().to_rfc3339();
     let targets: Vec<Option<&str>> = if episode_ids.is_empty() {

@@ -795,6 +795,9 @@ pub trait TitleRepository: Send + Sync {
     async fn get_by_id_without_external_ids(&self, id: &str) -> AppResult<Option<Title>> {
         self.get_by_id(id).await
     }
+    async fn get_title_ratings(&self, _title_id: &str) -> AppResult<TitleRatingSummary> {
+        Ok(TitleRatingSummary::default())
+    }
     async fn get_by_facet_and_slug(
         &self,
         facet: MediaFacet,

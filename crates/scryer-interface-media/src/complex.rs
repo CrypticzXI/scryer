@@ -5,7 +5,8 @@ use scryer_interface_core::{actor_from_ctx, app_from_ctx, to_gql_error};
 use crate::mappers::{
     from_collection, from_discovery_item, from_download_queue_item, from_episode,
     from_library_settings, from_pending_release, from_release_decision, from_series_movie_link,
-    from_submission_scope, from_title, from_title_media_file, from_wanted_item,
+    from_submission_scope, from_title, from_title_media_file, from_title_rating_summary,
+    from_wanted_item,
 };
 use crate::types::*;
 
@@ -71,6 +72,15 @@ impl LibraryPayload {
 
 #[ComplexObject]
 impl TitlePayload {
+    async fn ratings(&self, ctx: &Context<'_>) -> GqlResult<TitleRatingPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        app.title_ratings(&actor, self.id.as_ref())
+            .await
+            .map(from_title_rating_summary)
+            .map_err(to_gql_error)
+    }
+
     async fn more_like_this(
         &self,
         ctx: &Context<'_>,

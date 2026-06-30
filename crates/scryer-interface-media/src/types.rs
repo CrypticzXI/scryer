@@ -64,6 +64,23 @@ pub struct TitlePayload {
     pub preloaded_collections: Option<Vec<CollectionPayload>>,
 }
 
+#[derive(SimpleObject, Clone)]
+pub struct TitleExternalRatingPayload {
+    pub source: String,
+    pub value: Option<f64>,
+    pub score: Option<f64>,
+    pub normalized: f64,
+    pub votes: Option<i32>,
+    pub url: String,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct TitleRatingPayload {
+    pub rating: Option<f64>,
+    pub rating_sources: Vec<String>,
+    pub external_ratings: Vec<TitleExternalRatingPayload>,
+}
+
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
 #[graphql(rename_items = "snake_case")]
 pub enum TitleCatalogSortKeyValue {

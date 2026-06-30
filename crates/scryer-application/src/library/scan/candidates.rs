@@ -214,6 +214,8 @@ fn find_existing_series_title_index(
     existing_titles: &[Title],
     existing_titles_by_name: &HashMap<String, usize>,
     existing_titles_by_tvdb_id: &HashMap<String, usize>,
+    existing_titles_by_imdb_id: &HashMap<String, usize>,
+    existing_titles_by_tmdb_id: &HashMap<String, usize>,
 ) -> Option<usize> {
     if let Some(identity_hint) = candidate
         .identity_hint
@@ -225,6 +227,16 @@ fn find_existing_series_title_index(
         {
             return Some(index);
         }
+        if let Some(imdb_id) = identity_hint.imdb_id.as_deref()
+            && let Some(&index) = existing_titles_by_imdb_id.get(imdb_id)
+        {
+            return Some(index);
+        }
+        if let Some(tmdb_id) = identity_hint.tmdb_id.as_deref()
+            && let Some(&index) = existing_titles_by_tmdb_id.get(tmdb_id)
+        {
+            return Some(index);
+        }
         return None;
     }
 
@@ -233,6 +245,26 @@ fn find_existing_series_title_index(
         .as_ref()
         .and_then(|meta| meta.tvdb_id.as_deref())
         && let Some(&index) = existing_titles_by_tvdb_id.get(tvdb_id)
+    {
+        return Some(index);
+    }
+
+    if let Some(nfo_imdb_id) = candidate
+        .nfo_meta
+        .as_ref()
+        .and_then(|meta| meta.imdb_id.as_deref())
+        .and_then(crate::normalize::normalize_imdb_id)
+        && let Some(&index) = existing_titles_by_imdb_id.get(&nfo_imdb_id)
+    {
+        return Some(index);
+    }
+
+    if let Some(nfo_tmdb_id) = candidate
+        .nfo_meta
+        .as_ref()
+        .and_then(|meta| meta.tmdb_id.as_deref())
+        .map(str::to_string)
+        && let Some(&index) = existing_titles_by_tmdb_id.get(&nfo_tmdb_id)
     {
         return Some(index);
     }
@@ -410,6 +442,8 @@ async fn append_series_title_and_merge_work(
     existing_titles: &mut Vec<Title>,
     existing_titles_by_name: &mut HashMap<String, usize>,
     existing_titles_by_tvdb_id: &mut HashMap<String, usize>,
+    existing_titles_by_imdb_id: &mut HashMap<String, usize>,
+    existing_titles_by_tmdb_id: &mut HashMap<String, usize>,
     title: Title,
     folder_path: &Path,
     mode: LibraryScanTitleWalkMode,
@@ -419,6 +453,8 @@ async fn append_series_title_and_merge_work(
         existing_titles,
         existing_titles_by_name,
         existing_titles_by_tvdb_id,
+        existing_titles_by_imdb_id,
+        existing_titles_by_tmdb_id,
         title,
     );
     merge_series_title_work_for_index(
@@ -642,6 +678,8 @@ pub(super) async fn process_series_full_scan_candidate(
     existing_titles: &mut [Title],
     existing_titles_by_name: &mut HashMap<String, usize>,
     existing_titles_by_tvdb_id: &mut HashMap<String, usize>,
+    existing_titles_by_imdb_id: &mut HashMap<String, usize>,
+    existing_titles_by_tmdb_id: &mut HashMap<String, usize>,
     executor: &mut LibraryScanTitleWorkExecutor,
     summary: &mut LibraryScanSummary,
     _unmatched_items: &mut Vec<LibraryScanUnmatchedItem>,
@@ -674,6 +712,8 @@ pub(super) async fn process_series_full_scan_candidate(
         existing_titles,
         existing_titles_by_name,
         existing_titles_by_tvdb_id,
+        existing_titles_by_imdb_id,
+        existing_titles_by_tmdb_id,
     ) {
         if let Some(file) = candidate.source_file.as_ref() {
             executor.enqueue(episodic_title_work(
@@ -864,6 +904,8 @@ pub(super) async fn process_resolved_series_full_scan_candidate(
     existing_titles: &mut Vec<Title>,
     existing_titles_by_name: &mut HashMap<String, usize>,
     existing_titles_by_tvdb_id: &mut HashMap<String, usize>,
+    existing_titles_by_imdb_id: &mut HashMap<String, usize>,
+    existing_titles_by_tmdb_id: &mut HashMap<String, usize>,
     summary: &mut LibraryScanSummary,
     unmatched_items: &mut Vec<LibraryScanUnmatchedItem>,
 ) -> AppResult<()> {
@@ -964,6 +1006,8 @@ pub(super) async fn process_resolved_series_full_scan_candidate(
                 existing_titles,
                 existing_titles_by_name,
                 existing_titles_by_tvdb_id,
+                existing_titles_by_imdb_id,
+                existing_titles_by_tmdb_id,
                 created.title,
                 &candidate.folder_path,
                 LibraryScanTitleWalkMode::Full,
@@ -1036,6 +1080,8 @@ pub(super) async fn process_series_refresh_candidate(
     existing_titles: &mut [Title],
     existing_titles_by_name: &mut HashMap<String, usize>,
     existing_titles_by_tvdb_id: &mut HashMap<String, usize>,
+    existing_titles_by_imdb_id: &mut HashMap<String, usize>,
+    existing_titles_by_tmdb_id: &mut HashMap<String, usize>,
     existing_titles_by_folder_path: &mut HashMap<String, usize>,
     summary: &mut LibraryScanSummary,
 ) -> AppResult<Option<PreparedSeriesLibraryScanCandidate>> {
@@ -1049,6 +1095,8 @@ pub(super) async fn process_series_refresh_candidate(
         existing_titles,
         existing_titles_by_name,
         existing_titles_by_tvdb_id,
+        existing_titles_by_imdb_id,
+        existing_titles_by_tmdb_id,
     ) {
         refresh_existing_series_title_match(
             app,
@@ -1086,6 +1134,8 @@ pub(super) async fn process_resolved_series_refresh_candidate(
     existing_titles: &mut Vec<Title>,
     existing_titles_by_name: &mut HashMap<String, usize>,
     existing_titles_by_tvdb_id: &mut HashMap<String, usize>,
+    existing_titles_by_imdb_id: &mut HashMap<String, usize>,
+    existing_titles_by_tmdb_id: &mut HashMap<String, usize>,
     existing_titles_by_folder_path: &mut HashMap<String, usize>,
     summary: &mut LibraryScanSummary,
 ) -> AppResult<()> {
@@ -1135,6 +1185,8 @@ pub(super) async fn process_resolved_series_refresh_candidate(
                 existing_titles,
                 existing_titles_by_name,
                 existing_titles_by_tvdb_id,
+                existing_titles_by_imdb_id,
+                existing_titles_by_tmdb_id,
                 created.title,
                 &candidate.folder_path,
                 LibraryScanTitleWalkMode::Additive,
@@ -1471,6 +1523,73 @@ mod tests {
             digital_release_date: None,
             folder_path: None,
         }
+    }
+
+    fn series_candidate_with_nfo_ids(
+        nfo_meta: crate::nfo::NfoMetadata,
+    ) -> PreparedSeriesLibraryScanCandidate {
+        PreparedSeriesLibraryScanCandidate {
+            folder_path: std::path::PathBuf::from("/library/Show"),
+            folder_name: Some("Show".to_string()),
+            source_file: None,
+            nfo_meta: Some(nfo_meta),
+            identity_hint: None,
+            query: String::new(),
+            year_hint: None,
+            search_candidates: Vec::new(),
+            title_match_candidates: Vec::new(),
+            metadata_lookup_attempted: true,
+        }
+    }
+
+    #[test]
+    fn find_existing_series_title_index_resolves_via_imdb_and_tmdb() {
+        let mut imdb_title = build_series_title("series-imdb");
+        imdb_title.external_ids = vec![scryer_domain::ExternalId {
+            source: "imdb".to_string(),
+            value: "tt2222222".to_string(),
+        }];
+        let mut tmdb_title = build_series_title("series-tmdb");
+        tmdb_title.external_ids = vec![scryer_domain::ExternalId {
+            source: "tmdb".to_string(),
+            value: "55555".to_string(),
+        }];
+        let existing_titles = vec![imdb_title, tmdb_title];
+        let (by_name, by_tvdb, by_imdb, by_tmdb) = build_series_title_indexes(&existing_titles);
+
+        // A re-scanned series whose tvdb isn't locally indexed still resolves via
+        // its NFO imdb/tmdb id, mirroring the movie scan (no SMG round-trip).
+        let imdb_candidate = series_candidate_with_nfo_ids(crate::nfo::NfoMetadata {
+            imdb_id: Some("tt2222222".to_string()),
+            ..Default::default()
+        });
+        assert_eq!(
+            find_existing_series_title_index(
+                &imdb_candidate,
+                &existing_titles,
+                &by_name,
+                &by_tvdb,
+                &by_imdb,
+                &by_tmdb,
+            ),
+            Some(0)
+        );
+
+        let tmdb_candidate = series_candidate_with_nfo_ids(crate::nfo::NfoMetadata {
+            tmdb_id: Some("55555".to_string()),
+            ..Default::default()
+        });
+        assert_eq!(
+            find_existing_series_title_index(
+                &tmdb_candidate,
+                &existing_titles,
+                &by_name,
+                &by_tvdb,
+                &by_imdb,
+                &by_tmdb,
+            ),
+            Some(1)
+        );
     }
 
     #[test]

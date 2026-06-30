@@ -16,6 +16,23 @@ pub struct LibraryRootDraft {
     pub is_default: bool,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct TitleExternalRating {
+    pub source: String,
+    pub value: Option<f64>,
+    pub score: Option<f64>,
+    pub normalized: f64,
+    pub votes: Option<i32>,
+    pub url: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct TitleRatingSummary {
+    pub rating: Option<f64>,
+    pub rating_sources: Vec<String>,
+    pub external_ratings: Vec<TitleExternalRating>,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct TitleMetadataUpdate {
     pub name: Option<String>,
@@ -39,6 +56,8 @@ pub struct TitleMetadataUpdate {
     pub metadata_language: Option<String>,
     pub metadata_fetched_at: Option<String>,
     pub digital_release_date: Option<String>,
+    /// Ratings returned by SMG/MDBList. `Some(default)` clears stale stored ratings.
+    pub ratings: Option<TitleRatingSummary>,
     /// Additional external IDs to merge onto the title (e.g. MAL, AniList from anime mappings).
     pub extra_external_ids: Vec<ExternalId>,
     /// Additional tags to merge onto the title (e.g. MAL score, anime media type).

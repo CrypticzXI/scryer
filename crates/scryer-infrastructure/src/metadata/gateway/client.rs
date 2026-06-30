@@ -17,7 +17,7 @@ use scryer_application::{
     EpisodeMetadata, MetadataGateway, MetadataSearchItem, MetadataSearchQuery, MovieMetadata,
     MultiMetadataSearchResult, RichMetadataSearchItem, SeasonMetadata, SeriesArtworkUrls,
     SeriesMetadata, SettingsRepository, SmgScryerUpdateNotice, TitleArtworkUrls,
-    TitleRecommendationsInput,
+    TitleExternalRating, TitleRatingSummary, TitleRecommendationsInput,
 };
 use scryer_outbound_http::{
     OutboundHttpClient, OutboundHttpError, OutboundRequestError, RateLimitRegistry, RequestPolicy,
@@ -1966,6 +1966,11 @@ fn merge_bulk_metadata_partial(
                         genres: m.genres,
                         studio: m.studio,
                         tmdb_release_date: m.tmdb_release_date,
+                        ratings: rating_summary_from_gateway(
+                            m.rating,
+                            m.rating_sources,
+                            m.external_ratings,
+                        ),
                     },
                 );
             }
@@ -2089,6 +2094,11 @@ fn merge_bulk_metadata_partial(
                             signal_summary: movie.signal_summary,
                         })
                         .collect(),
+                    ratings: rating_summary_from_gateway(
+                        s.rating,
+                        s.rating_sources,
+                        s.external_ratings,
+                    ),
                 },
             );
         }
@@ -2689,6 +2699,18 @@ mod tests {
         assert!(query.contains("fragment SeriesFields on TvdbSeries"));
         assert!(query.contains("tagged_aliases"));
         assert!(query.contains("language"));
+    }
+
+    #[test]
+    fn bulk_metadata_query_requests_mdb_external_ratings() {
+        let query = build_bulk_mixed_query(&[11], &[22], "eng");
+
+        assert!(query.contains("fragment MovieFields on TvdbMovie"));
+        assert!(query.contains("fragment SeriesFields on TvdbSeries"));
+        assert!(query.contains("rating_sources"));
+        assert!(query.contains("external_ratings"));
+        assert!(query.contains("normalized"));
+        assert!(query.contains("votes"));
     }
 
     #[test]
@@ -3316,7 +3338,62 @@ struct MovieItem {
     studio: String,
     tmdb_release_date: Option<String>,
     #[serde(default)]
+    rating: Option<f64>,
+    #[serde(default)]
+    rating_sources: Vec<String>,
+    #[serde(default)]
+    external_ratings: Vec<ExternalRatingItem>,
+    #[serde(default)]
     artworks: Vec<ArtworkItem>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct ExternalRatingItem {
+    source: String,
+    #[serde(default)]
+    value: Option<f64>,
+    #[serde(default)]
+    score: Option<f64>,
+    normalized: f64,
+    #[serde(default)]
+    votes: Option<i32>,
+    url: String,
+}
+
+fn rating_summary_from_gateway(
+    rating: Option<f64>,
+    rating_sources: Vec<String>,
+    external_ratings: Vec<ExternalRatingItem>,
+) -> TitleRatingSummary {
+    let rating_sources = rating_sources
+        .into_iter()
+        .filter_map(|source| {
+            let source = source.trim();
+            (!source.is_empty()).then(|| source.to_string())
+        })
+        .collect();
+    let external_ratings = external_ratings
+        .into_iter()
+        .filter_map(|rating| {
+            let source = rating.source.trim();
+            if source.is_empty() {
+                return None;
+            }
+            Some(TitleExternalRating {
+                source: source.to_string(),
+                value: rating.value,
+                score: rating.score,
+                normalized: rating.normalized,
+                votes: rating.votes,
+                url: rating.url.trim().to_string(),
+            })
+        })
+        .collect();
+    TitleRatingSummary {
+        rating,
+        rating_sources,
+        external_ratings,
+    }
 }
 
 // --- Artwork helper ---
@@ -3475,6 +3552,12 @@ struct SeriesItem {
     poster_url: String,
     country: String,
     genres: Vec<String>,
+    #[serde(default)]
+    rating: Option<f64>,
+    #[serde(default)]
+    rating_sources: Vec<String>,
+    #[serde(default)]
+    external_ratings: Vec<ExternalRatingItem>,
     aliases: Vec<String>,
     #[serde(default)]
     tagged_aliases: Vec<TaggedAliasItem>,
@@ -3836,6 +3919,7 @@ impl MetadataGateway for MetadataGatewayClient {
             genres: m.genres,
             studio: m.studio,
             tmdb_release_date: m.tmdb_release_date,
+            ratings: rating_summary_from_gateway(m.rating, m.rating_sources, m.external_ratings),
         })
     }
 
@@ -3970,6 +4054,7 @@ impl MetadataGateway for MetadataGatewayClient {
                     signal_summary: movie.signal_summary,
                 })
                 .collect(),
+            ratings: rating_summary_from_gateway(s.rating, s.rating_sources, s.external_ratings),
         })
     }
 

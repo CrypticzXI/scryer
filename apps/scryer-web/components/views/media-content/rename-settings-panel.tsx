@@ -916,6 +916,18 @@ function RenameFunctionReference({ t }: { t: Translate }) {
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-1 2xl:grid-cols-2">
           <div className="rounded-md border border-border/70 bg-muted/40 px-3 py-2.5">
             <p className="text-sm font-medium text-card-foreground">
+              {t("settings.renameFunctionPaddingTitle")}
+            </p>
+            <code className="mt-1 block break-all font-[var(--font-code)] text-xs text-emerald-600 dark:text-emerald-400">
+              {"{season:2}"}
+            </code>
+            <p className="mt-1 text-xs leading-snug text-muted-foreground">
+              {t("settings.renameNumberPaddingLabel")}
+            </p>
+          </div>
+
+          <div className="rounded-md border border-border/70 bg-muted/40 px-3 py-2.5">
+            <p className="text-sm font-medium text-card-foreground">
               {t("settings.renameFunctionChainTitle")}
             </p>
             <code className="mt-1 block break-all font-[var(--font-code)] text-xs text-emerald-600 dark:text-emerald-400">
