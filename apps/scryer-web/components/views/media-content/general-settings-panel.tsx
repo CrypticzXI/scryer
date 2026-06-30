@@ -12,6 +12,7 @@ import {
   isChmodPresetValue,
 } from "@/lib/constants/chmod";
 import type { ImportMode } from "@/lib/types/settings";
+import type { LocalPathStyle } from "@/lib/utils/local-path-style";
 import type { ViewCategoryId } from "./indexer-category-picker";
 
 const FILLER_POLICY_OPTIONS = [
@@ -112,6 +113,7 @@ export function GeneralSettingsPanel({
   handlePlexmatchWriteChange,
   importMode,
   handleImportModeChange,
+  localPathStyle,
   setPermissionsLinux,
   handleSetPermissionsLinuxChange,
   fileChmod,
@@ -139,6 +141,7 @@ export function GeneralSettingsPanel({
   handlePlexmatchWriteChange: (checked: boolean) => void;
   importMode: Record<ViewCategoryId, ImportMode>;
   handleImportModeChange: (value: ImportMode) => void;
+  localPathStyle: LocalPathStyle | undefined;
   setPermissionsLinux: Record<ViewCategoryId, string>;
   handleSetPermissionsLinuxChange: (checked: boolean) => void;
   fileChmod: Record<ViewCategoryId, string>;
@@ -156,6 +159,7 @@ export function GeneralSettingsPanel({
     chownGroup[activeQualityScopeId] ?? "",
   );
   const permissionsEnabled = setPermissionsLinux[activeQualityScopeId] === "true";
+  const showUnixPermissions = localPathStyle !== "windows";
   const permissionFieldsDisabled = mediaSettingsLoading || !permissionsEnabled;
   const selectedFileChmod =
     fileChmod[activeQualityScopeId]?.trim() || FILE_CHMOD_DERIVED_VALUE;
@@ -209,114 +213,117 @@ export function GeneralSettingsPanel({
             </SelectContent>
           </Select>
         </div>
-        <div className="grid max-w-xl gap-4 sm:grid-cols-2">
-          <ToggleSettingRow
-            label={t("settings.setPermissionsLinuxLabel")}
-            description={t("settings.setPermissionsLinuxDescription")}
-            checked={setPermissionsLinux[activeQualityScopeId] === "true"}
-            disabled={mediaSettingsLoading}
-            onChange={handleSetPermissionsLinuxChange}
-          />
-          <div className="space-y-2">
-            <Label>{t("settings.fileChmodLabel")}</Label>
-            <Select
-              value={selectedFileChmod}
-              onValueChange={(value) =>
-                handleFileChmodChange(
-                  value === FILE_CHMOD_DERIVED_VALUE ? "" : value,
-                )
-              }
-              disabled={permissionFieldsDisabled}
-            >
-              <SelectTrigger className="w-full">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value={FILE_CHMOD_DERIVED_VALUE}>
-                  {t("settings.fileChmodDeriveFromFolder")}
-                </SelectItem>
-                {FILE_CHMOD_PRESETS.map((option) => (
-                  <SelectItem key={option.value} value={option.value}>
-                    <span className="flex w-full items-center justify-between gap-4">
-                      <span>
-                        {option.value} - {t(option.labelKey)}
-                      </span>
-                      <span className="font-[var(--font-code)] text-xs text-muted-foreground">
-                        {formatChmodMode(option.value, "file")}
-                      </span>
-                    </span>
-                  </SelectItem>
-                ))}
-                {customFileChmod ? (
-                  <SelectItem value={customFileChmod}>
-                    <span className="flex w-full items-center justify-between gap-4">
-                      <span>
-                        {customFileChmod} - {t("settings.chmodPresetCustom")}
-                      </span>
-                      <span className="font-[var(--font-code)] text-xs text-muted-foreground">
-                        {formatChmodMode(customFileChmod, "file")}
-                      </span>
-                    </span>
-                  </SelectItem>
-                ) : null}
-              </SelectContent>
-            </Select>
-          </div>
-          <div className="space-y-2">
-            <Label>{t("settings.folderChmodLabel")}</Label>
-            <Select
-              value={selectedFolderChmod}
-              onValueChange={handleFolderChmodChange}
-              disabled={permissionFieldsDisabled}
-            >
-              <SelectTrigger className="w-full">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {FOLDER_CHMOD_PRESETS.map((option) => (
-                  <SelectItem key={option.value} value={option.value}>
-                    <span className="flex w-full items-center justify-between gap-4">
-                      <span>
-                        {option.value} - {t(option.labelKey)}
-                      </span>
-                      <span className="font-[var(--font-code)] text-xs text-muted-foreground">
-                        {formatChmodMode(option.value, "folder")}
-                      </span>
-                    </span>
-                  </SelectItem>
-                ))}
-                {customFolderChmod ? (
-                  <SelectItem value={customFolderChmod}>
-                    <span className="flex w-full items-center justify-between gap-4">
-                      <span>
-                        {customFolderChmod} - {t("settings.chmodPresetCustom")}
-                      </span>
-                      <span className="font-[var(--font-code)] text-xs text-muted-foreground">
-                        {formatChmodMode(customFolderChmod, "folder")}
-                      </span>
-                    </span>
-                  </SelectItem>
-                ) : null}
-              </SelectContent>
-            </Select>
-          </div>
-          <div className="space-y-2">
-            <Label>{t("settings.chownGroupLabel")}</Label>
-            <Input
-              value={chownGroupDraft}
-              onChange={(event) => setChownGroupDraft(event.target.value)}
-              onBlur={commitChownGroup}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") {
-                  event.preventDefault();
-                  commitChownGroup();
-                }
-              }}
-              disabled={permissionFieldsDisabled}
-              placeholder={t("label.none")}
+        {showUnixPermissions ? (
+          <div className="grid max-w-xl gap-4 sm:grid-cols-2">
+            <ToggleSettingRow
+              label={t("settings.setPermissionsLinuxLabel")}
+              description={t("settings.setPermissionsLinuxDescription")}
+              checked={setPermissionsLinux[activeQualityScopeId] === "true"}
+              disabled={mediaSettingsLoading}
+              onChange={handleSetPermissionsLinuxChange}
             />
+            <div className="space-y-2">
+              <Label>{t("settings.fileChmodLabel")}</Label>
+              <Select
+                value={selectedFileChmod}
+                onValueChange={(value) =>
+                  handleFileChmodChange(
+                    value === FILE_CHMOD_DERIVED_VALUE ? "" : value,
+                  )
+                }
+                disabled={permissionFieldsDisabled}
+              >
+                <SelectTrigger className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={FILE_CHMOD_DERIVED_VALUE}>
+                    {t("settings.fileChmodDeriveFromFolder")}
+                  </SelectItem>
+                  {FILE_CHMOD_PRESETS.map((option) => (
+                    <SelectItem key={option.value} value={option.value}>
+                      <span className="flex w-full items-center justify-between gap-4">
+                        <span>
+                          {option.value} - {t(option.labelKey)}
+                        </span>
+                        <span className="font-[var(--font-code)] text-xs text-muted-foreground">
+                          {formatChmodMode(option.value, "file")}
+                        </span>
+                      </span>
+                    </SelectItem>
+                  ))}
+                  {customFileChmod ? (
+                    <SelectItem value={customFileChmod}>
+                      <span className="flex w-full items-center justify-between gap-4">
+                        <span>
+                          {customFileChmod} - {t("settings.chmodPresetCustom")}
+                        </span>
+                        <span className="font-[var(--font-code)] text-xs text-muted-foreground">
+                          {formatChmodMode(customFileChmod, "file")}
+                        </span>
+                      </span>
+                    </SelectItem>
+                  ) : null}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label>{t("settings.folderChmodLabel")}</Label>
+              <Select
+                value={selectedFolderChmod}
+                onValueChange={handleFolderChmodChange}
+                disabled={permissionFieldsDisabled}
+              >
+                <SelectTrigger className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {FOLDER_CHMOD_PRESETS.map((option) => (
+                    <SelectItem key={option.value} value={option.value}>
+                      <span className="flex w-full items-center justify-between gap-4">
+                        <span>
+                          {option.value} - {t(option.labelKey)}
+                        </span>
+                        <span className="font-[var(--font-code)] text-xs text-muted-foreground">
+                          {formatChmodMode(option.value, "folder")}
+                        </span>
+                      </span>
+                    </SelectItem>
+                  ))}
+                  {customFolderChmod ? (
+                    <SelectItem value={customFolderChmod}>
+                      <span className="flex w-full items-center justify-between gap-4">
+                        <span>
+                          {customFolderChmod} -{" "}
+                          {t("settings.chmodPresetCustom")}
+                        </span>
+                        <span className="font-[var(--font-code)] text-xs text-muted-foreground">
+                          {formatChmodMode(customFolderChmod, "folder")}
+                        </span>
+                      </span>
+                    </SelectItem>
+                  ) : null}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label>{t("settings.chownGroupLabel")}</Label>
+              <Input
+                value={chownGroupDraft}
+                onChange={(event) => setChownGroupDraft(event.target.value)}
+                onBlur={commitChownGroup}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    commitChownGroup();
+                  }
+                }}
+                disabled={permissionFieldsDisabled}
+                placeholder={t("label.none")}
+              />
+            </div>
           </div>
-        </div>
+        ) : null}
       </GeneralSettingsSection>
 
       <GeneralSettingsSection

@@ -1,4 +1,10 @@
 import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import {
   compactRatingNumber,
   ratingSourceInfo,
   ratingValueLabel,
@@ -16,19 +22,6 @@ type TitleRatingsStripProps = {
   ratings?: TitleRatings | null;
 };
 
-function voteLabel(votes: number | null | undefined): string | null {
-  if (!votes || votes <= 0) {
-    return null;
-  }
-  if (votes >= 1_000_000) {
-    return `${compactRatingNumber(votes / 1_000_000)}M`;
-  }
-  if (votes >= 1_000) {
-    return `${compactRatingNumber(votes / 1_000)}K`;
-  }
-  return votes.toString();
-}
-
 function RatingSourceLogo({ source }: { source: RatingSourceInfo }) {
   if (!source.logoSrc) {
     return null;
@@ -44,6 +37,49 @@ function RatingSourceLogo({ source }: { source: RatingSourceInfo }) {
   );
 }
 
+function RatingPill({
+  source,
+  value,
+  href,
+}: {
+  source: RatingSourceInfo;
+  value: string;
+  href: string;
+}) {
+  const className =
+    "inline-flex items-center gap-1.5 rounded border border-border/70 bg-background/45 px-2 py-1 text-xs";
+  const label = `${source.label}: ${value}`;
+  const content = (
+    <>
+      <RatingSourceLogo source={source} />
+      <span className="font-[var(--font-code)] text-card-foreground">{value}</span>
+    </>
+  );
+
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        {href.trim() ? (
+          <a
+            href={href}
+            target="_blank"
+            rel="noreferrer"
+            aria-label={label}
+            className={className}
+          >
+            {content}
+          </a>
+        ) : (
+          <span tabIndex={0} aria-label={label} className={className}>
+            {content}
+          </span>
+        )}
+      </TooltipTrigger>
+      <TooltipContent>{source.label}</TooltipContent>
+    </Tooltip>
+  );
+}
+
 export function TitleRatingsStrip({ ratings }: TitleRatingsStripProps) {
   const externalRatings = ratings?.externalRatings ?? [];
   if (externalRatings.length === 0 && ratings?.rating == null) {
@@ -51,47 +87,27 @@ export function TitleRatingsStrip({ ratings }: TitleRatingsStripProps) {
   }
 
   return (
-    <div className="mt-3 flex flex-wrap gap-2">
-      {externalRatings.map((rating, index) => {
-        const source = ratingSourceInfo(rating.source);
-        const votes = voteLabel(rating.votes);
-        const content = (
-          <>
-            <RatingSourceLogo source={source} />
-            <span className="font-medium text-foreground">{source.label}</span>
-            <span className="font-[var(--font-code)] text-card-foreground">
-              {ratingValueLabel(rating, source)}
-            </span>
-            {votes ? <span className="text-muted-foreground/70">{votes}</span> : null}
-          </>
-        );
-        const className =
-          "inline-flex items-center gap-1.5 rounded border border-border/70 bg-background/45 px-2 py-1 text-xs";
-        return rating.url.trim() ? (
-          <a
-            key={`${rating.source}-${index}`}
-            href={rating.url}
-            target="_blank"
-            rel="noreferrer"
-            className={className}
-          >
-            {content}
-          </a>
-        ) : (
-          <span key={`${rating.source}-${index}`} className={className}>
-            {content}
-          </span>
-        );
-      })}
-      {externalRatings.length === 0 && ratings?.rating != null ? (
-        <span className="inline-flex items-center gap-1.5 rounded border border-border/70 bg-background/45 px-2 py-1 text-xs">
-          <RatingSourceLogo source={ratingSourceInfo("mdblist")} />
-          <span className="font-medium text-foreground">MDBList</span>
-          <span className="font-[var(--font-code)] text-card-foreground">
-            {compactRatingNumber(ratings.rating)}
-          </span>
-        </span>
-      ) : null}
-    </div>
+    <TooltipProvider delayDuration={200}>
+      <div className="mt-3 flex flex-wrap gap-2">
+        {externalRatings.map((rating, index) => {
+          const source = ratingSourceInfo(rating.source);
+          return (
+            <RatingPill
+              key={`${rating.source}-${index}`}
+              source={source}
+              value={ratingValueLabel(rating, source)}
+              href={rating.url}
+            />
+          );
+        })}
+        {externalRatings.length === 0 && ratings?.rating != null ? (
+          <RatingPill
+            source={ratingSourceInfo("mdblist")}
+            value={compactRatingNumber(ratings.rating)}
+            href=""
+          />
+        ) : null}
+      </div>
+    </TooltipProvider>
   );
 }

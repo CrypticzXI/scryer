@@ -169,6 +169,10 @@ pub fn normalize_known_audio_language_code(code: &str) -> Option<String> {
         "ea" => return Some("spa".to_string()),
         "pob" => return Some("por".to_string()),
         "zht" => return Some("zho".to_string()),
+        // "LAT" is the release/scene abbreviation for Latino (Latin-American
+        // Spanish), not the dead language Latin. Resolve it before the ISO-exact
+        // lookup, which would otherwise map it to "lat" (Latin).
+        "lat" => return Some("spa".to_string()),
         _ => {}
     }
 

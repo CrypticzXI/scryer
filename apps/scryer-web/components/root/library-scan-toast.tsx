@@ -103,6 +103,9 @@ function percentForPhase(
   totalKnown: boolean,
   terminal: boolean,
 ): number {
+  if (!totalKnown && !terminal) {
+    return 0;
+  }
   if (phase.total <= 0) {
     return terminal || totalKnown ? 100 : 0;
   }
@@ -238,12 +241,14 @@ function ScanPhaseBar({
   status,
   count,
   percent,
+  indeterminate,
 }: {
   facet: FacetConfig;
   label: string;
   status: PhaseStatus;
   count: string;
   percent: number;
+  indeterminate: boolean;
 }) {
   let Icon: LucideIcon;
   let iconColor: string;
@@ -300,7 +305,7 @@ function ScanPhaseBar({
           className="absolute left-0 top-0 h-full rounded-full transition-[width] duration-500 ease-out"
           style={fillStyle}
         />
-        {status === "active" ? (
+        {status === "active" && indeterminate ? (
           <div
             className="absolute left-0 top-0 h-full w-2/5"
             style={{
@@ -886,6 +891,7 @@ export function LibraryScanToast({
               session.titleMatchTotalKnown,
               terminal,
             )}
+            indeterminate={!terminal && !session.titleMatchTotalKnown}
           />
           <ScanPhaseBar
             facet={facet}
@@ -903,6 +909,7 @@ export function LibraryScanToast({
               session.mediaAnalysisTotalKnown,
               terminal,
             )}
+            indeterminate={!terminal && !session.mediaAnalysisTotalKnown}
           />
         </div>
 

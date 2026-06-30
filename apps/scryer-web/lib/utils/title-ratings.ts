@@ -14,7 +14,7 @@ export type RatingSourceInfo = {
 };
 
 export function normalizedRatingSource(source: string): string {
-  return source.trim().toLowerCase().replace(/[\s_-]+/g, "");
+  return source.trim().toLowerCase().replace(/[\s_.-]+/g, "");
 }
 
 function fallbackSourceLabel(source: string): string {
@@ -69,7 +69,9 @@ export function ratingSourceInfo(source: string): RatingSourceInfo {
     case "mdblist":
       return { label: "MDBList", logoSrc: "/rating-sources/mdblist.avif", format: "default" };
     case "mal":
-      return { label: "MAL", logoSrc: "/rating-sources/mal.svg", format: "default" };
+    case "myanimelist":
+    case "myanimelistnet":
+      return { label: "MyAnimeList", logoSrc: "/media-sites/mal.svg", format: "default" };
     default:
       return { label: fallbackSourceLabel(source), logoSrc: null, format: "default" };
   }

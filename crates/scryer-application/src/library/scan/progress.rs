@@ -1070,7 +1070,7 @@ fn apply_library_scan_delta_fields(
             .mark_failed(data.metadata_failed_delta as usize);
     }
 
-    if data.file_total_delta > 0 {
+    if data.file_total_delta > 0 && !session.file_total_known {
         session
             .file_progress
             .add_total(data.file_total_delta as usize);
@@ -1636,6 +1636,68 @@ mod tests {
                 unmatched: 1,
             })
         );
+    }
+
+    #[tokio::test]
+    async fn live_file_total_delta_is_ignored_after_total_known() {
+        let tracker = LibraryScanTracker::new();
+        let session = tracker
+            .start_session(MediaFacet::Series)
+            .await
+            .expect("start session");
+
+        tracker
+            .apply_delta(
+                &session.session_id,
+                &LibraryScanDeltaRecordedEventData {
+                    session_id: session.session_id.clone(),
+                    found_titles_total: None,
+                    found_titles_delta: 0,
+                    title_match_completed_delta: 0,
+                    title_match_failed_delta: 0,
+                    title_match_total_known: None,
+                    metadata_total_delta: 0,
+                    metadata_completed_delta: 0,
+                    metadata_failed_delta: 0,
+                    metadata_total_known: None,
+                    file_total_delta: 2,
+                    file_completed_delta: 0,
+                    file_failed_delta: 0,
+                    file_total_known: Some(true),
+                    summary: None,
+                    summary_is_delta: false,
+                },
+            )
+            .await
+            .expect("seed known file total");
+
+        let snapshot = tracker
+            .apply_delta(
+                &session.session_id,
+                &LibraryScanDeltaRecordedEventData {
+                    session_id: session.session_id.clone(),
+                    found_titles_total: None,
+                    found_titles_delta: 0,
+                    title_match_completed_delta: 0,
+                    title_match_failed_delta: 0,
+                    title_match_total_known: None,
+                    metadata_total_delta: 0,
+                    metadata_completed_delta: 0,
+                    metadata_failed_delta: 0,
+                    metadata_total_known: None,
+                    file_total_delta: 3,
+                    file_completed_delta: 0,
+                    file_failed_delta: 0,
+                    file_total_known: None,
+                    summary: None,
+                    summary_is_delta: false,
+                },
+            )
+            .await
+            .expect("late file total delta");
+
+        assert!(snapshot.file_total_known);
+        assert_eq!(snapshot.file_progress.total, 2);
     }
 
     #[tokio::test]

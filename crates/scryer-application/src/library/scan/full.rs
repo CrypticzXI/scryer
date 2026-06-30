@@ -497,6 +497,8 @@ pub(super) async fn scan_library_series(
             continue;
         }
 
+        let prepared_candidates =
+            prepare_series_library_scan_candidates(&folder_batch, scan_hints).await?;
         process_series_candidate_batch(
             app,
             actor,
@@ -505,7 +507,7 @@ pub(super) async fn scan_library_series(
             library_path,
             session_id,
             &coordinator,
-            prepare_series_library_scan_candidates(&folder_batch, scan_hints).await?,
+            prepared_candidates,
             &metadata_language,
             &mut metadata_lookup_stats,
             &mut existing_titles,

@@ -483,40 +483,6 @@ async fn execute_batch_metadata_searches(
             tvdb_id: key.tvdb_id.clone(),
         })
         .collect::<Vec<_>>();
-    // TEMP import-hint diagnostics (target=import_scan_hint_debug): shows exactly
-    // what the match phase sends to SMG — how many id-anchored (empty-query) vs
-    // text-search keys, and the ids attached to each. Remove once import title
-    // matching is verified.
-    {
-        let id_only = search_keys
-            .iter()
-            .filter(|key| key.query.trim().is_empty())
-            .count();
-        let with_ids = search_keys
-            .iter()
-            .filter(|key| key.imdb_id.is_some() || key.tmdb_id.is_some() || key.tvdb_id.is_some())
-            .count();
-        tracing::info!(
-            target: "import_scan_hint_debug",
-            total_keys = search_keys.len(),
-            id_only_keys = id_only,
-            text_query_keys = search_keys.len() - id_only,
-            keys_with_ids = with_ids,
-            "scan metadata batch dispatch",
-        );
-        for key in &search_keys {
-            tracing::info!(
-                target: "import_scan_hint_debug",
-                type_hint = key.type_hint,
-                query = %key.query,
-                year = ?key.year,
-                imdb = key.imdb_id.as_deref().unwrap_or("-"),
-                tmdb = key.tmdb_id.as_deref().unwrap_or("-"),
-                tvdb = key.tvdb_id.as_deref().unwrap_or("-"),
-                "scan metadata search key",
-            );
-        }
-    }
     let Some(batched_results) = await_cancellable_app_result(
         cancel_token,
         metadata_gateway.search_tvdb_batch(&search_queries, metadata_language),
@@ -710,7 +676,9 @@ where
 
     for candidate in candidates {
         let keys = candidate_keys(&candidate)?;
-        if keys.iter().all(|key| search_results.contains_key(key)) {
+        if metadata_candidate_has_non_empty_result(&keys, search_results)
+            || keys.iter().all(|key| search_results.contains_key(key))
+        {
             ready.push(candidate);
         } else {
             pending.push(candidate);
@@ -718,6 +686,15 @@ where
     }
 
     Ok((ready, pending))
+}
+
+fn metadata_candidate_has_non_empty_result(
+    keys: &[BatchMetadataSearchKey],
+    search_results: &MetadataSearchResults,
+) -> bool {
+    keys.iter()
+        .filter_map(|key| search_results.get(key))
+        .any(|items| !items.is_empty())
 }
 
 pub(crate) fn next_metadata_search_chunk<T, F>(
@@ -733,26 +710,18 @@ where
     let mut seen = HashSet::new();
 
     for candidate in candidates {
-        let mut missing_keys = Vec::new();
-        for key in candidate_keys(candidate)? {
-            if search_results.contains_key(&key) || !seen.insert(key.clone()) {
-                continue;
-            }
-            missing_keys.push(key);
-        }
-
-        if missing_keys.is_empty() {
-            continue;
-        }
-
-        if !chunk.is_empty() && chunk.len().saturating_add(missing_keys.len()) > max_keys {
-            break;
-        }
-
-        chunk.extend(missing_keys);
         if chunk.len() >= max_keys {
             break;
         }
+
+        let Some(key) = candidate_keys(candidate)?
+            .into_iter()
+            .find(|key| !search_results.contains_key(key) && seen.insert(key.clone()))
+        else {
+            continue;
+        };
+
+        chunk.push(key);
     }
 
     Ok(chunk)
@@ -1149,7 +1118,10 @@ pub(crate) fn select_movie_metadata_from_batch_results(
         })?;
 
         if let Some(best) = select_safe_batch_match(results_for_query.as_ref()) {
-            return Ok(Some(best));
+            return Ok(with_metadata_match_fallback_name(
+                best,
+                movie_candidate_fallback_title(candidate),
+            ));
         }
     }
 
@@ -1182,7 +1154,10 @@ pub(crate) fn select_series_metadata_from_batch_results(
         })?;
 
         if let Some(best) = select_safe_batch_match(results_for_query.as_ref()) {
-            return Ok(Some(best));
+            return Ok(with_metadata_match_fallback_name(
+                best,
+                series_candidate_fallback_title(candidate),
+            ));
         }
     }
 
@@ -1191,6 +1166,51 @@ pub(crate) fn select_series_metadata_from_batch_results(
 
 fn select_safe_batch_match(results: &[MetadataSearchItem]) -> Option<MetadataSearchItem> {
     results.first().filter(|item| item.auto_match_safe).cloned()
+}
+
+fn with_metadata_match_fallback_name(
+    mut item: MetadataSearchItem,
+    fallback: Option<&str>,
+) -> Option<MetadataSearchItem> {
+    if item.name.trim().is_empty() {
+        item.name = fallback?.trim().to_string();
+    }
+    (!item.name.trim().is_empty()).then_some(item)
+}
+
+fn movie_candidate_fallback_title(candidate: &PreparedMovieLibraryScanCandidate) -> Option<&str> {
+    candidate
+        .identity_hint
+        .as_ref()
+        .and_then(|hint| hint.title.as_deref())
+        .or_else(|| {
+            candidate
+                .nfo_meta
+                .as_ref()
+                .and_then(|nfo| nfo.title.as_deref())
+        })
+        .or_else(|| non_empty_str(candidate.query.as_str()))
+        .or_else(|| non_empty_str(candidate.file.display_name.as_str()))
+}
+
+fn series_candidate_fallback_title(candidate: &PreparedSeriesLibraryScanCandidate) -> Option<&str> {
+    candidate
+        .identity_hint
+        .as_ref()
+        .and_then(|hint| hint.title.as_deref())
+        .or_else(|| {
+            candidate
+                .nfo_meta
+                .as_ref()
+                .and_then(|nfo| nfo.title.as_deref())
+        })
+        .or_else(|| non_empty_str(candidate.query.as_str()))
+        .or_else(|| candidate.folder_name.as_deref().and_then(non_empty_str))
+}
+
+fn non_empty_str(value: &str) -> Option<&str> {
+    let trimmed = value.trim();
+    (!trimmed.is_empty()).then_some(trimmed)
 }
 
 #[cfg(test)]
@@ -1777,32 +1797,6 @@ async fn prepare_series_library_scan_candidate(
     } else {
         (Vec::new(), Vec::new())
     };
-
-    // TEMP import-hint diagnostics (target=import_scan_hint_debug): per series
-    // folder, shows where the identity came from (Nfo vs ExternalImportSonarr vs
-    // none), the resolved ids, whether the fast id-only path was taken, and the
-    // text query/candidate count. Remove once import title matching is verified.
-    tracing::info!(
-        target: "import_scan_hint_debug",
-        folder = folder_name.as_deref().unwrap_or("?"),
-        identity_source = ?identity_hint.as_ref().map(|hint| &hint.source),
-        tvdb = identity_hint
-            .as_ref()
-            .and_then(|hint| hint.tvdb_id.as_deref())
-            .unwrap_or("-"),
-        imdb = identity_hint
-            .as_ref()
-            .and_then(|hint| hint.imdb_id.as_deref())
-            .unwrap_or("-"),
-        tmdb = identity_hint
-            .as_ref()
-            .and_then(|hint| hint.tmdb_id.as_deref())
-            .unwrap_or("-"),
-        external_import_identity_only,
-        query = %query,
-        search_candidates = search_candidates.len(),
-        "series scan candidate identity",
-    );
 
     Ok(PreparedSeriesLibraryScanCandidate {
         folder_path: folder,
@@ -3239,8 +3233,8 @@ mod tests {
             vec![
                 BatchMetadataSearchKey::new(METADATA_TYPE_MOVIE, "Alpha", None, None)
                     .expect("alpha key"),
-                BatchMetadataSearchKey::new(METADATA_TYPE_MOVIE, "Beta", None, None)
-                    .expect("beta key"),
+                BatchMetadataSearchKey::new(METADATA_TYPE_MOVIE, "Gamma", None, None)
+                    .expect("gamma key"),
             ]
         );
     }
@@ -3258,6 +3252,36 @@ mod tests {
         search_results.insert(
             BatchMetadataSearchKey::new(METADATA_TYPE_MOVIE, "Beta", None, None).expect("beta key"),
             Arc::new(Vec::new()),
+        );
+
+        let (ready, pending) = split_ready_metadata_candidates(
+            vec![ready_candidate.clone(), pending_candidate.clone()],
+            &search_results,
+            movie_candidate_batch_search_keys,
+        )
+        .expect("split ready metadata candidates");
+
+        assert_eq!(ready.len(), 1);
+        assert_eq!(ready[0].query, ready_candidate.query);
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].query, pending_candidate.query);
+    }
+
+    #[test]
+    fn split_ready_metadata_candidates_accepts_first_non_empty_movie_result() {
+        let ready_candidate = build_prepared_movie_candidate(&["Alpha", "Beta"]);
+        let pending_candidate = build_prepared_movie_candidate(&["Gamma"]);
+        let mut search_results = HashMap::new();
+        search_results.insert(
+            BatchMetadataSearchKey::new(METADATA_TYPE_MOVIE, "Alpha", None, None)
+                .expect("alpha key"),
+            Arc::new(vec![MetadataSearchItem {
+                tvdb_id: "12345".into(),
+                name: "Alpha".into(),
+                year: Some(2024),
+                auto_match_safe: true,
+                auto_match_signals: vec!["external_id:imdb".into()],
+            }]),
         );
 
         let (ready, pending) = split_ready_metadata_candidates(

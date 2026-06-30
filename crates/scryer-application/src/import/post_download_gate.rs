@@ -28,7 +28,9 @@ pub(crate) struct ImportedFileAcceptance {
     pub scan_error: Option<String>,
     pub rule_file_doc: Option<scryer_rules::FileDoc>,
     /// Set when the file was accepted but a required audio language could not be
-    /// verified (untagged tracks); surfaced as an import warning for review.
+    /// verified (untagged tracks, or the requirement could not be resolved).
+    /// Currently emitted as an operator `warn!` log line at import time; the
+    /// durable/UI review surface is deferred.
     pub audio_language_warning: Option<String>,
 }
 
@@ -454,32 +456,22 @@ pub(crate) async fn probe_and_validate(
     }
 
     let category_hint = facet_to_category_hint(&title.facet);
-    let required_audio_languages = app
+    let required_audio_resolution = app
         .resolve_required_audio_languages(
             Some(&title.id),
             Some(title.library_id.as_str()),
             Some(category_hint),
         )
-        .await
-        .unwrap_or_else(|error| {
-            warn!(
-                error = %error,
-                title_id = %title.id,
-                "failed to resolve required audio languages, using canonical default"
-            );
-            Vec::new()
-        });
-    let persona = app
-        .resolve_scoring_persona(Some(title.library_id.as_str()), Some(category_hint))
-        .await
-        .unwrap_or_else(|error| {
-            warn!(
-                error = %error,
-                title_id = %title.id,
-                "failed to resolve scoring persona, using canonical default"
-            );
-            crate::ScoringPersona::default()
-        });
+        .await;
+    let required_audio_resolution_failed = required_audio_resolution.is_err();
+    let required_audio_languages = required_audio_resolution.unwrap_or_else(|error| {
+        warn!(
+            error = %error,
+            title_id = %title.id,
+            "failed to resolve required audio languages; importing without language verification"
+        );
+        Vec::new()
+    });
 
     let accepted_analysis = build_media_file_analysis(&analysis);
 
@@ -487,8 +479,19 @@ pub(crate) async fn probe_and_validate(
     // provable absence (reject) from an untagged/indeterminate result (accept +
     // flag), so a correctly-dubbed file with "und"/untagged tracks is not falsely
     // rejected. Uses the same title context + release hints as the search gate.
+    //
+    // Manual imports (operator-chosen files) always land: they bypass this gate
+    // entirely, exactly as they bypass the runtime-sample check.
     let mut audio_language_warning: Option<String> = None;
-    if !required_audio_languages.is_empty() {
+    let enforce_required_audio =
+        runtime_sample_validation.mode == RuntimeSampleValidationMode::EnforceAutomatic;
+    if enforce_required_audio && required_audio_resolution_failed {
+        audio_language_warning = Some(
+            "required audio languages could not be resolved; imported without language verification"
+                .to_string(),
+        );
+    }
+    if enforce_required_audio && !required_audio_languages.is_empty() {
         let title_audio_context = crate::title_audio_language_context(
             title.language.as_deref(),
             title.country.as_deref(),
@@ -528,6 +531,18 @@ pub(crate) async fn probe_and_validate(
             }
         }
     }
+
+    let persona = app
+        .resolve_scoring_persona(Some(title.library_id.as_str()), Some(category_hint))
+        .await
+        .unwrap_or_else(|error| {
+            warn!(
+                error = %error,
+                title_id = %title.id,
+                "failed to resolve scoring persona, using canonical default"
+            );
+            crate::ScoringPersona::default()
+        });
 
     let rule_file_doc = crate::user_rule_input::build_file_doc(&analysis);
     let accepted_for_rules = ImportedFileAcceptance {

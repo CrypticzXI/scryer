@@ -8,6 +8,8 @@ use crate::library_filename_parser::{
 use crate::library_scan_unmatched::build_title_bound_unmatched_scan_item;
 use crate::stored_paths::{path_to_stored_string, stored_path_to_path_buf};
 
+const LIBRARY_SCAN_ENUMERATED_FILE_BACKLOG_HIGH_WATER: usize = 100_000;
+
 fn hydration_source_for_scan_mode(
     mode: LibraryScanMode,
 ) -> crate::catalog_workflow::HydrationSource {
@@ -50,6 +52,33 @@ pub(super) async fn title_requires_scan_hydration(
         .list_episodes_for_title(&title.id)
         .await?;
     Ok(episodes.is_empty())
+}
+
+async fn discover_episodic_title_files_for_progress(
+    app: &AppUseCase,
+    title: &Title,
+) -> AppResult<Vec<LibraryFile>> {
+    let import_paths = crate::import_workflow::resolve_import_paths(app, title).await?;
+    let title_dir = crate::effective_title_folder_path(
+        &import_paths.media_root,
+        title,
+        &import_paths.folder_template,
+        None,
+    );
+    if tokio::fs::metadata(&title_dir).await.is_err() {
+        tokio::fs::create_dir_all(&title_dir).await.map_err(|err| {
+            AppError::Repository(format!(
+                "failed to recreate title directory {}: {err}",
+                title_dir.display()
+            ))
+        })?;
+    }
+    let scan_result = scan_episodic_title_directory_for_progress_metrics(
+        app.services.library.library_scanner.clone(),
+        &title_dir,
+    )
+    .await?;
+    Ok(scan_result.files)
 }
 
 async fn discover_movie_title_files(
@@ -820,6 +849,27 @@ fn ready_full_folder_already_covered(
         .any(|work| work.title.id == title_id && work.discovered_files.is_none())
 }
 
+fn analysis_ready_scoped_path_already_covered(
+    ready: &std::collections::VecDeque<QueuedLibraryScanTitleAnalysisWork>,
+    title_id: &str,
+    path: &str,
+) -> bool {
+    ready
+        .iter()
+        .filter(|queued| queued.work.title.id == title_id)
+        .filter_map(|queued| queued.work.discovered_files.as_ref())
+        .any(|files| files.iter().any(|file| file.path == path))
+}
+
+fn analysis_ready_full_folder_already_covered(
+    ready: &std::collections::VecDeque<QueuedLibraryScanTitleAnalysisWork>,
+    title_id: &str,
+) -> bool {
+    ready
+        .iter()
+        .any(|queued| queued.work.title.id == title_id && queued.coverage.full_folder)
+}
+
 struct LibraryScanTitleWalkTaskOutput {
     title_id: String,
     discovered_file_count: usize,
@@ -827,6 +877,17 @@ struct LibraryScanTitleWalkTaskOutput {
     absorb_walk_summary: bool,
     created_in_scan: bool,
     result: AppResult<LibraryTitleWalkResult>,
+}
+
+struct LibraryScanTitleEnumerationTaskOutput {
+    title_id: String,
+    coverage: LibraryScanWorkCoverage,
+    result: AppResult<LibraryScanTitleWork>,
+}
+
+struct QueuedLibraryScanTitleAnalysisWork {
+    work: LibraryScanTitleWork,
+    coverage: LibraryScanWorkCoverage,
 }
 
 pub(super) struct LibraryScanTitleWorkExecutor {
@@ -843,9 +904,14 @@ pub(super) struct LibraryScanTitleWorkExecutor {
     pending_full: HashMap<String, LibraryScanTitleWork>,
     pending_scoped: HashMap<String, LibraryScanTitleWork>,
     ready: std::collections::VecDeque<LibraryScanTitleWork>,
+    enumerating: HashMap<String, LibraryScanWorkCoverage>,
+    enumeration_set: tokio::task::JoinSet<LibraryScanTitleEnumerationTaskOutput>,
+    analysis_ready: std::collections::VecDeque<QueuedLibraryScanTitleAnalysisWork>,
+    enumerated_file_backlog: usize,
     in_flight: HashMap<String, LibraryScanWorkCoverage>,
     completed: HashMap<String, LibraryScanWorkCoverage>,
     work_set: tokio::task::JoinSet<LibraryScanTitleWalkTaskOutput>,
+    file_total_known_marked: bool,
     summary: LibraryScanSummary,
 }
 
@@ -919,9 +985,14 @@ impl LibraryScanTitleWorkExecutor {
             pending_full: HashMap::new(),
             pending_scoped: HashMap::new(),
             ready: std::collections::VecDeque::new(),
+            enumerating: HashMap::new(),
+            enumeration_set: tokio::task::JoinSet::new(),
+            analysis_ready: std::collections::VecDeque::new(),
+            enumerated_file_backlog: 0,
             in_flight: HashMap::new(),
             completed: HashMap::new(),
             work_set: tokio::task::JoinSet::new(),
+            file_total_known_marked: false,
             summary: LibraryScanSummary::default(),
         }
     }
@@ -955,7 +1026,9 @@ impl LibraryScanTitleWorkExecutor {
             return Ok(());
         }
         self.prepare_pending_chunk().await?;
-        self.launch_ready(false).await
+        self.launch_ready().await?;
+        self.launch_analysis().await?;
+        self.mark_file_total_known_if_ready().await
     }
 
     pub(super) fn close_input(&mut self) {
@@ -972,27 +1045,25 @@ impl LibraryScanTitleWorkExecutor {
             }
 
             self.prepare_pending_chunk().await?;
-            self.launch_ready(true).await?;
+            self.launch_ready().await?;
+            self.launch_analysis().await?;
+            self.mark_file_total_known_if_ready().await?;
 
             if self.pending_full.is_empty()
                 && self.pending_scoped.is_empty()
                 && self.ready.is_empty()
+                && self.enumeration_set.is_empty()
+                && self.analysis_ready.is_empty()
                 && self.work_set.is_empty()
             {
                 break;
             }
 
-            if !self.work_set.is_empty() {
+            if !self.enumeration_set.is_empty() || !self.work_set.is_empty() {
                 self.reap_next_completed_or_cancelled().await?;
+            } else {
+                tokio::time::sleep(Duration::from_millis(10)).await;
             }
-        }
-
-        if self.file_total_mode == LibraryScanFileTotalMode::AggregateKnownByExecutor
-            && !library_scan_cancel_requested(self.cancel_token.as_ref())
-            && let Some(coordinator) = self.coordinator.as_ref()
-        {
-            coordinator.mark_file_total_known().await;
-            coordinator.publish_progress().await;
         }
 
         Ok(self.summary.clone())
@@ -1002,6 +1073,16 @@ impl LibraryScanTitleWorkExecutor {
         self.pending_full.clear();
         self.pending_scoped.clear();
         self.ready.clear();
+        self.analysis_ready.clear();
+        self.enumerated_file_backlog = 0;
+        self.enumeration_set.abort_all();
+        while let Some(result) = self.enumeration_set.join_next().await {
+            match result {
+                Ok(_) => {}
+                Err(error) if error.is_cancelled() => {}
+                Err(error) => return Err(AppError::Repository(error.to_string())),
+            }
+        }
         self.work_set.abort_all();
         while let Some(result) = self.work_set.join_next().await {
             match result {
@@ -1010,6 +1091,7 @@ impl LibraryScanTitleWorkExecutor {
                 Err(error) => return Err(AppError::Repository(error.to_string())),
             }
         }
+        self.enumerating.clear();
         self.in_flight.clear();
         Ok(())
     }
@@ -1022,7 +1104,12 @@ impl LibraryScanTitleWorkExecutor {
                 .in_flight
                 .get(title_id)
                 .is_some_and(|coverage| coverage.scoped_paths.contains(path))
+            || self
+                .enumerating
+                .get(title_id)
+                .is_some_and(|coverage| coverage.scoped_paths.contains(path))
             || ready_scoped_path_already_covered(&self.ready, title_id, path)
+            || analysis_ready_scoped_path_already_covered(&self.analysis_ready, title_id, path)
             || self
                 .pending_scoped
                 .get(title_id)
@@ -1038,7 +1125,12 @@ impl LibraryScanTitleWorkExecutor {
                 .in_flight
                 .get(title_id)
                 .is_some_and(|coverage| coverage.full_folder)
+            || self
+                .enumerating
+                .get(title_id)
+                .is_some_and(|coverage| coverage.full_folder)
             || ready_full_folder_already_covered(&self.ready, title_id)
+            || analysis_ready_full_folder_already_covered(&self.analysis_ready, title_id)
             || self.pending_full.contains_key(title_id)
     }
 
@@ -1156,7 +1248,7 @@ impl LibraryScanTitleWorkExecutor {
         let len = self.ready.len();
         for _ in 0..len {
             let work = self.ready.pop_front()?;
-            if self.in_flight.contains_key(&work.title.id) {
+            if self.enumerating.contains_key(&work.title.id) {
                 self.ready.push_back(work);
             } else {
                 return Some(work);
@@ -1165,75 +1257,157 @@ impl LibraryScanTitleWorkExecutor {
         None
     }
 
-    async fn launch_ready(&mut self, wait_for_permit: bool) -> AppResult<()> {
+    fn pop_analysis_ready_work(&mut self) -> Option<QueuedLibraryScanTitleAnalysisWork> {
+        let len = self.analysis_ready.len();
+        for _ in 0..len {
+            let queued = self.analysis_ready.pop_front()?;
+            if self.in_flight.contains_key(&queued.work.title.id) {
+                self.analysis_ready.push_back(queued);
+            } else {
+                self.enumerated_file_backlog = self
+                    .enumerated_file_backlog
+                    .saturating_sub(queued.work.discovered_file_count());
+                return Some(queued);
+            }
+        }
+        None
+    }
+
+    fn enumeration_pending(&self) -> bool {
+        !self.pending_full.is_empty()
+            || !self.pending_scoped.is_empty()
+            || !self.ready.is_empty()
+            || !self.enumerating.is_empty()
+            || !self.enumeration_set.is_empty()
+    }
+
+    fn should_defer_analysis_for_enumeration(&self) -> bool {
+        self.file_total_mode == LibraryScanFileTotalMode::AggregateKnownByExecutor
+            && self.input_closed
+            && self.enumeration_pending()
+            && self.enumerated_file_backlog < LIBRARY_SCAN_ENUMERATED_FILE_BACKLOG_HIGH_WATER
+    }
+
+    async fn launch_ready(&mut self) -> AppResult<()> {
         while !library_scan_cancel_requested(self.cancel_token.as_ref()) {
+            if self.enumerated_file_backlog >= LIBRARY_SCAN_ENUMERATED_FILE_BACKLOG_HIGH_WATER {
+                break;
+            }
             let Some(work) = self.pop_ready_work() else {
                 break;
             };
-            let permit = if wait_for_permit {
-                let title_walk_limit = self
-                    .app
-                    .runtime
-                    .library
-                    .library_scan_title_walk_limit
-                    .clone();
-                if let Some(cancel_token) = self.cancel_token.as_ref() {
-                    tokio::select! {
-                        biased;
-                        _ = cancel_token.cancelled() => {
-                            self.ready.push_front(work);
-                            break;
-                        }
-                        result = title_walk_limit.acquire_owned() => {
-                            result.map_err(|error| AppError::Repository(error.to_string()))?
-                        }
-                    }
-                } else {
-                    title_walk_limit
-                        .acquire_owned()
-                        .await
-                        .map_err(|error| AppError::Repository(error.to_string()))?
+            let coverage = LibraryScanWorkCoverage::from_work(&work);
+            if work.discovered_files.is_some() {
+                self.complete_enumerated_work(work, coverage).await?;
+                continue;
+            }
+            let permit = match self
+                .app
+                .runtime
+                .library
+                .library_scan_title_walk_limit
+                .clone()
+                .try_acquire_owned()
+            {
+                Ok(permit) => permit,
+                Err(tokio::sync::TryAcquireError::NoPermits) => {
+                    self.ready.push_front(work);
+                    break;
                 }
-            } else {
-                match self
-                    .app
-                    .runtime
-                    .library
-                    .library_scan_title_walk_limit
-                    .clone()
-                    .try_acquire_owned()
-                {
-                    Ok(permit) => permit,
-                    Err(tokio::sync::TryAcquireError::NoPermits) => {
-                        self.ready.push_front(work);
-                        break;
-                    }
-                    Err(error) => return Err(AppError::Repository(error.to_string())),
-                }
+                Err(error) => return Err(AppError::Repository(error.to_string())),
             };
-            self.spawn_walk(work, permit).await?;
+            self.spawn_enumeration(work, coverage, permit).await?;
         }
         Ok(())
     }
 
-    async fn spawn_walk(
+    async fn launch_analysis(&mut self) -> AppResult<()> {
+        while !library_scan_cancel_requested(self.cancel_token.as_ref()) {
+            if self.should_defer_analysis_for_enumeration() {
+                break;
+            }
+            let Some(queued) = self.pop_analysis_ready_work() else {
+                break;
+            };
+            let permit = match self
+                .app
+                .runtime
+                .library
+                .library_scan_title_analysis_group_limit
+                .clone()
+                .try_acquire_owned()
+            {
+                Ok(permit) => permit,
+                Err(tokio::sync::TryAcquireError::NoPermits) => {
+                    self.enumerated_file_backlog = self
+                        .enumerated_file_backlog
+                        .saturating_add(queued.work.discovered_file_count());
+                    self.analysis_ready.push_front(queued);
+                    break;
+                }
+                Err(error) => return Err(AppError::Repository(error.to_string())),
+            };
+            self.spawn_walk(queued, permit).await?;
+        }
+        Ok(())
+    }
+
+    async fn spawn_enumeration(
         &mut self,
         work: LibraryScanTitleWork,
+        coverage: LibraryScanWorkCoverage,
         permit: tokio::sync::OwnedSemaphorePermit,
     ) -> AppResult<()> {
         let title_id = work.title.id.clone();
+        self.enumerating.insert(title_id.clone(), coverage.clone());
+        let app = self.app.clone();
+        let cancel_token = self.cancel_token.clone();
+        self.enumeration_set.spawn(async move {
+            let _permit = permit;
+            let result = enumerate_library_scan_title_work(&app, work, cancel_token).await;
+            LibraryScanTitleEnumerationTaskOutput {
+                title_id,
+                coverage,
+                result,
+            }
+        });
+        Ok(())
+    }
+
+    async fn complete_enumerated_work(
+        &mut self,
+        work: LibraryScanTitleWork,
+        coverage: LibraryScanWorkCoverage,
+    ) -> AppResult<()> {
         let discovered_file_count = work.discovered_file_count();
         if self.file_total_mode == LibraryScanFileTotalMode::AggregateKnownByExecutor
+            && !self.file_total_known_marked
             && discovered_file_count > 0
             && let Some(coordinator) = self.coordinator.as_ref()
         {
             coordinator.add_file_total(discovered_file_count).await;
             coordinator.publish_progress().await;
         }
-        let coverage = LibraryScanWorkCoverage::from_work(&work);
+        self.enumerated_file_backlog = self
+            .enumerated_file_backlog
+            .saturating_add(discovered_file_count);
+        self.analysis_ready
+            .push_back(QueuedLibraryScanTitleAnalysisWork { work, coverage });
+        Ok(())
+    }
+
+    async fn spawn_walk(
+        &mut self,
+        queued: QueuedLibraryScanTitleAnalysisWork,
+        permit: tokio::sync::OwnedSemaphorePermit,
+    ) -> AppResult<()> {
+        let QueuedLibraryScanTitleAnalysisWork { work, coverage } = queued;
+        let title_id = work.title.id.clone();
+        let discovered_file_count = work.discovered_file_count();
         self.in_flight.insert(title_id.clone(), coverage.clone());
         let absorb_walk_summary = self.summary_mode == LibraryScanTitleWorkSummaryMode::OneOff
             || matches!(work.facet_plan, LibraryScanTitleFacetPlan::Movie(_));
+        let full_folder_scan = coverage.full_folder;
         let created_in_scan = work.created_in_scan;
         let app = self.app.clone();
         let actor = self.actor.clone();
@@ -1250,6 +1424,7 @@ impl LibraryScanTitleWorkExecutor {
                         session_id,
                         cancel_token,
                         file_total_mode,
+                        full_folder_scan,
                     },
                 )
                 .await;
@@ -1267,6 +1442,14 @@ impl LibraryScanTitleWorkExecutor {
 
     async fn reap_completed_ready(&mut self) -> AppResult<()> {
         loop {
+            match tokio::time::timeout(Duration::from_millis(0), self.enumeration_set.join_next())
+                .await
+            {
+                Ok(Some(result)) => self.handle_enumeration_task_result(result).await?,
+                Ok(None) | Err(_) => break,
+            }
+        }
+        loop {
             match tokio::time::timeout(Duration::from_millis(0), self.work_set.join_next()).await {
                 Ok(Some(result)) => self.handle_walk_task_result(result).await?,
                 Ok(None) | Err(_) => break,
@@ -1276,15 +1459,51 @@ impl LibraryScanTitleWorkExecutor {
     }
 
     async fn reap_next_completed_or_cancelled(&mut self) -> AppResult<()> {
+        if self.enumeration_set.is_empty() && self.work_set.is_empty() {
+            return Ok(());
+        }
+
         if let Some(cancel_token) = self.cancel_token.as_ref() {
-            tokio::select! {
-                biased;
-                _ = cancel_token.cancelled() => {}
-                result = self.work_set.join_next() => {
-                    if let Some(result) = result {
-                        self.handle_walk_task_result(result).await?;
+            match (self.enumeration_set.is_empty(), self.work_set.is_empty()) {
+                (false, false) => {
+                    tokio::select! {
+                        biased;
+                        _ = cancel_token.cancelled() => {}
+                        result = self.enumeration_set.join_next() => {
+                            if let Some(result) = result {
+                                self.handle_enumeration_task_result(result).await?;
+                            }
+                        }
+                        result = self.work_set.join_next() => {
+                            if let Some(result) = result {
+                                self.handle_walk_task_result(result).await?;
+                            }
+                        }
                     }
                 }
+                (false, true) => {
+                    tokio::select! {
+                        biased;
+                        _ = cancel_token.cancelled() => {}
+                        result = self.enumeration_set.join_next() => {
+                            if let Some(result) = result {
+                                self.handle_enumeration_task_result(result).await?;
+                            }
+                        }
+                    }
+                }
+                (true, false) => {
+                    tokio::select! {
+                        biased;
+                        _ = cancel_token.cancelled() => {}
+                        result = self.work_set.join_next() => {
+                            if let Some(result) = result {
+                                self.handle_walk_task_result(result).await?;
+                            }
+                        }
+                    }
+                }
+                (true, true) => {}
             }
             return Ok(());
         }
@@ -1293,9 +1512,61 @@ impl LibraryScanTitleWorkExecutor {
     }
 
     async fn reap_next_completed(&mut self) -> AppResult<()> {
-        if let Some(result) = self.work_set.join_next().await {
+        if !self.enumeration_set.is_empty()
+            && let Some(result) = self.enumeration_set.join_next().await
+        {
+            self.handle_enumeration_task_result(result).await?;
+        } else if let Some(result) = self.work_set.join_next().await {
             self.handle_walk_task_result(result).await?;
         }
+        Ok(())
+    }
+
+    async fn handle_enumeration_task_result(
+        &mut self,
+        result: Result<LibraryScanTitleEnumerationTaskOutput, tokio::task::JoinError>,
+    ) -> AppResult<()> {
+        let output = result.map_err(|error| AppError::Repository(error.to_string()))?;
+        self.enumerating.remove(&output.title_id);
+        match output.result {
+            Ok(work) => {
+                self.complete_enumerated_work(work, output.coverage).await?;
+                self.launch_analysis().await?;
+                self.mark_file_total_known_if_ready().await?;
+            }
+            Err(error) => {
+                if self.summary_mode == LibraryScanTitleWorkSummaryMode::OneOff {
+                    return Err(error);
+                }
+                warn!(
+                    error = %error,
+                    title_id = %output.title_id,
+                    "library scan title enumeration failed"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    async fn mark_file_total_known_if_ready(&mut self) -> AppResult<()> {
+        if self.file_total_mode != LibraryScanFileTotalMode::AggregateKnownByExecutor
+            || self.file_total_known_marked
+            || !self.input_closed
+            || library_scan_cancel_requested(self.cancel_token.as_ref())
+            || !self.pending_full.is_empty()
+            || !self.pending_scoped.is_empty()
+            || !self.ready.is_empty()
+            || !self.enumerating.is_empty()
+            || !self.enumeration_set.is_empty()
+        {
+            return Ok(());
+        }
+
+        if let Some(coordinator) = self.coordinator.as_ref() {
+            coordinator.mark_file_total_known().await;
+            coordinator.publish_progress().await;
+        }
+        self.file_total_known_marked = true;
         Ok(())
     }
 
@@ -1312,13 +1583,11 @@ impl LibraryScanTitleWorkExecutor {
                     .or_default()
                     .absorb(output.coverage);
                 if output.absorb_walk_summary {
-                    let mut delta = walk_result.summary;
-                    if output.created_in_scan
-                        && self.summary_mode == LibraryScanTitleWorkSummaryMode::FullScan
-                    {
-                        delta.imported = delta.imported.saturating_sub(1);
+                    let mut summary = walk_result.summary;
+                    if output.created_in_scan {
+                        summary.imported = summary.imported.saturating_sub(1);
                     }
-                    self.summary.absorb(&delta);
+                    self.summary.absorb(&summary);
                 }
             }
             Err(error) => {
@@ -1342,6 +1611,28 @@ impl LibraryScanTitleWorkExecutor {
         }
         Ok(())
     }
+}
+
+async fn enumerate_library_scan_title_work(
+    app: &AppUseCase,
+    mut work: LibraryScanTitleWork,
+    cancel_token: Option<CancellationToken>,
+) -> AppResult<LibraryScanTitleWork> {
+    if work.discovered_files.is_some() {
+        return Ok(work);
+    }
+    if library_scan_cancel_requested(cancel_token.as_ref()) {
+        return Err(AppError::Canceled("library scan canceled".into()));
+    }
+
+    let files = match &work.facet_plan {
+        LibraryScanTitleFacetPlan::Movie(_) => discover_movie_title_files(app, &work.title).await?,
+        LibraryScanTitleFacetPlan::Episodic => {
+            discover_episodic_title_files_for_progress(app, &work.title).await?
+        }
+    };
+    work.discovered_files = Some(files);
+    Ok(work)
 }
 
 impl AppUseCase {
@@ -1431,6 +1722,7 @@ impl AppUseCase {
             session_id,
             cancel_token,
             file_total_mode,
+            full_folder_scan,
         } = request;
         match work.facet_plan {
             LibraryScanTitleFacetPlan::Movie(cleanup) => {
@@ -1442,6 +1734,7 @@ impl AppUseCase {
                     work.mode,
                     cancel_token,
                     file_total_mode,
+                    full_folder_scan,
                 )
                 .await
             }
@@ -1454,6 +1747,7 @@ impl AppUseCase {
                     work.mode,
                     cancel_token,
                     file_total_mode,
+                    full_folder_scan,
                 )
                 .await
             }
@@ -1469,6 +1763,7 @@ impl AppUseCase {
         mode: LibraryScanTitleWalkMode,
         cancel_token: Option<CancellationToken>,
         file_total_mode: LibraryScanFileTotalMode,
+        _full_folder_scan: bool,
     ) -> AppResult<LibraryTitleWalkResult> {
         let started_at = Instant::now();
         let session_coordinator =
@@ -1478,11 +1773,11 @@ impl AppUseCase {
             Some(files) => files,
             None => {
                 let files = discover_movie_title_files(self, &title).await?;
-                if let Some(coordinator) = session_coordinator.as_ref() {
+                if file_total_mode == LibraryScanFileTotalMode::MarkKnownAfterThisWalk
+                    && let Some(coordinator) = session_coordinator.as_ref()
+                {
                     coordinator.add_file_total(files.len()).await;
-                    if file_total_mode == LibraryScanFileTotalMode::MarkKnownAfterThisWalk {
-                        coordinator.mark_file_total_known().await;
-                    }
+                    coordinator.mark_file_total_known().await;
                 }
                 files
             }
@@ -1557,11 +1852,12 @@ impl AppUseCase {
         mode: LibraryScanTitleWalkMode,
         cancel_token: Option<CancellationToken>,
         file_total_mode: LibraryScanFileTotalMode,
+        full_folder_scan: bool,
     ) -> AppResult<LibraryTitleWalkResult> {
         let started_at = Instant::now();
         let session_coordinator =
             session_id.map(|value| LibraryScanCoordinator::new(self.clone(), value.to_string()));
-        let scoped_discovered_files = pre_scanned_files.is_some();
+        let scoped_discovered_files = pre_scanned_files.is_some() && !full_folder_scan;
         let pre_scanned_file_count = pre_scanned_files.as_ref().map(Vec::len);
         let scan_mode = mode.as_file_finalize_mode();
 
@@ -1617,11 +1913,11 @@ impl AppUseCase {
                     walk_elapsed.saturating_add(Duration::from_millis(scan_result.walk_ms));
                 stat_elapsed =
                     stat_elapsed.saturating_add(Duration::from_millis(scan_result.stat_ms));
-                if let Some(coordinator) = session_coordinator.as_ref() {
+                if file_total_mode == LibraryScanFileTotalMode::MarkKnownAfterThisWalk
+                    && let Some(coordinator) = session_coordinator.as_ref()
+                {
                     coordinator.add_file_total(scan_result.files.len()).await;
-                    if file_total_mode == LibraryScanFileTotalMode::MarkKnownAfterThisWalk {
-                        coordinator.mark_file_total_known().await;
-                    }
+                    coordinator.mark_file_total_known().await;
                 }
                 scan_result.files
             }
@@ -2158,6 +2454,7 @@ pub(crate) struct LibraryScanTitleWalkRequest {
     pub(crate) session_id: Option<String>,
     pub(crate) cancel_token: Option<CancellationToken>,
     pub(crate) file_total_mode: LibraryScanFileTotalMode,
+    pub(crate) full_folder_scan: bool,
 }
 
 #[cfg(test)]

@@ -283,6 +283,7 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
   const [resolvingItemId, setResolvingItemId] = React.useState<string | null>(null);
   const [ignoringItemId, setIgnoringItemId] = React.useState<string | null>(null);
   const [ignoreTargetItem, setIgnoreTargetItem] = React.useState<PendingImportItem | null>(null);
+  const inFlightPendingImportActionsRef = React.useRef<Set<string>>(new Set());
   const libraryNameById = React.useMemo(
     () => new Map(libraries.map((library) => [library.id, library.name])),
     [libraries],
@@ -623,6 +624,9 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
     if (item.status !== "pending") {
       return;
     }
+    if (inFlightPendingImportActionsRef.current.has(item.id)) {
+      return;
+    }
 
     setIgnoreTargetItem(item);
   }, []);
@@ -632,12 +636,18 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
       return;
     }
 
-    setResolvingItemId(activeItem.id);
+    const itemId = activeItem.id;
+    if (inFlightPendingImportActionsRef.current.has(itemId)) {
+      return;
+    }
+    inFlightPendingImportActionsRef.current.add(itemId);
+
+    setResolvingItemId(itemId);
     try {
       const { data, error: mutationError } = await client
         .mutation(resolvePendingImportMutation, {
           input: {
-            pendingImportId: activeItem.id,
+            pendingImportId: itemId,
             tvdbId,
           },
         })
@@ -659,7 +669,8 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
     } catch (err) {
       setGlobalStatus(err instanceof Error ? err.message : t("pendingImports.resolveFailed"));
     } finally {
-      setResolvingItemId(null);
+      inFlightPendingImportActionsRef.current.delete(itemId);
+      setResolvingItemId((current) => (current === itemId ? null : current));
     }
   }, [activeItem, clearActiveItem, client, refreshAll, setGlobalStatus, t]);
 
@@ -672,12 +683,18 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
       return;
     }
 
-    setResolvingItemId(activeItem.id);
+    const itemId = activeItem.id;
+    if (inFlightPendingImportActionsRef.current.has(itemId)) {
+      return;
+    }
+    inFlightPendingImportActionsRef.current.add(itemId);
+
+    setResolvingItemId(itemId);
     try {
       const { data, error: mutationError } = await client
         .mutation(bindPendingImportMutation, {
           input: {
-            pendingImportId: activeItem.id,
+            pendingImportId: itemId,
             episodeIds: selectedEpisodeIds,
           },
         })
@@ -698,7 +715,8 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
     } catch (err) {
       setGlobalStatus(err instanceof Error ? err.message : t("pendingImports.bindFailed"));
     } finally {
-      setResolvingItemId(null);
+      inFlightPendingImportActionsRef.current.delete(itemId);
+      setResolvingItemId((current) => (current === itemId ? null : current));
     }
   }, [activeItem, clearActiveItem, client, refreshAll, selectedEpisodeIds, setGlobalStatus, t]);
 
@@ -707,11 +725,17 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
       return;
     }
 
-    setIgnoringItemId(ignoreTargetItem.id);
+    const itemId = ignoreTargetItem.id;
+    if (inFlightPendingImportActionsRef.current.has(itemId)) {
+      return;
+    }
+    inFlightPendingImportActionsRef.current.add(itemId);
+
+    setIgnoringItemId(itemId);
     try {
       const { error: mutationError } = await client
         .mutation(ignorePendingImportMutation, {
-          pendingImportId: ignoreTargetItem.id,
+          pendingImportId: itemId,
         })
         .toPromise();
       if (mutationError) {
@@ -734,7 +758,8 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
     } catch (err) {
       setGlobalStatus(err instanceof Error ? err.message : t("pendingImports.ignoreFailed"));
     } finally {
-      setIgnoringItemId(null);
+      inFlightPendingImportActionsRef.current.delete(itemId);
+      setIgnoringItemId((current) => (current === itemId ? null : current));
     }
   }, [activeItemRef, clearActiveItem, client, ignoreTargetItem, refreshAll, setGlobalStatus, t]);
 

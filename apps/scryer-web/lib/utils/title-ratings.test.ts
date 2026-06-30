@@ -52,3 +52,11 @@ test("Metacritic ratings render on a hundred-point scale", () => {
     "75",
   );
 });
+
+test("MAL rating pill reuses the existing media-site logo", () => {
+  for (const source of ["mal", "myanimelist", "my-anime-list", "myanimelist.net"]) {
+    const info = ratingSourceInfo(source);
+    assert.equal(info.label, "MyAnimeList");
+    assert.equal(info.logoSrc, "/media-sites/mal.svg");
+  }
+});

@@ -600,6 +600,7 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
   const hasInvalidRootFolderPaths = invalidRootFolderPaths.size > 0;
   const actionBusy = loading || librariesLoading || rootValidationLibrariesLoading || saving;
   const settingsBusy = actionBusy || settingsLoading;
+  const showUnixPermissions = localPathStyle !== "windows";
   const effectiveDraftSetPermissionsLinux =
     draftSetPermissionsLinux === INHERIT_VALUE
       ? (savedSettings?.setPermissionsLinux ?? false)
@@ -1458,156 +1459,165 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
                       })}
                     </EffectiveChip>
                   ) : null}
-                  <div className="grid gap-3 pt-2 sm:grid-cols-2">
-                    <div className="space-y-2">
-                      <Label>{t("settings.setPermissionsLinuxLabel")}</Label>
-                      <Select
-                        value={draftSetPermissionsLinux}
-                        onValueChange={setDraftSetPermissionsLinux}
-                        disabled={settingsBusy}
-                      >
-                        <SelectTrigger>
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {BOOLEAN_OVERRIDE_OPTIONS.map((option) => (
-                            <SelectItem key={option.value} value={option.value}>
-                              {t(option.labelKey)}
+                  {showUnixPermissions ? (
+                    <div className="grid gap-3 pt-2 sm:grid-cols-2">
+                      <div className="space-y-2">
+                        <Label>{t("settings.setPermissionsLinuxLabel")}</Label>
+                        <Select
+                          value={draftSetPermissionsLinux}
+                          onValueChange={setDraftSetPermissionsLinux}
+                          disabled={settingsBusy}
+                        >
+                          <SelectTrigger>
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {BOOLEAN_OVERRIDE_OPTIONS.map((option) => (
+                              <SelectItem key={option.value} value={option.value}>
+                                {t(option.labelKey)}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                        {savedSettings ? (
+                          <EffectiveChip>
+                            {t("settings.libraryEffectiveProfile", {
+                              value: savedSettings.setPermissionsLinux
+                                ? t("label.enabled")
+                                : t("label.disabled"),
+                            })}
+                          </EffectiveChip>
+                        ) : null}
+                      </div>
+                      <div className="space-y-2">
+                        <Label>{t("settings.fileChmodLabel")}</Label>
+                        <Select
+                          value={draftFileChmodSelectValue}
+                          onValueChange={(value) =>
+                            setDraftFileChmod(
+                              value === INHERIT_VALUE ? "" : value,
+                            )
+                          }
+                          disabled={permissionFieldsDisabled}
+                        >
+                          <SelectTrigger className="w-full">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value={INHERIT_VALUE}>
+                              {t("settings.libraryInheritFacet")}
                             </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                      {savedSettings ? (
-                        <EffectiveChip>
-                          {t("settings.libraryEffectiveProfile", {
-                            value: savedSettings.setPermissionsLinux
-                              ? t("label.enabled")
-                              : t("label.disabled"),
-                          })}
-                        </EffectiveChip>
-                      ) : null}
+                            {FILE_CHMOD_PRESETS.map((option) => (
+                              <SelectItem key={option.value} value={option.value}>
+                                <span className="flex w-full items-center justify-between gap-4">
+                                  <span>
+                                    {option.value} - {t(option.labelKey)}
+                                  </span>
+                                  <span className="font-[var(--font-code)] text-xs text-muted-foreground">
+                                    {formatChmodMode(option.value, "file")}
+                                  </span>
+                                </span>
+                              </SelectItem>
+                            ))}
+                            {customFileChmod ? (
+                              <SelectItem value={customFileChmod}>
+                                <span className="flex w-full items-center justify-between gap-4">
+                                  <span>
+                                    {customFileChmod} -{" "}
+                                    {t("settings.chmodPresetCustom")}
+                                  </span>
+                                  <span className="font-[var(--font-code)] text-xs text-muted-foreground">
+                                    {formatChmodMode(customFileChmod, "file")}
+                                  </span>
+                                </span>
+                              </SelectItem>
+                            ) : null}
+                          </SelectContent>
+                        </Select>
+                        {savedSettings ? (
+                          <EffectiveChip>
+                            {t("settings.libraryEffectiveProfile", {
+                              value: savedSettings.fileChmod ?? t("label.none"),
+                            })}
+                          </EffectiveChip>
+                        ) : null}
+                      </div>
+                      <div className="space-y-2">
+                        <Label>{t("settings.folderChmodLabel")}</Label>
+                        <Select
+                          value={draftFolderChmodSelectValue}
+                          onValueChange={(value) =>
+                            setDraftFolderChmod(
+                              value === INHERIT_VALUE ? "" : value,
+                            )
+                          }
+                          disabled={permissionFieldsDisabled}
+                        >
+                          <SelectTrigger className="w-full">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value={INHERIT_VALUE}>
+                              {t("settings.libraryInheritFacet")}
+                            </SelectItem>
+                            {FOLDER_CHMOD_PRESETS.map((option) => (
+                              <SelectItem key={option.value} value={option.value}>
+                                <span className="flex w-full items-center justify-between gap-4">
+                                  <span>
+                                    {option.value} - {t(option.labelKey)}
+                                  </span>
+                                  <span className="font-[var(--font-code)] text-xs text-muted-foreground">
+                                    {formatChmodMode(option.value, "folder")}
+                                  </span>
+                                </span>
+                              </SelectItem>
+                            ))}
+                            {customFolderChmod ? (
+                              <SelectItem value={customFolderChmod}>
+                                <span className="flex w-full items-center justify-between gap-4">
+                                  <span>
+                                    {customFolderChmod} -{" "}
+                                    {t("settings.chmodPresetCustom")}
+                                  </span>
+                                  <span className="font-[var(--font-code)] text-xs text-muted-foreground">
+                                    {formatChmodMode(customFolderChmod, "folder")}
+                                  </span>
+                                </span>
+                              </SelectItem>
+                            ) : null}
+                          </SelectContent>
+                        </Select>
+                        {savedSettings ? (
+                          <EffectiveChip>
+                            {t("settings.libraryEffectiveProfile", {
+                              value: savedSettings.folderChmod ?? t("label.none"),
+                            })}
+                          </EffectiveChip>
+                        ) : null}
+                      </div>
+                      <div className="space-y-2">
+                        <Label>{t("settings.chownGroupLabel")}</Label>
+                        <Input
+                          value={draftChownGroup}
+                          onChange={(event) =>
+                            setDraftChownGroup(event.target.value)
+                          }
+                          disabled={permissionFieldsDisabled}
+                          placeholder={
+                            savedSettings?.chownGroup ??
+                            t("settings.libraryInheritFacet")
+                          }
+                        />
+                        {savedSettings ? (
+                          <EffectiveChip>
+                            {t("settings.libraryEffectiveProfile", {
+                              value: savedSettings.chownGroup ?? t("label.none"),
+                            })}
+                          </EffectiveChip>
+                        ) : null}
+                      </div>
                     </div>
-                    <div className="space-y-2">
-                      <Label>{t("settings.fileChmodLabel")}</Label>
-                      <Select
-                        value={draftFileChmodSelectValue}
-                        onValueChange={(value) =>
-                          setDraftFileChmod(value === INHERIT_VALUE ? "" : value)
-                        }
-                        disabled={permissionFieldsDisabled}
-                      >
-                        <SelectTrigger className="w-full">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value={INHERIT_VALUE}>
-                            {t("settings.libraryInheritFacet")}
-                          </SelectItem>
-                          {FILE_CHMOD_PRESETS.map((option) => (
-                            <SelectItem key={option.value} value={option.value}>
-                              <span className="flex w-full items-center justify-between gap-4">
-                                <span>
-                                  {option.value} - {t(option.labelKey)}
-                                </span>
-                                <span className="font-[var(--font-code)] text-xs text-muted-foreground">
-                                  {formatChmodMode(option.value, "file")}
-                                </span>
-                              </span>
-                            </SelectItem>
-                          ))}
-                          {customFileChmod ? (
-                            <SelectItem value={customFileChmod}>
-                              <span className="flex w-full items-center justify-between gap-4">
-                                <span>
-                                  {customFileChmod} -{" "}
-                                  {t("settings.chmodPresetCustom")}
-                                </span>
-                                <span className="font-[var(--font-code)] text-xs text-muted-foreground">
-                                  {formatChmodMode(customFileChmod, "file")}
-                                </span>
-                              </span>
-                            </SelectItem>
-                          ) : null}
-                        </SelectContent>
-                      </Select>
-                      {savedSettings ? (
-                        <EffectiveChip>
-                          {t("settings.libraryEffectiveProfile", {
-                            value: savedSettings.fileChmod ?? t("label.none"),
-                          })}
-                        </EffectiveChip>
-                      ) : null}
-                    </div>
-                    <div className="space-y-2">
-                      <Label>{t("settings.folderChmodLabel")}</Label>
-                      <Select
-                        value={draftFolderChmodSelectValue}
-                        onValueChange={(value) =>
-                          setDraftFolderChmod(
-                            value === INHERIT_VALUE ? "" : value,
-                          )
-                        }
-                        disabled={permissionFieldsDisabled}
-                      >
-                        <SelectTrigger className="w-full">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value={INHERIT_VALUE}>
-                            {t("settings.libraryInheritFacet")}
-                          </SelectItem>
-                          {FOLDER_CHMOD_PRESETS.map((option) => (
-                            <SelectItem key={option.value} value={option.value}>
-                              <span className="flex w-full items-center justify-between gap-4">
-                                <span>
-                                  {option.value} - {t(option.labelKey)}
-                                </span>
-                                <span className="font-[var(--font-code)] text-xs text-muted-foreground">
-                                  {formatChmodMode(option.value, "folder")}
-                                </span>
-                              </span>
-                            </SelectItem>
-                          ))}
-                          {customFolderChmod ? (
-                            <SelectItem value={customFolderChmod}>
-                              <span className="flex w-full items-center justify-between gap-4">
-                                <span>
-                                  {customFolderChmod} -{" "}
-                                  {t("settings.chmodPresetCustom")}
-                                </span>
-                                <span className="font-[var(--font-code)] text-xs text-muted-foreground">
-                                  {formatChmodMode(customFolderChmod, "folder")}
-                                </span>
-                              </span>
-                            </SelectItem>
-                          ) : null}
-                        </SelectContent>
-                      </Select>
-                      {savedSettings ? (
-                        <EffectiveChip>
-                          {t("settings.libraryEffectiveProfile", {
-                            value: savedSettings.folderChmod ?? t("label.none"),
-                          })}
-                        </EffectiveChip>
-                      ) : null}
-                    </div>
-                    <div className="space-y-2">
-                      <Label>{t("settings.chownGroupLabel")}</Label>
-                      <Input
-                        value={draftChownGroup}
-                        onChange={(event) => setDraftChownGroup(event.target.value)}
-                        disabled={permissionFieldsDisabled}
-                        placeholder={savedSettings?.chownGroup ?? t("settings.libraryInheritFacet")}
-                      />
-                      {savedSettings ? (
-                        <EffectiveChip>
-                          {t("settings.libraryEffectiveProfile", {
-                            value: savedSettings.chownGroup ?? t("label.none"),
-                          })}
-                        </EffectiveChip>
-                      ) : null}
-                    </div>
-                  </div>
+                  ) : null}
                 </div>
                 {canManageDownloadClientRouting ? (
                   <div className="space-y-2">

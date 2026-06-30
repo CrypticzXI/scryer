@@ -2865,6 +2865,7 @@ export function MediaContentView({
           handlePlexmatchWriteChange={handlePlexmatchWriteChange}
           importMode={importMode}
           handleImportModeChange={handleImportModeChange}
+          localPathStyle={localPathStyle}
           setPermissionsLinux={setPermissionsLinux}
           handleSetPermissionsLinuxChange={handleSetPermissionsLinuxChange}
           fileChmod={fileChmod}
@@ -2883,131 +2884,13 @@ export function MediaContentView({
         >
           <CardContent className="flex min-h-0 flex-1 flex-col space-y-0 p-0">
             <div className="shrink-0 border-b border-[var(--scry-border3)] bg-[linear-gradient(180deg,var(--scry-surfD),transparent)] px-4 pb-0 pt-4 sm:px-5 lg:px-6">
-              <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
-                <div className="min-w-0">
-                  <h1 className="text-[22px] font-bold leading-tight tracking-normal text-[var(--scry-ink2)]">
-                    {mediaTitle}
-                  </h1>
-                  <p className="mt-1 text-[12.5px] text-[var(--scry-muted3)]">
-                    {mediaSummary}
-                  </p>
-                </div>
-                <div className="flex min-w-0 flex-1 flex-col gap-2.5 lg:flex-row lg:items-center xl:max-w-[800px] xl:justify-end">
-                  <div className="relative min-w-[220px] flex-1 xl:max-w-[520px]">
-                    <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--scry-muted2)]" />
-                    <Input
-                      placeholder={t("title.filterPlaceholder")}
-                      value={titleFilterInputValue}
-                      onChange={handleTitleFilterChange}
-                      className="h-10 w-full rounded-[10px] border-[var(--scry-border2)] bg-[var(--scry-inset)] pl-9 text-[13px] text-[var(--scry-body)] shadow-none placeholder:text-[var(--scry-faint2)] focus-visible:ring-[var(--scry-focus)]"
-                    />
-                  </div>
-                  <LibraryMultiSelect
-                    libraries={libraries}
-                    selectedLibraryIds={selectedLibraryIds}
-                    onSelectedLibraryIdsChange={setSelectedLibraryIds}
-                    disabled={librariesLoading || libraries.length === 0}
-                    triggerClassName="h-10 w-full rounded-[10px] border-[var(--scry-border2)] bg-[var(--scry-inset)] text-[13px] text-[var(--scry-body)] shadow-none lg:w-[180px]"
-                  />
-                  <ToggleGroup
-                    type="single"
-                    variant="outline"
-                    value={effectiveViewMode}
-                    onValueChange={(v) => {
-                      if (
-                        v === "compact" ||
-                        v === "poster-table" ||
-                        v === "poster"
-                      ) {
-                        setViewMode(v);
-                      }
-                    }}
-                    size="sm"
-                    aria-label={t("title.viewModeToggle")}
-                    className="h-10 shrink-0 gap-0.5 rounded-[10px] border border-[var(--scry-border2)] bg-[var(--scry-inset)] p-1 shadow-none"
-                  >
-                    <ToggleGroupItem
-                      id={titleOverviewViewModeId(view, "compact")}
-                      value="compact"
-                      size="sm"
-                      aria-label={t("title.viewModeCompact")}
-                      title={t("title.viewModeCompact")}
-                      className="h-8 w-8 rounded-lg px-0 text-[var(--scry-muted2)] transition hover:bg-[var(--scry-hover)] hover:text-[var(--scry-ink2)] data-[state=on]:!border-transparent data-[state=on]:!bg-[var(--scry-accent)] data-[state=on]:!text-primary-foreground data-[state=on]:!shadow-none"
-                    >
-                      <TableIcon className="h-4 w-4" />
-                    </ToggleGroupItem>
-                    <ToggleGroupItem
-                      id={titleOverviewViewModeId(view, "poster-table")}
-                      value="poster-table"
-                      size="sm"
-                      aria-label={t("title.viewModePosterTable")}
-                      title={t("title.viewModePosterTable")}
-                      className="h-8 w-8 rounded-lg px-0 text-[var(--scry-muted2)] transition hover:bg-[var(--scry-hover)] hover:text-[var(--scry-ink2)] data-[state=on]:!border-transparent data-[state=on]:!bg-[var(--scry-accent)] data-[state=on]:!text-primary-foreground data-[state=on]:!shadow-none"
-                    >
-                      <LayoutList className="h-4 w-4" />
-                    </ToggleGroupItem>
-                    <ToggleGroupItem
-                      id={titleOverviewViewModeId(view, "poster")}
-                      value="poster"
-                      size="sm"
-                      aria-label={t("title.viewModePoster")}
-                      title={t("title.viewModePoster")}
-                      className="h-8 w-8 rounded-lg px-0 text-[var(--scry-muted2)] transition hover:bg-[var(--scry-hover)] hover:text-[var(--scry-ink2)] data-[state=on]:!border-transparent data-[state=on]:!bg-[var(--scry-accent)] data-[state=on]:!text-primary-foreground data-[state=on]:!shadow-none"
-                    >
-                      <LayoutGrid className="h-4 w-4" />
-                    </ToggleGroupItem>
-                  </ToggleGroup>
-                  {showTitleTableColumnControls ? (
-                    <Popover>
-                      <PopoverTrigger asChild>
-                        <Button
-                          type="button"
-                          variant="outline"
-                          className="h-10 w-full rounded-[10px] border-[var(--scry-border2)] bg-[var(--scry-inset)] px-3 text-[13px] text-[var(--scry-muted2)] shadow-none transition hover:bg-[var(--scry-hover)] hover:text-[var(--scry-ink2)] lg:w-10 lg:px-0"
-                          aria-label={t("title.columns")}
-                          title={t("title.columns")}
-                        >
-                          <Columns3 className="h-4 w-4" />
-                          <span className="lg:hidden">{t("title.columns")}</span>
-                        </Button>
-                      </PopoverTrigger>
-                      <PopoverContent
-                        align="end"
-                        className="w-[194px] rounded-[11px] border border-[var(--scry-border2)] bg-[var(--scry-soft)] p-[7px] shadow-[0_18px_44px_rgba(0,0,0,0.55)]"
-                      >
-                        <div className="px-2 pb-2 pt-1 text-[10.5px] font-bold uppercase tracking-[0.06em] text-[var(--scry-faint2)]">
-                          {t("title.toggleColumns")}
-                        </div>
-                        <div>
-                          {titleTableColumnOptions.map((columnKey) => (
-                            <label
-                              key={columnKey}
-                              className="flex cursor-pointer items-center gap-2.5 rounded-[8px] px-2 py-[7px] text-[13px] text-[var(--scry-text2)] transition hover:bg-[var(--scry-hover)]"
-                            >
-                              <Checkbox
-                                checked={visibleTitleTableColumns[columnKey]}
-                                onCheckedChange={(checked) =>
-                                  toggleTitleTableColumn(
-                                    columnKey,
-                                    checked === true,
-                                  )
-                                }
-                                aria-label={titleTableColumnLabel(
-                                  columnKey,
-                                  t,
-                                )}
-                                className="size-[17px] rounded-[5px] [&_svg]:size-3"
-                              />
-                              <span className="min-w-0 truncate">
-                                {titleTableColumnLabel(columnKey, t)}
-                              </span>
-                            </label>
-                          ))}
-                        </div>
-                      </PopoverContent>
-                    </Popover>
-                  ) : null}
-                </div>
+              <div className="min-w-0">
+                <h1 className="text-[22px] font-bold leading-tight tracking-normal text-[var(--scry-ink2)]">
+                  {mediaTitle}
+                </h1>
+                <p className="mt-1 text-[12.5px] text-[var(--scry-muted3)]">
+                  {mediaSummary}
+                </p>
               </div>
               <div className="mt-4">
                 <TitleQuickFilterBar
@@ -3074,6 +2957,124 @@ export function MediaContentView({
                     ) : null
                   }
                 />
+                <div className="mt-3 flex flex-col gap-2.5 lg:flex-row lg:items-center lg:justify-between">
+                  <div className="relative w-full min-w-[220px] lg:max-w-[520px]">
+                    <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--scry-muted2)]" />
+                    <Input
+                      placeholder={t("title.filterPlaceholder")}
+                      value={titleFilterInputValue}
+                      onChange={handleTitleFilterChange}
+                      className="h-10 w-full rounded-[10px] border-[var(--scry-border2)] bg-[var(--scry-inset)] pl-9 text-[13px] text-[var(--scry-body)] shadow-none placeholder:text-[var(--scry-faint2)] focus-visible:ring-[var(--scry-focus)]"
+                    />
+                  </div>
+                  <div className="flex min-w-0 flex-col gap-2.5 sm:flex-row sm:items-center lg:justify-end">
+                    {showTitleTableColumnControls ? (
+                      <Popover>
+                        <PopoverTrigger asChild>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            className="h-10 w-full rounded-[10px] border-[var(--scry-border2)] bg-[var(--scry-inset)] px-3 text-[13px] text-[var(--scry-muted2)] shadow-none transition hover:bg-[var(--scry-hover)] hover:text-[var(--scry-ink2)] sm:w-10 sm:px-0"
+                            aria-label={t("title.columns")}
+                            title={t("title.columns")}
+                          >
+                            <Columns3 className="h-4 w-4" />
+                            <span className="sm:hidden">{t("title.columns")}</span>
+                          </Button>
+                        </PopoverTrigger>
+                        <PopoverContent
+                          align="end"
+                          className="w-[194px] rounded-[11px] border border-[var(--scry-border2)] bg-[var(--scry-soft)] p-[7px] shadow-[0_18px_44px_rgba(0,0,0,0.55)]"
+                        >
+                          <div className="px-2 pb-2 pt-1 text-[10.5px] font-bold uppercase tracking-[0.06em] text-[var(--scry-faint2)]">
+                            {t("title.toggleColumns")}
+                          </div>
+                          <div>
+                            {titleTableColumnOptions.map((columnKey) => (
+                              <label
+                                key={columnKey}
+                                className="flex cursor-pointer items-center gap-2.5 rounded-[8px] px-2 py-[7px] text-[13px] text-[var(--scry-text2)] transition hover:bg-[var(--scry-hover)]"
+                              >
+                                <Checkbox
+                                  checked={visibleTitleTableColumns[columnKey]}
+                                  onCheckedChange={(checked) =>
+                                    toggleTitleTableColumn(
+                                      columnKey,
+                                      checked === true,
+                                    )
+                                  }
+                                  aria-label={titleTableColumnLabel(
+                                    columnKey,
+                                    t,
+                                  )}
+                                  className="size-[17px] rounded-[5px] [&_svg]:size-3"
+                                />
+                                <span className="min-w-0 truncate">
+                                  {titleTableColumnLabel(columnKey, t)}
+                                </span>
+                              </label>
+                            ))}
+                          </div>
+                        </PopoverContent>
+                      </Popover>
+                    ) : null}
+                    <LibraryMultiSelect
+                      libraries={libraries}
+                      selectedLibraryIds={selectedLibraryIds}
+                      onSelectedLibraryIdsChange={setSelectedLibraryIds}
+                      disabled={librariesLoading || libraries.length === 0}
+                      triggerClassName="h-10 w-full rounded-[10px] border-[var(--scry-border2)] bg-[var(--scry-inset)] text-[13px] text-[var(--scry-body)] shadow-none sm:w-[190px]"
+                    />
+                    <ToggleGroup
+                      type="single"
+                      variant="outline"
+                      value={effectiveViewMode}
+                      onValueChange={(v) => {
+                        if (
+                          v === "compact" ||
+                          v === "poster-table" ||
+                          v === "poster"
+                        ) {
+                          setViewMode(v);
+                        }
+                      }}
+                      size="sm"
+                      aria-label={t("title.viewModeToggle")}
+                      className="h-10 shrink-0 gap-0.5 rounded-[10px] border border-[var(--scry-border2)] bg-[var(--scry-inset)] p-1 shadow-none"
+                    >
+                      <ToggleGroupItem
+                        id={titleOverviewViewModeId(view, "compact")}
+                        value="compact"
+                        size="sm"
+                        aria-label={t("title.viewModeCompact")}
+                        title={t("title.viewModeCompact")}
+                        className="h-8 w-8 rounded-lg px-0 text-[var(--scry-muted2)] transition hover:bg-[var(--scry-hover)] hover:text-[var(--scry-ink2)] data-[state=on]:!border-transparent data-[state=on]:!bg-[var(--scry-accent)] data-[state=on]:!text-primary-foreground data-[state=on]:!shadow-none"
+                      >
+                        <TableIcon className="h-4 w-4" />
+                      </ToggleGroupItem>
+                      <ToggleGroupItem
+                        id={titleOverviewViewModeId(view, "poster-table")}
+                        value="poster-table"
+                        size="sm"
+                        aria-label={t("title.viewModePosterTable")}
+                        title={t("title.viewModePosterTable")}
+                        className="h-8 w-8 rounded-lg px-0 text-[var(--scry-muted2)] transition hover:bg-[var(--scry-hover)] hover:text-[var(--scry-ink2)] data-[state=on]:!border-transparent data-[state=on]:!bg-[var(--scry-accent)] data-[state=on]:!text-primary-foreground data-[state=on]:!shadow-none"
+                      >
+                        <LayoutList className="h-4 w-4" />
+                      </ToggleGroupItem>
+                      <ToggleGroupItem
+                        id={titleOverviewViewModeId(view, "poster")}
+                        value="poster"
+                        size="sm"
+                        aria-label={t("title.viewModePoster")}
+                        title={t("title.viewModePoster")}
+                        className="h-8 w-8 rounded-lg px-0 text-[var(--scry-muted2)] transition hover:bg-[var(--scry-hover)] hover:text-[var(--scry-ink2)] data-[state=on]:!border-transparent data-[state=on]:!bg-[var(--scry-accent)] data-[state=on]:!text-primary-foreground data-[state=on]:!shadow-none"
+                      >
+                        <LayoutGrid className="h-4 w-4" />
+                      </ToggleGroupItem>
+                    </ToggleGroup>
+                  </div>
+                </div>
               </div>
             </div>
             <div
