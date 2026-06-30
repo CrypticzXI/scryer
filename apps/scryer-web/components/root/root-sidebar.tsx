@@ -40,6 +40,7 @@ import {
   Download,
   FileText,
   FolderCog,
+  Heart,
   Inbox,
   Monitor,
   Moon,
@@ -235,7 +236,6 @@ type RootSidebarProps = {
   pendingMediaRequestCounts: PendingImportCounts | null;
   manualImportRequiredCount: number;
   pluginUpdateCount: number;
-  scryerVersion: string | null;
   header?: React.ReactNode;
   children?: React.ReactNode;
   onNavigate: (
@@ -505,7 +505,6 @@ function RootSidebarContent({
   pendingMediaRequestCounts,
   manualImportRequiredCount,
   pluginUpdateCount,
-  scryerVersion,
   header,
   children,
   onNavigate,
@@ -1447,37 +1446,49 @@ function RootSidebarContent({
             </SidebarGroup>
           ))}
         </SidebarContent>
-        <SidebarFooter className="border-t border-[var(--scry-border3)] px-[18px] py-[13px]">
-          <div className="flex items-center justify-between gap-3">
-            {scryerVersion ? (
-              <span className="shrink-0 text-[11.5px] text-[var(--scry-faint)] group-data-[collapsible=icon]:hidden">
-                Scryer v{scryerVersion}
-              </span>
-            ) : (
-              <span className="shrink-0 text-[11.5px] text-[var(--scry-faint)] group-data-[collapsible=icon]:hidden">
-                Scryer
-              </span>
+        <SidebarFooter className="space-y-1.5 border-t border-[var(--scry-border3)] px-3.5 py-2.5">
+          <div
+            className={cn(
+              "grid gap-1.5 group-data-[collapsible=icon]:flex group-data-[collapsible=icon]:justify-center",
+              uiSettings.hideSponsorButton
+                ? "grid-cols-1"
+                : "grid-cols-2 group-data-[collapsible=icon]:grid-cols-1",
             )}
-            {themeMounted ? (
-              <button
-                id="root-sidebar-theme-toggle"
-                type="button"
-                onClick={cycleTheme}
-                aria-label={t("theme.switchLabel", { theme: themeLabel })}
+          >
+            {!uiSettings.hideSponsorButton ? (
+              <a
+                id="root-sidebar-sponsor-link"
+                href="https://opencollective.com/scryer-media/projects/scryer"
+                target="_blank"
+                rel="noreferrer"
                 className={cn(
-                  "flex min-w-0 shrink-0 items-center gap-1.5 rounded-lg border border-transparent bg-transparent px-2 py-1.5 text-xs font-medium text-[var(--scry-muted)] transition hover:border-[var(--scry-border2)] hover:bg-[var(--scry-hover)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/25",
+                  "flex min-w-0 items-center justify-center gap-1.5 rounded-lg border border-[var(--scry-border2)] bg-[var(--scry-card2)] px-2 py-1 text-xs font-semibold text-[var(--scry-ink2)] transition hover:border-[var(--scry-accent)] hover:bg-[var(--scry-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/25 group-data-[collapsible=icon]:hidden",
                 )}
               >
-                {displayTheme === "light" ? (
-                  <Sun className="h-4 w-4" />
-                ) : displayTheme === "dark" ? (
-                  <Moon className="h-4 w-4" />
-                ) : (
-                  <Monitor className="h-4 w-4" />
-                )}
-                <span className="truncate">{themeLabel}</span>
-              </button>
+                <Heart className="h-3.5 w-3.5 text-rose-400" />
+                <span className="truncate">Sponsor</span>
+              </a>
             ) : null}
+              {themeMounted ? (
+                <button
+                  id="root-sidebar-theme-toggle"
+                  type="button"
+                  onClick={cycleTheme}
+                  aria-label={t("theme.switchLabel", { theme: themeLabel })}
+                  className={cn(
+                    "flex min-w-0 items-center justify-center gap-1.5 rounded-lg border border-transparent bg-transparent px-2 py-1 text-xs font-medium text-[var(--scry-muted)] transition hover:border-[var(--scry-border2)] hover:bg-[var(--scry-hover)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/25",
+                  )}
+                >
+                  {displayTheme === "light" ? (
+                    <Sun className="h-4 w-4" />
+                  ) : displayTheme === "dark" ? (
+                    <Moon className="h-4 w-4" />
+                  ) : (
+                    <Monitor className="h-4 w-4" />
+                  )}
+                  <span className="truncate">{themeLabel}</span>
+                </button>
+              ) : null}
           </div>
         </SidebarFooter>
       </Sidebar>
@@ -1516,7 +1527,7 @@ export const RootSidebar = React.memo(function RootSidebar(
       className="h-full"
       style={
         {
-          "--sidebar-width": "236px",
+          "--sidebar-width": "224px",
         } as React.CSSProperties
       }
     >

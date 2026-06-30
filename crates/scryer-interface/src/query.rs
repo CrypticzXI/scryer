@@ -231,52 +231,71 @@ async fn title_payloads_from_titles(
     }
 
     let title_ids: Vec<String> = titles.iter().map(|t| t.id.clone()).collect();
-    let libraries = if selection.include_library_context {
-        app.list_libraries_for_permission(actor, None, scryer_domain::LibraryPermission::View)
-            .await
-            .map_err(to_gql_error)?
-    } else {
-        Vec::new()
+    let libraries = async {
+        if selection.include_library_context {
+            app.list_libraries_for_permission(actor, None, scryer_domain::LibraryPermission::View)
+                .await
+        } else {
+            Ok(Vec::new())
+        }
     };
+    let summaries = async {
+        if selection.include_quality_tier {
+            app.list_primary_collection_summaries(actor, &title_ids)
+                .await
+        } else {
+            Ok(Vec::new())
+        }
+    };
+    let media_size_summaries = async {
+        if selection.include_size_bytes {
+            app.list_title_media_size_summaries(actor, &title_ids).await
+        } else {
+            Ok(Vec::new())
+        }
+    };
+    let quality_summaries = async {
+        if selection.include_current_quality_tier {
+            app.list_title_quality_summaries(actor, &title_ids).await
+        } else {
+            Ok(Vec::new())
+        }
+    };
+    let episode_progress_summaries = async {
+        if selection.include_episode_progress {
+            app.list_title_episode_progress_summaries(actor, &title_ids)
+                .await
+        } else {
+            Ok(Vec::new())
+        }
+    };
+    let collections_by_title_id = async {
+        if selection.include_collections {
+            app.list_collections_for_titles(actor, &titles).await
+        } else {
+            Ok(std::collections::HashMap::new())
+        }
+    };
+    let (
+        libraries,
+        summaries,
+        media_size_summaries,
+        quality_summaries,
+        episode_progress_summaries,
+        collections_by_title_id,
+    ) = tokio::try_join!(
+        libraries,
+        summaries,
+        media_size_summaries,
+        quality_summaries,
+        episode_progress_summaries,
+        collections_by_title_id,
+    )
+    .map_err(to_gql_error)?;
     let library_map: std::collections::HashMap<&str, (&String, &String)> = libraries
         .iter()
         .map(|library| (library.id.as_str(), (&library.name, &library.slug)))
         .collect();
-    let summaries = if selection.include_quality_tier {
-        app.list_primary_collection_summaries(actor, &title_ids)
-            .await
-            .map_err(to_gql_error)?
-    } else {
-        Vec::new()
-    };
-    let media_size_summaries = if selection.include_size_bytes {
-        app.list_title_media_size_summaries(actor, &title_ids)
-            .await
-            .map_err(to_gql_error)?
-    } else {
-        Vec::new()
-    };
-    let quality_summaries = if selection.include_current_quality_tier {
-        app.list_title_quality_summaries(actor, &title_ids)
-            .await
-            .map_err(to_gql_error)?
-    } else {
-        Vec::new()
-    };
-    let episode_progress_summaries = if selection.include_episode_progress {
-        app.list_title_episode_progress_summaries(actor, &title_ids)
-            .await
-            .map_err(to_gql_error)?
-    } else {
-        Vec::new()
-    };
-    let collections_by_title_id = if selection.include_collections {
-        app.list_collections_for_titles(actor, &titles)
-            .await
-            .map_err(to_gql_error)?
-    } else {
-        std::collections::HashMap::new()
-    };
     let summary_map: std::collections::HashMap<&str, _> =
         summaries.iter().map(|s| (s.title_id.as_str(), s)).collect();
     let media_size_map: std::collections::HashMap<&str, i64> = media_size_summaries

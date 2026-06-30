@@ -423,7 +423,7 @@ async fn load_ui_settings_by_user_id(
     let row = SqlRuntime::fetch_optional(
         datastore.read_exec(),
         "SELECT user_id, theme, date_time_format, highlight_color, secondary_color, high_contrast_mode,
-                reduce_motion, density, sidebar_mode, default_landing_view, created_at, updated_at
+                reduce_motion, hide_sponsor_button, density, sidebar_mode, default_landing_view, created_at, updated_at
            FROM user_ui_settings
           WHERE user_id = {}",
         &[SqlArg::Text(user_id.to_string())],
@@ -444,7 +444,7 @@ async fn load_ui_settings_by_user_id_tx(
     let row = SqlRuntime::fetch_optional(
         SqlExec::Tx(tx),
         "SELECT user_id, theme, date_time_format, highlight_color, secondary_color, high_contrast_mode,
-                reduce_motion, density, sidebar_mode, default_landing_view, created_at, updated_at
+                reduce_motion, hide_sponsor_button, density, sidebar_mode, default_landing_view, created_at, updated_at
            FROM user_ui_settings
           WHERE user_id = {}",
         &[SqlArg::Text(user_id.to_string())],
@@ -467,9 +467,9 @@ async fn upsert_ui_settings_tx(
     tx.execute(
         "INSERT INTO user_ui_settings (
              user_id, theme, date_time_format, highlight_color, secondary_color, high_contrast_mode, reduce_motion,
-             density, sidebar_mode, default_landing_view, created_at, updated_at
+             hide_sponsor_button, density, sidebar_mode, default_landing_view, created_at, updated_at
          )
-         VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})
+         VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})
          ON CONFLICT(user_id) DO UPDATE SET
              theme = excluded.theme,
              date_time_format = excluded.date_time_format,
@@ -477,6 +477,7 @@ async fn upsert_ui_settings_tx(
              secondary_color = excluded.secondary_color,
              high_contrast_mode = excluded.high_contrast_mode,
              reduce_motion = excluded.reduce_motion,
+             hide_sponsor_button = excluded.hide_sponsor_button,
              density = excluded.density,
              sidebar_mode = excluded.sidebar_mode,
              default_landing_view = excluded.default_landing_view,
@@ -489,6 +490,7 @@ async fn upsert_ui_settings_tx(
             SqlArg::OptText(settings.secondary_color.clone()),
             SqlArg::Bool(settings.high_contrast_mode),
             SqlArg::Bool(settings.reduce_motion),
+            SqlArg::Bool(settings.hide_sponsor_button),
             SqlArg::Text(settings.density.as_str().to_string()),
             SqlArg::Text(settings.sidebar_mode.as_str().to_string()),
             SqlArg::Text(settings.default_landing_view.as_str().to_string()),
@@ -545,6 +547,7 @@ fn row_to_ui_settings(row: &SqlRow) -> AppResult<UiSettings> {
         secondary_color: row.opt_text("secondary_color")?,
         high_contrast_mode: row.bool("high_contrast_mode")?,
         reduce_motion: row.bool("reduce_motion")?,
+        hide_sponsor_button: row.bool("hide_sponsor_button")?,
         density: parse_ui_density(row.text("density")?)?,
         sidebar_mode: parse_ui_sidebar_mode(row.text("sidebar_mode")?)?,
         default_landing_view: parse_ui_default_landing_view(row.text("default_landing_view")?)?,
@@ -772,6 +775,7 @@ mod tests {
                 secondary_color TEXT,
                 high_contrast_mode INTEGER NOT NULL DEFAULT 0,
                 reduce_motion INTEGER NOT NULL DEFAULT 0,
+                hide_sponsor_button INTEGER NOT NULL DEFAULT 0,
                 density TEXT NOT NULL DEFAULT 'comfortable',
                 sidebar_mode TEXT NOT NULL DEFAULT 'expanded',
                 default_landing_view TEXT NOT NULL DEFAULT 'movies',
@@ -890,6 +894,7 @@ mod tests {
                 secondary_color: Some("#2277aa".to_string()),
                 high_contrast_mode: true,
                 reduce_motion: true,
+                hide_sponsor_button: true,
                 density: UiDensity::Compact,
                 sidebar_mode: UiSidebarMode::Collapsed,
                 default_landing_view: UiDefaultLandingView::Calendar,
@@ -916,6 +921,7 @@ mod tests {
         assert_eq!(stored.user_id, user.id);
         assert_eq!(stored.theme, UiTheme::Pride);
         assert_eq!(stored.date_time_format, UiDateTimeFormat::Iso24h);
+        assert!(stored.hide_sponsor_button);
         assert_eq!(stored.table_columns.len(), 2);
         assert_eq!(stored.table_columns[0].column_id, "name");
         assert_eq!(stored.table_columns[1].column_id, "episodes");
@@ -930,6 +936,7 @@ mod tests {
                 secondary_color: None,
                 high_contrast_mode: false,
                 reduce_motion: false,
+                hide_sponsor_button: false,
                 density: UiDensity::Comfortable,
                 sidebar_mode: UiSidebarMode::Expanded,
                 default_landing_view: UiDefaultLandingView::Movies,
@@ -946,6 +953,7 @@ mod tests {
         .expect("replace UI settings");
         assert_eq!(replaced.theme, UiTheme::System);
         assert_eq!(replaced.date_time_format, UiDateTimeFormat::Locale);
+        assert!(!replaced.hide_sponsor_button);
         assert_eq!(replaced.table_columns.len(), 1);
         assert_eq!(replaced.table_columns[0].facet, UiSettingsFacet::Anime);
         assert_eq!(replaced.table_columns[0].column_id, "status");

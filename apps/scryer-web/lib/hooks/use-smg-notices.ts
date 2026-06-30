@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { backendClient } from "@/lib/graphql/urql-client";
 import {
@@ -35,6 +35,7 @@ export function useSmgNotices() {
     useState<SmgVersionCompatibilityNotice | null>(null);
   const [smgScryerUpdateNotice, setSmgScryerUpdateNotice] =
     useState<SmgScryerUpdateNotice | null>(null);
+  const lastRoutineSmgNoticeRefreshAtRef = useRef(0);
   const [dismissedSmgScryerUpdate, setDismissedSmgScryerUpdate] = useState(
     () => {
       if (typeof window === "undefined") {
@@ -80,12 +81,30 @@ export function useSmgNotices() {
     }
   }, []);
 
+  const refreshSmgNotices = useCallback(
+    async ({ force = false }: { force?: boolean } = {}) => {
+      const now = Date.now();
+      if (
+        !force &&
+        now - lastRoutineSmgNoticeRefreshAtRef.current <
+          SMG_NOTICE_REFRESH_INTERVAL_MS
+      ) {
+        return;
+      }
+      lastRoutineSmgNoticeRefreshAtRef.current = now;
+      await Promise.all([
+        refreshSmgVersionCompatibilityNotice(),
+        refreshSmgScryerUpdateNotice(),
+      ]);
+    },
+    [refreshSmgScryerUpdateNotice, refreshSmgVersionCompatibilityNotice],
+  );
+
   useEffect(() => {
     return scheduleAfterFirstPaint(() => {
-      void refreshSmgVersionCompatibilityNotice();
-      void refreshSmgScryerUpdateNotice();
+      void refreshSmgNotices({ force: true });
     });
-  }, [refreshSmgScryerUpdateNotice, refreshSmgVersionCompatibilityNotice]);
+  }, [refreshSmgNotices]);
 
   useSettingsSubscription(
     useCallback(
@@ -94,11 +113,10 @@ export function useSmgNotices() {
           changedKeys.includes(SMG_VERSION_COMPATIBILITY_NOTICE_KEY) ||
           changedKeys.includes(SMG_SCRYER_UPDATE_NOTICE_KEY)
         ) {
-          void refreshSmgVersionCompatibilityNotice();
-          void refreshSmgScryerUpdateNotice();
+          void refreshSmgNotices({ force: true });
         }
       },
-      [refreshSmgScryerUpdateNotice, refreshSmgVersionCompatibilityNotice],
+      [refreshSmgNotices],
     ),
   );
 
@@ -108,28 +126,25 @@ export function useSmgNotices() {
     }
 
     const handleFocus = () => {
-      void refreshSmgVersionCompatibilityNotice();
-      void refreshSmgScryerUpdateNotice();
+      void refreshSmgNotices();
     };
     const handleVisibilityChange = () => {
       if (document.visibilityState === "visible") {
-        void refreshSmgVersionCompatibilityNotice();
-        void refreshSmgScryerUpdateNotice();
+        void refreshSmgNotices();
       }
     };
 
     window.addEventListener("focus", handleFocus);
     document.addEventListener("visibilitychange", handleVisibilityChange);
     const intervalId = window.setInterval(() => {
-      void refreshSmgVersionCompatibilityNotice();
-      void refreshSmgScryerUpdateNotice();
+      void refreshSmgNotices();
     }, SMG_NOTICE_REFRESH_INTERVAL_MS);
     return () => {
       window.removeEventListener("focus", handleFocus);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
       window.clearInterval(intervalId);
     };
-  }, [refreshSmgScryerUpdateNotice, refreshSmgVersionCompatibilityNotice]);
+  }, [refreshSmgNotices]);
 
   const smgScryerUpdateDismissalValue = useMemo(
     () => buildSmgScryerUpdateDismissalValue(smgScryerUpdateNotice),

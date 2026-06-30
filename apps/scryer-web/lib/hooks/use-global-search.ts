@@ -498,6 +498,7 @@ export function useGlobalSearch({
     promise: Promise<void>;
   } | null>(null);
   const catalogConfigRefreshTokenRef = useRef(0);
+  const catalogConfigLoadedRef = useRef(false);
 
   const cancelAutocomplete = useCallback(() => {
     if (autocompleteDebounceTimerRef.current !== null) {
@@ -588,6 +589,7 @@ export function useGlobalSearch({
           .toPromise();
         if (error) throw error;
         if (!isCurrentRefresh()) return;
+        catalogConfigLoadedRef.current = true;
 
         const parsedProfiles = (data.qualityProfileSettings?.profiles ?? []).map(
           (profile: { id: string; name: string }) => ({
@@ -713,10 +715,6 @@ export function useGlobalSearch({
     [isCatalogConfigReady, refreshCatalogQualityProfileState],
   );
 
-  useEffect(() => {
-    void refreshCatalogQualityProfileState();
-  }, [refreshCatalogQualityProfileState]);
-
   // Re-fetch search config when settings change (cross-client via WebSocket).
   const searchSettingsKeys = useMemo(
     () =>
@@ -735,7 +733,10 @@ export function useGlobalSearch({
   useSettingsSubscription(
     useCallback(
       (keys: string[]) => {
-        if (keys.some((k) => searchSettingsKeys.has(k))) {
+        if (
+          catalogConfigLoadedRef.current &&
+          keys.some((k) => searchSettingsKeys.has(k))
+        ) {
           void refreshCatalogQualityProfileState();
         }
       },

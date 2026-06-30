@@ -336,14 +336,10 @@ impl EpisodePayload {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
         let files = app
-            .list_title_media_files(&actor, self.title_id.as_ref())
+            .list_episode_media_files(&actor, self.title_id.as_ref(), self.id.as_ref())
             .await
             .map_err(to_gql_error)?;
-        Ok(files
-            .into_iter()
-            .filter(|file| file.episode_id.as_deref() == Some(self.id.as_ref()))
-            .map(from_title_media_file)
-            .collect())
+        Ok(files.into_iter().map(from_title_media_file).collect())
     }
 }
 

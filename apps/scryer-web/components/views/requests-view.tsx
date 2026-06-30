@@ -752,7 +752,10 @@ export function RequestsView({
   };
 
   return (
-    <section className="scry-scroll flex min-h-0 flex-1 overflow-y-auto bg-[var(--scry-surfE)]">
+    <section
+      id="requests-view"
+      className="scry-scroll flex min-h-0 flex-1 overflow-y-auto bg-[var(--scry-surfE)]"
+    >
       <div className="mx-auto flex w-full max-w-[1240px] flex-col gap-4 px-4 py-6 sm:px-6 lg:px-8">
         <div className="flex items-start gap-4">
           <div className="flex h-11 w-11 flex-none items-center justify-center rounded-[13px] border border-[var(--scry-baccent)] bg-[rgba(var(--scry-accent-rgb),0.16)] text-[var(--scry-accent-text)]">

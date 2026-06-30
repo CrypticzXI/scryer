@@ -6,6 +6,7 @@ CREATE TABLE IF NOT EXISTS user_ui_settings (
     secondary_color TEXT,
     high_contrast_mode INTEGER NOT NULL DEFAULT 0,
     reduce_motion INTEGER NOT NULL DEFAULT 0,
+    hide_sponsor_button INTEGER NOT NULL DEFAULT 0,
     density TEXT NOT NULL DEFAULT 'comfortable',
     sidebar_mode TEXT NOT NULL DEFAULT 'expanded',
     default_landing_view TEXT NOT NULL DEFAULT 'movies',

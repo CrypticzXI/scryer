@@ -38,6 +38,7 @@ async fn graphql_anonymous_ui_settings_round_trip_is_shared() {
             secondaryColor
             highContrastMode
             reduceMotion
+            hideSponsorButton
             density
             sidebarMode
             defaultLandingView
@@ -59,6 +60,7 @@ async fn graphql_anonymous_ui_settings_round_trip_is_shared() {
                 "secondaryColor": "#2277aa",
                 "highContrastMode": true,
                 "reduceMotion": true,
+                "hideSponsorButton": true,
                 "density": "compact",
                 "sidebarMode": "collapsed",
                 "defaultLandingView": "calendar",
@@ -95,6 +97,7 @@ async fn graphql_anonymous_ui_settings_round_trip_is_shared() {
             secondaryColor
             highContrastMode
             reduceMotion
+            hideSponsorButton
             density
             sidebarMode
             defaultLandingView
@@ -120,6 +123,7 @@ async fn graphql_anonymous_ui_settings_round_trip_is_shared() {
     assert_eq!(settings["secondaryColor"], json!("#2277aa"));
     assert_eq!(settings["highContrastMode"], json!(true));
     assert_eq!(settings["reduceMotion"], json!(true));
+    assert_eq!(settings["hideSponsorButton"], json!(true));
     assert_eq!(settings["density"], json!("compact"));
     assert_eq!(settings["sidebarMode"], json!("collapsed"));
     assert_eq!(settings["defaultLandingView"], json!("calendar"));
@@ -160,6 +164,7 @@ async fn graphql_anonymous_ui_settings_round_trip_is_shared() {
                 "secondaryColor": "#2277aa",
                 "highContrastMode": true,
                 "reduceMotion": true,
+                "hideSponsorButton": false,
                 "density": "compact",
                 "sidebarMode": "collapsed",
                 "defaultLandingView": "calendar",
@@ -192,6 +197,7 @@ async fn graphql_ui_settings_are_isolated_per_logged_in_user() {
             secondaryColor: "#445566"
             highContrastMode: false
             reduceMotion: true
+            hideSponsorButton: true
             density: compact
             sidebarMode: collapsed
             defaultLandingView: series
@@ -309,9 +315,10 @@ async fn graphql_ui_settings_reject_invalid_table_column() {
                 "dateTimeFormat": "locale",
                 "highlightColor": null,
                 "secondaryColor": null,
-                "highContrastMode": false,
-                "reduceMotion": false,
-                "density": "comfortable",
+            "highContrastMode": false,
+            "reduceMotion": false,
+            "hideSponsorButton": false,
+            "density": "comfortable",
                 "sidebarMode": "expanded",
                 "defaultLandingView": "movies",
                 "tableColumns": [

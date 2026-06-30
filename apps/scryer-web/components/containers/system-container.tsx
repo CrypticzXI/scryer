@@ -56,8 +56,10 @@ function SystemPageFrame({
 
 export const SystemContainer = memo(function SystemContainer({
   systemSection,
+  scryerVersion,
 }: {
   systemSection: SystemSection;
+  scryerVersion: string | null;
 }) {
   const setGlobalStatus = useGlobalStatus();
   const t = useTranslate();
@@ -128,6 +130,7 @@ export const SystemContainer = memo(function SystemContainer({
   return (
     <SystemPageFrame breadcrumbLabel="Health" icon={Server} title={systemTitle}>
       <SystemView
+        scryerVersion={scryerVersion}
         state={{
           systemHealth,
           systemLoading,

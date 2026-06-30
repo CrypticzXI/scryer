@@ -135,6 +135,7 @@ type Props = {
   episodesByCollection: Record<string, CollectionEpisode[]>;
   mediaFilesByEpisode: Record<string, EpisodeMediaFile[]>;
   mediaFilesBySeriesMovieLink: Record<string, EpisodeMediaFile[]>;
+  onLoadEpisodeMediaFiles?: (episodeId: string) => Promise<void> | void;
   downloadQueueItems?: DownloadQueueItem[];
   subtitleDownloads?: ExternalSubtitleRecord[];
   onRefreshSubtitles?: () => Promise<void> | void;
@@ -187,6 +188,7 @@ export function SeriesOverviewView({
   episodesByCollection,
   mediaFilesByEpisode,
   mediaFilesBySeriesMovieLink,
+  onLoadEpisodeMediaFiles,
   downloadQueueItems = [],
   subtitleDownloads,
   onRefreshSubtitles,
@@ -1031,6 +1033,7 @@ export function SeriesOverviewView({
                     onToggle={() => toggleKey(item.key)}
                     initiallyOpenEpisodeId={initialEpisodeId}
                     mediaFilesByEpisode={mediaFilesByEpisode}
+                    onLoadEpisodeMediaFiles={onLoadEpisodeMediaFiles}
                     downloadQueueItemByEpisodeId={primaryQueueItemByEpisodeId}
                     subtitleDownloads={subtitleDownloads}
                     onRefreshSubtitles={canManageTitle ? onRefreshSubtitles : undefined}

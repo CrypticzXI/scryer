@@ -214,6 +214,23 @@ const COLLECTION_EPISODE_FIELDS = `
       monitored
       createdAt`;
 
+const COLLECTION_EPISODE_BASIC_FIELDS = `
+      id
+      titleId
+      collectionId
+      episodeType
+      episodeNumber
+      seasonNumber
+      episodeLabel
+      title
+      airDate
+      durationSeconds
+      isFiller
+      isRecap
+      absoluteNumber
+      monitored
+      createdAt`;
+
 const TITLE_COLLECTION_FIELDS = `
       id
       titleId
@@ -228,6 +245,22 @@ const TITLE_COLLECTION_FIELDS = `
       monitored
       createdAt
       episodes {${COLLECTION_EPISODE_FIELDS}
+      }`;
+
+const TITLE_COLLECTION_BASIC_FIELDS = `
+      id
+      titleId
+      collectionType
+      collectionIndex
+      label
+      orderedPath
+      narrativeOrder
+      fileSizeBytes
+      firstEpisodeNumber
+      lastEpisodeNumber
+      monitored
+      createdAt
+      episodes {${COLLECTION_EPISODE_BASIC_FIELDS}
       }`;
 
 const TITLE_MEDIA_FILE_FIELDS = `
@@ -352,16 +385,18 @@ const DOWNLOAD_QUEUE_ITEM_FIELDS = `
       seriesMovieLinkId
     }`;
 
-const TITLE_OVERVIEW_FIELDS = `${TITLE_CORE_FIELDS}
-    collections {${TITLE_COLLECTION_FIELDS}
+const TITLE_SERIES_OVERVIEW_FIELDS = `${TITLE_CORE_FIELDS}
+    collections {${TITLE_COLLECTION_BASIC_FIELDS}
     }
     seriesMovieLinks {${SERIES_MOVIE_LINK_FIELDS}
-    }
-    mediaFiles {${TITLE_MEDIA_FILE_FIELDS}
     }
     wantedItems {
       items {${WANTED_ITEM_FIELDS}
       }
+    }`;
+
+const TITLE_OVERVIEW_FIELDS = `${TITLE_SERIES_OVERVIEW_FIELDS}
+    mediaFiles {${TITLE_MEDIA_FILE_FIELDS}
     }`;
 
 const TITLE_EVENT_FIELDS = `
@@ -649,6 +684,53 @@ export const titleOverviewNativeQuery = `query TitleOverviewNative($id: ID!, $bl
   }
 }`;
 
+export const seriesTitleOverviewNativeQuery = `query SeriesTitleOverviewNative($id: ID!, $blocklistLimit: Int) {
+  title(id: $id) {${TITLE_SERIES_OVERVIEW_FIELDS}
+  }
+  titleAcquisitionDiagnostics(titleId: $id) {
+    recentDecisions {
+      id
+      wantedItemId
+      titleId
+      releaseTitle
+      releaseUrl
+      releaseSizeBytes
+      decisionCode
+      candidateScore
+      currentScore
+      scoreDelta
+      explanationJson
+      createdAt
+    }
+    decisionCounts {
+      code
+      count
+    }
+    wantedStatusCounts {
+      status
+      count
+    }
+    pendingReleaseCounts {
+      status
+      count
+    }
+    mismatchRecoveryEligibleCount
+    latestDecisionAt
+    latestWantedSearchAt
+  }
+  titleHistory: titleHistory(filter: { titleIds: [$id], limit: 50, offset: 0 }) {
+    records {${TITLE_EVENT_FIELDS}
+    }
+  }
+  titleReleaseBlocklist(titleId: $id, limit: $blocklistLimit) {${TITLE_RELEASE_BLOCKLIST_FIELDS}
+  }
+  externalSubtitles(titleId: $id) {${EXTERNAL_SUBTITLE_FIELDS}
+  }
+  setupStatus {
+    hasDownloadClients
+  }
+}`;
+
 export const titleOverviewDownloadFeedbackQuery = `query TitleOverviewDownloadFeedback($id: ID!) {
   downloadQueueItems: downloadQueue(titleId: $id, includeAllActivity: true, includeImportActivity: true, activityFilter: all) {${DOWNLOAD_QUEUE_ITEM_FIELDS}
   }
@@ -660,6 +742,14 @@ export const titleDownloadQueueItemsQuery = `query TitleDownloadQueueItems($id: 
   title(id: $id) {
     id
     downloadQueueItems {${DOWNLOAD_QUEUE_ITEM_FIELDS}
+    }
+  }
+}`;
+
+export const titleMediaFilesQuery = `query TitleMediaFiles($id: ID!) {
+  title(id: $id) {
+    id
+    mediaFiles {${TITLE_MEDIA_FILE_FIELDS}
     }
   }
 }`;
@@ -913,18 +1003,10 @@ export const TITLE_LIST_FIELDS = `
     librarySlug
     monitored
     tags
-    externalIds {
-      source
-      value
-    }
     slug
-    sortTitle
-    imdbId
     year
     posterUrl
     posterSourceUrl
-    rootFolderId
-    rootFolderPath
     qualityTier
     currentQualityTier
     sizeBytes
@@ -936,6 +1018,11 @@ export const TITLE_LIST_FIELDS = `
     createdAt`;
 
 export const TITLE_PANEL_FIELDS = `${TITLE_LIST_FIELDS}
+    externalIds {
+      source
+      value
+    }
+    imdbId
     overview
     backgroundUrl
     backgroundSourceUrl
@@ -1003,7 +1090,12 @@ export const TITLE_CATALOG_SEARCH_FIELDS = `
       value
     }`;
 
-export const TITLE_LIST_FIELDS_WITH_EXTERNAL_IDS = TITLE_LIST_FIELDS;
+export const TITLE_LIST_FIELDS_WITH_EXTERNAL_IDS = `${TITLE_LIST_FIELDS}
+    imdbId
+    externalIds {
+      source
+      value
+    }`;
 
 export const librariesQuery = `query Libraries($facet: MediaFacetValue, $permission: LibraryPermissionValue) {
   libraries(facet: $facet, permission: $permission) {
@@ -1170,7 +1262,17 @@ ${TITLE_SELECTED_PANEL_FIELDS}
   }
 }`;
 
+export const seriesTitlePanelDetailQuery = `query SeriesTitlePanelDetail($id: ID!) {
+  title(id: $id) {
+${TITLE_PANEL_FIELDS}
+    collections {${TITLE_COLLECTION_BASIC_FIELDS}
+    }
+  }
+}`;
+
 type ReactiveRefreshVariableValue = string | number | null;
+
+export type TitleOverviewNativeProjection = "default" | "series";
 
 export type ReactiveRefreshQueryActionInput =
   | {
@@ -1188,6 +1290,7 @@ export type ReactiveRefreshQueryActionInput =
       kind: "titleOverviewNative";
       titleId: string;
       blocklistLimit: number;
+      projection?: TitleOverviewNativeProjection;
     }
   | {
       key: string;
@@ -1275,8 +1378,12 @@ export function buildReactiveRefreshQuery(
 
         variableDefinitions.push(`$${titleIdVariableName}: ID!`);
         variableDefinitions.push(`$${blocklistLimitVariableName}: Int`);
+        const titleFields =
+          action.projection === "series"
+            ? TITLE_SERIES_OVERVIEW_FIELDS
+            : TITLE_OVERVIEW_FIELDS;
         fields.push(
-          `  ${titleAlias}: title(id: $${titleIdVariableName}) {\n${TITLE_OVERVIEW_FIELDS}\n  }`,
+          `  ${titleAlias}: title(id: $${titleIdVariableName}) {\n${titleFields}\n  }`,
         );
         fields.push(
           `  ${titleHistoryAlias}: titleHistory(filter: { titleIds: [$${titleIdVariableName}], limit: 50, offset: 0 }) {\n    records {\n${TITLE_EVENT_FIELDS}\n    }\n  }`,
@@ -2051,6 +2158,7 @@ export const myUiSettingsQuery = `query MyUiSettings {
     secondaryColor
     highContrastMode
     reduceMotion
+    hideSponsorButton
     density
     sidebarMode
     defaultLandingView

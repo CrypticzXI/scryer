@@ -38,6 +38,7 @@ type TitleOverviewNativeAction = {
   kind: "titleOverviewNative";
   titleId: string;
   blocklistLimit: number;
+  projection?: QueueTitleOverviewNativeRefreshOptions["projection"];
   apply: (
     snapshot: TitleOverviewNativeSnapshot<
       unknown,
@@ -100,6 +101,7 @@ function actionInputFromPendingAction(
         kind: action.kind,
         titleId: action.titleId,
         blocklistLimit: action.blocklistLimit,
+        projection: action.projection,
       };
     case "titleOverviewDownloadFeedback":
       return {
@@ -535,7 +537,7 @@ export function ReactiveRefreshProvider({
       ) {
         queuePendingAction({
           ...options,
-            key: `titleOverviewNative:${options.titleId}:${options.blocklistLimit}`,
+            key: `titleOverviewNative:${options.titleId}:${options.blocklistLimit}:${options.projection ?? "default"}`,
             kind: "titleOverviewNative",
           } as TitleOverviewNativeAction);
         },

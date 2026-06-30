@@ -79,11 +79,6 @@ function renderEpisodeTypeBadges(episode: CollectionEpisode, t: TranslateFn) {
           {t("episode.recap")}
         </Badge>
       ) : null}
-      {episode.hasMultiAudio ? (
-        <Badge tone="info" className="px-1.5 text-[10px]">
-          {t("episode.multiAudio")}
-        </Badge>
-      ) : null}
     </>
   );
 }
@@ -170,6 +165,7 @@ export type EpisodeRowProps = {
   hasSearchResults: boolean;
   initiallyOpen: boolean;
   isMobile: boolean;
+  onLoadEpisodeMediaFiles?: (episodeId: string) => Promise<void> | void;
   onAutoSearchEpisode?: (episode: CollectionEpisode) => void;
   onClearReleaseBlocklistEntry?: (entryId: string) => Promise<void> | void;
   onDeleteFile?: (fileId: string) => void;
@@ -197,6 +193,7 @@ export const EpisodeRow = React.memo(function EpisodeRow({
   hasSearchResults,
   initiallyOpen,
   isMobile,
+  onLoadEpisodeMediaFiles,
   onAutoSearchEpisode,
   onClearReleaseBlocklistEntry,
   onDeleteFile,
@@ -221,8 +218,9 @@ export const EpisodeRow = React.memo(function EpisodeRow({
     if (initiallyOpen) {
       setIsPanelOpen(true);
       setActiveTab("details");
+      void onLoadEpisodeMediaFiles?.(episode.id);
     }
-  }, [initiallyOpen]);
+  }, [episode.id, initiallyOpen, onLoadEpisodeMediaFiles]);
 
   const dateTimeFormat = useUiDateTimeFormat();
   const formattedAirDate = React.useMemo(
@@ -238,11 +236,12 @@ export const EpisodeRow = React.memo(function EpisodeRow({
     (tab: EpisodePanelTab) => {
       setActiveTab(tab);
       setIsPanelOpen(true);
+      void onLoadEpisodeMediaFiles?.(episode.id);
       if (tab === "search" && onRunEpisodeSearch && (searchBlocked || !hasSearchResults)) {
         onRunEpisodeSearch(episode);
       }
     },
-    [episode, hasSearchResults, onRunEpisodeSearch, searchBlocked],
+    [episode, hasSearchResults, onLoadEpisodeMediaFiles, onRunEpisodeSearch, searchBlocked],
   );
 
   const handleToggleEpisodeDetails = React.useCallback(() => {

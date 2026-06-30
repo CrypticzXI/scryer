@@ -31,10 +31,8 @@ import { releaseQueueScopeInput } from "@/lib/utils/release-queue-scope";
 import { useClient } from "urql";
 import { useTranslate } from "@/lib/context/translate-context";
 import { useGlobalStatus } from "@/lib/context/global-status-context";
-import { useTitleOverviewReactiveRefresh } from "@/lib/hooks/use-title-overview-reactive-refresh";
 import { useTitleDownloadQueue } from "@/lib/hooks/use-title-download-queue";
 import { handleFixTitleMatchComplete as applyFixTitleMatchCompletion } from "@/lib/fix-title-match";
-import { TITLE_OVERVIEW_REFRESH_KINDS } from "@/lib/utils/title-overview-refresh-kinds";
 import type { Release, TitleAcquisitionDiagnostics, WantedItem } from "@/lib/types";
 import type { LibraryRootRecord } from "@/lib/types/titles";
 import type { DownloadQueueItem } from "@/lib/types/download-queue";
@@ -1115,16 +1113,6 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
     !mediaFileDeletePreview ||
     (mediaFileDeletePreview.requiresTypedConfirmation &&
       mediaFileDeleteTypedConfirmation.trim() !== "DELETE");
-
-  useTitleOverviewReactiveRefresh({
-    titleId,
-    blocklistLimit: 200,
-    applyNativeSnapshot: applyNativeTitleDetailSnapshot,
-    applyDownloadFeedbackSnapshot,
-    importKinds: TITLE_OVERVIEW_REFRESH_KINDS,
-    downloadFeedbackEnabled: hasDownloadClients,
-    pause: !titleId,
-  });
 
   return (
     <>

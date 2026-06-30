@@ -7,6 +7,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { SettingsToggleSwitch } from "@/components/common/settings-toggle-switch";
 import { Input, integerInputProps } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -46,6 +47,9 @@ type Props = {
   highlightColor: string | null;
   savingHighlightColor: string | null;
   onSelectHighlightColor: (value: string) => void;
+  hideSponsorButton: boolean;
+  savingSponsorPreference: boolean;
+  onHideSponsorButtonChange: (value: boolean) => void;
   currentPassword: string;
   newPassword: string;
   confirmPassword: string;
@@ -158,6 +162,9 @@ export function SettingsProfileSection({
   highlightColor,
   savingHighlightColor,
   onSelectHighlightColor,
+  hideSponsorButton,
+  savingSponsorPreference,
+  onHideSponsorButtonChange,
   currentPassword,
   newPassword,
   confirmPassword,
@@ -357,6 +364,28 @@ export function SettingsProfileSection({
                 </button>
               );
             })}
+          </div>
+        </div>
+        <div className={PROFILE_ROW_CARD_CLASS}>
+          <div className="space-y-1">
+            <div className="font-medium text-[var(--scry-ink2)]">
+              Sponsor button
+            </div>
+            <p className={`${PROFILE_MUTED_TEXT_CLASS} max-w-xs`}>
+              Remove the Sponsor link from the navigation footer.
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            {savingSponsorPreference ? (
+              <Loader2 className="h-4 w-4 animate-spin text-[var(--scry-muted3)]" />
+            ) : null}
+            <SettingsToggleSwitch
+              id="settings-profile-hide-sponsor-button"
+              checked={hideSponsorButton}
+              disabled={savingSponsorPreference}
+              onChange={onHideSponsorButtonChange}
+              ariaLabel="Hide Sponsor button"
+            />
           </div>
         </div>
       </div>

@@ -75,10 +75,11 @@ export async function fetchTitleOverviewNativeSnapshot<
   client: Client,
   titleId: string,
   blocklistLimit: number,
+  queryDocument: string = titleOverviewNativeQuery,
 ) : Promise<TitleOverviewNativeSnapshot<TTitle, TDiagnostics, TEvent, TBlocklist, TSubtitle>> {
   const { data, error } = await client
     .query(
-      titleOverviewNativeQuery,
+      queryDocument,
       { id: titleId, blocklistLimit },
       { requestPolicy: "network-only" },
     )

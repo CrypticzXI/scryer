@@ -40,6 +40,7 @@ import {
   ruleSetsQuery,
   routingPageInitQuery,
   searchForTitleQuery,
+  seriesTitlePanelDetailQuery,
   titlePanelDetailQuery,
   titleReleaseBlocklistQuery,
   titlesQuery,
@@ -114,7 +115,6 @@ import {
 import { useDeletePreview } from "@/lib/hooks/use-delete-preview";
 import { useDeferredWsSubscription } from "@/lib/hooks/use-deferred-ws-subscription";
 import { useOverviewWindowScrollRestoration } from "@/lib/hooks/use-overview-window-scroll-restoration";
-import { useTitleListReactiveRefresh } from "@/lib/hooks/use-title-list-reactive-refresh";
 import { useJobRunToasts } from "@/components/root/job-run-provider";
 import type { TitleOptionUpdates } from "@/lib/types/title-options";
 import { isTerminalJobRunStatus, normalizeJobRun } from "@/lib/utils/job-runs";
@@ -894,10 +894,15 @@ function hasSelectedTitlePanelDetails(title: TitleRecord): boolean {
 }
 
 function hasSelectedTitleEpisodeDetails(title: TitleRecord): boolean {
-  return (
-    title.mediaFiles !== undefined &&
-    (title.facet === "movie" || title.collections !== undefined)
-  );
+  return title.facet === "movie"
+    ? title.mediaFiles !== undefined
+    : title.collections !== undefined;
+}
+
+function titlePanelDetailQueryForTitle(title: TitleRecord | null | undefined): string {
+  return title?.facet === "movie"
+    ? titlePanelDetailQuery
+    : seriesTitlePanelDetailQuery;
 }
 
 function sameIdSet(
@@ -1220,7 +1225,11 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     view === "movies" || view === "series" || view === "anime";
   const shouldLoadCatalogTitles =
     isMediaView && contentSettingsSection === "overview";
-  const shouldLoadMediaSettings = isMediaView;
+  const shouldLoadMediaSettingsForSection =
+    isMediaView &&
+    (contentSettingsSection === "library" ||
+      contentSettingsSection === "general" ||
+      contentSettingsSection === "routing");
   const refreshTitleContextDiscovery = React.useCallback(async () => {
     const requestId = titleContextDiscoveryRequestIdRef.current + 1;
     titleContextDiscoveryRequestIdRef.current = requestId;
@@ -1368,6 +1377,8 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
       : titleCatalogSort;
   const [bulkActionBusy, setBulkActionBusy] = React.useState(false);
   const [bulkEditDialogOpen, setBulkEditDialogOpen] = React.useState(false);
+  const shouldLoadMediaSettings =
+    shouldLoadMediaSettingsForSection || bulkEditDialogOpen;
   const [debouncedTitleFilter, setDebouncedTitleFilter] = React.useState("");
   const [libraries, setLibraries] = React.useState<LibraryRecord[]>([]);
   const [librariesLoading, setLibrariesLoading] = React.useState(false);
@@ -2559,18 +2570,14 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     [pendingHydrationPosterTitleIds],
   );
 
-  useTitleListReactiveRefresh({
-    facet: activeFacet,
-    pause: !shouldLoadCatalogTitles,
-    onTitleRefreshed: applyRefreshedTitleRecord,
-  });
-
   const refreshTitlePanelDetail = React.useCallback(
     async (titleId: string) => {
       const requestEpoch = reactiveRefreshEpoch();
+      const currentTitle =
+        monitoredTitles.find((title) => title.id === titleId) ?? null;
       const detailResult = await client
         .query<{ title?: TitleRecord | null }>(
-          titlePanelDetailQuery,
+          titlePanelDetailQueryForTitle(currentTitle),
           { id: titleId },
           { requestPolicy: "network-only" },
         )
@@ -2586,7 +2593,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
         );
       }
     },
-    [applyRefreshedTitleRecord, client],
+    [applyRefreshedTitleRecord, client, monitoredTitles],
   );
 
   // When a slug deep link selects a title that isn't part of the currently
@@ -2777,6 +2784,9 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   );
   const selectedPanelHydrationTitleId =
     selectedOverviewTitleForPanelHydration?.id ?? null;
+  const selectedPanelHydrationIsRouteOverview =
+    selectedPanelHydrationTitleId !== null &&
+    selectedPanelHydrationTitleId === routeOverviewTitleId;
   const selectedPanelHydrationMetadataFetchedAt =
     selectedOverviewTitleForPanelHydration?.metadataFetchedAt ?? "";
   const selectedPanelHydrationCreatedAt =
@@ -2867,7 +2877,11 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   const refreshSelectedOverviewExternalSubtitles = React.useCallback(
     async () => {
       const titleId = selectedPanelHydrationTitleId;
-      if (!shouldLoadCatalogTitles || !titleId) {
+      if (
+        !shouldLoadCatalogTitles ||
+        !titleId ||
+        selectedPanelHydrationIsRouteOverview
+      ) {
         setSelectedOverviewExternalSubtitleState({
           titleId: null,
           entries: [],
@@ -2892,13 +2906,18 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     },
     [
       loadSelectedOverviewExternalSubtitles,
+      selectedPanelHydrationIsRouteOverview,
       selectedPanelHydrationTitleId,
       shouldLoadCatalogTitles,
     ],
   );
 
   React.useEffect(() => {
-    if (!shouldLoadCatalogTitles || !selectedPanelHydrationTitleId) {
+    if (
+      !shouldLoadCatalogTitles ||
+      !selectedPanelHydrationTitleId ||
+      selectedPanelHydrationIsRouteOverview
+    ) {
       selectedPanelHydrationKeyRef.current = null;
       return;
     }
@@ -2922,10 +2941,15 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
 
     let cancelled = false;
     const requestEpoch = reactiveRefreshEpoch();
+    const detailQuery = titlePanelDetailQueryForTitle(
+      selectedOverviewTitleForPanelHydration,
+    );
     void client
-      .query<{ title?: TitleRecord | null }>(titlePanelDetailQuery, {
-        id: titleId,
-      })
+      .query<{ title?: TitleRecord | null }>(
+        detailQuery,
+        { id: titleId },
+        { requestPolicy: "network-only" },
+      )
       .toPromise()
       .then(({ data, error }) => {
         if (cancelled) {
@@ -2969,13 +2993,19 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     selectedPanelHydrationCreatedAt,
     selectedPanelHydrationMetadataFetchedAt,
     selectedPanelHydrationTitleId,
+    selectedPanelHydrationIsRouteOverview,
     selectedPanelNeedsEpisodeDetails,
     selectedPanelNeedsPanelDetails,
+    selectedOverviewTitleForPanelHydration,
     shouldLoadCatalogTitles,
   ]);
 
   React.useEffect(() => {
-    if (!shouldLoadCatalogTitles || !selectedPanelHydrationTitleId) {
+    if (
+      !shouldLoadCatalogTitles ||
+      !selectedPanelHydrationTitleId ||
+      selectedPanelHydrationIsRouteOverview
+    ) {
       setSelectedOverviewExternalSubtitleState({ titleId: null, entries: [] });
       return;
     }
@@ -3008,6 +3038,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     };
   }, [
     loadSelectedOverviewExternalSubtitles,
+    selectedPanelHydrationIsRouteOverview,
     selectedPanelHydrationTitleId,
     shouldLoadCatalogTitles,
   ]);
@@ -4476,15 +4507,21 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
           const normalizedSelectedLibraryIds = nextLibraries
             ? normalizeLibraryFilterSelection(selectedLibraryIds, nextLibraries)
             : [];
+          const librarySelectionChanged = !sameStringArray(
+            selectedLibraryIds,
+            normalizedSelectedLibraryIds,
+          );
           setSelectedLibraryIds((current) =>
-            sameStringArray(current, normalizedSelectedLibraryIds)
-              ? current
-              : normalizedSelectedLibraryIds,
+            librarySelectionChanged
+              ? normalizedSelectedLibraryIds
+              : current,
           );
 
-          await reloadTitles(debouncedTitleFilter, normalizedSelectedLibraryIds);
-          if (catalogBootstrapRequestSeqRef.current !== requestSeq) {
-            return;
+          if (librarySelectionChanged) {
+            await reloadTitles(debouncedTitleFilter, normalizedSelectedLibraryIds);
+            if (catalogBootstrapRequestSeqRef.current !== requestSeq) {
+              return;
+            }
           }
           finalizeBootstrap();
         })();

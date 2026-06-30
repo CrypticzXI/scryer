@@ -691,6 +691,7 @@ export const setMyUiSettingsMutation = `mutation SetMyUiSettings($input: SetMyUi
     secondaryColor
     highContrastMode
     reduceMotion
+    hideSponsorButton
     density
     sidebarMode
     defaultLandingView

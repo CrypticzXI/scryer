@@ -611,8 +611,10 @@ function LogViewer() {
 }
 
 export function SystemView({
+  scryerVersion,
   state,
 }: {
+  scryerVersion: string | null;
   state: SystemViewState;
 }) {
   const t = useTranslate();
@@ -642,6 +644,11 @@ export function SystemView({
                     : t("system.notReady")
                   : t("system.notLoaded")}
               </p>
+              {scryerVersion ? (
+                <p className="text-xs font-medium text-[var(--scry-faint)]">
+                  Scryer v{scryerVersion}
+                </p>
+              ) : null}
             </div>
             <Button
               size="sm"

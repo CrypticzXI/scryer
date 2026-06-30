@@ -99,6 +99,7 @@ export function SettingsProfileContainer({ userId, username }: Props) {
   const [savingHighlightColor, setSavingHighlightColor] = useState<string | null>(
     null,
   );
+  const [savingSponsorPreference, setSavingSponsorPreference] = useState(false);
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -238,6 +239,57 @@ export function SettingsProfileContainer({ userId, username }: Props) {
       setGlobalStatus,
       setUiSettings,
       t,
+      uiSettings,
+      uiSettingsLoaded,
+      uiSettingsLoading,
+    ],
+  );
+
+  const handleHideSponsorButtonChange = useCallback(
+    async (hideSponsorButton: boolean) => {
+      if (
+        !uiSettingsLoaded ||
+        uiSettingsLoading ||
+        savingSponsorPreference ||
+        uiSettings.hideSponsorButton === hideSponsorButton
+      ) {
+        return;
+      }
+
+      const previous = uiSettings;
+      const next: UiSettings = { ...uiSettings, hideSponsorButton };
+      setSavingSponsorPreference(true);
+      setUiSettings(next);
+      try {
+        const result = await client
+          .mutation<{ setMyUiSettings?: UiSettings }, { input: UiSettings }>(
+            setMyUiSettingsMutation,
+            { input: uiSettingsInputFromSettings(next) },
+          )
+          .toPromise();
+        if (result.error || !result.data?.setMyUiSettings) {
+          setUiSettings(previous);
+          setGlobalStatus(result.error?.message ?? "Failed to update Sponsor preference.");
+          return;
+        }
+        setUiSettings(result.data.setMyUiSettings);
+        setGlobalStatus("Sponsor preference saved.");
+      } catch (error) {
+        setUiSettings(previous);
+        setGlobalStatus(
+          error instanceof Error
+            ? error.message
+            : "Failed to update Sponsor preference.",
+        );
+      } finally {
+        setSavingSponsorPreference(false);
+      }
+    },
+    [
+      client,
+      savingSponsorPreference,
+      setGlobalStatus,
+      setUiSettings,
       uiSettings,
       uiSettingsLoaded,
       uiSettingsLoading,
@@ -800,6 +852,9 @@ export function SettingsProfileContainer({ userId, username }: Props) {
       highlightColor={uiSettings.highlightColor}
       savingHighlightColor={savingHighlightColor}
       onSelectHighlightColor={handleSelectHighlightColor}
+      hideSponsorButton={uiSettings.hideSponsorButton}
+      savingSponsorPreference={savingSponsorPreference}
+      onHideSponsorButtonChange={handleHideSponsorButtonChange}
       currentPassword={currentPassword}
       newPassword={newPassword}
       confirmPassword={confirmPassword}

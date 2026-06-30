@@ -67,6 +67,7 @@ export function SeasonSection({
   onToggle,
   initiallyOpenEpisodeId,
   mediaFilesByEpisode,
+  onLoadEpisodeMediaFiles,
   downloadQueueItemByEpisodeId,
   releaseBlocklistEntries,
   clearingReleaseBlocklistEntryId,
@@ -98,6 +99,7 @@ export function SeasonSection({
   onToggle: () => void;
   initiallyOpenEpisodeId?: string | null;
   mediaFilesByEpisode: Record<string, EpisodeMediaFile[]>;
+  onLoadEpisodeMediaFiles?: (episodeId: string) => Promise<void> | void;
   downloadQueueItemByEpisodeId?: Record<string, DownloadQueueItem | undefined>;
   subtitleDownloads?: ExternalSubtitleRecord[];
   onRefreshSubtitles?: () => Promise<void> | void;
@@ -377,6 +379,7 @@ export function SeasonSection({
                       hasSearchResults={Object.prototype.hasOwnProperty.call(searchResultsByEpisode, episode.id)}
                       initiallyOpen={episode.id === initiallyOpenEpisodeId}
                       isMobile={true}
+                      onLoadEpisodeMediaFiles={onLoadEpisodeMediaFiles}
                       onAutoSearchEpisode={onAutoSearchEpisode}
                       onClearReleaseBlocklistEntry={onClearReleaseBlocklistEntry}
                       onDeleteFile={onDeleteFile}
@@ -422,6 +425,7 @@ export function SeasonSection({
                         hasSearchResults={Object.prototype.hasOwnProperty.call(searchResultsByEpisode, episode.id)}
                         initiallyOpen={episode.id === initiallyOpenEpisodeId}
                         isMobile={false}
+                        onLoadEpisodeMediaFiles={onLoadEpisodeMediaFiles}
                         onAutoSearchEpisode={onAutoSearchEpisode}
                         onClearReleaseBlocklistEntry={onClearReleaseBlocklistEntry}
                         onDeleteFile={onDeleteFile}

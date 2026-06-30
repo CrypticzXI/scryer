@@ -6,6 +6,7 @@ import type {
   TitleOverviewDownloadFeedbackSnapshot,
   TitleOverviewNativeSnapshot,
 } from "@/lib/title-overview-loader";
+import type { TitleOverviewNativeProjection } from "@/lib/graphql/queries";
 import {
   shouldHandleTitleOverviewActivity,
   TITLE_OVERVIEW_BULK_REFRESH_DEBOUNCE_MS,
@@ -23,6 +24,7 @@ type UseTitleOverviewReactiveRefreshOptions<
 > = {
   titleId?: string | null;
   blocklistLimit: number;
+  projection?: TitleOverviewNativeProjection;
   applyNativeSnapshot: (
     snapshot: TitleOverviewNativeSnapshot<
       TTitle,
@@ -52,6 +54,7 @@ export function useTitleOverviewReactiveRefresh<
 >({
   titleId,
   blocklistLimit,
+  projection,
   applyNativeSnapshot,
   applyDownloadFeedbackSnapshot,
   importKinds,
@@ -103,6 +106,7 @@ export function useTitleOverviewReactiveRefresh<
     queueTitleOverviewNativeRefresh({
       titleId: requestedTitleId,
       blocklistLimit,
+      projection,
       apply(snapshot) {
         if (titleIdRef.current !== requestedTitleId) {
           return;

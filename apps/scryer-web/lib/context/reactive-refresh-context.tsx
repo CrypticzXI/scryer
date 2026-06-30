@@ -1,5 +1,6 @@
 import { createContext, useContext } from "react";
 
+import type { TitleOverviewNativeProjection } from "@/lib/graphql/queries";
 import type { ImportRecord, TitleRecord } from "@/lib/types";
 import type {
   TitleOverviewDownloadFeedbackSnapshot,
@@ -29,6 +30,7 @@ export type QueueTitleOverviewNativeRefreshOptions<
 > = {
   titleId: string;
   blocklistLimit: number;
+  projection?: TitleOverviewNativeProjection;
   apply: (
     snapshot: TitleOverviewNativeSnapshot<
       TTitle,

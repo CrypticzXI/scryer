@@ -169,7 +169,6 @@ export function SeriesOverviewShell() {
                   pendingMediaRequestCounts={null}
                   manualImportRequiredCount={0}
                   pluginUpdateCount={0}
-                  scryerVersion={null}
                   header={
                     <RootHeader
                       onOpenOverview={handleOpenOverview}

@@ -54,6 +54,7 @@ export type UiSettings = {
   secondaryColor: string | null;
   highContrastMode: boolean;
   reduceMotion: boolean;
+  hideSponsorButton: boolean;
   density: "compact" | "comfortable";
   sidebarMode: "expanded" | "collapsed";
   defaultLandingView:

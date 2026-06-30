@@ -2746,6 +2746,52 @@ impl AppUseCase {
             .await
     }
 
+    pub async fn list_episode_media_files(
+        &self,
+        actor: &User,
+        title_id: &str,
+        episode_id: &str,
+    ) -> AppResult<Vec<TitleMediaFile>> {
+        let title = self
+            .services
+            .catalog
+            .titles
+            .get_by_id(title_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("title {title_id}")))?;
+        self.require_library_permission(
+            actor,
+            &title.library_id,
+            scryer_domain::LibraryPermission::View,
+        )
+        .await?;
+
+        let episode_ids = vec![episode_id.to_string()];
+        let scoped_files = self
+            .services
+            .library
+            .media_files
+            .list_live_media_files_for_episode_ids(title_id, &episode_ids)
+            .await?;
+
+        Ok(scoped_files
+            .into_iter()
+            .filter_map(|scoped_file| {
+                if !scoped_file
+                    .episode_ids
+                    .iter()
+                    .any(|scoped_episode_id| scoped_episode_id == episode_id)
+                {
+                    return None;
+                }
+
+                let mut media_file = scoped_file.media_file;
+                media_file.episode_id = Some(episode_id.to_string());
+                Some(media_file)
+            })
+            .collect())
+    }
+
     pub async fn get_title_wanted_item(
         &self,
         actor: &User,

@@ -13,6 +13,7 @@ export const DEFAULT_UI_SETTINGS: UiSettings = {
   secondaryColor: null,
   highContrastMode: false,
   reduceMotion: false,
+  hideSponsorButton: false,
   density: "comfortable",
   sidebarMode: "expanded",
   defaultLandingView: "movies",

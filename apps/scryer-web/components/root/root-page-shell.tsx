@@ -484,6 +484,7 @@ function MainContent({
   contentSettingsSection,
   systemSection,
   logsSection,
+  scryerVersion,
   activitySection,
   wantedSection,
   handleOpenOverview,
@@ -515,6 +516,7 @@ function MainContent({
   contentSettingsSection: ContentSettingsSection;
   systemSection: SystemSection;
   logsSection: LogsSection;
+  scryerVersion: string | null;
   activitySection: ActivitySection;
   wantedSection: WantedSection;
   handleOpenOverview: (
@@ -602,6 +604,7 @@ function MainContent({
       <SystemContainer
         key={`system-${effectiveSystemSection}`}
         systemSection={effectiveSystemSection}
+        scryerVersion={scryerVersion}
       />
     );
   }
@@ -613,6 +616,7 @@ function MainContent({
       <SystemContainer
         key={`logs-${logsSection}`}
         systemSection={logsSection}
+        scryerVersion={scryerVersion}
       />
     );
   }
@@ -1908,7 +1912,6 @@ function AuthenticatedHomePage({
                           pendingMediaRequestCounts={pendingMediaRequestCounts}
                           manualImportRequiredCount={manualImportRequiredCount}
                           pluginUpdateCount={pluginUpdateCount}
-                          scryerVersion={scryerVersion}
                           header={
                             <RootHeader
                               onOpenOverview={handleOpenOverview}
@@ -1973,6 +1976,7 @@ function AuthenticatedHomePage({
                                   }
                                   systemSection={systemSection}
                                   logsSection={logsSection}
+                                  scryerVersion={scryerVersion}
                                   activitySection={activitySection}
                                   wantedSection={wantedSection}
                                   handleOpenOverview={handleOpenOverview}
