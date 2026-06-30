@@ -654,7 +654,7 @@ export function SettingsProfileSection({
                         code,
                       )}
                       key={code}
-                      className="rounded bg-background/70 px-2 py-1 font-mono text-xs"
+                      className="rounded bg-background/70 px-2 py-1 font-[var(--font-code)] text-xs"
                     >
                       {code}
                     </code>
@@ -763,7 +763,7 @@ export function SettingsProfileSection({
                   </div>
                   <code
                     id={selectorId("settings-profile-totp-secret")}
-                    className="block break-all rounded bg-background/70 px-2 py-1 font-mono text-xs"
+                    className="block break-all rounded bg-background/70 px-2 py-1 font-[var(--font-code)] text-xs"
                   >
                     {totpEnrollment.secretBase32}
                   </code>

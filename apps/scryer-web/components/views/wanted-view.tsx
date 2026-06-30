@@ -1243,7 +1243,7 @@ function ScoringBreakdown({
         {entries.map((entry, index) => (
           <div
             key={`${entry.code}-${index}`}
-            className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-4 font-mono text-xs text-foreground"
+            className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-4 font-[var(--font-code)] text-xs text-foreground"
           >
             <span className="truncate" title={entry.code}>
               {entry.code}

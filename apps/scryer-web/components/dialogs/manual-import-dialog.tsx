@@ -315,7 +315,7 @@ export function ManualImportDialog({
                       <TableCell>
                         <div className="flex items-center gap-2">
                           <FileVideo className="h-4 w-4 shrink-0 text-muted-foreground/60" />
-                          <span className="max-w-[280px] truncate font-mono text-xs text-card-foreground" title={file.fileName}>
+                          <span className="max-w-[280px] truncate font-[var(--font-code)] text-xs text-card-foreground" title={file.fileName}>
                             {file.fileName}
                           </span>
                         </div>

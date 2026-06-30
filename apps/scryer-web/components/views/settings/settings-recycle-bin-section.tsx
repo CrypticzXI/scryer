@@ -209,7 +209,7 @@ export function SettingsRecycleBinSection({
                       <TableCell>
                         <div>
                           <div className="font-medium">{item.fileName}</div>
-                          <div className="max-w-[300px] truncate text-xs text-muted-foreground" title={item.originalPath}>
+                          <div className="max-w-[300px] truncate font-[var(--font-code)] text-xs text-muted-foreground" title={item.originalPath}>
                             {item.originalPath}
                           </div>
                         </div>

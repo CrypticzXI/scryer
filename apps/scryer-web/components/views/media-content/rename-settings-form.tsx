@@ -395,7 +395,7 @@ export function RenameSettingsForm({
               </Label>
               {renamePreview ? (
                 <div className="rounded border border-border bg-muted px-3 py-1.5">
-                  <p className="break-all font-mono text-sm text-card-foreground">{renamePreview}</p>
+                  <p className="break-all font-[var(--font-code)] text-sm text-card-foreground">{renamePreview}</p>
                 </div>
               ) : (
                 <div className="rounded border border-dashed border-border bg-card/40 px-3 py-1.5">

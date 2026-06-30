@@ -934,7 +934,7 @@ export function SettingsBackupsContainer() {
                 <p className={`text-xs font-medium uppercase ${BACKUPS_MUTED_TEXT_CLASS}`}>
                   {t("settings.backupLocationEffectivePath")}
                 </p>
-                <p className="break-all font-mono text-sm text-[var(--scry-ink2)]">
+                <p className="break-all font-[var(--font-code)] text-sm text-[var(--scry-ink2)]">
                   {savedBackupSettings.effectiveBackupPath || savedBackupSettings.defaultBackupPath}
                 </p>
               </div>

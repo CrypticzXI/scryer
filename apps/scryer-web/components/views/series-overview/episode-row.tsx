@@ -364,7 +364,7 @@ export const EpisodeRow = React.memo(function EpisodeRow({
                 onClick={handleToggleEpisodeDetails}
               >
                 <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                  <span className="rounded bg-accent px-2 py-0.5 font-mono text-card-foreground">
+                  <span className="rounded bg-accent px-2 py-0.5 font-[var(--font-code)] text-card-foreground">
                     {episode.episodeNumber ?? episode.episodeLabel ?? "—"}
                   </span>
                   {episode.absoluteNumber && facet === "anime" ? (
@@ -474,7 +474,7 @@ export const EpisodeRow = React.memo(function EpisodeRow({
             </button>
           </div>
         </TableCell>
-        <TableCell className="text-center align-middle font-mono text-sm text-card-foreground">
+        <TableCell className="text-center align-middle font-[var(--font-code)] text-sm text-card-foreground">
           <div className="flex flex-col items-center gap-0.5">
             <span>{episode.episodeNumber ?? episode.episodeLabel ?? "—"}</span>
             {episode.absoluteNumber && facet === "anime" ? (

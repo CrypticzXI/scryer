@@ -561,7 +561,7 @@ function SearchResultRow({
             hasLog ? (
               <button
                 type="button"
-                className={`text-sm font-mono underline-offset-2 hover:underline ${decision.releaseScore < 0 ? "text-red-400" : "text-emerald-700 dark:text-emerald-300"}`}
+                className={`text-sm font-[var(--font-code)] underline-offset-2 hover:underline ${decision.releaseScore < 0 ? "text-red-400" : "text-emerald-700 dark:text-emerald-300"}`}
                 onClick={() => setExpanded((prev) => !prev)}
                 aria-label={
                   expanded ? t("nzb.hideScoringLog") : t("nzb.showScoringLog")
@@ -571,13 +571,13 @@ function SearchResultRow({
               </button>
             ) : (
               <span
-                className={`text-sm font-mono ${decision.releaseScore < 0 ? "text-red-400" : "text-emerald-700 dark:text-emerald-300"}`}
+                className={`text-sm font-[var(--font-code)] ${decision.releaseScore < 0 ? "text-red-400" : "text-emerald-700 dark:text-emerald-300"}`}
               >
                 {getScoreText(decision.releaseScore)}
               </span>
             )
           ) : (
-            <span className="text-sm font-mono text-muted-foreground">
+            <span className="text-sm font-[var(--font-code)] text-muted-foreground">
               {getScoreText(undefined)}
             </span>
           )}
@@ -662,7 +662,7 @@ function SearchResultRow({
                   return (
                     <div
                       key={entry.code}
-                      className="flex justify-between gap-4 font-mono text-xs"
+                      className="flex justify-between gap-4 font-[var(--font-code)] text-xs"
                     >
                       <span className="flex items-center gap-1.5 text-muted-foreground">
                         {entry.code}
@@ -693,7 +693,7 @@ function SearchResultRow({
                   );
                 })}
               </div>
-              <div className="mt-1.5 flex justify-between border-t border-border pt-1.5 font-mono text-xs font-semibold">
+              <div className="mt-1.5 flex justify-between border-t border-border pt-1.5 font-[var(--font-code)] text-xs font-semibold">
                 <span className="text-muted-foreground">{t("nzb.total")}</span>
                 <span
                   className={

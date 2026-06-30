@@ -97,7 +97,7 @@ export function ActivityQueueDetailsPanel({
               <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
                 {t("queue.errorCode")}
               </p>
-              <p className="mt-1 break-words text-sm font-mono text-foreground">{errorCode}</p>
+              <p className="mt-1 break-words text-sm font-[var(--font-code)] text-foreground">{errorCode}</p>
             </>
           ) : null}
         </div>

@@ -584,14 +584,15 @@ pub trait DiscoveryRepository: Send + Sync {
         readable_library_ids: &[String],
         include_unresolved: bool,
     ) -> AppResult<Vec<DiscoveryFacetRecord>>;
-    async fn list_title_context_public_discovery_items(
+    async fn list_catalog_public_discovery_items(
         &self,
         run_id: &str,
+        owned_library_ids: &[String],
         media_kind: &str,
         include_unresolved: bool,
         limit: i64,
     ) -> AppResult<CatalogDiscoveryCandidatesRecord>;
-    async fn list_title_context_personalized_discovery_items(
+    async fn list_catalog_personalized_discovery_items(
         &self,
         run_id: &str,
         readable_library_ids: &[String],

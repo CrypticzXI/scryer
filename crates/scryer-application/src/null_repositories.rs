@@ -283,9 +283,10 @@ impl DiscoveryRepository for NullDiscoveryRepository {
         Ok(Vec::new())
     }
 
-    async fn list_title_context_public_discovery_items(
+    async fn list_catalog_public_discovery_items(
         &self,
         _run_id: &str,
+        _owned_library_ids: &[String],
         _media_kind: &str,
         _include_unresolved: bool,
         _limit: i64,
@@ -293,7 +294,7 @@ impl DiscoveryRepository for NullDiscoveryRepository {
         Ok(CatalogDiscoveryCandidatesRecord::default())
     }
 
-    async fn list_title_context_personalized_discovery_items(
+    async fn list_catalog_personalized_discovery_items(
         &self,
         _run_id: &str,
         _readable_library_ids: &[String],

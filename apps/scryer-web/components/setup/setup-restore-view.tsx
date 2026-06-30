@@ -476,7 +476,7 @@ export function SetupRestoreView({
                     <TableBody>
                       {rowCounts.map((entry) => (
                         <TableRow key={entry.table}>
-                          <TableCell className="font-mono text-xs">{entry.table}</TableCell>
+                          <TableCell className="font-[var(--font-code)] text-xs">{entry.table}</TableCell>
                           <TableCell className="text-right text-xs text-muted-foreground">
                             {Number(entry.rowCount).toLocaleString()}
                           </TableCell>

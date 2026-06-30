@@ -750,24 +750,26 @@ impl DiscoveryRepository for DiscoveryStore {
         .await
     }
 
-    async fn list_title_context_public_discovery_items(
+    async fn list_catalog_public_discovery_items(
         &self,
         run_id: &str,
+        owned_library_ids: &[String],
         media_kind: &str,
         include_unresolved: bool,
         limit: i64,
     ) -> AppResult<CatalogDiscoveryCandidatesRecord> {
-        fetch_title_context_public_items(
+        fetch_catalog_public_items(
             &self.datastore,
             run_id,
+            owned_library_ids,
             media_kind,
             include_unresolved,
-            limit.clamp(1, 200),
+            limit.clamp(1, 1_000),
         )
         .await
     }
 
-    async fn list_title_context_personalized_discovery_items(
+    async fn list_catalog_personalized_discovery_items(
         &self,
         run_id: &str,
         readable_library_ids: &[String],
@@ -775,7 +777,7 @@ impl DiscoveryRepository for DiscoveryStore {
         include_unresolved: bool,
         limit: i64,
     ) -> AppResult<CatalogDiscoveryCandidatesRecord> {
-        fetch_title_context_personalized_items(
+        fetch_catalog_personalized_items(
             &self.datastore,
             run_id,
             readable_library_ids,
@@ -1166,9 +1168,10 @@ async fn fetch_personalized_items(
     fetch_items_with_sql(datastore, &sql, &args).await
 }
 
-async fn fetch_title_context_public_items(
+async fn fetch_catalog_public_items(
     datastore: &StoreDatastore,
     run_id: &str,
+    owned_library_ids: &[String],
     media_kind: &str,
     include_unresolved: bool,
     limit: i64,
@@ -1177,6 +1180,24 @@ async fn fetch_title_context_public_items(
         ""
     } else {
         " AND i.resolved = TRUE"
+    };
+    let mut args = vec![
+        SqlArg::Text(run_id.to_string()),
+        SqlArg::Text(run_id.to_string()),
+    ];
+    let owned_clause = if owned_library_ids.is_empty() {
+        String::new()
+    } else {
+        let placeholders = placeholders(owned_library_ids.len());
+        args.extend(owned_library_ids.iter().cloned().map(SqlArg::Text));
+        format!(
+            " AND NOT EXISTS (
+                SELECT 1
+                FROM titles owned
+                WHERE owned.id = i.resolved_title_id
+                  AND owned.library_id IN ({placeholders})
+             )"
+        )
     };
     let sql = format!(
         "WITH candidates AS (
@@ -1198,6 +1219,7 @@ async fn fetch_title_context_public_items(
               AND s.surface = 'public'
               AND UPPER(TRIM(s.section_type)) <> 'COMPLETE_THE_COLLECTION'
               AND {}
+              {owned_clause}
               {resolved_clause}
          ),
          deduped AS (
@@ -1216,19 +1238,16 @@ async fn fetch_title_context_public_items(
         authoritative_media_kind_clause("i", media_kind),
         ITEM_COLUMNS.join(", ")
     );
-    fetch_title_context_candidates_with_sql(
+    args.push(SqlArg::I64(limit));
+    fetch_catalog_candidates_with_sql(
         datastore,
         &sql,
-        &[
-            SqlArg::Text(run_id.to_string()),
-            SqlArg::Text(run_id.to_string()),
-            SqlArg::I64(limit),
-        ],
+        &args,
     )
     .await
 }
 
-async fn fetch_title_context_personalized_items(
+async fn fetch_catalog_personalized_items(
     datastore: &StoreDatastore,
     run_id: &str,
     readable_library_ids: &[String],
@@ -1290,10 +1309,10 @@ async fn fetch_title_context_personalized_items(
         clauses.join(" AND "),
         ITEM_COLUMNS.join(", ")
     );
-    fetch_title_context_candidates_with_sql(datastore, &sql, &args).await
+    fetch_catalog_candidates_with_sql(datastore, &sql, &args).await
 }
 
-async fn fetch_title_context_candidates_with_sql(
+async fn fetch_catalog_candidates_with_sql(
     datastore: &StoreDatastore,
     sql: &str,
     args: &[SqlArg],

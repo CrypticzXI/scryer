@@ -62,7 +62,7 @@ export function DeletePreviewSummary({
           </p>
           <div className="space-y-1">
             {preview.samplePaths.map((path) => (
-              <p key={path} className="break-all font-mono text-[11px] text-muted-foreground">
+              <p key={path} className="break-all font-[var(--font-code)] text-[11px] text-muted-foreground">
                 {path}
               </p>
             ))}

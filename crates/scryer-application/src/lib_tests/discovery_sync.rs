@@ -3495,9 +3495,10 @@ impl DiscoveryRepository for RecordingDiscoveryRepository {
         Ok(recording_canonical_facet_records(run_id, &items))
     }
 
-    async fn list_title_context_public_discovery_items(
+    async fn list_catalog_public_discovery_items(
         &self,
         run_id: &str,
+        _owned_library_ids: &[String],
         media_kind: &str,
         include_unresolved: bool,
         limit: i64,
@@ -3521,7 +3522,7 @@ impl DiscoveryRepository for RecordingDiscoveryRepository {
         Ok(CatalogDiscoveryCandidatesRecord { items, total_count })
     }
 
-    async fn list_title_context_personalized_discovery_items(
+    async fn list_catalog_personalized_discovery_items(
         &self,
         run_id: &str,
         readable_library_ids: &[String],

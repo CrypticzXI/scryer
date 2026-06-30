@@ -737,7 +737,7 @@ export function SystemView({
                       <p className={`text-xs uppercase tracking-[0.12em] ${SYSTEM_MUTED_TEXT_CLASS}`}>
                         {t("system.dbPathLabel")}
                       </p>
-                      <p className="mt-1 break-all font-mono text-xs text-[var(--scry-ink2)]">
+                      <p className="mt-1 break-all font-[var(--font-code)] text-xs text-[var(--scry-ink2)]">
                         {systemHealth.dbPath}
                       </p>
                     </div>

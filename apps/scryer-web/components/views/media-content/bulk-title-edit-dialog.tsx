@@ -220,7 +220,7 @@ export function BulkTitleEditDialog({
               }
               disabled={busy}
             >
-              <SelectTrigger className="h-9 w-full font-mono text-sm">
+              <SelectTrigger className="h-9 w-full font-[var(--font-code)] text-sm">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>

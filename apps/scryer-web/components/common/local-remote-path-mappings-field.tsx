@@ -217,7 +217,7 @@ export function LocalRemotePathMappingsField({
                         : (event) => updateRow(index, { remotePath: event.target.value })
                     }
                     required={required && isEmpty && index === 0}
-                    className={`font-mono text-sm${localPathFirst ? " cursor-pointer pr-10" : ""}`}
+                    className={`font-[var(--font-code)] text-sm${localPathFirst ? " cursor-pointer pr-10" : ""}`}
                     aria-invalid={
                       (localPathFirst ? rowError.localPath : rowError.remotePath)
                         ? true
@@ -260,7 +260,7 @@ export function LocalRemotePathMappingsField({
                         : undefined
                     }
                     required={required && isEmpty && index === 0}
-                    className={`font-mono text-sm${!localPathFirst ? " cursor-pointer pr-10" : ""}`}
+                    className={`font-[var(--font-code)] text-sm${!localPathFirst ? " cursor-pointer pr-10" : ""}`}
                     aria-invalid={
                       (localPathFirst ? rowError.remotePath : rowError.localPath)
                         ? true

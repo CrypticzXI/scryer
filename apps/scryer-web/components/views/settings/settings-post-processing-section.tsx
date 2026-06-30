@@ -173,7 +173,7 @@ function ScriptRunsTable({
                     {run.stdoutTail ? (
                       <pre
                         id={selectorId("settings-post-processing-run-stdout", run.id)}
-                        className="max-h-24 overflow-auto whitespace-pre-wrap rounded bg-muted/50 p-1.5 font-mono text-[10px] leading-relaxed text-muted-foreground"
+                        className="max-h-24 overflow-auto whitespace-pre-wrap rounded bg-muted/50 p-1.5 font-[var(--font-code)] text-[10px] leading-relaxed text-muted-foreground"
                       >
                         {run.stdoutTail}
                       </pre>
@@ -181,7 +181,7 @@ function ScriptRunsTable({
                     {run.stderrTail ? (
                       <pre
                         id={selectorId("settings-post-processing-run-stderr", run.id)}
-                        className="max-h-24 overflow-auto whitespace-pre-wrap rounded bg-red-900/20 p-1.5 font-mono text-[10px] leading-relaxed text-red-300"
+                        className="max-h-24 overflow-auto whitespace-pre-wrap rounded bg-red-900/20 p-1.5 font-[var(--font-code)] text-[10px] leading-relaxed text-red-300"
                       >
                         {run.stderrTail}
                       </pre>
@@ -507,7 +507,7 @@ export const SettingsPostProcessingSection = React.memo(
                             scriptContent: e.target.value,
                           }))
                         }
-                        className="font-mono"
+                        className="font-[var(--font-code)]"
                         placeholder="/usr/local/bin/post-process.sh"
                       />
                       <Button

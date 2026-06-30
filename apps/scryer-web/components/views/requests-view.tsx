@@ -697,7 +697,7 @@ export function RequestsView({
                     <span className="text-[var(--scry-faint2)]">
                       {formatExternalIdSourceLabel(externalId.source)}
                     </span>
-                    <span className="font-mono text-[var(--scry-ink2)]">
+                    <span className="font-[var(--font-code)] text-[var(--scry-ink2)]">
                       {externalId.value}
                     </span>
                   </span>

@@ -101,7 +101,7 @@ export function FolderBrowserDialog({
                 type="button"
                 onClick={() => browse("/")}
                 className={cn(
-                  "shrink-0 rounded-[8px] border px-2 py-1 font-mono transition-colors",
+                  "shrink-0 rounded-[8px] border px-2 py-1 font-[var(--font-code)] transition-colors",
                   pathSegments.length === 0
                     ? "border-[var(--scry-baccent)] bg-[rgba(var(--scry-accent-rgb),0.14)] text-[var(--scry-accent-text)]"
                     : "border-transparent text-[var(--scry-muted3)] hover:border-[var(--scry-border3)] hover:bg-[var(--scry-hover)] hover:text-[var(--scry-ink2)]",
@@ -119,7 +119,7 @@ export function FolderBrowserDialog({
                       type="button"
                       onClick={() => browse(segPath)}
                       className={cn(
-                        "shrink-0 rounded-[8px] border px-2 py-1 transition-colors",
+                        "shrink-0 rounded-[8px] border px-2 py-1 font-[var(--font-code)] transition-colors",
                         isLast
                           ? "border-[var(--scry-baccent)] bg-[rgba(var(--scry-accent-rgb),0.14)] font-medium text-[var(--scry-accent-text)]"
                           : "border-transparent text-[var(--scry-muted3)] hover:border-[var(--scry-border3)] hover:bg-[var(--scry-hover)] hover:text-[var(--scry-ink2)]",
@@ -144,7 +144,7 @@ export function FolderBrowserDialog({
                 onKeyDown={(e) => {
                   if (e.key === "Enter") browse(currentPath);
                 }}
-                className="h-10 border-[var(--scry-border3)] bg-[var(--scry-inset)] font-mono text-sm text-[var(--scry-ink2)]"
+                className="h-10 border-[var(--scry-border3)] bg-[var(--scry-inset)] font-[var(--font-code)] text-sm text-[var(--scry-ink2)]"
               />
               <Button
                 id="folder-browser-go"
@@ -214,7 +214,7 @@ export function FolderBrowserDialog({
                     <span className="grid h-8 w-8 place-items-center rounded-[9px] bg-[var(--scry-inset)] text-[var(--scry-accent-text)]">
                       <Folder className="h-4 w-4 shrink-0" />
                     </span>
-                    <span className="truncate text-[var(--scry-ink2)]">{entry.name}</span>
+                    <span className="truncate font-[var(--font-code)] text-[var(--scry-ink2)]">{entry.name}</span>
                   </button>
                 ))}
               </div>
@@ -223,7 +223,7 @@ export function FolderBrowserDialog({
         </div>
 
         <DialogFooter className="border-t border-[var(--scry-border3)] bg-[var(--scry-inset)] px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:px-5">
-          <p className="min-w-0 truncate text-left font-mono text-xs text-[var(--scry-muted3)] sm:mr-auto">
+          <p className="min-w-0 truncate text-left font-[var(--font-code)] text-xs text-[var(--scry-muted3)] sm:mr-auto">
             {currentPath}
           </p>
           <div className="flex shrink-0 justify-end gap-2">

@@ -295,7 +295,7 @@ export function DownloadClientRemotePathMappingsField({
               <span className="font-medium text-card-foreground">
                 {t("settings.downloadClientRemotePathMappingsExampleLabel")}:
               </span>{" "}
-              <span className="font-mono">{EXAMPLE_MAPPING}</span>
+              <span className="font-[var(--font-code)]">{EXAMPLE_MAPPING}</span>
             </p>
             <Button
               id={`${fieldKey}-add-mapping`}
@@ -365,7 +365,7 @@ export function DownloadClientRemotePathMappingsField({
                       }
                       required={required && rows.length === 1}
                       aria-invalid={hasRemoteError}
-                      className="font-mono text-sm"
+                      className="font-[var(--font-code)] text-sm"
                     />
                     {hasRemoteError ? (
                       <p className="text-xs text-destructive">{rowErrors.remotePath}</p>
@@ -388,7 +388,7 @@ export function DownloadClientRemotePathMappingsField({
                         }
                         required={required && rows.length === 1}
                         aria-invalid={hasLocalError}
-                        className="pr-10 font-mono text-sm"
+                        className="pr-10 font-[var(--font-code)] text-sm"
                       />
                       <Button
                         id={browseButtonId}
@@ -443,7 +443,7 @@ export function DownloadClientRemotePathMappingsField({
               <span className="font-medium text-card-foreground">
                 {t("settings.downloadClientRemotePathMappingsExampleLabel")}:
               </span>{" "}
-              <span className="font-mono">{EXAMPLE_MAPPING}</span>
+              <span className="font-[var(--font-code)]">{EXAMPLE_MAPPING}</span>
             </p>
           </div>
         </div>

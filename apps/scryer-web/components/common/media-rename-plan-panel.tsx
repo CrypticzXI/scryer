@@ -69,10 +69,10 @@ export function MediaRenamePlanPanel({
                 key={`${item.collectionId ?? "none"}-${item.currentPath ?? ""}-${index}`}
                 className="border-t border-border"
               >
-                <td className="px-3 py-2 align-top font-mono text-xs text-muted-foreground">
+                <td className="px-3 py-2 align-top font-[var(--font-code)] text-xs text-muted-foreground">
                   {item.currentPath || "—"}
                 </td>
-                <td className="px-3 py-2 align-top font-mono text-xs text-muted-foreground">
+                <td className="px-3 py-2 align-top font-[var(--font-code)] text-xs text-muted-foreground">
                   {item.proposedPath ?? "—"}
                 </td>
               </tr>

@@ -369,7 +369,7 @@ impl AppUseCase {
         let max_groups = catalog_discovery_max_groups(query.max_groups);
         let candidate_limit = catalog_discovery_candidate_limit(limit, max_groups);
         let owned_visibility = self
-            .title_context_owned_visibility(query.facet, &effective_library_id_list)
+            .catalog_owned_visibility(query.facet, &effective_library_id_list)
             .await?;
 
         let public_candidates =
@@ -380,6 +380,7 @@ impl AppUseCase {
                     .discovery
                     .list_catalog_public_discovery_items(
                         public_run_id,
+                        &effective_library_id_list,
                         media_kind,
                         query.include_unresolved,
                         candidate_limit as i64,
@@ -388,6 +389,7 @@ impl AppUseCase {
                 candidates
                     .items
                     .retain(|item| !owned_visibility.item_is_owned(item));
+                candidates.total_count = candidates.items.len() as i64;
                 candidates
             } else {
                 Default::default()
@@ -513,13 +515,13 @@ impl AppUseCase {
         })
     }
 
-    async fn title_context_owned_visibility(
+    async fn catalog_owned_visibility(
         &self,
         facet: MediaFacet,
         readable_library_ids: &[String],
-    ) -> AppResult<TitleContextOwnedVisibility> {
+    ) -> AppResult<CatalogOwnedVisibility> {
         if readable_library_ids.is_empty() {
-            return Ok(TitleContextOwnedVisibility::default());
+            return Ok(CatalogOwnedVisibility::default());
         }
         let titles = self
             .services
@@ -527,26 +529,9 @@ impl AppUseCase {
             .titles
             .list_for_libraries(Some(facet), readable_library_ids, None)
             .await?;
-        Ok(TitleContextOwnedVisibility::from_titles(&titles))
+        Ok(CatalogOwnedVisibility::from_titles(&titles))
     }
 
-    async fn title_context_readable_title(
-        &self,
-        title_id: &str,
-        readable_library_ids: &HashSet<String>,
-    ) -> AppResult<Title> {
-        let title = self
-            .services
-            .catalog
-            .titles
-            .get_by_id(title_id)
-            .await?
-            .ok_or_else(|| AppError::NotFound(format!("title {title_id}")))?;
-        if !readable_library_ids.contains(&title.library_id) {
-            return Err(AppError::Unauthorized(format!("title {title_id}")));
-        }
-        Ok(title)
-    }
 }
 
 impl AppUseCase {
@@ -846,24 +831,24 @@ struct DiscoveryLibraryAffinityProfile {
 }
 
 #[derive(Clone, Debug, Default)]
-struct TitleContextOwnedVisibility {
+struct CatalogOwnedVisibility {
     title_ids: HashSet<String>,
     keys: HashSet<String>,
 }
 
-impl TitleContextOwnedVisibility {
+impl CatalogOwnedVisibility {
     fn from_titles(titles: &[Title]) -> Self {
         let mut visibility = Self::default();
         for title in titles {
             visibility.title_ids.insert(title.id.clone());
-            add_title_context_owned_external_keys(
+            add_catalog_owned_external_keys(
                 &mut visibility.keys,
                 "imdb",
                 title.imdb_id.as_deref(),
                 title.facet.clone(),
             );
             for external_id in &title.external_ids {
-                add_title_context_owned_external_keys(
+                add_catalog_owned_external_keys(
                     &mut visibility.keys,
                     &external_id.source,
                     Some(external_id.value.as_str()),
@@ -891,14 +876,14 @@ impl TitleContextOwnedVisibility {
     }
 }
 
-fn add_title_context_owned_external_keys(
+fn add_catalog_owned_external_keys(
     keys: &mut HashSet<String>,
     source: &str,
     value: Option<&str>,
     facet: MediaFacet,
 ) {
-    let source = normalize_title_context_owned_key(source);
-    let value = normalize_title_context_owned_key(value.unwrap_or_default());
+    let source = normalize_catalog_owned_key(source);
+    let value = normalize_catalog_owned_key(value.unwrap_or_default());
     if source.is_empty() || value.is_empty() {
         return;
     }
@@ -912,7 +897,7 @@ fn add_title_context_owned_external_keys(
 
 fn discovery_item_ownership_keys(item: &DiscoveryItemRecord) -> HashSet<String> {
     let mut keys = HashSet::new();
-    let target_key = normalize_title_context_owned_key(&item.target_key);
+    let target_key = normalize_catalog_owned_key(&item.target_key);
     if !target_key.is_empty() {
         keys.insert(target_key);
     }
@@ -923,8 +908,8 @@ fn discovery_item_ownership_keys(item: &DiscoveryItemRecord) -> HashSet<String> 
         .filter(|part| !part.is_empty())
         .collect::<Vec<_>>();
     if target_parts.len() >= 3 {
-        let source = normalize_title_context_owned_key(target_parts[0]);
-        let value = normalize_title_context_owned_key(&target_parts[2..].join(":"));
+        let source = normalize_catalog_owned_key(target_parts[0]);
+        let value = normalize_catalog_owned_key(&target_parts[2..].join(":"));
         if !source.is_empty() && !value.is_empty() {
             keys.insert(format!("{source}:{value}"));
         }
@@ -932,7 +917,7 @@ fn discovery_item_ownership_keys(item: &DiscoveryItemRecord) -> HashSet<String> 
     keys
 }
 
-fn normalize_title_context_owned_key(value: &str) -> String {
+fn normalize_catalog_owned_key(value: &str) -> String {
     value.trim().to_ascii_lowercase()
 }
 

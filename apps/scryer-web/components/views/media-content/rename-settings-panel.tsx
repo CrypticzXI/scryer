@@ -768,7 +768,7 @@ function TokenAutocompleteInput({
                     setDismissedKey(null);
                   }}
                 >
-                  <code className="font-mono text-emerald-600 dark:text-emerald-400">{item.code}</code>
+                  <code className="font-[var(--font-code)] text-emerald-600 dark:text-emerald-400">{item.code}</code>
                   <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
                     {translateLabel(item.labelKey)}
                   </span>
@@ -814,7 +814,7 @@ function RenameTokenReferenceList({
             className="flex items-center justify-between gap-3 rounded-md border border-border/70 bg-muted/40 px-2.5 py-2"
           >
             <div className="min-w-0 space-y-1">
-              <code className="block font-mono text-xs text-emerald-600 dark:text-emerald-400">
+              <code className="block font-[var(--font-code)] text-xs text-emerald-600 dark:text-emerald-400">
                 {`{${item.token}}`}
               </code>
               <p className="text-xs leading-snug text-muted-foreground">
@@ -851,7 +851,7 @@ function RenameFunctionReference({ t }: { t: Translate }) {
           <p className="text-sm font-medium text-card-foreground">
             {t("settings.renameFunctionTruncateTitle")}
           </p>
-          <code className="mt-1 block break-all font-mono text-xs text-emerald-600 dark:text-emerald-400">
+          <code className="mt-1 block break-all font-[var(--font-code)] text-xs text-emerald-600 dark:text-emerald-400">
             {"{title|truncate:N}"}
           </code>
           <p className="mt-1 text-xs leading-snug text-muted-foreground">
@@ -872,7 +872,7 @@ function RenameFunctionReference({ t }: { t: Translate }) {
                 key={item.code}
                 className="rounded border border-border/60 bg-background/50 px-2 py-1.5"
               >
-                <code className="font-mono text-xs text-emerald-600 dark:text-emerald-400">
+                <code className="font-[var(--font-code)] text-xs text-emerald-600 dark:text-emerald-400">
                   {item.code}
                 </code>
                 <p className="mt-0.5 text-[11px] leading-snug text-muted-foreground">
@@ -888,7 +888,7 @@ function RenameFunctionReference({ t }: { t: Translate }) {
             <p className="text-sm font-medium text-card-foreground">
               {t("settings.renameFunctionChainTitle")}
             </p>
-            <code className="mt-1 block break-all font-mono text-xs text-emerald-600 dark:text-emerald-400">
+            <code className="mt-1 block break-all font-[var(--font-code)] text-xs text-emerald-600 dark:text-emerald-400">
               {"{title|truncate:64|space:_}"}
             </code>
             <p className="mt-1 text-xs leading-snug text-muted-foreground">
@@ -900,7 +900,7 @@ function RenameFunctionReference({ t }: { t: Translate }) {
             <p className="text-sm font-medium text-card-foreground">
               {t("settings.renameFunctionBracesTitle")}
             </p>
-            <code className="mt-1 block break-all font-mono text-xs text-emerald-600 dark:text-emerald-400">
+            <code className="mt-1 block break-all font-[var(--font-code)] text-xs text-emerald-600 dark:text-emerald-400">
               {"{{edition-{edition}}}"}
             </code>
             <p className="mt-1 text-xs leading-snug text-muted-foreground">
@@ -986,7 +986,7 @@ function TemplateExample({
         <div className="rounded-[12px] border border-[var(--scry-border)] bg-[var(--scry-card2)] px-3.5 py-2.5">
           <p
             id={outputId}
-            className="break-all font-mono text-[13.5px] text-[var(--scry-text2)]"
+            className="break-all font-[var(--font-code)] text-[13.5px] text-[var(--scry-text2)]"
           >
             {value}
           </p>

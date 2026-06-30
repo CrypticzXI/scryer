@@ -299,7 +299,7 @@ export function TitleSettingsPanel({
             onValueChange={(v) => void handleRootFolderChange(v)}
             disabled={saving || sortedRootFolders.length === 0}
           >
-            <SelectTrigger id="series-overview-settings-root-folder" className="h-9 w-full font-mono text-sm">
+            <SelectTrigger id="series-overview-settings-root-folder" className="h-9 w-full font-[var(--font-code)] text-sm">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>

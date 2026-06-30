@@ -264,7 +264,7 @@ export function SubtitleSearchModal({
               <Search className="h-4 w-4" />
               {t("subtitle.manualSearch")}
             </DialogTitle>
-            <p className="truncate font-mono text-xs text-muted-foreground">
+            <p className="truncate font-[var(--font-code)] text-xs text-muted-foreground">
               {filePath}
             </p>
           </DialogHeader>
@@ -377,7 +377,7 @@ export function SubtitleSearchModal({
                             {formatUiDateTime(entry.createdAt, dateTimeFormat)}
                           </span>
                         </div>
-                        <p className="mt-1 break-all font-mono text-[11px] text-muted-foreground">
+                        <p className="mt-1 break-all font-[var(--font-code)] text-[11px] text-muted-foreground">
                           {entry.providerFileId}
                         </p>
                         {entry.reason ? (

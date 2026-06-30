@@ -207,7 +207,7 @@ export const SubtitleLanguagePicker = React.memo(function SubtitleLanguagePicker
                           ) : null}
                         </span>
                       </span>
-                      <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 font-mono text-xs text-muted-foreground">
+                      <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 font-[var(--font-code)] text-xs text-muted-foreground">
                         {lang.code}
                       </span>
                     </label>

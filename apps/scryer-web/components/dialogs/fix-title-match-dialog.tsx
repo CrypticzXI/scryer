@@ -195,7 +195,7 @@ export function FixTitleMatchDialog({
             />
             <div className="text-xs text-muted-foreground sm:min-w-[180px]">
               {t("title.fixMatchCurrentTvdbId")}:{" "}
-              <span className="font-mono">{existingTvdbId ?? t("title.fixMatchCurrentTvdbNone")}</span>
+              <span className="font-[var(--font-code)]">{existingTvdbId ?? t("title.fixMatchCurrentTvdbNone")}</span>
             </div>
           </div>
 

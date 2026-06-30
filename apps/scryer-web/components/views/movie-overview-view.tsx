@@ -327,7 +327,7 @@ function TitleSettingsPanel({
             onValueChange={(value) => void handleRootFolderChange(value)}
             disabled={saving || sortedRootFolders.length === 0}
           >
-            <SelectTrigger id="movie-overview-settings-root-folder" className="h-9 w-full font-mono text-sm">
+            <SelectTrigger id="movie-overview-settings-root-folder" className="h-9 w-full font-[var(--font-code)] text-sm">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -800,7 +800,7 @@ export function MovieOverviewView({
                   .map((e) => (
                     <div key={e.source}>
                       <span className="text-muted-foreground capitalize">{e.source} </span>
-                      <span className="font-mono text-card-foreground">{e.value}</span>
+                      <span className="font-[var(--font-code)] text-card-foreground">{e.value}</span>
                     </div>
                   ))}
                 <span className="ml-auto text-xs text-muted-foreground/60">
@@ -927,7 +927,7 @@ export function MovieOverviewView({
                     <div className="flex items-start justify-between gap-2">
                       <div className="min-w-0 space-y-1.5">
                         {collection.orderedPath ? (
-                          <p className="truncate font-mono text-xs text-muted-foreground">{collection.orderedPath}</p>
+                          <p className="truncate font-[var(--font-code)] text-xs text-muted-foreground">{collection.orderedPath}</p>
                         ) : (
                           <p className="text-sm text-muted-foreground">{t("mediaFile.pathNotRecorded")}</p>
                         )}

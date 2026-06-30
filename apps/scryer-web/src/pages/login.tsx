@@ -488,7 +488,7 @@ export default function LoginPage() {
               <p className="text-sm text-muted-foreground">
                 {t("auth.mfaRecoveryCodesDescription")}
               </p>
-              <div className="grid grid-cols-2 gap-2 rounded-md border border-border bg-background/60 p-3 font-mono text-xs">
+              <div className="grid grid-cols-2 gap-2 rounded-md border border-border bg-background/60 p-3 font-[var(--font-code)] text-xs">
                 {jellyfinMfaRecoveryCodes.map((code) => (
                   <code key={code}>{code}</code>
                 ))}
@@ -520,7 +520,7 @@ export default function LoginPage() {
                   <div className="text-xs text-muted-foreground">{t("profile.totpSecret")}</div>
                   <code
                     id="jellyfin-mfa-enrollment-secret"
-                    className="block break-all rounded bg-background/70 px-2 py-1 font-mono text-xs"
+                    className="block break-all rounded bg-background/70 px-2 py-1 font-[var(--font-code)] text-xs"
                   >
                     {jellyfinMfaEnrollment.secretBase32}
                   </code>
