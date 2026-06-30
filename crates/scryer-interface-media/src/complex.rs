@@ -3,9 +3,9 @@ use scryer_application::{ReleaseDecisionsQuery, WantedItemsQuery};
 use scryer_interface_core::{actor_from_ctx, app_from_ctx, to_gql_error};
 
 use crate::mappers::{
-    from_collection, from_download_queue_item, from_episode, from_library_settings,
-    from_pending_release, from_release_decision, from_series_movie_link, from_submission_scope,
-    from_title, from_title_media_file, from_wanted_item,
+    from_collection, from_discovery_item, from_download_queue_item, from_episode,
+    from_library_settings, from_pending_release, from_release_decision, from_series_movie_link,
+    from_submission_scope, from_title, from_title_media_file, from_wanted_item,
 };
 use crate::types::*;
 
@@ -71,6 +71,20 @@ impl LibraryPayload {
 
 #[ComplexObject]
 impl TitlePayload {
+    async fn more_like_this(
+        &self,
+        ctx: &Context<'_>,
+        #[graphql(default = 12)] limit: i32,
+    ) -> GqlResult<Vec<DiscoveryItemPayload>> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let items = app
+            .title_more_like_this(&actor, self.id.as_ref(), i64::from(limit.clamp(0, 100)))
+            .await
+            .map_err(to_gql_error)?;
+        Ok(items.into_iter().map(from_discovery_item).collect())
+    }
+
     async fn root_folder_path(&self, ctx: &Context<'_>) -> GqlResult<String> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;

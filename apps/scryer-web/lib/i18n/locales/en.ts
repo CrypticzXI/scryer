@@ -361,6 +361,12 @@ const en: LocaleDictionary = {
     "This root folder is already used by {{libraries}}.",
   "settings.rootFolderAddPlaceholder": "/data/movies",
   "settings.rootFolderSetDefault": "Set as default",
+  "settings.rootFolderInvalid": "Invalid",
+  "settings.rootFolderInvalidTooltip":
+    "Scryer could not browse this root folder from the host.",
+  "settings.unsavedLibraryChangesTitle": "Unsaved library changes",
+  "settings.unsavedLibraryChangesConfirm":
+    "Discard your unsaved library changes and leave this page?",
   "settings.libraryScanTitle": "Library scan",
   "settings.libraryScanHelp":
     "Scan the movies folder and import any missing titles.",
@@ -382,6 +388,7 @@ const en: LocaleDictionary = {
   "settings.libraryScanDiscovering": "Discovering titles…",
   "settings.libraryScanProgressPending": "Waiting for discovery…",
   "settings.libraryScanProgressCalculatingTotal": "Calculating total…",
+  "settings.libraryScanProgressScannedCount": "{{count}} scanned",
   "settings.libraryScanTitleMatch": "Title Match",
   "settings.libraryScanFetchingMetadata": "Fetch Metadata",
   "settings.libraryScanFilesScanned": "Media Analysis",

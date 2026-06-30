@@ -231,6 +231,7 @@ const it: LocaleDictionary = {
   "settings.libraryScanDiscovering": "Rilevamento titoli…",
   "settings.libraryScanProgressPending": "In attesa del rilevamento…",
   "settings.libraryScanProgressCalculatingTotal": "Calcolo del totale…",
+  "settings.libraryScanProgressScannedCount": "{{count}} analizzati",
   "settings.libraryScanTitleMatch": "Abbinamento titoli",
   "settings.libraryScanFetchingMetadata": "Recupero metadati",
   "settings.libraryScanFilesScanned": "Analisi media",

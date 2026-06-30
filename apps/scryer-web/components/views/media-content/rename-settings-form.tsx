@@ -48,11 +48,25 @@ const RECAP_POLICY_OPTIONS = [
   { value: "skip_recap", label: "settings.recapPolicySkipRecap" },
 ];
 
-const VALID_RENAME_TOKENS = new Set([
-  "title", "year", "quality", "edition", "source",
+const COMMON_RENAME_TOKENS = [
+  "title", "year", "quality", "source",
   "video_codec", "audio_codec", "audio_channels", "group", "ext",
-  "season", "season_order", "episode", "episode_title", "absolute_episode",
+];
+const EXTERNAL_ID_RENAME_TOKENS = [
   "imdb_id", "tmdb_id", "tvdb_id", "anidb_id", "mal_id", "anilist_id",
+];
+const EPISODE_RENAME_TOKENS = [
+  "season", "season_order", "episode", "episode_title", "absolute_episode",
+];
+const VALID_MOVIE_RENAME_TOKENS = new Set([
+  ...COMMON_RENAME_TOKENS,
+  "edition",
+  ...EXTERNAL_ID_RENAME_TOKENS,
+]);
+const VALID_EPISODE_RENAME_TOKENS = new Set([
+  ...COMMON_RENAME_TOKENS,
+  ...EPISODE_RENAME_TOKENS,
+  ...EXTERNAL_ID_RENAME_TOKENS,
 ]);
 
 const SHARED_RENAME_TOKEN_DESCRIPTIONS: { token: string; labelKey: string }[] = [
@@ -82,7 +96,9 @@ const EXTERNAL_ID_RENAME_TOKEN_DESCRIPTIONS: { token: string; labelKey: string }
 
 const SERIES_RENAME_TOKEN_DESCRIPTIONS: { token: string; labelKey: string }[] = [
   { token: "season", labelKey: "settings.renameTokenSeason" },
+  { token: "season_order", labelKey: "settings.renameTokenSeasonOrder" },
   { token: "episode", labelKey: "settings.renameTokenEpisode" },
+  { token: "absolute_episode", labelKey: "settings.renameTokenAbsoluteEpisode" },
   { token: "episode_title", labelKey: "settings.renameTokenEpisodeTitle" },
 ];
 
@@ -106,12 +122,19 @@ function getRenameTokenDescriptions(scopeId: ViewCategoryId): { token: string; l
   return [...scopeSpecific, ...EXTERNAL_ID_RENAME_TOKEN_DESCRIPTIONS, ...shared];
 }
 
+function getValidRenameTokens(scopeId: ViewCategoryId): ReadonlySet<string> {
+  return scopeId === "movie"
+    ? VALID_MOVIE_RENAME_TOKENS
+    : VALID_EPISODE_RENAME_TOKENS;
+}
+
 function validateRenameTemplate(
   template: string,
+  scopeId: ViewCategoryId,
   t: Translate,
 ): string | null {
   return formatRenameValidationIssue(
-    validateRenameTemplateSyntax(template, VALID_RENAME_TOKENS),
+    validateRenameTemplateSyntax(template, getValidRenameTokens(scopeId)),
     t,
   );
 }
@@ -180,7 +203,9 @@ const RENAME_PREVIEW_SERIES_SAMPLE: Record<string, string> = {
   mal_id: "",
   anilist_id: "",
   season: "5",
+  season_order: "5",
   episode: "12",
+  absolute_episode: "97",
   episode_title: "The One with the Embryos",
 };
 
@@ -215,7 +240,7 @@ function applyRenameTemplate(template: string, scopeId: ViewCategoryId): string 
       : scopeId === "anime"
         ? RENAME_PREVIEW_ANIME_SAMPLE
         : RENAME_PREVIEW_SERIES_SAMPLE;
-  return applyRenameTemplatePreview(template, VALID_RENAME_TOKENS, sampleValues);
+  return applyRenameTemplatePreview(template, getValidRenameTokens(scopeId), sampleValues);
 }
 
 // --- Component ---
@@ -285,8 +310,8 @@ export function RenameSettingsForm({
   const t = useTranslate();
   const templateValue = categoryRenameTemplates[activeQualityScopeId];
   const renameValidationError = React.useMemo(
-    () => validateRenameTemplate(templateValue, t),
-    [templateValue, t],
+    () => validateRenameTemplate(templateValue, activeQualityScopeId, t),
+    [activeQualityScopeId, templateValue, t],
   );
 
   const renamePreview = React.useMemo(

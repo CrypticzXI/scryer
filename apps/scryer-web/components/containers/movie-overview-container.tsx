@@ -34,6 +34,7 @@ import { useGlobalStatus } from "@/lib/context/global-status-context";
 import { useTitleDownloadQueue } from "@/lib/hooks/use-title-download-queue";
 import { handleFixTitleMatchComplete as applyFixTitleMatchCompletion } from "@/lib/fix-title-match";
 import type { Release, TitleAcquisitionDiagnostics, WantedItem } from "@/lib/types";
+import type { CatalogDiscoveryItem } from "@/lib/types/discovery";
 import type { LibraryRootRecord } from "@/lib/types/titles";
 import type { DownloadQueueItem } from "@/lib/types/download-queue";
 import {
@@ -104,6 +105,7 @@ export type TitleDetail = {
   interSeasonMovies?: boolean | null;
   fillerPolicy?: string | null;
   recapPolicy?: string | null;
+  moreLikeThis?: CatalogDiscoveryItem[];
   createdAt: string;
 };
 

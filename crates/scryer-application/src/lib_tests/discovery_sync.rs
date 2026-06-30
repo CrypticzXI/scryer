@@ -3981,6 +3981,22 @@ impl DiscoveryRepository for RecordingDiscoveryRepository {
         Ok(DiscoveryItemsPageRecord { items, total_count })
     }
 
+    async fn replace_title_more_like_this_items(
+        &self,
+        _title_id: &str,
+        _items: &[DiscoveryItemRecord],
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn list_title_more_like_this_items(
+        &self,
+        _title_id: &str,
+        _limit: i64,
+    ) -> AppResult<Vec<DiscoveryItemRecord>> {
+        Ok(Vec::new())
+    }
+
     async fn list_discovery_items_for_generation(
         &self,
         base_generation_id: &str,
@@ -4705,6 +4721,7 @@ fn test_discovery_title() -> DiscoveryTitle {
         status_tags: Vec::new(),
         background_url: String::new(),
         source_tags: Vec::new(),
+        canonical_tags: Vec::new(),
         sources: vec!["popular".to_string()],
         relation_types: Vec::new(),
         relation_subtypes: Vec::new(),

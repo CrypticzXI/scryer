@@ -29,6 +29,19 @@ pub struct TitleDeletePreviewInfo {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TitleExternalIdLookup {
+    pub lookup_index: usize,
+    pub source: String,
+    pub external_id: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct TitleExternalIdLookupMatch {
+    pub lookup_index: usize,
+    pub title: Title,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HousekeepingMediaFileRootRow {
     pub media_file_id: String,
     pub title_id: String,
@@ -624,6 +637,16 @@ pub trait DiscoveryRepository: Send + Sync {
         &self,
         query: &DiscoveryItemsStorageQuery,
     ) -> AppResult<DiscoveryItemsPageRecord>;
+    async fn replace_title_more_like_this_items(
+        &self,
+        title_id: &str,
+        items: &[DiscoveryItemRecord],
+    ) -> AppResult<()>;
+    async fn list_title_more_like_this_items(
+        &self,
+        title_id: &str,
+        limit: i64,
+    ) -> AppResult<Vec<DiscoveryItemRecord>>;
     async fn list_discovery_items_for_generation(
         &self,
         base_generation_id: &str,
@@ -745,6 +768,24 @@ pub trait TitleRepository: Send + Sync {
         })
     }
     async fn list_by_external_ids(&self, source: &str, values: &[String]) -> AppResult<Vec<Title>>;
+    async fn list_by_external_id_lookups(
+        &self,
+        lookups: &[TitleExternalIdLookup],
+    ) -> AppResult<Vec<TitleExternalIdLookupMatch>> {
+        let mut matches = Vec::new();
+        for lookup in lookups {
+            for title in self
+                .list_by_external_ids(&lookup.source, std::slice::from_ref(&lookup.external_id))
+                .await?
+            {
+                matches.push(TitleExternalIdLookupMatch {
+                    lookup_index: lookup.lookup_index,
+                    title,
+                });
+            }
+        }
+        Ok(matches)
+    }
     async fn list_for_matching(
         &self,
         facet: Option<MediaFacet>,

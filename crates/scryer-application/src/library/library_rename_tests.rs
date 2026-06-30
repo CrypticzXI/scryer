@@ -97,6 +97,26 @@ fn validate_rename_template_accepts_supported_filters_and_literals() {
 }
 
 #[test]
+fn validate_rename_template_for_facet_rejects_unavailable_tokens() {
+    validate_rename_template_for_facet(
+        "{title} - S{season_order:2}E{episode:2} ({absolute_episode}) - {quality}.{ext}",
+        &MediaFacet::Anime,
+    )
+    .expect("anime episode tokens are allowed");
+
+    let error = validate_rename_template_for_facet(
+        "{title} - S{season_order:2}E{episode:2} - {quality}.{ext}",
+        &MediaFacet::Movie,
+    )
+    .expect_err("movie templates cannot use episode tokens");
+    assert!(
+        error
+            .to_string()
+            .contains("unsupported rename template token")
+    );
+}
+
+#[test]
 fn validate_rename_template_rejects_invalid_filters_and_tokens() {
     let error = validate_rename_template("{title|truncate:0}.{ext}")
         .expect_err("truncate limit must be positive");
@@ -730,6 +750,7 @@ fn test_media_file(path: &str) -> TitleMediaFile {
             profile: Some("DTS-HD MA + DTS:X IMAX".to_string()),
             channels: Some(8),
             language: Some("eng".to_string()),
+            name: None,
             bitrate_kbps: Some(4_000),
         }],
         subtitle_languages: vec![],

@@ -126,7 +126,7 @@ export function applyRenameTemplatePreview(
       if (inner.includes("{")) return null;
       const parsed = parseRenameTemplateTokenSpec(inner);
       if (!parsed.ok || !validTokens.has(parsed.spec.lookupName)) return null;
-      let value = sampleValues[parsed.spec.lookupName] ?? parsed.spec.tokenName;
+      let value = sampleValues[parsed.spec.lookupName] ?? "";
       if (parsed.spec.padWidth > 0 && /^\d+$/.test(value)) {
         value = value.padStart(parsed.spec.padWidth, "0");
       }

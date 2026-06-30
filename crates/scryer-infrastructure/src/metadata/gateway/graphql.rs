@@ -9,6 +9,8 @@ pub(crate) const GET_MOVIE_QUERY: &str = include_str!("metadata_gateway/get_movi
 pub(crate) const GET_SERIES_QUERY: &str = include_str!("metadata_gateway/get_series.graphql");
 pub(crate) const DISCOVER_PUBLIC_FEED_QUERY: &str =
     include_str!("metadata_gateway/discover_public_feed.graphql");
+pub(crate) const TITLE_RECOMMENDATIONS_QUERY: &str =
+    include_str!("metadata_gateway/title_recommendations.graphql");
 pub(crate) const COLLECTION_COMPLETIONS_QUERY: &str =
     include_str!("metadata_gateway/collection_completions.graphql");
 pub(crate) const SUBMIT_DISCOVERY_CONTEXT_SNAPSHOT_QUERY: &str =

@@ -54,7 +54,7 @@ pub(super) async fn maybe_probe_existing_series_title_for_background_refresh(
     app: &AppUseCase,
     title: &mut Title,
     folder_path: &Path,
-    workset: &mut HashMap<String, LibraryScanTitleWork>,
+    executor: &mut LibraryScanTitleWorkExecutor,
     summary: &mut LibraryScanSummary,
 ) -> AppResult<()> {
     if !title_ready_for_background_refresh(app, title).await? {
@@ -102,15 +102,12 @@ pub(super) async fn maybe_probe_existing_series_title_for_background_refresh(
             summary.skipped += 1;
         }
         BackgroundRefreshProbeOutcome::Changed(discovered_files) => {
-            merge_library_scan_title_work(
-                workset,
-                super::scan_candidates::episodic_title_work(
-                    title.clone(),
-                    discovered_files,
-                    LibraryScanTitleWalkMode::Additive,
-                    false,
-                ),
-            );
+            executor.enqueue(super::scan_candidates::episodic_title_work(
+                title.clone(),
+                discovered_files,
+                LibraryScanTitleWalkMode::Additive,
+                false,
+            ));
             summary.matched += 1;
         }
     }
@@ -123,7 +120,7 @@ async fn maybe_probe_existing_movie_title_for_background_refresh(
     title: &Title,
     collections: &[Collection],
     entry: &MovieTopLevelEntry,
-    workset: &mut HashMap<String, LibraryScanTitleWork>,
+    executor: &mut LibraryScanTitleWorkExecutor,
     summary: &mut LibraryScanSummary,
 ) -> AppResult<()> {
     if !title_ready_for_background_refresh(app, title).await? {
@@ -199,16 +196,13 @@ async fn maybe_probe_existing_movie_title_for_background_refresh(
                 }
             }
 
-            merge_library_scan_title_work(
-                workset,
-                super::scan_candidates::movie_title_work(
-                    title.clone(),
-                    discovered_files,
-                    LibraryScanTitleWalkMode::Additive,
-                    cleanup,
-                    false,
-                ),
-            );
+            executor.enqueue(super::scan_candidates::movie_title_work(
+                title.clone(),
+                discovered_files,
+                LibraryScanTitleWalkMode::Additive,
+                cleanup,
+                false,
+            ));
             summary.matched += 1;
         }
     }
@@ -236,7 +230,7 @@ pub(super) async fn background_refresh_series(
 
     let mut summary = LibraryScanSummary::default();
     let mut metadata_lookup_stats = MetadataLookupBatchStats::default();
-    let mut workset = HashMap::new();
+    let mut executor = LibraryScanTitleWorkExecutor::for_scan(app, actor, session_id, None).await?;
     let metadata_language = app.metadata_language().await;
 
     let library_ids = vec![library_id.to_string()];
@@ -260,7 +254,7 @@ pub(super) async fn background_refresh_series(
                 app,
                 title,
                 &folder,
-                &mut workset,
+                &mut executor,
                 &mut summary,
             )
             .await?;
@@ -268,6 +262,7 @@ pub(super) async fn background_refresh_series(
             unknown_folders.push(folder);
         }
         coordinator.mark_title_match_completed(1).await;
+        executor.pump().await?;
     }
 
     for folder_batch in unknown_folders.chunks(LIBRARY_SCAN_SERIES_BATCH_SIZE) {
@@ -279,7 +274,7 @@ pub(super) async fn background_refresh_series(
             let candidate = process_series_refresh_candidate(
                 app,
                 candidate,
-                &mut workset,
+                &mut executor,
                 &mut existing_titles,
                 &mut existing_titles_by_name,
                 &mut existing_titles_by_tvdb_id,
@@ -293,6 +288,7 @@ pub(super) async fn background_refresh_series(
                 coordinator.mark_title_match_completed(1).await;
             }
         }
+        executor.pump().await?;
 
         let (ready_candidate_batches, batch_search_results) = resolve_full_scan_metadata_batches(
             app.services.library.metadata_gateway.clone(),
@@ -316,7 +312,7 @@ pub(super) async fn background_refresh_series(
                     library_id,
                     candidate,
                     &batch_search_results,
-                    &mut workset,
+                    &mut executor,
                     &mut existing_titles,
                     &mut existing_titles_by_name,
                     &mut existing_titles_by_tvdb_id,
@@ -328,13 +324,12 @@ pub(super) async fn background_refresh_series(
             }
 
             coordinator.publish_progress().await;
+            executor.pump().await?;
         }
     }
 
-    summary.absorb(
-        &app.execute_library_scan_workset(actor, session_id, workset, None)
-            .await?,
-    );
+    executor.close_input();
+    summary.absorb(&executor.finish().await?);
     coordinator.publish_progress().await;
 
     info!(
@@ -374,7 +369,7 @@ pub(super) async fn background_refresh_movies(
 
     let mut summary = LibraryScanSummary::default();
     let mut metadata_lookup_stats = MetadataLookupBatchStats::default();
-    let mut workset = HashMap::new();
+    let mut executor = LibraryScanTitleWorkExecutor::for_scan(app, actor, session_id, None).await?;
     let library_ids = vec![library_id.to_string()];
     let mut existing_titles = app
         .services
@@ -419,7 +414,7 @@ pub(super) async fn background_refresh_movies(
                 title,
                 &collections,
                 &entry,
-                &mut workset,
+                &mut executor,
                 &mut summary,
             )
             .await?;
@@ -427,6 +422,7 @@ pub(super) async fn background_refresh_movies(
             unknown_entries.push(entry);
         }
         coordinator.mark_title_match_completed(1).await;
+        executor.pump().await?;
     }
 
     for entry_chunk in unknown_entries.chunks(LIBRARY_SCAN_MOVIE_BATCH_SIZE) {
@@ -447,7 +443,7 @@ pub(super) async fn background_refresh_movies(
                         actor,
                         library_id,
                         *candidate,
-                        &mut workset,
+                        &mut executor,
                         &mut existing_titles,
                         &mut existing_titles_by_name,
                         &mut existing_titles_by_tvdb_id,
@@ -470,6 +466,7 @@ pub(super) async fn background_refresh_movies(
                 }
             }
         }
+        executor.pump().await?;
 
         let (ready_candidate_batches, batch_search_results) = resolve_full_scan_metadata_batches(
             app.services.library.metadata_gateway.clone(),
@@ -492,7 +489,7 @@ pub(super) async fn background_refresh_movies(
                     library_id,
                     candidate,
                     &batch_search_results,
-                    &mut workset,
+                    &mut executor,
                     &mut existing_titles,
                     &mut existing_titles_by_name,
                     &mut existing_titles_by_tvdb_id,
@@ -507,13 +504,12 @@ pub(super) async fn background_refresh_movies(
             }
 
             coordinator.publish_progress().await;
+            executor.pump().await?;
         }
     }
 
-    summary.absorb(
-        &app.execute_library_scan_workset(actor, session_id, workset, None)
-            .await?,
-    );
+    executor.close_input();
+    summary.absorb(&executor.finish().await?);
     coordinator.publish_progress().await;
 
     info!(

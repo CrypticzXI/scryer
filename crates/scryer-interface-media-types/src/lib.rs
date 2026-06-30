@@ -1232,6 +1232,7 @@ pub struct AudioStreamDetailPayload {
     pub profile: Option<String>,
     pub channels: Option<i32>,
     pub language: Option<String>,
+    pub name: Option<String>,
     pub bitrate_kbps: Option<i32>,
 }
 

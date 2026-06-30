@@ -4,7 +4,7 @@ use scryer_application::{
     AppError, AppResult, CreateTitleOutcome, PendingTitleHydration, SortDirection,
     TitleArtworkUrlUpdate, TitleCatalogContentStatus, TitleCatalogFilter, TitleCatalogResult,
     TitleCatalogSort, TitleCatalogSortKey, TitleDeletePreviewInfo, TitleMetadataUpdate,
-    TitleRepository,
+    TitleExternalIdLookup, TitleExternalIdLookupMatch, TitleRepository,
     persisted_records::{
         PersistedTitleDecodeOptions, PersistedTitleReadMode, finalize_persisted_title,
     },
@@ -490,6 +490,55 @@ impl TitleRepository for TitleStore {
 
         let rows = SqlRuntime::fetch_all(self.datastore.read_exec(), &sql, &args).await?;
         decode_runtime_title_rows(&rows, PersistedTitleReadMode::Presentation, true)
+    }
+
+    async fn list_by_external_id_lookups(
+        &self,
+        lookups: &[TitleExternalIdLookup],
+    ) -> AppResult<Vec<TitleExternalIdLookupMatch>> {
+        if lookups.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let requested_values = std::iter::repeat_n("({}, {}, {})", lookups.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            "WITH requested(lookup_index, source, external_id) AS (
+                 VALUES {requested_values}
+             )
+             SELECT requested.lookup_index AS lookup_index,
+                    {TITLE_COLUMNS}
+               FROM requested
+               JOIN title_external_ids
+                 ON LOWER(title_external_ids.source) = LOWER(requested.source)
+                AND title_external_ids.external_id = requested.external_id
+               JOIN titles ON titles.id = title_external_ids.title_id
+              ORDER BY requested.lookup_index ASC,
+                       titles.id ASC"
+        );
+        let mut args = Vec::with_capacity(lookups.len() * 3);
+        for lookup in lookups {
+            args.push(SqlArg::I64(lookup.lookup_index as i64));
+            args.push(SqlArg::Text(lookup.source.clone()));
+            args.push(SqlArg::Text(lookup.external_id.clone()));
+        }
+
+        let rows = SqlRuntime::fetch_all(self.datastore.read_exec(), &sql, &args).await?;
+        let base_path = normalized_base_path_from_env();
+        rows.iter()
+            .map(|row| {
+                Ok(TitleExternalIdLookupMatch {
+                    lookup_index: row.i64("lookup_index")? as usize,
+                    title: title_from_projection_row(
+                        row,
+                        PersistedTitleReadMode::Presentation,
+                        true,
+                        &base_path,
+                    )?,
+                })
+            })
+            .collect()
     }
 
     async fn list_for_matching(

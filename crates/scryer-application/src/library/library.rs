@@ -48,7 +48,6 @@ use tracing::{debug, info, warn};
 const LIBRARY_METADATA_LOOKUP_CONCURRENCY: usize = 4;
 const LIBRARY_SCAN_MOVIE_BATCH_SIZE: usize = 32;
 const LIBRARY_SCAN_SERIES_BATCH_SIZE: usize = 8;
-const LIBRARY_SCAN_TITLE_WALK_CONCURRENCY: usize = 4;
 const TITLE_SCAN_FILE_BATCH_SIZE: usize = 128;
 #[path = "scan/candidates.rs"]
 mod scan_candidates;
@@ -85,6 +84,7 @@ use scan_title_files::{
 };
 use scan_title_finalize::finalize_movie_scan_file;
 pub(crate) use scan_title_finalize::finalize_title_scan_file;
+use scan_title_scan::LibraryScanTitleWorkExecutor;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum LibraryScanTitleWalkMode {

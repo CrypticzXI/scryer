@@ -683,7 +683,7 @@ impl AppUseCase {
         }
 
         if let Some(rename_template) = normalize_optional_string(input.rename_template) {
-            crate::validate_rename_template(&rename_template)?;
+            crate::validate_rename_template_for_facet(&rename_template, &facet)?;
             self.services
                 .config
                 .settings

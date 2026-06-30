@@ -179,8 +179,10 @@ pub use app_usecase_integration::{
 };
 pub use app_usecase_post_processing::{PostProcessingContext, run_post_processing};
 pub use app_usecase_rss::RssSyncReport;
-#[cfg(any(test, feature = "runtime-media-analysis"))]
+#[cfg(test)]
 pub(crate) use audio_requirements::missing_required_audio_languages;
+#[cfg(any(test, feature = "runtime-media-analysis"))]
+pub(crate) use audio_requirements::{RequiredAudioVerdict, classify_required_audio};
 pub(crate) use audio_requirements::{
     normalize_required_audio_languages, release_audio_language_hints_for_title,
     required_audio_languages_match, title_audio_language_context,
@@ -246,11 +248,12 @@ pub use library::rename::{
 };
 pub(crate) use library::rename::{
     effective_title_folder_path, normalize_title_folder_template_or_default,
-    validate_rename_template, validate_title_folder_template,
+    validate_rename_template, validate_rename_template_for_facet, validate_title_folder_template,
 };
 pub use media::language::{
     normalize_detected_audio_language_code, normalize_detected_audio_languages,
     normalize_detected_subtitle_language_code, normalize_detected_subtitle_languages,
+    normalize_known_audio_language_code,
 };
 pub use media_requests::{
     ListMediaRequestsInput, SubmitMediaRequestInput, SubmitMediaRequestOutcome,
@@ -291,7 +294,10 @@ pub use subtitles::orchestration::{
 pub const DOWNLOAD_FEEDBACK_TIMEOUT_MESSAGE: &str =
     "download feedback timed out after 10s; queue status is temporarily unavailable";
 
-pub(crate) const GLOBAL_LIBRARY_SCAN_ANALYSIS_CONCURRENCY: usize = 4;
+pub(crate) const LIBRARY_SCAN_GLOBAL_TITLE_WALK_CONCURRENCY: usize = 4;
+pub(crate) const LIBRARY_SCAN_FILE_ANALYSIS_CONCURRENCY_PER_WALK: usize = 6;
+pub(crate) const GLOBAL_LIBRARY_SCAN_ANALYSIS_CONCURRENCY: usize =
+    LIBRARY_SCAN_GLOBAL_TITLE_WALK_CONCURRENCY * LIBRARY_SCAN_FILE_ANALYSIS_CONCURRENCY_PER_WALK;
 pub use acquisition::release_search::release_strategy_kind_for_label;
 pub use app_usecase_integration::publish_download_queue_snapshot_events;
 #[cfg(unix)]
@@ -317,12 +323,13 @@ pub use library_scan::{
     DiscoveryContextSnapshotPageResult, DiscoveryContextSnapshotStatusResult,
     DiscoveryContextSnapshotSubmitInput, DiscoveryContextSnapshotSubmitResult,
     DiscoveryDashboardResult, DiscoveryDashboardSection, DiscoveryExternalIdInput, DiscoveryFacet,
-    DiscoveryPublicFeedInput, DiscoverySnapshotFacetGroup, DiscoverySnapshotFacetValue,
-    DiscoverySubjectInput, DiscoveryTitle, EpisodeArtworkUrls, EpisodeMetadata,
-    LibraryDirectoryScanResult, LibraryFile, LibraryFileBatch, LibraryFileBatchReceiver,
-    LibraryScanSummary, LibraryScanner, MetadataGateway, MetadataSearchItem, MetadataSearchQuery,
-    MovieMetadata, MultiMetadataSearchResult, RichMetadataSearchItem, SeasonMetadata,
-    SeriesArtworkUrls, SeriesMetadata, TitleArtworkUrls, source_signature_from_std_metadata,
+    DiscoveryPublicFeedInput, DiscoveryRelatedResult, DiscoverySnapshotFacetGroup,
+    DiscoverySnapshotFacetValue, DiscoverySubjectInput, DiscoveryTitle, EpisodeArtworkUrls,
+    EpisodeMetadata, LibraryDirectoryScanResult, LibraryFile, LibraryFileBatch,
+    LibraryFileBatchReceiver, LibraryScanSummary, LibraryScanner, MetadataGateway,
+    MetadataSearchItem, MetadataSearchQuery, MovieMetadata, MultiMetadataSearchResult,
+    RichMetadataSearchItem, SeasonMetadata, SeriesArtworkUrls, SeriesMetadata, TitleArtworkUrls,
+    TitleRecommendationsInput, source_signature_from_std_metadata,
 };
 pub use library_scan_progress::{
     LibraryScanMode, LibraryScanPhaseProgress, LibraryScanSession, LibraryScanStatus,

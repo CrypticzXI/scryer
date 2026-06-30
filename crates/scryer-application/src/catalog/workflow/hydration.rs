@@ -1,4 +1,5 @@
 pub(crate) const HYDRATION_BULK_BATCH_SIZE: usize = 20;
+const TITLE_MORE_LIKE_THIS_HYDRATION_LIMIT: usize = 24;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct HydrationCompletionOptions {
     sync_wanted_after_completion: bool,
@@ -508,6 +509,11 @@ impl AppUseCase {
                     .push(format!("scryer:anime-status:{}", primary.status));
             }
         }
+        let recommendation_external_ids =
+            crate::catalog::facets::handler::external_ids_from_hydration_metadata(
+                title.external_ids.clone(),
+                &metadata_update,
+            );
 
         let title = match self
             .services
@@ -540,6 +546,14 @@ impl AppUseCase {
             .await;
         }
 
+        self.refresh_title_more_like_this_after_hydration(
+            &title,
+            &recommendation_external_ids,
+            &result.more_like_this,
+            source,
+        )
+        .await;
+
         if title
             .poster_url
             .as_ref()
@@ -556,6 +570,95 @@ impl AppUseCase {
         }
 
         title
+    }
+
+    async fn refresh_title_more_like_this_after_hydration(
+        &self,
+        title: &Title,
+        external_ids: &[scryer_domain::ExternalId],
+        seeded_more_like_this: &[crate::DiscoveryTitle],
+        source: HydrationSource,
+    ) {
+        let Some((subject, source_target_keys)) =
+            crate::discovery::title_recommendations_subject(title, external_ids)
+        else {
+            debug!(
+                hydration_source = source.as_str(),
+                facet = title.facet.as_str(),
+                title_id = %title.id,
+                "skipping title recommendations refresh: title has no recommendation subject ids"
+            );
+            return;
+        };
+
+        let recommendations = if seeded_more_like_this.is_empty() {
+            let language = self.metadata_language().await;
+            let input = crate::TitleRecommendationsInput {
+                subject,
+                query: String::new(),
+                limit: TITLE_MORE_LIKE_THIS_HYDRATION_LIMIT as i32,
+                language,
+                include_unresolved: true,
+            };
+            match self
+                .services
+                .library
+                .metadata_gateway
+                .title_recommendations(&input)
+                .await
+            {
+                Ok(result) => result.results,
+                Err(err) => {
+                    warn!(
+                        hydration_source = source.as_str(),
+                        facet = title.facet.as_str(),
+                        title_id = %title.id,
+                        error = %err,
+                        "failed to refresh title recommendations; keeping existing recommendations"
+                    );
+                    return;
+                }
+            }
+        } else {
+            seeded_more_like_this.to_vec()
+        };
+
+        let now = self.runtime.environment.now();
+        let records = match crate::discovery::title_more_like_this_item_records(
+            &title.id,
+            &source_target_keys,
+            &recommendations,
+            TITLE_MORE_LIKE_THIS_HYDRATION_LIMIT,
+            now,
+        ) {
+            Ok(records) => records,
+            Err(err) => {
+                warn!(
+                    hydration_source = source.as_str(),
+                    facet = title.facet.as_str(),
+                    title_id = %title.id,
+                    error = %err,
+                    "failed to normalize title recommendations"
+                );
+                return;
+            }
+        };
+
+        if let Err(err) = self
+            .services
+            .library
+            .discovery
+            .replace_title_more_like_this_items(&title.id, &records)
+            .await
+        {
+            warn!(
+                hydration_source = source.as_str(),
+                facet = title.facet.as_str(),
+                title_id = %title.id,
+                error = %err,
+                "failed to persist title recommendations"
+            );
+        }
     }
 }
 impl AppUseCase {

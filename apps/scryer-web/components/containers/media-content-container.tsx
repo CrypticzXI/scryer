@@ -56,8 +56,11 @@ import type {
   OverviewTitleTarget,
   ViewId,
 } from "@/components/root/types";
-import { discoveryItemDisplayTitle } from "@/lib/utils/discovery-display";
 import { toProfileOptions } from "@/lib/utils/quality-profiles";
+import {
+  discoveryItemFacet,
+  metadataResultForDiscoveryItem,
+} from "@/lib/utils/discovery-actions";
 import {
   normalizeLibraryFilterSelection,
   singleSelectedLibraryId,
@@ -90,7 +93,6 @@ import type {
   CatalogDiscoveryInput,
   CatalogDiscoveryItem,
   CatalogDiscoveryPayload,
-  ExternalId,
   Facet,
   RuleSetRecord,
 } from "@/lib/types";
@@ -100,7 +102,6 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
 import { useDownloadConflictConfirmation } from "@/components/common/download-conflict-confirmation";
 import { DeletePreviewSummary } from "@/components/common/delete-preview-summary";
-import type { MetadataTvdbSearchItem } from "@/lib/graphql/smg-queries";
 import { userFacingGraphQlErrorMessage } from "@/lib/graphql/error-message";
 import { useTranslate } from "@/lib/context/translate-context";
 import { useGlobalStatus } from "@/lib/context/global-status-context";
@@ -199,66 +200,6 @@ const defaultTitleCatalogSortState: TitleCatalogSortState = {
 
 const CATALOG_DISCOVERY_LIMIT_PER_GROUP = 12;
 const CATALOG_DISCOVERY_MAX_GROUPS = 6;
-
-function normalizedDiscoveryItemFacet(
-  value: string | null | undefined,
-): Facet | null {
-  switch (value?.trim().toLowerCase()) {
-    case "anime":
-      return "anime";
-    case "series":
-      return "series";
-    case "movie":
-      return "movie";
-    default:
-      return null;
-  }
-}
-
-function discoveryItemFacet(item: CatalogDiscoveryItem): Facet | null {
-  const contentType = item.contentType?.trim();
-  return contentType
-    ? normalizedDiscoveryItemFacet(contentType)
-    : normalizedDiscoveryItemFacet(item.targetKind);
-}
-
-function externalIdsForDiscoveryItem(item: CatalogDiscoveryItem): ExternalId[] {
-  const parts = item.targetKey.split(":").map((part) => part.trim());
-  const source = parts[0]?.toLowerCase() ?? "";
-  const value =
-    parts.length >= 3
-      ? parts.slice(2).join(":")
-      : parts.length === 2
-        ? parts[1]
-        : "";
-  return source && value ? [{ source, value }] : [];
-}
-
-function metadataResultForDiscoveryItem(
-  item: CatalogDiscoveryItem,
-): MetadataTvdbSearchItem {
-  const externalIds = externalIdsForDiscoveryItem(item);
-  return {
-    tvdbId:
-      externalIds.find((externalId) => externalId.source === "tvdb")?.value ??
-      "",
-    name: discoveryItemDisplayTitle(item),
-    imdbId:
-      externalIds.find((externalId) => externalId.source === "imdb")?.value ??
-      null,
-    externalIds,
-    slug: null,
-    type: item.contentType ?? item.targetKind,
-    year: item.year,
-    status: item.statusTags[0] ?? null,
-    overview: item.overview,
-    popularity: item.rankScore,
-    posterUrl: item.posterUrl,
-    language: null,
-    runtimeMinutes: null,
-    sortTitle: item.sortTitle,
-  };
-}
 
 type ActiveCatalogListFilters = {
   facet: TitleRecord["facet"];
@@ -935,6 +876,8 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   const [invalidRootLibraryIds, setInvalidRootLibraryIds] = React.useState<
     string[]
   >([]);
+  const [invalidRootPathsByLibraryId, setInvalidRootPathsByLibraryId] =
+    React.useState<Record<string, string[]>>({});
   const [validatedRootFolderSnapshotKey, setValidatedRootFolderSnapshotKey] =
     React.useState<string | null>(null);
   const [librarySettingsSaving, setLibrarySettingsSaving] =
@@ -3192,6 +3135,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   React.useEffect(() => {
     if (rootFolderValidationSnapshot === null) {
       setInvalidRootLibraryIds([]);
+      setInvalidRootPathsByLibraryId({});
       setValidatedRootFolderSnapshotKey(null);
       return;
     }
@@ -3201,6 +3145,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
 
     if (librariesWithConfiguredRoots.length === 0) {
       setInvalidRootLibraryIds([]);
+      setInvalidRootPathsByLibraryId({});
       setValidatedRootFolderSnapshotKey(key);
       return;
     }
@@ -3209,6 +3154,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
 
     const validateRoots = async () => {
       const invalidIds = new Set<string>();
+      const invalidPathsByLibraryId: Record<string, string[]> = {};
 
       await Promise.all(
         librariesWithConfiguredRoots.map(async (library) => {
@@ -3232,14 +3178,20 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
             }),
           );
 
-          if (validationResults.some(Boolean)) {
+          const invalidPaths = configuredPaths.filter(
+            (_path, index) => validationResults[index],
+          );
+
+          if (invalidPaths.length > 0) {
             invalidIds.add(library.id);
+            invalidPathsByLibraryId[library.id] = invalidPaths;
           }
         }),
       );
 
       if (!cancelled) {
         setInvalidRootLibraryIds([...invalidIds]);
+        setInvalidRootPathsByLibraryId(invalidPathsByLibraryId);
         setValidatedRootFolderSnapshotKey(key);
       }
     };
@@ -3251,6 +3203,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
       );
       if (!cancelled) {
         setInvalidRootLibraryIds([]);
+        setInvalidRootPathsByLibraryId({});
         setValidatedRootFolderSnapshotKey(key);
       }
     });
@@ -4244,6 +4197,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
           rootValidationLibrariesLoading,
           rootFolderValidationLoading,
           invalidRootLibraryIds,
+          invalidRootPathsByLibraryId,
           selectedLibraryIds,
           allLibrariesValue: ALL_LIBRARIES_VALUE,
           setSelectedLibraryIds,

@@ -232,6 +232,7 @@ const es: LocaleDictionary = {
   "settings.libraryScanDiscovering": "Descubriendo títulos…",
   "settings.libraryScanProgressPending": "Esperando el descubrimiento…",
   "settings.libraryScanProgressCalculatingTotal": "Calculando el total…",
+  "settings.libraryScanProgressScannedCount": "{{count}} escaneados",
   "settings.libraryScanTitleMatch": "Coincidencia de títulos",
   "settings.libraryScanFetchingMetadata": "Obtener metadatos",
   "settings.libraryScanFilesScanned": "Análisis de medios",

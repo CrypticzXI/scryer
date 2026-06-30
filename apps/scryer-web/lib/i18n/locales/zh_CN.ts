@@ -218,6 +218,7 @@ const zh_CN: LocaleDictionary = {
   "settings.libraryScanDiscovering": "正在发现标题…",
   "settings.libraryScanProgressPending": "等待发现中…",
   "settings.libraryScanProgressCalculatingTotal": "正在计算总数…",
+  "settings.libraryScanProgressScannedCount": "已扫描 {{count}} 个",
   "settings.libraryScanTitleMatch": "标题匹配",
   "settings.libraryScanFetchingMetadata": "获取元数据",
   "settings.libraryScanFilesScanned": "媒体分析",

@@ -328,6 +328,22 @@ impl DiscoveryRepository for NullDiscoveryRepository {
         })
     }
 
+    async fn replace_title_more_like_this_items(
+        &self,
+        _title_id: &str,
+        _items: &[DiscoveryItemRecord],
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn list_title_more_like_this_items(
+        &self,
+        _title_id: &str,
+        _limit: i64,
+    ) -> AppResult<Vec<DiscoveryItemRecord>> {
+        Ok(Vec::new())
+    }
+
     async fn list_discovery_items_for_generation(
         &self,
         _base_generation_id: &str,

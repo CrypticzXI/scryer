@@ -1780,6 +1780,7 @@ mod tests {
                         profile: Some("DTS-HD MA + DTS:X IMAX".to_string()),
                         channels: Some(8),
                         language: Some("eng".to_string()),
+                        name: None,
                         bitrate_kbps: Some(4_000),
                     }],
                     subtitle_languages: vec![],

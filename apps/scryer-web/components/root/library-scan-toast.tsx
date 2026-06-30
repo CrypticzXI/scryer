@@ -134,6 +134,12 @@ function phaseCountLabel(
   t: Translate,
 ): string {
   if (!totalKnown && !terminal) {
+    const done = phaseDone(phase);
+    if (done > 0) {
+      return t("settings.libraryScanProgressScannedCount", {
+        count: done.toLocaleString(),
+      });
+    }
     return t("settings.libraryScanProgressCalculatingTotal");
   }
   if (phase.total <= 0) {
@@ -558,7 +564,7 @@ export function LibraryScanToast({
     terminal,
   )
     ? "done"
-    : titleMatchStatus === "done"
+    : mediaAnalysisDone > 0 || mediaAnalysisTotal > 0 || titleMatchStatus === "done"
       ? "active"
       : "pending";
 

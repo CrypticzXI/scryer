@@ -535,8 +535,12 @@ function TitleContextForYouPanel({
   );
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col overflow-y-auto p-[18px]">
-      <div className="flex items-center gap-3">
+    <div className="relative flex min-h-0 flex-1 flex-col overflow-y-auto bg-[linear-gradient(180deg,rgba(var(--scry-accent-rgb),0.055),rgba(7,12,24,0.54)_18%,rgba(5,9,18,0.78))] p-[18px] shadow-[inset_0_1px_0_rgba(255,255,255,0.035),inset_0_0_0_1px_rgba(var(--scry-accent-rgb),0.035)]">
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute inset-x-0 top-0 h-px bg-[linear-gradient(90deg,transparent,rgba(var(--scry-accent-rgb),0.34),transparent)]"
+      />
+      <div className="flex items-center gap-3 rounded-[14px] border border-[var(--scry-border)] bg-[rgba(8,13,25,0.68)] px-3 py-3 shadow-[0_14px_34px_rgba(0,0,0,0.18)]">
         <div className="flex size-9 shrink-0 items-center justify-center rounded-[10px] border border-[var(--scry-baccent)] bg-[linear-gradient(135deg,rgba(var(--scry-accent-rgb),0.32),rgba(155,91,255,0.2))] text-[var(--scry-accent-text)]">
           <Sparkles className="h-[18px] w-[18px]" />
         </div>
@@ -562,10 +566,13 @@ function TitleContextForYouPanel({
           </div>
         </div>
       ) : (
-        <div className="mt-4 space-y-5">
+        <div className="mt-4 space-y-4">
           {recommendationGroups.map((group) => (
-            <section key={group.id}>
-              <h3 className="mx-0.5 mb-2.5 text-[11px] font-bold uppercase tracking-[0.06em] text-[var(--scry-faint2)]">
+            <section
+              key={group.id}
+              className="rounded-[15px] border border-[var(--scry-border)] bg-[rgba(4,8,17,0.52)] px-3 py-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.025)]"
+            >
+              <h3 className="mx-0.5 mb-2.5 text-[11px] font-bold uppercase tracking-[0.06em] text-[var(--scry-muted3)]">
                 {group.label}
               </h3>
               <div className="flex gap-[11px] overflow-x-auto pb-1 pr-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
@@ -1727,6 +1734,7 @@ export function MediaContentView({
     rootValidationLibrariesLoading: boolean;
     rootFolderValidationLoading: boolean;
     invalidRootLibraryIds: string[];
+    invalidRootPathsByLibraryId: Record<string, string[]>;
     selectedLibraryIds: string[];
     allLibrariesValue: string;
     setSelectedLibraryIds: (value: string[]) => void;
@@ -1944,6 +1952,7 @@ export function MediaContentView({
     rootValidationLibrariesLoading,
     rootFolderValidationLoading,
     invalidRootLibraryIds,
+    invalidRootPathsByLibraryId,
     selectedLibraryIds,
     allLibrariesValue,
     setSelectedLibraryIds,
@@ -2806,6 +2815,7 @@ export function MediaContentView({
             onActiveLibraryNameChange={setLibraryCrumb}
             rootValidationLibraries={rootValidationLibraries}
             rootValidationLibrariesLoading={rootValidationLibrariesLoading}
+            invalidRootPathsByLibraryId={invalidRootPathsByLibraryId}
             preferredLibraryId={
               selectedLibraryIds.length === 1
                 ? selectedLibraryIds[0]

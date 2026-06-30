@@ -229,6 +229,7 @@ const de: LocaleDictionary = {
   "settings.libraryScanDiscovering": "Titel werden erkannt…",
   "settings.libraryScanProgressPending": "Warte auf Erkennung…",
   "settings.libraryScanProgressCalculatingTotal": "Gesamtzahl wird berechnet…",
+  "settings.libraryScanProgressScannedCount": "{{count}} gescannt",
   "settings.libraryScanTitleMatch": "Titelabgleich",
   "settings.libraryScanFetchingMetadata": "Metadaten abrufen",
   "settings.libraryScanFilesScanned": "Medienanalyse",

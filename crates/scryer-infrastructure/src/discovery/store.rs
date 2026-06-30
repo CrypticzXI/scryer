@@ -819,6 +819,66 @@ impl DiscoveryRepository for DiscoveryStore {
         query_discovery_items_page(&self.datastore, query).await
     }
 
+    async fn replace_title_more_like_this_items(
+        &self,
+        title_id: &str,
+        items: &[DiscoveryItemRecord],
+    ) -> AppResult<()> {
+        let datastore = self.datastore.clone();
+        let title_id = title_id.to_string();
+        let items = items.to_vec();
+        SqlRuntime::run_in_transaction(
+            &self.datastore,
+            "replace_title_more_like_this_items",
+            move |tx| {
+                let datastore = datastore.clone();
+                let title_id = title_id.clone();
+                let items = items.clone();
+                Box::pin(async move {
+                    delete_title_more_like_this_items_tx(tx, &title_id).await?;
+                    for item in &items {
+                        insert_title_more_like_this_item_tx(tx, &datastore, &title_id, item)
+                            .await?;
+                    }
+                    Ok(())
+                })
+            },
+        )
+        .await
+    }
+
+    async fn list_title_more_like_this_items(
+        &self,
+        title_id: &str,
+        limit: i64,
+    ) -> AppResult<Vec<DiscoveryItemRecord>> {
+        let rows = SqlRuntime::fetch_all(
+            self.datastore.read_exec(),
+            &format!(
+                "SELECT {}
+                 FROM title_more_like_this_items
+                 WHERE source_title_id = {{}}
+                   AND tombstoned_at IS NULL
+                 ORDER BY sort_index ASC,
+                          COALESCE(rank_score, 0) DESC,
+                          id ASC
+                 LIMIT {{}}",
+                ITEM_COLUMNS.join(", ")
+            ),
+            &[
+                SqlArg::Text(title_id.to_string()),
+                SqlArg::I64(limit.clamp(0, 100)),
+            ],
+        )
+        .await?;
+        let mut items = rows
+            .iter()
+            .map(item_from_row)
+            .collect::<AppResult<Vec<_>>>()?;
+        hydrate_title_more_like_this_item_terms(&self.datastore, &mut items).await?;
+        Ok(items)
+    }
+
     async fn list_discovery_items_for_generation(
         &self,
         base_generation_id: &str,
@@ -2396,6 +2456,52 @@ async fn hydrate_item_terms(
     Ok(())
 }
 
+async fn hydrate_title_more_like_this_item_terms(
+    datastore: &StoreDatastore,
+    items: &mut [DiscoveryItemRecord],
+) -> AppResult<()> {
+    if items.is_empty() {
+        return Ok(());
+    }
+    let item_ids = items.iter().map(|item| item.id.clone()).collect::<Vec<_>>();
+    let mut item_indexes = HashMap::new();
+    for (index, item) in items.iter().enumerate() {
+        item_indexes.insert(item.id.clone(), index);
+    }
+    let rows = fetch_child_rows(
+        datastore,
+        "SELECT item_id, term_kind, term_value, sort_index
+         FROM title_more_like_this_item_terms
+         WHERE item_id IN ({})
+         ORDER BY item_id ASC, term_kind ASC, sort_index ASC, term_value ASC",
+        &item_ids,
+    )
+    .await?;
+    for row in rows {
+        let item_id = row.text("item_id")?;
+        let Some(index) = item_indexes.get(&item_id).copied() else {
+            continue;
+        };
+        let term_kind = row.text("term_kind")?;
+        let term_value = row.text("term_value")?;
+        let item = &mut items[index];
+        match term_kind.as_str() {
+            "genre" => item.genres.push(term_value),
+            "rating_source" => item.rating_sources.push(term_value),
+            "status_tag" => item.status_tags.push(term_value),
+            "source" => item.sources.push(term_value),
+            "relation_type" => item.relation_types.push(term_value),
+            "relation_subtype" => item.relation_subtypes.push(term_value),
+            "chart_signal" => item.chart_signals.push(term_value),
+            "provider_signal" => item.provider_signals.push(term_value),
+            "facet_term" => item.facet_terms.push(term_value),
+            "context_term" => item.context_terms.push(term_value),
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 async fn hydrate_item_source_tags(
     datastore: &StoreDatastore,
     items: &mut [DiscoveryItemRecord],
@@ -2672,6 +2778,100 @@ async fn insert_item_tx(
     Ok(())
 }
 
+async fn delete_title_more_like_this_items_tx(tx: &mut SqlTx<'_>, title_id: &str) -> AppResult<()> {
+    SqlRuntime::execute(
+        SqlExec::Tx(tx),
+        "DELETE FROM title_more_like_this_item_terms WHERE source_title_id = {}",
+        &[SqlArg::Text(title_id.to_string())],
+    )
+    .await?;
+    SqlRuntime::execute(
+        SqlExec::Tx(tx),
+        "DELETE FROM title_more_like_this_items WHERE source_title_id = {}",
+        &[SqlArg::Text(title_id.to_string())],
+    )
+    .await?;
+    Ok(())
+}
+
+async fn insert_title_more_like_this_item_tx(
+    tx: &mut SqlTx<'_>,
+    _datastore: &StoreDatastore,
+    title_id: &str,
+    item: &DiscoveryItemRecord,
+) -> AppResult<()> {
+    let columns = std::iter::once("source_title_id")
+        .chain(ITEM_COLUMNS.iter().copied())
+        .collect::<Vec<_>>();
+    let mut args = vec![SqlArg::Text(title_id.to_string())];
+    args.extend(item_args(item));
+    SqlRuntime::execute(
+        SqlExec::Tx(tx),
+        &insert_sql("title_more_like_this_items", &columns),
+        &args,
+    )
+    .await?;
+    insert_title_more_like_this_item_terms_tx(tx, title_id, item, "genre", &item.genres).await?;
+    insert_title_more_like_this_item_terms_tx(
+        tx,
+        title_id,
+        item,
+        "rating_source",
+        &item.rating_sources,
+    )
+    .await?;
+    insert_title_more_like_this_item_terms_tx(tx, title_id, item, "status_tag", &item.status_tags)
+        .await?;
+    insert_title_more_like_this_item_terms_tx(tx, title_id, item, "source", &item.sources).await?;
+    insert_title_more_like_this_item_terms_tx(
+        tx,
+        title_id,
+        item,
+        "relation_type",
+        &item.relation_types,
+    )
+    .await?;
+    insert_title_more_like_this_item_terms_tx(
+        tx,
+        title_id,
+        item,
+        "relation_subtype",
+        &item.relation_subtypes,
+    )
+    .await?;
+    insert_title_more_like_this_item_terms_tx(
+        tx,
+        title_id,
+        item,
+        "chart_signal",
+        &item.chart_signals,
+    )
+    .await?;
+    insert_title_more_like_this_item_terms_tx(
+        tx,
+        title_id,
+        item,
+        "provider_signal",
+        &item.provider_signals,
+    )
+    .await?;
+    insert_title_more_like_this_item_terms_tx(tx, title_id, item, "facet_term", &item.facet_terms)
+        .await?;
+    insert_title_more_like_this_item_terms_tx(
+        tx,
+        title_id,
+        item,
+        "context_term",
+        &item.context_terms,
+    )
+    .await?;
+    if let Some(media_kind) = discovery_item_authoritative_media_kind(item) {
+        insert_title_more_like_this_item_terms_tx(tx, title_id, item, "media_kind", &[media_kind])
+            .await?;
+    }
+    Ok(())
+}
+
 async fn insert_facet_tx(
     tx: &mut SqlTx<'_>,
     _datastore: &StoreDatastore,
@@ -2810,6 +3010,38 @@ async fn insert_item_terms_tx(
                 SqlArg::Text(item.run_id.clone()),
                 SqlArg::Text(term_kind.to_string()),
                 SqlArg::Text(storage_text(term_category)),
+                SqlArg::Text(value.to_string()),
+                SqlArg::I32(index as i32),
+            ],
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+async fn insert_title_more_like_this_item_terms_tx(
+    tx: &mut SqlTx<'_>,
+    title_id: &str,
+    item: &DiscoveryItemRecord,
+    term_kind: &str,
+    values: &[String],
+) -> AppResult<()> {
+    for (index, value) in values.iter().enumerate() {
+        let value = value.trim();
+        if value.is_empty() {
+            continue;
+        }
+        SqlRuntime::execute(
+            SqlExec::Tx(tx),
+            "INSERT INTO title_more_like_this_item_terms
+             (item_id, source_title_id, term_kind, term_category, term_value, sort_index)
+             VALUES ({}, {}, {}, {}, {}, {})
+             ON CONFLICT DO NOTHING",
+            &[
+                SqlArg::Text(item.id.clone()),
+                SqlArg::Text(title_id.to_string()),
+                SqlArg::Text(term_kind.to_string()),
+                SqlArg::Text(String::new()),
                 SqlArg::Text(value.to_string()),
                 SqlArg::I32(index as i32),
             ],

@@ -229,6 +229,7 @@ export function SettingsProfileSection({
   const [submittedTotpAction, setSubmittedTotpAction] = useState(false);
   const passwordMismatch =
     confirmPassword.length > 0 && newPassword !== confirmPassword;
+  const showSponsorButton = !hideSponsorButton;
   const canSubmit =
     (!requiresCurrentPassword || currentPassword.length > 0) &&
     newPassword.length > 0 &&
@@ -372,7 +373,7 @@ export function SettingsProfileSection({
               Sponsor button
             </div>
             <p className={`${PROFILE_MUTED_TEXT_CLASS} max-w-xs`}>
-              Remove the Sponsor link from the navigation footer.
+              Show the Sponsor link in the navigation footer.
             </p>
           </div>
           <div className="flex items-center gap-2">
@@ -381,10 +382,10 @@ export function SettingsProfileSection({
             ) : null}
             <SettingsToggleSwitch
               id="settings-profile-hide-sponsor-button"
-              checked={hideSponsorButton}
+              checked={showSponsorButton}
               disabled={savingSponsorPreference}
-              onChange={onHideSponsorButtonChange}
-              ariaLabel="Hide Sponsor button"
+              onChange={(visible) => onHideSponsorButtonChange(!visible)}
+              ariaLabel="Show Sponsor button"
             />
           </div>
         </div>

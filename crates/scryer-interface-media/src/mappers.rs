@@ -1996,6 +1996,7 @@ pub fn from_title_media_file(file: scryer_application::TitleMediaFile) -> TitleM
                 profile: s.profile,
                 channels: s.channels,
                 language: s.language,
+                name: s.name,
                 bitrate_kbps: s.bitrate_kbps,
             })
             .collect(),

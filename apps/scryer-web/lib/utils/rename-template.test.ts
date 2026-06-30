@@ -7,7 +7,7 @@ import {
   validateRenameTemplateSyntax,
 } from "./rename-template.ts";
 
-const VALID_TOKENS = new Set(["title", "ext"]);
+const VALID_TOKENS = new Set(["title", "season_order", "ext"]);
 const SAMPLE_VALUES = {
   title: "The Dark Knight",
   ext: "mkv",
@@ -39,6 +39,13 @@ test("applyRenameTemplatePreview applies truncate before later filters", () => {
       SAMPLE_VALUES,
     ),
     "The_Dark.mkv",
+  );
+});
+
+test("applyRenameTemplatePreview renders missing sample values as empty strings", () => {
+  assert.equal(
+    applyRenameTemplatePreview("{title} - {season_order}.{ext}", VALID_TOKENS, SAMPLE_VALUES),
+    "The Dark Knight - .mkv",
   );
 });
 

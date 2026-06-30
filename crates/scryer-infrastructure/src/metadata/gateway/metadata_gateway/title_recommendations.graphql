@@ -1,0 +1,103 @@
+query TitleRecommendations(
+  $subject: DiscoverySubjectInput!
+  $query: String!
+  $limit: Int!
+  $language: String!
+  $includeUnresolved: Boolean!
+) {
+  titleRecommendations(
+    subject: $subject
+    query: $query
+    limit: $limit
+    language: $language
+    includeUnresolved: $includeUnresolved
+  ) {
+    subject_key
+    query
+    generated_at
+    results {
+      target_key
+      target_kind
+      resolved
+      resolved_title_id
+      display_title
+      original_title
+      year
+      poster_path
+      poster_url
+      overview
+      content_type
+      genres
+      rating
+      rating_sources
+      status_tags
+      background_url
+      source_tags {
+        source
+        category
+        key
+        name
+        rank
+        weight
+        is_adult
+        is_spoiler
+      }
+      canonical_tags {
+        key
+        category
+        name
+        confidence
+        sources
+        source_tag_keys
+        is_adult
+        is_spoiler
+      }
+      sources
+      relation_types
+      relation_subtypes
+      chart_signals {
+        source
+        chart_key
+        scope
+        country_iso2
+        observed_week
+        category
+        rank
+        score
+        score_percent
+        signal_kind
+        ranking_body_key
+        ranking_body_name
+        ranking_body_kind
+        source_url
+        source_title
+        source_published_at
+        source_total_votes
+        anime_season
+        anime_season_year
+        anime_season_week
+        anime_signal_phase
+        anime_signal_category
+        attribution
+      }
+      provider_signals {
+        key
+        name
+        source
+        region
+        kind
+        access_type
+      }
+      rank_components {
+        name
+        value
+      }
+      source_count
+      edge_count
+      relation_count
+      source_subject_count
+      rank_score
+      best_source
+    }
+  }
+}

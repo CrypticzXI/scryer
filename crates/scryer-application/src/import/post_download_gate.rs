@@ -27,6 +27,9 @@ pub(crate) struct ImportedFileAcceptance {
     pub analysis: Option<crate::MediaFileAnalysis>,
     pub scan_error: Option<String>,
     pub rule_file_doc: Option<scryer_rules::FileDoc>,
+    /// Set when the file was accepted but a required audio language could not be
+    /// verified (untagged tracks); surfaced as an import warning for review.
+    pub audio_language_warning: Option<String>,
 }
 
 pub(crate) struct PreparedImportCandidate {
@@ -260,6 +263,7 @@ pub(crate) fn build_media_file_analysis(
                     .language
                     .as_deref()
                     .and_then(crate::normalize_detected_audio_language_code),
+                name: stream.name.clone(),
                 bitrate_kbps: stream.bitrate_kbps,
             })
             .collect(),
@@ -408,6 +412,7 @@ pub(crate) async fn probe_and_validate(
             analysis: Some(build_stream_pointer_media_file_analysis_from_parsed(parsed)),
             scan_error: None,
             rule_file_doc: None,
+            audio_language_warning: None,
         }));
     }
 
@@ -428,6 +433,7 @@ pub(crate) async fn probe_and_validate(
                 analysis: synthetic_analysis,
                 scan_error: Some(error.to_string()),
                 rule_file_doc: None,
+                audio_language_warning: None,
             }));
         }
     };
@@ -463,23 +469,6 @@ pub(crate) async fn probe_and_validate(
             );
             Vec::new()
         });
-    if !required_audio_languages.is_empty() {
-        let missing = crate::missing_required_audio_languages(
-            &required_audio_languages,
-            &analysis.audio_languages,
-        );
-        if !missing.is_empty() {
-            return ImportedFileGateDecision::Rejected(ImportedFileRejection {
-                message: format!(
-                    "imported file is missing required audio language(s): {}",
-                    missing.join(", ")
-                ),
-                recycle_reason: "language_mismatch",
-                skip_reason: None,
-                blocking_rule_codes: Vec::new(),
-            });
-        }
-    }
     let persona = app
         .resolve_scoring_persona(Some(title.library_id.as_str()), Some(category_hint))
         .await
@@ -493,11 +482,62 @@ pub(crate) async fn probe_and_validate(
         });
 
     let accepted_analysis = build_media_file_analysis(&analysis);
+
+    // Required audio language gate (post-download, file truth). Distinguishes a
+    // provable absence (reject) from an untagged/indeterminate result (accept +
+    // flag), so a correctly-dubbed file with "und"/untagged tracks is not falsely
+    // rejected. Uses the same title context + release hints as the search gate.
+    let mut audio_language_warning: Option<String> = None;
+    if !required_audio_languages.is_empty() {
+        let title_audio_context = crate::title_audio_language_context(
+            title.language.as_deref(),
+            title.country.as_deref(),
+            Some(category_hint),
+            &title.tags,
+        );
+        let release_audio_hints = crate::release_audio_language_hints_for_title(
+            parsed,
+            None,
+            Some(&title_audio_context),
+            true,
+        );
+        match crate::classify_required_audio(
+            &required_audio_languages,
+            &accepted_analysis.audio_streams,
+            &release_audio_hints,
+        ) {
+            crate::RequiredAudioVerdict::Satisfied => {}
+            crate::RequiredAudioVerdict::Missing(missing) => {
+                return ImportedFileGateDecision::Rejected(ImportedFileRejection {
+                    message: format!(
+                        "imported file is missing required audio language(s): {}",
+                        missing.join(", ")
+                    ),
+                    recycle_reason: "language_mismatch",
+                    skip_reason: None,
+                    blocking_rule_codes: Vec::new(),
+                });
+            }
+            crate::RequiredAudioVerdict::Indeterminate(unverified) => {
+                warn!(
+                    title_id = %title.id,
+                    unverified = %unverified.join(", "),
+                    "required audio language(s) could not be verified from file metadata; importing for review"
+                );
+                audio_language_warning = Some(format!(
+                    "audio language(s) {} could not be verified from file metadata (untagged track(s)); imported for review",
+                    unverified.join(", ")
+                ));
+            }
+        }
+    }
+
     let rule_file_doc = crate::user_rule_input::build_file_doc(&analysis);
     let accepted_for_rules = ImportedFileAcceptance {
         analysis: Some(accepted_analysis.clone()),
         scan_error: None,
         rule_file_doc: Some(rule_file_doc.clone()),
+        audio_language_warning: None,
     };
     let (rescored_for_rules, _) = rescore_from_mediainfo(parsed, &accepted_for_rules);
 
@@ -609,6 +649,7 @@ pub(crate) async fn probe_and_validate(
         analysis: Some(accepted_analysis),
         scan_error: None,
         rule_file_doc: Some(rule_file_doc),
+        audio_language_warning,
     }))
 }
 
@@ -636,6 +677,7 @@ pub(crate) async fn probe_and_validate(
         )),
         scan_error: Some("native media analysis is not compiled into this target".to_string()),
         rule_file_doc: None,
+        audio_language_warning: None,
     }))
 }
 

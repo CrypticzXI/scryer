@@ -13,10 +13,11 @@ use scryer_application::{
     DiscoveryContextChangesInput, DiscoveryContextChangesResult, DiscoveryContextSnapshotAckResult,
     DiscoveryContextSnapshotPageResult, DiscoveryContextSnapshotStatusResult,
     DiscoveryContextSnapshotSubmitInput, DiscoveryContextSnapshotSubmitResult,
-    DiscoveryDashboardResult, DiscoveryPublicFeedInput, EpisodeArtworkUrls, EpisodeMetadata,
-    MetadataGateway, MetadataSearchItem, MetadataSearchQuery, MovieMetadata,
+    DiscoveryDashboardResult, DiscoveryPublicFeedInput, DiscoveryRelatedResult, EpisodeArtworkUrls,
+    EpisodeMetadata, MetadataGateway, MetadataSearchItem, MetadataSearchQuery, MovieMetadata,
     MultiMetadataSearchResult, RichMetadataSearchItem, SeasonMetadata, SeriesArtworkUrls,
     SeriesMetadata, SettingsRepository, SmgScryerUpdateNotice, TitleArtworkUrls,
+    TitleRecommendationsInput,
 };
 use scryer_outbound_http::{
     OutboundHttpClient, OutboundHttpError, OutboundRequestError, RateLimitRegistry, RequestPolicy,
@@ -96,6 +97,7 @@ const OP_SEARCH_TVDB_RICH: &str = "SearchTvdbRich";
 const OP_SEARCH_TVDB_MULTI: &str = "SearchTvdbMulti";
 const OP_GET_MOVIE: &str = "GetMovie";
 const OP_GET_SERIES: &str = "GetSeries";
+const OP_TITLE_RECOMMENDATIONS: &str = "TitleRecommendations";
 const OP_DISCOVER_PUBLIC_FEED: &str = "DiscoverPublicFeed";
 const OP_COLLECTION_COMPLETIONS: &str = "CollectionCompletions";
 const OP_SUBMIT_DISCOVERY_CONTEXT_SNAPSHOT: &str = "SubmitDiscoveryContextSnapshot";
@@ -459,6 +461,7 @@ pub struct MetadataGatewayClient {
     search_multi_hash: String,
     movie_hash: String,
     series_hash: String,
+    title_recommendations_hash: String,
     collection_completions_hash: String,
     submit_discovery_context_snapshot_hash: String,
     discovery_context_snapshot_status_hash: String,
@@ -494,6 +497,7 @@ impl MetadataGatewayClient {
         let search_multi_hash = apq_hash(graphql_docs::SEARCH_TVDB_MULTI_QUERY);
         let movie_hash = apq_hash(graphql_docs::GET_MOVIE_QUERY);
         let series_hash = apq_hash(graphql_docs::GET_SERIES_QUERY);
+        let title_recommendations_hash = apq_hash(graphql_docs::TITLE_RECOMMENDATIONS_QUERY);
         let collection_completions_hash = apq_hash(graphql_docs::COLLECTION_COMPLETIONS_QUERY);
         let submit_discovery_context_snapshot_hash =
             apq_hash(graphql_docs::SUBMIT_DISCOVERY_CONTEXT_SNAPSHOT_QUERY);
@@ -524,6 +528,7 @@ impl MetadataGatewayClient {
             %search_multi_hash,
             %movie_hash,
             %series_hash,
+            %title_recommendations_hash,
             %collection_completions_hash,
             %submit_discovery_context_snapshot_hash,
             %discovery_context_snapshot_status_hash,
@@ -552,6 +557,7 @@ impl MetadataGatewayClient {
             search_multi_hash,
             movie_hash,
             series_hash,
+            title_recommendations_hash,
             collection_completions_hash,
             submit_discovery_context_snapshot_hash,
             discovery_context_snapshot_status_hash,
@@ -577,6 +583,7 @@ impl MetadataGatewayClient {
         let search_multi_hash = apq_hash(graphql_docs::SEARCH_TVDB_MULTI_QUERY);
         let movie_hash = apq_hash(graphql_docs::GET_MOVIE_QUERY);
         let series_hash = apq_hash(graphql_docs::GET_SERIES_QUERY);
+        let title_recommendations_hash = apq_hash(graphql_docs::TITLE_RECOMMENDATIONS_QUERY);
         let collection_completions_hash = apq_hash(graphql_docs::COLLECTION_COMPLETIONS_QUERY);
         let submit_discovery_context_snapshot_hash =
             apq_hash(graphql_docs::SUBMIT_DISCOVERY_CONTEXT_SNAPSHOT_QUERY);
@@ -615,6 +622,7 @@ impl MetadataGatewayClient {
             search_multi_hash,
             movie_hash,
             series_hash,
+            title_recommendations_hash,
             collection_completions_hash,
             submit_discovery_context_snapshot_hash,
             discovery_context_snapshot_status_hash,
@@ -3115,6 +3123,12 @@ struct DiscoverPublicFeedResponse {
 }
 
 #[derive(Deserialize)]
+struct TitleRecommendationsResponse {
+    #[serde(rename = "titleRecommendations")]
+    title_recommendations: DiscoveryRelatedResult,
+}
+
+#[derive(Deserialize)]
 struct CollectionCompletionsResponse {
     #[serde(rename = "collectionCompletions")]
     collection_completions: DiscoveryCollectionCompletionResult,
@@ -4030,6 +4044,27 @@ impl MetadataGateway for MetadataGatewayClient {
             )
             .await?;
         Ok(data.discover_public_feed)
+    }
+
+    async fn title_recommendations(
+        &self,
+        input: &TitleRecommendationsInput,
+    ) -> AppResult<DiscoveryRelatedResult> {
+        let data: TitleRecommendationsResponse = self
+            .execute_graphql_apq_post(
+                OP_TITLE_RECOMMENDATIONS,
+                graphql_docs::TITLE_RECOMMENDATIONS_QUERY,
+                &self.title_recommendations_hash,
+                json!({
+                    "subject": input.subject,
+                    "query": input.query,
+                    "limit": input.limit,
+                    "language": input.language,
+                    "includeUnresolved": input.include_unresolved,
+                }),
+            )
+            .await?;
+        Ok(data.title_recommendations)
     }
 
     async fn collection_completions(

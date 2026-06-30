@@ -198,6 +198,25 @@ pub struct DiscoveryDashboardResult {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct TitleRecommendationsInput {
+    pub subject: DiscoverySubjectInput,
+    #[serde(default)]
+    pub query: String,
+    pub limit: i32,
+    pub language: String,
+    pub include_unresolved: bool,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct DiscoveryRelatedResult {
+    pub subject_key: String,
+    pub query: String,
+    pub generated_at: String,
+    #[serde(default)]
+    pub results: Vec<DiscoveryTitle>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct DiscoveryDashboardSection {
     pub section_id: String,
     pub section_type: String,
@@ -333,6 +352,8 @@ pub struct DiscoveryTitle {
     #[serde(default)]
     pub source_tags: Vec<serde_json::Value>,
     #[serde(default)]
+    pub canonical_tags: Vec<serde_json::Value>,
+    #[serde(default)]
     pub sources: Vec<String>,
     #[serde(default)]
     pub relation_types: Vec<String>,
@@ -354,8 +375,10 @@ pub struct DiscoveryTitle {
     pub matched_subject_keys: Vec<String>,
     #[serde(default)]
     pub matched_subject_titles: Vec<String>,
+    #[serde(default)]
     pub matched_subject_count: i32,
     pub tmdb_collection_id: Option<i32>,
+    #[serde(default)]
     pub tmdb_collection_name: String,
     #[serde(default)]
     pub owned_in_input: bool,
@@ -538,6 +561,16 @@ pub trait MetadataGateway: Send + Sync {
         series_tvdb_ids: &[i64],
         language: &str,
     ) -> AppResult<BulkMetadataResult>;
+
+    async fn title_recommendations(
+        &self,
+        input: &TitleRecommendationsInput,
+    ) -> AppResult<DiscoveryRelatedResult> {
+        let _ = input;
+        Err(AppError::Repository(
+            "metadata gateway titleRecommendations is not implemented".into(),
+        ))
+    }
 
     async fn discover_public_feed(
         &self,

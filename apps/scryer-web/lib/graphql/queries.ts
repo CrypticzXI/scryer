@@ -426,6 +426,9 @@ const TITLE_SERIES_OVERVIEW_FIELDS = `${TITLE_CORE_FIELDS}
     wantedItems {
       items {${WANTED_ITEM_FIELDS}
       }
+    }
+    moreLikeThis(limit: 12) {
+${CATALOG_DISCOVERY_ITEM_FIELDS}
     }`;
 
 const TITLE_OVERVIEW_FIELDS = `${TITLE_SERIES_OVERVIEW_FIELDS}
@@ -659,6 +662,16 @@ export const titleDetailQuery = `query TitleDetail($id: ID!) {
 export const titleBySlugQuery = `query TitleBySlug($facet: MediaFacetValue!, $librarySlug: String, $slug: String!) {
   titleBySlug(facet: $facet, librarySlug: $librarySlug, slug: $slug) {
     id
+    slug
+    libraryId
+    librarySlug
+  }
+}`;
+
+export const titleRouteTargetQuery = `query TitleRouteTarget($id: ID!) {
+  title(id: $id) {
+    id
+    facet
     slug
     libraryId
     librarySlug

@@ -1244,6 +1244,22 @@ pub(crate) fn validate_title_folder_template(template: &str) -> AppResult<()> {
 }
 
 pub(crate) fn validate_rename_template(template: &str) -> AppResult<()> {
+    validate_rename_template_with_token_checker(template, is_supported_rename_template_token)
+}
+
+pub(crate) fn validate_rename_template_for_facet(
+    template: &str,
+    facet: &MediaFacet,
+) -> AppResult<()> {
+    validate_rename_template_with_token_checker(template, |token| {
+        is_supported_rename_template_token_for_facet(token, facet)
+    })
+}
+
+fn validate_rename_template_with_token_checker(
+    template: &str,
+    is_supported_token: impl Fn(&str) -> bool,
+) -> AppResult<()> {
     let trimmed = template.trim();
     if trimmed.is_empty() {
         return Err(AppError::Validation(
@@ -1282,7 +1298,7 @@ pub(crate) fn validate_rename_template(template: &str) -> AppResult<()> {
                     token_spec.trim()
                 )));
             };
-            if !is_supported_rename_template_token(&parsed_token.name) {
+            if !is_supported_token(&parsed_token.name) {
                 return Err(AppError::Validation(format!(
                     "unsupported rename template token: {{{}}}",
                     token_spec.trim()
@@ -1687,6 +1703,32 @@ fn is_supported_rename_template_token(token: &str) -> bool {
     ) || TITLE_EXTERNAL_ID_TOKENS
         .iter()
         .any(|(token_name, _)| *token_name == token)
+}
+
+fn is_supported_rename_template_token_for_facet(token: &str, facet: &MediaFacet) -> bool {
+    let common = matches!(
+        token,
+        "title"
+            | "year"
+            | "quality"
+            | "source"
+            | "video_codec"
+            | "audio_codec"
+            | "audio_channels"
+            | "group"
+            | "ext"
+    ) || TITLE_EXTERNAL_ID_TOKENS
+        .iter()
+        .any(|(token_name, _)| *token_name == token);
+
+    common
+        || match facet {
+            MediaFacet::Movie => token == "edition",
+            MediaFacet::Series | MediaFacet::Anime => matches!(
+                token,
+                "season" | "season_order" | "episode" | "episode_title" | "absolute_episode"
+            ),
+        }
 }
 
 fn is_supported_title_folder_token(token: &str) -> bool {

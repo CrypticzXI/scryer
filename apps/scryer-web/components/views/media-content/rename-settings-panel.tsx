@@ -33,11 +33,25 @@ const RENAME_MISSING_METADATA_POLICY_OPTIONS = [
   { value: "skip", label: "settings.renameMissingMetadataPolicySkip" },
 ];
 
-const VALID_RENAME_TOKENS = new Set([
-  "title", "year", "quality", "edition", "source",
+const COMMON_RENAME_TOKENS = [
+  "title", "year", "quality", "source",
   "video_codec", "audio_codec", "audio_channels", "group", "ext",
-  "season", "season_order", "episode", "episode_title", "absolute_episode",
+];
+const EXTERNAL_ID_RENAME_TOKENS = [
   "imdb_id", "tmdb_id", "tvdb_id", "anidb_id", "mal_id", "anilist_id",
+];
+const EPISODE_RENAME_TOKENS = [
+  "season", "season_order", "episode", "episode_title", "absolute_episode",
+];
+const VALID_MOVIE_RENAME_TOKENS = new Set([
+  ...COMMON_RENAME_TOKENS,
+  "edition",
+  ...EXTERNAL_ID_RENAME_TOKENS,
+]);
+const VALID_EPISODE_RENAME_TOKENS = new Set([
+  ...COMMON_RENAME_TOKENS,
+  ...EPISODE_RENAME_TOKENS,
+  ...EXTERNAL_ID_RENAME_TOKENS,
 ]);
 const VALID_FOLDER_TOKENS = new Set([
   "title", "year",
@@ -82,7 +96,9 @@ const EXTERNAL_ID_RENAME_TOKEN_DESCRIPTIONS: { token: string; labelKey: string }
 
 const SERIES_RENAME_TOKEN_DESCRIPTIONS: { token: string; labelKey: string }[] = [
   { token: "season", labelKey: "settings.renameTokenSeason" },
+  { token: "season_order", labelKey: "settings.renameTokenSeasonOrder" },
   { token: "episode", labelKey: "settings.renameTokenEpisode" },
+  { token: "absolute_episode", labelKey: "settings.renameTokenAbsoluteEpisode" },
   { token: "episode_title", labelKey: "settings.renameTokenEpisodeTitle" },
 ];
 
@@ -149,6 +165,12 @@ function getRenameTokenDescriptions(scopeId: ViewCategoryId): { token: string; l
   return [...scopeSpecific, ...EXTERNAL_ID_RENAME_TOKEN_DESCRIPTIONS, ...shared];
 }
 
+function getValidRenameTokens(scopeId: ViewCategoryId): ReadonlySet<string> {
+  return scopeId === "movie"
+    ? VALID_MOVIE_RENAME_TOKENS
+    : VALID_EPISODE_RENAME_TOKENS;
+}
+
 function getRenameReferenceTokens(
   renameTokenDescriptions: TokenDescription[],
 ): TokenReference[] {
@@ -175,10 +197,11 @@ function getRenameReferenceTokens(
 
 function validateRenameTemplate(
   template: string,
+  scopeId: ViewCategoryId,
   t: Translate,
 ): string | null {
   return formatRenameValidationIssue(
-    validateRenameTemplateSyntax(template, VALID_RENAME_TOKENS),
+    validateRenameTemplateSyntax(template, getValidRenameTokens(scopeId)),
     t,
   );
 }
@@ -261,7 +284,8 @@ const RENAME_PREVIEW_SERIES_SAMPLE: Record<string, string> = {
   audio_channels: "2.0", group: "NTb", ext: "mkv",
   imdb_id: "tt0108778", tmdb_id: "1668", tvdb_id: "79168",
   anidb_id: "", mal_id: "", anilist_id: "",
-  season: "5", episode: "12", episode_title: "The One with the Embryos",
+  season: "5", season_order: "5", episode: "12",
+  absolute_episode: "97", episode_title: "The One with the Embryos",
 };
 
 const RENAME_PREVIEW_ANIME_SAMPLE: Record<string, string> = {
@@ -281,7 +305,7 @@ function applyRenameTemplate(template: string, scopeId: ViewCategoryId): string 
       : scopeId === "anime"
         ? RENAME_PREVIEW_ANIME_SAMPLE
         : RENAME_PREVIEW_SERIES_SAMPLE;
-  return applyRenameTemplatePreview(template, VALID_RENAME_TOKENS, sampleValues);
+  return applyRenameTemplatePreview(template, getValidRenameTokens(scopeId), sampleValues);
 }
 
 function applyFolderTemplate(template: string, scopeId: ViewCategoryId): string | null {
@@ -362,8 +386,11 @@ function splitFolderTemplateSegments(template: string): RenameTemplateSegment[] 
   return segments.filter((segment) => segment.text.length > 0);
 }
 
-function splitRenameInputSegments(template: string): RenameTemplateSegment[] {
-  return splitRenameTemplateSegments(template, VALID_RENAME_TOKENS);
+function splitRenameInputSegments(
+  template: string,
+  scopeId: ViewCategoryId,
+): RenameTemplateSegment[] {
+  return splitRenameTemplateSegments(template, getValidRenameTokens(scopeId));
 }
 
 type HighlightedTemplateInputProps = React.ComponentProps<typeof Input> & {
@@ -508,7 +535,10 @@ const HighlightedTemplateInput = React.forwardRef<HTMLInputElement, HighlightedT
   ({ className, value, getSegments, onScroll, ...props }, ref) => {
     const [scrollLeft, setScrollLeft] = React.useState(0);
     const segments = React.useMemo(
-      () => (getSegments ?? splitRenameInputSegments)(value),
+      () =>
+        getSegments
+          ? getSegments(value)
+          : splitRenameTemplateSegments(value, VALID_EPISODE_RENAME_TOKENS),
       [getSegments, value],
     );
     const showOverlay = value.length > 0;
@@ -1040,8 +1070,8 @@ export function RenameSettingsPanel({
     [folderTemplateValue, t],
   );
   const renameValidationError = React.useMemo(
-    () => (renameEnabled ? validateRenameTemplate(templateValue, t) : null),
-    [renameEnabled, templateValue, t],
+    () => (renameEnabled ? validateRenameTemplate(templateValue, activeQualityScopeId, t) : null),
+    [activeQualityScopeId, renameEnabled, templateValue, t],
   );
 
   const folderPreview = React.useMemo(
@@ -1189,6 +1219,7 @@ export function RenameSettingsPanel({
                     tokenDescriptions={renameTokenDescriptions}
                     onAutocompleteToken={autocompleteRenameToken}
                     translateLabel={t}
+                    getSegments={(value) => splitRenameInputSegments(value, activeQualityScopeId)}
                     placeholder={t("settings.renameTemplatePlaceholder")}
                     disabled={mediaSettingsLoading}
                     className={

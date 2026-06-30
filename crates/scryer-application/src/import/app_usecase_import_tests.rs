@@ -650,6 +650,7 @@ fn rescore_from_mediainfo_updates_quality_when_parsed_quality_is_missing() {
         analysis: Some(test_media_analysis(Some(1080))),
         scan_error: None,
         rule_file_doc: None,
+        audio_language_warning: None,
     };
 
     let (rescored, changes) =
@@ -685,6 +686,7 @@ async fn post_download_score_uses_rescored_quality_and_records_negative_audit() 
         analysis: Some(analysis),
         scan_error: None,
         rule_file_doc: None,
+        audio_language_warning: None,
     };
 
     let result = crate::post_download_gate::compute_post_download_acquisition_decision(
@@ -734,6 +736,7 @@ async fn post_download_score_preserves_prepared_rescore_changes_when_parsed_alre
         analysis: Some(test_media_analysis(Some(1080))),
         scan_error: None,
         rule_file_doc: None,
+        audio_language_warning: None,
     };
     let (prepared_parsed, first_pass_changes) =
         crate::post_download_gate::rescore_from_mediainfo(&parsed, &acceptance);
@@ -806,6 +809,7 @@ score_entry["dv_profile_bonus"] := 123 if {
         analysis: Some(test_media_analysis(Some(2160))),
         scan_error: None,
         rule_file_doc: Some(test_rule_file_doc(Some(8), Some(1))),
+        audio_language_warning: None,
     };
 
     let result = crate::post_download_gate::compute_post_download_acquisition_decision(
@@ -849,6 +853,7 @@ fn episode_import_dest_path_uses_rescored_parsed_quality_without_override() {
         analysis: Some(test_media_analysis(Some(1080))),
         scan_error: None,
         rule_file_doc: None,
+        audio_language_warning: None,
     };
     let (rescored, _) = crate::post_download_gate::rescore_from_mediainfo(&parsed, &acceptance);
 

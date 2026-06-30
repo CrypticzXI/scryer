@@ -3,8 +3,8 @@ use chrono::Utc;
 use scryer_domain::{ExternalId, MediaFacet};
 
 use crate::{
-    AnimeMapping, AnimeMovie, AppResult, EpisodeMetadata, MetadataGateway, MovieMetadata,
-    SeasonMetadata, SeriesMetadata, TitleMetadataUpdate,
+    AnimeMapping, AnimeMovie, AppResult, DiscoveryTitle, EpisodeMetadata, MetadataGateway,
+    MovieMetadata, SeasonMetadata, SeriesMetadata, TitleMetadataUpdate,
 };
 
 /// Result of hydrating a title's metadata from a metadata gateway.
@@ -15,6 +15,7 @@ pub struct HydrationResult {
     pub episodes: Vec<EpisodeMetadata>,
     pub anime_mappings: Vec<AnimeMapping>,
     pub anime_movies: Vec<AnimeMovie>,
+    pub more_like_this: Vec<DiscoveryTitle>,
 }
 
 pub(crate) fn external_ids_from_hydration_metadata(
@@ -179,6 +180,7 @@ pub fn movie_to_hydration_result(movie: MovieMetadata, language: &str) -> Hydrat
         episodes: vec![],
         anime_mappings: vec![],
         anime_movies: vec![],
+        more_like_this: vec![],
     }
 }
 
@@ -219,6 +221,7 @@ pub fn series_to_hydration_result(series: SeriesMetadata, language: &str) -> Hyd
         episodes: series.episodes,
         anime_mappings: series.anime_mappings,
         anime_movies: series.anime_movies,
+        more_like_this: vec![],
     }
 }
 

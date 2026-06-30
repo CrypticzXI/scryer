@@ -230,6 +230,7 @@ const ja: LocaleDictionary = {
   "settings.libraryScanDiscovering": "タイトルを検出中…",
   "settings.libraryScanProgressPending": "検出待機中…",
   "settings.libraryScanProgressCalculatingTotal": "合計を計算中…",
+  "settings.libraryScanProgressScannedCount": "{{count}}件スキャン済み",
   "settings.libraryScanTitleMatch": "タイトル照合",
   "settings.libraryScanFetchingMetadata": "メタデータ取得",
   "settings.libraryScanFilesScanned": "メディア解析",

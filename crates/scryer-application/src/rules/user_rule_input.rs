@@ -325,6 +325,7 @@ pub(crate) fn build_file_doc(analysis: &scryer_mediainfo::MediaAnalysis) -> scry
                     .language
                     .as_deref()
                     .and_then(crate::normalize_detected_audio_language_code),
+                name: stream.name.clone(),
                 bitrate_kbps: stream.bitrate_kbps,
             })
             .collect(),

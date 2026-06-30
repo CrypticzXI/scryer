@@ -12,13 +12,13 @@ use crate::ports::{
     DiscoveryItemsResult, DiscoveryItemsStorageQuery, DiscoveryPendingContextChangeRecord,
     DiscoveryRankComponentRecord, DiscoveryRawPageRecord, DiscoverySectionItemsRecord,
     DiscoverySectionRecord, DiscoverySectionResult, DiscoverySourceTagRecord,
-    DiscoverySubmittedSubjectRecord, DiscoverySyncStatus,
+    DiscoverySubmittedSubjectRecord, DiscoverySyncStatus, TitleExternalIdLookup,
 };
 use crate::{AppError, AppResult, AppUseCase};
 use chrono::{DateTime, Utc};
 use scryer_domain::{
-    DomainEvent, DomainEventPayload, DomainExternalIds, LibraryPermission, MediaFacet, Title,
-    TitleContextSnapshot, User,
+    DomainEvent, DomainEventPayload, DomainExternalIds, ExternalId, LibraryPermission, MediaFacet,
+    Title, TitleContextSnapshot, User,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
@@ -127,6 +127,83 @@ struct DiscoverySubjectParts {
 }
 
 impl AppUseCase {
+    pub async fn title_more_like_this(
+        &self,
+        actor: &User,
+        title_id: &str,
+        limit: i64,
+    ) -> AppResult<Vec<DiscoveryItemRecord>> {
+        let source_title = self
+            .get_title(actor, title_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("title {title_id}")))?;
+        let readable_library_ids = self
+            .authorized_library_ids(actor, None, LibraryPermission::View)
+            .await?
+            .into_iter()
+            .collect::<HashSet<_>>();
+        let mut items = self
+            .services
+            .library
+            .discovery
+            .list_title_more_like_this_items(title_id, limit.clamp(0, 100))
+            .await?;
+        let mut item_lookup_indexes = vec![Vec::<usize>::new(); items.len()];
+        let mut lookups = Vec::new();
+        for item in &mut items {
+            item.resolved_title_id = None;
+            item.owned_in_input = false;
+        }
+        for (item_index, item) in items.iter().enumerate() {
+            let Some((source, kind, value)) = discovery_target_key_parts(&item.target_key) else {
+                continue;
+            };
+            let values = discovery_local_external_id_values(&kind, &value);
+            for source in discovery_local_external_id_sources(&source, &kind) {
+                for external_id in &values {
+                    let lookup_index = lookups.len();
+                    lookups.push(TitleExternalIdLookup {
+                        lookup_index,
+                        source: source.clone(),
+                        external_id: external_id.clone(),
+                    });
+                    item_lookup_indexes[item_index].push(lookup_index);
+                }
+            }
+        }
+        let mut matches_by_lookup_index = HashMap::<usize, Vec<Title>>::new();
+        for lookup_match in self
+            .services
+            .catalog
+            .titles
+            .list_by_external_id_lookups(&lookups)
+            .await?
+        {
+            matches_by_lookup_index
+                .entry(lookup_match.lookup_index)
+                .or_default()
+                .push(lookup_match.title);
+        }
+        for (item, lookup_indexes) in items.iter_mut().zip(item_lookup_indexes) {
+            let local_title = lookup_indexes.iter().find_map(|lookup_index| {
+                matches_by_lookup_index
+                    .get(lookup_index)
+                    .and_then(|titles| {
+                        titles.iter().find(|candidate| {
+                            candidate.id != source_title.id
+                                && readable_library_ids.contains(candidate.library_id.as_str())
+                        })
+                    })
+            });
+            if let Some(local_title) = local_title {
+                item.resolved = true;
+                item.resolved_title_id = Some(local_title.id.clone());
+                item.owned_in_input = true;
+            }
+        }
+        Ok(items)
+    }
+
     pub async fn discovery_home(
         &self,
         actor: &User,
@@ -2622,6 +2699,234 @@ fn discovery_item_record(
     })
 }
 
+pub(crate) fn title_more_like_this_item_records(
+    title_id: &str,
+    source_target_keys: &[String],
+    items: &[DiscoveryTitle],
+    limit: usize,
+    now: DateTime<Utc>,
+) -> AppResult<Vec<DiscoveryItemRecord>> {
+    let run_id = format!("title:{title_id}:more_like_this");
+    let provenance = HashMap::new();
+    let source_keys = source_target_keys
+        .iter()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .collect::<HashSet<_>>();
+    let mut seen = HashSet::new();
+    let mut records = Vec::new();
+    for item in items {
+        let target_key = item.target_key.trim();
+        if target_key.is_empty()
+            || source_keys.contains(target_key)
+            || !seen.insert(target_key.to_string())
+        {
+            continue;
+        }
+        let mut record = discovery_item_record(
+            &run_id,
+            &run_id,
+            "title_more_like_this",
+            None,
+            records.len(),
+            item,
+            &provenance,
+            now,
+        )?;
+        record.base_generation_id = None;
+        record.matched_subject_keys.clear();
+        record.matched_subject_titles.clear();
+        record.matched_subject_count = 0;
+        record.library_provenance.clear();
+        record.owned_in_input = false;
+        record.resolved_title_id = None;
+        records.push(record);
+        if records.len() >= limit {
+            break;
+        }
+    }
+    Ok(records)
+}
+
+pub(crate) fn title_recommendations_subject(
+    title: &Title,
+    external_ids: &[ExternalId],
+) -> Option<(DiscoverySubjectInput, Vec<String>)> {
+    let mut ids = BTreeSet::<(String, String)>::new();
+    for external_id in title.external_ids.iter().chain(external_ids.iter()) {
+        let raw_source = external_id.source.trim().to_ascii_lowercase();
+        let source = if matches!(raw_source.as_str(), "imdb" | "imdb_id") {
+            "imdb".to_string()
+        } else {
+            let Some(source) = normalize_supported_external_id_source(&external_id.source) else {
+                continue;
+            };
+            source
+        };
+        let value = external_id.value.trim();
+        if value.is_empty() {
+            continue;
+        }
+        let value = if source == "imdb" {
+            let Some(normalized) = crate::normalize::normalize_imdb_id(value) else {
+                continue;
+            };
+            normalized
+        } else {
+            let Some(id) = parse_positive_external_numeric_id(value) else {
+                continue;
+            };
+            id.to_string()
+        };
+        ids.insert((source, value));
+    }
+    if let Some(imdb_id) = title
+        .imdb_id
+        .as_deref()
+        .and_then(crate::normalize::normalize_imdb_id)
+    {
+        ids.insert(("imdb".to_string(), imdb_id));
+    }
+
+    if ids.is_empty() {
+        return None;
+    }
+
+    let mut subject = DiscoverySubjectInput {
+        kind: Some(title.facet.as_str().to_string()),
+        facet: Some(title.facet.as_str().to_string()),
+        ..Default::default()
+    };
+    let mut target_keys = Vec::new();
+    for (source, value) in &ids {
+        subject.external_ids.push(DiscoveryExternalIdInput {
+            source: source.clone(),
+            value: value.clone(),
+        });
+        match source.as_str() {
+            "tvdb" => {
+                if let Some(id) = parse_positive_i32(value) {
+                    subject.tvdb_id = subject.tvdb_id.or(Some(id));
+                    let key = keyed_discovery_target_key("tvdb", &title.facet, value);
+                    target_keys.push(key);
+                }
+            }
+            "tmdb" => {
+                if let Some(id) = parse_positive_i32(value) {
+                    subject.tmdb_id = subject.tmdb_id.or(Some(id));
+                    let key = keyed_discovery_target_key("tmdb", &title.facet, value);
+                    target_keys.push(key);
+                }
+            }
+            "mal" => {
+                if let Some(id) = parse_positive_i32(value) {
+                    subject.mal_id = subject.mal_id.or(Some(id));
+                    let key = format!("mal:anime:{value}");
+                    target_keys.push(key);
+                }
+            }
+            "anidb" => {
+                if let Some(id) = parse_positive_i32(value) {
+                    subject.anidb_id = subject.anidb_id.or(Some(id));
+                    let key = format!("anidb:anime:{value}");
+                    target_keys.push(key);
+                }
+            }
+            "anilist" => {
+                let key = format!("anilist:anime:{value}");
+                target_keys.push(key);
+            }
+            "imdb" => {
+                let key = format!("imdb:title:{value}");
+                target_keys.push(key);
+            }
+            _ => {}
+        }
+    }
+    subject.key = title_recommendations_preferred_subject_key(&ids, &title.facet);
+    Some((subject, unique_discovery_text_terms(target_keys)))
+}
+
+fn title_recommendations_preferred_subject_key(
+    ids: &BTreeSet<(String, String)>,
+    facet: &MediaFacet,
+) -> Option<String> {
+    for source in ["tvdb", "tmdb", "mal", "anidb", "anilist", "imdb"] {
+        let Some((_, value)) = ids.iter().find(|(candidate, _)| candidate == source) else {
+            continue;
+        };
+        return Some(match source {
+            "tvdb" | "tmdb" => keyed_discovery_target_key(source, facet, value),
+            "mal" | "anidb" | "anilist" => format!("{source}:anime:{value}"),
+            "imdb" => format!("imdb:title:{value}"),
+            _ => unreachable!("source priority list contains only known sources"),
+        });
+    }
+    None
+}
+
+fn keyed_discovery_target_key(source: &str, facet: &MediaFacet, value: &str) -> String {
+    let kind = match facet {
+        MediaFacet::Movie => "movie",
+        MediaFacet::Series | MediaFacet::Anime => "series",
+    };
+    format!("{source}:{kind}:{value}")
+}
+
+fn parse_positive_i32(value: &str) -> Option<i32> {
+    value.trim().parse::<i32>().ok().filter(|value| *value > 0)
+}
+
+fn discovery_target_key_parts(target_key: &str) -> Option<(String, String, String)> {
+    let mut parts = target_key.split(':');
+    let source = parts.next()?.trim();
+    let kind = parts.next()?.trim();
+    let value = parts.next()?.trim();
+    if source.is_empty() || kind.is_empty() || value.is_empty() {
+        return None;
+    }
+    Some((
+        source.to_ascii_lowercase(),
+        kind.to_ascii_lowercase(),
+        value.to_string(),
+    ))
+}
+
+fn discovery_local_external_id_sources(source: &str, kind: &str) -> Vec<String> {
+    match source {
+        "tvdb" => match kind {
+            "movie" => vec!["tvdb".to_string(), "tvdb_movie".to_string()],
+            _ => vec![
+                "tvdb".to_string(),
+                "tvdb_series".to_string(),
+                "tvdb_show".to_string(),
+            ],
+        },
+        "tmdb" => match kind {
+            "movie" => vec!["tmdb".to_string(), "tmdb_movie".to_string()],
+            _ => vec![
+                "tmdb".to_string(),
+                "tmdb_series".to_string(),
+                "tmdb_tv".to_string(),
+                "tmdb_show".to_string(),
+            ],
+        },
+        "mal" => vec!["mal".to_string(), "myanimelist".to_string()],
+        "anilist" => vec![
+            "anilist".to_string(),
+            "anilist_anime".to_string(),
+            "anilist:anime".to_string(),
+        ],
+        "anidb" => vec!["anidb".to_string()],
+        "imdb" => vec!["imdb".to_string()],
+        _ => vec![source.to_string()],
+    }
+}
+
+fn discovery_local_external_id_values(kind: &str, value: &str) -> Vec<String> {
+    unique_discovery_text_terms(vec![value.to_string(), format!("{kind}:{value}")])
+}
+
 fn discovery_item_library_provenance_records(
     item: &DiscoveryTitle,
     provenance_by_subject_key: &HashMap<String, Vec<DiscoveryLibraryProvenance>>,
@@ -2692,6 +2997,13 @@ fn discovery_canonical_facet_terms(item: &DiscoveryTitle) -> Vec<String> {
     for source_tag in &item.source_tags {
         values.extend(
             unique_json_text_values(source_tag)
+                .into_iter()
+                .filter_map(|value| canonical_discovery_term(&value).map(str::to_string)),
+        );
+    }
+    for canonical_tag in &item.canonical_tags {
+        values.extend(
+            unique_json_text_values(canonical_tag)
                 .into_iter()
                 .filter_map(|value| canonical_discovery_term(&value).map(str::to_string)),
         );

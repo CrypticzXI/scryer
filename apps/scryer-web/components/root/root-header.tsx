@@ -9,6 +9,7 @@ import {
 } from "lucide-react";
 import { createPortal } from "react-dom";
 import { useNavigate } from "react-router-dom";
+import { useClient } from "urql";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -54,8 +55,10 @@ import {
   type GlobalSearchTabKey,
 } from "@/components/root/global-search-model";
 import { useTranslate } from "@/lib/context/translate-context";
+import { linkedAccountsQuery } from "@/lib/graphql/queries";
 import type { MetadataTvdbSearchItem } from "@/lib/graphql/smg-queries";
 import type { Facet } from "@/lib/types";
+import type { LinkedAccount } from "@/lib/types/settings";
 import type {
   MetadataCatalogAddOptions,
   MetadataCatalogRequestOptions,
@@ -97,6 +100,41 @@ type RootHeaderProps = {
   ) => void;
 };
 
+function hashAccountBadgeSeed(seed: string): number {
+  let hash = 2166136261;
+  for (let index = 0; index < seed.length; index += 1) {
+    hash ^= seed.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
+
+function buildAccountBadgeStyle(seed: string): React.CSSProperties {
+  const hash = hashAccountBadgeSeed(seed || "?");
+  const hue = hash % 360;
+  const secondaryHue = (hue + 42 + ((hash >>> 8) % 48)) % 360;
+
+  return {
+    background: `linear-gradient(135deg, hsl(${hue} 82% 58%), hsl(${secondaryHue} 86% 62%))`,
+    boxShadow: `inset 0 1px 0 rgba(255,255,255,0.28), 0 8px 18px hsla(${hue},82%,42%,0.28)`,
+  };
+}
+
+function selectAccountAvatar(accounts: LinkedAccount[]): LinkedAccount | null {
+  const hasAvatar = (account: LinkedAccount) =>
+    Boolean(account.avatarUrl?.trim());
+
+  return (
+    accounts.find(
+      (account) => account.provider === "jellyfin" && hasAvatar(account),
+    ) ??
+    accounts.find(
+      (account) => account.provider === "plex" && hasAvatar(account),
+    ) ??
+    null
+  );
+}
+
 export const RootHeader = React.memo(function RootHeader({
   mobileNavigation,
   routeCommandItems = [],
@@ -133,6 +171,7 @@ export const RootHeader = React.memo(function RootHeader({
   const t = useTranslate();
   const isMobile = useIsMobile(ROOT_SHELL_MOBILE_BREAKPOINT);
   const navigate = useNavigate();
+  const client = useClient();
   const { token, user, logout, effectiveFormLoginEnabled } = useAuth();
   const canViewCatalog = user
     ? hasAnyLibraryPermission(user, LIBRARY_PERMISSIONS.view)
@@ -184,12 +223,45 @@ export const RootHeader = React.memo(function RootHeader({
   >({});
   const lastScrollYRef = React.useRef(0);
   const [accountMenuOpen, setAccountMenuOpen] = React.useState(false);
+  const [accountLinkedAccounts, setAccountLinkedAccounts] = React.useState<
+    LinkedAccount[]
+  >([]);
   const [desktopSearchFilters, setDesktopSearchFilters] = React.useState<
     GlobalSearchFilterKey[]
   >([]);
   const [mobileHeaderHeight, setMobileHeaderHeight] = React.useState(0);
   const [isMobileHeaderVisible, setIsMobileHeaderVisible] =
     React.useState(true);
+  React.useEffect(() => {
+    if (!user?.id) {
+      setAccountLinkedAccounts([]);
+      return;
+    }
+
+    let cancelled = false;
+    void client
+      .query<{ linkedAccounts?: LinkedAccount[] }>(linkedAccountsQuery, {
+        userId: user.id,
+      })
+      .toPromise()
+      .then((result) => {
+        if (cancelled) {
+          return;
+        }
+        setAccountLinkedAccounts(
+          result.error ? [] : (result.data?.linkedAccounts ?? []),
+        );
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setAccountLinkedAccounts([]);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [client, user?.id]);
   const readPageScrollTop = React.useCallback(() => {
     if (typeof window === "undefined") {
       return 0;
@@ -1189,6 +1261,14 @@ export const RootHeader = React.memo(function RootHeader({
     ],
   );
   const accountInitial = (user?.username.trim().charAt(0) || "?").toUpperCase();
+  const accountBadgeStyle = React.useMemo(
+    () => buildAccountBadgeStyle(user?.id || user?.username || "?"),
+    [user?.id, user?.username],
+  );
+  const accountAvatar = React.useMemo(
+    () => selectAccountAvatar(accountLinkedAccounts),
+    [accountLinkedAccounts],
+  );
 
   return (
     <>
@@ -1613,9 +1693,9 @@ export const RootHeader = React.memo(function RootHeader({
                   type="button"
                   variant="ghost"
                   className={cn(
-                    "h-10 shrink-0 gap-2 rounded-[11px] border border-[var(--scry-border2)] bg-[var(--scry-bg)] p-[5px] pr-2 text-[var(--scry-body)] shadow-none transition hover:border-[var(--scry-bhover2)] hover:bg-[var(--scry-hover)] hover:text-[var(--scry-ink2)] sm:h-10",
+                    "h-10 shrink-0 gap-2 rounded-[11px] border border-[rgba(var(--scry-accent-rgb),0.48)] bg-[rgba(var(--scry-accent-rgb),0.08)] p-[5px] pr-2 text-[var(--scry-body)] shadow-[0_0_0_1px_rgba(var(--scry-accent-rgb),0.08)] transition hover:border-[rgba(var(--scry-accent-rgb),0.68)] hover:bg-[rgba(var(--scry-accent-rgb),0.12)] hover:text-[var(--scry-ink2)] sm:h-10",
                     accountMenuOpen
-                      ? "border-[var(--scry-baccent)] bg-[var(--scry-hover)] text-[var(--scry-ink2)]"
+                      ? "border-[rgba(var(--scry-accent-rgb),0.78)] bg-[rgba(var(--scry-accent-rgb),0.14)] text-[var(--scry-ink2)] shadow-[0_0_0_1px_rgba(var(--scry-accent-rgb),0.22)]"
                       : null,
                   )}
                   aria-label={t("profile.accountInfo")}
@@ -1623,9 +1703,21 @@ export const RootHeader = React.memo(function RootHeader({
                   aria-controls="account-menu-content"
                   aria-expanded={accountMenuOpen}
                 >
-                  <span className="flex h-[30px] w-[30px] items-center justify-center rounded-lg bg-[var(--scry-accent-grad)] text-[13px] font-bold text-primary-foreground">
-                    {accountInitial}
-                  </span>
+                  {accountAvatar?.avatarUrl?.trim() ? (
+                    <img
+                      src={accountAvatar.avatarUrl}
+                      alt=""
+                      className="h-[30px] w-[30px] shrink-0 rounded-lg border border-white/20 object-cover shadow-[0_8px_18px_rgba(0,0,0,0.24)]"
+                      loading="lazy"
+                    />
+                  ) : (
+                    <span
+                      className="flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-lg text-[13px] font-extrabold text-white"
+                      style={accountBadgeStyle}
+                    >
+                      {accountInitial}
+                    </span>
+                  )}
                   <span className="hidden min-w-0 flex-col items-start leading-tight sm:flex">
                     <span className="max-w-32 truncate text-[12.5px] font-semibold text-[var(--scry-ink2)]">
                       {user.username}

@@ -1,5 +1,6 @@
 import * as React from "react";
 import { createPortal } from "react-dom";
+import { useBeforeUnload, useBlocker } from "react-router-dom";
 import {
   FileText,
   Folder,
@@ -102,6 +103,7 @@ type MediaLibrarySettingsPanelProps = {
   librariesLoading: boolean;
   rootValidationLibraries: LibraryRecord[];
   rootValidationLibrariesLoading: boolean;
+  invalidRootPathsByLibraryId: Record<string, string[]>;
   preferredLibraryId: string;
   allLibrariesValue: string;
   loading: boolean;
@@ -261,6 +263,7 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
   librariesLoading,
   rootValidationLibraries,
   rootValidationLibrariesLoading,
+  invalidRootPathsByLibraryId,
   preferredLibraryId,
   allLibrariesValue,
   loading,
@@ -286,6 +289,9 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
   const t = useTranslate();
   const [mode, setMode] = React.useState<"existing" | "new">("existing");
   const [deleteLibraryOpen, setDeleteLibraryOpen] = React.useState(false);
+  const [pendingLibrarySelection, setPendingLibrarySelection] = React.useState<
+    string | null
+  >(null);
   const [activeLibraryId, setActiveLibraryId] = React.useState<string | null>(null);
   const [draftName, setDraftName] = React.useState("");
   const [draftRoots, setDraftRoots] = React.useState<RootFolderOption[]>([]);
@@ -575,6 +581,16 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
     });
     return invalidPaths;
   }, [localPathStyle, normalizedDraftRoots]);
+  const validatedInvalidRootPathKeys = React.useMemo(() => {
+    if (!activeLibrary?.id) {
+      return new Set<string>();
+    }
+    return new Set(
+      (invalidRootPathsByLibraryId[activeLibrary.id] ?? []).map(
+        normalizeComparableRootPath,
+      ),
+    );
+  }, [activeLibrary?.id, invalidRootPathsByLibraryId]);
   const hasInvalidRootFolderPaths = invalidRootFolderPaths.size > 0;
   const actionBusy = loading || librariesLoading || rootValidationLibrariesLoading || saving;
   const settingsBusy = actionBusy || settingsLoading;
@@ -703,9 +719,24 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
     draftName.trim() !== (activeLibrary?.name ?? "") ||
     !rootsEqual(draftRoots, savedRoots) ||
     hasSettingsChanges;
+  const shouldBlockNavigation = hasDraftChanges && !saving;
+  const libraryNavigationBlocker = useBlocker(shouldBlockNavigation);
+
+  useBeforeUnload(
+    React.useCallback(
+      (event: BeforeUnloadEvent) => {
+        if (!shouldBlockNavigation) {
+          return;
+        }
+        event.preventDefault();
+        event.returnValue = "";
+      },
+      [shouldBlockNavigation],
+    ),
+  );
   const selectedValue = mode === "new" ? NEW_LIBRARY_VALUE : activeLibraryId ?? "";
 
-  const handleSelectLibrary = (value: string) => {
+  const applyLibrarySelection = React.useCallback((value: string) => {
     if (value === NEW_LIBRARY_VALUE) {
       if (!canCreateLibrary) {
         return;
@@ -739,6 +770,17 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
     }
     setMode("existing");
     setActiveLibraryId(value);
+  }, [canCreateLibrary]);
+
+  const handleSelectLibrary = (value: string) => {
+    if (value === selectedValue) {
+      return;
+    }
+    if (shouldBlockNavigation) {
+      setPendingLibrarySelection(value);
+      return;
+    }
+    applyLibrarySelection(value);
   };
 
   const handleAddPath = (path: string) => {
@@ -794,34 +836,7 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
   };
 
   const handleNewLibrary = () => {
-    if (!canCreateLibrary) {
-      return;
-    }
-    setMode("new");
-    setActiveLibraryId(null);
-    setDraftName("");
-    setDraftRoots([]);
-    setSavedSettings(null);
-    setDraftRequiredAudioLanguages([]);
-    setDraftQualityProfileId(INHERIT_VALUE);
-    setDraftRequestQualityProfileIds([]);
-    setDraftScoringPersona(INHERIT_VALUE);
-    setDraftFillerPolicy(INHERIT_VALUE);
-    setDraftRecapPolicy(INHERIT_VALUE);
-    setDraftMonitorSpecials(INHERIT_VALUE);
-    setDraftInterSeasonMovies(INHERIT_VALUE);
-    setDraftMonitorFillerMovies(INHERIT_VALUE);
-    setDraftNfoWriteOnImport(INHERIT_VALUE);
-    setDraftPlexmatchWriteOnImport(INHERIT_VALUE);
-    setDraftImportMode(INHERIT_VALUE);
-    setDraftSetPermissionsLinux(INHERIT_VALUE);
-    setDraftFileChmod("");
-    setDraftFolderChmod("");
-    setDraftChownGroup("");
-    setDraftDownloadClientRoutingMode("inherit");
-    setDraftDownloadClientRouting({});
-    setDraftDownloadClientRoutingOrder([]);
-    setDraftDownloadClientRoutingLoading(false);
+    handleSelectLibrary(NEW_LIBRARY_VALUE);
   };
 
   const handleDownloadClientRoutingModeChange = React.useCallback(
@@ -989,6 +1004,25 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
     await onDeleteLibrary(activeLibrary.id);
   };
 
+  const handleConfirmDiscardLibraryChanges = React.useCallback(() => {
+    if (libraryNavigationBlocker.state === "blocked") {
+      libraryNavigationBlocker.proceed();
+      return;
+    }
+    if (pendingLibrarySelection !== null) {
+      const nextSelection = pendingLibrarySelection;
+      setPendingLibrarySelection(null);
+      applyLibrarySelection(nextSelection);
+    }
+  }, [applyLibrarySelection, libraryNavigationBlocker, pendingLibrarySelection]);
+
+  const handleCancelDiscardLibraryChanges = React.useCallback(() => {
+    if (libraryNavigationBlocker.state === "blocked") {
+      libraryNavigationBlocker.reset();
+    }
+    setPendingLibrarySelection(null);
+  }, [libraryNavigationBlocker]);
+
   const handleScan = () => {
     if (!activeLibrary || mode === "new") {
       return;
@@ -1058,22 +1092,21 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
                 })}
               </ul>
               {canCreateLibrary ? (
-                <Button
+                <button
                   id="media-library-new"
                   type="button"
-                  variant="outline"
                   onClick={handleNewLibrary}
                   disabled={actionBusy}
                   aria-current={mode === "new" ? "true" : undefined}
                   className={cn(
-                    "mt-2 w-full justify-start gap-2",
+                    "mt-2 inline-flex h-11 w-full items-center justify-start gap-2 whitespace-nowrap rounded-[11px] border-[1.5px] border-dashed border-[var(--scry-accent)]! bg-[rgba(var(--scry-accent-rgb),0.08)] px-4 text-[13px] font-semibold text-[var(--scry-accent)] transition-colors hover:bg-[rgba(var(--scry-accent-rgb),0.16)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--scry-accent-ring)] disabled:pointer-events-none disabled:opacity-50 [&_svg]:shrink-0",
                     mode === "new" &&
-                      "border-[var(--scry-baccent)] bg-[rgba(var(--scry-accent-rgb),0.12)] text-[var(--scry-ink2)]",
+                      "bg-[rgba(var(--scry-accent-rgb),0.16)]",
                   )}
                 >
-                  <Plus className="h-4 w-4" />
+                  <Plus className="size-[18px]" />
                   {t("settings.libraryNewButton")}
-                </Button>
+                </button>
               ) : null}
             </div>,
             secondaryNavTarget,
@@ -1138,7 +1171,16 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
                   {sortedFolders.map(({ rf, originalIndex: index }) => {
                     const conflictingLibraryNames =
                       conflictingLibraryNamesByRootPath.get(rf.path) ?? null;
-                    const pathIsInvalid = invalidRootFolderPaths.has(rf.path);
+                    const pathFormatIsInvalid = invalidRootFolderPaths.has(rf.path);
+                    const pathValidationIsInvalid =
+                      validatedInvalidRootPathKeys.has(
+                        normalizeComparableRootPath(rf.path),
+                      );
+                    const pathIsInvalid =
+                      pathFormatIsInvalid || pathValidationIsInvalid;
+                    const invalidRootTooltip = pathFormatIsInvalid
+                      ? t("settings.downloadClientRemotePathMappingsLocalRequired")
+                      : t("settings.rootFolderInvalidTooltip");
 
                     return (
                       <li
@@ -1151,6 +1193,14 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
                           <span className="flex-1 truncate font-[var(--font-code)] text-[13.5px] text-[var(--scry-text2)]">
                             {rf.path}
                           </span>
+                          {pathIsInvalid ? (
+                            <span
+                              className="shrink-0 rounded-[7px] border border-destructive/40 bg-destructive/10 px-2 py-0.5 text-[10.5px] font-bold uppercase tracking-[0.06em] text-destructive"
+                              title={invalidRootTooltip}
+                            >
+                              {t("settings.rootFolderInvalid")}
+                            </span>
+                          ) : null}
                           {rf.isDefault ? (
                             <span className="shrink-0 rounded-[7px] border border-[var(--scry-baccent)] bg-[rgba(var(--scry-accent-rgb),0.12)] px-2 py-0.5 text-[10.5px] font-bold uppercase tracking-[0.06em] text-[var(--scry-accent-text)]">
                               {t("label.default")}
@@ -1169,13 +1219,12 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
                           <Button
                             id={selectorId("media-library-root-edit", rf.path)}
                             type="button"
-                            variant="outline"
+                            variant="primary"
                             size="icon-sm"
                             onClick={() => openEdit(index)}
                             disabled={actionBusy}
                             aria-label={t("label.edit")}
                             title={t("label.edit")}
-                            className="border-[var(--scry-baccent)] bg-[rgba(var(--scry-accent-rgb),0.12)] text-[var(--scry-accent-text)] hover:bg-[rgba(var(--scry-accent-rgb),0.2)] hover:text-[var(--scry-accent-text)]"
                           >
                             <Pencil className="h-4 w-4" />
                           </Button>
@@ -1197,11 +1246,6 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
                             {t("settings.rootFolderConflict", {
                               libraries: conflictingLibraryNames.join(", "),
                             })}
-                          </p>
-                        ) : null}
-                        {pathIsInvalid ? (
-                          <p className="text-xs text-destructive">
-                            {t("settings.downloadClientRemotePathMappingsLocalRequired")}
                           </p>
                         ) : null}
                       </li>
@@ -1844,6 +1888,18 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
         cancelLabel={t("label.cancel")}
         onConfirm={handleConfirmDeleteLibrary}
         onCancel={() => setDeleteLibraryOpen(false)}
+      />
+      <ConfirmDialog
+        open={
+          libraryNavigationBlocker.state === "blocked" ||
+          pendingLibrarySelection !== null
+        }
+        title={t("settings.unsavedLibraryChangesTitle")}
+        description={t("settings.unsavedLibraryChangesConfirm")}
+        confirmLabel={t("label.discard")}
+        cancelLabel={t("label.cancel")}
+        onConfirm={handleConfirmDiscardLibraryChanges}
+        onCancel={handleCancelDiscardLibraryChanges}
       />
     </>
   );

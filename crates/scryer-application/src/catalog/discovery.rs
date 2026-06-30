@@ -603,7 +603,7 @@ impl AppUseCase {
         resolved_profile.criteria.scoring_persona = resolved_persona.clone();
         resolved_profile.criteria.facet_persona_overrides.clear();
         let title_language_metadata = match self.services.catalog.titles.get_by_id(title_id).await {
-            Ok(Some(title)) => Some((title.language, title.country)),
+            Ok(Some(title)) => Some((title.language, title.country, title.facet)),
             Ok(None) => None,
             Err(error) => {
                 warn!(
@@ -616,14 +616,22 @@ impl AppUseCase {
         };
         let title_original_language = title_language_metadata
             .as_ref()
-            .and_then(|(language, _)| language.as_deref());
+            .and_then(|(language, _, _)| language.as_deref());
         let title_original_country = title_language_metadata
             .as_ref()
-            .and_then(|(_, country)| country.as_deref());
+            .and_then(|(_, country, _)| country.as_deref());
+        // Prefer the owning title's facet for anime detection: the search facet
+        // (and thus `category`) collapses anime movies and series-movie links to
+        // "movie", which would otherwise hide their anime origin and break
+        // dual-audio language inference (e.g. eng+jpn).
+        let audio_context_category = title_language_metadata
+            .as_ref()
+            .map(|(_, _, facet)| facet.as_str())
+            .or(category);
         let title_language_context = crate::title_audio_language_context(
             title_original_language,
             title_original_country,
-            category,
+            audio_context_category,
             title_tags,
         );
         let library_name = match library_id {

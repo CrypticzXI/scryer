@@ -26,6 +26,7 @@ import {
 } from "@/lib/graphql/mutations";
 import type { DownloadQueueItem } from "@/lib/types/download-queue";
 import type { Release } from "@/lib/types";
+import type { CatalogDiscoveryItem } from "@/lib/types/discovery";
 import { DEFAULT_SERIES_LIBRARY_PATH } from "@/lib/constants/settings";
 import { userFacingGraphQlErrorMessage } from "@/lib/graphql/error-message";
 import { qualityProfileSettingsToEntries } from "@/lib/utils/quality-profiles";
@@ -105,6 +106,7 @@ export type TitleDetail = {
   fillerPolicy?: string | null;
   recapPolicy?: string | null;
   seriesMovieLinks?: SeriesMovieLink[];
+  moreLikeThis?: CatalogDiscoveryItem[];
   createdAt: string;
 };
 

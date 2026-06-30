@@ -48,6 +48,7 @@ import {
 } from "./helpers";
 import { OverviewControlPanel } from "../overview-control-panel";
 import { OverviewBackLink } from "../overview-back-link";
+import { TitleMoreLikeThisStrip } from "../title-more-like-this-strip";
 import { TitleSettingsPanel } from "./title-settings-panel";
 import { SeasonSection, SeriesMovieTimelineSection } from "./season-section";
 import type { TitleOptionUpdates } from "@/lib/types/title-options";
@@ -962,6 +963,11 @@ export function SeriesOverviewView({
           }
         />
       ) : null}
+
+      <TitleMoreLikeThisStrip
+        items={title.moreLikeThis ?? []}
+        fallbackYearLabel={title.facet === "anime" ? t("nav.anime") : t("nav.series")}
+      />
 
       <div>
         <Card className="relative overflow-hidden">

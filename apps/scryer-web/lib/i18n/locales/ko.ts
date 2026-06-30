@@ -223,6 +223,7 @@ const ko: LocaleDictionary = {
   "settings.libraryScanDiscovering": "타이틀 확인 중…",
   "settings.libraryScanProgressPending": "탐색 대기 중…",
   "settings.libraryScanProgressCalculatingTotal": "총합 계산 중…",
+  "settings.libraryScanProgressScannedCount": "{{count}}개 스캔됨",
   "settings.libraryScanTitleMatch": "타이틀 매칭",
   "settings.libraryScanFetchingMetadata": "메타데이터 가져오기",
   "settings.libraryScanFilesScanned": "미디어 분석",

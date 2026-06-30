@@ -623,6 +623,7 @@ fn synthetic_test_input() -> UserRuleInput {
                 profile: Some("Dolby Digital Plus + Dolby Atmos".to_string()),
                 channels: Some(6),
                 language: Some("eng".to_string()),
+                name: None,
                 bitrate_kbps: Some(640),
             }],
             subtitle_languages: vec!["eng".to_string()],

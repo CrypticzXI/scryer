@@ -33,6 +33,7 @@ import { TitleSearchDownloadClientNotice } from "@/components/common/title-searc
 import { releaseSupportsAdditionalFileQueue } from "@/lib/utils/release-queue-scope";
 import { OverviewControlPanel } from "@/components/views/overview-control-panel";
 import { OverviewBackLink } from "@/components/views/overview-back-link";
+import { TitleMoreLikeThisStrip } from "@/components/views/title-more-like-this-strip";
 import {
   localizedTitleStatus,
   localizedWantedPhase,
@@ -846,6 +847,11 @@ export function MovieOverviewView({
           interactiveSearchPanel={interactiveSearchPanel}
         />
       ) : null}
+
+      <TitleMoreLikeThisStrip
+        items={title.moreLikeThis ?? []}
+        fallbackYearLabel={t("nav.movies")}
+      />
 
       {downloadQueueItems.length > 0 ? (
         <Card>

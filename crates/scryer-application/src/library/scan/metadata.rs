@@ -494,9 +494,7 @@ async fn execute_batch_metadata_searches(
             .count();
         let with_ids = search_keys
             .iter()
-            .filter(|key| {
-                key.imdb_id.is_some() || key.tmdb_id.is_some() || key.tvdb_id.is_some()
-            })
+            .filter(|key| key.imdb_id.is_some() || key.tmdb_id.is_some() || key.tvdb_id.is_some())
             .count();
         tracing::info!(
             target: "import_scan_hint_debug",

@@ -49,7 +49,7 @@ async fn process_ready_movie_candidate_batches(
     coordinator: &LibraryScanCoordinator,
     ready_candidate_batches: Vec<Vec<PreparedMovieLibraryScanCandidate>>,
     batch_search_results: &MetadataSearchResults,
-    workset: &mut HashMap<String, LibraryScanTitleWork>,
+    executor: &mut LibraryScanTitleWorkExecutor,
     existing_titles: &mut Vec<Title>,
     existing_titles_by_name: &mut HashMap<String, usize>,
     existing_titles_by_tvdb_id: &mut HashMap<String, usize>,
@@ -77,7 +77,7 @@ async fn process_ready_movie_candidate_batches(
                 coordinator,
                 candidate,
                 batch_search_results,
-                workset,
+                executor,
                 existing_titles,
                 existing_titles_by_name,
                 existing_titles_by_tvdb_id,
@@ -90,6 +90,7 @@ async fn process_ready_movie_candidate_batches(
         }
 
         coordinator.publish_progress().await;
+        executor.pump().await?;
     }
 
     Ok(())
@@ -113,7 +114,7 @@ async fn process_series_candidate_batch(
     existing_titles: &mut Vec<Title>,
     existing_titles_by_name: &mut HashMap<String, usize>,
     existing_titles_by_tvdb_id: &mut HashMap<String, usize>,
-    workset: &mut HashMap<String, LibraryScanTitleWork>,
+    executor: &mut LibraryScanTitleWorkExecutor,
     summary: &mut LibraryScanSummary,
     unmatched_items: &mut Vec<LibraryScanUnmatchedItem>,
     seen_paths: &mut HashSet<String>,
@@ -143,7 +144,7 @@ async fn process_series_candidate_batch(
             existing_titles,
             existing_titles_by_name,
             existing_titles_by_tvdb_id,
-            workset,
+            executor,
             summary,
             unmatched_items,
         )
@@ -152,6 +153,8 @@ async fn process_series_candidate_batch(
             unresolved_candidates.push(candidate);
         }
     }
+
+    executor.pump().await?;
 
     let (ready_candidate_batches, batch_search_results) = resolve_full_scan_metadata_batches(
         app.services.library.metadata_gateway.clone(),
@@ -184,7 +187,7 @@ async fn process_series_candidate_batch(
                 coordinator,
                 candidate,
                 &batch_search_results,
-                workset,
+                executor,
                 existing_titles,
                 existing_titles_by_name,
                 existing_titles_by_tvdb_id,
@@ -195,6 +198,7 @@ async fn process_series_candidate_batch(
         }
 
         coordinator.publish_progress().await;
+        executor.pump().await?;
     }
 
     coordinator.publish_progress().await;
@@ -247,7 +251,9 @@ pub(super) async fn scan_library_movies(
     let mut summary = LibraryScanSummary::default();
     let mut seen_paths = HashSet::new();
     let mut unmatched_items = Vec::new();
-    let mut workset = HashMap::new();
+    let mut executor =
+        LibraryScanTitleWorkExecutor::for_scan(app, actor, session_id, cancel_token.clone())
+            .await?;
     let metadata_language = app.metadata_language().await;
     let mut prepared_entries = stream_prepared_movie_library_scan_entries(
         app.services.library.library_scanner.clone(),
@@ -298,7 +304,7 @@ pub(super) async fn scan_library_movies(
                         session_id,
                         &coordinator,
                         *candidate,
-                        &mut workset,
+                        &mut executor,
                         &mut existing_titles,
                         &mut existing_titles_by_name,
                         &mut existing_titles_by_tvdb_id,
@@ -320,6 +326,7 @@ pub(super) async fn scan_library_movies(
                 }
             }
         }
+        executor.pump().await?;
 
         let (ready_candidate_batches, metadata_progress) = metadata_resolver
             .ingest_candidates(unresolved_candidates, cancel_token.as_ref())
@@ -335,7 +342,7 @@ pub(super) async fn scan_library_movies(
             &coordinator,
             ready_candidate_batches,
             metadata_resolver.search_results(),
-            &mut workset,
+            &mut executor,
             &mut existing_titles,
             &mut existing_titles_by_name,
             &mut existing_titles_by_tvdb_id,
@@ -346,6 +353,7 @@ pub(super) async fn scan_library_movies(
             cancel_token.as_ref(),
         )
         .await?;
+        executor.pump().await?;
     }
 
     let metadata_lookup_stats = metadata_resolver.stats();
@@ -363,7 +371,7 @@ pub(super) async fn scan_library_movies(
             &coordinator,
             ready_candidate_batches,
             metadata_resolver.search_results(),
-            &mut workset,
+            &mut executor,
             &mut existing_titles,
             &mut existing_titles_by_name,
             &mut existing_titles_by_tvdb_id,
@@ -374,12 +382,10 @@ pub(super) async fn scan_library_movies(
             cancel_token.as_ref(),
         )
         .await?;
-
-        summary.absorb(
-            &app.execute_library_scan_workset(actor, session_id, workset, cancel_token.clone())
-                .await?,
-        );
-
+    }
+    executor.close_input();
+    summary.absorb(&executor.finish().await?);
+    if !library_scan_cancel_requested(cancel_token.as_ref()) {
         finalize_full_library_scan(app, &coordinator, facet, library_path, &seen_paths).await?;
     }
 
@@ -463,7 +469,9 @@ pub(super) async fn scan_library_series(
     let mut metadata_lookup_stats = MetadataLookupBatchStats::default();
     let mut seen_paths = HashSet::new();
     let mut unmatched_items = Vec::new();
-    let mut workset = HashMap::new();
+    let mut executor =
+        LibraryScanTitleWorkExecutor::for_scan(app, actor, session_id, cancel_token.clone())
+            .await?;
     let metadata_language = app.metadata_language().await;
 
     while let Some(folder_batch_result) =
@@ -493,13 +501,14 @@ pub(super) async fn scan_library_series(
             &mut existing_titles,
             &mut existing_titles_by_name,
             &mut existing_titles_by_tvdb_id,
-            &mut workset,
+            &mut executor,
             &mut summary,
             &mut unmatched_items,
             &mut seen_paths,
             cancel_token.as_ref(),
         )
         .await?;
+        executor.pump().await?;
     }
 
     if !library_scan_cancel_requested(cancel_token.as_ref()) {
@@ -528,22 +537,20 @@ pub(super) async fn scan_library_series(
                 &mut existing_titles,
                 &mut existing_titles_by_name,
                 &mut existing_titles_by_tvdb_id,
-                &mut workset,
+                &mut executor,
                 &mut summary,
                 &mut unmatched_items,
                 &mut seen_paths,
                 cancel_token.as_ref(),
             )
             .await?;
+            executor.pump().await?;
         }
     }
 
+    executor.close_input();
+    summary.absorb(&executor.finish().await?);
     if !library_scan_cancel_requested(cancel_token.as_ref()) {
-        summary.absorb(
-            &app.execute_library_scan_workset(actor, session_id, workset, cancel_token.clone())
-                .await?,
-        );
-
         finalize_full_library_scan(app, &coordinator, facet, library_path, &seen_paths).await?;
     }
 

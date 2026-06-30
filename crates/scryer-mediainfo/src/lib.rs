@@ -74,6 +74,9 @@ pub struct AudioStreamDetail {
     pub profile: Option<String>,
     pub channels: Option<i32>,
     pub language: Option<String>,
+    /// Human-readable track title from the container (e.g. "English", "日本語").
+    /// Often set by uploaders even when the ISO language tag is missing/`und`.
+    pub name: Option<String>,
     pub bitrate_kbps: Option<i32>,
 }
 
@@ -342,6 +345,7 @@ fn build_analysis(raw: RawContainer) -> MediaAnalysis {
                 .as_deref()
                 .filter(|l| !l.is_empty() && *l != "und")
                 .map(str::to_owned),
+            name: t.name.clone(),
             bitrate_kbps: t.bit_rate_bps.map(|bps| (bps / 1000) as i32),
         })
         .collect();
