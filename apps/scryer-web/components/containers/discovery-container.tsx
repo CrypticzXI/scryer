@@ -39,7 +39,7 @@ const DISCOVERY_HOME_INPUT: DiscoveryHomeInput = {
   includePublic: true,
   includePersonalized: true,
   includeUnresolved: true,
-  limitPerSection: 18,
+  limitPerSection: 12,
 };
 
 function facetForDiscoveryItem(item: DiscoveryItem): Facet {

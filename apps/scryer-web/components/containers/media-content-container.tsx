@@ -145,7 +145,7 @@ const HYDRATION_POSTER_REFRESH_INTERVAL_MS = 2_500;
 const TITLE_DELETION_JOB_FALLBACK_DELAYS_MS = [
   10_000, 60_000, 180_000,
 ] as const;
-const TITLE_CATALOG_PAGE_SIZE = 300;
+const TITLE_CATALOG_PAGE_SIZE = 72;
 const ALL_LIBRARIES_VALUE = "__all__";
 
 type MediaContentContainerProps = {
@@ -162,6 +162,7 @@ type MediaContentContainerProps = {
     overviewTarget: OverviewTitleTarget,
   ) => void;
   routeOverviewTitleId: string | null;
+  routeOverviewPending: boolean;
   routeOverviewEpisodeId: string | null;
   onCloseOverview: () => void;
 };
@@ -686,6 +687,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   canRequestMedia,
   onOpenOverview,
   routeOverviewTitleId,
+  routeOverviewPending,
   routeOverviewEpisodeId,
   onCloseOverview,
 }: MediaContentContainerProps) {
@@ -756,8 +758,11 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     CATEGORY_SCOPE_MAP[view as keyof typeof CATEGORY_SCOPE_MAP] ?? "movie";
   const isMediaView =
     view === "movies" || view === "series" || view === "anime";
+  const routeOverviewActive = routeOverviewPending;
   const shouldLoadCatalogTitles =
-    isMediaView && contentSettingsSection === "overview";
+    isMediaView &&
+    contentSettingsSection === "overview" &&
+    !routeOverviewActive;
   const shouldLoadMediaSettingsForSection =
     isMediaView &&
     (contentSettingsSection === "library" ||
@@ -828,7 +833,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     React.useState<{
       titleId: string | null;
       entries: TitleReleaseBlocklistEntry[];
-    }>({ titleId: null, entries: [] });
+  }>({ titleId: null, entries: [] });
   const selectedOverviewBlocklistEntries =
     selectedOverviewBlocklistState.titleId === selectedOverviewTitleId
       ? selectedOverviewBlocklistState.entries
@@ -884,7 +889,11 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   const [librarySettingsSaving, setLibrarySettingsSaving] =
     React.useState(false);
   const rootFolderValidationSnapshot = React.useMemo(() => {
-    if (!isMediaView || librariesLoading) {
+    if (
+      !isMediaView ||
+      librariesLoading ||
+      contentSettingsSection !== "library"
+    ) {
       return null;
     }
 
@@ -914,7 +923,13 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
       .join("\u001e");
 
     return { key, librariesWithConfiguredRoots };
-  }, [isMediaView, libraries, librariesLoading, selectedLibraryIds]);
+  }, [
+    contentSettingsSection,
+    isMediaView,
+    libraries,
+    librariesLoading,
+    selectedLibraryIds,
+  ]);
   const rootFolderValidationLoading =
     rootFolderValidationSnapshot !== null &&
     validatedRootFolderSnapshotKey !== rootFolderValidationSnapshot.key;
@@ -1220,8 +1235,11 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   // which title is selected in the list. Mirror it into local selection state
   // so the inline overview pane reflects the URL on load and live navigation.
   React.useEffect(() => {
+    if (routeOverviewPending && !routeOverviewTitleId) {
+      return;
+    }
     setSelectedOverviewTitleId(routeOverviewTitleId);
-  }, [routeOverviewTitleId]);
+  }, [routeOverviewPending, routeOverviewTitleId]);
 
   // Multi-select and the single-title overview are mutually exclusive: as soon
   // as the user selects a title for a bulk action, close any open overview so
@@ -4211,6 +4229,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
           onCloseOverview,
           selectedOverviewTitleId,
           selectedOverviewDetailLoading,
+          routeOverviewPending,
           routeOverviewEpisodeId,
           selectedOverviewBlocklistEntries,
           selectedOverviewExternalSubtitles,

@@ -15,7 +15,57 @@ import type {
 const SMG_VERSION_COMPATIBILITY_NOTICE_KEY = "smg.version_compatibility_notice";
 const SMG_SCRYER_UPDATE_NOTICE_KEY = "smg.scryer_update_notice";
 const SMG_SCRYER_UPDATE_DISMISSED_KEY = "scryer.smgUpdate.dismissed";
+const SMG_NOTICE_SESSION_CACHE_KEY = "scryer.smgNotices.session.v1";
 const SMG_NOTICE_REFRESH_INTERVAL_MS = 5 * 60 * 1_000;
+
+type SmgNoticeSessionCache = {
+  refreshedAt: number;
+  versionCompatibilityNotice: SmgVersionCompatibilityNotice | null;
+  scryerUpdateNotice: SmgScryerUpdateNotice | null;
+};
+
+function readSmgNoticeSessionCache(): SmgNoticeSessionCache | null {
+  if (typeof window === "undefined") {
+    return null;
+  }
+  try {
+    const raw = window.sessionStorage.getItem(SMG_NOTICE_SESSION_CACHE_KEY);
+    if (!raw) {
+      return null;
+    }
+    const parsed = JSON.parse(raw) as Partial<SmgNoticeSessionCache>;
+    if (
+      typeof parsed.refreshedAt !== "number" ||
+      Date.now() - parsed.refreshedAt >= SMG_NOTICE_REFRESH_INTERVAL_MS
+    ) {
+      window.sessionStorage.removeItem(SMG_NOTICE_SESSION_CACHE_KEY);
+      return null;
+    }
+    return {
+      refreshedAt: parsed.refreshedAt,
+      versionCompatibilityNotice:
+        parsed.versionCompatibilityNotice ?? null,
+      scryerUpdateNotice: parsed.scryerUpdateNotice ?? null,
+    };
+  } catch {
+    window.sessionStorage.removeItem(SMG_NOTICE_SESSION_CACHE_KEY);
+    return null;
+  }
+}
+
+function writeSmgNoticeSessionCache(cache: SmgNoticeSessionCache) {
+  if (typeof window === "undefined") {
+    return;
+  }
+  try {
+    window.sessionStorage.setItem(
+      SMG_NOTICE_SESSION_CACHE_KEY,
+      JSON.stringify(cache),
+    );
+  } catch {
+    // Best effort only; notice checks are allowed to fall back to network.
+  }
+}
 
 function buildSmgScryerUpdateDismissalValue(
   notice: SmgScryerUpdateNotice | null,
@@ -31,11 +81,18 @@ function buildSmgScryerUpdateDismissalValue(
 }
 
 export function useSmgNotices() {
+  const initialSessionCache = useMemo(() => readSmgNoticeSessionCache(), []);
   const [smgVersionCompatibilityNotice, setSmgVersionCompatibilityNotice] =
-    useState<SmgVersionCompatibilityNotice | null>(null);
+    useState<SmgVersionCompatibilityNotice | null>(
+      () => initialSessionCache?.versionCompatibilityNotice ?? null,
+    );
   const [smgScryerUpdateNotice, setSmgScryerUpdateNotice] =
-    useState<SmgScryerUpdateNotice | null>(null);
-  const lastRoutineSmgNoticeRefreshAtRef = useRef(0);
+    useState<SmgScryerUpdateNotice | null>(
+      () => initialSessionCache?.scryerUpdateNotice ?? null,
+    );
+  const lastRoutineSmgNoticeRefreshAtRef = useRef(
+    initialSessionCache?.refreshedAt ?? 0,
+  );
   const [dismissedSmgScryerUpdate, setDismissedSmgScryerUpdate] = useState(
     () => {
       if (typeof window === "undefined") {
@@ -57,11 +114,12 @@ export function useSmgNotices() {
       if (error) {
         throw error;
       }
-      setSmgVersionCompatibilityNotice(
-        data?.smgVersionCompatibilityNotice ?? null,
-      );
+      const notice = data?.smgVersionCompatibilityNotice ?? null;
+      setSmgVersionCompatibilityNotice(notice);
+      return notice;
     } catch (error) {
       console.warn("Failed to refresh SMG version compatibility notice", error);
+      return null;
     }
   }, []);
 
@@ -75,15 +133,30 @@ export function useSmgNotices() {
       if (error) {
         throw error;
       }
-      setSmgScryerUpdateNotice(data?.smgScryerUpdateNotice ?? null);
+      const notice = data?.smgScryerUpdateNotice ?? null;
+      setSmgScryerUpdateNotice(notice);
+      return notice;
     } catch (error) {
       console.warn("Failed to refresh SMG Scryer update notice", error);
+      return null;
     }
   }, []);
 
   const refreshSmgNotices = useCallback(
     async ({ force = false }: { force?: boolean } = {}) => {
       const now = Date.now();
+      if (!force) {
+        const sessionCache = readSmgNoticeSessionCache();
+        if (sessionCache) {
+          lastRoutineSmgNoticeRefreshAtRef.current =
+            sessionCache.refreshedAt;
+          setSmgVersionCompatibilityNotice(
+            sessionCache.versionCompatibilityNotice,
+          );
+          setSmgScryerUpdateNotice(sessionCache.scryerUpdateNotice);
+          return;
+        }
+      }
       if (
         !force &&
         now - lastRoutineSmgNoticeRefreshAtRef.current <
@@ -92,17 +165,22 @@ export function useSmgNotices() {
         return;
       }
       lastRoutineSmgNoticeRefreshAtRef.current = now;
-      await Promise.all([
+      const [versionCompatibilityNotice, scryerUpdateNotice] = await Promise.all([
         refreshSmgVersionCompatibilityNotice(),
         refreshSmgScryerUpdateNotice(),
       ]);
+      writeSmgNoticeSessionCache({
+        refreshedAt: now,
+        versionCompatibilityNotice,
+        scryerUpdateNotice,
+      });
     },
     [refreshSmgScryerUpdateNotice, refreshSmgVersionCompatibilityNotice],
   );
 
   useEffect(() => {
     return scheduleAfterFirstPaint(() => {
-      void refreshSmgNotices({ force: true });
+      void refreshSmgNotices();
     });
   }, [refreshSmgNotices]);
 

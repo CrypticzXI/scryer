@@ -453,17 +453,25 @@ function readOverviewTargetFromLocationState(
     typeof target.libraryId === "string" ? target.libraryId.trim() : "";
   const librarySlug =
     typeof target.librarySlug === "string" ? target.librarySlug.trim() : "";
+  const effectiveLibrarySlug =
+    librarySlug ||
+    (parsedOverviewLibrarySlug === view ? parsedOverviewLibrarySlug : "");
   if (
     !id ||
     !slug ||
-    !librarySlug ||
     slug !== parsedOverviewSlug ||
-    librarySlug !== parsedOverviewLibrarySlug
+    !effectiveLibrarySlug ||
+    effectiveLibrarySlug !== parsedOverviewLibrarySlug
   ) {
     return null;
   }
 
-  return { id, slug, libraryId: libraryId || null, librarySlug };
+  return {
+    id,
+    slug,
+    libraryId: libraryId || null,
+    librarySlug: effectiveLibrarySlug,
+  };
 }
 
 /**
@@ -472,6 +480,7 @@ function readOverviewTargetFromLocationState(
 function MainContent({
   view,
   overviewTitleId,
+  overviewTitleRoutePending,
   routeOverviewEpisodeId,
   handleBackToList,
   settingsSection,
@@ -504,6 +513,7 @@ function MainContent({
 }: {
   view: ViewId;
   overviewTitleId: string | null;
+  overviewTitleRoutePending: boolean;
   routeOverviewEpisodeId: string | null;
   handleBackToList: () => void;
   settingsSection: SettingsSection;
@@ -697,6 +707,7 @@ function MainContent({
       canRequestMedia={canRequestMedia}
       onOpenOverview={handleOpenOverview}
       routeOverviewTitleId={overviewTitleId}
+      routeOverviewPending={overviewTitleRoutePending}
       routeOverviewEpisodeId={routeOverviewEpisodeId}
       onCloseOverview={handleBackToList}
     />
@@ -710,6 +721,7 @@ export default function HomePage() {
     user,
     loading: authLoading,
     effectiveFormLoginEnabled,
+    mfaRequireConfigStepUp,
     adoptSession,
   } = useAuth();
   const navigate = useNavigate();
@@ -790,6 +802,7 @@ export default function HomePage() {
     <AuthenticatedHomePage
       authToken={token}
       authenticatedUser={user}
+      mfaRequireConfigStepUp={mfaRequireConfigStepUp}
       adoptSession={adoptSession}
       serviceRestarting={serviceRestarting}
     />
@@ -799,11 +812,13 @@ export default function HomePage() {
 function AuthenticatedHomePage({
   authToken,
   authenticatedUser,
+  mfaRequireConfigStepUp,
   adoptSession,
   serviceRestarting,
 }: {
   authToken: string | null;
   authenticatedUser: AuthUser;
+  mfaRequireConfigStepUp: boolean | null;
   adoptSession: (nextToken: string, nextUser: AuthUser | null) => void;
   serviceRestarting: boolean;
 }) {
@@ -1310,11 +1325,13 @@ function AuthenticatedHomePage({
 
     setResolvedOverviewTarget(null);
     setOverviewSlugLoading(true);
+    const lookupLibrarySlug =
+      parsedOverviewLibrarySlug === view ? null : parsedOverviewLibrarySlug;
 
     void resolveTitleOverviewTargetBySlug(
       backendClient,
       facet,
-      parsedOverviewLibrarySlug,
+      lookupLibrarySlug,
       parsedOverviewSlug,
     )
       .then((target) => {
@@ -1373,6 +1390,9 @@ function AuthenticatedHomePage({
   const overviewTitleId = parsedOverviewSlug
     ? (navigationOverviewTarget?.id ?? resolvedOverviewTarget?.id ?? null)
     : legacyOverviewTitleId;
+  const overviewTitleRoutePending = Boolean(
+    parsedOverviewSlug && isMediaView(view),
+  );
 
   const handleOpenOverview = useCallback(
     (
@@ -1566,6 +1586,7 @@ function AuthenticatedHomePage({
     handleSettingsStepUpSubmit,
   } = useConfigStepUp({
     authToken,
+    initialMfaRequireConfigStepUp: mfaRequireConfigStepUp,
     protectedSettingsRoute,
     adoptSession,
     setGlobalStatus,
@@ -1955,6 +1976,9 @@ function AuthenticatedHomePage({
                                 <MainContent
                                   view={view}
                                   overviewTitleId={overviewTitleId}
+                                  overviewTitleRoutePending={
+                                    overviewTitleRoutePending
+                                  }
                                   routeOverviewEpisodeId={overviewEpisodeId}
                                   handleBackToList={handleBackToList}
                                   settingsSection={settingsSection}

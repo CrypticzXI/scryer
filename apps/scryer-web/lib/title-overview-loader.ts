@@ -144,12 +144,12 @@ export async function fetchTitleOverviewDownloadFeedbackSnapshot(
 export async function resolveTitleOverviewTargetBySlug(
   client: Client,
   facet: Facet,
-  librarySlug: string,
+  librarySlug: string | null | undefined,
   slug: string,
 ): Promise<ResolvedTitleOverviewTarget | null> {
-  const normalizedLibrarySlug = librarySlug.trim();
+  const normalizedLibrarySlug = librarySlug?.trim() || null;
   const normalizedSlug = slug.trim();
-  if (!normalizedLibrarySlug || !normalizedSlug) {
+  if (!normalizedSlug) {
     return null;
   }
 

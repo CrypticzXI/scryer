@@ -365,6 +365,10 @@ async fn execute_resolved_episode_import(
         .resolve_import_mode(Some(&title.library_id), &title.facet)
         .await?;
 
+    let manual_replacement = matches!(
+        runtime_sample_mode,
+        crate::post_download_gate::RuntimeSampleValidationMode::BypassRuntimeSampleCheck
+    );
     if !existing_incumbents.is_empty() {
         let post_download_score =
             crate::post_download_gate::compute_post_download_acquisition_decision(
@@ -381,11 +385,19 @@ async fn execute_resolved_episode_import(
                 is_filler,
             )
             .await;
-        let new_score = post_download_score.score;
+        // A manual operator replacement always lands and is score-boosted so it is
+        // not immediately re-replaced by a marginally-higher automatic upgrade.
+        let new_score = post_download_score.score
+            + if manual_replacement {
+                crate::post_download_gate::MANUAL_GRAB_BOOST
+            } else {
+                0
+            };
         let upgrade_plan = match build_episode_upgrade_plan(
             &existing_incumbents,
             &target_episode_ids,
             new_score,
+            manual_replacement,
         ) {
             Ok(plan) => plan,
             Err(rejection) => {

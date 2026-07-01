@@ -153,6 +153,18 @@ async fn qbittorrent_mock_handler(
 ) -> impl IntoResponse {
     let method = request.method().clone();
     let uri = request.uri().clone();
+    let origin = request
+        .headers()
+        .get("origin")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    let referer = request
+        .headers()
+        .get("referer")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("")
+        .to_string();
     let cookie = request
         .headers()
         .get("cookie")
@@ -168,9 +180,22 @@ async fn qbittorrent_mock_handler(
         .lock()
         .expect("qbittorrent mock request log")
         .push(format!(
-            "{} {} cookie={} body={}",
-            method, uri, cookie, body
+            "{} {} origin={} referer={} cookie={} body={}",
+            method, uri, origin, referer, cookie, body
         ));
+
+    if method.as_str() == "POST"
+        && uri.path() == "/api/v2/auth/login"
+        && !qbittorrent_mock_browser_headers_ok(&origin, &referer)
+    {
+        return (StatusCode::FORBIDDEN, "Forbidden").into_response();
+    }
+    if uri.path().starts_with("/api/v2/")
+        && uri.path() != "/api/v2/auth/login"
+        && !qbittorrent_mock_api_headers_ok(&origin, &referer, &cookie)
+    {
+        return (StatusCode::FORBIDDEN, "Forbidden").into_response();
+    }
 
     match (method.as_str(), uri.path()) {
         ("POST", "/api/v2/auth/login") => {
@@ -260,6 +285,22 @@ async fn qbittorrent_mock_handler(
             .into_response(),
         _ => (StatusCode::NOT_FOUND, "not found").into_response(),
     }
+}
+
+fn qbittorrent_mock_browser_headers_ok(origin: &str, referer: &str) -> bool {
+    let origin = origin.trim().trim_end_matches('/');
+    let referer = referer.trim().trim_end_matches('/');
+    !origin.is_empty()
+        && !referer.is_empty()
+        && origin == referer
+        && (origin.starts_with("http://") || origin.starts_with("https://"))
+}
+
+fn qbittorrent_mock_api_headers_ok(origin: &str, referer: &str, cookie: &str) -> bool {
+    qbittorrent_mock_browser_headers_ok(origin, referer)
+        && cookie
+            .split(';')
+            .any(|part| part.trim().starts_with("SID="))
 }
 
 fn qbittorrent_wasm_bytes() -> Vec<u8> {

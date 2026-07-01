@@ -1,5 +1,5 @@
 import * as React from "react";
-import { FileInput, FolderOpen, Loader2 } from "lucide-react";
+import { FileInput, FolderOpen, Loader2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Clapperboard } from "lucide-react";
@@ -797,12 +797,6 @@ export function SeriesOverviewView({
   return (
     <>
       <div className="space-y-4">
-      <OverviewBackLink
-        id="series-overview-back-link"
-        label={t("title.backToFacet", { facet: backLabel })}
-        onClick={() => onBackToList?.()}
-      />
-
       <Card
         className="relative overflow-hidden p-0"
         style={overviewBackdropUrl ? { backdropFilter: "none", WebkitBackdropFilter: "none" } : undefined}
@@ -827,6 +821,24 @@ export function SeriesOverviewView({
                   "linear-gradient(to top, var(--color-card) 0%, var(--color-card) 5%, color-mix(in srgb, var(--color-card) 82%, transparent), color-mix(in srgb, var(--color-card) 52%, transparent)), linear-gradient(135deg, rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0.012) 40%, transparent 100%)",
               }}
             />
+          </div>
+        ) : null}
+        {onBackToList ? (
+          <div
+            className="pointer-events-none absolute z-30"
+            style={{ top: "1rem", right: "1rem" }}
+          >
+            <Button
+              type="button"
+              variant="outline"
+              size="icon"
+              className="pointer-events-auto size-10 rounded-[11px] border border-[var(--scry-border2)] bg-[var(--scry-card2)] text-[var(--scry-ink2)] shadow-[0_12px_30px_rgba(0,0,0,0.35)] backdrop-blur-sm transition hover:bg-[var(--scry-hover)] hover:text-[var(--scry-ink2)]"
+              aria-label={t("label.close")}
+              title={t("label.close")}
+              onClick={() => onBackToList()}
+            >
+              <X className="h-5 w-5" />
+            </Button>
           </div>
         ) : null}
         <CardContent className="relative p-4">
@@ -972,12 +984,6 @@ export function SeriesOverviewView({
         />
       ) : null}
 
-      <TitleMoreLikeThisStrip
-        items={title.moreLikeThis ?? []}
-        fallbackYearLabel={title.facet === "anime" ? t("nav.anime") : t("nav.series")}
-        {...moreLikeThisActions}
-      />
-
       <div>
         <Card className="relative overflow-hidden">
           <CardHeader>
@@ -1108,6 +1114,12 @@ export function SeriesOverviewView({
           ) : null}
         </Card>
       </div>
+
+      <TitleMoreLikeThisStrip
+        items={title.moreLikeThis ?? []}
+        fallbackYearLabel={title.facet === "anime" ? t("nav.anime") : t("nav.series")}
+        {...moreLikeThisActions}
+      />
 
       <details className="rounded-xl border border-border bg-card text-card-foreground overflow-hidden">
         <summary className="cursor-pointer select-none px-4 py-3 text-sm font-medium text-card-foreground">

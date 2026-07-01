@@ -18,6 +18,7 @@ import {
   type ExternalImportSourceLibraryMappingInput,
 } from "@/lib/graphql/mutations";
 import {
+  browsePathQuery,
   externalImportAggregateWarmupProgressQuery,
   externalImportSetupSecretDraftQuery,
   externalImportSetupSecretDraftStatusQuery,
@@ -530,6 +531,11 @@ export function useExternalImportSetup({ client }: UseExternalImportSetupArgs) {
   const [assign, setAssign] = useState<Record<string, string | null>>(
     () => initial?.assign ?? {},
   );
+  const [invalidAssignedRootIds, setInvalidAssignedRootIds] = useState<
+    string[]
+  >([]);
+  const [validatedAssignedRootPathSnapshotKey, setValidatedAssignedRootPathSnapshotKey] =
+    useState<string | null>(null);
 
   const detectedRoots = useMemo<ImportRoot[]>(() => {
     if (!preview) return [];
@@ -578,6 +584,80 @@ export function useExternalImportSetup({ client }: UseExternalImportSetupArgs) {
   const assignRoot = useCallback((rootId: string, libraryId: string | null) => {
     setAssign((prev) => ({ ...prev, [rootId]: libraryId }));
   }, []);
+
+  const assignedRootPathValidationSnapshot = useMemo(() => {
+    const assignedRoots = roots
+      .filter((root) => Boolean(assign[root.id]))
+      .map((root) => ({
+        id: root.id,
+        path: effectiveRootPath(root).trim(),
+      }))
+      .filter((root) => root.path.length > 0);
+
+    const key = assignedRoots
+      .map((root) => `${root.id}:${root.path}`)
+      .sort()
+      .join("\u001e");
+
+    return { key, assignedRoots };
+  }, [assign, roots]);
+
+  const assignedRootPathValidationLoading =
+    assignedRootPathValidationSnapshot.assignedRoots.length > 0 &&
+    validatedAssignedRootPathSnapshotKey !==
+      assignedRootPathValidationSnapshot.key;
+
+  useEffect(() => {
+    const { key, assignedRoots } = assignedRootPathValidationSnapshot;
+
+    if (assignedRoots.length === 0) {
+      setInvalidAssignedRootIds([]);
+      setValidatedAssignedRootPathSnapshotKey(key);
+      return;
+    }
+
+    let cancelled = false;
+
+    const validateAssignedRoots = async () => {
+      const invalidIds = new Set<string>();
+
+      await Promise.all(
+        assignedRoots.map(async (root) => {
+          const { error } = await client
+            .query(
+              browsePathQuery,
+              { path: root.path },
+              { requestPolicy: "network-only" },
+            )
+            .toPromise();
+
+          if (error) {
+            invalidIds.add(root.id);
+          }
+        }),
+      );
+
+      if (!cancelled) {
+        setInvalidAssignedRootIds([...invalidIds]);
+        setValidatedAssignedRootPathSnapshotKey(key);
+      }
+    };
+
+    void validateAssignedRoots().catch((error) => {
+      console.error(
+        "[external-import-root-validation] failed to validate assigned roots:",
+        error,
+      );
+      if (!cancelled) {
+        setInvalidAssignedRootIds([]);
+        setValidatedAssignedRootPathSnapshotKey(key);
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [assignedRootPathValidationSnapshot, client]);
 
   const setRootRemap = useCallback((rootId: string, scryerPath: string | null) => {
     setRemaps((prev) => {
@@ -1417,7 +1497,11 @@ export function useExternalImportSetup({ client }: UseExternalImportSetupArgs) {
       ),
     [manualRoots, assign],
   );
-  const mappingReady = allDetectedRootsMapped && !hasBlankAssignedManualRoot;
+  const mappingReady =
+    allDetectedRootsMapped &&
+    !hasBlankAssignedManualRoot &&
+    !assignedRootPathValidationLoading &&
+    invalidAssignedRootIds.length === 0;
 
   // Settled = nothing left to wait on: no arr sessions, or every connected arr
   // source's warmup has reached a terminal state in the latest preview.
@@ -1540,6 +1624,8 @@ export function useExternalImportSetup({ client }: UseExternalImportSetupArgs) {
     setManualRootPath,
     removeManualRoot,
     allDetectedRootsMapped,
+    invalidAssignedRootIds,
+    assignedRootPathValidationLoading,
     mappingReady,
     previewSettled,
     // libraries

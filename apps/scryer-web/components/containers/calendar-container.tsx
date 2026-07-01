@@ -25,6 +25,10 @@ type CalendarContainerProps = {
   ) => void;
 };
 
+function sameStringArray(left: string[], right: string[]) {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
 export const CalendarContainer = memo(function CalendarContainer({
   onOpenOverview,
 }: CalendarContainerProps) {
@@ -58,9 +62,10 @@ export const CalendarContainer = memo(function CalendarContainer({
         }
         const nextLibraries = (data?.libraries ?? []) as LibraryRecord[];
         setLibraries(nextLibraries);
-        setSelectedLibraryIds((current) =>
-          normalizeLibraryFilterSelection(current, nextLibraries),
-        );
+        setSelectedLibraryIds((current) => {
+          const normalized = normalizeLibraryFilterSelection(current, nextLibraries);
+          return sameStringArray(current, normalized) ? current : normalized;
+        });
       })
       .catch((error) => {
         if (!cancelled) {

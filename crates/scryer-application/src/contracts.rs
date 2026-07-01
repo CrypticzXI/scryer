@@ -16,6 +16,11 @@ pub enum DownloadSubmissionPurpose {
     #[default]
     Standard,
     AdditionalFile,
+    /// A manually-queued release chosen by the operator to replace the existing
+    /// primary file. On import it bypasses the required-audio gate (like a manual
+    /// file-pick) and forces the upgrade/replace path regardless of score, so a
+    /// known-correct lower-scored release can replace a mis-scored one.
+    ManualReplacement,
 }
 
 impl DownloadSubmissionPurpose {
@@ -23,18 +28,25 @@ impl DownloadSubmissionPurpose {
         match self {
             Self::Standard => "standard",
             Self::AdditionalFile => "additional_file",
+            Self::ManualReplacement => "manual_replacement",
         }
     }
 
     pub fn from_label(raw: &str) -> Self {
         match raw.trim().to_ascii_lowercase().as_str() {
             "additional_file" => Self::AdditionalFile,
+            "manual_replacement" => Self::ManualReplacement,
             _ => Self::Standard,
         }
     }
 
     pub fn is_additional_file(self) -> bool {
         self == Self::AdditionalFile
+    }
+
+    /// A manual operator-chosen replacement for the primary file.
+    pub fn is_manual_replacement(self) -> bool {
+        self == Self::ManualReplacement
     }
 }
 

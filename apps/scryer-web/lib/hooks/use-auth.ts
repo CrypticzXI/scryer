@@ -131,6 +131,183 @@ async function waitForRateLimitWindow(attempt: number) {
   await new Promise((resolve) => window.setTimeout(resolve, delayMs));
 }
 
+type AuthBootstrapSnapshot = {
+  token: string | null;
+  user: AuthUser | null;
+  effectiveFormLoginEnabled: boolean | null;
+  passkeyEnabled: boolean;
+  mfaRequirePasswordLogin: boolean;
+  mfaRequireConfigStepUp: boolean | null;
+  totpRequireJellyfinLogin: boolean;
+};
+
+let authBootstrapSnapshot: AuthBootstrapSnapshot | null = null;
+let authBootstrapPromise: Promise<AuthBootstrapSnapshot> | null = null;
+
+async function queryWithRateLimitRetry<TData>(
+  query: string,
+): Promise<TData | null> {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const { data, error } = await backendClient.query(query, {}).toPromise();
+    if (!error) {
+      return (data as TData | null) ?? null;
+    }
+    if (!isRateLimitedError(error) || attempt === 2) {
+      throw error;
+    }
+    await waitForRateLimitWindow(attempt);
+  }
+
+  return null;
+}
+
+async function loadUserFromBypass(options?: { clearToken?: boolean }) {
+  if (options?.clearToken) {
+    clearPersistedAuthToken();
+  }
+
+  try {
+    const data = await queryWithRateLimitRetry<{ me?: AuthUser | null }>(
+      meQuery,
+    );
+    return data?.me ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function rememberAuthBootstrapSession(token: string | null, user: AuthUser | null) {
+  authBootstrapPromise = null;
+  authBootstrapSnapshot = {
+    token,
+    user,
+    effectiveFormLoginEnabled:
+      authBootstrapSnapshot?.effectiveFormLoginEnabled ?? null,
+    passkeyEnabled: authBootstrapSnapshot?.passkeyEnabled ?? false,
+    mfaRequirePasswordLogin:
+      authBootstrapSnapshot?.mfaRequirePasswordLogin ?? false,
+    mfaRequireConfigStepUp:
+      authBootstrapSnapshot?.mfaRequireConfigStepUp ?? null,
+    totpRequireJellyfinLogin:
+      authBootstrapSnapshot?.totpRequireJellyfinLogin ?? false,
+  };
+}
+
+async function computeAuthBootstrapSnapshot(): Promise<AuthBootstrapSnapshot> {
+  let runtimeState: AuthRuntimeState | null = null;
+  let effectiveFormLoginEnabled: boolean | null = null;
+  let passkeyEnabled = false;
+  let mfaRequirePasswordLogin = false;
+  let mfaRequireConfigStepUp: boolean | null = null;
+  let totpRequireJellyfinLogin = false;
+
+  try {
+    const data = await queryWithRateLimitRetry<{
+      authRuntimeState?: AuthRuntimeState | null;
+    }>(authRuntimeStateQuery);
+    runtimeState = data?.authRuntimeState ?? null;
+    effectiveFormLoginEnabled =
+      typeof runtimeState?.effectiveFormLoginEnabled === "boolean"
+        ? runtimeState.effectiveFormLoginEnabled
+        : null;
+    passkeyEnabled = runtimeState?.passkeyEnabled === true;
+    mfaRequirePasswordLogin = runtimeState?.mfaRequirePasswordLogin === true;
+    mfaRequireConfigStepUp =
+      typeof runtimeState?.mfaRequireConfigStepUp === "boolean"
+        ? runtimeState.mfaRequireConfigStepUp
+        : null;
+    totpRequireJellyfinLogin = runtimeState?.totpRequireJellyfinLogin === true;
+  } catch {
+    // Fall back to the existing token/bootstrap path when the public
+    // runtime-state probe is temporarily unavailable.
+  }
+
+  if (runtimeState?.effectiveFormLoginEnabled === false) {
+    clearPersistedAuthToken();
+    return {
+      token: null,
+      user: await loadUserFromBypass(),
+      effectiveFormLoginEnabled,
+      passkeyEnabled,
+      mfaRequirePasswordLogin,
+      mfaRequireConfigStepUp,
+      totpRequireJellyfinLogin,
+    };
+  }
+
+  // When auth is enabled, or the runtime mode is temporarily unknown,
+  // prefer preserving an existing valid session over clearing it.
+  if (currentToken) {
+    const authUser = userFromToken(currentToken);
+    if (authUser) {
+      return {
+        token: currentToken,
+        user: authUser,
+        effectiveFormLoginEnabled,
+        passkeyEnabled,
+        mfaRequirePasswordLogin,
+        mfaRequireConfigStepUp,
+        totpRequireJellyfinLogin,
+      };
+    }
+    clearPersistedAuthToken();
+  }
+
+  const stored = sessionStorage.getItem(SESSION_STORAGE_KEY);
+  if (stored) {
+    const authUser = userFromToken(stored);
+    if (authUser) {
+      currentToken = stored;
+      return {
+        token: stored,
+        user: authUser,
+        effectiveFormLoginEnabled,
+        passkeyEnabled,
+        mfaRequirePasswordLogin,
+        mfaRequireConfigStepUp,
+        totpRequireJellyfinLogin,
+      };
+    }
+    clearPersistedAuthToken();
+  }
+
+  let user: AuthUser | null = null;
+  if (runtimeState == null || runtimeState?.skipLoginForLocalIps === true) {
+    user = await loadUserFromBypass();
+    if (
+      !user &&
+      runtimeState?.skipLoginForLocalIps === true &&
+      currentToken
+    ) {
+      user = await loadUserFromBypass({ clearToken: true });
+    }
+  }
+
+  return {
+    token: null,
+    user,
+    effectiveFormLoginEnabled,
+    passkeyEnabled,
+    mfaRequirePasswordLogin,
+    mfaRequireConfigStepUp,
+    totpRequireJellyfinLogin,
+  };
+}
+
+function loadAuthBootstrapSnapshot(): Promise<AuthBootstrapSnapshot> {
+  if (authBootstrapSnapshot) {
+    return Promise.resolve(authBootstrapSnapshot);
+  }
+  if (!authBootstrapPromise) {
+    authBootstrapPromise = computeAuthBootstrapSnapshot().then((snapshot) => {
+      authBootstrapSnapshot = snapshot;
+      authBootstrapPromise = null;
+      return snapshot;
+    });
+  }
+  return authBootstrapPromise;
+}
+
 function applyAuthenticatedSession(
   token: string,
   user: AuthUser | null,
@@ -149,6 +326,7 @@ export type AuthState = {
   effectiveFormLoginEnabled: boolean | null;
   passkeyEnabled: boolean;
   mfaRequirePasswordLogin: boolean;
+  mfaRequireConfigStepUp: boolean | null;
   totpRequireJellyfinLogin: boolean;
   login: (
     username: string,
@@ -183,6 +361,9 @@ export function useAuth(): AuthState {
   const [effectiveFormLoginEnabled, setEffectiveFormLoginEnabled] = useState<boolean | null>(null);
   const [passkeyEnabled, setPasskeyEnabled] = useState(false);
   const [mfaRequirePasswordLogin, setMfaRequirePasswordLogin] = useState(false);
+  const [mfaRequireConfigStepUp, setMfaRequireConfigStepUp] = useState<
+    boolean | null
+  >(null);
   const [totpRequireJellyfinLogin, setTotpRequireJellyfinLogin] = useState(false);
   const initialized = useRef(false);
 
@@ -190,110 +371,25 @@ export function useAuth(): AuthState {
     if (initialized.current) return;
     initialized.current = true;
 
-    (async () => {
-      const queryWithRateLimitRetry = async <TData>(
-        query: string,
-      ): Promise<TData | null> => {
-        for (let attempt = 0; attempt < 3; attempt += 1) {
-          const { data, error } = await backendClient.query(query, {}).toPromise();
-          if (!error) {
-            return (data as TData | null) ?? null;
-          }
-          if (!isRateLimitedError(error) || attempt === 2) {
-            throw error;
-          }
-          await waitForRateLimitWindow(attempt);
-        }
-
-        return null;
-      };
-
-      const loadUserFromBypass = async (options?: { clearToken?: boolean }) => {
-        if (options?.clearToken) {
-          clearPersistedAuthToken();
-          setToken(null);
-        }
-
-        try {
-          const data = await queryWithRateLimitRetry<{ me?: AuthUser | null }>(meQuery);
-          return data?.me ?? null;
-        } catch {
-          return null;
-        }
-      };
-
-      let runtimeState: AuthRuntimeState | null = null;
-
-      try {
-        const data = await queryWithRateLimitRetry<{ authRuntimeState?: AuthRuntimeState | null }>(
-          authRuntimeStateQuery,
-        );
-        runtimeState = data?.authRuntimeState ?? null;
-        setEffectiveFormLoginEnabled(
-          typeof runtimeState?.effectiveFormLoginEnabled === "boolean"
-            ? runtimeState.effectiveFormLoginEnabled
-            : null,
-        );
-        setPasskeyEnabled(runtimeState?.passkeyEnabled === true);
-        setMfaRequirePasswordLogin(runtimeState?.mfaRequirePasswordLogin === true);
-        setTotpRequireJellyfinLogin(runtimeState?.totpRequireJellyfinLogin === true);
-      } catch {
-        // Fall back to the existing token/bootstrap path when the public
-        // runtime-state probe is temporarily unavailable.
-      }
-
-      if (runtimeState?.effectiveFormLoginEnabled === false) {
-        clearPersistedAuthToken();
-        setToken(null);
-        setUser(await loadUserFromBypass());
-
-        setLoading(false);
+    let cancelled = false;
+    void loadAuthBootstrapSnapshot().then((snapshot) => {
+      if (cancelled) {
         return;
       }
-
-      // When auth is enabled, or the runtime mode is temporarily unknown,
-      // prefer preserving an existing valid session over clearing it.
-      if (currentToken) {
-        const authUser = userFromToken(currentToken);
-        if (authUser) {
-          setToken(currentToken);
-          setUser(authUser);
-          setLoading(false);
-          return;
-        }
-        clearPersistedAuthToken();
-      }
-
-      const stored = sessionStorage.getItem(SESSION_STORAGE_KEY);
-      if (stored) {
-        const authUser = userFromToken(stored);
-        if (authUser) {
-          currentToken = stored;
-          setToken(stored);
-          setUser(authUser);
-          setLoading(false);
-          return;
-        }
-        clearPersistedAuthToken();
-      }
-
-      if (
-        runtimeState == null ||
-        runtimeState?.skipLoginForLocalIps === true
-      ) {
-        let bypassUser = await loadUserFromBypass();
-        if (
-          !bypassUser &&
-          runtimeState?.skipLoginForLocalIps === true &&
-          currentToken
-        ) {
-          bypassUser = await loadUserFromBypass({ clearToken: true });
-        }
-        setUser(bypassUser);
-      }
-
+      setToken(snapshot.token);
+      setUser(snapshot.user);
+      setEffectiveFormLoginEnabled(snapshot.effectiveFormLoginEnabled);
+      setPasskeyEnabled(snapshot.passkeyEnabled);
+      setMfaRequirePasswordLogin(snapshot.mfaRequirePasswordLogin);
+      setMfaRequireConfigStepUp(snapshot.mfaRequireConfigStepUp);
+      setTotpRequireJellyfinLogin(snapshot.totpRequireJellyfinLogin);
       setLoading(false);
-    })();
+    });
+
+    return () => {
+      cancelled = true;
+      initialized.current = false;
+    };
   }, []);
 
   const login = useCallback(async (
@@ -312,6 +408,7 @@ export function useAuth(): AuthState {
 
     if (options?.persistSession !== false) {
       applyAuthenticatedSession(newToken, nextUser, setToken, setUser);
+      rememberAuthBootstrapSession(newToken, nextUser);
     }
 
     return {
@@ -323,12 +420,14 @@ export function useAuth(): AuthState {
 
   const adoptSession = useCallback((nextToken: string, nextUser: AuthUser | null) => {
     applyAuthenticatedSession(nextToken, nextUser, setToken, setUser);
+    rememberAuthBootstrapSession(nextToken, nextUser);
   }, []);
 
   const logout = useCallback(() => {
     clearPersistedAuthToken();
     setToken(null);
     setUser(null);
+    rememberAuthBootstrapSession(null, null);
   }, []);
 
   return {
@@ -338,6 +437,7 @@ export function useAuth(): AuthState {
     effectiveFormLoginEnabled,
     passkeyEnabled,
     mfaRequirePasswordLogin,
+    mfaRequireConfigStepUp,
     totpRequireJellyfinLogin,
     login,
     adoptSession,

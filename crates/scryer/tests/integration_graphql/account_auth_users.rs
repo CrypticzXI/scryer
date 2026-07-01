@@ -2518,6 +2518,183 @@ async fn graphql_local_password_login_requires_mfa_enrollment_when_enabled() {
 }
 
 #[tokio::test]
+async fn graphql_jellyfin_login_requires_mfa_enrollment_when_enabled() {
+    let ctx = TestContext::new().await;
+    seed_typed_settings_definitions(&ctx).await;
+    let admin = ctx.app.find_or_create_default_user().await.unwrap();
+    let admin = ctx
+        .app
+        .set_initial_own_password(&admin, "admin-pass1".to_string())
+        .await
+        .expect("set initial default admin password");
+
+    let now = Utc::now();
+    let media_servers =
+        MediaServerConnectionStore::new(ctx.db.datastore(), ctx.db.encryption_key_state());
+    MediaServerConnectionRepository::create(
+        &media_servers,
+        MediaServerConnection {
+            id: "jellyfin-main".to_string(),
+            provider: MediaServerProvider::Jellyfin,
+            display_name: "Main Jellyfin".to_string(),
+            base_url: ctx.smg_server.uri(),
+            enabled: true,
+            login_enabled: true,
+            linking_enabled: false,
+            auto_add_enabled: true,
+            default_app_permissions: AppPermissionMask::NONE,
+            default_library_grants: Vec::new(),
+            machine_id: None,
+            api_key: Some("jellyfin-api-key".to_string()),
+            path_mappings: Vec::new(),
+            created_at: now,
+            updated_at: now,
+        },
+    )
+    .await
+    .expect("seed Jellyfin media server connection");
+
+    Mock::given(method("POST"))
+        .and(path("/Users/AuthenticateByName"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "User": {
+                "Id": "jellyfin-mfa-user-id",
+                "Name": "jellyfin-mfa"
+            }
+        })))
+        .mount(&ctx.smg_server)
+        .await;
+
+    let update = schema_exec(
+        &ctx,
+        r#"
+        mutation UpdateSecuritySettings {
+          updateSecuritySettings(input: {
+            formLoginEnabled: true
+            passwordMinLength: 8
+            skipLoginForLocalIps: false
+            mfaRequireConfigStepUp: false
+            mfaRequirePasswordLogin: false
+            totpRequireJellyfinLogin: true
+          }) {
+            effectiveFormLoginEnabled
+            totpRequireJellyfinLogin
+          }
+        }
+        "#,
+        Some(admin),
+    )
+    .await;
+    assert_no_errors(&update);
+    assert_eq!(
+        update["data"]["updateSecuritySettings"]["effectiveFormLoginEnabled"],
+        true
+    );
+    assert_eq!(
+        update["data"]["updateSecuritySettings"]["totpRequireJellyfinLogin"],
+        true
+    );
+
+    let login_body = gql(
+        &ctx,
+        r#"
+        mutation LoginWithJellyfin($connectionId: ID!, $username: String!, $password: String!) {
+          loginWithJellyfin(input: {
+            connectionId: $connectionId
+            username: $username
+            password: $password
+          }) {
+            token
+            mfaEnrollmentRequired
+            mfaVerifiedUntil
+            user { username }
+          }
+        }
+        "#,
+        json!({
+            "connectionId": "jellyfin-main",
+            "username": "jellyfin-mfa",
+            "password": "jellyfin-pass1",
+        }),
+    )
+    .await;
+    assert_no_errors(&login_body);
+    let payload = &login_body["data"]["loginWithJellyfin"];
+    assert_eq!(payload["mfaEnrollmentRequired"], true);
+    assert!(payload["mfaVerifiedUntil"].is_null());
+    assert_eq!(payload["user"]["username"], "jellyfin-mfa");
+
+    let token = payload["token"].as_str().expect("enrollment token");
+    let (_user, claims) = ctx
+        .app
+        .authenticate_token_with_claims(token)
+        .await
+        .expect("authenticate enrollment token");
+    assert_eq!(claims.session_scope, JwtSessionScope::MfaEnrollment);
+
+    let enrollment_start = gql_with_token(
+        &ctx,
+        r#"mutation { totpEnrollmentStart { challengeId secretBase32 } }"#,
+        json!({}),
+        token,
+    )
+    .await;
+    assert_no_errors(&enrollment_start);
+    let challenge_id = enrollment_start["data"]["totpEnrollmentStart"]["challengeId"]
+        .as_str()
+        .expect("challenge id");
+    let secret_base32 = enrollment_start["data"]["totpEnrollmentStart"]["secretBase32"]
+        .as_str()
+        .expect("secret");
+    let code = test_totp_code(secret_base32);
+
+    let complete = gql_with_token(
+        &ctx,
+        r#"
+        mutation CompleteLoginMfaEnrollment($input: TotpEnrollmentCompleteInput!) {
+          completeLoginMfaEnrollment(input: $input) {
+            recoveryCodes
+            login {
+              token
+              mfaEnrollmentRequired
+              mfaVerifiedUntil
+              user { username }
+            }
+          }
+        }
+        "#,
+        json!({
+            "input": {
+                "challengeId": challenge_id,
+                "code": code
+            }
+        }),
+        token,
+    )
+    .await;
+    assert_no_errors(&complete);
+    let complete_payload = &complete["data"]["completeLoginMfaEnrollment"];
+    assert!(
+        complete_payload["recoveryCodes"]
+            .as_array()
+            .is_some_and(|codes| !codes.is_empty()),
+        "Jellyfin login MFA enrollment should return recovery codes: {complete}"
+    );
+    let login_payload = &complete_payload["login"];
+    assert_eq!(login_payload["mfaEnrollmentRequired"], false);
+    assert!(login_payload["mfaVerifiedUntil"].as_str().is_some());
+    assert_eq!(login_payload["user"]["username"], "jellyfin-mfa");
+    let full_token = login_payload["token"].as_str().expect("full token");
+    let (_user, full_claims) = ctx
+        .app
+        .authenticate_token_with_claims(full_token)
+        .await
+        .expect("authenticate full token");
+    assert_eq!(full_claims.session_scope, JwtSessionScope::Full);
+    assert!(full_claims.mfa_verified_until.is_some());
+}
+
+#[tokio::test]
 async fn graphql_local_password_login_with_existing_totp_requires_and_accepts_code() {
     let ctx = TestContext::new().await;
     seed_typed_settings_definitions(&ctx).await;

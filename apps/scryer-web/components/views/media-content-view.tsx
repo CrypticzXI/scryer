@@ -552,7 +552,7 @@ function TitleContextForYouPanel({
       </div>
 
       {recommendationGroups.length === 0 ? (
-        <div className="flex min-h-[16rem] flex-1 flex-col items-center justify-center gap-3 px-4 text-center">
+        <div className="flex min-h-[42rem] flex-1 flex-col items-center justify-center gap-3 px-4 text-center">
           <div className="flex size-12 items-center justify-center rounded-[14px] border border-[var(--scry-border2)] bg-[var(--scry-inset)] text-[var(--scry-muted2)]">
             <LayoutList className="h-5 w-5" />
           </div>
@@ -566,7 +566,7 @@ function TitleContextForYouPanel({
           </div>
         </div>
       ) : (
-        <div className="mt-4 space-y-4">
+        <div className="min-h-[42rem] space-y-4">
           {recommendationGroups.map((group) => (
             <section
               key={group.id}
@@ -1769,6 +1769,7 @@ export function MediaContentView({
     ) => void;
     selectedOverviewTitleId: string | null;
     selectedOverviewDetailLoading: boolean;
+    routeOverviewPending: boolean;
     routeOverviewEpisodeId: string | null;
     selectedOverviewBlocklistEntries: TitleReleaseBlocklistEntry[];
     selectedOverviewExternalSubtitles: ExternalSubtitleRecord[];
@@ -1960,6 +1961,7 @@ export function MediaContentView({
     onOpenOverview,
     selectedOverviewTitleId,
     selectedOverviewDetailLoading,
+    routeOverviewPending,
     routeOverviewEpisodeId,
     selectedOverviewBlocklistEntries,
     selectedOverviewExternalSubtitles,
@@ -1969,6 +1971,7 @@ export function MediaContentView({
     selectedOverviewPrimaryMovieFileUpdatingId,
     previewTitleRename,
     applyTitleRename,
+    setSelectedOverviewTitleId,
     onCloseOverview,
     deleteCatalogTitle,
     isDeletingCatalogTitleById,
@@ -1993,6 +1996,21 @@ export function MediaContentView({
   const deferredCatalogDiscoveryGroups = React.useDeferredValue(
     catalogDiscoveryGroups,
   );
+  const routeOverviewSlug = React.useMemo(() => {
+    if (!routeOverviewPending) {
+      return null;
+    }
+    const segments = location.pathname.split("/").filter(Boolean);
+    const candidate = segments[segments.length - 1]?.trim();
+    if (!candidate || candidate === "overview" || candidate === "settings") {
+      return null;
+    }
+    try {
+      return decodeURIComponent(candidate);
+    } catch {
+      return candidate;
+    }
+  }, [location.pathname, routeOverviewPending]);
   const [visibleTitleTableColumns, setVisibleTitleTableColumns] =
     React.useState<TitleTableVisibleColumns>(() => ({
       ...DEFAULT_TITLE_TABLE_VISIBLE_COLUMNS,
@@ -2033,13 +2051,24 @@ export function MediaContentView({
     [deferredMonitoredTitles, selectedTitleIds],
   );
   const selectedOverviewTitle = React.useMemo(
-    () =>
-      selectedOverviewTitleId
-        ? (deferredTitleContextTitles.find(
+    () => {
+      if (selectedOverviewTitleId) {
+        return (
+          deferredTitleContextTitles.find(
             (title) => title.id === selectedOverviewTitleId,
-          ) ?? null)
-        : null,
-    [deferredTitleContextTitles, selectedOverviewTitleId],
+          ) ?? null
+        );
+      }
+      if (routeOverviewSlug) {
+        return (
+          deferredTitleContextTitles.find(
+            (title) => title.slug === routeOverviewSlug,
+          ) ?? null
+        );
+      }
+      return null;
+    },
+    [deferredTitleContextTitles, routeOverviewSlug, selectedOverviewTitleId],
   );
   const activeOverviewTitle = selectedOverviewTitle;
   const activeOverviewTitleId = activeOverviewTitle?.id ?? null;
@@ -2069,6 +2098,7 @@ export function MediaContentView({
     (title: TitleRecord) => {
       // Selecting a title is a navigation: the URL (slug deep link) is the
       // source of truth, and the container mirrors it into the inline pane.
+      setSelectedOverviewTitleId(title.id);
       onOpenOverview(view, {
         id: title.id,
         slug: title.slug ?? null,
@@ -2076,7 +2106,7 @@ export function MediaContentView({
         librarySlug: title.librarySlug ?? null,
       });
     },
-    [onOpenOverview, view],
+    [onOpenOverview, setSelectedOverviewTitleId, view],
   );
   const effectiveContentSettingsSection = canAccessMediaSettingsSection(
     contentSettingsSection,
@@ -2282,7 +2312,6 @@ export function MediaContentView({
       }
     };
 
-    maybeLoadNextPage();
     const scrollElement = selectedTitlePosterLayoutActive
       ? selectedTitleListDrawerRef.current
       : window;
@@ -2321,9 +2350,15 @@ export function MediaContentView({
       if (effectiveViewMode === "poster") {
         persistOverviewWindowScroll(location.pathname);
       }
+      setSelectedOverviewTitleId(overviewTarget.id);
       onOpenOverview(targetView, overviewTarget);
     },
-    [effectiveViewMode, location.pathname, onOpenOverview],
+    [
+      effectiveViewMode,
+      location.pathname,
+      onOpenOverview,
+      setSelectedOverviewTitleId,
+    ],
   );
   const explicitlySelectedLibraryIds = selectedLibraryIds.filter(
     (libraryId) => libraryId !== allLibrariesValue,
@@ -2645,10 +2680,15 @@ export function MediaContentView({
     titleFilter.trim().length > 0 ||
     hasActiveTitleQuickFilters(titleQuickFilters, quickFilterView);
   const showEmptyStateActions = !hasActiveTitleDisplayFilters;
+  const knownCatalogTitleCount = Math.max(
+    titleQuickFilterCounts.all,
+    catalogTotalTitleCount,
+  );
   const rootConfigurationResolutionPending =
     showEmptyStateActions &&
     canManageLibrarySettings &&
     catalogInitialLoadComplete &&
+    knownCatalogTitleCount === 0 &&
     monitoredTitles.length === 0 &&
     (librariesLoading || rootFolderValidationLoading);
 
@@ -2660,10 +2700,7 @@ export function MediaContentView({
   );
   const mediaTitle = mediaTitleLabel(view, t);
   const visibleTitleCount = deferredMonitoredTitles.length;
-  const totalTitleCount = Math.max(
-    titleQuickFilterCounts.all,
-    catalogTotalTitleCount,
-  );
+  const totalTitleCount = knownCatalogTitleCount;
   const titleSummaryNoun = (() => {
     if (view === "movies") {
       return totalTitleCount === 1 ? "title" : "titles";
@@ -2957,124 +2994,6 @@ export function MediaContentView({
                     ) : null
                   }
                 />
-                <div className="mt-3 flex flex-col gap-2.5 lg:flex-row lg:items-center lg:justify-between">
-                  <div className="relative w-full min-w-[220px] lg:max-w-[520px]">
-                    <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--scry-muted2)]" />
-                    <Input
-                      placeholder={t("title.filterPlaceholder")}
-                      value={titleFilterInputValue}
-                      onChange={handleTitleFilterChange}
-                      className="h-10 w-full rounded-[10px] border-[var(--scry-border2)] bg-[var(--scry-inset)] pl-9 text-[13px] text-[var(--scry-body)] shadow-none placeholder:text-[var(--scry-faint2)] focus-visible:ring-[var(--scry-focus)]"
-                    />
-                  </div>
-                  <div className="flex min-w-0 flex-col gap-2.5 sm:flex-row sm:items-center lg:justify-end">
-                    {showTitleTableColumnControls ? (
-                      <Popover>
-                        <PopoverTrigger asChild>
-                          <Button
-                            type="button"
-                            variant="outline"
-                            className="h-10 w-full rounded-[10px] border-[var(--scry-border2)] bg-[var(--scry-inset)] px-3 text-[13px] text-[var(--scry-muted2)] shadow-none transition hover:bg-[var(--scry-hover)] hover:text-[var(--scry-ink2)] sm:w-10 sm:px-0"
-                            aria-label={t("title.columns")}
-                            title={t("title.columns")}
-                          >
-                            <Columns3 className="h-4 w-4" />
-                            <span className="sm:hidden">{t("title.columns")}</span>
-                          </Button>
-                        </PopoverTrigger>
-                        <PopoverContent
-                          align="end"
-                          className="w-[194px] rounded-[11px] border border-[var(--scry-border2)] bg-[var(--scry-soft)] p-[7px] shadow-[0_18px_44px_rgba(0,0,0,0.55)]"
-                        >
-                          <div className="px-2 pb-2 pt-1 text-[10.5px] font-bold uppercase tracking-[0.06em] text-[var(--scry-faint2)]">
-                            {t("title.toggleColumns")}
-                          </div>
-                          <div>
-                            {titleTableColumnOptions.map((columnKey) => (
-                              <label
-                                key={columnKey}
-                                className="flex cursor-pointer items-center gap-2.5 rounded-[8px] px-2 py-[7px] text-[13px] text-[var(--scry-text2)] transition hover:bg-[var(--scry-hover)]"
-                              >
-                                <Checkbox
-                                  checked={visibleTitleTableColumns[columnKey]}
-                                  onCheckedChange={(checked) =>
-                                    toggleTitleTableColumn(
-                                      columnKey,
-                                      checked === true,
-                                    )
-                                  }
-                                  aria-label={titleTableColumnLabel(
-                                    columnKey,
-                                    t,
-                                  )}
-                                  className="size-[17px] rounded-[5px] [&_svg]:size-3"
-                                />
-                                <span className="min-w-0 truncate">
-                                  {titleTableColumnLabel(columnKey, t)}
-                                </span>
-                              </label>
-                            ))}
-                          </div>
-                        </PopoverContent>
-                      </Popover>
-                    ) : null}
-                    <LibraryMultiSelect
-                      libraries={libraries}
-                      selectedLibraryIds={selectedLibraryIds}
-                      onSelectedLibraryIdsChange={setSelectedLibraryIds}
-                      disabled={librariesLoading || libraries.length === 0}
-                      triggerClassName="h-10 w-full rounded-[10px] border-[var(--scry-border2)] bg-[var(--scry-inset)] text-[13px] text-[var(--scry-body)] shadow-none sm:w-[190px]"
-                    />
-                    <ToggleGroup
-                      type="single"
-                      variant="outline"
-                      value={effectiveViewMode}
-                      onValueChange={(v) => {
-                        if (
-                          v === "compact" ||
-                          v === "poster-table" ||
-                          v === "poster"
-                        ) {
-                          setViewMode(v);
-                        }
-                      }}
-                      size="sm"
-                      aria-label={t("title.viewModeToggle")}
-                      className="h-10 shrink-0 gap-0.5 rounded-[10px] border border-[var(--scry-border2)] bg-[var(--scry-inset)] p-1 shadow-none"
-                    >
-                      <ToggleGroupItem
-                        id={titleOverviewViewModeId(view, "compact")}
-                        value="compact"
-                        size="sm"
-                        aria-label={t("title.viewModeCompact")}
-                        title={t("title.viewModeCompact")}
-                        className="h-8 w-8 rounded-lg px-0 text-[var(--scry-muted2)] transition hover:bg-[var(--scry-hover)] hover:text-[var(--scry-ink2)] data-[state=on]:!border-transparent data-[state=on]:!bg-[var(--scry-accent)] data-[state=on]:!text-primary-foreground data-[state=on]:!shadow-none"
-                      >
-                        <TableIcon className="h-4 w-4" />
-                      </ToggleGroupItem>
-                      <ToggleGroupItem
-                        id={titleOverviewViewModeId(view, "poster-table")}
-                        value="poster-table"
-                        size="sm"
-                        aria-label={t("title.viewModePosterTable")}
-                        title={t("title.viewModePosterTable")}
-                        className="h-8 w-8 rounded-lg px-0 text-[var(--scry-muted2)] transition hover:bg-[var(--scry-hover)] hover:text-[var(--scry-ink2)] data-[state=on]:!border-transparent data-[state=on]:!bg-[var(--scry-accent)] data-[state=on]:!text-primary-foreground data-[state=on]:!shadow-none"
-                      >
-                        <LayoutList className="h-4 w-4" />
-                      </ToggleGroupItem>
-                      <ToggleGroupItem
-                        id={titleOverviewViewModeId(view, "poster")}
-                        value="poster"
-                        size="sm"
-                        aria-label={t("title.viewModePoster")}
-                        title={t("title.viewModePoster")}
-                        className="h-8 w-8 rounded-lg px-0 text-[var(--scry-muted2)] transition hover:bg-[var(--scry-hover)] hover:text-[var(--scry-ink2)] data-[state=on]:!border-transparent data-[state=on]:!bg-[var(--scry-accent)] data-[state=on]:!text-primary-foreground data-[state=on]:!shadow-none"
-                      >
-                        <LayoutGrid className="h-4 w-4" />
-                      </ToggleGroupItem>
-                    </ToggleGroup>
-                  </div>
-                </div>
               </div>
             </div>
             <div
@@ -3104,9 +3023,158 @@ export function MediaContentView({
                     null
                   );
                 })();
+                const titleCatalogControlBar = (
+                  <div className="mb-3 flex shrink-0 flex-col gap-2.5 lg:flex-row lg:items-center lg:justify-between">
+                    <div className="relative w-full min-w-[220px] lg:max-w-[520px]">
+                      <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--scry-muted2)]" />
+                      <Input
+                        placeholder={t("title.filterPlaceholder")}
+                        value={titleFilterInputValue}
+                        onChange={handleTitleFilterChange}
+                        className="h-10 w-full rounded-[10px] border-[var(--scry-border2)] bg-[var(--scry-inset)] pl-9 text-[13px] text-[var(--scry-body)] shadow-none placeholder:text-[var(--scry-faint2)] focus-visible:ring-[var(--scry-focus)]"
+                      />
+                    </div>
+                    <div className="flex min-w-0 flex-col gap-2.5 sm:flex-row sm:items-center lg:justify-end">
+                      {showTitleTableColumnControls ? (
+                        <Popover>
+                          <PopoverTrigger asChild>
+                            <Button
+                              type="button"
+                              variant="outline"
+                              className="h-10 w-full rounded-[10px] border-[var(--scry-border2)] bg-[var(--scry-inset)] px-3 text-[13px] text-[var(--scry-muted2)] shadow-none transition hover:bg-[var(--scry-hover)] hover:text-[var(--scry-ink2)] sm:w-10 sm:px-0"
+                              aria-label={t("title.columns")}
+                              title={t("title.columns")}
+                            >
+                              <Columns3 className="h-4 w-4" />
+                              <span className="sm:hidden">
+                                {t("title.columns")}
+                              </span>
+                            </Button>
+                          </PopoverTrigger>
+                          <PopoverContent
+                            align="end"
+                            className="w-[194px] rounded-[11px] border border-[var(--scry-border2)] bg-[var(--scry-soft)] p-[7px] shadow-[0_18px_44px_rgba(0,0,0,0.55)]"
+                          >
+                            <div className="px-2 pb-2 pt-1 text-[10.5px] font-bold uppercase tracking-[0.06em] text-[var(--scry-faint2)]">
+                              {t("title.toggleColumns")}
+                            </div>
+                            <div>
+                              {titleTableColumnOptions.map((columnKey) => (
+                                <label
+                                  key={columnKey}
+                                  className="flex cursor-pointer items-center gap-2.5 rounded-[8px] px-2 py-[7px] text-[13px] text-[var(--scry-text2)] transition hover:bg-[var(--scry-hover)]"
+                                >
+                                  <Checkbox
+                                    checked={
+                                      visibleTitleTableColumns[columnKey]
+                                    }
+                                    onCheckedChange={(checked) =>
+                                      toggleTitleTableColumn(
+                                        columnKey,
+                                        checked === true,
+                                      )
+                                    }
+                                    aria-label={titleTableColumnLabel(
+                                      columnKey,
+                                      t,
+                                    )}
+                                    className="size-[17px] rounded-[5px] [&_svg]:size-3"
+                                  />
+                                  <span className="min-w-0 truncate">
+                                    {titleTableColumnLabel(columnKey, t)}
+                                  </span>
+                                </label>
+                              ))}
+                            </div>
+                          </PopoverContent>
+                        </Popover>
+                      ) : (
+                        <div
+                          aria-hidden="true"
+                          className="hidden h-10 shrink-0 sm:block sm:w-10"
+                        />
+                      )}
+                      <LibraryMultiSelect
+                        libraries={libraries}
+                        selectedLibraryIds={selectedLibraryIds}
+                        onSelectedLibraryIdsChange={setSelectedLibraryIds}
+                        disabled={librariesLoading || libraries.length === 0}
+                        triggerClassName="h-10 w-full rounded-[10px] border-[var(--scry-border2)] bg-[var(--scry-inset)] text-[13px] text-[var(--scry-body)] shadow-none sm:w-[190px]"
+                      />
+                      <ToggleGroup
+                        type="single"
+                        variant="outline"
+                        value={effectiveViewMode}
+                        onValueChange={(v) => {
+                          if (
+                            v === "compact" ||
+                            v === "poster-table" ||
+                            v === "poster"
+                          ) {
+                            setViewMode(v);
+                          }
+                        }}
+                        size="sm"
+                        aria-label={t("title.viewModeToggle")}
+                        className="h-10 shrink-0 gap-0.5 rounded-[10px] border border-[var(--scry-border2)] bg-[var(--scry-inset)] p-1 shadow-none"
+                      >
+                        <ToggleGroupItem
+                          id={titleOverviewViewModeId(view, "compact")}
+                          value="compact"
+                          size="sm"
+                          aria-label={t("title.viewModeCompact")}
+                          title={t("title.viewModeCompact")}
+                          className="h-8 w-8 rounded-lg px-0 text-[var(--scry-muted2)] transition hover:bg-[var(--scry-hover)] hover:text-[var(--scry-ink2)] data-[state=on]:!border-transparent data-[state=on]:!bg-[var(--scry-accent)] data-[state=on]:!text-primary-foreground data-[state=on]:!shadow-none"
+                        >
+                          <TableIcon className="h-4 w-4" />
+                        </ToggleGroupItem>
+                        <ToggleGroupItem
+                          id={titleOverviewViewModeId(view, "poster-table")}
+                          value="poster-table"
+                          size="sm"
+                          aria-label={t("title.viewModePosterTable")}
+                          title={t("title.viewModePosterTable")}
+                          className="h-8 w-8 rounded-lg px-0 text-[var(--scry-muted2)] transition hover:bg-[var(--scry-hover)] hover:text-[var(--scry-ink2)] data-[state=on]:!border-transparent data-[state=on]:!bg-[var(--scry-accent)] data-[state=on]:!text-primary-foreground data-[state=on]:!shadow-none"
+                        >
+                          <LayoutList className="h-4 w-4" />
+                        </ToggleGroupItem>
+                        <ToggleGroupItem
+                          id={titleOverviewViewModeId(view, "poster")}
+                          value="poster"
+                          size="sm"
+                          aria-label={t("title.viewModePoster")}
+                          title={t("title.viewModePoster")}
+                          className="h-8 w-8 rounded-lg px-0 text-[var(--scry-muted2)] transition hover:bg-[var(--scry-hover)] hover:text-[var(--scry-ink2)] data-[state=on]:!border-transparent data-[state=on]:!bg-[var(--scry-accent)] data-[state=on]:!text-primary-foreground data-[state=on]:!shadow-none"
+                        >
+                          <LayoutGrid className="h-4 w-4" />
+                        </ToggleGroupItem>
+                      </ToggleGroup>
+                    </div>
+                  </div>
+                );
                 let titleCollectionView: React.ReactNode;
+                const overviewTitleResolutionPending =
+                  (routeOverviewPending &&
+                    selectedOverviewTitleId === null &&
+                    activeOverviewTitle === null) ||
+                  (selectedOverviewTitleId !== null &&
+                    activeOverviewTitle === null &&
+                    selectedOverviewDetailLoading);
+                const titleListLoading =
+                  (titleLoading || catalogBootstrapLoading) &&
+                  !(
+                    activeOverviewTitle !== null &&
+                    deferredMonitoredTitles.length > 0
+                  );
+                const titleListInitialLoadComplete =
+                  catalogInitialLoadComplete ||
+                  (activeOverviewTitle !== null &&
+                    deferredMonitoredTitles.length > 0);
 
-                if (rootConfigurationResolutionPending) {
+                if (
+                  rootConfigurationResolutionPending ||
+                  overviewTitleResolutionPending
+                ) {
                   titleCollectionView = (
                     <div
                       data-slot="title-list-root-config-loading"
@@ -3126,8 +3194,8 @@ export function MediaContentView({
                     <PosterGrid
                       key={`${view}-poster-grid`}
                       titles={deferredMonitoredTitles}
-                      catalogInitialLoadComplete={catalogInitialLoadComplete}
-                      onOpenOverview={onOpenOverview}
+                      catalogInitialLoadComplete={titleListInitialLoadComplete}
+                      onOpenOverview={handleOpenOverviewFromContext}
                       selectedTitleId={contextPanelSelectedTitleId}
                       contextPanelId={selectedTitleContextPanelId}
                       onSelectTitle={onSelectTitleForContextPanel}
@@ -3155,7 +3223,7 @@ export function MediaContentView({
                       key={`${view}-${selectedTitleCompactLayoutActive && !selectedTitleListInlineActive ? "drawer" : "full"}-compact-title-table`}
                       view={view}
                       titles={deferredMonitoredTitles}
-                      titleLoading={titleLoading || catalogBootstrapLoading}
+                      titleLoading={titleListLoading}
                       catalogHasMoreTitles={catalogHasMoreTitles}
                       catalogLoadingMoreTitles={catalogLoadingMoreTitles}
                       catalogPagingEnabled={
@@ -3214,7 +3282,7 @@ export function MediaContentView({
                       key={`${view}-poster-title-table`}
                       view={view}
                       titles={deferredMonitoredTitles}
-                      titleLoading={titleLoading || catalogBootstrapLoading}
+                      titleLoading={titleListLoading}
                       catalogHasMoreTitles={catalogHasMoreTitles}
                       catalogLoadingMoreTitles={catalogLoadingMoreTitles}
                       onCatalogEndReached={loadMoreCatalogTitles}
@@ -3520,16 +3588,26 @@ export function MediaContentView({
                           ? selectedTitlePosterLayoutActive
                             ? "h-full min-h-0 overflow-y-auto pr-1"
                             : ""
-                          : "min-h-0",
+                          : "flex min-h-0 flex-col",
                         selectedTitleCompactLayoutActive &&
                           (selectedTitleListInlineActive
-                            ? "block min-h-0"
+                            ? "flex min-h-0 flex-col"
                             : selectedTitleListDrawerOpen
                               ? "absolute bottom-3 left-3 top-3 z-30 flex w-[min(360px,82%)] min-w-0 flex-col overflow-hidden rounded-[14px] border border-[var(--scry-border2)] bg-[var(--scry-card2)] p-2 shadow-[0_24px_70px_rgba(0,0,0,0.62)] motion-safe:animate-in motion-safe:fade-in-0 motion-safe:slide-in-from-left-3"
                               : "hidden"),
                       )}
                     >
-                      {titleCollectionView}
+                      {titleCatalogControlBar}
+                      <div
+                        className={cn(
+                          "min-w-0",
+                          collectionViewMode === "poster"
+                            ? ""
+                            : "min-h-0 flex-1",
+                        )}
+                      >
+                        {titleCollectionView}
+                      </div>
                     </div>
                     {titleOverviewPane}
                   </div>

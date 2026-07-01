@@ -128,6 +128,66 @@ impl DownloadMutations {
         })
     }
 
+    /// Queue an operator-chosen release to REPLACE the existing primary file. The
+    /// replacement always lands (bypasses scoring deltas + required-language gates
+    /// on import, recycling the old primary with a score boost), and the release
+    /// that produced the replaced file is blocklisted. `purpose`/`scope` are ignored
+    /// (scope comes from the signed candidate token; purpose is always replacement).
+    async fn queue_replacement_release(
+        &self,
+        ctx: &Context<'_>,
+        input: QueueDownloadInput,
+    ) -> GqlResult<QueueDownloadPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let QueueDownloadInput {
+            title_id,
+            candidate_token,
+            scope: _,
+            replace_in_progress,
+            purpose: _,
+        } = input;
+        let title_id = title_id.to_string();
+        let outcome = app
+            .queue_replacement_release_from_candidate_token(
+                &actor,
+                &title_id,
+                &candidate_token,
+                SubmissionConflictPolicy::from_replace_flag(replace_in_progress.unwrap_or(true)),
+            )
+            .await
+            .map_err(to_gql_error)?;
+        let title = app
+            .get_title_for_download_actions(&actor, &title_id)
+            .await
+            .map_err(to_gql_error)?
+            .ok_or_else(|| to_gql_error(AppError::NotFound(format!("title {title_id}"))))?;
+
+        Ok(match outcome {
+            QueueDownloadOutcome::Queued(queued) => QueueDownloadPayload {
+                status: QueueDownloadResultStatusValue::Queued,
+                job_id: Some(queued.job_id.into()),
+                title_id: title.id.into(),
+                title_name: title.name,
+                source_title: queued.queued_release.source_title,
+                source_kind: queued
+                    .queued_release
+                    .source_kind
+                    .map(DownloadSourceKindValue::from_application),
+                conflict: None,
+            },
+            QueueDownloadOutcome::Conflict(conflict) => QueueDownloadPayload {
+                status: QueueDownloadResultStatusValue::Conflict,
+                job_id: None,
+                title_id: title.id.into(),
+                title_name: title.name,
+                source_title: None,
+                source_kind: None,
+                conflict: Some(queue_download_conflict_payload(conflict)),
+            },
+        })
+    }
+
     async fn queue_best_release(
         &self,
         ctx: &Context<'_>,

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { backendClient, MFA_STEP_UP_REQUIRED_EVENT } from "@/lib/graphql/urql-client";
 import { authRuntimeStateQuery } from "@/lib/graphql/queries";
@@ -36,6 +36,7 @@ function hasFreshConfigStepUp(token: string | null, now: number): boolean {
 
 export function useConfigStepUp({
   authToken,
+  initialMfaRequireConfigStepUp,
   protectedSettingsRoute,
   adoptSession,
   setGlobalStatus,
@@ -43,6 +44,7 @@ export function useConfigStepUp({
   t,
 }: {
   authToken: string | null;
+  initialMfaRequireConfigStepUp: boolean | null;
   protectedSettingsRoute: boolean;
   adoptSession: (nextToken: string, nextUser: AuthUser | null) => void;
   setGlobalStatus: SetGlobalStatus;
@@ -56,10 +58,11 @@ export function useConfigStepUp({
   t: Translate;
 }) {
   const [configStepUpPolicy, setConfigStepUpPolicy] = useState({
-    loading: true,
-    required: false,
+    loading: false,
+    required: initialMfaRequireConfigStepUp === true,
     error: false,
   });
+  const usedInitialPolicyRef = useRef(false);
   const [configStepUpNow, setConfigStepUpNow] = useState(() => Date.now());
   const [settingsStepUpCode, setSettingsStepUpCode] = useState("");
   const [settingsStepUpBusy, setSettingsStepUpBusy] = useState(false);
@@ -68,7 +71,28 @@ export function useConfigStepUp({
   );
   const [settingsStepUpForced, setSettingsStepUpForced] = useState(false);
 
-  const refreshConfigStepUpPolicy = useCallback(async () => {
+  const refreshConfigStepUpPolicy = useCallback(async (options?: { force?: boolean }) => {
+    if (!protectedSettingsRoute) {
+      usedInitialPolicyRef.current = false;
+      setConfigStepUpPolicy({ loading: false, required: false, error: false });
+      return;
+    }
+
+    if (
+      options?.force !== true &&
+      !usedInitialPolicyRef.current &&
+      initialMfaRequireConfigStepUp !== null
+    ) {
+      usedInitialPolicyRef.current = true;
+      setConfigStepUpPolicy({
+        loading: false,
+        required: initialMfaRequireConfigStepUp,
+        error: false,
+      });
+      return;
+    }
+
+    usedInitialPolicyRef.current = true;
     setConfigStepUpPolicy((current) => ({
       ...current,
       loading: true,
@@ -96,7 +120,7 @@ export function useConfigStepUp({
       console.warn("Failed to refresh MFA step-up policy", error);
       setConfigStepUpPolicy({ loading: false, required: false, error: true });
     }
-  }, []);
+  }, [initialMfaRequireConfigStepUp, protectedSettingsRoute]);
 
   useEffect(() => {
     return scheduleAfterFirstPaint(() => {
@@ -113,7 +137,7 @@ export function useConfigStepUp({
           changedKeys.includes("auth.form_login_enabled") ||
           changedKeys.includes("auth.form.enabled")
         ) {
-          void refreshConfigStepUpPolicy();
+          void refreshConfigStepUpPolicy({ force: true });
         }
       },
       [refreshConfigStepUpPolicy],

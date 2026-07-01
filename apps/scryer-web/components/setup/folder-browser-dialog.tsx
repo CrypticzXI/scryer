@@ -80,7 +80,7 @@ export function FolderBrowserDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
         id="folder-browser-dialog"
-        className="overflow-hidden border-[var(--scry-border)] bg-[var(--scry-surf)] p-0 text-[var(--scry-ink2)] shadow-[0_24px_80px_rgba(0,0,0,0.55)] sm:max-w-2xl"
+        className="w-[calc(100vw-2rem)] max-w-[42rem] overflow-hidden border-[var(--scry-border)] bg-[var(--scry-surf)] p-0 text-[var(--scry-ink2)] shadow-[0_24px_80px_rgba(0,0,0,0.55)]"
       >
         <DialogHeader className="border-b border-[var(--scry-border3)] bg-[linear-gradient(180deg,rgba(255,255,255,0.04),rgba(255,255,255,0))] px-4 py-3 sm:px-5">
           <DialogTitle className="flex items-center gap-2 text-[15px] font-semibold text-[var(--scry-ink2)]">
@@ -94,9 +94,9 @@ export function FolderBrowserDialog({
           </DialogDescription>
         </DialogHeader>
 
-        <div className="space-y-3 p-4 sm:p-5">
-          <div className="rounded-[12px] border border-[var(--scry-line2)] bg-[var(--scry-card2)] p-3">
-            <div className="flex items-center gap-1 overflow-x-auto pb-1 text-sm">
+        <div className="min-w-0 max-w-full space-y-3 overflow-hidden p-4 sm:p-5">
+          <div className="min-w-0 max-w-full rounded-[12px] border border-[var(--scry-line2)] bg-[var(--scry-card2)] p-3">
+            <div className="flex min-w-0 max-w-full items-center gap-1 overflow-x-auto pb-1 text-sm">
               <button
                 type="button"
                 onClick={() => browse("/")}
@@ -131,7 +131,7 @@ export function FolderBrowserDialog({
                 );
               })}
             </div>
-            <div className="mt-2 flex gap-2">
+            <div className="mt-2 flex min-w-0 max-w-full gap-2">
               <Input
                 id="folder-browser-path-input"
                 value={currentPath}
@@ -144,7 +144,7 @@ export function FolderBrowserDialog({
                 onKeyDown={(e) => {
                   if (e.key === "Enter") browse(currentPath);
                 }}
-                className="h-10 border-[var(--scry-border3)] bg-[var(--scry-inset)] font-[var(--font-code)] text-sm text-[var(--scry-ink2)]"
+                className="h-10 min-w-0 border-[var(--scry-border3)] bg-[var(--scry-inset)] font-[var(--font-code)] text-sm text-[var(--scry-ink2)]"
               />
               <Button
                 id="folder-browser-go"
@@ -158,7 +158,7 @@ export function FolderBrowserDialog({
             </div>
           </div>
 
-          <div className="h-[22rem] overflow-hidden rounded-[12px] border border-[var(--scry-line2)] bg-[var(--scry-card2)]">
+          <div className="h-[22rem] min-w-0 max-w-full overflow-hidden rounded-[12px] border border-[var(--scry-line2)] bg-[var(--scry-card2)]">
             {loading ? (
               <div className="flex h-full items-center justify-center">
                 <div className="flex items-center gap-3 rounded-[12px] border border-[var(--scry-border2)] bg-[var(--scry-inset)] px-4 py-3 text-sm text-[var(--scry-muted3)]">
@@ -184,18 +184,18 @@ export function FolderBrowserDialog({
                 ) : null}
               </div>
             ) : (
-              <div className="h-full overflow-y-auto p-2">
+              <div className="h-full min-w-0 max-w-full overflow-x-hidden overflow-y-auto p-2">
                 {parentPath !== null && (
                   <button
                     id="folder-browser-up"
                     type="button"
                     onClick={() => browse(parentPath)}
-                    className="mb-1 flex w-full items-center gap-2.5 rounded-[10px] border border-transparent px-3 py-2 text-left text-sm text-[var(--scry-muted3)] transition-colors hover:border-[var(--scry-border3)] hover:bg-[var(--scry-hover)] hover:text-[var(--scry-ink2)]"
+                    className="mb-1 grid w-full min-w-0 max-w-full grid-cols-[2rem_minmax(0,1fr)] items-center gap-2.5 overflow-hidden rounded-[10px] border border-transparent px-3 py-2 text-left text-sm text-[var(--scry-muted3)] transition-colors hover:border-[var(--scry-border3)] hover:bg-[var(--scry-hover)] hover:text-[var(--scry-ink2)]"
                   >
                     <span className="grid h-8 w-8 place-items-center rounded-[9px] bg-[var(--scry-inset)]">
                       <ArrowUp className="h-4 w-4 shrink-0" />
                     </span>
-                    <span>..</span>
+                    <span className="min-w-0 truncate">..</span>
                   </button>
                 )}
                 {entries.length === 0 && !loading && (
@@ -209,13 +209,13 @@ export function FolderBrowserDialog({
                     key={entry.path}
                     type="button"
                     onClick={() => browse(entry.path)}
-                    className="mb-1 flex w-full min-w-0 items-center gap-2.5 overflow-hidden rounded-[10px] border border-transparent px-3 py-2 text-left text-sm transition-colors hover:border-[var(--scry-border3)] hover:bg-[var(--scry-hover)]"
+                    className="mb-1 grid w-full min-w-0 max-w-full grid-cols-[2rem_minmax(0,1fr)] items-center gap-2.5 overflow-hidden rounded-[10px] border border-transparent px-3 py-2 text-left text-sm transition-colors hover:border-[var(--scry-border3)] hover:bg-[var(--scry-hover)]"
                   >
                     <span className="grid h-8 w-8 shrink-0 place-items-center rounded-[9px] bg-[var(--scry-inset)] text-[var(--scry-accent-text)]">
                       <Folder className="h-4 w-4 shrink-0" />
                     </span>
                     <span
-                      className="block min-w-0 flex-1 truncate font-[var(--font-code)] text-[var(--scry-ink2)]"
+                      className="block min-w-0 max-w-full overflow-hidden text-ellipsis whitespace-nowrap font-[var(--font-code)] text-[var(--scry-ink2)]"
                       title={entry.name}
                     >
                       {entry.name}
@@ -227,25 +227,29 @@ export function FolderBrowserDialog({
           </div>
         </div>
 
-        <DialogFooter className="border-t border-[var(--scry-border3)] bg-[var(--scry-inset)] px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:px-5">
+        <DialogFooter className="min-w-0 max-w-full border-t border-[var(--scry-border3)] bg-[var(--scry-inset)] px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:px-5">
           <p className="min-w-0 truncate text-left font-[var(--font-code)] text-xs text-[var(--scry-muted3)] sm:mr-auto">
             {currentPath}
           </p>
-          <div className="flex shrink-0 justify-end gap-2">
-          <Button id="folder-browser-cancel" variant="outline" onClick={() => onOpenChange(false)}>
-            Cancel
-          </Button>
-          <Button
-            id="folder-browser-select"
-            disabled={!canSelect}
-            onClick={() => {
-              onSelect(currentPath);
-              onOpenChange(false);
-            }}
-          >
-            <FolderOpen className="mr-1.5 h-4 w-4" />
-            Select folder
-          </Button>
+          <div className="flex min-w-0 shrink-0 flex-wrap justify-end gap-2">
+            <Button
+              id="folder-browser-cancel"
+              variant="outline"
+              onClick={() => onOpenChange(false)}
+            >
+              Cancel
+            </Button>
+            <Button
+              id="folder-browser-select"
+              disabled={!canSelect}
+              onClick={() => {
+                onSelect(currentPath);
+                onOpenChange(false);
+              }}
+            >
+              <FolderOpen className="mr-1.5 h-4 w-4" />
+              Select folder
+            </Button>
           </div>
         </DialogFooter>
       </DialogContent>

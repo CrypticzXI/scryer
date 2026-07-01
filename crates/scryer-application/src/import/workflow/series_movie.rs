@@ -317,6 +317,19 @@ struct SeriesMovieAdditionalImportContext<'a> {
     linked_episode_artifacts: &'a [scryer_domain::Episode],
 }
 
+/// Runtime-sample validation for a movie import, choosing the manual bypass mode
+/// for a manual operator replacement (which always lands, like a manual file pick).
+fn manual_aware_runtime_sample_validation(
+    expected_runtime_seconds: Option<i32>,
+    manual_replacement: bool,
+) -> crate::post_download_gate::RuntimeSampleValidation {
+    if manual_replacement {
+        crate::post_download_gate::RuntimeSampleValidation::manual_override(expected_runtime_seconds)
+    } else {
+        crate::post_download_gate::RuntimeSampleValidation::automatic(expected_runtime_seconds)
+    }
+}
+
 #[expect(
     clippy::too_many_arguments,
     reason = "additional movie imports share the normal movie path context without using the upgrade gate"
@@ -605,10 +618,8 @@ async fn import_movie_download(
         .into_iter()
         .filter(|file| file.role.is_primary())
         .collect::<Vec<_>>();
-    if completed_import_purpose(app, completed)
-        .await
-        .is_additional_file()
-    {
+    let import_purpose = completed_import_purpose(app, completed).await;
+    if import_purpose.is_additional_file() {
         return import_additional_movie_download(
             app,
             actor,
@@ -629,6 +640,7 @@ async fn import_movie_download(
         )
         .await;
     }
+    let manual_replacement = import_purpose.is_manual_replacement();
     let existing_files = existing_files
         .into_iter()
         .filter(|file| file.role.is_primary())
@@ -648,11 +660,12 @@ async fn import_movie_download(
         !existing_files.is_empty(),
         existing_score,
         false,
-        crate::post_download_gate::RuntimeSampleValidation::automatic(
+        manual_aware_runtime_sample_validation(
             title
                 .runtime_minutes
                 .filter(|runtime_minutes| *runtime_minutes > 0)
                 .map(|runtime_minutes| runtime_minutes.saturating_mul(60)),
+            manual_replacement,
         ),
     )
     .await
@@ -801,8 +814,13 @@ async fn import_movie_download(
                     false,
                 )
                 .await;
-            let new_score = post_download_score.score;
-            if new_score > old_score {
+            let new_score = post_download_score.score
+                + if manual_replacement {
+                    crate::post_download_gate::MANUAL_GRAB_BOOST
+                } else {
+                    0
+                };
+            if new_score > old_score || manual_replacement {
                 let old_file_recycle_context =
                     crate::upgrade::resolve_old_file_recycle_context(app, title, existing_file)
                         .await?;
@@ -1286,10 +1304,8 @@ async fn import_series_movie_download(
         .filter(|file| file.file_path == path_to_stored_string(&dest_path))
         .cloned()
         .collect();
-    if completed_import_purpose(app, completed)
-        .await
-        .is_additional_file()
-    {
+    let import_purpose = completed_import_purpose(app, completed).await;
+    if import_purpose.is_additional_file() {
         return import_additional_movie_download(
             app,
             actor,
@@ -1314,6 +1330,7 @@ async fn import_series_movie_download(
         )
         .await;
     }
+    let manual_replacement = import_purpose.is_manual_replacement();
     let quality_profile = resolve_import_quality_profile(app, title).await;
     let existing_score = series_movie_files
         .iter()
@@ -1329,12 +1346,13 @@ async fn import_series_movie_download(
         !series_movie_files.is_empty(),
         existing_score,
         false,
-        crate::post_download_gate::RuntimeSampleValidation::automatic(
+        manual_aware_runtime_sample_validation(
             movie
                 .runtime_minutes
                 .or(title.runtime_minutes)
                 .filter(|runtime_minutes| *runtime_minutes > 0)
                 .map(|runtime_minutes| runtime_minutes.saturating_mul(60)),
+            manual_replacement,
         ),
     )
     .await
@@ -1414,8 +1432,13 @@ async fn import_series_movie_download(
                     false,
                 )
                 .await;
-            let new_score = post_download_score.score;
-            if new_score > old_score {
+            let new_score = post_download_score.score
+                + if manual_replacement {
+                    crate::post_download_gate::MANUAL_GRAB_BOOST
+                } else {
+                    0
+                };
+            if new_score > old_score || manual_replacement {
                 let old_file_recycle_context =
                     crate::upgrade::resolve_old_file_recycle_context(app, title, existing_file)
                         .await?;

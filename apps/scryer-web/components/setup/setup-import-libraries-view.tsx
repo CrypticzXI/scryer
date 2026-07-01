@@ -1,5 +1,6 @@
 import {
   useCallback,
+  useMemo,
   useRef,
   useState,
   type CSSProperties,
@@ -78,10 +79,15 @@ export default function SetupImportLibrariesView({
     renameLibrary,
     removeLibrary,
     setRootRemap,
+    invalidAssignedRootIds,
     rootById,
   } = wizard;
 
   const isMobile = useIsMobile(MOBILE_BREAKPOINT);
+  const invalidAssignedRootIdSet = useMemo(
+    () => new Set(invalidAssignedRootIds),
+    [invalidAssignedRootIds],
+  );
 
   // ── Local UI state ─────────────────────────────────────────────────────────
   const [assignSheetRootId, setAssignSheetRootId] = useState<string | null>(
@@ -248,9 +254,9 @@ export default function SetupImportLibrariesView({
       variant={variant}
       isMobile={isMobile}
       invalid={
-        root.manual &&
         Boolean(assign[root.id]) &&
-        !effectiveRootPath(root).trim()
+        ((root.manual && !effectiveRootPath(root).trim()) ||
+          invalidAssignedRootIdSet.has(root.id))
       }
       draggable={!isMobile}
       onDragStart={(e) => onDragStart(e, root.id)}

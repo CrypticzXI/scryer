@@ -620,15 +620,16 @@ export function SystemView({
   const t = useTranslate();
   const dateTimeFormat = useUiDateTimeFormat();
   const { systemHealth, systemLoading, refreshSystem } = state;
+  const healthPlaceholder = "\u2014";
   const statusReady = systemHealth?.serviceReady === true;
-  const facetStats = systemHealth
-    ? [
-        ["Movies", systemHealth.titlesMovie],
-        ["Series", systemHealth.titlesSeries],
-        ["Anime", systemHealth.titlesAnime],
-        ["Other", systemHealth.titlesOther],
-      ]
-    : [];
+  const facetStats: Array<[string, number | string]> = [
+    ["Movies", systemHealth?.titlesMovie ?? healthPlaceholder],
+    ["Series", systemHealth?.titlesSeries ?? healthPlaceholder],
+    ["Anime", systemHealth?.titlesAnime ?? healthPlaceholder],
+    ["Other", systemHealth?.titlesOther ?? healthPlaceholder],
+  ];
+  const recentEventPreview = systemHealth?.recentEventPreview ?? [];
+  const indexerStats = systemHealth?.indexerStats ?? null;
 
   return (
     <div className="space-y-4 text-sm">
@@ -644,16 +645,14 @@ export function SystemView({
                     : t("system.notReady")
                   : t("system.notLoaded")}
               </p>
-              {scryerVersion ? (
-                <p className="text-xs font-medium text-[var(--scry-faint)]">
-                  Scryer v{scryerVersion}
-                </p>
-              ) : null}
+              <p className="min-h-4 text-xs font-medium text-[var(--scry-faint)]">
+                {scryerVersion ? `Scryer v${scryerVersion}` : "\u00a0"}
+              </p>
             </div>
             <Button
               size="sm"
               variant="primary"
-              className="w-full sm:w-auto"
+              className="w-full justify-start sm:w-32"
               onClick={() => void refreshSystem()}
               disabled={systemLoading}
             >
@@ -663,127 +662,136 @@ export function SystemView({
           </div>
         </div>
         <div className={SYSTEM_PANEL_BODY_CLASS}>
-          {!systemHealth ? (
-            <div className={`${SYSTEM_INSET_CLASS} p-4 ${SYSTEM_MUTED_TEXT_CLASS}`}>
-              {t("system.notLoaded")}
-            </div>
-          ) : (
-            <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
-              <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-                <div className={`${SYSTEM_INSET_CLASS} p-4`}>
-                  <div className="mb-3 flex items-center gap-2">
-                    <span className="flex h-8 w-8 items-center justify-center rounded-[10px] border border-[var(--scry-border3)] bg-[var(--scry-inset)] text-[var(--scry-accent-text)]">
-                      {statusReady ? (
-                        <CheckCircle2 className="h-4 w-4" />
-                      ) : (
-                        <XCircle className="h-4 w-4" />
-                      )}
-                    </span>
-                    <div>
-                      <p className={`text-xs uppercase tracking-[0.12em] ${SYSTEM_MUTED_TEXT_CLASS}`}>
-                        {t("system.serviceReady")}
-                      </p>
-                      <p className="text-base font-semibold text-[var(--scry-ink2)]">
-                        {statusReady ? t("label.yes") : t("label.no")}
-                      </p>
-                    </div>
-                  </div>
-                </div>
-
-                <div className={`${SYSTEM_INSET_CLASS} p-4`}>
-                  <div className="mb-3 flex items-center gap-2">
-                    <span className="flex h-8 w-8 items-center justify-center rounded-[10px] border border-[var(--scry-border3)] bg-[var(--scry-inset)] text-[var(--scry-accent-text)]">
-                      <Film className="h-4 w-4" />
-                    </span>
-                    <div>
-                      <p className={`text-xs uppercase tracking-[0.12em] ${SYSTEM_MUTED_TEXT_CLASS}`}>
-                        {t("system.totalTitlesLabel")}
-                      </p>
-                      <p className="text-base font-semibold text-[var(--scry-ink2)]">
-                        {systemHealth.totalTitles}
-                      </p>
-                    </div>
-                  </div>
-                  <p className={`text-xs ${SYSTEM_MUTED_TEXT_CLASS}`}>
-                    {t("system.monitoredTitlesLabel")}: {systemHealth.monitoredTitles}
-                  </p>
-                </div>
-
-                <div className={`${SYSTEM_INSET_CLASS} p-4`}>
-                  <div className="mb-3 flex items-center gap-2">
-                    <span className="flex h-8 w-8 items-center justify-center rounded-[10px] border border-[var(--scry-border3)] bg-[var(--scry-inset)] text-[var(--scry-accent-text)]">
-                      <Users className="h-4 w-4" />
-                    </span>
-                    <div>
-                      <p className={`text-xs uppercase tracking-[0.12em] ${SYSTEM_MUTED_TEXT_CLASS}`}>
-                        {t("system.usersLabel")}
-                      </p>
-                      <p className="text-base font-semibold text-[var(--scry-ink2)]">
-                        {systemHealth.totalUsers}
-                      </p>
-                    </div>
-                  </div>
-                </div>
-
-                <div className={`${SYSTEM_INSET_CLASS} p-4 sm:col-span-2 xl:col-span-3`}>
-                  <div className="mb-3 flex items-center gap-2">
-                    <span className="flex h-8 w-8 items-center justify-center rounded-[10px] border border-[var(--scry-border3)] bg-[var(--scry-inset)] text-[var(--scry-accent-text)]">
-                      <Database className="h-4 w-4" />
-                    </span>
-                    <p className="font-semibold text-[var(--scry-ink2)]">Datastore</p>
-                  </div>
-                  <div className="grid gap-3 md:grid-cols-2">
-                    <div>
-                      <p className={`text-xs uppercase tracking-[0.12em] ${SYSTEM_MUTED_TEXT_CLASS}`}>
-                        {t("system.dbPathLabel")}
-                      </p>
-                      <p className="mt-1 break-all font-[var(--font-code)] text-xs text-[var(--scry-ink2)]">
-                        {systemHealth.dbPath}
-                      </p>
-                    </div>
-                    <div>
-                      <p className={`text-xs uppercase tracking-[0.12em] ${SYSTEM_MUTED_TEXT_CLASS}`}>
-                        Migration
-                      </p>
-                      <div className="mt-1 flex flex-wrap gap-2">
-                        <code className="rounded-[7px] border border-[var(--scry-border3)] bg-[var(--scry-inset)] px-2 py-1 text-xs text-[var(--scry-ink2)]">
-                          {systemHealth.dbMigrationVersion ?? "unknown"}
-                        </code>
-                        {systemHealth.datastoreMigrationKey ? (
-                          <code className="rounded-[7px] border border-[var(--scry-border3)] bg-[var(--scry-inset)] px-2 py-1 text-xs text-[var(--scry-ink2)]">
-                            {systemHealth.datastoreMigrationKey}
-                          </code>
-                        ) : null}
-                      </div>
-                    </div>
+          <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
+            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+              <div className={`${SYSTEM_INSET_CLASS} min-h-[138px] p-4`}>
+                <div className="mb-3 flex items-center gap-2">
+                  <span className="flex h-8 w-8 items-center justify-center rounded-[10px] border border-[var(--scry-border3)] bg-[var(--scry-inset)] text-[var(--scry-accent-text)]">
+                    {statusReady ? (
+                      <CheckCircle2 className="h-4 w-4" />
+                    ) : (
+                      <XCircle className="h-4 w-4" />
+                    )}
+                  </span>
+                  <div>
+                    <p className={`text-xs uppercase tracking-[0.12em] ${SYSTEM_MUTED_TEXT_CLASS}`}>
+                      {t("system.serviceReady")}
+                    </p>
+                    <p className="text-base font-semibold text-[var(--scry-ink2)]">
+                      {systemHealth
+                        ? statusReady
+                          ? t("label.yes")
+                          : t("label.no")
+                        : healthPlaceholder}
+                    </p>
                   </div>
                 </div>
               </div>
 
-              <div className={`${SYSTEM_INSET_CLASS} p-4`}>
-                <p className="mb-3 font-semibold text-[var(--scry-ink2)]">
-                  {t("system.facetLabel")}
-                </p>
-                <div className="grid grid-cols-2 gap-2">
-                  {facetStats.map(([label, value]) => (
-                    <div
-                      key={label}
-                      className="rounded-[10px] border border-[var(--scry-border3)] bg-[var(--scry-inset)] p-3"
-                    >
-                      <p className={`text-xs ${SYSTEM_MUTED_TEXT_CLASS}`}>{label}</p>
-                      <p className="mt-1 text-lg font-semibold text-[var(--scry-ink2)]">
-                        {value}
-                      </p>
-                    </div>
-                  ))}
+              <div className={`${SYSTEM_INSET_CLASS} min-h-[138px] p-4`}>
+                <div className="mb-3 flex items-center gap-2">
+                  <span className="flex h-8 w-8 items-center justify-center rounded-[10px] border border-[var(--scry-border3)] bg-[var(--scry-inset)] text-[var(--scry-accent-text)]">
+                    <Film className="h-4 w-4" />
+                  </span>
+                  <div>
+                    <p className={`text-xs uppercase tracking-[0.12em] ${SYSTEM_MUTED_TEXT_CLASS}`}>
+                      {t("system.totalTitlesLabel")}
+                    </p>
+                    <p className="text-base font-semibold text-[var(--scry-ink2)]">
+                      {systemHealth?.totalTitles ?? healthPlaceholder}
+                    </p>
+                  </div>
                 </div>
-                {systemHealth.recentEventPreview.length > 0 ? (
-                  <div className="mt-4">
+                <p className={`text-xs ${SYSTEM_MUTED_TEXT_CLASS}`}>
+                  {t("system.monitoredTitlesLabel")}:{" "}
+                  {systemHealth?.monitoredTitles ?? healthPlaceholder}
+                </p>
+              </div>
+
+              <div className={`${SYSTEM_INSET_CLASS} min-h-[138px] p-4`}>
+                <div className="mb-3 flex items-center gap-2">
+                  <span className="flex h-8 w-8 items-center justify-center rounded-[10px] border border-[var(--scry-border3)] bg-[var(--scry-inset)] text-[var(--scry-accent-text)]">
+                    <Users className="h-4 w-4" />
+                  </span>
+                  <div>
+                    <p className={`text-xs uppercase tracking-[0.12em] ${SYSTEM_MUTED_TEXT_CLASS}`}>
+                      {t("system.usersLabel")}
+                    </p>
+                    <p className="text-base font-semibold text-[var(--scry-ink2)]">
+                      {systemHealth?.totalUsers ?? healthPlaceholder}
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              <div className={`${SYSTEM_INSET_CLASS} min-h-[231px] p-4 sm:col-span-2 xl:col-span-3`}>
+                <div className="mb-3 flex items-center gap-2">
+                  <span className="flex h-8 w-8 items-center justify-center rounded-[10px] border border-[var(--scry-border3)] bg-[var(--scry-inset)] text-[var(--scry-accent-text)]">
+                    <Database className="h-4 w-4" />
+                  </span>
+                  <p className="font-semibold text-[var(--scry-ink2)]">Datastore</p>
+                </div>
+                <div className="grid gap-3 md:grid-cols-2">
+                  <div>
+                    <p className={`text-xs uppercase tracking-[0.12em] ${SYSTEM_MUTED_TEXT_CLASS}`}>
+                      {t("system.dbPathLabel")}
+                    </p>
+                    <p className="mt-1 break-all font-[var(--font-code)] text-xs text-[var(--scry-ink2)]">
+                      {systemHealth?.dbPath ?? healthPlaceholder}
+                    </p>
+                  </div>
+                  <div>
+                    <p className={`text-xs uppercase tracking-[0.12em] ${SYSTEM_MUTED_TEXT_CLASS}`}>
+                      Migration
+                    </p>
+                    <div className="mt-1 flex flex-wrap gap-2">
+                      {systemHealth ? (
+                        <code className="rounded-[7px] border border-[var(--scry-border3)] bg-[var(--scry-inset)] px-2 py-1 text-xs text-[var(--scry-ink2)]">
+                          {systemHealth.dbMigrationVersion ?? "unknown"}
+                        </code>
+                      ) : (
+                        <code className="rounded-[7px] border border-[var(--scry-border3)] bg-[var(--scry-inset)] px-2 py-1 text-xs text-[var(--scry-ink2)]">
+                          {healthPlaceholder}
+                        </code>
+                      )}
+                      <code
+                        className={`min-w-[13rem] rounded-[7px] border border-[var(--scry-border3)] bg-[var(--scry-inset)] px-2 py-1 text-xs text-[var(--scry-ink2)] ${
+                          systemHealth?.datastoreMigrationKey ? "" : "invisible"
+                        }`}
+                      >
+                        {systemHealth?.datastoreMigrationKey ?? healthPlaceholder}
+                      </code>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className={`${SYSTEM_INSET_CLASS} min-h-[380px] p-4`}>
+              <p className="mb-3 font-semibold text-[var(--scry-ink2)]">
+                {t("system.facetLabel")}
+              </p>
+              <div className="grid grid-cols-2 gap-2">
+                {facetStats.map(([label, value]) => (
+                  <div
+                    key={label}
+                    className="rounded-[10px] border border-[var(--scry-border3)] bg-[var(--scry-inset)] p-3"
+                  >
+                    <p className={`text-xs ${SYSTEM_MUTED_TEXT_CLASS}`}>{label}</p>
+                    <p className="mt-1 text-lg font-semibold text-[var(--scry-ink2)]">
+                      {value}
+                    </p>
+                  </div>
+                ))}
+              </div>
+              <div className="mt-4 min-h-[116px]">
+                {recentEventPreview.length > 0 ? (
+                  <>
                     <p className={`mb-2 text-xs uppercase tracking-[0.12em] ${SYSTEM_MUTED_TEXT_CLASS}`}>
                       {t("system.recentEventSample")}
                     </p>
                     <div className="space-y-2">
-                      {systemHealth.recentEventPreview.slice(0, 3).map((event, index) => (
+                      {recentEventPreview.slice(0, 3).map((event, index) => (
                         <p
                           key={`${event}-${index}`}
                           className="rounded-[9px] border border-[var(--scry-border3)] bg-[var(--scry-inset)] px-3 py-2 text-xs text-[var(--scry-ink2)]"
@@ -792,87 +800,101 @@ export function SystemView({
                         </p>
                       ))}
                     </div>
-                  </div>
+                  </>
                 ) : null}
               </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section className={SYSTEM_PANEL_CLASS}>
+        <div className={SYSTEM_PANEL_HEADER_CLASS}>
+          <h3 className={SYSTEM_PANEL_TITLE_CLASS}>Indexer Stats (Last 24h)</h3>
+        </div>
+        <div className={SYSTEM_PANEL_BODY_CLASS}>
+          {indexerStats === null ? (
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3" aria-hidden="true">
+              {[0, 1, 2].map((item) => (
+                <div
+                  key={item}
+                  className={`${SYSTEM_INSET_CLASS} min-h-[142px] p-4 opacity-70`}
+                >
+                  <div className="h-4 w-2/3 rounded bg-[var(--scry-border3)]" />
+                  <div className="mt-3 h-3 w-1/2 rounded bg-[var(--scry-border3)]" />
+                  <div className="mt-5 space-y-2">
+                    <div className="h-3 w-1/3 rounded bg-[var(--scry-border3)]" />
+                    <div className="h-3 w-1/2 rounded bg-[var(--scry-border3)]" />
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : indexerStats.length > 0 ? (
+            <div
+              className={`grid gap-3 ${
+                indexerStats.length === 1
+                  ? "grid-cols-1"
+                  : indexerStats.length === 2
+                    ? "grid-cols-1 sm:grid-cols-2"
+                    : "grid-cols-1 sm:grid-cols-2 lg:grid-cols-3"
+              }`}
+            >
+              {indexerStats.map((stat) => (
+                <div key={stat.indexerId} className={`${SYSTEM_INSET_CLASS} p-4`}>
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="font-semibold text-[var(--scry-ink2)]">
+                        {stat.indexerName}
+                      </p>
+                      {stat.lastQueryAt ? (
+                        <p className={`mt-1 text-xs ${SYSTEM_MUTED_TEXT_CLASS}`}>
+                          Last query:{" "}
+                          {formatUiDateTime(stat.lastQueryAt, dateTimeFormat)}
+                        </p>
+                      ) : null}
+                    </div>
+                    <span className="rounded-full border border-[var(--scry-border3)] bg-[var(--scry-inset)] px-2 py-0.5 text-xs text-[var(--scry-muted3)]">
+                      {stat.successfulLast24H}/{stat.queriesLast24H}
+                    </span>
+                  </div>
+                  <div className="mt-3 space-y-2 text-xs">
+                    <p>
+                      <span className={SYSTEM_MUTED_TEXT_CLASS}>Queries:</span>{" "}
+                      {stat.queriesLast24H}
+                      {stat.failedLast24H > 0 && (
+                        <span className="text-red-400">
+                          {" "}
+                          ({stat.failedLast24H} failed)
+                        </span>
+                      )}
+                    </p>
+                    {stat.apiMax !== null && (
+                      <p>
+                        <span className={SYSTEM_MUTED_TEXT_CLASS}>API usage:</span>{" "}
+                        <span className={quotaBadgeClass(stat.apiCurrent, stat.apiMax)}>
+                          {stat.apiCurrent ?? 0}/{stat.apiMax}
+                        </span>
+                      </p>
+                    )}
+                    {stat.grabMax !== null && (
+                      <p>
+                        <span className={SYSTEM_MUTED_TEXT_CLASS}>Grabs:</span>{" "}
+                        <span className={quotaBadgeClass(stat.grabCurrent, stat.grabMax)}>
+                          {stat.grabCurrent ?? 0}/{stat.grabMax}
+                        </span>
+                      </p>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className={`${SYSTEM_INSET_CLASS} min-h-[142px] p-4 ${SYSTEM_MUTED_TEXT_CLASS}`}>
+              No indexer activity in the last 24 hours.
             </div>
           )}
         </div>
       </section>
-
-      {systemHealth ? (
-        <section className={SYSTEM_PANEL_CLASS}>
-          <div className={SYSTEM_PANEL_HEADER_CLASS}>
-            <h3 className={SYSTEM_PANEL_TITLE_CLASS}>Indexer Stats (Last 24h)</h3>
-          </div>
-          <div className={SYSTEM_PANEL_BODY_CLASS}>
-            {systemHealth.indexerStats.length > 0 ? (
-              <div
-                className={`grid gap-3 ${
-                  systemHealth.indexerStats.length === 1
-                    ? "grid-cols-1"
-                    : systemHealth.indexerStats.length === 2
-                      ? "grid-cols-1 sm:grid-cols-2"
-                      : "grid-cols-1 sm:grid-cols-2 lg:grid-cols-3"
-                }`}
-              >
-                {systemHealth.indexerStats.map((stat) => (
-                  <div key={stat.indexerId} className={`${SYSTEM_INSET_CLASS} p-4`}>
-                    <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <p className="font-semibold text-[var(--scry-ink2)]">
-                          {stat.indexerName}
-                        </p>
-                        {stat.lastQueryAt ? (
-                          <p className={`mt-1 text-xs ${SYSTEM_MUTED_TEXT_CLASS}`}>
-                            Last query:{" "}
-                            {formatUiDateTime(stat.lastQueryAt, dateTimeFormat)}
-                          </p>
-                        ) : null}
-                      </div>
-                      <span className="rounded-full border border-[var(--scry-border3)] bg-[var(--scry-inset)] px-2 py-0.5 text-xs text-[var(--scry-muted3)]">
-                        {stat.successfulLast24H}/{stat.queriesLast24H}
-                      </span>
-                    </div>
-                    <div className="mt-3 space-y-2 text-xs">
-                      <p>
-                        <span className={SYSTEM_MUTED_TEXT_CLASS}>Queries:</span>{" "}
-                        {stat.queriesLast24H}
-                        {stat.failedLast24H > 0 && (
-                          <span className="text-red-400">
-                            {" "}
-                            ({stat.failedLast24H} failed)
-                          </span>
-                        )}
-                      </p>
-                      {stat.apiMax !== null && (
-                        <p>
-                          <span className={SYSTEM_MUTED_TEXT_CLASS}>API usage:</span>{" "}
-                          <span className={quotaBadgeClass(stat.apiCurrent, stat.apiMax)}>
-                            {stat.apiCurrent ?? 0}/{stat.apiMax}
-                          </span>
-                        </p>
-                      )}
-                      {stat.grabMax !== null && (
-                        <p>
-                          <span className={SYSTEM_MUTED_TEXT_CLASS}>Grabs:</span>{" "}
-                          <span className={quotaBadgeClass(stat.grabCurrent, stat.grabMax)}>
-                            {stat.grabCurrent ?? 0}/{stat.grabMax}
-                          </span>
-                        </p>
-                      )}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <div className={`${SYSTEM_INSET_CLASS} p-4 ${SYSTEM_MUTED_TEXT_CLASS}`}>
-                No indexer activity in the last 24 hours.
-              </div>
-            )}
-          </div>
-        </section>
-      ) : null}
 
       <section className={SYSTEM_PANEL_CLASS}>
         <div className={SYSTEM_PANEL_HEADER_CLASS}>

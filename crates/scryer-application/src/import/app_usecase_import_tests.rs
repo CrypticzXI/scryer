@@ -1157,7 +1157,7 @@ fn build_episode_upgrade_plan_replaces_different_filename_when_new_score_is_high
         &["ep-1"],
     )];
 
-    let plan = build_episode_upgrade_plan(&incumbents, &["ep-1".to_string()], 900)
+    let plan = build_episode_upgrade_plan(&incumbents, &["ep-1".to_string()], 900, false)
         .expect("upgrade plan should accept higher-scored replacement");
 
     assert_eq!(plan.primary_incumbent.media_file.id, "file-1");
@@ -1175,13 +1175,33 @@ fn build_episode_upgrade_plan_rejects_when_existing_episode_file_scores_higher()
     )];
 
     let rejection =
-        build_episode_upgrade_plan(&incumbents, &["ep-1".to_string()], 700).unwrap_err();
+        build_episode_upgrade_plan(&incumbents, &["ep-1".to_string()], 700, false).unwrap_err();
 
     assert_eq!(
         rejection.skip_reason,
         Some(ImportSkipReason::AlreadyImported)
     );
     assert!(rejection.message.contains("equal or better"));
+}
+
+#[test]
+fn build_episode_upgrade_plan_force_replace_allows_lower_score() {
+    let incumbents = vec![scoped_media_file(
+        "file-1",
+        "/data/TV/Resident Alien/Season 01/Resident Alien - S01E01 - 1080p.mkv",
+        820,
+        &["ep-1"],
+    )];
+
+    // Without force, a lower-scored release is rejected as a non-upgrade.
+    assert!(build_episode_upgrade_plan(&incumbents, &["ep-1".to_string()], 600, false).is_err());
+
+    // A manual replacement (force) lands even at a lower score: it replaces the
+    // higher-scored incumbent rather than rejecting.
+    let plan = build_episode_upgrade_plan(&incumbents, &["ep-1".to_string()], 600, true)
+        .expect("manual replacement should replace a higher-scored incumbent");
+    assert_eq!(plan.primary_incumbent.media_file.id, "file-1");
+    assert!(plan.additional_superseded.is_empty());
 }
 
 #[test]
@@ -1194,7 +1214,7 @@ fn build_episode_upgrade_plan_rejects_when_existing_file_covers_broader_episode_
     )];
 
     let rejection =
-        build_episode_upgrade_plan(&incumbents, &["ep-1".to_string()], 900).unwrap_err();
+        build_episode_upgrade_plan(&incumbents, &["ep-1".to_string()], 900, false).unwrap_err();
 
     assert_eq!(
         rejection.skip_reason,
@@ -1292,7 +1312,7 @@ fn build_episode_upgrade_plan_supersedes_all_duplicate_incumbents_for_same_targe
         ),
     ];
 
-    let plan = build_episode_upgrade_plan(&incumbents, &["ep-1".to_string()], 900)
+    let plan = build_episode_upgrade_plan(&incumbents, &["ep-1".to_string()], 900, false)
         .expect("higher score should supersede all incumbents");
 
     assert_eq!(plan.primary_incumbent.media_file.id, "file-2");
@@ -1318,7 +1338,7 @@ fn build_episode_upgrade_plan_allows_pack_to_replace_singles_when_it_beats_all_o
     ];
 
     let plan =
-        build_episode_upgrade_plan(&incumbents, &["ep-1".to_string(), "ep-2".to_string()], 900)
+        build_episode_upgrade_plan(&incumbents, &["ep-1".to_string(), "ep-2".to_string()], 900, false)
             .expect("season pack should replace lower-scored singles");
 
     assert_eq!(plan.previous_best_score, 450);

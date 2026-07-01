@@ -58,7 +58,6 @@ export type RegistryPluginRecord = {
   docsUrl?: string | null;
   sourceRepo?: string | null;
   builtin: boolean;
-  sourceUrl: string | null;
   sourceKind?: string | null;
   blockedReason?: string | null;
   bytes?: number | null;
@@ -393,7 +392,7 @@ function PluginTable({
             const isUpgrading =
               (runningProgress?.operationKind === "upgrade")
               || (plugin.installInProgress && showActions === "installed");
-            const sourceLink = plugin.sourceRepo ?? plugin.sourceUrl;
+            const sourceLink = plugin.sourceRepo;
             const normalizedSourceLink = normalizePluginLink(sourceLink);
             const normalizedDocsLink = normalizePluginLink(plugin.docsUrl);
             const showDocsLink =
@@ -663,7 +662,7 @@ export function SettingsPluginsSection({
 
   const upgradeCount = installed.filter((p) => p.updateAvailable).length;
   const toolbar = (
-    <div className="flex flex-wrap items-center justify-end gap-2">
+    <div className="flex min-h-10 flex-wrap items-center justify-end gap-2 sm:min-w-[29rem]">
       <Button
         id="settings-plugins-upgrade-all"
         variant="outline"
@@ -673,11 +672,16 @@ export function SettingsPluginsSection({
       >
         <ArrowUpCircle className={`mr-2 h-4 w-4 ${upgradingAll ? "animate-spin" : ""}`} />
         {upgradingAll ? t("settings.pluginsUpdatingAll") : t("settings.pluginsUpdateAll")}
-        {upgradeCount > 0 ? (
-          <Badge tone="info" className="ml-2 h-5 min-w-5 rounded-full px-1.5 text-[11px]">
-            {upgradeCount}
-          </Badge>
-        ) : null}
+        <Badge
+          tone="info"
+          aria-hidden={upgradeCount === 0}
+          className={cn(
+            "ml-2 h-5 min-w-5 rounded-full px-1.5 text-[11px]",
+            upgradeCount === 0 && "invisible",
+          )}
+        >
+          {upgradeCount || 0}
+        </Badge>
       </Button>
       <Button
         id="settings-plugins-manual-toggle"
@@ -704,9 +708,7 @@ export function SettingsPluginsSection({
     <div className="space-y-4 text-sm">
       {headerActionsTarget ? (
         createPortal(toolbar, headerActionsTarget)
-      ) : (
-        <div className="flex justify-end">{toolbar}</div>
-      )}
+      ) : null}
 
       {catalogStatus?.outageMessage && (
         <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-100">

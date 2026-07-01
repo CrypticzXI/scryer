@@ -1381,9 +1381,7 @@ function RootSidebarContent({
                                     </SidebarMenuSubButton>
                                   </SidebarMenuSubItem>
                                 ) : null}
-                                {canAccessFacetImport &&
-                                (pendingImportCountForNavView(item.id) > 0 ||
-                                  contentSettingsSection === "import") ? (
+                                {canAccessFacetImport ? (
                                   <SidebarMenuSubItem>
                                     <SidebarMenuSubButton
                                       id={selectorId(

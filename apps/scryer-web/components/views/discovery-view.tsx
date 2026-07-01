@@ -142,7 +142,7 @@ const MONTH_ABBREVIATIONS = [
 const DATE_TOKEN_PATTERN = /(\d{4})[-/](\d{1,2})(?:[-/](\d{1,2}))?/;
 
 function itemStableKey(item: DiscoveryItem) {
-  return `${item.targetKind}:${item.targetKey}:${item.id}`;
+  return `${item.targetKind}:${item.targetKey}`;
 }
 
 function itemIdentityKey(item: DiscoveryItem) {
@@ -172,10 +172,10 @@ function formatCalendarDateToken(value: string) {
 
 function itemCalendarBadgeLabel(item: DiscoveryItem) {
   const dateLikeTag = [
-    ...item.statusTags,
-    ...item.contextTerms,
-    ...item.sourceTags,
-    ...item.relationSubtypes,
+    ...(item.statusTags ?? []),
+    ...(item.contextTerms ?? []),
+    ...(item.sourceTags ?? []),
+    ...(item.relationSubtypes ?? []),
   ]
     .map(formatCalendarDateToken)
     .find((label): label is string => Boolean(label));

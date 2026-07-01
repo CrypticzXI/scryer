@@ -17,6 +17,11 @@ use tracing::warn;
 
 const SOURCE_CHANGED_AFTER_PROBE_CODE: &str = "source_changed_after_probe";
 
+/// Score boost added to a manually-grabbed/replaced file's acquisition score so a
+/// deliberate operator pick is not immediately re-replaced by a marginally-higher
+/// automatic upgrade. A far-better (cross-tier) release can still win.
+pub(crate) const MANUAL_GRAB_BOOST: i32 = 500;
+
 pub(crate) enum ImportedFileGateDecision {
     Accepted(Box<ImportedFileAcceptance>),
     #[cfg_attr(not(feature = "runtime-media-analysis"), allow(dead_code))]

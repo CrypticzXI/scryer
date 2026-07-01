@@ -1,6 +1,6 @@
 
 import * as React from "react";
-import { FolderOpen, Loader2, Pause, Play, RotateCcw, Search } from "lucide-react";
+import { FolderOpen, Loader2, Pause, Play, RotateCcw, Search, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -609,12 +609,6 @@ export function MovieOverviewView({
   ) : null;
   return (
     <div className="space-y-4">
-      <OverviewBackLink
-        id="movie-overview-back-link"
-        label={t("title.backToFacet", { facet: t("nav.movies") })}
-        onClick={() => onBackToList?.()}
-      />
-
       {/* title header with poster */}
       {(() => {
         const overviewBackdropUrl = title.backgroundUrl;
@@ -645,6 +639,24 @@ export function MovieOverviewView({
             />
           </div>
         ) : null}
+        {onBackToList ? (
+          <div
+            className="pointer-events-none absolute z-30"
+            style={{ top: "1rem", right: "1rem" }}
+          >
+            <Button
+              type="button"
+              variant="outline"
+              size="icon"
+              className="pointer-events-auto size-10 rounded-[11px] border border-[var(--scry-border2)] bg-[var(--scry-card2)] text-[var(--scry-ink2)] shadow-[0_12px_30px_rgba(0,0,0,0.35)] backdrop-blur-sm transition hover:bg-[var(--scry-hover)] hover:text-[var(--scry-ink2)]"
+              aria-label={t("label.close")}
+              title={t("label.close")}
+              onClick={() => onBackToList()}
+            >
+              <X className="h-5 w-5" />
+            </Button>
+          </div>
+        ) : null}
         <CardContent className="relative p-4">
           <div className="flex flex-col gap-4 sm:flex-row sm:gap-5">
             <div className="mx-auto shrink-0 sm:mx-0">
@@ -654,7 +666,7 @@ export function MovieOverviewView({
                 metadataFetchedAt={title.metadataFetchedAt}
                 createdAt={title.createdAt}
                 alt={title.name}
-                className="block h-auto w-32 rounded-lg object-cover shadow-lg sm:w-[180px]"
+                className="block h-48 w-32 rounded-lg object-cover shadow-lg sm:h-[270px] sm:w-[180px]"
                 placeholderClassName="flex h-48 w-32 items-center justify-center rounded-lg bg-muted text-sm text-muted-foreground/60 sm:h-[270px] sm:w-[180px]"
                 emptyLabel={t("title.noPoster")}
               />
@@ -856,12 +868,6 @@ export function MovieOverviewView({
         />
       ) : null}
 
-      <TitleMoreLikeThisStrip
-        items={title.moreLikeThis ?? []}
-        fallbackYearLabel={t("nav.movies")}
-        {...moreLikeThisActions}
-      />
-
       {downloadQueueItems.length > 0 ? (
         <Card>
           <CardHeader>
@@ -978,6 +984,12 @@ export function MovieOverviewView({
           ) : null}
           </CardContent>
         </Card>
+
+      <TitleMoreLikeThisStrip
+        items={title.moreLikeThis ?? []}
+        fallbackYearLabel={t("nav.movies")}
+        {...moreLikeThisActions}
+      />
 
       <details className="rounded-xl border border-border bg-card text-card-foreground overflow-hidden">
         <summary className="cursor-pointer select-none px-4 py-3 text-sm font-medium text-card-foreground">

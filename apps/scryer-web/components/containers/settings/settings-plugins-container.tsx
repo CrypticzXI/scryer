@@ -167,6 +167,8 @@ export function SettingsPluginsContainer() {
   const [pendingUninstall, setPendingUninstall] = useState<RegistryPluginRecord | null>(null);
   const installProgressSubscriptionsRef = useRef(new Map<string, () => void>());
   const pluginProgressRef = useRef<Record<string, PluginInstallProgressRecord>>({});
+  const pluginsRefreshPromiseRef = useRef<Promise<void> | null>(null);
+  const lastPluginsRefreshCompletedAtRef = useRef(0);
 
   useEffect(() => {
     setHeaderActionsTarget(document.getElementById(SETTINGS_HEADER_ACTIONS_SLOT_ID));
@@ -265,18 +267,27 @@ export function SettingsPluginsContainer() {
   }, []);
 
   const refreshPlugins = useCallback(async () => {
-    try {
-      const { data, error } = await client.query(pluginsQuery, {}).toPromise();
-      if (error) throw error;
-      const nextPlugins = data.plugins || [];
-      setPlugins(nextPlugins);
-      setCatalogStatus(data.pluginCatalogStatus || null);
-      reconcilePluginOperationState(nextPlugins);
-    } catch (error) {
-      setGlobalStatus(error instanceof Error ? error.message : t("status.failedToLoad"));
-    } finally {
-      setInitialLoading(false);
+    if (pluginsRefreshPromiseRef.current) {
+      return pluginsRefreshPromiseRef.current;
     }
+    const refreshPromise = (async () => {
+      try {
+        const { data, error } = await client.query(pluginsQuery, {}).toPromise();
+        if (error) throw error;
+        const nextPlugins = data.plugins || [];
+        setPlugins(nextPlugins);
+        setCatalogStatus(data.pluginCatalogStatus || null);
+        reconcilePluginOperationState(nextPlugins);
+      } catch (error) {
+        setGlobalStatus(error instanceof Error ? error.message : t("status.failedToLoad"));
+      } finally {
+        setInitialLoading(false);
+        lastPluginsRefreshCompletedAtRef.current = Date.now();
+        pluginsRefreshPromiseRef.current = null;
+      }
+    })();
+    pluginsRefreshPromiseRef.current = refreshPromise;
+    return refreshPromise;
   }, [client, reconcilePluginOperationState, setGlobalStatus, t, setPlugins]);
 
   useEffect(() => {
@@ -284,6 +295,12 @@ export function SettingsPluginsContainer() {
   }, [refreshPlugins]);
 
   useProviderCatalogSubscription(() => {
+    if (
+      pluginsRefreshPromiseRef.current
+      || Date.now() - lastPluginsRefreshCompletedAtRef.current < 2_000
+    ) {
+      return;
+    }
     void refreshPlugins();
     dispatchNavigationBadgesRefresh();
   });

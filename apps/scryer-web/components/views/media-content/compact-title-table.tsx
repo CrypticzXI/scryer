@@ -222,7 +222,7 @@ export function CompactTitleTable({
       {showEpisodesColumn ? <col style={{ width: "7.5rem" }} /> : null}
       {showSizeColumn ? <col style={{ width: "6.5rem" }} /> : null}
       {showAddedColumn ? <col style={{ width: "6.5rem" }} /> : null}
-      {showActionsColumn ? <col style={{ width: "8rem" }} /> : null}
+      {showActionsColumn ? <col style={{ width: "8.5rem" }} /> : null}
     </colgroup>
   );
   const visibleColumnSignature = selectedDrawerMode
@@ -369,7 +369,6 @@ export function CompactTitleTable({
       }
     };
 
-    maybeLoadNextPage();
     element.addEventListener("scroll", maybeLoadNextPage, { passive: true });
     return () => {
       element.removeEventListener("scroll", maybeLoadNextPage);
@@ -727,7 +726,7 @@ export function CompactTitleTable({
               )}
             </span>
           </TableCell>
-          <TableCell className="align-middle whitespace-nowrap py-2 pr-4 text-right text-[12.5px] tabular-nums text-[var(--scry-text4)]">
+          <TableCell className="whitespace-nowrap px-2 py-2 text-center align-middle text-[12.5px] tabular-nums text-[var(--scry-text4)]">
             {bytesToReadable(item.sizeBytes)}
           </TableCell>
         </TableRow>
@@ -758,7 +757,7 @@ export function CompactTitleTable({
             selectionMode && "cursor-pointer",
           )}
         >
-          <TableCell className="align-middle">
+          <TableCell className="px-0 text-center align-middle">
             <Checkbox
               checked={selectedTitleIds.has(item.id)}
               onCheckedChange={() => onToggleSelected(item.id)}
@@ -782,7 +781,7 @@ export function CompactTitleTable({
             </button>
           </TableCell>
           {showLibraryColumn ? (
-            <TableCell className="align-middle overflow-hidden py-1.5 text-[12px] text-[var(--scry-muted)]">
+            <TableCell className="overflow-hidden py-1.5 text-center align-middle text-[12px] text-[var(--scry-muted)]">
               <span className="block truncate">
                 {item.libraryName ?? item.libraryId}
               </span>
@@ -804,7 +803,7 @@ export function CompactTitleTable({
             </TableCell>
           ) : null}
           {showQualityColumn ? (
-            <TableCell className="align-middle whitespace-nowrap py-1.5 text-[12.5px] text-[var(--scry-text4)]">
+            <TableCell className="whitespace-nowrap py-1.5 text-center align-middle text-[12.5px] text-[var(--scry-text4)]">
               {qualityProfilesLoading
                 ? null
                 : resolveDisplayedQualityLabel(
@@ -816,26 +815,26 @@ export function CompactTitleTable({
             </TableCell>
           ) : null}
           {showEpisodesColumn ? (
-            <TableCell className="align-middle whitespace-nowrap py-1.5">
+            <TableCell className="whitespace-nowrap py-1.5 text-center align-middle">
               <TitleEpisodeProgressBar item={item} t={t} compact />
             </TableCell>
           ) : null}
           {showSizeColumn ? (
-            <TableCell className="align-middle whitespace-nowrap py-1.5 text-right text-[12.5px] tabular-nums text-[var(--scry-text4)]">
+            <TableCell className="whitespace-nowrap py-1.5 text-center align-middle text-[12.5px] tabular-nums text-[var(--scry-text4)]">
               {bytesToReadable(item.sizeBytes)}
             </TableCell>
           ) : null}
           {showAddedColumn ? (
-            <TableCell className="align-middle whitespace-nowrap py-1.5 text-right text-[12px] text-[var(--scry-muted)]">
+            <TableCell className="whitespace-nowrap py-1.5 text-center align-middle text-[12px] text-[var(--scry-muted)]">
               {addedLabel}
             </TableCell>
           ) : null}
           {showActionsColumn ? (
-            <TableCell className="text-center align-middle py-1.5">
+            <TableCell className="overflow-hidden px-1.5 py-1.5 text-center align-middle">
               <div
                 data-ui="row-actions"
                 className={cn(
-                  "inline-flex items-center justify-end gap-1",
+                  "flex w-full min-w-0 items-center justify-center gap-1",
                   selectionMode && "pointer-events-none opacity-40",
                 )}
               >
@@ -1002,8 +1001,8 @@ export function CompactTitleTable({
         {renderSortableHeader(
           "size",
           t("title.table.size"),
-          cn("whitespace-nowrap pr-4 text-right", TITLE_TABLE_HEADER_CELL_CLASS),
-          "justify-end text-right uppercase tracking-[0.05em] text-[var(--scry-faint2)]",
+          cn("whitespace-nowrap px-2 text-center", TITLE_TABLE_HEADER_CELL_CLASS),
+          "justify-center text-center uppercase tracking-[0.05em] text-[var(--scry-faint2)]",
         )}
       </TableRow>
     </TableHeader>
@@ -1028,7 +1027,8 @@ export function CompactTitleTable({
           ? renderSortableHeader(
               "library",
               t("title.table.library"),
-              cn("whitespace-nowrap", TITLE_TABLE_HEADER_CELL_CLASS),
+              cn("whitespace-nowrap text-center", TITLE_TABLE_HEADER_CELL_CLASS),
+              "justify-center text-center uppercase tracking-[0.05em] text-[var(--scry-faint2)]",
             )
           : null}
         {showMonitoredColumn
@@ -1043,35 +1043,40 @@ export function CompactTitleTable({
           ? renderSortableHeader(
               "quality",
               t("title.table.qualityTier"),
-              cn("whitespace-nowrap", TITLE_TABLE_HEADER_CELL_CLASS),
+              cn("whitespace-nowrap text-center", TITLE_TABLE_HEADER_CELL_CLASS),
+              "justify-center text-center uppercase tracking-[0.05em] text-[var(--scry-faint2)]",
             )
           : null}
         {showEpisodesColumn
           ? renderSortableHeader(
               "episodes",
               t("title.table.episodes"),
-              cn("whitespace-nowrap", TITLE_TABLE_HEADER_CELL_CLASS),
+              cn("whitespace-nowrap text-center", TITLE_TABLE_HEADER_CELL_CLASS),
+              "justify-center text-center uppercase tracking-[0.05em] text-[var(--scry-faint2)]",
             )
           : null}
         {showSizeColumn
           ? renderSortableHeader(
               "size",
               t("title.table.size"),
-              cn("whitespace-nowrap text-right", TITLE_TABLE_HEADER_CELL_CLASS),
-              "justify-end text-right uppercase tracking-[0.05em] text-[var(--scry-faint2)]",
+              cn("whitespace-nowrap text-center", TITLE_TABLE_HEADER_CELL_CLASS),
+              "justify-center text-center uppercase tracking-[0.05em] text-[var(--scry-faint2)]",
             )
           : null}
         {showAddedColumn
           ? renderSortableHeader(
               "added",
               t("title.contextAdded"),
-              cn("whitespace-nowrap text-right", TITLE_TABLE_HEADER_CELL_CLASS),
-              "justify-end text-right uppercase tracking-[0.05em] text-[var(--scry-faint2)]",
+              cn("whitespace-nowrap text-center", TITLE_TABLE_HEADER_CELL_CLASS),
+              "justify-center text-center uppercase tracking-[0.05em] text-[var(--scry-faint2)]",
             )
           : null}
         {showActionsColumn ? (
           <TableHead
-            className={cn("whitespace-nowrap text-right", TITLE_TABLE_HEADER_CELL_CLASS)}
+            className={cn(
+              "whitespace-nowrap px-1.5 text-center",
+              TITLE_TABLE_HEADER_CELL_CLASS,
+            )}
           >
             {t("label.actions")}
           </TableHead>
@@ -1121,7 +1126,7 @@ export function CompactTitleTable({
         data-slot="title-list-scroll"
         ref={titleTableScrollRef}
         className={cn(
-          "relative flex-1 overflow-auto rounded-[14px] border border-[var(--scry-border)]",
+          "relative flex-1 overflow-x-hidden overflow-y-auto rounded-[14px] border border-[var(--scry-border)]",
           selectedPaneMode ? "bg-[var(--scry-card2)]" : "bg-[var(--scry-surfD)]",
           selectedDrawerMode ? "min-h-0" : "min-h-[22rem]",
         )}

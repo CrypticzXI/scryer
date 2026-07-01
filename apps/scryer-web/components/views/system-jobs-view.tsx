@@ -485,7 +485,7 @@ export function SystemJobsView({ state }: { state: SystemJobsViewState }) {
         className="cursor-pointer border-[var(--scry-border3)] hover:bg-[var(--scry-hover)]"
         onClick={() => onSelectJob(job.key)}
       >
-        <TableCell>
+        <TableCell className="min-w-0">
           <div className="space-y-1">
             <p className="font-medium text-[var(--scry-ink2)]">{job.displayName}</p>
             <p className={`text-xs ${JOBS_MUTED_TEXT_CLASS}`}>{job.description}</p>
@@ -504,10 +504,10 @@ export function SystemJobsView({ state }: { state: SystemJobsViewState }) {
             dateTimeFormat,
           )}
         </TableCell>
-        <TableCell>
+        <TableCell className="w-[7.5rem] min-w-[7.5rem]">
           <span className={runStatusTone(status)}>{runStatusLabel(status, t)}</span>
         </TableCell>
-        <TableCell>
+        <TableCell className="w-[6rem] min-w-[6rem] text-right">
           {job.manualTriggerAllowed ? (
             <Button
               size="sm"
@@ -649,7 +649,7 @@ export function SystemJobsView({ state }: { state: SystemJobsViewState }) {
             </div>
 
             <div className="hidden overflow-x-auto md:block">
-              <Table>
+              <Table className="table-fixed">
                 <TableHeader>
                   <TableRow className="border-[var(--scry-border3)] bg-[var(--scry-inset)] hover:bg-[var(--scry-inset)]">
                     {renderSortableHeader("name", t("jobs.column.name"))}
@@ -666,8 +666,12 @@ export function SystemJobsView({ state }: { state: SystemJobsViewState }) {
                       t("jobs.column.lastRun"),
                       "w-[10.5rem]",
                     )}
-                    {renderSortableHeader("status", t("jobs.column.status"))}
-                    <TableHead />
+                    {renderSortableHeader(
+                      "status",
+                      t("jobs.column.status"),
+                      "w-[7.5rem]",
+                    )}
+                    <TableHead className="w-[6rem]" />
                   </TableRow>
                 </TableHeader>
                 <TableBody>{renderRows(sortedJobRows)}</TableBody>

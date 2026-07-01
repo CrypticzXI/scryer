@@ -33,6 +33,23 @@ export const DISCOVERY_ITEM_FIELDS = `
     facetTerms
     contextTerms`;
 
+const DISCOVERY_HOME_ITEM_FIELDS = `
+    targetKey
+    targetKind
+    resolved
+    resolvedTitleId
+    displayTitle
+    originalTitle
+    year
+    posterUrl
+    contentType
+    rating
+    statusTags
+    sourceCount
+    rankScore
+    ownedInInput
+    facetTerms`;
+
 export const DISCOVERY_SECTION_FIELDS = `
     sectionId
     sectionType
@@ -41,6 +58,16 @@ export const DISCOVERY_SECTION_FIELDS = `
     totalCount
     items {
 ${DISCOVERY_ITEM_FIELDS}
+    }`;
+
+const DISCOVERY_HOME_SECTION_FIELDS = `
+    sectionId
+    sectionType
+    title
+    surface
+    totalCount
+    items {
+${DISCOVERY_HOME_ITEM_FIELDS}
     }`;
 
 export const discoveryHomeQuery = `query DiscoveryHome($input: DiscoveryHomeInput) {
@@ -67,13 +94,13 @@ export const discoveryHomeQuery = `query DiscoveryHome($input: DiscoveryHomeInpu
       localCount
     }
     publicSections {
-${DISCOVERY_SECTION_FIELDS}
+${DISCOVERY_HOME_SECTION_FIELDS}
     }
     personalizedSections {
-${DISCOVERY_SECTION_FIELDS}
+${DISCOVERY_HOME_SECTION_FIELDS}
     }
     completeCollection {
-${DISCOVERY_SECTION_FIELDS}
+${DISCOVERY_HOME_SECTION_FIELDS}
     }
   }
 }`;
@@ -2767,7 +2794,6 @@ export const pluginsQuery = `query Plugins {
     docsUrl
     sourceRepo
     builtin
-    sourceUrl
     sourceKind
     blockedReason
     bytes

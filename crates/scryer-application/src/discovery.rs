@@ -133,7 +133,11 @@ impl AppUseCase {
         title_id: &str,
         limit: i64,
     ) -> AppResult<Vec<DiscoveryItemRecord>> {
-        let source_title = self
+        let requested_limit = limit.clamp(0, 100) as usize;
+        if requested_limit == 0 {
+            return Ok(Vec::new());
+        }
+        let _source_title = self
             .get_title(actor, title_id)
             .await?
             .ok_or_else(|| AppError::NotFound(format!("title {title_id}")))?;
@@ -146,7 +150,7 @@ impl AppUseCase {
             .services
             .library
             .discovery
-            .list_title_more_like_this_items(title_id, limit.clamp(0, 100))
+            .list_title_more_like_this_items(title_id, 100)
             .await?;
         let mut item_lookup_indexes = vec![Vec::<usize>::new(); items.len()];
         let mut lookups = Vec::new();
@@ -184,24 +188,30 @@ impl AppUseCase {
                 .or_default()
                 .push(lookup_match.title);
         }
-        for (item, lookup_indexes) in items.iter_mut().zip(item_lookup_indexes) {
-            let local_title = lookup_indexes.iter().find_map(|lookup_index| {
+        let mut filtered_items = Vec::with_capacity(requested_limit.min(items.len()));
+        for (mut item, lookup_indexes) in items.into_iter().zip(item_lookup_indexes) {
+            let readable_local_title = lookup_indexes.iter().find_map(|lookup_index| {
                 matches_by_lookup_index
                     .get(lookup_index)
                     .and_then(|titles| {
                         titles.iter().find(|candidate| {
-                            candidate.id != source_title.id
-                                && readable_library_ids.contains(candidate.library_id.as_str())
+                            readable_library_ids.contains(candidate.library_id.as_str())
                         })
                     })
             });
-            if let Some(local_title) = local_title {
-                item.resolved = true;
-                item.resolved_title_id = Some(local_title.id.clone());
-                item.owned_in_input = true;
+            if readable_local_title.is_some() {
+                continue;
+            }
+
+            item.resolved = false;
+            item.resolved_title_id = None;
+            item.owned_in_input = false;
+            filtered_items.push(item);
+            if filtered_items.len() >= requested_limit {
+                break;
             }
         }
-        Ok(items)
+        Ok(filtered_items)
     }
 
     pub async fn discovery_home(

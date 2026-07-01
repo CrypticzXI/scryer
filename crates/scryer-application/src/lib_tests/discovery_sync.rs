@@ -1119,6 +1119,100 @@ async fn catalog_discovery_excludes_public_rows_owned_by_normalized_external_id(
 }
 
 #[tokio::test]
+async fn title_more_like_this_filters_readable_library_titles_and_refills_limit() {
+    let gateway = Arc::new(SnapshotMetadataGateway::default());
+    let (app, _admin, titles) = bootstrap_with_metadata_gateway_and_titles(gateway);
+    let discovery = Arc::new(RecordingDiscoveryRepository::default());
+    let app = app.with_test_overrides(|builder| builder.with_discovery_store(discovery.clone()));
+    let movie_library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Movie);
+    let viewer = library_permission_user(
+        "title-more-like-this-viewer",
+        &movie_library_id,
+        &[scryer_domain::LibraryPermission::View],
+    );
+
+    let mut source_title = test_title(
+        "source-title",
+        "Source Movie",
+        MediaFacet::Movie,
+        vec![("tmdb_movie", "100")],
+    );
+    source_title.library_id = movie_library_id.clone();
+    let mut owned_title = test_title(
+        "owned-title",
+        "Owned Movie",
+        MediaFacet::Movie,
+        vec![("tmdb_movie", "603")],
+    );
+    owned_title.library_id = movie_library_id.clone();
+    titles.store.lock().await.extend([source_title, owned_title]);
+
+    discovery
+        .title_more_like_this_items
+        .lock()
+        .await
+        .insert(
+            "source-title".to_string(),
+            vec![
+                discovery_item_record(
+                    "title-more-like-this-run",
+                    "title-more-like-this-run",
+                    None,
+                    "tmdb:movie:603",
+                    "Owned Recommendation",
+                    "movie",
+                    100.0,
+                    &["Action"],
+                    &[],
+                    false,
+                    true,
+                ),
+                discovery_item_record(
+                    "title-more-like-this-run",
+                    "title-more-like-this-run",
+                    None,
+                    "tmdb:movie:604",
+                    "Fresh Recommendation One",
+                    "movie",
+                    90.0,
+                    &["Drama"],
+                    &[],
+                    false,
+                    true,
+                ),
+                discovery_item_record(
+                    "title-more-like-this-run",
+                    "title-more-like-this-run",
+                    None,
+                    "tmdb:movie:605",
+                    "Fresh Recommendation Two",
+                    "movie",
+                    80.0,
+                    &["Comedy"],
+                    &[],
+                    false,
+                    true,
+                ),
+            ],
+        );
+
+    let items = app
+        .title_more_like_this(&viewer, "source-title", 2)
+        .await
+        .expect("title more-like-this should load");
+
+    assert_eq!(
+        items
+            .iter()
+            .map(|item| item.display_title.as_str())
+            .collect::<Vec<_>>(),
+        vec!["Fresh Recommendation One", "Fresh Recommendation Two"]
+    );
+    assert!(items.iter().all(|item| !item.owned_in_input));
+    assert!(items.iter().all(|item| item.resolved_title_id.is_none()));
+}
+
+#[tokio::test]
 async fn catalog_discovery_scopes_personalized_rows_to_selected_readable_library() {
     let gateway = Arc::new(SnapshotMetadataGateway::default());
     let (app, admin, titles) = bootstrap_with_metadata_gateway_and_titles(gateway);
@@ -3329,6 +3423,7 @@ struct RecordingDiscoveryRepository {
     items: Mutex<Vec<DiscoveryItemRecord>>,
     facets: Mutex<Vec<DiscoveryFacetRecord>>,
     submitted_subjects: Mutex<Vec<DiscoverySubmittedSubjectRecord>>,
+    title_more_like_this_items: Mutex<HashMap<String, Vec<DiscoveryItemRecord>>>,
     generation_list_calls: Mutex<usize>,
 }
 
@@ -3983,18 +4078,31 @@ impl DiscoveryRepository for RecordingDiscoveryRepository {
 
     async fn replace_title_more_like_this_items(
         &self,
-        _title_id: &str,
-        _items: &[DiscoveryItemRecord],
+        title_id: &str,
+        items: &[DiscoveryItemRecord],
     ) -> AppResult<()> {
+        self.title_more_like_this_items
+            .lock()
+            .await
+            .insert(title_id.to_string(), items.to_vec());
         Ok(())
     }
 
     async fn list_title_more_like_this_items(
         &self,
-        _title_id: &str,
-        _limit: i64,
+        title_id: &str,
+        limit: i64,
     ) -> AppResult<Vec<DiscoveryItemRecord>> {
-        Ok(Vec::new())
+        let limit = limit.max(0) as usize;
+        let mut items = self
+            .title_more_like_this_items
+            .lock()
+            .await
+            .get(title_id)
+            .cloned()
+            .unwrap_or_default();
+        items.truncate(limit);
+        Ok(items)
     }
 
     async fn list_discovery_items_for_generation(

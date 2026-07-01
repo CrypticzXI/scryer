@@ -309,11 +309,12 @@ export function CalendarView({
             airings this month
           </div>
         </div>
-        {loading && (
-          <p className="mb-2 text-sm text-muted-foreground">
-            {t("label.loading")}
-          </p>
-        )}
+        <p
+          aria-live="polite"
+          className="mb-2 min-h-5 text-sm text-muted-foreground"
+        >
+          {loading ? t("label.loading") : "\u00a0"}
+        </p>
         <div className="fc-scryer min-h-0 flex-1">
           <FullCalendar
             key={isMobile ? "calendar-mobile" : "calendar-desktop"}

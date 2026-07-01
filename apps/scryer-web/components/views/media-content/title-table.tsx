@@ -204,7 +204,7 @@ export function TitleTable({
       {showEpisodesColumn ? <col style={{ width: "9.5rem" }} /> : null}
       {showSizeColumn ? <col style={{ width: "6rem" }} /> : null}
       {showAddedColumn ? <col style={{ width: "7.5rem" }} /> : null}
-      {showActionsColumn ? <col style={{ width: "12rem" }} /> : null}
+      {showActionsColumn ? <col style={{ width: "11.5rem" }} /> : null}
     </colgroup>
   );
   const visibleColumnSignature = [
@@ -348,7 +348,6 @@ export function TitleTable({
       }
     };
 
-    maybeLoadNextPage();
     element.addEventListener("scroll", maybeLoadNextPage, { passive: true });
     return () => {
       element.removeEventListener("scroll", maybeLoadNextPage);
@@ -618,7 +617,7 @@ export function TitleTable({
             selectionMode && "cursor-pointer",
           )}
         >
-          <TableCell className="align-middle">
+          <TableCell className="px-0 text-center align-middle">
             <Checkbox
               checked={selectedTitleIds.has(item.id)}
               onCheckedChange={() => onToggleSelected(item.id)}
@@ -662,7 +661,7 @@ export function TitleTable({
             </button>
           </TableCell>
           {showLibraryColumn ? (
-            <TableCell className="align-middle overflow-hidden text-[12.5px] text-[var(--scry-muted)]">
+            <TableCell className="overflow-hidden text-center align-middle text-[12.5px] text-[var(--scry-muted)]">
               <span className="block truncate">
                 {item.libraryName ?? item.libraryId}
               </span>
@@ -684,7 +683,7 @@ export function TitleTable({
             </TableCell>
           ) : null}
           {showQualityColumn ? (
-            <TableCell className="align-middle whitespace-nowrap text-[12.5px] text-[var(--scry-text4)]">
+            <TableCell className="whitespace-nowrap text-center align-middle text-[12.5px] text-[var(--scry-text4)]">
               {qualityProfilesLoading
                 ? null
                 : resolveDisplayedQualityLabel(
@@ -696,26 +695,26 @@ export function TitleTable({
             </TableCell>
           ) : null}
           {showEpisodesColumn ? (
-            <TableCell className="align-middle whitespace-nowrap">
+            <TableCell className="whitespace-nowrap text-center align-middle">
               <TitleEpisodeProgressBar item={item} t={t} />
             </TableCell>
           ) : null}
           {showSizeColumn ? (
-            <TableCell className="align-middle whitespace-nowrap text-right text-[12.5px] tabular-nums text-[var(--scry-text4)]">
+            <TableCell className="whitespace-nowrap text-center align-middle text-[12.5px] tabular-nums text-[var(--scry-text4)]">
               {bytesToReadable(item.sizeBytes)}
             </TableCell>
           ) : null}
           {showAddedColumn ? (
-            <TableCell className="align-middle whitespace-nowrap text-right text-[12px] text-[var(--scry-muted)]">
+            <TableCell className="whitespace-nowrap text-center align-middle text-[12px] text-[var(--scry-muted)]">
               {addedLabel}
             </TableCell>
           ) : null}
           {showActionsColumn ? (
-            <TableCell className="text-center align-middle">
+            <TableCell className="overflow-hidden px-2 text-center align-middle">
               <div
                 data-ui="row-actions"
                 className={cn(
-                  "inline-flex items-center justify-end gap-1.5",
+                  "flex w-full min-w-0 items-center justify-center gap-1.5",
                   selectionMode && "pointer-events-none opacity-40",
                 )}
               >
@@ -882,7 +881,8 @@ export function TitleTable({
           ? renderSortableHeader(
               "library",
               t("title.table.library"),
-              cn("whitespace-nowrap", TITLE_TABLE_HEADER_CELL_CLASS),
+              cn("whitespace-nowrap text-center", TITLE_TABLE_HEADER_CELL_CLASS),
+              "justify-center text-center uppercase tracking-[0.05em] text-[var(--scry-faint2)]",
             )
           : null}
         {showMonitoredColumn
@@ -897,35 +897,40 @@ export function TitleTable({
           ? renderSortableHeader(
               "quality",
               t("title.table.qualityTier"),
-              cn("whitespace-nowrap", TITLE_TABLE_HEADER_CELL_CLASS),
+              cn("whitespace-nowrap text-center", TITLE_TABLE_HEADER_CELL_CLASS),
+              "justify-center text-center uppercase tracking-[0.05em] text-[var(--scry-faint2)]",
             )
           : null}
         {showEpisodesColumn
           ? renderSortableHeader(
               "episodes",
               t("title.table.episodes"),
-              cn("whitespace-nowrap", TITLE_TABLE_HEADER_CELL_CLASS),
+              cn("whitespace-nowrap text-center", TITLE_TABLE_HEADER_CELL_CLASS),
+              "justify-center text-center uppercase tracking-[0.05em] text-[var(--scry-faint2)]",
             )
           : null}
         {showSizeColumn
           ? renderSortableHeader(
               "size",
               t("title.table.size"),
-              cn("whitespace-nowrap text-right", TITLE_TABLE_HEADER_CELL_CLASS),
-              "justify-end text-right uppercase tracking-[0.05em] text-[var(--scry-faint2)]",
+              cn("whitespace-nowrap text-center", TITLE_TABLE_HEADER_CELL_CLASS),
+              "justify-center text-center uppercase tracking-[0.05em] text-[var(--scry-faint2)]",
             )
           : null}
         {showAddedColumn
           ? renderSortableHeader(
               "added",
               t("title.contextAdded"),
-              cn("whitespace-nowrap text-right", TITLE_TABLE_HEADER_CELL_CLASS),
-              "justify-end text-right uppercase tracking-[0.05em] text-[var(--scry-faint2)]",
+              cn("whitespace-nowrap text-center", TITLE_TABLE_HEADER_CELL_CLASS),
+              "justify-center text-center uppercase tracking-[0.05em] text-[var(--scry-faint2)]",
             )
           : null}
         {showActionsColumn ? (
           <TableHead
-            className={cn("whitespace-nowrap text-right", TITLE_TABLE_HEADER_CELL_CLASS)}
+            className={cn(
+              "whitespace-nowrap px-2 text-center",
+              TITLE_TABLE_HEADER_CELL_CLASS,
+            )}
           >
             {t("label.actions")}
           </TableHead>

@@ -441,7 +441,7 @@ export const SettingsContainer = memo(function SettingsContainer({
             ) : settingsSection === "plugins" ? (
               <div
                 id={SETTINGS_HEADER_ACTIONS_SLOT_ID}
-                className="flex shrink-0 flex-wrap items-center justify-end gap-2"
+                className="flex min-h-10 shrink-0 flex-wrap items-center justify-end gap-2 sm:min-w-[29rem]"
               />
             ) : showPluginsShortcut ? (
               <Button asChild variant="primary" className="h-10 shrink-0 rounded-[10px] px-3 text-[13px]">
