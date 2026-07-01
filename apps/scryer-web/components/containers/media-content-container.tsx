@@ -25,6 +25,7 @@ import {
 } from "@/lib/graphql/mutations";
 import {
   browsePathQuery,
+  catalogHasValidRootQuery,
   deleteMediaFilePreviewQuery,
   deleteTitlePreviewQuery,
   downloadClientRoutingQuery,
@@ -36,6 +37,7 @@ import {
   externalSubtitlesQuery,
   mediaRenamePreviewQuery,
   catalogDiscoveryQuery,
+  discoveryItemDetailQuery,
   ruleSetsQuery,
   routingPageInitQuery,
   searchForTitleQuery,
@@ -879,13 +881,15 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   >([]);
   const [rootValidationLibrariesLoading, setRootValidationLibrariesLoading] =
     React.useState(false);
-  const [invalidRootLibraryIds, setInvalidRootLibraryIds] = React.useState<
-    string[]
-  >([]);
+  const [catalogHasValidRoot, setCatalogHasValidRoot] = React.useState<
+    boolean | null
+  >(null);
+  const [, setInvalidRootLibraryIds] = React.useState<string[]>([]);
   const [invalidRootPathsByLibraryId, setInvalidRootPathsByLibraryId] =
     React.useState<Record<string, string[]>>({});
-  const [validatedRootFolderSnapshotKey, setValidatedRootFolderSnapshotKey] =
-    React.useState<string | null>(null);
+  const [, setValidatedRootFolderSnapshotKey] = React.useState<string | null>(
+    null,
+  );
   const [librarySettingsSaving, setLibrarySettingsSaving] =
     React.useState(false);
   const rootFolderValidationSnapshot = React.useMemo(() => {
@@ -930,9 +934,6 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     librariesLoading,
     selectedLibraryIds,
   ]);
-  const rootFolderValidationLoading =
-    rootFolderValidationSnapshot !== null &&
-    validatedRootFolderSnapshotKey !== rootFolderValidationSnapshot.key;
   const activeCatalogQueryRef = React.useRef("");
   const interactiveSearchAbortRef = React.useRef<AbortController | null>(null);
   const activeCatalogListFiltersRef = React.useRef<ActiveCatalogListFilters>({
@@ -1240,15 +1241,6 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     }
     setSelectedOverviewTitleId(routeOverviewTitleId);
   }, [routeOverviewPending, routeOverviewTitleId]);
-
-  // Multi-select and the single-title overview are mutually exclusive: as soon
-  // as the user selects a title for a bulk action, close any open overview so
-  // the full library list (and its bulk-selection bar) takes over.
-  React.useEffect(() => {
-    if (selectedTitleIds.size > 0 && routeOverviewTitleId) {
-      onCloseOverview();
-    }
-  }, [onCloseOverview, routeOverviewTitleId, selectedTitleIds]);
 
   React.useEffect(() => {
     const visibleTitleIds = new Set(visibleTitles.map((title) => title.id));
@@ -1704,12 +1696,30 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
         setGlobalStatus(t("status.apiError"));
         return;
       }
-      const target = {
-        result: metadataResultForDiscoveryItem(item),
-        facet,
-      };
       try {
         await ensureCatalogConfigReady(facet);
+        const { data, error } = await client
+          .query(
+            discoveryItemDetailQuery,
+            {
+              input: {
+                targetKey: item.targetKey,
+                includeUnresolved: true,
+              },
+            },
+            { requestPolicy: "network-only" },
+          )
+          .toPromise();
+        if (error) {
+          throw error;
+        }
+        const detailItem =
+          (data?.discoveryItemDetail as CatalogDiscoveryItem | null | undefined) ??
+          item;
+        const target = {
+          result: metadataResultForDiscoveryItem(detailItem),
+          facet,
+        };
         if (canManageTitle) {
           setAddDiscoveryDialogTarget(target);
         } else {
@@ -1724,6 +1734,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     [
       canManageTitle,
       canRequestMedia,
+      client,
       ensureCatalogConfigReady,
       setGlobalStatus,
       t,
@@ -3232,6 +3243,52 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     };
   }, [client, rootFolderValidationSnapshot]);
 
+  React.useEffect(() => {
+    if (!shouldLoadCatalogTitles || !canManageLibrarySettings) {
+      setCatalogHasValidRoot(null);
+      return;
+    }
+
+    let cancelled = false;
+    setCatalogHasValidRoot(null);
+
+    void client
+      .query(
+        catalogHasValidRootQuery,
+        { facet: activeFacet },
+        { requestPolicy: "network-only" },
+      )
+      .toPromise()
+      .then(({ data, error }) => {
+        if (cancelled) {
+          return;
+        }
+        if (error) {
+          console.error(
+            "[catalog-root-validation] failed to validate catalog roots:",
+            error,
+          );
+          setCatalogHasValidRoot(null);
+          return;
+        }
+        setCatalogHasValidRoot(data?.catalogHasValidRoot ?? null);
+      })
+      .catch((error) => {
+        if (cancelled) {
+          return;
+        }
+        console.error(
+          "[catalog-root-validation] failed to validate catalog roots:",
+          error,
+        );
+        setCatalogHasValidRoot(null);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeFacet, canManageLibrarySettings, client, shouldLoadCatalogTitles]);
+
   const openBulkTitleEdit = React.useCallback(() => {
     if (selectedTitles.length === 0 || bulkActionBusy) {
       return;
@@ -4214,8 +4271,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
           libraryDownloadClientsLoading,
           rootValidationLibraries,
           rootValidationLibrariesLoading,
-          rootFolderValidationLoading,
-          invalidRootLibraryIds,
+          catalogHasValidRoot,
           invalidRootPathsByLibraryId,
           selectedLibraryIds,
           allLibrariesValue: ALL_LIBRARIES_VALUE,

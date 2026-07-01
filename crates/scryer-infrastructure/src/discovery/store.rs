@@ -8,7 +8,7 @@ use scryer_application::{
     DiscoveryPublicFeedCommit, DiscoveryRankComponentRecord, DiscoveryRawPageRecord,
     DiscoveryRepository, DiscoverySectionItemsRecord, DiscoverySectionRecord,
     DiscoverySourceTagRecord, DiscoverySubmittedSubjectRecord, DiscoverySyncRunRecord,
-    DiscoverySyncStateRecord,
+    DiscoverySyncStateRecord, TitleExternalRating,
 };
 use serde_json::Value as JsonValue;
 use std::collections::{HashMap, HashSet};
@@ -876,6 +876,7 @@ impl DiscoveryRepository for DiscoveryStore {
             .map(item_from_row)
             .collect::<AppResult<Vec<_>>>()?;
         hydrate_title_more_like_this_item_terms(&self.datastore, &mut items).await?;
+        hydrate_title_more_like_this_item_ratings(&self.datastore, &mut items).await?;
         Ok(items)
     }
 
@@ -1754,6 +1755,12 @@ fn append_discovery_items_filters(
                 .join(" OR ")
         ));
     }
+    let target_keys = normalized_filter_values(&query.target_keys);
+    if !target_keys.is_empty() {
+        let placeholders = placeholders(target_keys.len());
+        args.extend(target_keys.into_iter().map(SqlArg::Text));
+        clauses.push(format!("LOWER(i.target_key) IN ({placeholders})"));
+    }
     append_term_filter(clauses, args, "media_kind", &query.target_kinds);
     append_source_filter(clauses, args, &query.sources);
     append_term_filter(clauses, args, "relation_type", &query.relation_types);
@@ -2302,6 +2309,7 @@ fn item_from_row(row: &SqlRow) -> AppResult<DiscoveryItemRecord> {
         genres: Vec::new(),
         rating: row.opt_f64("rating")?,
         rating_sources: Vec::new(),
+        external_ratings: Vec::new(),
         status_tags: Vec::new(),
         source_tags: Vec::new(),
         sources: Vec::new(),
@@ -2442,6 +2450,11 @@ async fn hydrate_item_terms(
         let item = &mut items[index];
         match term_kind.as_str() {
             "genre" => item.genres.push(term_value),
+            "rating_source" => {
+                if !item.rating_sources.iter().any(|value| value == &term_value) {
+                    item.rating_sources.push(term_value);
+                }
+            }
             "status_tag" => item.status_tags.push(term_value),
             "source" => item.sources.push(term_value),
             "relation_type" => item.relation_types.push(term_value),
@@ -2497,6 +2510,54 @@ async fn hydrate_title_more_like_this_item_terms(
             "facet_term" => item.facet_terms.push(term_value),
             "context_term" => item.context_terms.push(term_value),
             _ => {}
+        }
+    }
+    Ok(())
+}
+
+async fn hydrate_title_more_like_this_item_ratings(
+    datastore: &StoreDatastore,
+    items: &mut [DiscoveryItemRecord],
+) -> AppResult<()> {
+    if items.is_empty() {
+        return Ok(());
+    }
+    let item_ids = items.iter().map(|item| item.id.clone()).collect::<Vec<_>>();
+    let mut item_indexes = HashMap::new();
+    for (index, item) in items.iter().enumerate() {
+        item_indexes.insert(item.id.clone(), index);
+    }
+    let rows = fetch_child_rows(
+        datastore,
+        "SELECT item_id, rating_source, rating_value, rating_score, normalized, votes, url, sort_index
+         FROM title_more_like_this_item_ratings
+         WHERE item_id IN ({})
+         ORDER BY item_id ASC, sort_index ASC",
+        &item_ids,
+    )
+    .await?;
+    for row in rows {
+        let item_id = row.text("item_id")?;
+        let Some(index) = item_indexes.get(&item_id).copied() else {
+            continue;
+        };
+        let source = row.text("rating_source")?;
+        if !items[index]
+            .rating_sources
+            .iter()
+            .any(|value| value == &source)
+        {
+            items[index].rating_sources.push(source.clone());
+        }
+        if let Some(normalized) = row.opt_f64("normalized")? {
+            items[index].external_ratings.push(TitleExternalRating {
+                source,
+                value: row.opt_f64("rating_value")?,
+                score: row.opt_f64("rating_score")?,
+                normalized,
+                votes: row.opt_i32("votes")?,
+                url: row.opt_text("url")?.unwrap_or_default(),
+            });
         }
     }
     Ok(())
@@ -2566,7 +2627,7 @@ async fn hydrate_item_ratings(
 ) -> AppResult<()> {
     let rows = fetch_child_rows(
         datastore,
-        "SELECT item_id, rating_source, sort_index
+        "SELECT item_id, rating_source, rating_value, rating_score, normalized, votes, url, sort_index
          FROM discovery_item_ratings
          WHERE item_id IN ({})
          ORDER BY item_id ASC, sort_index ASC",
@@ -2578,7 +2639,24 @@ async fn hydrate_item_ratings(
         let Some(index) = item_indexes.get(&item_id).copied() else {
             continue;
         };
-        items[index].rating_sources.push(row.text("rating_source")?);
+        let source = row.text("rating_source")?;
+        if !items[index]
+            .rating_sources
+            .iter()
+            .any(|value| value == &source)
+        {
+            items[index].rating_sources.push(source.clone());
+        }
+        if let Some(normalized) = row.opt_f64("normalized")? {
+            items[index].external_ratings.push(TitleExternalRating {
+                source,
+                value: row.opt_f64("rating_value")?,
+                score: row.opt_f64("rating_score")?,
+                normalized,
+                votes: row.opt_i32("votes")?,
+                url: row.opt_text("url")?.unwrap_or_default(),
+            });
+        }
     }
     Ok(())
 }
@@ -2781,6 +2859,12 @@ async fn insert_item_tx(
 async fn delete_title_more_like_this_items_tx(tx: &mut SqlTx<'_>, title_id: &str) -> AppResult<()> {
     SqlRuntime::execute(
         SqlExec::Tx(tx),
+        "DELETE FROM title_more_like_this_item_ratings WHERE source_title_id = {}",
+        &[SqlArg::Text(title_id.to_string())],
+    )
+    .await?;
+    SqlRuntime::execute(
+        SqlExec::Tx(tx),
         "DELETE FROM title_more_like_this_item_terms WHERE source_title_id = {}",
         &[SqlArg::Text(title_id.to_string())],
     )
@@ -2820,6 +2904,24 @@ async fn insert_title_more_like_this_item_tx(
         &item.rating_sources,
     )
     .await?;
+    if item.external_ratings.is_empty() {
+        for (index, source) in item.rating_sources.iter().enumerate() {
+            insert_title_more_like_this_rating_tx(tx, title_id, item, source, None, index as i32)
+                .await?;
+        }
+    } else {
+        for (index, rating) in item.external_ratings.iter().enumerate() {
+            insert_title_more_like_this_rating_tx(
+                tx,
+                title_id,
+                item,
+                &rating.source,
+                Some(rating),
+                index as i32,
+            )
+            .await?;
+        }
+    }
     insert_title_more_like_this_item_terms_tx(tx, title_id, item, "status_tag", &item.status_tags)
         .await?;
     insert_title_more_like_this_item_terms_tx(tx, title_id, item, "source", &item.sources).await?;
@@ -2972,8 +3074,14 @@ async fn insert_item_children_tx(tx: &mut SqlTx<'_>, item: &DiscoveryItemRecord)
     for (index, source_tag) in item.source_tags.iter().enumerate() {
         insert_source_tag_tx(tx, item, source_tag, index as i32).await?;
     }
-    for (index, source) in item.rating_sources.iter().enumerate() {
-        insert_rating_tx(tx, item, source, index as i32).await?;
+    if item.external_ratings.is_empty() {
+        for (index, source) in item.rating_sources.iter().enumerate() {
+            insert_rating_tx(tx, item, source, None, index as i32).await?;
+        }
+    } else {
+        for (index, rating) in item.external_ratings.iter().enumerate() {
+            insert_rating_tx(tx, item, &rating.source, Some(rating), index as i32).await?;
+        }
     }
     for rank_component in &item.rank_components {
         insert_rank_component_tx(tx, item, rank_component).await?;
@@ -3129,19 +3237,56 @@ async fn insert_rating_tx(
     tx: &mut SqlTx<'_>,
     item: &DiscoveryItemRecord,
     source: &str,
+    rating: Option<&TitleExternalRating>,
     index: i32,
 ) -> AppResult<()> {
     SqlRuntime::execute(
         SqlExec::Tx(tx),
         "INSERT INTO discovery_item_ratings
-         (item_id, run_id, rating_source, rating, sort_index)
-         VALUES ({}, {}, {}, {}, {})
+         (item_id, run_id, rating_source, rating, rating_value, rating_score, normalized, votes, url, sort_index)
+         VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {})
          ON CONFLICT DO NOTHING",
         &[
             SqlArg::Text(item.id.clone()),
             SqlArg::Text(item.run_id.clone()),
             SqlArg::Text(source.to_string()),
             SqlArg::OptF64(item.rating),
+            SqlArg::OptF64(rating.and_then(|rating| rating.value)),
+            SqlArg::OptF64(rating.and_then(|rating| rating.score)),
+            SqlArg::OptF64(rating.map(|rating| rating.normalized)),
+            SqlArg::OptI32(rating.and_then(|rating| rating.votes)),
+            SqlArg::Text(rating.map(|rating| rating.url.clone()).unwrap_or_default()),
+            SqlArg::I32(index),
+        ],
+    )
+    .await?;
+    Ok(())
+}
+
+async fn insert_title_more_like_this_rating_tx(
+    tx: &mut SqlTx<'_>,
+    title_id: &str,
+    item: &DiscoveryItemRecord,
+    source: &str,
+    rating: Option<&TitleExternalRating>,
+    index: i32,
+) -> AppResult<()> {
+    SqlRuntime::execute(
+        SqlExec::Tx(tx),
+        "INSERT INTO title_more_like_this_item_ratings
+         (item_id, source_title_id, rating_source, rating, rating_value, rating_score, normalized, votes, url, sort_index)
+         VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {})
+         ON CONFLICT DO NOTHING",
+        &[
+            SqlArg::Text(item.id.clone()),
+            SqlArg::Text(title_id.to_string()),
+            SqlArg::Text(source.to_string()),
+            SqlArg::OptF64(item.rating),
+            SqlArg::OptF64(rating.and_then(|rating| rating.value)),
+            SqlArg::OptF64(rating.and_then(|rating| rating.score)),
+            SqlArg::OptF64(rating.map(|rating| rating.normalized)),
+            SqlArg::OptI32(rating.and_then(|rating| rating.votes)),
+            SqlArg::Text(rating.map(|rating| rating.url.clone()).unwrap_or_default()),
             SqlArg::I32(index),
         ],
     )
@@ -3598,6 +3743,7 @@ mod tests {
                         genres: vec!["Drama".to_string(), "Drama".to_string()],
                         rating: Some(7.5),
                         rating_sources: vec!["tmdb".to_string(), "tmdb".to_string()],
+                        external_ratings: Vec::new(),
                         status_tags: vec!["available".to_string()],
                         source_tags: vec![DiscoverySourceTagRecord {
                             category: Some("theme".to_string()),
@@ -3682,6 +3828,7 @@ mod tests {
                         genres: vec!["Drama".to_string()],
                         rating: None,
                         rating_sources: Vec::new(),
+                        external_ratings: Vec::new(),
                         status_tags: Vec::new(),
                         source_tags: Vec::new(),
                         sources: vec!["smg".to_string()],
@@ -4430,6 +4577,7 @@ mod tests {
             genres: Vec::new(),
             rating: None,
             rating_sources: Vec::new(),
+            external_ratings: Vec::new(),
             status_tags: Vec::new(),
             source_tags: Vec::new(),
             sources: Vec::new(),

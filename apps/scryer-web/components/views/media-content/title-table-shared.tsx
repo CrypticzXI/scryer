@@ -271,20 +271,25 @@ function episodeProgressIndicatorClass(item: TitleRecord, percent: number) {
       : "bg-sky-600 dark:bg-sky-500";
   }
 
-  return item.monitored
+  const missingMonitoredEpisodes =
+    typeof item.episodesMonitored === "number" &&
+    item.episodesMonitored > 0 &&
+    (item.episodesOwned ?? 0) < item.episodesMonitored;
+
+  return missingMonitoredEpisodes
     ? "bg-rose-500 dark:bg-rose-400"
     : "bg-slate-500 dark:bg-slate-500";
 }
 
 function collectionEpisodeProgressIndicatorClass(
-  monitored: boolean,
+  missingMonitoredEpisodes: boolean,
   percent: number,
 ) {
   if (percent >= 100) {
     return "bg-emerald-600 dark:bg-emerald-600";
   }
 
-  return monitored
+  return missingMonitoredEpisodes
     ? "bg-rose-500 dark:bg-rose-400"
     : "bg-slate-500 dark:bg-slate-500";
 }
@@ -333,13 +338,11 @@ export function getCollectionEpisodeProgressPresentation({
   ownedEpisodes,
   totalEpisodes,
   monitoredEpisodes,
-  monitored,
   t,
 }: {
   ownedEpisodes: number | null | undefined;
   totalEpisodes: number | null | undefined;
   monitoredEpisodes?: number | null | undefined;
-  monitored: boolean;
   t: Translate;
 }): EpisodeProgressPresentation | null {
   if (typeof totalEpisodes !== "number") {
@@ -360,12 +363,16 @@ export function getCollectionEpisodeProgressPresentation({
         ? monitoredEpisodes
         : 0,
   });
+  const missingMonitoredEpisodes =
+    typeof monitoredEpisodes === "number" &&
+    monitoredEpisodes > 0 &&
+    owned < monitoredEpisodes;
 
   return {
     text,
     percent,
     indicatorClassName: collectionEpisodeProgressIndicatorClass(
-      monitored,
+      missingMonitoredEpisodes,
       percent,
     ),
     assistiveText,

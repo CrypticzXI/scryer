@@ -3733,10 +3733,10 @@ impl MetadataGateway for MetadataGatewayClient {
                 },
             });
             let data: SearchTvdbBatchResponse = self.execute_graphql(payload).await?;
+            let elapsed_ms = request_started_at.elapsed().as_millis() as u64;
             debug!(
                 query_count = chunk.len(),
-                elapsed_ms = request_started_at.elapsed().as_millis() as u64,
-                "metadata gateway batched search complete"
+                elapsed_ms, "metadata gateway batched search complete"
             );
             if data.search_tvdb_batch.len() != chunk.len() {
                 return Err(AppError::Repository(format!(
@@ -3746,6 +3746,17 @@ impl MetadataGateway for MetadataGatewayClient {
                 )));
             }
 
+            let exact_id_count = chunk
+                .iter()
+                .filter(|query| {
+                    query.query.trim().is_empty()
+                        && (query.imdb_id.is_some()
+                            || query.tmdb_id.is_some()
+                            || query.tvdb_id.is_some())
+                })
+                .count();
+            let mut hit_count = 0usize;
+            let mut safe_hit_count = 0usize;
             for (query_spec, item) in chunk.iter().cloned().zip(data.search_tvdb_batch) {
                 validate_search_tvdb_batch_echo(&query_spec, &item)?;
                 let items = item
@@ -3759,27 +3770,25 @@ impl MetadataGateway for MetadataGatewayClient {
                         auto_match_signals: entry.auto_match_signals,
                     })
                     .collect::<Vec<_>>();
-                // TEMP import-hint diagnostics (target=import_scan_hint_debug):
-                // per SMG request, shows whether it was id-anchored (empty query
-                // + ids) or a text search, and how many results came back (a
-                // single result ⇒ id-resolved; many ⇒ text list ranked by SMG).
-                // Remove once import title matching is verified.
-                tracing::info!(
-                    target: "import_scan_hint_debug",
-                    type_hint = %query_spec.type_hint,
-                    query = %query_spec.query,
-                    imdb = query_spec.imdb_id.as_deref().unwrap_or("-"),
-                    tmdb = query_spec.tmdb_id.as_deref().unwrap_or("-"),
-                    tvdb = query_spec.tvdb_id.as_deref().unwrap_or("-"),
-                    result_count = items.len(),
-                    top_name = items.first().map(|item| item.name.as_str()).unwrap_or("-"),
-                    top_tvdb = items.first().map(|item| item.tvdb_id.as_str()).unwrap_or("-"),
-                    top_auto_safe =
-                        items.first().map(|item| item.auto_match_safe).unwrap_or(false),
-                    "smg search result",
-                );
+                if !items.is_empty() {
+                    hit_count = hit_count.saturating_add(1);
+                }
+                if items.iter().any(|item| item.auto_match_safe) {
+                    safe_hit_count = safe_hit_count.saturating_add(1);
+                }
                 results.insert(query_spec, items);
             }
+
+            tracing::info!(
+                target: "import_scan_hint_debug",
+                request_count = chunk.len(),
+                exact_id_count,
+                fuzzy_count = chunk.len().saturating_sub(exact_id_count),
+                hit_count,
+                safe_hit_count,
+                elapsed_ms,
+                "smg batch search result",
+            );
 
             for query in chunk {
                 results.entry(query.clone()).or_default();

@@ -1732,8 +1732,7 @@ export function MediaContentView({
     librariesLoading: boolean;
     rootValidationLibraries: LibraryRecord[];
     rootValidationLibrariesLoading: boolean;
-    rootFolderValidationLoading: boolean;
-    invalidRootLibraryIds: string[];
+    catalogHasValidRoot: boolean | null;
     invalidRootPathsByLibraryId: Record<string, string[]>;
     selectedLibraryIds: string[];
     allLibrariesValue: string;
@@ -1951,8 +1950,7 @@ export function MediaContentView({
     libraryDownloadClientsLoading,
     rootValidationLibraries,
     rootValidationLibrariesLoading,
-    rootFolderValidationLoading,
-    invalidRootLibraryIds,
+    catalogHasValidRoot,
     invalidRootPathsByLibraryId,
     selectedLibraryIds,
     allLibrariesValue,
@@ -2379,9 +2377,8 @@ export function MediaContentView({
   const hasInvalidConfiguredRootFolders =
     catalogInitialLoadComplete &&
     !librariesLoading &&
-    relevantLibraries.some((library) =>
-      invalidRootLibraryIds.includes(library.id),
-    );
+    hasConfiguredRootFolders === true &&
+    catalogHasValidRoot === false;
   const showInitialScanAction =
     canManageLibrarySettings &&
     catalogInitialLoadComplete &&
@@ -2645,9 +2642,7 @@ export function MediaContentView({
     (event: React.ChangeEvent<HTMLInputElement>) => {
       const nextValue = event.target.value;
       setTitleFilterInputValue(nextValue);
-      React.startTransition(() => {
-        setTitleFilter(nextValue);
-      });
+      setTitleFilter(nextValue);
     },
     [setTitleFilter],
   );
@@ -2690,7 +2685,7 @@ export function MediaContentView({
     catalogInitialLoadComplete &&
     knownCatalogTitleCount === 0 &&
     monitoredTitles.length === 0 &&
-    (librariesLoading || rootFolderValidationLoading);
+    librariesLoading;
 
   const handleDeleteCatalogTitle = React.useCallback(
     (title: TitleRecord) => {

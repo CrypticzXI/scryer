@@ -58,6 +58,7 @@ async fn process_ready_movie_candidate_batches(
     summary: &mut LibraryScanSummary,
     unmatched_items: &mut Vec<LibraryScanUnmatchedItem>,
     cancel_token: Option<&CancellationToken>,
+    pump_executor: bool,
 ) -> AppResult<()> {
     for ready_candidates in ready_candidate_batches {
         if library_scan_cancel_requested(cancel_token) {
@@ -90,10 +91,69 @@ async fn process_ready_movie_candidate_batches(
         }
 
         coordinator.publish_progress().await;
-        executor.pump().await?;
+        if pump_executor {
+            executor.pump().await?;
+        }
     }
 
     Ok(())
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "movie hinted batches coordinate shared scan state, indexes, and progress reporting"
+)]
+async fn flush_hinted_movie_candidate_batch(
+    app: &AppUseCase,
+    actor: &User,
+    facet: &MediaFacet,
+    library_id: &str,
+    library_path: &str,
+    session_id: &str,
+    coordinator: &LibraryScanCoordinator,
+    pending_candidates: &mut Vec<PreparedMovieLibraryScanCandidate>,
+    metadata_resolver: &mut StreamingMovieMetadataResolver,
+    executor: &mut LibraryScanTitleWorkExecutor,
+    existing_titles: &mut Vec<Title>,
+    existing_titles_by_name: &mut HashMap<String, usize>,
+    existing_titles_by_tvdb_id: &mut HashMap<String, usize>,
+    existing_titles_by_imdb_id: &mut HashMap<String, usize>,
+    existing_titles_by_tmdb_id: &mut HashMap<String, usize>,
+    summary: &mut LibraryScanSummary,
+    unmatched_items: &mut Vec<LibraryScanUnmatchedItem>,
+    cancel_token: Option<&CancellationToken>,
+) -> AppResult<()> {
+    if pending_candidates.is_empty() || library_scan_cancel_requested(cancel_token) {
+        return Ok(());
+    }
+
+    let candidates = std::mem::take(pending_candidates);
+    let (ready_candidate_batches, metadata_progress) = metadata_resolver
+        .ingest_candidates(candidates, cancel_token)
+        .await?;
+    apply_streaming_metadata_progress(coordinator, metadata_progress).await;
+    process_ready_movie_candidate_batches(
+        app,
+        actor,
+        facet,
+        library_id,
+        library_path,
+        session_id,
+        coordinator,
+        ready_candidate_batches,
+        metadata_resolver.search_results(),
+        executor,
+        existing_titles,
+        existing_titles_by_name,
+        existing_titles_by_tvdb_id,
+        existing_titles_by_imdb_id,
+        existing_titles_by_tmdb_id,
+        summary,
+        unmatched_items,
+        cancel_token,
+        false,
+    )
+    .await
 }
 
 #[expect(
@@ -120,6 +180,7 @@ async fn process_series_candidate_batch(
     summary: &mut LibraryScanSummary,
     unmatched_items: &mut Vec<LibraryScanUnmatchedItem>,
     seen_paths: &mut HashSet<String>,
+    pump_executor: bool,
     cancel_token: Option<&CancellationToken>,
 ) -> AppResult<()> {
     let mut unresolved_candidates = Vec::new();
@@ -158,7 +219,9 @@ async fn process_series_candidate_batch(
         }
     }
 
-    executor.pump().await?;
+    if pump_executor {
+        executor.pump().await?;
+    }
 
     let (ready_candidate_batches, batch_search_results) = resolve_full_scan_metadata_batches(
         app.services.library.metadata_gateway.clone(),
@@ -204,11 +267,70 @@ async fn process_series_candidate_batch(
         }
 
         coordinator.publish_progress().await;
-        executor.pump().await?;
+        if pump_executor {
+            executor.pump().await?;
+        }
     }
 
     coordinator.publish_progress().await;
     Ok(())
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "hinted series scan flush coordinates shared scan state and indexes"
+)]
+async fn flush_hinted_series_candidate_batch(
+    app: &AppUseCase,
+    actor: &User,
+    facet: &MediaFacet,
+    library_id: &str,
+    library_path: &str,
+    session_id: &str,
+    coordinator: &LibraryScanCoordinator,
+    pending_hinted_candidates: &mut Vec<PreparedSeriesLibraryScanCandidate>,
+    metadata_language: &str,
+    metadata_lookup_stats: &mut MetadataLookupBatchStats,
+    existing_titles: &mut Vec<Title>,
+    existing_titles_by_name: &mut HashMap<String, usize>,
+    existing_titles_by_tvdb_id: &mut HashMap<String, usize>,
+    existing_titles_by_imdb_id: &mut HashMap<String, usize>,
+    existing_titles_by_tmdb_id: &mut HashMap<String, usize>,
+    executor: &mut LibraryScanTitleWorkExecutor,
+    summary: &mut LibraryScanSummary,
+    unmatched_items: &mut Vec<LibraryScanUnmatchedItem>,
+    seen_paths: &mut HashSet<String>,
+    cancel_token: Option<&CancellationToken>,
+) -> AppResult<()> {
+    if pending_hinted_candidates.is_empty() {
+        return Ok(());
+    }
+
+    let candidates = std::mem::take(pending_hinted_candidates);
+    process_series_candidate_batch(
+        app,
+        actor,
+        facet,
+        library_id,
+        library_path,
+        session_id,
+        coordinator,
+        candidates,
+        metadata_language,
+        metadata_lookup_stats,
+        existing_titles,
+        existing_titles_by_name,
+        existing_titles_by_tvdb_id,
+        existing_titles_by_imdb_id,
+        existing_titles_by_tmdb_id,
+        executor,
+        summary,
+        unmatched_items,
+        seen_paths,
+        false,
+        cancel_token,
+    )
+    .await
 }
 
 #[expect(
@@ -273,6 +395,7 @@ pub(super) async fn scan_library_movies(
         app.services.library.metadata_gateway.clone(),
         metadata_language.clone(),
     );
+    let mut pending_hinted_candidates = Vec::new();
 
     while let Some(prepared_batch_result) =
         await_cancellable(cancel_token.as_ref(), prepared_entries.recv())
@@ -288,6 +411,7 @@ pub(super) async fn scan_library_movies(
         }
 
         let mut unresolved_candidates = Vec::new();
+        let mut saw_hinted_candidate = false;
 
         for prepared_entry in prepared_batch {
             if library_scan_cancel_requested(cancel_token.as_ref()) {
@@ -300,6 +424,8 @@ pub(super) async fn scan_library_movies(
                     if !item_path.is_empty() {
                         seen_paths.insert(item_path);
                     }
+                    let is_hinted_candidate = candidate.has_external_import_identity_ids();
+                    saw_hinted_candidate |= is_hinted_candidate;
 
                     if let Some(candidate) = process_movie_full_scan_candidate(
                         app,
@@ -332,13 +458,75 @@ pub(super) async fn scan_library_movies(
                 }
             }
         }
-        executor.pump().await?;
 
-        let (ready_candidate_batches, metadata_progress) = metadata_resolver
-            .ingest_candidates(unresolved_candidates, cancel_token.as_ref())
+        let mut standard_unresolved_candidates = Vec::new();
+        for candidate in unresolved_candidates {
+            if candidate.has_external_import_identity_ids() {
+                pending_hinted_candidates.push(candidate);
+            } else {
+                standard_unresolved_candidates.push(candidate);
+            }
+        }
+
+        if !standard_unresolved_candidates.is_empty() {
+            let (ready_candidate_batches, metadata_progress) = metadata_resolver
+                .ingest_candidates(standard_unresolved_candidates, cancel_token.as_ref())
+                .await?;
+            apply_streaming_metadata_progress(&coordinator, metadata_progress).await;
+            let can_pump_executor = pending_hinted_candidates.is_empty() && !saw_hinted_candidate;
+            process_ready_movie_candidate_batches(
+                app,
+                actor,
+                facet,
+                library_id,
+                library_path,
+                session_id,
+                &coordinator,
+                ready_candidate_batches,
+                metadata_resolver.search_results(),
+                &mut executor,
+                &mut existing_titles,
+                &mut existing_titles_by_name,
+                &mut existing_titles_by_tvdb_id,
+                &mut existing_titles_by_imdb_id,
+                &mut existing_titles_by_tmdb_id,
+                &mut summary,
+                &mut unmatched_items,
+                cancel_token.as_ref(),
+                can_pump_executor,
+            )
             .await?;
-        apply_streaming_metadata_progress(&coordinator, metadata_progress).await;
-        process_ready_movie_candidate_batches(
+            if can_pump_executor {
+                executor.pump().await?;
+            }
+        } else if pending_hinted_candidates.len() >= LIBRARY_SCAN_METADATA_SEARCH_BATCH_SIZE {
+            flush_hinted_movie_candidate_batch(
+                app,
+                actor,
+                facet,
+                library_id,
+                library_path,
+                session_id,
+                &coordinator,
+                &mut pending_hinted_candidates,
+                &mut metadata_resolver,
+                &mut executor,
+                &mut existing_titles,
+                &mut existing_titles_by_name,
+                &mut existing_titles_by_tvdb_id,
+                &mut existing_titles_by_imdb_id,
+                &mut existing_titles_by_tmdb_id,
+                &mut summary,
+                &mut unmatched_items,
+                cancel_token.as_ref(),
+            )
+            .await?;
+        }
+    }
+
+    let mut metadata_lookup_stats = MetadataLookupBatchStats::default();
+    if !library_scan_cancel_requested(cancel_token.as_ref()) {
+        flush_hinted_movie_candidate_batch(
             app,
             actor,
             facet,
@@ -346,8 +534,8 @@ pub(super) async fn scan_library_movies(
             library_path,
             session_id,
             &coordinator,
-            ready_candidate_batches,
-            metadata_resolver.search_results(),
+            &mut pending_hinted_candidates,
+            &mut metadata_resolver,
             &mut executor,
             &mut existing_titles,
             &mut existing_titles_by_name,
@@ -359,11 +547,8 @@ pub(super) async fn scan_library_movies(
             cancel_token.as_ref(),
         )
         .await?;
-        executor.pump().await?;
-    }
 
-    let metadata_lookup_stats = metadata_resolver.stats();
-    if !library_scan_cancel_requested(cancel_token.as_ref()) {
+        metadata_lookup_stats = metadata_resolver.stats();
         let (ready_candidate_batches, metadata_progress) =
             metadata_resolver.finish(cancel_token.as_ref()).await?;
         apply_streaming_metadata_progress(&coordinator, metadata_progress).await;
@@ -386,6 +571,7 @@ pub(super) async fn scan_library_movies(
             &mut summary,
             &mut unmatched_items,
             cancel_token.as_ref(),
+            true,
         )
         .await?;
     }
@@ -483,6 +669,7 @@ pub(super) async fn scan_library_series(
         LibraryScanTitleWorkExecutor::for_scan(app, actor, session_id, cancel_token.clone())
             .await?;
     let metadata_language = app.metadata_language().await;
+    let mut pending_hinted_candidates = Vec::new();
 
     while let Some(folder_batch_result) =
         await_cancellable(cancel_token.as_ref(), queued_discovered_folders.recv())
@@ -499,31 +686,94 @@ pub(super) async fn scan_library_series(
 
         let prepared_candidates =
             prepare_series_library_scan_candidates(&folder_batch, scan_hints).await?;
-        process_series_candidate_batch(
-            app,
-            actor,
-            facet,
-            library_id,
-            library_path,
-            session_id,
-            &coordinator,
-            prepared_candidates,
-            &metadata_language,
-            &mut metadata_lookup_stats,
-            &mut existing_titles,
-            &mut existing_titles_by_name,
-            &mut existing_titles_by_tvdb_id,
-            &mut existing_titles_by_imdb_id,
-            &mut existing_titles_by_tmdb_id,
-            &mut executor,
-            &mut summary,
-            &mut unmatched_items,
-            &mut seen_paths,
-            cancel_token.as_ref(),
-        )
-        .await?;
-        executor.pump().await?;
+        let mut standard_candidates = Vec::new();
+        for candidate in prepared_candidates {
+            if candidate.has_external_import_identity_ids() {
+                pending_hinted_candidates.push(candidate);
+            } else {
+                standard_candidates.push(candidate);
+            }
+        }
+
+        if !standard_candidates.is_empty() {
+            let can_pump_executor = pending_hinted_candidates.is_empty();
+            process_series_candidate_batch(
+                app,
+                actor,
+                facet,
+                library_id,
+                library_path,
+                session_id,
+                &coordinator,
+                standard_candidates,
+                &metadata_language,
+                &mut metadata_lookup_stats,
+                &mut existing_titles,
+                &mut existing_titles_by_name,
+                &mut existing_titles_by_tvdb_id,
+                &mut existing_titles_by_imdb_id,
+                &mut existing_titles_by_tmdb_id,
+                &mut executor,
+                &mut summary,
+                &mut unmatched_items,
+                &mut seen_paths,
+                can_pump_executor,
+                cancel_token.as_ref(),
+            )
+            .await?;
+            if can_pump_executor {
+                executor.pump().await?;
+            }
+        } else if pending_hinted_candidates.len() >= LIBRARY_SCAN_METADATA_SEARCH_BATCH_SIZE {
+            flush_hinted_series_candidate_batch(
+                app,
+                actor,
+                facet,
+                library_id,
+                library_path,
+                session_id,
+                &coordinator,
+                &mut pending_hinted_candidates,
+                &metadata_language,
+                &mut metadata_lookup_stats,
+                &mut existing_titles,
+                &mut existing_titles_by_name,
+                &mut existing_titles_by_tvdb_id,
+                &mut existing_titles_by_imdb_id,
+                &mut existing_titles_by_tmdb_id,
+                &mut executor,
+                &mut summary,
+                &mut unmatched_items,
+                &mut seen_paths,
+                cancel_token.as_ref(),
+            )
+            .await?;
+        }
     }
+
+    flush_hinted_series_candidate_batch(
+        app,
+        actor,
+        facet,
+        library_id,
+        library_path,
+        session_id,
+        &coordinator,
+        &mut pending_hinted_candidates,
+        &metadata_language,
+        &mut metadata_lookup_stats,
+        &mut existing_titles,
+        &mut existing_titles_by_name,
+        &mut existing_titles_by_tvdb_id,
+        &mut existing_titles_by_imdb_id,
+        &mut existing_titles_by_tmdb_id,
+        &mut executor,
+        &mut summary,
+        &mut unmatched_items,
+        &mut seen_paths,
+        cancel_token.as_ref(),
+    )
+    .await?;
 
     if !library_scan_cancel_requested(cancel_token.as_ref()) {
         let loose_root_files = list_series_loose_root_files(root).await?;
@@ -557,6 +807,7 @@ pub(super) async fn scan_library_series(
                 &mut summary,
                 &mut unmatched_items,
                 &mut seen_paths,
+                true,
                 cancel_token.as_ref(),
             )
             .await?;

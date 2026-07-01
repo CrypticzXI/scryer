@@ -6,7 +6,10 @@ import {
 } from "@/components/root/add-to-catalog-dialog";
 import { RequestMediaDialog } from "@/components/root/request-media-dialog";
 import { DiscoveryView } from "@/components/views/discovery-view";
-import { discoveryHomeQuery } from "@/lib/graphql/queries";
+import {
+  discoveryHomeQuery,
+  discoveryItemDetailQuery,
+} from "@/lib/graphql/queries";
 import { useGlobalStatus } from "@/lib/context/global-status-context";
 import { useSearchContext } from "@/lib/context/search-context";
 import { useTranslate } from "@/lib/context/translate-context";
@@ -16,6 +19,7 @@ import {
   readDiscoveryHomeCache,
   writeDiscoveryHomeCache,
 } from "@/lib/discovery-home-cache";
+import { canonicalDiscoveryFacetLabels } from "@/lib/discovery-facets";
 import type { LocaleCode } from "@/lib/i18n";
 import { discoveryItemDisplayTitle } from "@/lib/utils/discovery-display";
 import type { MetadataTvdbSearchItem } from "@/lib/graphql/smg-queries";
@@ -39,7 +43,7 @@ const DISCOVERY_HOME_INPUT: DiscoveryHomeInput = {
   includePublic: true,
   includePersonalized: true,
   includeUnresolved: true,
-  limitPerSection: 12,
+  limitPerSection: 18,
 };
 
 function facetForDiscoveryItem(item: DiscoveryItem): Facet {
@@ -87,9 +91,14 @@ function metadataResultForDiscoveryItem(
     overview: item.overview,
     popularity: item.rankScore,
     posterUrl: item.posterUrl,
+    backgroundUrl: item.backgroundUrl,
     language: null,
     runtimeMinutes: null,
     sortTitle: item.sortTitle,
+    genres: canonicalDiscoveryFacetLabels(item, "genre"),
+    rating: item.rating,
+    ratingSource: item.sources[0] ?? item.bestSource,
+    externalRatings: item.externalRatings ?? [],
   };
 }
 
@@ -226,9 +235,24 @@ export const DiscoveryContainer = memo(function DiscoveryContainer({
       }
 
       const facet = facetForDiscoveryItem(item);
-      setSelectedItem(item);
       try {
         await ensureCatalogConfigReady(facet);
+        const { data, error: detailError } = await client
+          .query(
+            discoveryItemDetailQuery,
+            {
+              input: {
+                targetKey: item.targetKey,
+                includeUnresolved: true,
+              },
+            },
+            { requestPolicy: "network-only" },
+          )
+          .toPromise();
+        if (detailError) {
+          throw detailError;
+        }
+        setSelectedItem((data?.discoveryItemDetail ?? item) as DiscoveryItem);
         if (canManageTitle) {
           setAddDialogOpen(true);
         } else {
@@ -243,6 +267,7 @@ export const DiscoveryContainer = memo(function DiscoveryContainer({
     [
       canManageTitle,
       canRequestMedia,
+      client,
       ensureCatalogConfigReady,
       setGlobalStatus,
       t,

@@ -211,11 +211,10 @@ export function SeasonSection({
         ownedEpisodes: collectionMetrics.ownedEpisodes,
         totalEpisodes: collectionMetrics.totalEpisodes,
         monitoredEpisodes: collectionMetrics.monitoredEpisodes,
-        monitored: seasonCheckedState !== false,
         t,
       });
     },
-    [collectionMetrics, seasonCheckedState, t],
+    [collectionMetrics, t],
   );
 
   const collectionSizeLabel = React.useMemo(() => {
@@ -400,13 +399,13 @@ export function SeasonSection({
               </div>
             ) : (
               <div className={cn(showCollectionHeader && "border-t border-border", "overflow-x-auto")}>
-                <Table className="min-w-[640px]">
+                <Table className="min-w-[672px]">
                   <TableHeader>
                     <TableRow>
                       <TableHead className="w-10 text-center" />
                       <TableHead className="w-12 text-center">{t("episode.numberLabel")}</TableHead>
                       <TableHead>{t("label.title")}</TableHead>
-                      <TableHead className="w-32">{t("episode.airDate")}</TableHead>
+                      <TableHead className="w-40">{t("episode.airDate")}</TableHead>
                       <TableHead className="w-32 text-center">{t("episode.quality")}</TableHead>
                       <TableHead className="w-24 text-right">{t("label.actions")}</TableHead>
                     </TableRow>

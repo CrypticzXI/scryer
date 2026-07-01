@@ -8,11 +8,12 @@ use crate::ports::{
     CatalogDiscoveryGroup, CatalogDiscoveryGroupKind, CatalogDiscoveryQuery,
     CatalogDiscoveryResult, CatalogDiscoverySectionCandidatesRecord, CatalogDiscoverySurface,
     DISCOVERY_DEFAULT_SCOPE_KEY, DiscoveryFacetRecord, DiscoveryHomeQuery, DiscoveryHomeResult,
-    DiscoveryItemLibraryProvenanceRecord, DiscoveryItemRecord, DiscoveryItemsQuery,
-    DiscoveryItemsResult, DiscoveryItemsStorageQuery, DiscoveryPendingContextChangeRecord,
-    DiscoveryRankComponentRecord, DiscoveryRawPageRecord, DiscoverySectionItemsRecord,
-    DiscoverySectionRecord, DiscoverySectionResult, DiscoverySourceTagRecord,
-    DiscoverySubmittedSubjectRecord, DiscoverySyncStatus, TitleExternalIdLookup,
+    DiscoveryItemDetailQuery, DiscoveryItemLibraryProvenanceRecord, DiscoveryItemRecord,
+    DiscoveryItemsQuery, DiscoveryItemsResult, DiscoveryItemsStorageQuery,
+    DiscoveryPendingContextChangeRecord, DiscoveryRankComponentRecord, DiscoveryRawPageRecord,
+    DiscoverySectionItemsRecord, DiscoverySectionRecord, DiscoverySectionResult,
+    DiscoverySourceTagRecord, DiscoverySubmittedSubjectRecord, DiscoverySyncStatus,
+    TitleExternalIdLookup,
 };
 use crate::{AppError, AppResult, AppUseCase};
 use chrono::{DateTime, Utc};
@@ -227,9 +228,13 @@ impl AppUseCase {
         let limit = discovery_section_limit(query.limit_per_section);
         let include_unresolved = query.include_unresolved;
         let readable_library_id_list = sorted_discovery_library_ids(&readable_library_ids);
+        let owned_visibility = self
+            .discovery_home_owned_visibility(&readable_library_id_list)
+            .await?;
 
         let mut public_sections = Vec::<DiscoverySectionResult>::new();
         if query.include_public {
+            let public_candidate_limit = public_home_candidate_limit(limit);
             if let Some(public_run_id) = status.state.last_public_feed_generation_id.as_deref() {
                 let public_section_items = self
                     .services
@@ -238,18 +243,25 @@ impl AppUseCase {
                     .list_public_discovery_section_items(
                         public_run_id,
                         include_unresolved,
-                        limit as i64,
+                        public_candidate_limit as i64,
                     )
                     .await?;
-                public_sections = public_section_items
-                    .into_iter()
-                    .filter_map(section_items_record_to_result)
-                    .collect();
+                public_sections = filter_discovery_sections_for_owned_items(
+                    public_section_items
+                        .into_iter()
+                        .filter_map(section_items_record_to_result)
+                        .collect(),
+                    &owned_visibility,
+                    limit,
+                );
             }
             if public_sections.is_empty() && status.state.last_success_generation_id.is_none() {
-                public_sections = self
-                    .live_public_section_results(include_unresolved, limit)
-                    .await?;
+                public_sections = filter_discovery_sections_for_owned_items(
+                    self.live_public_section_results(include_unresolved, public_candidate_limit)
+                        .await?,
+                    &owned_visibility,
+                    limit,
+                );
             }
         }
 
@@ -415,6 +427,69 @@ impl AppUseCase {
             total_count: page.total_count,
             can_view_personalized,
         })
+    }
+
+    pub async fn discovery_item_detail(
+        &self,
+        actor: &User,
+        query: DiscoveryItemDetailQuery,
+    ) -> AppResult<Option<DiscoveryItemRecord>> {
+        let target_key = query.target_key.trim();
+        if target_key.is_empty() {
+            return Ok(None);
+        }
+
+        let readable_library_ids = self.discovery_readable_library_ids(actor).await?;
+        let can_view_personalized = !readable_library_ids.is_empty();
+        let readable_library_id_list = sorted_discovery_library_ids(&readable_library_ids);
+        let state = self
+            .services
+            .library
+            .discovery
+            .get_discovery_sync_state(DISCOVERY_DEFAULT_SCOPE_KEY)
+            .await?
+            .unwrap_or_default();
+        let context_run_id = can_view_personalized
+            .then(|| state.last_success_generation_id.clone())
+            .flatten();
+        let storage_query = DiscoveryItemsStorageQuery {
+            context_run_id: context_run_id.clone(),
+            public_run_id: state.last_public_feed_generation_id.clone(),
+            readable_library_ids: readable_library_id_list,
+            filters: DiscoveryItemsQuery {
+                target_keys: vec![target_key.to_string()],
+                include_owned: true,
+                include_unresolved: query.include_unresolved,
+                include_public: true,
+                limit: 1,
+                offset: 0,
+                ..DiscoveryItemsQuery::default()
+            },
+            limit: 1,
+            offset: 0,
+        };
+        let mut page = self
+            .services
+            .library
+            .discovery
+            .query_discovery_items(&storage_query)
+            .await?;
+        if page.items.is_empty() {
+            return Ok(None);
+        }
+        if let Some(context_run_id) = context_run_id.as_deref() {
+            let submitted_subjects = self
+                .services
+                .library
+                .discovery
+                .list_discovery_submitted_subjects(context_run_id)
+                .await?;
+            let submitted_subjects =
+                filter_submitted_subjects_for_libraries(&submitted_subjects, &readable_library_ids);
+            resolve_discovery_matched_subjects(&mut page.items, &submitted_subjects)?;
+        }
+
+        Ok(page.items.into_iter().next())
     }
 
     pub async fn catalog_discovery(
@@ -633,6 +708,22 @@ impl AppUseCase {
             .await?;
         Ok(CatalogOwnedVisibility::from_titles(&titles))
     }
+
+    async fn discovery_home_owned_visibility(
+        &self,
+        readable_library_ids: &[String],
+    ) -> AppResult<CatalogOwnedVisibility> {
+        if readable_library_ids.is_empty() {
+            return Ok(CatalogOwnedVisibility::default());
+        }
+        let titles = self
+            .services
+            .catalog
+            .titles
+            .list_for_libraries(None, readable_library_ids, None)
+            .await?;
+        Ok(CatalogOwnedVisibility::from_titles(&titles))
+    }
 }
 
 impl AppUseCase {
@@ -675,6 +766,10 @@ fn discovery_section_limit(limit: usize) -> usize {
     if limit == 0 { 25 } else { limit.clamp(1, 100) }
 }
 
+fn public_home_candidate_limit(section_limit: usize) -> usize {
+    (section_limit.max(1) * 4).clamp(section_limit, 100)
+}
+
 fn personalized_home_candidate_limit(section_limit: usize) -> usize {
     (section_limit.max(25) * 40).clamp(DISCOVERY_HOME_MIN_CANDIDATES, DISCOVERY_HOME_MAX_CANDIDATES)
 }
@@ -710,6 +805,34 @@ fn section_items_record_to_result(
         total_count: record.total_count,
         items: record.items,
     })
+}
+
+fn filter_discovery_sections_for_owned_items(
+    sections: Vec<DiscoverySectionResult>,
+    owned_visibility: &CatalogOwnedVisibility,
+    limit: usize,
+) -> Vec<DiscoverySectionResult> {
+    sections
+        .into_iter()
+        .filter_map(|mut section| {
+            let original_len = section.items.len();
+            section
+                .items
+                .retain(|item| !owned_visibility.item_is_owned(item));
+            if section.items.len() > limit {
+                section.items.truncate(limit);
+            }
+            if section.items.is_empty() {
+                return None;
+            }
+            let removed_count = original_len.saturating_sub(section.items.len()) as i64;
+            section.total_count = section
+                .total_count
+                .saturating_sub(removed_count)
+                .max(section.items.len() as i64);
+            Some(section)
+        })
+        .collect()
 }
 
 fn public_section_results(
@@ -1772,6 +1895,11 @@ fn item_matches_discovery_items_query(
     if !matches_optional_text_query(item, query.query.as_deref()) {
         return false;
     }
+    if !query.target_keys.is_empty()
+        && !contains_case_insensitive(&query.target_keys, item.target_key.as_str())
+    {
+        return false;
+    }
     if !query.target_kinds.is_empty()
         && !discovery_item_media_kind(item)
             .is_some_and(|kind| contains_case_insensitive(&query.target_kinds, kind))
@@ -2677,6 +2805,7 @@ fn discovery_item_record(
         genres: item.genres.clone(),
         rating: item.rating,
         rating_sources: item.rating_sources.clone(),
+        external_ratings: item.external_ratings.clone(),
         status_tags: item.status_tags.clone(),
         source_tags: discovery_source_tag_records(&item.source_tags),
         sources: item.sources.clone(),
@@ -3480,6 +3609,49 @@ mod tests {
     }
 
     #[test]
+    fn discovery_home_public_sections_filter_owned_catalog_titles() {
+        let owned_visibility = CatalogOwnedVisibility::from_titles(&[test_title(
+            "house-of-the-dragon",
+            "House of the Dragon",
+            MediaFacet::Series,
+            vec![("tvdb", "371572")],
+        )]);
+        let mut owned_item = test_discovery_item("owned", "series", Some("series"));
+        owned_item.target_key = "tvdb:series:371572".to_string();
+        owned_item.display_title = "House of the Dragon".to_string();
+        let mut visible_item = test_discovery_item("visible", "series", Some("series"));
+        visible_item.target_key = "tmdb:series:100".to_string();
+        visible_item.display_title = "Visible".to_string();
+        let mut refill_item = test_discovery_item("refill", "series", Some("series"));
+        refill_item.target_key = "tmdb:series:101".to_string();
+        refill_item.display_title = "Refill".to_string();
+
+        let sections = filter_discovery_sections_for_owned_items(
+            vec![DiscoverySectionResult {
+                section_id: "trending_now".to_string(),
+                section_type: "TRENDING_NOW".to_string(),
+                title: "Top Series This Week".to_string(),
+                surface: "public".to_string(),
+                total_count: 3,
+                items: vec![owned_item, visible_item, refill_item],
+            }],
+            &owned_visibility,
+            2,
+        );
+
+        assert_eq!(sections.len(), 1);
+        assert_eq!(sections[0].total_count, 2);
+        assert_eq!(
+            sections[0]
+                .items
+                .iter()
+                .map(|item| item.display_title.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Visible", "Refill"]
+        );
+    }
+
+    #[test]
     fn discovery_context_deduplicates_identical_subjects() {
         let context = build_discovery_library_context(
             &[
@@ -3911,6 +4083,7 @@ mod tests {
             genres: Vec::new(),
             rating: None,
             rating_sources: Vec::new(),
+            external_ratings: Vec::new(),
             status_tags: Vec::new(),
             source_tags: Vec::new(),
             sources: Vec::new(),

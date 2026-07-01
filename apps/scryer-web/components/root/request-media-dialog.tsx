@@ -1,16 +1,9 @@
 import * as React from "react";
 import { Loader2, Send } from "lucide-react";
 
-import { TitlePoster } from "@/components/title-poster";
+import { CatalogActionDialogSummary } from "@/components/root/catalog-action-dialog-summary";
 import { Button } from "@/components/ui/button";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogFooter } from "@/components/ui/dialog";
 import {
   Select,
   SelectContent,
@@ -32,7 +25,6 @@ import {
   mediaRequestProfileOptionId,
   selectorId,
 } from "@/lib/utils/dom-ids";
-import { selectPosterVariantUrl } from "@/lib/utils/poster-images";
 
 type RequestMediaDialogProps = {
   open: boolean;
@@ -102,8 +94,6 @@ export function RequestMediaDialog({
       };
     });
   }, [qualityProfileOptions, selectedLibrary]);
-  const posterUrl = selectPosterVariantUrl(result.posterUrl, "w70");
-
   React.useEffect(() => {
     if (!open || !selectedLibrary) return;
     const defaultProfileId =
@@ -148,125 +138,111 @@ export function RequestMediaDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent id="request-media-dialog" className="sm:max-w-md">
-        <DialogHeader>
-          <div className="flex gap-3">
-            <div className="h-20 w-14 flex-none overflow-hidden rounded-md border border-border bg-muted">
-              {posterUrl ? (
-                <TitlePoster
-                  src={posterUrl}
-                  alt={t("media.posterAlt", { name: result.name })}
-                  className="h-full w-full object-cover"
-                />
-              ) : (
-                <div className="flex h-full w-full items-center justify-center text-xs text-muted-foreground">
-                  {t("label.noArt")}
-                </div>
-              )}
-            </div>
-            <div className="min-w-0">
-              <DialogTitle className="text-base">{result.name}</DialogTitle>
-              <DialogDescription>
-                {result.year ? result.year : t("label.yearUnknown")}
-              </DialogDescription>
-            </div>
-          </div>
-          {result.overview ? (
-            <p className="mt-2 text-xs text-muted-foreground line-clamp-3">
-              {result.overview}
-            </p>
-          ) : null}
-        </DialogHeader>
+      <DialogContent
+        id="request-media-dialog"
+        className="max-h-[90vh] gap-0 overflow-y-auto p-0 sm:max-w-5xl"
+      >
+        <CatalogActionDialogSummary result={result} facet={facet} mode="request" />
 
-        <label className="space-y-1">
-          <span className="block text-xs font-medium text-card-foreground">
-            {t("search.addConfigLibrary")}
-          </span>
-          <Select
-            value={selectedLibrary?.id || ""}
-            onValueChange={setLibraryId}
-            disabled={isSubmitting || requestableLibraries.length <= 1}
-          >
-            <SelectTrigger id="request-media-library" className="h-9 w-full">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {requestableLibraries.map((library) => (
-                <SelectItem
-                  id={selectorId("request-media-library-option", library.id)}
-                  key={library.id}
-                  value={library.id}
+        <div className="space-y-6 p-5 sm:p-7">
+          <div className="grid gap-4 sm:grid-cols-2">
+            <label className="space-y-1 sm:col-span-2">
+              <span className="block text-xs font-medium text-card-foreground">
+                {t("search.addConfigLibrary")}
+              </span>
+              <Select
+                value={selectedLibrary?.id || ""}
+                onValueChange={setLibraryId}
+                disabled={isSubmitting || requestableLibraries.length <= 1}
+              >
+                <SelectTrigger id="request-media-library" className="h-12 w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {requestableLibraries.map((library) => (
+                    <SelectItem
+                      id={selectorId("request-media-library-option", library.id)}
+                      key={library.id}
+                      value={library.id}
+                    >
+                      {library.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </label>
+
+            <label className="space-y-1">
+              <span className="block text-xs font-medium text-card-foreground">
+                {t("requests.requestedQualityProfile")}
+              </span>
+              <Select
+                value={qualityProfileId}
+                onValueChange={setQualityProfileId}
+                disabled={isSubmitting || requestProfileOptions.length <= 1}
+              >
+                <SelectTrigger
+                  id="request-media-quality-profile"
+                  className="h-12 w-full"
                 >
-                  {library.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </label>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {requestProfileOptions.map((profile) => (
+                    <SelectItem
+                      id={mediaRequestProfileOptionId("request", profile.id)}
+                      key={profile.id}
+                      value={profile.id}
+                    >
+                      {profile.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </label>
 
-        <label className="space-y-1">
-          <span className="block text-xs font-medium text-card-foreground">
-            {t("requests.requestedQualityProfile")}
-          </span>
-          <Select
-            value={qualityProfileId}
-            onValueChange={setQualityProfileId}
-            disabled={isSubmitting || requestProfileOptions.length <= 1}
-          >
-            <SelectTrigger id="request-media-quality-profile" className="h-9 w-full">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {requestProfileOptions.map((profile) => (
-                <SelectItem
-                  id={mediaRequestProfileOptionId("request", profile.id)}
-                  key={profile.id}
-                  value={profile.id}
+            {canRequestMonitorType ? (
+              <label className="space-y-1">
+                <span className="block text-xs font-medium text-card-foreground">
+                  {t("requests.requestedMonitorType")}
+                </span>
+                <Select
+                  value={monitorType}
+                  onValueChange={(value) =>
+                    setMonitorType(value as MetadataCatalogMonitorType)
+                  }
+                  disabled={isSubmitting}
                 >
-                  {profile.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </label>
-
-        {canRequestMonitorType ? (
-          <label className="space-y-1">
-            <span className="block text-xs font-medium text-card-foreground">
-              {t("requests.requestedMonitorType")}
-            </span>
-            <Select
-              value={monitorType}
-              onValueChange={(value) =>
-                setMonitorType(value as MetadataCatalogMonitorType)
-              }
-              disabled={isSubmitting}
-            >
-              <SelectTrigger id="request-media-monitor-type" className="h-9 w-full">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {monitorOptions.map((option) => (
-                  <SelectItem
-                    id={mediaRequestMonitorOptionId("request", option.value)}
-                    key={option.value}
-                    value={option.value}
+                  <SelectTrigger
+                    id="request-media-monitor-type"
+                    className="h-12 w-full"
                   >
-                    {option.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </label>
-        ) : null}
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {monitorOptions.map((option) => (
+                      <SelectItem
+                        id={mediaRequestMonitorOptionId("request", option.value)}
+                        key={option.value}
+                        value={option.value}
+                      >
+                        {option.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </label>
+            ) : null}
+          </div>
 
-        <DialogFooter>
+        <DialogFooter className="items-stretch gap-3 sm:items-center">
           <Button
             id="request-media-cancel"
             type="button"
             variant="outline"
             onClick={() => onOpenChange(false)}
             disabled={isSubmitting}
+            className="h-12 px-8"
           >
             {t("label.cancel")}
           </Button>
@@ -280,7 +256,7 @@ export function RequestMediaDialog({
               !qualityProfileId ||
               (canRequestMonitorType && !monitorType)
             }
-            className="bg-primary text-primary-foreground hover:bg-primary/90"
+            className="h-12 gap-2 bg-primary px-8 text-primary-foreground hover:bg-primary/90"
           >
             {isSubmitting ? (
               <Loader2 className="h-4 w-4 animate-spin" />
@@ -290,6 +266,7 @@ export function RequestMediaDialog({
             {isSubmitting ? t("search.requesting") : t("search.request")}
           </Button>
         </DialogFooter>
+        </div>
       </DialogContent>
     </Dialog>
   );

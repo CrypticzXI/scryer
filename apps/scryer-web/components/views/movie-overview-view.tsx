@@ -639,24 +639,6 @@ export function MovieOverviewView({
             />
           </div>
         ) : null}
-        {onBackToList ? (
-          <div
-            className="pointer-events-none absolute z-30"
-            style={{ top: "1rem", right: "1rem" }}
-          >
-            <Button
-              type="button"
-              variant="outline"
-              size="icon"
-              className="pointer-events-auto size-10 rounded-[11px] border border-[var(--scry-border2)] bg-[var(--scry-card2)] text-[var(--scry-ink2)] shadow-[0_12px_30px_rgba(0,0,0,0.35)] backdrop-blur-sm transition hover:bg-[var(--scry-hover)] hover:text-[var(--scry-ink2)]"
-              aria-label={t("label.close")}
-              title={t("label.close")}
-              onClick={() => onBackToList()}
-            >
-              <X className="h-5 w-5" />
-            </Button>
-          </div>
-        ) : null}
         <CardContent className="relative p-4">
           <div className="flex flex-col gap-4 sm:flex-row sm:gap-5">
             <div className="mx-auto shrink-0 sm:mx-0">
@@ -672,7 +654,20 @@ export function MovieOverviewView({
               />
             </div>
 
-            <div className="min-w-0 flex-1 flex flex-col">
+            <div className="relative min-w-0 flex-1 flex flex-col pr-12">
+              {onBackToList ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="icon"
+                  className="absolute right-0 top-0 z-20 size-10 rounded-[11px] border border-[var(--scry-border2)] bg-[var(--scry-card2)] text-[var(--scry-ink2)] shadow-[0_12px_30px_rgba(0,0,0,0.35)] backdrop-blur-sm transition hover:bg-[var(--scry-hover)] hover:text-[var(--scry-ink2)]"
+                  aria-label={t("label.close")}
+                  title={t("label.close")}
+                  onClick={() => onBackToList()}
+                >
+                  <X className="h-5 w-5" />
+                </Button>
+              ) : null}
               <h1 className="text-xl font-bold text-foreground sm:text-2xl">
                 {title.name}
                 {year ? (

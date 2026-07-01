@@ -24,14 +24,15 @@ use crate::context::{
 };
 use crate::mappers::{
     catalog_discovery_query_from_input, discovery_home_query_from_input,
-    discovery_items_query_from_input, from_activity_event, from_backup_info,
-    from_catalog_discovery, from_collection, from_delete_preview, from_delete_titles_preview,
-    from_discovery_home, from_discovery_items_result, from_discovery_sync_status,
-    from_domain_event, from_download_queue_item, from_episode,
-    from_external_import_monitor_warmup_progress, from_job_definition, from_job_run, from_library,
-    from_library_scan_session, from_library_settings, from_linked_account, from_media_rename_plan,
-    from_media_request, from_media_request_counts, from_pending_import_connection,
-    from_pending_import_counts, from_pending_release, from_provider_type, from_runtime_path_style,
+    discovery_item_detail_query_from_input, discovery_items_query_from_input, from_activity_event,
+    from_backup_info, from_catalog_discovery, from_collection, from_delete_preview,
+    from_delete_titles_preview, from_discovery_home, from_discovery_item,
+    from_discovery_items_result, from_discovery_sync_status, from_domain_event,
+    from_download_queue_item, from_episode, from_external_import_monitor_warmup_progress,
+    from_job_definition, from_job_run, from_library, from_library_scan_session,
+    from_library_settings, from_linked_account, from_media_rename_plan, from_media_request,
+    from_media_request_counts, from_pending_import_connection, from_pending_import_counts,
+    from_pending_release, from_provider_type, from_runtime_path_style,
     from_smg_scryer_update_notice, from_smg_version_compatibility_notice, from_system_health,
     from_title, from_title_acquisition_diagnostics, from_title_history_page,
     from_title_release_blocklist_entry, from_user_with_auth_factor_status, from_wanted_item,
@@ -52,6 +53,17 @@ fn browse_path_read_dir(path: &str) -> Result<fs::ReadDir, AppError> {
     }
 
     fs::read_dir(target).map_err(|error| browse_path_io_error(path, error))
+}
+
+fn library_root_path_is_valid(path: &str) -> bool {
+    let target = Path::new(path.trim());
+    if !target.is_absolute() {
+        return false;
+    }
+
+    fs::metadata(target)
+        .map(|metadata| metadata.is_dir())
+        .unwrap_or(false)
 }
 
 fn browse_path_io_error(path: &str, error: io::Error) -> AppError {
@@ -612,6 +624,40 @@ impl CatalogQueries {
             .await
             .map_err(to_gql_error)?;
         Ok(libraries.into_iter().map(from_library).collect())
+    }
+
+    async fn catalog_has_valid_root(
+        &self,
+        ctx: &Context<'_>,
+        facet: MediaFacetValue,
+    ) -> GqlResult<bool> {
+        require_library_settings_permission(ctx).await?;
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let libraries = app
+            .list_libraries_for_permission(
+                &actor,
+                Some(facet.into_domain()),
+                LibraryPermission::ManageLibrary,
+            )
+            .await
+            .map_err(to_gql_error)?;
+        let root_paths = libraries
+            .into_iter()
+            .flat_map(|library| library.roots.into_iter().map(|root| root.path))
+            .collect::<Vec<_>>();
+        let has_valid_root = tokio::task::spawn_blocking(move || {
+            root_paths
+                .iter()
+                .any(|path| library_root_path_is_valid(path))
+        })
+        .await
+        .map_err(|error| {
+            to_gql_error(AppError::Repository(format!(
+                "catalog root validation task failed: {error}"
+            )))
+        })?;
+        Ok(has_valid_root)
     }
 
     async fn media_requests(
@@ -1370,6 +1416,20 @@ impl JobAndDownloadQueries {
             .await
             .map_err(to_gql_error)?;
         Ok(from_discovery_items_result(result))
+    }
+
+    async fn discovery_item_detail(
+        &self,
+        ctx: &Context<'_>,
+        input: DiscoveryItemDetailInput,
+    ) -> GqlResult<Option<DiscoveryItemPayload>> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let item = app
+            .discovery_item_detail(&actor, discovery_item_detail_query_from_input(input))
+            .await
+            .map_err(to_gql_error)?;
+        Ok(item.map(from_discovery_item))
     }
 
     async fn catalog_discovery(

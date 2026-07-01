@@ -1,4 +1,5 @@
 import type { MetadataTvdbSearchItem } from "@/lib/graphql/smg-queries";
+import { canonicalDiscoveryFacetLabels } from "@/lib/discovery-facets";
 import type { CatalogDiscoveryItem, ExternalId, Facet } from "@/lib/types";
 import { discoveryItemDisplayTitle } from "@/lib/utils/discovery-display";
 
@@ -55,11 +56,22 @@ export function metadataResultForDiscoveryItem(
     type: item.contentType ?? item.targetKind,
     year: item.year,
     status: item.statusTags[0] ?? null,
-    overview: item.overview,
+    overview: item.overview ?? null,
     popularity: item.rankScore,
     posterUrl: item.posterUrl,
+    backgroundUrl: item.backgroundUrl ?? null,
     language: null,
     runtimeMinutes: null,
     sortTitle: item.sortTitle,
+    genres:
+      item.facetTerms && item.facetTerms.length > 0
+        ? canonicalDiscoveryFacetLabels(
+            { facetTerms: item.facetTerms },
+            "genre",
+          )
+        : item.genres,
+    rating: item.rating ?? null,
+    ratingSource: item.sources?.[0] ?? item.bestSource ?? null,
+    externalRatings: item.externalRatings ?? [],
   };
 }

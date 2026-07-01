@@ -1145,56 +1145,56 @@ async fn title_more_like_this_filters_readable_library_titles_and_refills_limit(
         vec![("tmdb_movie", "603")],
     );
     owned_title.library_id = movie_library_id.clone();
-    titles.store.lock().await.extend([source_title, owned_title]);
-
-    discovery
-        .title_more_like_this_items
+    titles
+        .store
         .lock()
         .await
-        .insert(
-            "source-title".to_string(),
-            vec![
-                discovery_item_record(
-                    "title-more-like-this-run",
-                    "title-more-like-this-run",
-                    None,
-                    "tmdb:movie:603",
-                    "Owned Recommendation",
-                    "movie",
-                    100.0,
-                    &["Action"],
-                    &[],
-                    false,
-                    true,
-                ),
-                discovery_item_record(
-                    "title-more-like-this-run",
-                    "title-more-like-this-run",
-                    None,
-                    "tmdb:movie:604",
-                    "Fresh Recommendation One",
-                    "movie",
-                    90.0,
-                    &["Drama"],
-                    &[],
-                    false,
-                    true,
-                ),
-                discovery_item_record(
-                    "title-more-like-this-run",
-                    "title-more-like-this-run",
-                    None,
-                    "tmdb:movie:605",
-                    "Fresh Recommendation Two",
-                    "movie",
-                    80.0,
-                    &["Comedy"],
-                    &[],
-                    false,
-                    true,
-                ),
-            ],
-        );
+        .extend([source_title, owned_title]);
+
+    discovery.title_more_like_this_items.lock().await.insert(
+        "source-title".to_string(),
+        vec![
+            discovery_item_record(
+                "title-more-like-this-run",
+                "title-more-like-this-run",
+                None,
+                "tmdb:movie:603",
+                "Owned Recommendation",
+                "movie",
+                100.0,
+                &["Action"],
+                &[],
+                false,
+                true,
+            ),
+            discovery_item_record(
+                "title-more-like-this-run",
+                "title-more-like-this-run",
+                None,
+                "tmdb:movie:604",
+                "Fresh Recommendation One",
+                "movie",
+                90.0,
+                &["Drama"],
+                &[],
+                false,
+                true,
+            ),
+            discovery_item_record(
+                "title-more-like-this-run",
+                "title-more-like-this-run",
+                None,
+                "tmdb:movie:605",
+                "Fresh Recommendation Two",
+                "movie",
+                80.0,
+                &["Comedy"],
+                &[],
+                false,
+                true,
+            ),
+        ],
+    );
 
     let items = app
         .title_more_like_this(&viewer, "source-title", 2)
@@ -4672,6 +4672,7 @@ fn discovery_item_record(
         genres: genres.iter().map(|genre| (*genre).to_string()).collect(),
         rating: Some(7.5),
         rating_sources: Vec::new(),
+        external_ratings: Vec::new(),
         status_tags: Vec::new(),
         source_tags: Vec::new(),
         sources: vec!["smg".to_string()],
@@ -4826,6 +4827,7 @@ fn test_discovery_title() -> DiscoveryTitle {
         genres: vec!["sci-fi".to_string()],
         rating: Some(7.5),
         rating_sources: vec!["smg".to_string()],
+        external_ratings: Vec::new(),
         status_tags: Vec::new(),
         background_url: String::new(),
         source_tags: Vec::new(),

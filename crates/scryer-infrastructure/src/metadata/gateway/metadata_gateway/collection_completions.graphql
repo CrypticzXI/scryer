@@ -23,6 +23,14 @@ fragment DiscoveryCollectionCompletionTitleFields on DiscoveryCollectionCompleti
   genres
   rating
   rating_sources
+  external_ratings {
+    source
+    value
+    score
+    normalized
+    votes
+    url
+  }
   status_tags
   background_url
   source_tags {

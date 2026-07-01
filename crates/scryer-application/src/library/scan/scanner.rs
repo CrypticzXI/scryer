@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tokio::sync::mpsc;
 
-use crate::{AppError, AppResult};
+use crate::{AppError, AppResult, TitleExternalRating};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LibraryFile {
@@ -346,6 +346,8 @@ pub struct DiscoveryTitle {
     pub rating: Option<f64>,
     #[serde(default)]
     pub rating_sources: Vec<String>,
+    #[serde(default)]
+    pub external_ratings: Vec<TitleExternalRating>,
     #[serde(default)]
     pub status_tags: Vec<String>,
     pub background_url: String,

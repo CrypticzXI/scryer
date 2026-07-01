@@ -11,7 +11,10 @@ import type { TitleMoreLikeThisStripActions } from "@/components/views/title-mor
 import { useGlobalStatus } from "@/lib/context/global-status-context";
 import { useSearchContext } from "@/lib/context/search-context";
 import { useTranslate } from "@/lib/context/translate-context";
-import { titleRouteTargetQuery } from "@/lib/graphql/queries";
+import {
+  discoveryItemDetailQuery,
+  titleRouteTargetQuery,
+} from "@/lib/graphql/queries";
 import type { CatalogDiscoveryItem, Facet } from "@/lib/types";
 import {
   discoveryItemFacet,
@@ -34,6 +37,8 @@ type TitleRouteTarget = {
 };
 
 type UseTitleMoreLikeThisActionsOptions = {
+  canAddItems?: boolean;
+  canRequestItems?: boolean;
   onCatalogChanged?: () => Promise<void> | void;
 };
 
@@ -63,6 +68,8 @@ function routePathForTitle(target: TitleRouteTarget, view: ViewId): string {
 }
 
 export function useTitleMoreLikeThisActions({
+  canAddItems = false,
+  canRequestItems = false,
   onCatalogChanged,
 }: UseTitleMoreLikeThisActionsOptions = {}): {
   stripProps: TitleMoreLikeThisStripActions;
@@ -81,19 +88,22 @@ export function useTitleMoreLikeThisActions({
   const canAddItem = React.useCallback(
     (item: CatalogDiscoveryItem) => {
       const facet = discoveryItemFacet(item);
-      return facet ? (search.librariesByFacet[facet] ?? []).length > 0 : false;
+      return facet
+        ? canAddItems || (search.librariesByFacet[facet] ?? []).length > 0
+        : false;
     },
-    [search.librariesByFacet],
+    [canAddItems, search.librariesByFacet],
   );
 
   const canRequestItem = React.useCallback(
     (item: CatalogDiscoveryItem) => {
       const facet = discoveryItemFacet(item);
       return facet
-        ? (search.requestableLibrariesByFacet[facet] ?? []).length > 0
+        ? canRequestItems ||
+            (search.requestableLibrariesByFacet[facet] ?? []).length > 0
         : false;
     },
-    [search.requestableLibrariesByFacet],
+    [canRequestItems, search.requestableLibrariesByFacet],
   );
 
   const handleAction = React.useCallback(
@@ -106,12 +116,30 @@ export function useTitleMoreLikeThisActions({
         setGlobalStatus(t("status.apiError"));
         return;
       }
-      const target = {
-        result: metadataResultForDiscoveryItem(item),
-        facet,
-      };
       try {
         await search.ensureCatalogConfigReady(facet);
+        const { data, error } = await client
+          .query(
+            discoveryItemDetailQuery,
+            {
+              input: {
+                targetKey: item.targetKey,
+                includeUnresolved: true,
+              },
+            },
+            { requestPolicy: "network-only" },
+          )
+          .toPromise();
+        if (error) {
+          throw error;
+        }
+        const detailItem =
+          (data?.discoveryItemDetail as CatalogDiscoveryItem | null | undefined) ??
+          item;
+        const target = {
+          result: metadataResultForDiscoveryItem(detailItem),
+          facet,
+        };
         if ((search.librariesByFacet[facet] ?? []).length > 0) {
           setAddDialogTarget(target);
         } else if ((search.requestableLibrariesByFacet[facet] ?? []).length > 0) {
@@ -126,6 +154,7 @@ export function useTitleMoreLikeThisActions({
       }
     },
     [
+      client,
       search,
       setGlobalStatus,
       t,

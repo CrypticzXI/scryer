@@ -1,6 +1,8 @@
 // Metadata types returned by the backend metadata proxy resolvers.
 // Field names are camelCase to match async_graphql output.
 
+import type { TitleExternalRating } from "@/lib/utils/title-ratings";
+
 export type MetadataTvdbSearchItem = {
   tvdbId: string;
   name: string;
@@ -13,9 +15,15 @@ export type MetadataTvdbSearchItem = {
   overview: string | null;
   popularity: number | null;
   posterUrl: string | null;
+  backgroundUrl?: string | null;
   language: string | null;
   runtimeMinutes: number | null;
   sortTitle: string | null;
+  genres?: string[];
+  rating?: number | null;
+  ratingSource?: string | null;
+  ratingSources?: string[];
+  externalRatings?: TitleExternalRating[];
 };
 
 export type MetadataMoviePayload = {

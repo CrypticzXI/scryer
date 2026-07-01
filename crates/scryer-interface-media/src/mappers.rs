@@ -5,15 +5,15 @@ use scryer_application::stored_paths::stored_path_to_path_buf;
 use scryer_application::{
     ActivityEvent, BackupInfo, CatalogDiscoveryGroup, CatalogDiscoveryGroupKind,
     CatalogDiscoveryQuery, CatalogDiscoveryResult, CatalogDiscoverySurface, DeletePreview,
-    DiscoveryFacetRecord, DiscoveryHomeQuery, DiscoveryHomeResult, DiscoveryItemRecord,
-    DiscoveryItemsQuery, DiscoveryItemsResult, DiscoverySectionResult, DiscoverySyncRunRecord,
-    DiscoverySyncStateRecord, DiscoverySyncStatus, DownloadClientRoutingSettingsEntry,
-    FacetScoringPersonaSelection, IgnorePendingImportResult, IndexerRoutingSettingsEntry,
-    IndexerSearchResult, JobDefinition, JobRun, LibraryPathsSettings, LibraryScanSummary,
-    LibrarySettings, ManualPluginPreview, MediaRequestCounts, MediaSettings, ParsedEpisodeMetadata,
-    ParsedReleaseMetadata, PendingImportConnection, PendingImportCounts, PendingImportItem,
-    PendingImportSearchAttempt, PendingRelease, PluginCatalogStatus, QualityProfile,
-    QualityProfileCriteria, QualityProfileDecision, QualityProfileSelection,
+    DiscoveryFacetRecord, DiscoveryHomeQuery, DiscoveryHomeResult, DiscoveryItemDetailQuery,
+    DiscoveryItemRecord, DiscoveryItemsQuery, DiscoveryItemsResult, DiscoverySectionResult,
+    DiscoverySyncRunRecord, DiscoverySyncStateRecord, DiscoverySyncStatus,
+    DownloadClientRoutingSettingsEntry, FacetScoringPersonaSelection, IgnorePendingImportResult,
+    IndexerRoutingSettingsEntry, IndexerSearchResult, JobDefinition, JobRun, LibraryPathsSettings,
+    LibraryScanSummary, LibrarySettings, ManualPluginPreview, MediaRequestCounts, MediaSettings,
+    ParsedEpisodeMetadata, ParsedReleaseMetadata, PendingImportConnection, PendingImportCounts,
+    PendingImportItem, PendingImportSearchAttempt, PendingRelease, PluginCatalogStatus,
+    QualityProfile, QualityProfileCriteria, QualityProfileDecision, QualityProfileSelection,
     QualityProfileSettings, RegistryPlugin, RenameApplyItemResult, RenameApplyResult, RenamePlan,
     RenamePlanItem, ResolvePendingImportResult, RssSyncReport, ScoringEntry, ScoringSource,
     ServiceSettings, SmgScryerUpdateNotice, SmgVersionCompatibilityNotice, SubmissionScope,
@@ -1601,6 +1601,7 @@ pub fn discovery_items_query_from_input(input: Option<DiscoveryItemsInput>) -> D
     let input = input.unwrap_or_default();
     DiscoveryItemsQuery {
         query: input.query,
+        target_keys: Vec::new(),
         target_kinds: input.target_kinds.unwrap_or_default(),
         sources: input.sources.unwrap_or_default(),
         relation_types: input.relation_types.unwrap_or_default(),
@@ -1613,6 +1614,15 @@ pub fn discovery_items_query_from_input(input: Option<DiscoveryItemsInput>) -> D
         include_public: input.include_public.unwrap_or(false),
         limit: input.limit.map(|value| value.max(1) as usize).unwrap_or(50),
         offset: input.offset.map(|value| value.max(0) as usize).unwrap_or(0),
+    }
+}
+
+pub fn discovery_item_detail_query_from_input(
+    input: DiscoveryItemDetailInput,
+) -> DiscoveryItemDetailQuery {
+    DiscoveryItemDetailQuery {
+        target_key: input.target_key,
+        include_unresolved: input.include_unresolved.unwrap_or(true),
     }
 }
 
@@ -1743,6 +1753,18 @@ pub fn from_discovery_item(item: DiscoveryItemRecord) -> DiscoveryItemPayload {
         content_type: item.content_type,
         genres: item.genres,
         rating: item.rating,
+        external_ratings: item
+            .external_ratings
+            .into_iter()
+            .map(|rating| DiscoveryExternalRatingPayload {
+                source: rating.source,
+                value: rating.value,
+                score: rating.score,
+                normalized: rating.normalized,
+                votes: rating.votes,
+                url: rating.url,
+            })
+            .collect(),
         status_tags: item.status_tags,
         source_tags: item
             .source_tags

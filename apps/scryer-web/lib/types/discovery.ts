@@ -1,3 +1,5 @@
+import type { TitleExternalRating } from "@/lib/utils/title-ratings";
+
 export type DiscoveryHomeInput = {
   includePublic?: boolean | null;
   includePersonalized?: boolean | null;
@@ -45,6 +47,7 @@ export type DiscoveryItem = {
   contentType: string | null;
   genres: string[];
   rating: number | null;
+  externalRatings?: TitleExternalRating[];
   statusTags: string[];
   sourceTags: string[];
   sources: string[];
@@ -125,12 +128,24 @@ export type CatalogDiscoveryItem = Pick<
   | "sortTitle"
   | "year"
   | "posterUrl"
-  | "overview"
   | "contentType"
   | "statusTags"
   | "rankScore"
   | "ownedInInput"
->;
+> &
+  Partial<
+    Pick<
+      DiscoveryItem,
+      | "backgroundUrl"
+      | "bestSource"
+      | "facetTerms"
+      | "genres"
+      | "externalRatings"
+      | "overview"
+      | "rating"
+      | "sources"
+    >
+  >;
 
 export type CatalogDiscoveryGroupKind =
   | "PUBLIC_TOP"

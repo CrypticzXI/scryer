@@ -1627,6 +1627,12 @@ pub struct DiscoveryItemsInput {
     pub offset: Option<i32>,
 }
 
+#[derive(InputObject, Clone)]
+pub struct DiscoveryItemDetailInput {
+    pub target_key: String,
+    pub include_unresolved: Option<bool>,
+}
+
 #[derive(SimpleObject, Clone)]
 pub struct DiscoveryHomePayload {
     pub status: DiscoverySyncStatusPayload,
@@ -1699,6 +1705,16 @@ pub struct DiscoverySectionPayload {
 }
 
 #[derive(SimpleObject, Clone)]
+pub struct DiscoveryExternalRatingPayload {
+    pub source: String,
+    pub value: Option<f64>,
+    pub score: Option<f64>,
+    pub normalized: f64,
+    pub votes: Option<i32>,
+    pub url: String,
+}
+
+#[derive(SimpleObject, Clone)]
 pub struct DiscoveryItemPayload {
     pub id: ID,
     pub target_key: String,
@@ -1715,6 +1731,7 @@ pub struct DiscoveryItemPayload {
     pub content_type: Option<String>,
     pub genres: Vec<String>,
     pub rating: Option<f64>,
+    pub external_ratings: Vec<DiscoveryExternalRatingPayload>,
     pub status_tags: Vec<String>,
     pub source_tags: Vec<String>,
     pub sources: Vec<String>,

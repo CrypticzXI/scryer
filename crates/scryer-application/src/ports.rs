@@ -234,6 +234,7 @@ pub enum CatalogDiscoverySurface {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DiscoveryItemsQuery {
     pub query: Option<String>,
+    pub target_keys: Vec<String>,
     pub target_kinds: Vec<String>,
     pub sources: Vec<String>,
     pub relation_types: Vec<String>,
@@ -253,6 +254,12 @@ pub struct DiscoveryItemsResult {
     pub items: Vec<DiscoveryItemRecord>,
     pub total_count: i64,
     pub can_view_personalized: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DiscoveryItemDetailQuery {
+    pub target_key: String,
+    pub include_unresolved: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -432,6 +439,7 @@ pub struct DiscoveryItemRecord {
     pub genres: Vec<String>,
     pub rating: Option<f64>,
     pub rating_sources: Vec<String>,
+    pub external_ratings: Vec<TitleExternalRating>,
     pub status_tags: Vec<String>,
     pub source_tags: Vec<DiscoverySourceTagRecord>,
     pub sources: Vec<String>,

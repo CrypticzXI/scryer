@@ -63,7 +63,11 @@ import type {
 } from "@/lib/title-overview-loader";
 import type { ExternalSubtitleRecord } from "@/lib/types/subtitles";
 import { useAuth } from "@/lib/hooks/use-auth";
-import { LIBRARY_PERMISSIONS, hasLibraryPermission } from "@/lib/utils/permissions";
+import {
+  LIBRARY_PERMISSIONS,
+  hasAnyLibraryPermission,
+  hasLibraryPermission,
+} from "@/lib/utils/permissions";
 import { useTitleMoreLikeThisActions } from "@/lib/hooks/use-title-more-like-this-actions";
 
 export type TitleDetail = {
@@ -247,6 +251,14 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
     auth.user,
     title?.libraryId,
     LIBRARY_PERMISSIONS.manageTitles,
+  );
+  const canAddDiscoveryItems = hasAnyLibraryPermission(
+    auth.user,
+    LIBRARY_PERMISSIONS.manageTitles,
+  );
+  const canRequestDiscoveryItems = hasAnyLibraryPermission(
+    auth.user,
+    LIBRARY_PERMISSIONS.request,
   );
   const [collections, setCollections] = React.useState<TitleCollection[]>([]);
   const [events, setEvents] = React.useState<TitleHistoryEvent[]>([]);
@@ -472,6 +484,8 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
     void refreshDownloadFeedback();
   }, [applyNativeTitleDetailSnapshot, client, refreshDownloadFeedback, titleId]);
   const moreLikeThisActions = useTitleMoreLikeThisActions({
+    canAddItems: canAddDiscoveryItems,
+    canRequestItems: canRequestDiscoveryItems,
     onCatalogChanged: refreshTitleDetail,
   });
 

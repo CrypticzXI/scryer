@@ -220,7 +220,7 @@ export function CompactTitleTable({
       {showMonitoredColumn ? <col style={{ width: "4rem" }} /> : null}
       {showQualityColumn ? <col style={{ width: "7rem" }} /> : null}
       {showEpisodesColumn ? <col style={{ width: "7.5rem" }} /> : null}
-      {showSizeColumn ? <col style={{ width: "6.5rem" }} /> : null}
+      {showSizeColumn ? <col style={{ width: "7.5rem" }} /> : null}
       {showAddedColumn ? <col style={{ width: "6.5rem" }} /> : null}
       {showActionsColumn ? <col style={{ width: "8.5rem" }} /> : null}
     </colgroup>

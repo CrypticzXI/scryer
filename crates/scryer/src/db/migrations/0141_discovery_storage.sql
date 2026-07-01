@@ -186,6 +186,11 @@ CREATE TABLE IF NOT EXISTS discovery_item_ratings (
     run_id TEXT NOT NULL REFERENCES discovery_sync_runs(id) ON DELETE CASCADE,
     rating_source TEXT NOT NULL,
     rating REAL,
+    rating_value REAL,
+    rating_score REAL,
+    normalized REAL,
+    votes INTEGER,
+    url TEXT NOT NULL DEFAULT '',
     sort_index INTEGER NOT NULL DEFAULT 0,
     UNIQUE (item_id, rating_source)
 );

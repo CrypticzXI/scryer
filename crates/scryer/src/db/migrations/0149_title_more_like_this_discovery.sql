@@ -52,3 +52,17 @@ CREATE TABLE IF NOT EXISTS title_more_like_this_item_terms (
 
 CREATE INDEX IF NOT EXISTS idx_title_more_like_this_item_terms_source_kind_value
     ON title_more_like_this_item_terms(source_title_id, term_kind, term_value, item_id);
+
+CREATE TABLE IF NOT EXISTS title_more_like_this_item_ratings (
+    item_id TEXT NOT NULL REFERENCES title_more_like_this_items(id) ON DELETE CASCADE,
+    source_title_id TEXT NOT NULL REFERENCES titles(id) ON DELETE CASCADE,
+    rating_source TEXT NOT NULL,
+    rating REAL,
+    rating_value REAL,
+    rating_score REAL,
+    normalized REAL,
+    votes INTEGER,
+    url TEXT NOT NULL DEFAULT '',
+    sort_index INTEGER NOT NULL DEFAULT 0,
+    UNIQUE (item_id, rating_source)
+);

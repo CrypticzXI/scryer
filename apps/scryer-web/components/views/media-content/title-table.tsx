@@ -202,7 +202,7 @@ export function TitleTable({
       {showMonitoredColumn ? <col style={{ width: "5.25rem" }} /> : null}
       {showQualityColumn ? <col style={{ width: "8rem" }} /> : null}
       {showEpisodesColumn ? <col style={{ width: "9.5rem" }} /> : null}
-      {showSizeColumn ? <col style={{ width: "6rem" }} /> : null}
+      {showSizeColumn ? <col style={{ width: "7rem" }} /> : null}
       {showAddedColumn ? <col style={{ width: "7.5rem" }} /> : null}
       {showActionsColumn ? <col style={{ width: "11.5rem" }} /> : null}
     </colgroup>

@@ -33,6 +33,16 @@ export const DISCOVERY_ITEM_FIELDS = `
     facetTerms
     contextTerms`;
 
+const DISCOVERY_ITEM_DETAIL_FIELDS = `${DISCOVERY_ITEM_FIELDS}
+    externalRatings {
+      source
+      value
+      score
+      normalized
+      votes
+      url
+    }`;
+
 const DISCOVERY_HOME_ITEM_FIELDS = `
     targetKey
     targetKind
@@ -115,6 +125,12 @@ ${DISCOVERY_ITEM_FIELDS}
   }
 }`;
 
+export const discoveryItemDetailQuery = `query DiscoveryItemDetail($input: DiscoveryItemDetailInput!) {
+  discoveryItemDetail(input: $input) {
+${DISCOVERY_ITEM_DETAIL_FIELDS}
+  }
+}`;
+
 const CATALOG_DISCOVERY_ITEM_FIELDS = `
     id
     targetKey
@@ -126,11 +142,20 @@ const CATALOG_DISCOVERY_ITEM_FIELDS = `
     sortTitle
     year
     posterUrl
-    overview
     contentType
     statusTags
     rankScore
     ownedInInput`;
+
+const TITLE_MORE_LIKE_THIS_ITEM_FIELDS = `${CATALOG_DISCOVERY_ITEM_FIELDS}
+    externalRatings {
+      source
+      value
+      score
+      normalized
+      votes
+      url
+    }`;
 
 export const catalogDiscoveryQuery = `query CatalogDiscovery($input: CatalogDiscoveryInput!) {
   catalogDiscovery(input: $input) {
@@ -467,7 +492,7 @@ const TITLE_SERIES_OVERVIEW_FIELDS = `${TITLE_CORE_FIELDS}
       }
     }
     moreLikeThis(limit: 12) {
-${CATALOG_DISCOVERY_ITEM_FIELDS}
+${TITLE_MORE_LIKE_THIS_ITEM_FIELDS}
     }`;
 
 const TITLE_OVERVIEW_FIELDS = `${TITLE_SERIES_OVERVIEW_FIELDS}
@@ -3152,6 +3177,10 @@ export const browsePathQuery = `query BrowsePath($path: String!) {
     name
     path
   }
+}`;
+
+export const catalogHasValidRootQuery = `query CatalogHasValidRoot($facet: MediaFacetValue!) {
+  catalogHasValidRoot(facet: $facet)
 }`;
 
 export const postProcessingScriptsQuery = `query PostProcessingScripts {

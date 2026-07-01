@@ -141,6 +141,99 @@ impl MediaAnalyzer for BlockingMediaAnalyzer {
     }
 }
 
+#[derive(Clone, Default)]
+struct RecordingExactIdMetadataGateway {
+    batch_queries: Arc<Mutex<Vec<Vec<MetadataSearchQuery>>>>,
+}
+
+impl RecordingExactIdMetadataGateway {
+    async fn batch_queries(&self) -> Vec<Vec<MetadataSearchQuery>> {
+        self.batch_queries.lock().await.clone()
+    }
+}
+
+#[async_trait]
+impl MetadataGateway for RecordingExactIdMetadataGateway {
+    async fn search_tvdb(
+        &self,
+        _query: &str,
+        _type_hint: &str,
+        _year: Option<i32>,
+    ) -> AppResult<Vec<MetadataSearchItem>> {
+        Ok(Vec::new())
+    }
+
+    async fn search_tvdb_batch(
+        &self,
+        queries: &[MetadataSearchQuery],
+        _language: &str,
+    ) -> AppResult<HashMap<MetadataSearchQuery, Vec<MetadataSearchItem>>> {
+        self.batch_queries.lock().await.push(queries.to_vec());
+        Ok(queries
+            .iter()
+            .cloned()
+            .map(|query| {
+                let tvdb_id = query
+                    .tvdb_id
+                    .clone()
+                    .or_else(|| query.tmdb_id.clone())
+                    .unwrap_or_else(|| "900000".to_string());
+                (
+                    query,
+                    vec![MetadataSearchItem {
+                        name: format!("Deliberately Different Identity Title {tvdb_id}"),
+                        tvdb_id,
+                        year: Some(1901),
+                        auto_match_safe: true,
+                        auto_match_signals: vec!["identity".to_string()],
+                    }],
+                )
+            })
+            .collect())
+    }
+
+    async fn search_tvdb_rich(
+        &self,
+        _query: &str,
+        _type_hint: &str,
+        _limit: i32,
+        _language: &str,
+        _year: Option<i32>,
+    ) -> AppResult<Vec<RichMetadataSearchItem>> {
+        Ok(Vec::new())
+    }
+
+    async fn search_tvdb_multi(
+        &self,
+        _query: &str,
+        _limit: i32,
+        _language: &str,
+    ) -> AppResult<MultiMetadataSearchResult> {
+        Ok(MultiMetadataSearchResult::default())
+    }
+
+    async fn get_movie(&self, _tvdb_id: i64, _language: &str) -> AppResult<MovieMetadata> {
+        Err(AppError::NotFound(
+            "movie metadata unavailable in test".into(),
+        ))
+    }
+
+    async fn get_series(&self, _tvdb_id: i64, _language: &str) -> AppResult<SeriesMetadata> {
+        Err(AppError::NotFound(
+            "series metadata unavailable in test".into(),
+        ))
+    }
+
+    async fn get_metadata_bulk(
+        &self,
+        _movie_tvdb_ids: &[i64],
+        _series_tvdb_ids: &[i64],
+        _language: &str,
+    ) -> AppResult<BulkMetadataResult> {
+        Ok(BulkMetadataResult::default())
+    }
+}
+
 #[tokio::test]
 async fn movie_full_scan_persists_and_reconciles_unmatched_items() {
     let tempdir = tempfile::tempdir().expect("tempdir");
@@ -1565,6 +1658,258 @@ async fn series_full_scan_scans_all_configured_roots_in_one_session() {
             .iter()
             .any(|item| item.scan_root == root_two.to_string_lossy())
     );
+}
+
+#[tokio::test]
+async fn series_full_scan_batches_sonarr_identity_hints_at_gateway_cap() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let series_root = tempdir.path().join("series");
+    let mut scan_hints = LibraryScanHintSet::new();
+
+    for index in 0..22 {
+        let folder = series_root.join(format!("Arr Show {index:02} (1999)"));
+        std::fs::create_dir_all(&folder).expect("create hinted show folder");
+        let folder_path = folder.to_string_lossy().to_string();
+        scan_hints.push(LibraryScanHint {
+            source: LibraryScanHintSource::ExternalImportSonarr,
+            facet: LibraryScanHintFacet::Series,
+            path_key: crate::library_scan_folder_leaf_key(&folder_path)
+                .expect("folder leaf path key"),
+            full_path_key: crate::library_scan_folder_full_path_key(&folder_path),
+            ids: vec![
+                ExternalIdHint::normalized(
+                    ExternalIdProvider::Tvdb,
+                    &(900_000 + index).to_string(),
+                )
+                .expect("normalized tvdb id"),
+            ],
+        });
+    }
+
+    let settings = Arc::new(StoredSettingsRepo::default());
+    let metadata_gateway = Arc::new(RecordingExactIdMetadataGateway::default());
+    let (app, user) = bootstrap_with_scan_unmatched_and_metadata_tracking(
+        settings,
+        Arc::new(MutableLibraryScanner::default()),
+        Arc::new(TrackingLibraryScanUnmatchedItemRepo::default()),
+        metadata_gateway.clone(),
+    );
+
+    app.update_media_settings(
+        &user,
+        MediaFacet::Series,
+        empty_update_media_settings_with_roots(vec![build_root_folder_entry(&series_root, true)]),
+    )
+    .await
+    .expect("store series root");
+
+    let session = app
+        .trigger_library_scan_by_id_with_hints(
+            &user,
+            &scryer_domain::default_library_id_for_facet(&MediaFacet::Series),
+            Some(scan_hints),
+        )
+        .await
+        .expect("trigger hinted series scan");
+
+    let projected =
+        wait_for_projected_library_scan_session_matching(&app, &session.session_id, |session| {
+            matches!(
+                session.status,
+                LibraryScanStatus::Completed | LibraryScanStatus::Warning
+            )
+        })
+        .await;
+    assert_eq!(
+        projected.summary.as_ref().map(|summary| summary.matched),
+        Some(22)
+    );
+
+    let batches = metadata_gateway.batch_queries().await;
+    assert_eq!(batches.len(), 1);
+    assert_eq!(batches[0].len(), 22);
+    for query in &batches[0] {
+        assert_eq!(query.query, "");
+        assert_eq!(query.type_hint, "series");
+        assert_eq!(query.year, None);
+        assert!(query.tvdb_id.is_some());
+        assert_eq!(query.imdb_id, None);
+        assert_eq!(query.tmdb_id, None);
+    }
+}
+
+#[tokio::test]
+async fn series_full_scan_keeps_hinted_batch_intact_across_unhinted_folder() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let series_root = tempdir.path().join("series");
+    let mut scan_hints = LibraryScanHintSet::new();
+
+    for index in 0..22 {
+        let folder_name = if index < 11 {
+            format!("A Hinted Show {index:02} (1999)")
+        } else {
+            format!("Z Hinted Show {index:02} (1999)")
+        };
+        let folder = series_root.join(folder_name);
+        std::fs::create_dir_all(&folder).expect("create hinted show folder");
+        let folder_path = folder.to_string_lossy().to_string();
+        scan_hints.push(LibraryScanHint {
+            source: LibraryScanHintSource::ExternalImportSonarr,
+            facet: LibraryScanHintFacet::Series,
+            path_key: crate::library_scan_folder_leaf_key(&folder_path)
+                .expect("folder leaf path key"),
+            full_path_key: crate::library_scan_folder_full_path_key(&folder_path),
+            ids: vec![
+                ExternalIdHint::normalized(
+                    ExternalIdProvider::Tvdb,
+                    &(910_000 + index).to_string(),
+                )
+                .expect("normalized tvdb id"),
+            ],
+        });
+    }
+    std::fs::create_dir_all(series_root.join("M Unhinted Show (1999)"))
+        .expect("create unhinted show folder");
+
+    let settings = Arc::new(StoredSettingsRepo::default());
+    let metadata_gateway = Arc::new(RecordingExactIdMetadataGateway::default());
+    let (app, user) = bootstrap_with_scan_unmatched_and_metadata_tracking(
+        settings,
+        Arc::new(MutableLibraryScanner::default()),
+        Arc::new(TrackingLibraryScanUnmatchedItemRepo::default()),
+        metadata_gateway.clone(),
+    );
+
+    app.update_media_settings(
+        &user,
+        MediaFacet::Series,
+        empty_update_media_settings_with_roots(vec![build_root_folder_entry(&series_root, true)]),
+    )
+    .await
+    .expect("store series root");
+
+    let session = app
+        .trigger_library_scan_by_id_with_hints(
+            &user,
+            &scryer_domain::default_library_id_for_facet(&MediaFacet::Series),
+            Some(scan_hints),
+        )
+        .await
+        .expect("trigger mixed hinted series scan");
+
+    wait_for_projected_library_scan_session_matching(&app, &session.session_id, |session| {
+        matches!(
+            session.status,
+            LibraryScanStatus::Completed | LibraryScanStatus::Warning
+        )
+    })
+    .await;
+
+    let batches = metadata_gateway.batch_queries().await;
+    let exact_batches = batches
+        .iter()
+        .filter(|batch| {
+            !batch.is_empty()
+                && batch.iter().all(|query| {
+                    query.query.is_empty()
+                        && query.type_hint == "series"
+                        && query.tvdb_id.is_some()
+                        && query.imdb_id.is_none()
+                        && query.tmdb_id.is_none()
+                })
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(exact_batches.len(), 1);
+    assert_eq!(exact_batches[0].len(), 22);
+    assert!(
+        batches
+            .iter()
+            .flatten()
+            .any(|query| !query.query.trim().is_empty())
+    );
+}
+
+#[tokio::test]
+async fn movie_full_scan_batches_radarr_identity_hints_at_gateway_cap() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let movie_root = tempdir.path().join("movies");
+    let mut scan_hints = LibraryScanHintSet::new();
+    let mut library_files = Vec::new();
+
+    for index in 0..22 {
+        let folder = movie_root.join(format!("Arr Movie {index:02} (1999)"));
+        std::fs::create_dir_all(&folder).expect("create hinted movie folder");
+        let movie_file = folder.join(format!("Arr Movie {index:02}.mkv"));
+        std::fs::write(&movie_file, b"movie").expect("write hinted movie file");
+        let file_path = movie_file.to_string_lossy().to_string();
+        library_files.push(build_test_library_file(&file_path));
+        scan_hints.push(LibraryScanHint {
+            source: LibraryScanHintSource::ExternalImportRadarr,
+            facet: LibraryScanHintFacet::Movie,
+            path_key: crate::library_scan_file_leaf_key(&file_path).expect("file leaf path key"),
+            full_path_key: crate::library_scan_file_full_path_key(&file_path),
+            ids: vec![
+                ExternalIdHint::normalized(
+                    ExternalIdProvider::Tmdb,
+                    &(800_000 + index).to_string(),
+                )
+                .expect("normalized tmdb id"),
+            ],
+        });
+    }
+
+    let settings = Arc::new(StoredSettingsRepo::default());
+    let metadata_gateway = Arc::new(RecordingExactIdMetadataGateway::default());
+    let library_scanner = Arc::new(MutableLibraryScanner::default());
+    library_scanner.set_library_files(library_files).await;
+    let (app, user) = bootstrap_with_scan_unmatched_and_metadata_tracking(
+        settings,
+        library_scanner,
+        Arc::new(TrackingLibraryScanUnmatchedItemRepo::default()),
+        metadata_gateway.clone(),
+    );
+
+    app.update_media_settings(
+        &user,
+        MediaFacet::Movie,
+        empty_update_media_settings_with_roots(vec![build_root_folder_entry(&movie_root, true)]),
+    )
+    .await
+    .expect("store movie root");
+
+    let session = app
+        .trigger_library_scan_by_id_with_hints(
+            &user,
+            &scryer_domain::default_library_id_for_facet(&MediaFacet::Movie),
+            Some(scan_hints),
+        )
+        .await
+        .expect("trigger hinted movie scan");
+
+    let projected =
+        wait_for_projected_library_scan_session_matching(&app, &session.session_id, |session| {
+            matches!(
+                session.status,
+                LibraryScanStatus::Completed | LibraryScanStatus::Warning
+            )
+        })
+        .await;
+    assert_eq!(
+        projected.summary.as_ref().map(|summary| summary.matched),
+        Some(22)
+    );
+
+    let batches = metadata_gateway.batch_queries().await;
+    assert_eq!(batches.len(), 1);
+    assert_eq!(batches[0].len(), 22);
+    for query in &batches[0] {
+        assert_eq!(query.query, "");
+        assert_eq!(query.type_hint, "movie");
+        assert_eq!(query.year, None);
+        assert!(query.tmdb_id.is_some());
+        assert_eq!(query.imdb_id, None);
+        assert_eq!(query.tvdb_id, None);
+    }
 }
 
 #[tokio::test]
