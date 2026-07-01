@@ -140,7 +140,7 @@ export function TitleHistoryView({
             <span>{t("label.loading")}</span>
           </div>
         ) : error ? (
-          <p className="py-8 text-sm text-rose-300">{error}</p>
+          <p className="py-8 text-sm text-[var(--scry-danger-text)]">{error}</p>
         ) : (
           <div className="min-h-0 flex-1 overflow-auto rounded-[14px] border border-[var(--scry-border2)] bg-[var(--scry-surfC)]">
             <HistoryEventTable

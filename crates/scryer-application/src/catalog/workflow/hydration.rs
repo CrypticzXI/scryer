@@ -591,13 +591,13 @@ impl AppUseCase {
             return;
         };
 
+        let language = self.metadata_language().await;
         let recommendations = if seeded_more_like_this.is_empty() {
-            let language = self.metadata_language().await;
             let input = crate::TitleRecommendationsInput {
                 subject,
                 query: String::new(),
                 limit: TITLE_MORE_LIKE_THIS_HYDRATION_LIMIT as i32,
-                language,
+                language: language.clone(),
                 include_unresolved: true,
             };
             match self
@@ -648,7 +648,7 @@ impl AppUseCase {
             .services
             .library
             .discovery
-            .replace_title_more_like_this_items(&title.id, &records)
+            .replace_title_more_like_this_items(&title.id, &language, &records)
             .await
         {
             warn!(

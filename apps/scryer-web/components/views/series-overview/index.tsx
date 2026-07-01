@@ -1147,7 +1147,7 @@ export function SeriesOverviewView({
                           {formatDate(entry.attemptedAt, dateTimeFormat)}
                         </span>
                         {entry.errorMessage ? (
-                          <span className="rounded bg-red-950/40 px-2 py-0.5 text-red-200">
+                          <span className="rounded bg-[var(--scry-danger-bg)] px-2 py-0.5 text-[var(--scry-danger-text)]">
                             {entry.errorMessage}
                           </span>
                         ) : null}

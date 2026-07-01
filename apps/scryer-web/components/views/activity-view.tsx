@@ -145,7 +145,7 @@ const importFilterOptions: ActivityFilterChipOption<DownloadImportStatus>[] = [
     value: "failed",
     labelKey: "activity.importFilter.failed",
     icon: XCircle,
-    iconClassName: "text-rose-400",
+    iconClassName: "text-[var(--scry-danger-text-soft)]",
   },
 ];
 
@@ -187,7 +187,7 @@ const historyFilterOptions: ActivityFilterChipOption<DownloadHistoryStatus>[] = 
     value: "failed",
     labelKey: "activity.historyFilter.failed",
     icon: XCircle,
-    iconClassName: "text-rose-400",
+    iconClassName: "text-[var(--scry-danger-text-soft)]",
   },
 ];
 
@@ -1009,7 +1009,7 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
         >
           <CardContent className="space-y-3 p-0">
           {queueError ? (
-            <p className="rounded border border-rose-500/40 bg-rose-950/40 p-2 text-sm text-rose-200">
+            <p className="rounded border border-[var(--scry-danger-border)] bg-[var(--scry-danger-bg)] p-2 text-sm text-[var(--scry-danger-text)]">
               {queueError}
             </p>
           ) : null}

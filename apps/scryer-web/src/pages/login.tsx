@@ -477,7 +477,7 @@ export default function LoginPage() {
           {error ? (
             <div
               id="login-error"
-              className="rounded-md bg-red-900/40 px-3 py-2 text-sm text-red-300"
+              className="rounded-md bg-[var(--scry-danger-bg)] px-3 py-2 text-sm text-[var(--scry-danger-text)]"
             >
               {error}
             </div>
@@ -590,7 +590,7 @@ export default function LoginPage() {
         <h1 className="text-center text-xl font-semibold tracking-tight">{t("auth.signIn")}</h1>
 
         {error && (
-          <div id="login-error" className="rounded-md bg-red-900/40 px-3 py-2 text-sm text-red-300">
+          <div id="login-error" className="rounded-md bg-[var(--scry-danger-bg)] px-3 py-2 text-sm text-[var(--scry-danger-text)]">
             {error}
           </div>
         )}

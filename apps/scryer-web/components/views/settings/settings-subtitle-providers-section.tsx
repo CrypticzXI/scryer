@@ -180,7 +180,7 @@ function SubtitleProviderStatusCell({
     return (
       <div className="space-y-1">
         <span
-          className="text-red-600 dark:text-red-400"
+          className="text-[var(--scry-danger-text-soft)]"
           title={provider.lastErrorAt}
         >
           {t("settings.subtitleProviderLastError", {

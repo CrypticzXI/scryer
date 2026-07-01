@@ -28,6 +28,7 @@ import { cn } from "@/lib/utils";
 import {
   boxedActionButtonBaseClass,
   boxedActionButtonToneClass,
+  boxedTextActionButtonBaseClass,
   type BoxedActionButtonTone,
 } from "@/lib/utils/action-button-styles";
 
@@ -667,6 +668,7 @@ export function SettingsPluginsSection({
         id="settings-plugins-upgrade-all"
         variant="outline"
         size="sm"
+        className={cn(boxedTextActionButtonBaseClass, boxedActionButtonToneClass.upgrade)}
         disabled={upgradingAll || remoteActionsBlocked.upgrade || upgradeCount === 0}
         onClick={onUpgradeAllPlugins}
       >

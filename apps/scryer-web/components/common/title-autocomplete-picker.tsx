@@ -286,7 +286,7 @@ export function TitleAutocompletePicker({
                 </div>
               ) : null}
               {searchError ? (
-                <div className="px-2 py-3 text-sm text-rose-400">{searchError}</div>
+                <div className="px-2 py-3 text-sm text-[var(--scry-danger-text-soft)]">{searchError}</div>
               ) : null}
               {shouldShowEmptyState ? (
                 <div className="px-2 py-3 text-sm text-muted-foreground">

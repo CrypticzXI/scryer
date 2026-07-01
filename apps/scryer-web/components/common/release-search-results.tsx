@@ -27,9 +27,9 @@ type SortDirection = ReleaseSearchSortDirection;
 type SearchResultPresentation = "default" | "selected-title";
 
 const selectedTitleTagClassNames = [
-  "bg-[rgba(56,189,248,0.13)] text-[#5cc8f5]",
-  "bg-[rgba(var(--scry-accent-rgb),0.15)] text-[var(--scry-accent-text)]",
-  "bg-[rgba(168,85,247,0.15)] text-[#c79bf5]",
+  "bg-[var(--scry-facet-series-bg)] text-[var(--scry-facet-series-text)]",
+  "bg-[var(--scry-facet-movie-bg)] text-[var(--scry-facet-movie-text)]",
+  "bg-[var(--scry-facet-anime-bg)] text-[var(--scry-facet-anime-text)]",
   "bg-[var(--scry-chip)] text-[var(--scry-muted2)]",
 ];
 
@@ -123,7 +123,7 @@ function SearchResultRow({
       ? decision.blockCodes.join(" · ")
       : null;
   const rejectionBadge = blockReason ? (
-    <span className="inline-flex max-w-full items-center gap-1 rounded-[6px] bg-red-500/10 px-2 py-0.5 text-[10px] font-bold text-red-400">
+    <span className="inline-flex max-w-full items-center gap-1 rounded-[6px] bg-[var(--scry-danger-bg)] px-2 py-0.5 text-[10px] font-bold text-[var(--scry-danger-text-soft)]">
       <Ban className="h-2.5 w-2.5 shrink-0" />
       <span className="min-w-0 break-words">{blockReason}</span>
     </span>
@@ -161,10 +161,10 @@ function SearchResultRow({
           ? { label: "Remux", className: "bg-violet-500/20 text-violet-300" }
           : null,
         result.parsedRelease.isBdDisk
-          ? { label: "BD", className: "bg-rose-500/20 text-rose-300" }
+          ? { label: "BD", className: "bg-[var(--scry-danger-bg-strong)] text-[var(--scry-danger-text)]" }
           : null,
         result.parsedRelease.isAiEnhanced
-          ? { label: "AI Enhanced", className: "bg-red-500/20 text-red-300" }
+          ? { label: "AI Enhanced", className: "bg-[var(--scry-danger-bg-strong)] text-[var(--scry-danger-text)]" }
           : null,
         result.parsedRelease.isAtmos
           ? { label: "Atmos", className: "bg-purple-500/20 text-purple-300" }
@@ -561,7 +561,7 @@ function SearchResultRow({
             hasLog ? (
               <button
                 type="button"
-                className={`text-sm font-[var(--font-code)] underline-offset-2 hover:underline ${decision.releaseScore < 0 ? "text-red-400" : "text-emerald-700 dark:text-emerald-300"}`}
+                className={`text-sm font-[var(--font-code)] underline-offset-2 hover:underline ${decision.releaseScore < 0 ? "text-[var(--scry-danger-text-soft)]" : "text-emerald-700 dark:text-emerald-300"}`}
                 onClick={() => setExpanded((prev) => !prev)}
                 aria-label={
                   expanded ? t("nzb.hideScoringLog") : t("nzb.showScoringLog")
@@ -571,7 +571,7 @@ function SearchResultRow({
               </button>
             ) : (
               <span
-                className={`text-sm font-[var(--font-code)] ${decision.releaseScore < 0 ? "text-red-400" : "text-emerald-700 dark:text-emerald-300"}`}
+                className={`text-sm font-[var(--font-code)] ${decision.releaseScore < 0 ? "text-[var(--scry-danger-text-soft)]" : "text-emerald-700 dark:text-emerald-300"}`}
               >
                 {getScoreText(decision.releaseScore)}
               </span>
@@ -682,7 +682,7 @@ function SearchResultRow({
                       <span
                         className={
                           entry.delta < 0
-                            ? "text-red-400"
+                            ? "text-[var(--scry-danger-text-soft)]"
                             : "text-emerald-600 dark:text-emerald-400"
                         }
                       >
@@ -698,7 +698,7 @@ function SearchResultRow({
                 <span
                   className={
                     decision.releaseScore < 0
-                      ? "text-red-400"
+                      ? "text-[var(--scry-danger-text-soft)]"
                       : "text-emerald-600 dark:text-emerald-400"
                   }
                 >

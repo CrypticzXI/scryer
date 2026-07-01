@@ -20,9 +20,9 @@ const queueStateClasses: Record<string, string> = {
   removing: "border-sky-500/40 bg-sky-500/10 text-sky-200",
   import_pending: "border-indigo-500/40 bg-indigo-500/10 text-indigo-200",
   import_blocked: "border-amber-500/40 bg-amber-500/10 text-amber-200",
-  import_failed: "border-rose-500/40 bg-rose-500/10 text-rose-200",
-  remove_failed: "border-rose-500/40 bg-rose-500/10 text-rose-200",
-  failed: "border-rose-500/40 bg-rose-500/10 text-rose-200",
+  import_failed: "border-[var(--scry-danger-border)] bg-[var(--scry-danger-bg)] text-[var(--scry-danger-text)]",
+  remove_failed: "border-[var(--scry-danger-border)] bg-[var(--scry-danger-bg)] text-[var(--scry-danger-text)]",
+  failed: "border-[var(--scry-danger-border)] bg-[var(--scry-danger-bg)] text-[var(--scry-danger-text)]",
 };
 
 const queueStateLabels: Record<string, string> = {
@@ -127,7 +127,7 @@ function getProgressBarColor(stateKey: string): string {
       return "bg-emerald-500";
     case "failed":
     case "remove_failed":
-      return "bg-rose-500";
+      return "bg-[var(--scry-danger-solid)]";
     case "paused":
       return "bg-amber-500";
     case "import_pending":

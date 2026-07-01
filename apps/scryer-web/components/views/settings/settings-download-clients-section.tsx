@@ -332,7 +332,7 @@ function DownloadClientStatusCell({ client }: { client: DownloadClientRecord }) 
   if (client.lastError || client.status === "error" || client.status === "failed") {
     return (
       <span
-        className="text-red-600 dark:text-red-400"
+        className="text-[var(--scry-danger-text-soft)]"
         title={client.lastError ?? client.status}
       >
         {t("settings.downloadClientLastError")}

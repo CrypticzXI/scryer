@@ -43,21 +43,21 @@ function navIconForFacet(facet: Facet): LucideIcon {
 const FACET_CONFIG: Record<Facet, FacetConfig> = {
   movie: {
     Icon: navIconForFacet("movie"),
-    rgb: "123,140,255",
-    base: "#7b8cff",
-    grad: "linear-gradient(90deg,#5b64ff,#7b5bff)",
+    rgb: "var(--scry-facet-movie-rgb)",
+    base: "var(--scry-facet-movie)",
+    grad: "var(--scry-facet-movie-grad)",
   },
   series: {
     Icon: navIconForFacet("series"),
-    rgb: "92,200,245",
-    base: "#5cc8f5",
-    grad: "linear-gradient(90deg,#2aa3e0,#5cc8f5)",
+    rgb: "var(--scry-facet-series-rgb)",
+    base: "var(--scry-facet-series)",
+    grad: "var(--scry-facet-series-grad)",
   },
   anime: {
     Icon: navIconForFacet("anime"),
-    rgb: "199,155,245",
-    base: "#c79bf5",
-    grad: "linear-gradient(90deg,#9b5bff,#c79bf5)",
+    rgb: "var(--scry-facet-anime-rgb)",
+    base: "var(--scry-facet-anime)",
+    grad: "var(--scry-facet-anime-grad)",
   },
 };
 
@@ -606,7 +606,7 @@ export function LibraryScanToast({
         : visualState === "issues"
           ? "linear-gradient(90deg,#e08b3c,#f0a35e)"
           : visualState === "failed"
-            ? "linear-gradient(90deg,#d65151,#f08c8c)"
+            ? "linear-gradient(90deg,var(--scry-danger-solid-hover),var(--scry-danger-text-soft))"
             : "linear-gradient(90deg,#5b6478,#8b94a8)";
 
   type Badge = {
@@ -637,9 +637,9 @@ export function LibraryScanToast({
           ? {
               label: t("settings.libraryScanBadgeFailed"),
               Icon: CircleAlert,
-              color: "#f08c8c",
-              bg: "rgba(240,113,113,.14)",
-              border: "rgba(240,113,113,.32)",
+              color: "var(--scry-danger-text-soft)",
+              bg: "var(--scry-danger-bg)",
+              border: "var(--scry-danger-border)",
             }
           : visualState === "canceled"
             ? {
@@ -684,9 +684,9 @@ export function LibraryScanToast({
   } else if (visualState === "failed") {
     chip = {
       Icon: CircleAlert,
-      color: "#f08c8c",
-      bg: "rgba(240,113,113,.09)",
-      border: "rgba(240,113,113,.24)",
+      color: "var(--scry-danger-text-soft)",
+      bg: "var(--scry-danger-bg)",
+      border: "var(--scry-danger-border)",
       text: session.warningMessage || t("settings.libraryScanFailed"),
     };
   }
@@ -749,9 +749,9 @@ export function LibraryScanToast({
             title={t("settings.libraryScanCancel")}
             className="flex h-9 w-[88px] items-center justify-center gap-1.5 rounded-[9px] text-[12.5px] font-semibold transition hover:brightness-110 disabled:opacity-60"
             style={{
-              border: "1px solid rgba(240,113,113,.32)",
-              background: "rgba(240,113,113,.1)",
-              color: "#f08c8c",
+              border: "1px solid var(--scry-danger-border)",
+              background: "var(--scry-danger-bg)",
+              color: "var(--scry-danger-text-soft)",
             }}
           >
             <X className="h-3.5 w-3.5" aria-hidden="true" />

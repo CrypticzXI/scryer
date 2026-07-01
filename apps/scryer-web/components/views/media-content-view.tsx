@@ -805,7 +805,7 @@ function TitleContextReleaseSearchPanel({
             {t("title.searchingReleases")}
           </div>
         ) : searchFailed ? (
-          <p className="rounded-[10px] border border-rose-500/25 bg-rose-500/10 px-3 py-2 text-[12px] text-rose-700 dark:text-rose-300">
+          <p className="rounded-[10px] border border-[var(--scry-danger-border)] bg-[var(--scry-danger-bg)] px-3 py-2 text-[12px] text-[var(--scry-danger-text)]">
             {t("nzb.searchFailed")}
           </p>
         ) : results === null ? (
@@ -1469,7 +1469,7 @@ function TitleContextPanel({
                             ) : null}
                           </div>
                           {entry.errorMessage ? (
-                            <p className="mt-2 line-clamp-3 rounded-[8px] bg-red-500/10 px-2.5 py-1.5 text-[11px] leading-4 text-red-700 dark:text-red-200">
+                            <p className="mt-2 line-clamp-3 rounded-[8px] bg-[var(--scry-danger-bg)] px-2.5 py-1.5 text-[11px] leading-4 text-[var(--scry-danger-text)]">
                               {entry.errorMessage}
                             </p>
                           ) : null}

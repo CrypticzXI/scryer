@@ -95,7 +95,7 @@ function statusColor(status: string): string {
     case "success":
       return "text-emerald-400";
     case "failed":
-      return "text-red-400";
+      return "text-[var(--scry-danger-text-soft)]";
     case "timeout":
       return "text-yellow-400";
     case "running":
@@ -181,7 +181,7 @@ function ScriptRunsTable({
                     {run.stderrTail ? (
                       <pre
                         id={selectorId("settings-post-processing-run-stderr", run.id)}
-                        className="max-h-24 overflow-auto whitespace-pre-wrap rounded bg-red-900/20 p-1.5 font-[var(--font-code)] text-[10px] leading-relaxed text-red-300"
+                        className="max-h-24 overflow-auto whitespace-pre-wrap rounded bg-[var(--scry-danger-bg)] p-1.5 font-[var(--font-code)] text-[10px] leading-relaxed text-[var(--scry-danger-text)]"
                       >
                         {run.stderrTail}
                       </pre>

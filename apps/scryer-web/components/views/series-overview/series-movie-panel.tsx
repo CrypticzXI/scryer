@@ -116,7 +116,7 @@ function badgeClassName(tone: "emerald" | "amber" | "slate" | "red") {
     case "amber":
       return "border-amber-500/30 bg-amber-500/10 text-amber-100";
     case "red":
-      return "border-red-500/30 bg-red-500/10 text-red-200";
+      return "border-[var(--scry-danger-border)] bg-[var(--scry-danger-bg)] text-[var(--scry-danger-text)]";
     default:
       return "border-border bg-muted/30 text-muted-foreground";
   }

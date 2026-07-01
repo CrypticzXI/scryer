@@ -88,6 +88,110 @@ impl LibraryScanner for NotifyingLibraryScanner {
 }
 
 #[derive(Clone, Default)]
+struct PerDirectoryBlockingLibraryScanner {
+    library_files: Arc<Mutex<Vec<LibraryFile>>>,
+    directory_files: Arc<Mutex<std::collections::HashMap<String, Vec<LibraryFile>>>>,
+    blocked_directories: Arc<Mutex<std::collections::HashSet<String>>>,
+    blocked_scan_calls: Arc<AtomicUsize>,
+    blocked_scan_started: Arc<Notify>,
+    release_blocked_scans: Arc<Notify>,
+}
+
+impl PerDirectoryBlockingLibraryScanner {
+    async fn set_library_files(&self, files: Vec<LibraryFile>) {
+        *self.library_files.lock().await = files;
+    }
+
+    async fn set_directory_files(&self, root: &std::path::Path, files: Vec<LibraryFile>) {
+        self.directory_files
+            .lock()
+            .await
+            .insert(root.to_string_lossy().to_string(), files);
+    }
+
+    async fn block_directory(&self, root: &std::path::Path) {
+        self.blocked_directories
+            .lock()
+            .await
+            .insert(root.to_string_lossy().to_string());
+    }
+
+    async fn release_blocked_directory_scans(&self) {
+        self.blocked_directories.lock().await.clear();
+        self.release_blocked_scans.notify_waiters();
+    }
+
+    async fn wait_for_blocked_directory_scan(&self) {
+        if self.blocked_scan_calls.load(Ordering::SeqCst) > 0 {
+            return;
+        }
+        timeout(Duration::from_secs(5), async {
+            loop {
+                let notified = self.blocked_scan_started.notified();
+                if self.blocked_scan_calls.load(Ordering::SeqCst) > 0 {
+                    break;
+                }
+                notified.await;
+            }
+        })
+        .await
+        .expect("timed out waiting for blocked title directory scan");
+    }
+}
+
+#[async_trait]
+impl LibraryScanner for PerDirectoryBlockingLibraryScanner {
+    async fn scan_library(&self, _root: &str) -> AppResult<Vec<LibraryFile>> {
+        Ok(self.library_files.lock().await.clone())
+    }
+
+    async fn scan_directory(&self, root: &str) -> AppResult<Vec<LibraryFile>> {
+        loop {
+            let should_block = self.blocked_directories.lock().await.contains(root);
+            if !should_block {
+                break;
+            }
+            self.blocked_scan_calls.fetch_add(1, Ordering::SeqCst);
+            self.blocked_scan_started.notify_waiters();
+            self.release_blocked_scans.notified().await;
+        }
+        Ok(self
+            .directory_files
+            .lock()
+            .await
+            .get(root)
+            .cloned()
+            .unwrap_or_default())
+    }
+
+    async fn scan_library_batched(
+        &self,
+        _root: &str,
+        _batch_size: usize,
+    ) -> AppResult<LibraryFileBatchReceiver> {
+        let files = self.library_files.lock().await.clone();
+        let (tx, rx) = tokio::sync::mpsc::channel(4);
+        tx.send(Ok(files))
+            .await
+            .map_err(|err| AppError::Repository(err.to_string()))?;
+        Ok(rx)
+    }
+
+    async fn scan_directory_batched(
+        &self,
+        root: &str,
+        _batch_size: usize,
+    ) -> AppResult<LibraryFileBatchReceiver> {
+        let files = self.scan_directory(root).await?;
+        let (tx, rx) = tokio::sync::mpsc::channel(4);
+        tx.send(Ok(files))
+            .await
+            .map_err(|err| AppError::Repository(err.to_string()))?;
+        Ok(rx)
+    }
+}
+
+#[derive(Clone, Default)]
 struct BlockingMediaAnalyzer {
     analyze_calls: Arc<AtomicUsize>,
     analyze_started: Arc<Notify>,
@@ -2260,6 +2364,176 @@ async fn series_full_scan_marks_media_total_known_after_enumeration_before_analy
         .expect("join series full scan task")
         .expect("series full scan should complete");
     assert_eq!(summary.scanned, 1);
+}
+
+#[tokio::test]
+async fn series_full_scan_starts_media_analysis_while_later_enumeration_is_pending() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let series_root = tempdir.path().join("series");
+    let fast_folder = series_root.join("Fast Show (2020)");
+    let fast_season = fast_folder.join("Season 01");
+    let slow_folder = series_root.join("Slow Show (2020)");
+    let slow_season = slow_folder.join("Season 01");
+    std::fs::create_dir_all(&fast_season).expect("create fast show season");
+    std::fs::create_dir_all(&slow_season).expect("create slow show season");
+    let fast_file = fast_season.join("Fast Show - S01E01.mkv");
+    let slow_file = slow_season.join("Slow Show - S01E01.mkv");
+    std::fs::write(&fast_file, b"episode").expect("write fast episode");
+    std::fs::write(&slow_file, b"episode").expect("write slow episode");
+
+    let settings = Arc::new(StoredSettingsRepo::default());
+    settings
+        .set_value(
+            SETTINGS_SCOPE_MEDIA,
+            "series.path",
+            series_root.to_string_lossy().as_ref(),
+        )
+        .await;
+    let scanner = Arc::new(PerDirectoryBlockingLibraryScanner::default());
+    scanner
+        .set_library_files(build_test_library_files(&[
+            fast_file.as_path(),
+            slow_file.as_path(),
+        ]))
+        .await;
+    scanner
+        .set_directory_files(
+            &fast_folder,
+            build_test_library_files(&[fast_file.as_path()]),
+        )
+        .await;
+    scanner
+        .set_directory_files(
+            &slow_folder,
+            build_test_library_files(&[slow_file.as_path()]),
+        )
+        .await;
+    scanner.block_directory(&slow_folder).await;
+    let blocking_analyzer = Arc::new(BlockingMediaAnalyzer::default());
+    blocking_analyzer.block();
+
+    let (app, user) = bootstrap_with_scan_unmatched_and_metadata_tracking(
+        settings,
+        Arc::new(MutableLibraryScanner::default()),
+        Arc::new(TrackingLibraryScanUnmatchedItemRepo::default()),
+        Arc::new(EmptySearchMetadataGateway),
+    );
+    let app = app.with_test_overrides(|builder| {
+        builder
+            .with_library_scanner(scanner.clone())
+            .with_media_analyzer(blocking_analyzer.clone())
+    });
+    app.reconcile_default_library_roots()
+        .await
+        .expect("reconcile legacy series root");
+
+    for (name, folder) in [
+        ("Fast Show", fast_folder.as_path()),
+        ("Slow Show", slow_folder.as_path()),
+    ] {
+        let title = app
+            .add_title(
+                &user,
+                NewTitle {
+                    name: name.into(),
+                    facet: MediaFacet::Series,
+                    monitored: true,
+                    tags: vec![],
+                    external_ids: vec![],
+                    min_availability: None,
+                    year: Some(2020),
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("create existing series title");
+        app.services
+            .catalog
+            .titles
+            .set_folder_path(&title.id, folder.to_string_lossy().as_ref())
+            .await
+            .expect("set series folder path");
+        let season = app
+            .services
+            .catalog
+            .shows
+            .create_collection(Collection {
+                id: Id::new().0,
+                title_id: title.id.clone(),
+                collection_type: CollectionType::Season,
+                collection_index: "1".to_string(),
+                label: Some("Season 1".to_string()),
+                ordered_path: None,
+                narrative_order: Some("1".to_string()),
+                first_episode_number: Some("1".to_string()),
+                last_episode_number: Some("1".to_string()),
+                monitored: true,
+                created_at: Utc::now(),
+            })
+            .await
+            .expect("create season");
+        app.services
+            .catalog
+            .shows
+            .create_episode(Episode {
+                id: Id::new().0,
+                title_id: title.id.clone(),
+                collection_id: Some(season.id.clone()),
+                episode_type: scryer_domain::EpisodeType::Standard,
+                episode_number: Some("1".to_string()),
+                season_number: Some("1".to_string()),
+                episode_label: Some("S01E01".to_string()),
+                title: Some("Pilot".to_string()),
+                air_date: Some("2020-01-01".to_string()),
+                duration_seconds: Some(420),
+                has_multi_audio: false,
+                has_subtitle: false,
+                is_filler: false,
+                is_recap: false,
+                absolute_number: None,
+                overview: None,
+                tvdb_id: None,
+                image_url: None,
+                monitored: true,
+                created_at: Utc::now(),
+            })
+            .await
+            .expect("create episode");
+    }
+
+    let session_id = "series-analysis-before-enumeration-drain";
+    let app_for_scan = app.clone();
+    let user_for_scan = user.clone();
+    let handle = tokio::spawn(async move {
+        app_for_scan
+            .scan_library_with_tracking(
+                &user_for_scan,
+                MediaFacet::Series,
+                Some(session_id.to_string()),
+                LibraryScanMode::Full,
+            )
+            .await
+    });
+
+    scanner.wait_for_blocked_directory_scan().await;
+    blocking_analyzer.wait_for_analysis().await;
+
+    let projected = wait_for_projected_library_scan_session_matching(&app, session_id, |session| {
+        !session.file_total_known && session.file_progress.total == 1
+    })
+    .await;
+    assert_eq!(projected.file_progress.total, 1);
+    assert_eq!(projected.file_progress.completed, 0);
+    assert!(!projected.status.is_terminal());
+
+    scanner.release_blocked_directory_scans().await;
+    blocking_analyzer.release();
+
+    let summary = handle
+        .await
+        .expect("join series full scan task")
+        .expect("series full scan should complete");
+    assert_eq!(summary.scanned, 2);
 }
 
 #[tokio::test]

@@ -20,13 +20,13 @@ export const boxedActionButtonToneClass = {
   install:
     "border-emerald-200 bg-emerald-50 text-emerald-700 hover:border-emerald-300 hover:bg-emerald-100 hover:text-emerald-800 dark:border-emerald-500/35 dark:bg-emerald-500/12 dark:text-emerald-200 dark:hover:border-emerald-400/45 dark:hover:bg-emerald-500/22 dark:hover:text-emerald-50",
   upgrade:
-    "border-amber-200 bg-amber-50 text-amber-700 hover:border-amber-300 hover:bg-amber-100 hover:text-amber-800 dark:border-amber-500/40 dark:bg-amber-500/14 dark:text-amber-200 dark:hover:border-amber-400/50 dark:hover:bg-amber-500/24 dark:hover:text-amber-50",
+    "border-[var(--scry-warning-border)] bg-[var(--scry-warning-bg)] text-[var(--scry-warning-text)] hover:border-[var(--scry-warning-border-strong)] hover:bg-[var(--scry-warning-bg-strong)] hover:text-[var(--scry-warning-text)]",
   enabled:
     "border-emerald-200 bg-emerald-50 text-emerald-700 hover:border-emerald-300 hover:bg-emerald-100 hover:text-emerald-800 dark:border-emerald-500/35 dark:bg-emerald-500/12 dark:text-emerald-200 dark:hover:border-emerald-400/45 dark:hover:bg-emerald-500/22 dark:hover:text-emerald-50",
   disabled:
-    "border-rose-200 bg-rose-50 text-rose-700 hover:border-rose-300 hover:bg-rose-100 hover:text-rose-800 dark:border-rose-500/35 dark:bg-rose-500/12 dark:text-rose-200 dark:hover:border-rose-400/45 dark:hover:bg-rose-500/22 dark:hover:text-rose-50",
+    "border-[var(--scry-danger-border)] bg-[var(--scry-danger-bg)] text-[var(--scry-danger-text)] hover:border-[var(--scry-danger-border-strong)] hover:bg-[var(--scry-danger-bg-strong)] hover:text-[var(--scry-danger-text)]",
   delete:
-    "border-red-200 bg-red-50 text-red-700 hover:border-red-300 hover:bg-red-100 hover:text-red-800 dark:border-red-500/40 dark:bg-red-500/14 dark:text-red-200 dark:hover:border-red-400/50 dark:hover:bg-red-500/26 dark:hover:text-red-50",
+    "border-[var(--scry-danger-border)] bg-[var(--scry-danger-bg)] text-[var(--scry-danger-text)] hover:border-[var(--scry-danger-border-strong)] hover:bg-[var(--scry-danger-bg-strong)] hover:text-[var(--scry-danger-text)]",
 } as const;
 
 export type BoxedActionButtonTone = keyof typeof boxedActionButtonToneClass;

@@ -15,7 +15,7 @@ export function RenderBooleanIcon({ value, label }: RenderBooleanIconProps) {
       {value ? (
         <Check className="h-4 w-4 text-emerald-600 dark:text-emerald-300" />
       ) : (
-        <X className="h-4 w-4 text-rose-600 dark:text-rose-300" />
+        <X className="h-4 w-4 text-[var(--scry-danger-text)]" />
       )}
     </span>
   );

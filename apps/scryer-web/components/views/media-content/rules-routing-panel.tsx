@@ -101,7 +101,7 @@ export const RulesRoutingPanel = React.memo(function RulesRoutingPanel({
                           onClick={() => onToggleFacet(rule.id, !isEnabledForFacet)}
                           className={
                             isEnabledForFacet
-                              ? "border-red-700/70 bg-red-900/60 text-red-200 hover:bg-red-900/80 hover:text-red-100"
+                              ? "border-[var(--scry-danger-border)] bg-[var(--scry-danger-bg)] text-[var(--scry-danger-text)] hover:bg-[var(--scry-danger-bg-strong)] hover:text-[var(--scry-danger-text)]"
                               : "border-emerald-300/70 dark:border-emerald-700/70 bg-emerald-100 dark:bg-emerald-900/60 text-emerald-800 dark:text-emerald-100 hover:bg-emerald-200 dark:hover:bg-emerald-800/80"
                           }
                         >

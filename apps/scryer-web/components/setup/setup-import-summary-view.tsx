@@ -228,9 +228,9 @@ export default function SetupImportSummaryView({
               <div
                 style={{
                   ...accentTileStyle,
-                  background: "rgba(248, 113, 113, 0.12)",
-                  border: "1px solid rgba(248, 113, 113, 0.4)",
-                  color: "#f87171",
+                  background: "var(--scry-danger-bg)",
+                  border: "1px solid var(--scry-danger-border)",
+                  color: "var(--scry-danger-text-soft)",
                 }}
               >
                 <TriangleAlert size={18} strokeWidth={2} aria-hidden />

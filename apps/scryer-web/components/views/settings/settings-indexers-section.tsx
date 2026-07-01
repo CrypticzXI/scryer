@@ -192,7 +192,7 @@ function IndexerStatusCell({ indexer }: { indexer: IndexerRecord }) {
   if (indexer.lastErrorAt) {
     return (
       <span
-        className="text-red-600 dark:text-red-400"
+        className="text-[var(--scry-danger-text-soft)]"
         title={indexer.lastErrorAt}
       >
         {t("settings.indexerLastError", {

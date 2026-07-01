@@ -215,13 +215,13 @@ export function ExternalSubtitleSection({
                     {download.aiTranslated ? (
                       <SubtitleFlag
                         label={t("subtitle.aiTranslated")}
-                        className="bg-rose-500/20 text-rose-700 dark:text-rose-300"
+                        className="bg-[var(--scry-danger-bg-strong)] text-[var(--scry-danger-text)]"
                       />
                     ) : null}
                     {download.machineTranslated ? (
                       <SubtitleFlag
                         label={t("subtitle.machineTranslated")}
-                        className="bg-red-500/20 text-red-700 dark:text-red-300"
+                        className="bg-[var(--scry-danger-bg-strong)] text-[var(--scry-danger-text)]"
                       />
                     ) : null}
                     {download.score != null ? (

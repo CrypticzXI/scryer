@@ -283,7 +283,7 @@ export function ManualImportDialog({
         ) : error && files.length === 0 ? (
           <div
             id="activity-manual-import-error"
-            className="py-8 text-center text-sm text-red-400"
+            className="py-8 text-center text-sm text-[var(--scry-danger-text-soft)]"
           >
             {error}
           </div>
@@ -393,7 +393,7 @@ export function ManualImportDialog({
               </Table>
             )}
             {error && (
-              <p id="activity-manual-import-error" className="text-sm text-red-400">
+              <p id="activity-manual-import-error" className="text-sm text-[var(--scry-danger-text-soft)]">
                 {error}
               </p>
             )}

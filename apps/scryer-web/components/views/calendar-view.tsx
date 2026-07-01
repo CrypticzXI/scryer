@@ -44,25 +44,28 @@ type CalendarViewProps = {
   onEpisodeClick?: (episode: CalendarEpisodeItem) => void;
 };
 
-// Facet brand colors sourced from the design handoff (CalendarView.dc.html).
-// `FACET_COLORS` drives the dot / left-accent-bar; `FACET_GRADIENTS` is the
-// 135° two-tone chip fill.
 const FACET_COLORS: Record<string, string> = {
-  anime: "#9b6bff",
-  movie: "#e0a64a",
-  series: "#5b8cff",
+  anime: "var(--scry-facet-anime)",
+  movie: "var(--scry-facet-movie)",
+  series: "var(--scry-facet-series)",
 };
 
 const FACET_GRADIENTS: Record<string, string> = {
-  anime: "linear-gradient(135deg,#7c5cff,#9b6bff)",
-  movie: "linear-gradient(135deg,#d9962f,#eab308)",
-  series: "linear-gradient(135deg,#3b6ef6,#5b8cff)",
+  anime: "var(--scry-facet-anime-grad)",
+  movie: "var(--scry-facet-movie-grad)",
+  series: "var(--scry-facet-series-grad)",
 };
 
 const FACET_GLOWS: Record<string, string> = {
-  anime: "rgba(155,107,255,.7)",
-  movie: "rgba(234,179,8,.7)",
-  series: "rgba(91,140,255,.7)",
+  anime: "rgba(var(--scry-facet-anime-rgb), .7)",
+  movie: "rgba(var(--scry-facet-movie-rgb), .7)",
+  series: "rgba(var(--scry-facet-series-rgb), .7)",
+};
+
+const FACET_RGB: Record<string, string> = {
+  anime: "var(--scry-facet-anime-rgb)",
+  movie: "var(--scry-facet-movie-rgb)",
+  series: "var(--scry-facet-series-rgb)",
 };
 
 // Handoff orders the filter pills Anime · Movie · Series.
@@ -73,18 +76,6 @@ const FACET_LABELS: Record<string, string> = {
   movie: "Movie",
   series: "Series",
 };
-
-function hexToRgbChannels(hex: string): string {
-  const normalized = hex.replace("#", "");
-  const value = normalized.length === 3
-    ? normalized.split("").map((char) => `${char}${char}`).join("")
-    : normalized;
-
-  const r = Number.parseInt(value.slice(0, 2), 16);
-  const g = Number.parseInt(value.slice(2, 4), 16);
-  const b = Number.parseInt(value.slice(4, 6), 16);
-  return `${r} ${g} ${b}`;
-}
 
 function formatEpisodeLabel(ep: CalendarEpisodeItem): string {
   const parts: string[] = [ep.titleName];
@@ -201,11 +192,12 @@ export function CalendarView({
     const ep = arg.event.extendedProps as CalendarEpisodeItem;
     const facetColor = FACET_COLORS[ep.titleFacet] ?? "#6b7280";
     const facetGradient = FACET_GRADIENTS[ep.titleFacet] ?? facetColor;
+    const facetRgb = FACET_RGB[ep.titleFacet] ?? "107, 114, 128";
     arg.el.setAttribute("title", formatTooltip(ep));
     arg.el.style.setProperty("--scryer-event-color", facetColor);
     arg.el.style.setProperty("--scryer-event-accent", facetColor);
     arg.el.style.setProperty("--scryer-event-gradient", facetGradient);
-    arg.el.style.setProperty("--scryer-event-rgb", hexToRgbChannels(facetColor));
+    arg.el.style.setProperty("--scryer-event-rgb", facetRgb);
     arg.el.style.setProperty("--fc-event-text-color", "#f8fbff");
   }, []);
 

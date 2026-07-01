@@ -48,7 +48,7 @@ export function RouteErrorBoundary() {
         style={{
           background: [
             "radial-gradient(circle at 30% 20%, rgba(91, 100, 255, 0.08), transparent 40%)",
-            "radial-gradient(circle at 70% 80%, rgba(239, 68, 68, 0.06), transparent 40%)",
+            "radial-gradient(circle at 70% 80%, rgba(var(--scry-danger-rgb), 0.06), transparent 40%)",
             "linear-gradient(180deg, transparent 0%, rgba(4, 8, 20, 0.5) 100%)",
           ].join(", "),
         }}
@@ -65,7 +65,7 @@ export function RouteErrorBoundary() {
 
         {/* Icon + Title */}
         <div className="mb-3 flex items-center justify-center gap-2.5">
-          <AlertTriangle className="h-5 w-5 text-red-400" />
+          <AlertTriangle className="h-5 w-5 text-[var(--scry-danger-text-soft)]" />
           <h1 className="text-lg font-semibold text-foreground">{title}</h1>
         </div>
 

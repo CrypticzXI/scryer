@@ -108,14 +108,11 @@ CREATE TABLE IF NOT EXISTS discovery_sections (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE TABLE IF NOT EXISTS discovery_items (
+CREATE TABLE IF NOT EXISTS discovery_titles (
     id TEXT PRIMARY KEY NOT NULL,
-    run_id TEXT NOT NULL REFERENCES discovery_sync_runs(id) ON DELETE CASCADE,
-    base_generation_id TEXT REFERENCES discovery_sync_runs(id) ON DELETE SET NULL,
-    source_run_kind TEXT NOT NULL,
-    section_id TEXT,
-    sort_index INTEGER NOT NULL DEFAULT 0,
     target_key TEXT NOT NULL,
+    target_key_norm TEXT NOT NULL,
+    language TEXT NOT NULL,
     target_kind TEXT NOT NULL,
     resolved BOOLEAN NOT NULL DEFAULT FALSE,
     resolved_title_id TEXT REFERENCES titles(id) ON DELETE SET NULL,
@@ -129,6 +126,58 @@ CREATE TABLE IF NOT EXISTS discovery_items (
     overview TEXT,
     content_type TEXT,
     rating DOUBLE PRECISION,
+    tmdb_collection_id TEXT,
+    tmdb_collection_name TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (target_key_norm, language)
+);
+
+CREATE TABLE IF NOT EXISTS discovery_title_terms (
+    discovery_title_id TEXT NOT NULL REFERENCES discovery_titles(id) ON DELETE CASCADE,
+    term_kind TEXT NOT NULL,
+    term_category TEXT NOT NULL DEFAULT '',
+    term_value TEXT NOT NULL,
+    sort_index INTEGER NOT NULL DEFAULT 0,
+    UNIQUE (discovery_title_id, term_kind, term_category, term_value)
+);
+
+CREATE TABLE IF NOT EXISTS discovery_title_source_tags (
+    discovery_title_id TEXT NOT NULL REFERENCES discovery_titles(id) ON DELETE CASCADE,
+    category TEXT NOT NULL DEFAULT '',
+    name TEXT NOT NULL DEFAULT '',
+    sort_index INTEGER NOT NULL DEFAULT 0,
+    UNIQUE (discovery_title_id, sort_index, category, name)
+);
+
+CREATE TABLE IF NOT EXISTS discovery_title_source_tag_values (
+    discovery_title_id TEXT NOT NULL REFERENCES discovery_titles(id) ON DELETE CASCADE,
+    source_tag_sort_index INTEGER NOT NULL,
+    source_tag_value TEXT NOT NULL,
+    value_sort_index INTEGER NOT NULL DEFAULT 0,
+    UNIQUE (discovery_title_id, source_tag_sort_index, source_tag_value)
+);
+
+CREATE TABLE IF NOT EXISTS discovery_title_ratings (
+    discovery_title_id TEXT NOT NULL REFERENCES discovery_titles(id) ON DELETE CASCADE,
+    rating_source TEXT NOT NULL,
+    rating_value DOUBLE PRECISION,
+    rating_score DOUBLE PRECISION,
+    normalized DOUBLE PRECISION,
+    votes INTEGER,
+    url TEXT NOT NULL DEFAULT '',
+    sort_index INTEGER NOT NULL DEFAULT 0,
+    UNIQUE (discovery_title_id, rating_source)
+);
+
+CREATE TABLE IF NOT EXISTS discovery_items (
+    id TEXT PRIMARY KEY NOT NULL,
+    run_id TEXT NOT NULL REFERENCES discovery_sync_runs(id) ON DELETE CASCADE,
+    base_generation_id TEXT REFERENCES discovery_sync_runs(id) ON DELETE SET NULL,
+    discovery_title_id TEXT NOT NULL REFERENCES discovery_titles(id) ON DELETE CASCADE,
+    source_run_kind TEXT NOT NULL,
+    section_id TEXT,
+    sort_index INTEGER NOT NULL DEFAULT 0,
     best_source TEXT,
     source_count INTEGER,
     edge_count INTEGER,
@@ -136,8 +185,6 @@ CREATE TABLE IF NOT EXISTS discovery_items (
     source_subject_count INTEGER,
     rank_score DOUBLE PRECISION,
     matched_subject_count INTEGER NOT NULL DEFAULT 0,
-    tmdb_collection_id TEXT,
-    tmdb_collection_name TEXT,
     owned_in_input BOOLEAN NOT NULL DEFAULT FALSE,
     tombstoned_by_run_id TEXT REFERENCES discovery_sync_runs(id) ON DELETE SET NULL,
     tombstoned_at TIMESTAMPTZ,
@@ -151,48 +198,6 @@ CREATE TABLE IF NOT EXISTS discovery_section_items (
     item_id TEXT NOT NULL REFERENCES discovery_items(id) ON DELETE CASCADE,
     sort_index INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (run_id, section_id, item_id)
-);
-
-CREATE TABLE IF NOT EXISTS discovery_item_terms (
-    item_id TEXT NOT NULL REFERENCES discovery_items(id) ON DELETE CASCADE,
-    run_id TEXT NOT NULL REFERENCES discovery_sync_runs(id) ON DELETE CASCADE,
-    term_kind TEXT NOT NULL,
-    term_category TEXT NOT NULL DEFAULT '',
-    term_value TEXT NOT NULL,
-    sort_index INTEGER NOT NULL DEFAULT 0,
-    UNIQUE (item_id, term_kind, term_category, term_value)
-);
-
-CREATE TABLE IF NOT EXISTS discovery_item_source_tags (
-    item_id TEXT NOT NULL REFERENCES discovery_items(id) ON DELETE CASCADE,
-    run_id TEXT NOT NULL REFERENCES discovery_sync_runs(id) ON DELETE CASCADE,
-    category TEXT NOT NULL DEFAULT '',
-    name TEXT NOT NULL DEFAULT '',
-    sort_index INTEGER NOT NULL DEFAULT 0,
-    UNIQUE (item_id, sort_index, category, name)
-);
-
-CREATE TABLE IF NOT EXISTS discovery_item_source_tag_values (
-    item_id TEXT NOT NULL REFERENCES discovery_items(id) ON DELETE CASCADE,
-    run_id TEXT NOT NULL REFERENCES discovery_sync_runs(id) ON DELETE CASCADE,
-    source_tag_sort_index INTEGER NOT NULL,
-    source_tag_value TEXT NOT NULL,
-    value_sort_index INTEGER NOT NULL DEFAULT 0,
-    UNIQUE (item_id, source_tag_sort_index, source_tag_value)
-);
-
-CREATE TABLE IF NOT EXISTS discovery_item_ratings (
-    item_id TEXT NOT NULL REFERENCES discovery_items(id) ON DELETE CASCADE,
-    run_id TEXT NOT NULL REFERENCES discovery_sync_runs(id) ON DELETE CASCADE,
-    rating_source TEXT NOT NULL,
-    rating DOUBLE PRECISION,
-    rating_value DOUBLE PRECISION,
-    rating_score DOUBLE PRECISION,
-    normalized DOUBLE PRECISION,
-    votes INTEGER,
-    url TEXT NOT NULL DEFAULT '',
-    sort_index INTEGER NOT NULL DEFAULT 0,
-    UNIQUE (item_id, rating_source)
 );
 
 CREATE TABLE IF NOT EXISTS discovery_item_rank_components (
@@ -243,26 +248,28 @@ CREATE INDEX IF NOT EXISTS idx_discovery_pending_changes_scope_sequence
     ON discovery_pending_context_changes(scope_key, last_seen_sequence);
 CREATE INDEX IF NOT EXISTS idx_discovery_sections_run_surface
     ON discovery_sections(run_id, surface, sort_index);
-CREATE INDEX IF NOT EXISTS idx_discovery_items_active_target
-    ON discovery_items(base_generation_id, target_key, tombstoned_at);
+CREATE INDEX IF NOT EXISTS idx_discovery_titles_key_language
+    ON discovery_titles(target_key_norm, language);
+CREATE INDEX IF NOT EXISTS idx_discovery_title_terms_kind_value
+    ON discovery_title_terms(term_kind, term_value, discovery_title_id);
+CREATE INDEX IF NOT EXISTS idx_discovery_title_terms_title
+    ON discovery_title_terms(discovery_title_id, term_kind, sort_index);
+CREATE INDEX IF NOT EXISTS idx_discovery_title_source_tags_title
+    ON discovery_title_source_tags(discovery_title_id, sort_index);
+CREATE INDEX IF NOT EXISTS idx_discovery_title_source_tag_values_title
+    ON discovery_title_source_tag_values(discovery_title_id, source_tag_sort_index, value_sort_index);
+CREATE INDEX IF NOT EXISTS idx_discovery_title_ratings_title
+    ON discovery_title_ratings(discovery_title_id, sort_index);
+CREATE INDEX IF NOT EXISTS idx_discovery_items_active_title
+    ON discovery_items(base_generation_id, discovery_title_id, tombstoned_at);
 CREATE INDEX IF NOT EXISTS idx_discovery_items_run
     ON discovery_items(run_id);
 CREATE INDEX IF NOT EXISTS idx_discovery_items_section
     ON discovery_items(section_id, sort_index, rank_score);
-CREATE INDEX IF NOT EXISTS idx_discovery_items_target_kind
-    ON discovery_items(target_kind, resolved, owned_in_input);
+CREATE INDEX IF NOT EXISTS idx_discovery_items_run_section
+    ON discovery_items(run_id, section_id, sort_index);
 CREATE INDEX IF NOT EXISTS idx_discovery_section_items_run_section
     ON discovery_section_items(run_id, section_id, sort_index);
-CREATE INDEX IF NOT EXISTS idx_discovery_item_terms_run_kind_value
-    ON discovery_item_terms(run_id, term_kind, term_value, item_id);
-CREATE INDEX IF NOT EXISTS idx_discovery_item_terms_item
-    ON discovery_item_terms(item_id, term_kind, sort_index);
-CREATE INDEX IF NOT EXISTS idx_discovery_item_source_tags_item
-    ON discovery_item_source_tags(item_id, sort_index);
-CREATE INDEX IF NOT EXISTS idx_discovery_item_source_tag_values_item
-    ON discovery_item_source_tag_values(item_id, source_tag_sort_index, value_sort_index);
-CREATE INDEX IF NOT EXISTS idx_discovery_item_ratings_item
-    ON discovery_item_ratings(item_id, sort_index);
 CREATE INDEX IF NOT EXISTS idx_discovery_item_rank_components_item
     ON discovery_item_rank_components(item_id, component_index);
 CREATE INDEX IF NOT EXISTS idx_discovery_item_subject_links_run_type_key

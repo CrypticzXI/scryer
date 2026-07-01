@@ -946,8 +946,8 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
       ) : null}
 
       {pendingError ? (
-        <Card className="border-red-500/30 bg-red-500/10">
-          <CardContent className="py-4 text-sm text-red-200">{pendingError}</CardContent>
+        <Card className="border-[var(--scry-danger-border)] bg-[var(--scry-danger-bg)]">
+          <CardContent className="py-4 text-sm text-[var(--scry-danger-text)]">{pendingError}</CardContent>
         </Card>
       ) : null}
 
@@ -986,8 +986,8 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
             </CollapsibleTrigger>
             <CollapsibleContent className="space-y-4 px-4 pb-4">
               {ignoredError ? (
-                <Card className="border-red-500/30 bg-red-500/10">
-                  <CardContent className="py-4 text-sm text-red-200">{ignoredError}</CardContent>
+                <Card className="border-[var(--scry-danger-border)] bg-[var(--scry-danger-bg)]">
+                  <CardContent className="py-4 text-sm text-[var(--scry-danger-text)]">{ignoredError}</CardContent>
                 </Card>
               ) : null}
 

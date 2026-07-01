@@ -13,22 +13,22 @@ interface KindColors {
 
 const KIND_COLORS: Record<PillKind, KindColors> = {
   sonarr: {
-    dot: "#38bdf8",
-    bg: "rgba(56, 189, 248, 0.1)",
-    border: "rgba(56, 189, 248, 0.28)",
-    text: "#9bd6f5",
+    dot: "var(--scry-facet-series)",
+    bg: "var(--scry-facet-series-bg)",
+    border: "var(--scry-facet-series-border)",
+    text: "var(--scry-facet-series-text)",
   },
   radarr: {
-    dot: "#e7c66a",
-    bg: "rgba(234, 179, 8, 0.1)",
-    border: "rgba(234, 179, 8, 0.28)",
-    text: "#e7c66a",
+    dot: "var(--scry-facet-movie)",
+    bg: "var(--scry-facet-movie-bg)",
+    border: "var(--scry-facet-movie-border)",
+    text: "var(--scry-facet-movie-text)",
   },
   prowlarr: {
-    dot: "#a987ff",
-    bg: "rgba(155, 91, 255, 0.1)",
-    border: "rgba(155, 91, 255, 0.3)",
-    text: "#c4a3ff",
+    dot: "var(--scry-facet-anime)",
+    bg: "var(--scry-facet-anime-bg)",
+    border: "var(--scry-facet-anime-border)",
+    text: "var(--scry-facet-anime-text)",
   },
   manual: {
     dot: "var(--scry-faint)",

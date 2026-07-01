@@ -1273,21 +1273,6 @@ impl LibraryScanTitleWorkExecutor {
         None
     }
 
-    fn enumeration_pending(&self) -> bool {
-        !self.pending_full.is_empty()
-            || !self.pending_scoped.is_empty()
-            || !self.ready.is_empty()
-            || !self.enumerating.is_empty()
-            || !self.enumeration_set.is_empty()
-    }
-
-    fn should_defer_analysis_for_enumeration(&self) -> bool {
-        self.file_total_mode == LibraryScanFileTotalMode::AggregateKnownByExecutor
-            && self.input_closed
-            && self.enumeration_pending()
-            && self.enumerated_file_backlog < LIBRARY_SCAN_ENUMERATED_FILE_BACKLOG_HIGH_WATER
-    }
-
     async fn launch_ready(&mut self) -> AppResult<()> {
         while !library_scan_cancel_requested(self.cancel_token.as_ref()) {
             if self.enumerated_file_backlog >= LIBRARY_SCAN_ENUMERATED_FILE_BACKLOG_HIGH_WATER {
@@ -1323,9 +1308,6 @@ impl LibraryScanTitleWorkExecutor {
 
     async fn launch_analysis(&mut self) -> AppResult<()> {
         while !library_scan_cancel_requested(self.cancel_token.as_ref()) {
-            if self.should_defer_analysis_for_enumeration() {
-                break;
-            }
             let Some(queued) = self.pop_analysis_ready_work() else {
                 break;
             };

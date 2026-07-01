@@ -132,7 +132,7 @@ export const QueueRowItem = memo(function QueueRowItem({
       </div>
       {(queueItem.deleteErrorMessage || queueItem.importErrorMessage) &&
       !row.hasStatusDetails ? (
-        <p className="mt-2 break-words text-xs text-rose-400">
+        <p className="mt-2 break-words text-xs text-[var(--scry-danger-text-soft)]">
           {queueItem.deleteErrorMessage ?? queueItem.importErrorMessage}
         </p>
       ) : null}

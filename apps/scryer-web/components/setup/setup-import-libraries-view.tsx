@@ -470,7 +470,14 @@ export default function SetupImportLibrariesView({
               }}
             >
               {/* Header */}
-              <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 9,
+                  minWidth: 0,
+                }}
+              >
                 <span
                   aria-hidden
                   style={{
@@ -542,6 +549,31 @@ export default function SetupImportLibrariesView({
                     {lib.name}
                   </button>
                 )}
+                <span
+                  style={{
+                    display: "inline-flex",
+                    flex: "none",
+                    alignItems: "center",
+                    gap: 5,
+                    marginLeft: "auto",
+                    padding: "3px 9px",
+                    borderRadius: 7,
+                    fontSize: 10.5,
+                    fontWeight: 700,
+                    ...facetPillStyle(lib.facet),
+                  }}
+                >
+                  <span
+                    aria-hidden
+                    style={{
+                      width: 6,
+                      height: 6,
+                      borderRadius: "50%",
+                      background: style.dot,
+                    }}
+                  />
+                  {t(facetLabelKey(lib.facet))}
+                </span>
                 {!lib.isDefault ? (
                   <button
                     type="button"
@@ -566,33 +598,6 @@ export default function SetupImportLibrariesView({
                   </button>
                 ) : null}
               </div>
-
-              {/* Facet pill */}
-              <span
-                style={{
-                  display: "inline-flex",
-                  alignSelf: "flex-start",
-                  alignItems: "center",
-                  gap: 5,
-                  margin: "10px 0",
-                  padding: "3px 9px",
-                  borderRadius: 7,
-                  fontSize: 10.5,
-                  fontWeight: 700,
-                  ...facetPillStyle(lib.facet),
-                }}
-              >
-                <span
-                  aria-hidden
-                  style={{
-                    width: 6,
-                    height: 6,
-                    borderRadius: "50%",
-                    background: style.dot,
-                  }}
-                />
-                {t(facetLabelKey(lib.facet))}
-              </span>
 
               {/* Drop body */}
               <div

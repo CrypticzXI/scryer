@@ -1075,7 +1075,6 @@ fn serve_local_scryer(ctx: &TaskContext, args: ServeArgs, mode: ServeMode) -> Re
         std::env::var("SCRYER_VITE_POLL_INTERVAL_MS").unwrap_or_else(|_| "250".to_string());
     let backend_rust_min_stack = dotenv_or_process_env(&dotenv_envs, "RUST_MIN_STACK")
         .unwrap_or_else(|| DEFAULT_SERVE_BACKEND_RUST_MIN_STACK.to_string());
-    let datastore = prepare_serve_datastore(ctx, &args, mode)?;
     let encryption_key = serve_encryption_key();
     let webauthn_rp_id = dotenv_or_process_env(&dotenv_envs, "SCRYER_WEBAUTHN_RP_ID")
         .unwrap_or_else(|| "localhost".to_string());
@@ -1095,6 +1094,8 @@ fn serve_local_scryer(ctx: &TaskContext, args: ServeArgs, mode: ServeMode) -> Re
     let mut build = ctx.command_in("cargo", &ctx.repo_root);
     build.args(["build", "--locked", "-p", "scryer"]);
     run_checked(&mut build)?;
+
+    let datastore = prepare_serve_datastore(ctx, &args, mode)?;
 
     step(format!(
         "Starting Scryer backend from {} on {}",

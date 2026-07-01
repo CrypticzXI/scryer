@@ -23,8 +23,9 @@ fragment DiscoveryCollectionCompletionTitleFields on DiscoveryCollectionCompleti
   genres
   rating
   rating_sources
-  external_ratings {
-    source
+  rating_provenance {
+    metadata_source
+    rating_source
     value
     score
     normalized

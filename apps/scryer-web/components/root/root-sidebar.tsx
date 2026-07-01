@@ -430,7 +430,7 @@ type NavBadgeTone = "cta" | "danger" | "request";
 function navBadgeToneClass(tone: NavBadgeTone) {
   switch (tone) {
     case "danger":
-      return "bg-red-600 text-white dark:bg-red-500 dark:text-white";
+      return "bg-[var(--scry-danger-solid)] text-[var(--scry-danger-on-solid)]";
     case "request":
       return "bg-emerald-600 text-white dark:bg-emerald-500 dark:text-emerald-950";
     case "cta":
@@ -1161,7 +1161,7 @@ function RootSidebarContent({
                             </SidebarMenuBadge>
                           ) : null}
                           {item.id === "settings" && pluginUpdateCount > 0 ? (
-                            <SidebarMenuBadge className="bg-red-600 text-white dark:bg-red-500 dark:text-white">
+                            <SidebarMenuBadge className="bg-[var(--scry-danger-solid)] text-[var(--scry-danger-on-solid)]">
                               {pluginUpdateCount}
                             </SidebarMenuBadge>
                           ) : null}

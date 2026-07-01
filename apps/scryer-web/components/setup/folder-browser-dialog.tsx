@@ -168,7 +168,7 @@ export function FolderBrowserDialog({
               </div>
             ) : error ? (
               <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center text-sm">
-                <p className="max-w-md rounded-[10px] border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-rose-700 dark:text-rose-300">
+                <p className="max-w-md rounded-[10px] border border-[var(--scry-danger-border)] bg-[var(--scry-danger-bg)] px-3 py-2 text-[var(--scry-danger-text)]">
                   {error}
                 </p>
                 {currentPath !== "/" ? (

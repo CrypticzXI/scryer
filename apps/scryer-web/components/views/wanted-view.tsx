@@ -442,18 +442,18 @@ function phaseBadge(phase: WantedSearchPhase, t: Translate) {
 function decisionBadge(code: string, t: Translate) {
   const colors: Record<string, string> = {
     eligible: "bg-green-500/20 text-green-400",
-    title_mismatch: "bg-red-500/20 text-red-400",
-    quality_blocked: "bg-red-500/20 text-red-400",
+    title_mismatch: "bg-[var(--scry-danger-bg-strong)] text-[var(--scry-danger-text-soft)]",
+    quality_blocked: "bg-[var(--scry-danger-bg-strong)] text-[var(--scry-danger-text-soft)]",
     upgrade_rejected: "bg-amber-500/20 text-amber-400",
     pending_delay: "bg-yellow-500/20 text-yellow-400",
     already_active: "bg-muted text-muted-foreground",
     download_client_unavailable: "bg-yellow-500/20 text-yellow-400",
-    repack_group_mismatch: "bg-red-500/20 text-red-400",
+    repack_group_mismatch: "bg-[var(--scry-danger-bg-strong)] text-[var(--scry-danger-text-soft)]",
     accept_initial: "bg-green-500/20 text-green-400",
     accept_upgrade: "bg-green-500/20 text-green-400",
-    reject_insufficient_delta: "bg-red-500/20 text-red-400",
+    reject_insufficient_delta: "bg-[var(--scry-danger-bg-strong)] text-[var(--scry-danger-text-soft)]",
     reject_cooldown: "bg-amber-500/20 text-amber-400",
-    reject_not_allowed: "bg-red-500/20 text-red-400",
+    reject_not_allowed: "bg-[var(--scry-danger-bg-strong)] text-[var(--scry-danger-text-soft)]",
   };
   return (
     <span
@@ -1281,7 +1281,7 @@ function pendingStatusBadge(status: PendingReleaseStatus) {
     status === "grabbed"
       ? "border-emerald-500/30 bg-emerald-500/15 text-emerald-300"
       : status === "expired" || status === "dismissed"
-        ? "border-red-500/25 bg-red-500/12 text-red-300"
+        ? "border-[var(--scry-danger-border)] bg-[var(--scry-danger-bg)] text-[var(--scry-danger-text)]"
         : status === "processing"
           ? "border-sky-500/30 bg-sky-500/14 text-sky-300"
           : status === "superseded"

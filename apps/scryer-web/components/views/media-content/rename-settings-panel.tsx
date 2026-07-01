@@ -1189,13 +1189,13 @@ export function RenameSettingsPanel({
                 className={
                   folderTemplateValue.trim()
                     ? folderValidationError
-                      ? "border-rose-500/60"
+                      ? "border-[var(--scry-danger-border-strong)]"
                       : "border-emerald-500/60"
                     : undefined
                 }
               />
               {folderValidationError ? (
-                <p className="text-xs text-rose-400">{folderValidationError}</p>
+                <p className="text-xs text-[var(--scry-danger-text-soft)]">{folderValidationError}</p>
               ) : null}
             </div>
 
@@ -1237,13 +1237,13 @@ export function RenameSettingsPanel({
                     className={
                       templateValue.trim()
                         ? renameValidationError
-                          ? "border-rose-500/60"
+                          ? "border-[var(--scry-danger-border-strong)]"
                           : "border-emerald-500/60"
                         : undefined
                     }
                   />
                   {renameValidationError ? (
-                    <p id="rename-settings-validation-message" className="text-xs text-rose-400">{renameValidationError}</p>
+                    <p id="rename-settings-validation-message" className="text-xs text-[var(--scry-danger-text-soft)]">{renameValidationError}</p>
                   ) : null}
                 </div>
 

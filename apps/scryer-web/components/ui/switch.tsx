@@ -18,7 +18,7 @@ function Switch({ className, size = "default", ...props }: SwitchProps) {
     <SwitchPrimitive.Root
       data-slot="switch"
       className={cn(
-        "peer inline-flex shrink-0 items-center rounded-full border border-transparent transition-colors duration-200 outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/40 disabled:cursor-not-allowed disabled:opacity-50 data-[state=checked]:border-emerald-500/40 data-[state=checked]:bg-emerald-500 data-[state=unchecked]:border-red-500/40 data-[state=unchecked]:bg-red-500/14",
+        "peer inline-flex shrink-0 items-center rounded-full border border-transparent transition-colors duration-200 outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/40 disabled:cursor-not-allowed disabled:opacity-50 data-[state=checked]:border-emerald-500/40 data-[state=checked]:bg-emerald-500 data-[state=unchecked]:border-[var(--scry-danger-border)] data-[state=unchecked]:bg-[var(--scry-danger-bg)]",
         track,
         className
       )}

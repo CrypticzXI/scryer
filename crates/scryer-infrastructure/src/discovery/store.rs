@@ -91,6 +91,52 @@ const ITEM_COLUMNS: &[&str] = &[
     "updated_at",
 ];
 
+const TITLE_COLUMNS: &[&str] = &[
+    "id",
+    "target_key",
+    "target_key_norm",
+    "language",
+    "target_kind",
+    "resolved",
+    "resolved_title_id",
+    "display_title",
+    "original_title",
+    "sort_title",
+    "year",
+    "poster_path",
+    "poster_url",
+    "background_url",
+    "overview",
+    "content_type",
+    "rating",
+    "tmdb_collection_id",
+    "tmdb_collection_name",
+    "created_at",
+    "updated_at",
+];
+
+const OCCURRENCE_COLUMNS: &[&str] = &[
+    "id",
+    "run_id",
+    "base_generation_id",
+    "discovery_title_id",
+    "source_run_kind",
+    "section_id",
+    "sort_index",
+    "best_source",
+    "source_count",
+    "edge_count",
+    "relation_count",
+    "source_subject_count",
+    "rank_score",
+    "matched_subject_count",
+    "owned_in_input",
+    "tombstoned_by_run_id",
+    "tombstoned_at",
+    "created_at",
+    "updated_at",
+];
+
 const FACET_COLUMNS: &[&str] = &[
     "run_id",
     "facet_name",
@@ -333,7 +379,7 @@ impl DiscoveryRepository for DiscoveryStore {
                         insert_submitted_subject_tx(tx, &datastore, subject).await?;
                     }
                     for item in &commit.items {
-                        insert_item_tx(tx, &datastore, item).await?;
+                        insert_item_tx(tx, &datastore, item, &commit.run.language).await?;
                     }
                     for facet in &commit.facets {
                         insert_facet_tx(tx, &datastore, facet).await?;
@@ -382,7 +428,7 @@ impl DiscoveryRepository for DiscoveryStore {
                     )
                     .await?;
                     for item in &commit.items {
-                        insert_item_tx(tx, &datastore, item).await?;
+                        insert_item_tx(tx, &datastore, item, &commit.run.language).await?;
                     }
                     if let Some(sequence) = commit.clear_pending_through_sequence {
                         clear_pending_discovery_context_changes_tx(
@@ -421,7 +467,7 @@ impl DiscoveryRepository for DiscoveryStore {
                     insert_section_tx(tx, &datastore, section).await?;
                 }
                 for item in &commit.items {
-                    insert_item_tx(tx, &datastore, item).await?;
+                    insert_item_tx(tx, &datastore, item, &commit.run.language).await?;
                 }
                 Ok(())
             })
@@ -612,17 +658,21 @@ impl DiscoveryRepository for DiscoveryStore {
         items: &[DiscoveryItemRecord],
     ) -> AppResult<()> {
         let datastore = self.datastore.clone();
+        let language = discovery_run_language(&self.datastore, run_id)
+            .await?
+            .unwrap_or_else(|| "eng".to_string());
         let run_id = run_id.to_string();
         let items = items.to_vec();
         SqlRuntime::run_in_transaction(&self.datastore, "replace_discovery_items", move |tx| {
             let datastore = datastore.clone();
+            let language = language.clone();
             let run_id = run_id.clone();
             let items = items.clone();
             Box::pin(async move {
                 delete_item_children_for_run_tx(tx, &run_id).await?;
                 delete_for_run_tx(tx, "discovery_items", &run_id).await?;
                 for item in &items {
-                    insert_item_tx(tx, &datastore, item).await?;
+                    insert_item_tx(tx, &datastore, item, &language).await?;
                 }
                 Ok(())
             })
@@ -822,10 +872,12 @@ impl DiscoveryRepository for DiscoveryStore {
     async fn replace_title_more_like_this_items(
         &self,
         title_id: &str,
+        language: &str,
         items: &[DiscoveryItemRecord],
     ) -> AppResult<()> {
         let datastore = self.datastore.clone();
         let title_id = title_id.to_string();
+        let language = normalize_discovery_language(language);
         let items = items.to_vec();
         SqlRuntime::run_in_transaction(
             &self.datastore,
@@ -833,13 +885,17 @@ impl DiscoveryRepository for DiscoveryStore {
             move |tx| {
                 let datastore = datastore.clone();
                 let title_id = title_id.clone();
+                let language = language.clone();
                 let items = items.clone();
                 Box::pin(async move {
                     delete_title_more_like_this_items_tx(tx, &title_id).await?;
                     for item in &items {
-                        insert_title_more_like_this_item_tx(tx, &datastore, &title_id, item)
-                            .await?;
+                        insert_title_more_like_this_item_tx(
+                            tx, &datastore, &title_id, item, &language,
+                        )
+                        .await?;
                     }
+                    delete_unreferenced_discovery_titles_tx(tx).await?;
                     Ok(())
                 })
             },
@@ -857,13 +913,14 @@ impl DiscoveryRepository for DiscoveryStore {
             &format!(
                 "SELECT {}
                  FROM title_more_like_this_items
+                 JOIN discovery_titles t
+                   ON t.id = title_more_like_this_items.discovery_title_id
                  WHERE source_title_id = {{}}
-                   AND tombstoned_at IS NULL
                  ORDER BY sort_index ASC,
                           COALESCE(rank_score, 0) DESC,
-                          id ASC
+                          discovery_title_id ASC
                  LIMIT {{}}",
-                ITEM_COLUMNS.join(", ")
+                title_more_like_this_projection()
             ),
             &[
                 SqlArg::Text(title_id.to_string()),
@@ -875,8 +932,11 @@ impl DiscoveryRepository for DiscoveryStore {
             .iter()
             .map(item_from_row)
             .collect::<AppResult<Vec<_>>>()?;
-        hydrate_title_more_like_this_item_terms(&self.datastore, &mut items).await?;
-        hydrate_title_more_like_this_item_ratings(&self.datastore, &mut items).await?;
+        let title_ids = rows
+            .iter()
+            .map(|row| row.text("discovery_title_id"))
+            .collect::<AppResult<Vec<_>>>()?;
+        hydrate_discovery_title_children(&self.datastore, &mut items, &title_ids).await?;
         Ok(items)
     }
 
@@ -888,13 +948,15 @@ impl DiscoveryRepository for DiscoveryStore {
             self.datastore.read_exec(),
             &format!(
                 "SELECT {}
-                 FROM discovery_items
-                 WHERE base_generation_id = {{}}
-                   AND tombstoned_at IS NULL
-                 ORDER BY COALESCE(section_id, '') ASC,
-                          sort_index ASC,
-                          id ASC",
-                ITEM_COLUMNS.join(", ")
+                 FROM discovery_items i
+                 JOIN discovery_titles t
+                   ON t.id = i.discovery_title_id
+                 WHERE i.base_generation_id = {{}}
+                   AND i.tombstoned_at IS NULL
+                 ORDER BY COALESCE(i.section_id, '') ASC,
+                          i.sort_index ASC,
+                          i.id ASC",
+                discovery_item_projection("i", "t")
             ),
             &[SqlArg::Text(base_generation_id.to_string())],
         )
@@ -903,7 +965,8 @@ impl DiscoveryRepository for DiscoveryStore {
             .iter()
             .map(item_from_row)
             .collect::<AppResult<Vec<_>>>()?;
-        hydrate_discovery_items(&self.datastore, &mut items).await?;
+        let title_ids = discovery_title_ids_from_rows(&rows)?;
+        hydrate_discovery_items(&self.datastore, &mut items, &title_ids).await?;
         Ok(items)
     }
 
@@ -1002,6 +1065,7 @@ impl DiscoveryRepository for DiscoveryStore {
             )
             .await?;
         }
+        delete_unreferenced_discovery_titles(&self.datastore).await?;
 
         Ok(DiscoveryPruneReport { runs_deleted })
     }
@@ -1051,12 +1115,90 @@ fn placeholders(count: usize) -> String {
     (0..count).map(|_| "{}").collect::<Vec<_>>().join(", ")
 }
 
-fn qualified_columns(alias: &str, columns: &[&str]) -> String {
-    columns
-        .iter()
-        .map(|column| format!("{alias}.{column}"))
-        .collect::<Vec<_>>()
-        .join(", ")
+fn discovery_item_projection(item_alias: &str, title_alias: &str) -> String {
+    [
+        format!("{item_alias}.id AS id"),
+        format!("{item_alias}.run_id AS run_id"),
+        format!("{item_alias}.base_generation_id AS base_generation_id"),
+        format!("{item_alias}.source_run_kind AS source_run_kind"),
+        format!("{item_alias}.section_id AS section_id"),
+        format!("{item_alias}.sort_index AS sort_index"),
+        format!("{title_alias}.target_key AS target_key"),
+        format!("{title_alias}.target_kind AS target_kind"),
+        format!("{title_alias}.resolved AS resolved"),
+        format!("{title_alias}.resolved_title_id AS resolved_title_id"),
+        format!("{title_alias}.display_title AS display_title"),
+        format!("{title_alias}.original_title AS original_title"),
+        format!("{title_alias}.sort_title AS sort_title"),
+        format!("{title_alias}.year AS year"),
+        format!("{title_alias}.poster_path AS poster_path"),
+        format!("{title_alias}.poster_url AS poster_url"),
+        format!("{title_alias}.background_url AS background_url"),
+        format!("{title_alias}.overview AS overview"),
+        format!("{title_alias}.content_type AS content_type"),
+        format!("{title_alias}.rating AS rating"),
+        format!("{item_alias}.best_source AS best_source"),
+        format!("{item_alias}.source_count AS source_count"),
+        format!("{item_alias}.edge_count AS edge_count"),
+        format!("{item_alias}.relation_count AS relation_count"),
+        format!("{item_alias}.source_subject_count AS source_subject_count"),
+        format!("{item_alias}.rank_score AS rank_score"),
+        format!("{item_alias}.matched_subject_count AS matched_subject_count"),
+        format!("{title_alias}.tmdb_collection_id AS tmdb_collection_id"),
+        format!("{title_alias}.tmdb_collection_name AS tmdb_collection_name"),
+        format!("{item_alias}.owned_in_input AS owned_in_input"),
+        format!("{item_alias}.tombstoned_by_run_id AS tombstoned_by_run_id"),
+        format!("{item_alias}.tombstoned_at AS tombstoned_at"),
+        format!("{item_alias}.created_at AS created_at"),
+        format!("{item_alias}.updated_at AS updated_at"),
+        format!("{item_alias}.discovery_title_id AS discovery_title_id"),
+    ]
+    .join(", ")
+}
+
+fn discovery_item_row_columns() -> String {
+    format!("{}, discovery_title_id", ITEM_COLUMNS.join(", "))
+}
+
+fn title_more_like_this_projection() -> String {
+    [
+        "source_title_id || ':more-like-this:' || discovery_title_id AS id".to_string(),
+        "source_title_id AS run_id".to_string(),
+        "NULL AS base_generation_id".to_string(),
+        "'title_more_like_this' AS source_run_kind".to_string(),
+        "NULL AS section_id".to_string(),
+        "title_more_like_this_items.sort_index AS sort_index".to_string(),
+        "t.target_key AS target_key".to_string(),
+        "t.target_kind AS target_kind".to_string(),
+        "t.resolved AS resolved".to_string(),
+        "t.resolved_title_id AS resolved_title_id".to_string(),
+        "t.display_title AS display_title".to_string(),
+        "t.original_title AS original_title".to_string(),
+        "t.sort_title AS sort_title".to_string(),
+        "t.year AS year".to_string(),
+        "t.poster_path AS poster_path".to_string(),
+        "t.poster_url AS poster_url".to_string(),
+        "t.background_url AS background_url".to_string(),
+        "t.overview AS overview".to_string(),
+        "t.content_type AS content_type".to_string(),
+        "t.rating AS rating".to_string(),
+        "title_more_like_this_items.best_source AS best_source".to_string(),
+        "title_more_like_this_items.source_count AS source_count".to_string(),
+        "title_more_like_this_items.edge_count AS edge_count".to_string(),
+        "title_more_like_this_items.relation_count AS relation_count".to_string(),
+        "title_more_like_this_items.source_subject_count AS source_subject_count".to_string(),
+        "title_more_like_this_items.rank_score AS rank_score".to_string(),
+        "0 AS matched_subject_count".to_string(),
+        "t.tmdb_collection_id AS tmdb_collection_id".to_string(),
+        "t.tmdb_collection_name AS tmdb_collection_name".to_string(),
+        "FALSE AS owned_in_input".to_string(),
+        "NULL AS tombstoned_by_run_id".to_string(),
+        "NULL AS tombstoned_at".to_string(),
+        "title_more_like_this_items.created_at AS created_at".to_string(),
+        "title_more_like_this_items.updated_at AS updated_at".to_string(),
+        "t.id AS discovery_title_id".to_string(),
+    ]
+    .join(", ")
 }
 
 fn storage_text(value: Option<&str>) -> String {
@@ -1065,6 +1207,32 @@ fn storage_text(value: Option<&str>) -> String {
         .filter(|value| !value.is_empty())
         .unwrap_or_default()
         .to_string()
+}
+
+fn normalize_discovery_language(value: &str) -> String {
+    let value = value.trim().to_ascii_lowercase();
+    if value.is_empty() {
+        "und".to_string()
+    } else {
+        value
+    }
+}
+
+fn discovery_title_target_key_norm(item: &DiscoveryItemRecord) -> String {
+    let target_key = item.target_key.trim().to_ascii_lowercase();
+    if target_key.is_empty() {
+        format!(
+            "__scryer_occurrence:{}",
+            item.id.trim().to_ascii_lowercase()
+        )
+    } else {
+        target_key
+    }
+}
+
+fn discovery_title_id_for(target_key_norm: &str, language: &str) -> String {
+    let digest = blake3::hash(format!("{language}\0{target_key_norm}").as_bytes());
+    format!("discovery-title:{}", digest.to_hex())
 }
 
 fn empty_to_none(value: String) -> Option<String> {
@@ -1106,7 +1274,7 @@ async fn fetch_public_section_item_rows(
     let resolved_clause = if include_unresolved {
         ""
     } else {
-        " AND i.resolved = TRUE"
+        " AND t.resolved = TRUE"
     };
     SqlRuntime::fetch_all(
         datastore.read_exec(),
@@ -1115,7 +1283,7 @@ async fn fetch_public_section_item_rows(
                 SELECT {}, si.section_id AS result_section_id, si.sort_index AS section_sort_index,
                        ROW_NUMBER() OVER (
                            PARTITION BY si.section_id,
-                                        CASE WHEN TRIM(i.target_key) = '' THEN i.id ELSE i.target_key END
+                                        CASE WHEN TRIM(t.target_key) = '' THEN i.id ELSE t.target_key END
                            ORDER BY si.sort_index ASC, i.id ASC
                        ) AS identity_rank
                 FROM discovery_section_items si
@@ -1124,6 +1292,8 @@ async fn fetch_public_section_item_rows(
                  AND s.section_id = si.section_id
                 JOIN discovery_items i
                   ON i.id = si.item_id
+                JOIN discovery_titles t
+                  ON t.id = i.discovery_title_id
                 WHERE si.run_id = {{}}
                   AND i.base_generation_id = {{}}
                   AND i.tombstoned_at IS NULL
@@ -1147,9 +1317,9 @@ async fn fetch_public_section_item_rows(
              SELECT {}, result_section_id, section_total_count
              FROM ranked
              WHERE section_rank <= {{}}
-             ORDER BY result_section_id ASC, section_rank ASC",
-            qualified_columns("i", ITEM_COLUMNS),
-            ITEM_COLUMNS.join(", ")
+            ORDER BY result_section_id ASC, section_rank ASC",
+            discovery_item_projection("i", "t"),
+            discovery_item_row_columns()
         ),
         &[
             SqlArg::Text(run_id.to_string()),
@@ -1167,14 +1337,15 @@ async fn section_items_from_rows(
 ) -> AppResult<Vec<DiscoverySectionItemsRecord>> {
     let mut item_metadata = Vec::new();
     let mut items = Vec::new();
-    for row in rows {
+    for row in &rows {
         item_metadata.push((
             row.text("result_section_id")?,
             row.i64("section_total_count")?,
         ));
         items.push(item_from_row(&row)?);
     }
-    hydrate_discovery_items(datastore, &mut items).await?;
+    let title_ids = discovery_title_ids_from_rows(&rows)?;
+    hydrate_discovery_items(datastore, &mut items, &title_ids).await?;
 
     let mut items_by_section = HashMap::<String, Vec<DiscoveryItemRecord>>::new();
     let mut totals_by_section = HashMap::<String, i64>::new();
@@ -1226,7 +1397,7 @@ async fn fetch_personalized_items(
         "i.owned_in_input = FALSE".to_string(),
     ];
     if !include_unresolved {
-        clauses.push("i.resolved = TRUE".to_string());
+        clauses.push("t.resolved = TRUE".to_string());
     }
     clauses.push(library_provenance_exists_clause(
         "i",
@@ -1234,20 +1405,22 @@ async fn fetch_personalized_items(
         &mut args,
     ));
     if matches!(subset, Some(PersonalizedItemSubset::CompleteCollection)) {
-        clauses.push(authoritative_media_kind_clause("i", "movie"));
-        clauses.push(collection_signal_clause("i"));
+        clauses.push(authoritative_media_kind_clause("t", "movie"));
+        clauses.push(collection_signal_clause("i", "t"));
     }
     args.push(SqlArg::I64(limit));
 
     let sql = format!(
         "SELECT {}
          FROM discovery_items i
+         JOIN discovery_titles t
+           ON t.id = i.discovery_title_id
          WHERE {}
          ORDER BY COALESCE(i.rank_score, -999999999.0) DESC,
-                  COALESCE(i.sort_title, i.display_title) ASC,
-                  i.target_key ASC
+                  COALESCE(t.sort_title, t.display_title) ASC,
+                  t.target_key ASC
          LIMIT {{}}",
-        qualified_columns("i", ITEM_COLUMNS),
+        discovery_item_projection("i", "t"),
         clauses.join(" AND ")
     );
     fetch_items_with_sql(datastore, &sql, &args).await
@@ -1265,7 +1438,7 @@ async fn fetch_catalog_public_items(
     let resolved_clause = if include_unresolved {
         ""
     } else {
-        " AND i.resolved = TRUE"
+        " AND t.resolved = TRUE"
     };
     let mut args = vec![
         SqlArg::Text(run_id.to_string()),
@@ -1280,7 +1453,7 @@ async fn fetch_catalog_public_items(
             " AND NOT EXISTS (
                 SELECT 1
                 FROM titles owned
-                WHERE owned.id = i.resolved_title_id
+                WHERE owned.id = t.resolved_title_id
                   AND owned.library_id IN ({placeholders})
              )"
         )
@@ -1291,14 +1464,14 @@ async fn fetch_catalog_public_items(
         let placeholders = placeholders(excluded_identity_keys.len());
         args.extend(excluded_identity_keys.iter().cloned().map(SqlArg::Text));
         format!(
-            " AND CASE WHEN TRIM(i.target_key) = '' THEN LOWER(i.id) ELSE LOWER(TRIM(i.target_key)) END NOT IN ({placeholders})"
+            " AND CASE WHEN TRIM(t.target_key) = '' THEN LOWER(i.id) ELSE LOWER(TRIM(t.target_key)) END NOT IN ({placeholders})"
         )
     };
     let sql = format!(
         "WITH candidates AS (
             SELECT {}, s.sort_index AS section_sort_index, si.sort_index AS section_item_sort_index,
                    ROW_NUMBER() OVER (
-                       PARTITION BY CASE WHEN TRIM(i.target_key) = '' THEN i.id ELSE i.target_key END
+                       PARTITION BY CASE WHEN TRIM(t.target_key) = '' THEN i.id ELSE t.target_key END
                        ORDER BY s.sort_index ASC, si.sort_index ASC, i.id ASC
                    ) AS identity_rank
             FROM discovery_section_items si
@@ -1307,6 +1480,8 @@ async fn fetch_catalog_public_items(
              AND s.section_id = si.section_id
             JOIN discovery_items i
               ON i.id = si.item_id
+            JOIN discovery_titles t
+              ON t.id = i.discovery_title_id
             WHERE si.run_id = {{}}
               AND i.base_generation_id = {{}}
               AND i.tombstoned_at IS NULL
@@ -1328,11 +1503,11 @@ async fn fetch_catalog_public_items(
          )
          SELECT {}, total_count
          FROM ranked
-         ORDER BY section_sort_index ASC, section_item_sort_index ASC, id ASC
-         LIMIT {{}}",
-        qualified_columns("i", ITEM_COLUMNS),
-        authoritative_media_kind_clause("i", media_kind),
-        ITEM_COLUMNS.join(", ")
+        ORDER BY section_sort_index ASC, section_item_sort_index ASC, id ASC
+        LIMIT {{}}",
+        discovery_item_projection("i", "t"),
+        authoritative_media_kind_clause("t", media_kind),
+        discovery_item_row_columns()
     );
     args.push(SqlArg::I64(limit));
     fetch_catalog_candidates_with_sql(datastore, &sql, &args).await
@@ -1350,7 +1525,7 @@ async fn fetch_catalog_public_sections(
     let resolved_clause = if include_unresolved {
         ""
     } else {
-        " AND i.resolved = TRUE"
+        " AND t.resolved = TRUE"
     };
     let mut args = vec![
         SqlArg::Text(run_id.to_string()),
@@ -1365,7 +1540,7 @@ async fn fetch_catalog_public_sections(
             " AND NOT EXISTS (
                 SELECT 1
                 FROM titles owned
-                WHERE owned.id = i.resolved_title_id
+                WHERE owned.id = t.resolved_title_id
                   AND owned.library_id IN ({placeholders})
              )"
         )
@@ -1376,7 +1551,7 @@ async fn fetch_catalog_public_sections(
         let placeholders = placeholders(excluded_identity_keys.len());
         args.extend(excluded_identity_keys.iter().cloned().map(SqlArg::Text));
         format!(
-            " AND CASE WHEN TRIM(i.target_key) = '' THEN LOWER(i.id) ELSE LOWER(TRIM(i.target_key)) END NOT IN ({placeholders})"
+            " AND CASE WHEN TRIM(t.target_key) = '' THEN LOWER(i.id) ELSE LOWER(TRIM(t.target_key)) END NOT IN ({placeholders})"
         )
     };
     let sql = format!(
@@ -1388,7 +1563,7 @@ async fn fetch_catalog_public_sections(
                    si.sort_index AS section_item_sort_index,
                    ROW_NUMBER() OVER (
                        PARTITION BY s.section_id,
-                                    CASE WHEN TRIM(i.target_key) = '' THEN i.id ELSE i.target_key END
+                                    CASE WHEN TRIM(t.target_key) = '' THEN i.id ELSE t.target_key END
                        ORDER BY si.sort_index ASC, i.id ASC
                    ) AS identity_rank
             FROM discovery_section_items si
@@ -1397,6 +1572,8 @@ async fn fetch_catalog_public_sections(
              AND s.section_id = si.section_id
             JOIN discovery_items i
               ON i.id = si.item_id
+            JOIN discovery_titles t
+              ON t.id = i.discovery_title_id
             WHERE si.run_id = {{}}
               AND i.base_generation_id = {{}}
               AND i.tombstoned_at IS NULL
@@ -1423,16 +1600,16 @@ async fn fetch_catalog_public_sections(
          SELECT {}, result_section_id, result_section_type, result_section_title, section_total_count
          FROM ranked
          WHERE section_rank <= {{}}
-         ORDER BY section_sort_index ASC, section_rank ASC, id ASC",
-        qualified_columns("i", ITEM_COLUMNS),
-        authoritative_media_kind_clause("i", media_kind),
-        ITEM_COLUMNS.join(", ")
+        ORDER BY section_sort_index ASC, section_rank ASC, id ASC",
+        discovery_item_projection("i", "t"),
+        authoritative_media_kind_clause("t", media_kind),
+        discovery_item_row_columns()
     );
     args.push(SqlArg::I64(limit_per_section));
     let rows = SqlRuntime::fetch_all(datastore.read_exec(), &sql, &args).await?;
     let mut item_metadata = Vec::new();
     let mut items = Vec::new();
-    for row in rows {
+    for row in &rows {
         item_metadata.push((
             row.text("result_section_id")?,
             row.text("result_section_type")?,
@@ -1441,7 +1618,8 @@ async fn fetch_catalog_public_sections(
         ));
         items.push(item_from_row(&row)?);
     }
-    hydrate_discovery_items(datastore, &mut items).await?;
+    let title_ids = discovery_title_ids_from_rows(&rows)?;
+    hydrate_discovery_items(datastore, &mut items, &title_ids).await?;
 
     let mut sections = Vec::<CatalogDiscoverySectionCandidatesRecord>::new();
     for (item, (section_id, section_type, title, total_count)) in
@@ -1485,10 +1663,10 @@ async fn fetch_catalog_personalized_items(
         "i.base_generation_id = {}".to_string(),
         "i.tombstoned_at IS NULL".to_string(),
         "i.owned_in_input = FALSE".to_string(),
-        authoritative_media_kind_clause("i", media_kind),
+        authoritative_media_kind_clause("t", media_kind),
     ];
     if !include_unresolved {
-        clauses.push("i.resolved = TRUE".to_string());
+        clauses.push("t.resolved = TRUE".to_string());
     }
     clauses.push(library_provenance_exists_clause(
         "i",
@@ -1501,12 +1679,14 @@ async fn fetch_catalog_personalized_items(
         "WITH candidates AS (
             SELECT {},
                    ROW_NUMBER() OVER (
-                       PARTITION BY CASE WHEN TRIM(i.target_key) = '' THEN i.id ELSE i.target_key END
+                       PARTITION BY CASE WHEN TRIM(t.target_key) = '' THEN i.id ELSE t.target_key END
                        ORDER BY COALESCE(i.rank_score, -999999999.0) DESC,
-                                COALESCE(i.sort_title, i.display_title) ASC,
-                                i.target_key ASC
+                                COALESCE(t.sort_title, t.display_title) ASC,
+                                t.target_key ASC
                    ) AS identity_rank
             FROM discovery_items i
+            JOIN discovery_titles t
+              ON t.id = i.discovery_title_id
             WHERE {}
          ),
          deduped AS (
@@ -1522,10 +1702,10 @@ async fn fetch_catalog_personalized_items(
          ORDER BY COALESCE(rank_score, -999999999.0) DESC,
                   COALESCE(sort_title, display_title) ASC,
                   target_key ASC
-         LIMIT {{}}",
-        qualified_columns("i", ITEM_COLUMNS),
+        LIMIT {{}}",
+        discovery_item_projection("i", "t"),
         clauses.join(" AND "),
-        ITEM_COLUMNS.join(", ")
+        discovery_item_row_columns()
     );
     fetch_catalog_candidates_with_sql(datastore, &sql, &args).await
 }
@@ -1545,7 +1725,8 @@ async fn fetch_catalog_candidates_with_sql(
         .iter()
         .map(item_from_row)
         .collect::<AppResult<Vec<_>>>()?;
-    hydrate_discovery_items(datastore, &mut items).await?;
+    let title_ids = discovery_title_ids_from_rows(&rows)?;
+    hydrate_discovery_items(datastore, &mut items, &title_ids).await?;
     Ok(CatalogDiscoveryCandidatesRecord { total_count, items })
 }
 
@@ -1570,7 +1751,7 @@ async fn fetch_personalized_facets(
             .to_string(),
     ];
     if !include_unresolved {
-        clauses.push("i.resolved = TRUE".to_string());
+        clauses.push("dt.resolved = TRUE".to_string());
     }
     clauses.push(library_provenance_exists_clause(
         "i",
@@ -1584,8 +1765,10 @@ async fn fetch_personalized_facets(
             "SELECT t.term_value AS facet_term,
                     COUNT(DISTINCT i.id) AS local_count
              FROM discovery_items i
-             JOIN discovery_item_terms t
-               ON t.item_id = i.id
+             JOIN discovery_titles dt
+               ON dt.id = i.discovery_title_id
+             JOIN discovery_title_terms t
+               ON t.discovery_title_id = dt.id
              WHERE {}
              GROUP BY t.term_value
              HAVING COUNT(DISTINCT i.id) > 0
@@ -1644,7 +1827,7 @@ async fn query_discovery_items_page(
          LIMIT {{}}
          OFFSET {{}}",
         sql.cte_sql,
-        ITEM_COLUMNS.join(", ")
+        discovery_item_row_columns()
     );
     let items = fetch_items_with_sql(datastore, &page_sql, &page_args).await?;
     Ok(DiscoveryItemsPageRecord { items, total_count })
@@ -1663,10 +1846,12 @@ fn build_discovery_items_sql(query: &DiscoveryItemsStorageQuery) -> Option<Disco
         sources.push(format!(
             "SELECT {}, 0 AS source_priority
              FROM discovery_items i
+             JOIN discovery_titles t
+               ON t.id = i.discovery_title_id
              WHERE i.base_generation_id = {{}}
                AND i.tombstoned_at IS NULL
                AND {provenance_clause}",
-            qualified_columns("i", ITEM_COLUMNS)
+            discovery_item_projection("i", "t")
         ));
     }
     if let Some(public_run_id) = query.public_run_id.as_deref() {
@@ -1674,9 +1859,11 @@ fn build_discovery_items_sql(query: &DiscoveryItemsStorageQuery) -> Option<Disco
         sources.push(format!(
             "SELECT {}, 1 AS source_priority
              FROM discovery_items i
+             JOIN discovery_titles t
+               ON t.id = i.discovery_title_id
              WHERE i.base_generation_id = {{}}
                AND i.tombstoned_at IS NULL",
-            qualified_columns("i", ITEM_COLUMNS)
+            discovery_item_projection("i", "t")
         ));
     }
     if sources.is_empty() {
@@ -1785,8 +1972,8 @@ fn append_term_filter(
     clauses.push(format!(
         "EXISTS (
             SELECT 1
-            FROM discovery_item_terms t
-            WHERE t.item_id = i.id
+            FROM discovery_title_terms t
+            WHERE t.discovery_title_id = i.discovery_title_id
               AND t.term_kind = '{term_kind}'
               AND LOWER(t.term_value) IN ({placeholders})
          )"
@@ -1808,8 +1995,8 @@ fn append_canonical_facet_filter(
     clauses.push(format!(
         "EXISTS (
             SELECT 1
-            FROM discovery_item_terms t
-            WHERE t.item_id = i.id
+            FROM discovery_title_terms t
+            WHERE t.discovery_title_id = i.discovery_title_id
               AND t.term_kind = 'facet_term'
               AND LOWER(t.term_value) IN ({placeholders})
          )"
@@ -1860,8 +2047,8 @@ fn append_source_filter(clauses: &mut Vec<String>, args: &mut Vec<SqlArg>, filte
         "(LOWER(COALESCE(i.best_source, '')) IN ({best_source_placeholders})
           OR EXISTS (
             SELECT 1
-            FROM discovery_item_terms t
-            WHERE t.item_id = i.id
+            FROM discovery_title_terms t
+            WHERE t.discovery_title_id = i.discovery_title_id
               AND t.term_kind = 'source'
               AND LOWER(t.term_value) IN ({source_term_placeholders})
           ))"
@@ -1912,14 +2099,14 @@ fn authoritative_media_kind_clause(item_alias: &str, media_kind: &str) -> String
     )
 }
 
-fn collection_signal_clause(item_alias: &str) -> String {
+fn collection_signal_clause(item_alias: &str, title_alias: &str) -> String {
     format!(
-        "({item_alias}.tmdb_collection_id IS NOT NULL
-          OR TRIM(COALESCE({item_alias}.tmdb_collection_name, '')) <> ''
+        "({title_alias}.tmdb_collection_id IS NOT NULL
+          OR TRIM(COALESCE({title_alias}.tmdb_collection_name, '')) <> ''
           OR EXISTS (
             SELECT 1
-            FROM discovery_item_terms t
-            WHERE t.item_id = {item_alias}.id
+            FROM discovery_title_terms t
+            WHERE t.discovery_title_id = {item_alias}.discovery_title_id
               AND t.term_kind IN ('relation_type', 'relation_subtype')
               AND (
                 LOWER(t.term_value) = 'tmdb.collection'
@@ -1940,8 +2127,23 @@ async fn fetch_items_with_sql(
         .iter()
         .map(item_from_row)
         .collect::<AppResult<Vec<_>>>()?;
-    hydrate_discovery_items(datastore, &mut items).await?;
+    let title_ids = discovery_title_ids_from_rows(&rows)?;
+    hydrate_discovery_items(datastore, &mut items, &title_ids).await?;
     Ok(items)
+}
+
+async fn discovery_run_language(
+    datastore: &StoreDatastore,
+    run_id: &str,
+) -> AppResult<Option<String>> {
+    SqlRuntime::fetch_optional(
+        datastore.read_exec(),
+        "SELECT language FROM discovery_sync_runs WHERE id = {}",
+        &[SqlArg::Text(run_id.to_string())],
+    )
+    .await?
+    .map(|row| row.text("language"))
+    .transpose()
 }
 
 fn upsert_sql(table: &str, columns: &[&str], conflict_columns: &[&str]) -> String {
@@ -1960,6 +2162,56 @@ fn upsert_sql(table: &str, columns: &[&str], conflict_columns: &[&str]) -> Strin
     )
 }
 
+fn upsert_discovery_title_sql() -> String {
+    format!(
+        "INSERT INTO discovery_titles ({}) VALUES ({})
+         ON CONFLICT(target_key_norm, language) DO UPDATE SET
+            target_key = COALESCE(NULLIF(excluded.target_key, ''), discovery_titles.target_key),
+            target_kind = COALESCE(NULLIF(excluded.target_kind, ''), discovery_titles.target_kind),
+            resolved = CASE
+                WHEN excluded.resolved THEN excluded.resolved
+                ELSE discovery_titles.resolved
+            END,
+            resolved_title_id = COALESCE(
+                NULLIF(excluded.resolved_title_id, ''),
+                discovery_titles.resolved_title_id
+            ),
+            display_title = COALESCE(
+                NULLIF(excluded.display_title, ''),
+                discovery_titles.display_title
+            ),
+            original_title = COALESCE(
+                NULLIF(excluded.original_title, ''),
+                discovery_titles.original_title
+            ),
+            sort_title = COALESCE(NULLIF(excluded.sort_title, ''), discovery_titles.sort_title),
+            year = COALESCE(excluded.year, discovery_titles.year),
+            poster_path = COALESCE(NULLIF(excluded.poster_path, ''), discovery_titles.poster_path),
+            poster_url = COALESCE(NULLIF(excluded.poster_url, ''), discovery_titles.poster_url),
+            background_url = COALESCE(
+                NULLIF(excluded.background_url, ''),
+                discovery_titles.background_url
+            ),
+            overview = COALESCE(NULLIF(excluded.overview, ''), discovery_titles.overview),
+            content_type = COALESCE(
+                NULLIF(excluded.content_type, ''),
+                discovery_titles.content_type
+            ),
+            rating = COALESCE(excluded.rating, discovery_titles.rating),
+            tmdb_collection_id = COALESCE(
+                NULLIF(excluded.tmdb_collection_id, ''),
+                discovery_titles.tmdb_collection_id
+            ),
+            tmdb_collection_name = COALESCE(
+                NULLIF(excluded.tmdb_collection_name, ''),
+                discovery_titles.tmdb_collection_name
+            ),
+            updated_at = excluded.updated_at",
+        TITLE_COLUMNS.join(", "),
+        placeholders(TITLE_COLUMNS.len())
+    )
+}
+
 async fn delete_for_run_tx(tx: &mut SqlTx<'_>, table: &'static str, run_id: &str) -> AppResult<()> {
     SqlRuntime::execute(
         SqlExec::Tx(tx),
@@ -1973,10 +2225,6 @@ async fn delete_for_run_tx(tx: &mut SqlTx<'_>, table: &'static str, run_id: &str
 async fn delete_item_children_for_run_tx(tx: &mut SqlTx<'_>, run_id: &str) -> AppResult<()> {
     for table in [
         "discovery_section_items",
-        "discovery_item_terms",
-        "discovery_item_source_tag_values",
-        "discovery_item_source_tags",
-        "discovery_item_ratings",
         "discovery_item_rank_components",
         "discovery_item_subject_links",
         "discovery_item_library_provenance",
@@ -2060,7 +2308,11 @@ async fn tombstone_discovery_items_tx(
             "UPDATE discovery_items
              SET tombstoned_by_run_id = {}, tombstoned_at = {}, updated_at = {}
              WHERE base_generation_id = {}
-               AND target_key = {}
+               AND discovery_title_id IN (
+                    SELECT id
+                    FROM discovery_titles
+                    WHERE target_key = {}
+               )
                AND tombstoned_at IS NULL",
             &[
                 SqlArg::Text(tombstone_run_id.to_string()),
@@ -2407,6 +2659,7 @@ fn canonical_label_from_slug(value: &str) -> String {
 async fn hydrate_discovery_items(
     datastore: &StoreDatastore,
     items: &mut [DiscoveryItemRecord],
+    discovery_title_ids: &[String],
 ) -> AppResult<()> {
     if items.is_empty() {
         return Ok(());
@@ -2416,246 +2669,201 @@ async fn hydrate_discovery_items(
     for (index, item) in items.iter().enumerate() {
         item_indexes.insert(item.id.clone(), index);
     }
-    hydrate_item_terms(datastore, items, &item_ids, &item_indexes).await?;
-    hydrate_item_source_tags(datastore, items, &item_ids, &item_indexes).await?;
-    hydrate_item_ratings(datastore, items, &item_ids, &item_indexes).await?;
+    hydrate_discovery_title_children(datastore, items, &discovery_title_ids).await?;
     hydrate_item_rank_components(datastore, items, &item_ids, &item_indexes).await?;
     hydrate_item_subject_links(datastore, items, &item_ids, &item_indexes).await?;
     hydrate_item_library_provenance(datastore, items, &item_ids, &item_indexes).await?;
     Ok(())
 }
 
-async fn hydrate_item_terms(
+fn discovery_title_ids_from_rows(rows: &[SqlRow]) -> AppResult<Vec<String>> {
+    rows.iter()
+        .map(|row| row.text("discovery_title_id"))
+        .collect()
+}
+
+async fn hydrate_discovery_title_children(
     datastore: &StoreDatastore,
     items: &mut [DiscoveryItemRecord],
-    item_ids: &[String],
-    item_indexes: &HashMap<String, usize>,
+    discovery_title_ids: &[String],
+) -> AppResult<()> {
+    if items.is_empty() {
+        return Ok(());
+    }
+    let mut title_indexes = HashMap::<String, Vec<usize>>::new();
+    for (index, title_id) in discovery_title_ids.iter().enumerate() {
+        if !title_id.trim().is_empty() {
+            title_indexes
+                .entry(title_id.clone())
+                .or_default()
+                .push(index);
+        }
+    }
+    if title_indexes.is_empty() {
+        return Ok(());
+    }
+    let mut unique_title_ids = title_indexes.keys().cloned().collect::<Vec<_>>();
+    unique_title_ids.sort();
+    hydrate_title_terms(datastore, items, &unique_title_ids, &title_indexes).await?;
+    hydrate_title_source_tags(datastore, items, &unique_title_ids, &title_indexes).await?;
+    hydrate_title_ratings(datastore, items, &unique_title_ids, &title_indexes).await?;
+    Ok(())
+}
+
+async fn hydrate_title_terms(
+    datastore: &StoreDatastore,
+    items: &mut [DiscoveryItemRecord],
+    discovery_title_ids: &[String],
+    title_indexes: &HashMap<String, Vec<usize>>,
 ) -> AppResult<()> {
     let rows = fetch_child_rows(
         datastore,
-        "SELECT item_id, term_kind, term_category, term_value, sort_index
-         FROM discovery_item_terms
-         WHERE item_id IN ({})
-         ORDER BY item_id ASC, term_kind ASC, sort_index ASC, term_value ASC",
-        item_ids,
+        "SELECT discovery_title_id, term_kind, term_category, term_value, sort_index
+         FROM discovery_title_terms
+         WHERE discovery_title_id IN ({})
+         ORDER BY discovery_title_id ASC, term_kind ASC, sort_index ASC, term_value ASC",
+        discovery_title_ids,
     )
     .await?;
     for row in rows {
-        let item_id = row.text("item_id")?;
-        let Some(index) = item_indexes.get(&item_id).copied() else {
+        let discovery_title_id = row.text("discovery_title_id")?;
+        let Some(indexes) = title_indexes.get(&discovery_title_id) else {
             continue;
         };
         let term_kind = row.text("term_kind")?;
         let term_value = row.text("term_value")?;
-        let item = &mut items[index];
-        match term_kind.as_str() {
-            "genre" => item.genres.push(term_value),
-            "rating_source" => {
-                if !item.rating_sources.iter().any(|value| value == &term_value) {
-                    item.rating_sources.push(term_value);
+        for index in indexes {
+            let item = &mut items[*index];
+            match term_kind.as_str() {
+                "genre" => item.genres.push(term_value.clone()),
+                "rating_source" => {
+                    if !item.rating_sources.iter().any(|value| value == &term_value) {
+                        item.rating_sources.push(term_value.clone());
+                    }
                 }
+                "status_tag" => item.status_tags.push(term_value.clone()),
+                "source" => item.sources.push(term_value.clone()),
+                "relation_type" => item.relation_types.push(term_value.clone()),
+                "relation_subtype" => item.relation_subtypes.push(term_value.clone()),
+                "chart_signal" => item.chart_signals.push(term_value.clone()),
+                "provider_signal" => item.provider_signals.push(term_value.clone()),
+                "facet_term" => item.facet_terms.push(term_value.clone()),
+                "context_term" => item.context_terms.push(term_value.clone()),
+                _ => {}
             }
-            "status_tag" => item.status_tags.push(term_value),
-            "source" => item.sources.push(term_value),
-            "relation_type" => item.relation_types.push(term_value),
-            "relation_subtype" => item.relation_subtypes.push(term_value),
-            "chart_signal" => item.chart_signals.push(term_value),
-            "provider_signal" => item.provider_signals.push(term_value),
-            "facet_term" => item.facet_terms.push(term_value),
-            "context_term" => item.context_terms.push(term_value),
-            _ => {}
         }
     }
     Ok(())
 }
 
-async fn hydrate_title_more_like_this_item_terms(
+async fn hydrate_title_source_tags(
     datastore: &StoreDatastore,
     items: &mut [DiscoveryItemRecord],
+    discovery_title_ids: &[String],
+    title_indexes: &HashMap<String, Vec<usize>>,
 ) -> AppResult<()> {
-    if items.is_empty() {
-        return Ok(());
-    }
-    let item_ids = items.iter().map(|item| item.id.clone()).collect::<Vec<_>>();
-    let mut item_indexes = HashMap::new();
-    for (index, item) in items.iter().enumerate() {
-        item_indexes.insert(item.id.clone(), index);
-    }
+    let mut source_tag_indexes = HashMap::<(String, i32), Vec<(usize, usize)>>::new();
     let rows = fetch_child_rows(
         datastore,
-        "SELECT item_id, term_kind, term_value, sort_index
-         FROM title_more_like_this_item_terms
-         WHERE item_id IN ({})
-         ORDER BY item_id ASC, term_kind ASC, sort_index ASC, term_value ASC",
-        &item_ids,
+        "SELECT discovery_title_id, category, name, sort_index
+         FROM discovery_title_source_tags
+         WHERE discovery_title_id IN ({})
+         ORDER BY discovery_title_id ASC, sort_index ASC",
+        discovery_title_ids,
     )
     .await?;
     for row in rows {
-        let item_id = row.text("item_id")?;
-        let Some(index) = item_indexes.get(&item_id).copied() else {
-            continue;
-        };
-        let term_kind = row.text("term_kind")?;
-        let term_value = row.text("term_value")?;
-        let item = &mut items[index];
-        match term_kind.as_str() {
-            "genre" => item.genres.push(term_value),
-            "rating_source" => item.rating_sources.push(term_value),
-            "status_tag" => item.status_tags.push(term_value),
-            "source" => item.sources.push(term_value),
-            "relation_type" => item.relation_types.push(term_value),
-            "relation_subtype" => item.relation_subtypes.push(term_value),
-            "chart_signal" => item.chart_signals.push(term_value),
-            "provider_signal" => item.provider_signals.push(term_value),
-            "facet_term" => item.facet_terms.push(term_value),
-            "context_term" => item.context_terms.push(term_value),
-            _ => {}
-        }
-    }
-    Ok(())
-}
-
-async fn hydrate_title_more_like_this_item_ratings(
-    datastore: &StoreDatastore,
-    items: &mut [DiscoveryItemRecord],
-) -> AppResult<()> {
-    if items.is_empty() {
-        return Ok(());
-    }
-    let item_ids = items.iter().map(|item| item.id.clone()).collect::<Vec<_>>();
-    let mut item_indexes = HashMap::new();
-    for (index, item) in items.iter().enumerate() {
-        item_indexes.insert(item.id.clone(), index);
-    }
-    let rows = fetch_child_rows(
-        datastore,
-        "SELECT item_id, rating_source, rating_value, rating_score, normalized, votes, url, sort_index
-         FROM title_more_like_this_item_ratings
-         WHERE item_id IN ({})
-         ORDER BY item_id ASC, sort_index ASC",
-        &item_ids,
-    )
-    .await?;
-    for row in rows {
-        let item_id = row.text("item_id")?;
-        let Some(index) = item_indexes.get(&item_id).copied() else {
-            continue;
-        };
-        let source = row.text("rating_source")?;
-        if !items[index]
-            .rating_sources
-            .iter()
-            .any(|value| value == &source)
-        {
-            items[index].rating_sources.push(source.clone());
-        }
-        if let Some(normalized) = row.opt_f64("normalized")? {
-            items[index].external_ratings.push(TitleExternalRating {
-                source,
-                value: row.opt_f64("rating_value")?,
-                score: row.opt_f64("rating_score")?,
-                normalized,
-                votes: row.opt_i32("votes")?,
-                url: row.opt_text("url")?.unwrap_or_default(),
-            });
-        }
-    }
-    Ok(())
-}
-
-async fn hydrate_item_source_tags(
-    datastore: &StoreDatastore,
-    items: &mut [DiscoveryItemRecord],
-    item_ids: &[String],
-    item_indexes: &HashMap<String, usize>,
-) -> AppResult<()> {
-    let mut source_tag_indexes = HashMap::<(String, i32), (usize, usize)>::new();
-    let rows = fetch_child_rows(
-        datastore,
-        "SELECT item_id, category, name, sort_index
-         FROM discovery_item_source_tags
-         WHERE item_id IN ({})
-         ORDER BY item_id ASC, sort_index ASC",
-        item_ids,
-    )
-    .await?;
-    for row in rows {
-        let item_id = row.text("item_id")?;
-        let Some(index) = item_indexes.get(&item_id).copied() else {
+        let discovery_title_id = row.text("discovery_title_id")?;
+        let Some(indexes) = title_indexes.get(&discovery_title_id) else {
             continue;
         };
         let sort_index = row.i32("sort_index")?;
-        let source_tag_index = items[index].source_tags.len();
-        items[index].source_tags.push(DiscoverySourceTagRecord {
-            category: empty_to_none(row.text("category")?),
-            name: empty_to_none(row.text("name")?),
-            values: Vec::new(),
-        });
-        source_tag_indexes.insert((item_id, sort_index), (index, source_tag_index));
+        let category = empty_to_none(row.text("category")?);
+        let name = empty_to_none(row.text("name")?);
+        let mut source_tag_item_indexes = Vec::new();
+        for index in indexes {
+            let source_tag_index = items[*index].source_tags.len();
+            items[*index].source_tags.push(DiscoverySourceTagRecord {
+                category: category.clone(),
+                name: name.clone(),
+                values: Vec::new(),
+            });
+            source_tag_item_indexes.push((*index, source_tag_index));
+        }
+        source_tag_indexes.insert((discovery_title_id, sort_index), source_tag_item_indexes);
     }
 
     let value_rows = fetch_child_rows(
         datastore,
-        "SELECT item_id, source_tag_sort_index, source_tag_value, value_sort_index
-         FROM discovery_item_source_tag_values
-         WHERE item_id IN ({})
-         ORDER BY item_id ASC, source_tag_sort_index ASC, value_sort_index ASC",
-        item_ids,
+        "SELECT discovery_title_id, source_tag_sort_index, source_tag_value, value_sort_index
+         FROM discovery_title_source_tag_values
+         WHERE discovery_title_id IN ({})
+         ORDER BY discovery_title_id ASC, source_tag_sort_index ASC, value_sort_index ASC",
+        discovery_title_ids,
     )
     .await?;
     for row in value_rows {
-        let item_id = row.text("item_id")?;
+        let discovery_title_id = row.text("discovery_title_id")?;
         let source_tag_sort_index = row.i32("source_tag_sort_index")?;
-        let Some((item_index, source_tag_index)) = source_tag_indexes
-            .get(&(item_id, source_tag_sort_index))
-            .copied()
+        let Some(source_tag_item_indexes) =
+            source_tag_indexes.get(&(discovery_title_id, source_tag_sort_index))
         else {
             continue;
         };
-        items[item_index].source_tags[source_tag_index]
-            .values
-            .push(row.text("source_tag_value")?);
+        let source_tag_value = row.text("source_tag_value")?;
+        for (item_index, source_tag_index) in source_tag_item_indexes {
+            items[*item_index].source_tags[*source_tag_index]
+                .values
+                .push(source_tag_value.clone());
+        }
     }
     Ok(())
 }
 
-async fn hydrate_item_ratings(
+async fn hydrate_title_ratings(
     datastore: &StoreDatastore,
     items: &mut [DiscoveryItemRecord],
-    item_ids: &[String],
-    item_indexes: &HashMap<String, usize>,
+    discovery_title_ids: &[String],
+    title_indexes: &HashMap<String, Vec<usize>>,
 ) -> AppResult<()> {
     let rows = fetch_child_rows(
         datastore,
-        "SELECT item_id, rating_source, rating_value, rating_score, normalized, votes, url, sort_index
-         FROM discovery_item_ratings
-         WHERE item_id IN ({})
-         ORDER BY item_id ASC, sort_index ASC",
-        item_ids,
+        "SELECT discovery_title_id, rating_source, rating_value, rating_score, normalized, votes, url, sort_index
+         FROM discovery_title_ratings
+         WHERE discovery_title_id IN ({})
+         ORDER BY discovery_title_id ASC, sort_index ASC",
+        discovery_title_ids,
     )
     .await?;
     for row in rows {
-        let item_id = row.text("item_id")?;
-        let Some(index) = item_indexes.get(&item_id).copied() else {
+        let discovery_title_id = row.text("discovery_title_id")?;
+        let Some(indexes) = title_indexes.get(&discovery_title_id) else {
             continue;
         };
         let source = row.text("rating_source")?;
-        if !items[index]
-            .rating_sources
-            .iter()
-            .any(|value| value == &source)
-        {
-            items[index].rating_sources.push(source.clone());
-        }
-        if let Some(normalized) = row.opt_f64("normalized")? {
-            items[index].external_ratings.push(TitleExternalRating {
-                source,
+        let rating = if let Some(normalized) = row.opt_f64("normalized")? {
+            Some(TitleExternalRating {
+                source: source.clone(),
                 value: row.opt_f64("rating_value")?,
                 score: row.opt_f64("rating_score")?,
                 normalized,
                 votes: row.opt_i32("votes")?,
                 url: row.opt_text("url")?.unwrap_or_default(),
-            });
+            })
+        } else {
+            None
+        };
+        for index in indexes {
+            if !items[*index]
+                .rating_sources
+                .iter()
+                .any(|value| value == &source)
+            {
+                items[*index].rating_sources.push(source.clone());
+            }
+            if let Some(rating) = &rating {
+                items[*index].external_ratings.push(rating.clone());
+            }
         }
     }
     Ok(())
@@ -2845,11 +3053,13 @@ async fn insert_item_tx(
     tx: &mut SqlTx<'_>,
     _datastore: &StoreDatastore,
     item: &DiscoveryItemRecord,
+    language: &str,
 ) -> AppResult<()> {
+    let discovery_title_id = upsert_discovery_title_tx(tx, item, language).await?;
     SqlRuntime::execute(
         SqlExec::Tx(tx),
-        &insert_sql("discovery_items", ITEM_COLUMNS),
-        &item_args(item),
+        &insert_sql("discovery_items", OCCURRENCE_COLUMNS),
+        &occurrence_args(item, &discovery_title_id),
     )
     .await?;
     insert_item_children_tx(tx, item).await?;
@@ -2859,20 +3069,48 @@ async fn insert_item_tx(
 async fn delete_title_more_like_this_items_tx(tx: &mut SqlTx<'_>, title_id: &str) -> AppResult<()> {
     SqlRuntime::execute(
         SqlExec::Tx(tx),
-        "DELETE FROM title_more_like_this_item_ratings WHERE source_title_id = {}",
-        &[SqlArg::Text(title_id.to_string())],
-    )
-    .await?;
-    SqlRuntime::execute(
-        SqlExec::Tx(tx),
-        "DELETE FROM title_more_like_this_item_terms WHERE source_title_id = {}",
-        &[SqlArg::Text(title_id.to_string())],
-    )
-    .await?;
-    SqlRuntime::execute(
-        SqlExec::Tx(tx),
         "DELETE FROM title_more_like_this_items WHERE source_title_id = {}",
         &[SqlArg::Text(title_id.to_string())],
+    )
+    .await?;
+    Ok(())
+}
+
+async fn delete_unreferenced_discovery_titles_tx(tx: &mut SqlTx<'_>) -> AppResult<()> {
+    SqlRuntime::execute(
+        SqlExec::Tx(tx),
+        "DELETE FROM discovery_titles
+         WHERE NOT EXISTS (
+            SELECT 1
+            FROM discovery_items i
+            WHERE i.discovery_title_id = discovery_titles.id
+         )
+         AND NOT EXISTS (
+            SELECT 1
+            FROM title_more_like_this_items m
+            WHERE m.discovery_title_id = discovery_titles.id
+         )",
+        &[],
+    )
+    .await?;
+    Ok(())
+}
+
+async fn delete_unreferenced_discovery_titles(datastore: &StoreDatastore) -> AppResult<()> {
+    SqlRuntime::execute(
+        datastore.read_exec(),
+        "DELETE FROM discovery_titles
+         WHERE NOT EXISTS (
+            SELECT 1
+            FROM discovery_items i
+            WHERE i.discovery_title_id = discovery_titles.id
+         )
+         AND NOT EXISTS (
+            SELECT 1
+            FROM title_more_like_this_items m
+            WHERE m.discovery_title_id = discovery_titles.id
+         )",
+        &[],
     )
     .await?;
     Ok(())
@@ -2883,94 +3121,39 @@ async fn insert_title_more_like_this_item_tx(
     _datastore: &StoreDatastore,
     title_id: &str,
     item: &DiscoveryItemRecord,
+    language: &str,
 ) -> AppResult<()> {
-    let columns = std::iter::once("source_title_id")
-        .chain(ITEM_COLUMNS.iter().copied())
-        .collect::<Vec<_>>();
-    let mut args = vec![SqlArg::Text(title_id.to_string())];
-    args.extend(item_args(item));
+    let discovery_title_id = upsert_discovery_title_tx(tx, item, language).await?;
     SqlRuntime::execute(
         SqlExec::Tx(tx),
-        &insert_sql("title_more_like_this_items", &columns),
-        &args,
+        "INSERT INTO title_more_like_this_items
+         (source_title_id, discovery_title_id, sort_index, rank_score, best_source,
+          source_count, edge_count, relation_count, source_subject_count, created_at, updated_at)
+         VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})
+         ON CONFLICT(source_title_id, discovery_title_id) DO UPDATE SET
+            sort_index = excluded.sort_index,
+            rank_score = excluded.rank_score,
+            best_source = excluded.best_source,
+            source_count = excluded.source_count,
+            edge_count = excluded.edge_count,
+            relation_count = excluded.relation_count,
+            source_subject_count = excluded.source_subject_count,
+            updated_at = excluded.updated_at",
+        &[
+            SqlArg::Text(title_id.to_string()),
+            SqlArg::Text(discovery_title_id),
+            SqlArg::I32(item.sort_index),
+            SqlArg::OptF64(item.rank_score),
+            SqlArg::OptText(item.best_source.clone()),
+            SqlArg::OptI32(item.source_count),
+            SqlArg::OptI32(item.edge_count),
+            SqlArg::OptI32(item.relation_count),
+            SqlArg::OptI32(item.source_subject_count),
+            SqlArg::Timestamp(item.created_at),
+            SqlArg::Timestamp(item.updated_at),
+        ],
     )
     .await?;
-    insert_title_more_like_this_item_terms_tx(tx, title_id, item, "genre", &item.genres).await?;
-    insert_title_more_like_this_item_terms_tx(
-        tx,
-        title_id,
-        item,
-        "rating_source",
-        &item.rating_sources,
-    )
-    .await?;
-    if item.external_ratings.is_empty() {
-        for (index, source) in item.rating_sources.iter().enumerate() {
-            insert_title_more_like_this_rating_tx(tx, title_id, item, source, None, index as i32)
-                .await?;
-        }
-    } else {
-        for (index, rating) in item.external_ratings.iter().enumerate() {
-            insert_title_more_like_this_rating_tx(
-                tx,
-                title_id,
-                item,
-                &rating.source,
-                Some(rating),
-                index as i32,
-            )
-            .await?;
-        }
-    }
-    insert_title_more_like_this_item_terms_tx(tx, title_id, item, "status_tag", &item.status_tags)
-        .await?;
-    insert_title_more_like_this_item_terms_tx(tx, title_id, item, "source", &item.sources).await?;
-    insert_title_more_like_this_item_terms_tx(
-        tx,
-        title_id,
-        item,
-        "relation_type",
-        &item.relation_types,
-    )
-    .await?;
-    insert_title_more_like_this_item_terms_tx(
-        tx,
-        title_id,
-        item,
-        "relation_subtype",
-        &item.relation_subtypes,
-    )
-    .await?;
-    insert_title_more_like_this_item_terms_tx(
-        tx,
-        title_id,
-        item,
-        "chart_signal",
-        &item.chart_signals,
-    )
-    .await?;
-    insert_title_more_like_this_item_terms_tx(
-        tx,
-        title_id,
-        item,
-        "provider_signal",
-        &item.provider_signals,
-    )
-    .await?;
-    insert_title_more_like_this_item_terms_tx(tx, title_id, item, "facet_term", &item.facet_terms)
-        .await?;
-    insert_title_more_like_this_item_terms_tx(
-        tx,
-        title_id,
-        item,
-        "context_term",
-        &item.context_terms,
-    )
-    .await?;
-    if let Some(media_kind) = discovery_item_authoritative_media_kind(item) {
-        insert_title_more_like_this_item_terms_tx(tx, title_id, item, "media_kind", &[media_kind])
-            .await?;
-    }
     Ok(())
 }
 
@@ -3002,15 +3185,35 @@ fn insert_sql(table: &str, columns: &[&str]) -> String {
     )
 }
 
-fn item_args(item: &DiscoveryItemRecord) -> Vec<SqlArg> {
+async fn upsert_discovery_title_tx(
+    tx: &mut SqlTx<'_>,
+    item: &DiscoveryItemRecord,
+    language: &str,
+) -> AppResult<String> {
+    let language = normalize_discovery_language(language);
+    let target_key_norm = discovery_title_target_key_norm(item);
+    let discovery_title_id = discovery_title_id_for(&target_key_norm, &language);
+    SqlRuntime::execute(
+        SqlExec::Tx(tx),
+        &upsert_discovery_title_sql(),
+        &title_args(item, &discovery_title_id, &target_key_norm, &language),
+    )
+    .await?;
+    insert_title_children_tx(tx, item, &discovery_title_id).await?;
+    Ok(discovery_title_id)
+}
+
+fn title_args(
+    item: &DiscoveryItemRecord,
+    discovery_title_id: &str,
+    target_key_norm: &str,
+    language: &str,
+) -> Vec<SqlArg> {
     vec![
-        SqlArg::Text(item.id.clone()),
-        SqlArg::Text(item.run_id.clone()),
-        SqlArg::OptText(item.base_generation_id.clone()),
-        SqlArg::Text(item.source_run_kind.clone()),
-        SqlArg::OptText(item.section_id.clone()),
-        SqlArg::I32(item.sort_index),
+        SqlArg::Text(discovery_title_id.to_string()),
         SqlArg::Text(item.target_key.clone()),
+        SqlArg::Text(target_key_norm.to_string()),
+        SqlArg::Text(language.to_string()),
         SqlArg::Text(item.target_kind.clone()),
         SqlArg::Bool(item.resolved),
         SqlArg::OptText(item.resolved_title_id.clone()),
@@ -3024,6 +3227,22 @@ fn item_args(item: &DiscoveryItemRecord) -> Vec<SqlArg> {
         SqlArg::OptText(item.overview.clone()),
         SqlArg::OptText(item.content_type.clone()),
         SqlArg::OptF64(item.rating),
+        SqlArg::OptText(item.tmdb_collection_id.clone()),
+        SqlArg::OptText(item.tmdb_collection_name.clone()),
+        SqlArg::Timestamp(item.created_at),
+        SqlArg::Timestamp(item.updated_at),
+    ]
+}
+
+fn occurrence_args(item: &DiscoveryItemRecord, discovery_title_id: &str) -> Vec<SqlArg> {
+    vec![
+        SqlArg::Text(item.id.clone()),
+        SqlArg::Text(item.run_id.clone()),
+        SqlArg::OptText(item.base_generation_id.clone()),
+        SqlArg::Text(discovery_title_id.to_string()),
+        SqlArg::Text(item.source_run_kind.clone()),
+        SqlArg::OptText(item.section_id.clone()),
+        SqlArg::I32(item.sort_index),
         SqlArg::OptText(item.best_source.clone()),
         SqlArg::OptI32(item.source_count),
         SqlArg::OptI32(item.edge_count),
@@ -3031,8 +3250,6 @@ fn item_args(item: &DiscoveryItemRecord) -> Vec<SqlArg> {
         SqlArg::OptI32(item.source_subject_count),
         SqlArg::OptF64(item.rank_score),
         SqlArg::I32(item.matched_subject_count),
-        SqlArg::OptText(item.tmdb_collection_id.clone()),
-        SqlArg::OptText(item.tmdb_collection_name.clone()),
         SqlArg::Bool(item.owned_in_input),
         SqlArg::OptText(item.tombstoned_by_run_id.clone()),
         SqlArg::OptTimestamp(item.tombstoned_at),
@@ -3058,31 +3275,6 @@ async fn insert_item_children_tx(tx: &mut SqlTx<'_>, item: &DiscoveryItemRecord)
         .await?;
     }
 
-    insert_item_terms_tx(tx, item, "genre", None, &item.genres).await?;
-    insert_item_terms_tx(tx, item, "rating_source", None, &item.rating_sources).await?;
-    insert_item_terms_tx(tx, item, "status_tag", None, &item.status_tags).await?;
-    insert_item_terms_tx(tx, item, "source", None, &item.sources).await?;
-    insert_item_terms_tx(tx, item, "relation_type", None, &item.relation_types).await?;
-    insert_item_terms_tx(tx, item, "relation_subtype", None, &item.relation_subtypes).await?;
-    insert_item_terms_tx(tx, item, "chart_signal", None, &item.chart_signals).await?;
-    insert_item_terms_tx(tx, item, "provider_signal", None, &item.provider_signals).await?;
-    insert_item_terms_tx(tx, item, "facet_term", None, &item.facet_terms).await?;
-    insert_item_terms_tx(tx, item, "context_term", None, &item.context_terms).await?;
-    if let Some(media_kind) = discovery_item_authoritative_media_kind(item) {
-        insert_item_terms_tx(tx, item, "media_kind", None, &[media_kind]).await?;
-    }
-    for (index, source_tag) in item.source_tags.iter().enumerate() {
-        insert_source_tag_tx(tx, item, source_tag, index as i32).await?;
-    }
-    if item.external_ratings.is_empty() {
-        for (index, source) in item.rating_sources.iter().enumerate() {
-            insert_rating_tx(tx, item, source, None, index as i32).await?;
-        }
-    } else {
-        for (index, rating) in item.external_ratings.iter().enumerate() {
-            insert_rating_tx(tx, item, &rating.source, Some(rating), index as i32).await?;
-        }
-    }
     for rank_component in &item.rank_components {
         insert_rank_component_tx(tx, item, rank_component).await?;
     }
@@ -3095,9 +3287,105 @@ async fn insert_item_children_tx(tx: &mut SqlTx<'_>, item: &DiscoveryItemRecord)
     Ok(())
 }
 
-async fn insert_item_terms_tx(
+async fn insert_title_children_tx(
     tx: &mut SqlTx<'_>,
     item: &DiscoveryItemRecord,
+    discovery_title_id: &str,
+) -> AppResult<()> {
+    insert_title_terms_tx(tx, discovery_title_id, "genre", None, &item.genres).await?;
+    insert_title_terms_tx(
+        tx,
+        discovery_title_id,
+        "rating_source",
+        None,
+        &item.rating_sources,
+    )
+    .await?;
+    insert_title_terms_tx(
+        tx,
+        discovery_title_id,
+        "status_tag",
+        None,
+        &item.status_tags,
+    )
+    .await?;
+    insert_title_terms_tx(tx, discovery_title_id, "source", None, &item.sources).await?;
+    insert_title_terms_tx(
+        tx,
+        discovery_title_id,
+        "relation_type",
+        None,
+        &item.relation_types,
+    )
+    .await?;
+    insert_title_terms_tx(
+        tx,
+        discovery_title_id,
+        "relation_subtype",
+        None,
+        &item.relation_subtypes,
+    )
+    .await?;
+    insert_title_terms_tx(
+        tx,
+        discovery_title_id,
+        "chart_signal",
+        None,
+        &item.chart_signals,
+    )
+    .await?;
+    insert_title_terms_tx(
+        tx,
+        discovery_title_id,
+        "provider_signal",
+        None,
+        &item.provider_signals,
+    )
+    .await?;
+    insert_title_terms_tx(
+        tx,
+        discovery_title_id,
+        "facet_term",
+        None,
+        &item.facet_terms,
+    )
+    .await?;
+    insert_title_terms_tx(
+        tx,
+        discovery_title_id,
+        "context_term",
+        None,
+        &item.context_terms,
+    )
+    .await?;
+    if let Some(media_kind) = discovery_item_authoritative_media_kind(item) {
+        insert_title_terms_tx(tx, discovery_title_id, "media_kind", None, &[media_kind]).await?;
+    }
+    for (index, source_tag) in item.source_tags.iter().enumerate() {
+        insert_title_source_tag_tx(tx, discovery_title_id, source_tag, index as i32).await?;
+    }
+    if item.external_ratings.is_empty() {
+        for (index, source) in item.rating_sources.iter().enumerate() {
+            insert_title_rating_tx(tx, discovery_title_id, source, None, index as i32).await?;
+        }
+    } else {
+        for (index, rating) in item.external_ratings.iter().enumerate() {
+            insert_title_rating_tx(
+                tx,
+                discovery_title_id,
+                &rating.source,
+                Some(rating),
+                index as i32,
+            )
+            .await?;
+        }
+    }
+    Ok(())
+}
+
+async fn insert_title_terms_tx(
+    tx: &mut SqlTx<'_>,
+    discovery_title_id: &str,
     term_kind: &str,
     term_category: Option<&str>,
     values: &[String],
@@ -3109,13 +3397,12 @@ async fn insert_item_terms_tx(
         }
         SqlRuntime::execute(
             SqlExec::Tx(tx),
-            "INSERT INTO discovery_item_terms
-             (item_id, run_id, term_kind, term_category, term_value, sort_index)
-             VALUES ({}, {}, {}, {}, {}, {})
+            "INSERT INTO discovery_title_terms
+             (discovery_title_id, term_kind, term_category, term_value, sort_index)
+             VALUES ({}, {}, {}, {}, {})
              ON CONFLICT DO NOTHING",
             &[
-                SqlArg::Text(item.id.clone()),
-                SqlArg::Text(item.run_id.clone()),
+                SqlArg::Text(discovery_title_id.to_string()),
                 SqlArg::Text(term_kind.to_string()),
                 SqlArg::Text(storage_text(term_category)),
                 SqlArg::Text(value.to_string()),
@@ -3127,53 +3414,20 @@ async fn insert_item_terms_tx(
     Ok(())
 }
 
-async fn insert_title_more_like_this_item_terms_tx(
+async fn insert_title_source_tag_tx(
     tx: &mut SqlTx<'_>,
-    title_id: &str,
-    item: &DiscoveryItemRecord,
-    term_kind: &str,
-    values: &[String],
-) -> AppResult<()> {
-    for (index, value) in values.iter().enumerate() {
-        let value = value.trim();
-        if value.is_empty() {
-            continue;
-        }
-        SqlRuntime::execute(
-            SqlExec::Tx(tx),
-            "INSERT INTO title_more_like_this_item_terms
-             (item_id, source_title_id, term_kind, term_category, term_value, sort_index)
-             VALUES ({}, {}, {}, {}, {}, {})
-             ON CONFLICT DO NOTHING",
-            &[
-                SqlArg::Text(item.id.clone()),
-                SqlArg::Text(title_id.to_string()),
-                SqlArg::Text(term_kind.to_string()),
-                SqlArg::Text(String::new()),
-                SqlArg::Text(value.to_string()),
-                SqlArg::I32(index as i32),
-            ],
-        )
-        .await?;
-    }
-    Ok(())
-}
-
-async fn insert_source_tag_tx(
-    tx: &mut SqlTx<'_>,
-    item: &DiscoveryItemRecord,
+    discovery_title_id: &str,
     source_tag: &DiscoverySourceTagRecord,
     index: i32,
 ) -> AppResult<()> {
     SqlRuntime::execute(
         SqlExec::Tx(tx),
-        "INSERT INTO discovery_item_source_tags
-         (item_id, run_id, category, name, sort_index)
-         VALUES ({}, {}, {}, {}, {})
+        "INSERT INTO discovery_title_source_tags
+         (discovery_title_id, category, name, sort_index)
+         VALUES ({}, {}, {}, {})
          ON CONFLICT DO NOTHING",
         &[
-            SqlArg::Text(item.id.clone()),
-            SqlArg::Text(item.run_id.clone()),
+            SqlArg::Text(discovery_title_id.to_string()),
             SqlArg::Text(storage_text(source_tag.category.as_deref())),
             SqlArg::Text(storage_text(source_tag.name.as_deref())),
             SqlArg::I32(index),
@@ -3181,18 +3435,18 @@ async fn insert_source_tag_tx(
     )
     .await?;
     if let Some(name) = source_tag.name.as_deref() {
-        insert_item_terms_tx(
+        insert_title_terms_tx(
             tx,
-            item,
+            discovery_title_id,
             "source_tag",
             source_tag.category.as_deref(),
             &[name.to_string()],
         )
         .await?;
     }
-    insert_item_terms_tx(
+    insert_title_terms_tx(
         tx,
-        item,
+        discovery_title_id,
         "source_tag_value",
         source_tag.category.as_deref(),
         &source_tag.values,
@@ -3203,27 +3457,27 @@ async fn insert_source_tag_tx(
         if value.is_empty() {
             continue;
         }
-        insert_source_tag_value_tx(tx, item, index, value, value_index as i32).await?;
+        insert_title_source_tag_value_tx(tx, discovery_title_id, index, value, value_index as i32)
+            .await?;
     }
     Ok(())
 }
 
-async fn insert_source_tag_value_tx(
+async fn insert_title_source_tag_value_tx(
     tx: &mut SqlTx<'_>,
-    item: &DiscoveryItemRecord,
+    discovery_title_id: &str,
     source_tag_sort_index: i32,
     value: &str,
     value_sort_index: i32,
 ) -> AppResult<()> {
     SqlRuntime::execute(
         SqlExec::Tx(tx),
-        "INSERT INTO discovery_item_source_tag_values
-         (item_id, run_id, source_tag_sort_index, source_tag_value, value_sort_index)
-         VALUES ({}, {}, {}, {}, {})
+        "INSERT INTO discovery_title_source_tag_values
+         (discovery_title_id, source_tag_sort_index, source_tag_value, value_sort_index)
+         VALUES ({}, {}, {}, {})
          ON CONFLICT DO NOTHING",
         &[
-            SqlArg::Text(item.id.clone()),
-            SqlArg::Text(item.run_id.clone()),
+            SqlArg::Text(discovery_title_id.to_string()),
             SqlArg::I32(source_tag_sort_index),
             SqlArg::Text(value.to_string()),
             SqlArg::I32(value_sort_index),
@@ -3233,55 +3487,32 @@ async fn insert_source_tag_value_tx(
     Ok(())
 }
 
-async fn insert_rating_tx(
+async fn insert_title_rating_tx(
     tx: &mut SqlTx<'_>,
-    item: &DiscoveryItemRecord,
+    discovery_title_id: &str,
     source: &str,
     rating: Option<&TitleExternalRating>,
     index: i32,
 ) -> AppResult<()> {
     SqlRuntime::execute(
         SqlExec::Tx(tx),
-        "INSERT INTO discovery_item_ratings
-         (item_id, run_id, rating_source, rating, rating_value, rating_score, normalized, votes, url, sort_index)
-         VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {})
-         ON CONFLICT DO NOTHING",
+        "INSERT INTO discovery_title_ratings
+         (discovery_title_id, rating_source, rating_value, rating_score, normalized, votes, url, sort_index)
+         VALUES ({}, {}, {}, {}, {}, {}, {}, {})
+         ON CONFLICT(discovery_title_id, rating_source) DO UPDATE SET
+            rating_value = COALESCE(excluded.rating_value, discovery_title_ratings.rating_value),
+            rating_score = COALESCE(excluded.rating_score, discovery_title_ratings.rating_score),
+            normalized = COALESCE(excluded.normalized, discovery_title_ratings.normalized),
+            votes = COALESCE(excluded.votes, discovery_title_ratings.votes),
+            url = COALESCE(NULLIF(excluded.url, ''), discovery_title_ratings.url),
+            sort_index = CASE
+                WHEN discovery_title_ratings.sort_index <= excluded.sort_index
+                    THEN discovery_title_ratings.sort_index
+                ELSE excluded.sort_index
+            END",
         &[
-            SqlArg::Text(item.id.clone()),
-            SqlArg::Text(item.run_id.clone()),
+            SqlArg::Text(discovery_title_id.to_string()),
             SqlArg::Text(source.to_string()),
-            SqlArg::OptF64(item.rating),
-            SqlArg::OptF64(rating.and_then(|rating| rating.value)),
-            SqlArg::OptF64(rating.and_then(|rating| rating.score)),
-            SqlArg::OptF64(rating.map(|rating| rating.normalized)),
-            SqlArg::OptI32(rating.and_then(|rating| rating.votes)),
-            SqlArg::Text(rating.map(|rating| rating.url.clone()).unwrap_or_default()),
-            SqlArg::I32(index),
-        ],
-    )
-    .await?;
-    Ok(())
-}
-
-async fn insert_title_more_like_this_rating_tx(
-    tx: &mut SqlTx<'_>,
-    title_id: &str,
-    item: &DiscoveryItemRecord,
-    source: &str,
-    rating: Option<&TitleExternalRating>,
-    index: i32,
-) -> AppResult<()> {
-    SqlRuntime::execute(
-        SqlExec::Tx(tx),
-        "INSERT INTO title_more_like_this_item_ratings
-         (item_id, source_title_id, rating_source, rating, rating_value, rating_score, normalized, votes, url, sort_index)
-         VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {})
-         ON CONFLICT DO NOTHING",
-        &[
-            SqlArg::Text(item.id.clone()),
-            SqlArg::Text(title_id.to_string()),
-            SqlArg::Text(source.to_string()),
-            SqlArg::OptF64(item.rating),
             SqlArg::OptF64(rating.and_then(|rating| rating.value)),
             SqlArg::OptF64(rating.and_then(|rating| rating.score)),
             SqlArg::OptF64(rating.map(|rating| rating.normalized)),
@@ -3737,13 +3968,22 @@ mod tests {
                         year: Some(2026),
                         poster_path: None,
                         poster_url: None,
-                        background_url: None,
-                        overview: None,
+                        background_url: Some(
+                            "https://images.example.test/movie-bg.jpg".to_string(),
+                        ),
+                        overview: Some("Rich canonical overview".to_string()),
                         content_type: Some(String::new()),
                         genres: vec!["Drama".to_string(), "Drama".to_string()],
                         rating: Some(7.5),
                         rating_sources: vec!["tmdb".to_string(), "tmdb".to_string()],
-                        external_ratings: Vec::new(),
+                        external_ratings: vec![TitleExternalRating {
+                            source: "imdb".to_string(),
+                            value: Some(8.2),
+                            score: Some(82.0),
+                            normalized: 0.82,
+                            votes: Some(1234),
+                            url: "https://www.imdb.com/title/tt0000010/".to_string(),
+                        }],
                         status_tags: vec!["available".to_string()],
                         source_tags: vec![DiscoverySourceTagRecord {
                             category: Some("theme".to_string()),
@@ -3899,8 +4139,23 @@ mod tests {
             .find(|item| item.id == "item-row-1")
             .expect("canonical fixture item should round trip");
         assert_eq!(read_item.target_key, "tmdb:movie:10");
+        assert_eq!(
+            read_item.background_url.as_deref(),
+            Some("https://images.example.test/movie-bg.jpg")
+        );
+        assert_eq!(
+            read_item.overview.as_deref(),
+            Some("Rich canonical overview")
+        );
         assert_eq!(read_item.genres, vec!["Drama".to_string()]);
-        assert_eq!(read_item.rating_sources, vec!["tmdb".to_string()]);
+        assert_eq!(
+            read_item.rating_sources,
+            vec!["tmdb".to_string(), "imdb".to_string()]
+        );
+        assert_eq!(read_item.external_ratings.len(), 1);
+        assert_eq!(read_item.external_ratings[0].source, "imdb");
+        assert_eq!(read_item.external_ratings[0].normalized, 0.82);
+        assert_eq!(read_item.external_ratings[0].votes, Some(1234));
         assert_eq!(read_item.source_tags.len(), 1);
         assert_eq!(
             read_item.source_tags[0].values,
@@ -3913,6 +4168,101 @@ mod tests {
             read_item.library_provenance[0].library_id.as_deref(),
             Some("series-library-a")
         );
+        SqlRuntime::execute(
+            store.datastore.read_exec(),
+            "INSERT INTO titles (
+                id, library_id, name, name_normalized, facet, root_folder_id, created_at
+             )
+             VALUES ({}, {}, {}, {}, {}, {}, {})",
+            &[
+                SqlArg::Text("source-title-1".to_string()),
+                SqlArg::Text("movie_default_library".to_string()),
+                SqlArg::Text("Source Title".to_string()),
+                SqlArg::Text("source title".to_string()),
+                SqlArg::Text("movie".to_string()),
+                SqlArg::Text("canonical_root_for_movie_default_library".to_string()),
+                SqlArg::Timestamp(now),
+            ],
+        )
+        .await
+        .expect("source title should insert");
+        let mut sparse_title_rec_item = (*read_item).clone();
+        sparse_title_rec_item.background_url = None;
+        sparse_title_rec_item.overview = None;
+        sparse_title_rec_item.rating = None;
+        sparse_title_rec_item.genres.clear();
+        sparse_title_rec_item.rating_sources.clear();
+        sparse_title_rec_item.external_ratings.clear();
+        sparse_title_rec_item.source_tags.clear();
+        sparse_title_rec_item.facet_terms.clear();
+        store
+            .replace_title_more_like_this_items("source-title-1", "eng", &[sparse_title_rec_item])
+            .await
+            .expect("title recommendations should replace");
+        let more_like_this = store
+            .list_title_more_like_this_items("source-title-1", 10)
+            .await
+            .expect("title recommendations should list");
+        assert_eq!(more_like_this.len(), 1);
+        assert_eq!(more_like_this[0].target_key, "tmdb:movie:10");
+        assert_eq!(
+            more_like_this[0].background_url.as_deref(),
+            Some("https://images.example.test/movie-bg.jpg")
+        );
+        assert_eq!(
+            more_like_this[0].overview.as_deref(),
+            Some("Rich canonical overview")
+        );
+        assert_eq!(more_like_this[0].genres, vec!["Drama".to_string()]);
+        assert_eq!(
+            more_like_this[0].source_tags[0].values,
+            vec!["theme".to_string(), "Isekai".to_string()]
+        );
+        assert_eq!(more_like_this[0].external_ratings.len(), 1);
+        assert_eq!(more_like_this[0].external_ratings[0].source, "imdb");
+        let canonical_rows = SqlRuntime::fetch_all(
+            store.datastore.read_exec(),
+            "SELECT id
+             FROM discovery_titles
+             WHERE target_key_norm = {} AND language = {}
+             ORDER BY id ASC",
+            &[
+                SqlArg::Text("tmdb:movie:10".to_string()),
+                SqlArg::Text("eng".to_string()),
+            ],
+        )
+        .await
+        .expect("canonical title rows should query");
+        assert_eq!(
+            canonical_rows.len(),
+            1,
+            "snapshot occurrences and title recommendations should share one canonical title row"
+        );
+        let occurrence_title_id = SqlRuntime::fetch_optional(
+            store.datastore.read_exec(),
+            "SELECT discovery_title_id
+             FROM discovery_items
+             WHERE id = {}",
+            &[SqlArg::Text("item-row-1".to_string())],
+        )
+        .await
+        .expect("occurrence title id should query")
+        .expect("occurrence title id should exist")
+        .text("discovery_title_id")
+        .expect("occurrence title id should read");
+        let link_title_id = SqlRuntime::fetch_optional(
+            store.datastore.read_exec(),
+            "SELECT discovery_title_id
+             FROM title_more_like_this_items
+             WHERE source_title_id = {}",
+            &[SqlArg::Text("source-title-1".to_string())],
+        )
+        .await
+        .expect("link title id should query")
+        .expect("link title id should exist")
+        .text("discovery_title_id")
+        .expect("link title id should read");
+        assert_eq!(occurrence_title_id, link_title_id);
         let read_facets = store
             .list_discovery_facets("run-1")
             .await

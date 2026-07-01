@@ -258,19 +258,19 @@ export function ImportRootChip({
             cursor: "pointer",
             flex: "none",
             background: invalid
-              ? "rgba(244, 63, 94, 0.16)"
+              ? "var(--scry-danger-bg-strong)"
               : remapped
               ? "rgba(var(--scry-accent-rgb), 0.1)"
               : "transparent",
             border: `1px solid ${
               invalid
-                ? "rgba(244, 63, 94, 0.68)"
+                ? "var(--scry-danger-border-strong)"
                 : remapped
                   ? "var(--scry-baccent)"
                   : "var(--scry-border2)"
             }`,
             color: invalid
-              ? "rgb(251, 113, 133)"
+              ? "var(--scry-danger-text-soft)"
               : remapped
                 ? "var(--scry-accent-text)"
                 : "var(--scry-faint)",

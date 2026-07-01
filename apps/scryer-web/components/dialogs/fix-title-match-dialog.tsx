@@ -209,7 +209,7 @@ export function FixTitleMatchDialog({
           {error ? (
             <div
               id="fix-title-match-error"
-              className="rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-300"
+              className="rounded-md border border-[var(--scry-danger-border)] bg-[var(--scry-danger-bg)] px-3 py-2 text-sm text-[var(--scry-danger-text)]"
             >
               {error}
             </div>

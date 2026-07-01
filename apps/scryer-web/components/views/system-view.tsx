@@ -104,14 +104,14 @@ function detectLogLevel(line: string): string {
 function quotaBadgeClass(current: number | null, max: number | null): string {
   if (current === null || max === null || max === 0) return "";
   const pct = current / max;
-  if (pct >= 1) return "text-red-500 font-semibold";
-  if (pct >= 0.9) return "text-red-400";
+  if (pct >= 1) return "text-[var(--scry-danger-text-soft)] font-semibold";
+  if (pct >= 0.9) return "text-[var(--scry-danger-text-soft)]";
   if (pct >= 0.75) return "text-yellow-400";
   return "text-green-400";
 }
 
 const LOG_LEVEL_COLORS: Record<string, string> = {
-  error: "text-red-300",
+  error: "text-[var(--scry-danger-text)]",
   warn: "text-amber-300",
   info: "text-sky-300",
   debug: "text-emerald-300",
@@ -475,7 +475,7 @@ function LogViewer() {
           <div className="flex flex-wrap items-center gap-2 text-xs">
             <span className="inline-flex items-center gap-1.5 rounded-full border border-[var(--scry-border3)] bg-[var(--scry-inset)] px-2.5 py-1 text-[var(--scry-ink2)]">
               <span
-                className={`size-2 rounded-full ${connected ? "bg-emerald-400" : "bg-red-400"}`}
+                className={`size-2 rounded-full ${connected ? "bg-emerald-400" : "bg-[var(--scry-danger-solid)]"}`}
               />
               {connected ? "Live" : "Disconnected"}
             </span>
@@ -537,7 +537,7 @@ function LogViewer() {
             <Button
               size="sm"
               variant="secondary"
-              className="h-9 rounded-[10px] px-3 text-[13px] text-red-300 hover:text-red-200"
+              className="h-9 rounded-[10px] px-3 text-[13px] text-[var(--scry-danger-text)] hover:text-[var(--scry-danger-text-soft)]"
               onClick={() => {
                 if (ingestTimerRef.current) {
                   clearTimeout(ingestTimerRef.current);
@@ -862,7 +862,7 @@ export function SystemView({
                       <span className={SYSTEM_MUTED_TEXT_CLASS}>Queries:</span>{" "}
                       {stat.queriesLast24H}
                       {stat.failedLast24H > 0 && (
-                        <span className="text-red-400">
+                        <span className="text-[var(--scry-danger-text-soft)]">
                           {" "}
                           ({stat.failedLast24H} failed)
                         </span>

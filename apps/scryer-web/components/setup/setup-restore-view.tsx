@@ -379,7 +379,7 @@ export function SetupRestoreView({
                         variant="outline"
                         onClick={resetSelection}
                         disabled={inspecting}
-                        className="border-red-400/35 text-red-300 hover:bg-red-500/10 hover:text-red-200"
+                        className="border-[var(--scry-danger-border)] text-[var(--scry-danger-text)] hover:bg-[var(--scry-danger-bg)] hover:text-[var(--scry-danger-text)]"
                       >
                         {t("setup.restoreClearFile")}
                       </Button>

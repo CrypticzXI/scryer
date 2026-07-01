@@ -60,7 +60,7 @@ export const UnderlineFilterButton = React.forwardRef<
               : tone === "success"
                 ? "text-emerald-500"
                 : tone === "danger"
-                  ? "text-rose-500"
+                  ? "text-[var(--scry-danger-text-soft)]"
                   : tone === "muted"
                     ? "text-zinc-400"
                     : "text-[var(--scry-muted2)]",

@@ -66,7 +66,7 @@ const statusClasses: Record<ImportRecordStatus, string> = {
     "border-sky-500/40 bg-sky-500/10 text-sky-700 dark:text-sky-200",
   completed:
     "border-emerald-500/40 bg-emerald-500/15 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-200",
-  failed: "border-rose-500/40 bg-rose-500/10 text-rose-700 dark:text-rose-200",
+  failed: "border-[var(--scry-danger-border)] bg-[var(--scry-danger-bg)] text-[var(--scry-danger-text)]",
   skipped: "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-200",
 };
 
@@ -74,14 +74,14 @@ const decisionClasses: Record<ImportDecision, string> = {
   imported:
     "border-emerald-500/40 bg-emerald-500/15 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-200",
   rejected:
-    "border-rose-500/40 bg-rose-500/10 text-rose-700 dark:text-rose-200",
+    "border-[var(--scry-danger-border)] bg-[var(--scry-danger-bg)] text-[var(--scry-danger-text)]",
   skipped:
     "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-200",
   conflict:
     "border-violet-500/40 bg-violet-500/10 text-violet-700 dark:text-violet-200",
   unmatched:
     "border-slate-500/40 bg-slate-500/10 text-slate-700 dark:text-slate-200",
-  failed: "border-rose-500/40 bg-rose-500/10 text-rose-700 dark:text-rose-200",
+  failed: "border-[var(--scry-danger-border)] bg-[var(--scry-danger-bg)] text-[var(--scry-danger-text)]",
 };
 
 const statusFilterOrder: ImportRecordStatus[] = [
@@ -385,7 +385,7 @@ export function ImportHistoryView({
       </CardHeader>
       <CardContent>
         {error ? (
-          <p className="rounded border border-rose-500/40 bg-rose-950/40 p-2 text-sm text-rose-200">
+          <p className="rounded border border-[var(--scry-danger-border)] bg-[var(--scry-danger-bg)] p-2 text-sm text-[var(--scry-danger-text)]">
             {error}
           </p>
         ) : loading && records.length === 0 ? (
@@ -453,7 +453,7 @@ export function ImportHistoryView({
                     </p>
                   ) : null}
                   {record.errorMessage ? (
-                    <p className="mt-2 break-words text-xs text-rose-400">{record.errorMessage}</p>
+                    <p className="mt-2 break-words text-xs text-[var(--scry-danger-text-soft)]">{record.errorMessage}</p>
                   ) : null}
                   {hasPaths ? (
                     <div className="mt-2 space-y-1 text-xs text-muted-foreground">
@@ -561,7 +561,7 @@ export function ImportHistoryView({
                           {hasError ? (
                             <p
                               className={cn(
-                                "max-w-full break-words whitespace-pre-wrap text-xs text-rose-500 dark:text-rose-300",
+                                "max-w-full break-words whitespace-pre-wrap text-xs text-[var(--scry-danger-text-soft)]",
                                 !isExpanded && "line-clamp-3",
                               )}
                             >
@@ -625,7 +625,7 @@ export function ImportHistoryView({
                                   <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
                                     {t("importHistory.error")}
                                   </p>
-                                  <p className="mt-1 whitespace-pre-wrap break-words text-sm text-rose-500 dark:text-rose-300">
+                                  <p className="mt-1 whitespace-pre-wrap break-words text-sm text-[var(--scry-danger-text-soft)]">
                                     {record.errorMessage}
                                   </p>
                                 </div>

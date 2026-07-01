@@ -377,7 +377,7 @@ export function RenameSettingsForm({
               </SelectContent>
             </Select>
             {qualityProfileParseError ? (
-              <p className="mt-2 rounded border border-rose-500/60 bg-rose-500/10 p-2 text-xs text-rose-300">
+              <p className="mt-2 rounded border border-[var(--scry-danger-border-strong)] bg-[var(--scry-danger-bg)] p-2 text-xs text-[var(--scry-danger-text)]">
                 {qualityProfileParseError}
               </p>
             ) : null}
@@ -404,13 +404,13 @@ export function RenameSettingsForm({
                 className={
                   templateValue.trim()
                     ? renameValidationError
-                      ? "text-rose-400 border-rose-500/60"
+                      ? "text-[var(--scry-danger-text-soft)] border-[var(--scry-danger-border-strong)]"
                       : "text-emerald-600 dark:text-emerald-400 border-emerald-500/60"
                     : undefined
                 }
               />
               {renameValidationError ? (
-                <p className="text-xs text-rose-400">{renameValidationError}</p>
+                <p className="text-xs text-[var(--scry-danger-text-soft)]">{renameValidationError}</p>
               ) : null}
             </div>
 

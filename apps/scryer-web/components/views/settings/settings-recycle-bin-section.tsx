@@ -69,7 +69,7 @@ function formatDate(iso: string, dateTimeFormat: UiDateTimeFormat): string {
 
 const REASON_LABELS: Record<string, { label: string; className: string }> = {
   upgrade_replaced: { label: "Upgrade", className: "bg-blue-900/40 text-blue-300" },
-  file_deleted: { label: "Deleted", className: "bg-red-900/40 text-red-300" },
+  file_deleted: { label: "Deleted", className: "bg-[var(--scry-danger-bg)] text-[var(--scry-danger-text)]" },
   invalid_file: { label: "Invalid", className: "bg-yellow-900/40 text-yellow-300" },
   language_mismatch: { label: "Language", className: "bg-orange-900/40 text-orange-300" },
   post_download_rule_blocked: { label: "Rule blocked", className: "bg-purple-900/40 text-purple-300" },
@@ -170,7 +170,7 @@ export function SettingsRecycleBinSection({
               size="sm"
               disabled={totalCount === 0 || isBusy || librariesLoading}
               onClick={onEmptyAll}
-              className="text-red-400 hover:text-red-300"
+              className="text-[var(--scry-danger-text-soft)] hover:text-[var(--scry-danger-text)]"
             >
               <Trash2 className="mr-2 h-4 w-4" />
               {t("settings.recycleBinEmptyAll")}

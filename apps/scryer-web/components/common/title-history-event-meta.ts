@@ -52,9 +52,9 @@ const eventMeta: Record<string, EventMeta> = {
   },
   download_failed: {
     icon: AlertTriangle,
-    iconClassName: "text-rose-400",
+    iconClassName: "text-[var(--scry-danger-text-soft)]",
     labelKey: "history.downloadFailed",
-    badgeClassName: "border-rose-500/40 bg-rose-500/10 text-rose-200",
+    badgeClassName: "border-[var(--scry-danger-border)] bg-[var(--scry-danger-bg)] text-[var(--scry-danger-text)]",
   },
   blocklisted: {
     icon: Ban,
@@ -70,9 +70,9 @@ const eventMeta: Record<string, EventMeta> = {
   },
   import_failed: {
     icon: XCircle,
-    iconClassName: "text-rose-400",
+    iconClassName: "text-[var(--scry-danger-text-soft)]",
     labelKey: "history.importFailed",
-    badgeClassName: "border-rose-500/40 bg-rose-500/10 text-rose-200",
+    badgeClassName: "border-[var(--scry-danger-border)] bg-[var(--scry-danger-bg)] text-[var(--scry-danger-text)]",
   },
   import_skipped: {
     icon: SkipForward,
@@ -94,9 +94,9 @@ const eventMeta: Record<string, EventMeta> = {
   },
   file_deleted: {
     icon: Trash2,
-    iconClassName: "text-rose-400",
+    iconClassName: "text-[var(--scry-danger-text-soft)]",
     labelKey: "history.fileDeleted",
-    badgeClassName: "border-rose-500/40 bg-rose-500/10 text-rose-200",
+    badgeClassName: "border-[var(--scry-danger-border)] bg-[var(--scry-danger-bg)] text-[var(--scry-danger-text)]",
   },
   file_renamed: {
     icon: FileEdit,

@@ -301,7 +301,7 @@ function InstanceCard({
           onClick={onRemove}
           title={t("setup.removeInstance")}
           aria-label={t("setup.removeInstance")}
-          className="flex items-center justify-center transition-colors hover:text-[#f87171]"
+          className="flex items-center justify-center transition-colors hover:text-[var(--scry-danger-text-soft)]"
           style={{
             width: 26,
             height: 26,
@@ -404,7 +404,7 @@ function StatusRow({
         <span className="flex flex-col gap-1">
           <span
             className="flex items-center gap-1.5"
-            style={{ color: "#f87171" }}
+            style={{ color: "var(--scry-danger-text-soft)" }}
           >
             <CircleAlert style={{ width: 15, height: 15 }} />
             {t("setup.couldntConnect")}
@@ -441,7 +441,7 @@ function statusDotColor(
     case "testing":
       return "var(--scry-accent)";
     case "error":
-      return "#f87171";
+      return "var(--scry-danger-text-soft)";
     default:
       return idleColor;
   }

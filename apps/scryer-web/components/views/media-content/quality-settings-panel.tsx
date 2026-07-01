@@ -157,7 +157,7 @@ export function QualitySettingsPanel({
             </SelectContent>
           </Select>
           {qualityProfileParseError ? (
-            <p className="rounded-[12px] border border-rose-500/60 bg-rose-500/10 p-3 text-xs text-rose-300">
+            <p className="rounded-[12px] border border-[var(--scry-danger-border-strong)] bg-[var(--scry-danger-bg)] p-3 text-xs text-[var(--scry-danger-text)]">
               {qualityProfileParseError}
             </p>
           ) : null}

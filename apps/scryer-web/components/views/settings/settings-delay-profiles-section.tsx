@@ -104,7 +104,7 @@ export function SettingsDelayProfilesSection({
   return (
     <div id="settings-delay-profiles-section" className="space-y-4 text-sm">
       {parseError && (
-        <div className="rounded-[12px] border border-rose-500/35 bg-rose-500/10 p-3 text-sm text-rose-200">
+        <div className="rounded-[12px] border border-[var(--scry-danger-border)] bg-[var(--scry-danger-bg)] p-3 text-sm text-[var(--scry-danger-text)]">
           {parseError}
         </div>
       )}

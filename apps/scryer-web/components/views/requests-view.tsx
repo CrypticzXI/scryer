@@ -287,7 +287,7 @@ function requestStatusTone(
       return {
         label: requestStatusLabel(t, status),
         Icon: X,
-        className: "border-red-400/25 bg-red-500/15 text-red-300",
+        className: "border-[var(--scry-danger-border)] bg-[var(--scry-danger-bg)] text-[var(--scry-danger-text)]",
       };
     case "canceled":
     default:

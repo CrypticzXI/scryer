@@ -1367,7 +1367,7 @@ export function DiscoveryView({
         </div>
 
         {error ? (
-          <div className="mb-5 flex items-center justify-between gap-4 rounded-[12px] border border-rose-500/25 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
+          <div className="mb-5 flex items-center justify-between gap-4 rounded-[12px] border border-[var(--scry-danger-border)] bg-[var(--scry-danger-bg)] px-4 py-3 text-sm text-[var(--scry-danger-text)]">
             <span>{error}</span>
             <Button type="button" size="sm" variant="outline" onClick={onRefresh}>
               {t("label.retry")}

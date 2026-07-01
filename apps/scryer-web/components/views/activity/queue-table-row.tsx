@@ -133,7 +133,7 @@ export const QueueTableRow = memo(function QueueTableRow({
           {(queueItem.deleteErrorMessage || queueItem.importErrorMessage) &&
             !row.hasStatusDetails && (
             <p
-              className="mt-1 max-w-full break-words whitespace-normal text-xs text-rose-400"
+              className="mt-1 max-w-full break-words whitespace-normal text-xs text-[var(--scry-danger-text-soft)]"
               title={queueItem.deleteErrorMessage ?? queueItem.importErrorMessage ?? ""}
             >
               {queueItem.deleteErrorMessage ?? queueItem.importErrorMessage}
@@ -305,7 +305,7 @@ export const QueueTableRow = memo(function QueueTableRow({
                 type="button"
                 size="sm"
                 variant="secondary"
-                className={`h-10 w-10 border border-rose-500/50 bg-rose-600/15 text-rose-200 hover:bg-rose-600/25 ${rowActionVisualClass}`}
+                className={`h-10 w-10 border border-[var(--scry-danger-border)] bg-[var(--scry-danger-bg)] text-[var(--scry-danger-text)] hover:bg-[var(--scry-danger-bg-strong)] ${rowActionVisualClass}`}
                 disabled={isRowFullyBusy}
                 title={t("queue.markFailedOnly")}
                 aria-label={t("queue.markFailedOnly")}
@@ -323,7 +323,7 @@ export const QueueTableRow = memo(function QueueTableRow({
               type="button"
               size="sm"
               variant="secondary"
-              className={`h-10 w-10 border border-rose-500/50 bg-rose-600/15 text-rose-300 hover:bg-rose-600/25 ${rowActionVisualClass}`}
+              className={`h-10 w-10 border border-[var(--scry-danger-border)] bg-[var(--scry-danger-bg)] text-[var(--scry-danger-text)] hover:bg-[var(--scry-danger-bg-strong)] ${rowActionVisualClass}`}
               disabled={isRowFullyBusy}
               title={t("label.delete")}
               aria-label={t("label.delete")}

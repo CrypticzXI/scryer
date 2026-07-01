@@ -369,7 +369,7 @@ function ProfileListEditor({
               sortedDenied.map((option) => (
                 <div
                   key={option.value}
-                  className="mb-1 flex items-center justify-between rounded-[9px] border border-rose-500/35 bg-rose-500/10 px-2 py-1.5 text-[var(--scry-ink2)] ring-1 ring-inset ring-rose-500/20 hover:border-rose-500/60"
+                  className="mb-1 flex items-center justify-between rounded-[9px] border border-[var(--scry-danger-border)] bg-[var(--scry-danger-bg)] px-2 py-1.5 text-[var(--scry-ink2)] ring-1 ring-inset ring-[color:var(--scry-danger-border)] hover:border-[var(--scry-danger-border-strong)]"
                 >
                   <span className="text-xs">{option.label}</span>
                   <Button
@@ -1259,7 +1259,7 @@ export function SettingsQualityProfilesSection({
           </div>
 
           {qualityProfileParseError ? (
-            <p className="rounded-[10px] border border-rose-500/40 bg-rose-500/10 p-3 text-xs text-rose-700 dark:text-rose-300">
+            <p className="rounded-[10px] border border-[var(--scry-danger-border)] bg-[var(--scry-danger-bg)] p-3 text-xs text-[var(--scry-danger-text)]">
               {qualityProfileParseError}
             </p>
           ) : null}

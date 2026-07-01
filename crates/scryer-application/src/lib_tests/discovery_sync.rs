@@ -4079,6 +4079,7 @@ impl DiscoveryRepository for RecordingDiscoveryRepository {
     async fn replace_title_more_like_this_items(
         &self,
         title_id: &str,
+        _language: &str,
         items: &[DiscoveryItemRecord],
     ) -> AppResult<()> {
         self.title_more_like_this_items
@@ -4828,6 +4829,7 @@ fn test_discovery_title() -> DiscoveryTitle {
         rating: Some(7.5),
         rating_sources: vec!["smg".to_string()],
         external_ratings: Vec::new(),
+        rating_provenance: Vec::new(),
         status_tags: Vec::new(),
         background_url: String::new(),
         source_tags: Vec::new(),

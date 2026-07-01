@@ -943,7 +943,7 @@ export function SettingsRulesSection({
                     className={`rounded border px-3 py-2 text-sm ${
                       validationResult.valid
                         ? "border-emerald-700/50 bg-emerald-900/30 text-emerald-300"
-                        : "border-red-700/50 bg-red-900/30 text-red-300"
+                        : "border-[var(--scry-danger-border)] bg-[var(--scry-danger-bg)] text-[var(--scry-danger-text)]"
                     }`}
                   >
                     {validationResult.valid ? (

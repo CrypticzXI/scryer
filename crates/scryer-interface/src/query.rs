@@ -61,9 +61,7 @@ fn library_root_path_is_valid(path: &str) -> bool {
         return false;
     }
 
-    fs::metadata(target)
-        .map(|metadata| metadata.is_dir())
-        .unwrap_or(false)
+    fs::read_dir(target).is_ok()
 }
 
 fn browse_path_io_error(path: &str, error: io::Error) -> AppError {

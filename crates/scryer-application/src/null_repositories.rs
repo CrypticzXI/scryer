@@ -331,6 +331,7 @@ impl DiscoveryRepository for NullDiscoveryRepository {
     async fn replace_title_more_like_this_items(
         &self,
         _title_id: &str,
+        _language: &str,
         _items: &[DiscoveryItemRecord],
     ) -> AppResult<()> {
         Ok(())

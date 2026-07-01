@@ -277,7 +277,7 @@ function episodeProgressIndicatorClass(item: TitleRecord, percent: number) {
     (item.episodesOwned ?? 0) < item.episodesMonitored;
 
   return missingMonitoredEpisodes
-    ? "bg-rose-500 dark:bg-rose-400"
+    ? "bg-[var(--scry-danger-solid)]"
     : "bg-slate-500 dark:bg-slate-500";
 }
 
@@ -290,7 +290,7 @@ function collectionEpisodeProgressIndicatorClass(
   }
 
   return missingMonitoredEpisodes
-    ? "bg-rose-500 dark:bg-rose-400"
+    ? "bg-[var(--scry-danger-solid)]"
     : "bg-slate-500 dark:bg-slate-500";
 }
 

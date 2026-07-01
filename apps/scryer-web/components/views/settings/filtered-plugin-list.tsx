@@ -18,6 +18,10 @@ import {
 import { useTranslate } from "@/lib/context/translate-context";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import {
+  boxedActionButtonBaseClass,
+  boxedActionButtonToneClass,
+} from "@/lib/utils/action-button-styles";
 import { cn } from "@/lib/utils";
 
 const FILTERED_PLUGIN_PANEL_CLASS =
@@ -100,6 +104,7 @@ export function FilteredPluginList({
           type="button"
           variant="secondary"
           size="icon-sm"
+          className={cn(boxedActionButtonBaseClass, boxedActionButtonToneClass.neutral)}
           onClick={() => void refreshPluginsRegistry()}
           disabled={pluginsRefreshing}
           title={t("settings.pluginsRefresh")}
@@ -112,7 +117,7 @@ export function FilteredPluginList({
       </div>
       <div className={FILTERED_PLUGIN_BODY_CLASS}>
         {pluginsError ? (
-          <p className="text-xs text-red-400">{pluginsError}</p>
+          <p className="text-xs text-[var(--scry-danger-text-soft)]">{pluginsError}</p>
         ) : null}
         {pluginsLoading ? (
           <div className={`flex items-center gap-2 py-6 text-sm ${FILTERED_PLUGIN_MUTED_CLASS}`}>
@@ -194,12 +199,18 @@ export function FilteredPluginList({
                     <div className="flex shrink-0 items-center gap-1">
                       {plugin.isInstalled ? (
                         <>
-                          <Button
-                            type="button"
-                            variant="secondary"
-                            size="icon-sm"
-                            onClick={() => void togglePlugin(plugin)}
-                            disabled={mutating}
+                            <Button
+                              type="button"
+                              variant="secondary"
+                              size="icon-sm"
+                              className={cn(
+                                boxedActionButtonBaseClass,
+                                boxedActionButtonToneClass[
+                                  plugin.isEnabled ? "disabled" : "enabled"
+                                ],
+                              )}
+                              onClick={() => void togglePlugin(plugin)}
+                              disabled={mutating}
                             title={
                               plugin.isEnabled
                                 ? t("label.disable")
@@ -222,6 +233,7 @@ export function FilteredPluginList({
                               type="button"
                               variant="secondary"
                               size="icon-sm"
+                              className={cn(boxedActionButtonBaseClass, boxedActionButtonToneClass.upgrade)}
                               onClick={() => void upgradePlugin(plugin)}
                               disabled={mutating}
                               title={t("settings.pluginUpgrade", {
@@ -231,7 +243,7 @@ export function FilteredPluginList({
                                 version: plugin.latestVersion ?? plugin.version,
                               })}
                             >
-                              <ArrowUpCircle className="h-3.5 w-3.5 text-[var(--scry-accent-text)]" />
+                              <ArrowUpCircle className="h-3.5 w-3.5" />
                             </Button>
                           ) : null}
                           {canUninstall ? (
@@ -239,12 +251,13 @@ export function FilteredPluginList({
                               type="button"
                               variant="secondary"
                               size="icon-sm"
+                              className={cn(boxedActionButtonBaseClass, boxedActionButtonToneClass.delete)}
                               onClick={() => void uninstallPlugin(plugin)}
                               disabled={mutating}
                               title={t("settings.pluginUninstall")}
                               aria-label={t("settings.pluginUninstall")}
                             >
-                              <Trash2 className="h-3.5 w-3.5 text-red-400" />
+                              <Trash2 className="h-3.5 w-3.5" />
                             </Button>
                           ) : null}
                         </>
@@ -273,7 +286,7 @@ export function FilteredPluginList({
                   </div>
                 ) : null}
                 {error ? (
-                  <p className="mt-1.5 text-[11px] text-red-400">{error}</p>
+                  <p className="mt-1.5 text-[11px] text-[var(--scry-danger-text-soft)]">{error}</p>
                 ) : null}
               </div>
             );

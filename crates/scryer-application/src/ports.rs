@@ -648,6 +648,7 @@ pub trait DiscoveryRepository: Send + Sync {
     async fn replace_title_more_like_this_items(
         &self,
         title_id: &str,
+        language: &str,
         items: &[DiscoveryItemRecord],
     ) -> AppResult<()>;
     async fn list_title_more_like_this_items(

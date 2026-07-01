@@ -18,22 +18,22 @@ export interface FacetStyle {
 
 const FACET_STYLES: Record<WizardFacet, FacetStyle> = {
   movie: {
-    dot: "var(--scry-accent)",
-    bg: "rgba(var(--scry-accent-rgb), 0.13)",
-    border: "var(--scry-baccent)",
-    text: "var(--scry-accent-text)",
+    dot: "var(--scry-facet-movie)",
+    bg: "var(--scry-facet-movie-bg)",
+    border: "var(--scry-facet-movie-border)",
+    text: "var(--scry-facet-movie-text)",
   },
   series: {
-    dot: "#38bdf8",
-    bg: "rgba(56, 189, 248, 0.12)",
-    border: "rgba(56, 189, 248, 0.3)",
-    text: "#7dd3fc",
+    dot: "var(--scry-facet-series)",
+    bg: "var(--scry-facet-series-bg)",
+    border: "var(--scry-facet-series-border)",
+    text: "var(--scry-facet-series-text)",
   },
   anime: {
-    dot: "#9b5bff",
-    bg: "rgba(155, 91, 255, 0.14)",
-    border: "rgba(155, 91, 255, 0.32)",
-    text: "#c4a3ff",
+    dot: "var(--scry-facet-anime)",
+    bg: "var(--scry-facet-anime-bg)",
+    border: "var(--scry-facet-anime-border)",
+    text: "var(--scry-facet-anime-text)",
   },
 };
 

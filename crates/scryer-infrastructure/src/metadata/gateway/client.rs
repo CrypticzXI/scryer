@@ -2714,6 +2714,61 @@ mod tests {
     }
 
     #[test]
+    fn title_recommendations_query_uses_related_title_rating_provenance() {
+        assert!(graphql_docs::TITLE_RECOMMENDATIONS_QUERY.contains("rating_sources"));
+        assert!(graphql_docs::TITLE_RECOMMENDATIONS_QUERY.contains("rating_provenance"));
+        assert!(graphql_docs::TITLE_RECOMMENDATIONS_QUERY.contains("rating_source"));
+        assert!(graphql_docs::TITLE_RECOMMENDATIONS_QUERY.contains("metadata_source"));
+        assert!(!graphql_docs::TITLE_RECOMMENDATIONS_QUERY.contains("external_ratings"));
+    }
+
+    #[test]
+    fn discovery_queries_use_discovery_rating_provenance_shape() {
+        let queries = [
+            graphql_docs::DISCOVER_PUBLIC_FEED_QUERY,
+            graphql_docs::DISCOVERY_CONTEXT_SNAPSHOT_PAGE_QUERY,
+            graphql_docs::DISCOVERY_CONTEXT_CHANGES_QUERY,
+            graphql_docs::COLLECTION_COMPLETIONS_QUERY,
+            graphql_docs::TITLE_RECOMMENDATIONS_QUERY,
+        ];
+
+        for query in queries {
+            assert!(query.contains("rating_sources"));
+            assert!(query.contains("rating_provenance"));
+            assert!(query.contains("rating_source"));
+            assert!(query.contains("metadata_source"));
+            assert!(!query.contains("external_ratings"));
+        }
+    }
+
+    #[test]
+    fn discovery_title_applies_rating_provenance_as_external_ratings() {
+        let mut item = scryer_application::DiscoveryTitle {
+            rating_provenance: vec![scryer_application::DiscoveryRatingProvenance {
+                metadata_source: "mdblist".to_string(),
+                rating_source: "imdb".to_string(),
+                value: Some(8.2),
+                score: Some(82.0),
+                normalized: 0.82,
+                votes: Some(12_345),
+                url: "https://example.test/imdb".to_string(),
+            }],
+            ..scryer_application::DiscoveryTitle::default()
+        };
+
+        item.apply_rating_provenance();
+
+        assert!(item.rating_provenance.is_empty());
+        assert_eq!(item.external_ratings.len(), 1);
+        assert_eq!(item.external_ratings[0].source, "imdb");
+        assert_eq!(item.external_ratings[0].value, Some(8.2));
+        assert_eq!(item.external_ratings[0].score, Some(82.0));
+        assert_eq!(item.external_ratings[0].normalized, 0.82);
+        assert_eq!(item.external_ratings[0].votes, Some(12_345));
+        assert_eq!(item.external_ratings[0].url, "https://example.test/imdb");
+    }
+
+    #[test]
     fn bulk_artwork_url_query_uses_narrow_projection() {
         let query = build_bulk_artwork_url_query(&[11], &[22], "eng");
 
@@ -4137,7 +4192,13 @@ impl MetadataGateway for MetadataGatewayClient {
                 json!({ "input": input }),
             )
             .await?;
-        Ok(data.discover_public_feed)
+        let mut result = data.discover_public_feed;
+        for section in &mut result.sections {
+            for item in &mut section.items {
+                item.apply_rating_provenance();
+            }
+        }
+        Ok(result)
     }
 
     async fn title_recommendations(
@@ -4158,7 +4219,11 @@ impl MetadataGateway for MetadataGatewayClient {
                 }),
             )
             .await?;
-        Ok(data.title_recommendations)
+        let mut title_recommendations = data.title_recommendations;
+        for result in &mut title_recommendations.results {
+            result.apply_rating_provenance();
+        }
+        Ok(title_recommendations)
     }
 
     async fn collection_completions(
@@ -4173,7 +4238,11 @@ impl MetadataGateway for MetadataGatewayClient {
                 json!({ "input": input }),
             )
             .await?;
-        Ok(data.collection_completions)
+        let mut result = data.collection_completions;
+        for item in &mut result.results {
+            item.apply_rating_provenance();
+        }
+        Ok(result)
     }
 
     async fn submit_discovery_context_snapshot(
@@ -4219,7 +4288,11 @@ impl MetadataGateway for MetadataGatewayClient {
                 json!({ "requestId": request_id, "page": page }),
             )
             .await?;
-        Ok(data.discovery_context_snapshot_page)
+        let mut result = data.discovery_context_snapshot_page;
+        for item in &mut result.items {
+            item.apply_rating_provenance();
+        }
+        Ok(result)
     }
 
     async fn discovery_context_changes(
@@ -4234,7 +4307,11 @@ impl MetadataGateway for MetadataGatewayClient {
                 json!({ "input": input }),
             )
             .await?;
-        Ok(data.discovery_context_changes)
+        let mut result = data.discovery_context_changes;
+        for item in &mut result.items {
+            item.apply_rating_provenance();
+        }
+        Ok(result)
     }
 
     async fn acknowledge_discovery_context_snapshot(

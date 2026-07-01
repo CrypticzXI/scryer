@@ -93,7 +93,7 @@ function renderTableDateTime(
 function runStatusTone(status: JobRun["status"] | "idle"): string {
   switch (status) {
     case "failed":
-      return "text-red-400";
+      return "text-[var(--scry-danger-text-soft)]";
     case "warning":
       return "text-amber-400";
     case "completed":
@@ -172,7 +172,7 @@ function formatHealthCheckSource(source: string): string {
 function healthCheckStatusTone(status: string): string {
   switch (status) {
     case "error":
-      return "text-red-400";
+      return "text-[var(--scry-danger-text-soft)]";
     case "warning":
       return "text-amber-400";
     case "ok":
@@ -789,7 +789,7 @@ export function SystemJobsView({ state }: { state: SystemJobsViewState }) {
                                   </p>
                                 ) : null}
                                 {run.errorText ? (
-                                  <p className="text-sm text-red-400">{run.errorText}</p>
+                                  <p className="text-sm text-[var(--scry-danger-text-soft)]">{run.errorText}</p>
                                 ) : null}
                               </div>
                               <p className={`text-xs ${JOBS_MUTED_TEXT_CLASS}`}>

@@ -348,6 +348,8 @@ pub struct DiscoveryTitle {
     pub rating_sources: Vec<String>,
     #[serde(default)]
     pub external_ratings: Vec<TitleExternalRating>,
+    #[serde(default, skip_serializing)]
+    pub rating_provenance: Vec<DiscoveryRatingProvenance>,
     #[serde(default)]
     pub status_tags: Vec<String>,
     pub background_url: String,
@@ -392,6 +394,54 @@ pub struct DiscoveryTitle {
     pub change_subject_keys: Vec<String>,
     #[serde(default)]
     pub removed_subject_keys: Vec<String>,
+}
+
+impl DiscoveryTitle {
+    pub fn apply_rating_provenance(&mut self) {
+        self.external_ratings = self
+            .rating_provenance
+            .iter()
+            .filter_map(DiscoveryRatingProvenance::to_external_rating)
+            .collect();
+        self.rating_provenance.clear();
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct DiscoveryRatingProvenance {
+    #[serde(default)]
+    pub metadata_source: String,
+    #[serde(default)]
+    pub rating_source: String,
+    pub value: Option<f64>,
+    pub score: Option<f64>,
+    #[serde(default)]
+    pub normalized: f64,
+    pub votes: Option<i32>,
+    #[serde(default)]
+    pub url: String,
+}
+
+impl DiscoveryRatingProvenance {
+    fn to_external_rating(&self) -> Option<TitleExternalRating> {
+        let source = self.rating_source.trim();
+        let source = if source.is_empty() {
+            self.metadata_source.trim()
+        } else {
+            source
+        };
+        if source.is_empty() {
+            return None;
+        }
+        Some(TitleExternalRating {
+            source: source.to_string(),
+            value: self.value,
+            score: self.score,
+            normalized: self.normalized,
+            votes: self.votes,
+            url: self.url.clone(),
+        })
+    }
 }
 
 #[derive(Debug, Clone)]

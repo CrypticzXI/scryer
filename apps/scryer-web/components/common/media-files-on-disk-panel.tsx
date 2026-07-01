@@ -158,16 +158,18 @@ export function MediaFilesOnDiskPanel<TFile extends MediaFileOnDisk>({
             const unknownLabel = t("label.unknown");
             const selectedTitleBadges = [
               {
-                className: "bg-[rgba(56,189,248,0.13)] text-[#5cc8f5]",
+                className:
+                  "bg-[var(--scry-facet-series-bg)] text-[var(--scry-facet-series-text)]",
                 label: selectedTitleResolutionLabel(file) ?? unknownLabel,
               },
               {
                 className:
-                  "bg-[rgba(var(--scry-accent-rgb),0.15)] text-[var(--scry-accent-text)]",
+                  "bg-[var(--scry-facet-movie-bg)] text-[var(--scry-facet-movie-text)]",
                 label: selectedTitleCodecLabel(file) ?? unknownLabel,
               },
               {
-                className: "bg-[rgba(168,85,247,0.15)] text-[#c79bf5]",
+                className:
+                  "bg-[var(--scry-facet-anime-bg)] text-[var(--scry-facet-anime-text)]",
                 label: selectedTitleAudioLabel(file) ?? unknownLabel,
               },
             ];

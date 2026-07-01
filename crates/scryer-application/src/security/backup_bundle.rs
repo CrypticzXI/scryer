@@ -484,23 +484,7 @@ pub const BACKUP_TABLE_CATALOG: &[BackupTableCatalogEntry] = &[
         classification: BackupTableClassification::Export,
     },
     BackupTableCatalogEntry {
-        table: "discovery_item_ratings",
-        classification: BackupTableClassification::Export,
-    },
-    BackupTableCatalogEntry {
-        table: "discovery_item_source_tag_values",
-        classification: BackupTableClassification::Export,
-    },
-    BackupTableCatalogEntry {
-        table: "discovery_item_source_tags",
-        classification: BackupTableClassification::Export,
-    },
-    BackupTableCatalogEntry {
         table: "discovery_item_subject_links",
-        classification: BackupTableClassification::Export,
-    },
-    BackupTableCatalogEntry {
-        table: "discovery_item_terms",
         classification: BackupTableClassification::Export,
     },
     BackupTableCatalogEntry {
@@ -533,6 +517,26 @@ pub const BACKUP_TABLE_CATALOG: &[BackupTableCatalogEntry] = &[
     },
     BackupTableCatalogEntry {
         table: "discovery_sync_state",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
+        table: "discovery_title_ratings",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
+        table: "discovery_title_source_tag_values",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
+        table: "discovery_title_source_tags",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
+        table: "discovery_title_terms",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
+        table: "discovery_titles",
         classification: BackupTableClassification::Export,
     },
     BackupTableCatalogEntry {
