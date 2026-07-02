@@ -1,6 +1,7 @@
 import * as React from "react"
 
 import { Button } from "@/components/ui/button"
+import { ActionTooltip } from "@/components/ui/tooltip"
 import {
   boxedActionButtonBaseClass,
   boxedActionButtonToneClass,
@@ -16,6 +17,9 @@ type IconButtonProps = Omit<
   appearance?: "boxed" | "ghost"
   tone?: BoxedActionButtonTone
   showTitleAttribute?: boolean
+  tooltip?: React.ReactNode | false
+  tooltipSide?: React.ComponentProps<typeof ActionTooltip>["side"]
+  tooltipClassName?: string
 }
 
 function IconButton({
@@ -23,19 +27,23 @@ function IconButton({
   appearance = "boxed",
   tone = "neutral",
   showTitleAttribute = true,
+  tooltip,
+  tooltipSide,
+  tooltipClassName,
   className,
   title,
   children,
   ...props
 }: IconButtonProps) {
   const ariaLabel = props["aria-label"] ?? label
+  const tooltipContent =
+    tooltip === undefined ? (showTitleAttribute ? title ?? label : false) : tooltip
 
-  return (
+  const button = (
     <Button
       type="button"
       size="icon-sm"
       variant={appearance === "boxed" ? "secondary" : "ghost"}
-      title={showTitleAttribute ? title ?? label : undefined}
       aria-label={ariaLabel}
       className={cn(
         appearance === "boxed"
@@ -47,6 +55,16 @@ function IconButton({
     >
       {children}
     </Button>
+  )
+
+  return (
+    <ActionTooltip
+      content={tooltipContent}
+      side={tooltipSide}
+      className={tooltipClassName}
+    >
+      {button}
+    </ActionTooltip>
   )
 }
 

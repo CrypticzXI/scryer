@@ -1636,6 +1636,7 @@ pub struct DiscoveryItemDetailInput {
 #[derive(SimpleObject, Clone)]
 pub struct DiscoveryHomePayload {
     pub status: DiscoverySyncStatusPayload,
+    pub hero_item: Option<DiscoveryItemPayload>,
     pub public_sections: Vec<DiscoverySectionPayload>,
     pub personalized_sections: Vec<DiscoverySectionPayload>,
     pub complete_collection: Option<DiscoverySectionPayload>,

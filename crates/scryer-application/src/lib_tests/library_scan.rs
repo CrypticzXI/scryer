@@ -88,6 +88,98 @@ impl LibraryScanner for NotifyingLibraryScanner {
 }
 
 #[derive(Clone, Default)]
+struct CountingRecommendationMetadataGateway {
+    movies: HashMap<i64, MovieMetadata>,
+    title_recommendation_calls: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl MetadataGateway for CountingRecommendationMetadataGateway {
+    async fn search_tvdb(
+        &self,
+        _query: &str,
+        _type_hint: &str,
+        _year: Option<i32>,
+    ) -> AppResult<Vec<MetadataSearchItem>> {
+        Err(AppError::Repository("not implemented in tests".into()))
+    }
+
+    async fn search_tvdb_batch(
+        &self,
+        _queries: &[MetadataSearchQuery],
+        _language: &str,
+    ) -> AppResult<HashMap<MetadataSearchQuery, Vec<MetadataSearchItem>>> {
+        Err(AppError::Repository("not implemented in tests".into()))
+    }
+
+    async fn search_tvdb_rich(
+        &self,
+        _query: &str,
+        _type_hint: &str,
+        _limit: i32,
+        _language: &str,
+        _year: Option<i32>,
+    ) -> AppResult<Vec<RichMetadataSearchItem>> {
+        Err(AppError::Repository("not implemented in tests".into()))
+    }
+
+    async fn search_tvdb_multi(
+        &self,
+        _query: &str,
+        _limit: i32,
+        _language: &str,
+    ) -> AppResult<MultiMetadataSearchResult> {
+        Err(AppError::Repository("not implemented in tests".into()))
+    }
+
+    async fn get_movie(&self, tvdb_id: i64, _language: &str) -> AppResult<MovieMetadata> {
+        self.movies
+            .get(&tvdb_id)
+            .cloned()
+            .ok_or_else(|| AppError::NotFound(format!("movie {tvdb_id}")))
+    }
+
+    async fn get_series(&self, _tvdb_id: i64, _language: &str) -> AppResult<SeriesMetadata> {
+        Err(AppError::Repository("not implemented in tests".into()))
+    }
+
+    async fn get_metadata_bulk(
+        &self,
+        movie_tvdb_ids: &[i64],
+        _series_tvdb_ids: &[i64],
+        _language: &str,
+    ) -> AppResult<BulkMetadataResult> {
+        let movies = movie_tvdb_ids
+            .iter()
+            .filter_map(|tvdb_id| {
+                self.movies
+                    .get(tvdb_id)
+                    .cloned()
+                    .map(|movie| (*tvdb_id, movie))
+            })
+            .collect();
+        Ok(BulkMetadataResult {
+            movies,
+            series: HashMap::new(),
+        })
+    }
+
+    async fn title_recommendations(
+        &self,
+        _input: &TitleRecommendationsInput,
+    ) -> AppResult<DiscoveryRelatedResult> {
+        self.title_recommendation_calls
+            .fetch_add(1, Ordering::SeqCst);
+        Ok(DiscoveryRelatedResult {
+            subject_key: "tvdb:movie:1".to_string(),
+            query: String::new(),
+            generated_at: "2026-01-01T00:00:00Z".to_string(),
+            results: Vec::new(),
+        })
+    }
+}
+
+#[derive(Clone, Default)]
 struct PerDirectoryBlockingLibraryScanner {
     library_files: Arc<Mutex<Vec<LibraryFile>>>,
     directory_files: Arc<Mutex<std::collections::HashMap<String, Vec<LibraryFile>>>>,
@@ -2663,7 +2755,7 @@ async fn movie_full_scan_of_empty_library_completes_with_deterministic_zero_tota
 }
 
 #[tokio::test]
-async fn movie_full_scan_records_empty_folder_skip_as_ignored_pending_import() {
+async fn movie_full_scan_adopts_empty_folder_match_with_zero_files() {
     let tempdir = tempfile::tempdir().expect("tempdir");
     let movie_root = tempdir.path().join("movies");
     let empty_folder = movie_root.join("scan-item-empty");
@@ -2704,7 +2796,13 @@ async fn movie_full_scan_records_empty_folder_skip_as_ignored_pending_import() {
         .await;
     let summary = completed.summary.expect("scan summary");
     assert_eq!(summary.scanned, 1);
-    assert_eq!(summary.skipped, 1);
+    assert_eq!(summary.matched, 1);
+    assert_eq!(summary.skipped, 0);
+    assert_eq!(summary.unmatched, 0);
+    assert!(completed.file_total_known);
+    assert_eq!(completed.file_progress.total, 0);
+    assert_eq!(completed.file_progress.completed, 0);
+    assert_eq!(completed.file_progress.failed, 0);
 
     let pending = app
         .pending_imports(
@@ -2729,16 +2827,7 @@ async fn movie_full_scan_records_empty_folder_skip_as_ignored_pending_import() {
         )
         .await
         .expect("ignored imports");
-    assert_eq!(ignored.total, 1);
-    assert_eq!(ignored.items[0].status, PendingImportStatus::Ignored);
-    assert_eq!(
-        ignored.items[0].path,
-        empty_folder.to_string_lossy().as_ref()
-    );
-    assert_eq!(
-        ignored.items[0].reason,
-        crate::library_scan_unmatched::LIBRARY_SCAN_SKIPPED_NO_MEDIA_FILES
-    );
+    assert_eq!(ignored.total, 0);
 
     let counts = app
         .pending_import_counts(&user)
@@ -2793,6 +2882,78 @@ async fn movie_full_scan_records_empty_folder_skip_as_ignored_pending_import() {
         .await
         .expect("ignored imports after successful match");
     assert_eq!(ignored_after_success.total, 0);
+}
+
+#[tokio::test]
+async fn movie_full_scan_records_empty_folder_without_safe_match_as_pending_import() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let movie_root = tempdir.path().join("movies");
+    let empty_folder = movie_root.join("scan-item-unmatched (2024)");
+    std::fs::create_dir_all(&empty_folder).expect("create empty movie folder");
+
+    let scanner = Arc::new(PerDirectoryBlockingLibraryScanner::default());
+    scanner.set_directory_files(&empty_folder, Vec::new()).await;
+    let (base_app, user, _) = bootstrap_movie_scan_app(
+        &movie_root,
+        Vec::new(),
+        Arc::new(EmptySearchMetadataGateway),
+    )
+    .await;
+    let app = base_app.with_test_overrides(|builder| builder.with_library_scanner(scanner.clone()));
+
+    let session = app
+        .trigger_library_scan_by_id(
+            &user,
+            &scryer_domain::default_library_id_for_facet(&MediaFacet::Movie),
+        )
+        .await
+        .expect("trigger empty unmatched movie scan");
+    let completed =
+        wait_for_projected_library_scan_session_matching(&app, &session.session_id, |session| {
+            matches!(
+                session.status,
+                LibraryScanStatus::Completed | LibraryScanStatus::Warning
+            )
+        })
+        .await;
+    let summary = completed.summary.expect("scan summary");
+    assert_eq!(summary.scanned, 1);
+    assert_eq!(summary.matched, 0);
+    assert_eq!(summary.unmatched, 1);
+    assert_eq!(summary.skipped, 0);
+    assert!(completed.file_total_known);
+    assert_eq!(completed.file_progress.total, 0);
+
+    let pending = app
+        .pending_imports(
+            &user,
+            MediaFacet::Movie,
+            None,
+            PendingImportStatus::Pending,
+            50,
+            0,
+        )
+        .await
+        .expect("pending imports");
+    assert_eq!(pending.total, 1);
+    assert_eq!(
+        pending.items[0].path,
+        empty_folder.to_string_lossy().to_string()
+    );
+    assert_eq!(pending.items[0].status, PendingImportStatus::Pending);
+
+    let ignored = app
+        .pending_imports(
+            &user,
+            MediaFacet::Movie,
+            None,
+            PendingImportStatus::Ignored,
+            50,
+            0,
+        )
+        .await
+        .expect("ignored imports");
+    assert_eq!(ignored.total, 0);
 }
 
 #[tokio::test]
@@ -2892,7 +3053,7 @@ async fn title_scan_records_unreadable_file_skip_as_ignored_pending_import() {
     );
     assert_eq!(
         ignored.items[0].path,
-        missing_file.to_string_lossy().as_ref()
+        missing_file.to_string_lossy().to_string()
     );
     assert_eq!(
         ignored.items[0].reason,
@@ -5514,6 +5675,88 @@ async fn hydrate_titles_bulk_persists_movie_tmdb_external_id() {
             .external_ids
             .iter()
             .any(|external_id| { external_id.source == "tmdb" && external_id.value == "815010" })
+    );
+}
+
+#[tokio::test]
+async fn background_hydration_completes_without_inline_recommendation_refresh() {
+    let recommendation_calls = Arc::new(AtomicUsize::new(0));
+    let metadata_gateway = Arc::new(CountingRecommendationMetadataGateway {
+        movies: HashMap::from([(91_601, make_movie_metadata(91_601, "Hydrated Movie"))]),
+        title_recommendation_calls: Arc::clone(&recommendation_calls),
+    });
+    let (app, _user, titles) = bootstrap_with_metadata_gateway_and_titles(metadata_gateway);
+    let title = make_due_hydration_title("movie-background-hydration", MediaFacet::Movie, 91_601);
+    TitleRepository::create(&*titles, title.clone())
+        .await
+        .expect("seed due movie title");
+    let permit_a = app
+        .runtime
+        .catalog
+        .title_recommendation_refresh_limit
+        .clone()
+        .acquire_owned()
+        .await
+        .expect("first recommendation permit");
+    let permit_b = app
+        .runtime
+        .catalog
+        .title_recommendation_refresh_limit
+        .clone()
+        .acquire_owned()
+        .await
+        .expect("second recommendation permit");
+
+    let mut outcome = app
+        .hydrate_titles_bulk(vec![crate::catalog_workflow::HydrationTarget {
+            title: title.clone(),
+            requested_tvdb_id: None,
+            sync_wanted_after_completion: false,
+            source: crate::catalog_workflow::HydrationSource::BackgroundDue,
+        }])
+        .await
+        .expect("hydrate title");
+
+    assert!(
+        outcome.hydrated_titles.remove(&title.id).is_some(),
+        "metadata persistence should complete hydration"
+    );
+    assert_eq!(
+        recommendation_calls.load(Ordering::SeqCst),
+        0,
+        "background hydration must not call recommendations inline"
+    );
+
+    drop(permit_a);
+    drop(permit_b);
+}
+
+#[tokio::test]
+async fn interactive_hydration_refreshes_recommendations_inline() {
+    let recommendation_calls = Arc::new(AtomicUsize::new(0));
+    let metadata_gateway = Arc::new(CountingRecommendationMetadataGateway {
+        movies: HashMap::from([(91_602, make_movie_metadata(91_602, "Hydrated Movie"))]),
+        title_recommendation_calls: Arc::clone(&recommendation_calls),
+    });
+    let (app, _user, titles) = bootstrap_with_metadata_gateway_and_titles(metadata_gateway);
+    let title = make_due_hydration_title("movie-interactive-hydration", MediaFacet::Movie, 91_602);
+    TitleRepository::create(&*titles, title.clone())
+        .await
+        .expect("seed due movie title");
+
+    app.hydrate_titles_bulk(vec![crate::catalog_workflow::HydrationTarget {
+        title,
+        requested_tvdb_id: None,
+        sync_wanted_after_completion: false,
+        source: crate::catalog_workflow::HydrationSource::Interactive,
+    }])
+    .await
+    .expect("hydrate title");
+
+    assert_eq!(
+        recommendation_calls.load(Ordering::SeqCst),
+        1,
+        "interactive hydration should keep recommendation refresh inline"
     );
 }
 

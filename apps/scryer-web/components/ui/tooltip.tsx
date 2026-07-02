@@ -53,4 +53,51 @@ function TooltipContent({
   )
 }
 
-export { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider }
+type ActionTooltipProps = {
+  content?: React.ReactNode
+  children: React.ReactElement
+  side?: React.ComponentProps<typeof TooltipPrimitive.Content>["side"]
+  sideOffset?: React.ComponentProps<typeof TooltipPrimitive.Content>["sideOffset"]
+  collisionPadding?: React.ComponentProps<typeof TooltipPrimitive.Content>["collisionPadding"]
+  delayDuration?: React.ComponentProps<typeof TooltipPrimitive.Provider>["delayDuration"]
+  className?: string
+  wrapperClassName?: string
+}
+
+function ActionTooltip({
+  content,
+  children,
+  side = "top",
+  sideOffset = 8,
+  collisionPadding = 8,
+  delayDuration = 300,
+  className,
+  wrapperClassName,
+}: ActionTooltipProps) {
+  if (content == null || content === false) {
+    return children
+  }
+
+  return (
+    <TooltipProvider delayDuration={delayDuration}>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span className={cn("inline-flex", wrapperClassName)}>{children}</span>
+        </TooltipTrigger>
+        <TooltipContent
+          side={side}
+          sideOffset={sideOffset}
+          collisionPadding={collisionPadding}
+          className={cn(
+            "max-w-[18rem] whitespace-normal break-words text-left text-sm leading-snug",
+            className,
+          )}
+        >
+          {content}
+        </TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
+  )
+}
+
+export { ActionTooltip, Tooltip, TooltipTrigger, TooltipContent, TooltipProvider }

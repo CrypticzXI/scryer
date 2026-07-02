@@ -6,10 +6,6 @@ use crate::library_scan_metadata::{
     prepare_movie_candidate_evidence, prepare_series_library_scan_candidate,
     prepare_series_library_scan_candidate_from_file, split_ready_metadata_candidates,
 };
-use crate::library_scan_unmatched::{
-    IgnoredLibraryScanItemArgs, LIBRARY_SCAN_SKIPPED_NO_MEDIA_FILES,
-    persist_ignored_library_scan_item,
-};
 use crate::stored_paths::path_to_stored_string;
 use std::collections::VecDeque;
 
@@ -54,15 +50,6 @@ pub(super) enum LibraryScanPipelineKind {
 pub(super) enum ScanPipelineCandidate {
     Movie(Box<PreparedMovieLibraryScanCandidate>),
     Series(Box<PreparedSeriesLibraryScanCandidate>),
-}
-
-#[derive(Clone, Debug)]
-struct ScanSkippedItem {
-    item_path: String,
-    display_name: String,
-    query: String,
-    year_hint: Option<u32>,
-    reason_code: String,
 }
 
 impl ScanPipelineCandidate {
@@ -114,9 +101,6 @@ enum ScanCandidateJobEvent {
         scoped: bool,
         inline_inventory: Option<Vec<LibraryFile>>,
         inventory_cancel: CancellationToken,
-    },
-    Skipped {
-        item: ScanSkippedItem,
     },
     EvidenceFailed {
         item_path: String,
@@ -326,7 +310,7 @@ pub(super) async fn run_library_scan_pipeline(
 
     let mut summary = LibraryScanSummary::default();
     let mut candidates: HashMap<ScanCandidateKey, CandidateRuntime> = HashMap::new();
-    let mut skipped_seen_paths: HashSet<String> = HashSet::new();
+    let mut early_inventory: HashMap<ScanCandidateKey, CandidateInventoryState> = HashMap::new();
     let mut forward_queue: VecDeque<(ScanCandidateKey, ScanPipelineCandidate)> = VecDeque::new();
     let mut match_input_tx = Some(match_input_tx);
     let mut evidence_done = false;
@@ -390,15 +374,10 @@ pub(super) async fn run_library_scan_pipeline(
                     Some(event) => {
                         candidate_events_seen = candidate_events_seen.saturating_add(1);
                         if let Err(error) = handle_candidate_job_event(CandidateEventContext {
-                            app,
-                            facet,
-                            library_id,
-                            session_id,
-                            library_path,
                             coordinator: &coordinator,
                             summary: &mut summary,
                             candidates: &mut candidates,
-                            skipped_seen_paths: &mut skipped_seen_paths,
+                            early_inventory: &mut early_inventory,
                             forward_queue: &mut forward_queue,
                             discovery_error: &mut discovery_error,
                         }, event).await {
@@ -417,6 +396,7 @@ pub(super) async fn run_library_scan_pipeline(
                         handle_inventory_job_event(InventoryEventContext {
                             coordinator: &coordinator,
                             candidates: &mut candidates,
+                            early_inventory: &mut early_inventory,
                             hydration: &mut hydration,
                             pool: &mut pool,
                             media_dedup_skips: &mut media_dedup_skips,
@@ -626,15 +606,10 @@ pub(super) async fn run_library_scan_pipeline(
             event => {
                 if let Err(error) = handle_candidate_job_event(
                     CandidateEventContext {
-                        app,
-                        facet,
-                        library_id,
-                        session_id,
-                        library_path,
                         coordinator: &coordinator,
                         summary: &mut summary,
                         candidates: &mut candidates,
-                        skipped_seen_paths: &mut skipped_seen_paths,
+                        early_inventory: &mut early_inventory,
                         forward_queue: &mut forward_queue,
                         discovery_error: &mut discovery_error,
                     },
@@ -652,6 +627,7 @@ pub(super) async fn run_library_scan_pipeline(
             InventoryEventContext {
                 coordinator: &coordinator,
                 candidates: &mut candidates,
+                early_inventory: &mut early_inventory,
                 hydration: &mut hydration,
                 pool: &mut pool,
                 media_dedup_skips: &mut media_dedup_skips,
@@ -788,7 +764,6 @@ pub(super) async fn run_library_scan_pipeline(
                     seen_paths.insert(normalize_library_scan_item_path(trimmed));
                 }
             }
-            seen_paths.extend(skipped_seen_paths.iter().cloned());
             reconcile_library_scan_unmatched_items(app, facet, library_path, &seen_paths).await?;
             coordinator.publish_progress().await;
         }
@@ -921,15 +896,10 @@ fn candidate_runtime_state_counts(
 }
 
 struct CandidateEventContext<'a> {
-    app: &'a AppUseCase,
-    facet: &'a MediaFacet,
-    library_id: &'a str,
-    session_id: &'a str,
-    library_path: &'a str,
     coordinator: &'a LibraryScanCoordinator,
     summary: &'a mut LibraryScanSummary,
     candidates: &'a mut HashMap<ScanCandidateKey, CandidateRuntime>,
-    skipped_seen_paths: &'a mut HashSet<String>,
+    early_inventory: &'a mut HashMap<ScanCandidateKey, CandidateInventoryState>,
     forward_queue: &'a mut VecDeque<(ScanCandidateKey, ScanPipelineCandidate)>,
     discovery_error: &'a mut Option<AppError>,
 }
@@ -952,52 +922,22 @@ async fn handle_candidate_job_event(
                 }
                 ScanPipelineCandidate::Series(series) => series.item_path().trim().to_string(),
             };
+            let inventory = ctx
+                .early_inventory
+                .remove(&key)
+                .or_else(|| inline_inventory.map(CandidateInventoryState::Ready))
+                .unwrap_or(CandidateInventoryState::Pending);
             ctx.candidates.insert(
                 key,
                 CandidateRuntime {
                     item_path,
                     scoped,
                     match_state: CandidateMatchState::Pending,
-                    inventory: inline_inventory
-                        .map(CandidateInventoryState::Ready)
-                        .unwrap_or(CandidateInventoryState::Pending),
+                    inventory,
                     inventory_cancel,
                 },
             );
             ctx.forward_queue.push_back((key, candidate));
-        }
-        ScanCandidateJobEvent::Skipped { item } => {
-            ctx.summary.scanned += 1;
-            ctx.summary.skipped += 1;
-            ctx.skipped_seen_paths
-                .insert(normalize_library_scan_item_path(&item.item_path));
-            if let Err(error) = persist_ignored_library_scan_item(
-                ctx.app,
-                ctx.facet,
-                ctx.library_id,
-                IgnoredLibraryScanItemArgs {
-                    title_id: None,
-                    session_id: Some(ctx.session_id),
-                    library_path: ctx.library_path,
-                    item_path: &item.item_path,
-                    display_name: &item.display_name,
-                    query: &item.query,
-                    year_hint: item.year_hint,
-                    reason_code: &item.reason_code,
-                    error_message: None,
-                },
-            )
-            .await
-            {
-                warn!(
-                    item_path = %item.item_path,
-                    reason_code = %item.reason_code,
-                    error = %error,
-                    "failed to persist ignored library scan item"
-                );
-            }
-            ctx.coordinator.mark_title_match_completed(1).await;
-            ctx.coordinator.publish_progress().await;
         }
         ScanCandidateJobEvent::EvidenceFailed { item_path, error } => {
             warn!(
@@ -1023,6 +963,7 @@ async fn handle_candidate_job_event(
 struct InventoryEventContext<'a> {
     coordinator: &'a LibraryScanCoordinator,
     candidates: &'a mut HashMap<ScanCandidateKey, CandidateRuntime>,
+    early_inventory: &'a mut HashMap<ScanCandidateKey, CandidateInventoryState>,
     hydration: &'a mut ScanHydrationBatcher,
     pool: &'a mut LibraryScanMediaAnalysisPool,
     media_dedup_skips: &'a mut usize,
@@ -1046,6 +987,7 @@ async fn handle_inventory_job_event(
                 ctx.media_file_total_counted,
                 ctx.stored_inventory_paths,
                 ctx.storage_watch,
+                ctx.early_inventory,
                 key,
                 files,
             )
@@ -1068,6 +1010,9 @@ async fn handle_inventory_job_event(
                 {
                     // Matched but inventory failed: no media analysis for it.
                 }
+            } else {
+                ctx.early_inventory
+                    .insert(key, CandidateInventoryState::Failed);
             }
         }
         ScanInventoryJobEvent::InventoryCanceled { key } => {
@@ -1080,6 +1025,9 @@ async fn handle_inventory_job_event(
                     runtime.match_state = CandidateMatchState::Terminal;
                     // Matched but inventory was canceled: no media analysis for it.
                 }
+            } else {
+                ctx.early_inventory
+                    .insert(key, CandidateInventoryState::Canceled);
             }
         }
     }
@@ -1146,10 +1094,14 @@ async fn handle_inventory_ready(
     media_file_total_counted: &mut usize,
     stored_inventory_paths: &mut usize,
     storage_watch: &tokio::sync::watch::Sender<usize>,
+    early_inventory: &mut HashMap<ScanCandidateKey, CandidateInventoryState>,
     key: ScanCandidateKey,
     files: Vec<LibraryFile>,
 ) -> AppResult<()> {
     let Some(runtime) = candidates.get_mut(&key) else {
+        *stored_inventory_paths = stored_inventory_paths.saturating_add(files.len());
+        let _ = storage_watch.send(*stored_inventory_paths);
+        early_inventory.insert(key, CandidateInventoryState::Ready(files));
         return Ok(());
     };
     if (key as usize) % LIBRARY_SCAN_DIAGNOSTIC_ITEM_INTERVAL == 0 {
@@ -1737,9 +1689,6 @@ enum EvidenceJobOutput {
         inline_inventory: Option<Vec<LibraryFile>>,
         inventory_target: Option<PathBuf>,
     },
-    Skipped {
-        item: ScanSkippedItem,
-    },
     Failed {
         item_path: String,
         error: AppError,
@@ -1826,13 +1775,6 @@ impl<'a> CandidateJobRunner<'a> {
                         .push_back((key, target, inventory_cancel));
                 }
                 true
-            }
-            EvidenceJobOutput::Skipped { item } => {
-                self.metrics.skipped = self.metrics.skipped.saturating_add(1);
-                self.ctx
-                    .candidate_events
-                    .send(ScanCandidateJobEvent::Skipped { item })
-                    .is_ok()
             }
             EvidenceJobOutput::Failed { item_path, error } => {
                 self.metrics.failed = self.metrics.failed.saturating_add(1);
@@ -2128,20 +2070,6 @@ async fn movie_evidence_job(
             scoped: false,
             inventory_target: (inline_inventory.is_none() && is_dir).then_some(entry_path),
             inline_inventory,
-        },
-        Ok(MovieCandidateEvidence::Skipped {
-            item_path,
-            display_name,
-            query,
-            year_hint,
-        }) => EvidenceJobOutput::Skipped {
-            item: ScanSkippedItem {
-                item_path,
-                display_name,
-                query,
-                year_hint,
-                reason_code: LIBRARY_SCAN_SKIPPED_NO_MEDIA_FILES.to_string(),
-            },
         },
         Err(error) => EvidenceJobOutput::Failed { item_path, error },
     }

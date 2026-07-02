@@ -22,6 +22,10 @@ impl HydrationSource {
             Self::Maintenance => "maintenance",
         }
     }
+
+    fn refresh_recommendations_inline(&self) -> bool {
+        matches!(self, Self::Interactive | Self::Maintenance)
+    }
 }
 #[derive(Clone)]
 pub(crate) struct HydrationTarget {
@@ -199,11 +203,16 @@ impl AppUseCase {
     ) -> AppResult<HydrationBatchOutcome> {
         let language = self.metadata_language().await;
         let mut outcome = HydrationBatchOutcome::default();
+        let hydration_started_at = Instant::now();
 
         'chunks: for chunk in targets.chunks(HYDRATION_BULK_BATCH_SIZE) {
             if crate::library::library::library_scan_cancel_requested(cancel_token) {
                 break;
             }
+            let chunk_started_at = Instant::now();
+            let chunk_len = chunk.len();
+            let hydrated_before = outcome.hydrated_titles.len();
+            let failed_before = outcome.failed_titles.len();
             let mut movie_targets = Vec::new();
             let mut series_targets = Vec::new();
 
@@ -238,6 +247,15 @@ impl AppUseCase {
             }
 
             if movie_targets.is_empty() && series_targets.is_empty() {
+                info!(
+                    target_count = chunk_len,
+                    movie_count = 0,
+                    series_count = 0,
+                    hydrated_delta = outcome.hydrated_titles.len() - hydrated_before,
+                    failed_delta = outcome.failed_titles.len() - failed_before,
+                    elapsed_ms = chunk_started_at.elapsed().as_millis(),
+                    "metadata hydration chunk complete"
+                );
                 continue;
             }
 
@@ -250,6 +268,7 @@ impl AppUseCase {
                 .map(|(_, tvdb_id)| *tvdb_id)
                 .collect::<Vec<_>>();
 
+            let bulk_started_at = Instant::now();
             let bulk_result = await_cancellable(
                 cancel_token,
                 self.services.library.metadata_gateway.get_metadata_bulk(
@@ -265,7 +284,16 @@ impl AppUseCase {
             };
 
             let bulk_result = match bulk_result {
-                Ok(result) => result,
+                Ok(result) => {
+                    info!(
+                        target_count = chunk_len,
+                        movie_count = movie_ids.len(),
+                        series_count = series_ids.len(),
+                        elapsed_ms = bulk_started_at.elapsed().as_millis(),
+                        "metadata hydration bulk request complete"
+                    );
+                    result
+                }
                 Err(error) => {
                     let reason = error.to_string();
                     for (target, _) in movie_targets.iter().chain(series_targets.iter()) {
@@ -281,6 +309,14 @@ impl AppUseCase {
                             .failed_titles
                             .insert(target.title.id.clone(), reason.clone());
                     }
+                    info!(
+                        target_count = chunk_len,
+                        movie_count = movie_ids.len(),
+                        series_count = series_ids.len(),
+                        failed_delta = outcome.failed_titles.len() - failed_before,
+                        elapsed_ms = chunk_started_at.elapsed().as_millis(),
+                        "metadata hydration chunk complete"
+                    );
                     continue;
                 }
             };
@@ -402,6 +438,17 @@ impl AppUseCase {
                         .insert(title_id, "bulk metadata response missing title".to_string());
                 }
             }
+
+            info!(
+                target_count = chunk_len,
+                movie_count = movie_ids.len(),
+                series_count = series_ids.len(),
+                hydrated_delta = outcome.hydrated_titles.len() - hydrated_before,
+                failed_delta = outcome.failed_titles.len() - failed_before,
+                elapsed_ms = chunk_started_at.elapsed().as_millis(),
+                total_elapsed_ms = hydration_started_at.elapsed().as_millis(),
+                "metadata hydration chunk complete"
+            );
         }
 
         Ok(outcome)
@@ -468,6 +515,7 @@ impl AppUseCase {
                 title.external_ids.clone(),
                 &metadata_update,
             );
+        let persistence_started_at = Instant::now();
 
         let title = match self
             .services
@@ -500,7 +548,17 @@ impl AppUseCase {
             .await;
         }
 
-        self.refresh_title_more_like_this_after_hydration(
+        info!(
+            hydration_source = source.as_str(),
+            facet = title.facet.as_str(),
+            title_id = %title.id,
+            seasons = result.seasons.len(),
+            episodes = result.episodes.len(),
+            elapsed_ms = persistence_started_at.elapsed().as_millis(),
+            "metadata hydration persistence complete"
+        );
+
+        self.refresh_or_queue_title_more_like_this_after_hydration(
             &title,
             &recommendation_external_ids,
             &result.more_like_this,
@@ -526,13 +584,192 @@ impl AppUseCase {
         title
     }
 
-    async fn refresh_title_more_like_this_after_hydration(
+    async fn refresh_or_queue_title_more_like_this_after_hydration(
         &self,
         title: &Title,
         external_ids: &[scryer_domain::ExternalId],
         seeded_more_like_this: &[crate::DiscoveryTitle],
         source: HydrationSource,
     ) {
+        if source.refresh_recommendations_inline() {
+            let started_at = Instant::now();
+            if let Err(err) = self
+                .refresh_title_more_like_this_after_hydration_once(
+                    title,
+                    external_ids,
+                    seeded_more_like_this,
+                    source,
+                )
+                .await
+            {
+                warn!(
+                    hydration_source = source.as_str(),
+                    facet = title.facet.as_str(),
+                    title_id = %title.id,
+                    error = %err,
+                    elapsed_ms = started_at.elapsed().as_millis(),
+                    "failed to refresh title recommendations inline; keeping existing recommendations"
+                );
+            }
+            return;
+        }
+
+        let title_id = title.id.clone();
+        let inserted = {
+            let mut in_flight = self
+                .runtime
+                .catalog
+                .title_recommendation_refresh_inflight
+                .lock()
+                .await;
+            in_flight.insert(title_id.clone())
+        };
+        if !inserted {
+            debug!(
+                hydration_source = source.as_str(),
+                facet = title.facet.as_str(),
+                title_id = %title.id,
+                "title recommendations refresh already queued"
+            );
+            return;
+        }
+
+        info!(
+            hydration_source = source.as_str(),
+            facet = title.facet.as_str(),
+            title_id = %title.id,
+            seeded_count = seeded_more_like_this.len(),
+            "queued title recommendations refresh after hydration"
+        );
+
+        let app = self.clone();
+        let title = title.clone();
+        let external_ids = external_ids.to_vec();
+        let seeded_more_like_this = seeded_more_like_this.to_vec();
+        tokio::spawn(async move {
+            app.run_queued_title_more_like_this_refresh(
+                title,
+                external_ids,
+                seeded_more_like_this,
+                source,
+            )
+            .await;
+        });
+    }
+
+    async fn run_queued_title_more_like_this_refresh(
+        &self,
+        title: Title,
+        external_ids: Vec<scryer_domain::ExternalId>,
+        seeded_more_like_this: Vec<crate::DiscoveryTitle>,
+        source: HydrationSource,
+    ) {
+        let queued_at = Instant::now();
+        let title_id = title.id.clone();
+        let permit = match self
+            .runtime
+            .catalog
+            .title_recommendation_refresh_limit
+            .clone()
+            .acquire_owned()
+            .await
+        {
+            Ok(permit) => permit,
+            Err(err) => {
+                warn!(
+                    hydration_source = source.as_str(),
+                    facet = title.facet.as_str(),
+                    title_id = %title.id,
+                    error = %err,
+                    "title recommendations refresh worker unavailable"
+                );
+                let mut in_flight = self
+                    .runtime
+                    .catalog
+                    .title_recommendation_refresh_inflight
+                    .lock()
+                    .await;
+                in_flight.remove(&title_id);
+                return;
+            }
+        };
+
+        let _permit = permit;
+        let mut last_error = None;
+        for attempt in 1_u32..=3 {
+            let attempt_started_at = Instant::now();
+            match self
+                .refresh_title_more_like_this_after_hydration_once(
+                    &title,
+                    &external_ids,
+                    &seeded_more_like_this,
+                    source,
+                )
+                .await
+            {
+                Ok(()) => {
+                    info!(
+                        hydration_source = source.as_str(),
+                        facet = title.facet.as_str(),
+                        title_id = %title.id,
+                        attempts = attempt,
+                        elapsed_ms = queued_at.elapsed().as_millis(),
+                        attempt_elapsed_ms = attempt_started_at.elapsed().as_millis(),
+                        "completed queued title recommendations refresh"
+                    );
+                    let mut in_flight = self
+                        .runtime
+                        .catalog
+                        .title_recommendation_refresh_inflight
+                        .lock()
+                        .await;
+                    in_flight.remove(&title_id);
+                    return;
+                }
+                Err(err) => {
+                    let error = err.to_string();
+                    warn!(
+                        hydration_source = source.as_str(),
+                        facet = title.facet.as_str(),
+                        title_id = %title.id,
+                        attempt,
+                        error = %error,
+                        attempt_elapsed_ms = attempt_started_at.elapsed().as_millis(),
+                        "queued title recommendations refresh attempt failed"
+                    );
+                    last_error = Some(error);
+                    if attempt < 3 {
+                        tokio::time::sleep(Duration::from_secs(1 << (attempt - 1))).await;
+                    }
+                }
+            }
+        }
+
+        warn!(
+            hydration_source = source.as_str(),
+            facet = title.facet.as_str(),
+            title_id = %title.id,
+            attempts = 3,
+            error = %last_error.unwrap_or_else(|| "unknown error".to_string()),
+            elapsed_ms = queued_at.elapsed().as_millis(),
+            "queued title recommendations refresh exhausted retries"
+        );
+        let mut in_flight = self
+            .runtime
+            .catalog
+            .title_recommendation_refresh_inflight
+            .lock()
+            .await;
+        in_flight.remove(&title_id);
+    }
+
+    async fn refresh_title_more_like_this_after_hydration_once(
+        &self,
+        title: &Title,
+        external_ids: &[scryer_domain::ExternalId],
+        seeded_more_like_this: &[crate::DiscoveryTitle],
+        source: HydrationSource,
+    ) -> AppResult<()> {
         let Some((subject, source_target_keys)) =
             crate::discovery::title_recommendations_subject(title, external_ids)
         else {
@@ -542,7 +779,7 @@ impl AppUseCase {
                 title_id = %title.id,
                 "skipping title recommendations refresh: title has no recommendation subject ids"
             );
-            return;
+            return Ok(());
         };
 
         let language = self.metadata_language().await;
@@ -554,65 +791,32 @@ impl AppUseCase {
                 language: language.clone(),
                 include_unresolved: true,
             };
-            match self
-                .services
+            self.services
                 .library
                 .metadata_gateway
                 .title_recommendations(&input)
-                .await
-            {
-                Ok(result) => result.results,
-                Err(err) => {
-                    warn!(
-                        hydration_source = source.as_str(),
-                        facet = title.facet.as_str(),
-                        title_id = %title.id,
-                        error = %err,
-                        "failed to refresh title recommendations; keeping existing recommendations"
-                    );
-                    return;
-                }
-            }
+                .await?
+                .results
         } else {
             seeded_more_like_this.to_vec()
         };
 
         let now = self.runtime.environment.now();
-        let records = match crate::discovery::title_more_like_this_item_records(
+        let records = crate::discovery::title_more_like_this_item_records(
             &title.id,
             &source_target_keys,
             &recommendations,
             TITLE_MORE_LIKE_THIS_HYDRATION_LIMIT,
             now,
-        ) {
-            Ok(records) => records,
-            Err(err) => {
-                warn!(
-                    hydration_source = source.as_str(),
-                    facet = title.facet.as_str(),
-                    title_id = %title.id,
-                    error = %err,
-                    "failed to normalize title recommendations"
-                );
-                return;
-            }
-        };
+        )?;
 
-        if let Err(err) = self
-            .services
+        self.services
             .library
             .discovery
             .replace_title_more_like_this_items(&title.id, &language, &records)
-            .await
-        {
-            warn!(
-                hydration_source = source.as_str(),
-                facet = title.facet.as_str(),
-                title_id = %title.id,
-                error = %err,
-                "failed to persist title recommendations"
-            );
-        }
+            .await?;
+
+        Ok(())
     }
 }
 impl AppUseCase {

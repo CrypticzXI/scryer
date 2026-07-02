@@ -14,7 +14,6 @@ use crate::{
     PendingImportStatus, sha256_hex,
 };
 
-pub(crate) const LIBRARY_SCAN_SKIPPED_NO_MEDIA_FILES: &str = "skipped_no_media_files";
 pub(crate) const LIBRARY_SCAN_SKIPPED_UNUSABLE_TITLE_EVIDENCE: &str =
     "skipped_unusable_title_evidence";
 pub(crate) const LIBRARY_SCAN_SKIPPED_FILE_METADATA_UNREADABLE: &str =

@@ -5,12 +5,6 @@ import { Button } from "@/components/ui/button";
 import { IconButton } from "@/components/ui/icon-button";
 import { Progress } from "@/components/ui/progress";
 import { TableCell, TableRow } from "@/components/ui/table";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
 import type { ViewId, Translate } from "@/components/root/types";
 import type { TitleRecord } from "@/lib/types";
 import type { UiDateTimeFormat } from "@/lib/types/settings";
@@ -567,39 +561,13 @@ export function TitleTableTooltipActionButton({
   tooltip?: React.ReactNode;
   tooltipClassName?: string;
 }) {
-  // A plain, uncontrolled shadcn/Radix tooltip. Radix owns open/close, hover +
-  // focus intent, dismissal (pointer-leave, scroll, blur, Escape) and
-  // collision-aware positioning — so it can't get stuck open or mis-placed the
-  // way a hand-rolled `open`-controlled hover box does inside a re-rendering
-  // table. The button is wrapped in a span so disabled buttons still trigger
-  // the tooltip (disabled elements don't emit pointer events themselves).
-  // `tooltip` defaults to the button's accessible label so short-label buttons
-  // (monitor, delete) get the same styled tooltip without repeating the text.
-  const content = tooltip ?? buttonProps.label;
   return (
-    <TooltipProvider delayDuration={300}>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <span className="inline-flex">
-            <TitleTableActionButton
-              {...buttonProps}
-              showTitleAttribute={showTitleAttribute}
-            />
-          </span>
-        </TooltipTrigger>
-        <TooltipContent
-          side="top"
-          sideOffset={8}
-          collisionPadding={8}
-          className={cn(
-            "max-w-[18rem] whitespace-normal break-words text-left text-sm leading-snug",
-            tooltipClassName,
-          )}
-        >
-          {content}
-        </TooltipContent>
-      </Tooltip>
-    </TooltipProvider>
+    <TitleTableActionButton
+      {...buttonProps}
+      tooltip={tooltip ?? buttonProps.label}
+      tooltipClassName={tooltipClassName}
+      showTitleAttribute={showTitleAttribute}
+    />
   );
 }
 

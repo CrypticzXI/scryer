@@ -1,4 +1,8 @@
 use super::*;
+use crate::library_scan_unmatched::{
+    IgnoredLibraryScanItemArgs, LIBRARY_SCAN_SKIPPED_UNUSABLE_TITLE_EVIDENCE,
+    persist_ignored_library_scan_item,
+};
 use crate::stored_paths::{path_to_stored_string, stored_path_to_path_buf};
 
 async fn ensure_title_folder_path_if_missing(
@@ -39,7 +43,24 @@ fn normalize_title_folder_path(path: Option<String>) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
-fn scanned_movie_entry_folder_path(scan_root: &Path, representative_path: &str) -> Option<String> {
+fn movie_scan_folder_conflicts(
+    canonical_folder_path: Option<&str>,
+    scan_folder_path: Option<&str>,
+) -> bool {
+    let canonical_folder_path =
+        normalize_title_folder_path(canonical_folder_path.map(ToString::to_string));
+    let scan_folder_path = normalize_title_folder_path(scan_folder_path.map(ToString::to_string));
+    matches!(
+        (canonical_folder_path, scan_folder_path),
+        (Some(canonical), Some(scan)) if canonical != scan
+    )
+}
+
+fn scanned_movie_entry_folder_path(
+    scan_root: &Path,
+    representative_path: &str,
+    representative_is_directory: bool,
+) -> Option<String> {
     let representative_path = representative_path.trim();
     if representative_path.is_empty() {
         return None;
@@ -55,7 +76,7 @@ fn scanned_movie_entry_folder_path(scan_root: &Path, representative_path: &str) 
             return None;
         }
         if entry_path == representative_path {
-            return item_path.is_dir().then_some(entry_path);
+            return representative_is_directory.then_some(entry_path);
         }
         return Some(entry_path);
     }
@@ -75,8 +96,13 @@ async fn sync_movie_title_folder_path_for_scan(
     title: &mut Title,
     scan_root: &Path,
     representative_path: &str,
+    representative_is_directory: bool,
 ) -> (Option<String>, Option<String>) {
-    let scan_folder_path = scanned_movie_entry_folder_path(scan_root, representative_path);
+    let scan_folder_path = scanned_movie_entry_folder_path(
+        scan_root,
+        representative_path,
+        representative_is_directory,
+    );
     let current_folder_path = normalize_title_folder_path(title.folder_path.clone());
 
     if current_folder_path.is_some() {
@@ -594,15 +620,30 @@ pub(super) async fn process_movie_full_scan_candidate(
     let discovered_files = candidate.discovered_files.clone();
     let item_path = normalize_library_scan_item_path(&candidate.file.path);
     let representative_path = candidate.file.path.clone();
+    let representative_is_directory = candidate.representative_is_directory;
     let scan_root = Path::new(library_path);
 
     if let Some(mut title) =
         load_existing_title_for_media_file_path(app, &candidate.file.path).await?
     {
-        let (canonical_folder_path, scan_folder_path) =
-            sync_movie_title_folder_path_for_scan(app, &mut title, scan_root, &representative_path)
-                .await;
+        let (canonical_folder_path, scan_folder_path) = sync_movie_title_folder_path_for_scan(
+            app,
+            &mut title,
+            scan_root,
+            &representative_path,
+            representative_is_directory,
+        )
+        .await;
         sync_existing_title_folder_path_in_memory(existing_titles, &title);
+        if movie_scan_folder_conflicts(
+            canonical_folder_path.as_deref(),
+            scan_folder_path.as_deref(),
+        ) {
+            summary.skipped += 1;
+            clear_library_scan_unmatched_item(app, facet, library_id, &item_path).await?;
+            coordinator.mark_title_match_completed(1).await;
+            return Ok(None);
+        }
         let queued = merge_default_movie_title_work(
             executor,
             title,
@@ -629,7 +670,11 @@ pub(super) async fn process_movie_full_scan_candidate(
             display_name
         };
         let query = candidate.query.trim();
-        let query = if query.is_empty() { display_name } else { query };
+        let query = if query.is_empty() {
+            display_name
+        } else {
+            query
+        };
         if let Err(error) = persist_ignored_library_scan_item(
             app,
             facet,
@@ -676,9 +721,19 @@ pub(super) async fn process_movie_full_scan_candidate(
                 &mut title,
                 scan_root,
                 &representative_path,
+                representative_is_directory,
             )
             .await;
             sync_existing_title_folder_path_in_memory(existing_titles, &title);
+            if movie_scan_folder_conflicts(
+                canonical_folder_path.as_deref(),
+                scan_folder_path.as_deref(),
+            ) {
+                summary.skipped += 1;
+                clear_library_scan_unmatched_item(app, facet, library_id, &item_path).await?;
+                coordinator.mark_title_match_completed(1).await;
+                return Ok(None);
+            }
             let queued = merge_default_movie_title_work(
                 executor,
                 title,
@@ -815,7 +870,11 @@ pub(super) async fn process_series_full_scan_candidate(
             .filter(|value| !value.is_empty())
             .unwrap_or(item_path.as_str());
         let query = candidate.query.trim();
-        let query = if query.is_empty() { display_name } else { query };
+        let query = if query.is_empty() {
+            display_name
+        } else {
+            query
+        };
         if let Err(error) = persist_ignored_library_scan_item(
             app,
             facet,
@@ -894,9 +953,20 @@ pub(super) async fn process_resolved_movie_full_scan_candidate(
                 &mut title,
                 scan_root,
                 &candidate.file.path,
+                candidate.representative_is_directory,
             )
             .await;
             sync_existing_title_folder_path_in_memory(existing_titles, &title);
+            if movie_scan_folder_conflicts(
+                canonical_folder_path.as_deref(),
+                scan_folder_path.as_deref(),
+            ) {
+                summary.skipped += 1;
+                clear_library_scan_unmatched_item(app, facet, library_id, &candidate.file.path)
+                    .await?;
+                coordinator.mark_title_match_completed(1).await;
+                return Ok(());
+            }
             let queued = merge_default_movie_title_work(
                 executor,
                 title,
@@ -920,6 +990,7 @@ pub(super) async fn process_resolved_movie_full_scan_candidate(
                 &mut title,
                 scan_root,
                 &candidate.file.path,
+                candidate.representative_is_directory,
             )
             .await;
             sync_existing_title_folder_path_in_memory(existing_titles, &title);
@@ -1355,6 +1426,7 @@ pub(super) async fn process_movie_refresh_candidate(
     summary: &mut LibraryScanSummary,
 ) -> AppResult<Option<PreparedMovieLibraryScanCandidate>> {
     let representative_path = candidate.file.path.clone();
+    let representative_is_directory = candidate.representative_is_directory;
     let discovered_files = candidate.discovered_files.clone();
 
     match resolve_movie_scan_candidate(
@@ -1369,9 +1441,14 @@ pub(super) async fn process_movie_refresh_candidate(
     {
         MovieCandidateResolution::Ready(title) => {
             let mut title = *title;
-            let (canonical_folder_path, scan_folder_path) =
-                sync_movie_title_folder_path_for_scan(app, &mut title, root, &representative_path)
-                    .await;
+            let (canonical_folder_path, scan_folder_path) = sync_movie_title_folder_path_for_scan(
+                app,
+                &mut title,
+                root,
+                &representative_path,
+                representative_is_directory,
+            )
+            .await;
             sync_existing_title_folder_path_in_memory(existing_titles, &title);
             if let Some(index) = existing_titles
                 .iter()
@@ -1428,6 +1505,7 @@ pub(super) async fn process_resolved_movie_refresh_candidate(
     summary: &mut LibraryScanSummary,
 ) -> AppResult<()> {
     let representative_path = candidate.file.path.clone();
+    let representative_is_directory = candidate.representative_is_directory;
     let discovered_files = candidate.discovered_files.clone();
     match resolve_movie_metadata_match(
         app,
@@ -1445,9 +1523,14 @@ pub(super) async fn process_resolved_movie_refresh_candidate(
     .await?
     {
         MovieMetadataResolution::Ready(mut title) => {
-            let (canonical_folder_path, scan_folder_path) =
-                sync_movie_title_folder_path_for_scan(app, &mut title, root, &representative_path)
-                    .await;
+            let (canonical_folder_path, scan_folder_path) = sync_movie_title_folder_path_for_scan(
+                app,
+                &mut title,
+                root,
+                &representative_path,
+                representative_is_directory,
+            )
+            .await;
             sync_existing_title_folder_path_in_memory(existing_titles, &title);
             if let Some(index) = existing_titles
                 .iter()
@@ -1476,9 +1559,14 @@ pub(super) async fn process_resolved_movie_refresh_candidate(
             Ok(())
         }
         MovieMetadataResolution::ReadyCreated { index, mut title } => {
-            let (canonical_folder_path, scan_folder_path) =
-                sync_movie_title_folder_path_for_scan(app, &mut title, root, &representative_path)
-                    .await;
+            let (canonical_folder_path, scan_folder_path) = sync_movie_title_folder_path_for_scan(
+                app,
+                &mut title,
+                root,
+                &representative_path,
+                representative_is_directory,
+            )
+            .await;
             sync_existing_title_folder_path_in_memory(existing_titles, &title);
             update_movie_probe_path_index(
                 existing_titles_by_probe_path,

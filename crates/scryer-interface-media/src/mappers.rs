@@ -1650,6 +1650,7 @@ pub fn catalog_discovery_query_from_input(input: CatalogDiscoveryInput) -> Catal
 pub fn from_discovery_home(result: DiscoveryHomeResult) -> DiscoveryHomePayload {
     DiscoveryHomePayload {
         status: from_discovery_sync_status(result.status),
+        hero_item: result.hero_item.map(from_discovery_item),
         public_sections: result
             .public_sections
             .into_iter()

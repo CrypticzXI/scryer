@@ -13,7 +13,7 @@ import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { IconButton } from "@/components/ui/icon-button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
-import { Checkbox } from "@/components/ui/checkbox";
+import { MultiSelectOptionList } from "@/components/ui/multi-select-dropdown";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
   Table,
@@ -124,30 +124,6 @@ type WantedFilterOption<T extends string> = {
   label: string;
 };
 
-function normalizeMultiSelectValues<T extends string>(
-  selectedValues: T[],
-  allValues: readonly T[],
-): T[] {
-  const selectedSet = new Set(selectedValues);
-  const normalized = allValues.filter((value) => selectedSet.has(value));
-  return normalized.length === 0 || normalized.length === allValues.length ? [] : normalized;
-}
-
-function toggleMultiSelectValue<T extends string>(
-  selectedValues: T[],
-  value: T,
-  allValues: readonly T[],
-): T[] {
-  const selectedSet = new Set(selectedValues.length > 0 ? selectedValues : allValues);
-  if (selectedSet.has(value)) {
-    selectedSet.delete(value);
-  } else {
-    selectedSet.add(value);
-  }
-
-  return normalizeMultiSelectValues(Array.from(selectedSet), allValues);
-}
-
 function WantedFilterSection<T extends string>({
   title,
   allLabel,
@@ -162,53 +138,32 @@ function WantedFilterSection<T extends string>({
   onSelectedValuesChange: (values: T[]) => void;
 }) {
   const implicitAllSelected = selectedValues.length === 0;
+  const allValues = options.map((option) => option.value);
+  const effectiveSelectedValues = implicitAllSelected ? allValues : selectedValues;
+  const handleSelectedValuesChange = (nextValues: string[]) => {
+    const normalized = allValues.filter((value) => nextValues.includes(value));
+    onSelectedValuesChange(
+      normalized.length === 0 || normalized.length === allValues.length
+        ? []
+        : (normalized as T[]),
+    );
+  };
 
   return (
     <div className="flex flex-col gap-2">
       <p className="text-xs font-medium text-muted-foreground">{title}</p>
-      <div className="flex flex-col gap-1">
-        <button
-          type="button"
-          onClick={() => onSelectedValuesChange([])}
-          className="flex items-center gap-2 rounded-md px-1.5 py-1 text-left text-sm hover:bg-accent/50"
-        >
-          <Checkbox
-            checked={implicitAllSelected}
-            size="compact"
-            className="pointer-events-none"
-          />
-          <span>{allLabel}</span>
-        </button>
-        {options.map((option) => {
-          const checked = implicitAllSelected || selectedValues.includes(option.value);
-          const implicitChecked = implicitAllSelected && !selectedValues.includes(option.value);
-          return (
-            <button
-              key={option.value}
-              type="button"
-              onClick={() =>
-                onSelectedValuesChange(
-                  toggleMultiSelectValue(
-                    selectedValues,
-                    option.value,
-                    options.map((entry) => entry.value),
-                  ),
-                )
-              }
-              className="flex items-center gap-2 rounded-md px-1.5 py-1 text-left text-sm hover:bg-accent/50"
-            >
-              <Checkbox
-                checked={checked}
-                size="compact"
-                className="pointer-events-none"
-              />
-              <span className={implicitChecked ? "text-muted-foreground" : undefined}>
-                {option.label}
-              </span>
-            </button>
-          );
-        })}
-      </div>
+      <MultiSelectOptionList
+        groups={[{ options }]}
+        selectedValues={effectiveSelectedValues}
+        onSelectedValuesChange={handleSelectedValuesChange}
+        allOption={{
+          label: allLabel,
+          selected: implicitAllSelected,
+          onSelect: () => onSelectedValuesChange([]),
+        }}
+        maxHeightClassName=""
+        className="overflow-visible"
+      />
     </div>
   );
 }

@@ -139,6 +139,7 @@ pub(crate) struct SeriesLibraryScanCandidate {
 #[derive(Clone, Debug)]
 pub(crate) struct PreparedMovieLibraryScanCandidate {
     pub(crate) file: LibraryFile,
+    pub(crate) representative_is_directory: bool,
     pub(crate) discovered_files: Vec<LibraryFile>,
     pub(crate) parsed_release: crate::ParsedReleaseMetadata,
     pub(crate) nfo_meta: Option<crate::nfo::NfoMetadata>,
@@ -1008,7 +1009,8 @@ async fn prepare_movie_library_scan_candidate(
     file: LibraryFile,
     library_path: String,
 ) -> AppResult<PreparedMovieLibraryScanCandidate> {
-    build_prepared_movie_library_scan_candidate(file.clone(), vec![file], library_path, None).await
+    build_prepared_movie_library_scan_candidate(file.clone(), false, vec![file], library_path, None)
+        .await
 }
 
 pub(crate) async fn prepare_movie_library_scan_entries(
@@ -1092,6 +1094,7 @@ async fn prepare_movie_library_scan_entry(
     Ok(PreparedMovieLibraryScanEntry::Candidate(Box::new(
         build_prepared_movie_library_scan_candidate(
             file,
+            false,
             discovered_files,
             library_path,
             scan_hints,
@@ -1115,14 +1118,8 @@ pub(crate) enum MovieCandidateEvidence {
     Candidate {
         candidate: Box<PreparedMovieLibraryScanCandidate>,
         /// Present when evidence gathering already produced the exact
-        /// inventory (top-level movie files and degenerate-folder fallback).
+        /// inventory (top-level movie files and root-level movie files).
         inline_inventory: Option<Vec<LibraryFile>>,
-    },
-    Skipped {
-        item_path: String,
-        display_name: String,
-        query: String,
-        year_hint: Option<u32>,
     },
 }
 
@@ -1154,6 +1151,7 @@ pub(crate) async fn prepare_movie_candidate_evidence(
             matching_movie_nfo_path_async(&stored_path_to_path_buf(&file.path)).await;
         let candidate = build_prepared_movie_library_scan_candidate(
             representative,
+            false,
             Vec::new(),
             library_path,
             scan_hints,
@@ -1172,9 +1170,14 @@ pub(crate) async fn prepare_movie_candidate_evidence(
 
     if children.is_empty() {
         let file = build_movie_folder_representative_file(&entry).await;
-        let candidate =
-            build_prepared_movie_library_scan_candidate(file, Vec::new(), library_path, scan_hints)
-                .await?;
+        let candidate = build_prepared_movie_library_scan_candidate(
+            file,
+            true,
+            Vec::new(),
+            library_path,
+            scan_hints,
+        )
+        .await?;
         return Ok(MovieCandidateEvidence::Candidate {
             candidate: Box::new(candidate),
             inline_inventory: None,
@@ -1182,9 +1185,14 @@ pub(crate) async fn prepare_movie_candidate_evidence(
     }
 
     let file = build_movie_entry_representative_file(&entry, &children).await?;
-    let candidate =
-        build_prepared_movie_library_scan_candidate(file, Vec::new(), library_path, scan_hints)
-            .await?;
+    let candidate = build_prepared_movie_library_scan_candidate(
+        file,
+        false,
+        Vec::new(),
+        library_path,
+        scan_hints,
+    )
+    .await?;
     Ok(MovieCandidateEvidence::Candidate {
         candidate: Box::new(candidate),
         inline_inventory: None,
@@ -1316,6 +1324,7 @@ fn is_sample_video_candidate(path: &Path) -> bool {
 
 async fn build_prepared_movie_library_scan_candidate(
     file: LibraryFile,
+    representative_is_directory: bool,
     discovered_files: Vec<LibraryFile>,
     library_path: String,
     scan_hints: Option<&LibraryScanHintSet>,
@@ -1330,6 +1339,7 @@ async fn build_prepared_movie_library_scan_candidate(
     ) {
         return Ok(PreparedMovieLibraryScanCandidate {
             file,
+            representative_is_directory,
             discovered_files,
             parsed_release: crate::ParsedReleaseMetadata::default(),
             nfo_meta: None,
@@ -1429,6 +1439,7 @@ async fn build_prepared_movie_library_scan_candidate(
 
     Ok(PreparedMovieLibraryScanCandidate {
         file,
+        representative_is_directory,
         discovered_files,
         parsed_release,
         nfo_meta,
@@ -2094,6 +2105,7 @@ mod tests {
     ) -> PreparedMovieLibraryScanCandidate {
         PreparedMovieLibraryScanCandidate {
             file: build_library_file("/library/Movie/Movie.mkv"),
+            representative_is_directory: false,
             discovered_files: vec![build_library_file("/library/Movie/Movie.mkv")],
             parsed_release: crate::ParsedReleaseMetadata::default(),
             nfo_meta: None,
@@ -2275,6 +2287,7 @@ mod tests {
 
         let candidate = build_prepared_movie_library_scan_candidate(
             file.clone(),
+            false,
             vec![file],
             path_to_stored_string(Path::new("/movies")),
             Some(&scan_hints),
@@ -2435,6 +2448,54 @@ mod tests {
             .expect("URL-only NFO should be usable metadata");
 
         assert_eq!(meta.imdb_id.as_deref(), Some("tt1234567"));
+    }
+
+    #[tokio::test]
+    async fn prepare_movie_candidate_evidence_uses_empty_folder_sidecar_without_recursive_scan() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let root = tempdir.path().join("movies");
+        let folder = root.join("scan-item-folder (2024)");
+        std::fs::create_dir_all(&folder).expect("create movie folder");
+        let nfo_path = folder.join("movie.nfo");
+        std::fs::write(
+            &nfo_path,
+            r#"<movie><title>Sidecar Item</title><tvdbid>12345</tvdbid></movie>"#,
+        )
+        .expect("write movie nfo");
+
+        let scanner = DelayedLibraryScanner::default();
+        scanner.set_response(path_to_stored_string(&folder).as_str(), 0, Vec::new());
+
+        let evidence = prepare_movie_candidate_evidence(
+            Arc::new(scanner.clone()),
+            MovieTopLevelEntry {
+                path: folder.clone(),
+                is_dir: true,
+            },
+            path_to_stored_string(&root),
+            None,
+        )
+        .await
+        .expect("prepare empty folder movie evidence");
+
+        let MovieCandidateEvidence::Candidate {
+            candidate,
+            inline_inventory,
+        } = evidence;
+        assert!(inline_inventory.is_none());
+        assert_eq!(scanner.scan_directory_call_count(), 1);
+        assert_eq!(candidate.file.path, path_to_stored_string(&folder));
+        assert_eq!(
+            candidate.file.nfo_path.as_deref(),
+            Some(path_to_stored_string(&nfo_path).as_str())
+        );
+
+        let keys = movie_candidate_batch_search_keys(&candidate).expect("movie search keys");
+        assert_eq!(keys.first().map(|key| key.query.as_str()), Some(""));
+        assert_eq!(
+            keys.first().and_then(|key| key.tvdb_id.as_deref()),
+            Some("12345")
+        );
     }
 
     #[tokio::test]

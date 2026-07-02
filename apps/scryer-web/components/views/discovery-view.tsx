@@ -3,7 +3,6 @@ import type { CSSProperties } from "react";
 import type { LucideIcon } from "lucide-react";
 import {
   Check,
-  ChevronDown,
   ChevronRight,
   Compass,
   Drama,
@@ -27,8 +26,7 @@ import {
 } from "lucide-react";
 import { useTranslate } from "@/lib/context/translate-context";
 import { Button } from "@/components/ui/button";
-import { Checkbox } from "@/components/ui/checkbox";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { MultiSelectDropdown } from "@/components/ui/multi-select-dropdown";
 import { TitleCard } from "@/components/title-card";
 import {
   canonicalDiscoveryFacetLabels,
@@ -833,10 +831,6 @@ function DiscoveryFilterMultiSelect({
   ariaLabel: string;
   onSelectedValuesChange: (values: string[]) => void;
 }) {
-  const selectedSet = React.useMemo(
-    () => new Set(selectedValues),
-    [selectedValues],
-  );
   const triggerLabel =
     selectedValues.length > 0
       ? selectedValues.length === 1
@@ -845,61 +839,16 @@ function DiscoveryFilterMultiSelect({
       : placeholder;
 
   return (
-    <Popover>
-      <PopoverTrigger asChild>
-        <Button
-          type="button"
-          variant="ghost"
-          aria-label={ariaLabel}
-          className={cn(
-            "h-[38px] w-full justify-between rounded-[9px] border border-[var(--scry-border2)] bg-[var(--scry-bg)] px-3 text-left text-[13px] font-normal outline-none transition hover:border-[var(--scry-bhover2)] hover:bg-[var(--scry-bg)]",
-            selectedValues.length > 0
-              ? "text-[var(--scry-text2)]"
-              : "text-[var(--scry-faint)]",
-          )}
-        >
-          <span className="min-w-0 truncate">{triggerLabel}</span>
-          <ChevronDown className="h-[15px] w-[15px] text-[var(--scry-faint)]" />
-        </Button>
-      </PopoverTrigger>
-      <PopoverContent
-        align="start"
-        className="max-h-72 w-[var(--radix-popover-trigger-width)] overflow-y-auto rounded-[9px] border border-[var(--scry-border2)] bg-[var(--scry-bg)] p-1 shadow-[0_18px_42px_rgba(0,0,0,0.45)]"
-      >
-        {options.map((option) => {
-          const selected = selectedSet.has(option);
-          const toggleOption = () =>
-            onSelectedValuesChange(
-              toggleSelectedFilterValue(selectedValues, option),
-            );
-          return (
-            <div
-              key={option}
-              role="checkbox"
-              aria-checked={selected}
-              tabIndex={0}
-              onClick={toggleOption}
-              onKeyDown={(event) => {
-                if (event.key === "Enter" || event.key === " ") {
-                  event.preventDefault();
-                  toggleOption();
-                }
-              }}
-              className="flex w-full cursor-pointer items-center gap-2 rounded-[7px] px-2 py-2 text-left text-[13px] text-[var(--scry-text2)] transition hover:bg-[var(--scry-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--scry-accent)]"
-            >
-              <Checkbox
-                checked={selected}
-                size="compact"
-                tabIndex={-1}
-                aria-hidden="true"
-                className="pointer-events-none"
-              />
-              <span className="min-w-0 flex-1 truncate">{option}</span>
-            </div>
-          );
-        })}
-      </PopoverContent>
-    </Popover>
+    <MultiSelectDropdown
+      options={options.map((option) => ({ value: option, label: option }))}
+      selectedValues={selectedValues}
+      onSelectedValuesChange={onSelectedValuesChange}
+      triggerLabel={triggerLabel}
+      placeholder={placeholder}
+      ariaLabel={ariaLabel}
+      size="compact"
+      chrome="toolbar"
+    />
   );
 }
 
@@ -1268,8 +1217,8 @@ export function DiscoveryView({
     [sections],
   );
   const heroItem = React.useMemo(
-    () => firstHeroItem(heroSections),
-    [heroSections],
+    () => home?.heroItem ?? firstHeroItem(heroSections),
+    [heroSections, home?.heroItem],
   );
   const genreTiles = React.useMemo(() => buildGenreTiles(allItems), [allItems]);
   const heroRailSection = React.useMemo(

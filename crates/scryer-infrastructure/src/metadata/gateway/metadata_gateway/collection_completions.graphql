@@ -44,6 +44,16 @@ fragment DiscoveryCollectionCompletionTitleFields on DiscoveryCollectionCompleti
     is_adult
     is_spoiler
   }
+  canonical_tags {
+    key
+    category
+    name
+    confidence
+    sources
+    source_tag_keys
+    is_adult
+    is_spoiler
+  }
   sources
   relation_types
   relation_subtypes

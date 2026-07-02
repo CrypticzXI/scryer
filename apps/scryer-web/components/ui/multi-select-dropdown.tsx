@@ -17,6 +17,7 @@ export type MultiSelectOption = {
   disabled?: boolean;
   description?: React.ReactNode;
   id?: string;
+  title?: string;
 };
 
 export type MultiSelectGroup = {
@@ -95,6 +96,7 @@ function MultiSelectOptionList({
         type="button"
         onClick={() => toggleOption(option.value)}
         disabled={disabled || option.disabled}
+        title={option.title}
         className={cn(
           "flex w-full items-center gap-2 rounded-[8px] px-2 py-1.5 text-left text-sm text-[var(--scry-ink2)] transition-colors",
           "hover:bg-[var(--scry-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[rgba(var(--scry-accent-rgb),0.32)]",

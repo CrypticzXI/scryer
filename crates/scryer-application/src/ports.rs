@@ -183,6 +183,7 @@ impl Default for DiscoveryHomeQuery {
 #[derive(Clone, Debug, PartialEq)]
 pub struct DiscoveryHomeResult {
     pub status: DiscoverySyncStatus,
+    pub hero_item: Option<DiscoveryItemRecord>,
     pub public_sections: Vec<DiscoverySectionResult>,
     pub personalized_sections: Vec<DiscoverySectionResult>,
     pub complete_collection: Option<DiscoverySectionResult>,

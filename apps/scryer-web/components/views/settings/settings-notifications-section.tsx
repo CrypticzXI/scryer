@@ -1,6 +1,6 @@
 
 import * as React from "react";
-import { Bell, ChevronDown, Edit, Loader2, Plus, Power, PowerOff, Send, Trash2 } from "lucide-react";
+import { Bell, Edit, Loader2, Plus, Power, PowerOff, Send, Trash2 } from "lucide-react";
 import { Link } from "react-router-dom";
 import { AddNewButton } from "@/components/common/add-new-button";
 import { InfoHelp } from "@/components/common/info-help";
@@ -13,7 +13,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox, CheckboxField } from "@/components/ui/checkbox";
 import { Input, signedIntegerInputProps } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { MultiSelectDropdown } from "@/components/ui/multi-select-dropdown";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { RenderBooleanIcon } from "@/components/common/boolean-icon";
@@ -368,95 +368,6 @@ function notificationTargetName(
   return (
     targets.find((target) => target.targetKind === targetKind && target.id === targetId)?.name ??
     targetId
-  );
-}
-
-type MultiSelectDropdownOption = {
-  value: string;
-  label: string;
-};
-
-function MultiSelectDropdown({
-  options,
-  selectedValues,
-  onSelectedValuesChange,
-  placeholder,
-  triggerId,
-  optionIdPrefix,
-}: {
-  options: MultiSelectDropdownOption[];
-  selectedValues: string[];
-  onSelectedValuesChange: (values: string[]) => void;
-  placeholder: string;
-  triggerId?: string;
-  optionIdPrefix?: string;
-}) {
-  const selectedLabel = React.useMemo(() => {
-    const labels = options
-      .filter((option) => selectedValues.includes(option.value))
-      .map((option) => option.label);
-    return labels.length > 0 ? labels.join(", ") : placeholder;
-  }, [options, placeholder, selectedValues]);
-
-  const toggleOption = React.useCallback(
-    (value: string) => {
-      const selectedSet = new Set(selectedValues);
-      if (selectedSet.has(value)) {
-        selectedSet.delete(value);
-      } else {
-        selectedSet.add(value);
-      }
-
-      onSelectedValuesChange(
-        options
-          .map((option) => option.value)
-          .filter((optionValue) => selectedSet.has(optionValue)),
-      );
-    },
-    [onSelectedValuesChange, options, selectedValues],
-  );
-
-  return (
-    <Popover>
-      <PopoverTrigger asChild>
-        <Button
-          id={triggerId}
-          type="button"
-          variant="outline"
-          className="w-full justify-between px-3 text-left font-normal"
-        >
-          <span
-            className={`truncate ${selectedValues.length === 0 ? "text-muted-foreground" : ""}`}
-          >
-            {selectedLabel}
-          </span>
-          <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" />
-        </Button>
-      </PopoverTrigger>
-      <PopoverContent align="start" className="w-[var(--radix-popover-trigger-width)] p-2">
-        <div className="flex max-h-72 flex-col gap-1 overflow-y-auto">
-          {options.map((option) => {
-            const checked = selectedValues.includes(option.value);
-            return (
-              <button
-                key={option.value}
-                id={selectorId(optionIdPrefix, option.value)}
-                type="button"
-                onClick={() => toggleOption(option.value)}
-                className="flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors hover:bg-accent"
-              >
-                <Checkbox
-                  checked={checked}
-                  size="compact"
-                  className="pointer-events-none"
-                />
-                <span className="truncate">{option.label}</span>
-              </button>
-            );
-          })}
-        </div>
-      </PopoverContent>
-    </Popover>
   );
 }
 
@@ -1090,8 +1001,14 @@ export function SettingsNotificationsSection({
                         eventTypes: values,
                       }))
                     }
+                    triggerLabel={
+                      eventTypeOptions
+                        .filter((option) => subscriptionDraft.eventTypes.includes(option.value))
+                        .map((option) => option.label)
+                        .join(", ") || t("settings.notificationEventType")
+                    }
                     placeholder={t("settings.notificationEventType")}
-                    triggerId="settings-notification-subscription-event-types"
+                    id="settings-notification-subscription-event-types"
                     optionIdPrefix="settings-notification-subscription-event-type-option"
                   />
                 </label>

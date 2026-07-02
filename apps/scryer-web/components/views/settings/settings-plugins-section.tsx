@@ -9,13 +9,7 @@ import { TextActionButton } from "@/components/ui/text-action-button";
 import { CheckboxField } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { SingleSelectField } from "@/components/ui/select";
 import {
   Table,
   TableBody,
@@ -282,22 +276,23 @@ function PluginFilters({
   return (
     <div className="flex flex-wrap items-center gap-3">
       {leadingContent}
-      <Select
+      <SingleSelectField
         value={filters.category}
         onValueChange={(v) => onChange({ ...filters, category: v })}
-      >
-        <SelectTrigger className="h-9 w-44 rounded-[10px] border-[var(--scry-border3)] bg-[var(--scry-inset)] text-[13px]">
-          <SelectValue />
-        </SelectTrigger>
-        <SelectContent>
-          <SelectItem value="all">{t("settings.pluginAllCategories")}</SelectItem>
-          {categories.map((cat) => (
-            <SelectItem key={cat} value={cat}>
-              {categoryLabel(cat, t)}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
+        chrome="toolbar"
+        size="compact"
+        triggerClassName="w-44"
+        options={[
+          {
+            value: "all",
+            label: t("settings.pluginAllCategories"),
+          },
+          ...categories.map((cat) => ({
+            value: cat,
+            label: categoryLabel(cat, t),
+          })),
+        ]}
+      />
       <CheckboxField
         id="settings-plugins-official-only"
         checked={filters.officialOnly}

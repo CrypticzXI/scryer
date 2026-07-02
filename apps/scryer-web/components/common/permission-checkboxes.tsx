@@ -1,9 +1,9 @@
 import type * as React from "react";
 import { ChevronDown } from "lucide-react";
 
-import { Button } from "@/components/ui/button";
-import { Checkbox } from "@/components/ui/checkbox";
+import { MultiSelectOptionList } from "@/components/ui/multi-select-dropdown";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { selectTriggerClassName } from "@/components/ui/select";
 import type { LibraryRecord } from "@/lib/types";
 import {
   APP_PERMISSIONS,
@@ -80,6 +80,14 @@ export function togglePermissionValue(current: string[], value: string): string[
   return Array.from(next);
 }
 
+function changedPermissionValue(previous: string[], next: string[]) {
+  return (
+    next.find((value) => !previous.includes(value)) ??
+    previous.find((value) => !next.includes(value)) ??
+    ""
+  );
+}
+
 function shadowTitle(source: string | null): string | undefined {
   return source ? `Included by ${source}` : undefined;
 }
@@ -95,21 +103,23 @@ function PermissionDropdownTrigger({
   readOnly,
   className,
   ...props
-}: React.ComponentProps<typeof Button> & {
+}: React.ButtonHTMLAttributes<HTMLButtonElement> & {
   label: string;
   count: number;
   disabled?: boolean;
   readOnly?: boolean;
 }) {
   return (
-    <Button
+    <button
       type="button"
-      variant="outline"
-      className={cn(
-        "w-full justify-between bg-field px-3 text-left font-normal hover:bg-field/90",
-        readOnly && "opacity-60",
-        className,
-      )}
+      className={selectTriggerClassName({
+        className: cn(
+          "w-full text-left font-normal",
+          count === 0 && "text-[var(--scry-faint)]",
+          readOnly && "opacity-60",
+          className,
+        ),
+      })}
       disabled={disabled}
       aria-disabled={disabled || readOnly}
       {...props}
@@ -117,13 +127,13 @@ function PermissionDropdownTrigger({
       <span
         className={cn(
           "min-w-0 truncate text-sm",
-          count === 0 && "text-muted-foreground",
+          count === 0 && "text-[var(--scry-faint)]",
         )}
       >
         {count === 0 ? label : `${label}: ${selectedCountLabel(count)}`}
       </span>
-      <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" />
-    </Button>
+      <ChevronDown className="h-4 w-4 shrink-0 text-[var(--scry-faint)]" />
+    </button>
   );
 }
 
@@ -157,31 +167,21 @@ function AppPermissionDropdown({
         align="start"
         className="w-max min-w-[var(--radix-popover-trigger-width)] max-w-[calc(100vw-2rem)] p-2"
       >
-        <div className="flex max-h-72 flex-col gap-1 overflow-y-auto">
-          {options.map((permission) => {
-            const checked = selected.includes(permission.value);
-            return (
-              <button
-                id={idPrefix ? `${idPrefix}-app-${permission.value}` : undefined}
-                key={permission.value}
-                type="button"
-                onClick={() =>
-                  onChange(togglePermissionValue(selected, permission.value), permission.value)
-                }
-                disabled={disabled}
-                className="flex min-w-max items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:bg-transparent"
-              >
-                <Checkbox
-                  checked={checked}
-                  disabled={disabled}
-                  size="compact"
-                  className="pointer-events-none"
-                />
-                <span className="whitespace-nowrap">{permission.label}</span>
-              </button>
-            );
-          })}
-        </div>
+        <MultiSelectOptionList
+          groups={[{
+            options: options.map((permission) => ({
+              ...permission,
+              id: idPrefix ? `${idPrefix}-app-${permission.value}` : undefined,
+            })),
+          }]}
+          selectedValues={selected}
+          onSelectedValuesChange={(next) =>
+            onChange(next, changedPermissionValue(selected, next))
+          }
+          disabled={disabled}
+          optionClassName="min-w-max"
+          optionLabelClassName="whitespace-nowrap"
+        />
       </PopoverContent>
     </Popover>
   );
@@ -230,45 +230,40 @@ function FacetPermissionDropdown({
                 <div className="truncate px-2 text-xs font-semibold uppercase text-muted-foreground">
                   {library.name}
                 </div>
-                <div className="space-y-0.5">
-                  {options.map((permission) => {
-                    const checked = effectiveSelected.includes(permission.value);
-                    const shadowSource = libraryPermissionShadowSource(
-                      selected,
-                      permission.value,
-                    );
-                    const permissionDisabled = disabled || shadowSource !== null;
-                    return (
-                      <button
-                        id={
-                          idPrefix
-                            ? `${idPrefix}-${facet}-${library.id}-${permission.value}`
-                            : undefined
-                        }
-                        key={`${library.id}-${permission.value}`}
-                        type="button"
-                        onClick={() =>
-                          onLibraryChange(
-                            library.id,
-                            togglePermissionValue(selected, permission.value),
-                            permission.value,
-                          )
-                        }
-                        disabled={permissionDisabled}
-                        title={shadowTitle(shadowSource)}
-                        className="flex min-w-max items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:bg-transparent"
-                      >
-                        <Checkbox
-                          checked={checked}
-                          disabled={permissionDisabled}
-                          size="compact"
-                          className="pointer-events-none"
-                        />
-                        <span className="whitespace-nowrap">{permission.label}</span>
-                      </button>
-                    );
-                  })}
-                </div>
+                <MultiSelectOptionList
+                  groups={[{
+                    options: options.map((permission) => {
+                      const shadowSource = libraryPermissionShadowSource(
+                        selected,
+                        permission.value,
+                      );
+                      return {
+                        ...permission,
+                        id: idPrefix
+                          ? `${idPrefix}-${facet}-${library.id}-${permission.value}`
+                          : undefined,
+                        disabled: shadowSource !== null,
+                        title: shadowTitle(shadowSource),
+                      };
+                    }),
+                  }]}
+                  selectedValues={effectiveSelected}
+                  onSelectedValuesChange={(next) => {
+                    const permission = changedPermissionValue(effectiveSelected, next);
+                    if (permission) {
+                      onLibraryChange(
+                        library.id,
+                        togglePermissionValue(selected, permission),
+                        permission,
+                      );
+                    }
+                  }}
+                  disabled={disabled}
+                  className="overflow-visible"
+                  maxHeightClassName=""
+                  optionClassName="min-w-max"
+                  optionLabelClassName="whitespace-nowrap"
+                />
               </div>
             );
           })}

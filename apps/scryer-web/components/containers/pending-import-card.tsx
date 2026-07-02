@@ -107,7 +107,7 @@ export const PendingImportCard = React.memo(function PendingImportCard({
             <Button
               type="button"
               size="sm"
-              variant={isActive ? "secondary" : item.status === "ignored" ? "outline" : "default"}
+              variant={isActive ? "secondary" : "default"}
               onClick={() => onOpenSearch(item)}
               disabled={isBusy}
             >

@@ -79,6 +79,7 @@ export type DiscoverySection = {
 
 export type DiscoveryHomePayload = {
   status: DiscoverySyncStatus;
+  heroItem: DiscoveryItem | null;
   publicSections: DiscoverySection[];
   personalizedSections: DiscoverySection[];
   completeCollection: DiscoverySection | null;

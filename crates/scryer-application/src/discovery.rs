@@ -330,8 +330,11 @@ impl AppUseCase {
                 .await?;
         }
 
+        let hero_item = select_discovery_home_hero(&public_sections, &personalized_sections);
+
         Ok(DiscoveryHomeResult {
             status,
+            hero_item,
             public_sections,
             personalized_sections,
             complete_collection,
@@ -833,6 +836,94 @@ fn filter_discovery_sections_for_owned_items(
             Some(section)
         })
         .collect()
+}
+
+fn select_discovery_home_hero(
+    public_sections: &[DiscoverySectionResult],
+    personalized_sections: &[DiscoverySectionResult],
+) -> Option<DiscoveryItemRecord> {
+    select_personalized_discovery_home_hero(personalized_sections)
+        .or_else(|| select_public_discovery_home_hero(public_sections))
+}
+
+fn select_personalized_discovery_home_hero(
+    sections: &[DiscoverySectionResult],
+) -> Option<DiscoveryItemRecord> {
+    let mut candidates = sections
+        .iter()
+        .flat_map(|section| section.items.iter())
+        .filter(|item| !item.owned_in_input)
+        .cloned()
+        .collect::<Vec<_>>();
+    candidates.sort_by(compare_personalized_discovery_home_hero_items);
+    candidates.into_iter().next()
+}
+
+fn select_public_discovery_home_hero(
+    sections: &[DiscoverySectionResult],
+) -> Option<DiscoveryItemRecord> {
+    let mut candidates = sections
+        .iter()
+        .flat_map(|section| section.items.iter())
+        .cloned()
+        .collect::<Vec<_>>();
+    candidates.sort_by(compare_public_discovery_home_hero_items);
+    candidates.into_iter().next()
+}
+
+fn compare_personalized_discovery_home_hero_items(
+    left: &DiscoveryItemRecord,
+    right: &DiscoveryItemRecord,
+) -> Ordering {
+    right
+        .background_url
+        .is_some()
+        .cmp(&left.background_url.is_some())
+        .then_with(|| right.matched_subject_count.cmp(&left.matched_subject_count))
+        .then_with(|| compare_optional_f64_desc(left.rank_score, right.rank_score))
+        .then_with(|| compare_discovery_item_rating_desc(left, right))
+        .then_with(|| {
+            right
+                .source_count
+                .unwrap_or_default()
+                .cmp(&left.source_count.unwrap_or_default())
+        })
+        .then_with(|| left.target_key.cmp(&right.target_key))
+}
+
+fn compare_public_discovery_home_hero_items(
+    left: &DiscoveryItemRecord,
+    right: &DiscoveryItemRecord,
+) -> Ordering {
+    right
+        .background_url
+        .is_some()
+        .cmp(&left.background_url.is_some())
+        .then_with(|| compare_discovery_item_rating_desc(left, right))
+        .then_with(|| compare_optional_f64_desc(left.rank_score, right.rank_score))
+        .then_with(|| {
+            right
+                .source_count
+                .unwrap_or_default()
+                .cmp(&left.source_count.unwrap_or_default())
+        })
+        .then_with(|| left.target_key.cmp(&right.target_key))
+}
+
+fn compare_discovery_item_rating_desc(
+    left: &DiscoveryItemRecord,
+    right: &DiscoveryItemRecord,
+) -> Ordering {
+    discovery_item_comparable_rating(right)
+        .partial_cmp(&discovery_item_comparable_rating(left))
+        .unwrap_or(Ordering::Equal)
+}
+
+fn compare_optional_f64_desc(left: Option<f64>, right: Option<f64>) -> Ordering {
+    right
+        .unwrap_or_default()
+        .partial_cmp(&left.unwrap_or_default())
+        .unwrap_or(Ordering::Equal)
 }
 
 fn public_section_results(
@@ -3159,13 +3250,53 @@ fn discovery_canonical_facet_terms(item: &DiscoveryTitle) -> Vec<String> {
         );
     }
     for canonical_tag in &item.canonical_tags {
-        values.extend(
-            unique_json_text_values(canonical_tag)
-                .into_iter()
-                .filter_map(|value| canonical_discovery_term(&value).map(str::to_string)),
-        );
+        values.extend(canonical_discovery_terms_from_canonical_tag(canonical_tag));
     }
     unique_discovery_text_terms(values)
+}
+
+fn canonical_discovery_terms_from_canonical_tag(value: &JsonValue) -> Vec<String> {
+    let mut terms = unique_json_text_values(value)
+        .into_iter()
+        .filter_map(|value| canonical_discovery_term(&value).map(str::to_string))
+        .collect::<Vec<_>>();
+    if !terms.is_empty() {
+        return unique_discovery_text_terms(terms);
+    }
+
+    if !value.is_object() {
+        return Vec::new();
+    }
+    let Some(category) = json_object_string(value, &["category", "type"]) else {
+        return Vec::new();
+    };
+    let category = category.trim().to_ascii_lowercase();
+    if category != "genre" && category != "theme" {
+        return Vec::new();
+    }
+    let Some(label) = json_object_string(value, &["key", "name", "label", "value"]) else {
+        return Vec::new();
+    };
+    let label = label.trim();
+    if label.is_empty() {
+        return Vec::new();
+    }
+    let tail = label
+        .rsplit(':')
+        .next()
+        .unwrap_or(label)
+        .trim()
+        .to_ascii_lowercase()
+        .replace(|character: char| !character.is_ascii_alphanumeric(), "-")
+        .split('-')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("-");
+    if tail.is_empty() {
+        return Vec::new();
+    }
+    terms.push(format!("canonical:{category}:{tail}"));
+    unique_discovery_text_terms(terms)
 }
 
 fn unique_discovery_text_terms(values: Vec<String>) -> Vec<String> {
@@ -3670,6 +3801,115 @@ mod tests {
     }
 
     #[test]
+    fn discovery_home_hero_prefers_visible_personalized_item() {
+        let mut public_item = test_discovery_item("public", "movie", Some("movie"));
+        public_item.target_key = "tmdb:movie:public".to_string();
+        public_item.rating = Some(10.0);
+        public_item.rank_score = Some(99.0);
+        public_item.source_count = Some(9);
+        public_item.background_url = Some("https://images.example/public.jpg".to_string());
+
+        let mut personalized_item = test_discovery_item("personalized", "movie", Some("movie"));
+        personalized_item.target_key = "tmdb:movie:personalized".to_string();
+        personalized_item.rating = Some(1.0);
+        personalized_item.rank_score = Some(1.0);
+        personalized_item.matched_subject_count = 1;
+        personalized_item.background_url =
+            Some("https://images.example/personalized.jpg".to_string());
+
+        let hero = select_discovery_home_hero(
+            &[test_discovery_section("public", vec![public_item])],
+            &[test_discovery_section(
+                "personalized",
+                vec![personalized_item],
+            )],
+        )
+        .expect("hero item");
+
+        assert_eq!(hero.target_key, "tmdb:movie:personalized");
+    }
+
+    #[test]
+    fn discovery_home_hero_skips_owned_personalized_items() {
+        let mut owned_item = test_discovery_item("owned", "series", Some("series"));
+        owned_item.target_key = "tmdb:series:owned".to_string();
+        owned_item.owned_in_input = true;
+        owned_item.matched_subject_count = 100;
+        owned_item.background_url = Some("https://images.example/owned.jpg".to_string());
+
+        let mut visible_item = test_discovery_item("visible", "series", Some("series"));
+        visible_item.target_key = "tmdb:series:visible".to_string();
+        visible_item.matched_subject_count = 1;
+        visible_item.background_url = Some("https://images.example/visible.jpg".to_string());
+
+        let hero = select_discovery_home_hero(
+            &[],
+            &[test_discovery_section(
+                "personalized",
+                vec![owned_item, visible_item],
+            )],
+        )
+        .expect("hero item");
+
+        assert_eq!(hero.target_key, "tmdb:series:visible");
+    }
+
+    #[test]
+    fn discovery_home_hero_falls_back_to_highest_rated_public_item() {
+        let mut lower_rated = test_discovery_item("lower", "movie", Some("movie"));
+        lower_rated.target_key = "tmdb:movie:lower".to_string();
+        lower_rated.rating = Some(6.0);
+        lower_rated.rank_score = Some(100.0);
+        lower_rated.background_url = Some("https://images.example/lower.jpg".to_string());
+
+        let mut higher_rated = test_discovery_item("higher", "movie", Some("movie"));
+        higher_rated.target_key = "tmdb:movie:higher".to_string();
+        higher_rated.rating = Some(8.5);
+        higher_rated.rank_score = Some(1.0);
+        higher_rated.background_url = Some("https://images.example/higher.jpg".to_string());
+
+        let hero = select_discovery_home_hero(
+            &[test_discovery_section(
+                "public",
+                vec![lower_rated, higher_rated],
+            )],
+            &[],
+        )
+        .expect("hero item");
+
+        assert_eq!(hero.target_key, "tmdb:movie:higher");
+    }
+
+    #[test]
+    fn discovery_home_hero_tie_breaks_by_target_key_without_raw_labels() {
+        let mut later_key = test_discovery_item("later", "anime", Some("anime"));
+        later_key.target_key = "tmdb:anime:z".to_string();
+        later_key.background_url = Some("https://images.example/z.jpg".to_string());
+        later_key.genres = vec!["raw anime label".to_string()];
+        later_key.source_tags = vec![DiscoverySourceTagRecord {
+            category: Some("theme".to_string()),
+            name: Some("Isekai".to_string()),
+            values: vec!["Isekai".to_string()],
+        }];
+
+        let mut earlier_key = test_discovery_item("earlier", "anime", Some("anime"));
+        earlier_key.target_key = "tmdb:anime:a".to_string();
+        earlier_key.background_url = Some("https://images.example/a.jpg".to_string());
+        earlier_key.facet_terms = vec!["canonical:theme:isekai".to_string()];
+
+        let hero = select_discovery_home_hero(
+            &[test_discovery_section(
+                "public",
+                vec![later_key, earlier_key],
+            )],
+            &[],
+        )
+        .expect("hero item");
+
+        assert_eq!(hero.target_key, "tmdb:anime:a");
+    }
+
+    #[test]
     fn discovery_context_deduplicates_identical_subjects() {
         let context = build_discovery_library_context(
             &[
@@ -3810,6 +4050,20 @@ mod tests {
                 }),
                 serde_json::json!("canonical:theme:survival"),
             ],
+            canonical_tags: vec![
+                serde_json::json!({
+                    "key": "canonical:theme:isekai",
+                    "category": "theme",
+                    "name": "Isekai",
+                    "confidence": 1.0,
+                }),
+                serde_json::json!({
+                    "key": "adult-cast",
+                    "category": "theme",
+                    "name": "Adult Cast",
+                    "confidence": 1.0,
+                }),
+            ],
             facet_terms: vec![
                 "raw:compat".to_string(),
                 "canonical:genre:drama".to_string(),
@@ -3851,6 +4105,16 @@ mod tests {
             records[0]
                 .facet_terms
                 .contains(&"canonical:theme:survival".to_string())
+        );
+        assert!(
+            records[0]
+                .facet_terms
+                .contains(&"canonical:theme:isekai".to_string())
+        );
+        assert!(
+            records[0]
+                .facet_terms
+                .contains(&"canonical:theme:adult-cast".to_string())
         );
         assert!(records[0].source_tags.iter().any(|source_tag| {
             source_tag
@@ -4131,6 +4395,20 @@ mod tests {
             tombstoned_at: None,
             created_at: now,
             updated_at: now,
+        }
+    }
+
+    fn test_discovery_section(
+        surface: &str,
+        items: Vec<DiscoveryItemRecord>,
+    ) -> DiscoverySectionResult {
+        DiscoverySectionResult {
+            section_id: format!("{surface}_section"),
+            section_type: "TEST".to_string(),
+            title: "Test".to_string(),
+            surface: surface.to_string(),
+            total_count: items.len() as i64,
+            items,
         }
     }
 }

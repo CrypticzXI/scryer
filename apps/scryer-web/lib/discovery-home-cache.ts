@@ -161,6 +161,7 @@ function isDiscoveryHomePayload(value: unknown): value is DiscoveryHomePayload {
     value.publicSections.every(isDiscoverySection) &&
     Array.isArray(value.personalizedSections) &&
     value.personalizedSections.every(isDiscoverySection) &&
+    (value.heroItem === null || isDiscoveryItem(value.heroItem)) &&
     (value.completeCollection === null ||
       isDiscoverySection(value.completeCollection)) &&
     Array.isArray(value.facets) &&

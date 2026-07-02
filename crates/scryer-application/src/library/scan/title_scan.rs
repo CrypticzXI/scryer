@@ -1145,7 +1145,7 @@ impl LibraryScanMediaAnalysisPool {
                     return None;
                 }
                 files.retain(|file| !self.scoped_path_already_covered(&title_id, &file.path));
-                if files.is_empty() {
+                if files.is_empty() && !work.full_folder {
                     return None;
                 }
             }

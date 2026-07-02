@@ -1,7 +1,10 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt::Write as _;
 use std::future::Future;
-use std::sync::{Arc, RwLock};
+use std::sync::{
+    Arc, RwLock,
+    atomic::{AtomicBool, Ordering},
+};
 use std::time::{Duration, Instant, SystemTime};
 
 use async_trait::async_trait;
@@ -97,6 +100,7 @@ const OP_SEARCH_TVDB_RICH: &str = "SearchTvdbRich";
 const OP_SEARCH_TVDB_MULTI: &str = "SearchTvdbMulti";
 const OP_GET_MOVIE: &str = "GetMovie";
 const OP_GET_SERIES: &str = "GetSeries";
+const OP_METADATA_BULK: &str = "MetadataBulk";
 const OP_TITLE_RECOMMENDATIONS: &str = "TitleRecommendations";
 const OP_DISCOVER_PUBLIC_FEED: &str = "DiscoverPublicFeed";
 const OP_COLLECTION_COMPLETIONS: &str = "CollectionCompletions";
@@ -245,6 +249,7 @@ const METADATA_GATEWAY_RATE_LIMIT_MAX_DELAY: Duration = Duration::from_secs(30);
 const METADATA_GATEWAY_TRANSIENT_BASE_DELAY: Duration = Duration::from_secs(1);
 const METADATA_GATEWAY_TRANSIENT_MAX_DELAY: Duration = Duration::from_secs(5);
 const METADATA_GATEWAY_MAX_SEARCH_BATCH: usize = 50;
+const METADATA_GATEWAY_MAX_METADATA_BULK_BATCH: usize = 50;
 const METADATA_GATEWAY_MAX_BULK_METADATA_ALIAS_BATCH: usize = 100;
 const METADATA_GATEWAY_COMPATIBILITY_POLL_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
 const METADATA_GATEWAY_COMPATIBILITY_STARTUP_GUARD: Duration = Duration::from_secs(30 * 60);
@@ -444,6 +449,15 @@ fn next_version_compatibility_poll_delay_at(
     Duration::from_secs(next_slot.saturating_sub(now_secs))
 }
 
+fn metadata_bulk_unknown_field_error(error: &AppError) -> bool {
+    let AppError::Repository(message) = error else {
+        return false;
+    };
+    message.contains("Cannot query field \"metadataBulk\"")
+        || (message.contains("Cannot query field") && message.contains("metadataBulk"))
+        || message.contains("missing field `metadataBulk`")
+}
+
 pub struct MetadataGatewayClient {
     http: Client,
     outbound_http: OutboundHttpClient,
@@ -461,6 +475,8 @@ pub struct MetadataGatewayClient {
     search_multi_hash: String,
     movie_hash: String,
     series_hash: String,
+    metadata_bulk_hash: String,
+    metadata_bulk_unavailable: AtomicBool,
     title_recommendations_hash: String,
     collection_completions_hash: String,
     submit_discovery_context_snapshot_hash: String,
@@ -497,6 +513,7 @@ impl MetadataGatewayClient {
         let search_multi_hash = apq_hash(graphql_docs::SEARCH_TVDB_MULTI_QUERY);
         let movie_hash = apq_hash(graphql_docs::GET_MOVIE_QUERY);
         let series_hash = apq_hash(graphql_docs::GET_SERIES_QUERY);
+        let metadata_bulk_hash = apq_hash(graphql_docs::METADATA_BULK_QUERY);
         let title_recommendations_hash = apq_hash(graphql_docs::TITLE_RECOMMENDATIONS_QUERY);
         let collection_completions_hash = apq_hash(graphql_docs::COLLECTION_COMPLETIONS_QUERY);
         let submit_discovery_context_snapshot_hash =
@@ -528,6 +545,7 @@ impl MetadataGatewayClient {
             %search_multi_hash,
             %movie_hash,
             %series_hash,
+            %metadata_bulk_hash,
             %title_recommendations_hash,
             %collection_completions_hash,
             %submit_discovery_context_snapshot_hash,
@@ -557,6 +575,8 @@ impl MetadataGatewayClient {
             search_multi_hash,
             movie_hash,
             series_hash,
+            metadata_bulk_hash,
+            metadata_bulk_unavailable: AtomicBool::new(false),
             title_recommendations_hash,
             collection_completions_hash,
             submit_discovery_context_snapshot_hash,
@@ -583,6 +603,7 @@ impl MetadataGatewayClient {
         let search_multi_hash = apq_hash(graphql_docs::SEARCH_TVDB_MULTI_QUERY);
         let movie_hash = apq_hash(graphql_docs::GET_MOVIE_QUERY);
         let series_hash = apq_hash(graphql_docs::GET_SERIES_QUERY);
+        let metadata_bulk_hash = apq_hash(graphql_docs::METADATA_BULK_QUERY);
         let title_recommendations_hash = apq_hash(graphql_docs::TITLE_RECOMMENDATIONS_QUERY);
         let collection_completions_hash = apq_hash(graphql_docs::COLLECTION_COMPLETIONS_QUERY);
         let submit_discovery_context_snapshot_hash =
@@ -622,6 +643,8 @@ impl MetadataGatewayClient {
             search_multi_hash,
             movie_hash,
             series_hash,
+            metadata_bulk_hash,
+            metadata_bulk_unavailable: AtomicBool::new(false),
             title_recommendations_hash,
             collection_completions_hash,
             submit_discovery_context_snapshot_hash,
@@ -1806,6 +1829,114 @@ impl MetadataGatewayClient {
             .cloned()
             .ok_or_else(|| AppError::Repository("bulk metadata: no data in response".into()))
     }
+
+    async fn get_metadata_bulk_via_metadata_bulk(
+        &self,
+        unique_movies: &[i64],
+        unique_series: &[i64],
+        language: &str,
+    ) -> AppResult<BulkMetadataResult> {
+        let request_started_at = Instant::now();
+        let mut movies = HashMap::new();
+        let mut series = HashMap::new();
+        let bulk_requests = build_bulk_metadata_alias_requests(unique_movies, unique_series);
+        let mut request_count = 0usize;
+
+        for chunk in bulk_requests.chunks(METADATA_GATEWAY_MAX_METADATA_BULK_BATCH) {
+            request_count = request_count.saturating_add(1);
+            let chunk_started_at = Instant::now();
+            let mut chunk_movie_ids = Vec::new();
+            let mut chunk_series_ids = Vec::new();
+            for request in chunk {
+                match request {
+                    BulkMetadataAliasRequest::Movie(tvdb_id) => chunk_movie_ids.push(*tvdb_id),
+                    BulkMetadataAliasRequest::Series(tvdb_id) => chunk_series_ids.push(*tvdb_id),
+                }
+            }
+            let movies_requested = chunk_movie_ids.len();
+            let series_requested = chunk_series_ids.len();
+
+            let data: MetadataBulkResponse = self
+                .execute_graphql_apq_post(
+                    OP_METADATA_BULK,
+                    graphql_docs::METADATA_BULK_QUERY,
+                    &self.metadata_bulk_hash,
+                    json!({
+                        "movieTvdbIds": chunk_movie_ids,
+                        "seriesTvdbIds": chunk_series_ids,
+                        "language": language,
+                        "includeEpisodes": true,
+                    }),
+                )
+                .await?;
+            let movie_count = data.metadata_bulk.movies.len();
+            let series_count = data.metadata_bulk.series.len();
+            for movie in data.metadata_bulk.movies {
+                let metadata = movie_metadata_from_item(movie);
+                movies.insert(metadata.tvdb_id, metadata);
+            }
+            for series_item in data.metadata_bulk.series {
+                let metadata = series_metadata_from_item(series_item);
+                series.insert(metadata.tvdb_id, metadata);
+            }
+            info!(
+                request = request_count,
+                ids = chunk.len(),
+                movies_requested,
+                series_requested,
+                movies_resolved = movie_count,
+                series_resolved = series_count,
+                elapsed_ms = chunk_started_at.elapsed().as_millis() as u64,
+                "metadata gateway metadataBulk request complete"
+            );
+        }
+
+        info!(
+            requests = request_count,
+            movies_requested = unique_movies.len(),
+            series_requested = unique_series.len(),
+            movies_resolved = movies.len(),
+            series_resolved = series.len(),
+            elapsed_ms = request_started_at.elapsed().as_millis() as u64,
+            "metadata gateway metadataBulk complete"
+        );
+        Ok(BulkMetadataResult { movies, series })
+    }
+
+    async fn get_metadata_bulk_via_aliases(
+        &self,
+        unique_movies: &[i64],
+        unique_series: &[i64],
+        language: &str,
+    ) -> AppResult<BulkMetadataResult> {
+        let request_started_at = Instant::now();
+        let mut movies = HashMap::new();
+        let mut series = HashMap::new();
+
+        let bulk_requests = build_bulk_metadata_alias_requests(unique_movies, unique_series);
+        for chunk in bulk_requests.chunks(METADATA_GATEWAY_MAX_BULK_METADATA_ALIAS_BATCH) {
+            let mut chunk_movie_ids = Vec::new();
+            let mut chunk_series_ids = Vec::new();
+            for request in chunk {
+                match request {
+                    BulkMetadataAliasRequest::Movie(tvdb_id) => chunk_movie_ids.push(*tvdb_id),
+                    BulkMetadataAliasRequest::Series(tvdb_id) => chunk_series_ids.push(*tvdb_id),
+                }
+            }
+
+            let query = build_bulk_mixed_query(&chunk_movie_ids, &chunk_series_ids, language);
+            let data = self.post_batched_graphql_partial(&query).await?;
+            merge_bulk_metadata_partial(&data, &mut movies, &mut series);
+        }
+
+        debug!(
+            movies_resolved = movies.len(),
+            series_resolved = series.len(),
+            elapsed_ms = request_started_at.elapsed().as_millis() as u64,
+            "bulk metadata aliased fallback complete"
+        );
+        Ok(BulkMetadataResult { movies, series })
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1945,163 +2076,157 @@ fn merge_bulk_metadata_partial(
         }
         if alias.starts_with('m') {
             if let Ok(movie_result) = serde_json::from_value::<MovieResult>(value.clone()) {
-                let m = movie_result.movie;
-                movies.insert(
-                    m.tvdb_id,
-                    MovieMetadata {
-                        tvdb_id: m.tvdb_id,
-                        name: m.name,
-                        slug: m.slug,
-                        year: m.year,
-                        content_status: m.status,
-                        overview: m.overview,
-                        poster_url: normalize_artwork_url(&m.poster_url),
-                        background_url: pick_artwork_url(&m.artworks, "background"),
-                        language: m.language,
-                        runtime_minutes: m.runtime_minutes,
-                        sort_title: m.sort_title,
-                        imdb_id: m.imdb_id,
-                        tmdb_id: m.tmdb_id,
-                        anidb_id: m.anidb_id,
-                        genres: m.genres,
-                        studio: m.studio,
-                        tmdb_release_date: m.tmdb_release_date,
-                        ratings: rating_summary_from_gateway(
-                            m.rating,
-                            m.rating_sources,
-                            m.external_ratings,
-                        ),
-                    },
-                );
+                let metadata = movie_metadata_from_item(movie_result.movie);
+                movies.insert(metadata.tvdb_id, metadata);
             }
         } else if alias.starts_with('s')
             && let Ok(series_result) = serde_json::from_value::<SeriesResult>(value.clone())
         {
-            let s = series_result.series;
-            series.insert(
-                s.tvdb_id,
-                SeriesMetadata {
-                    tvdb_id: s.tvdb_id,
-                    name: s.name,
-                    sort_name: s.sort_name,
-                    slug: s.slug,
-                    year: s.year,
-                    content_status: s.status,
-                    first_aired: s.first_aired,
-                    overview: s.overview,
-                    network: s.network,
-                    runtime_minutes: s.runtime_minutes,
-                    poster_url: normalize_artwork_url(&s.poster_url),
-                    background_url: pick_artwork_url(&s.artworks, "background"),
-                    country: s.country,
-                    genres: s.genres,
-                    aliases: s.aliases,
-                    tagged_aliases: s
-                        .tagged_aliases
-                        .into_iter()
-                        .map(|ta| scryer_domain::TaggedAlias {
-                            name: ta.name,
-                            language: ta.language,
-                        })
-                        .collect(),
-                    seasons: s
-                        .seasons
-                        .into_iter()
-                        .map(|season| SeasonMetadata {
-                            tvdb_id: season.tvdb_id,
-                            number: season.number,
-                            label: season.label,
-                            episode_type: season.episode_type,
-                        })
-                        .collect(),
-                    episodes: s
-                        .episodes
-                        .into_iter()
-                        .map(|ep| EpisodeMetadata {
-                            tvdb_id: ep.tvdb_id,
-                            episode_number: ep.episode_number,
-                            name: ep.name,
-                            aired: ep.aired,
-                            runtime_minutes: ep.runtime_minutes,
-                            is_filler: ep.is_filler,
-                            is_recap: ep.is_recap,
-                            overview: ep.overview,
-                            absolute_number: ep.absolute_number,
-                            season_number: ep.season_number,
-                            image_url: ep.image_url,
-                        })
-                        .collect(),
-                    anime_mappings: s
-                        .anime_mappings
-                        .into_iter()
-                        .map(|m| AnimeMapping {
-                            mal_id: m.mal_id,
-                            mal_dub_id: m.mal_dub_id,
-                            anilist_id: m.anilist_id,
-                            anidb_id: m.anidb_id,
-                            kitsu_id: m.kitsu_id,
-                            simkl_id: m.simkl_id,
-                            thetvdb_id: m.thetvdb_id,
-                            themoviedb_id: m.themoviedb_id,
-                            imdb_id: m.imdb_id,
-                            trakt_id: m.trakt_id,
-                            alt_tvdb_id: m.alt_tvdb_id,
-                            thetvdb_season: m.thetvdb_season,
-                            thetvdb_part: m.thetvdb_part,
-                            score: m.score,
-                            anime_media_type: m.anime_media_type.unwrap_or_default(),
-                            global_media_type: m.global_media_type.unwrap_or_default(),
-                            status: m.status.unwrap_or_default(),
-                            mapping_type: m.mapping_type.unwrap_or_default(),
-                            episode_mappings: m
-                                .episode_mappings
-                                .into_iter()
-                                .map(|e| AnimeEpisodeMapping {
-                                    tvdb_season: e.tvdb_season,
-                                    episode_start: e.episode_start,
-                                    episode_end: e.episode_end,
-                                })
-                                .collect(),
-                        })
-                        .collect(),
-                    anime_movies: s
-                        .anime_movies
-                        .into_iter()
-                        .map(|movie| AnimeMovie {
-                            movie_tvdb_id: movie.movie_tvdb_id,
-                            movie_tmdb_id: movie.movie_tmdb_id,
-                            movie_imdb_id: movie.movie_imdb_id,
-                            movie_mal_id: movie.movie_mal_id,
-                            movie_anidb_id: movie.movie_anidb_id,
-                            name: movie.name,
-                            slug: movie.slug,
-                            year: movie.year,
-                            content_status: movie.content_status,
-                            overview: movie.overview,
-                            poster_url: movie.poster_url,
-                            language: movie.language,
-                            runtime_minutes: movie.runtime_minutes,
-                            sort_title: movie.sort_title,
-                            imdb_id: movie.imdb_id,
-                            genres: movie.genres,
-                            studio: movie.studio,
-                            digital_release_date: movie.digital_release_date,
-                            association_confidence: movie.association_confidence,
-                            continuity_status: movie.continuity_status,
-                            movie_form: movie.movie_form,
-                            placement: movie.placement,
-                            confidence: movie.confidence,
-                            signal_summary: movie.signal_summary,
-                        })
-                        .collect(),
-                    ratings: rating_summary_from_gateway(
-                        s.rating,
-                        s.rating_sources,
-                        s.external_ratings,
-                    ),
-                },
-            );
+            let metadata = series_metadata_from_item(series_result.series);
+            series.insert(metadata.tvdb_id, metadata);
         }
+    }
+}
+
+fn movie_metadata_from_item(m: MovieItem) -> MovieMetadata {
+    MovieMetadata {
+        tvdb_id: m.tvdb_id,
+        name: m.name,
+        slug: m.slug,
+        year: m.year,
+        content_status: m.status,
+        overview: m.overview,
+        poster_url: normalize_artwork_url(&m.poster_url),
+        background_url: pick_artwork_url(&m.artworks, "background"),
+        language: m.language,
+        runtime_minutes: m.runtime_minutes,
+        sort_title: m.sort_title,
+        imdb_id: m.imdb_id,
+        tmdb_id: m.tmdb_id,
+        anidb_id: m.anidb_id,
+        genres: m.genres,
+        studio: m.studio,
+        tmdb_release_date: m.tmdb_release_date,
+        ratings: rating_summary_from_gateway(m.rating, m.rating_sources, m.external_ratings),
+    }
+}
+
+fn series_metadata_from_item(s: SeriesItem) -> SeriesMetadata {
+    SeriesMetadata {
+        tvdb_id: s.tvdb_id,
+        name: s.name,
+        sort_name: s.sort_name,
+        slug: s.slug,
+        year: s.year,
+        content_status: s.status,
+        first_aired: s.first_aired,
+        overview: s.overview,
+        network: s.network,
+        runtime_minutes: s.runtime_minutes,
+        poster_url: normalize_artwork_url(&s.poster_url),
+        background_url: pick_artwork_url(&s.artworks, "background"),
+        country: s.country,
+        genres: s.genres,
+        aliases: s.aliases,
+        tagged_aliases: s
+            .tagged_aliases
+            .into_iter()
+            .map(|ta| scryer_domain::TaggedAlias {
+                name: ta.name,
+                language: ta.language,
+            })
+            .collect(),
+        seasons: s
+            .seasons
+            .into_iter()
+            .map(|season| SeasonMetadata {
+                tvdb_id: season.tvdb_id,
+                number: season.number,
+                label: season.label,
+                episode_type: season.episode_type,
+            })
+            .collect(),
+        episodes: s
+            .episodes
+            .into_iter()
+            .map(|ep| EpisodeMetadata {
+                tvdb_id: ep.tvdb_id,
+                episode_number: ep.episode_number,
+                name: ep.name,
+                aired: ep.aired,
+                runtime_minutes: ep.runtime_minutes,
+                is_filler: ep.is_filler,
+                is_recap: ep.is_recap,
+                overview: ep.overview,
+                absolute_number: ep.absolute_number,
+                season_number: ep.season_number,
+                image_url: ep.image_url,
+            })
+            .collect(),
+        anime_mappings: s
+            .anime_mappings
+            .into_iter()
+            .map(|m| AnimeMapping {
+                mal_id: m.mal_id,
+                mal_dub_id: m.mal_dub_id,
+                anilist_id: m.anilist_id,
+                anidb_id: m.anidb_id,
+                kitsu_id: m.kitsu_id,
+                simkl_id: m.simkl_id,
+                thetvdb_id: m.thetvdb_id,
+                themoviedb_id: m.themoviedb_id,
+                imdb_id: m.imdb_id,
+                trakt_id: m.trakt_id,
+                alt_tvdb_id: m.alt_tvdb_id,
+                thetvdb_season: m.thetvdb_season,
+                thetvdb_part: m.thetvdb_part,
+                score: m.score,
+                anime_media_type: m.anime_media_type.unwrap_or_default(),
+                global_media_type: m.global_media_type.unwrap_or_default(),
+                status: m.status.unwrap_or_default(),
+                mapping_type: m.mapping_type.unwrap_or_default(),
+                episode_mappings: m
+                    .episode_mappings
+                    .into_iter()
+                    .map(|e| AnimeEpisodeMapping {
+                        tvdb_season: e.tvdb_season,
+                        episode_start: e.episode_start,
+                        episode_end: e.episode_end,
+                    })
+                    .collect(),
+            })
+            .collect(),
+        anime_movies: s
+            .anime_movies
+            .into_iter()
+            .map(|movie| AnimeMovie {
+                movie_tvdb_id: movie.movie_tvdb_id,
+                movie_tmdb_id: movie.movie_tmdb_id,
+                movie_imdb_id: movie.movie_imdb_id,
+                movie_mal_id: movie.movie_mal_id,
+                movie_anidb_id: movie.movie_anidb_id,
+                name: movie.name,
+                slug: movie.slug,
+                year: movie.year,
+                content_status: movie.content_status,
+                overview: movie.overview,
+                poster_url: movie.poster_url,
+                language: movie.language,
+                runtime_minutes: movie.runtime_minutes,
+                sort_title: movie.sort_title,
+                imdb_id: movie.imdb_id,
+                genres: movie.genres,
+                studio: movie.studio,
+                digital_release_date: movie.digital_release_date,
+                association_confidence: movie.association_confidence,
+                continuity_status: movie.continuity_status,
+                movie_form: movie.movie_form,
+                placement: movie.placement,
+                confidence: movie.confidence,
+                signal_summary: movie.signal_summary,
+            })
+            .collect(),
+        ratings: rating_summary_from_gateway(s.rating, s.rating_sources, s.external_ratings),
     }
 }
 
@@ -2156,8 +2281,8 @@ fn build_bulk_artwork_url_query(movie_ids: &[i64], series_ids: &[i64], language:
 mod tests {
     use super::{
         ArtworkItem, InstanceAuth, MetadataGatewayClient, MetadataSearchQuery, MtlsState,
-        OP_DISCOVER_PUBLIC_FEED, OP_DISCOVERY_CONTEXT_CHANGES, OP_SEARCH_TVDB,
-        SearchTvdbBatchResult, SearchTvdbResponse, SmgEnrollmentConfig,
+        OP_DISCOVER_PUBLIC_FEED, OP_DISCOVERY_CONTEXT_CHANGES, OP_GET_MOVIE, OP_METADATA_BULK,
+        OP_SEARCH_TVDB, SearchTvdbBatchResult, SearchTvdbResponse, SmgEnrollmentConfig,
         apply_instance_auth_headers_with_nonce, apq_cache_key, apq_hash,
         build_bulk_artwork_url_query, build_bulk_mixed_query, build_search_tvdb_batch_query,
         canonical_request_host, canonical_request_path_and_query, compatibility_poll_phase,
@@ -2189,6 +2314,73 @@ mod tests {
             "data": {
                 "searchTvdb": {
                     "results": []
+                }
+            }
+        })
+    }
+
+    fn empty_metadata_bulk_payload() -> serde_json::Value {
+        json!({
+            "data": {
+                "metadataBulk": {
+                    "movies": [],
+                    "series": [],
+                    "missing_movie_tvdb_ids": [],
+                    "missing_series_tvdb_ids": []
+                }
+            }
+        })
+    }
+
+    fn bulk_alias_payload() -> serde_json::Value {
+        json!({
+            "data": {}
+        })
+    }
+
+    fn metadata_bulk_unknown_field_payload() -> serde_json::Value {
+        json!({
+            "errors": [
+                {
+                    "message": "Cannot query field \"metadataBulk\" on type \"Query\".",
+                    "extensions": {
+                        "code": "GRAPHQL_VALIDATION_FAILED"
+                    }
+                }
+            ],
+            "data": null
+        })
+    }
+
+    fn movie_item_payload(tvdb_id: i64) -> serde_json::Value {
+        json!({
+            "tvdb_id": tvdb_id,
+            "name": "Fixture Movie",
+            "slug": "fixture-movie",
+            "year": 2026,
+            "status": "released",
+            "overview": "Fixture overview",
+            "poster_url": "",
+            "language": "eng",
+            "runtime_minutes": 90,
+            "sort_title": "fixture movie",
+            "imdb_id": "tt1234567",
+            "tmdb_id": 123,
+            "genres": [],
+            "studio": "",
+            "tmdb_release_date": null,
+            "rating": null,
+            "rating_sources": [],
+            "external_ratings": [],
+            "artworks": []
+        })
+    }
+
+    fn movie_payload(tvdb_id: i64) -> serde_json::Value {
+        json!({
+            "data": {
+                "movie": {
+                    "movie": movie_item_payload(tvdb_id)
                 }
             }
         })
@@ -2261,6 +2453,176 @@ mod tests {
         assert!(header_value(request, "x-scryer-timestamp").is_some());
         assert!(header_value(request, "x-scryer-signature").is_some());
         assert!(header_value(request, "x-scryer-nonce").is_some());
+    }
+
+    #[tokio::test]
+    async fn get_metadata_bulk_uses_metadata_bulk_when_available() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .and(body_string_contains(&format!(
+                "\"operationName\":\"{OP_METADATA_BULK}\""
+            )))
+            .and(body_string_contains("\"movieTvdbIds\":[101]"))
+            .and(body_string_contains("\"seriesTvdbIds\":[202]"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(empty_metadata_bulk_payload()))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = unsigned_gateway_client(format!("{}/graphql", server.uri()));
+
+        let result = client
+            .get_metadata_bulk(&[101], &[202], "eng")
+            .await
+            .expect("metadataBulk request should succeed");
+
+        assert!(result.movies.is_empty());
+        assert!(result.series.is_empty());
+    }
+
+    #[tokio::test]
+    async fn get_metadata_bulk_falls_back_and_caches_unknown_field() {
+        let server = MockServer::start().await;
+        let counts = Arc::new(Mutex::new((0usize, 0usize)));
+        let counts_for_mock = Arc::clone(&counts);
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .respond_with(move |request: &Request| {
+                let body = String::from_utf8_lossy(&request.body);
+                let mut counts = counts_for_mock.lock().expect("count lock");
+                if body.contains("metadataBulk") {
+                    counts.0 += 1;
+                    ResponseTemplate::new(200).set_body_json(metadata_bulk_unknown_field_payload())
+                } else {
+                    counts.1 += 1;
+                    ResponseTemplate::new(200).set_body_json(bulk_alias_payload())
+                }
+            })
+            .expect(3)
+            .mount(&server)
+            .await;
+        let client = unsigned_gateway_client(format!("{}/graphql", server.uri()));
+
+        client
+            .get_metadata_bulk(&[101], &[], "eng")
+            .await
+            .expect("unknown metadataBulk field should fall back to aliases");
+        client
+            .get_metadata_bulk(&[102], &[], "eng")
+            .await
+            .expect("cached fallback should use aliases directly");
+
+        assert_eq!(*counts.lock().expect("count lock"), (1, 2));
+    }
+
+    #[tokio::test]
+    async fn get_metadata_bulk_falls_back_when_response_is_alias_shaped() {
+        let server = MockServer::start().await;
+        let counts = Arc::new(Mutex::new((0usize, 0usize)));
+        let counts_for_mock = Arc::clone(&counts);
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .respond_with(move |request: &Request| {
+                let body = String::from_utf8_lossy(&request.body);
+                let mut counts = counts_for_mock.lock().expect("count lock");
+                if body.contains("metadataBulk") {
+                    counts.0 += 1;
+                    ResponseTemplate::new(200).set_body_json(bulk_alias_payload())
+                } else {
+                    counts.1 += 1;
+                    ResponseTemplate::new(200).set_body_json(bulk_alias_payload())
+                }
+            })
+            .expect(2)
+            .mount(&server)
+            .await;
+        let client = unsigned_gateway_client(format!("{}/graphql", server.uri()));
+
+        client
+            .get_metadata_bulk(&[101], &[], "eng")
+            .await
+            .expect("alias-shaped metadataBulk response should fall back");
+
+        assert_eq!(*counts.lock().expect("count lock"), (1, 1));
+    }
+
+    #[tokio::test]
+    async fn get_metadata_bulk_caps_metadata_bulk_requests_at_fifty_combined_ids() {
+        let server = MockServer::start().await;
+        let request_sizes = Arc::new(Mutex::new(Vec::new()));
+        let request_sizes_for_mock = Arc::clone(&request_sizes);
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .and(body_string_contains("metadataBulk"))
+            .respond_with(move |request: &Request| {
+                let body: serde_json::Value =
+                    serde_json::from_slice(&request.body).expect("request json");
+                let variables = body
+                    .get("variables")
+                    .expect("variables")
+                    .as_object()
+                    .expect("variables object");
+                let movie_count = variables
+                    .get("movieTvdbIds")
+                    .and_then(|value| value.as_array())
+                    .map_or(0, Vec::len);
+                let series_count = variables
+                    .get("seriesTvdbIds")
+                    .and_then(|value| value.as_array())
+                    .map_or(0, Vec::len);
+                request_sizes_for_mock
+                    .lock()
+                    .expect("request sizes lock")
+                    .push((movie_count, series_count));
+                ResponseTemplate::new(200).set_body_json(empty_metadata_bulk_payload())
+            })
+            .expect(2)
+            .mount(&server)
+            .await;
+        let client = unsigned_gateway_client(format!("{}/graphql", server.uri()));
+        let movie_ids = (1..=30).collect::<Vec<_>>();
+        let series_ids = (101..=130).collect::<Vec<_>>();
+
+        client
+            .get_metadata_bulk(&movie_ids, &series_ids, "eng")
+            .await
+            .expect("metadataBulk chunks should succeed");
+
+        let request_sizes = request_sizes.lock().expect("request sizes lock");
+        assert_eq!(request_sizes.len(), 2);
+        assert!(
+            request_sizes
+                .iter()
+                .all(|(movies, series)| movies + series <= 50)
+        );
+        assert_eq!(
+            request_sizes
+                .iter()
+                .map(|(movies, series)| movies + series)
+                .sum::<usize>(),
+            60
+        );
+    }
+
+    #[tokio::test]
+    async fn get_movie_still_uses_single_title_query() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/graphql"))
+            .and(query_param("operationName", OP_GET_MOVIE))
+            .respond_with(ResponseTemplate::new(200).set_body_json(movie_payload(909)))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = unsigned_gateway_client(format!("{}/graphql", server.uri()));
+
+        let movie = client
+            .get_movie(909, "eng")
+            .await
+            .expect("single movie request should still work");
+
+        assert_eq!(movie.tvdb_id, 909);
+        assert_eq!(movie.name, "Fixture Movie");
     }
 
     #[tokio::test]
@@ -2738,6 +3100,22 @@ mod tests {
             assert!(query.contains("rating_source"));
             assert!(query.contains("metadata_source"));
             assert!(!query.contains("external_ratings"));
+        }
+    }
+
+    #[test]
+    fn discovery_queries_request_canonical_tags() {
+        let queries = [
+            graphql_docs::DISCOVER_PUBLIC_FEED_QUERY,
+            graphql_docs::DISCOVERY_CONTEXT_SNAPSHOT_PAGE_QUERY,
+            graphql_docs::DISCOVERY_CONTEXT_CHANGES_QUERY,
+            graphql_docs::COLLECTION_COMPLETIONS_QUERY,
+            graphql_docs::TITLE_RECOMMENDATIONS_QUERY,
+        ];
+
+        for query in queries {
+            assert!(query.contains("canonical_tags"));
+            assert!(query.contains("source_tag_keys"));
         }
     }
 
@@ -3360,6 +3738,18 @@ struct ArtworkTitleItem {
     poster_url: String,
     #[serde(default)]
     artworks: Vec<ArtworkItem>,
+}
+
+#[derive(Deserialize)]
+struct MetadataBulkResponse {
+    #[serde(rename = "metadataBulk")]
+    metadata_bulk: MetadataBulkResult,
+}
+
+#[derive(Deserialize)]
+struct MetadataBulkResult {
+    movies: Vec<MovieItem>,
+    series: Vec<SeriesItem>,
 }
 
 #[derive(Deserialize)]
@@ -4153,32 +4543,34 @@ impl MetadataGateway for MetadataGatewayClient {
             "bulk metadata request"
         );
 
-        let mut movies = HashMap::new();
-        let mut series = HashMap::new();
-
-        let bulk_requests = build_bulk_metadata_alias_requests(&unique_movies, &unique_series);
-        for chunk in bulk_requests.chunks(METADATA_GATEWAY_MAX_BULK_METADATA_ALIAS_BATCH) {
-            let mut chunk_movie_ids = Vec::new();
-            let mut chunk_series_ids = Vec::new();
-            for request in chunk {
-                match request {
-                    BulkMetadataAliasRequest::Movie(tvdb_id) => chunk_movie_ids.push(*tvdb_id),
-                    BulkMetadataAliasRequest::Series(tvdb_id) => chunk_series_ids.push(*tvdb_id),
+        if !self.metadata_bulk_unavailable.load(Ordering::Relaxed) {
+            match self
+                .get_metadata_bulk_via_metadata_bulk(&unique_movies, &unique_series, language)
+                .await
+            {
+                Ok(result) => return Ok(result),
+                Err(error) if metadata_bulk_unknown_field_error(&error) => {
+                    self.metadata_bulk_unavailable
+                        .store(true, Ordering::Relaxed);
+                    warn!(
+                        error = %error,
+                        "metadata gateway metadataBulk unavailable; falling back to aliased bulk queries"
+                    );
                 }
+                Err(error) => return Err(error),
             }
-
-            let query = build_bulk_mixed_query(&chunk_movie_ids, &chunk_series_ids, language);
-            let data = self.post_batched_graphql_partial(&query).await?;
-            merge_bulk_metadata_partial(&data, &mut movies, &mut series);
         }
 
+        let result = self
+            .get_metadata_bulk_via_aliases(&unique_movies, &unique_series, language)
+            .await?;
         debug!(
-            movies_resolved = movies.len(),
-            series_resolved = series.len(),
+            movies_resolved = result.movies.len(),
+            series_resolved = result.series.len(),
             elapsed_ms = request_started_at.elapsed().as_millis() as u64,
             "bulk metadata complete"
         );
-        Ok(BulkMetadataResult { movies, series })
+        Ok(result)
     }
 
     async fn discover_public_feed(

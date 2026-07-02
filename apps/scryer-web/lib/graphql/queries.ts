@@ -84,6 +84,9 @@ ${DISCOVERY_HOME_ITEM_FIELDS}
 export const discoveryHomeQuery = `query DiscoveryHome($input: DiscoveryHomeInput) {
   discoveryHome(input: $input) {
     canViewPersonalized
+    heroItem {
+${DISCOVERY_HOME_ITEM_FIELDS}
+    }
     status {
       pendingContextChangeCount
       state {

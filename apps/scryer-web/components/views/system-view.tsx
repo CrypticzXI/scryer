@@ -20,13 +20,7 @@ import {
   Users,
   XCircle,
 } from "lucide-react";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { SingleSelectField } from "@/components/ui/select";
 import "@fontsource-variable/jetbrains-mono";
 import { serviceLogsQuery, serviceLogLinesSubscription } from "@/lib/graphql/queries";
 import { CODE_FONT } from "@/lib/fonts";
@@ -493,23 +487,22 @@ function LogViewer() {
       <div className={`${SYSTEM_PANEL_BODY_CLASS} flex min-h-0 flex-col gap-4`}>
         <div className={`${SYSTEM_INSET_CLASS} grid gap-3 p-3 lg:grid-cols-[150px_minmax(220px,1fr)_auto] lg:items-end`}>
           <div className="space-y-1">
-            <Label className={`text-xs ${SYSTEM_MUTED_TEXT_CLASS}`}>Level</Label>
-            <Select value={level} onValueChange={setLevel}>
-              <SelectTrigger
-                size="sm"
-                className="h-9 w-full rounded-[10px] border-[var(--scry-border2)] bg-[var(--scry-inset)] text-[13px] text-[var(--scry-body)] shadow-none"
-              >
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All levels</SelectItem>
-                <SelectItem value="error">Error</SelectItem>
-                <SelectItem value="warn">Warn</SelectItem>
-                <SelectItem value="info">Info</SelectItem>
-                <SelectItem value="debug">Debug</SelectItem>
-                <SelectItem value="trace">Trace</SelectItem>
-              </SelectContent>
-            </Select>
+            <SingleSelectField
+              label="Level"
+              labelClassName={`text-xs ${SYSTEM_MUTED_TEXT_CLASS}`}
+              value={level}
+              onValueChange={setLevel}
+              size="compact"
+              chrome="toolbar"
+              options={[
+                { value: "all", label: "All levels" },
+                { value: "error", label: "Error" },
+                { value: "warn", label: "Warn" },
+                { value: "info", label: "Info" },
+                { value: "debug", label: "Debug" },
+                { value: "trace", label: "Trace" },
+              ]}
+            />
           </div>
           <div className="space-y-1">
             <Label className={`text-xs ${SYSTEM_MUTED_TEXT_CLASS}`}>Search</Label>
