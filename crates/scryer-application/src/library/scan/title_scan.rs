@@ -5,7 +5,10 @@ use crate::library_filename_parser::{
     LibraryFilenameExistingRecord, LibraryFilenameFallbackPolicy, LibraryFilenameParseInput,
     LibraryFilenameParseMode, parse_library_filename,
 };
-use crate::library_scan_unmatched::build_title_bound_unmatched_scan_item;
+use crate::library_scan_unmatched::{
+    IgnoredLibraryScanItemArgs, LIBRARY_SCAN_SKIPPED_FILE_METADATA_UNREADABLE,
+    build_title_bound_unmatched_scan_item, persist_ignored_library_scan_item,
+};
 use crate::stored_paths::{path_to_stored_string, stored_path_to_path_buf};
 
 fn hydration_source_for_scan_mode(
@@ -2072,6 +2075,39 @@ impl AppUseCase {
                                 file_path = %file.path,
                                 "failed to read file metadata during title scan"
                             );
+                            let display_name = file.display_name.trim().to_string();
+                            let display_name = if display_name.is_empty() {
+                                source_path
+                                    .file_name()
+                                    .map(|value| value.to_string_lossy().into_owned())
+                                    .unwrap_or_else(|| file.path.clone())
+                            } else {
+                                display_name
+                            };
+                            if let Err(persist_error) = persist_ignored_library_scan_item(
+                                self,
+                                &title.facet,
+                                &title.library_id,
+                                IgnoredLibraryScanItemArgs {
+                                    title_id: Some(&title.id),
+                                    session_id,
+                                    library_path: &title_dir_str,
+                                    item_path: &file.path,
+                                    display_name: &display_name,
+                                    query: &display_name,
+                                    year_hint: title.year.and_then(|year| u32::try_from(year).ok()),
+                                    reason_code: LIBRARY_SCAN_SKIPPED_FILE_METADATA_UNREADABLE,
+                                    error_message: Some(error.to_string()),
+                                },
+                            )
+                            .await
+                            {
+                                warn!(
+                                    path = %file.path,
+                                    error = %persist_error,
+                                    "failed to persist ignored library scan file"
+                                );
+                            }
                             summary.skipped += 1;
                             pending_progress.absorb(TitleScanProgressDelta::completed(1));
                             flush_title_scan_progress_batch(

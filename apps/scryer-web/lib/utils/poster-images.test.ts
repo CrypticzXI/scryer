@@ -42,3 +42,13 @@ test("rewriting a TMDB image CDN backdrop selects w1280", () => {
     "https://image.tmdb.org/t/p/w1280/abc123.jpg",
   );
 });
+
+test("rewriting a TMDB image CDN backdrop can select original", () => {
+  assert.equal(
+    selectBackdropVariantUrl(
+      "https://image.tmdb.org/t/p/w1280/abc123.jpg",
+      "original",
+    ),
+    "https://image.tmdb.org/t/p/original/abc123.jpg",
+  );
+});

@@ -403,6 +403,123 @@ impl MetadataGateway for RecordingExactIdMetadataGateway {
     }
 }
 
+#[derive(Clone, Default)]
+struct BlockingBulkHydrationMetadataGateway {
+    bulk_calls: Arc<AtomicUsize>,
+    bulk_started: Arc<Notify>,
+    released_through: Arc<AtomicUsize>,
+    release_notify: Arc<Notify>,
+}
+
+impl BlockingBulkHydrationMetadataGateway {
+    async fn wait_for_bulk_calls(&self, expected_calls: usize) {
+        if self.bulk_calls.load(Ordering::SeqCst) >= expected_calls {
+            return;
+        }
+        timeout(Duration::from_secs(5), async {
+            loop {
+                let notified = self.bulk_started.notified();
+                if self.bulk_calls.load(Ordering::SeqCst) >= expected_calls {
+                    break;
+                }
+                notified.await;
+            }
+        })
+        .await
+        .expect("timed out waiting for bulk hydration");
+    }
+
+    fn release_through(&self, call_number: usize) {
+        self.released_through.store(call_number, Ordering::SeqCst);
+        self.release_notify.notify_waiters();
+    }
+
+    fn release_all(&self) {
+        self.release_through(usize::MAX);
+    }
+}
+
+#[async_trait]
+impl MetadataGateway for BlockingBulkHydrationMetadataGateway {
+    async fn search_tvdb(
+        &self,
+        _query: &str,
+        _type_hint: &str,
+        _year: Option<i32>,
+    ) -> AppResult<Vec<MetadataSearchItem>> {
+        Ok(Vec::new())
+    }
+
+    async fn search_tvdb_batch(
+        &self,
+        queries: &[MetadataSearchQuery],
+        _language: &str,
+    ) -> AppResult<HashMap<MetadataSearchQuery, Vec<MetadataSearchItem>>> {
+        Ok(queries
+            .iter()
+            .cloned()
+            .map(|query| (query, Vec::new()))
+            .collect())
+    }
+
+    async fn search_tvdb_rich(
+        &self,
+        _query: &str,
+        _type_hint: &str,
+        _limit: i32,
+        _language: &str,
+        _year: Option<i32>,
+    ) -> AppResult<Vec<RichMetadataSearchItem>> {
+        Ok(Vec::new())
+    }
+
+    async fn search_tvdb_multi(
+        &self,
+        _query: &str,
+        _limit: i32,
+        _language: &str,
+    ) -> AppResult<MultiMetadataSearchResult> {
+        Ok(MultiMetadataSearchResult::default())
+    }
+
+    async fn get_movie(&self, _tvdb_id: i64, _language: &str) -> AppResult<MovieMetadata> {
+        Err(AppError::NotFound(
+            "movie metadata unavailable in test".into(),
+        ))
+    }
+
+    async fn get_series(&self, _tvdb_id: i64, _language: &str) -> AppResult<SeriesMetadata> {
+        Err(AppError::NotFound(
+            "series metadata unavailable in test".into(),
+        ))
+    }
+
+    async fn get_metadata_bulk(
+        &self,
+        movie_tvdb_ids: &[i64],
+        _series_tvdb_ids: &[i64],
+        _language: &str,
+    ) -> AppResult<BulkMetadataResult> {
+        let call_number = self.bulk_calls.fetch_add(1, Ordering::SeqCst) + 1;
+        self.bulk_started.notify_waiters();
+        while self.released_through.load(Ordering::SeqCst) < call_number {
+            self.release_notify.notified().await;
+        }
+        Ok(BulkMetadataResult {
+            movies: movie_tvdb_ids
+                .iter()
+                .map(|tvdb_id| {
+                    (
+                        *tvdb_id,
+                        make_movie_metadata(*tvdb_id, "Hydrated Test Title"),
+                    )
+                })
+                .collect(),
+            series: HashMap::new(),
+        })
+    }
+}
+
 #[tokio::test]
 async fn manual_title_create_without_hydration_does_not_fetch_poster() {
     let metadata_gateway = Arc::new(RecordingExactIdMetadataGateway::default());
@@ -2399,6 +2516,103 @@ async fn movie_full_scan_marks_exact_media_total_before_blocked_analysis_finishe
 }
 
 #[tokio::test]
+async fn movie_full_scan_streams_completed_final_hydration_chunks_into_analysis() {
+    const ITEM_COUNT: usize = 25;
+    const FIRST_HYDRATION_CHUNK: usize = crate::catalog_workflow::HYDRATION_BULK_BATCH_SIZE;
+
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let scan_root = tempdir.path().join("scan-root");
+    std::fs::create_dir_all(&scan_root).expect("create scan root");
+
+    let scanner = Arc::new(PerDirectoryBlockingLibraryScanner::default());
+    let metadata_gateway = Arc::new(BlockingBulkHydrationMetadataGateway::default());
+    let (base_app, user, _) =
+        bootstrap_movie_scan_app(&scan_root, Vec::new(), metadata_gateway.clone()).await;
+    let blocking_analyzer = Arc::new(BlockingMediaAnalyzer::default());
+    blocking_analyzer.block();
+    let app = base_app.with_test_overrides(|builder| {
+        builder
+            .with_library_scanner(scanner.clone())
+            .with_media_analyzer(blocking_analyzer.clone())
+    });
+
+    for index in 0..ITEM_COUNT {
+        let item_label = format!("scan-item-{index:03}");
+        let item_folder = scan_root.join(&item_label);
+        std::fs::create_dir_all(&item_folder).expect("create scan item folder");
+        let item_file = item_folder.join(format!("{item_label}.mkv"));
+        std::fs::write(&item_file, b"scan").expect("write scan item file");
+        scanner
+            .set_directory_files(
+                &item_folder,
+                vec![build_test_library_file(
+                    item_file.to_string_lossy().as_ref(),
+                )],
+            )
+            .await;
+
+        let mut title = make_due_hydration_title(
+            &format!("scan-title-{index:03}"),
+            MediaFacet::Movie,
+            90_000 + index as i64,
+        );
+        title.name = item_label;
+        title.folder_path = Some(item_folder.to_string_lossy().to_string());
+        let title = app
+            .services
+            .catalog
+            .titles
+            .create(title)
+            .await
+            .expect("seed due-hydration movie title");
+        app.services
+            .catalog
+            .titles
+            .set_folder_path(&title.id, item_folder.to_string_lossy().as_ref())
+            .await
+            .expect("set movie folder path");
+    }
+
+    let session_id = "scan-final-hydration-streams-to-analysis";
+    let app_for_scan = app.clone();
+    let user_for_scan = user.clone();
+    let handle = tokio::spawn(async move {
+        app_for_scan
+            .scan_library_with_tracking(
+                &user_for_scan,
+                MediaFacet::Movie,
+                Some(session_id.to_string()),
+                LibraryScanMode::Full,
+            )
+            .await
+    });
+
+    metadata_gateway.wait_for_bulk_calls(2).await;
+    let projected = wait_for_projected_library_scan_session_matching(&app, session_id, |session| {
+        session.file_total_known && session.file_progress.total == ITEM_COUNT
+    })
+    .await;
+    assert_eq!(projected.file_progress.completed, 0);
+    assert_eq!(projected.file_progress.failed, 0);
+    assert!(!projected.status.is_terminal());
+
+    metadata_gateway.release_through(1);
+    blocking_analyzer
+        .wait_for_active_analysis(FIRST_HYDRATION_CHUNK)
+        .await;
+    assert_eq!(blocking_analyzer.max_active_calls(), FIRST_HYDRATION_CHUNK);
+
+    metadata_gateway.release_all();
+    blocking_analyzer.release();
+    let summary = handle
+        .await
+        .expect("join movie full scan task")
+        .expect("movie full scan should complete");
+    assert_eq!(summary.scanned, ITEM_COUNT);
+    assert_eq!(summary.matched, ITEM_COUNT);
+}
+
+#[tokio::test]
 async fn movie_full_scan_of_empty_library_completes_with_deterministic_zero_totals() {
     let tempdir = tempfile::tempdir().expect("tempdir");
     let movie_root = tempdir.path().join("movies");
@@ -2445,6 +2659,244 @@ async fn movie_full_scan_of_empty_library_completes_with_deterministic_zero_tota
     assert!(
         metadata_gateway.batch_queries().await.is_empty(),
         "an empty library must not issue SMG lookups"
+    );
+}
+
+#[tokio::test]
+async fn movie_full_scan_records_empty_folder_skip_as_ignored_pending_import() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let movie_root = tempdir.path().join("movies");
+    let empty_folder = movie_root.join("scan-item-empty");
+    std::fs::create_dir_all(&empty_folder).expect("create empty movie folder");
+
+    let scanner = Arc::new(PerDirectoryBlockingLibraryScanner::default());
+    scanner.set_directory_files(&empty_folder, Vec::new()).await;
+    let (base_app, user, _) = bootstrap_movie_scan_app(
+        &movie_root,
+        Vec::new(),
+        Arc::new(FixedBatchSearchMetadataGateway {
+            results: vec![MetadataSearchItem {
+                tvdb_id: "667788".to_string(),
+                name: "scan-item-empty".to_string(),
+                year: None,
+                auto_match_safe: true,
+                auto_match_signals: vec!["exact_title".into()],
+            }],
+        }),
+    )
+    .await;
+    let app = base_app.with_test_overrides(|builder| builder.with_library_scanner(scanner.clone()));
+
+    let session = app
+        .trigger_library_scan_by_id(
+            &user,
+            &scryer_domain::default_library_id_for_facet(&MediaFacet::Movie),
+        )
+        .await
+        .expect("trigger movie scan with empty folder");
+    let completed =
+        wait_for_projected_library_scan_session_matching(&app, &session.session_id, |session| {
+            matches!(
+                session.status,
+                LibraryScanStatus::Completed | LibraryScanStatus::Warning
+            )
+        })
+        .await;
+    let summary = completed.summary.expect("scan summary");
+    assert_eq!(summary.scanned, 1);
+    assert_eq!(summary.skipped, 1);
+
+    let pending = app
+        .pending_imports(
+            &user,
+            MediaFacet::Movie,
+            None,
+            PendingImportStatus::Pending,
+            50,
+            0,
+        )
+        .await
+        .expect("pending imports");
+    assert_eq!(pending.total, 0);
+    let ignored = app
+        .pending_imports(
+            &user,
+            MediaFacet::Movie,
+            None,
+            PendingImportStatus::Ignored,
+            50,
+            0,
+        )
+        .await
+        .expect("ignored imports");
+    assert_eq!(ignored.total, 1);
+    assert_eq!(ignored.items[0].status, PendingImportStatus::Ignored);
+    assert_eq!(
+        ignored.items[0].path,
+        empty_folder.to_string_lossy().as_ref()
+    );
+    assert_eq!(
+        ignored.items[0].reason,
+        crate::library_scan_unmatched::LIBRARY_SCAN_SKIPPED_NO_MEDIA_FILES
+    );
+
+    let counts = app
+        .pending_import_counts(&user)
+        .await
+        .expect("pending import counts");
+    assert_eq!(counts.movie, 0);
+
+    let movie_file = empty_folder.join("scan-item-empty.mkv");
+    std::fs::write(&movie_file, b"movie").expect("write movie file");
+    scanner
+        .set_directory_files(
+            &empty_folder,
+            vec![build_test_library_file(
+                movie_file.to_string_lossy().as_ref(),
+            )],
+        )
+        .await;
+    let second_session = app
+        .trigger_library_scan_by_id(
+            &user,
+            &scryer_domain::default_library_id_for_facet(&MediaFacet::Movie),
+        )
+        .await
+        .expect("trigger movie scan after adding media file");
+    let second_completed = wait_for_projected_library_scan_session_matching(
+        &app,
+        &second_session.session_id,
+        |session| {
+            matches!(
+                session.status,
+                LibraryScanStatus::Completed | LibraryScanStatus::Warning
+            )
+        },
+    )
+    .await;
+    assert_eq!(
+        second_completed
+            .summary
+            .as_ref()
+            .map(|summary| summary.matched),
+        Some(1)
+    );
+    let ignored_after_success = app
+        .pending_imports(
+            &user,
+            MediaFacet::Movie,
+            None,
+            PendingImportStatus::Ignored,
+            50,
+            0,
+        )
+        .await
+        .expect("ignored imports after successful match");
+    assert_eq!(ignored_after_success.total, 0);
+}
+
+#[tokio::test]
+async fn title_scan_records_unreadable_file_skip_as_ignored_pending_import() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let series_root = tempdir.path().join("series");
+    let title_folder = series_root.join("scan-title");
+    std::fs::create_dir_all(&title_folder).expect("create title folder");
+    let missing_file = title_folder.join("scan-title - S01E01.mkv");
+
+    let settings = Arc::new(StoredSettingsRepo::default());
+    settings
+        .set_value(
+            SETTINGS_SCOPE_MEDIA,
+            "series.path",
+            series_root.to_string_lossy().as_ref(),
+        )
+        .await;
+    let (app, user) = bootstrap_with_scan_unmatched_tracking(
+        settings,
+        Arc::new(MutableLibraryScanner::default()),
+        Arc::new(TrackingLibraryScanUnmatchedItemRepo::default()),
+    );
+    app.reconcile_default_library_roots()
+        .await
+        .expect("reconcile series root");
+
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "scan-title".to_string(),
+                facet: MediaFacet::Series,
+                monitored: true,
+                year: Some(2026),
+                ..NewTitle::default()
+            },
+        )
+        .await
+        .expect("create series title");
+    app.services
+        .catalog
+        .titles
+        .set_folder_path(&title.id, title_folder.to_string_lossy().as_ref())
+        .await
+        .expect("set title folder");
+    let title = app
+        .services
+        .catalog
+        .titles
+        .get_by_id(&title.id)
+        .await
+        .expect("load title")
+        .expect("title exists");
+
+    let summary = app
+        .scan_title_library_with_discovered_files(
+            &user,
+            title.clone(),
+            vec![build_test_library_file(
+                missing_file.to_string_lossy().as_ref(),
+            )],
+        )
+        .await
+        .expect("title scan should complete with skipped unreadable file");
+    assert_eq!(summary.scanned, 1);
+    assert_eq!(summary.skipped, 1);
+
+    let pending = app
+        .pending_imports(
+            &user,
+            MediaFacet::Series,
+            None,
+            PendingImportStatus::Pending,
+            50,
+            0,
+        )
+        .await
+        .expect("pending imports");
+    assert_eq!(pending.total, 0);
+    let ignored = app
+        .pending_imports(
+            &user,
+            MediaFacet::Series,
+            None,
+            PendingImportStatus::Ignored,
+            50,
+            0,
+        )
+        .await
+        .expect("ignored imports");
+    assert_eq!(ignored.total, 1);
+    assert_eq!(ignored.items[0].status, PendingImportStatus::Ignored);
+    assert_eq!(
+        ignored.items[0].title_id.as_deref(),
+        Some(title.id.as_str())
+    );
+    assert_eq!(
+        ignored.items[0].path,
+        missing_file.to_string_lossy().as_ref()
+    );
+    assert_eq!(
+        ignored.items[0].reason,
+        crate::library_scan_unmatched::LIBRARY_SCAN_SKIPPED_FILE_METADATA_UNREADABLE
     );
 }
 

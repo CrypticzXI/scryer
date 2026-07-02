@@ -51,8 +51,11 @@ fn scanned_movie_entry_folder_path(scan_root: &Path, representative_path: &str) 
     {
         let entry_path = scan_root.join(first_component.as_os_str());
         let entry_path = path_to_stored_string(&entry_path).trim().to_string();
-        if entry_path.is_empty() || entry_path == representative_path {
+        if entry_path.is_empty() {
             return None;
+        }
+        if entry_path == representative_path {
+            return item_path.is_dir().then_some(entry_path);
         }
         return Some(entry_path);
     }
@@ -576,7 +579,7 @@ pub(super) async fn process_movie_full_scan_candidate(
     facet: &MediaFacet,
     library_id: &str,
     library_path: &str,
-    _session_id: &str,
+    session_id: &str,
     coordinator: &LibraryScanCoordinator,
     candidate: PreparedMovieLibraryScanCandidate,
     executor: &mut dyn LibraryScanTitleWorkQueue,
@@ -614,6 +617,44 @@ pub(super) async fn process_movie_full_scan_candidate(
             summary.skipped += 1;
         }
         clear_library_scan_unmatched_item(app, facet, library_id, &item_path).await?;
+        coordinator.mark_title_match_completed(1).await;
+        return Ok(None);
+    }
+
+    if !candidate.metadata_lookup_attempted {
+        let display_name = candidate.file.display_name.trim();
+        let display_name = if display_name.is_empty() {
+            representative_path.as_str()
+        } else {
+            display_name
+        };
+        let query = candidate.query.trim();
+        let query = if query.is_empty() { display_name } else { query };
+        if let Err(error) = persist_ignored_library_scan_item(
+            app,
+            facet,
+            library_id,
+            IgnoredLibraryScanItemArgs {
+                title_id: None,
+                session_id: Some(session_id),
+                library_path,
+                item_path: &item_path,
+                display_name,
+                query,
+                year_hint: candidate.year_hint,
+                reason_code: LIBRARY_SCAN_SKIPPED_UNUSABLE_TITLE_EVIDENCE,
+                error_message: None,
+            },
+        )
+        .await
+        {
+            warn!(
+                item_path = %item_path,
+                error = %error,
+                "failed to persist unusable movie scan evidence"
+            );
+        }
+        summary.skipped += 1;
         coordinator.mark_title_match_completed(1).await;
         return Ok(None);
     }
@@ -674,8 +715,8 @@ pub(super) async fn process_series_full_scan_candidate(
     _actor: &User,
     facet: &MediaFacet,
     library_id: &str,
-    _library_path: &str,
-    _session_id: &str,
+    library_path: &str,
+    session_id: &str,
     coordinator: &LibraryScanCoordinator,
     candidate: PreparedSeriesLibraryScanCandidate,
     existing_titles: &mut [Title],
@@ -689,8 +730,31 @@ pub(super) async fn process_series_full_scan_candidate(
 ) -> AppResult<Option<PreparedSeriesLibraryScanCandidate>> {
     let item_path = candidate.item_path().trim().to_string();
     if candidate.folder_name.as_deref().is_none() {
+        if let Err(error) = persist_ignored_library_scan_item(
+            app,
+            facet,
+            library_id,
+            IgnoredLibraryScanItemArgs {
+                title_id: None,
+                session_id: Some(session_id),
+                library_path,
+                item_path: &item_path,
+                display_name: &item_path,
+                query: &item_path,
+                year_hint: candidate.year_hint,
+                reason_code: LIBRARY_SCAN_SKIPPED_UNUSABLE_TITLE_EVIDENCE,
+                error_message: None,
+            },
+        )
+        .await
+        {
+            warn!(
+                item_path = %item_path,
+                error = %error,
+                "failed to persist unusable series scan evidence"
+            );
+        }
         summary.skipped += 1;
-        clear_library_scan_unmatched_item(app, facet, library_id, &item_path).await?;
         coordinator.mark_title_match_completed(1).await;
         return Ok(None);
     }
@@ -744,8 +808,39 @@ pub(super) async fn process_series_full_scan_candidate(
     }
 
     if !candidate.metadata_lookup_attempted {
+        let display_name = candidate
+            .folder_name
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or(item_path.as_str());
+        let query = candidate.query.trim();
+        let query = if query.is_empty() { display_name } else { query };
+        if let Err(error) = persist_ignored_library_scan_item(
+            app,
+            facet,
+            library_id,
+            IgnoredLibraryScanItemArgs {
+                title_id: None,
+                session_id: Some(session_id),
+                library_path,
+                item_path: &item_path,
+                display_name,
+                query,
+                year_hint: candidate.year_hint,
+                reason_code: LIBRARY_SCAN_SKIPPED_UNUSABLE_TITLE_EVIDENCE,
+                error_message: None,
+            },
+        )
+        .await
+        {
+            warn!(
+                item_path = %item_path,
+                error = %error,
+                "failed to persist unusable series scan evidence"
+            );
+        }
         summary.skipped += 1;
-        clear_library_scan_unmatched_item(app, facet, library_id, &item_path).await?;
         coordinator.mark_title_match_completed(1).await;
         return Ok(None);
     }
@@ -914,8 +1009,31 @@ pub(super) async fn process_resolved_series_full_scan_candidate(
 ) -> AppResult<()> {
     let item_path = candidate.item_path().trim().to_string();
     let Some(folder_name) = candidate.folder_name.as_deref() else {
+        if let Err(error) = persist_ignored_library_scan_item(
+            app,
+            facet,
+            library_id,
+            IgnoredLibraryScanItemArgs {
+                title_id: None,
+                session_id: Some(session_id),
+                library_path,
+                item_path: &item_path,
+                display_name: &item_path,
+                query: &item_path,
+                year_hint: candidate.year_hint,
+                reason_code: LIBRARY_SCAN_SKIPPED_UNUSABLE_TITLE_EVIDENCE,
+                error_message: None,
+            },
+        )
+        .await
+        {
+            warn!(
+                item_path = %item_path,
+                error = %error,
+                "failed to persist unusable resolved series scan evidence"
+            );
+        }
         summary.skipped += 1;
-        clear_library_scan_unmatched_item(app, facet, library_id, &item_path).await?;
         coordinator.mark_title_match_completed(1).await;
         return Ok(());
     };

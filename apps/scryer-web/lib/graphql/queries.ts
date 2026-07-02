@@ -52,6 +52,7 @@ const DISCOVERY_HOME_ITEM_FIELDS = `
     originalTitle
     year
     posterUrl
+    backgroundUrl
     contentType
     rating
     statusTags
@@ -142,6 +143,7 @@ const CATALOG_DISCOVERY_ITEM_FIELDS = `
     sortTitle
     year
     posterUrl
+    backgroundUrl
     contentType
     statusTags
     sourceTags

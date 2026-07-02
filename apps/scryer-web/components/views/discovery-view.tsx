@@ -213,22 +213,8 @@ function posterFallbackStyle(item: DiscoveryItem): CSSProperties {
   };
 }
 
-function heroBackdropStyle(item: DiscoveryItem | null): CSSProperties {
-  if (!item) {
-    return {};
-  }
-  const backdropUrl = selectBackdropVariantUrl(item.backgroundUrl, "w1280");
-  if (backdropUrl) {
-    return {
-      backgroundImage: `url(${backdropUrl})`,
-    };
-  }
-  if (item.posterUrl) {
-    return {
-      backgroundImage: `url(${item.posterUrl})`,
-    };
-  }
-  return posterFallbackStyle(item);
+function heroBackdropUrl(item: DiscoveryItem | null): string | null {
+  return selectBackdropVariantUrl(item?.backgroundUrl ?? null, "w1280") ?? null;
 }
 
 function formatScore(value: number | null | undefined) {
@@ -407,7 +393,7 @@ function firstHeroItem(sections: DiscoverySection[]) {
   return (
     sections
       .flatMap((section) => section.items)
-      .find((item) => item.backgroundUrl || item.posterUrl || item.overview) ??
+      .find((item) => item.backgroundUrl) ??
     sections[0]?.items[0] ??
     null
   );
@@ -731,12 +717,24 @@ function DiscoveryHero({
     statusLabel,
     sourceLabel,
   ].filter((detail): detail is string => Boolean(detail));
+  const backdropUrl = heroBackdropUrl(item);
   return (
     <section className="relative min-h-[340px] overflow-hidden rounded-[18px] border border-[var(--scry-border2)] bg-slate-950">
-      <div
-        className="absolute inset-0 bg-cover bg-center opacity-90"
-        style={heroBackdropStyle(item)}
-      />
+      {backdropUrl ? (
+        <img
+          src={backdropUrl}
+          alt=""
+          aria-hidden="true"
+          data-discovery-hero-backdrop="true"
+          className="absolute inset-0 h-full w-full object-cover opacity-80"
+        />
+      ) : (
+        <div
+          className="absolute inset-0"
+          style={posterFallbackStyle(item)}
+          data-discovery-hero-backdrop-fallback="true"
+        />
+      )}
       <div className="absolute inset-0 bg-gradient-to-r from-slate-950 via-slate-950/75 to-slate-950/5" />
       <div className="absolute inset-0 bg-gradient-to-t from-slate-950/85 to-transparent" />
       <div className="relative flex h-full max-w-[min(62%,540px)] flex-col p-8 max-lg:max-w-[78%] max-sm:max-w-full">

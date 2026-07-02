@@ -1108,9 +1108,9 @@ async fn prepare_movie_library_scan_entry(
 /// candidates produced here carry an empty `discovered_files` list and the
 /// pipeline attaches the real file list at match/inventory rendezvous.
 ///
-/// Degenerate folders (no direct-child video and no folder sidecar evidence)
-/// fall back to the recursive walk inline so empty folders keep today's
-/// `Skipped` semantics instead of matching on a bare folder name.
+/// Folders without direct-child video still produce title evidence from the
+/// folder name and sidecars. Recursive inventory runs downstream so empty
+/// title folders can be adopted and nested layouts can still count files.
 pub(crate) enum MovieCandidateEvidence {
     Candidate {
         candidate: Box<PreparedMovieLibraryScanCandidate>,
@@ -1120,6 +1120,9 @@ pub(crate) enum MovieCandidateEvidence {
     },
     Skipped {
         item_path: String,
+        display_name: String,
+        query: String,
+        year_hint: Option<u32>,
     },
 }
 
@@ -1168,23 +1171,13 @@ pub(crate) async fn prepare_movie_candidate_evidence(
     children.sort_by(|left, right| left.path.cmp(&right.path));
 
     if children.is_empty() {
-        // No direct-child video: nested-only or empty folder. Fall back to
-        // the recursive walk now so empty folders stay skipped and nested
-        // layouts keep a real representative file.
-        let mut discovered_files = library_scanner.scan_directory(entry_path.as_str()).await?;
-        if discovered_files.is_empty() {
-            return Ok(MovieCandidateEvidence::Skipped {
-                item_path: entry_path,
-            });
-        }
-        discovered_files.sort_by(|left, right| left.path.cmp(&right.path));
-        let file = build_movie_entry_representative_file(&entry, &discovered_files).await?;
+        let file = build_movie_folder_representative_file(&entry).await;
         let candidate =
             build_prepared_movie_library_scan_candidate(file, Vec::new(), library_path, scan_hints)
                 .await?;
         return Ok(MovieCandidateEvidence::Candidate {
             candidate: Box::new(candidate),
-            inline_inventory: Some(discovered_files),
+            inline_inventory: None,
         });
     }
 
@@ -1196,6 +1189,25 @@ pub(crate) async fn prepare_movie_candidate_evidence(
         candidate: Box::new(candidate),
         inline_inventory: None,
     })
+}
+
+async fn build_movie_folder_representative_file(entry: &MovieTopLevelEntry) -> LibraryFile {
+    let path = path_to_stored_string(&entry.path);
+    let display_name = entry
+        .path
+        .file_name()
+        .map(|value| value.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.clone())
+        .trim()
+        .to_string();
+    LibraryFile {
+        path: path.clone(),
+        display_name,
+        nfo_path: directory_movie_nfo_path(&entry.path, &path).await,
+        size_bytes: None,
+        source_signature_scheme: None,
+        source_signature_value: None,
+    }
 }
 
 async fn build_movie_entry_representative_file(
