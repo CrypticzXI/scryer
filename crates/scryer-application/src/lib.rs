@@ -296,11 +296,13 @@ pub const DOWNLOAD_FEEDBACK_TIMEOUT_MESSAGE: &str =
     "download feedback timed out after 10s; queue status is temporarily unavailable";
 
 pub(crate) const LIBRARY_SCAN_GLOBAL_TITLE_WALK_CONCURRENCY: usize = 4;
-pub(crate) const LIBRARY_SCAN_GLOBAL_TITLE_ANALYSIS_GROUP_CONCURRENCY: usize = 2;
-pub(crate) const LIBRARY_SCAN_FILE_ANALYSIS_CONCURRENCY_PER_WALK: usize = 6;
-pub(crate) const GLOBAL_LIBRARY_SCAN_ANALYSIS_CONCURRENCY: usize =
-    LIBRARY_SCAN_GLOBAL_TITLE_ANALYSIS_GROUP_CONCURRENCY
-        * LIBRARY_SCAN_FILE_ANALYSIS_CONCURRENCY_PER_WALK;
+pub(crate) const LIBRARY_SCAN_MOVIE_TITLE_ANALYSIS_GROUP_CONCURRENCY: usize = 24;
+pub(crate) const LIBRARY_SCAN_EPISODIC_TITLE_ANALYSIS_GROUP_CONCURRENCY: usize = 4;
+pub(crate) const LIBRARY_SCAN_MOVIE_FILE_ANALYSIS_CONCURRENCY_PER_WALK: usize = 1;
+pub(crate) const LIBRARY_SCAN_EPISODIC_FILE_ANALYSIS_CONCURRENCY_PER_WALK: usize = 6;
+pub(crate) const LIBRARY_SCAN_GLOBAL_TITLE_ANALYSIS_GROUP_CONCURRENCY: usize =
+    LIBRARY_SCAN_MOVIE_TITLE_ANALYSIS_GROUP_CONCURRENCY;
+pub(crate) const GLOBAL_LIBRARY_SCAN_ANALYSIS_CONCURRENCY: usize = 24;
 pub use acquisition::release_search::release_strategy_kind_for_label;
 pub use app_usecase_integration::publish_download_queue_snapshot_events;
 #[cfg(unix)]
@@ -480,19 +482,19 @@ pub use types::{
     PendingReleaseStatusCount, PendingTitleHydration, PrimaryCollectionSummary, RecycleBinSettings,
     RecycledItem, ReleaseDecision, ReleaseDownloadAttemptOutcome, ReleaseDownloadFailureSignature,
     ResolvePendingImportResult, RuntimePathStyle, ScopedExternalId, SortDirection, SystemHealth,
-    TitleAcquisitionDiagnostics, TitleCatalogContentStatus, TitleCatalogFilter, TitleCatalogResult,
-    TitleCatalogSort, TitleCatalogSortKey, TitleEpisodeProgressSummary, TitleExternalRating,
-    TitleImageBlob, TitleImageKind, TitleImageSourceResult, TitleImageSyncTask,
-    TitleImageVariantRecord, TitleImageVariantSpec, TitleMediaFile, TitleMediaSizeSummary,
-    TitleMetadataUpdate, TitleQualitySummary, TitleRatingSummary, TitleReleaseBlocklistEntry,
-    TotpCredentialRecord, TotpEnrollmentChallengeRecord, TotpEnrollmentComplete,
-    TotpEnrollmentStart, TotpFailedAttemptRecord, TotpRecoveryCodeRecord, TotpStatus,
-    UiDateTimeFormat, UiDefaultLandingView, UiDensity, UiSettings, UiSettingsFacet,
-    UiSettingsUpdate, UiSidebarMode, UiTableColumnSetting, UiTableViewMode, UiTheme,
-    UpdateRecycleBinSettings, UserAuthFactorStatus, WantedCompleteTransition, WantedGrabTransition,
-    WantedItem, WantedPauseTransition, WantedSearchTransition, WantedStatus, WantedStatusCount,
-    WebauthnChallengeRecord, WebauthnChallengeStart, WebauthnChallengeType,
-    WebauthnCredentialRecord,
+    TitleAcquisitionDiagnostics, TitleCatalogContentStatus, TitleCatalogFilter,
+    TitleCatalogFilterCounts, TitleCatalogResult, TitleCatalogSort, TitleCatalogSortKey,
+    TitleEpisodeProgressSummary, TitleExternalRating, TitleImageBlob, TitleImageKind,
+    TitleImageSourceResult, TitleImageSyncTask, TitleImageVariantRecord, TitleImageVariantSpec,
+    TitleMediaFile, TitleMediaSizeSummary, TitleMetadataUpdate, TitleQualitySummary,
+    TitleRatingSummary, TitleReleaseBlocklistEntry, TotpCredentialRecord,
+    TotpEnrollmentChallengeRecord, TotpEnrollmentComplete, TotpEnrollmentStart,
+    TotpFailedAttemptRecord, TotpRecoveryCodeRecord, TotpStatus, UiDateTimeFormat,
+    UiDefaultLandingView, UiDensity, UiSettings, UiSettingsFacet, UiSettingsUpdate, UiSidebarMode,
+    UiTableColumnSetting, UiTableViewMode, UiTheme, UpdateRecycleBinSettings, UserAuthFactorStatus,
+    WantedCompleteTransition, WantedGrabTransition, WantedItem, WantedPauseTransition,
+    WantedSearchTransition, WantedStatus, WantedStatusCount, WebauthnChallengeRecord,
+    WebauthnChallengeStart, WebauthnChallengeType, WebauthnCredentialRecord,
 };
 pub use types::{
     EXTERNAL_IMPORT_MONITOR_APPLY_SESSION_ID, ExternalIdHint, ExternalIdProvider,

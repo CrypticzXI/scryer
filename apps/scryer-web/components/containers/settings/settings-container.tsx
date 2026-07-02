@@ -1,5 +1,5 @@
 
-import { lazy, memo, Suspense, useCallback, useEffect, useState } from "react";
+import { lazy, memo, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import {
   Archive,
@@ -86,6 +86,32 @@ const SettingsBackupsContainer = lazy(async () => ({
 export const SETTINGS_REFERENCE_SLOT_ID = "settings-content-reference";
 export const SETTINGS_HEADER_ACTIONS_SLOT_ID = "settings-header-actions";
 
+const DOCKED_REFERENCE_GAP_PX = 20;
+
+type DockedReferenceLayout = {
+  mainMinWidth: number;
+  railMinWidth: number;
+  contentClass: string;
+  mainClass: string;
+  railClass: string;
+};
+
+const STANDARD_FILTERED_PLUGIN_LAYOUT: DockedReferenceLayout = {
+  mainMinWidth: 1080,
+  railMinWidth: 288,
+  contentClass: "max-w-none",
+  mainClass: "min-w-0 max-w-[1280px] flex-[1_1_1280px]",
+  railClass: "sticky top-[26px] z-auto min-w-[288px] max-w-[720px] flex-[1_1_720px]",
+};
+
+const SUBTITLES_FILTERED_PLUGIN_LAYOUT: DockedReferenceLayout = {
+  mainMinWidth: 960,
+  railMinWidth: 320,
+  contentClass: "max-w-none",
+  mainClass: "min-w-0 max-w-[1120px] flex-[1_1_960px]",
+  railClass: "sticky top-[26px] z-auto min-w-[320px] max-w-[560px] flex-[1_1_560px]",
+};
+
 type SettingsContainerProps = {
   settingsSection: SettingsSection;
   userId?: string;
@@ -139,6 +165,12 @@ export const SettingsContainer = memo(function SettingsContainer({
     settingsSection === "notifications" ||
     settingsSection === "subtitles";
   const isSubtitlesSection = settingsSection === "subtitles";
+  const referenceLayout = showReferenceRail
+    ? isSubtitlesSection
+      ? SUBTITLES_FILTERED_PLUGIN_LAYOUT
+      : STANDARD_FILTERED_PLUGIN_LAYOUT
+    : null;
+  const settingsContentRef = useRef<HTMLElement | null>(null);
   const [referenceRailOpen, setReferenceRailOpen] = useState(false);
   const [referenceRailDocked, setReferenceRailDocked] = useState(false);
 
@@ -147,23 +179,37 @@ export const SettingsContainer = memo(function SettingsContainer({
   }, [referenceRailDocked, settingsSection]);
 
   useEffect(() => {
-    if (!showReferenceRail) {
+    if (!referenceLayout) {
       setReferenceRailDocked(false);
       return;
     }
 
-    const mediaQuery = window.matchMedia(
-      isSubtitlesSection ? "(min-width: 1440px)" : "(min-width: 1960px)",
-    );
+    const contentElement = settingsContentRef.current;
+    if (!contentElement) {
+      setReferenceRailDocked(false);
+      return;
+    }
+
+    const minimumDockedWidth =
+      referenceLayout.mainMinWidth +
+      referenceLayout.railMinWidth +
+      DOCKED_REFERENCE_GAP_PX;
     const syncReferenceRailMode = () => {
-      setReferenceRailDocked(mediaQuery.matches);
+      setReferenceRailDocked(
+        contentElement.getBoundingClientRect().width >= minimumDockedWidth,
+      );
     };
 
     syncReferenceRailMode();
-    mediaQuery.addEventListener("change", syncReferenceRailMode);
-    return () =>
-      mediaQuery.removeEventListener("change", syncReferenceRailMode);
-  }, [isSubtitlesSection, showReferenceRail]);
+    if (typeof ResizeObserver === "undefined") {
+      window.addEventListener("resize", syncReferenceRailMode);
+      return () => window.removeEventListener("resize", syncReferenceRailMode);
+    }
+
+    const resizeObserver = new ResizeObserver(syncReferenceRailMode);
+    resizeObserver.observe(contentElement);
+    return () => resizeObserver.disconnect();
+  }, [referenceLayout]);
 
   useEffect(() => {
     if (!referenceRailOpen || referenceRailDocked) {
@@ -352,20 +398,16 @@ export const SettingsContainer = memo(function SettingsContainer({
         </aside>
       ) : null}
       <main
+        ref={settingsContentRef}
         data-slot="settings-main-scroll"
         className="min-w-0 flex-1 overflow-y-auto bg-transparent"
       >
         <div
           className={cn(
             "mx-auto w-full px-4 py-5 sm:px-6 md:px-[30px] md:py-[26px] md:pb-[60px]",
-            settingsSection === "indexers" ||
-            settingsSection === "downloadClients" ||
-            settingsSection === "notifications" ||
-            settingsSection === "subtitles"
+            showReferenceRail
               ? referenceRailDocked
-                ? isSubtitlesSection
-                  ? "max-w-[1340px]"
-                  : "max-w-[1700px]"
+                ? referenceLayout?.contentClass
                 : "max-w-[1280px]"
               : settingsSection === "rules" ||
                   settingsSection === "post-processing"
@@ -376,16 +418,14 @@ export const SettingsContainer = memo(function SettingsContainer({
           <div
             className={cn(
               showReferenceRail && referenceRailDocked
-                ? "flex items-start gap-5"
+                ? "flex items-start justify-center gap-5"
                 : "contents",
             )}
           >
             <div
               className={cn(
                 showReferenceRail && referenceRailDocked
-                  ? isSubtitlesSection
-                    ? "min-w-0 flex-[1_1_auto]"
-                    : "min-w-0 w-[1280px] shrink-0"
+                  ? referenceLayout?.mainClass
                   : showReferenceRail
                     ? "min-w-0"
                   : "contents",
@@ -521,9 +561,7 @@ export const SettingsContainer = memo(function SettingsContainer({
                   aria-label={t("settings.plugins")}
                   className={cn(
                     referenceRailDocked
-                      ? isSubtitlesSection
-                        ? "sticky top-[26px] z-auto w-[320px] shrink-0"
-                        : "sticky top-[26px] z-auto min-w-[320px] max-w-[400px] flex-[1_1_400px]"
+                      ? referenceLayout?.railClass
                       : "fixed bottom-4 right-4 top-[118px] z-50 flex w-[min(420px,calc(100vw-2rem))] min-w-0 flex-col gap-3 overflow-y-auto rounded-[16px] border border-[var(--scry-border)] bg-[var(--scry-bg)] p-3 shadow-[0_20px_50px_rgba(0,0,0,0.38)] transition duration-200",
                     !referenceRailDocked &&
                       (referenceRailOpen

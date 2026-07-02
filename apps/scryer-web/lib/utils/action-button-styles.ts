@@ -18,7 +18,7 @@ export const boxedActionButtonToneClass = {
   neutral:
     "border-slate-200 bg-slate-50 text-slate-700 hover:border-slate-300 hover:bg-slate-100 hover:text-slate-800 dark:border-slate-500/35 dark:bg-slate-500/12 dark:text-slate-200 dark:hover:border-slate-400/45 dark:hover:bg-slate-500/22 dark:hover:text-slate-50",
   install:
-    "border-emerald-200 bg-emerald-50 text-emerald-700 hover:border-emerald-300 hover:bg-emerald-100 hover:text-emerald-800 dark:border-emerald-500/35 dark:bg-emerald-500/12 dark:text-emerald-200 dark:hover:border-emerald-400/45 dark:hover:bg-emerald-500/22 dark:hover:text-emerald-50",
+    "border-[rgba(var(--scry-accent-rgb),0.55)] bg-[rgb(var(--scry-accent-rgb))] text-white hover:border-[rgba(var(--scry-accent-rgb),0.72)] hover:bg-[var(--scry-accent-dark)] hover:text-white",
   upgrade:
     "border-[var(--scry-warning-border)] bg-[var(--scry-warning-bg)] text-[var(--scry-warning-text)] hover:border-[var(--scry-warning-border-strong)] hover:bg-[var(--scry-warning-bg-strong)] hover:text-[var(--scry-warning-text)]",
   enabled:

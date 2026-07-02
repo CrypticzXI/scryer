@@ -144,6 +144,7 @@ const CATALOG_DISCOVERY_ITEM_FIELDS = `
     posterUrl
     contentType
     statusTags
+    sourceTags
     rankScore
     ownedInInput`;
 
@@ -1335,6 +1336,13 @@ ${TITLE_LIST_FIELDS}
     offset
     hasMore
     totalCount
+    filterCounts {
+      all
+      monitored
+      unmonitored
+      continuing
+      ended
+    }
   }
 }`;
 

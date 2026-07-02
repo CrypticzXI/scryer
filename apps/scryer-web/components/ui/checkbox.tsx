@@ -3,17 +3,41 @@ import * as React from "react"
 import { CheckIcon, MinusIcon } from "lucide-react"
 import { Checkbox as CheckboxPrimitive } from "radix-ui"
 
+import { Label } from "@/components/ui/label"
 import { cn } from "@/lib/utils"
+
+type CheckboxSize = "default" | "compact" | "table"
+
+type CheckboxProps = Omit<
+  React.ComponentProps<typeof CheckboxPrimitive.Root>,
+  "children"
+> & {
+  size?: CheckboxSize
+}
+
+const CHECKBOX_SIZE_CLASS: Record<CheckboxSize, string> = {
+  default: "size-5 rounded-[6px]",
+  compact: "size-[18px] rounded-[5px]",
+  table: "size-[18px] rounded-[5px]",
+}
+
+const CHECKBOX_ICON_CLASS: Record<CheckboxSize, string> = {
+  default: "size-3.5",
+  compact: "size-3",
+  table: "size-3",
+}
 
 function Checkbox({
   className,
+  size = "default",
   ...props
-}: React.ComponentProps<typeof CheckboxPrimitive.Root>) {
+}: CheckboxProps) {
   return (
     <CheckboxPrimitive.Root
       data-slot="checkbox"
       className={cn(
-        "peer border-input bg-input/30 data-[state=checked]:bg-emerald-600 data-[state=checked]:text-foreground data-[state=checked]:border-emerald-600 data-[state=indeterminate]:bg-emerald-600 data-[state=indeterminate]:text-foreground data-[state=indeterminate]:border-emerald-600 focus-visible:border-ring focus-visible:ring-ring/50 aria-invalid:ring-destructive/20 aria-invalid:ring-destructive/40 aria-invalid:border-destructive size-4 shrink-0 rounded-[4px] border shadow-xs transition-shadow outline-none focus-visible:ring-[3px] disabled:cursor-not-allowed disabled:opacity-50",
+        "peer shrink-0 border border-[var(--scry-border3)] bg-[var(--scry-inset)] text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.08)] outline-none transition-colors focus-visible:border-[var(--scry-accent)] focus-visible:ring-2 focus-visible:ring-[var(--scry-accent-ring)] disabled:cursor-not-allowed disabled:opacity-50 aria-invalid:border-[var(--scry-danger)] aria-invalid:ring-2 aria-invalid:ring-[var(--scry-danger-border)] data-[state=checked]:border-[var(--scry-accent)] data-[state=checked]:bg-[var(--scry-accent)] data-[state=checked]:text-white data-[state=indeterminate]:border-[var(--scry-accent)] data-[state=indeterminate]:bg-[var(--scry-accent)] data-[state=indeterminate]:text-white",
+        CHECKBOX_SIZE_CLASS[size],
         className
       )}
       {...props}
@@ -23,13 +47,82 @@ function Checkbox({
         className="grid place-content-center text-current transition-none"
       >
         {props.checked === "indeterminate" ? (
-          <MinusIcon className="size-3.5" />
+          <MinusIcon className={CHECKBOX_ICON_CLASS[size]} />
         ) : (
-          <CheckIcon className="size-3.5" />
+          <CheckIcon className={CHECKBOX_ICON_CLASS[size]} />
         )}
       </CheckboxPrimitive.Indicator>
     </CheckboxPrimitive.Root>
   )
 }
 
-export { Checkbox }
+type CheckboxFieldProps = Omit<CheckboxProps, "className"> & {
+  id: string
+  label: React.ReactNode
+  description?: React.ReactNode
+  labelAccessory?: React.ReactNode
+  className?: string
+  checkboxClassName?: string
+  labelClassName?: string
+  descriptionClassName?: string
+}
+
+function CheckboxField({
+  id,
+  label,
+  description,
+  labelAccessory,
+  className,
+  checkboxClassName,
+  labelClassName,
+  descriptionClassName,
+  disabled,
+  size = "default",
+  ...props
+}: CheckboxFieldProps) {
+  return (
+    <div
+      className={cn(
+        "flex min-w-0 items-start gap-3",
+        disabled && "opacity-60",
+        className
+      )}
+      data-disabled={disabled ? "true" : undefined}
+    >
+      <Checkbox
+        id={id}
+        disabled={disabled}
+        size={size}
+        className={cn("mt-0.5", checkboxClassName)}
+        {...props}
+      />
+      <div className="min-w-0 flex-1 space-y-1">
+        <div className="flex min-w-0 items-center gap-2">
+          <Label
+            htmlFor={id}
+            className={cn(
+              "cursor-pointer text-sm font-medium leading-5 text-[var(--scry-ink3)]",
+              disabled && "cursor-not-allowed",
+              labelClassName
+            )}
+          >
+            {label}
+          </Label>
+          {labelAccessory}
+        </div>
+        {description ? (
+          <p
+            className={cn(
+              "text-sm leading-5 text-[var(--scry-muted2)]",
+              descriptionClassName
+            )}
+          >
+            {description}
+          </p>
+        ) : null}
+      </div>
+    </div>
+  )
+}
+
+export { Checkbox, CheckboxField }

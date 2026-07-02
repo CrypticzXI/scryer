@@ -763,7 +763,8 @@ export function CompactTitleTable({
               onCheckedChange={() => onToggleSelected(item.id)}
               aria-label={t("title.selectTitle", { name: item.name })}
               disabled={bulkActionBusy}
-              className="mx-auto size-[17px] rounded-[5px] [&_svg]:size-3"
+              size="table"
+              className="mx-auto"
             />
           </TableCell>
           <TableCell className="align-middle overflow-hidden py-1.5">
@@ -1015,7 +1016,8 @@ export function CompactTitleTable({
             onCheckedChange={(checked) => onToggleSelectAll(checked === true)}
             aria-label={t("title.selectAllTitles")}
             disabled={bulkActionBusy}
-            className="mx-auto size-5 rounded-md [&_svg]:size-4"
+            size="table"
+            className="mx-auto"
           />
         </TableHead>
         {renderSortableHeader(

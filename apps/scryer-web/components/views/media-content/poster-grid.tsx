@@ -15,6 +15,9 @@ import {
 type PosterGridProps = {
   titles: TitleRecord[];
   catalogInitialLoadComplete?: boolean;
+  catalogHasMoreTitles?: boolean;
+  catalogLoadingMoreTitles?: boolean;
+  onCatalogEndReached?: () => Promise<void> | void;
   onOpenOverview: (
     targetView: ViewId,
     overviewTarget: OverviewTitleTarget,
@@ -39,6 +42,9 @@ type PosterGridProps = {
 export const PosterGrid = React.memo(function PosterGrid({
   titles,
   catalogInitialLoadComplete = true,
+  catalogHasMoreTitles = false,
+  catalogLoadingMoreTitles = false,
+  onCatalogEndReached,
   onOpenOverview,
   selectedTitleId,
   contextPanelId,
@@ -54,6 +60,41 @@ export const PosterGrid = React.memo(function PosterGrid({
   scanLibraryNotice,
 }: PosterGridProps) {
   const t = useTranslate();
+  const endSentinelRef = React.useRef<HTMLDivElement | null>(null);
+
+  React.useEffect(() => {
+    if (
+      !catalogHasMoreTitles ||
+      catalogLoadingMoreTitles ||
+      !onCatalogEndReached
+    ) {
+      return;
+    }
+
+    const sentinel = endSentinelRef.current;
+    if (!sentinel) {
+      return;
+    }
+
+    const scrollRoot = sentinel.closest<HTMLElement>(
+      "[data-catalog-scroll-root='true']",
+    );
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) {
+          void onCatalogEndReached();
+        }
+      },
+      { root: scrollRoot, rootMargin: "1200px 0px" },
+    );
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [
+    catalogHasMoreTitles,
+    catalogLoadingMoreTitles,
+    onCatalogEndReached,
+    titles.length,
+  ]);
 
   if (!catalogInitialLoadComplete) {
     return <TitleCollectionLoadingState />;
@@ -76,18 +117,23 @@ export const PosterGrid = React.memo(function PosterGrid({
   }
 
   return (
-    <div className="grid grid-cols-[repeat(auto-fill,minmax(150px,1fr))] gap-3.5">
-      {titles.map((title) => (
-        <PosterCard
-          key={title.id}
-          title={title}
-          onOpenOverview={onOpenOverview}
-          selected={selectedTitleId === title.id}
-          contextPanelId={contextPanelId}
-          onSelectTitle={onSelectTitle}
-          overviewTargetView={overviewTargetView}
-        />
-      ))}
+    <div>
+      <div className="grid grid-cols-[repeat(auto-fill,minmax(150px,1fr))] gap-3.5">
+        {titles.map((title) => (
+          <PosterCard
+            key={title.id}
+            title={title}
+            onOpenOverview={onOpenOverview}
+            selected={selectedTitleId === title.id}
+            contextPanelId={contextPanelId}
+            onSelectTitle={onSelectTitle}
+            overviewTargetView={overviewTargetView}
+          />
+        ))}
+      </div>
+      {catalogHasMoreTitles ? (
+        <div ref={endSentinelRef} aria-hidden="true" className="h-12" />
+      ) : null}
     </div>
   );
 });

@@ -1202,7 +1202,7 @@ export const RootHeader = React.memo(function RootHeader({
             catalogQualityProfileOptions.length > 0 &&
             (librariesByFacet[facet].length > 0 ||
               rootFoldersByFacet[facet].some((rootFolder) =>
-                Boolean(rootFolder.id?.trim()),
+                Boolean(rootFolder.path.trim()),
               )),
           canRequest: requestableLibrariesByFacet[facet].length > 0,
           resultName: result.name,

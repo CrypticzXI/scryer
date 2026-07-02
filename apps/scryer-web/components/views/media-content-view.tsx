@@ -3013,9 +3013,18 @@ export function MediaContentView({
               </div>
             </div>
             <div
+              data-catalog-scroll-root={
+                collectionViewMode === "poster" && !selectedTitleLayoutActive
+                  ? "true"
+                  : undefined
+              }
               className={cn(
                 "flex min-h-0 flex-1 flex-col bg-transparent p-3 sm:p-4 lg:p-5",
-                selectedTitleLayoutActive && "overflow-hidden",
+                selectedTitleLayoutActive
+                  ? "overflow-hidden"
+                  : collectionViewMode === "poster"
+                    ? "overflow-y-auto"
+                    : undefined,
               )}
             >
               {(() => {
@@ -3125,7 +3134,7 @@ export function MediaContentView({
                                       columnKey,
                                       t,
                                     )}
-                                    className="size-[17px] rounded-[5px] [&_svg]:size-3"
+                                    size="compact"
                                   />
                                   <span className="min-w-0 truncate">
                                     {titleTableColumnLabel(columnKey, t)}
@@ -3242,6 +3251,9 @@ export function MediaContentView({
                       key={`${view}-poster-grid`}
                       titles={deferredMonitoredTitles}
                       catalogInitialLoadComplete={titleListInitialLoadComplete}
+                      catalogHasMoreTitles={catalogHasMoreTitles}
+                      catalogLoadingMoreTitles={catalogLoadingMoreTitles}
+                      onCatalogEndReached={loadMoreCatalogTitles}
                       onOpenOverview={handleOpenOverviewFromContext}
                       selectedTitleId={contextPanelSelectedTitleId}
                       contextPanelId={selectedTitleContextPanelId}

@@ -1,5 +1,6 @@
-import { Clock3, ExternalLink, Send, Sparkles } from "lucide-react";
+import { Clock3 } from "lucide-react";
 
+import { ExternalMediaLinkButton } from "@/components/common/external-media-links";
 import { TitlePoster } from "@/components/title-poster";
 import {
   DialogDescription,
@@ -29,26 +30,56 @@ type CatalogActionDialogSummaryProps = {
 
 type ExternalSiteLink = {
   id: string;
+  site: string;
   label: string;
   href: string;
-  logoSrc: string | null;
+  logoSrc: string;
 };
 
+const mediaSiteLogo = (path: string) => `${import.meta.env.BASE_URL}${path}`;
+
 const MEDIA_SITE_LOGOS: Record<string, string> = {
-  imdb: "/media-sites/imdb.svg",
-  mal: "/media-sites/mal.svg",
-  tmdb: "/media-sites/tmdb.svg",
-  trakt: "/rating-sources/trakt.svg",
+  anidb: mediaSiteLogo("media-sites/anidb.png"),
+  anilist: mediaSiteLogo("media-sites/anilist.svg"),
+  imdb: mediaSiteLogo("media-sites/imdb.svg"),
+  mal: mediaSiteLogo("media-sites/mal.svg"),
+  tmdb: mediaSiteLogo("media-sites/tmdb.svg"),
+  trakt: mediaSiteLogo("rating-sources/trakt.svg"),
+  tvdb: mediaSiteLogo("media-sites/tvdb.svg"),
 };
 
 function normalizeSource(value: string) {
   return value.trim().toLowerCase().replace(/[\s_.-]+/g, "");
 }
 
+const EXTERNAL_SOURCE_ALIASES: Record<string, string> = {
+  anidb: "anidb",
+  anidbnet: "anidb",
+  anilist: "anilist",
+  anilistco: "anilist",
+  imdb: "imdb",
+  imdbcom: "imdb",
+  mal: "mal",
+  myanimelist: "mal",
+  myanimelistnet: "mal",
+  themoviedb: "tmdb",
+  themoviedborg: "tmdb",
+  tmdb: "tmdb",
+  trakt: "trakt",
+  traktv: "trakt",
+  thetvdb: "tvdb",
+  thetvdbcom: "tvdb",
+  tvdb: "tvdb",
+};
+
+function canonicalExternalSource(value: string) {
+  return EXTERNAL_SOURCE_ALIASES[normalizeSource(value)] ?? normalizeSource(value);
+}
+
 function externalIdMap(result: MetadataTvdbSearchItem) {
   const ids = new Map<string, string>();
   for (const externalId of result.externalIds ?? []) {
-    const source = normalizeSource(externalId.source);
+    const source = canonicalExternalSource(externalId.source);
     const value = externalId.value.trim();
     if (source && value && !ids.has(source)) {
       ids.set(source, value);
@@ -71,6 +102,14 @@ function tmdbPathForFacet(facet: Facet, type: string | null | undefined) {
   return "tv";
 }
 
+function tvdbPathForFacet(facet: Facet, type: string | null | undefined) {
+  const normalizedType = type?.trim().toLowerCase();
+  if (normalizedType === "movie" || facet === "movie") {
+    return "movie";
+  }
+  return "series";
+}
+
 function externalLinks(result: MetadataTvdbSearchItem, facet: Facet): ExternalSiteLink[] {
   const ids = externalIdMap(result);
   const links: ExternalSiteLink[] = [];
@@ -88,6 +127,7 @@ function externalLinks(result: MetadataTvdbSearchItem, facet: Facet): ExternalSi
     imdbId
       ? {
           id: "imdb",
+          site: "IMDb",
           label: "IMDb",
           href: `https://www.imdb.com/title/${encodeURIComponent(imdbId)}/`,
           logoSrc: MEDIA_SITE_LOGOS.imdb,
@@ -100,6 +140,7 @@ function externalLinks(result: MetadataTvdbSearchItem, facet: Facet): ExternalSi
     tmdbId
       ? {
           id: "tmdb",
+          site: "TMDB",
           label: "TMDB",
           href: `https://www.themoviedb.org/${tmdbPathForFacet(
             facet,
@@ -110,11 +151,28 @@ function externalLinks(result: MetadataTvdbSearchItem, facet: Facet): ExternalSi
       : null,
   );
 
+  const tvdbId = ids.get("tvdb");
+  push(
+    tvdbId
+      ? {
+          id: "tvdb",
+          site: "TVDB",
+          label: "TVDB",
+          href: `https://thetvdb.com/dereferrer/${tvdbPathForFacet(
+            facet,
+            result.type,
+          )}/${encodeURIComponent(tvdbId)}`,
+          logoSrc: MEDIA_SITE_LOGOS.tvdb,
+        }
+      : null,
+  );
+
   const malId = ids.get("mal") ?? ids.get("myanimelist");
   push(
     malId
       ? {
           id: "mal",
+          site: "MyAnimeList",
           label: "MAL",
           href: `https://myanimelist.net/anime/${encodeURIComponent(malId)}`,
           logoSrc: MEDIA_SITE_LOGOS.mal,
@@ -122,19 +180,33 @@ function externalLinks(result: MetadataTvdbSearchItem, facet: Facet): ExternalSi
       : null,
   );
 
-  const query = [result.name, result.year].filter(Boolean).join(" ");
+  const anilistId = ids.get("anilist");
   push(
-    query
+    anilistId
       ? {
-          id: "trakt",
-          label: "Trakt",
-          href: `https://trakt.tv/search?query=${encodeURIComponent(query)}`,
-          logoSrc: MEDIA_SITE_LOGOS.trakt,
+          id: "anilist",
+          site: "AniList",
+          label: "AniList",
+          href: `https://anilist.co/anime/${encodeURIComponent(anilistId)}`,
+          logoSrc: MEDIA_SITE_LOGOS.anilist,
         }
       : null,
   );
 
-  return links.slice(0, 4);
+  const anidbId = ids.get("anidb");
+  push(
+    anidbId
+      ? {
+          id: "anidb",
+          site: "AniDB",
+          label: "AniDB",
+          href: `https://anidb.net/anime/${encodeURIComponent(anidbId)}`,
+          logoSrc: MEDIA_SITE_LOGOS.anidb,
+        }
+      : null,
+  );
+
+  return links;
 }
 
 function ratingEntries(result: MetadataTvdbSearchItem): TitleExternalRating[] {
@@ -172,6 +244,9 @@ function runtimeLabel(runtimeMinutes: number | null) {
 function SummaryRatingPill({ rating }: { rating: TitleExternalRating }) {
   const source = ratingSourceInfo(rating.source);
   const value = ratingValueLabel(rating, source);
+  const className =
+    "inline-flex items-center gap-1.5 rounded border border-border/70 bg-background/45 px-2 py-1 text-xs";
+  const label = `${source.label}: ${value}`;
   const content = (
     <>
       {source.logoSrc ? (
@@ -179,11 +254,13 @@ function SummaryRatingPill({ rating }: { rating: TitleExternalRating }) {
           src={source.logoSrc}
           alt=""
           aria-hidden="true"
-          className="h-4 max-w-10 shrink-0 object-contain"
+          className="h-3.5 w-3.5 shrink-0 object-contain"
           loading="lazy"
         />
       ) : null}
-      <span className="font-semibold text-foreground">{value}</span>
+      <span className="font-[var(--font-code)] text-card-foreground">
+        {value}
+      </span>
     </>
   );
   return (
@@ -194,16 +271,16 @@ function SummaryRatingPill({ rating }: { rating: TitleExternalRating }) {
             href={rating.url}
             target="_blank"
             rel="noreferrer"
-            aria-label={`${source.label}: ${value}`}
-            className="inline-flex h-10 items-center gap-2 rounded-lg border border-border/80 bg-background/55 px-3 text-sm shadow-sm"
+            aria-label={label}
+            className={className}
           >
             {content}
           </a>
         ) : (
           <span
             tabIndex={0}
-            aria-label={`${source.label}: ${value}`}
-            className="inline-flex h-10 items-center gap-2 rounded-lg border border-border/80 bg-background/55 px-3 text-sm shadow-sm"
+            aria-label={label}
+            className={className}
           >
             {content}
           </span>
@@ -217,7 +294,6 @@ function SummaryRatingPill({ rating }: { rating: TitleExternalRating }) {
 export function CatalogActionDialogSummary({
   result,
   facet,
-  mode,
 }: CatalogActionDialogSummaryProps) {
   const posterUrl = selectPosterVariantUrl(result.posterUrl, "w250");
   const posterSourceUrl = selectPosterVariantUrl(result.posterUrl, "original");
@@ -227,8 +303,6 @@ export function CatalogActionDialogSummary({
   const links = externalLinks(result, facet);
   const genres = (result.genres ?? []).slice(0, 4);
   const runtime = runtimeLabel(result.runtimeMinutes);
-  const badgeLabel = mode === "add" ? "New to Catalog" : "Request Media";
-  const BadgeIcon = mode === "add" ? Sparkles : Send;
 
   return (
     <DialogHeader className="relative isolate overflow-hidden rounded-t-lg border-b border-border/70 p-5 text-left sm:p-7">
@@ -238,11 +312,11 @@ export function CatalogActionDialogSummary({
             src={backgroundUrl}
             alt=""
             aria-hidden="true"
-            className="absolute inset-0 -z-20 h-full w-full object-cover opacity-35 blur-xl scale-110"
+            className="absolute inset-0 -z-20 h-full w-full scale-105 object-cover opacity-55 blur-md"
           />
           <div
             aria-hidden="true"
-            className="absolute inset-0 -z-10 bg-gradient-to-r from-background via-background/92 to-background/55"
+            className="absolute inset-0 -z-10 bg-gradient-to-r from-background/92 via-background/72 to-background/34"
           />
         </>
       ) : null}
@@ -263,10 +337,6 @@ export function CatalogActionDialogSummary({
         </div>
 
         <div className="min-w-0 space-y-4">
-          <div className="inline-flex h-8 items-center gap-2 rounded-lg border border-primary/45 bg-primary/15 px-3 text-xs font-semibold uppercase text-primary">
-            <BadgeIcon className="h-3.5 w-3.5" />
-            {badgeLabel}
-          </div>
           <div className="min-w-0">
             <DialogTitle className="text-3xl font-bold leading-tight tracking-normal text-foreground sm:text-4xl">
               {result.name}
@@ -326,25 +396,14 @@ export function CatalogActionDialogSummary({
                 Open In
               </span>
               {links.map((link) => (
-                <a
+                <ExternalMediaLinkButton
                   key={link.id}
                   href={link.href}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="inline-flex h-10 items-center gap-2 rounded-lg border border-border/80 bg-background/45 px-3 text-sm font-semibold text-foreground transition hover:border-primary/70 hover:bg-primary/10"
-                >
-                  {link.logoSrc ? (
-                    <img
-                      src={link.logoSrc}
-                      alt=""
-                      aria-hidden="true"
-                      className="h-5 max-w-14 object-contain"
-                      loading="lazy"
-                    />
-                  ) : null}
-                  <span>{link.label}</span>
-                  <ExternalLink className="h-3.5 w-3.5 text-muted-foreground" />
-                </a>
+                  site={link.site}
+                  label={link.label}
+                  logoSrc={link.logoSrc}
+                  size="compact"
+                />
               ))}
             </div>
           ) : null}

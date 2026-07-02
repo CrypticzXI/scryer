@@ -4,7 +4,7 @@ import { AddNewButton } from "@/components/common/add-new-button";
 import { Button } from "@/components/ui/button";
 import { IconButton } from "@/components/ui/icon-button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Checkbox } from "@/components/ui/checkbox";
+import { Checkbox, CheckboxField } from "@/components/ui/checkbox";
 import { Input, signedIntegerInputProps } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -225,24 +225,18 @@ function DynamicConfigField({
 
   if (field.fieldType === "bool") {
     return (
-      <label className="flex items-center gap-2">
-        <Checkbox
-          id={fieldId}
-          checked={value === "true"}
-          onCheckedChange={(checkedValue) =>
-            onChange(field.key, checkedValue === true ? "true" : "false")
-          }
-        />
-        <span className="inline-flex items-center gap-2 text-sm">
-          {field.label}
-          {requiredMarker}
-        </span>
-        {field.helpText ? (
-          <span className="text-xs text-muted-foreground">
-            {field.helpText}
-          </span>
-        ) : null}
-      </label>
+      <CheckboxField
+        id={fieldId}
+        checked={value === "true"}
+        onCheckedChange={(checkedValue) =>
+          onChange(field.key, checkedValue === true ? "true" : "false")
+        }
+        label={field.label}
+        labelAccessory={requiredMarker}
+        description={field.helpText}
+        className="items-center"
+        checkboxClassName="mt-0"
+      />
     );
   }
 

@@ -17,7 +17,6 @@ import {
 } from "@/components/views/settings/settings-plugins-section";
 import { useTranslate } from "@/lib/context/translate-context";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import { IconButton } from "@/components/ui/icon-button";
 import { cn } from "@/lib/utils";
 
@@ -27,7 +26,8 @@ const FILTERED_PLUGIN_HEADER_CLASS =
   "flex flex-row items-center justify-between gap-2 border-b border-[var(--scry-border3)] bg-[linear-gradient(180deg,rgba(255,255,255,0.035),rgba(255,255,255,0))] px-4 py-3";
 const FILTERED_PLUGIN_TITLE_CLASS =
   "text-[15px] font-semibold text-[var(--scry-ink2)]";
-const FILTERED_PLUGIN_BODY_CLASS = "space-y-2 p-4";
+const FILTERED_PLUGIN_BODY_CLASS =
+  "grid grid-cols-[repeat(auto-fit,minmax(min(100%,256px),1fr))] gap-2 p-4";
 const FILTERED_PLUGIN_MUTED_CLASS = "text-[var(--scry-muted3)]";
 
 /** Plugin `pluginType` values that belong to each provider-catalog family. */
@@ -110,15 +110,17 @@ export function FilteredPluginList({
       </div>
       <div className={FILTERED_PLUGIN_BODY_CLASS}>
         {pluginsError ? (
-          <p className="text-xs text-[var(--scry-danger-text-soft)]">{pluginsError}</p>
+          <p className="col-span-full text-xs text-[var(--scry-danger-text-soft)]">
+            {pluginsError}
+          </p>
         ) : null}
         {pluginsLoading ? (
-          <div className={`flex items-center gap-2 py-6 text-sm ${FILTERED_PLUGIN_MUTED_CLASS}`}>
+          <div className={`col-span-full flex items-center gap-2 py-6 text-sm ${FILTERED_PLUGIN_MUTED_CLASS}`}>
             <Loader2 className="h-4 w-4 animate-spin" />
             {t("label.loading")}
           </div>
         ) : familyPlugins.length === 0 ? (
-          <p className={`py-6 text-sm ${FILTERED_PLUGIN_MUTED_CLASS}`}>
+          <p className={`col-span-full py-6 text-sm ${FILTERED_PLUGIN_MUTED_CLASS}`}>
             {t("settings.pluginsNoAvailable")}
           </p>
         ) : (
@@ -139,9 +141,9 @@ export function FilteredPluginList({
             return (
               <div
                 key={plugin.id}
-                className="rounded-[12px] border border-[var(--scry-line2)] bg-[var(--scry-card2)] p-3"
+                className="min-w-0 rounded-[12px] border border-[var(--scry-line2)] bg-[var(--scry-card2)] p-3"
               >
-                <div className="flex items-start justify-between gap-2">
+                <div className="flex items-center justify-between gap-2">
                   <div className="min-w-0">
                     <div className="flex items-center gap-2">
                       {plugin.isInstalled && plugin.isEnabled ? (
@@ -189,7 +191,7 @@ export function FilteredPluginList({
                     ) : null}
                   </div>
                   {running ? null : (
-                    <div className="flex shrink-0 items-center gap-1">
+                    <div className="flex shrink-0 items-center self-center gap-1">
                       {plugin.isInstalled ? (
                         <>
                             <IconButton
@@ -232,10 +234,10 @@ export function FilteredPluginList({
                           ) : null}
                         </>
                       ) : (
-                        <Button
+                        <IconButton
                           type="button"
-                          variant="primary"
-                          size="sm"
+                          label={t("settings.pluginInstall")}
+                          tone="install"
                           onClick={() => void installPlugin(plugin)}
                           disabled={mutating}
                         >
@@ -244,8 +246,7 @@ export function FilteredPluginList({
                           ) : (
                             <Plus className="h-3.5 w-3.5" />
                           )}
-                          {t("settings.pluginInstall")}
-                        </Button>
+                        </IconButton>
                       )}
                     </div>
                   )}

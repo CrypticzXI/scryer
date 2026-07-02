@@ -1,14 +1,19 @@
 import * as React from "react";
 import { Clock, Eye, EyeOff, Plus, Send } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 import type { Facet } from "@/lib/types/titles";
 import { TitlePosterSlot } from "@/components/title-poster-slot";
 import { useTranslate } from "@/lib/context/translate-context";
+import { facetById } from "@/lib/facets/registry";
 import { cn } from "@/lib/utils";
 
-const FACET_BADGE_TEXT_CLASS: Record<Facet, string> = {
-  movie: "text-[#a9b3ff]",
-  series: "text-[#7cc4ff]",
-  anime: "text-[#d9a9ff]",
+const FACET_BADGE_CLASS: Record<Facet, string> = {
+  movie:
+    "bg-[linear-gradient(135deg,rgba(var(--scry-facet-movie-rgb),0.96),rgba(var(--scry-facet-movie-rgb),0.72))] text-white",
+  series:
+    "bg-[linear-gradient(135deg,rgba(var(--scry-facet-series-rgb),0.96),rgba(var(--scry-facet-series-rgb),0.72))] text-white",
+  anime:
+    "bg-[linear-gradient(135deg,rgba(var(--scry-facet-anime-rgb),0.96),rgba(var(--scry-facet-anime-rgb),0.72))] text-white",
 };
 
 const FACET_LABEL_KEY: Record<Facet, string> = {
@@ -17,9 +22,12 @@ const FACET_LABEL_KEY: Record<Facet, string> = {
   anime: "search.facetAnime",
 };
 
+function facetBadgeIcon(facet: Facet | null | undefined): LucideIcon | null {
+  return facet ? (facetById(facet)?.icon ?? null) : null;
+}
+
 const ACCENT_ACTION_STYLE: React.CSSProperties = {
-  backgroundImage: "var(--scry-accent-grad)",
-  boxShadow: "0 12px 28px rgba(var(--scry-accent-rgb), 0.45)",
+  backgroundColor: "rgb(var(--scry-accent-rgb))",
 };
 
 const REQUESTED_ACTION_STYLE: React.CSSProperties = {
@@ -110,8 +118,9 @@ function TitleCardImpl({
   const t = useTranslate();
   const badgeLabel = facetLabel ?? (facet ? t(FACET_LABEL_KEY[facet]) : null);
   const badgeColorClass = facet
-    ? FACET_BADGE_TEXT_CLASS[facet]
-    : "text-[var(--scry-muted2)]";
+    ? FACET_BADGE_CLASS[facet]
+    : "bg-[rgba(4,6,12,0.82)] text-[var(--scry-muted2)]";
+  const BadgeIcon = facetBadgeIcon(facet);
   const hasYear = year != null && `${year}`.trim() !== "";
 
   // Exactly one action available → the whole card triggers it.
@@ -205,11 +214,17 @@ function TitleCardImpl({
         {badgeLabel ? (
           <span
             className={cn(
-              "rounded-md border border-white/10 bg-[rgba(4,6,12,0.82)] font-bold uppercase tracking-[0.06em]",
-              compact ? "px-1.5 py-0.5 text-[9px]" : "px-2 py-0.5 text-[10px]",
+              "inline-flex items-center gap-1.5 rounded-[8px] font-black uppercase tracking-[0.035em] shadow-[inset_0_1px_0_rgba(255,255,255,0.28),0_8px_18px_rgba(0,0,0,0.22)]",
+              compact ? "px-2 py-1 text-[10px]" : "px-2.5 py-1 text-[11px]",
               badgeColorClass,
             )}
           >
+            {BadgeIcon ? (
+              <BadgeIcon
+                className={compact ? "h-3 w-3" : "h-3.5 w-3.5"}
+                aria-hidden="true"
+              />
+            ) : null}
             {badgeLabel}
           </span>
         ) : null}

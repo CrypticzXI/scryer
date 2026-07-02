@@ -130,6 +130,7 @@ export type CatalogDiscoveryItem = Pick<
   | "posterUrl"
   | "contentType"
   | "statusTags"
+  | "sourceTags"
   | "rankScore"
   | "ownedInInput"
 > &

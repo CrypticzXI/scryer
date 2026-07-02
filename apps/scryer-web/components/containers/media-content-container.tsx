@@ -129,7 +129,7 @@ import {
 } from "@/components/views/media-content/content-view-mode";
 import {
   filterTitlesByQuickFilters,
-  getTitleQuickFilterCounts,
+  type TitleQuickFilterCounts,
   type TitleQuickFilters,
 } from "@/components/views/media-content/title-quick-filters";
 import {
@@ -181,6 +181,7 @@ type TitleCatalogState = {
   hasMore: boolean;
   nextOffset: number;
   totalCount: number;
+  filterCounts: TitleQuickFilterCounts;
   loadingMore: boolean;
 };
 
@@ -194,8 +195,38 @@ const emptyTitleCatalogState: TitleCatalogState = {
   hasMore: false,
   nextOffset: 0,
   totalCount: 0,
+  filterCounts: {
+    all: 0,
+    monitored: 0,
+    unmonitored: 0,
+    continuing: 0,
+    ended: 0,
+  },
   loadingMore: false,
 };
+
+function titleCatalogFilterCountsFromPage(
+  page: { filterCounts?: Partial<TitleQuickFilterCounts> | null },
+  fallback: TitleQuickFilterCounts = emptyTitleCatalogState.filterCounts,
+): TitleQuickFilterCounts {
+  const counts = page.filterCounts;
+  return {
+    all: typeof counts?.all === "number" ? counts.all : fallback.all,
+    monitored:
+      typeof counts?.monitored === "number"
+        ? counts.monitored
+        : fallback.monitored,
+    unmonitored:
+      typeof counts?.unmonitored === "number"
+        ? counts.unmonitored
+        : fallback.unmonitored,
+    continuing:
+      typeof counts?.continuing === "number"
+        ? counts.continuing
+        : fallback.continuing,
+    ended: typeof counts?.ended === "number" ? counts.ended : fallback.ended,
+  };
+}
 
 const defaultTitleCatalogSortState: TitleCatalogSortState = {
   key: "name",
@@ -1134,25 +1165,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
       ),
     [activeFacet, catalogSourceTitlesWithLibraries, pendingDeletedTitleIds],
   );
-  const titleQuickFilterView =
-    activeFacet === "movie"
-      ? "movies"
-      : activeFacet === "series"
-        ? "series"
-        : "anime";
-  const titleQuickFilterCounts = React.useMemo(
-    () =>
-      getTitleQuickFilterCounts(
-        titleContextSourceTitles,
-        effectiveTitleQuickFilters,
-        titleQuickFilterView,
-      ),
-    [
-      effectiveTitleQuickFilters,
-      titleContextSourceTitles,
-      titleQuickFilterView,
-    ],
-  );
+  const titleQuickFilterCounts = catalogPaginationState.filterCounts;
   React.useEffect(() => {
     if (pendingDeletedTitleIds.size === 0) {
       return;
@@ -1621,6 +1634,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
 
         const page = data?.titles ?? {};
         const nextTitles = (page.items ?? []) as TitleRecord[];
+        const filterCounts = titleCatalogFilterCountsFromPage(page);
         setMonitoredTitles((current) =>
           mergeCatalogTitlesPreservingImages(current, nextTitles),
         );
@@ -1636,6 +1650,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
             typeof page.totalCount === "number"
               ? page.totalCount
               : nextTitles.length,
+          filterCounts,
           loadingMore: false,
         });
         setTitleStatus(
@@ -1795,6 +1810,10 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
 
       const page = data?.titles ?? {};
       const nextTitles = (page.items ?? []) as TitleRecord[];
+      const filterCounts = titleCatalogFilterCountsFromPage(
+        page,
+        catalogPaginationState.filterCounts,
+      );
       setMonitoredTitles((current) =>
         appendCatalogTitlesPreservingImages(current, nextTitles),
       );
@@ -1810,6 +1829,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
           typeof page.totalCount === "number"
             ? page.totalCount
             : catalogPaginationState.totalCount,
+        filterCounts,
         loadingMore: false,
       });
     } catch (error) {
@@ -1836,6 +1856,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   }, [
     activeFacet,
     catalogPaginationState.hasMore,
+    catalogPaginationState.filterCounts,
     catalogPaginationState.loadingMore,
     catalogPaginationState.nextOffset,
     catalogPaginationState.queryKey,

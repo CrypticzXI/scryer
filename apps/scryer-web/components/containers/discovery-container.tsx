@@ -23,6 +23,7 @@ import { canonicalDiscoveryFacetLabels } from "@/lib/discovery-facets";
 import type { LocaleCode } from "@/lib/i18n";
 import { discoveryItemDisplayTitle } from "@/lib/utils/discovery-display";
 import type { MetadataTvdbSearchItem } from "@/lib/graphql/smg-queries";
+import { externalIdsFromDiscoverySignals } from "@/lib/utils/discovery-actions";
 import type {
   DiscoveryHomeInput,
   DiscoveryHomePayload,
@@ -61,15 +62,7 @@ function facetForDiscoveryItem(item: DiscoveryItem): Facet {
 }
 
 function externalIdsForDiscoveryItem(item: DiscoveryItem): ExternalId[] {
-  const parts = item.targetKey.split(":").map((part) => part.trim());
-  const source = parts[0]?.toLowerCase() ?? "";
-  const value =
-    parts.length >= 3
-      ? parts.slice(2).join(":")
-      : parts.length === 2
-        ? parts[1]
-        : "";
-  return source && value ? [{ source, value }] : [];
+  return externalIdsFromDiscoverySignals(item);
 }
 
 function metadataResultForDiscoveryItem(

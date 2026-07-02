@@ -214,6 +214,8 @@ impl LibraryScanner for PerDirectoryBlockingLibraryScanner {
 #[derive(Clone, Default)]
 struct BlockingMediaAnalyzer {
     analyze_calls: Arc<AtomicUsize>,
+    active_calls: Arc<AtomicUsize>,
+    max_active_calls: Arc<AtomicUsize>,
     analyze_started: Arc<Notify>,
     block_analysis: Arc<AtomicUsize>,
     release_analysis: Arc<Notify>,
@@ -245,12 +247,46 @@ impl BlockingMediaAnalyzer {
         .await
         .expect("timed out waiting for media analysis");
     }
+
+    async fn wait_for_active_analysis(&self, expected: usize) {
+        if self.active_calls.load(Ordering::SeqCst) >= expected {
+            return;
+        }
+        timeout(Duration::from_secs(5), async {
+            loop {
+                let notified = self.analyze_started.notified();
+                if self.active_calls.load(Ordering::SeqCst) >= expected {
+                    break;
+                }
+                notified.await;
+            }
+        })
+        .await
+        .expect("timed out waiting for active media analysis");
+    }
+
+    fn max_active_calls(&self) -> usize {
+        self.max_active_calls.load(Ordering::SeqCst)
+    }
 }
 
 #[async_trait]
 impl MediaAnalyzer for BlockingMediaAnalyzer {
     async fn analyze_file(&self, _path: std::path::PathBuf) -> AppResult<MediaAnalysisOutcome> {
         self.analyze_calls.fetch_add(1, Ordering::SeqCst);
+        let active = self.active_calls.fetch_add(1, Ordering::SeqCst) + 1;
+        let mut observed = self.max_active_calls.load(Ordering::SeqCst);
+        while active > observed {
+            match self.max_active_calls.compare_exchange(
+                observed,
+                active,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                Ok(_) => break,
+                Err(current) => observed = current,
+            }
+        }
         self.analyze_started.notify_waiters();
         loop {
             let notified = self.release_analysis.notified();
@@ -259,6 +295,7 @@ impl MediaAnalyzer for BlockingMediaAnalyzer {
             }
             notified.await;
         }
+        self.active_calls.fetch_sub(1, Ordering::SeqCst);
         Ok(MediaAnalysisOutcome::Invalid(
             "blocked test analyzer".to_string(),
         ))
@@ -268,11 +305,16 @@ impl MediaAnalyzer for BlockingMediaAnalyzer {
 #[derive(Clone, Default)]
 struct RecordingExactIdMetadataGateway {
     batch_queries: Arc<Mutex<Vec<Vec<MetadataSearchQuery>>>>,
+    detail_calls: Arc<AtomicUsize>,
 }
 
 impl RecordingExactIdMetadataGateway {
     async fn batch_queries(&self) -> Vec<Vec<MetadataSearchQuery>> {
         self.batch_queries.lock().await.clone()
+    }
+
+    fn detail_calls(&self) -> usize {
+        self.detail_calls.load(Ordering::SeqCst)
     }
 }
 
@@ -338,12 +380,14 @@ impl MetadataGateway for RecordingExactIdMetadataGateway {
     }
 
     async fn get_movie(&self, _tvdb_id: i64, _language: &str) -> AppResult<MovieMetadata> {
+        self.detail_calls.fetch_add(1, Ordering::SeqCst);
         Err(AppError::NotFound(
             "movie metadata unavailable in test".into(),
         ))
     }
 
     async fn get_series(&self, _tvdb_id: i64, _language: &str) -> AppResult<SeriesMetadata> {
+        self.detail_calls.fetch_add(1, Ordering::SeqCst);
         Err(AppError::NotFound(
             "series metadata unavailable in test".into(),
         ))
@@ -357,6 +401,34 @@ impl MetadataGateway for RecordingExactIdMetadataGateway {
     ) -> AppResult<BulkMetadataResult> {
         Ok(BulkMetadataResult::default())
     }
+}
+
+#[tokio::test]
+async fn manual_title_create_without_hydration_does_not_fetch_poster() {
+    let metadata_gateway = Arc::new(RecordingExactIdMetadataGateway::default());
+    let (app, user, _titles) = bootstrap_with_metadata_gateway_and_titles(metadata_gateway.clone());
+
+    let created = app
+        .create_title_without_hydration(
+            &user,
+            NewTitle {
+                name: "Fixture 1234".to_string(),
+                facet: MediaFacet::Movie,
+                monitored: false,
+                tags: vec![],
+                external_ids: vec![ExternalId {
+                    source: "tvdb".to_string(),
+                    value: "1234".to_string(),
+                }],
+                min_availability: None,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create title");
+
+    assert_eq!(metadata_gateway.detail_calls(), 0);
+    assert_eq!(created.title.poster_url, None);
 }
 
 #[tokio::test]
@@ -1849,6 +1921,7 @@ async fn series_full_scan_batches_sonarr_identity_hints_at_gateway_cap() {
         projected.summary.as_ref().map(|summary| summary.matched),
         Some(22)
     );
+    assert_eq!(metadata_gateway.detail_calls(), 0);
 
     let batches = metadata_gateway.batch_queries().await;
     assert_eq!(batches.len(), 1);
@@ -2022,6 +2095,7 @@ async fn movie_full_scan_batches_radarr_identity_hints_at_gateway_cap() {
         projected.summary.as_ref().map(|summary| summary.matched),
         Some(22)
     );
+    assert_eq!(metadata_gateway.detail_calls(), 0);
 
     let batches = metadata_gateway.batch_queries().await;
     assert_eq!(batches.len(), 1);
@@ -2299,7 +2373,13 @@ async fn movie_full_scan_marks_exact_media_total_before_blocked_analysis_finishe
             .await
     });
 
-    blocking_analyzer.wait_for_analysis().await;
+    blocking_analyzer
+        .wait_for_active_analysis(crate::GLOBAL_LIBRARY_SCAN_ANALYSIS_CONCURRENCY)
+        .await;
+    assert_eq!(
+        blocking_analyzer.max_active_calls(),
+        crate::GLOBAL_LIBRARY_SCAN_ANALYSIS_CONCURRENCY
+    );
     let projected = wait_for_projected_library_scan_session_matching(&app, session_id, |session| {
         session.file_total_known && session.file_progress.total == ITEM_COUNT
     })

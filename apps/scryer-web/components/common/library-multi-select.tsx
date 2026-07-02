@@ -157,6 +157,7 @@ export function LibraryMultiSelect({
           >
             <Checkbox
               checked={implicitAllSelected}
+              size="compact"
               className="pointer-events-none"
             />
             <span className="truncate">{t("libraryFilter.all")}</span>
@@ -181,7 +182,11 @@ export function LibraryMultiSelect({
                     onClick={() => toggleLibrary(library.id)}
                     className="flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors hover:bg-accent"
                   >
-                    <Checkbox checked={checked} className="pointer-events-none" />
+                    <Checkbox
+                      checked={checked}
+                      size="compact"
+                      className="pointer-events-none"
+                    />
                     <span
                       className={cn(
                         "truncate",

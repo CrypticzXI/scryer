@@ -34,7 +34,9 @@ import {
   canonicalDiscoveryFacetLabels,
   canonicalDiscoveryFilterOptions,
 } from "@/lib/discovery-facets";
+import { facetById } from "@/lib/facets/registry";
 import { discoveryItemDisplayTitle } from "@/lib/utils/discovery-display";
+import { selectBackdropVariantUrl } from "@/lib/utils/poster-images";
 import { cn } from "@/lib/utils";
 import type {
   DiscoveryHomePayload,
@@ -88,8 +90,22 @@ const DEFAULT_DISCOVERY_CONTENT_TYPES: DiscoveryContentType[] = [
   "series",
   "anime",
 ];
+const DISCOVERY_FACET_PILL_CLASS: Record<DiscoveryContentType, string> = {
+  movie:
+    "bg-[linear-gradient(135deg,rgba(var(--scry-facet-movie-rgb),0.96),rgba(var(--scry-facet-movie-rgb),0.72))] text-white",
+  series:
+    "bg-[linear-gradient(135deg,rgba(var(--scry-facet-series-rgb),0.96),rgba(var(--scry-facet-series-rgb),0.72))] text-white",
+  anime:
+    "bg-[linear-gradient(135deg,rgba(var(--scry-facet-anime-rgb),0.96),rgba(var(--scry-facet-anime-rgb),0.72))] text-white",
+};
 const DEFAULT_MINIMUM_YEAR = 1900;
 const DEFAULT_MINIMUM_RATING = 7;
+
+function discoveryFacetIcon(
+  facet: DiscoveryContentType | null | undefined,
+): LucideIcon | null {
+  return facet ? (facetById(facet)?.icon ?? null) : null;
+}
 
 const GENRE_ICONS: LucideIcon[] = [
   Swords,
@@ -201,9 +217,10 @@ function heroBackdropStyle(item: DiscoveryItem | null): CSSProperties {
   if (!item) {
     return {};
   }
-  if (item.backgroundUrl) {
+  const backdropUrl = selectBackdropVariantUrl(item.backgroundUrl, "w1280");
+  if (backdropUrl) {
     return {
-      backgroundImage: `url(${item.backgroundUrl})`,
+      backgroundImage: `url(${backdropUrl})`,
     };
   }
   if (item.posterUrl) {
@@ -593,6 +610,7 @@ function DiscoveryRailCard({
   const owned = item.ownedInInput;
   const addable = !owned && canManageTitle;
   const requestable = !owned && !canManageTitle && canRequestMedia;
+  const facet = itemContentType(item);
   const subtitle = upcoming ? itemCalendarBadgeLabel(item) : item.year;
   const handleAction = React.useCallback(
     () => onAction(item),
@@ -612,6 +630,7 @@ function DiscoveryRailCard({
       <TitleCard
         title={discoveryItemDisplayTitle(item)}
         year={subtitle}
+        facet={facet}
         facetLabel={itemTypeLabel(item)}
         posterUrl={item.posterUrl}
         addable={addable}
@@ -697,6 +716,8 @@ function DiscoveryHero({
   const score = formatScore(item.rating);
   const match = itemMatchScore(item);
   const genres = discoveryItemDisplayGenreLabels(item).slice(0, 3);
+  const facet = itemContentType(item);
+  const FacetIcon = discoveryFacetIcon(facet);
   const statusLabel =
     item.statusTags
       .find((tag) => tag.trim().length > 0)
@@ -723,7 +744,17 @@ function DiscoveryHero({
           <span className="rounded-[7px] border border-[rgba(var(--scry-accent-rgb),0.4)] bg-[rgba(var(--scry-accent-rgb),0.22)] px-2.5 py-1 text-[11px] font-bold uppercase tracking-[0.04em] text-[#c3c9ff]">
             {t("discovery.featured")}
           </span>
-          <span className="rounded-[7px] bg-white/10 px-2.5 py-1 text-[11px] font-semibold uppercase text-[#cfd7ee]">
+          <span
+            className={cn(
+              "inline-flex items-center gap-1.5 rounded-[8px] px-2.5 py-1 text-[11px] font-black uppercase tracking-[0.035em] shadow-[inset_0_1px_0_rgba(255,255,255,0.28),0_8px_18px_rgba(0,0,0,0.22)]",
+              facet
+                ? DISCOVERY_FACET_PILL_CLASS[facet]
+                : "bg-white/15 text-[#cfd7ee]",
+            )}
+          >
+            {FacetIcon ? (
+              <FacetIcon className="h-3.5 w-3.5" aria-hidden="true" />
+            ) : null}
             {itemTypeLabel(item)}
           </span>
         </div>
@@ -860,10 +891,10 @@ function DiscoveryFilterMultiSelect({
             >
               <Checkbox
                 checked={selected}
+                size="compact"
                 tabIndex={-1}
                 aria-hidden="true"
-                aria-label={option}
-                className="pointer-events-none border-[var(--scry-border2)] data-[state=checked]:border-[var(--scry-accent)] data-[state=checked]:bg-[var(--scry-accent)]"
+                className="pointer-events-none"
               />
               <span className="min-w-0 flex-1 truncate">{option}</span>
             </div>

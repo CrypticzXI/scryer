@@ -9,7 +9,7 @@ use crate::library_scan_metadata::{
 use crate::stored_paths::path_to_stored_string;
 use std::collections::VecDeque;
 
-use super::scan_title_scan::title_requires_scan_hydration;
+use super::scan_title_scan::{LibraryScanMediaWorkReservation, title_requires_scan_hydration};
 
 /// Concurrent sidecar/evidence reads per scan root. Evidence is cheap (one
 /// readdir plus at most two sidecar reads), so this can run much wider than
@@ -30,12 +30,14 @@ const LIBRARY_SCAN_MATCH_INPUT_QUEUE_CAPACITY: usize = 2 * LIBRARY_SCAN_METADATA
 /// Cap on candidates parked in the match worker waiting for SMG results
 /// before the worker stops pulling intake and lets channel backpressure hold.
 const LIBRARY_SCAN_MATCH_PENDING_HIGH_WATER: usize = 4 * LIBRARY_SCAN_METADATA_SEARCH_BATCH_SIZE;
-const LIBRARY_SCAN_CANDIDATE_EVENT_QUEUE_CAPACITY: usize = 64;
-const LIBRARY_SCAN_INVENTORY_EVENT_QUEUE_CAPACITY: usize = 64;
-const LIBRARY_SCAN_MATCH_EVENT_QUEUE_CAPACITY: usize = 64;
+/// Resolved candidates can perform storage/progress work. Keep this burst
+/// small so finalization cannot starve SMG dispatch and completion handling.
+const LIBRARY_SCAN_MATCH_RESOLUTION_BURST_SIZE: usize = 4;
 /// Hydration runs downstream of matching in bulk batches so a fresh episodic
 /// library does not degrade into one SMG metadata call per title.
 const LIBRARY_SCAN_HYDRATION_IN_FLIGHT_BATCHES: usize = 2;
+const LIBRARY_SCAN_DIAGNOSTIC_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(2);
+const LIBRARY_SCAN_DIAGNOSTIC_ITEM_INTERVAL: usize = 20;
 
 pub(super) type ScanCandidateKey = u64;
 
@@ -55,6 +57,36 @@ impl ScanPipelineCandidate {
         match self {
             Self::Movie(candidate) => movie_candidate_batch_search_keys(candidate),
             Self::Series(candidate) => series_candidate_batch_search_keys(candidate),
+        }
+    }
+
+    fn diagnostic_name(&self) -> String {
+        match self {
+            Self::Movie(candidate) => {
+                if !candidate.query.trim().is_empty() {
+                    candidate.query.trim().to_string()
+                } else {
+                    Path::new(&candidate.file.path)
+                        .file_stem()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or(candidate.file.path.as_str())
+                        .to_string()
+                }
+            }
+            Self::Series(candidate) => {
+                if !candidate.query.trim().is_empty() {
+                    candidate.query.trim().to_string()
+                } else if let Some(folder_name) = candidate.folder_name.as_deref() {
+                    folder_name.to_string()
+                } else {
+                    candidate
+                        .folder_path
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .map(str::to_string)
+                        .unwrap_or_else(|| candidate.folder_path.to_string_lossy().into_owned())
+                }
+            }
         }
     }
 }
@@ -158,6 +190,25 @@ enum CandidateInventoryState {
     Canceled,
 }
 
+fn candidate_match_state_name(state: &CandidateMatchState) -> &'static str {
+    match state {
+        CandidateMatchState::Pending => "pending",
+        CandidateMatchState::MatchedAwaitingInventory(_) => "matched_awaiting_inventory",
+        CandidateMatchState::Dispatched => "dispatched",
+        CandidateMatchState::Terminal => "terminal",
+    }
+}
+
+fn candidate_inventory_state_name(state: &CandidateInventoryState) -> &'static str {
+    match state {
+        CandidateInventoryState::Pending => "pending",
+        CandidateInventoryState::Ready(_) => "ready",
+        CandidateInventoryState::Consumed => "consumed",
+        CandidateInventoryState::Failed => "failed",
+        CandidateInventoryState::Canceled => "canceled",
+    }
+}
+
 struct CandidateRuntime {
     item_path: String,
     scoped: bool,
@@ -205,14 +256,11 @@ pub(super) async fn run_library_scan_pipeline(
     let coordinator = LibraryScanCoordinator::new(app.clone(), session_id.to_string());
     require_directory_library_path(library_path)?;
 
-    let (candidate_events_tx, mut candidate_events_rx) =
-        tokio::sync::mpsc::channel(LIBRARY_SCAN_CANDIDATE_EVENT_QUEUE_CAPACITY);
-    let (inventory_events_tx, mut inventory_events_rx) =
-        tokio::sync::mpsc::channel(LIBRARY_SCAN_INVENTORY_EVENT_QUEUE_CAPACITY);
+    let (candidate_events_tx, mut candidate_events_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (inventory_events_tx, mut inventory_events_rx) = tokio::sync::mpsc::unbounded_channel();
     let (match_input_tx, match_input_rx) =
         tokio::sync::mpsc::channel(LIBRARY_SCAN_MATCH_INPUT_QUEUE_CAPACITY);
-    let (match_events_tx, mut match_events_rx) =
-        tokio::sync::mpsc::channel(LIBRARY_SCAN_MATCH_EVENT_QUEUE_CAPACITY);
+    let (match_events_tx, mut match_events_rx) = tokio::sync::mpsc::unbounded_channel();
     let (storage_watch_tx, storage_watch_rx) = tokio::sync::watch::channel(0usize);
 
     let jobs_handle = spawn_candidate_jobs(CandidateJobContext {
@@ -248,9 +296,19 @@ pub(super) async fn run_library_scan_pipeline(
         app,
         actor,
         session_id,
+        facet,
         cancel_token.clone(),
     )
     .await?;
+    let analysis_profile = pool.analysis_profile();
+    info!(
+        path = %library_path,
+        facet = facet.as_str(),
+        title_group_concurrency = analysis_profile.title_group_concurrency,
+        file_analysis_concurrency_per_title = analysis_profile.file_analysis_concurrency_per_title,
+        global_analysis_concurrency = crate::GLOBAL_LIBRARY_SCAN_ANALYSIS_CONCURRENCY,
+        "library scan media analysis profile selected"
+    );
 
     let mut summary = LibraryScanSummary::default();
     let mut candidates: HashMap<ScanCandidateKey, CandidateRuntime> = HashMap::new();
@@ -262,10 +320,18 @@ pub(super) async fn run_library_scan_pipeline(
     let mut worker_report: Option<Box<ScanMatchWorkerReport>> = None;
     let mut stored_inventory_paths = 0usize;
     let mut file_total_marked = false;
+    let mut media_file_total_counted = 0usize;
     let mut discovery_error: Option<AppError> = None;
     // Duplicate candidates resolving to already-covered title work are
     // deduplicated by the analysis pool; they count as skipped, not matched.
     let mut media_dedup_skips = 0usize;
+    let mut candidate_events_seen = 0usize;
+    let mut inventory_events_seen = 0usize;
+    let mut match_events_seen = 0usize;
+    let mut match_events_matched = 0usize;
+    let mut match_events_terminal = 0usize;
+    let mut hydration_batches_completed = 0usize;
+    let mut last_diagnostic_heartbeat = Instant::now();
 
     let mut hydration = ScanHydrationBatcher::new(app.clone(), cancel_token.clone());
 
@@ -284,10 +350,14 @@ pub(super) async fn run_library_scan_pipeline(
         }
 
         let hydration_deadline = hydration.deadline_instant();
+        let diagnostic_deadline = tokio::time::Instant::from_std(
+            last_diagnostic_heartbeat + LIBRARY_SCAN_DIAGNOSTIC_HEARTBEAT_INTERVAL,
+        );
         tokio::select! {
             event = candidate_events_rx.recv(), if !evidence_done => {
                 match event {
                     Some(ScanCandidateJobEvent::EvidenceDone { metrics }) => {
+                        candidate_events_seen = candidate_events_seen.saturating_add(1);
                         evidence_done = true;
                         info!(
                             path = %library_path,
@@ -303,6 +373,7 @@ pub(super) async fn run_library_scan_pipeline(
                         );
                     }
                     Some(event) => {
+                        candidate_events_seen = candidate_events_seen.saturating_add(1);
                         if let Err(error) = handle_candidate_job_event(CandidateEventContext {
                             app,
                             facet,
@@ -324,12 +395,14 @@ pub(super) async fn run_library_scan_pipeline(
             event = inventory_events_rx.recv(), if !inventory_done => {
                 match event {
                     Some(event) => {
+                        inventory_events_seen = inventory_events_seen.saturating_add(1);
                         handle_inventory_job_event(InventoryEventContext {
                             coordinator: &coordinator,
                             candidates: &mut candidates,
                             hydration: &mut hydration,
                             pool: &mut pool,
                             media_dedup_skips: &mut media_dedup_skips,
+                            media_file_total_counted: &mut media_file_total_counted,
                             stored_inventory_paths: &mut stored_inventory_paths,
                             storage_watch: &storage_watch_tx,
                         }, event).await?;
@@ -361,12 +434,15 @@ pub(super) async fn run_library_scan_pipeline(
             event = match_events_rx.recv(), if !match_done => {
                 match event {
                     Some(ScanMatchWorkerEvent::Matched { key, work }) => {
+                        match_events_seen = match_events_seen.saturating_add(1);
+                        match_events_matched = match_events_matched.saturating_add(1);
                         handle_match_decision(
                             &coordinator,
                             &mut candidates,
                             &mut hydration,
                             &mut pool,
                             &mut media_dedup_skips,
+                            &mut media_file_total_counted,
                             &mut stored_inventory_paths,
                             &storage_watch_tx,
                             key,
@@ -374,12 +450,15 @@ pub(super) async fn run_library_scan_pipeline(
                         ).await?;
                     }
                     Some(ScanMatchWorkerEvent::Terminal { key }) => {
+                        match_events_seen = match_events_seen.saturating_add(1);
+                        match_events_terminal = match_events_terminal.saturating_add(1);
                         handle_match_decision(
                             &coordinator,
                             &mut candidates,
                             &mut hydration,
                             &mut pool,
                             &mut media_dedup_skips,
+                            &mut media_file_total_counted,
                             &mut stored_inventory_paths,
                             &storage_watch_tx,
                             key,
@@ -387,6 +466,7 @@ pub(super) async fn run_library_scan_pipeline(
                         ).await?;
                     }
                     Some(ScanMatchWorkerEvent::Done(report)) => {
+                        match_events_seen = match_events_seen.saturating_add(1);
                         info!(
                             path = %library_path,
                             facet = facet.as_str(),
@@ -408,12 +488,19 @@ pub(super) async fn run_library_scan_pipeline(
                 }
             }
             hydrated = hydration.join_next(), if hydration.has_in_flight() => {
-                for work in hydrated? {
-                    if !pool.enqueue(work) {
-                        media_dedup_skips = media_dedup_skips.saturating_add(1);
-                    }
-                }
-                pool.pump().await?;
+                hydration_batches_completed = hydration_batches_completed.saturating_add(1);
+                let batch = hydrated?;
+                info!(
+                    path = %library_path,
+                    facet = facet.as_str(),
+                    hydrated = batch.ready.len(),
+                    failed = batch.failed.len(),
+                    hydration_pending = hydration.pending.len(),
+                    hydration_in_flight = hydration.in_flight.len(),
+                    hydration_batches_completed,
+                    "library scan hydration chunk settled"
+                );
+                commit_hydration_batch(&mut pool, batch).await?;
             }
             _ = async {
                 match hydration_deadline {
@@ -423,6 +510,7 @@ pub(super) async fn run_library_scan_pipeline(
             }, if hydration_deadline.is_some() => {
                 hydration.flush_due();
             }
+            _ = tokio::time::sleep_until(diagnostic_deadline) => {}
             _ = async {
                 match cancel_token.as_ref() {
                     Some(token) => token.cancelled().await,
@@ -436,12 +524,60 @@ pub(super) async fn run_library_scan_pipeline(
         hydration.maybe_flush();
         pool.pump().await?;
 
+        if last_diagnostic_heartbeat.elapsed() >= LIBRARY_SCAN_DIAGNOSTIC_HEARTBEAT_INTERVAL {
+            let (
+                candidate_pending,
+                candidate_awaiting_inventory,
+                candidate_dispatched,
+                candidate_terminal,
+            ) = candidate_runtime_state_counts(&candidates);
+            let pool_diagnostics = pool.diagnostics();
+            debug!(
+                path = %library_path,
+                facet = facet.as_str(),
+                elapsed_ms = elapsed_ms_u64(started_at),
+                evidence_done,
+                inventory_done,
+                match_done,
+                forward_queue = forward_queue.len(),
+                candidates = candidates.len(),
+                candidate_pending,
+                candidate_awaiting_inventory,
+                candidate_dispatched,
+                candidate_terminal,
+                candidate_events = candidate_events_seen,
+                inventory_events = inventory_events_seen,
+                match_events = match_events_seen,
+                match_events_matched,
+                match_events_terminal,
+                stored_inventory_paths,
+                hydration_pending = hydration.pending.len(),
+                hydration_in_flight = hydration.in_flight.len(),
+                hydration_flush_requested = hydration.flush_requested,
+                hydration_batches_completed,
+                media_file_total_counted,
+                media_reserved = pool_diagnostics.reserved,
+                media_pending_full = pool_diagnostics.pending_full,
+                media_pending_scoped = pool_diagnostics.pending_scoped,
+                media_analysis_ready = pool_diagnostics.analysis_ready,
+                media_in_flight = pool_diagnostics.in_flight,
+                media_completed = pool_diagnostics.completed,
+                media_walk_tasks = pool_diagnostics.walk_tasks,
+                media_input_closed = pool_diagnostics.input_closed,
+                media_file_total_known_marked = pool_diagnostics.file_total_known_marked,
+                media_dedup_skips,
+                "library scan pipeline diagnostic heartbeat"
+            );
+            last_diagnostic_heartbeat = Instant::now();
+        }
+
         try_mark_file_total_known(TotalKnownLatchContext {
             coordinator: &coordinator,
             pool: &mut pool,
             candidates: &candidates,
             hydration: &hydration,
             file_total_marked: &mut file_total_marked,
+            media_file_total_counted,
             match_done,
             cancel_token: cancel_token.as_ref(),
             started_at,
@@ -498,6 +634,7 @@ pub(super) async fn run_library_scan_pipeline(
                 hydration: &mut hydration,
                 pool: &mut pool,
                 media_dedup_skips: &mut media_dedup_skips,
+                media_file_total_counted: &mut media_file_total_counted,
                 stored_inventory_paths: &mut stored_inventory_paths,
                 storage_watch: &storage_watch_tx,
             },
@@ -524,6 +661,7 @@ pub(super) async fn run_library_scan_pipeline(
                     &mut hydration,
                     &mut pool,
                     &mut media_dedup_skips,
+                    &mut media_file_total_counted,
                     &mut stored_inventory_paths,
                     &storage_watch_tx,
                     key,
@@ -538,6 +676,7 @@ pub(super) async fn run_library_scan_pipeline(
                     &mut hydration,
                     &mut pool,
                     &mut media_dedup_skips,
+                    &mut media_file_total_counted,
                     &mut stored_inventory_paths,
                     &storage_watch_tx,
                     key,
@@ -569,16 +708,13 @@ pub(super) async fn run_library_scan_pipeline(
     if canceled {
         hydration.abort();
     } else {
-        hydration.flush_due();
-        for work in hydration.drain().await? {
-            pool.enqueue(work);
-        }
-        try_mark_file_total_known(TotalKnownLatchContext {
+        drain_hydration_into_media(StreamingHydrationDrainContext {
             coordinator: &coordinator,
             pool: &mut pool,
             candidates: &candidates,
-            hydration: &hydration,
+            hydration: &mut hydration,
             file_total_marked: &mut file_total_marked,
+            media_file_total_counted,
             match_done,
             cancel_token: cancel_token.as_ref(),
             started_at,
@@ -600,6 +736,7 @@ pub(super) async fn run_library_scan_pipeline(
             candidates: &candidates,
             hydration: &hydration,
             file_total_marked: &mut file_total_marked,
+            media_file_total_counted,
             match_done,
             cancel_token: cancel_token.as_ref(),
             started_at,
@@ -695,6 +832,26 @@ fn matched_inventory_totals_ready(
         })
 }
 
+fn candidate_runtime_state_counts(
+    candidates: &HashMap<ScanCandidateKey, CandidateRuntime>,
+) -> (usize, usize, usize, usize) {
+    let mut pending = 0usize;
+    let mut awaiting_inventory = 0usize;
+    let mut dispatched = 0usize;
+    let mut terminal = 0usize;
+    for runtime in candidates.values() {
+        match runtime.match_state {
+            CandidateMatchState::Pending => pending = pending.saturating_add(1),
+            CandidateMatchState::MatchedAwaitingInventory(_) => {
+                awaiting_inventory = awaiting_inventory.saturating_add(1);
+            }
+            CandidateMatchState::Dispatched => dispatched = dispatched.saturating_add(1),
+            CandidateMatchState::Terminal => terminal = terminal.saturating_add(1),
+        }
+    }
+    (pending, awaiting_inventory, dispatched, terminal)
+}
+
 struct CandidateEventContext<'a> {
     app: &'a AppUseCase,
     facet: &'a MediaFacet,
@@ -770,6 +927,7 @@ struct InventoryEventContext<'a> {
     hydration: &'a mut ScanHydrationBatcher,
     pool: &'a mut LibraryScanMediaAnalysisPool,
     media_dedup_skips: &'a mut usize,
+    media_file_total_counted: &'a mut usize,
     stored_inventory_paths: &'a mut usize,
     storage_watch: &'a tokio::sync::watch::Sender<usize>,
 }
@@ -786,6 +944,7 @@ async fn handle_inventory_job_event(
                 ctx.hydration,
                 ctx.pool,
                 ctx.media_dedup_skips,
+                ctx.media_file_total_counted,
                 ctx.stored_inventory_paths,
                 ctx.storage_watch,
                 key,
@@ -815,6 +974,13 @@ async fn handle_inventory_job_event(
         ScanInventoryJobEvent::InventoryCanceled { key } => {
             if let Some(runtime) = ctx.candidates.get_mut(&key) {
                 runtime.inventory = CandidateInventoryState::Canceled;
+                if matches!(
+                    runtime.match_state,
+                    CandidateMatchState::MatchedAwaitingInventory(_)
+                ) {
+                    runtime.match_state = CandidateMatchState::Terminal;
+                    // Matched but inventory was canceled: no media analysis for it.
+                }
             }
         }
     }
@@ -827,6 +993,7 @@ struct TotalKnownLatchContext<'a> {
     candidates: &'a HashMap<ScanCandidateKey, CandidateRuntime>,
     hydration: &'a ScanHydrationBatcher,
     file_total_marked: &'a mut bool,
+    media_file_total_counted: usize,
     match_done: bool,
     cancel_token: Option<&'a CancellationToken>,
     started_at: Instant,
@@ -838,15 +1005,11 @@ async fn try_mark_file_total_known(ctx: TotalKnownLatchContext<'_>) -> AppResult
     if *ctx.file_total_marked
         || !ctx.match_done
         || library_scan_cancel_requested(ctx.cancel_token)
-        || !ctx.hydration.is_idle()
         || !matched_inventory_totals_ready(ctx.candidates)
     {
         return Ok(());
     }
 
-    // Promotion publishes totals for queued pre-counted work. The progress
-    // tracker intentionally ignores later file_total_delta values once the
-    // known latch is set, so this must happen before mark_file_total_known.
     ctx.pool.pump().await?;
     if !matched_inventory_totals_ready(ctx.candidates) {
         return Ok(());
@@ -855,11 +1018,18 @@ async fn try_mark_file_total_known(ctx: TotalKnownLatchContext<'_>) -> AppResult
     ctx.coordinator.mark_file_total_known().await;
     ctx.coordinator.publish_progress().await;
     *ctx.file_total_marked = true;
+    let diagnostics = ctx.pool.diagnostics();
     info!(
         path = %ctx.library_path,
         facet = ctx.facet.as_str(),
+        file_total = ctx.media_file_total_counted,
+        hydration_pending = ctx.hydration.pending.len(),
+        hydration_in_flight = ctx.hydration.in_flight.len(),
+        media_reserved = diagnostics.reserved,
+        media_analysis_ready = diagnostics.analysis_ready,
+        media_in_flight = diagnostics.in_flight,
         elapsed_ms = elapsed_ms_u64(ctx.started_at),
-        "library scan inventory totals ready"
+        "library scan file totals known"
     );
     Ok(())
 }
@@ -874,6 +1044,7 @@ async fn handle_inventory_ready(
     hydration: &mut ScanHydrationBatcher,
     pool: &mut LibraryScanMediaAnalysisPool,
     media_dedup_skips: &mut usize,
+    media_file_total_counted: &mut usize,
     stored_inventory_paths: &mut usize,
     storage_watch: &tokio::sync::watch::Sender<usize>,
     key: ScanCandidateKey,
@@ -882,6 +1053,17 @@ async fn handle_inventory_ready(
     let Some(runtime) = candidates.get_mut(&key) else {
         return Ok(());
     };
+    if (key as usize) % LIBRARY_SCAN_DIAGNOSTIC_ITEM_INTERVAL == 0 {
+        debug!(
+            key,
+            files = files.len(),
+            stored_inventory_paths = *stored_inventory_paths,
+            runtime_scoped = runtime.scoped,
+            match_state = candidate_match_state_name(&runtime.match_state),
+            inventory_state = candidate_inventory_state_name(&runtime.inventory),
+            "library scan inventory ready diagnostic"
+        );
+    }
 
     match &mut runtime.match_state {
         CandidateMatchState::MatchedAwaitingInventory(_) => {
@@ -896,6 +1078,7 @@ async fn handle_inventory_ready(
                 hydration,
                 pool,
                 media_dedup_skips,
+                media_file_total_counted,
                 *work,
                 files,
             )
@@ -924,34 +1107,56 @@ async fn handle_match_decision(
     hydration: &mut ScanHydrationBatcher,
     pool: &mut LibraryScanMediaAnalysisPool,
     media_dedup_skips: &mut usize,
+    media_file_total_counted: &mut usize,
     stored_inventory_paths: &mut usize,
     storage_watch: &tokio::sync::watch::Sender<usize>,
     key: ScanCandidateKey,
     matched_work: Option<LibraryScanTitleWork>,
 ) -> AppResult<()> {
+    let started_at = Instant::now();
     let Some(runtime) = candidates.get_mut(&key) else {
         return Ok(());
     };
+    let initial_match_state = candidate_match_state_name(&runtime.match_state);
+    let initial_inventory_state = candidate_inventory_state_name(&runtime.inventory);
+    let scoped = runtime.scoped;
+    let matched = matched_work.is_some();
+    let matched_title_name = matched_work.as_ref().map(|work| work.title.name.clone());
+    let mut file_count = 0usize;
+    let outcome: &'static str;
 
     match matched_work {
         Some(work) if runtime.scoped => {
             // Scoped work already carries its own file list.
             runtime.match_state = CandidateMatchState::Dispatched;
             let files = work.discovered_files.clone().unwrap_or_default();
-            dispatch_media_work(coordinator, hydration, pool, media_dedup_skips, work, files)
-                .await?;
+            file_count = files.len();
+            outcome = "dispatched_scoped";
+            dispatch_media_work(
+                coordinator,
+                hydration,
+                pool,
+                media_dedup_skips,
+                media_file_total_counted,
+                work,
+                files,
+            )
+            .await?;
         }
         Some(work) => {
             match std::mem::replace(&mut runtime.inventory, CandidateInventoryState::Consumed) {
                 CandidateInventoryState::Ready(files) => {
+                    file_count = files.len();
                     *stored_inventory_paths = stored_inventory_paths.saturating_sub(files.len());
                     let _ = storage_watch.send(*stored_inventory_paths);
                     runtime.match_state = CandidateMatchState::Dispatched;
+                    outcome = "dispatched_inventory_ready";
                     dispatch_media_work(
                         coordinator,
                         hydration,
                         pool,
                         media_dedup_skips,
+                        media_file_total_counted,
                         work,
                         files,
                     )
@@ -961,10 +1166,12 @@ async fn handle_match_decision(
                     runtime.inventory = CandidateInventoryState::Pending;
                     runtime.match_state =
                         CandidateMatchState::MatchedAwaitingInventory(Box::new(work));
+                    outcome = "matched_awaiting_inventory";
                 }
                 CandidateInventoryState::Failed => {
                     runtime.inventory = CandidateInventoryState::Failed;
                     runtime.match_state = CandidateMatchState::Terminal;
+                    outcome = "inventory_failed";
                     warn!(
                         item_path = %runtime.item_path,
                         "matched candidate has failed media inventory; skipping analysis"
@@ -972,6 +1179,7 @@ async fn handle_match_decision(
                 }
                 CandidateInventoryState::Canceled | CandidateInventoryState::Consumed => {
                     runtime.match_state = CandidateMatchState::Terminal;
+                    outcome = "inventory_unavailable";
                 }
             }
         }
@@ -982,13 +1190,119 @@ async fn handle_match_decision(
             if let CandidateInventoryState::Ready(files) =
                 std::mem::replace(&mut runtime.inventory, CandidateInventoryState::Consumed)
             {
+                file_count = files.len();
                 *stored_inventory_paths = stored_inventory_paths.saturating_sub(files.len());
                 let _ = storage_watch.send(*stored_inventory_paths);
             } else if matches!(runtime.inventory, CandidateInventoryState::Consumed) {
                 // preserved state
             }
             runtime.match_state = CandidateMatchState::Terminal;
+            outcome = "unmatched_or_terminal";
         }
+    }
+    let elapsed_ms = elapsed_ms_u64(started_at);
+    if elapsed_ms >= 500 || (key as usize) % LIBRARY_SCAN_DIAGNOSTIC_ITEM_INTERVAL == 0 {
+        debug!(
+            key,
+            title_name = matched_title_name.as_deref(),
+            matched,
+            scoped,
+            file_count,
+            outcome,
+            initial_match_state,
+            initial_inventory_state,
+            final_match_state = candidate_match_state_name(&runtime.match_state),
+            final_inventory_state = candidate_inventory_state_name(&runtime.inventory),
+            stored_inventory_paths = *stored_inventory_paths,
+            hydration_pending = hydration.pending.len(),
+            hydration_in_flight = hydration.in_flight.len(),
+            media_dedup_skips = *media_dedup_skips,
+            elapsed_ms,
+            "library scan coordinator match decision diagnostic"
+        );
+    }
+    Ok(())
+}
+
+async fn commit_hydration_batch(
+    pool: &mut LibraryScanMediaAnalysisPool,
+    batch: ScanHydrationBatchResult,
+) -> AppResult<()> {
+    for (reservation, reason) in batch.failed {
+        pool.fail_reserved(reservation, &reason).await;
+    }
+    for reservation in batch.ready {
+        pool.commit_reserved(reservation);
+    }
+    pool.pump().await
+}
+
+struct StreamingHydrationDrainContext<'a> {
+    coordinator: &'a LibraryScanCoordinator,
+    pool: &'a mut LibraryScanMediaAnalysisPool,
+    candidates: &'a HashMap<ScanCandidateKey, CandidateRuntime>,
+    hydration: &'a mut ScanHydrationBatcher,
+    file_total_marked: &'a mut bool,
+    media_file_total_counted: usize,
+    match_done: bool,
+    cancel_token: Option<&'a CancellationToken>,
+    started_at: Instant,
+    library_path: &'a str,
+    facet: &'a MediaFacet,
+}
+
+async fn drain_hydration_into_media(ctx: StreamingHydrationDrainContext<'_>) -> AppResult<()> {
+    try_mark_file_total_known(TotalKnownLatchContext {
+        coordinator: ctx.coordinator,
+        pool: ctx.pool,
+        candidates: ctx.candidates,
+        hydration: ctx.hydration,
+        file_total_marked: ctx.file_total_marked,
+        media_file_total_counted: ctx.media_file_total_counted,
+        match_done: ctx.match_done,
+        cancel_token: ctx.cancel_token,
+        started_at: ctx.started_at,
+        library_path: ctx.library_path,
+        facet: ctx.facet,
+    })
+    .await?;
+
+    ctx.hydration.flush_due();
+    ctx.hydration.maybe_flush();
+    while ctx.hydration.has_pending_or_in_flight() {
+        let batch = ctx.hydration.join_next().await?;
+        let batch_len = batch.ready.len().saturating_add(batch.failed.len());
+        commit_hydration_batch(ctx.pool, batch).await?;
+        try_mark_file_total_known(TotalKnownLatchContext {
+            coordinator: ctx.coordinator,
+            pool: ctx.pool,
+            candidates: ctx.candidates,
+            hydration: ctx.hydration,
+            file_total_marked: ctx.file_total_marked,
+            media_file_total_counted: ctx.media_file_total_counted,
+            match_done: ctx.match_done,
+            cancel_token: ctx.cancel_token,
+            started_at: ctx.started_at,
+            library_path: ctx.library_path,
+            facet: ctx.facet,
+        })
+        .await?;
+
+        let diagnostics = ctx.pool.diagnostics();
+        info!(
+            path = %ctx.library_path,
+            facet = ctx.facet.as_str(),
+            batch_len,
+            hydration_pending = ctx.hydration.pending.len(),
+            hydration_in_flight = ctx.hydration.in_flight.len(),
+            media_analysis_ready = diagnostics.analysis_ready,
+            media_in_flight = diagnostics.in_flight,
+            elapsed_ms = elapsed_ms_u64(ctx.started_at),
+            "library scan final hydration chunk committed"
+        );
+
+        ctx.hydration.flush_due();
+        ctx.hydration.maybe_flush();
     }
     Ok(())
 }
@@ -998,9 +1312,14 @@ async fn dispatch_media_work(
     hydration: &mut ScanHydrationBatcher,
     pool: &mut LibraryScanMediaAnalysisPool,
     media_dedup_skips: &mut usize,
+    media_file_total_counted: &mut usize,
     mut work: LibraryScanTitleWork,
     files: Vec<LibraryFile>,
 ) -> AppResult<()> {
+    let started_at = Instant::now();
+    let title_id = work.title.id.clone();
+    let title_name = work.title.name.clone();
+    let input_file_count = files.len();
     if work
         .discovered_files
         .as_ref()
@@ -1010,32 +1329,114 @@ async fn dispatch_media_work(
         work.discovered_files = Some(files);
     }
 
-    if hydration.submit(work).await? {
-        return Ok(());
-    }
-
-    // No hydration needed: enqueue straight into the analysis pool.
-    let work = hydration.take_passthrough();
-    if let Some(work) = work {
-        if !pool.enqueue(work) {
+    let Some(reservation) = pool.reserve_work(work) else {
+        if input_file_count > 0 {
             *media_dedup_skips = media_dedup_skips.saturating_add(1);
         }
-        pool.pump().await?;
+        let diagnostics = pool.diagnostics();
+        debug!(
+            title_id = %title_id,
+            title_name = %title_name,
+            input_file_count,
+            media_dedup_skips = *media_dedup_skips,
+            media_reserved = diagnostics.reserved,
+            media_analysis_ready = diagnostics.analysis_ready,
+            media_in_flight = diagnostics.in_flight,
+            elapsed_ms = elapsed_ms_u64(started_at),
+            "library scan media work reservation skipped"
+        );
+        return Ok(());
+    };
+
+    let counted_files = reservation.file_count();
+    if counted_files > 0 {
+        *media_file_total_counted = (*media_file_total_counted).saturating_add(counted_files);
+        coordinator.add_file_total(counted_files).await;
         coordinator.publish_progress().await;
+    }
+
+    match hydration.submit(reservation).await? {
+        ScanHydrationSubmission::Queued => {
+            let elapsed_ms = elapsed_ms_u64(started_at);
+            if elapsed_ms >= 250 {
+                debug!(
+                    title_id = %title_id,
+                    title_name = %title_name,
+                    input_file_count,
+                    counted_files,
+                    hydration_pending = hydration.pending.len(),
+                    hydration_in_flight = hydration.in_flight.len(),
+                    elapsed_ms,
+                    "library scan media work queued for hydration"
+                );
+            }
+            Ok(())
+        }
+        ScanHydrationSubmission::Ready(reservation) => {
+            pool.commit_reserved(reservation);
+            pool.pump().await?;
+            coordinator.publish_progress().await;
+            let diagnostics = pool.diagnostics();
+            let enqueue_elapsed_ms = elapsed_ms_u64(started_at);
+            if enqueue_elapsed_ms >= 250 {
+                debug!(
+                    title_id = %title_id,
+                    title_name = %title_name,
+                    input_file_count,
+                    counted_files,
+                    media_reserved = diagnostics.reserved,
+                    media_analysis_ready = diagnostics.analysis_ready,
+                    media_in_flight = diagnostics.in_flight,
+                    media_walk_tasks = diagnostics.walk_tasks,
+                    elapsed_ms = enqueue_elapsed_ms,
+                    "library scan media work committed without hydration"
+                );
+            }
+            Ok(())
+        }
+    }?;
+
+    let pump_elapsed_ms = elapsed_ms_u64(started_at);
+    if pump_elapsed_ms >= 500 {
+        let diagnostics = pool.diagnostics();
+        debug!(
+            title_id = %title_id,
+            title_name = %title_name,
+            input_file_count,
+            counted_files,
+            media_reserved = diagnostics.reserved,
+            media_pending_full = diagnostics.pending_full,
+            media_pending_scoped = diagnostics.pending_scoped,
+            media_analysis_ready = diagnostics.analysis_ready,
+            media_in_flight = diagnostics.in_flight,
+            media_walk_tasks = diagnostics.walk_tasks,
+            media_completed = diagnostics.completed,
+            elapsed_ms = pump_elapsed_ms,
+            "library scan media work pump diagnostic"
+        );
     }
     Ok(())
 }
 
 /// Batches titles that need SMG hydration before media analysis so hydration
 /// stays in bulk requests and off the candidate-to-match critical path.
+struct ScanHydrationBatchResult {
+    ready: Vec<LibraryScanMediaWorkReservation>,
+    failed: Vec<(LibraryScanMediaWorkReservation, String)>,
+}
+
+enum ScanHydrationSubmission {
+    Queued,
+    Ready(LibraryScanMediaWorkReservation),
+}
+
 struct ScanHydrationBatcher {
     app: AppUseCase,
     cancel_token: Option<CancellationToken>,
-    pending: Vec<LibraryScanTitleWork>,
-    passthrough: Option<LibraryScanTitleWork>,
+    pending: VecDeque<LibraryScanMediaWorkReservation>,
     first_pending_at: Option<Instant>,
     flush_requested: bool,
-    in_flight: tokio::task::JoinSet<AppResult<Vec<LibraryScanTitleWork>>>,
+    in_flight: tokio::task::JoinSet<AppResult<ScanHydrationBatchResult>>,
 }
 
 impl ScanHydrationBatcher {
@@ -1043,35 +1444,32 @@ impl ScanHydrationBatcher {
         Self {
             app,
             cancel_token,
-            pending: Vec::new(),
-            passthrough: None,
+            pending: VecDeque::new(),
             first_pending_at: None,
             flush_requested: false,
             in_flight: tokio::task::JoinSet::new(),
         }
     }
 
-    /// Returns true when the work was queued for hydration; false when the
-    /// work does not need hydration (retrieve it with `take_passthrough`).
-    async fn submit(&mut self, work: LibraryScanTitleWork) -> AppResult<bool> {
+    async fn submit(
+        &mut self,
+        reservation: LibraryScanMediaWorkReservation,
+    ) -> AppResult<ScanHydrationSubmission> {
         let metadata_language = self.app.metadata_language().await;
-        if title_requires_scan_hydration(&self.app, &work.title, &metadata_language).await? {
+        if title_requires_scan_hydration(&self.app, &reservation.work.title, &metadata_language)
+            .await?
+        {
             if self.pending.is_empty() {
                 self.first_pending_at = Some(Instant::now());
             }
-            self.pending.push(work);
+            self.pending.push_back(reservation);
             if self.pending.len() >= crate::catalog_workflow::HYDRATION_BULK_BATCH_SIZE {
                 self.flush_requested = true;
             }
-            Ok(true)
+            Ok(ScanHydrationSubmission::Queued)
         } else {
-            self.passthrough = Some(work);
-            Ok(false)
+            Ok(ScanHydrationSubmission::Ready(reservation))
         }
-    }
-
-    fn take_passthrough(&mut self) -> Option<LibraryScanTitleWork> {
-        self.passthrough.take()
     }
 
     fn deadline_instant(&self) -> Option<tokio::time::Instant> {
@@ -1091,38 +1489,57 @@ impl ScanHydrationBatcher {
     }
 
     fn maybe_flush(&mut self) {
-        if !self.flush_requested
-            || self.pending.is_empty()
-            || self.in_flight.len() >= LIBRARY_SCAN_HYDRATION_IN_FLIGHT_BATCHES
+        while self.flush_requested
+            && !self.pending.is_empty()
+            && self.in_flight.len() < LIBRARY_SCAN_HYDRATION_IN_FLIGHT_BATCHES
         {
-            return;
+            let batch_len = self
+                .pending
+                .len()
+                .min(crate::catalog_workflow::HYDRATION_BULK_BATCH_SIZE);
+            let batch = self.pending.drain(..batch_len).collect::<Vec<_>>();
+            if self.pending.is_empty() {
+                self.flush_requested = false;
+                self.first_pending_at = None;
+            } else {
+                self.flush_requested = true;
+                self.first_pending_at = Some(Instant::now());
+            }
+            info!(
+                batch_len = batch.len(),
+                pending = self.pending.len(),
+                in_flight = self.in_flight.len(),
+                "library scan hydration chunk dispatched"
+            );
+            let app = self.app.clone();
+            let cancel_token = self.cancel_token.clone();
+            self.in_flight.spawn(async move {
+                hydrate_library_scan_title_works(&app, batch, cancel_token.as_ref()).await
+            });
         }
-        self.flush_requested = false;
-        self.first_pending_at = None;
-
-        let batch = std::mem::take(&mut self.pending);
-        let app = self.app.clone();
-        let cancel_token = self.cancel_token.clone();
-        self.in_flight.spawn(async move {
-            hydrate_library_scan_title_works(&app, batch, cancel_token.as_ref()).await
-        });
     }
 
     fn has_in_flight(&self) -> bool {
         !self.in_flight.is_empty()
     }
 
-    async fn join_next(&mut self) -> AppResult<Vec<LibraryScanTitleWork>> {
-        match self.in_flight.join_next().await {
-            Some(Ok(result)) => result,
-            Some(Err(error)) if error.is_cancelled() => Ok(Vec::new()),
-            Some(Err(error)) => Err(AppError::Repository(error.to_string())),
-            None => Ok(Vec::new()),
-        }
+    fn has_pending_or_in_flight(&self) -> bool {
+        !self.pending.is_empty() || !self.in_flight.is_empty()
     }
 
-    fn is_idle(&self) -> bool {
-        self.pending.is_empty() && self.in_flight.is_empty() && self.passthrough.is_none()
+    async fn join_next(&mut self) -> AppResult<ScanHydrationBatchResult> {
+        match self.in_flight.join_next().await {
+            Some(Ok(result)) => result,
+            Some(Err(error)) if error.is_cancelled() => Ok(ScanHydrationBatchResult {
+                ready: Vec::new(),
+                failed: Vec::new(),
+            }),
+            Some(Err(error)) => Err(AppError::Repository(error.to_string())),
+            None => Ok(ScanHydrationBatchResult {
+                ready: Vec::new(),
+                failed: Vec::new(),
+            }),
+        }
     }
 
     fn abort(&mut self) {
@@ -1130,33 +1547,20 @@ impl ScanHydrationBatcher {
         self.in_flight.abort_all();
     }
 
-    async fn drain(&mut self) -> AppResult<Vec<LibraryScanTitleWork>> {
-        self.flush_requested = true;
-        self.maybe_flush();
-        let mut works = Vec::new();
-        while !self.in_flight.is_empty() || !self.pending.is_empty() {
-            works.extend(self.join_next().await?);
-            self.flush_requested = true;
-            self.maybe_flush();
-            if self.in_flight.is_empty() && self.pending.is_empty() {
-                break;
-            }
-        }
-        Ok(works)
-    }
 }
 
 async fn hydrate_library_scan_title_works(
     app: &AppUseCase,
-    works: Vec<LibraryScanTitleWork>,
+    reservations: Vec<LibraryScanMediaWorkReservation>,
     cancel_token: Option<&CancellationToken>,
-) -> AppResult<Vec<LibraryScanTitleWork>> {
+) -> AppResult<ScanHydrationBatchResult> {
     let session = None::<()>;
     let _ = session;
-    let targets = works
+    let started_at = Instant::now();
+    let targets = reservations
         .iter()
-        .map(|work| crate::catalog_workflow::HydrationTarget {
-            title: work.title.clone(),
+        .map(|reservation| crate::catalog_workflow::HydrationTarget {
+            title: reservation.work.title.clone(),
             requested_tvdb_id: None,
             sync_wanted_after_completion: false,
             source: crate::catalog_workflow::HydrationSource::LibraryScanFull,
@@ -1170,22 +1574,34 @@ async fn hydrate_library_scan_title_works(
     let mut hydrated_by_id: HashMap<String, Title> = outcome.hydrated_titles.into_iter().collect();
     let failed: HashMap<String, String> = outcome.failed_titles.into_iter().collect();
 
-    let mut ready = Vec::with_capacity(works.len());
-    for mut work in works {
-        if let Some(reason) = failed.get(&work.title.id) {
+    let mut ready = Vec::with_capacity(reservations.len());
+    let mut failed_reservations = Vec::new();
+    for mut reservation in reservations {
+        if let Some(reason) = failed.get(&reservation.work.title.id) {
             warn!(
-                title_id = %work.title.id,
+                title_id = %reservation.work.title.id,
                 reason = %reason,
                 "library scan title hydration failed"
             );
+            failed_reservations.push((reservation, reason.clone()));
             continue;
         }
-        if let Some(hydrated) = hydrated_by_id.remove(&work.title.id) {
-            work.title = hydrated;
+        if let Some(hydrated) = hydrated_by_id.remove(&reservation.work.title.id) {
+            reservation.work.title = hydrated;
         }
-        ready.push(work);
+        ready.push(reservation);
     }
-    Ok(ready)
+    info!(
+        batch_len = ready.len().saturating_add(failed_reservations.len()),
+        hydrated = ready.len(),
+        failed = failed_reservations.len(),
+        elapsed_ms = elapsed_ms_u64(started_at),
+        "library scan hydration chunk completed"
+    );
+    Ok(ScanHydrationBatchResult {
+        ready,
+        failed: failed_reservations,
+    })
 }
 
 struct CandidateJobContext {
@@ -1196,8 +1612,8 @@ struct CandidateJobContext {
     scan_hints: Option<LibraryScanHintSet>,
     mark_discovery_complete_on_drain: bool,
     cancel_token: Option<CancellationToken>,
-    candidate_events: tokio::sync::mpsc::Sender<ScanCandidateJobEvent>,
-    inventory_events: tokio::sync::mpsc::Sender<ScanInventoryJobEvent>,
+    candidate_events: tokio::sync::mpsc::UnboundedSender<ScanCandidateJobEvent>,
+    inventory_events: tokio::sync::mpsc::UnboundedSender<ScanInventoryJobEvent>,
     storage_watch: tokio::sync::watch::Receiver<usize>,
 }
 
@@ -1210,8 +1626,7 @@ fn spawn_candidate_jobs(ctx: CandidateJobContext) -> AppResult<tokio::task::Join
         if let Err(error) = result {
             let _ = ctx
                 .candidate_events
-                .send(ScanCandidateJobEvent::DiscoveryFailed { error })
-                .await;
+                .send(ScanCandidateJobEvent::DiscoveryFailed { error });
         }
     }))
 }
@@ -1238,7 +1653,6 @@ struct CandidateJobRunner<'a> {
     next_key: ScanCandidateKey,
     evidence_set: tokio::task::JoinSet<EvidenceJobOutput>,
     inventory_set: tokio::task::JoinSet<()>,
-    inline_inventory_queue: VecDeque<(ScanCandidateKey, Vec<LibraryFile>)>,
     inventory_queue: VecDeque<(ScanCandidateKey, PathBuf, CancellationToken)>,
     cancel_tokens: HashMap<ScanCandidateKey, CancellationToken>,
     metrics: CandidateJobMetrics,
@@ -1251,7 +1665,6 @@ impl<'a> CandidateJobRunner<'a> {
             next_key: 0,
             evidence_set: tokio::task::JoinSet::new(),
             inventory_set: tokio::task::JoinSet::new(),
-            inline_inventory_queue: VecDeque::new(),
             inventory_queue: VecDeque::new(),
             cancel_tokens: HashMap::new(),
             metrics: CandidateJobMetrics::default(),
@@ -1283,16 +1696,36 @@ impl<'a> CandidateJobRunner<'a> {
                         scoped,
                         inventory_cancel: inventory_cancel.clone(),
                     })
-                    .await
                     .is_err()
                 {
                     return false;
                 }
                 self.metrics.candidates_emitted = self.metrics.candidates_emitted.saturating_add(1);
+                if self.metrics.candidates_emitted % LIBRARY_SCAN_DIAGNOSTIC_ITEM_INTERVAL == 0 {
+                    info!(
+                        kind = ?self.ctx.kind,
+                        candidates_emitted = self.metrics.candidates_emitted,
+                        skipped = self.metrics.skipped,
+                        failed = self.metrics.failed,
+                        inline_inventory = self.metrics.inline_inventory_emitted,
+                        inventory_walks_queued = self.metrics.inventory_walks_queued,
+                        inventory_walks_started = self.metrics.inventory_walks_started,
+                        evidence_in_flight = self.evidence_set.len(),
+                        inventory_in_flight = self.inventory_set.len(),
+                        inventory_queue = self.inventory_queue.len(),
+                        "library scan candidate producer diagnostic"
+                    );
+                }
                 if let Some(files) = inline_inventory {
                     self.metrics.inline_inventory_emitted =
                         self.metrics.inline_inventory_emitted.saturating_add(1);
-                    if !scoped && !self.try_forward_inline_inventory(key, files) {
+                    if !scoped
+                        && self
+                            .ctx
+                            .inventory_events
+                            .send(ScanInventoryJobEvent::Inventory { key, files })
+                            .is_err()
+                    {
                         return false;
                     }
                 } else if let Some(target) = inventory_target {
@@ -1308,7 +1741,6 @@ impl<'a> CandidateJobRunner<'a> {
                 self.ctx
                     .candidate_events
                     .send(ScanCandidateJobEvent::Skipped { item_path })
-                    .await
                     .is_ok()
             }
             EvidenceJobOutput::Failed { item_path, error } => {
@@ -1316,57 +1748,9 @@ impl<'a> CandidateJobRunner<'a> {
                 self.ctx
                     .candidate_events
                     .send(ScanCandidateJobEvent::EvidenceFailed { item_path, error })
-                    .await
                     .is_ok()
             }
         }
-    }
-
-    fn try_forward_inline_inventory(
-        &mut self,
-        key: ScanCandidateKey,
-        files: Vec<LibraryFile>,
-    ) -> bool {
-        match self
-            .ctx
-            .inventory_events
-            .try_send(ScanInventoryJobEvent::Inventory { key, files })
-        {
-            Ok(()) => true,
-            Err(tokio::sync::mpsc::error::TrySendError::Full(
-                ScanInventoryJobEvent::Inventory { key, files },
-            )) => {
-                self.inline_inventory_queue.push_back((key, files));
-                true
-            }
-            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => false,
-            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => true,
-        }
-    }
-
-    async fn flush_inline_inventory(&mut self, block: bool) -> bool {
-        while let Some((key, files)) = self.inline_inventory_queue.pop_front() {
-            let event = ScanInventoryJobEvent::Inventory { key, files };
-            if block {
-                if self.ctx.inventory_events.send(event).await.is_err() {
-                    return false;
-                }
-                continue;
-            }
-
-            match self.ctx.inventory_events.try_send(event) {
-                Ok(()) => {}
-                Err(tokio::sync::mpsc::error::TrySendError::Full(
-                    ScanInventoryJobEvent::Inventory { key, files },
-                )) => {
-                    self.inline_inventory_queue.push_front((key, files));
-                    return true;
-                }
-                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => return false,
-                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => return true,
-            }
-        }
-        true
     }
 
     /// Launch queued inventory walks. In the evidence loop this is
@@ -1434,9 +1818,7 @@ impl<'a> CandidateJobRunner<'a> {
             self.inventory_set.spawn(async move {
                 let _permit = permit;
                 if cancel.is_cancelled() || library_scan_cancel_requested(scan_cancel.as_ref()) {
-                    let _ = events
-                        .send(ScanInventoryJobEvent::InventoryCanceled { key })
-                        .await;
+                    let _ = events.send(ScanInventoryJobEvent::InventoryCanceled { key });
                     return;
                 }
 
@@ -1472,7 +1854,7 @@ impl<'a> CandidateJobRunner<'a> {
                         error,
                     },
                 };
-                let _ = events.send(event).await;
+                let _ = events.send(event);
             });
         }
     }
@@ -1484,9 +1866,6 @@ impl<'a> CandidateJobRunner<'a> {
                 return false;
             }
             self.launch_pending_inventory(false).await;
-            if !self.flush_inline_inventory(false).await {
-                return false;
-            }
             match self.evidence_set.join_next().await {
                 Some(Ok(output)) => {
                     if !self.forward_evidence_output(output).await {
@@ -1504,25 +1883,20 @@ impl<'a> CandidateJobRunner<'a> {
         true
     }
 
-    async fn send_evidence_done(&self) -> bool {
+    fn send_evidence_done(&self) -> bool {
         self.ctx
             .candidate_events
             .send(ScanCandidateJobEvent::EvidenceDone {
                 metrics: self.metrics,
             })
-            .await
             .is_ok()
     }
 
     async fn settle(mut self) {
         while !library_scan_cancel_requested(self.ctx.cancel_token.as_ref()) {
-            if !self.flush_inline_inventory(true).await {
-                break;
-            }
             self.launch_pending_inventory(true).await;
             if self.evidence_set.is_empty()
                 && self.inventory_set.is_empty()
-                && self.inline_inventory_queue.is_empty()
                 && self.inventory_queue.is_empty()
             {
                 break;
@@ -1552,7 +1926,6 @@ impl<'a> CandidateJobRunner<'a> {
         // Abort-and-join both pools; a no-op when they drained normally.
         // Joining (not just aborting) is required so cancellation cannot
         // leave tasks parked in the sets.
-        self.inline_inventory_queue.clear();
         self.inventory_queue.clear();
         self.evidence_set.abort_all();
         while self.evidence_set.join_next().await.is_some() {}
@@ -1582,7 +1955,6 @@ async fn run_movie_candidate_jobs(ctx: &CandidateJobContext) -> AppResult<()> {
         if library_scan_cancel_requested(ctx.cancel_token.as_ref()) {
             pending_entries.clear();
             runner.evidence_set.abort_all();
-            runner.inline_inventory_queue.clear();
             runner.inventory_queue.clear();
             runner.inventory_set.abort_all();
             break;
@@ -1602,9 +1974,6 @@ async fn run_movie_candidate_jobs(ctx: &CandidateJobContext) -> AppResult<()> {
         }
 
         runner.launch_pending_inventory(false).await;
-        if !runner.flush_inline_inventory(false).await {
-            return Ok(());
-        }
 
         if discovery_closed && pending_entries.is_empty() && runner.evidence_set.is_empty() {
             break;
@@ -1613,7 +1982,19 @@ async fn run_movie_candidate_jobs(ctx: &CandidateJobContext) -> AppResult<()> {
         tokio::select! {
             maybe_batch = queued_entries.recv(), if !discovery_closed => {
                 match maybe_batch {
-                    Some(Ok(batch)) => pending_entries.extend(batch),
+                    Some(Ok(batch)) => {
+                        let batch_len = batch.len();
+                        pending_entries.extend(batch);
+                        info!(
+                            kind = ?ctx.kind,
+                            batch_len,
+                            pending_entries = pending_entries.len(),
+                            evidence_in_flight = runner.evidence_set.len(),
+                            inventory_in_flight = runner.inventory_set.len(),
+                            inventory_queue = runner.inventory_queue.len(),
+                            "library scan candidate producer received discovery batch"
+                        );
+                    }
                     Some(Err(error)) => return Err(error),
                     None => discovery_closed = true,
                 }
@@ -1628,10 +2009,7 @@ async fn run_movie_candidate_jobs(ctx: &CandidateJobContext) -> AppResult<()> {
         }
     }
 
-    if !runner.drain_evidence().await || !runner.send_evidence_done().await {
-        return Ok(());
-    }
-    if !runner.drain_evidence().await || !runner.send_evidence_done().await {
+    if !runner.drain_evidence().await || !runner.send_evidence_done() {
         return Ok(());
     }
     runner.settle().await;
@@ -1689,7 +2067,6 @@ async fn run_series_candidate_jobs(ctx: &CandidateJobContext) -> AppResult<()> {
         if library_scan_cancel_requested(ctx.cancel_token.as_ref()) {
             pending_folders.clear();
             runner.evidence_set.abort_all();
-            runner.inline_inventory_queue.clear();
             runner.inventory_queue.clear();
             runner.inventory_set.abort_all();
             break;
@@ -1707,9 +2084,6 @@ async fn run_series_candidate_jobs(ctx: &CandidateJobContext) -> AppResult<()> {
         }
 
         runner.launch_pending_inventory(false).await;
-        if !runner.flush_inline_inventory(false).await {
-            return Ok(());
-        }
 
         if discovery_closed && pending_folders.is_empty() && runner.evidence_set.is_empty() {
             break;
@@ -1718,7 +2092,19 @@ async fn run_series_candidate_jobs(ctx: &CandidateJobContext) -> AppResult<()> {
         tokio::select! {
             maybe_batch = queued_folders.recv(), if !discovery_closed => {
                 match maybe_batch {
-                    Some(Ok(batch)) => pending_folders.extend(batch),
+                    Some(Ok(batch)) => {
+                        let batch_len = batch.len();
+                        pending_folders.extend(batch);
+                        info!(
+                            kind = ?ctx.kind,
+                            batch_len,
+                            pending_folders = pending_folders.len(),
+                            evidence_in_flight = runner.evidence_set.len(),
+                            inventory_in_flight = runner.inventory_set.len(),
+                            inventory_queue = runner.inventory_queue.len(),
+                            "library scan candidate producer received discovery batch"
+                        );
+                    }
                     Some(Err(error)) => return Err(error),
                     None => discovery_closed = true,
                 }
@@ -1762,6 +2148,9 @@ async fn run_series_candidate_jobs(ctx: &CandidateJobContext) -> AppResult<()> {
         coordinator.publish_progress().await;
     }
 
+    if !runner.drain_evidence().await || !runner.send_evidence_done() {
+        return Ok(());
+    }
     runner.settle().await;
     Ok(())
 }
@@ -1836,9 +2225,10 @@ struct ScanMatchWorkerState {
 async fn run_scan_match_worker(
     ctx: ScanMatchWorkerContext,
     mut input: tokio::sync::mpsc::Receiver<(ScanCandidateKey, ScanPipelineCandidate)>,
-    events: tokio::sync::mpsc::Sender<ScanMatchWorkerEvent>,
+    events: tokio::sync::mpsc::UnboundedSender<ScanMatchWorkerEvent>,
     cancel_token: Option<CancellationToken>,
 ) {
+    let worker_started_at = Instant::now();
     let coordinator = LibraryScanCoordinator::new(ctx.app.clone(), ctx.session_id.clone());
 
     let library_ids = vec![ctx.library_id.clone()];
@@ -1877,6 +2267,7 @@ async fn run_scan_match_worker(
     };
 
     let mut pending: Vec<QueuedMatchCandidate> = Vec::new();
+    let mut ready_resolution: VecDeque<QueuedMatchCandidate> = VecDeque::new();
     let mut in_flight_keys: HashSet<BatchMetadataSearchKey> = HashSet::new();
     let mut search_set: tokio::task::JoinSet<(
         Vec<BatchMetadataSearchKey>,
@@ -1886,12 +2277,19 @@ async fn run_scan_match_worker(
     // Set when every pending candidate is waiting on an in-flight key, so the
     // expired flush timer does not busy-loop until new state arrives.
     let mut flush_blocked = false;
+    let mut candidates_intaken = 0usize;
+    let mut metadata_batches_started = 0usize;
+    let mut metadata_batches_finished = 0usize;
 
     loop {
         if library_scan_cancel_requested(cancel_token.as_ref()) {
             break;
         }
-        if !intake_open && pending.is_empty() && search_set.is_empty() {
+        if !intake_open
+            && pending.is_empty()
+            && ready_resolution.is_empty()
+            && search_set.is_empty()
+        {
             break;
         }
 
@@ -1921,19 +2319,40 @@ async fn run_scan_match_worker(
                         continue;
                     }
                 };
+                metadata_batches_finished = metadata_batches_finished.saturating_add(1);
                 for key in &chunk {
                     in_flight_keys.remove(key);
                 }
                 flush_blocked = false;
+                info!(
+                    facet = ctx.facet.as_str(),
+                    batch_keys = chunk.len(),
+                    exact_id_keys = chunk.iter().filter(|key| key.has_external_id()).count(),
+                    fuzzy_keys = chunk.iter().filter(|key| !key.has_external_id()).count(),
+                    pending = pending.len(),
+                    in_flight_keys = in_flight_keys.len(),
+                    search_tasks = search_set.len(),
+                    metadata_batches_started,
+                    metadata_batches_finished,
+                    elapsed_ms = elapsed_ms_u64(worker_started_at),
+                    "library scan match worker metadata batch completed"
+                );
                 match result {
                     Ok(results) => {
                         state.search_results.extend(results);
-                        if resolve_ready_candidates(&ctx, &coordinator, &mut state, &mut pending, &events)
-                            .await
-                            .is_err()
-                        {
+                        if stage_ready_candidates(&state.search_results, &mut pending, &mut ready_resolution)
+                            .is_err() {
                             break;
                         }
+                        debug!(
+                            facet = ctx.facet.as_str(),
+                            pending = pending.len(),
+                            ready_resolution = ready_resolution.len(),
+                            search_tasks = search_set.len(),
+                            in_flight_keys = in_flight_keys.len(),
+                            elapsed_ms = elapsed_ms_u64(worker_started_at),
+                            "library scan match worker staged ready candidates"
+                        );
                     }
                     Err(error) => {
                         // SMG batch failure: terminal metadata failure for every
@@ -1957,6 +2376,24 @@ async fn run_scan_match_worker(
                         {
                             break;
                         }
+                        candidates_intaken = candidates_intaken.saturating_add(1);
+                        if candidates_intaken % LIBRARY_SCAN_DIAGNOSTIC_ITEM_INTERVAL == 0 {
+                            debug!(
+                                facet = ctx.facet.as_str(),
+                                candidates_intaken,
+                                pending = pending.len(),
+                                ready_resolution = ready_resolution.len(),
+                                intake_open,
+                                search_tasks = search_set.len(),
+                                in_flight_keys = in_flight_keys.len(),
+                                executed_requests = state.report.stats.executed_requests,
+                                logical_lookups = state.report.stats.logical_lookups,
+                                scanned = state.report.summary.scanned,
+                                matched = state.report.summary.matched,
+                                unmatched = state.report.summary.unmatched,
+                                "library scan match worker intake diagnostic"
+                            );
+                        }
                         flush_blocked = false;
                         if pending.len() == 1 {
                             coordinator.publish_progress().await;
@@ -1976,10 +2413,24 @@ async fn run_scan_match_worker(
             }, if flush_deadline.is_some() && search_set.len() < LIBRARY_SCAN_METADATA_IN_FLIGHT_BATCHES => {
                 // Timer flush below.
             }
+            _ = std::future::ready(()), if !ready_resolution.is_empty() => {}
         }
 
         // Flush policy: full batch, timer expiry, or closed intake.
         while search_set.len() < LIBRARY_SCAN_METADATA_IN_FLIGHT_BATCHES && !pending.is_empty() {
+            if !state.search_results.is_empty()
+                && stage_ready_candidates(
+                    &state.search_results,
+                    &mut pending,
+                    &mut ready_resolution,
+                )
+                .is_err()
+            {
+                break;
+            }
+            if pending.is_empty() {
+                break;
+            }
             let timer_expired = pending.first().is_some_and(|queued| {
                 queued.queued_at.elapsed() >= LIBRARY_SCAN_MATCH_FLUSH_INTERVAL
             });
@@ -1987,6 +2438,13 @@ async fn run_scan_match_worker(
             if !size_ready && !timer_expired && intake_open {
                 break;
             }
+            let flush_reason = if size_ready {
+                "size"
+            } else if timer_expired {
+                "timer"
+            } else {
+                "intake_closed"
+            };
 
             let chunk = match next_pipeline_search_chunk(
                 &state.search_results,
@@ -2014,6 +2472,22 @@ async fn run_scan_match_worker(
                         state.report.stats.executed_requests.saturating_add(1);
                 }
             }
+            metadata_batches_started = metadata_batches_started.saturating_add(1);
+            info!(
+                facet = ctx.facet.as_str(),
+                batch_keys = chunk.len(),
+                exact_id_keys = chunk.iter().filter(|key| key.has_external_id()).count(),
+                fuzzy_keys = chunk.iter().filter(|key| !key.has_external_id()).count(),
+                pending = pending.len(),
+                ready_resolution = ready_resolution.len(),
+                search_tasks = search_set.len(),
+                in_flight_keys = in_flight_keys.len(),
+                metadata_batches_started,
+                metadata_batches_finished,
+                flush_reason,
+                elapsed_ms = elapsed_ms_u64(worker_started_at),
+                "library scan match worker dispatching metadata batch"
+            );
             let gateway = ctx.app.services.library.metadata_gateway.clone();
             let language = ctx.metadata_language.clone();
             let batch_cancel = cancel_token.clone();
@@ -2027,6 +2501,21 @@ async fn run_scan_match_worker(
                 .await;
                 (chunk, result)
             });
+        }
+
+        if !ready_resolution.is_empty()
+            && resolve_ready_candidate_burst(
+                &ctx,
+                &coordinator,
+                &mut state,
+                &mut ready_resolution,
+                &events,
+                LIBRARY_SCAN_MATCH_RESOLUTION_BURST_SIZE,
+            )
+            .await
+            .is_err()
+        {
+            break;
         }
     }
 
@@ -2044,9 +2533,7 @@ async fn run_scan_match_worker(
             stats: MetadataLookupBatchStats::default(),
         },
     );
-    let _ = events
-        .send(ScanMatchWorkerEvent::Done(Box::new(report)))
-        .await;
+    let _ = events.send(ScanMatchWorkerEvent::Done(Box::new(report)));
 }
 
 async fn intake_candidate(
@@ -2054,11 +2541,17 @@ async fn intake_candidate(
     coordinator: &LibraryScanCoordinator,
     state: &mut ScanMatchWorkerState,
     pending: &mut Vec<QueuedMatchCandidate>,
-    events: &tokio::sync::mpsc::Sender<ScanMatchWorkerEvent>,
+    events: &tokio::sync::mpsc::UnboundedSender<ScanMatchWorkerEvent>,
     key: ScanCandidateKey,
     candidate: ScanPipelineCandidate,
 ) -> Result<(), ()> {
+    let candidate_started_at = Instant::now();
     state.report.summary.scanned += 1;
+    let candidate_kind = match &candidate {
+        ScanPipelineCandidate::Movie(_) => "movie",
+        ScanPipelineCandidate::Series(_) => "series",
+    };
+    let candidate_name = candidate.diagnostic_name();
     let item_path = match &candidate {
         ScanPipelineCandidate::Movie(movie) => normalize_library_scan_item_path(&movie.file.path),
         ScanPipelineCandidate::Series(series) => series.item_path().trim().to_string(),
@@ -2117,16 +2610,30 @@ async fn intake_candidate(
             warn!(error = %error, "library scan candidate processing failed");
             state.report.summary.unmatched += 1;
             coordinator.mark_title_match_completed(1).await;
-            return send_terminal(events, &mut sink, key).await;
+            if candidate_started_at.elapsed() >= LIBRARY_SCAN_DIAGNOSTIC_HEARTBEAT_INTERVAL {
+                debug!(
+                    facet = ctx.facet.as_str(),
+                    key,
+                    candidate_name = %candidate_name,
+                    elapsed_ms = elapsed_ms_u64(candidate_started_at),
+                    outcome = "error",
+                    "library scan match worker slow candidate intake"
+                );
+            }
+            return send_terminal(events, &mut sink, key);
         }
     };
 
     match unresolved {
         Some(candidate) => {
             // Register the SMG lookup for metadata progress before queueing.
+            let mut search_key_count = 0usize;
+            let mut exact_id_key_count = 0usize;
             if let Ok(keys) = candidate.batch_search_keys()
                 && !keys.is_empty()
             {
+                search_key_count = keys.len();
+                exact_id_key_count = keys.iter().filter(|key| key.has_external_id()).count();
                 state.report.stats.logical_lookups =
                     state.report.stats.logical_lookups.saturating_add(1);
                 coordinator.add_metadata_total(1).await;
@@ -2136,14 +2643,44 @@ async fn intake_candidate(
                 candidate,
                 queued_at: Instant::now(),
             });
+            let elapsed_ms = elapsed_ms_u64(candidate_started_at);
+            if elapsed_ms >= 500 || (key as usize) % LIBRARY_SCAN_DIAGNOSTIC_ITEM_INTERVAL == 0 {
+                debug!(
+                    facet = ctx.facet.as_str(),
+                    key,
+                    candidate_kind,
+                    candidate_name = %candidate_name,
+                    search_key_count,
+                    exact_id_key_count,
+                    pending = pending.len(),
+                    elapsed_ms,
+                    outcome = "queued_metadata",
+                    "library scan match worker candidate intake diagnostic"
+                );
+            }
             Ok(())
         }
-        None => send_terminal(events, &mut sink, key).await,
+        None => {
+            let elapsed_ms = elapsed_ms_u64(candidate_started_at);
+            if elapsed_ms >= 500 || (key as usize) % LIBRARY_SCAN_DIAGNOSTIC_ITEM_INTERVAL == 0 {
+                debug!(
+                    facet = ctx.facet.as_str(),
+                    key,
+                    candidate_kind,
+                    candidate_name = %candidate_name,
+                    produced_work = sink.staged.is_some(),
+                    elapsed_ms,
+                    outcome = "terminal",
+                    "library scan match worker candidate intake diagnostic"
+                );
+            }
+            send_terminal(events, &mut sink, key)
+        }
     }
 }
 
-async fn send_terminal(
-    events: &tokio::sync::mpsc::Sender<ScanMatchWorkerEvent>,
+fn send_terminal(
+    events: &tokio::sync::mpsc::UnboundedSender<ScanMatchWorkerEvent>,
     sink: &mut PipelineTitleWorkSink,
     key: ScanCandidateKey,
 ) -> Result<(), ()> {
@@ -2154,7 +2691,7 @@ async fn send_terminal(
         },
         None => ScanMatchWorkerEvent::Terminal { key },
     };
-    events.send(event).await.map_err(|_| ())
+    events.send(event).map_err(|_| ())
 }
 
 fn next_pipeline_search_chunk(
@@ -2199,29 +2736,57 @@ fn next_pipeline_search_chunk(
     Ok(chunk)
 }
 
-async fn resolve_ready_candidates(
-    ctx: &ScanMatchWorkerContext,
-    coordinator: &LibraryScanCoordinator,
-    state: &mut ScanMatchWorkerState,
+fn stage_ready_candidates(
+    search_results: &MetadataSearchResults,
     pending: &mut Vec<QueuedMatchCandidate>,
-    events: &tokio::sync::mpsc::Sender<ScanMatchWorkerEvent>,
+    ready_resolution: &mut VecDeque<QueuedMatchCandidate>,
 ) -> Result<(), ()> {
     let queued = std::mem::take(pending);
     let (ready, still_pending) = match split_ready_metadata_candidates(
         queued,
-        &state.search_results,
+        search_results,
         |queued: &QueuedMatchCandidate| queued.candidate.batch_search_keys(),
     ) {
         Ok(split) => split,
         Err(error) => {
             warn!(error = %error, "library scan match worker failed to split ready candidates");
-            return Ok(());
+            return Err(());
         }
     };
     *pending = still_pending;
+    ready_resolution.extend(ready);
+    Ok(())
+}
 
-    for queued in ready {
+async fn resolve_ready_candidate_burst(
+    ctx: &ScanMatchWorkerContext,
+    coordinator: &LibraryScanCoordinator,
+    state: &mut ScanMatchWorkerState,
+    ready_resolution: &mut VecDeque<QueuedMatchCandidate>,
+    events: &tokio::sync::mpsc::UnboundedSender<ScanMatchWorkerEvent>,
+    limit: usize,
+) -> Result<(), ()> {
+    let ready_count = ready_resolution.len();
+    let resolve_started_at = Instant::now();
+    let mut resolved_count = 0usize;
+    let mut matched_events = 0usize;
+    let mut terminal_events = 0usize;
+    let mut slow_resolved_count = 0usize;
+    let mut max_candidate_elapsed_ms = 0u64;
+    let mut max_candidate_key: Option<ScanCandidateKey> = None;
+    let mut max_candidate_name: Option<String> = None;
+
+    while resolved_count < limit {
+        let Some(queued) = ready_resolution.pop_front() else {
+            break;
+        };
         let QueuedMatchCandidate { key, candidate, .. } = queued;
+        let candidate_started_at = Instant::now();
+        let candidate_kind = match &candidate {
+            ScanPipelineCandidate::Movie(_) => "movie",
+            ScanPipelineCandidate::Series(_) => "series",
+        };
+        let candidate_name = candidate.diagnostic_name();
         let mut sink = PipelineTitleWorkSink { staged: None };
         let result = match candidate {
             ScanPipelineCandidate::Movie(movie) => {
@@ -2269,15 +2834,79 @@ async fn resolve_ready_candidates(
                 .await
             }
         };
+        let candidate_elapsed_ms = elapsed_ms_u64(candidate_started_at);
+        if candidate_elapsed_ms > max_candidate_elapsed_ms {
+            max_candidate_elapsed_ms = candidate_elapsed_ms;
+            max_candidate_key = Some(key);
+            max_candidate_name = Some(candidate_name.clone());
+        }
         if let Err(error) = result {
             warn!(error = %error, "library scan resolved candidate processing failed");
             state.report.summary.unmatched += 1;
             coordinator.mark_title_match_completed(1).await;
         }
         coordinator.mark_metadata_completed(1).await;
-        send_terminal(events, &mut sink, key).await?;
+        let produced_work = sink.staged.is_some();
+        if produced_work {
+            matched_events = matched_events.saturating_add(1);
+        } else {
+            terminal_events = terminal_events.saturating_add(1);
+        }
+        send_terminal(events, &mut sink, key)?;
+        resolved_count = resolved_count.saturating_add(1);
+        if candidate_elapsed_ms >= 1000 {
+            slow_resolved_count = slow_resolved_count.saturating_add(1);
+            info!(
+                facet = ctx.facet.as_str(),
+                key,
+                candidate_kind,
+                candidate_name = %candidate_name,
+                produced_work,
+                elapsed_ms = candidate_elapsed_ms,
+                resolved_count,
+                ready_count,
+                remaining_ready = ready_resolution.len(),
+                scanned = state.report.summary.scanned,
+                matched = state.report.summary.matched,
+                unmatched = state.report.summary.unmatched,
+                "library scan match worker slow resolved candidate"
+            );
+        } else if resolved_count % LIBRARY_SCAN_DIAGNOSTIC_ITEM_INTERVAL == 0 {
+            debug!(
+                facet = ctx.facet.as_str(),
+                resolved_count,
+                ready_count,
+                remaining_ready = ready_resolution.len(),
+                matched_events,
+                terminal_events,
+                max_candidate_elapsed_ms,
+                max_candidate_key,
+                max_candidate_name = max_candidate_name.as_deref(),
+                elapsed_ms = elapsed_ms_u64(resolve_started_at),
+                "library scan match worker resolve progress diagnostic"
+            );
+        }
     }
     coordinator.publish_progress().await;
+    if ready_count > 0 {
+        debug!(
+            facet = ctx.facet.as_str(),
+            resolved_count,
+            initial_ready_count = ready_count,
+            remaining_ready = ready_resolution.len(),
+            matched_events,
+            terminal_events,
+            slow_resolved_count,
+            max_candidate_elapsed_ms,
+            max_candidate_key,
+            max_candidate_name = max_candidate_name.as_deref(),
+            elapsed_ms = elapsed_ms_u64(resolve_started_at),
+            scanned = state.report.summary.scanned,
+            matched = state.report.summary.matched,
+            unmatched = state.report.summary.unmatched,
+            "library scan match worker resolved candidate burst"
+        );
+    }
     Ok(())
 }
 
@@ -2286,7 +2915,7 @@ async fn fail_candidates_for_chunk(
     coordinator: &LibraryScanCoordinator,
     state: &mut ScanMatchWorkerState,
     pending: &mut Vec<QueuedMatchCandidate>,
-    events: &tokio::sync::mpsc::Sender<ScanMatchWorkerEvent>,
+    events: &tokio::sync::mpsc::UnboundedSender<ScanMatchWorkerEvent>,
     chunk: &[BatchMetadataSearchKey],
     error: &AppError,
 ) -> Result<(), ()> {
@@ -2350,7 +2979,6 @@ async fn fail_candidates_for_chunk(
         coordinator.mark_metadata_failed(1).await;
         events
             .send(ScanMatchWorkerEvent::Terminal { key })
-            .await
             .map_err(|_| ())?;
     }
     coordinator.publish_progress().await;

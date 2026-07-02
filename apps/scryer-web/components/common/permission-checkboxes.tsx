@@ -171,7 +171,12 @@ function AppPermissionDropdown({
                 disabled={disabled}
                 className="flex min-w-max items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:bg-transparent"
               >
-                <Checkbox checked={checked} disabled={disabled} className="pointer-events-none" />
+                <Checkbox
+                  checked={checked}
+                  disabled={disabled}
+                  size="compact"
+                  className="pointer-events-none"
+                />
                 <span className="whitespace-nowrap">{permission.label}</span>
               </button>
             );
@@ -256,6 +261,7 @@ function FacetPermissionDropdown({
                         <Checkbox
                           checked={checked}
                           disabled={permissionDisabled}
+                          size="compact"
                           className="pointer-events-none"
                         />
                         <span className="whitespace-nowrap">{permission.label}</span>

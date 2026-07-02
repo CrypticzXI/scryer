@@ -93,7 +93,6 @@ impl AppUseCase {
         request: NewTitle,
         library_id: String,
     ) -> AppResult<CreateTitleOutcome> {
-        let request = self.enrich_new_title_poster_from_smg(request).await;
         if request.name.trim().is_empty() {
             return Err(AppError::Validation("title name is required".into()));
         }
@@ -161,51 +160,6 @@ impl AppUseCase {
         }
 
         Ok(created)
-    }
-
-    async fn enrich_new_title_poster_from_smg(&self, mut request: NewTitle) -> NewTitle {
-        request.poster_url = None;
-        let Some(tvdb_id) = request
-            .external_ids
-            .iter()
-            .find(|external_id| external_id.source == "tvdb")
-            .and_then(|external_id| external_id.value.trim().parse::<i64>().ok())
-        else {
-            return request;
-        };
-
-        let language = self.metadata_language().await;
-        let poster_url = match request.facet {
-            MediaFacet::Movie => self
-                .services
-                .library
-                .metadata_gateway
-                .get_movie(tvdb_id, &language)
-                .await
-                .map(|metadata| metadata.poster_url),
-            MediaFacet::Series | MediaFacet::Anime => self
-                .services
-                .library
-                .metadata_gateway
-                .get_series(tvdb_id, &language)
-                .await
-                .map(|metadata| metadata.poster_url),
-        };
-        match poster_url {
-            Ok(poster_url) if !poster_url.trim().is_empty() => {
-                request.poster_url = Some(poster_url.trim().to_string());
-            }
-            Ok(_) => {}
-            Err(error) => {
-                tracing::warn!(
-                    error = %error,
-                    tvdb_id,
-                    facet = request.facet.as_str(),
-                    "failed to resolve title poster from SMG metadata"
-                );
-            }
-        }
-        request
     }
 }
 impl AppUseCase {

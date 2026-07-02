@@ -743,6 +743,16 @@ pub struct TitleCatalogResult {
     pub offset: usize,
     pub has_more: bool,
     pub total_count: usize,
+    pub filter_counts: TitleCatalogFilterCounts,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct TitleCatalogFilterCounts {
+    pub all: usize,
+    pub monitored: usize,
+    pub unmonitored: usize,
+    pub continuing: usize,
+    pub ended: usize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -2,10 +2,10 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use scryer_application::{
     AppError, AppResult, CreateTitleOutcome, PendingTitleHydration, SortDirection,
-    TitleArtworkUrlUpdate, TitleCatalogContentStatus, TitleCatalogFilter, TitleCatalogResult,
-    TitleCatalogSort, TitleCatalogSortKey, TitleDeletePreviewInfo, TitleExternalIdLookup,
-    TitleExternalIdLookupMatch, TitleExternalRating, TitleMetadataUpdate, TitleRatingSummary,
-    TitleRepository,
+    TitleArtworkUrlUpdate, TitleCatalogContentStatus, TitleCatalogFilter, TitleCatalogFilterCounts,
+    TitleCatalogResult, TitleCatalogSort, TitleCatalogSortKey, TitleDeletePreviewInfo,
+    TitleExternalIdLookup, TitleExternalIdLookupMatch, TitleExternalRating, TitleMetadataUpdate,
+    TitleRatingSummary, TitleRepository,
     persisted_records::{
         PersistedTitleDecodeOptions, PersistedTitleReadMode, finalize_persisted_title,
     },
@@ -395,19 +395,22 @@ impl TitleRepository for TitleStore {
                 offset,
                 has_more: false,
                 total_count: 0,
+                filter_counts: TitleCatalogFilterCounts::default(),
             });
         }
 
         let query = query.as_deref();
-        let (count_sql, count_args) =
-            build_title_catalog_count_sql(facet.clone(), library_ids, query, &filter);
+        let filter_counts = fetch_title_catalog_filter_counts(
+            &self.datastore,
+            facet.clone(),
+            library_ids,
+            query,
+            &filter,
+        )
+        .await?;
         let total_count =
-            SqlRuntime::fetch_optional(self.datastore.read_exec(), &count_sql, &count_args)
-                .await?
-                .map(|row| row.i64("count"))
-                .transpose()?
-                .unwrap_or(0)
-                .max(0) as usize;
+            fetch_title_catalog_count(&self.datastore, facet.clone(), library_ids, query, &filter)
+                .await?;
 
         if total_count == 0 || limit == 0 {
             return Ok(TitleCatalogResult {
@@ -416,6 +419,7 @@ impl TitleRepository for TitleStore {
                 offset,
                 has_more: false,
                 total_count,
+                filter_counts,
             });
         }
 
@@ -443,6 +447,7 @@ impl TitleRepository for TitleStore {
             offset,
             has_more,
             total_count,
+            filter_counts,
         })
     }
 
@@ -1641,6 +1646,81 @@ fn build_title_catalog_count_sql(
         sql.push_str(&where_sql);
     }
     (sql, args)
+}
+
+async fn fetch_title_catalog_count(
+    datastore: &StoreDatastore,
+    facet: Option<MediaFacet>,
+    library_ids: &[String],
+    query: Option<&str>,
+    filter: &TitleCatalogFilter,
+) -> AppResult<usize> {
+    let (sql, args) = build_title_catalog_count_sql(facet, library_ids, query, filter);
+    Ok(
+        SqlRuntime::fetch_optional(datastore.read_exec(), &sql, &args)
+            .await?
+            .map(|row| row.i64("count"))
+            .transpose()?
+            .unwrap_or(0)
+            .max(0) as usize,
+    )
+}
+
+async fn fetch_title_catalog_filter_counts(
+    datastore: &StoreDatastore,
+    facet: Option<MediaFacet>,
+    library_ids: &[String],
+    query: Option<&str>,
+    active_filter: &TitleCatalogFilter,
+) -> AppResult<TitleCatalogFilterCounts> {
+    let all_filter = TitleCatalogFilter::default();
+    let monitored_filter = TitleCatalogFilter {
+        monitored: Some(true),
+        content_statuses: active_filter.content_statuses.clone(),
+    };
+    let unmonitored_filter = TitleCatalogFilter {
+        monitored: Some(false),
+        content_statuses: active_filter.content_statuses.clone(),
+    };
+    let continuing_filter = TitleCatalogFilter {
+        monitored: active_filter.monitored,
+        content_statuses: vec![TitleCatalogContentStatus::Continuing],
+    };
+    let ended_filter = TitleCatalogFilter {
+        monitored: active_filter.monitored,
+        content_statuses: vec![TitleCatalogContentStatus::Ended],
+    };
+
+    Ok(TitleCatalogFilterCounts {
+        all: fetch_title_catalog_count(datastore, facet.clone(), library_ids, query, &all_filter)
+            .await?,
+        monitored: fetch_title_catalog_count(
+            datastore,
+            facet.clone(),
+            library_ids,
+            query,
+            &monitored_filter,
+        )
+        .await?,
+        unmonitored: fetch_title_catalog_count(
+            datastore,
+            facet.clone(),
+            library_ids,
+            query,
+            &unmonitored_filter,
+        )
+        .await?,
+        continuing: fetch_title_catalog_count(
+            datastore,
+            facet.clone(),
+            library_ids,
+            query,
+            &continuing_filter,
+        )
+        .await?,
+        ended: fetch_title_catalog_count(datastore, facet, library_ids, query, &ended_filter)
+            .await?,
+    })
 }
 
 #[expect(

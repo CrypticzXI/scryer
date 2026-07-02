@@ -6,7 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { IconButton } from "@/components/ui/icon-button";
 import { TextActionButton } from "@/components/ui/text-action-button";
-import { Checkbox } from "@/components/ui/checkbox";
+import { CheckboxField } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
 import {
@@ -298,13 +298,18 @@ function PluginFilters({
           ))}
         </SelectContent>
       </Select>
-      <label className={`flex cursor-pointer select-none items-center gap-1.5 text-sm ${PLUGIN_MUTED_TEXT_CLASS}`}>
-        <Checkbox
-          checked={filters.officialOnly}
-          onCheckedChange={(checked) => onChange({ ...filters, officialOnly: !!checked })}
-        />
-        {t("settings.pluginOfficialOnly")}
-      </label>
+      <CheckboxField
+        id="settings-plugins-official-only"
+        checked={filters.officialOnly}
+        onCheckedChange={(checked) =>
+          onChange({ ...filters, officialOnly: !!checked })
+        }
+        label={t("settings.pluginOfficialOnly")}
+        size="compact"
+        className="items-center gap-2"
+        checkboxClassName="mt-0"
+        labelClassName={`text-sm font-medium ${PLUGIN_MUTED_TEXT_CLASS}`}
+      />
     </div>
   );
 }

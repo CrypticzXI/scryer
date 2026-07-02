@@ -8,7 +8,7 @@ import { InfoHelp } from "@/components/common/info-help";
 import { RenderBooleanIcon } from "@/components/common/boolean-icon";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Checkbox } from "@/components/ui/checkbox";
+import { Checkbox, CheckboxField } from "@/components/ui/checkbox";
 import { Input, integerInputProps, sanitizeDigits, signedIntegerInputProps } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -110,18 +110,22 @@ function DynamicDownloadClientConfigField({
 
   if (field.fieldType === "bool") {
     return (
-      <label className="flex items-center gap-2">
-        <Checkbox
-          id={fieldId}
-          checked={value === "true"}
-          onCheckedChange={(checked) => onChange(field.key, checked === true ? "true" : "false")}
-        />
-        <span className="inline-flex items-center gap-2 text-sm">
-          {field.label}
-          {requiredMarker}
-          {help}
-        </span>
-      </label>
+      <CheckboxField
+        id={fieldId}
+        checked={value === "true"}
+        onCheckedChange={(checked) =>
+          onChange(field.key, checked === true ? "true" : "false")
+        }
+        label={field.label}
+        labelAccessory={
+          <>
+            {requiredMarker}
+            {help}
+          </>
+        }
+        className="items-center"
+        checkboxClassName="mt-0"
+      />
     );
   }
 

@@ -4,7 +4,7 @@ import { AddNewButton } from "@/components/common/add-new-button";
 import { Button } from "@/components/ui/button";
 import { IconButton } from "@/components/ui/icon-button";
 import { RenderBooleanIcon } from "@/components/common/boolean-icon";
-import { Checkbox } from "@/components/ui/checkbox";
+import { Checkbox, CheckboxField } from "@/components/ui/checkbox";
 import { Input, integerInputProps, sanitizeDigits } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
@@ -375,16 +375,16 @@ export function SettingsDelayProfilesSection({
             </div>
 
             {/* Enabled */}
-            <label className="flex items-center gap-2 text-sm text-[var(--scry-ink2)]">
-              <Checkbox
-                id="settings-delay-profile-enabled"
-                checked={draft.enabled}
-                onCheckedChange={(checked) =>
-                  updateField("enabled", checked === true)
-                }
-              />
-              {t("settings.delayProfileEnabledLabel")}
-            </label>
+            <CheckboxField
+              id="settings-delay-profile-enabled"
+              checked={draft.enabled}
+              onCheckedChange={(checked) =>
+                updateField("enabled", checked === true)
+              }
+              label={t("settings.delayProfileEnabledLabel")}
+              className="items-center text-[var(--scry-ink2)]"
+              checkboxClassName="mt-0"
+            />
 
             {/* Actions */}
             <div className="flex flex-wrap gap-2 pt-2">

@@ -120,6 +120,16 @@ pub struct TitleCatalogPayload {
     pub offset: i32,
     pub has_more: bool,
     pub total_count: i32,
+    pub filter_counts: TitleCatalogFilterCountsPayload,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct TitleCatalogFilterCountsPayload {
+    pub all: i32,
+    pub monitored: i32,
+    pub unmonitored: i32,
+    pub continuing: i32,
+    pub ended: i32,
 }
 
 #[derive(SimpleObject, Clone)]

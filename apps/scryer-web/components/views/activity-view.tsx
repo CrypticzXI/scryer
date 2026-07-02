@@ -216,7 +216,11 @@ function ActivityFilterSection<T extends string>({
               key={option.value}
               className="flex cursor-pointer items-center gap-2 rounded-md px-1.5 py-1 text-sm hover:bg-accent/50"
             >
-              <Checkbox checked={isSelected} onCheckedChange={() => onToggle(option.value)} />
+              <Checkbox
+                checked={isSelected}
+                size="compact"
+                onCheckedChange={() => onToggle(option.value)}
+              />
               <Icon
                 className={cn(
                   "h-[14px] w-[14px] shrink-0",
@@ -256,7 +260,11 @@ function ActivityClientFilterSection({
               className="flex cursor-pointer items-center gap-2 rounded-md px-1.5 py-1 text-sm hover:bg-accent/50"
               title={`${option.clientName} • ${option.clientType}`}
             >
-              <Checkbox checked={isSelected} onCheckedChange={() => onToggle(option.clientId)} />
+              <Checkbox
+                checked={isSelected}
+                size="compact"
+                onCheckedChange={() => onToggle(option.clientId)}
+              />
               <DownloadClientTypeLogo
                 typeValue={option.clientType}
                 className="h-[14px] w-[14px] shrink-0"
@@ -285,7 +293,11 @@ function ActivityBooleanFilterSection({
     <div className="flex flex-col gap-2">
       <p className="text-xs font-medium text-muted-foreground">{title}</p>
       <label className="flex cursor-pointer items-center gap-2 rounded-md px-1.5 py-1 text-sm hover:bg-accent/50">
-        <Checkbox checked={checked} onCheckedChange={onToggle} />
+        <Checkbox
+          checked={checked}
+          size="compact"
+          onCheckedChange={onToggle}
+        />
         <span>{label}</span>
       </label>
     </div>
@@ -1114,7 +1126,7 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
                   <TableHeader>
                     <TableRow>
                       {activeTab === "import" ? (
-                        <TableHead className="w-12 min-w-12">
+                        <TableHead className="w-12 min-w-12 text-center">
                           <Checkbox
                             checked={
                               allVisibleImportItemsSelected
@@ -1126,6 +1138,8 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
                             disabled={visibleImportKeys.length === 0}
                             aria-label={t("activity.selectAllImportItems")}
                             onCheckedChange={toggleAllVisibleImportItemsSelected}
+                            size="table"
+                            className="mx-auto"
                           />
                         </TableHead>
                       ) : null}

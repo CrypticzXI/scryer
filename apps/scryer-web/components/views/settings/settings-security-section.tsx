@@ -2,7 +2,7 @@ import type * as React from "react";
 import { InfoHelp } from "@/components/common/info-help";
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
 import { Button } from "@/components/ui/button";
-import { Checkbox } from "@/components/ui/checkbox";
+import { CheckboxField } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Loader2 } from "lucide-react";
@@ -138,93 +138,72 @@ export function SettingsSecuritySection({
                 {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
                 {settings.formLoginEnabled ? t("label.disable") : t("label.enable")}
               </Button>
-              <div className={`${SECURITY_INSET_CLASS} flex w-fit max-w-full items-center gap-3 px-3 py-2`}>
-                <Checkbox
-                  checked={settings.skipLoginForLocalIps}
-                  disabled={busy}
-                  id="security-skip-local-ips"
-                  onCheckedChange={(checked) => onSkipLocalIpsChange(checked === true)}
-                />
-                <div className="flex items-center gap-2">
-                  <Label
-                    className="cursor-pointer text-sm font-medium"
-                    htmlFor="security-skip-local-ips"
-                  >
-                    {t("settings.securitySkipLocalIps")}
-                  </Label>
+              <CheckboxField
+                id="security-skip-local-ips"
+                checked={settings.skipLoginForLocalIps}
+                disabled={busy}
+                onCheckedChange={(checked) =>
+                  onSkipLocalIpsChange(checked === true)
+                }
+                label={t("settings.securitySkipLocalIps")}
+                labelAccessory={
                   <InfoHelp
                     ariaLabel={t("settings.securitySkipLocalIps")}
                     text={t("settings.securitySkipLocalIpsHelp")}
                   />
-                </div>
-              </div>
+                }
+                className={`${SECURITY_INSET_CLASS} w-fit max-w-full items-center px-3 py-2`}
+                checkboxClassName="mt-0"
+              />
               <div className="grid gap-3 md:grid-cols-3">
-                <div className={`${SECURITY_INSET_CLASS} flex max-w-full items-start gap-3 px-3 py-2`}>
-                  <Checkbox
-                    checked={settings.mfaRequireConfigStepUp}
-                    disabled={busy}
-                    id="security-mfa-config-step-up"
-                    onCheckedChange={(checked) => onMfaConfigStepUpChange(checked === true)}
-                  />
-                  <div className="grid gap-1">
-                    <div className="flex items-center gap-2">
-                      <Label
-                        className="cursor-pointer text-sm font-medium"
-                        htmlFor="security-mfa-config-step-up"
-                      >
-                        {t("settings.securityMfaConfigStepUp")}
-                      </Label>
-                      <InfoHelp
-                        ariaLabel={t("settings.securityMfaConfigStepUp")}
-                        text={t("settings.securityMfaConfigStepUpHelp")}
-                      />
-                    </div>
-                  </div>
-                </div>
-                <div className={`${SECURITY_INSET_CLASS} flex max-w-full items-start gap-3 px-3 py-2`}>
-                  <Checkbox
-                    checked={settings.mfaRequirePasswordLogin}
-                    disabled={busy}
-                    id="security-mfa-password-login"
-                    onCheckedChange={(checked) => onMfaPasswordLoginChange(checked === true)}
-                  />
-                  <div className="grid gap-1">
-                    <div className="flex items-center gap-2">
-                      <Label
-                        className="cursor-pointer text-sm font-medium"
-                        htmlFor="security-mfa-password-login"
-                      >
-                        {t("settings.securityMfaPasswordLogin")}
-                      </Label>
-                      <InfoHelp
-                        ariaLabel={t("settings.securityMfaPasswordLogin")}
-                        text={t("settings.securityMfaPasswordLoginHelp")}
-                      />
-                    </div>
-                  </div>
-                </div>
-                <div className={`${SECURITY_INSET_CLASS} flex max-w-full items-start gap-3 px-3 py-2`}>
-                  <Checkbox
-                    checked={settings.totpRequireJellyfinLogin}
-                    disabled={busy}
-                    id="security-totp-jellyfin-login"
-                    onCheckedChange={(checked) => onTotpJellyfinLoginChange(checked === true)}
-                  />
-                  <div className="grid gap-1">
-                    <div className="flex items-center gap-2">
-                      <Label
-                        className="cursor-pointer text-sm font-medium"
-                        htmlFor="security-totp-jellyfin-login"
-                      >
-                        {t("settings.securityTotpJellyfinLogin")}
-                      </Label>
-                      <InfoHelp
-                        ariaLabel={t("settings.securityTotpJellyfinLogin")}
-                        text={t("settings.securityTotpJellyfinLoginHelp")}
-                      />
-                    </div>
-                  </div>
-                </div>
+                <CheckboxField
+                  id="security-mfa-config-step-up"
+                  checked={settings.mfaRequireConfigStepUp}
+                  disabled={busy}
+                  onCheckedChange={(checked) =>
+                    onMfaConfigStepUpChange(checked === true)
+                  }
+                  label={t("settings.securityMfaConfigStepUp")}
+                  labelAccessory={
+                    <InfoHelp
+                      ariaLabel={t("settings.securityMfaConfigStepUp")}
+                      text={t("settings.securityMfaConfigStepUpHelp")}
+                    />
+                  }
+                  className={`${SECURITY_INSET_CLASS} max-w-full px-3 py-2`}
+                />
+                <CheckboxField
+                  id="security-mfa-password-login"
+                  checked={settings.mfaRequirePasswordLogin}
+                  disabled={busy}
+                  onCheckedChange={(checked) =>
+                    onMfaPasswordLoginChange(checked === true)
+                  }
+                  label={t("settings.securityMfaPasswordLogin")}
+                  labelAccessory={
+                    <InfoHelp
+                      ariaLabel={t("settings.securityMfaPasswordLogin")}
+                      text={t("settings.securityMfaPasswordLoginHelp")}
+                    />
+                  }
+                  className={`${SECURITY_INSET_CLASS} max-w-full px-3 py-2`}
+                />
+                <CheckboxField
+                  id="security-totp-jellyfin-login"
+                  checked={settings.totpRequireJellyfinLogin}
+                  disabled={busy}
+                  onCheckedChange={(checked) =>
+                    onTotpJellyfinLoginChange(checked === true)
+                  }
+                  label={t("settings.securityTotpJellyfinLogin")}
+                  labelAccessory={
+                    <InfoHelp
+                      ariaLabel={t("settings.securityTotpJellyfinLogin")}
+                      text={t("settings.securityTotpJellyfinLoginHelp")}
+                    />
+                  }
+                  className={`${SECURITY_INSET_CLASS} max-w-full px-3 py-2`}
+                />
               </div>
             </div>
           </div>

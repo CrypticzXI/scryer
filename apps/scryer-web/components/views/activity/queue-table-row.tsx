@@ -98,11 +98,13 @@ export const QueueTableRow = memo(function QueueTableRow({
         data-activity-client-type={queueItem.clientType}
       >
         {activeTab === "import" ? (
-          <TableCell className="w-12 min-w-12 align-middle">
+          <TableCell className="w-12 min-w-12 text-center align-middle">
             <Checkbox
               checked={isImportSelected}
               aria-label={t("activity.selectImportItem")}
               onCheckedChange={onToggleImportSelected}
+              size="table"
+              className="mx-auto"
             />
           </TableCell>
         ) : null}

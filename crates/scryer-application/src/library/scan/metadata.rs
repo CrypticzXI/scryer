@@ -93,6 +93,10 @@ impl BatchMetadataSearchKey {
             tvdb_id: identity_hint.and_then(|hint| hint.tvdb_id.clone()),
         })
     }
+
+    pub(crate) fn has_external_id(&self) -> bool {
+        self.imdb_id.is_some() || self.tmdb_id.is_some() || self.tvdb_id.is_some()
+    }
 }
 
 type SharedMetadataSearchItems = Arc<Vec<MetadataSearchItem>>;

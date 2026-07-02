@@ -1,4 +1,5 @@
 use super::*;
+use crate::types::TitleCatalogFilterCounts;
 use async_trait::async_trait;
 use scryer_domain::{
     ImportTransferPhase, ImportType, IndexerCapsSnapshot, PersistedPluginWasmPayload,
@@ -748,6 +749,7 @@ pub trait TitleRepository: Send + Sync {
                 offset,
                 has_more: false,
                 total_count: 0,
+                filter_counts: TitleCatalogFilterCounts::default(),
             });
         }
 
@@ -757,6 +759,7 @@ pub trait TitleRepository: Send + Sync {
             self.list_for_libraries_without_external_ids(facet, library_ids, query)
                 .await?
         };
+        let filter_counts = title_catalog_filter_counts(&titles, &filter);
         titles.retain(|title| title_matches_catalog_filter(title, &filter));
         sort_titles_for_catalog(&mut titles, sort);
 
@@ -774,6 +777,7 @@ pub trait TitleRepository: Send + Sync {
             offset,
             has_more,
             total_count,
+            filter_counts,
         })
     }
     async fn list_by_external_ids(&self, source: &str, values: &[String]) -> AppResult<Vec<Title>>;
@@ -1015,6 +1019,48 @@ fn title_matches_catalog_filter(title: &Title, filter: &TitleCatalogFilter) -> b
     }
 
     true
+}
+
+fn title_catalog_filter_counts(
+    titles: &[Title],
+    active_filter: &TitleCatalogFilter,
+) -> TitleCatalogFilterCounts {
+    let monitored_filter = TitleCatalogFilter {
+        monitored: Some(true),
+        content_statuses: active_filter.content_statuses.clone(),
+    };
+    let unmonitored_filter = TitleCatalogFilter {
+        monitored: Some(false),
+        content_statuses: active_filter.content_statuses.clone(),
+    };
+    let continuing_filter = TitleCatalogFilter {
+        monitored: active_filter.monitored,
+        content_statuses: vec![TitleCatalogContentStatus::Continuing],
+    };
+    let ended_filter = TitleCatalogFilter {
+        monitored: active_filter.monitored,
+        content_statuses: vec![TitleCatalogContentStatus::Ended],
+    };
+
+    TitleCatalogFilterCounts {
+        all: titles.len(),
+        monitored: titles
+            .iter()
+            .filter(|title| title_matches_catalog_filter(title, &monitored_filter))
+            .count(),
+        unmonitored: titles
+            .iter()
+            .filter(|title| title_matches_catalog_filter(title, &unmonitored_filter))
+            .count(),
+        continuing: titles
+            .iter()
+            .filter(|title| title_matches_catalog_filter(title, &continuing_filter))
+            .count(),
+        ended: titles
+            .iter()
+            .filter(|title| title_matches_catalog_filter(title, &ended_filter))
+            .count(),
+    }
 }
 
 fn title_catalog_status_filter_matches(

@@ -592,6 +592,7 @@ impl CatalogQueries {
         let offset = page.offset;
         let has_more = page.has_more;
         let total_count = page.total_count;
+        let filter_counts = page.filter_counts.clone();
         let items = title_payloads_from_titles(&app, &actor, page.items, selection).await?;
 
         Ok(TitleCatalogPayload {
@@ -600,6 +601,13 @@ impl CatalogQueries {
             offset: usize_to_i32_saturating(offset),
             has_more,
             total_count: usize_to_i32_saturating(total_count),
+            filter_counts: TitleCatalogFilterCountsPayload {
+                all: usize_to_i32_saturating(filter_counts.all),
+                monitored: usize_to_i32_saturating(filter_counts.monitored),
+                unmonitored: usize_to_i32_saturating(filter_counts.unmonitored),
+                continuing: usize_to_i32_saturating(filter_counts.continuing),
+                ended: usize_to_i32_saturating(filter_counts.ended),
+            },
         })
     }
 
