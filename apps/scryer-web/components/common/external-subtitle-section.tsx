@@ -4,7 +4,7 @@ import { useClient } from "urql";
 
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
 import { DeletePreviewSummary } from "@/components/common/delete-preview-summary";
-import { Button } from "@/components/ui/button";
+import { IconButton } from "@/components/ui/icon-button";
 import { useGlobalStatus } from "@/lib/context/global-status-context";
 import { useTranslate } from "@/lib/context/translate-context";
 import { useUiDateTimeFormat } from "@/lib/context/ui-settings-context";
@@ -233,34 +233,28 @@ export function ExternalSubtitleSection({
                   {canDelete || canBlocklist ? (
                     <div className="flex shrink-0 items-center gap-2">
                       {canBlocklist ? (
-                        <Button
-                          type="button"
-                          size="icon-sm"
-                          variant="secondary"
+                        <IconButton
+                          label={t("subtitle.blocklist")}
+                          tone="disabled"
                           onClick={() => {
                             setPendingAction({ kind: "blocklist", subtitle: download });
                             setTypedConfirmation("");
                           }}
-                          title={t("subtitle.blocklist")}
-                          aria-label={t("subtitle.blocklist")}
                         >
                           <Ban className="h-3.5 w-3.5" />
-                        </Button>
+                        </IconButton>
                       ) : null}
                       {canDelete ? (
-                        <Button
-                          type="button"
-                          size="icon-sm"
-                          variant="outline"
+                        <IconButton
+                          label={t("label.delete")}
+                          tone="delete"
                           onClick={() => {
                             setPendingAction({ kind: "delete", subtitle: download });
                             setTypedConfirmation("");
                           }}
-                          title={t("label.delete")}
-                          aria-label={t("label.delete")}
                         >
                           <Trash2 className="h-3.5 w-3.5" />
-                        </Button>
+                        </IconButton>
                       ) : null}
                     </div>
                   ) : null}

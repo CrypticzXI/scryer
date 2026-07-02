@@ -2,6 +2,7 @@ import { Fragment } from "react";
 import { Blocks, Download, Loader2, PlugZap, RefreshCw, Trash2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { IconButton } from "@/components/ui/icon-button";
 import { Progress } from "@/components/ui/progress";
 import {
   Table,
@@ -282,7 +283,7 @@ export function SetupPluginsView({
                             </div>
                           </TableCell>
                           <TableCell
-                            className="w-[120px] text-sm text-muted-foreground"
+                            className="w-[120px] font-[var(--font-code)] text-sm text-muted-foreground"
                             title={plugin.bytes != null ? `${plugin.bytes} bytes` : undefined}
                           >
                             {bytesLabel ?? "—"}
@@ -295,20 +296,19 @@ export function SetupPluginsView({
                                     {t("settings.pluginInstalled")}
                                   </span>
                                   {canUninstallPlugin(plugin) && (
-                                    <Button
+                                    <IconButton
                                       id={selectorId("setup-plugin-uninstall", plugin.name)}
-                                      variant="ghost"
-                                      size="icon"
+                                      label={uninstallLabel(plugin, t)}
+                                      tone="delete"
                                       disabled={isBusy}
                                       onClick={() => onUninstallPlugin(plugin)}
-                                      title={uninstallLabel(plugin, t)}
                                     >
                                       {isBusy ? (
-                                        <Loader2 className="h-4 w-4 animate-spin text-destructive" />
+                                        <Loader2 className="h-4 w-4 animate-spin" />
                                       ) : (
-                                        <Trash2 className="h-4 w-4 text-destructive" />
+                                        <Trash2 className="h-4 w-4" />
                                       )}
-                                    </Button>
+                                    </IconButton>
                                   )}
                                 </div>
                                 {runningProgress && (

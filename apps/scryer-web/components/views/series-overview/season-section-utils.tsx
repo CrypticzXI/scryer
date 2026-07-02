@@ -1,13 +1,8 @@
 import * as React from "react";
-import { Button } from "@/components/ui/button";
-import { cn } from "@/lib/utils";
+import { IconButton } from "@/components/ui/icon-button";
 import { useTranslate } from "@/lib/context/translate-context";
 import type { Release } from "@/lib/types";
-import {
-  boxedActionButtonBaseClass,
-  boxedActionButtonToneClass,
-  type BoxedActionButtonTone,
-} from "@/lib/utils/action-button-styles";
+import type { BoxedActionButtonTone } from "@/lib/utils/action-button-styles";
 import type {
   EpisodeMediaFile,
   TitleReleaseBlocklistEntry,
@@ -28,26 +23,20 @@ export function EpisodeTableActionButton({
   className,
   children,
   ...props
-}: React.ComponentProps<typeof Button> & {
+}: Omit<React.ComponentProps<typeof IconButton>, "tone"> & {
   label: string;
   tone: Extract<BoxedActionButtonTone, "auto" | "search">;
   showTitleAttribute?: boolean;
 }) {
   return (
-    <Button
-      type="button"
-      size="icon-sm"
-      variant="secondary"
-      title={showTitleAttribute ? label : undefined}
-      aria-label={label}
-      className={cn(
-        boxedActionButtonBaseClass,
-        boxedActionButtonToneClass[tone],
-        className,
-      )}
+    <IconButton
+      label={label}
+      tone={tone}
+      showTitleAttribute={showTitleAttribute}
+      className={className}
       {...props}
     >
       {children}
-    </Button>
+    </IconButton>
   );
 }

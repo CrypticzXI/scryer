@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import { AddNewButton } from "@/components/common/add-new-button";
 import { Button } from "@/components/ui/button";
+import { IconButton } from "@/components/ui/icon-button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -37,12 +38,7 @@ import type {
   SubtitleProviderDraft,
   SubtitleProviderTypeInfo,
 } from "@/lib/types";
-import { cn } from "@/lib/utils";
-import {
-  boxedActionButtonBaseClass,
-  boxedActionButtonToneClass,
-  type BoxedActionButtonTone,
-} from "@/lib/utils/action-button-styles";
+import type { BoxedActionButtonTone } from "@/lib/utils/action-button-styles";
 import { selectorId } from "@/lib/utils/dom-ids";
 
 type Props = {
@@ -101,26 +97,14 @@ function SubtitleProviderActionButton({
   className,
   children,
   ...props
-}: React.ComponentProps<typeof Button> & {
+}: Omit<React.ComponentProps<typeof IconButton>, "tone"> & {
   label: string;
   tone: Extract<BoxedActionButtonTone, "edit" | "enabled" | "disabled" | "delete">;
 }) {
   return (
-    <Button
-      type="button"
-      size="icon-sm"
-      variant="secondary"
-      title={label}
-      aria-label={label}
-      className={cn(
-        boxedActionButtonBaseClass,
-        boxedActionButtonToneClass[tone],
-        className,
-      )}
-      {...props}
-    >
+    <IconButton label={label} tone={tone} className={className} {...props}>
       {children}
-    </Button>
+    </IconButton>
   );
 }
 

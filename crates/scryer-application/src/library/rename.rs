@@ -1243,6 +1243,7 @@ pub(crate) fn validate_title_folder_template(template: &str) -> AppResult<()> {
     Ok(())
 }
 
+#[cfg(test)]
 pub(crate) fn validate_rename_template(template: &str) -> AppResult<()> {
     validate_rename_template_with_token_checker(template, is_supported_rename_template_token)
 }
@@ -1682,6 +1683,7 @@ const TITLE_EXTERNAL_ID_TOKENS: [(&str, &str); 6] = [
     ("anilist_id", "anilist"),
 ];
 
+#[cfg(test)]
 fn is_supported_rename_template_token(token: &str) -> bool {
     matches!(
         token,

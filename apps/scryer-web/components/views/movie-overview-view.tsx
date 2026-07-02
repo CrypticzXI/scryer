@@ -2,6 +2,7 @@
 import * as React from "react";
 import { FolderOpen, Loader2, Pause, Play, RotateCcw, Search, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { IconButton } from "@/components/ui/icon-button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Select,
@@ -656,17 +657,14 @@ export function MovieOverviewView({
 
             <div className="relative min-w-0 flex-1 flex flex-col pr-12">
               {onBackToList ? (
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="icon"
+                <IconButton
+                  label={t("label.close")}
+                  tone="neutral"
                   className="absolute right-0 top-0 z-20 size-10 rounded-[11px] border border-[var(--scry-border2)] bg-[var(--scry-card2)] text-[var(--scry-ink2)] shadow-[0_12px_30px_rgba(0,0,0,0.35)] backdrop-blur-sm transition hover:bg-[var(--scry-hover)] hover:text-[var(--scry-ink2)]"
-                  aria-label={t("label.close")}
-                  title={t("label.close")}
                   onClick={() => onBackToList()}
                 >
                   <X className="h-5 w-5" />
-                </Button>
+                </IconButton>
               ) : null}
               <h1 className="text-xl font-bold text-foreground sm:text-2xl">
                 {title.name}

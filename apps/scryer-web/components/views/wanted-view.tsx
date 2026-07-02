@@ -11,6 +11,7 @@ import { buildViewPath } from "@/lib/utils/routing";
 import { formatUiDateTime } from "@/lib/utils/date-format";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
+import { IconButton } from "@/components/ui/icon-button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -1047,55 +1048,50 @@ function WantedItemsCard({
                       <TableCell>{item.searchCount}</TableCell>
                       <TableCell>
                         <div className="flex gap-1">
-                          <Button
-                            size="icon"
-                            variant="ghost"
+                          <IconButton
+                            label={t("wanted.searchNow")}
+                            appearance="ghost"
                             className="h-7 w-7"
-                            title={t("wanted.searchNow")}
                             onClick={() => void triggerSearch(item.id)}
                           >
                             <Search className="h-3.5 w-3.5" />
-                          </Button>
+                          </IconButton>
                           {item.status === "paused" ? (
-                            <Button
-                              size="icon"
-                              variant="ghost"
+                            <IconButton
+                              label={t("wanted.resume")}
+                              appearance="ghost"
                               className="h-7 w-7"
-                              title={t("wanted.resume")}
                               onClick={() => void resumeItem(item.id)}
                             >
                               <Play className="h-3.5 w-3.5" />
-                            </Button>
+                            </IconButton>
                           ) : (
-                            <Button
-                              size="icon"
-                              variant="ghost"
+                            <IconButton
+                              label={t("wanted.pause")}
+                              appearance="ghost"
                               className="h-7 w-7"
-                              title={t("wanted.pause")}
                               onClick={() => void pauseItem(item.id)}
                             >
                               <Pause className="h-3.5 w-3.5" />
-                            </Button>
+                            </IconButton>
                           )}
-                          <Button
-                            size="icon"
-                            variant="ghost"
+                          <IconButton
+                            label={t("wanted.reset")}
+                            appearance="ghost"
                             className="h-7 w-7"
-                            title={t("wanted.reset")}
                             onClick={() => void resetItem(item.id)}
                           >
                             <RotateCcw className="h-3.5 w-3.5" />
-                          </Button>
+                          </IconButton>
                           {item.mismatchRecoveryEligible ? (
-                            <Button
-                              size="icon"
-                              variant="ghost"
+                            <IconButton
+                              label={t("wanted.actionRecoverMismatch")}
+                              appearance="ghost"
                               className="h-7 w-7"
-                              title={t("wanted.actionRecoverMismatch")}
                               onClick={() => void triggerMismatchRecovery(item.titleId)}
                             >
                               <RefreshCw className="h-3.5 w-3.5" />
-                            </Button>
+                            </IconButton>
                           ) : null}
                         </div>
                       </TableCell>
@@ -1411,7 +1407,9 @@ function PendingReleasesCard({ state }: { state: PendingViewState }) {
                     </div>
                     <div>
                       <span className="block">{t("pending.colSize")}</span>
-                      <span className="text-foreground">{item.releaseSizeBytes == null ? "—" : formatBytes(item.releaseSizeBytes)}</span>
+                      <span className="font-[var(--font-code)] text-foreground">
+                        {item.releaseSizeBytes == null ? "—" : formatBytes(item.releaseSizeBytes)}
+                      </span>
                     </div>
                     <div>
                       <span className="block">{t("pending.colIndexer")}</span>
@@ -1499,7 +1497,7 @@ function PendingReleasesCard({ state }: { state: PendingViewState }) {
                         <TableCell>{pendingStatusBadge(item.status)}</TableCell>
                         <TableCell>{pendingPhaseBadge(item.status)}</TableCell>
                         <TableCell>{item.releaseScore}</TableCell>
-                        <TableCell className="text-xs">
+                        <TableCell className="font-[var(--font-code)] text-xs">
                           {item.releaseSizeBytes == null ? "—" : formatBytes(item.releaseSizeBytes)}
                         </TableCell>
                         <TableCell className="text-xs">{item.indexerSource ?? "—"}</TableCell>
@@ -1513,24 +1511,22 @@ function PendingReleasesCard({ state }: { state: PendingViewState }) {
                         </TableCell>
                         <TableCell>
                           <div className="flex gap-1">
-                            <Button
-                              size="icon"
-                              variant="ghost"
+                            <IconButton
+                              label={t("pending.forceGrab")}
+                              appearance="ghost"
                               className="h-7 w-7"
-                              title={t("pending.forceGrab")}
                               onClick={() => void forceGrab(item.id)}
                             >
                               <Download className="h-3.5 w-3.5" />
-                            </Button>
-                            <Button
-                              size="icon"
-                              variant="ghost"
+                            </IconButton>
+                            <IconButton
+                              label={t("pending.dismiss")}
+                              appearance="ghost"
                               className="h-7 w-7"
-                              title={t("pending.dismiss")}
                               onClick={() => void dismiss(item.id)}
                             >
                               <X className="h-3.5 w-3.5" />
-                            </Button>
+                            </IconButton>
                           </div>
                         </TableCell>
                       </TableRow>

@@ -9,6 +9,7 @@ import {
   Trash2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { IconButton } from "@/components/ui/icon-button";
 import { ExternalSubtitleSection } from "@/components/common/external-subtitle-section";
 import { MediaInfoBadges, type MediaInfoFile } from "@/components/common/media-info-badges";
 import { SubtitleSearchModal } from "@/components/views/subtitle-search-modal";
@@ -18,7 +19,6 @@ import type { ExternalSubtitleRecord } from "@/lib/types/subtitles";
 import type { UiDateTimeFormat } from "@/lib/types/settings";
 import { formatUiDate } from "@/lib/utils/date-format";
 import {
-  boxedActionButtonBaseClass,
   boxedActionButtonToneClass,
   boxedTextActionButtonBaseClass,
 } from "@/lib/utils/action-button-styles";
@@ -369,25 +369,15 @@ export function MediaFilesOnDiskPanel<TFile extends MediaFileOnDisk>({
                           ) : null}
                         </div>
                         {onDeleteFile ? (
-                          <Button
-                            type="button"
-                            size="icon-sm"
-                            variant="secondary"
+                          <IconButton
+                            label={t("mediaFile.delete")}
+                            tone="delete"
                             id={selectorId(deleteFileIdPrefix, file.id)}
                             onClick={() => onDeleteFile(file.id)}
-                            className={
-                              selectedTitlePresentation
-                                ? "h-8 w-8 rounded-[8px] border border-[#3a1620] bg-[rgba(120,30,40,0.25)] p-0 text-[#ef6a7a] shadow-none hover:bg-[rgba(120,30,40,0.34)] hover:text-[#ef6a7a]"
-                                : cn(
-                                    boxedActionButtonBaseClass,
-                                    boxedActionButtonToneClass.delete,
-                                  )
-                            }
-                            title={t("mediaFile.delete")}
-                            aria-label={t("mediaFile.delete")}
+                            className={selectedTitlePresentation ? "h-8 w-8" : undefined}
                           >
                             <Trash2 className="h-4 w-4" />
-                          </Button>
+                          </IconButton>
                         ) : null}
                       </div>
                     ) : null}

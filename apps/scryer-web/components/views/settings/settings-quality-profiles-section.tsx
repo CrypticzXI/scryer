@@ -3,6 +3,7 @@ import * as React from "react";
 import { ArrowLeft, ArrowRight, Edit, Plus, Trash2 } from "lucide-react";
 import { AddNewButton } from "@/components/common/add-new-button";
 import { Button } from "@/components/ui/button";
+import { IconButton } from "@/components/ui/icon-button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
 import { Input, signedIntegerInputProps } from "@/components/ui/input";
@@ -27,12 +28,7 @@ import {
 import { useTranslate } from "@/lib/context/translate-context";
 import { PERSONA_OVERRIDE_DEFAULTS } from "@/lib/constants/quality-profiles";
 import { selectorId } from "@/lib/utils/dom-ids";
-import { cn } from "@/lib/utils";
-import {
-  boxedActionButtonBaseClass,
-  boxedActionButtonToneClass,
-  type BoxedActionButtonTone,
-} from "@/lib/utils/action-button-styles";
+import type { BoxedActionButtonTone } from "@/lib/utils/action-button-styles";
 
 const QUALITY_PANEL_CLASS =
   "overflow-hidden rounded-[14px] border border-[var(--scry-border)] bg-[var(--scry-surf)] shadow-[0_10px_24px_rgba(0,0,0,0.16)]";
@@ -226,26 +222,14 @@ function QualityProfileActionButton({
   className,
   children,
   ...props
-}: React.ComponentProps<typeof Button> & {
+}: Omit<React.ComponentProps<typeof IconButton>, "tone"> & {
   label: string;
   tone: Extract<BoxedActionButtonTone, "edit" | "delete">;
 }) {
   return (
-    <Button
-      type="button"
-      size="icon-sm"
-      variant="secondary"
-      title={label}
-      aria-label={label}
-      className={cn(
-        boxedActionButtonBaseClass,
-        boxedActionButtonToneClass[tone],
-        className,
-      )}
-      {...props}
-    >
+    <IconButton label={label} tone={tone} className={className} {...props}>
       {children}
-    </Button>
+    </IconButton>
   );
 }
 

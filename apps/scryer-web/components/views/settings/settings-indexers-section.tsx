@@ -2,6 +2,7 @@ import * as React from "react";
 import { Edit, Lock, Plus, Power, PowerOff, RefreshCw, Trash2 } from "lucide-react";
 import { AddNewButton } from "@/components/common/add-new-button";
 import { Button } from "@/components/ui/button";
+import { IconButton } from "@/components/ui/icon-button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input, signedIntegerInputProps } from "@/components/ui/input";
@@ -33,11 +34,7 @@ import type {
 } from "@/lib/types";
 import { selectorId } from "@/lib/utils/dom-ids";
 import { cn } from "@/lib/utils";
-import {
-  boxedActionButtonBaseClass,
-  boxedActionButtonToneClass,
-  type BoxedActionButtonTone,
-} from "@/lib/utils/action-button-styles";
+import type { BoxedActionButtonTone } from "@/lib/utils/action-button-styles";
 
 type SettingsIndexersSectionProps = {
   editingIndexerId: string | null;
@@ -115,7 +112,7 @@ function IndexerActionButton({
   className,
   children,
   ...props
-}: React.ComponentProps<typeof Button> & {
+}: Omit<React.ComponentProps<typeof IconButton>, "tone"> & {
   label: string;
   tone: Extract<
     BoxedActionButtonTone,
@@ -123,21 +120,9 @@ function IndexerActionButton({
   >;
 }) {
   return (
-    <Button
-      type="button"
-      size="icon-sm"
-      variant="secondary"
-      title={label}
-      aria-label={label}
-      className={cn(
-        boxedActionButtonBaseClass,
-        boxedActionButtonToneClass[tone],
-        className,
-      )}
-      {...props}
-    >
+    <IconButton label={label} tone={tone} className={className} {...props}>
       {children}
-    </Button>
+    </IconButton>
   );
 }
 

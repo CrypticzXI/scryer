@@ -4,6 +4,7 @@ import { Link } from "react-router-dom";
 import { SettingsToggleSwitch } from "@/components/common/settings-toggle-switch";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { IconButton } from "@/components/ui/icon-button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Input, integerInputProps, sanitizeDigits } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -363,16 +364,14 @@ export function SettingsOverviewSection({
                         {entry.fingerprintSha256}
                       </code>
                     </div>
-                    <Button
+                    <IconButton
                       id={`settings-general-plugin-http-trust-remove-${entry.fingerprintSha256}`}
-                      type="button"
-                      variant="ghost"
-                      size="icon"
+                      label={t("label.remove")}
+                      appearance="ghost"
                       onClick={() => handleRemoveTrustedCertificate(entry.fingerprintSha256)}
                     >
                       <Trash2 className="h-4 w-4" />
-                      <span className="sr-only">{t("label.remove")}</span>
-                    </Button>
+                    </IconButton>
                   </div>
                 ))
               )}

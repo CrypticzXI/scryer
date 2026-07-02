@@ -12,11 +12,7 @@ import {
 import { AddNewButton } from "@/components/common/add-new-button";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { cn } from "@/lib/utils";
-import {
-  boxedActionButtonBaseClass,
-  boxedActionButtonToneClass,
-} from "@/lib/utils/action-button-styles";
+import { IconButton } from "@/components/ui/icon-button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -311,53 +307,32 @@ export const SettingsPostProcessingSection = React.memo(
                           className="flex justify-end gap-1"
                           onClick={(e) => e.stopPropagation()}
                         >
-                          <Button
+                          <IconButton
                             id={selectorId("settings-post-processing-toggle", script.id)}
-                            type="button"
-                            size="icon-sm"
-                            variant="secondary"
-                            title={script.enabled ? t("label.disable") : t("label.enable")}
-                            aria-label={script.enabled ? t("label.disable") : t("label.enable")}
+                            label={script.enabled ? t("label.disable") : t("label.enable")}
+                            tone={script.enabled ? "disabled" : "enabled"}
                             onClick={() => void toggleScript(script)}
                             disabled={mutatingScriptId === script.id}
-                            className={cn(
-                              boxedActionButtonBaseClass,
-                              boxedActionButtonToneClass[script.enabled ? "disabled" : "enabled"],
-                            )}
                           >
                             <Power className="h-4 w-4" />
-                          </Button>
-                          <Button
+                          </IconButton>
+                          <IconButton
                             id={selectorId("settings-post-processing-edit", script.id)}
-                            type="button"
-                            size="icon-sm"
-                            variant="secondary"
-                            title={t("label.edit")}
-                            aria-label={t("label.edit")}
+                            label={t("label.edit")}
+                            tone="edit"
                             onClick={() => editScript(script)}
-                            className={cn(
-                              boxedActionButtonBaseClass,
-                              boxedActionButtonToneClass.edit,
-                            )}
                           >
                             <Edit className="h-4 w-4" />
-                          </Button>
-                          <Button
+                          </IconButton>
+                          <IconButton
                             id={selectorId("settings-post-processing-delete", script.id)}
-                            type="button"
-                            size="icon-sm"
-                            variant="secondary"
-                            title={t("label.delete")}
-                            aria-label={t("label.delete")}
+                            label={t("label.delete")}
+                            tone="delete"
                             onClick={() => deleteScript(script)}
                             disabled={mutatingScriptId === script.id}
-                            className={cn(
-                              boxedActionButtonBaseClass,
-                              boxedActionButtonToneClass.delete,
-                            )}
                           >
                             <Trash2 className="h-4 w-4" />
-                          </Button>
+                          </IconButton>
                         </div>
                       </TableCell>
                     </TableRow>

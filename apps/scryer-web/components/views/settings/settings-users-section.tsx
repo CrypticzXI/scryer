@@ -6,6 +6,7 @@ import {
   type LibraryPermissionDrafts,
 } from "@/components/common/permission-checkboxes";
 import { Button } from "@/components/ui/button";
+import { IconButton } from "@/components/ui/icon-button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -19,10 +20,6 @@ import {
 import { useTranslate } from "@/lib/context/translate-context";
 import type { LibraryRecord, UserRecord } from "@/lib/types";
 import { cn } from "@/lib/utils";
-import {
-  boxedActionButtonBaseClass,
-  boxedActionButtonToneClass,
-} from "@/lib/utils/action-button-styles";
 import { selectorId } from "@/lib/utils/dom-ids";
 
 const USERS_PANEL_CLASS =
@@ -294,39 +291,25 @@ export function SettingsUsersSection({
                     <TableCell className="align-middle text-right">
                       <div className="flex justify-end gap-2">
                         {!isOwnUser && user.hasMfa ? (
-                          <Button
+                          <IconButton
                             id={selectorId("settings-user-reset-mfa", user.username)}
-                            type="button"
-                            variant="secondary"
-                            size="icon-sm"
-                            title={t("settings.resetMfa")}
-                            aria-label={t("settings.resetMfa")}
-                            className={cn(
-                              boxedActionButtonBaseClass,
-                              boxedActionButtonToneClass.neutral,
-                            )}
+                            label={t("settings.resetMfa")}
+                            tone="neutral"
                             onClick={() => void resetUserMfa(user)}
                             disabled={mutatingUserId === user.id}
                           >
                             <ShieldOff className="h-4 w-4" />
-                          </Button>
+                          </IconButton>
                         ) : null}
-                        <Button
+                        <IconButton
                           id={selectorId("settings-user-delete", user.username)}
-                          type="button"
-                          variant="secondary"
-                          size="icon-sm"
-                          title={t("label.delete")}
-                          aria-label={t("label.delete")}
-                          className={cn(
-                            boxedActionButtonBaseClass,
-                            boxedActionButtonToneClass.delete,
-                          )}
+                          label={t("label.delete")}
+                          tone="delete"
                           onClick={() => void deleteUser(user)}
                           disabled={mutatingUserId === user.id || isOwnUser}
                         >
                           <Trash2 className="h-4 w-4" />
-                        </Button>
+                        </IconButton>
                       </div>
                     </TableCell>
                         </TableRow>

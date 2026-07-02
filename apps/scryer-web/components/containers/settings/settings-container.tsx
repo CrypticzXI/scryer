@@ -20,6 +20,7 @@ import {
   X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { IconButton } from "@/components/ui/icon-button";
 import type { SettingsSection } from "@/components/root/types";
 import type { LocaleCode, LanguageOption } from "@/lib/i18n";
 import { useTranslate } from "@/lib/context/translate-context";
@@ -536,15 +537,13 @@ export const SettingsContainer = memo(function SettingsContainer({
                         <Puzzle className="h-4 w-4 shrink-0" />
                         <span className="truncate">{t("settings.plugins")}</span>
                       </div>
-                      <Button
-                        type="button"
-                        variant="secondary"
-                        size="icon-sm"
+                      <IconButton
+                        label={t("label.close")}
+                        tone="neutral"
                         onClick={() => setReferenceRailOpen(false)}
-                        aria-label={t("label.close")}
                       >
                         <X className="h-4 w-4" />
-                      </Button>
+                      </IconButton>
                     </div>
                   ) : null}
                   <div

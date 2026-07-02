@@ -20,13 +20,11 @@ use crate::library_scan_helpers::{
 use crate::library_scan_metadata::{
     LIBRARY_SCAN_METADATA_SEARCH_BATCH_SIZE, MetadataLookupBatchStats, MetadataSearchResults,
     PreparedMovieLibraryScanCandidate, PreparedMovieLibraryScanEntry,
-    PreparedSeriesLibraryScanCandidate, StreamingMetadataProgressUpdate,
-    StreamingMovieMetadataResolver, build_movie_metadata_batch_stats,
+    PreparedSeriesLibraryScanCandidate, build_movie_metadata_batch_stats,
     build_series_metadata_batch_stats, movie_candidate_batch_search_keys,
     prepare_movie_library_scan_entries, prepare_series_library_scan_candidates,
     resolve_full_scan_metadata_batches, select_movie_metadata_from_batch_results,
     select_series_metadata_from_batch_results, series_candidate_batch_search_keys,
-    stream_prepared_movie_library_scan_entries,
 };
 use crate::library_scan_titles::{
     append_movie_title, append_series_title, build_movie_probe_path_indexes,
@@ -46,7 +44,6 @@ use crate::settings::settings::{
 };
 use tracing::{debug, info, warn};
 
-const LIBRARY_METADATA_LOOKUP_CONCURRENCY: usize = 4;
 const LIBRARY_SCAN_MOVIE_BATCH_SIZE: usize = 32;
 const LIBRARY_SCAN_SERIES_BATCH_SIZE: usize = 8;
 const TITLE_SCAN_FILE_BATCH_SIZE: usize = 128;
@@ -54,6 +51,8 @@ const TITLE_SCAN_FILE_BATCH_SIZE: usize = 128;
 mod scan_candidates;
 #[path = "scan/full.rs"]
 mod scan_full;
+#[path = "scan/pipeline.rs"]
+mod scan_pipeline;
 #[path = "scan/refresh.rs"]
 mod scan_refresh;
 #[path = "scan/title_files.rs"]
@@ -71,6 +70,7 @@ use scan_candidates::{
     scan_episodic_title_directory_for_progress_metrics,
 };
 use scan_full::{scan_library_movies, scan_library_series};
+use scan_pipeline::{LibraryScanPipelineKind, LibraryScanPipelineRequest, run_library_scan_pipeline};
 use scan_refresh::{
     background_refresh_movies, background_refresh_series,
     maybe_probe_existing_series_title_for_background_refresh,
@@ -85,7 +85,14 @@ use scan_title_files::{
 };
 use scan_title_finalize::finalize_movie_scan_file;
 pub(crate) use scan_title_finalize::finalize_title_scan_file;
-use scan_title_scan::LibraryScanTitleWorkExecutor;
+use scan_title_scan::LibraryScanMediaAnalysisPool;
+
+/// Destination for matched title work. Implemented by the media-analysis pool
+/// (direct dispatch for refresh and one-off scans) and by the streaming scan
+/// pipeline's staging sink (rendezvous with candidate inventory).
+trait LibraryScanTitleWorkQueue: Send {
+    fn enqueue(&mut self, work: LibraryScanTitleWork) -> bool;
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum LibraryScanTitleWalkMode {
@@ -127,6 +134,10 @@ pub(crate) struct LibraryScanTitleWork {
     discovered_files: Option<Vec<LibraryFile>>,
     mode: LibraryScanTitleWalkMode,
     created_in_scan: bool,
+    /// True when `discovered_files` covers the title's whole folder (pipeline
+    /// inventory rendezvous), so missing-file cleanup may treat the walk as
+    /// full-folder coverage even though a scoped file list is attached.
+    full_folder: bool,
 }
 
 impl LibraryScanTitleWork {
@@ -236,6 +247,7 @@ fn merge_library_scan_title_work(
             existing.title = work.title;
             existing.mode = work.mode;
             existing.created_in_scan |= work.created_in_scan;
+            existing.full_folder |= work.full_folder;
             true
         }
         None => {

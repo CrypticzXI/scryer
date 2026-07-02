@@ -700,7 +700,7 @@ export function TitleTable({
             </TableCell>
           ) : null}
           {showSizeColumn ? (
-            <TableCell className="whitespace-nowrap text-center align-middle text-[12.5px] tabular-nums text-[var(--scry-text4)]">
+            <TableCell className="whitespace-nowrap text-center align-middle font-[var(--font-code)] text-[12.5px] tabular-nums text-[var(--scry-text4)]">
               {bytesToReadable(item.sizeBytes)}
             </TableCell>
           ) : null}

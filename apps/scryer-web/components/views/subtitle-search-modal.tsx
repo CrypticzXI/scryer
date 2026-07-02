@@ -3,6 +3,7 @@ import { useClient } from "urql";
 import { Search, ArrowDownToLine, Loader2, Hash, CircleAlert } from "lucide-react";
 import { Link } from "react-router-dom";
 import { Button } from "@/components/ui/button";
+import { IconButton } from "@/components/ui/icon-button";
 import { Badge } from "@/components/ui/badge";
 import {
   Dialog,
@@ -462,21 +463,19 @@ export function SubtitleSearchModal({
                         {r.provider}
                       </TableCell>
                       <TableCell className="whitespace-nowrap text-right">
-                        <Button
+                        <IconButton
                           id={selectorId("subtitle-search-download", r.providerFileId)}
-                          size="icon-sm"
-                          variant="default"
+                          label={downloadingId === r.providerFileId ? t("subtitle.downloading") : t("subtitle.download")}
+                          tone="install"
                           disabled={downloadingId === r.providerFileId}
                           onClick={() => void handleDownload(r)}
-                          title={downloadingId === r.providerFileId ? t("subtitle.downloading") : t("subtitle.download")}
-                          aria-label={downloadingId === r.providerFileId ? t("subtitle.downloading") : t("subtitle.download")}
                         >
                           {downloadingId === r.providerFileId ? (
                             <Loader2 className="h-4 w-4 animate-spin" />
                           ) : (
                             <ArrowDownToLine className="h-4 w-4" />
                           )}
-                        </Button>
+                        </IconButton>
                       </TableCell>
                     </TableRow>
                   ))}

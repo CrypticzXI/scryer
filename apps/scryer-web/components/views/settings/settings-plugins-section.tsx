@@ -4,6 +4,7 @@ import { ArrowUpCircle, Download, ExternalLink, Loader2, Power, PowerOff, Refres
 import { RenderBooleanIcon } from "@/components/common/boolean-icon";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { IconButton } from "@/components/ui/icon-button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
@@ -26,7 +27,6 @@ import { useTranslate } from "@/lib/context/translate-context";
 import { selectorId } from "@/lib/utils/dom-ids";
 import { cn } from "@/lib/utils";
 import {
-  boxedActionButtonBaseClass,
   boxedActionButtonToneClass,
   boxedTextActionButtonBaseClass,
   type BoxedActionButtonTone,
@@ -232,26 +232,19 @@ function PluginActionButton({
   className,
   children,
   ...props
-}: React.ComponentProps<typeof Button> & {
+}: Omit<React.ComponentProps<typeof IconButton>, "tone"> & {
   label: string;
   tone: Extract<BoxedActionButtonTone, "install" | "upgrade" | "enabled" | "disabled" | "delete">;
 }) {
   return (
-    <Button
-      type="button"
-      size="icon-sm"
-      variant="secondary"
-      title={label}
-      aria-label={label}
-      className={cn(
-        boxedActionButtonBaseClass,
-        boxedActionButtonToneClass[tone],
-        className,
-      )}
+    <IconButton
+      label={label}
+      tone={tone}
+      className={className}
       {...props}
     >
       {children}
-    </Button>
+    </IconButton>
   );
 }
 
@@ -469,7 +462,11 @@ function PluginTable({
                 )}
                 </TableCell>
                 <TableCell
-                  className={cn(sizeColumnClass, "text-sm", PLUGIN_MUTED_TEXT_CLASS)}
+                  className={cn(
+                    sizeColumnClass,
+                    "font-[var(--font-code)] text-sm",
+                    PLUGIN_MUTED_TEXT_CLASS,
+                  )}
                   title={plugin.bytes != null ? `${plugin.bytes} bytes` : undefined}
                 >
                   {bytesLabel ?? "—"}

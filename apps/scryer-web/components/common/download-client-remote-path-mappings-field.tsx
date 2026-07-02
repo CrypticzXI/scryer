@@ -3,6 +3,7 @@ import { FolderOpen, Plus, Trash2 } from "lucide-react";
 import { FolderBrowserDialog } from "@/components/setup/folder-browser-dialog";
 import type { Translate } from "@/components/root/types";
 import { Button } from "@/components/ui/button";
+import { IconButton } from "@/components/ui/icon-button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { TranslateContext } from "@/lib/context/translate-context";
@@ -390,18 +391,15 @@ export function DownloadClientRemotePathMappingsField({
                         aria-invalid={hasLocalError}
                         className="pr-10 font-[var(--font-code)] text-sm"
                       />
-                      <Button
+                      <IconButton
                         id={browseButtonId}
-                        type="button"
-                        variant="ghost"
-                        size="icon-sm"
+                        label={t("setup.browse")}
+                        appearance="ghost"
                         className="absolute right-1 top-1/2 h-7 w-7 -translate-y-1/2"
                         onClick={() => setBrowseRowIndex(index)}
-                        title={t("setup.browse")}
-                        aria-label={t("setup.browse")}
                       >
                         <FolderOpen className="h-4 w-4" />
-                      </Button>
+                      </IconButton>
                     </div>
                     {hasLocalError ? (
                       <p className="text-xs text-destructive">{rowErrors.localPath}</p>
@@ -409,18 +407,15 @@ export function DownloadClientRemotePathMappingsField({
                   </div>
 
                   <div className="flex items-start justify-end pt-5 md:pt-0">
-                    <Button
+                    <IconButton
                       id={removeButtonId}
-                      type="button"
-                      variant="ghost"
-                      size="icon-sm"
+                      label={t("label.remove")}
+                      appearance="ghost"
                       className="h-9 w-9 shrink-0"
                       onClick={() => removeRow(index)}
-                      title={t("label.remove")}
-                      aria-label={t("label.remove")}
                     >
                       <Trash2 className="h-4 w-4" />
-                    </Button>
+                    </IconButton>
                   </div>
                 </div>
               </div>

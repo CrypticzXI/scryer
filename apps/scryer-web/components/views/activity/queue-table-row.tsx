@@ -149,7 +149,7 @@ export const QueueTableRow = memo(function QueueTableRow({
             />
           </TableCell>
         ) : null}
-        <TableCell className="w-24 min-w-24 align-middle">
+        <TableCell className="w-24 min-w-24 align-middle font-[var(--font-code)]">
           {formatBytes(queueItem.sizeBytes)}
         </TableCell>
         <TableCell className="w-44 min-w-44 align-middle text-right">

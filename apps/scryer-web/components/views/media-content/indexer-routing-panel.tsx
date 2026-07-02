@@ -1,6 +1,6 @@
 import * as React from "react";
-import { Button } from "@/components/ui/button";
 import { RenderBooleanIcon } from "@/components/common/boolean-icon";
+import { IconButton } from "@/components/ui/icon-button";
 import { ChevronDown, ChevronUp, Power, PowerOff, SlidersVertical } from "lucide-react";
 import {
   Table,
@@ -15,13 +15,8 @@ import type { ViewCategoryId } from "./indexer-category-picker";
 import { getDefaultIndexerRouting } from "@/lib/constants/indexers";
 import type { IndexerCategoryRoutingSettings, IndexerRecord } from "@/lib/types";
 import { useTranslate } from "@/lib/context/translate-context";
-import { cn } from "@/lib/utils";
 import { selectorId } from "@/lib/utils/dom-ids";
-import {
-  boxedActionButtonBaseClass,
-  boxedActionButtonToneClass,
-  type BoxedActionButtonTone,
-} from "@/lib/utils/action-button-styles";
+import type { BoxedActionButtonTone } from "@/lib/utils/action-button-styles";
 
 type IndexerRoutingRecord = Record<string, IndexerCategoryRoutingSettings>;
 
@@ -31,26 +26,14 @@ function IndexerRoutingActionButton({
   className,
   children,
   ...props
-}: React.ComponentProps<typeof Button> & {
+}: Omit<React.ComponentProps<typeof IconButton>, "tone"> & {
   label: string;
   tone: Extract<BoxedActionButtonTone, "enabled" | "disabled" | "reorder">;
 }) {
   return (
-    <Button
-      type="button"
-      size="icon-sm"
-      variant="secondary"
-      title={label}
-      aria-label={label}
-      className={cn(
-        boxedActionButtonBaseClass,
-        boxedActionButtonToneClass[tone],
-        className,
-      )}
-      {...props}
-    >
+    <IconButton label={label} tone={tone} className={className} {...props}>
       {children}
-    </Button>
+    </IconButton>
   );
 }
 

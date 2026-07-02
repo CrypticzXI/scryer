@@ -1,5 +1,5 @@
 use std::borrow::Cow;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
@@ -7,7 +7,7 @@ use unicode_normalization::UnicodeNormalization;
 
 use crate::library::library::library_scan_cancel_requested;
 use crate::library_discovery::{
-    LibraryTitleWalk, MovieTopLevelEntry, MovieTopLevelEntryBatchReceiver,
+    LibraryTitleWalk, MovieTopLevelEntry,
     extract_library_query_evidence, matching_movie_nfo_path_async, normalize_folder_name,
     strip_year_suffix,
 };
@@ -18,8 +18,7 @@ use crate::stored_paths::{path_to_stored_string, stored_path_to_path_buf};
 use crate::{
     AppError, AppResult, ExternalIdProvider, LibraryFile, LibraryScanHint, LibraryScanHintFacet,
     LibraryScanHintSet, LibraryScanHintSource, LibraryScanUnmatchedSearchAttempt, LibraryScanner,
-    MetadataGateway, MetadataSearchItem, MetadataSearchQuery, await_cancellable,
-    await_cancellable_app_result,
+    MetadataGateway, MetadataSearchItem, MetadataSearchQuery, await_cancellable_app_result,
 };
 
 pub(crate) const METADATA_TYPE_MOVIE: &str = "movie";
@@ -27,8 +26,6 @@ pub(crate) const METADATA_TYPE_SERIES: &str = "series";
 
 pub(crate) const LIBRARY_SCAN_METADATA_SEARCH_BATCH_SIZE: usize = 50;
 const MOVIE_ENTRY_PREP_CONCURRENCY: usize = 8;
-const MOVIE_PREPARED_ENTRY_FLUSH_BATCH_SIZE: usize = MOVIE_ENTRY_PREP_CONCURRENCY;
-const LIBRARY_SCAN_PREPARED_ENTRY_QUEUE_CAPACITY: usize = 16;
 const RADARR_MOVIE_NFO_MAX_BYTES: u64 = 10 * 1024 * 1024;
 const PLEXMATCH_MAX_BYTES: u64 = 1024 * 1024;
 
@@ -150,22 +147,11 @@ pub(crate) struct PreparedMovieLibraryScanCandidate {
     pub(crate) metadata_lookup_attempted: bool,
 }
 
-impl PreparedMovieLibraryScanCandidate {
-    pub(crate) fn has_external_import_identity_ids(&self) -> bool {
-        self.identity_hint
-            .as_ref()
-            .is_some_and(|hint| hint.is_external_import_hint() && hint.has_external_ids())
-    }
-}
-
 #[derive(Clone, Debug)]
 pub(crate) enum PreparedMovieLibraryScanEntry {
     Candidate(Box<PreparedMovieLibraryScanCandidate>),
     Skipped { item_path: String },
 }
-
-pub(crate) type PreparedMovieLibraryScanEntryBatchReceiver =
-    tokio::sync::mpsc::Receiver<AppResult<Vec<PreparedMovieLibraryScanEntry>>>;
 
 #[derive(Clone, Debug)]
 pub(crate) struct PreparedSeriesLibraryScanCandidate {
@@ -190,11 +176,6 @@ impl PreparedSeriesLibraryScanCandidate {
         }
     }
 
-    pub(crate) fn has_external_import_identity_ids(&self) -> bool {
-        self.identity_hint
-            .as_ref()
-            .is_some_and(|hint| hint.is_external_import_hint() && hint.has_external_ids())
-    }
 }
 
 pub(crate) async fn read_valid_movie_nfo_metadata(
@@ -476,7 +457,7 @@ pub(crate) fn library_scan_unmatched_reason_code(
     }
 }
 
-async fn execute_batch_metadata_searches(
+pub(crate) async fn execute_batch_metadata_searches(
     metadata_gateway: Arc<dyn MetadataGateway>,
     search_keys: Vec<BatchMetadataSearchKey>,
     metadata_language: &str,
@@ -759,180 +740,6 @@ where
     Ok(count)
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct StreamingMetadataProgressUpdate {
-    pub(crate) total_delta: usize,
-    pub(crate) completed_delta: usize,
-    pub(crate) total_known: bool,
-}
-
-impl StreamingMetadataProgressUpdate {
-    pub(crate) fn has_changes(self) -> bool {
-        self.total_delta > 0 || self.completed_delta > 0 || self.total_known
-    }
-}
-
-pub(crate) struct StreamingMovieMetadataResolver {
-    metadata_gateway: Arc<dyn MetadataGateway>,
-    metadata_language: String,
-    search_results: MetadataSearchResults,
-    pending_candidates: Vec<PreparedMovieLibraryScanCandidate>,
-    metadata_lookup_stats: MetadataLookupBatchStats,
-    accounted_search_keys: HashSet<BatchMetadataSearchKey>,
-}
-
-impl StreamingMovieMetadataResolver {
-    pub(crate) fn new(
-        metadata_gateway: Arc<dyn MetadataGateway>,
-        metadata_language: impl Into<String>,
-    ) -> Self {
-        Self {
-            metadata_gateway,
-            metadata_language: metadata_language.into(),
-            search_results: MetadataSearchResults::new(),
-            pending_candidates: Vec::new(),
-            metadata_lookup_stats: MetadataLookupBatchStats::default(),
-            accounted_search_keys: HashSet::new(),
-        }
-    }
-
-    pub(crate) async fn ingest_candidates(
-        &mut self,
-        candidates: Vec<PreparedMovieLibraryScanCandidate>,
-        cancel_token: Option<&CancellationToken>,
-    ) -> AppResult<(
-        Vec<Vec<PreparedMovieLibraryScanCandidate>>,
-        StreamingMetadataProgressUpdate,
-    )> {
-        let batch_lookup_stats =
-            register_streaming_movie_metadata_batch(&candidates, &mut self.accounted_search_keys)?;
-        self.metadata_lookup_stats.absorb(batch_lookup_stats);
-        self.pending_candidates.extend(candidates);
-
-        let mut progress = StreamingMetadataProgressUpdate {
-            total_delta: batch_lookup_stats.logical_lookups,
-            completed_delta: 0,
-            total_known: false,
-        };
-        let ready_batches = self
-            .resolve_pending_ready_batches(&mut progress, cancel_token)
-            .await?;
-
-        Ok((ready_batches, progress))
-    }
-
-    pub(crate) async fn finish(
-        &mut self,
-        cancel_token: Option<&CancellationToken>,
-    ) -> AppResult<(
-        Vec<Vec<PreparedMovieLibraryScanCandidate>>,
-        StreamingMetadataProgressUpdate,
-    )> {
-        let mut progress = StreamingMetadataProgressUpdate {
-            total_delta: 0,
-            completed_delta: 0,
-            total_known: true,
-        };
-        let ready_batches = self
-            .resolve_pending_ready_batches(&mut progress, cancel_token)
-            .await?;
-        Ok((ready_batches, progress))
-    }
-
-    pub(crate) fn search_results(&self) -> &MetadataSearchResults {
-        &self.search_results
-    }
-
-    pub(crate) fn stats(&self) -> MetadataLookupBatchStats {
-        self.metadata_lookup_stats
-    }
-
-    async fn resolve_pending_ready_batches(
-        &mut self,
-        progress: &mut StreamingMetadataProgressUpdate,
-        cancel_token: Option<&CancellationToken>,
-    ) -> AppResult<Vec<Vec<PreparedMovieLibraryScanCandidate>>> {
-        let mut ready_batches = Vec::new();
-
-        while !self.pending_candidates.is_empty() {
-            let pending_candidates = std::mem::take(&mut self.pending_candidates);
-            let (ready_candidates, still_pending) = split_ready_metadata_candidates(
-                pending_candidates,
-                &self.search_results,
-                movie_candidate_batch_search_keys,
-            )?;
-            self.pending_candidates = still_pending;
-
-            if !ready_candidates.is_empty() {
-                progress.completed_delta =
-                    progress
-                        .completed_delta
-                        .saturating_add(count_candidates_with_metadata_lookup(
-                            &ready_candidates,
-                            movie_candidate_batch_search_keys,
-                        )?);
-                ready_batches.push(ready_candidates);
-                continue;
-            }
-
-            if library_scan_cancel_requested(cancel_token) {
-                break;
-            }
-
-            let search_chunk = next_metadata_search_chunk(
-                &self.pending_candidates,
-                &self.search_results,
-                LIBRARY_SCAN_METADATA_SEARCH_BATCH_SIZE,
-                movie_candidate_batch_search_keys,
-            )?;
-            if search_chunk.is_empty() {
-                return Err(AppError::Repository(
-                    "movie metadata search chunk unexpectedly empty".into(),
-                ));
-            }
-
-            self.search_results.extend(
-                execute_batch_metadata_searches(
-                    self.metadata_gateway.clone(),
-                    search_chunk,
-                    &self.metadata_language,
-                    cancel_token,
-                )
-                .await?,
-            );
-        }
-
-        Ok(ready_batches)
-    }
-}
-
-fn register_streaming_movie_metadata_batch(
-    candidates: &[PreparedMovieLibraryScanCandidate],
-    accounted_search_keys: &mut HashSet<BatchMetadataSearchKey>,
-) -> AppResult<MetadataLookupBatchStats> {
-    let mut stats = MetadataLookupBatchStats::default();
-    let mut total_requested_searches = 0usize;
-
-    for candidate in candidates {
-        let keys = movie_candidate_batch_search_keys(candidate)?;
-        if keys.is_empty() {
-            continue;
-        }
-
-        stats.logical_lookups = stats.logical_lookups.saturating_add(1);
-        total_requested_searches = total_requested_searches.saturating_add(keys.len());
-
-        for key in keys {
-            if accounted_search_keys.insert(key) {
-                stats.executed_requests = stats.executed_requests.saturating_add(1);
-            }
-        }
-    }
-
-    stats.coalesced_requests = total_requested_searches.saturating_sub(stats.executed_requests);
-    Ok(stats)
-}
-
 #[expect(
     clippy::too_many_arguments,
     reason = "batched metadata resolution coordinates gateway, progress, and candidate state explicitly"
@@ -1059,39 +866,6 @@ pub(crate) async fn prepare_series_library_scan_candidates(
             Ok::<_, AppError>((
                 index,
                 prepare_series_library_scan_candidate(folder, scan_hints.as_ref()).await?,
-            ))
-        });
-    }
-
-    let mut prepared_results = vec![None; prepare_set.len()];
-    while let Some(result) = prepare_set.join_next().await {
-        let (index, candidate) =
-            result.map_err(|error| AppError::Repository(error.to_string()))??;
-        prepared_results[index] = Some(candidate);
-    }
-
-    Ok(prepared_results.into_iter().flatten().collect())
-}
-
-pub(crate) async fn prepare_series_library_scan_candidates_from_files(
-    files: &[LibraryFile],
-    library_path: &str,
-    scan_hints: Option<&LibraryScanHintSet>,
-) -> AppResult<Vec<PreparedSeriesLibraryScanCandidate>> {
-    let mut prepare_set = tokio::task::JoinSet::new();
-
-    for (index, file) in files.iter().cloned().enumerate() {
-        let library_path = library_path.to_string();
-        let scan_hints = scan_hints.cloned();
-        prepare_set.spawn(async move {
-            Ok::<_, AppError>((
-                index,
-                prepare_series_library_scan_candidate_from_file(
-                    file,
-                    &library_path,
-                    scan_hints.as_ref(),
-                )
-                .await?,
             ))
         });
     }
@@ -1276,166 +1050,6 @@ pub(crate) async fn prepare_movie_library_scan_entries(
     Ok(prepared_results.into_iter().flatten().collect())
 }
 
-pub(crate) fn stream_prepared_movie_library_scan_entries(
-    library_scanner: Arc<dyn LibraryScanner>,
-    mut discovered_entries: MovieTopLevelEntryBatchReceiver,
-    library_path: String,
-    batch_size: usize,
-    cancel_token: Option<CancellationToken>,
-    scan_hints: Option<LibraryScanHintSet>,
-) -> AppResult<PreparedMovieLibraryScanEntryBatchReceiver> {
-    if batch_size == 0 {
-        return Err(AppError::Validation(
-            "batch size must be greater than 0".into(),
-        ));
-    }
-
-    let (prepared_tx, prepared_rx) =
-        tokio::sync::mpsc::channel(LIBRARY_SCAN_PREPARED_ENTRY_QUEUE_CAPACITY);
-    let flush_batch_size = batch_size.clamp(1, MOVIE_PREPARED_ENTRY_FLUSH_BATCH_SIZE);
-
-    tokio::spawn(async move {
-        let mut pending_entries = VecDeque::new();
-        let mut prepare_set = tokio::task::JoinSet::new();
-        let mut prepared_batch = Vec::with_capacity(flush_batch_size.min(256));
-        let mut discovery_closed = false;
-
-        loop {
-            if library_scan_cancel_requested(cancel_token.as_ref()) {
-                pending_entries.clear();
-                prepare_set.abort_all();
-                discovery_closed = true;
-            }
-
-            while prepare_set.len() < MOVIE_ENTRY_PREP_CONCURRENCY {
-                let Some(entry) = pending_entries.pop_front() else {
-                    break;
-                };
-                let library_scanner = library_scanner.clone();
-                let library_path = library_path.clone();
-                let scan_hints = scan_hints.clone();
-                prepare_set.spawn(async move {
-                    prepare_movie_library_scan_entry(
-                        library_scanner,
-                        entry,
-                        library_path,
-                        scan_hints.as_ref(),
-                    )
-                    .await
-                });
-            }
-
-            if prepared_batch.len() >= flush_batch_size {
-                let next_batch = std::mem::take(&mut prepared_batch);
-                let Some(send_result) =
-                    await_cancellable(cancel_token.as_ref(), prepared_tx.send(Ok(next_batch)))
-                        .await
-                else {
-                    return;
-                };
-                if send_result.is_err() {
-                    return;
-                }
-                continue;
-            }
-
-            if discovery_closed && pending_entries.is_empty() && prepare_set.is_empty() {
-                break;
-            }
-
-            if prepare_set.is_empty() {
-                let maybe_batch =
-                    await_cancellable(cancel_token.as_ref(), discovered_entries.recv()).await;
-                match maybe_batch.flatten() {
-                    Some(Ok(batch)) => pending_entries.extend(batch),
-                    Some(Err(error)) => {
-                        let _ = prepared_tx.send(Err(error)).await;
-                        return;
-                    }
-                    None => discovery_closed = true,
-                }
-                continue;
-            }
-
-            if discovery_closed {
-                match prepare_set.join_next().await {
-                    Some(Ok(Ok(entry)))
-                        if !library_scan_cancel_requested(cancel_token.as_ref()) =>
-                    {
-                        prepared_batch.push(entry);
-                    }
-                    Some(Ok(Ok(_))) => {}
-                    Some(Ok(Err(error))) => {
-                        let _ = prepared_tx.send(Err(error)).await;
-                        return;
-                    }
-                    Some(Err(error)) => {
-                        if error.is_cancelled() {
-                            continue;
-                        }
-                        let _ = prepared_tx
-                            .send(Err(AppError::Repository(error.to_string())))
-                            .await;
-                        return;
-                    }
-                    None => {}
-                }
-                continue;
-            }
-
-            tokio::select! {
-                _ = async {
-                    if let Some(token) = cancel_token.as_ref() {
-                        token.cancelled().await;
-                    } else {
-                        std::future::pending::<()>().await;
-                    }
-                } => {
-                    pending_entries.clear();
-                    prepare_set.abort_all();
-                    discovery_closed = true;
-                }
-                Some(result) = prepare_set.join_next() => {
-                    match result {
-                        Ok(Ok(entry)) => {
-                            if !library_scan_cancel_requested(cancel_token.as_ref()) {
-                                prepared_batch.push(entry);
-                            }
-                        }
-                        Ok(Err(error)) => {
-                            let _ = prepared_tx.send(Err(error)).await;
-                            return;
-                        }
-                        Err(error) => {
-                            let _ = prepared_tx
-                                .send(Err(AppError::Repository(error.to_string())))
-                                .await;
-                            return;
-                        }
-                    }
-                }
-                maybe_batch = discovered_entries.recv() => {
-                    match maybe_batch {
-                        Some(Ok(batch)) => pending_entries.extend(batch),
-                        Some(Err(error)) => {
-                            let _ = prepared_tx.send(Err(error)).await;
-                            return;
-                        }
-                        None => discovery_closed = true,
-                    }
-                }
-            }
-        }
-
-        if !prepared_batch.is_empty() && !library_scan_cancel_requested(cancel_token.as_ref()) {
-            let _ = await_cancellable(cancel_token.as_ref(), prepared_tx.send(Ok(prepared_batch)))
-                .await;
-        }
-    });
-
-    Ok(prepared_rx)
-}
-
 async fn prepare_movie_library_scan_entry(
     library_scanner: Arc<dyn LibraryScanner>,
     entry: MovieTopLevelEntry,
@@ -1445,7 +1059,7 @@ async fn prepare_movie_library_scan_entry(
     let entry_path = path_to_stored_string(&entry.path);
     let mut discovered_files = if entry.is_dir {
         library_scanner
-            .scan_library(path_to_stored_string(&entry.path).as_str())
+            .scan_directory(path_to_stored_string(&entry.path).as_str())
             .await?
     } else {
         vec![LibraryFile {
@@ -1482,6 +1096,110 @@ async fn prepare_movie_library_scan_entry(
         )
         .await?,
     )))
+}
+
+/// Evidence-only movie candidate preparation for the streaming scan pipeline.
+///
+/// Reads only title-level signals: the direct children of the entry (one
+/// shallow listing), sidecars (`movie.nfo`, same-stem NFO, `.plexmatch`), and
+/// filename/folder-name hints. The recursive inventory walk runs separately;
+/// candidates produced here carry an empty `discovered_files` list and the
+/// pipeline attaches the real file list at match/inventory rendezvous.
+///
+/// Degenerate folders (no direct-child video and no folder sidecar evidence)
+/// fall back to the recursive walk inline so empty folders keep today's
+/// `Skipped` semantics instead of matching on a bare folder name.
+pub(crate) enum MovieCandidateEvidence {
+    Candidate {
+        candidate: Box<PreparedMovieLibraryScanCandidate>,
+        /// Present when evidence gathering already produced the exact
+        /// inventory (top-level movie files and degenerate-folder fallback).
+        inline_inventory: Option<Vec<LibraryFile>>,
+    },
+    Skipped {
+        item_path: String,
+    },
+}
+
+pub(crate) async fn prepare_movie_candidate_evidence(
+    library_scanner: Arc<dyn LibraryScanner>,
+    entry: MovieTopLevelEntry,
+    library_path: String,
+    scan_hints: Option<&LibraryScanHintSet>,
+) -> AppResult<MovieCandidateEvidence> {
+    let entry_path = path_to_stored_string(&entry.path);
+
+    if !entry.is_dir {
+        let file = LibraryFile {
+            path: entry_path.clone(),
+            display_name: entry
+                .path
+                .file_stem()
+                .map(|stem| stem.to_string_lossy().into_owned())
+                .unwrap_or_default()
+                .trim()
+                .to_string(),
+            nfo_path: None,
+            size_bytes: None,
+            source_signature_scheme: None,
+            source_signature_value: None,
+        };
+        let mut representative = file.clone();
+        representative.nfo_path =
+            matching_movie_nfo_path_async(&stored_path_to_path_buf(&file.path)).await;
+        let candidate = build_prepared_movie_library_scan_candidate(
+            representative,
+            Vec::new(),
+            library_path,
+            scan_hints,
+        )
+        .await?;
+        return Ok(MovieCandidateEvidence::Candidate {
+            candidate: Box::new(candidate),
+            inline_inventory: Some(vec![file]),
+        });
+    }
+
+    let mut children = library_scanner
+        .scan_directory_children(entry_path.as_str())
+        .await?;
+    children.sort_by(|left, right| left.path.cmp(&right.path));
+
+    if children.is_empty() {
+        // No direct-child video: nested-only or empty folder. Fall back to
+        // the recursive walk now so empty folders stay skipped and nested
+        // layouts keep a real representative file.
+        let mut discovered_files = library_scanner
+            .scan_directory(entry_path.as_str())
+            .await?;
+        if discovered_files.is_empty() {
+            return Ok(MovieCandidateEvidence::Skipped {
+                item_path: entry_path,
+            });
+        }
+        discovered_files.sort_by(|left, right| left.path.cmp(&right.path));
+        let file = build_movie_entry_representative_file(&entry, &discovered_files).await?;
+        let candidate = build_prepared_movie_library_scan_candidate(
+            file,
+            Vec::new(),
+            library_path,
+            scan_hints,
+        )
+        .await?;
+        return Ok(MovieCandidateEvidence::Candidate {
+            candidate: Box::new(candidate),
+            inline_inventory: Some(discovered_files),
+        });
+    }
+
+    let file = build_movie_entry_representative_file(&entry, &children).await?;
+    let candidate =
+        build_prepared_movie_library_scan_candidate(file, Vec::new(), library_path, scan_hints)
+            .await?;
+    Ok(MovieCandidateEvidence::Candidate {
+        candidate: Box::new(candidate),
+        inline_inventory: None,
+    })
 }
 
 async fn build_movie_entry_representative_file(
@@ -1715,7 +1433,7 @@ async fn build_prepared_movie_library_scan_candidate(
     })
 }
 
-async fn prepare_series_library_scan_candidate(
+pub(crate) async fn prepare_series_library_scan_candidate(
     folder: PathBuf,
     scan_hints: Option<&LibraryScanHintSet>,
 ) -> AppResult<PreparedSeriesLibraryScanCandidate> {
@@ -2205,6 +1923,8 @@ mod tests {
     #[derive(Clone, Default)]
     struct DelayedLibraryScanner {
         responses: DelayedScanResponses,
+        scan_library_calls: Arc<std::sync::atomic::AtomicUsize>,
+        scan_directory_calls: Arc<std::sync::atomic::AtomicUsize>,
     }
 
     impl DelayedLibraryScanner {
@@ -2213,6 +1933,16 @@ mod tests {
                 .lock()
                 .unwrap()
                 .insert(root.to_string(), (delay_ms, files));
+        }
+
+        fn scan_library_call_count(&self) -> usize {
+            self.scan_library_calls
+                .load(std::sync::atomic::Ordering::SeqCst)
+        }
+
+        fn scan_directory_call_count(&self) -> usize {
+            self.scan_directory_calls
+                .load(std::sync::atomic::Ordering::SeqCst)
         }
     }
 
@@ -2292,17 +2022,15 @@ mod tests {
     #[async_trait]
     impl LibraryScanner for DelayedLibraryScanner {
         async fn scan_library(&self, root: &str) -> AppResult<Vec<LibraryFile>> {
-            let (delay_ms, files) = self
-                .responses
-                .lock()
-                .unwrap()
-                .get(root)
-                .cloned()
-                .unwrap_or_default();
-            if delay_ms > 0 {
-                tokio::time::sleep(Duration::from_millis(delay_ms)).await;
-            }
-            Ok(files)
+            self.scan_library_calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.scan_files(root).await
+        }
+
+        async fn scan_directory(&self, root: &str) -> AppResult<Vec<LibraryFile>> {
+            self.scan_directory_calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.scan_files(root).await
         }
 
         async fn scan_library_batched(
@@ -2319,6 +2047,22 @@ mod tests {
             _batch_size: usize,
         ) -> AppResult<LibraryFileBatchReceiver> {
             panic!("unused in test")
+        }
+    }
+
+    impl DelayedLibraryScanner {
+        async fn scan_files(&self, root: &str) -> AppResult<Vec<LibraryFile>> {
+            let (delay_ms, files) = self
+                .responses
+                .lock()
+                .unwrap()
+                .get(root)
+                .cloned()
+                .unwrap_or_default();
+            if delay_ms > 0 {
+                tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+            }
+            Ok(files)
         }
     }
 
@@ -3975,56 +3719,31 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stream_prepared_movie_library_scan_entries_emits_batches_before_discovery_closes() {
+    async fn prepare_movie_directory_entry_uses_directory_scan() {
         let scanner = DelayedLibraryScanner::default();
         scanner.set_response(
             "/library/Fast Movie",
-            10,
+            0,
             vec![build_library_file(
                 "/library/Fast Movie/Fast.Movie.2024.mkv",
             )],
         );
-        scanner.set_response(
-            "/library/Slow Movie",
-            250,
-            vec![build_library_file(
-                "/library/Slow Movie/Slow.Movie.2024.mkv",
-            )],
-        );
 
-        let (entry_tx, entry_rx) = tokio::sync::mpsc::channel(4);
-        let mut prepared_rx = stream_prepared_movie_library_scan_entries(
-            Arc::new(scanner),
-            entry_rx,
+        let entry = MovieTopLevelEntry {
+            path: PathBuf::from("/library/Fast Movie"),
+            is_dir: true,
+        };
+
+        let prepared = prepare_movie_library_scan_entry(
+            Arc::new(scanner.clone()),
+            entry,
             "/library".to_string(),
-            1,
-            None,
             None,
         )
-        .expect("prepared entry stream");
+        .await
+        .expect("prepare movie directory entry");
 
-        entry_tx
-            .send(Ok(vec![
-                MovieTopLevelEntry {
-                    path: PathBuf::from("/library/Fast Movie"),
-                    is_dir: true,
-                },
-                MovieTopLevelEntry {
-                    path: PathBuf::from("/library/Slow Movie"),
-                    is_dir: true,
-                },
-            ]))
-            .await
-            .expect("send discovery batch");
-
-        let first_batch = tokio::time::timeout(Duration::from_millis(100), prepared_rx.recv())
-            .await
-            .expect("first prepared batch should arrive before discovery closes")
-            .expect("prepared entry stream should stay open")
-            .expect("prepared batch");
-
-        assert_eq!(first_batch.len(), 1);
-        match &first_batch[0] {
+        match prepared {
             PreparedMovieLibraryScanEntry::Candidate(candidate) => {
                 assert_eq!(candidate.file.display_name, "Fast.Movie.2024");
             }
@@ -4032,127 +3751,8 @@ mod tests {
                 panic!("unexpected skipped entry for {item_path}");
             }
         }
-
-        drop(entry_tx);
-
-        let second_batch = tokio::time::timeout(Duration::from_millis(500), prepared_rx.recv())
-            .await
-            .expect("second prepared batch should arrive after discovery closes")
-            .expect("prepared entry stream should stay open")
-            .expect("prepared batch");
-
-        assert_eq!(second_batch.len(), 1);
-    }
-
-    #[tokio::test]
-    async fn stream_prepared_movie_library_scan_entries_does_not_wait_for_large_input_batch_size() {
-        let scanner = DelayedLibraryScanner::default();
-        for index in 0..9 {
-            let folder = format!("/library/Movie {index}");
-            let file = format!("{folder}/Movie.{index}.2024.mkv");
-            scanner.set_response(&folder, 5, vec![build_library_file(&file)]);
-        }
-
-        let (entry_tx, entry_rx) = tokio::sync::mpsc::channel(4);
-        let mut prepared_rx = stream_prepared_movie_library_scan_entries(
-            Arc::new(scanner),
-            entry_rx,
-            "/library".to_string(),
-            128,
-            None,
-            None,
-        )
-        .expect("prepared entry stream");
-
-        entry_tx
-            .send(Ok((0..9)
-                .map(|index| MovieTopLevelEntry {
-                    path: PathBuf::from(format!("/library/Movie {index}")),
-                    is_dir: true,
-                })
-                .collect()))
-            .await
-            .expect("send discovery batch");
-
-        let first_batch = tokio::time::timeout(Duration::from_millis(250), prepared_rx.recv())
-            .await
-            .expect("first prepared batch should flush before 128 entries are ready")
-            .expect("prepared entry stream should stay open")
-            .expect("prepared batch");
-
-        assert_eq!(first_batch.len(), MOVIE_PREPARED_ENTRY_FLUSH_BATCH_SIZE);
-
-        drop(entry_tx);
-
-        let second_batch = tokio::time::timeout(Duration::from_millis(250), prepared_rx.recv())
-            .await
-            .expect("remaining prepared batch should arrive")
-            .expect("prepared entry stream should stay open")
-            .expect("prepared batch");
-
-        assert_eq!(second_batch.len(), 1);
-    }
-
-    #[tokio::test]
-    async fn stream_prepared_movie_library_scan_entries_cancel_stops_without_draining_slow_prep() {
-        let scanner = DelayedLibraryScanner::default();
-        scanner.set_response(
-            "/library/Fast Movie",
-            5,
-            vec![build_library_file(
-                "/library/Fast Movie/Fast.Movie.2024.mkv",
-            )],
-        );
-        scanner.set_response(
-            "/library/Slow Movie",
-            500,
-            vec![build_library_file(
-                "/library/Slow Movie/Slow.Movie.2024.mkv",
-            )],
-        );
-
-        let cancel_token = CancellationToken::new();
-        let (entry_tx, entry_rx) = tokio::sync::mpsc::channel(4);
-        let mut prepared_rx = stream_prepared_movie_library_scan_entries(
-            Arc::new(scanner),
-            entry_rx,
-            "/library".to_string(),
-            1,
-            Some(cancel_token.clone()),
-            None,
-        )
-        .expect("prepared entry stream");
-
-        entry_tx
-            .send(Ok(vec![
-                MovieTopLevelEntry {
-                    path: PathBuf::from("/library/Fast Movie"),
-                    is_dir: true,
-                },
-                MovieTopLevelEntry {
-                    path: PathBuf::from("/library/Slow Movie"),
-                    is_dir: true,
-                },
-            ]))
-            .await
-            .expect("send discovery batch");
-
-        let first_batch = tokio::time::timeout(Duration::from_millis(100), prepared_rx.recv())
-            .await
-            .expect("fast prepared batch should arrive")
-            .expect("prepared entry stream should stay open")
-            .expect("prepared batch");
-        assert_eq!(first_batch.len(), 1);
-
-        cancel_token.cancel();
-
-        let next_item = tokio::time::timeout(Duration::from_millis(100), prepared_rx.recv())
-            .await
-            .expect("cancel should stop prepared entry stream promptly");
-        assert!(
-            next_item.is_none(),
-            "prepared entry stream should close after cancel"
-        );
+        assert_eq!(scanner.scan_directory_call_count(), 1);
+        assert_eq!(scanner.scan_library_call_count(), 0);
     }
 
     #[tokio::test]
@@ -4185,73 +3785,6 @@ mod tests {
             result.is_empty(),
             "canceled metadata search should drop late results"
         );
-    }
-
-    #[tokio::test]
-    async fn streaming_movie_metadata_resolver_reuses_search_results_and_delays_total_known() {
-        let gateway = CountingMetadataGateway::default();
-        gateway.set_search_results(
-            METADATA_TYPE_MOVIE,
-            "Glass Harbor",
-            vec![MetadataSearchItem {
-                tvdb_id: "movie-1".into(),
-                name: "Glass Harbor".into(),
-                year: Some(2021),
-                auto_match_safe: true,
-                auto_match_signals: vec!["exact_title".into(), "exact_year".into()],
-            }],
-        );
-
-        let mut resolver = StreamingMovieMetadataResolver::new(Arc::new(gateway.clone()), "eng");
-
-        let (first_ready, first_progress) = resolver
-            .ingest_candidates(
-                vec![build_prepared_movie_candidate(&["Glass Harbor"])],
-                None,
-            )
-            .await
-            .expect("first incremental metadata batch");
-
-        assert_eq!(first_progress.total_delta, 1);
-        assert_eq!(first_progress.completed_delta, 1);
-        assert!(!first_progress.total_known);
-        assert_eq!(first_ready.len(), 1);
-        assert_eq!(
-            gateway.search_call_count(METADATA_TYPE_MOVIE, "Glass Harbor"),
-            1
-        );
-
-        let (second_ready, second_progress) = resolver
-            .ingest_candidates(
-                vec![build_prepared_movie_candidate(&["Glass Harbor"])],
-                None,
-            )
-            .await
-            .expect("second incremental metadata batch");
-
-        assert_eq!(second_progress.total_delta, 1);
-        assert_eq!(second_progress.completed_delta, 1);
-        assert!(!second_progress.total_known);
-        assert_eq!(second_ready.len(), 1);
-        assert_eq!(
-            gateway.search_call_count(METADATA_TYPE_MOVIE, "Glass Harbor"),
-            1
-        );
-
-        let (final_ready, final_progress) = resolver
-            .finish(None)
-            .await
-            .expect("final incremental metadata batch");
-
-        assert!(final_ready.is_empty());
-        assert_eq!(final_progress.total_delta, 0);
-        assert_eq!(final_progress.completed_delta, 0);
-        assert!(final_progress.total_known);
-
-        let stats = resolver.stats();
-        assert_eq!(stats.logical_lookups, 2);
-        assert_eq!(stats.executed_requests, 1);
-        assert_eq!(stats.coalesced_requests, 1);
     }
 
     #[test]

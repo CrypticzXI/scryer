@@ -21,11 +21,8 @@ import {
 } from "@/lib/graphql/queries";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { IconButton } from "@/components/ui/icon-button";
 import { cn } from "@/lib/utils";
-import {
-  boxedActionButtonBaseClass,
-  boxedActionButtonToneClass,
-} from "@/lib/utils/action-button-styles";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -731,65 +728,38 @@ export function SettingsRulesSection({
                   </TableCell>
                   <TableCell className="text-right">
                     <div className="flex justify-end gap-1">
-                      <Button
+                      <IconButton
                         id={selectorId("settings-rule-toggle", record.id)}
-                        type="button"
-                        size="icon-sm"
-                        variant="secondary"
-                        title={
+                        label={
                           record.enabled
                             ? t("label.disable")
                             : t("label.enable")
                         }
-                        aria-label={
-                          record.enabled
-                            ? t("label.disable")
-                            : t("label.enable")
-                        }
+                        tone={record.enabled ? "disabled" : "enabled"}
                         onClick={() => void toggleRuleSetEnabled(record)}
                         disabled={mutatingRuleSetId === record.id}
-                        className={cn(
-                          boxedActionButtonBaseClass,
-                          boxedActionButtonToneClass[
-                            record.enabled ? "disabled" : "enabled"
-                          ],
-                        )}
                       >
                         <Power className="h-4 w-4" />
-                      </Button>
+                      </IconButton>
                       {!record.isManaged ? (
                         <>
-                          <Button
+                          <IconButton
                             id={selectorId("settings-rule-edit", record.id)}
-                            type="button"
-                            size="icon-sm"
-                            variant="secondary"
-                            title={t("label.edit")}
-                            aria-label={t("label.edit")}
+                            label={t("label.edit")}
+                            tone="edit"
                             onClick={() => editRuleSet(record)}
-                            className={cn(
-                              boxedActionButtonBaseClass,
-                              boxedActionButtonToneClass.edit,
-                            )}
                           >
                             <Edit className="h-4 w-4" />
-                          </Button>
-                          <Button
+                          </IconButton>
+                          <IconButton
                             id={selectorId("settings-rule-delete", record.id)}
-                            type="button"
-                            size="icon-sm"
-                            variant="secondary"
-                            title={t("label.delete")}
-                            aria-label={t("label.delete")}
+                            label={t("label.delete")}
+                            tone="delete"
                             onClick={() => void deleteRuleSet(record)}
                             disabled={mutatingRuleSetId === record.id}
-                            className={cn(
-                              boxedActionButtonBaseClass,
-                              boxedActionButtonToneClass.delete,
-                            )}
                           >
                             <Trash2 className="h-4 w-4" />
-                          </Button>
+                          </IconButton>
                         </>
                       ) : null}
                     </div>

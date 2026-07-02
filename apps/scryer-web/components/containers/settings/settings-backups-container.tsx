@@ -17,6 +17,7 @@ import { InfoHelp } from "@/components/common/info-help";
 import { FolderBrowserDialog } from "@/components/setup/folder-browser-dialog";
 import { SettingsToggleSwitch } from "@/components/common/settings-toggle-switch";
 import { Button } from "@/components/ui/button";
+import { IconButton } from "@/components/ui/icon-button";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
@@ -52,12 +53,7 @@ import { autoBackupSettingsQuery, backupSettingsQuery, backupsQuery } from "@/li
 import { scryerFetch } from "@/lib/graphql/urql-client";
 import { useSettingsSubscription } from "@/lib/hooks/use-settings-subscription";
 import { getRuntimeBasePath } from "@/lib/runtime-config";
-import { cn } from "@/lib/utils";
 import { formatUiDateTime } from "@/lib/utils/date-format";
-import {
-  boxedActionButtonBaseClass,
-  boxedActionButtonToneClass,
-} from "@/lib/utils/action-button-styles";
 import type {
   AutoBackupSettings,
   BackupSettings,
@@ -1067,57 +1063,43 @@ export function SettingsBackupsContainer() {
                             label={statusLabel}
                           />
                         </TableCell>
-                        <TableCell className={`align-middle text-xs ${BACKUPS_MUTED_TEXT_CLASS}`}>
+                        <TableCell className={`align-middle font-[var(--font-code)] text-xs ${BACKUPS_MUTED_TEXT_CLASS}`}>
                           {formatBytes(backup.sizeBytes)}
                         </TableCell>
                         <TableCell>
                           <div className="flex items-center justify-end gap-1">
                             {backup.status === "ready" ? (
-                              <Button
+                              <IconButton
                                 id={selectorId(
                                   "settings-backup-download",
                                   "created-at",
                                   backup.createdAt,
                                 )}
-                                type="button"
-                                variant="secondary"
-                                size="icon-sm"
-                                className={cn(
-                                  boxedActionButtonBaseClass,
-                                  boxedActionButtonToneClass.install,
-                                )}
+                                label={t("settings.backupsDownload")}
+                                tone="install"
                                 disabled={isDownloading || isDeleting}
                                 onClick={() => void handleDownloadBackup(backup)}
-                                title={t("settings.backupsDownload")}
-                                aria-label={t("settings.backupsDownload")}
                               >
                                 {isDownloading ? (
                                   <Loader2 className="h-4 w-4 animate-spin" />
                                 ) : (
                                   <Download className="h-4 w-4" />
                                 )}
-                              </Button>
+                              </IconButton>
                             ) : null}
-                            <Button
+                            <IconButton
                               id={selectorId("settings-backup-delete", "created-at", backup.createdAt)}
-                              type="button"
-                              variant="secondary"
-                              size="icon-sm"
-                              className={cn(
-                                boxedActionButtonBaseClass,
-                                boxedActionButtonToneClass.delete,
-                              )}
+                              label={t("settings.backupsDelete")}
+                              tone="delete"
                               disabled={disableActions}
                               onClick={() => setPendingDelete(backup)}
-                              title={t("settings.backupsDelete")}
-                              aria-label={t("settings.backupsDelete")}
                             >
                               {isDeleting ? (
                                 <Loader2 className="h-4 w-4 animate-spin" />
                               ) : (
                                 <Trash2 className="h-4 w-4" />
                               )}
-                            </Button>
+                            </IconButton>
                           </div>
                         </TableCell>
                       </TableRow>

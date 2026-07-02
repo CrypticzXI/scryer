@@ -54,7 +54,7 @@ pub(super) async fn maybe_probe_existing_series_title_for_background_refresh(
     app: &AppUseCase,
     title: &mut Title,
     folder_path: &Path,
-    executor: &mut LibraryScanTitleWorkExecutor,
+    executor: &mut dyn LibraryScanTitleWorkQueue,
     summary: &mut LibraryScanSummary,
 ) -> AppResult<()> {
     if !title_ready_for_background_refresh(app, title).await? {
@@ -120,7 +120,7 @@ async fn maybe_probe_existing_movie_title_for_background_refresh(
     title: &Title,
     collections: &[Collection],
     entry: &MovieTopLevelEntry,
-    executor: &mut LibraryScanTitleWorkExecutor,
+    executor: &mut dyn LibraryScanTitleWorkQueue,
     summary: &mut LibraryScanSummary,
 ) -> AppResult<()> {
     if !title_ready_for_background_refresh(app, title).await? {
@@ -230,7 +230,7 @@ pub(super) async fn background_refresh_series(
 
     let mut summary = LibraryScanSummary::default();
     let mut metadata_lookup_stats = MetadataLookupBatchStats::default();
-    let mut executor = LibraryScanTitleWorkExecutor::for_scan(app, actor, session_id, None).await?;
+    let mut executor = LibraryScanMediaAnalysisPool::for_scan(app, actor, session_id, None).await?;
     let metadata_language = app.metadata_language().await;
 
     let library_ids = vec![library_id.to_string()];
@@ -377,7 +377,7 @@ pub(super) async fn background_refresh_movies(
 
     let mut summary = LibraryScanSummary::default();
     let mut metadata_lookup_stats = MetadataLookupBatchStats::default();
-    let mut executor = LibraryScanTitleWorkExecutor::for_scan(app, actor, session_id, None).await?;
+    let mut executor = LibraryScanMediaAnalysisPool::for_scan(app, actor, session_id, None).await?;
     let library_ids = vec![library_id.to_string()];
     let mut existing_titles = app
         .services
@@ -468,7 +468,11 @@ pub(super) async fn background_refresh_movies(
                         coordinator.mark_title_match_completed(1).await;
                     }
                 }
-                PreparedMovieLibraryScanEntry::Skipped { .. } => {
+                PreparedMovieLibraryScanEntry::Skipped { item_path } => {
+                    debug!(
+                        item_path = %item_path,
+                        "background movie refresh skipped entry without media files"
+                    );
                     summary.skipped += 1;
                     coordinator.mark_title_match_completed(1).await;
                 }

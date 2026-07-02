@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { FolderOpen } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { IconButton } from "@/components/ui/icon-button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { FolderBrowserDialog } from "./folder-browser-dialog";
@@ -83,16 +84,14 @@ export function SetupMediaPathsView({
               placeholder="/data/movies"
               className="font-[var(--font-code)]"
             />
-            <Button
+            <IconButton
               id="setup-media-paths-movies-browse"
-              type="button"
-              variant="outline"
-              size="icon"
+              label={t("setup.browse")}
+              tone="neutral"
               onClick={() => setBrowseTarget("movies")}
-              title={t("setup.browse")}
             >
               <FolderOpen className="h-4 w-4" />
-            </Button>
+            </IconButton>
           </div>
         </div>
         <div className="space-y-2">
@@ -110,16 +109,14 @@ export function SetupMediaPathsView({
               placeholder="/data/series"
               className="font-[var(--font-code)]"
             />
-            <Button
+            <IconButton
               id="setup-media-paths-series-browse"
-              type="button"
-              variant="outline"
-              size="icon"
+              label={t("setup.browse")}
+              tone="neutral"
               onClick={() => setBrowseTarget("series")}
-              title={t("setup.browse")}
             >
               <FolderOpen className="h-4 w-4" />
-            </Button>
+            </IconButton>
           </div>
         </div>
         <div className="space-y-2">
@@ -137,16 +134,14 @@ export function SetupMediaPathsView({
               placeholder="/data/anime"
               className="font-[var(--font-code)]"
             />
-            <Button
+            <IconButton
               id="setup-media-paths-anime-browse"
-              type="button"
-              variant="outline"
-              size="icon"
+              label={t("setup.browse")}
+              tone="neutral"
               onClick={() => setBrowseTarget("anime")}
-              title={t("setup.browse")}
             >
               <FolderOpen className="h-4 w-4" />
-            </Button>
+            </IconButton>
           </div>
         </div>
         {error && (

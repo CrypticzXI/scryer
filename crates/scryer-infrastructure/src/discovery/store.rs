@@ -1342,7 +1342,7 @@ async fn section_items_from_rows(
             row.text("result_section_id")?,
             row.i64("section_total_count")?,
         ));
-        items.push(item_from_row(&row)?);
+        items.push(item_from_row(row)?);
     }
     let title_ids = discovery_title_ids_from_rows(&rows)?;
     hydrate_discovery_items(datastore, &mut items, &title_ids).await?;
@@ -1616,7 +1616,7 @@ async fn fetch_catalog_public_sections(
             row.opt_text("result_section_title")?,
             row.i64("section_total_count")?,
         ));
-        items.push(item_from_row(&row)?);
+        items.push(item_from_row(row)?);
     }
     let title_ids = discovery_title_ids_from_rows(&rows)?;
     hydrate_discovery_items(datastore, &mut items, &title_ids).await?;
@@ -2669,7 +2669,7 @@ async fn hydrate_discovery_items(
     for (index, item) in items.iter().enumerate() {
         item_indexes.insert(item.id.clone(), index);
     }
-    hydrate_discovery_title_children(datastore, items, &discovery_title_ids).await?;
+    hydrate_discovery_title_children(datastore, items, discovery_title_ids).await?;
     hydrate_item_rank_components(datastore, items, &item_ids, &item_indexes).await?;
     hydrate_item_subject_links(datastore, items, &item_ids, &item_indexes).await?;
     hydrate_item_library_provenance(datastore, items, &item_ids, &item_indexes).await?;

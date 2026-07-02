@@ -320,13 +320,7 @@ function SearchResultRow({
           </div>
         </div>
         <div className="w-16 shrink-0 text-right max-md:w-auto max-md:text-left">
-          <div
-            className="text-[15px] font-bold text-[var(--scry-ink2)]"
-            style={{
-              fontFamily:
-                "'Space Grotesk Variable', 'Inter Variable', ui-sans-serif, system-ui, sans-serif",
-            }}
-          >
+          <div className="font-[var(--font-code)] text-[15px] font-bold text-[var(--scry-ink2)]">
             {bytesToWholeReadable(result.sizeBytes)}
           </div>
         </div>
@@ -410,7 +404,7 @@ function SearchResultRow({
             <span aria-hidden="true">•</span>
             <span>{result.publishedAt ?? t("label.unknown")}</span>
             <span aria-hidden="true">•</span>
-            <span className="font-medium text-foreground/80">
+            <span className="font-[var(--font-code)] font-medium text-foreground/80">
               {bytesToWholeReadable(result.sizeBytes)}
             </span>
             {rejectionBadge}
@@ -582,7 +576,7 @@ function SearchResultRow({
             </span>
           )}
         </td>
-        <td className="border border-border border-x-0 px-4 py-2 text-center text-xl font-semibold text-foreground align-middle">
+        <td className="border border-border border-x-0 px-4 py-2 text-center font-[var(--font-code)] text-xl font-semibold text-foreground align-middle">
           {bytesToWholeReadable(result.sizeBytes)}
         </td>
         <td className="rounded-r-lg border border-border border-l-0 px-4 py-2 text-center align-middle">

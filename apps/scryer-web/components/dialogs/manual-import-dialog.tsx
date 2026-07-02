@@ -320,7 +320,7 @@ export function ManualImportDialog({
                           </span>
                         </div>
                       </TableCell>
-                      <TableCell className="text-right text-xs text-muted-foreground">
+                      <TableCell className="text-right font-[var(--font-code)] text-xs text-muted-foreground">
                         {formatFileSize(file.sizeBytes)}
                       </TableCell>
                       <TableCell className="text-center">

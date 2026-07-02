@@ -589,15 +589,15 @@ impl AppUseCase {
         let mut groups = Vec::new();
         let mut emitted_item_keys = HashSet::new();
         let mut public_sections = public_sections.into_iter();
-        if let Some(public_top_section) = public_sections.next() {
-            if let Some(group) = catalog_public_top_group(
+        if let Some(public_top_section) = public_sections.next()
+            && let Some(group) = catalog_public_top_group(
                 public_top_section,
                 media_kind,
                 limit,
                 &mut emitted_item_keys,
-            ) {
-                groups.push(group);
-            }
+            )
+        {
+            groups.push(group);
         }
         let remaining_public_sections = public_sections.collect::<Vec<_>>();
         let personalized_group_start = groups.len();
@@ -1216,11 +1216,13 @@ fn catalog_public_top_group(
     emitted_item_keys: &mut HashSet<String>,
 ) -> Option<CatalogDiscoveryGroup> {
     catalog_group_excluding_emitted(
-        format!("public_top_{media_kind}"),
-        CatalogDiscoveryGroupKind::PublicTop,
-        CatalogDiscoverySurface::Public,
-        None,
-        Some(section.total_count),
+        CatalogDiscoveryGroupDraft {
+            id: format!("public_top_{media_kind}"),
+            kind: CatalogDiscoveryGroupKind::PublicTop,
+            surface: CatalogDiscoverySurface::Public,
+            label_value: None,
+            total_count: Some(section.total_count),
+        },
         section.items,
         limit,
         emitted_item_keys,
@@ -1239,14 +1241,16 @@ fn catalog_public_section_group(
     let label_value = if section.section_id == "evergreen_popular" {
         Some("Netflix Most Watched".to_string())
     } else {
-        section.title.or_else(|| Some(section.section_type))
+        section.title.or(Some(section.section_type))
     };
     catalog_group_excluding_emitted(
-        id,
-        CatalogDiscoveryGroupKind::PublicSection,
-        CatalogDiscoverySurface::Public,
-        label_value,
-        Some(section.total_count),
+        CatalogDiscoveryGroupDraft {
+            id,
+            kind: CatalogDiscoveryGroupKind::PublicSection,
+            surface: CatalogDiscoverySurface::Public,
+            label_value,
+            total_count: Some(section.total_count),
+        },
         section.items,
         limit,
         emitted_item_keys,
@@ -1288,11 +1292,13 @@ fn catalog_personalized_groups(
             .collect::<Vec<_>>();
         dedupe_and_sort_discovery_items(&mut section_items);
         if let Some(group) = catalog_group_excluding_emitted(
-            format!("genre_{}", slugify_discovery_section_part(&label)),
-            CatalogDiscoveryGroupKind::GenreAffinity,
-            CatalogDiscoverySurface::Personalized,
-            Some(label),
-            None,
+            CatalogDiscoveryGroupDraft {
+                id: format!("genre_{}", slugify_discovery_section_part(&label)),
+                kind: CatalogDiscoveryGroupKind::GenreAffinity,
+                surface: CatalogDiscoverySurface::Personalized,
+                label_value: Some(label),
+                total_count: None,
+            },
             section_items,
             limit,
             emitted_item_keys,
@@ -1316,11 +1322,13 @@ fn catalog_personalized_groups(
             .collect::<Vec<_>>();
         dedupe_and_sort_discovery_items(&mut section_items);
         if let Some(group) = catalog_group_excluding_emitted(
-            format!("theme_{}", slugify_discovery_section_part(&label)),
-            CatalogDiscoveryGroupKind::ThemeAffinity,
-            CatalogDiscoverySurface::Personalized,
-            Some(label),
-            None,
+            CatalogDiscoveryGroupDraft {
+                id: format!("theme_{}", slugify_discovery_section_part(&label)),
+                kind: CatalogDiscoveryGroupKind::ThemeAffinity,
+                surface: CatalogDiscoverySurface::Personalized,
+                label_value: Some(label),
+                total_count: None,
+            },
             section_items,
             limit,
             emitted_item_keys,
@@ -1343,11 +1351,13 @@ fn catalog_personalized_groups(
                 .then_with(|| compare_discovery_items(left, right))
         });
         if let Some(group) = catalog_group_excluding_emitted(
-            "acclaimed_not_in_library".to_string(),
-            CatalogDiscoveryGroupKind::Acclaimed,
-            CatalogDiscoverySurface::Personalized,
-            None,
-            None,
+            CatalogDiscoveryGroupDraft {
+                id: "acclaimed_not_in_library".to_string(),
+                kind: CatalogDiscoveryGroupKind::Acclaimed,
+                surface: CatalogDiscoverySurface::Personalized,
+                label_value: None,
+                total_count: None,
+            },
             section_items,
             limit,
             emitted_item_keys,
@@ -1364,11 +1374,13 @@ fn catalog_personalized_groups(
             .collect::<Vec<_>>();
         dedupe_and_sort_discovery_items(&mut section_items);
         if let Some(group) = catalog_group_excluding_emitted(
-            "complete_the_collection".to_string(),
-            CatalogDiscoveryGroupKind::CompleteCollection,
-            CatalogDiscoverySurface::Personalized,
-            None,
-            None,
+            CatalogDiscoveryGroupDraft {
+                id: "complete_the_collection".to_string(),
+                kind: CatalogDiscoveryGroupKind::CompleteCollection,
+                surface: CatalogDiscoverySurface::Personalized,
+                label_value: None,
+                total_count: None,
+            },
             section_items,
             limit,
             emitted_item_keys,
@@ -1381,11 +1393,13 @@ fn catalog_personalized_groups(
         let mut section_items = items.to_vec();
         dedupe_and_sort_discovery_items(&mut section_items);
         if let Some(group) = catalog_group_excluding_emitted(
-            "fallback".to_string(),
-            CatalogDiscoveryGroupKind::Fallback,
-            CatalogDiscoverySurface::Personalized,
-            None,
-            None,
+            CatalogDiscoveryGroupDraft {
+                id: "fallback".to_string(),
+                kind: CatalogDiscoveryGroupKind::Fallback,
+                surface: CatalogDiscoverySurface::Personalized,
+                label_value: None,
+                total_count: None,
+            },
             section_items,
             limit,
             emitted_item_keys,
@@ -1395,12 +1409,16 @@ fn catalog_personalized_groups(
     }
 }
 
-fn catalog_group_excluding_emitted(
+struct CatalogDiscoveryGroupDraft {
     id: String,
     kind: CatalogDiscoveryGroupKind,
     surface: CatalogDiscoverySurface,
     label_value: Option<String>,
     total_count: Option<i64>,
+}
+
+fn catalog_group_excluding_emitted(
+    draft: CatalogDiscoveryGroupDraft,
     items: Vec<DiscoveryItemRecord>,
     limit: usize,
     emitted_item_keys: &mut HashSet<String>,
@@ -1424,11 +1442,11 @@ fn catalog_group_excluding_emitted(
         items.push(item);
     }
     Some(CatalogDiscoveryGroup {
-        id,
-        kind,
-        surface,
-        label_value,
-        total_count: total_count.unwrap_or(available_count),
+        id: draft.id,
+        kind: draft.kind,
+        surface: draft.surface,
+        label_value: draft.label_value,
+        total_count: draft.total_count.unwrap_or(available_count),
         items,
     })
 }

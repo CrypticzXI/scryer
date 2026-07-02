@@ -726,7 +726,7 @@ export function CompactTitleTable({
               )}
             </span>
           </TableCell>
-          <TableCell className="whitespace-nowrap px-2 py-2 text-center align-middle text-[12.5px] tabular-nums text-[var(--scry-text4)]">
+          <TableCell className="whitespace-nowrap px-2 py-2 text-center align-middle font-[var(--font-code)] text-[12.5px] tabular-nums text-[var(--scry-text4)]">
             {bytesToReadable(item.sizeBytes)}
           </TableCell>
         </TableRow>
@@ -820,7 +820,7 @@ export function CompactTitleTable({
             </TableCell>
           ) : null}
           {showSizeColumn ? (
-            <TableCell className="whitespace-nowrap py-1.5 text-center align-middle text-[12.5px] tabular-nums text-[var(--scry-text4)]">
+            <TableCell className="whitespace-nowrap py-1.5 text-center align-middle font-[var(--font-code)] text-[12.5px] tabular-nums text-[var(--scry-text4)]">
               {bytesToReadable(item.sizeBytes)}
             </TableCell>
           ) : null}

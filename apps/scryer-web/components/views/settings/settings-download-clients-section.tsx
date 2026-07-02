@@ -26,15 +26,12 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { IconButton } from "@/components/ui/icon-button";
 import { useTranslate } from "@/lib/context/translate-context";
 import type { ConfigFieldDef, DownloadClientRecord, DownloadClientDraft, DownloadClientTypeOption } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { selectorId } from "@/lib/utils/dom-ids";
-import {
-  boxedActionButtonBaseClass,
-  boxedActionButtonToneClass,
-  type BoxedActionButtonTone,
-} from "@/lib/utils/action-button-styles";
+import type { BoxedActionButtonTone } from "@/lib/utils/action-button-styles";
 import type { LocalPathStyle } from "@/lib/utils/local-path-style";
 
 type DownloadClientTypeLogoOption = {
@@ -281,26 +278,14 @@ function DownloadClientActionButton({
   className,
   children,
   ...props
-}: React.ComponentProps<typeof Button> & {
+}: Omit<React.ComponentProps<typeof IconButton>, "tone"> & {
   label: string;
   tone: Extract<BoxedActionButtonTone, "edit" | "enabled" | "disabled" | "delete">;
 }) {
   return (
-    <Button
-      type="button"
-      size="icon-sm"
-      variant="secondary"
-      title={label}
-      aria-label={label}
-      className={cn(
-        boxedActionButtonBaseClass,
-        boxedActionButtonToneClass[tone],
-        className,
-      )}
-      {...props}
-    >
+    <IconButton label={label} tone={tone} className={className} {...props}>
       {children}
-    </Button>
+    </IconButton>
   );
 }
 

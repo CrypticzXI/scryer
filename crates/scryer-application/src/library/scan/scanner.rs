@@ -749,6 +749,22 @@ pub trait LibraryScanner: Send + Sync {
         self.scan_library(root).await
     }
 
+    /// Direct-child media files of `root` only — the shallow evidence pass
+    /// used by the streaming scan pipeline for movie title candidates. The
+    /// default derives from `scan_directory` so existing implementations and
+    /// test doubles keep working; the filesystem scanner overrides this with
+    /// a true single-readdir listing.
+    async fn scan_directory_children(&self, root: &str) -> AppResult<Vec<LibraryFile>> {
+        let root_path = std::path::Path::new(root).to_path_buf();
+        let mut files = self.scan_directory(root).await?;
+        files.retain(|file| {
+            std::path::Path::new(&file.path)
+                .parent()
+                .is_some_and(|parent| parent == root_path.as_path())
+        });
+        Ok(files)
+    }
+
     async fn scan_library_batched(
         &self,
         root: &str,

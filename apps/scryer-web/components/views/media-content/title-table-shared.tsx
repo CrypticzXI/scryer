@@ -2,6 +2,7 @@ import * as React from "react";
 import { Loader2 } from "lucide-react";
 import { Link } from "react-router-dom";
 import { Button } from "@/components/ui/button";
+import { IconButton } from "@/components/ui/icon-button";
 import { Progress } from "@/components/ui/progress";
 import { TableCell, TableRow } from "@/components/ui/table";
 import {
@@ -16,10 +17,7 @@ import type { UiDateTimeFormat } from "@/lib/types/settings";
 import type { ParsedQualityProfile } from "@/lib/types/quality-profiles";
 import { formatUiDate } from "@/lib/utils/date-format";
 import { cn } from "@/lib/utils";
-import {
-  boxedActionButtonToneClass,
-  type BoxedActionButtonTone,
-} from "@/lib/utils/action-button-styles";
+import type { BoxedActionButtonTone } from "@/lib/utils/action-button-styles";
 
 const QP_TAG_PREFIX = "scryer:quality-profile:";
 
@@ -530,7 +528,10 @@ export function StatusBadge({
   return null;
 }
 
-type TitleTableActionButtonProps = React.ComponentProps<typeof Button> & {
+type TitleTableActionButtonProps = Omit<
+  React.ComponentProps<typeof IconButton>,
+  "tone"
+> & {
   label: string;
   tone: BoxedActionButtonTone;
   showTitleAttribute?: boolean;
@@ -545,21 +546,15 @@ export function TitleTableActionButton({
   ...props
 }: TitleTableActionButtonProps) {
   return (
-    <Button
-      type="button"
-      size="icon-sm"
-      variant="secondary"
-      title={showTitleAttribute ? label : undefined}
-      aria-label={label}
-      className={cn(
-        "h-9 w-9 border shadow-none transition-colors hover:translate-y-0 hover:shadow-none",
-        boxedActionButtonToneClass[tone],
-        className,
-      )}
+    <IconButton
+      label={label}
+      tone={tone}
+      showTitleAttribute={showTitleAttribute}
+      className={className}
       {...props}
     >
       {children}
-    </Button>
+    </IconButton>
   );
 }
 

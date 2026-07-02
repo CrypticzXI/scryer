@@ -21,6 +21,7 @@ import { ConfirmDialog } from "@/components/common/confirm-dialog";
 import { SubtitleLanguagePicker } from "@/components/common/subtitle-language-picker";
 import { FolderBrowserDialog } from "@/components/setup/folder-browser-dialog";
 import { Button } from "@/components/ui/button";
+import { IconButton } from "@/components/ui/icon-button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -1241,30 +1242,24 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
                               {t("settings.rootFolderSetDefault")}
                             </button>
                           )}
-                          <Button
+                          <IconButton
                             id={selectorId("media-library-root-edit", rf.path)}
-                            type="button"
-                            variant="primary"
-                            size="icon-sm"
+                            label={t("label.edit")}
+                            tone="edit"
                             onClick={() => openEdit(index)}
                             disabled={actionBusy}
-                            aria-label={t("label.edit")}
-                            title={t("label.edit")}
                           >
                             <Pencil className="h-4 w-4" />
-                          </Button>
-                          <Button
+                          </IconButton>
+                          <IconButton
                             id={selectorId("media-library-root-delete", rf.path)}
-                            type="button"
-                            variant="destructive"
-                            size="icon-sm"
+                            label={t("label.delete")}
+                            tone="delete"
                             onClick={() => handleRemovePath(index)}
                             disabled={actionBusy}
-                            aria-label={t("label.delete")}
-                            title={t("label.delete")}
                           >
                             <Trash2 className="h-4 w-4" />
-                          </Button>
+                          </IconButton>
                         </div>
                         {conflictingLibraryNames ? (
                           <p className="text-xs text-destructive">

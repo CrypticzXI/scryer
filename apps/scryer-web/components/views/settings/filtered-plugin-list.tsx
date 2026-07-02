@@ -18,10 +18,7 @@ import {
 import { useTranslate } from "@/lib/context/translate-context";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import {
-  boxedActionButtonBaseClass,
-  boxedActionButtonToneClass,
-} from "@/lib/utils/action-button-styles";
+import { IconButton } from "@/components/ui/icon-button";
 import { cn } from "@/lib/utils";
 
 const FILTERED_PLUGIN_PANEL_CLASS =
@@ -100,20 +97,16 @@ export function FilteredPluginList({
         <h2 className={FILTERED_PLUGIN_TITLE_CLASS}>
           {title ?? t("settings.plugins")}
         </h2>
-        <Button
-          type="button"
-          variant="secondary"
-          size="icon-sm"
-          className={cn(boxedActionButtonBaseClass, boxedActionButtonToneClass.neutral)}
+        <IconButton
+          label={t("settings.pluginsRefresh")}
+          tone="neutral"
           onClick={() => void refreshPluginsRegistry()}
           disabled={pluginsRefreshing}
-          title={t("settings.pluginsRefresh")}
-          aria-label={t("settings.pluginsRefresh")}
         >
           <RefreshCw
             className={cn("h-4 w-4", pluginsRefreshing && "animate-spin")}
           />
-        </Button>
+        </IconButton>
       </div>
       <div className={FILTERED_PLUGIN_BODY_CLASS}>
         {pluginsError ? (
@@ -199,66 +192,43 @@ export function FilteredPluginList({
                     <div className="flex shrink-0 items-center gap-1">
                       {plugin.isInstalled ? (
                         <>
-                            <Button
-                              type="button"
-                              variant="secondary"
-                              size="icon-sm"
-                              className={cn(
-                                boxedActionButtonBaseClass,
-                                boxedActionButtonToneClass[
-                                  plugin.isEnabled ? "disabled" : "enabled"
-                                ],
-                              )}
+                            <IconButton
+                              label={
+                                plugin.isEnabled
+                                  ? t("label.disable")
+                                  : t("label.enable")
+                              }
+                              tone={plugin.isEnabled ? "disabled" : "enabled"}
                               onClick={() => void togglePlugin(plugin)}
                               disabled={mutating}
-                            title={
-                              plugin.isEnabled
-                                ? t("label.disable")
-                                : t("label.enable")
-                            }
-                            aria-label={
-                              plugin.isEnabled
-                                ? t("label.disable")
-                                : t("label.enable")
-                            }
-                          >
-                            {plugin.isEnabled ? (
-                              <PowerOff className="h-3.5 w-3.5" />
-                            ) : (
-                              <Power className="h-3.5 w-3.5" />
-                            )}
-                          </Button>
+                            >
+                              {plugin.isEnabled ? (
+                                <PowerOff className="h-3.5 w-3.5" />
+                              ) : (
+                                <Power className="h-3.5 w-3.5" />
+                              )}
+                            </IconButton>
                           {plugin.updateAvailable ? (
-                            <Button
-                              type="button"
-                              variant="secondary"
-                              size="icon-sm"
-                              className={cn(boxedActionButtonBaseClass, boxedActionButtonToneClass.upgrade)}
+                            <IconButton
+                              label={t("settings.pluginUpgrade", {
+                                version: plugin.latestVersion ?? plugin.version,
+                              })}
+                              tone="upgrade"
                               onClick={() => void upgradePlugin(plugin)}
                               disabled={mutating}
-                              title={t("settings.pluginUpgrade", {
-                                version: plugin.latestVersion ?? plugin.version,
-                              })}
-                              aria-label={t("settings.pluginUpgrade", {
-                                version: plugin.latestVersion ?? plugin.version,
-                              })}
                             >
                               <ArrowUpCircle className="h-3.5 w-3.5" />
-                            </Button>
+                            </IconButton>
                           ) : null}
                           {canUninstall ? (
-                            <Button
-                              type="button"
-                              variant="secondary"
-                              size="icon-sm"
-                              className={cn(boxedActionButtonBaseClass, boxedActionButtonToneClass.delete)}
+                            <IconButton
+                              label={t("settings.pluginUninstall")}
+                              tone="delete"
                               onClick={() => void uninstallPlugin(plugin)}
                               disabled={mutating}
-                              title={t("settings.pluginUninstall")}
-                              aria-label={t("settings.pluginUninstall")}
                             >
                               <Trash2 className="h-3.5 w-3.5" />
-                            </Button>
+                            </IconButton>
                           ) : null}
                         </>
                       ) : (

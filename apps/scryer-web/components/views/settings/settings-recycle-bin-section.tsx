@@ -2,6 +2,7 @@ import { Loader2, RotateCcw, Trash2 } from "lucide-react";
 import { LibraryMultiSelect } from "@/components/common/library-multi-select";
 import { SettingsToggleSwitch } from "@/components/common/settings-toggle-switch";
 import { Button } from "@/components/ui/button";
+import { IconButton } from "@/components/ui/icon-button";
 import { Label } from "@/components/ui/label";
 import {
   Table,
@@ -13,11 +14,6 @@ import {
 } from "@/components/ui/table";
 import { useTranslate } from "@/lib/context/translate-context";
 import { useUiDateTimeFormat } from "@/lib/context/ui-settings-context";
-import { cn } from "@/lib/utils";
-import {
-  boxedActionButtonBaseClass,
-  boxedActionButtonToneClass,
-} from "@/lib/utils/action-button-styles";
 import { selectorId } from "@/lib/utils/dom-ids";
 import type { LibraryRecord } from "@/lib/types";
 import type { UiDateTimeFormat } from "@/lib/types/settings";
@@ -220,7 +216,7 @@ export function SettingsRecycleBinSection({
                       <TableCell>
                         <ReasonBadge reason={item.reason} />
                       </TableCell>
-                      <TableCell className="text-sm text-muted-foreground whitespace-nowrap">
+                      <TableCell className="whitespace-nowrap font-[var(--font-code)] text-sm text-muted-foreground">
                         {formatSize(item.sizeBytes)}
                       </TableCell>
                       <TableCell className="text-sm text-muted-foreground whitespace-nowrap">
@@ -228,38 +224,24 @@ export function SettingsRecycleBinSection({
                       </TableCell>
                       <TableCell className="text-right">
                         <div className="flex items-center justify-end gap-1">
-                          <Button
+                          <IconButton
                             id={selectorId("settings-recycle-bin-restore", item.id)}
-                            type="button"
-                            size="icon-sm"
-                            variant="secondary"
-                            title={t("settings.recycleBinRestore")}
-                            aria-label={t("settings.recycleBinRestore")}
+                            label={t("settings.recycleBinRestore")}
+                            tone="enabled"
                             disabled={rowBusy}
                             onClick={() => onRestore(item)}
-                            className={cn(
-                              boxedActionButtonBaseClass,
-                              boxedActionButtonToneClass.enabled,
-                            )}
                           >
                             <RotateCcw className="h-4 w-4" />
-                          </Button>
-                          <Button
+                          </IconButton>
+                          <IconButton
                             id={selectorId("settings-recycle-bin-delete", item.id)}
-                            type="button"
-                            size="icon-sm"
-                            variant="secondary"
-                            title={t("settings.recycleBinDelete")}
-                            aria-label={t("settings.recycleBinDelete")}
+                            label={t("settings.recycleBinDelete")}
+                            tone="delete"
                             disabled={rowBusy}
                             onClick={() => onDelete(item)}
-                            className={cn(
-                              boxedActionButtonBaseClass,
-                              boxedActionButtonToneClass.delete,
-                            )}
                           >
                             <Trash2 className="h-4 w-4" />
-                          </Button>
+                          </IconButton>
                         </div>
                       </TableCell>
                     </TableRow>

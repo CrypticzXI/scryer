@@ -11,6 +11,7 @@ import {
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { IconButton } from "@/components/ui/icon-button";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -28,10 +29,6 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { cn } from "@/lib/utils";
-import {
-  boxedActionButtonBaseClass,
-  boxedActionButtonToneClass,
-} from "@/lib/utils/action-button-styles";
 import type {
   ImportDecision,
   ImportRecord,
@@ -230,51 +227,39 @@ function RetryButton({
             if (e.key === "Enter" && password) void handleRetry();
           }}
         />
-        <Button
-          type="button"
-          size="icon-sm"
-          variant="secondary"
-          title={t("importHistory.retryWithPassword")}
-          aria-label={t("importHistory.retryWithPassword")}
+        <IconButton
+          label={t("importHistory.retryWithPassword")}
+          tone="auto"
           disabled={retrying || !password}
           onClick={() => void handleRetry()}
-          className={cn(boxedActionButtonBaseClass, boxedActionButtonToneClass.auto)}
         >
           {retrying ? <Loader2 className="h-4 w-4 animate-spin" /> : <KeyRound className="h-4 w-4" />}
-        </Button>
+        </IconButton>
       </div>
     );
   }
 
   if (isPasswordRequired) {
     return (
-      <Button
-        type="button"
-        size="icon-sm"
-        variant="secondary"
-        title={t("importHistory.retryWithPassword")}
-        aria-label={t("importHistory.retryWithPassword")}
+      <IconButton
+        label={t("importHistory.retryWithPassword")}
+        tone="edit"
         onClick={() => setShowPasswordInput(true)}
-        className={cn(boxedActionButtonBaseClass, boxedActionButtonToneClass.edit)}
       >
         <KeyRound className="h-4 w-4" />
-      </Button>
+      </IconButton>
     );
   }
 
   return (
-    <Button
-      type="button"
-      size="icon-sm"
-      variant="secondary"
-      title={t("importHistory.retry")}
-      aria-label={t("importHistory.retry")}
+    <IconButton
+      label={t("importHistory.retry")}
+      tone="auto"
       disabled={retrying}
       onClick={() => void handleRetry()}
-      className={cn(boxedActionButtonBaseClass, boxedActionButtonToneClass.auto)}
     >
       {retrying ? <Loader2 className="h-4 w-4 animate-spin" /> : <RotateCcw className="h-4 w-4" />}
-    </Button>
+    </IconButton>
   );
 }
 

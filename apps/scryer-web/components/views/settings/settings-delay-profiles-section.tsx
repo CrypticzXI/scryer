@@ -2,11 +2,7 @@ import * as React from "react";
 import { Edit, Plus, Trash2 } from "lucide-react";
 import { AddNewButton } from "@/components/common/add-new-button";
 import { Button } from "@/components/ui/button";
-import { cn } from "@/lib/utils";
-import {
-  boxedActionButtonBaseClass,
-  boxedActionButtonToneClass,
-} from "@/lib/utils/action-button-styles";
+import { IconButton } from "@/components/ui/icon-button";
 import { RenderBooleanIcon } from "@/components/common/boolean-icon";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input, integerInputProps, sanitizeDigits } from "@/components/ui/input";
@@ -172,37 +168,24 @@ export function SettingsDelayProfilesSection({
                       </TableCell>
                       <TableCell>
                         <div className="flex justify-end gap-1">
-                          <Button
+                          <IconButton
                             id={selectorId("settings-delay-profile-edit", profile.id)}
-                            type="button"
-                            size="icon-sm"
-                            variant="secondary"
+                            label={t("label.edit")}
+                            tone="edit"
                             onClick={() => loadProfileById(profile.id)}
                             title={t("label.load")}
-                            aria-label={t("label.edit")}
-                            className={cn(
-                              boxedActionButtonBaseClass,
-                              boxedActionButtonToneClass.edit,
-                            )}
                           >
                             <Edit className="h-4 w-4" />
-                          </Button>
-                          <Button
+                          </IconButton>
+                          <IconButton
                             id={selectorId("settings-delay-profile-delete", profile.id)}
-                            type="button"
-                            size="icon-sm"
-                            variant="secondary"
+                            label={t("label.delete")}
+                            tone="delete"
                             onClick={() => deleteProfile(profile.id)}
                             disabled={saving}
-                            title={t("label.delete")}
-                            aria-label={t("label.delete")}
-                            className={cn(
-                              boxedActionButtonBaseClass,
-                              boxedActionButtonToneClass.delete,
-                            )}
                           >
                             <Trash2 className="h-4 w-4" />
-                          </Button>
+                          </IconButton>
                         </div>
                       </TableCell>
                     </TableRow>

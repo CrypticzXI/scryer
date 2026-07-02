@@ -8,6 +8,7 @@ import { TitleAutocompletePicker } from "@/components/common/title-autocomplete-
 import { LocalRemotePathMappingsField } from "@/components/common/local-remote-path-mappings-field";
 import type { LocalPathStyle } from "@/lib/utils/local-path-style";
 import { Button } from "@/components/ui/button";
+import { IconButton } from "@/components/ui/icon-button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input, signedIntegerInputProps } from "@/components/ui/input";
@@ -40,12 +41,7 @@ import type {
   TitleRecord,
 } from "@/lib/types";
 import type { Facet } from "@/lib/types/titles";
-import { cn } from "@/lib/utils";
-import {
-  boxedActionButtonBaseClass,
-  boxedActionButtonToneClass,
-  type BoxedActionButtonTone,
-} from "@/lib/utils/action-button-styles";
+import type { BoxedActionButtonTone } from "@/lib/utils/action-button-styles";
 import { buildOverviewDetailPath } from "@/lib/utils/routing";
 
 type SettingsNotificationsSectionProps = {
@@ -98,26 +94,19 @@ function NotificationActionButton({
   className,
   children,
   ...props
-}: React.ComponentProps<typeof Button> & {
+}: Omit<React.ComponentProps<typeof IconButton>, "tone"> & {
   label: string;
   tone: Extract<BoxedActionButtonTone, "edit" | "enabled" | "disabled" | "delete" | "neutral">;
 }) {
   return (
-    <Button
-      type="button"
-      size="icon-sm"
-      variant="secondary"
-      title={label}
-      aria-label={label}
-      className={cn(
-        boxedActionButtonBaseClass,
-        boxedActionButtonToneClass[tone],
-        className,
-      )}
+    <IconButton
+      label={label}
+      tone={tone}
+      className={className}
       {...props}
     >
       {children}
-    </Button>
+    </IconButton>
   );
 }
 

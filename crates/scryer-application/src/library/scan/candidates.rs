@@ -346,6 +346,7 @@ pub(super) fn movie_title_work(
         discovered_files: Some(pre_scanned_files),
         mode,
         created_in_scan,
+        full_folder: false,
     }
 }
 
@@ -361,7 +362,7 @@ fn movie_cleanup_context(
 }
 
 fn merge_default_movie_title_work(
-    executor: &mut LibraryScanTitleWorkExecutor,
+    executor: &mut dyn LibraryScanTitleWorkQueue,
     title: Title,
     discovered_files: Vec<LibraryFile>,
     mode: LibraryScanTitleWalkMode,
@@ -389,6 +390,7 @@ pub(super) fn episodic_title_work(
         discovered_files: Some(pre_scanned_files),
         mode,
         created_in_scan,
+        full_folder: false,
     }
 }
 
@@ -403,6 +405,7 @@ fn deferred_episodic_title_work(
         discovered_files: None,
         mode,
         created_in_scan,
+        full_folder: false,
     }
 }
 
@@ -417,7 +420,7 @@ pub(super) async fn scan_episodic_title_directory_for_progress_metrics(
 
 async fn merge_series_title_work_for_index(
     app: &AppUseCase,
-    executor: &mut LibraryScanTitleWorkExecutor,
+    executor: &mut dyn LibraryScanTitleWorkQueue,
     existing_titles: &mut [Title],
     index: usize,
     folder_path: &Path,
@@ -438,7 +441,7 @@ async fn merge_series_title_work_for_index(
 )]
 async fn append_series_title_and_merge_work(
     app: &AppUseCase,
-    executor: &mut LibraryScanTitleWorkExecutor,
+    executor: &mut dyn LibraryScanTitleWorkQueue,
     existing_titles: &mut Vec<Title>,
     existing_titles_by_name: &mut HashMap<String, usize>,
     existing_titles_by_tvdb_id: &mut HashMap<String, usize>,
@@ -576,7 +579,7 @@ pub(super) async fn process_movie_full_scan_candidate(
     _session_id: &str,
     coordinator: &LibraryScanCoordinator,
     candidate: PreparedMovieLibraryScanCandidate,
-    executor: &mut LibraryScanTitleWorkExecutor,
+    executor: &mut dyn LibraryScanTitleWorkQueue,
     existing_titles: &mut [Title],
     existing_titles_by_name: &mut HashMap<String, usize>,
     existing_titles_by_tvdb_id: &mut HashMap<String, usize>,
@@ -680,7 +683,7 @@ pub(super) async fn process_series_full_scan_candidate(
     existing_titles_by_tvdb_id: &mut HashMap<String, usize>,
     existing_titles_by_imdb_id: &mut HashMap<String, usize>,
     existing_titles_by_tmdb_id: &mut HashMap<String, usize>,
-    executor: &mut LibraryScanTitleWorkExecutor,
+    executor: &mut dyn LibraryScanTitleWorkQueue,
     summary: &mut LibraryScanSummary,
     _unmatched_items: &mut Vec<LibraryScanUnmatchedItem>,
 ) -> AppResult<Option<PreparedSeriesLibraryScanCandidate>> {
@@ -764,7 +767,7 @@ pub(super) async fn process_resolved_movie_full_scan_candidate(
     coordinator: &LibraryScanCoordinator,
     candidate: PreparedMovieLibraryScanCandidate,
     batch_search_results: &MetadataSearchResults,
-    executor: &mut LibraryScanTitleWorkExecutor,
+    executor: &mut dyn LibraryScanTitleWorkQueue,
     existing_titles: &mut Vec<Title>,
     existing_titles_by_name: &mut HashMap<String, usize>,
     existing_titles_by_tvdb_id: &mut HashMap<String, usize>,
@@ -900,7 +903,7 @@ pub(super) async fn process_resolved_series_full_scan_candidate(
     coordinator: &LibraryScanCoordinator,
     candidate: PreparedSeriesLibraryScanCandidate,
     batch_search_results: &MetadataSearchResults,
-    executor: &mut LibraryScanTitleWorkExecutor,
+    executor: &mut dyn LibraryScanTitleWorkQueue,
     existing_titles: &mut Vec<Title>,
     existing_titles_by_name: &mut HashMap<String, usize>,
     existing_titles_by_tvdb_id: &mut HashMap<String, usize>,
@@ -1054,7 +1057,7 @@ async fn refresh_existing_series_title_match(
     index: usize,
     folder_path: &Path,
     existing_titles_by_folder_path: &mut HashMap<String, usize>,
-    executor: &mut LibraryScanTitleWorkExecutor,
+    executor: &mut dyn LibraryScanTitleWorkQueue,
     summary: &mut LibraryScanSummary,
 ) -> AppResult<()> {
     ensure_title_folder_path_if_missing(app, title, folder_path).await;
@@ -1076,7 +1079,7 @@ async fn refresh_existing_series_title_match(
 pub(super) async fn process_series_refresh_candidate(
     app: &AppUseCase,
     candidate: PreparedSeriesLibraryScanCandidate,
-    executor: &mut LibraryScanTitleWorkExecutor,
+    executor: &mut dyn LibraryScanTitleWorkQueue,
     existing_titles: &mut [Title],
     existing_titles_by_name: &mut HashMap<String, usize>,
     existing_titles_by_tvdb_id: &mut HashMap<String, usize>,
@@ -1130,7 +1133,7 @@ pub(super) async fn process_resolved_series_refresh_candidate(
     library_id: &str,
     candidate: PreparedSeriesLibraryScanCandidate,
     batch_search_results: &MetadataSearchResults,
-    executor: &mut LibraryScanTitleWorkExecutor,
+    executor: &mut dyn LibraryScanTitleWorkQueue,
     existing_titles: &mut Vec<Title>,
     existing_titles_by_name: &mut HashMap<String, usize>,
     existing_titles_by_tvdb_id: &mut HashMap<String, usize>,
@@ -1223,7 +1226,7 @@ pub(super) async fn process_movie_refresh_candidate(
     _actor: &User,
     _library_id: &str,
     candidate: PreparedMovieLibraryScanCandidate,
-    executor: &mut LibraryScanTitleWorkExecutor,
+    executor: &mut dyn LibraryScanTitleWorkQueue,
     existing_titles: &mut [Title],
     existing_titles_by_name: &mut HashMap<String, usize>,
     existing_titles_by_tvdb_id: &mut HashMap<String, usize>,
@@ -1296,7 +1299,7 @@ pub(super) async fn process_resolved_movie_refresh_candidate(
     library_id: &str,
     candidate: PreparedMovieLibraryScanCandidate,
     batch_search_results: &MetadataSearchResults,
-    executor: &mut LibraryScanTitleWorkExecutor,
+    executor: &mut dyn LibraryScanTitleWorkQueue,
     existing_titles: &mut Vec<Title>,
     existing_titles_by_name: &mut HashMap<String, usize>,
     existing_titles_by_tvdb_id: &mut HashMap<String, usize>,
