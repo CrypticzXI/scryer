@@ -4,8 +4,8 @@ import { Button } from "@/components/ui/button";
 import {
   SetupBackButton,
   SetupPanel,
+  SetupPrimaryButton,
   SetupStepHeader,
-  SETUP_PRIMARY_CTA,
 } from "./setup-chrome";
 import { Input, integerInputProps, sanitizeDigits } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -324,9 +324,9 @@ export function SetupDownloadClientView({
               {t("setup.skip")}
             </Button>
           )}
-          <Button id="setup-download-client-next" className={SETUP_PRIMARY_CTA} onClick={onNext} disabled={!canProceed || saving}>
+          <SetupPrimaryButton id="setup-download-client-next" onClick={onNext} disabled={!canProceed || saving}>
             {saving ? t("label.saving") : t("setup.next")}
-          </Button>
+          </SetupPrimaryButton>
         </div>
       </div>
     </SetupPanel>

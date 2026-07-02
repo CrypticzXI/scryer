@@ -8,8 +8,8 @@ import {
   Star,
   Trash2,
 } from "lucide-react";
-import { Button } from "@/components/ui/button";
 import { IconButton } from "@/components/ui/icon-button";
+import { TextActionButton } from "@/components/ui/text-action-button";
 import { ExternalSubtitleSection } from "@/components/common/external-subtitle-section";
 import { MediaInfoBadges, type MediaInfoFile } from "@/components/common/media-info-badges";
 import { SubtitleSearchModal } from "@/components/views/subtitle-search-modal";
@@ -18,10 +18,6 @@ import { useUiDateTimeFormat } from "@/lib/context/ui-settings-context";
 import type { ExternalSubtitleRecord } from "@/lib/types/subtitles";
 import type { UiDateTimeFormat } from "@/lib/types/settings";
 import { formatUiDate } from "@/lib/utils/date-format";
-import {
-  boxedActionButtonToneClass,
-  boxedTextActionButtonBaseClass,
-} from "@/lib/utils/action-button-styles";
 import { selectorId } from "@/lib/utils/dom-ids";
 import { cn } from "@/lib/utils";
 
@@ -312,18 +308,15 @@ export function MediaFilesOnDiskPanel<TFile extends MediaFileOnDisk>({
                       <div className="flex items-start gap-2 lg:justify-end">
                         <div className="flex flex-wrap items-center gap-2">
                           {canSearchSubtitles ? (
-                            <Button
+                            <TextActionButton
                               type="button"
                               size="sm"
-                              variant="secondary"
+                              tone="search"
                               id={selectorId(subtitleSearchIdPrefix, file.id)}
                               className={
                                 selectedTitlePresentation
                                   ? "h-8 rounded-[8px] border border-[var(--scry-border2)] bg-[var(--scry-soft)] px-3 text-[11.5px] font-medium text-[var(--scry-text2)] shadow-none hover:bg-[var(--scry-hover)]"
-                                  : cn(
-                                      boxedTextActionButtonBaseClass,
-                                      boxedActionButtonToneClass.search,
-                                    )
+                                  : undefined
                               }
                               onClick={() =>
                                 setSubtitleSearchTarget({
@@ -333,24 +326,21 @@ export function MediaFilesOnDiskPanel<TFile extends MediaFileOnDisk>({
                               }
                               title={t("subtitle.search")}
                               aria-label={t("subtitle.search")}
+                              leadingIcon={<Search className="h-3.5 w-3.5" />}
                             >
-                              <Search className="mr-1.5 h-3.5 w-3.5" />
                               {t("subtitle.search")}
-                            </Button>
+                            </TextActionButton>
                           ) : null}
                           {isAdditionalFile && onMakePrimaryFile ? (
-                            <Button
+                            <TextActionButton
                               type="button"
                               size="sm"
-                              variant="secondary"
+                              tone="search"
                               id={selectorId(makePrimaryFileIdPrefix, file.id)}
                               className={
                                 selectedTitlePresentation
                                   ? "h-8 rounded-[8px] border border-[var(--scry-border2)] bg-[var(--scry-soft)] px-3 text-[11.5px] font-medium text-[var(--scry-text2)] shadow-none hover:bg-[var(--scry-hover)]"
-                                  : cn(
-                                      boxedTextActionButtonBaseClass,
-                                      boxedActionButtonToneClass.search,
-                                    )
+                                  : undefined
                               }
                               onClick={() => {
                                 void onMakePrimaryFile(file.id);
@@ -358,14 +348,16 @@ export function MediaFilesOnDiskPanel<TFile extends MediaFileOnDisk>({
                               disabled={isPromotingFile}
                               title={t("mediaFile.makePrimary")}
                               aria-label={t("mediaFile.makePrimary")}
+                              leadingIcon={
+                                isPromotingFile ? (
+                                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                ) : (
+                                  <Star className="h-3.5 w-3.5" />
+                                )
+                              }
                             >
-                              {isPromotingFile ? (
-                                <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
-                              ) : (
-                                <Star className="mr-1.5 h-3.5 w-3.5" />
-                              )}
                               {t("mediaFile.makePrimary")}
-                            </Button>
+                            </TextActionButton>
                           ) : null}
                         </div>
                         {onDeleteFile ? (

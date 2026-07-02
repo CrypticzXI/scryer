@@ -3,8 +3,8 @@ import { Button } from "@/components/ui/button";
 import {
   SetupBackButton,
   SetupPanel,
+  SetupPrimaryButton,
   SetupStepHeader,
-  SETUP_PRIMARY_CTA,
 } from "./setup-chrome";
 import type {
   ScoringPersonaId,
@@ -145,23 +145,23 @@ export function SetupPersonaView({
         </SetupBackButton>
         <div className="flex items-center gap-3">
           {onSkip && (
-            <button
+            <Button
               id="setup-persona-skip"
               type="button"
+              variant="link"
               onClick={onSkip}
-              className="text-sm text-muted-foreground underline-offset-4 hover:underline"
+              className="px-0 text-muted-foreground"
             >
               {t("setup.skip")}
-            </button>
+            </Button>
           )}
-          <Button
+          <SetupPrimaryButton
             id="setup-persona-next"
-            className={SETUP_PRIMARY_CTA}
             onClick={onNext}
             disabled={saving}
           >
             {saving ? t("label.saving") : t("setup.next")}
-          </Button>
+          </SetupPrimaryButton>
         </div>
       </div>
     </SetupPanel>

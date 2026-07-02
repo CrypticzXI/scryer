@@ -2,16 +2,11 @@ import * as React from "react";
 
 import { cn } from "@/lib/utils";
 
-type AddNewButtonProps = {
+type AddNewButtonProps = Omit<React.ComponentProps<"button">, "children"> & {
   /** Leading icon (e.g. FolderPlus, Plus). */
   icon: React.ComponentType<{ className?: string }>;
   /** Button label. */
   label: React.ReactNode;
-  onClick?: () => void;
-  disabled?: boolean;
-  id?: string;
-  type?: "button" | "submit";
-  className?: string;
 };
 
 /**
@@ -28,6 +23,7 @@ export function AddNewButton({
   id,
   type = "button",
   className,
+  ...props
 }: AddNewButtonProps) {
   return (
     <button
@@ -35,6 +31,7 @@ export function AddNewButton({
       type={type}
       onClick={onClick}
       disabled={disabled}
+      {...props}
       className={cn(
         "inline-flex h-11 items-center justify-center gap-2 whitespace-nowrap rounded-[11px] border-[1.5px] border-dashed border-[var(--scry-accent)]! bg-[rgba(var(--scry-accent-rgb),0.08)] px-4 text-[13px] font-semibold text-[var(--scry-accent)] transition-colors hover:bg-[rgba(var(--scry-accent-rgb),0.16)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--scry-accent-ring)] disabled:pointer-events-none disabled:opacity-50 [&_svg]:shrink-0",
         className,

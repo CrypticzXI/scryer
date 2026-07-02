@@ -70,7 +70,9 @@ use scan_candidates::{
     scan_episodic_title_directory_for_progress_metrics,
 };
 use scan_full::{scan_library_movies, scan_library_series};
-use scan_pipeline::{LibraryScanPipelineKind, LibraryScanPipelineRequest, run_library_scan_pipeline};
+use scan_pipeline::{
+    LibraryScanPipelineKind, LibraryScanPipelineRequest, run_library_scan_pipeline,
+};
 use scan_refresh::{
     background_refresh_movies, background_refresh_series,
     maybe_probe_existing_series_title_for_background_refresh,

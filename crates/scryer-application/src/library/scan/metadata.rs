@@ -7,9 +7,8 @@ use unicode_normalization::UnicodeNormalization;
 
 use crate::library::library::library_scan_cancel_requested;
 use crate::library_discovery::{
-    LibraryTitleWalk, MovieTopLevelEntry,
-    extract_library_query_evidence, matching_movie_nfo_path_async, normalize_folder_name,
-    strip_year_suffix,
+    LibraryTitleWalk, MovieTopLevelEntry, extract_library_query_evidence,
+    matching_movie_nfo_path_async, normalize_folder_name, strip_year_suffix,
 };
 use crate::library_filename_parser::{LibraryFilenameParseInput, parse_library_filename};
 use crate::library_scan_coordinator::LibraryScanCoordinator;
@@ -175,7 +174,6 @@ impl PreparedSeriesLibraryScanCandidate {
             Cow::Owned(path_to_stored_string(&self.folder_path))
         }
     }
-
 }
 
 pub(crate) async fn read_valid_movie_nfo_metadata(
@@ -1169,9 +1167,7 @@ pub(crate) async fn prepare_movie_candidate_evidence(
         // No direct-child video: nested-only or empty folder. Fall back to
         // the recursive walk now so empty folders stay skipped and nested
         // layouts keep a real representative file.
-        let mut discovered_files = library_scanner
-            .scan_directory(entry_path.as_str())
-            .await?;
+        let mut discovered_files = library_scanner.scan_directory(entry_path.as_str()).await?;
         if discovered_files.is_empty() {
             return Ok(MovieCandidateEvidence::Skipped {
                 item_path: entry_path,
@@ -1179,13 +1175,9 @@ pub(crate) async fn prepare_movie_candidate_evidence(
         }
         discovered_files.sort_by(|left, right| left.path.cmp(&right.path));
         let file = build_movie_entry_representative_file(&entry, &discovered_files).await?;
-        let candidate = build_prepared_movie_library_scan_candidate(
-            file,
-            Vec::new(),
-            library_path,
-            scan_hints,
-        )
-        .await?;
+        let candidate =
+            build_prepared_movie_library_scan_candidate(file, Vec::new(), library_path, scan_hints)
+                .await?;
         return Ok(MovieCandidateEvidence::Candidate {
             candidate: Box::new(candidate),
             inline_inventory: Some(discovered_files),

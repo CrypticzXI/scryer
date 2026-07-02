@@ -13,13 +13,12 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 
-import { Button } from "@/components/ui/button";
 import { useExternalImportSetup } from "@/lib/hooks/use-external-import-setup";
 
 import {
-  SETUP_PRIMARY_CTA,
   SetupBackButton,
   SetupPanel,
+  SetupPrimaryButton,
   SetupStepHeader,
 } from "./setup-chrome";
 import SetupImportConnectView from "./setup-import-connect-view";
@@ -328,15 +327,15 @@ export function SetupImportWizard({
         <SetupBackButton onClick={back}>
           {t("setup.back")}
         </SetupBackButton>
-        <Button
+        <SetupPrimaryButton
           type="button"
           onClick={onPrimary}
           disabled={primaryDisabled}
-          className={`${SETUP_PRIMARY_CTA} shadow-none`}
+          className="shadow-none"
         >
           {primaryLabel}
           <PrimaryIcon className="h-4 w-4" />
-        </Button>
+        </SetupPrimaryButton>
       </div>
     </SetupPanel>
   );

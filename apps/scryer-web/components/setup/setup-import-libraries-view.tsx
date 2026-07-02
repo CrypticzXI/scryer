@@ -18,6 +18,7 @@ import {
   TriangleAlert,
 } from "lucide-react";
 
+import { AddNewButton } from "@/components/common/add-new-button";
 import { useIsMobile } from "@/lib/hooks/use-mobile";
 import {
   effectiveRootPath,
@@ -36,6 +37,9 @@ import {
   facetPillStyle,
   facetStyle,
 } from "./import/facet-style";
+import { Button } from "@/components/ui/button";
+import { IconButton } from "@/components/ui/icon-button";
+import { TextActionButton } from "@/components/ui/text-action-button";
 
 interface SetupImportLibrariesViewProps {
   wizard: UseExternalImportSetupReturn;
@@ -302,28 +306,16 @@ export default function SetupImportLibrariesView({
           <span style={{ fontSize: 12, color: "var(--scry-faint)" }}>
             {trayCountLabel}
           </span>
-          <button
+          <Button
             type="button"
             onClick={() => setBrowseTarget({ kind: "new" })}
-            style={{
-              marginLeft: "auto",
-              display: "inline-flex",
-              alignItems: "center",
-              gap: 6,
-              height: 34,
-              padding: "0 12px",
-              borderRadius: 9,
-              border: "1px solid var(--scry-border2)",
-              background: "var(--scry-bg)",
-              color: "var(--scry-ink2)",
-              fontSize: 13,
-              fontWeight: 600,
-              cursor: "pointer",
-            }}
+            variant="outline"
+            size="sm"
+            className="ml-auto h-[34px] rounded-[9px] px-3 text-[13px] font-semibold"
           >
-            <Plus size={15} style={{ color: "var(--scry-accent-text)" }} />
+            <Plus className="h-4 w-4 text-[var(--scry-accent-text)]" />
             {t("setup.addSourceRoot")}
-          </button>
+          </Button>
         </div>
 
         <div
@@ -356,27 +348,15 @@ export default function SetupImportLibrariesView({
             >
               <TriangleAlert size={16} style={{ flex: "none" }} />
               {t("setup.previewError")}
-              <button
+              <TextActionButton
                 type="button"
                 onClick={() => void loadPreview()}
-                style={{
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: 6,
-                  height: 28,
-                  padding: "0 12px",
-                  borderRadius: 8,
-                  border: "1px solid var(--scry-baccent)",
-                  background: "rgba(var(--scry-accent-rgb), 0.1)",
-                  color: "var(--scry-accent-text)",
-                  fontSize: 12.5,
-                  fontWeight: 600,
-                  cursor: "pointer",
-                }}
+                tone="accent"
+                size="sm"
+                leadingIcon={<RotateCw size={14} />}
               >
-                <RotateCw size={13} />
                 {t("setup.retry")}
-              </button>
+              </TextActionButton>
             </div>
           ) : previewing && roots.length === 0 ? (
             <div
@@ -575,27 +555,16 @@ export default function SetupImportLibrariesView({
                   {t(facetLabelKey(lib.facet))}
                 </span>
                 {!lib.isDefault ? (
-                  <button
+                  <IconButton
                     type="button"
-                    title={t("setup.deleteLibrary")}
-                    aria-label={t("setup.deleteLibrary")}
+                    label={t("setup.deleteLibrary")}
+                    appearance="ghost"
+                    tone="delete"
                     onClick={() => removeLibrary(lib.id)}
-                    style={{
-                      display: "inline-flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      width: 28,
-                      height: 28,
-                      borderRadius: 7,
-                      border: "1px solid var(--scry-border2)",
-                      background: "transparent",
-                      color: "var(--scry-faint)",
-                      flex: "none",
-                      cursor: "pointer",
-                    }}
+                    className="h-7 w-7 flex-none rounded-[7px] text-[var(--scry-faint)] hover:text-[var(--scry-danger-text)]"
                   >
-                    <Trash2 size={13} />
-                  </button>
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </IconButton>
                 ) : null}
               </div>
 
@@ -693,61 +662,23 @@ export default function SetupImportLibrariesView({
                 </button>
               );
             })}
-            <button
+            <Button
               type="button"
               onClick={() => setAddingLib(false)}
-              style={{
-                marginTop: "auto",
-                height: 30,
-                background: "transparent",
-                border: "none",
-                color: "var(--scry-faint)",
-                fontSize: 12.5,
-                fontWeight: 600,
-                cursor: "pointer",
-              }}
+              variant="ghost"
+              size="sm"
+              className="mt-auto h-[30px] px-2 text-[12.5px] font-semibold text-[var(--scry-faint)] hover:bg-transparent hover:text-[var(--scry-muted2)]"
             >
               {t("setup.cancel")}
-            </button>
+            </Button>
           </div>
         ) : (
-          <button
-            type="button"
+          <AddNewButton
+            icon={Plus}
+            label={t("setup.addLibrary")}
             onClick={() => setAddingLib(true)}
-            style={{
-              display: "flex",
-              flexDirection: "column",
-              alignItems: "center",
-              justifyContent: "center",
-              gap: 10,
-              minHeight: 130,
-              borderRadius: 14,
-              border: "1px dashed var(--scry-border2)",
-              background: "transparent",
-              color: "var(--scry-faint)",
-              cursor: "pointer",
-            }}
-          >
-            <span
-              aria-hidden
-              style={{
-                display: "inline-flex",
-                alignItems: "center",
-                justifyContent: "center",
-                width: 36,
-                height: 36,
-                borderRadius: 10,
-                background: "rgba(var(--scry-accent-rgb), 0.1)",
-                border: "1px solid var(--scry-baccent)",
-                color: "var(--scry-accent-text)",
-              }}
-            >
-              <Plus size={17} />
-            </span>
-            <span style={{ fontSize: 13, fontWeight: 600 }}>
-              {t("setup.addLibrary")}
-            </span>
-          </button>
+            className="h-auto min-h-[130px] w-full flex-col gap-3 rounded-[14px] text-[13px]"
+          />
         )}
       </div>
 

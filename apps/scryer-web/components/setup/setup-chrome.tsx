@@ -3,13 +3,22 @@ import { ArrowLeft, type LucideIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
-/**
- * Accent-gradient treatment for a step's primary forward CTA (Next / Finish /
- * Import / Connect). Spread onto a DS <Button> via `className`. Secondary
- * actions (Back / Skip / Test) keep their default styling.
- */
-export const SETUP_PRIMARY_CTA =
-  "border-0 text-white [background-image:var(--scry-accent-grad)] shadow-[0_12px_28px_rgba(var(--scry-accent-rgb),0.35)] transition hover:brightness-110";
+const SETUP_PRIMARY_CTA =
+  "border-0 bg-primary text-primary-foreground shadow-none transition hover:bg-primary/90";
+
+export function SetupPrimaryButton({
+  type = "button",
+  className,
+  ...props
+}: React.ComponentProps<typeof Button>) {
+  return (
+    <Button
+      type={type}
+      className={cn(SETUP_PRIMARY_CTA, className)}
+      {...props}
+    />
+  );
+}
 
 export function SetupBackButton({
   id,

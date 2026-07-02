@@ -1118,21 +1118,19 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
                 })}
               </ul>
               {canCreateLibrary ? (
-                <button
+                <AddNewButton
                   id="media-library-new"
-                  type="button"
+                  icon={Plus}
+                  label={t("settings.libraryNewButton")}
                   onClick={handleNewLibrary}
                   disabled={actionBusy}
                   aria-current={mode === "new" ? "true" : undefined}
                   className={cn(
-                    "mt-2 inline-flex h-11 w-full items-center justify-start gap-2 whitespace-nowrap rounded-[11px] border-[1.5px] border-dashed border-[var(--scry-accent)]! bg-[rgba(var(--scry-accent-rgb),0.08)] px-4 text-[13px] font-semibold text-[var(--scry-accent)] transition-colors hover:bg-[rgba(var(--scry-accent-rgb),0.16)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--scry-accent-ring)] disabled:pointer-events-none disabled:opacity-50 [&_svg]:shrink-0",
+                    "mt-2 w-full justify-start",
                     mode === "new" &&
                       "bg-[rgba(var(--scry-accent-rgb),0.16)]",
                   )}
-                >
-                  <Plus className="size-[18px]" />
-                  {t("settings.libraryNewButton")}
-                </button>
+                />
               ) : null}
             </div>,
             secondaryNavTarget,
@@ -1232,15 +1230,17 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
                               {t("label.default")}
                             </span>
                           ) : (
-                            <button
+                            <Button
                               id={selectorId("media-library-root-set-default", rf.path)}
                               type="button"
-                              className="shrink-0 rounded-md px-2 py-1 text-xs text-muted-foreground hover:text-foreground hover:underline"
+                              variant="ghost"
+                              size="sm"
+                              className="h-8 shrink-0 px-2 text-xs text-muted-foreground hover:text-foreground hover:underline"
                               onClick={() => handleSetDefault(index)}
                               disabled={actionBusy}
                             >
                               {t("settings.rootFolderSetDefault")}
-                            </button>
+                            </Button>
                           )}
                           <IconButton
                             id={selectorId("media-library-root-edit", rf.path)}

@@ -21,8 +21,8 @@ import { selectorId } from "@/lib/utils/dom-ids";
 import {
   SetupBackButton,
   SetupPanel,
+  SetupPrimaryButton,
   SetupStepHeader,
-  SETUP_PRIMARY_CTA,
 } from "./setup-chrome";
 
 interface SetupPluginsViewProps {
@@ -370,10 +370,10 @@ export function SetupPluginsView({
         <SetupBackButton id="setup-plugins-back" onClick={onBack}>
           {t("setup.back")}
         </SetupBackButton>
-        <Button id="setup-plugins-next" className={SETUP_PRIMARY_CTA} onClick={onNext}>
-          <PlugZap className="mr-2 h-4 w-4" />
+        <SetupPrimaryButton id="setup-plugins-next" onClick={onNext}>
+          <PlugZap className="h-4 w-4" />
           {t("setup.next")}
-        </Button>
+        </SetupPrimaryButton>
       </div>
     </SetupPanel>
   );

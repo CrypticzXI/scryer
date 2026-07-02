@@ -3,8 +3,8 @@ import { Button } from "@/components/ui/button";
 import {
   SetupBackButton,
   SetupPanel,
+  SetupPrimaryButton,
   SetupStepHeader,
-  SETUP_PRIMARY_CTA,
 } from "./setup-chrome";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input, signedIntegerInputProps } from "@/components/ui/input";
@@ -315,9 +315,9 @@ export function SetupIndexerView({
               {t("setup.skip")}
             </Button>
           )}
-          <Button id="setup-indexer-next" className={SETUP_PRIMARY_CTA} onClick={onNext} disabled={!canProceed || saving}>
+          <SetupPrimaryButton id="setup-indexer-next" onClick={onNext} disabled={!canProceed || saving}>
             {saving ? t("label.saving") : t("setup.next")}
-          </Button>
+          </SetupPrimaryButton>
         </div>
       </div>
     </SetupPanel>

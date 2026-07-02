@@ -24,6 +24,7 @@ import {
   type RouteCommandItem,
 } from "@/components/common/route-command-types";
 import { UnderlineFilterButton } from "@/components/common/underline-filter-button";
+import { IconButton } from "@/components/ui/icon-button";
 import {
   SearchCatalogResultButton,
   SearchEmptyState,
@@ -1400,27 +1401,29 @@ export const RootHeader = React.memo(function RootHeader({
                             </p>
                           </div>
                           {globalSearch ? (
-                            <button
+                            <IconButton
                               id="global-search-clear"
                               type="button"
-                              className="inline-flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-[7px] bg-[var(--scry-kbdbg)] text-[var(--scry-muted2)] transition hover:bg-[var(--scry-hover)] hover:text-[var(--scry-ink2)]"
+                              label={t("label.clear")}
+                              appearance="ghost"
+                              className="h-[26px] w-[26px] shrink-0 rounded-[7px] bg-[var(--scry-kbdbg)]"
                               onClick={handleClearSearch}
-                              aria-label={t("label.clear")}
                             >
                               <Eraser className="h-3.5 w-3.5" />
-                            </button>
+                            </IconButton>
                           ) : null}
                           <kbd className="rounded-[7px] border border-[var(--scry-kbdbd)] bg-[var(--scry-kbdbg)] px-2 py-1 text-[11px] font-medium text-[var(--scry-faint2)]">
                             ESC
                           </kbd>
-                          <button
+                          <IconButton
                             type="button"
-                            className="inline-flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-lg bg-[var(--scry-kbdbg)] text-[var(--scry-muted2)] transition hover:bg-[var(--scry-hover)] hover:text-[var(--scry-ink2)]"
+                            label={t("label.close")}
+                            appearance="ghost"
+                            className="h-[30px] w-[30px] shrink-0 rounded-lg bg-[var(--scry-kbdbg)]"
                             onClick={handleCloseGlobalSearchPanel}
-                            aria-label={t("label.close")}
                           >
                             <X className="h-4 w-4" />
-                          </button>
+                          </IconButton>
                         </div>
                         <div
                           className="flex gap-x-5 gap-y-1 overflow-x-auto border-b border-[var(--scry-border)] px-[18px] py-2 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"

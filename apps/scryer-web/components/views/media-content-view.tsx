@@ -49,6 +49,13 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
+import {
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
+  SheetTrigger,
+} from "@/components/ui/sheet";
 import { LibraryMultiSelect } from "@/components/common/library-multi-select";
 import {
   MediaFilesOnDiskPanel,
@@ -182,6 +189,8 @@ type ParsedQualityProfile = {
 const TITLE_OVERVIEW_PANE_MIN_WIDTH = 700;
 const TITLE_WORKSPACE_PANE_GAP = 16;
 const TITLE_POSTER_GRID_MIN_COLUMN_WIDTH = 150;
+const CATALOG_DISCOVERY_INLINE_MIN_WIDTH = 1060;
+const CATALOG_DISCOVERY_POSTER_INLINE_MIN_WIDTH = 980;
 const SELECTED_POSTER_INLINE_MIN_WIDTH =
   TITLE_OVERVIEW_PANE_MIN_WIDTH +
   TITLE_WORKSPACE_PANE_GAP +
@@ -2127,18 +2136,31 @@ export function MediaContentView({
   const effectiveViewMode: ContentViewMode = viewMode;
   const contextPanelMinimumWidth =
     effectiveViewMode === "poster" ? 720 : 760;
+  const catalogDiscoveryInlineMinimumWidth =
+    effectiveViewMode === "poster"
+      ? CATALOG_DISCOVERY_POSTER_INLINE_MIN_WIDTH
+      : CATALOG_DISCOVERY_INLINE_MIN_WIDTH;
   const contextPanelWidthMatches =
     titleLayoutWidth == null
       ? effectiveViewMode === "poster"
         ? posterContextPanelViewportMatches
         : contextPanelViewportMatches
       : titleLayoutWidth >= contextPanelMinimumWidth;
+  const catalogDiscoveryInlineWidthMatches =
+    titleLayoutWidth != null &&
+    titleLayoutWidth >= catalogDiscoveryInlineMinimumWidth;
   const selectedOverviewTitleAvailable =
     selectedOverviewTitleId !== null && selectedOverviewTitle !== null;
-  const contextPanelAvailable =
+  const titleContextPanelAvailable =
     contextPanelWidthMatches || selectedOverviewTitleAvailable;
   const selectedTitleLayoutActive =
-    contextPanelAvailable && activeOverviewTitle !== null;
+    titleContextPanelAvailable && activeOverviewTitle !== null;
+  const catalogDiscoveryInlineAvailable =
+    activeOverviewTitle === null && catalogDiscoveryInlineWidthMatches;
+  const catalogDiscoveryFlyoutAvailable =
+    activeOverviewTitle === null && !catalogDiscoveryInlineAvailable;
+  const contextPanelAvailable =
+    selectedTitleLayoutActive || catalogDiscoveryInlineAvailable;
   const selectedTitlePosterInlineActive =
     selectedTitleLayoutActive &&
     effectiveViewMode === "poster" &&
@@ -2147,9 +2169,8 @@ export function MediaContentView({
       : titleLayoutWidth >= SELECTED_POSTER_INLINE_MIN_WIDTH);
   const selectedTitleCompactLayoutActive =
     selectedTitleLayoutActive && !selectedTitlePosterInlineActive;
-  // Keep the title list inline (side-by-side with the overview) at exactly the
-  // widths where the discovery panel is already shown, so opening a title only
-  // swaps the panel's content instead of reflowing the list into a drawer.
+  // Keep the title list inline only when the overview has enough room to avoid
+  // stealing space from the table.
   const selectedTitleListInlineActive =
     selectedTitleCompactLayoutActive &&
     (titleLayoutWidth == null
@@ -3019,8 +3040,8 @@ export function MediaContentView({
                   );
                 })();
                 const titleCatalogControlBar = (
-                  <div className="mb-3 flex shrink-0 flex-col gap-2.5 lg:flex-row lg:items-center lg:justify-between">
-                    <div className="relative w-full min-w-[220px] lg:max-w-[520px]">
+                  <div className="mb-3 flex shrink-0 flex-wrap items-center gap-2.5">
+                    <div className="relative min-w-[180px] flex-[1_1_16rem] sm:min-w-[220px] md:max-w-[420px]">
                       <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--scry-muted2)]" />
                       <Input
                         placeholder={t("title.filterPlaceholder")}
@@ -3029,7 +3050,38 @@ export function MediaContentView({
                         className="h-10 w-full rounded-[10px] border-[var(--scry-border2)] bg-[var(--scry-inset)] pl-9 text-[13px] text-[var(--scry-body)] shadow-none placeholder:text-[var(--scry-faint2)] focus-visible:ring-[var(--scry-focus)]"
                       />
                     </div>
-                    <div className="flex min-w-0 flex-col gap-2.5 sm:flex-row sm:items-center lg:justify-end">
+                    <div className="flex min-w-0 flex-[999_1_28rem] flex-col gap-2.5 sm:flex-row sm:flex-wrap sm:items-center sm:justify-end">
+                      {catalogDiscoveryFlyoutAvailable ? (
+                        <Sheet>
+                          <SheetTrigger asChild>
+                            <Button
+                              type="button"
+                              variant="outline"
+                              className="h-10 w-full shrink-0 gap-2 rounded-[10px] border-[var(--scry-border2)] bg-[var(--scry-inset)] px-3 text-[13px] text-[var(--scry-body)] shadow-none transition hover:bg-[var(--scry-hover)] hover:text-[var(--scry-ink2)] sm:w-auto"
+                            >
+                              <Sparkles className="h-4 w-4 text-[var(--scry-accent-text)]" />
+                              <span>{t("title.contextForYouTitle")}</span>
+                            </Button>
+                          </SheetTrigger>
+                          <SheetContent
+                            side="right"
+                            className="w-[min(92vw,34rem)] max-w-none gap-0 border-l border-[var(--scry-border2)] bg-[var(--scry-surfD)] p-0 sm:max-w-none"
+                          >
+                            <SheetHeader className="sr-only">
+                              <SheetTitle>
+                                {t("title.contextForYouTitle")}
+                              </SheetTitle>
+                            </SheetHeader>
+                            <TitleContextForYouPanel
+                              discoveryGroups={deferredCatalogDiscoveryGroups}
+                              view={view}
+                              canManageTitle={canManageTitle}
+                              canRequestMedia={canRequestMedia}
+                              onDiscoveryAction={onCatalogDiscoveryAction}
+                            />
+                          </SheetContent>
+                        </Sheet>
+                      ) : null}
                       {showTitleTableColumnControls ? (
                         <Popover>
                           <PopoverTrigger asChild>
@@ -3094,7 +3146,7 @@ export function MediaContentView({
                         selectedLibraryIds={selectedLibraryIds}
                         onSelectedLibraryIdsChange={setSelectedLibraryIds}
                         disabled={librariesLoading || libraries.length === 0}
-                        triggerClassName="h-10 w-full rounded-[10px] border-[var(--scry-border2)] bg-[var(--scry-inset)] text-[13px] text-[var(--scry-body)] shadow-none sm:w-[190px]"
+                        triggerClassName="h-10 w-full rounded-[10px] border-[var(--scry-border2)] bg-[var(--scry-inset)] text-[13px] text-[var(--scry-body)] shadow-none sm:w-[180px]"
                       />
                       <ToggleGroup
                         type="single"
@@ -3111,7 +3163,7 @@ export function MediaContentView({
                         }}
                         size="sm"
                         aria-label={t("title.viewModeToggle")}
-                        className="h-10 shrink-0 gap-0.5 rounded-[10px] border border-[var(--scry-border2)] bg-[var(--scry-inset)] p-1 shadow-none"
+                        className="h-10 w-full shrink-0 justify-center gap-0.5 rounded-[10px] border border-[var(--scry-border2)] bg-[var(--scry-inset)] p-1 shadow-none sm:w-auto"
                       >
                         <ToggleGroupItem
                           id={titleOverviewViewModeId(view, "compact")}
@@ -3324,8 +3376,8 @@ export function MediaContentView({
                   );
                 }
                 const contextPanelGridTemplateColumns =
-                  contextPanelAvailable && !selectedTitleLayoutActive
-                    ? "minmax(0,1fr) clamp(700px,50%,1030px)"
+                  catalogDiscoveryInlineAvailable
+                    ? "minmax(42rem,1fr) minmax(23rem,30rem)"
                     : undefined;
                 const selectedTitleGridTemplateColumns =
                   selectedTitleListInlineActive || selectedTitlePosterLayoutActive

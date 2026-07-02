@@ -7,7 +7,7 @@ import {
   DialogContent,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { SETUP_PRIMARY_CTA } from "@/components/setup/setup-chrome";
+import { SetupPrimaryButton } from "@/components/setup/setup-chrome";
 import { FolderBrowserDialog } from "../folder-browser-dialog";
 import {
   effectiveRootPath,
@@ -244,13 +244,13 @@ export function ImportRemapDialog({
           >
             {t("setup.cancel")}
           </Button>
-          <Button
+          <SetupPrimaryButton
             size="sm"
-            className={`${SETUP_PRIMARY_CTA} shadow-none`}
+            className="shadow-none"
             onClick={handleSave}
           >
             {t("setup.remapSave")}
-          </Button>
+          </SetupPrimaryButton>
         </div>
 
         <FolderBrowserDialog

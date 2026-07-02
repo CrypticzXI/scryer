@@ -12,6 +12,7 @@ import {
   type RouteCommandItem,
 } from "@/components/common/route-command-types";
 import { UnderlineFilterButton } from "@/components/common/underline-filter-button";
+import { IconButton } from "@/components/ui/icon-button";
 import {
   SearchCatalogResultButton,
   SearchEmptyState,
@@ -965,18 +966,18 @@ export function MobileSearchOverlay({
             autoFocus
           />
           {globalSearch ? (
-            <button
+            <IconButton
               type="button"
-              className="flex h-[26px] w-[26px] flex-none items-center justify-center rounded-[7px] bg-[var(--scry-kbdbg)] text-[var(--scry-muted2)] transition active:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/25"
+              label={t("label.clear")}
+              appearance="ghost"
+              className="h-[26px] w-[26px] flex-none rounded-[7px] bg-[var(--scry-kbdbg)]"
               onClick={() => {
                 clearGlobalSearch();
                 inputRef.current?.focus();
               }}
-              aria-label={t("label.clear")}
-              title={t("label.clear")}
             >
               <Eraser className="h-3.5 w-3.5" />
-            </button>
+            </IconButton>
           ) : null}
           <kbd
             aria-hidden="true"
@@ -984,15 +985,16 @@ export function MobileSearchOverlay({
           >
             ESC
           </kbd>
-          <button
+          <IconButton
             type="button"
             onClick={onClose}
-            className="flex h-[34px] w-[34px] flex-none items-center justify-center rounded-lg bg-[var(--scry-kbdbg)] text-[var(--scry-muted2)] transition active:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/25"
-            aria-label={t("label.close")}
+            label={t("label.close")}
+            appearance="ghost"
+            className="h-[34px] w-[34px] flex-none rounded-lg bg-[var(--scry-kbdbg)]"
             aria-keyshortcuts="Escape"
           >
             <X className="h-4 w-4" />
-          </button>
+          </IconButton>
         </div>
 
         <div

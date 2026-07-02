@@ -816,7 +816,7 @@ impl LibraryScanWorkCoverage {
     fn from_work(work: &LibraryScanTitleWork) -> Self {
         match work.discovered_files.as_ref() {
             Some(files) => Self {
-                full_folder: false,
+                full_folder: work.full_folder,
                 scoped_paths: files.iter().map(|file| file.path.clone()).collect(),
             },
             None => Self {
@@ -1019,6 +1019,9 @@ impl LibraryScanMediaAnalysisPool {
         let title_id = work.title.id.clone();
         match work.discovered_files.as_mut() {
             Some(files) => {
+                if work.full_folder && self.full_folder_already_covered(&title_id) {
+                    return false;
+                }
                 files.retain(|file| !self.scoped_path_already_covered(&title_id, &file.path));
                 if files.is_empty() {
                     return false;
@@ -1128,6 +1131,10 @@ impl LibraryScanMediaAnalysisPool {
                 .get(title_id)
                 .is_some_and(|coverage| coverage.full_folder)
             || analysis_ready_full_folder_already_covered(&self.analysis_ready, title_id)
+            || self
+                .pending_scoped
+                .get(title_id)
+                .is_some_and(|work| work.full_folder)
             || self.pending_full.contains_key(title_id)
     }
 

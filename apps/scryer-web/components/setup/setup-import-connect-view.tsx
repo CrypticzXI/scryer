@@ -11,6 +11,8 @@ import {
   X,
 } from "lucide-react";
 
+import { AddNewButton } from "@/components/common/add-new-button";
+import { IconButton } from "@/components/ui/icon-button";
 import { Input } from "@/components/ui/input";
 import {
   instancePillColors,
@@ -157,23 +159,13 @@ export function SetupImportConnectView({
                 />
               ))}
 
-              {/* Add-instance button (dashed, per column). */}
-              <button
-                type="button"
-                onClick={() => addInstance(column.kind)}
+              <AddNewButton
                 data-slot="import-add-instance"
-                className="flex items-center justify-center gap-2 text-[13px] font-semibold transition-colors"
-                style={{
-                  height: 40,
-                  borderRadius: 11,
-                  border: "1px dashed var(--scry-border2)",
-                  background: "transparent",
-                  color: column.headingColor,
-                }}
-              >
-                <Plus className="h-4 w-4" style={{ color: column.headingColor }} />
-                {t("setup.addInstance", { product: column.productName })}
-              </button>
+                icon={Plus}
+                label={t("setup.addInstance", { product: column.productName })}
+                onClick={() => addInstance(column.kind)}
+                className="h-10 text-[13px]"
+              />
             </div>
           );
         })}
@@ -277,44 +269,27 @@ function InstanceCard({
           </span>
         )}
         {!editingName ? (
-          <button
+          <IconButton
             type="button"
             onClick={() => setEditingName(true)}
-            title={t("setup.renameInstance")}
-            aria-label={t("setup.renameInstance")}
-            className="flex items-center justify-center transition-colors hover:text-[var(--scry-accent-text)]"
-            style={{
-              width: 24,
-              height: 24,
-              flex: "none",
-              borderRadius: 7,
-              border: "1px solid var(--scry-border2)",
-              background: "transparent",
-              color: "var(--scry-faint)",
-            }}
+            label={t("setup.renameInstance")}
+            appearance="ghost"
+            tone="accent"
+            className="h-6 w-6 flex-none rounded-[7px] text-[var(--scry-faint)] hover:text-[var(--scry-accent-text)]"
           >
-            <Pencil style={{ width: 13, height: 13 }} />
-          </button>
+            <Pencil className="h-3.5 w-3.5" />
+          </IconButton>
         ) : null}
-        <button
+        <IconButton
           type="button"
           onClick={onRemove}
-          title={t("setup.removeInstance")}
-          aria-label={t("setup.removeInstance")}
-          className="flex items-center justify-center transition-colors hover:text-[var(--scry-danger-text-soft)]"
-          style={{
-            width: 26,
-            height: 26,
-            flex: "none",
-            marginLeft: "auto",
-            borderRadius: 7,
-            border: "1px solid var(--scry-border2)",
-            background: "transparent",
-            color: "var(--scry-faint)",
-          }}
+          label={t("setup.removeInstance")}
+          appearance="ghost"
+          tone="delete"
+          className="ml-auto h-[26px] w-[26px] flex-none rounded-[7px] text-[var(--scry-faint)] hover:text-[var(--scry-danger-text-soft)]"
         >
-          <X style={{ width: 14, height: 14 }} />
-        </button>
+          <X className="h-3.5 w-3.5" />
+        </IconButton>
       </div>
 
       {/* URL field. */}

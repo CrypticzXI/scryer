@@ -43,6 +43,8 @@ import { ReactiveRefreshProvider } from "@/components/root/reactive-refresh-prov
 import { RootSidebar } from "@/components/root/root-sidebar";
 import { ViewLoadingFallback } from "@/components/common/view-loading-fallback";
 import { GlobalSearchProvider } from "@/components/root/global-search-provider";
+import { Button } from "@/components/ui/button";
+import { IconButton } from "@/components/ui/icon-button";
 
 import { useGlobalStatusToast } from "@/lib/hooks/use-global-status-toast";
 import { useLanguage } from "@/lib/hooks/use-language";
@@ -403,14 +405,15 @@ function SmgScryerUpdateBanner({
             {t("smgUpdate.releaseNotes")}
           </a>
         ) : null}
-        <button
+        <IconButton
           type="button"
           onClick={onDismiss}
-          className="flex-none rounded-[8px] p-1 text-[var(--scry-muted2)] transition hover:bg-[var(--scry-hover)] hover:text-[var(--scry-ink2)]"
-          aria-label={t("label.dismiss")}
+          label={t("label.dismiss")}
+          appearance="ghost"
+          className="h-7 w-7 flex-none rounded-[8px]"
         >
           <X className="h-4 w-4" />
-        </button>
+        </IconButton>
       </div>
     </div>
   );
@@ -1839,22 +1842,25 @@ function AuthenticatedHomePage({
                               : t("pwa.installApp")}
                           </span>
                           {canPrompt ? (
-                            <button
+                            <Button
                               type="button"
                               onClick={() => void promptInstall()}
-                              className="rounded-[8px] border border-[var(--scry-border2)] bg-[rgba(var(--scry-accent-rgb),0.12)] px-3 py-1 text-xs font-semibold text-[var(--scry-accent-text)] transition hover:border-[var(--scry-bhover2)] hover:bg-[rgba(var(--scry-accent-rgb),0.18)]"
+                              variant="outline"
+                              size="sm"
+                              className="h-7 rounded-[8px] px-3 text-xs font-semibold text-[var(--scry-accent-text)]"
                             >
                               {t("pwa.installApp")}
-                            </button>
+                            </Button>
                           ) : null}
-                          <button
+                          <IconButton
                             type="button"
                             onClick={dismissInstallBanner}
-                            className="ml-auto rounded-[8px] p-1 text-[var(--scry-muted2)] transition hover:bg-[var(--scry-hover)] hover:text-[var(--scry-ink2)]"
-                            aria-label={t("label.dismiss")}
+                            label={t("label.dismiss")}
+                            appearance="ghost"
+                            className="ml-auto h-7 w-7 rounded-[8px]"
                           >
                             <X className="h-4 w-4" />
-                          </button>
+                          </IconButton>
                         </div>
                       ) : null}
 
@@ -1959,16 +1965,15 @@ function AuthenticatedHomePage({
                                       "settings.mfaStepUpPolicyLoadFailedDescription",
                                     )}
                                   </p>
-                                  <button
+                                  <Button
                                     id="settings-mfa-step-up-policy-retry"
                                     type="button"
-                                    className="rounded-[10px] bg-[var(--scry-accent-grad)] px-4 py-2 text-sm font-semibold text-white shadow-[0_12px_28px_rgba(var(--scry-accent-rgb),0.24)] transition hover:brightness-110"
                                     onClick={() =>
                                       void refreshConfigStepUpPolicy()
                                     }
                                   >
                                     {t("settings.mfaStepUpPolicyRetry")}
-                                  </button>
+                                  </Button>
                                 </div>
                               ) : settingsStepUpBlocksContent ? (
                                 <ViewLoadingFallback />

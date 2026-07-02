@@ -2249,6 +2249,76 @@ async fn movie_full_scan_completes_title_match_while_inventory_walk_is_blocked()
 }
 
 #[tokio::test]
+async fn movie_full_scan_marks_exact_media_total_before_blocked_analysis_finishes() {
+    const ITEM_COUNT: usize = 90;
+
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let scan_root = tempdir.path().join("scan-root");
+    std::fs::create_dir_all(&scan_root).expect("create scan root");
+
+    let scanner = Arc::new(PerDirectoryBlockingLibraryScanner::default());
+    let (base_app, user, _) =
+        bootstrap_movie_scan_app(&scan_root, Vec::new(), Arc::new(EmptySearchMetadataGateway))
+            .await;
+    let blocking_analyzer = Arc::new(BlockingMediaAnalyzer::default());
+    blocking_analyzer.block();
+    let app = base_app.with_test_overrides(|builder| {
+        builder
+            .with_library_scanner(scanner.clone())
+            .with_media_analyzer(blocking_analyzer.clone())
+    });
+
+    for index in 0..ITEM_COUNT {
+        let item_label = format!("scan-item-{index:03}");
+        let item_folder = scan_root.join(&item_label);
+        std::fs::create_dir_all(&item_folder).expect("create scan item folder");
+        let item_file = item_folder.join(format!("{item_label}.mkv"));
+        std::fs::write(&item_file, b"scan").expect("write scan item file");
+        scanner
+            .set_directory_files(
+                &item_folder,
+                vec![build_test_library_file(
+                    item_file.to_string_lossy().as_ref(),
+                )],
+            )
+            .await;
+        create_movie_title_with_folder(&app, &user, &item_label, item_folder.as_path()).await;
+    }
+
+    let session_id = "scan-exact-total-before-analysis-complete";
+    let app_for_scan = app.clone();
+    let user_for_scan = user.clone();
+    let handle = tokio::spawn(async move {
+        app_for_scan
+            .scan_library_with_tracking(
+                &user_for_scan,
+                MediaFacet::Movie,
+                Some(session_id.to_string()),
+                LibraryScanMode::Full,
+            )
+            .await
+    });
+
+    blocking_analyzer.wait_for_analysis().await;
+    let projected = wait_for_projected_library_scan_session_matching(&app, session_id, |session| {
+        session.file_total_known && session.file_progress.total == ITEM_COUNT
+    })
+    .await;
+    assert_eq!(projected.file_progress.total, ITEM_COUNT);
+    assert_eq!(projected.file_progress.completed, 0);
+    assert_eq!(projected.file_progress.failed, 0);
+    assert!(projected.title_match_total_known);
+    assert!(!projected.status.is_terminal());
+
+    blocking_analyzer.release();
+    let summary = handle
+        .await
+        .expect("join movie full scan task")
+        .expect("movie full scan should complete");
+    assert_eq!(summary.scanned, ITEM_COUNT);
+}
+
+#[tokio::test]
 async fn movie_full_scan_of_empty_library_completes_with_deterministic_zero_totals() {
     let tempdir = tempfile::tempdir().expect("tempdir");
     let movie_root = tempdir.path().join("movies");

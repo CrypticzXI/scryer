@@ -8,6 +8,7 @@ import {
   X,
 } from "lucide-react";
 
+import { IconButton } from "@/components/ui/icon-button";
 import {
   effectiveRootPath,
   isRootRemapped,
@@ -105,35 +106,19 @@ export function ImportRootChip({
 
       {/* Assign button — touch/tablet only (replaces drag-and-drop ≤1024px). */}
       {isMobile ? (
-        <button
+        <IconButton
           type="button"
-          aria-label={
-            library
-              ? t("setup.moveToAnotherLibrary")
-              : t("setup.assignToLibrary")
-          }
-          title={
+          label={
             library
               ? t("setup.moveToAnotherLibrary")
               : t("setup.assignToLibrary")
           }
           onClick={onAssign}
-          style={{
-            display: "inline-flex",
-            alignItems: "center",
-            justifyContent: "center",
-            width: library ? 30 : 32,
-            height: library ? 30 : 32,
-            borderRadius: 8,
-            border: "1px solid var(--scry-baccent)",
-            background: "rgba(var(--scry-accent-rgb), 0.1)",
-            color: "var(--scry-accent-text)",
-            flex: "none",
-            cursor: "pointer",
-          }}
+          tone="accent"
+          className={library ? "h-[30px] w-[30px] flex-none rounded-[8px]" : "h-8 w-8 flex-none rounded-[8px]"}
         >
-          <FolderInput size={library ? 15 : 16} />
-        </button>
+          <FolderInput className={library ? "h-[15px] w-[15px]" : "h-4 w-4"} />
+        </IconButton>
       ) : null}
 
       {/* Instance pill */}
@@ -335,27 +320,16 @@ function ManualPathRegion({
           {value || t("setup.chooseFolder")}
         </span>
       </button>
-      <button
+      <IconButton
         type="button"
-        title={t("setup.removeSourceRoot")}
-        aria-label={t("setup.removeSourceRoot")}
+        label={t("setup.removeSourceRoot")}
         onClick={onRemove}
-        style={{
-          display: "inline-flex",
-          alignItems: "center",
-          justifyContent: "center",
-          width: 24,
-          height: 24,
-          borderRadius: 7,
-          border: "1px solid var(--scry-border2)",
-          background: "transparent",
-          color: "var(--scry-faint)",
-          flex: "none",
-          cursor: "pointer",
-        }}
+        appearance="ghost"
+        tone="delete"
+        className="h-6 w-6 flex-none rounded-[7px] text-[var(--scry-faint)] hover:text-[var(--scry-danger-text-soft)]"
       >
-        <X size={13} />
-      </button>
+        <X className="h-3.5 w-3.5" />
+      </IconButton>
     </>
   );
 }

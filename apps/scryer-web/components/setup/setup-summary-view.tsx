@@ -3,8 +3,8 @@ import { Button } from "@/components/ui/button";
 import {
   SetupBackButton,
   SetupPanel,
+  SetupPrimaryButton,
   SetupStepHeader,
-  SETUP_PRIMARY_CTA,
 } from "./setup-chrome";
 import { Card, CardContent } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
@@ -261,9 +261,9 @@ export function SetupSummaryView({
             </Button>
           </div>
         ) : (
-          <Button id="setup-summary-finish" className={SETUP_PRIMARY_CTA} onClick={onFinish} disabled={finishing}>
+          <SetupPrimaryButton id="setup-summary-finish" onClick={onFinish} disabled={finishing}>
             {finishing ? t("label.saving") : t("setup.finish")}
-          </Button>
+          </SetupPrimaryButton>
         )}
       </div>
     </SetupPanel>

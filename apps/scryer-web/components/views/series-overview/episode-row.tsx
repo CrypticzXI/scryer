@@ -8,7 +8,7 @@ import {
   Search,
   Zap,
 } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { TextActionButton } from "@/components/ui/text-action-button";
 import { Badge } from "@/components/ui/badge";
 import {
   Tooltip,
@@ -22,7 +22,6 @@ import { useTranslate } from "@/lib/context/translate-context";
 import { useUiDateTimeFormat } from "@/lib/context/ui-settings-context";
 import type { Release } from "@/lib/types";
 import { cn } from "@/lib/utils";
-import { boxedActionButtonToneClass } from "@/lib/utils/action-button-styles";
 import {
   selectorId,
   seriesOverviewEpisodeAutoSearchId,
@@ -396,35 +395,37 @@ export const EpisodeRow = React.memo(function EpisodeRow({
             </div>
             <div className="mt-3 flex flex-col gap-2">
               {onAutoSearchEpisode ? (
-                <Button
+                <TextActionButton
                   id={selectorId("series-overview-episode-auto-search", episode.id)}
                   type="button"
                   size="sm"
-                  variant="secondary"
-                  className={cn("w-full", boxedActionButtonToneClass.auto)}
+                  tone="auto"
+                  className="w-full"
                   onClick={handleAutoSearchClick}
                   disabled={autoSearching}
+                  leadingIcon={
+                    autoSearching ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <Zap className="h-4 w-4" />
+                    )
+                  }
                 >
-                  {autoSearching ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                  ) : (
-                    <Zap className="h-4 w-4" />
-                  )}
                   <span>{t("label.search")}</span>
-                </Button>
+                </TextActionButton>
               ) : null}
               {onRunEpisodeSearch && onQueueFromEpisodeSearch ? (
-                <Button
+                <TextActionButton
                   id={selectorId("series-overview-episode-interactive-search", episode.id)}
                   type="button"
                   size="sm"
-                  variant="primary"
-                  className="w-full border border-sky-500/70 bg-sky-600 text-white hover:bg-sky-500 focus-visible:ring-sky-300/70 dark:border-sky-400/50 dark:bg-sky-500 dark:hover:bg-sky-400"
+                  tone="search"
+                  className="w-full"
                   onClick={handleToggleEpisodeSearch}
+                  leadingIcon={<Search className="h-4 w-4" />}
                 >
-                  <Search className="h-4 w-4" />
                   <span>{t("label.interactiveSearch")}</span>
-                </Button>
+                </TextActionButton>
               ) : null}
             </div>
             {isPanelOpen ? (

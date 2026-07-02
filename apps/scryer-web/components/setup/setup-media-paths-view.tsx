@@ -8,8 +8,8 @@ import { FolderBrowserDialog } from "./folder-browser-dialog";
 import {
   SetupBackButton,
   SetupPanel,
+  SetupPrimaryButton,
   SetupStepHeader,
-  SETUP_PRIMARY_CTA,
 } from "./setup-chrome";
 
 interface SetupMediaPathsViewProps {
@@ -160,9 +160,9 @@ export function SetupMediaPathsView({
               {t("setup.skip")}
             </Button>
           )}
-          <Button id="setup-media-paths-next" className={SETUP_PRIMARY_CTA} onClick={onNext} disabled={!canProceed || saving}>
+          <SetupPrimaryButton id="setup-media-paths-next" onClick={onNext} disabled={!canProceed || saving}>
             {saving ? t("label.saving") : t("setup.next")}
-          </Button>
+          </SetupPrimaryButton>
         </div>
       </div>
 

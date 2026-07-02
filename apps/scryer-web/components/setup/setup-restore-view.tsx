@@ -4,8 +4,8 @@ import { Button } from "@/components/ui/button";
 import {
   SetupBackButton,
   SetupPanel,
+  SetupPrimaryButton,
   SetupStepHeader,
-  SETUP_PRIMARY_CTA,
 } from "./setup-chrome";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -363,15 +363,14 @@ export function SetupRestoreView({
                     </p>
                   </div>
                   <div className="flex flex-wrap items-center justify-center gap-3">
-                    <Button
+                    <SetupPrimaryButton
                       id="setup-restore-select-file"
                       type="button"
                       onClick={() => fileInputRef.current?.click()}
                       disabled={inspecting}
-                      className={SETUP_PRIMARY_CTA}
                     >
                       {t("setup.restoreSelectFile")}
-                    </Button>
+                    </SetupPrimaryButton>
                     {selectedBundle ? (
                       <Button
                         id="setup-restore-clear-file"
@@ -561,10 +560,9 @@ export function SetupRestoreView({
           ) : null}
 
           {summary ? (
-            <Button
+            <SetupPrimaryButton
               id="setup-restore-apply"
               type="button"
-              className={SETUP_PRIMARY_CTA}
               onClick={() => void handleApply()}
               disabled={applying}
             >
@@ -574,13 +572,12 @@ export function SetupRestoreView({
                 <Upload className="h-4 w-4" />
               )}
               {t("setup.restoreApply")}
-            </Button>
+            </SetupPrimaryButton>
           ) : (
-            <Button
+            <SetupPrimaryButton
               id="setup-restore-inspect"
               type="button"
               onClick={() => void handleInspect()}
-              className={SETUP_PRIMARY_CTA}
               disabled={
                 inspecting
                 || !selectedBundle
@@ -593,7 +590,7 @@ export function SetupRestoreView({
                 <Upload className="h-4 w-4" />
               )}
               {t("setup.restoreInspect")}
-            </Button>
+            </SetupPrimaryButton>
           )}
         </div>
       </div>

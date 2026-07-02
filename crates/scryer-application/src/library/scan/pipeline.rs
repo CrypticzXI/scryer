@@ -29,9 +29,9 @@ const LIBRARY_SCAN_MEDIA_INVENTORY_PATH_HIGH_WATER: usize = 100_000;
 const LIBRARY_SCAN_MATCH_INPUT_QUEUE_CAPACITY: usize = 2 * LIBRARY_SCAN_METADATA_SEARCH_BATCH_SIZE;
 /// Cap on candidates parked in the match worker waiting for SMG results
 /// before the worker stops pulling intake and lets channel backpressure hold.
-const LIBRARY_SCAN_MATCH_PENDING_HIGH_WATER: usize =
-    4 * LIBRARY_SCAN_METADATA_SEARCH_BATCH_SIZE;
+const LIBRARY_SCAN_MATCH_PENDING_HIGH_WATER: usize = 4 * LIBRARY_SCAN_METADATA_SEARCH_BATCH_SIZE;
 const LIBRARY_SCAN_CANDIDATE_EVENT_QUEUE_CAPACITY: usize = 64;
+const LIBRARY_SCAN_INVENTORY_EVENT_QUEUE_CAPACITY: usize = 64;
 const LIBRARY_SCAN_MATCH_EVENT_QUEUE_CAPACITY: usize = 64;
 /// Hydration runs downstream of matching in bulk batches so a fresh episodic
 /// library does not degrade into one SMG metadata call per title.
@@ -76,6 +76,16 @@ enum ScanCandidateJobEvent {
         item_path: String,
         error: AppError,
     },
+    EvidenceDone {
+        metrics: CandidateJobMetrics,
+    },
+    DiscoveryFailed {
+        error: AppError,
+    },
+}
+
+/// Events emitted by recursive inventory/count walks.
+enum ScanInventoryJobEvent {
     Inventory {
         key: ScanCandidateKey,
         files: Vec<LibraryFile>,
@@ -88,9 +98,16 @@ enum ScanCandidateJobEvent {
     InventoryCanceled {
         key: ScanCandidateKey,
     },
-    DiscoveryFailed {
-        error: AppError,
-    },
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct CandidateJobMetrics {
+    candidates_emitted: usize,
+    skipped: usize,
+    failed: usize,
+    inline_inventory_emitted: usize,
+    inventory_walks_queued: usize,
+    inventory_walks_started: usize,
 }
 
 /// Events emitted by the SMG match worker.
@@ -190,6 +207,8 @@ pub(super) async fn run_library_scan_pipeline(
 
     let (candidate_events_tx, mut candidate_events_rx) =
         tokio::sync::mpsc::channel(LIBRARY_SCAN_CANDIDATE_EVENT_QUEUE_CAPACITY);
+    let (inventory_events_tx, mut inventory_events_rx) =
+        tokio::sync::mpsc::channel(LIBRARY_SCAN_INVENTORY_EVENT_QUEUE_CAPACITY);
     let (match_input_tx, match_input_rx) =
         tokio::sync::mpsc::channel(LIBRARY_SCAN_MATCH_INPUT_QUEUE_CAPACITY);
     let (match_events_tx, mut match_events_rx) =
@@ -204,7 +223,8 @@ pub(super) async fn run_library_scan_pipeline(
         scan_hints,
         mark_discovery_complete_on_drain,
         cancel_token: cancel_token.clone(),
-        events: candidate_events_tx,
+        candidate_events: candidate_events_tx,
+        inventory_events: inventory_events_tx,
         storage_watch: storage_watch_rx,
     })?;
 
@@ -236,7 +256,8 @@ pub(super) async fn run_library_scan_pipeline(
     let mut candidates: HashMap<ScanCandidateKey, CandidateRuntime> = HashMap::new();
     let mut forward_queue: VecDeque<(ScanCandidateKey, ScanPipelineCandidate)> = VecDeque::new();
     let mut match_input_tx = Some(match_input_tx);
-    let mut candidate_jobs_done = false;
+    let mut evidence_done = false;
+    let mut inventory_done = false;
     let mut match_done = false;
     let mut worker_report: Option<Box<ScanMatchWorkerReport>> = None;
     let mut stored_inventory_paths = 0usize;
@@ -249,22 +270,38 @@ pub(super) async fn run_library_scan_pipeline(
     let mut hydration = ScanHydrationBatcher::new(app.clone(), cancel_token.clone());
 
     loop {
-        if candidate_jobs_done && match_done && forward_queue.is_empty() {
+        if evidence_done && match_done && inventory_done && forward_queue.is_empty() {
             break;
         }
         if discovery_error.is_some() {
             break;
         }
 
-        // Close the match worker input once every candidate has been forwarded.
-        if candidate_jobs_done && forward_queue.is_empty() {
+        // Close the match worker input once all evidence has been forwarded;
+        // recursive inventory/count walks must not hold title matching open.
+        if evidence_done && forward_queue.is_empty() {
             match_input_tx = None;
         }
 
         let hydration_deadline = hydration.deadline_instant();
         tokio::select! {
-            event = candidate_events_rx.recv(), if !candidate_jobs_done => {
+            event = candidate_events_rx.recv(), if !evidence_done => {
                 match event {
+                    Some(ScanCandidateJobEvent::EvidenceDone { metrics }) => {
+                        evidence_done = true;
+                        info!(
+                            path = %library_path,
+                            facet = facet.as_str(),
+                            candidates = metrics.candidates_emitted,
+                            skipped = metrics.skipped,
+                            failed = metrics.failed,
+                            inline_inventory = metrics.inline_inventory_emitted,
+                            inventory_walks_queued = metrics.inventory_walks_queued,
+                            inventory_walks_started = metrics.inventory_walks_started,
+                            elapsed_ms = elapsed_ms_u64(started_at),
+                            "library scan evidence phase completed"
+                        );
+                    }
                     Some(event) => {
                         if let Err(error) = handle_candidate_job_event(CandidateEventContext {
                             app,
@@ -274,18 +311,31 @@ pub(super) async fn run_library_scan_pipeline(
                             summary: &mut summary,
                             candidates: &mut candidates,
                             forward_queue: &mut forward_queue,
-                            hydration: &mut hydration,
-                            pool: &mut pool,
-                            media_dedup_skips: &mut media_dedup_skips,
-                            stored_inventory_paths: &mut stored_inventory_paths,
-                            storage_watch: &storage_watch_tx,
                             discovery_error: &mut discovery_error,
                         }, event).await {
                             discovery_error = Some(error);
                         }
                     }
                     None => {
-                        candidate_jobs_done = true;
+                        evidence_done = true;
+                    }
+                }
+            }
+            event = inventory_events_rx.recv(), if !inventory_done => {
+                match event {
+                    Some(event) => {
+                        handle_inventory_job_event(InventoryEventContext {
+                            coordinator: &coordinator,
+                            candidates: &mut candidates,
+                            hydration: &mut hydration,
+                            pool: &mut pool,
+                            media_dedup_skips: &mut media_dedup_skips,
+                            stored_inventory_paths: &mut stored_inventory_paths,
+                            storage_watch: &storage_watch_tx,
+                        }, event).await?;
+                    }
+                    None => {
+                        inventory_done = true;
                     }
                 }
             }
@@ -337,6 +387,18 @@ pub(super) async fn run_library_scan_pipeline(
                         ).await?;
                     }
                     Some(ScanMatchWorkerEvent::Done(report)) => {
+                        info!(
+                            path = %library_path,
+                            facet = facet.as_str(),
+                            scanned = report.summary.scanned,
+                            matched = report.summary.matched,
+                            unmatched = report.summary.unmatched,
+                            skipped = report.summary.skipped,
+                            metadata_lookups = report.stats.logical_lookups,
+                            metadata_lookup_requests_executed = report.stats.executed_requests,
+                            elapsed_ms = elapsed_ms_u64(started_at),
+                            "library scan match phase completed"
+                        );
                         worker_report = Some(report);
                         match_done = true;
                     }
@@ -374,17 +436,19 @@ pub(super) async fn run_library_scan_pipeline(
         hydration.maybe_flush();
         pool.pump().await?;
 
-        if !file_total_marked
-            && match_done
-            && candidate_jobs_done
-            && !library_scan_cancel_requested(cancel_token.as_ref())
-            && hydration.is_idle()
-            && all_matched_inventories_terminal(&candidates)
-        {
-            coordinator.mark_file_total_known().await;
-            coordinator.publish_progress().await;
-            file_total_marked = true;
-        }
+        try_mark_file_total_known(TotalKnownLatchContext {
+            coordinator: &coordinator,
+            pool: &mut pool,
+            candidates: &candidates,
+            hydration: &hydration,
+            file_total_marked: &mut file_total_marked,
+            match_done,
+            cancel_token: cancel_token.as_ref(),
+            started_at,
+            library_path,
+            facet,
+        })
+        .await?;
     }
 
     drop(match_input_tx);
@@ -393,6 +457,7 @@ pub(super) async fn run_library_scan_pipeline(
         // Root discovery failed: settle workers and fail the scan without a
         // success progress latch.
         candidate_events_rx.close();
+        inventory_events_rx.close();
         match_events_rx.close();
         jobs_handle.abort();
         let _ = worker_handle.await;
@@ -400,33 +465,102 @@ pub(super) async fn run_library_scan_pipeline(
         return Err(error);
     }
 
-    // Drain any candidate/match events that raced with loop exit.
+    // Drain any candidate/inventory/match events that raced with loop exit.
     while let Some(event) = candidate_events_rx.recv().await {
-        if let ScanCandidateJobEvent::Inventory { key, files } = event {
-            let _ = handle_inventory_ready(
-                &coordinator,
-                &mut candidates,
-                &mut hydration,
-                &mut pool,
-                &mut media_dedup_skips,
-                &mut stored_inventory_paths,
-                &storage_watch_tx,
-                key,
-                files,
-            )
-            .await;
+        match event {
+            ScanCandidateJobEvent::EvidenceDone { .. } => {}
+            event => {
+                if let Err(error) = handle_candidate_job_event(
+                    CandidateEventContext {
+                        app,
+                        facet,
+                        library_id,
+                        coordinator: &coordinator,
+                        summary: &mut summary,
+                        candidates: &mut candidates,
+                        forward_queue: &mut forward_queue,
+                        discovery_error: &mut discovery_error,
+                    },
+                    event,
+                )
+                .await
+                {
+                    discovery_error = Some(error);
+                }
+            }
         }
+    }
+    while let Some(event) = inventory_events_rx.recv().await {
+        handle_inventory_job_event(
+            InventoryEventContext {
+                coordinator: &coordinator,
+                candidates: &mut candidates,
+                hydration: &mut hydration,
+                pool: &mut pool,
+                media_dedup_skips: &mut media_dedup_skips,
+                stored_inventory_paths: &mut stored_inventory_paths,
+                storage_watch: &storage_watch_tx,
+            },
+            event,
+        )
+        .await?;
+    }
+
+    if let Some(error) = discovery_error {
+        match_events_rx.close();
+        let _ = worker_handle.await;
+        pool.drain_for_failure().await?;
+        return Err(error);
     }
 
     // The worker's final report may not have been consumed if the loop broke
     // on cancellation; drain match events so the summary is not lost.
     while !match_done {
         match match_events_rx.recv().await {
+            Some(ScanMatchWorkerEvent::Matched { key, work }) => {
+                handle_match_decision(
+                    &coordinator,
+                    &mut candidates,
+                    &mut hydration,
+                    &mut pool,
+                    &mut media_dedup_skips,
+                    &mut stored_inventory_paths,
+                    &storage_watch_tx,
+                    key,
+                    Some(*work),
+                )
+                .await?;
+            }
+            Some(ScanMatchWorkerEvent::Terminal { key }) => {
+                handle_match_decision(
+                    &coordinator,
+                    &mut candidates,
+                    &mut hydration,
+                    &mut pool,
+                    &mut media_dedup_skips,
+                    &mut stored_inventory_paths,
+                    &storage_watch_tx,
+                    key,
+                    None,
+                )
+                .await?;
+            }
             Some(ScanMatchWorkerEvent::Done(report)) => {
+                info!(
+                    path = %library_path,
+                    facet = facet.as_str(),
+                    scanned = report.summary.scanned,
+                    matched = report.summary.matched,
+                    unmatched = report.summary.unmatched,
+                    skipped = report.summary.skipped,
+                    metadata_lookups = report.stats.logical_lookups,
+                    metadata_lookup_requests_executed = report.stats.executed_requests,
+                    elapsed_ms = elapsed_ms_u64(started_at),
+                    "library scan match phase completed"
+                );
                 worker_report = Some(report);
                 match_done = true;
             }
-            Some(_) => {}
             None => break,
         }
     }
@@ -439,6 +573,19 @@ pub(super) async fn run_library_scan_pipeline(
         for work in hydration.drain().await? {
             pool.enqueue(work);
         }
+        try_mark_file_total_known(TotalKnownLatchContext {
+            coordinator: &coordinator,
+            pool: &mut pool,
+            candidates: &candidates,
+            hydration: &hydration,
+            file_total_marked: &mut file_total_marked,
+            match_done,
+            cancel_token: cancel_token.as_ref(),
+            started_at,
+            library_path,
+            facet,
+        })
+        .await?;
     }
 
     if let Some(report) = worker_report.take() {
@@ -447,13 +594,30 @@ pub(super) async fn run_library_scan_pipeline(
             summary.matched = summary.matched.saturating_sub(media_dedup_skips);
             summary.skipped = summary.skipped.saturating_add(media_dedup_skips);
         }
-        if !file_total_marked && !canceled && all_matched_inventories_terminal(&candidates) {
-            coordinator.mark_file_total_known().await;
-            coordinator.publish_progress().await;
-        }
+        try_mark_file_total_known(TotalKnownLatchContext {
+            coordinator: &coordinator,
+            pool: &mut pool,
+            candidates: &candidates,
+            hydration: &hydration,
+            file_total_marked: &mut file_total_marked,
+            match_done,
+            cancel_token: cancel_token.as_ref(),
+            started_at,
+            library_path,
+            facet,
+        })
+        .await?;
 
         pool.close_input();
         summary.absorb(&pool.finish().await?);
+        info!(
+            path = %library_path,
+            facet = facet.as_str(),
+            imported = summary.imported,
+            skipped = summary.skipped,
+            elapsed_ms = elapsed_ms_u64(started_at),
+            "library scan analysis phase completed"
+        );
 
         if !canceled {
             let mut seen_paths = report.seen_paths;
@@ -516,18 +680,19 @@ pub(super) async fn run_library_scan_pipeline(
     Ok(summary)
 }
 
-fn all_matched_inventories_terminal(
+fn matched_inventory_totals_ready(
     candidates: &HashMap<ScanCandidateKey, CandidateRuntime>,
 ) -> bool {
-    candidates.values().all(|runtime| {
-        !matches!(
-            runtime.match_state,
-            CandidateMatchState::MatchedAwaitingInventory(_)
-        ) && match runtime.match_state {
-            CandidateMatchState::Pending => true,
-            _ => runtime.scoped || runtime.inventory_terminal(),
-        }
-    })
+    candidates
+        .values()
+        .all(|runtime| match runtime.match_state {
+            CandidateMatchState::Pending | CandidateMatchState::MatchedAwaitingInventory(_) => {
+                false
+            }
+            CandidateMatchState::Dispatched | CandidateMatchState::Terminal => {
+                runtime.scoped || runtime.inventory_terminal()
+            }
+        })
 }
 
 struct CandidateEventContext<'a> {
@@ -538,11 +703,6 @@ struct CandidateEventContext<'a> {
     summary: &'a mut LibraryScanSummary,
     candidates: &'a mut HashMap<ScanCandidateKey, CandidateRuntime>,
     forward_queue: &'a mut VecDeque<(ScanCandidateKey, ScanPipelineCandidate)>,
-    hydration: &'a mut ScanHydrationBatcher,
-    pool: &'a mut LibraryScanMediaAnalysisPool,
-    media_dedup_skips: &'a mut usize,
-    stored_inventory_paths: &'a mut usize,
-    storage_watch: &'a tokio::sync::watch::Sender<usize>,
     discovery_error: &'a mut Option<AppError>,
 }
 
@@ -594,7 +754,32 @@ async fn handle_candidate_job_event(
             ctx.coordinator.mark_title_match_completed(1).await;
             ctx.coordinator.publish_progress().await;
         }
-        ScanCandidateJobEvent::Inventory { key, files } => {
+        ScanCandidateJobEvent::EvidenceDone { .. } => {
+            // The coordinator consumes this lifecycle event directly.
+        }
+        ScanCandidateJobEvent::DiscoveryFailed { error } => {
+            *ctx.discovery_error = Some(error);
+        }
+    }
+    Ok(())
+}
+
+struct InventoryEventContext<'a> {
+    coordinator: &'a LibraryScanCoordinator,
+    candidates: &'a mut HashMap<ScanCandidateKey, CandidateRuntime>,
+    hydration: &'a mut ScanHydrationBatcher,
+    pool: &'a mut LibraryScanMediaAnalysisPool,
+    media_dedup_skips: &'a mut usize,
+    stored_inventory_paths: &'a mut usize,
+    storage_watch: &'a tokio::sync::watch::Sender<usize>,
+}
+
+async fn handle_inventory_job_event(
+    ctx: InventoryEventContext<'_>,
+    event: ScanInventoryJobEvent,
+) -> AppResult<()> {
+    match event {
+        ScanInventoryJobEvent::Inventory { key, files } => {
             handle_inventory_ready(
                 ctx.coordinator,
                 ctx.candidates,
@@ -608,7 +793,7 @@ async fn handle_candidate_job_event(
             )
             .await?;
         }
-        ScanCandidateJobEvent::InventoryFailed {
+        ScanInventoryJobEvent::InventoryFailed {
             key,
             item_path,
             error,
@@ -627,15 +812,55 @@ async fn handle_candidate_job_event(
                 }
             }
         }
-        ScanCandidateJobEvent::InventoryCanceled { key } => {
+        ScanInventoryJobEvent::InventoryCanceled { key } => {
             if let Some(runtime) = ctx.candidates.get_mut(&key) {
                 runtime.inventory = CandidateInventoryState::Canceled;
             }
         }
-        ScanCandidateJobEvent::DiscoveryFailed { error } => {
-            *ctx.discovery_error = Some(error);
-        }
     }
+    Ok(())
+}
+
+struct TotalKnownLatchContext<'a> {
+    coordinator: &'a LibraryScanCoordinator,
+    pool: &'a mut LibraryScanMediaAnalysisPool,
+    candidates: &'a HashMap<ScanCandidateKey, CandidateRuntime>,
+    hydration: &'a ScanHydrationBatcher,
+    file_total_marked: &'a mut bool,
+    match_done: bool,
+    cancel_token: Option<&'a CancellationToken>,
+    started_at: Instant,
+    library_path: &'a str,
+    facet: &'a MediaFacet,
+}
+
+async fn try_mark_file_total_known(ctx: TotalKnownLatchContext<'_>) -> AppResult<()> {
+    if *ctx.file_total_marked
+        || !ctx.match_done
+        || library_scan_cancel_requested(ctx.cancel_token)
+        || !ctx.hydration.is_idle()
+        || !matched_inventory_totals_ready(ctx.candidates)
+    {
+        return Ok(());
+    }
+
+    // Promotion publishes totals for queued pre-counted work. The progress
+    // tracker intentionally ignores later file_total_delta values once the
+    // known latch is set, so this must happen before mark_file_total_known.
+    ctx.pool.pump().await?;
+    if !matched_inventory_totals_ready(ctx.candidates) {
+        return Ok(());
+    }
+
+    ctx.coordinator.mark_file_total_known().await;
+    ctx.coordinator.publish_progress().await;
+    *ctx.file_total_marked = true;
+    info!(
+        path = %ctx.library_path,
+        facet = ctx.facet.as_str(),
+        elapsed_ms = elapsed_ms_u64(ctx.started_at),
+        "library scan inventory totals ready"
+    );
     Ok(())
 }
 
@@ -666,8 +891,15 @@ async fn handle_inventory_ready(
                 unreachable!("checked variant above");
             };
             runtime.inventory = CandidateInventoryState::Consumed;
-            dispatch_media_work(coordinator, hydration, pool, media_dedup_skips, *work, files)
-                .await?;
+            dispatch_media_work(
+                coordinator,
+                hydration,
+                pool,
+                media_dedup_skips,
+                *work,
+                files,
+            )
+            .await?;
         }
         CandidateMatchState::Pending => {
             *stored_inventory_paths = stored_inventory_paths.saturating_add(files.len());
@@ -709,33 +941,40 @@ async fn handle_match_decision(
             dispatch_media_work(coordinator, hydration, pool, media_dedup_skips, work, files)
                 .await?;
         }
-        Some(work) => match std::mem::replace(
-            &mut runtime.inventory,
-            CandidateInventoryState::Consumed,
-        ) {
-            CandidateInventoryState::Ready(files) => {
-                *stored_inventory_paths = stored_inventory_paths.saturating_sub(files.len());
-                let _ = storage_watch.send(*stored_inventory_paths);
-                runtime.match_state = CandidateMatchState::Dispatched;
-                dispatch_media_work(coordinator, hydration, pool, media_dedup_skips, work, files)
+        Some(work) => {
+            match std::mem::replace(&mut runtime.inventory, CandidateInventoryState::Consumed) {
+                CandidateInventoryState::Ready(files) => {
+                    *stored_inventory_paths = stored_inventory_paths.saturating_sub(files.len());
+                    let _ = storage_watch.send(*stored_inventory_paths);
+                    runtime.match_state = CandidateMatchState::Dispatched;
+                    dispatch_media_work(
+                        coordinator,
+                        hydration,
+                        pool,
+                        media_dedup_skips,
+                        work,
+                        files,
+                    )
                     .await?;
+                }
+                CandidateInventoryState::Pending => {
+                    runtime.inventory = CandidateInventoryState::Pending;
+                    runtime.match_state =
+                        CandidateMatchState::MatchedAwaitingInventory(Box::new(work));
+                }
+                CandidateInventoryState::Failed => {
+                    runtime.inventory = CandidateInventoryState::Failed;
+                    runtime.match_state = CandidateMatchState::Terminal;
+                    warn!(
+                        item_path = %runtime.item_path,
+                        "matched candidate has failed media inventory; skipping analysis"
+                    );
+                }
+                CandidateInventoryState::Canceled | CandidateInventoryState::Consumed => {
+                    runtime.match_state = CandidateMatchState::Terminal;
+                }
             }
-            CandidateInventoryState::Pending => {
-                runtime.inventory = CandidateInventoryState::Pending;
-                runtime.match_state = CandidateMatchState::MatchedAwaitingInventory(Box::new(work));
-            }
-            CandidateInventoryState::Failed => {
-                runtime.inventory = CandidateInventoryState::Failed;
-                runtime.match_state = CandidateMatchState::Terminal;
-                warn!(
-                    item_path = %runtime.item_path,
-                    "matched candidate has failed media inventory; skipping analysis"
-                );
-            }
-            CandidateInventoryState::Canceled | CandidateInventoryState::Consumed => {
-                runtime.match_state = CandidateMatchState::Terminal;
-            }
-        },
+        }
         None => {
             // Unmatched/failed/skipped: cancel any in-flight inventory walk
             // and discard stored file lists at decision time.
@@ -957,7 +1196,8 @@ struct CandidateJobContext {
     scan_hints: Option<LibraryScanHintSet>,
     mark_discovery_complete_on_drain: bool,
     cancel_token: Option<CancellationToken>,
-    events: tokio::sync::mpsc::Sender<ScanCandidateJobEvent>,
+    candidate_events: tokio::sync::mpsc::Sender<ScanCandidateJobEvent>,
+    inventory_events: tokio::sync::mpsc::Sender<ScanInventoryJobEvent>,
     storage_watch: tokio::sync::watch::Receiver<usize>,
 }
 
@@ -969,7 +1209,7 @@ fn spawn_candidate_jobs(ctx: CandidateJobContext) -> AppResult<tokio::task::Join
         };
         if let Err(error) = result {
             let _ = ctx
-                .events
+                .candidate_events
                 .send(ScanCandidateJobEvent::DiscoveryFailed { error })
                 .await;
         }
@@ -998,8 +1238,10 @@ struct CandidateJobRunner<'a> {
     next_key: ScanCandidateKey,
     evidence_set: tokio::task::JoinSet<EvidenceJobOutput>,
     inventory_set: tokio::task::JoinSet<()>,
+    inline_inventory_queue: VecDeque<(ScanCandidateKey, Vec<LibraryFile>)>,
     inventory_queue: VecDeque<(ScanCandidateKey, PathBuf, CancellationToken)>,
     cancel_tokens: HashMap<ScanCandidateKey, CancellationToken>,
+    metrics: CandidateJobMetrics,
 }
 
 impl<'a> CandidateJobRunner<'a> {
@@ -1009,8 +1251,10 @@ impl<'a> CandidateJobRunner<'a> {
             next_key: 0,
             evidence_set: tokio::task::JoinSet::new(),
             inventory_set: tokio::task::JoinSet::new(),
+            inline_inventory_queue: VecDeque::new(),
             inventory_queue: VecDeque::new(),
             cancel_tokens: HashMap::new(),
+            metrics: CandidateJobMetrics::default(),
         }
     }
 
@@ -1029,14 +1273,10 @@ impl<'a> CandidateJobRunner<'a> {
                 inline_inventory,
                 inventory_target,
             } => {
-                let inventory_cancel = self
-                    .cancel_tokens
-                    .entry(key)
-                    .or_default()
-                    .clone();
+                let inventory_cancel = self.cancel_tokens.entry(key).or_default().clone();
                 if self
                     .ctx
-                    .events
+                    .candidate_events
                     .send(ScanCandidateJobEvent::Candidate {
                         key,
                         candidate,
@@ -1048,36 +1288,85 @@ impl<'a> CandidateJobRunner<'a> {
                 {
                     return false;
                 }
+                self.metrics.candidates_emitted = self.metrics.candidates_emitted.saturating_add(1);
                 if let Some(files) = inline_inventory {
-                    if !scoped
-                        && self
-                            .ctx
-                            .events
-                            .send(ScanCandidateJobEvent::Inventory { key, files })
-                            .await
-                            .is_err()
-                    {
+                    self.metrics.inline_inventory_emitted =
+                        self.metrics.inline_inventory_emitted.saturating_add(1);
+                    if !scoped && !self.try_forward_inline_inventory(key, files) {
                         return false;
                     }
                 } else if let Some(target) = inventory_target {
+                    self.metrics.inventory_walks_queued =
+                        self.metrics.inventory_walks_queued.saturating_add(1);
                     self.inventory_queue
                         .push_back((key, target, inventory_cancel));
                 }
                 true
             }
-            EvidenceJobOutput::Skipped { item_path } => self
-                .ctx
-                .events
-                .send(ScanCandidateJobEvent::Skipped { item_path })
-                .await
-                .is_ok(),
-            EvidenceJobOutput::Failed { item_path, error } => self
-                .ctx
-                .events
-                .send(ScanCandidateJobEvent::EvidenceFailed { item_path, error })
-                .await
-                .is_ok(),
+            EvidenceJobOutput::Skipped { item_path } => {
+                self.metrics.skipped = self.metrics.skipped.saturating_add(1);
+                self.ctx
+                    .candidate_events
+                    .send(ScanCandidateJobEvent::Skipped { item_path })
+                    .await
+                    .is_ok()
+            }
+            EvidenceJobOutput::Failed { item_path, error } => {
+                self.metrics.failed = self.metrics.failed.saturating_add(1);
+                self.ctx
+                    .candidate_events
+                    .send(ScanCandidateJobEvent::EvidenceFailed { item_path, error })
+                    .await
+                    .is_ok()
+            }
         }
+    }
+
+    fn try_forward_inline_inventory(
+        &mut self,
+        key: ScanCandidateKey,
+        files: Vec<LibraryFile>,
+    ) -> bool {
+        match self
+            .ctx
+            .inventory_events
+            .try_send(ScanInventoryJobEvent::Inventory { key, files })
+        {
+            Ok(()) => true,
+            Err(tokio::sync::mpsc::error::TrySendError::Full(
+                ScanInventoryJobEvent::Inventory { key, files },
+            )) => {
+                self.inline_inventory_queue.push_back((key, files));
+                true
+            }
+            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => false,
+            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => true,
+        }
+    }
+
+    async fn flush_inline_inventory(&mut self, block: bool) -> bool {
+        while let Some((key, files)) = self.inline_inventory_queue.pop_front() {
+            let event = ScanInventoryJobEvent::Inventory { key, files };
+            if block {
+                if self.ctx.inventory_events.send(event).await.is_err() {
+                    return false;
+                }
+                continue;
+            }
+
+            match self.ctx.inventory_events.try_send(event) {
+                Ok(()) => {}
+                Err(tokio::sync::mpsc::error::TrySendError::Full(
+                    ScanInventoryJobEvent::Inventory { key, files },
+                )) => {
+                    self.inline_inventory_queue.push_front((key, files));
+                    return true;
+                }
+                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => return false,
+                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => return true,
+            }
+        }
+        true
     }
 
     /// Launch queued inventory walks. In the evidence loop this is
@@ -1136,7 +1425,9 @@ impl<'a> CandidateJobRunner<'a> {
             let Some((key, target, cancel)) = self.inventory_queue.pop_front() else {
                 return;
             };
-            let events = self.ctx.events.clone();
+            self.metrics.inventory_walks_started =
+                self.metrics.inventory_walks_started.saturating_add(1);
+            let events = self.ctx.inventory_events.clone();
             let app = self.ctx.app.clone();
             let kind = self.ctx.kind;
             let scan_cancel = self.ctx.cancel_token.clone();
@@ -1144,7 +1435,7 @@ impl<'a> CandidateJobRunner<'a> {
                 let _permit = permit;
                 if cancel.is_cancelled() || library_scan_cancel_requested(scan_cancel.as_ref()) {
                     let _ = events
-                        .send(ScanCandidateJobEvent::InventoryCanceled { key })
+                        .send(ScanInventoryJobEvent::InventoryCanceled { key })
                         .await;
                     return;
                 }
@@ -1169,13 +1460,13 @@ impl<'a> CandidateJobRunner<'a> {
 
                 let event = match result {
                     Ok(_) if cancel.is_cancelled() => {
-                        ScanCandidateJobEvent::InventoryCanceled { key }
+                        ScanInventoryJobEvent::InventoryCanceled { key }
                     }
                     Ok(mut files) => {
                         files.sort_by(|left, right| left.path.cmp(&right.path));
-                        ScanCandidateJobEvent::Inventory { key, files }
+                        ScanInventoryJobEvent::Inventory { key, files }
                     }
-                    Err(error) => ScanCandidateJobEvent::InventoryFailed {
+                    Err(error) => ScanInventoryJobEvent::InventoryFailed {
                         key,
                         item_path: target_str,
                         error,
@@ -1186,11 +1477,52 @@ impl<'a> CandidateJobRunner<'a> {
         }
     }
 
+    async fn drain_evidence(&mut self) -> bool {
+        while !self.evidence_set.is_empty() {
+            if library_scan_cancel_requested(self.ctx.cancel_token.as_ref()) {
+                self.evidence_set.abort_all();
+                return false;
+            }
+            self.launch_pending_inventory(false).await;
+            if !self.flush_inline_inventory(false).await {
+                return false;
+            }
+            match self.evidence_set.join_next().await {
+                Some(Ok(output)) => {
+                    if !self.forward_evidence_output(output).await {
+                        return false;
+                    }
+                }
+                Some(Err(error)) if error.is_cancelled() => {}
+                Some(Err(error)) => {
+                    self.metrics.failed = self.metrics.failed.saturating_add(1);
+                    warn!(error = %error, "library scan evidence task failed");
+                }
+                None => break,
+            }
+        }
+        true
+    }
+
+    async fn send_evidence_done(&self) -> bool {
+        self.ctx
+            .candidate_events
+            .send(ScanCandidateJobEvent::EvidenceDone {
+                metrics: self.metrics,
+            })
+            .await
+            .is_ok()
+    }
+
     async fn settle(mut self) {
         while !library_scan_cancel_requested(self.ctx.cancel_token.as_ref()) {
+            if !self.flush_inline_inventory(true).await {
+                break;
+            }
             self.launch_pending_inventory(true).await;
             if self.evidence_set.is_empty()
                 && self.inventory_set.is_empty()
+                && self.inline_inventory_queue.is_empty()
                 && self.inventory_queue.is_empty()
             {
                 break;
@@ -1220,6 +1552,7 @@ impl<'a> CandidateJobRunner<'a> {
         // Abort-and-join both pools; a no-op when they drained normally.
         // Joining (not just aborting) is required so cancellation cannot
         // leave tasks parked in the sets.
+        self.inline_inventory_queue.clear();
         self.inventory_queue.clear();
         self.evidence_set.abort_all();
         while self.evidence_set.join_next().await.is_some() {}
@@ -1249,6 +1582,7 @@ async fn run_movie_candidate_jobs(ctx: &CandidateJobContext) -> AppResult<()> {
         if library_scan_cancel_requested(ctx.cancel_token.as_ref()) {
             pending_entries.clear();
             runner.evidence_set.abort_all();
+            runner.inline_inventory_queue.clear();
             runner.inventory_queue.clear();
             runner.inventory_set.abort_all();
             break;
@@ -1268,6 +1602,9 @@ async fn run_movie_candidate_jobs(ctx: &CandidateJobContext) -> AppResult<()> {
         }
 
         runner.launch_pending_inventory(false).await;
+        if !runner.flush_inline_inventory(false).await {
+            return Ok(());
+        }
 
         if discovery_closed && pending_entries.is_empty() && runner.evidence_set.is_empty() {
             break;
@@ -1291,6 +1628,12 @@ async fn run_movie_candidate_jobs(ctx: &CandidateJobContext) -> AppResult<()> {
         }
     }
 
+    if !runner.drain_evidence().await || !runner.send_evidence_done().await {
+        return Ok(());
+    }
+    if !runner.drain_evidence().await || !runner.send_evidence_done().await {
+        return Ok(());
+    }
     runner.settle().await;
     Ok(())
 }
@@ -1346,6 +1689,7 @@ async fn run_series_candidate_jobs(ctx: &CandidateJobContext) -> AppResult<()> {
         if library_scan_cancel_requested(ctx.cancel_token.as_ref()) {
             pending_folders.clear();
             runner.evidence_set.abort_all();
+            runner.inline_inventory_queue.clear();
             runner.inventory_queue.clear();
             runner.inventory_set.abort_all();
             break;
@@ -1357,12 +1701,15 @@ async fn run_series_candidate_jobs(ctx: &CandidateJobContext) -> AppResult<()> {
             };
             let key = runner.allocate_key();
             let scan_hints = ctx.scan_hints.clone();
-            runner.evidence_set.spawn(async move {
-                series_evidence_job(folder, scan_hints, key).await
-            });
+            runner
+                .evidence_set
+                .spawn(async move { series_evidence_job(folder, scan_hints, key).await });
         }
 
         runner.launch_pending_inventory(false).await;
+        if !runner.flush_inline_inventory(false).await {
+            return Ok(());
+        }
 
         if discovery_closed && pending_folders.is_empty() && runner.evidence_set.is_empty() {
             break;
@@ -1633,9 +1980,9 @@ async fn run_scan_match_worker(
 
         // Flush policy: full batch, timer expiry, or closed intake.
         while search_set.len() < LIBRARY_SCAN_METADATA_IN_FLIGHT_BATCHES && !pending.is_empty() {
-            let timer_expired = pending
-                .first()
-                .is_some_and(|queued| queued.queued_at.elapsed() >= LIBRARY_SCAN_MATCH_FLUSH_INTERVAL);
+            let timer_expired = pending.first().is_some_and(|queued| {
+                queued.queued_at.elapsed() >= LIBRARY_SCAN_MATCH_FLUSH_INTERVAL
+            });
             let size_ready = pending.len() >= LIBRARY_SCAN_METADATA_SEARCH_BATCH_SIZE;
             if !size_ready && !timer_expired && intake_open {
                 break;
@@ -1877,46 +2224,50 @@ async fn resolve_ready_candidates(
         let QueuedMatchCandidate { key, candidate, .. } = queued;
         let mut sink = PipelineTitleWorkSink { staged: None };
         let result = match candidate {
-            ScanPipelineCandidate::Movie(movie) => process_resolved_movie_full_scan_candidate(
-                &ctx.app,
-                &ctx.actor,
-                &ctx.facet,
-                &ctx.library_id,
-                &ctx.library_path,
-                &ctx.session_id,
-                coordinator,
-                *movie,
-                &state.search_results,
-                &mut sink,
-                &mut state.existing_titles,
-                &mut state.existing_titles_by_name,
-                &mut state.existing_titles_by_tvdb_id,
-                &mut state.existing_titles_by_imdb_id,
-                &mut state.existing_titles_by_tmdb_id,
-                &mut state.report.summary,
-                &mut state.report.unmatched_items,
-            )
-            .await,
-            ScanPipelineCandidate::Series(series) => process_resolved_series_full_scan_candidate(
-                &ctx.app,
-                &ctx.actor,
-                &ctx.facet,
-                &ctx.library_id,
-                &ctx.library_path,
-                &ctx.session_id,
-                coordinator,
-                *series,
-                &state.search_results,
-                &mut sink,
-                &mut state.existing_titles,
-                &mut state.existing_titles_by_name,
-                &mut state.existing_titles_by_tvdb_id,
-                &mut state.existing_titles_by_imdb_id,
-                &mut state.existing_titles_by_tmdb_id,
-                &mut state.report.summary,
-                &mut state.report.unmatched_items,
-            )
-            .await,
+            ScanPipelineCandidate::Movie(movie) => {
+                process_resolved_movie_full_scan_candidate(
+                    &ctx.app,
+                    &ctx.actor,
+                    &ctx.facet,
+                    &ctx.library_id,
+                    &ctx.library_path,
+                    &ctx.session_id,
+                    coordinator,
+                    *movie,
+                    &state.search_results,
+                    &mut sink,
+                    &mut state.existing_titles,
+                    &mut state.existing_titles_by_name,
+                    &mut state.existing_titles_by_tvdb_id,
+                    &mut state.existing_titles_by_imdb_id,
+                    &mut state.existing_titles_by_tmdb_id,
+                    &mut state.report.summary,
+                    &mut state.report.unmatched_items,
+                )
+                .await
+            }
+            ScanPipelineCandidate::Series(series) => {
+                process_resolved_series_full_scan_candidate(
+                    &ctx.app,
+                    &ctx.actor,
+                    &ctx.facet,
+                    &ctx.library_id,
+                    &ctx.library_path,
+                    &ctx.session_id,
+                    coordinator,
+                    *series,
+                    &state.search_results,
+                    &mut sink,
+                    &mut state.existing_titles,
+                    &mut state.existing_titles_by_name,
+                    &mut state.existing_titles_by_tvdb_id,
+                    &mut state.existing_titles_by_imdb_id,
+                    &mut state.existing_titles_by_tmdb_id,
+                    &mut state.report.summary,
+                    &mut state.report.unmatched_items,
+                )
+                .await
+            }
         };
         if let Err(error) = result {
             warn!(error = %error, "library scan resolved candidate processing failed");

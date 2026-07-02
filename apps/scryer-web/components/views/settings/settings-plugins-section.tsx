@@ -5,6 +5,7 @@ import { RenderBooleanIcon } from "@/components/common/boolean-icon";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { IconButton } from "@/components/ui/icon-button";
+import { TextActionButton } from "@/components/ui/text-action-button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
@@ -26,11 +27,7 @@ import {
 import { useTranslate } from "@/lib/context/translate-context";
 import { selectorId } from "@/lib/utils/dom-ids";
 import { cn } from "@/lib/utils";
-import {
-  boxedActionButtonToneClass,
-  boxedTextActionButtonBaseClass,
-  type BoxedActionButtonTone,
-} from "@/lib/utils/action-button-styles";
+import type { BoxedActionButtonTone } from "@/lib/utils/action-button-styles";
 
 const PLUGIN_PANEL_CLASS =
   "overflow-hidden rounded-[14px] border border-[var(--scry-border)] bg-[var(--scry-surf)] shadow-[0_10px_24px_rgba(0,0,0,0.16)]";
@@ -661,15 +658,14 @@ export function SettingsPluginsSection({
   const upgradeCount = installed.filter((p) => p.updateAvailable).length;
   const toolbar = (
     <div className="flex min-h-10 flex-wrap items-center justify-end gap-2 sm:min-w-[29rem]">
-      <Button
+      <TextActionButton
         id="settings-plugins-upgrade-all"
-        variant="outline"
+        tone="upgrade"
         size="sm"
-        className={cn(boxedTextActionButtonBaseClass, boxedActionButtonToneClass.upgrade)}
         disabled={upgradingAll || remoteActionsBlocked.upgrade || upgradeCount === 0}
         onClick={onUpgradeAllPlugins}
+        leadingIcon={<ArrowUpCircle className={`h-4 w-4 ${upgradingAll ? "animate-spin" : ""}`} />}
       >
-        <ArrowUpCircle className={`mr-2 h-4 w-4 ${upgradingAll ? "animate-spin" : ""}`} />
         {upgradingAll ? t("settings.pluginsUpdatingAll") : t("settings.pluginsUpdateAll")}
         <Badge
           tone="info"
@@ -681,7 +677,7 @@ export function SettingsPluginsSection({
         >
           {upgradeCount || 0}
         </Badge>
-      </Button>
+      </TextActionButton>
       <Button
         id="settings-plugins-manual-toggle"
         variant="outline"
