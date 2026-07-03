@@ -37,7 +37,10 @@ const PLUGIN_INSET_CLASS =
   "rounded-[12px] border border-[var(--scry-line2)] bg-[var(--scry-card2)]";
 const PLUGIN_MUTED_TEXT_CLASS = "text-[var(--scry-muted3)]";
 const PLUGIN_TABLE_HEADER_CELL_CLASS =
-  "font-semibold text-[var(--scry-muted3)]";
+  "!bg-transparent font-semibold text-[var(--scry-muted3)]";
+const PLUGIN_TABLE_ROW_CLASS =
+  "border-[var(--scry-border3)] bg-transparent hover:bg-[linear-gradient(90deg,rgba(var(--scry-accent-rgb),0.12),rgba(var(--scry-accent-rgb),0.055)_48%,rgba(var(--scry-accent-rgb),0.02)_100%)] [&>td]:bg-transparent";
+const PLUGIN_TABLE_CELL_CLASS = "align-middle";
 
 export type RegistryPluginRecord = {
   id: string;
@@ -410,9 +413,9 @@ function PluginTable({
                 data-plugin-installed={plugin.isInstalled ? "true" : "false"}
                 data-plugin-enabled={plugin.isEnabled ? "true" : "false"}
                 data-plugin-update-available={plugin.updateAvailable ? "true" : "false"}
-                className="border-[var(--scry-border3)] hover:bg-[var(--scry-rowHover)]"
+                className={PLUGIN_TABLE_ROW_CLASS}
               >
-                <TableCell className={cn(nameColumnClass, "align-top")}>
+                <TableCell className={cn(nameColumnClass, PLUGIN_TABLE_CELL_CLASS)}>
                   <div>
                     <div className="font-medium text-[var(--scry-ink2)]">{plugin.name}</div>
                     <div className={`whitespace-normal break-words text-xs ${PLUGIN_MUTED_TEXT_CLASS}`}>
@@ -446,8 +449,8 @@ function PluginTable({
                     )}
                   </div>
                 </TableCell>
-                <TableCell className={cn(typeColumnClass, "align-top text-sm text-[var(--scry-ink2)]")}>{categoryLabel(plugin.pluginType, t)}</TableCell>
-                <TableCell className={cn(versionColumnClass, "align-top text-sm")}>
+                <TableCell className={cn(typeColumnClass, PLUGIN_TABLE_CELL_CLASS, "text-sm text-[var(--scry-ink2)]")}>{categoryLabel(plugin.pluginType, t)}</TableCell>
+                <TableCell className={cn(versionColumnClass, PLUGIN_TABLE_CELL_CLASS, "text-sm")}>
                   {t("settings.pluginVersion", { version: displayVersion })}
                   {plugin.updateAvailable && (
                     <div className="text-xs text-[var(--scry-warning-text)]">
@@ -465,14 +468,15 @@ function PluginTable({
                 <TableCodeCell
                   className={cn(
                     sizeColumnClass,
-                    "align-top text-sm",
+                    PLUGIN_TABLE_CELL_CLASS,
+                    "text-sm",
                     PLUGIN_MUTED_TEXT_CLASS,
                   )}
                   title={plugin.bytes != null ? `${plugin.bytes} bytes` : undefined}
                 >
                   {bytesLabel ?? "—"}
                 </TableCodeCell>
-                <TableCell className={cn(statusColumnClass, "align-top")}>
+                <TableCell className={cn(statusColumnClass, PLUGIN_TABLE_CELL_CLASS)}>
                   <div className="flex flex-wrap items-center justify-center gap-2">
                     {plugin.builtin && (
                       <Badge tone="info">{t("settings.pluginBuiltin")}</Badge>
@@ -497,14 +501,14 @@ function PluginTable({
                   </div>
                 </TableCell>
                 {showActions === "installed" && (
-                  <TableCell className={enabledColumnClass}>
+                  <TableCell className={cn(enabledColumnClass, PLUGIN_TABLE_CELL_CLASS)}>
                     <RenderBooleanIcon
                       value={plugin.isEnabled}
                       label={`${t("label.enabled")}: ${plugin.name}`}
                     />
                   </TableCell>
                 )}
-                <TableActionsCell className={cn(actionsColumnClass, "align-top")}>
+                <TableActionsCell className={cn(actionsColumnClass, PLUGIN_TABLE_CELL_CLASS)}>
                   {showActions === "installed" ? (
                     <div className="mx-auto flex w-full min-w-0 flex-col items-center gap-2">
                       <div className="flex w-full flex-wrap items-center justify-center gap-1">

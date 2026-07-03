@@ -4739,7 +4739,7 @@ fn recording_external_rating_score(item: &DiscoveryItemRecord) -> Option<f64> {
         .max_by(|left, right| left.partial_cmp(right).unwrap_or(std::cmp::Ordering::Equal))
 }
 
-fn recording_external_rating_votes(item: &DiscoveryItemRecord) -> i64 {
+fn recording_external_rating_votes(item: &DiscoveryItemRecord) -> i32 {
     item.external_ratings
         .iter()
         .filter_map(|rating| rating.votes)

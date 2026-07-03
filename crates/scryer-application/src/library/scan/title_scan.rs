@@ -2002,11 +2002,26 @@ impl AppUseCase {
             "movie title scan stage: start"
         );
 
+        let title_scan_root = cleanup
+            .scan_folder_path
+            .as_deref()
+            .or(title.folder_path.as_deref())
+            .unwrap_or_default();
+
         for file in &discovered_files {
             if library_scan_cancel_requested(cancel_token.as_ref()) {
                 break;
             }
-            finalize_movie_scan_file(self, &title, file, &mut summary, cancel_token.as_ref()).await;
+            finalize_movie_scan_file(
+                self,
+                &title,
+                file,
+                &mut summary,
+                session_id,
+                title_scan_root,
+                cancel_token.as_ref(),
+            )
+            .await;
             if let Some(coordinator) = session_coordinator.as_ref() {
                 coordinator.mark_file_completed(1).await;
             }

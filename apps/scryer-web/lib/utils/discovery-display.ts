@@ -4,6 +4,7 @@ const NUMERIC_ID_PATTERN = /^\d+$/;
 type DiscoveryDisplayItem = {
   displayTitle: string;
   originalTitle: string | null;
+  sortTitle?: string | null;
   targetKey: string;
 };
 
@@ -16,7 +17,7 @@ function hasNonLatinTitleCharacters(value: string) {
   return false;
 }
 
-function usefulAlternateTitle(value: string | null | undefined) {
+export function usefulDiscoveryTitle(value: string | null | undefined) {
   const title = value?.trim() ?? "";
   if (!title) {
     return null;
@@ -28,13 +29,11 @@ function usefulAlternateTitle(value: string | null | undefined) {
 }
 
 export function discoveryItemDisplayTitle(item: DiscoveryDisplayItem) {
-  const displayTitle = item.displayTitle.trim();
-  const alternateTitle = usefulAlternateTitle(item.originalTitle);
-  if (
-    alternateTitle &&
-    (!displayTitle || hasNonLatinTitleCharacters(displayTitle))
-  ) {
+  const displayTitle = usefulDiscoveryTitle(item.displayTitle);
+  const sortTitle = usefulDiscoveryTitle(item.sortTitle);
+  const alternateTitle = usefulDiscoveryTitle(item.originalTitle);
+  if (alternateTitle && displayTitle && hasNonLatinTitleCharacters(displayTitle)) {
     return alternateTitle;
   }
-  return displayTitle || alternateTitle || item.targetKey;
+  return displayTitle || sortTitle || alternateTitle || item.targetKey;
 }

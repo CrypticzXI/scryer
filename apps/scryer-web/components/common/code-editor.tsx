@@ -89,30 +89,55 @@ const regoBuiltins = new Set([
 
 const regoHighlightTheme = EditorView.theme({
   ".cm-scryer-rego-keyword": {
-    color: "var(--scry-accent-text)",
-    fontWeight: "600",
+    color: "#c4b5fd",
+    fontWeight: "700",
   },
   ".cm-scryer-rego-builtin": {
-    color: "var(--scry-accent-text)",
+    color: "#7dd3fc",
+    fontWeight: "600",
   },
   ".cm-scryer-rego-variable": {
-    color: "var(--scry-info-text)",
+    color: "#93c5fd",
   },
   ".cm-scryer-rego-property": {
-    color: "var(--scry-ink2)",
+    color: "#d8b4fe",
   },
   ".cm-scryer-rego-string": {
-    color: "var(--scry-success-text)",
+    color: "#86efac",
   },
   ".cm-scryer-rego-number": {
-    color: "var(--scry-warning-text)",
+    color: "#fde68a",
   },
   ".cm-scryer-rego-comment": {
-    color: "var(--scry-faint)",
+    color: "#94a3b8",
     fontStyle: "italic",
   },
   ".cm-scryer-rego-operator": {
-    color: "var(--scry-ink2)",
+    color: "#f0abfc",
+  },
+  ".light & .cm-scryer-rego-keyword": {
+    color: "#6d28d9",
+  },
+  ".light & .cm-scryer-rego-builtin": {
+    color: "#0369a1",
+  },
+  ".light & .cm-scryer-rego-variable": {
+    color: "#1d4ed8",
+  },
+  ".light & .cm-scryer-rego-property": {
+    color: "#7e22ce",
+  },
+  ".light & .cm-scryer-rego-string": {
+    color: "#047857",
+  },
+  ".light & .cm-scryer-rego-number": {
+    color: "#b45309",
+  },
+  ".light & .cm-scryer-rego-comment": {
+    color: "#64748b",
+  },
+  ".light & .cm-scryer-rego-operator": {
+    color: "#a21caf",
   },
 });
 

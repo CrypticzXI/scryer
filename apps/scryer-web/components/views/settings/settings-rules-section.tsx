@@ -778,7 +778,7 @@ export function SettingsRulesSection({
   return (
     <div id="settings-rules-section" className="space-y-4 text-sm">
       <div className="flex flex-col gap-4 xl:flex-row xl:items-start">
-        <div className="min-w-0 flex-1 space-y-4">
+        <div className="min-w-0 flex-1 space-y-4 xl:max-w-[1280px]">
       <div className="rounded border border-border">
         <div className="flex items-center justify-between border-b border-border px-3 py-2">
           <CardTitle className="text-base">

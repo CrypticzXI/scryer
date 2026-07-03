@@ -664,7 +664,6 @@ pub(super) async fn process_movie_full_scan_candidate(
             canonical_folder_path.as_deref(),
             scan_folder_path.as_deref(),
         ) {
-            summary.skipped += 1;
             clear_library_scan_unmatched_item(app, facet, library_id, &item_path).await?;
             coordinator.mark_title_match_completed(1).await;
             return Ok(None);
@@ -679,8 +678,6 @@ pub(super) async fn process_movie_full_scan_candidate(
         );
         if queued {
             summary.matched += 1;
-        } else {
-            summary.skipped += 1;
         }
         clear_library_scan_unmatched_item(app, facet, library_id, &item_path).await?;
         coordinator.mark_title_match_completed(1).await;
@@ -754,7 +751,6 @@ pub(super) async fn process_movie_full_scan_candidate(
                 canonical_folder_path.as_deref(),
                 scan_folder_path.as_deref(),
             ) {
-                summary.skipped += 1;
                 clear_library_scan_unmatched_item(app, facet, library_id, &item_path).await?;
                 coordinator.mark_title_match_completed(1).await;
                 return Ok(None);
@@ -769,15 +765,12 @@ pub(super) async fn process_movie_full_scan_candidate(
             );
             if queued {
                 summary.matched += 1;
-            } else {
-                summary.skipped += 1;
             }
             clear_library_scan_unmatched_item(app, facet, library_id, &item_path).await?;
             coordinator.mark_title_match_completed(1).await;
             Ok(None)
         }
         MovieCandidateResolution::Skipped => {
-            summary.skipped += 1;
             clear_library_scan_unmatched_item(app, facet, library_id, &item_path).await?;
             coordinator.mark_title_match_completed(1).await;
             Ok(None)
@@ -986,7 +979,6 @@ pub(super) async fn process_resolved_movie_full_scan_candidate(
                 canonical_folder_path.as_deref(),
                 scan_folder_path.as_deref(),
             ) {
-                summary.skipped += 1;
                 clear_library_scan_unmatched_item(app, facet, library_id, &candidate.file.path)
                     .await?;
                 coordinator.mark_title_match_completed(1).await;
@@ -1002,8 +994,6 @@ pub(super) async fn process_resolved_movie_full_scan_candidate(
             );
             if queued {
                 summary.matched += 1;
-            } else {
-                summary.skipped += 1;
             }
             clear_library_scan_unmatched_item(app, facet, library_id, &candidate.file.path).await?;
             coordinator.mark_title_match_completed(1).await;
@@ -1030,8 +1020,6 @@ pub(super) async fn process_resolved_movie_full_scan_candidate(
             if queued {
                 summary.imported += 1;
                 summary.matched += 1;
-            } else {
-                summary.skipped += 1;
             }
             clear_library_scan_unmatched_item(app, facet, library_id, &candidate.file.path).await?;
             coordinator.mark_title_match_completed(1).await;
@@ -1498,15 +1486,10 @@ pub(super) async fn process_movie_refresh_candidate(
             );
             if queued {
                 summary.matched += 1;
-            } else {
-                summary.skipped += 1;
             }
             Ok(None)
         }
-        MovieCandidateResolution::Skipped => {
-            summary.skipped += 1;
-            Ok(None)
-        }
+        MovieCandidateResolution::Skipped => Ok(None),
         MovieCandidateResolution::Unresolved(candidate) => Ok(Some(*candidate)),
     }
 }
@@ -1582,8 +1565,6 @@ pub(super) async fn process_resolved_movie_refresh_candidate(
             );
             if queued {
                 summary.matched += 1;
-            } else {
-                summary.skipped += 1;
             }
             Ok(())
         }
@@ -1616,8 +1597,6 @@ pub(super) async fn process_resolved_movie_refresh_candidate(
             if queued {
                 summary.imported += 1;
                 summary.matched += 1;
-            } else {
-                summary.skipped += 1;
             }
             Ok(())
         }

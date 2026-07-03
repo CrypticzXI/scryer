@@ -1,4 +1,8 @@
 use super::*;
+use crate::library_scan_unmatched::{
+    IgnoredLibraryScanItemArgs, LIBRARY_SCAN_SKIPPED_FILE_METADATA_UNREADABLE,
+    persist_ignored_library_scan_item,
+};
 use crate::stored_paths::stored_path_to_path_buf;
 
 struct ExistingScannedMediaFile<'a> {
@@ -40,7 +44,6 @@ async fn persist_or_reuse_scanned_media_file(
 
     if let Some(existing) = existing {
         let mut db_elapsed = Duration::default();
-        summary.skipped += 1;
 
         if existing.should_refresh_source_signature {
             let db_started = Instant::now();
@@ -439,6 +442,61 @@ pub(crate) async fn finalize_title_scan_file(
     }
 }
 
+async fn persist_ignored_movie_scan_file_metadata_error(
+    app: &AppUseCase,
+    title: &Title,
+    file: &LibraryFile,
+    session_id: Option<&str>,
+    title_scan_root: &str,
+    error_message: String,
+) {
+    let file_path = stored_path_to_path_buf(&file.path);
+    let display_name = file.display_name.trim();
+    let display_name = if display_name.is_empty() {
+        file_path
+            .file_name()
+            .map(|value| value.to_string_lossy().into_owned())
+            .unwrap_or_else(|| file.path.clone())
+    } else {
+        display_name.to_string()
+    };
+    let fallback_library_path;
+    let library_path = if title_scan_root.trim().is_empty() {
+        fallback_library_path = file_path
+            .parent()
+            .map(|path| path.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        fallback_library_path.as_str()
+    } else {
+        title_scan_root
+    };
+
+    if let Err(error) = persist_ignored_library_scan_item(
+        app,
+        &title.facet,
+        &title.library_id,
+        IgnoredLibraryScanItemArgs {
+            title_id: Some(&title.id),
+            session_id,
+            library_path,
+            item_path: &file.path,
+            display_name: &display_name,
+            query: &display_name,
+            year_hint: title.year.and_then(|year| u32::try_from(year).ok()),
+            reason_code: LIBRARY_SCAN_SKIPPED_FILE_METADATA_UNREADABLE,
+            error_message: Some(error_message),
+        },
+    )
+    .await
+    {
+        warn!(
+            path = %file.path,
+            error = %error,
+            "failed to persist ignored movie scan file"
+        );
+    }
+}
+
 /// Register a discovered movie file the same way episodic title scans do:
 /// persist or reuse a media-file row, run media analysis when needed, and
 /// ensure a movie collection points at the file path for overview UI.
@@ -447,6 +505,8 @@ pub(super) async fn finalize_movie_scan_file(
     title: &Title,
     file: &LibraryFile,
     summary: &mut LibraryScanSummary,
+    session_id: Option<&str>,
+    title_scan_root: &str,
     cancel_token: Option<&CancellationToken>,
 ) {
     let file_path = stored_path_to_path_buf(&file.path);
@@ -468,6 +528,15 @@ pub(super) async fn finalize_movie_scan_file(
                     file_path = %file.path,
                     "failed to read movie file source signature during library scan"
                 );
+                persist_ignored_movie_scan_file_metadata_error(
+                    app,
+                    title,
+                    file,
+                    session_id,
+                    title_scan_root,
+                    error.to_string(),
+                )
+                .await;
                 summary.skipped += 1;
                 return;
             }
@@ -489,7 +558,6 @@ pub(super) async fn finalize_movie_scan_file(
                 file_path = %file.path,
                 "failed to list media files during movie library scan"
             );
-            summary.skipped += 1;
             return;
         }
     };

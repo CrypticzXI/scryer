@@ -42,7 +42,10 @@ import {
   canonicalDiscoveryFilterOptions,
 } from "@/lib/discovery-facets";
 import { facetById } from "@/lib/facets/registry";
-import { discoveryItemDisplayTitle } from "@/lib/utils/discovery-display";
+import {
+  discoveryItemDisplayTitle,
+  usefulDiscoveryTitle,
+} from "@/lib/utils/discovery-display";
 import { richExternalIdsFromDiscoverySignals } from "@/lib/utils/discovery-actions";
 import { selectBackdropVariantUrl } from "@/lib/utils/poster-images";
 import { cn } from "@/lib/utils";
@@ -522,6 +525,13 @@ function filterDiscoverySections(
     .map((section) => ({
       ...section,
       items: section.items.filter((item) => {
+        if (
+          !usefulDiscoveryTitle(item.displayTitle) &&
+          !usefulDiscoveryTitle(item.sortTitle) &&
+          !usefulDiscoveryTitle(item.originalTitle)
+        ) {
+          return false;
+        }
         const contentType = itemContentType(item);
         if (contentType && !filters.contentTypes.includes(contentType)) {
           return false;

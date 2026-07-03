@@ -1138,13 +1138,57 @@ fn placeholders(count: usize) -> String {
     (0..count).map(|_| "{}").collect::<Vec<_>>().join(", ")
 }
 
-fn displayable_discovery_title_clause(title_alias: &str) -> String {
+fn source_identifier_title_clause(datastore: &StoreDatastore, value_expression: &str) -> String {
+    match datastore {
+        StoreDatastore::Sqlite { .. } => {
+            let normalized = format!("LOWER(TRIM({value_expression}))");
+            let first_colon = format!("INSTR({normalized}, ':')");
+            let after_first = format!("SUBSTR({normalized}, {first_colon} + 1)");
+            let second_colon = format!("INSTR({after_first}, ':')");
+            let source_part = format!("SUBSTR({normalized}, 1, {first_colon} - 1)");
+            let kind_part = format!("SUBSTR({after_first}, 1, {second_colon} - 1)");
+            format!(
+                "{first_colon} > 1
+                 AND {second_colon} > 1
+                 AND {source_part} GLOB '[a-z]*'
+                 AND {source_part} NOT GLOB '*[^a-z0-9_+-]*'
+                 AND {kind_part} NOT GLOB '*[^a-z0-9_+-]*'"
+            )
+        }
+        StoreDatastore::Postgres { .. } => {
+            format!("TRIM({value_expression}) ~* '^[a-z][a-z0-9_+-]*:[a-z0-9_+-]+:'")
+        }
+    }
+}
+
+fn numeric_title_clause(datastore: &StoreDatastore, value_expression: &str) -> String {
+    match datastore {
+        StoreDatastore::Sqlite { .. } => {
+            let normalized = format!("TRIM({value_expression})");
+            format!("{normalized} GLOB '[0-9]*' AND {normalized} NOT GLOB '*[^0-9]*'")
+        }
+        StoreDatastore::Postgres { .. } => {
+            format!("TRIM({value_expression}) ~ '^[0-9]+$'")
+        }
+    }
+}
+
+fn useful_discovery_title_clause(datastore: &StoreDatastore, value_expression: &str) -> String {
     format!(
-        "COALESCE(
-            NULLIF(TRIM({title_alias}.display_title), ''),
-            NULLIF(TRIM({title_alias}.sort_title), ''),
-            NULLIF(TRIM({title_alias}.original_title), '')
-        ) IS NOT NULL"
+        "NULLIF(TRIM({value_expression}), '') IS NOT NULL
+         AND NOT ({})
+         AND NOT ({})",
+        source_identifier_title_clause(datastore, value_expression),
+        numeric_title_clause(datastore, value_expression)
+    )
+}
+
+fn displayable_discovery_title_clause(datastore: &StoreDatastore, title_alias: &str) -> String {
+    format!(
+        "(({}) OR ({}) OR ({}))",
+        useful_discovery_title_clause(datastore, &format!("{title_alias}.display_title")),
+        useful_discovery_title_clause(datastore, &format!("{title_alias}.sort_title")),
+        useful_discovery_title_clause(datastore, &format!("{title_alias}.original_title"))
     )
 }
 
@@ -1353,7 +1397,7 @@ async fn fetch_public_section_item_rows(
              WHERE section_rank <= {{}}
             ORDER BY result_section_id ASC, section_rank ASC",
             discovery_item_projection("i", "t"),
-            displayable_discovery_title_clause("t"),
+            displayable_discovery_title_clause(datastore, "t"),
             discovery_item_row_columns()
         ),
         &[
@@ -1430,7 +1474,7 @@ async fn fetch_personalized_items(
         "i.base_generation_id = {}".to_string(),
         "i.tombstoned_at IS NULL".to_string(),
         "i.owned_in_input = FALSE".to_string(),
-        displayable_discovery_title_clause("t"),
+        displayable_discovery_title_clause(datastore, "t"),
     ];
     if !include_unresolved {
         clauses.push("t.resolved = TRUE".to_string());
@@ -1483,7 +1527,7 @@ async fn fetch_discovery_home_top_rated_items(
             "i.owned_in_input = FALSE".to_string(),
             "s.surface = 'public'".to_string(),
             "UPPER(TRIM(s.section_type)) <> 'COMPLETE_THE_COLLECTION'".to_string(),
-            displayable_discovery_title_clause("t"),
+            displayable_discovery_title_clause(datastore, "t"),
         ];
         args.push(SqlArg::Text(run_id.to_string()));
         args.push(SqlArg::Text(run_id.to_string()));
@@ -1545,7 +1589,7 @@ async fn fetch_discovery_home_top_rated_items(
             "i.base_generation_id = {}".to_string(),
             "i.tombstoned_at IS NULL".to_string(),
             "i.owned_in_input = FALSE".to_string(),
-            displayable_discovery_title_clause("t"),
+            displayable_discovery_title_clause(datastore, "t"),
         ];
         args.push(SqlArg::Text(run_id.to_string()));
         if !include_unresolved {
@@ -1739,7 +1783,7 @@ async fn fetch_catalog_public_items(
         LIMIT {{}}",
         discovery_item_projection("i", "t"),
         authoritative_media_kind_clause("t", media_kind),
-        displayable_discovery_title_clause("t"),
+        displayable_discovery_title_clause(datastore, "t"),
         discovery_item_row_columns()
     );
     args.push(SqlArg::I64(limit));
@@ -1897,7 +1941,7 @@ async fn fetch_catalog_personalized_items(
         "i.tombstoned_at IS NULL".to_string(),
         "i.owned_in_input = FALSE".to_string(),
         authoritative_media_kind_clause("t", media_kind),
-        displayable_discovery_title_clause("t"),
+        displayable_discovery_title_clause(datastore, "t"),
     ];
     if !include_unresolved {
         clauses.push("t.resolved = TRUE".to_string());
@@ -3978,6 +4022,112 @@ mod tests {
             None
         );
         assert_eq!(canonical_facet_display_value("canonical:source:tmdb"), None);
+    }
+
+    #[tokio::test]
+    async fn sqlite_public_sections_filter_identifier_only_discovery_titles() {
+        let db = std::env::temp_dir().join(format!(
+            "scryer_discovery_displayable_store_{}.db",
+            Utc::now().timestamp_micros()
+        ));
+        let services = SqliteServices::new(db.to_string_lossy())
+            .await
+            .expect("sqlite services should initialize");
+        let store = DiscoveryStore::new(services.datastore());
+        let now = Utc::now();
+        let run_id = "run-displayable";
+
+        store
+            .upsert_discovery_sync_run(&discovery_prune_run(run_id, "public_feed", "complete", now))
+            .await
+            .expect("run should upsert");
+        store
+            .replace_discovery_sections(
+                run_id,
+                &[DiscoverySectionRecord {
+                    id: "section-row-displayable".to_string(),
+                    run_id: run_id.to_string(),
+                    section_id: "popular".to_string(),
+                    section_type: "POPULAR_RIGHT_NOW".to_string(),
+                    surface: "public".to_string(),
+                    title: "Popular Right Now".to_string(),
+                    sort_index: 0,
+                    created_at: now,
+                    updated_at: now,
+                }],
+            )
+            .await
+            .expect("section should replace");
+
+        let make_item = |id: &str,
+                         sort_index: i32,
+                         target_key: &str,
+                         display_title: &str,
+                         sort_title: Option<&str>,
+                         original_title: Option<&str>| {
+            let mut item = discovery_prune_item(run_id, now);
+            item.id = id.to_string();
+            item.source_run_kind = "public_feed".to_string();
+            item.section_id = Some("popular".to_string());
+            item.sort_index = sort_index;
+            item.target_key = target_key.to_string();
+            item.target_kind = "movie".to_string();
+            item.resolved = true;
+            item.display_title = display_title.to_string();
+            item.original_title = original_title.map(str::to_string);
+            item.sort_title = sort_title.map(str::to_string);
+            item.content_type = Some("movie".to_string());
+            item
+        };
+
+        store
+            .replace_discovery_items(
+                run_id,
+                &[
+                    make_item(
+                        "item-human-title",
+                        0,
+                        "tmdb:movie:1",
+                        "Human Movie",
+                        Some("Human Movie"),
+                        None,
+                    ),
+                    make_item("item-blank-title", 1, "tvdb:movie:2", " ", None, None),
+                    make_item(
+                        "item-source-title",
+                        2,
+                        "tvdb:movie:3",
+                        "tvdb:movie:3",
+                        None,
+                        None,
+                    ),
+                    make_item("item-numeric-title", 3, "tvdb:movie:4", "12345", None, None),
+                    make_item(
+                        "item-source-title-with-sort",
+                        4,
+                        "tvdb:movie:5",
+                        "tvdb:movie:5",
+                        Some("Recovered Sort Title"),
+                        None,
+                    ),
+                ],
+            )
+            .await
+            .expect("items should replace");
+
+        let sections = store
+            .list_public_discovery_section_items(run_id, true, 10)
+            .await
+            .expect("public items should list");
+        assert_eq!(sections.len(), 1);
+        let target_keys = sections[0]
+            .items
+            .iter()
+            .map(|item| item.target_key.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(target_keys, vec!["tmdb:movie:1", "tvdb:movie:5"]);
+
+        let _ = std::fs::remove_file(db);
     }
 
     #[tokio::test]
