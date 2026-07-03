@@ -105,11 +105,11 @@ function quotaBadgeClass(current: number | null, max: number | null): string {
 }
 
 const LOG_LEVEL_COLORS: Record<string, string> = {
-  error: "text-[var(--scry-danger-text)]",
-  warn: "text-[var(--scry-warning-text)]",
-  info: "text-[var(--scry-info-text)]",
-  debug: "text-[var(--scry-success-text)]",
-  trace: "text-[var(--scry-muted3)]",
+  error: "text-red-600 dark:text-red-400",
+  warn: "text-amber-600 dark:text-amber-300",
+  info: "text-sky-600 dark:text-sky-300",
+  debug: "text-emerald-600 dark:text-emerald-300",
+  trace: "text-zinc-500 dark:text-zinc-500",
 };
 
 // Tracing default format: {timestamp} {LEVEL} {target}: {message} {key=value ...}
@@ -195,37 +195,37 @@ function HighlightedLine({ entry }: { entry: LogLineEntry }) {
   const parsed = entry.parsed;
   if (!parsed) {
     return (
-      <span className="text-[var(--scry-ink2)]" style={{ fontFamily: CODE_FONT }}>
+      <span className="text-zinc-700 dark:text-zinc-300" style={{ fontFamily: CODE_FONT }}>
         {entry.raw}
       </span>
     );
   }
 
   const lvl = parsed.level.toLowerCase();
-  const levelColor = LOG_LEVEL_COLORS[lvl] ?? "text-[var(--scry-ink2)]";
+  const levelColor = LOG_LEVEL_COLORS[lvl] ?? "text-zinc-700 dark:text-zinc-300";
 
   const fragments: React.ReactNode[] = [];
   let cursor = 0;
   for (const kv of parsed.kvPairs) {
     if (kv.start > cursor) {
       fragments.push(
-        <span key={`t${cursor}`} className="text-[var(--scry-muted2)]">
+        <span key={`t${cursor}`} className="text-zinc-700 dark:text-zinc-300">
           {parsed.message.slice(cursor, kv.start)}
         </span>,
       );
     }
     fragments.push(
       <span key={`k${kv.start}`}>
-        <span className="text-[var(--scry-info-text)]">{kv.key}</span>
-        <span className="text-[var(--scry-muted3)]">=</span>
-        <span className="text-[var(--scry-ink2)]">{kv.value}</span>
+        <span className="text-cyan-600 dark:text-cyan-300">{kv.key}</span>
+        <span className="text-zinc-500 dark:text-zinc-500">=</span>
+        <span className="text-zinc-800 dark:text-zinc-100">{kv.value}</span>
       </span>,
     );
     cursor = kv.end;
   }
   if (cursor < parsed.message.length) {
     fragments.push(
-      <span key={`t${cursor}`} className="text-[var(--scry-muted2)]">
+      <span key={`t${cursor}`} className="text-zinc-700 dark:text-zinc-300">
         {parsed.message.slice(cursor)}
       </span>,
     );
@@ -233,12 +233,12 @@ function HighlightedLine({ entry }: { entry: LogLineEntry }) {
 
   return (
     <span style={{ fontFamily: CODE_FONT }}>
-      <span className="text-[var(--scry-faint)]">{parsed.timestamp}</span>
+      <span className="text-zinc-500 dark:text-zinc-500">{parsed.timestamp}</span>
       {" "}
       <span className={levelColor}>{parsed.level.padStart(5)}</span>
       {" "}
-      <span className="text-[var(--scry-muted3)]">{parsed.target}</span>
-      <span className="text-[var(--scry-faint)]">:</span>
+      <span className="text-zinc-600 dark:text-zinc-400">{parsed.target}</span>
+      <span className="text-zinc-500 dark:text-zinc-500">:</span>
       {" "}
       {fragments}
     </span>

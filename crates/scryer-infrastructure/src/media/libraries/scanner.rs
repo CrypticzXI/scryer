@@ -754,12 +754,24 @@ mod tests {
         let show_dir = dir.path().join("Show");
         let junk_dir = show_dir.join("@eaDir");
         let trickplay_dir = show_dir.join("Episode.S01E01.trickplay");
+        let recycle_dir = show_dir.join("$RECYCLE.BIN");
+        let system_dir = show_dir.join("System Volume Information");
+        let lost_found_dir = show_dir.join("lost+found");
         tokio::fs::create_dir_all(&junk_dir)
             .await
             .expect("junk dir");
         tokio::fs::create_dir_all(&trickplay_dir)
             .await
             .expect("trickplay dir");
+        tokio::fs::create_dir_all(&recycle_dir)
+            .await
+            .expect("recycle dir");
+        tokio::fs::create_dir_all(&system_dir)
+            .await
+            .expect("system dir");
+        tokio::fs::create_dir_all(&lost_found_dir)
+            .await
+            .expect("lost+found dir");
         tokio::fs::write(show_dir.join("Episode.S01E01.mkv"), b"video")
             .await
             .expect("episode");
@@ -769,6 +781,15 @@ mod tests {
         tokio::fs::write(trickplay_dir.join("segment001.mkv"), b"video")
             .await
             .expect("trickplay segment");
+        tokio::fs::write(recycle_dir.join("Episode.S01E03.mkv"), b"video")
+            .await
+            .expect("recycle episode");
+        tokio::fs::write(system_dir.join("Episode.S01E04.mkv"), b"video")
+            .await
+            .expect("system episode");
+        tokio::fs::write(lost_found_dir.join("Episode.S01E05.mkv"), b"video")
+            .await
+            .expect("lost+found episode");
 
         let scanner = FileSystemLibraryScanner::new();
         let result = scanner
@@ -875,6 +896,8 @@ mod tests {
         let extras_dir = dir.path().join("extras");
         let trailers_dir = dir.path().join("trailers");
         let theme_music_dir = dir.path().join("theme-music");
+        let recycle_dir = dir.path().join("#recycle");
+        let trash_dir = dir.path().join("trash");
         tokio::fs::create_dir_all(&extras_dir)
             .await
             .expect("extras dir");
@@ -884,6 +907,12 @@ mod tests {
         tokio::fs::create_dir_all(&theme_music_dir)
             .await
             .expect("theme music dir");
+        tokio::fs::create_dir_all(&recycle_dir)
+            .await
+            .expect("recycle dir");
+        tokio::fs::create_dir_all(&trash_dir)
+            .await
+            .expect("trash dir");
         tokio::fs::write(dir.path().join("Movie.Title.2024.mkv"), b"video")
             .await
             .expect("movie");
@@ -899,6 +928,12 @@ mod tests {
         tokio::fs::write(theme_music_dir.join("Theme.Music.mkv"), b"video")
             .await
             .expect("theme music");
+        tokio::fs::write(recycle_dir.join("Deleted.Movie.mkv"), b"video")
+            .await
+            .expect("recycle movie");
+        tokio::fs::write(trash_dir.join("Trash.Movie.mkv"), b"video")
+            .await
+            .expect("trash movie");
 
         let scanner = FileSystemLibraryScanner::new();
         let files = scanner

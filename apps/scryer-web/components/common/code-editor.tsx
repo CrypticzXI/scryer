@@ -6,8 +6,15 @@ import {
   lineNumbers,
   keymap,
   ViewPlugin,
+  type ViewUpdate,
 } from "@codemirror/view";
-import { EditorState, StateEffect, StateField, type Extension } from "@codemirror/state";
+import {
+  EditorState,
+  StateEffect,
+  StateField,
+  type Extension,
+  type Range,
+} from "@codemirror/state";
 import { javascript } from "@codemirror/lang-javascript";
 import { shell } from "@codemirror/legacy-modes/mode/shell";
 import { oneDarkHighlightStyle } from "@codemirror/theme-one-dark";
@@ -114,7 +121,7 @@ function regoDecoration(className: string): Decoration {
 }
 
 function buildRegoHighlightDecorations(state: EditorState): DecorationSet {
-  const ranges: Array<ReturnType<Decoration["range"]>> = [];
+  const ranges: Range<Decoration>[] = [];
 
   for (let lineNumber = 1; lineNumber <= state.doc.lines; lineNumber += 1) {
     const line = state.doc.line(lineNumber);
@@ -196,7 +203,7 @@ function buildRegoHighlightDecorations(state: EditorState): DecorationSet {
     }
   }
 
-  return Decoration.set(ranges);
+  return Decoration.set(ranges, true);
 }
 
 const regoHighlightPlugin = ViewPlugin.fromClass(
@@ -207,7 +214,7 @@ const regoHighlightPlugin = ViewPlugin.fromClass(
       this.decorations = buildRegoHighlightDecorations(view.state);
     }
 
-    update(update: { docChanged: boolean; state: EditorState }) {
+    update(update: ViewUpdate) {
       if (update.docChanged) {
         this.decorations = buildRegoHighlightDecorations(update.state);
       }
@@ -323,10 +330,6 @@ function languageExtensions(language: CodeEditorLanguage): Extension[] {
     return [javascript()];
   }
 
-  if (language === "rego") {
-    return [StreamLanguage.define(regoParser)];
-  }
-
   if (language === "shell") {
     return [StreamLanguage.define(shell)];
   }
@@ -371,16 +374,18 @@ export default function CodeEditor({
         onChangeRef.current(update.state.doc.toString());
       }
     });
+    const editorTheme = usePrideTheme ? prideTheme : useDarkTheme ? scryerDark : lightTheme;
     const extensions = [
       lineNumbers(),
       ...languageExtensions(language),
-      syntaxHighlighting(scryerHighlightStyle),
+      syntaxHighlighting(oneDarkHighlightStyle),
       keymap.of([...defaultKeymap, indentWithTab]),
       updateListener,
       diagnosticField,
       diagnosticTheme,
       EditorView.lineWrapping,
-      usePrideTheme ? prideTheme : useDarkTheme ? scryerDark : lightTheme,
+      editorTheme,
+      ...(language === "rego" ? [regoHighlightTheme, regoHighlightPlugin] : []),
     ];
 
     if (readOnly) {

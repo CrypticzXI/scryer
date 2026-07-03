@@ -801,6 +801,29 @@ impl DiscoveryRepository for DiscoveryStore {
         .await
     }
 
+    async fn list_discovery_home_top_rated_items(
+        &self,
+        public_run_id: Option<&str>,
+        context_run_id: Option<&str>,
+        readable_library_ids: &[String],
+        owned_library_ids: &[String],
+        excluded_identity_keys: &[String],
+        include_unresolved: bool,
+        limit: i64,
+    ) -> AppResult<Vec<DiscoveryItemRecord>> {
+        fetch_discovery_home_top_rated_items(
+            &self.datastore,
+            public_run_id,
+            context_run_id,
+            readable_library_ids,
+            owned_library_ids,
+            excluded_identity_keys,
+            include_unresolved,
+            limit.clamp(1, 5_000),
+        )
+        .await
+    }
+
     async fn list_catalog_public_discovery_items(
         &self,
         run_id: &str,
@@ -1115,6 +1138,16 @@ fn placeholders(count: usize) -> String {
     (0..count).map(|_| "{}").collect::<Vec<_>>().join(", ")
 }
 
+fn displayable_discovery_title_clause(title_alias: &str) -> String {
+    format!(
+        "COALESCE(
+            NULLIF(TRIM({title_alias}.display_title), ''),
+            NULLIF(TRIM({title_alias}.sort_title), ''),
+            NULLIF(TRIM({title_alias}.original_title), '')
+        ) IS NOT NULL"
+    )
+}
+
 fn discovery_item_projection(item_alias: &str, title_alias: &str) -> String {
     [
         format!("{item_alias}.id AS id"),
@@ -1300,6 +1333,7 @@ async fn fetch_public_section_item_rows(
                   AND i.owned_in_input = FALSE
                   AND s.surface = 'public'
                   AND UPPER(TRIM(s.section_type)) <> 'COMPLETE_THE_COLLECTION'
+                  AND {}
                   {resolved_clause}
              ),
              deduped AS (
@@ -1319,6 +1353,7 @@ async fn fetch_public_section_item_rows(
              WHERE section_rank <= {{}}
             ORDER BY result_section_id ASC, section_rank ASC",
             discovery_item_projection("i", "t"),
+            displayable_discovery_title_clause("t"),
             discovery_item_row_columns()
         ),
         &[
@@ -1395,6 +1430,7 @@ async fn fetch_personalized_items(
         "i.base_generation_id = {}".to_string(),
         "i.tombstoned_at IS NULL".to_string(),
         "i.owned_in_input = FALSE".to_string(),
+        displayable_discovery_title_clause("t"),
     ];
     if !include_unresolved {
         clauses.push("t.resolved = TRUE".to_string());
@@ -1422,6 +1458,201 @@ async fn fetch_personalized_items(
          LIMIT {{}}",
         discovery_item_projection("i", "t"),
         clauses.join(" AND ")
+    );
+    fetch_items_with_sql(datastore, &sql, &args).await
+}
+
+async fn fetch_discovery_home_top_rated_items(
+    datastore: &StoreDatastore,
+    public_run_id: Option<&str>,
+    context_run_id: Option<&str>,
+    readable_library_ids: &[String],
+    owned_library_ids: &[String],
+    excluded_identity_keys: &[String],
+    include_unresolved: bool,
+    limit: i64,
+) -> AppResult<Vec<DiscoveryItemRecord>> {
+    let mut args = Vec::new();
+    let mut branches = Vec::new();
+
+    if let Some(run_id) = public_run_id {
+        let mut clauses = vec![
+            "si.run_id = {}".to_string(),
+            "i.base_generation_id = {}".to_string(),
+            "i.tombstoned_at IS NULL".to_string(),
+            "i.owned_in_input = FALSE".to_string(),
+            "s.surface = 'public'".to_string(),
+            "UPPER(TRIM(s.section_type)) <> 'COMPLETE_THE_COLLECTION'".to_string(),
+            displayable_discovery_title_clause("t"),
+        ];
+        args.push(SqlArg::Text(run_id.to_string()));
+        args.push(SqlArg::Text(run_id.to_string()));
+        if !include_unresolved {
+            clauses.push("t.resolved = TRUE".to_string());
+        }
+        if !owned_library_ids.is_empty() {
+            let placeholders = placeholders(owned_library_ids.len());
+            args.extend(owned_library_ids.iter().cloned().map(SqlArg::Text));
+            clauses.push(format!(
+                "NOT EXISTS (
+                    SELECT 1
+                    FROM titles owned
+                    WHERE owned.id = t.resolved_title_id
+                      AND owned.library_id IN ({placeholders})
+                 )"
+            ));
+        }
+        if !excluded_identity_keys.is_empty() {
+            let placeholders = placeholders(excluded_identity_keys.len());
+            args.extend(excluded_identity_keys.iter().cloned().map(SqlArg::Text));
+            clauses.push(format!(
+                "CASE WHEN TRIM(t.target_key) = '' THEN LOWER(i.id) ELSE LOWER(TRIM(t.target_key)) END NOT IN ({placeholders})"
+            ));
+        }
+        branches.push(format!(
+            "SELECT {},
+                    CASE WHEN TRIM(t.target_key) = '' THEN LOWER(i.id) ELSE LOWER(TRIM(t.target_key)) END AS identity_key,
+                    (
+                        SELECT MAX(CASE WHEN r.normalized <= 1.0 THEN r.normalized * 10.0 ELSE r.normalized END)
+                        FROM discovery_title_ratings r
+                        WHERE r.discovery_title_id = t.id
+                          AND r.normalized IS NOT NULL
+                          AND r.normalized > 0
+                    ) AS external_rating_score,
+                    (
+                        SELECT MAX(COALESCE(r.votes, 0))
+                        FROM discovery_title_ratings r
+                        WHERE r.discovery_title_id = t.id
+                          AND r.normalized IS NOT NULL
+                          AND r.normalized > 0
+                    ) AS external_rating_votes
+             FROM discovery_section_items si
+             JOIN discovery_sections s
+               ON s.run_id = si.run_id
+              AND s.section_id = si.section_id
+             JOIN discovery_items i
+               ON i.id = si.item_id
+             JOIN discovery_titles t
+               ON t.id = i.discovery_title_id
+             WHERE {}",
+            discovery_item_projection("i", "t"),
+            clauses.join(" AND ")
+        ));
+    }
+
+    if let Some(run_id) = context_run_id.filter(|_| !readable_library_ids.is_empty()) {
+        let mut clauses = vec![
+            "i.base_generation_id = {}".to_string(),
+            "i.tombstoned_at IS NULL".to_string(),
+            "i.owned_in_input = FALSE".to_string(),
+            displayable_discovery_title_clause("t"),
+        ];
+        args.push(SqlArg::Text(run_id.to_string()));
+        if !include_unresolved {
+            clauses.push("t.resolved = TRUE".to_string());
+        }
+        clauses.push(library_provenance_exists_clause(
+            "i",
+            readable_library_ids,
+            &mut args,
+        ));
+        if !owned_library_ids.is_empty() {
+            let placeholders = placeholders(owned_library_ids.len());
+            args.extend(owned_library_ids.iter().cloned().map(SqlArg::Text));
+            clauses.push(format!(
+                "NOT EXISTS (
+                    SELECT 1
+                    FROM titles owned
+                    WHERE owned.id = t.resolved_title_id
+                      AND owned.library_id IN ({placeholders})
+                 )"
+            ));
+        }
+        if !excluded_identity_keys.is_empty() {
+            let placeholders = placeholders(excluded_identity_keys.len());
+            args.extend(excluded_identity_keys.iter().cloned().map(SqlArg::Text));
+            clauses.push(format!(
+                "CASE WHEN TRIM(t.target_key) = '' THEN LOWER(i.id) ELSE LOWER(TRIM(t.target_key)) END NOT IN ({placeholders})"
+            ));
+        }
+        branches.push(format!(
+            "SELECT {},
+                    CASE WHEN TRIM(t.target_key) = '' THEN LOWER(i.id) ELSE LOWER(TRIM(t.target_key)) END AS identity_key,
+                    (
+                        SELECT MAX(CASE WHEN r.normalized <= 1.0 THEN r.normalized * 10.0 ELSE r.normalized END)
+                        FROM discovery_title_ratings r
+                        WHERE r.discovery_title_id = t.id
+                          AND r.normalized IS NOT NULL
+                          AND r.normalized > 0
+                    ) AS external_rating_score,
+                    (
+                        SELECT MAX(COALESCE(r.votes, 0))
+                        FROM discovery_title_ratings r
+                        WHERE r.discovery_title_id = t.id
+                          AND r.normalized IS NOT NULL
+                          AND r.normalized > 0
+                    ) AS external_rating_votes
+             FROM discovery_items i
+             JOIN discovery_titles t
+               ON t.id = i.discovery_title_id
+             WHERE {}",
+            discovery_item_projection("i", "t"),
+            clauses.join(" AND ")
+        ));
+    }
+
+    if branches.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    args.push(SqlArg::I64(limit));
+    let sql = format!(
+        "WITH candidates AS (
+            {}
+         ),
+         ranked AS (
+            SELECT *,
+                   COALESCE(
+                       external_rating_score,
+                       CASE
+                           WHEN rating IS NULL THEN NULL
+                           WHEN rating <= 1.0 THEN rating * 10.0
+                           ELSE rating
+                       END,
+                       -1.0
+                   ) AS effective_rating,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY identity_key
+                       ORDER BY
+                           CASE WHEN external_rating_score IS NULL THEN 0 ELSE 1 END DESC,
+                           COALESCE(external_rating_score, -1.0) DESC,
+                           COALESCE(external_rating_votes, 0) DESC,
+                           CASE
+                               WHEN rating IS NULL THEN -1.0
+                               WHEN rating <= 1.0 THEN rating * 10.0
+                               ELSE rating
+                           END DESC,
+                           COALESCE(rank_score, -999999999.0) DESC,
+                           source_count DESC,
+                           target_key ASC,
+                           id ASC
+                   ) AS identity_rank
+            FROM candidates
+         )
+         SELECT {}
+         FROM ranked
+         WHERE identity_rank = 1
+         ORDER BY
+             CASE WHEN external_rating_score IS NULL THEN 0 ELSE 1 END DESC,
+             effective_rating DESC,
+             COALESCE(external_rating_votes, 0) DESC,
+             COALESCE(rank_score, -999999999.0) DESC,
+             source_count DESC,
+             target_key ASC,
+             id ASC
+         LIMIT {{}}",
+        branches.join("\nUNION ALL\n"),
+        discovery_item_row_columns()
     );
     fetch_items_with_sql(datastore, &sql, &args).await
 }
@@ -1489,6 +1720,7 @@ async fn fetch_catalog_public_items(
               AND s.surface = 'public'
               AND UPPER(TRIM(s.section_type)) <> 'COMPLETE_THE_COLLECTION'
               AND {}
+              AND {}
               {owned_clause}
               {excluded_identity_clause}
               {resolved_clause}
@@ -1507,6 +1739,7 @@ async fn fetch_catalog_public_items(
         LIMIT {{}}",
         discovery_item_projection("i", "t"),
         authoritative_media_kind_clause("t", media_kind),
+        displayable_discovery_title_clause("t"),
         discovery_item_row_columns()
     );
     args.push(SqlArg::I64(limit));
@@ -1664,6 +1897,7 @@ async fn fetch_catalog_personalized_items(
         "i.tombstoned_at IS NULL".to_string(),
         "i.owned_in_input = FALSE".to_string(),
         authoritative_media_kind_clause("t", media_kind),
+        displayable_discovery_title_clause("t"),
     ];
     if !include_unresolved {
         clauses.push("t.resolved = TRUE".to_string());
@@ -3534,15 +3768,16 @@ async fn insert_title_external_id_tx(
     let source = external_id.source.trim();
     let id = external_id.id.trim();
     let key = external_id.key.trim();
-    if source.is_empty() || (id.is_empty() && key.is_empty()) {
+    let identity = if id.is_empty() { key } else { id };
+    if source.is_empty() || identity.is_empty() {
         return Ok(());
     }
     SqlRuntime::execute(
         SqlExec::Tx(tx),
         "INSERT INTO discovery_title_external_ids
-         (discovery_title_id, source, external_kind, external_id, external_key, sort_index)
-         VALUES ({}, {}, {}, {}, {}, {})
-         ON CONFLICT(discovery_title_id, source, external_kind, external_id, external_key)
+         (discovery_title_id, source, external_kind, external_id, external_key, external_identity, sort_index)
+         VALUES ({}, {}, {}, {}, {}, {}, {})
+         ON CONFLICT(discovery_title_id, source, external_kind, external_identity)
          DO UPDATE SET
             sort_index = CASE
                 WHEN discovery_title_external_ids.sort_index <= excluded.sort_index
@@ -3555,6 +3790,7 @@ async fn insert_title_external_id_tx(
             SqlArg::Text(external_id.kind.trim().to_ascii_lowercase()),
             SqlArg::Text(id.to_string()),
             SqlArg::Text(key.to_string()),
+            SqlArg::Text(identity.to_string()),
             SqlArg::I32(index),
         ],
     )
@@ -4065,6 +4301,12 @@ mod tests {
                                 kind: "movie".to_string(),
                                 id: "10".to_string(),
                                 key: "tmdb:movie:10".to_string(),
+                            },
+                            DiscoveryExternalIdRecord {
+                                source: "tmdb".to_string(),
+                                kind: "movie".to_string(),
+                                id: "10".to_string(),
+                                key: "tmdb:movie:alternate-10".to_string(),
                             },
                             DiscoveryExternalIdRecord {
                                 source: "imdb".to_string(),

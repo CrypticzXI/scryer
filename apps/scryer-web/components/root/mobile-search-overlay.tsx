@@ -4,7 +4,6 @@ import {
   Search,
   X,
 } from "lucide-react";
-import { Input } from "@/components/ui/input";
 import type { OverviewTitleTarget, ViewId } from "@/components/root/types";
 import {
   groupRouteCommandItems,
@@ -953,16 +952,25 @@ export function MobileSearchOverlay({
           className="flex items-center gap-[13px] border-b border-[var(--scry-border)] px-[14px] py-4"
         >
           <Search className="h-[21px] w-[21px] shrink-0 text-[var(--scry-accent-ring)]" />
-          <Input
+          <input
+            type="search"
             ref={setMobileSearchInputRef}
             value={globalSearch}
             onChange={(e) => setGlobalSearch(e.target.value)}
             onKeyDown={handleMobileSearchInputKeyDown}
-            className="h-8 min-w-0 flex-1 border-0 bg-transparent px-0 text-[16px] text-[var(--scry-ink2)] shadow-none placeholder:text-[16px] placeholder:text-[var(--scry-muted3)] focus-visible:ring-0"
+            className="h-8 min-w-0 flex-1 appearance-none border-0 !bg-transparent px-0 text-[16px] text-[var(--scry-ink2)] shadow-none outline-none placeholder:text-[16px] placeholder:text-[var(--scry-muted3)] focus:!bg-transparent focus:outline-none focus-visible:!bg-transparent focus-visible:ring-0 [&::-webkit-search-cancel-button]:hidden [&::-webkit-search-decoration]:hidden"
+            style={{
+              WebkitAppearance: "none",
+              background: "transparent",
+            }}
             placeholder={searchOverlayPlaceholder}
             aria-label={searchOverlayPlaceholder}
             aria-controls="mobile-global-search-results-panel"
             aria-describedby="mobile-global-search-description mobile-global-search-status"
+            autoComplete="off"
+            data-1p-ignore="true"
+            data-lpignore="true"
+            data-form-type="other"
             autoFocus
           />
           {globalSearch ? (

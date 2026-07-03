@@ -164,8 +164,9 @@ CREATE TABLE IF NOT EXISTS discovery_title_external_ids (
     external_kind TEXT NOT NULL DEFAULT '',
     external_id TEXT NOT NULL DEFAULT '',
     external_key TEXT NOT NULL DEFAULT '',
+    external_identity TEXT NOT NULL DEFAULT '',
     sort_index INTEGER NOT NULL DEFAULT 0,
-    UNIQUE (discovery_title_id, source, external_kind, external_id, external_key)
+    UNIQUE (discovery_title_id, source, external_kind, external_identity)
 );
 
 CREATE TABLE IF NOT EXISTS discovery_title_ratings (

@@ -18,7 +18,35 @@ const LIBRARY_PROBE_SIGNATURE_DIRECTORY_SCHEME: &str = "immediate_children_v1";
 const LIBRARY_PROBE_SIGNATURE_FILE_SCHEME: &str = "file_snapshot_v1";
 pub(crate) const LIBRARY_SCAN_MAX_RECURSIVE_DEPTH: usize = 3;
 
-const LIBRARY_IGNORED_DIR_NAMES: &[&str] = &["@eadir", ".@__thumb", "plex versions"];
+// Aligned with Sonarr/Radarr special-folder and root-folder exclusion behavior.
+const LIBRARY_IGNORED_DIR_NAMES: &[&str] = &[
+    "@eadir",
+    ".@__thumb",
+    "plex versions",
+    "$recycle.bin",
+    "#recycle",
+    "recycler",
+    "trash",
+    ".trashes",
+    "system volume information",
+    "lost+found",
+    "boot",
+    "bootmgr",
+    "cache",
+    "caches",
+    "cachedmessages",
+    "msocache",
+    "recovery",
+    "temporary internet files",
+    "windows",
+    ".fseventd",
+    ".spotlight",
+    ".vol",
+    ".appledb",
+    ".appledesktop",
+    ".appledouble",
+    ".grab",
+];
 const LIBRARY_IGNORED_MEDIA_SUBDIR_NAMES: &[&str] = &[
     "extras",
     "extrafanart",
@@ -902,8 +930,10 @@ mod tests {
             Path::new("/library/Movie Title/samples/foo.mkv"),
             Path::new("/library/Movie Title/short/foo.mkv"),
             Path::new("/library/Movie Title/shorts/foo.mkv"),
+            Path::new("/library/Movie Title/theme.music/foo.mkv"),
             Path::new("/library/Movie Title/theme music/foo.mkv"),
             Path::new("/library/Movie Title/theme-music/foo.mkv"),
+            Path::new("/library/Movie Title/theme_music/foo.mkv"),
             Path::new("/library/Movie Title/Trailers/foo.mkv"),
             Path::new("/library/Movie Title/Movie Trailers/foo.mkv"),
             Path::new("/library/Movie Title/12 Years a Slave (Trailers)/foo.mkv"),
@@ -925,6 +955,8 @@ mod tests {
             Path::new("/library/Anime Show/Featurettes/foo.mkv"),
             Path::new("/library/Anime Show/Movie Trailers/foo.mkv"),
             Path::new("/library/Anime Show/12 Years a Slave (Trailers)/foo.mkv"),
+            Path::new("/library/Anime Show/theme.music/foo.mkv"),
+            Path::new("/library/Anime Show/theme-music/foo.mkv"),
             Path::new("/library/Anime Show/theme_music/foo.mkv"),
         ] {
             assert!(
@@ -978,6 +1010,43 @@ mod tests {
         let path = Path::new("/library/Show Name/Show.Name.S01E01.trickplay");
 
         assert!(should_skip_library_subpath(root, path, true));
+    }
+
+    #[test]
+    fn should_skip_arr_special_and_recycle_directories() {
+        for path in [
+            Path::new("/library/$RECYCLE.BIN"),
+            Path::new("/library/#recycle"),
+            Path::new("/library/recycler"),
+            Path::new("/library/trash"),
+            Path::new("/library/.Trashes"),
+            Path::new("/library/System Volume Information"),
+            Path::new("/library/lost+found"),
+            Path::new("/library/Windows"),
+            Path::new("/library/Cache"),
+            Path::new("/library/.grab"),
+            Path::new("/library/.AppleDouble"),
+        ] {
+            assert!(
+                should_skip_library_top_level_entry(path, true),
+                "expected special folder to be skipped: {}",
+                path.display()
+            );
+        }
+
+        let root = Path::new("/library");
+        for path in [
+            Path::new("/library/Movie Title/$RECYCLE.BIN/foo.mkv"),
+            Path::new("/library/Movie Title/#recycle/foo.mkv"),
+            Path::new("/library/Movie Title/lost+found/foo.mkv"),
+            Path::new("/library/Movie Title/trash/foo.mkv"),
+        ] {
+            assert!(
+                should_skip_movie_library_subpath(root, path, false),
+                "expected nested special folder to be skipped: {}",
+                path.display()
+            );
+        }
     }
 
     #[cfg(unix)]

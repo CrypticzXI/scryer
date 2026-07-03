@@ -106,7 +106,7 @@ export const SystemContainer = memo(function SystemContainer({
       <SystemPageFrame
         breadcrumbLabel={t("nav.serviceLogs")}
         icon={ScrollText}
-        maxWidthClass="max-w-[1520px]"
+        maxWidthClass="max-w-[1600px]"
         title={t("nav.serviceLogs")}
       >
         <SystemLogsView />

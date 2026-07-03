@@ -1365,41 +1365,34 @@ export const RootHeader = React.memo(function RootHeader({
                         <div className="flex items-center gap-[13px] border-b border-[var(--scry-border)] px-[18px] py-4">
                           <div className="relative flex h-12 min-w-0 flex-1 items-center gap-3 rounded-[14px] border-2 border-primary/70 bg-[rgba(var(--scry-accent-rgb),0.055)] px-4 shadow-[0_0_0_1px_rgba(var(--scry-accent-rgb),0.10),0_12px_28px_rgba(var(--scry-accent-rgb),0.08)]">
                             <Search className="h-[22px] w-[22px] shrink-0 text-primary" />
-                            <div className="min-w-0 flex-1">
-                              <input
-                                id="global-search-input"
-                                ref={globalSearchInputRef}
-                                autoFocus
-                                value={globalSearch}
-                                onChange={handleSearchChange}
-                                onKeyDown={handleDesktopSearchKeyDown}
-                                data-ui="global-search"
-                                className="h-10 w-full min-w-0 appearance-none border-0 bg-transparent px-0 text-[18px] font-medium text-[var(--scry-ink2)] caret-primary shadow-none outline-none placeholder:text-[18px] placeholder:font-normal placeholder:text-[var(--scry-muted3)] focus-visible:outline-none"
-                                placeholder={searchOverlayPlaceholder}
-                                aria-label={searchOverlayPlaceholder}
-                                aria-controls="global-search-results-panel"
-                                aria-describedby="global-search-description global-search-status"
-                              />
-                              <p
-                                id="global-search-description"
-                                className="sr-only"
-                              >
-                                {globalSearch.trim()
-                                  ? t("search.subtitleWithQuery", {
-                                      query: globalSearch.trim(),
-                                    })
-                                  : searchSubtitle}
-                              </p>
-                              <p
-                                id="global-search-status"
-                                className="sr-only"
-                                role="status"
-                                aria-live="polite"
-                                aria-atomic="true"
-                              >
-                                {searchStatusLabel}
-                              </p>
-                            </div>
+                            <input
+                              type="text"
+                              id="global-search-input"
+                              ref={globalSearchInputRef}
+                              autoFocus
+                              value={globalSearch}
+                              onChange={handleSearchChange}
+                              onKeyDown={handleDesktopSearchKeyDown}
+                              data-ui="global-search"
+                              className="block h-10 min-w-0 flex-1 appearance-none border-0 !bg-transparent bg-none px-0 text-[18px] font-medium text-[var(--scry-ink2)] caret-primary shadow-none outline-none placeholder:text-[18px] placeholder:font-normal placeholder:text-[var(--scry-muted3)] focus:!bg-transparent focus:bg-none focus:outline-none focus-visible:!bg-transparent focus-visible:bg-none focus-visible:outline-none"
+                              style={{
+                                WebkitAppearance: "none",
+                                background: "transparent",
+                                backgroundColor: "transparent",
+                                backgroundImage: "none",
+                                border: 0,
+                                boxShadow: "none",
+                                outline: 0,
+                              }}
+                              placeholder={searchOverlayPlaceholder}
+                              aria-label={searchOverlayPlaceholder}
+                              aria-controls="global-search-results-panel"
+                              aria-describedby="global-search-description global-search-status"
+                              autoComplete="off"
+                              data-1p-ignore="true"
+                              data-lpignore="true"
+                              data-form-type="other"
+                            />
                             {globalSearch ? (
                               <IconButton
                                 id="global-search-clear"
@@ -1413,6 +1406,25 @@ export const RootHeader = React.memo(function RootHeader({
                               </IconButton>
                             ) : null}
                           </div>
+                          <p
+                            id="global-search-description"
+                            className="sr-only"
+                          >
+                            {globalSearch.trim()
+                              ? t("search.subtitleWithQuery", {
+                                  query: globalSearch.trim(),
+                                })
+                              : searchSubtitle}
+                          </p>
+                          <p
+                            id="global-search-status"
+                            className="sr-only"
+                            role="status"
+                            aria-live="polite"
+                            aria-atomic="true"
+                          >
+                            {searchStatusLabel}
+                          </p>
                           <kbd className="rounded-[7px] border border-primary/35 bg-primary/10 px-2 py-1 text-[11px] font-semibold text-primary">
                             ESC
                           </kbd>

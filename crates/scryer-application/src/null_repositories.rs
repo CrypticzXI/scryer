@@ -283,6 +283,19 @@ impl DiscoveryRepository for NullDiscoveryRepository {
         Ok(Vec::new())
     }
 
+    async fn list_discovery_home_top_rated_items(
+        &self,
+        _public_run_id: Option<&str>,
+        _context_run_id: Option<&str>,
+        _readable_library_ids: &[String],
+        _owned_library_ids: &[String],
+        _excluded_identity_keys: &[String],
+        _include_unresolved: bool,
+        _limit: i64,
+    ) -> AppResult<Vec<DiscoveryItemRecord>> {
+        Ok(Vec::new())
+    }
+
     async fn list_catalog_public_discovery_items(
         &self,
         _run_id: &str,

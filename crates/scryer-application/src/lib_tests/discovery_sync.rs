@@ -3945,6 +3945,65 @@ impl DiscoveryRepository for RecordingDiscoveryRepository {
         Ok(recording_canonical_facet_records(run_id, &items))
     }
 
+    async fn list_discovery_home_top_rated_items(
+        &self,
+        public_run_id: Option<&str>,
+        context_run_id: Option<&str>,
+        readable_library_ids: &[String],
+        _owned_library_ids: &[String],
+        excluded_identity_keys: &[String],
+        include_unresolved: bool,
+        limit: i64,
+    ) -> AppResult<Vec<DiscoveryItemRecord>> {
+        let excluded_identity_keys = excluded_identity_keys
+            .iter()
+            .map(|key| key.trim().to_ascii_lowercase())
+            .collect::<HashSet<_>>();
+        let all_items = self.items.lock().await.clone();
+        let mut items = Vec::new();
+        if let Some(run_id) = public_run_id {
+            items.extend(
+                all_items
+                    .iter()
+                    .filter(|item| item.base_generation_id.as_deref() == Some(run_id))
+                    .filter(|item| item.tombstoned_at.is_none())
+                    .filter(|item| !item.owned_in_input)
+                    .filter(|item| include_unresolved || item.resolved)
+                    .filter(|item| {
+                        !excluded_identity_keys.contains(
+                            &recording_item_identity_key(item)
+                                .trim()
+                                .to_ascii_lowercase(),
+                        )
+                    })
+                    .cloned(),
+            );
+        }
+        if let Some(run_id) = context_run_id {
+            items.extend(
+                recording_visible_personalized_items(
+                    &all_items,
+                    run_id,
+                    readable_library_ids,
+                    include_unresolved,
+                )
+                .into_iter()
+                .filter(|item| !item.owned_in_input)
+                .filter(|item| {
+                    !excluded_identity_keys.contains(
+                        &recording_item_identity_key(item)
+                            .trim()
+                            .to_ascii_lowercase(),
+                    )
+                }),
+            );
+        }
+        items.sort_by(recording_compare_top_rated_items);
+        recording_dedupe_preserving_order(&mut items);
+        items.truncate(limit.max(1) as usize);
+        Ok(items)
+    }
+
     async fn list_catalog_public_discovery_items(
         &self,
         run_id: &str,
@@ -4633,6 +4692,59 @@ fn recording_dedupe_and_sort(items: &mut Vec<DiscoveryItemRecord>) {
             })
             .then_with(|| left.target_key.cmp(&right.target_key))
     });
+}
+
+fn recording_compare_top_rated_items(
+    left: &DiscoveryItemRecord,
+    right: &DiscoveryItemRecord,
+) -> std::cmp::Ordering {
+    let left_external = recording_external_rating_score(left);
+    let right_external = recording_external_rating_score(right);
+    right_external
+        .is_some()
+        .cmp(&left_external.is_some())
+        .then_with(|| recording_compare_option_f64_desc(left_external, right_external))
+        .then_with(|| {
+            recording_external_rating_votes(right).cmp(&recording_external_rating_votes(left))
+        })
+        .then_with(|| recording_compare_option_f64_desc(left.rating, right.rating))
+        .then_with(|| recording_compare_option_f64_desc(left.rank_score, right.rank_score))
+        .then_with(|| right.source_count.cmp(&left.source_count))
+        .then_with(|| left.target_key.cmp(&right.target_key))
+        .then_with(|| left.id.cmp(&right.id))
+}
+
+fn recording_compare_option_f64_desc(left: Option<f64>, right: Option<f64>) -> std::cmp::Ordering {
+    match (left, right) {
+        (Some(left), Some(right)) => right
+            .partial_cmp(&left)
+            .unwrap_or(std::cmp::Ordering::Equal),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => std::cmp::Ordering::Equal,
+    }
+}
+
+fn recording_external_rating_score(item: &DiscoveryItemRecord) -> Option<f64> {
+    item.external_ratings
+        .iter()
+        .filter_map(|rating| {
+            let normalized = rating.normalized;
+            (normalized > 0.0).then_some(if normalized <= 1.0 {
+                normalized * 10.0
+            } else {
+                normalized
+            })
+        })
+        .max_by(|left, right| left.partial_cmp(right).unwrap_or(std::cmp::Ordering::Equal))
+}
+
+fn recording_external_rating_votes(item: &DiscoveryItemRecord) -> i64 {
+    item.external_ratings
+        .iter()
+        .filter_map(|rating| rating.votes)
+        .max()
+        .unwrap_or_default()
 }
 
 fn recording_item_identity_key(item: &DiscoveryItemRecord) -> &str {

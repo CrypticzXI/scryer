@@ -233,7 +233,7 @@ impl AppUseCase {
             .await?;
 
         let mut public_sections = Vec::<DiscoverySectionResult>::new();
-        let mut top_rated_public_sections = Vec::<DiscoverySectionResult>::new();
+        let mut top_rated_live_public_sections = Vec::<DiscoverySectionResult>::new();
         if query.include_public {
             let public_candidate_limit = public_home_candidate_limit(limit);
             if let Some(public_run_id) = status.state.last_public_feed_generation_id.as_deref() {
@@ -251,11 +251,6 @@ impl AppUseCase {
                     .into_iter()
                     .filter_map(section_items_record_to_result)
                     .collect::<Vec<_>>();
-                top_rated_public_sections = filter_discovery_sections_for_owned_items(
-                    public_section_results.clone(),
-                    &owned_visibility,
-                    public_candidate_limit,
-                );
                 public_sections = filter_discovery_sections_for_owned_items(
                     public_section_results,
                     &owned_visibility,
@@ -266,7 +261,7 @@ impl AppUseCase {
                 let live_public_sections = self
                     .live_public_section_results(include_unresolved, public_candidate_limit)
                     .await?;
-                top_rated_public_sections = filter_discovery_sections_for_owned_items(
+                top_rated_live_public_sections = filter_discovery_sections_for_owned_items(
                     live_public_sections.clone(),
                     &owned_visibility,
                     public_candidate_limit,
@@ -280,7 +275,6 @@ impl AppUseCase {
         }
 
         let mut personalized_sections = Vec::new();
-        let mut top_rated_personalized_items = Vec::new();
         let mut complete_collection = None;
         let mut facets = Vec::new();
         if can_view_personalized
@@ -307,7 +301,6 @@ impl AppUseCase {
             let submitted_subjects =
                 filter_submitted_subjects_for_libraries(&submitted_subjects, &readable_library_ids);
             resolve_discovery_matched_subjects(&mut personalized_items, &submitted_subjects)?;
-            top_rated_personalized_items = personalized_items.clone();
             let library_profile = self
                 .discovery_library_affinity_profile(&readable_library_ids, &submitted_subjects)
                 .await?;
@@ -346,9 +339,34 @@ impl AppUseCase {
                 .await?;
         }
 
+        let public_top_rated_run_id = query
+            .include_public
+            .then_some(status.state.last_public_feed_generation_id.as_deref())
+            .flatten();
+        let context_top_rated_run_id = if can_view_personalized && query.include_personalized {
+            status.state.last_success_generation_id.as_deref()
+        } else {
+            None
+        };
+        let mut top_rated_items = self
+            .services
+            .library
+            .discovery
+            .list_discovery_home_top_rated_items(
+                public_top_rated_run_id,
+                context_top_rated_run_id,
+                &readable_library_id_list,
+                &readable_library_id_list,
+                &owned_visibility.excluded_discovery_identity_keys(),
+                include_unresolved,
+                top_rated_home_candidate_limit(limit) as i64,
+            )
+            .await?;
+        top_rated_items.retain(|item| !owned_visibility.item_is_owned(item));
+
         if let Some(top_rated_section) = top_rated_discovery_home_section(
-            &top_rated_public_sections,
-            &top_rated_personalized_items,
+            &top_rated_items,
+            &top_rated_live_public_sections,
             include_unresolved,
             limit,
         ) {
@@ -806,6 +824,10 @@ fn public_home_candidate_limit(section_limit: usize) -> usize {
     (section_limit.max(1) * 4).clamp(section_limit, 100)
 }
 
+fn top_rated_home_candidate_limit(section_limit: usize) -> usize {
+    (section_limit.max(25) * 80).clamp(DISCOVERY_HOME_MIN_CANDIDATES, DISCOVERY_HOME_MAX_CANDIDATES)
+}
+
 fn personalized_home_candidate_limit(section_limit: usize) -> usize {
     (section_limit.max(25) * 40).clamp(DISCOVERY_HOME_MIN_CANDIDATES, DISCOVERY_HOME_MAX_CANDIDATES)
 }
@@ -880,15 +902,18 @@ fn select_discovery_home_hero(
 }
 
 fn top_rated_discovery_home_section(
-    public_sections: &[DiscoverySectionResult],
-    personalized_items: &[DiscoveryItemRecord],
+    top_rated_items: &[DiscoveryItemRecord],
+    live_public_sections: &[DiscoverySectionResult],
     include_unresolved: bool,
     limit: usize,
 ) -> Option<DiscoverySectionResult> {
-    let mut candidates = public_sections
+    let mut candidates = top_rated_items
         .iter()
-        .flat_map(|section| section.items.iter())
-        .chain(personalized_items.iter())
+        .chain(
+            live_public_sections
+                .iter()
+                .flat_map(|section| section.items.iter()),
+        )
         .filter(|item| !item.owned_in_input && home_item_visible(item, include_unresolved))
         .cloned()
         .collect::<Vec<_>>();
@@ -918,6 +943,7 @@ fn select_personalized_discovery_home_hero(
     let mut candidates = sections
         .iter()
         .flat_map(|section| section.items.iter())
+        .filter(|item| discovery_home_item_is_personalized(item))
         .filter(|item| !item.owned_in_input)
         .cloned()
         .collect::<Vec<_>>();
@@ -3966,11 +3992,8 @@ mod tests {
         }];
 
         let section = top_rated_discovery_home_section(
-            &[test_discovery_section(
-                "public",
-                vec![scalar_only, weaker_public_duplicate],
-            )],
-            &[external_rated],
+            &[scalar_only, weaker_public_duplicate, external_rated],
+            &[],
             true,
             10,
         )
@@ -3995,13 +4018,8 @@ mod tests {
         only_item.target_key = "tmdb:series:only".to_string();
         only_item.rating = Some(7.0);
 
-        let section = top_rated_discovery_home_section(
-            &[test_discovery_section("public", vec![only_item])],
-            &[],
-            true,
-            6,
-        )
-        .expect("top rated section");
+        let section = top_rated_discovery_home_section(&[only_item], &[], true, 6)
+            .expect("top rated section");
 
         assert_eq!(section.total_count, 1);
         assert_eq!(section.items.len(), 1);
@@ -4030,6 +4048,36 @@ mod tests {
             &[test_discovery_section(
                 "personalized",
                 vec![personalized_item],
+            )],
+        )
+        .expect("hero item");
+
+        assert_eq!(hero.target_key, "tmdb:movie:personalized");
+    }
+
+    #[test]
+    fn discovery_home_hero_ignores_public_items_inside_mixed_personalized_sections() {
+        let mut public_item = test_discovery_item("public", "movie", Some("movie"));
+        public_item.source_run_kind = "public_feed".to_string();
+        public_item.target_key = "tmdb:movie:public".to_string();
+        public_item.rating = Some(10.0);
+        public_item.rank_score = Some(100.0);
+        public_item.background_url = Some("https://images.example/public.jpg".to_string());
+
+        let mut personalized_item = test_discovery_item("personalized", "movie", Some("movie"));
+        personalized_item.source_run_kind = "context_snapshot".to_string();
+        personalized_item.target_key = "tmdb:movie:personalized".to_string();
+        personalized_item.matched_subject_count = 1;
+        personalized_item.rating = Some(1.0);
+        personalized_item.rank_score = Some(1.0);
+        personalized_item.background_url =
+            Some("https://images.example/personalized.jpg".to_string());
+
+        let hero = select_discovery_home_hero(
+            &[],
+            &[test_discovery_section(
+                "top_rated",
+                vec![public_item, personalized_item],
             )],
         )
         .expect("hero item");

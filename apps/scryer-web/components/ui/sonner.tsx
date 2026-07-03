@@ -68,7 +68,7 @@ const Toaster = ({ style, toastOptions, ...props }: ToasterProps) => {
           toast:
             "rounded-[12px] border border-[var(--scry-border2)] bg-[var(--scry-surf)]",
           success:
-            "border-[var(--scry-success-border)] bg-[linear-gradient(0deg,var(--scry-success-bg),var(--scry-success-bg)),var(--scry-bg)] text-[var(--scry-success-text)]",
+            "border-[var(--scry-success-border-strong)] bg-[var(--scry-success-solid)] text-[var(--scry-success-on-solid)]",
           error:
             "border-[var(--scry-danger-border-strong)] bg-[var(--scry-danger-solid)] text-[var(--scry-danger-on-solid)]",
           warning:

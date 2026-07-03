@@ -43,7 +43,7 @@ import {
 } from "@/lib/discovery-facets";
 import { facetById } from "@/lib/facets/registry";
 import { discoveryItemDisplayTitle } from "@/lib/utils/discovery-display";
-import { externalIdsFromDiscoverySignals } from "@/lib/utils/discovery-actions";
+import { richExternalIdsFromDiscoverySignals } from "@/lib/utils/discovery-actions";
 import { selectBackdropVariantUrl } from "@/lib/utils/poster-images";
 import { cn } from "@/lib/utils";
 import type {
@@ -447,15 +447,28 @@ function itemContentType(item: DiscoveryItem): DiscoveryContentType | null {
 }
 
 function discoveryExternalIdMap(item: DiscoveryItem) {
-  const ids = new Map<string, string>();
-  for (const externalId of externalIdsFromDiscoverySignals(item)) {
-    const source = externalId.source.trim().toLowerCase();
-    const value = externalId.value.trim();
-    if (source && value && !ids.has(source)) {
-      ids.set(source, value);
-    }
-  }
-  return ids;
+  const ids = richExternalIdsFromDiscoverySignals(item)
+    .map((externalId) => ({
+      source: externalId.source.trim().toLowerCase(),
+      value: externalId.value.trim(),
+      kind: externalId.kind?.trim().toLowerCase() || null,
+    }))
+    .filter((externalId) => externalId.source && externalId.value);
+  const bySource = (source: string) =>
+    ids.find((externalId) => externalId.source === source)?.value;
+  const bySourceKind = (source: string, kind: string) =>
+    ids.find(
+      (externalId) =>
+        externalId.source === source &&
+        (externalId.kind === kind ||
+          (kind === "tv" && externalId.kind === "series") ||
+          (kind === "series" && externalId.kind === "tv")),
+    )?.value ?? bySource(source);
+  return {
+    bySource,
+    bySourceKind,
+    has: (source: string) => Boolean(bySource(source)),
+  };
 }
 
 function discoveryItemDisplayGenreLabels(item: DiscoveryItem): string[] {
@@ -731,6 +744,7 @@ function DiscoveryHero({
     "anidb",
   ].some((source) => externalIds.has(source));
   const tmdbMediaType = facet === "movie" ? "movie" : "tv";
+  const tvdbKind = facet === "movie" ? "movie" : "series";
   const statusLabel =
     item.statusTags
       .find((tag) => tag.trim().length > 0)
@@ -833,30 +847,36 @@ function DiscoveryHero({
               <span className="mr-1 text-[11px] font-bold uppercase tracking-[0.08em] text-[#8995bd]">
                 Open In
               </span>
-              <ImdbExternalLink imdbId={externalIds.get("imdb")} size="compact" />
+              <ImdbExternalLink
+                imdbId={externalIds.bySource("imdb")}
+                size="compact"
+              />
               <TmdbExternalLink
-                tmdbId={externalIds.get("tmdb")}
+                tmdbId={externalIds.bySourceKind("tmdb", tmdbMediaType)}
                 mediaType={tmdbMediaType}
                 size="compact"
               />
               {facet === "movie" ? (
                 <TvdbMovieExternalLink
-                  tvdbId={externalIds.get("tvdb")}
+                  tvdbId={externalIds.bySourceKind("tvdb", tvdbKind)}
                   size="compact"
                 />
               ) : (
                 <TvdbSeriesExternalLink
-                  tvdbId={externalIds.get("tvdb")}
+                  tvdbId={externalIds.bySourceKind("tvdb", tvdbKind)}
                   size="compact"
                 />
               )}
-              <MalExternalLink malId={externalIds.get("mal")} size="compact" />
+              <MalExternalLink
+                malId={externalIds.bySource("mal")}
+                size="compact"
+              />
               <AnilistExternalLink
-                anilistId={externalIds.get("anilist")}
+                anilistId={externalIds.bySource("anilist")}
                 size="compact"
               />
               <AnidbExternalLink
-                anidbId={externalIds.get("anidb")}
+                anidbId={externalIds.bySource("anidb")}
                 size="compact"
               />
             </div>

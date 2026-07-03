@@ -29,10 +29,16 @@ type DiscoveryExternalIdSignals = {
   targetKey: string;
   externalIds?: Array<{
     source?: string | null;
+    kind?: string | null;
     id?: string | null;
     key?: string | null;
   }> | null;
   sourceTags?: string[] | null;
+};
+
+export type DiscoveryResolvedExternalId = ExternalId & {
+  kind: string | null;
+  key: string | null;
 };
 
 const EXTERNAL_ID_SOURCE_ALIASES: Record<string, string> = {
@@ -60,7 +66,7 @@ function normalizedExternalIdSource(value: string | null | undefined) {
   return normalized ? (EXTERNAL_ID_SOURCE_ALIASES[normalized] ?? null) : null;
 }
 
-function externalIdFromUrl(value: string): ExternalId | null {
+function externalIdFromUrl(value: string): DiscoveryResolvedExternalId | null {
   let url: URL;
   try {
     url = new URL(value);
@@ -72,34 +78,58 @@ function externalIdFromUrl(value: string): ExternalId | null {
   const path = url.pathname;
   if (host === "imdb.com") {
     const match = path.match(/\/title\/(tt\d+)/i);
-    return match ? { source: "imdb", value: match[1] } : null;
+    return match
+      ? { source: "imdb", value: match[1], kind: "movie", key: value }
+      : null;
   }
   if (host === "themoviedb.org") {
-    const match = path.match(/\/(?:movie|tv)\/(\d+)/i);
-    return match ? { source: "tmdb", value: match[1] } : null;
+    const match = path.match(/\/(movie|tv)\/(\d+)/i);
+    return match
+      ? {
+          source: "tmdb",
+          value: match[2],
+          kind: match[1].toLowerCase(),
+          key: value,
+        }
+      : null;
   }
   if (host === "thetvdb.com") {
     const match = path.match(
-      /\/(?:dereferrer\/(?:movie|series)|movies?|series)\/(\d+)/i,
+      /\/(?:dereferrer\/)?(movie|movies|series)\/(\d+)/i,
     );
-    return match ? { source: "tvdb", value: match[1] } : null;
+    return match
+      ? {
+          source: "tvdb",
+          value: match[2],
+          kind: match[1].toLowerCase().startsWith("movie")
+            ? "movie"
+            : "series",
+          key: value,
+        }
+      : null;
   }
   if (host === "myanimelist.net") {
     const match = path.match(/\/anime\/(\d+)/i);
-    return match ? { source: "mal", value: match[1] } : null;
+    return match
+      ? { source: "mal", value: match[1], kind: "anime", key: value }
+      : null;
   }
   if (host === "anilist.co") {
     const match = path.match(/\/anime\/(\d+)/i);
-    return match ? { source: "anilist", value: match[1] } : null;
+    return match
+      ? { source: "anilist", value: match[1], kind: "anime", key: value }
+      : null;
   }
   if (host === "anidb.net") {
     const match = path.match(/\/anime\/(\d+)/i);
-    return match ? { source: "anidb", value: match[1] } : null;
+    return match
+      ? { source: "anidb", value: match[1], kind: "anime", key: value }
+      : null;
   }
   return null;
 }
 
-function externalIdFromDiscoveryKey(value: string): ExternalId | null {
+function externalIdFromDiscoveryKey(value: string): DiscoveryResolvedExternalId | null {
   const urlExternalId = externalIdFromUrl(value);
   if (urlExternalId) {
     return urlExternalId;
@@ -117,16 +147,18 @@ function externalIdFromDiscoveryKey(value: string): ExternalId | null {
     source === "imdb"
       ? (parts.find((part) => /^tt\d+$/i.test(part)) ?? parts.at(-1))
       : parts.at(-1);
-  return id ? { source, value: id } : null;
+  const kind = parts.length > 2 ? parts[1].toLowerCase() : null;
+  return id ? { source, value: id, kind, key: value } : null;
 }
 
 function externalIdFromExplicitDiscoveryId(
   value: NonNullable<DiscoveryExternalIdSignals["externalIds"]>[number],
-): ExternalId | null {
+): DiscoveryResolvedExternalId | null {
   const source = normalizedExternalIdSource(value.source);
+  const kind = value.kind?.trim().toLowerCase() || null;
   const id = value.id?.trim();
   if (source && id) {
-    return { source, value: id };
+    return { source, value: id, kind, key: value.key?.trim() || null };
   }
 
   const key = value.key?.trim();
@@ -135,28 +167,49 @@ function externalIdFromExplicitDiscoveryId(
   }
   const keyExternalId = externalIdFromDiscoveryKey(key);
   if (keyExternalId && (!source || keyExternalId.source === source)) {
-    return keyExternalId;
+    return {
+      ...keyExternalId,
+      kind: kind ?? keyExternalId.kind,
+    };
   }
-  return source ? { source, value: key } : null;
+  return source ? { source, value: key, kind, key } : null;
+}
+
+export function richExternalIdsFromDiscoverySignals(
+  item: DiscoveryExternalIdSignals,
+): DiscoveryResolvedExternalId[] {
+  const ids = new Map<string, DiscoveryResolvedExternalId>();
+  for (const explicitId of item.externalIds ?? []) {
+    const externalId = externalIdFromExplicitDiscoveryId(explicitId);
+    if (externalId) {
+      const mapKey = `${externalId.source}:${externalId.kind ?? ""}:${externalId.value}`;
+      if (!ids.has(mapKey)) {
+        ids.set(mapKey, externalId);
+      }
+    }
+  }
+  if (ids.size > 0) {
+    return Array.from(ids.values());
+  }
+
+  for (const candidate of [item.targetKey, ...(item.sourceTags ?? [])]) {
+    const externalId = externalIdFromDiscoveryKey(candidate);
+    if (externalId) {
+      const mapKey = `${externalId.source}:${externalId.kind ?? ""}:${externalId.value}`;
+      if (!ids.has(mapKey)) {
+        ids.set(mapKey, externalId);
+      }
+    }
+  }
+  return Array.from(ids.values());
 }
 
 export function externalIdsFromDiscoverySignals(
   item: DiscoveryExternalIdSignals,
 ): ExternalId[] {
   const ids = new Map<string, string>();
-  for (const explicitId of item.externalIds ?? []) {
-    const externalId = externalIdFromExplicitDiscoveryId(explicitId);
-    if (externalId && !ids.has(externalId.source)) {
-      ids.set(externalId.source, externalId.value);
-    }
-  }
-  if (ids.size > 0) {
-    return Array.from(ids, ([source, value]) => ({ source, value }));
-  }
-
-  for (const candidate of [item.targetKey, ...(item.sourceTags ?? [])]) {
-    const externalId = externalIdFromDiscoveryKey(candidate);
-    if (externalId && !ids.has(externalId.source)) {
+  for (const externalId of richExternalIdsFromDiscoverySignals(item)) {
+    if (!ids.has(externalId.source)) {
       ids.set(externalId.source, externalId.value);
     }
   }
