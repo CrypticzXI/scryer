@@ -1,7 +1,23 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { ratingSourceInfo, ratingValueLabel } from "./title-ratings.ts";
+import {
+  ratingSourceInfo,
+  ratingValueLabel,
+  visibleTitleExternalRatings,
+  type TitleExternalRating,
+} from "./title-ratings.ts";
+
+function rating(source: string): TitleExternalRating {
+  return {
+    source,
+    value: 7.5,
+    score: null,
+    normalized: 7.5,
+    votes: null,
+    url: "",
+  };
+}
 
 test("MDB Rotten Tomatoes sources render as percentages with logos", () => {
   for (const source of ["rottentomatoes", "tomatoes"]) {
@@ -62,6 +78,8 @@ test("MDB normalized-only percentage ratings expand from a ten-point scale", () 
 });
 
 test("Metacritic ratings render on a hundred-point scale", () => {
+  const info = ratingSourceInfo("metacritic");
+  assert.equal(info.logoSrc, "/rating-sources/metacritic.svg");
   assert.equal(
     ratingValueLabel({
       source: "metacritic",
@@ -72,6 +90,40 @@ test("Metacritic ratings render on a hundred-point scale", () => {
       url: "",
     }),
     "75",
+  );
+});
+
+test("Metacritic user ratings reuse the Metacritic logo", () => {
+  for (const source of ["MC User", "metacritic-user"]) {
+    const info = ratingSourceInfo(source);
+    assert.equal(info.label, "Metacritic User");
+    assert.equal(info.logoSrc, "/rating-sources/metacritic.svg");
+    assert.equal(info.format, "hundred");
+  }
+});
+
+test("visible external ratings keep Rotten Tomatoes and Popcornmeter adjacent", () => {
+  assert.deepEqual(
+    visibleTitleExternalRatings([
+      rating("tmdb"),
+      rating("popcornmeter"),
+      rating("metacritic"),
+      rating("rottentomatoes"),
+      rating("imdb"),
+    ]).map((entry) => entry.source),
+    ["imdb", "rottentomatoes", "popcornmeter", "metacritic", "tmdb"],
+  );
+});
+
+test("visible external ratings drop Roger Ebert sources", () => {
+  assert.deepEqual(
+    visibleTitleExternalRatings([
+      rating("IMDb"),
+      rating("Roger Ebert"),
+      rating("RogerEbert.com"),
+      rating("ebert"),
+    ]).map((entry) => entry.source),
+    ["IMDb"],
   );
 });
 

@@ -449,7 +449,7 @@ function isPendingHydrationPosterTitle(
 }
 
 function hasSelectedTitlePanelDetails(title: TitleRecord): boolean {
-  return title.overview !== undefined && title.moreLikeThis !== undefined;
+  return title.moreLikeThis !== undefined;
 }
 
 function hasSelectedTitleEpisodeDetails(title: TitleRecord): boolean {
