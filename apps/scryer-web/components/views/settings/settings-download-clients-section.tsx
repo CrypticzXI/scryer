@@ -1,21 +1,24 @@
 
 import * as React from "react";
-import { ChevronDown, ChevronUp, Edit, Plus, Power, PowerOff, Server, Trash2 } from "lucide-react";
+import { ChevronDown, ChevronUp, Edit, Plus, Power, PowerOff, Trash2 } from "lucide-react";
 import { AddNewButton } from "@/components/common/add-new-button";
+import { DownloadClientConfigField } from "@/components/common/download-client-config-field";
 import { DownloadClientRemotePathMappingsField } from "@/components/common/download-client-remote-path-mappings-field";
-import { QBitTorrentIcon, SabnzbdIcon, WeaverIcon } from "@/components/common/download-client-type-logo";
+import { PluginLogo, PluginVisualLabel } from "@/components/common/plugin-visual";
 import { InfoHelp } from "@/components/common/info-help";
 import { RenderBooleanIcon } from "@/components/common/boolean-icon";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Checkbox, CheckboxField } from "@/components/ui/checkbox";
-import { Input, integerInputProps, sanitizeDigits, signedIntegerInputProps } from "@/components/ui/input";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Input, integerInputProps, sanitizeDigits } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Textarea } from "@/components/ui/textarea";
 import {
   buildWeaverApiKeyUrl,
   buildUrlPreview,
+  FIXED_DOWNLOAD_CLIENT_CONFIG_FIELD_KEYS,
+  defaultDownloadClientConfigValuesForFields,
+  downloadClientConfigFieldValue,
 } from "@/lib/utils/download-clients";
 import { DEFAULT_PORT_FOR_CLIENT_TYPE } from "@/lib/constants/download-clients";
 import {
@@ -28,253 +31,10 @@ import {
 } from "@/components/ui/table";
 import { IconButton } from "@/components/ui/icon-button";
 import { useTranslate } from "@/lib/context/translate-context";
-import type { ConfigFieldDef, DownloadClientRecord, DownloadClientDraft, DownloadClientTypeOption } from "@/lib/types";
-import { cn } from "@/lib/utils";
+import type { DownloadClientRecord, DownloadClientDraft, DownloadClientTypeOption } from "@/lib/types";
 import { selectorId } from "@/lib/utils/dom-ids";
 import type { BoxedActionButtonTone } from "@/lib/utils/action-button-styles";
 import type { LocalPathStyle } from "@/lib/utils/local-path-style";
-
-type DownloadClientTypeLogoOption = {
-  value: string;
-  iconSrc?: string;
-  icon?: (props: React.ComponentPropsWithoutRef<"svg">) => React.JSX.Element;
-};
-
-const FIXED_DOWNLOAD_CLIENT_CONFIG_FIELD_KEYS = new Set([
-  "host",
-  "port",
-  "use_ssl",
-  "useSsl",
-  "url_base",
-  "urlBase",
-  "base_url",
-  "baseUrl",
-  "remote_path_mappings",
-  "remotePathMappings",
-  "client_type",
-]);
-
-function defaultConfigValuesForFields(fields: ConfigFieldDef[]) {
-  return Object.fromEntries(
-    fields.map((field) => [
-      field.key,
-      field.defaultValue ?? (field.fieldType === "bool" ? "false" : ""),
-    ]),
-  );
-}
-
-function configFieldValue(
-  draft: DownloadClientDraft,
-  field: ConfigFieldDef,
-  hasStoredSecretValue = false,
-) {
-  return (
-    draft.configValues[field.key] ??
-    (hasStoredSecretValue ? "" : field.defaultValue) ??
-    (field.fieldType === "bool" ? "false" : "")
-  );
-}
-
-function splitConfigTagValue(value: string): string[] {
-  return value
-    .split(/[,\n;]/)
-    .map((entry) => entry.trim())
-    .filter(Boolean);
-}
-
-function joinConfigTagValue(values: string[]): string {
-  return values.join(",");
-}
-
-function DynamicDownloadClientConfigField({
-  field,
-  value,
-  hasStoredSecretValue = false,
-  onChange,
-}: {
-  field: ConfigFieldDef;
-  value: string;
-  hasStoredSecretValue?: boolean;
-  onChange: (key: string, value: string) => void;
-}) {
-  const t = useTranslate();
-  const fieldId = selectorId("settings-download-client-field", field.key);
-  const help = field.helpText ? (
-    <InfoHelp text={field.helpText} ariaLabel={`About ${field.label}`} />
-  ) : null;
-  const requiredMarker = field.required ? (
-    <span aria-hidden="true" className="text-destructive">
-      *
-    </span>
-  ) : null;
-
-  if (field.fieldType === "bool") {
-    return (
-      <CheckboxField
-        id={fieldId}
-        checked={value === "true"}
-        onCheckedChange={(checked) =>
-          onChange(field.key, checked === true ? "true" : "false")
-        }
-        label={field.label}
-        labelAccessory={
-          <>
-            {requiredMarker}
-            {help}
-          </>
-        }
-        className="items-center"
-        checkboxClassName="mt-0"
-      />
-    );
-  }
-
-  if (field.fieldType === "select" && field.options.length > 0) {
-    return (
-      <label>
-        <Label className="mb-2 inline-flex items-center gap-2" htmlFor={fieldId}>
-          {field.label}
-          {requiredMarker}
-          {help}
-        </Label>
-        <Select value={value || field.defaultValue || ""} onValueChange={(next) => onChange(field.key, next)}>
-          <SelectTrigger id={fieldId} className="w-full">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {field.options.map((option) => (
-              <SelectItem key={option.value} value={option.value}>
-                {option.label}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </label>
-    );
-  }
-
-  if (field.fieldType === "tag" && field.options.length > 0) {
-    const selectedValues = splitConfigTagValue(value);
-    const selected = new Set(selectedValues);
-    const optionValues = new Set(field.options.map((option) => option.value));
-
-    return (
-      <div>
-        <Label className="mb-2 inline-flex items-center gap-2">
-          {field.label}
-          {requiredMarker}
-          {help}
-        </Label>
-        <div className="grid gap-2 sm:grid-cols-2">
-          {field.options.map((option) => {
-            const optionId = selectorId(
-              "settings-download-client-field-option",
-              field.key,
-              option.value,
-            );
-            return (
-              <label key={option.value} className="flex items-center gap-2 text-sm">
-                <Checkbox
-                  id={optionId}
-                  checked={selected.has(option.value)}
-                  onCheckedChange={(checked) => {
-                    const next = new Set(selectedValues);
-                    if (checked === true) {
-                      next.add(option.value);
-                    } else {
-                      next.delete(option.value);
-                    }
-                    const orderedOptions = field.options
-                      .map((candidate) => candidate.value)
-                      .filter((candidate) => next.has(candidate));
-                    const customValues = selectedValues.filter(
-                      (candidate) => next.has(candidate) && !optionValues.has(candidate),
-                    );
-                    onChange(
-                      field.key,
-                      joinConfigTagValue([...orderedOptions, ...customValues]),
-                    );
-                  }}
-                />
-                <span>{option.label}</span>
-              </label>
-            );
-          })}
-        </div>
-      </div>
-    );
-  }
-
-  if (field.fieldType === "multiline") {
-    return (
-      <label>
-        <Label className="mb-2 inline-flex items-center gap-2" htmlFor={fieldId}>
-          {field.label}
-          {requiredMarker}
-          {help}
-        </Label>
-        <Textarea
-          id={fieldId}
-          value={value}
-          onChange={(event) => onChange(field.key, event.target.value)}
-          required={field.required && !hasStoredSecretValue}
-          placeholder={field.defaultValue ?? ""}
-          rows={5}
-        />
-      </label>
-    );
-  }
-
-  return (
-    <label>
-      <Label className="mb-2 inline-flex items-center gap-2" htmlFor={fieldId}>
-        {field.label}
-        {requiredMarker}
-        {help}
-      </Label>
-      <Input
-        id={fieldId}
-        value={value}
-        onChange={(event) => onChange(field.key, event.target.value)}
-        {...(field.fieldType === "number" ? signedIntegerInputProps : {})}
-        type={
-          field.fieldType === "password"
-            ? "password"
-            : field.fieldType === "number"
-              ? "number"
-              : "text"
-        }
-        required={field.required && !hasStoredSecretValue}
-        placeholder={
-          hasStoredSecretValue
-            ? t("form.apiKeyStoredPlaceholder")
-            : field.defaultValue ?? ""
-        }
-      />
-    </label>
-  );
-}
-
-const NzbgetIcon = (props: React.ComponentPropsWithoutRef<"svg">) => (
-  <svg
-    xmlns="http://www.w3.org/2000/svg"
-    viewBox="182.47 40.33 528 528"
-    fill="none"
-    {...props}
-  >
-    <ellipse cx="446.47417" cy="304.33312" rx="264" ry="263.99999" fill="#fafafa" />
-    <ellipse cx="445.47418" cy="304.99977" rx="239.8589" ry="239.66666" fill="#333733" />
-    <ellipse cx="445.33311" cy="303.33311" rx="226" ry="226" fill="#37d134" />
-    <path
-      d="m330.34323,434.81804l116.49998,-116.66662l116.49998,116.66662l-232.99996,0z"
-      fill="#000000"
-      transform="rotate(-180 446.843 376.485)"
-    />
-    <rect x="398.66641" y="266.66647" width="94.66664" height="51.33332" fill="#000000" />
-    <path d="m399.33309,215.33316l92.66665,0l0,33.33332l-92.66665,0l0,-33.33332z" fill="#000000" />
-    <path d="m399.33309,163.99984l92.66664,0l0,33.33332l-92.66664,0l0,-33.33332z" fill="#000000" />
-  </svg>
-);
 
 function DownloadClientActionButton({
   label,
@@ -365,60 +125,6 @@ export type SettingsDownloadClientsSectionProps = {
   startCreateDownloadClient: () => void;
 };
 
-const DOWNLOAD_CLIENT_TYPE_LOGO_OPTIONS: DownloadClientTypeLogoOption[] = [
-  {
-    value: "nzbget",
-    iconSrc: "/download-clients/nzbget.svg",
-    icon: NzbgetIcon,
-  },
-  {
-    value: "sabnzbd",
-    iconSrc: "/download-clients/sabnzbd.svg",
-    icon: SabnzbdIcon,
-  },
-  {
-    value: "weaver",
-    iconSrc: "/download-clients/weaver.webp",
-    icon: WeaverIcon,
-  },
-  {
-    value: "qbittorrent",
-    iconSrc: "/download-clients/qbittorrent.svg",
-    icon: QBitTorrentIcon,
-  },
-];
-
-function getDownloadClientTypeOption(typeValue: string) {
-  const normalizedType = typeValue.trim().toLowerCase();
-  return DOWNLOAD_CLIENT_TYPE_LOGO_OPTIONS.find((option) => option.value === normalizedType);
-}
-
-function DownloadClientTypeLogo({
-  typeValue,
-  className = "h-4 w-4",
-}: {
-  typeValue: string;
-  className?: string;
-}) {
-  const option = getDownloadClientTypeOption(typeValue);
-  const FallbackIcon = option?.icon ?? Server;
-  const [failedToLoadImage, setFailedToLoadImage] = React.useState(false);
-
-  if (failedToLoadImage || !option?.iconSrc) {
-    return <FallbackIcon className={`${className} object-contain`} aria-hidden="true" role="img" />;
-  }
-
-  return (
-    <img
-      src={option.iconSrc}
-      alt=""
-      className={`${className} object-contain`}
-      role="img"
-      onError={() => setFailedToLoadImage(true)}
-    />
-  );
-}
-
 function DownloadClientTypeOptionContent({
   typeValue,
   label,
@@ -429,10 +135,12 @@ function DownloadClientTypeOptionContent({
   className?: string;
 }) {
   return (
-    <span className={cn("inline-flex min-w-0 items-center gap-2", className)}>
-      <DownloadClientTypeLogo typeValue={typeValue} className="h-4 w-4 shrink-0" />
-      <span className="truncate">{label}</span>
-    </span>
+    <PluginVisualLabel
+      providerType={typeValue}
+      pluginType="download_client"
+      label={label}
+      className={className}
+    />
   );
 }
 
@@ -518,7 +226,7 @@ export function SettingsDownloadClientsSection({
           clientType: value,
           name: shouldAutofillName ? nextLabel : prev.name,
           port: isDefaultPort ? (DEFAULT_PORT_FOR_CLIENT_TYPE[value] ?? "8080") : prev.port,
-          configValues: defaultConfigValuesForFields(nextFields),
+          configValues: defaultDownloadClientConfigValuesForFields(nextFields),
         };
       });
     },
@@ -637,7 +345,11 @@ export function SettingsDownloadClientsSection({
                   <TableCell>{client.name}</TableCell>
                   <TableCell className="text-center align-middle">
                     <span className="inline-flex items-center justify-center">
-                      <DownloadClientTypeLogo typeValue={client.clientType} />
+                      <PluginLogo
+                        providerType={client.clientType}
+                        pluginType="download_client"
+                        className="h-5 w-5 rounded-[6px]"
+                      />
                       <span className="sr-only">{client.clientType}</span>
                     </span>
                   </TableCell>
@@ -963,14 +675,15 @@ export function SettingsDownloadClientsSection({
                     key={field.key}
                     className={field.fieldType === "multiline" ? "md:col-span-3" : undefined}
                   >
-                    <DynamicDownloadClientConfigField
+                    <DownloadClientConfigField
                       field={field}
-                      value={configFieldValue(
+                      value={downloadClientConfigFieldValue(
                         downloadClientDraft,
                         field,
                         hasStoredSecretValue,
                       )}
                       hasStoredSecretValue={hasStoredSecretValue}
+                      idPrefix="settings-download-client-field"
                       onChange={(key, value) =>
                         setDownloadClientDraft((prev: DownloadClientDraft) => ({
                           ...prev,

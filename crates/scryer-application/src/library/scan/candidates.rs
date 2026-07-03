@@ -1125,7 +1125,7 @@ pub(super) async fn process_resolved_series_full_scan_candidate(
     let selected_metadata =
         select_series_metadata_from_batch_results(&candidate, batch_search_results)?;
     let Some(selected) = selected_metadata else {
-        info!(
+        debug!(
             folder = %folder_name,
             query = %candidate.query,
             "series scan: no metadata match"

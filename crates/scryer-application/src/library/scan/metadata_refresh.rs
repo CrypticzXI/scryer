@@ -153,7 +153,7 @@ pub(super) async fn refresh_titles_metadata_for_scan_policy(
     }
 
     if summary.considered > 0 {
-        info!(
+        debug!(
             considered = summary.considered,
             refreshed = summary.refreshed,
             failed = summary.failed,
@@ -198,7 +198,7 @@ pub(super) async fn queue_title_recommendations_for_background_refresh(
     }
 
     if summary.queued > 0 || summary.failed > 0 {
-        info!(
+        debug!(
             considered = summary.considered,
             queued = summary.queued,
             failed = summary.failed,

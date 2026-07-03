@@ -17,6 +17,8 @@ export function normalizedRatingSource(source: string): string {
   return source.trim().toLowerCase().replace(/[\s_.-]+/g, "");
 }
 
+const POPCORNMETER_LOGO_SRC = "/rating-sources/popcornmeter.svg";
+
 function fallbackSourceLabel(source: string): string {
   return source
     .trim()
@@ -41,13 +43,14 @@ export function ratingSourceInfo(source: string): RatingSourceInfo {
     case "audience":
       return {
         label: "RT Audience",
-        logoSrc: "/rating-sources/rotten-tomatoes.svg",
+        logoSrc: POPCORNMETER_LOGO_SRC,
         format: "percent",
       };
     case "popcorn":
+    case "popcornmeter":
       return {
         label: "Popcornmeter",
-        logoSrc: "/rating-sources/rotten-tomatoes.svg",
+        logoSrc: POPCORNMETER_LOGO_SRC,
         format: "percent",
       };
     case "metacritic":

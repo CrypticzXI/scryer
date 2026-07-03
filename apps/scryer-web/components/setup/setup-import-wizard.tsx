@@ -312,9 +312,29 @@ export function SetupImportWizard({
   }
 
   const PrimaryIcon = primaryIcon;
+  const stepId =
+    currentStep === 1
+      ? "connect"
+      : currentStep === 2
+        ? "libraries"
+        : currentStep === 3
+          ? "quality"
+          : currentStep === 4
+            ? "sources"
+            : "summary";
+  const primaryButtonId =
+    currentStep === 1
+      ? "setup-import-connect-next"
+      : currentStep === 2
+        ? "setup-import-libraries-next"
+        : currentStep === 3
+          ? "setup-import-quality-next"
+          : currentStep === 4
+            ? "setup-import-sources-execute"
+            : "setup-import-summary-finish";
 
   return (
-    <SetupPanel id="setup-import-step">
+    <SetupPanel id="setup-import-step" data-step={stepId}>
       <SetupStepHeader
         icon={chrome.icon}
         title={t(chrome.titleKey)}
@@ -324,10 +344,11 @@ export function SetupImportWizard({
       <div className="mt-6">{body}</div>
 
       <div className="mt-6 flex items-center justify-between border-t border-[var(--scry-hover)] pt-5">
-        <SetupBackButton onClick={back}>
+        <SetupBackButton id={`setup-import-${stepId}-back`} onClick={back}>
           {t("setup.back")}
         </SetupBackButton>
         <SetupPrimaryButton
+          id={primaryButtonId}
           type="button"
           onClick={onPrimary}
           disabled={primaryDisabled}

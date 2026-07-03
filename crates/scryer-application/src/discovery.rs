@@ -138,10 +138,23 @@ impl AppUseCase {
         if requested_limit == 0 {
             return Ok(Vec::new());
         }
-        let _source_title = self
+        let source_title = self
             .get_title(actor, title_id)
             .await?
             .ok_or_else(|| AppError::NotFound(format!("title {title_id}")))?;
+        if let Err(error) = self
+            .queue_title_more_like_this_refresh_if_due(
+                &source_title,
+                crate::catalog_workflow::HydrationSource::Interactive,
+            )
+            .await
+        {
+            warn!(
+                title_id = %title_id,
+                error = %error,
+                "failed to refresh title recommendations while loading more-like-this cache"
+            );
+        }
         let readable_library_ids = self
             .authorized_library_ids(actor, None, LibraryPermission::View)
             .await?

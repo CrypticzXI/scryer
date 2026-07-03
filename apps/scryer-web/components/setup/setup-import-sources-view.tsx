@@ -132,7 +132,7 @@ export default function SetupImportSourcesView({
   }
 
   return (
-    <div className="flex flex-col gap-6">
+    <div id="setup-import-sources-view" className="flex flex-col gap-6">
       {/* ── Download Clients ─────────────────────────────────────────────── */}
       <Card data-slot="import-sources-clients">
         <CardHeader className="mb-3 flex items-center justify-between gap-3">

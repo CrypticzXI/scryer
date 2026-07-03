@@ -274,7 +274,10 @@ export default function SetupImportLibrariesView({
   );
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 0 }}>
+    <div
+      id="setup-import-libraries-view"
+      style={{ display: "flex", flexDirection: "column", gap: 0 }}
+    >
       {/* ── Source Roots tray ── */}
       <div
         data-drop="tray"
@@ -432,8 +435,11 @@ export default function SetupImportLibrariesView({
           const editing = editLibId === lib.id;
           return (
             <div
+              id={`setup-import-library-drop-${lib.facet}`}
               key={lib.id}
               data-drop="library"
+              data-library-facet={lib.facet}
+              data-library-id={lib.id}
               aria-label={lib.name}
               onDragOver={!isMobile ? (e) => libZoneOver(e, lib.facet) : undefined}
               onDragEnter={!isMobile ? (e) => libZoneEnter(e, lib.facet) : undefined}

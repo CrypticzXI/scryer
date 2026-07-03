@@ -1121,6 +1121,85 @@ async fn movie_title_scan_backfills_stale_mtime_signature_then_skips_current_sig
 }
 
 #[tokio::test]
+async fn movie_title_scan_backfills_missing_source_signature_without_media_info() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let title_dir = tempdir.path().join("Signature Missing (2026)");
+    std::fs::create_dir(&title_dir).expect("create movie folder");
+    let movie_path = title_dir.join("Signature.Missing.2026.1080p.WEB-DL.mkv");
+    std::fs::write(&movie_path, b"stable media bytes").expect("write movie file");
+
+    let (base_app, user, _) = bootstrap_movie_scan_app(
+        tempdir.path(),
+        Vec::new(),
+        Arc::new(EmptySearchMetadataGateway),
+    )
+    .await;
+    let analyzer = Arc::new(CountingValidMediaAnalyzer::default());
+    let app = base_app.with_test_overrides(|builder| builder.with_media_analyzer(analyzer.clone()));
+    let title =
+        create_movie_title_with_folder(&app, &user, "Signature Missing", title_dir.as_path()).await;
+    let file_id = app
+        .services
+        .library
+        .media_files
+        .insert_media_file(&InsertMediaFileInput {
+            title_id: title.id.clone(),
+            file_path: movie_path.to_string_lossy().to_string(),
+            size_bytes: 18,
+            role: MediaFileRole::Primary,
+            source_signature_scheme: None,
+            source_signature_value: None,
+            quality_label: Some("1080p".to_string()),
+            ..Default::default()
+        })
+        .await
+        .expect("seed media file without source signature");
+    app.services
+        .library
+        .media_files
+        .update_media_file_analysis(&file_id, test_valid_media_analysis())
+        .await
+        .expect("mark seeded file analyzed");
+
+    app.scan_title_library_with_discovered_files(
+        &user,
+        title.clone(),
+        vec![build_test_library_file(
+            movie_path.to_string_lossy().as_ref(),
+        )],
+    )
+    .await
+    .expect("scan missing signature file");
+
+    assert_eq!(
+        analyzer.analyze_calls(),
+        0,
+        "missing source signature should be backfilled without rerunning MediaInfo"
+    );
+    let files = app
+        .services
+        .library
+        .media_files
+        .list_media_files_for_title(&title.id)
+        .await
+        .expect("list media files after backfill");
+    let file = files
+        .iter()
+        .find(|file| file.file_path == movie_path.to_string_lossy())
+        .expect("media file exists after backfill");
+    assert_eq!(
+        file.source_signature_scheme.as_deref(),
+        Some(current_media_source_signature_scheme())
+    );
+    assert!(
+        file.source_signature_value
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty()),
+        "backfilled signature value should be stored"
+    );
+}
+
+#[tokio::test]
 async fn movie_library_scan_does_not_promote_additional_file_but_title_scan_does() {
     let tempdir = tempfile::tempdir().expect("tempdir");
     let title_dir = tempdir.path().join("Additional Only (2026)");
@@ -1912,7 +1991,7 @@ async fn movie_full_scan_skips_duplicate_same_title_sibling_folder_without_unmat
         .await
         .expect("scan movie library");
 
-    assert!(summary.skipped >= 1);
+    assert_eq!(summary.skipped, 0);
     assert!(unmatched_items.items().await.is_empty());
     let titles = app
         .list_titles_unpaged(&user, Some(MediaFacet::Movie), None, None)

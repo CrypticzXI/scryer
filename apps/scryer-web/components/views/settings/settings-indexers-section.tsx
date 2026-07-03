@@ -1,6 +1,7 @@
 import * as React from "react";
 import { Edit, Lock, Plus, Power, PowerOff, RefreshCw, Trash2 } from "lucide-react";
 import { AddNewButton } from "@/components/common/add-new-button";
+import { PluginVisualLabel } from "@/components/common/plugin-visual";
 import { Button } from "@/components/ui/button";
 import { IconButton } from "@/components/ui/icon-button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -65,15 +66,6 @@ const FALLBACK_PROVIDER_OPTIONS = [
   { value: "newznab", label: "Newznab Indexer" },
 ];
 
-const INDEXER_PROVIDER_LOGOS: Record<string, string> = {
-  nzbgeek: "/media-sites/nzbgeek.svg",
-  prowlarr: "/media-sites/prowlarr.svg",
-};
-
-function getProviderLogoSrc(value: string) {
-  return INDEXER_PROVIDER_LOGOS[value.trim().toLowerCase()];
-}
-
 function formatIndexerProviderTypeLabel(
   providerType: string,
   t: ReturnType<typeof useTranslate>,
@@ -90,19 +82,13 @@ function formatIndexerProviderTypeLabel(
 
 function IndexerProviderTypeCell({ providerType }: { providerType: string }) {
   const t = useTranslate();
-  const logoSrc = getProviderLogoSrc(providerType);
   return (
-    <div className="inline-flex items-center gap-2">
-      {logoSrc ? (
-        <img
-          src={logoSrc}
-          alt=""
-          aria-hidden="true"
-          className="h-4 w-4 object-contain"
-        />
-      ) : null}
-      <span>{formatIndexerProviderTypeLabel(providerType, t)}</span>
-    </div>
+    <PluginVisualLabel
+      providerType={providerType}
+      pluginType="indexer"
+      label={formatIndexerProviderTypeLabel(providerType, t)}
+      logoClassName="h-5 w-5 rounded-[6px]"
+    />
   );
 }
 
@@ -680,12 +666,28 @@ export function SettingsIndexersSection({
                   <SelectTrigger id="settings-indexer-provider-type" className="w-full">
                     <SelectValue
                       placeholder={t("form.providerTypePlaceholder")}
-                    />
+                    >
+                      {normalizedProviderType ? (
+                        <PluginVisualLabel
+                          providerType={normalizedProviderType}
+                          pluginType="indexer"
+                          label={
+                            providerTypeOptions.find(
+                              (option) => option.value === normalizedProviderType,
+                            )?.label ?? formatIndexerProviderTypeLabel(normalizedProviderType, t)
+                          }
+                        />
+                      ) : null}
+                    </SelectValue>
                   </SelectTrigger>
                   <SelectContent>
                     {providerTypeOptions.map((opt) => (
                       <SelectItem key={opt.value} value={opt.value}>
-                        {opt.label}
+                        <PluginVisualLabel
+                          providerType={opt.value}
+                          pluginType="indexer"
+                          label={opt.label}
+                        />
                       </SelectItem>
                     ))}
                   </SelectContent>

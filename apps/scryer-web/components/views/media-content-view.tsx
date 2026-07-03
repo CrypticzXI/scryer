@@ -965,7 +965,7 @@ function TitleContextPanel({
     "min-h-0 w-full min-w-0 flex-col overflow-hidden rounded-[16px] border border-[var(--scry-border2)] bg-[var(--scry-surfD)]",
     className,
   );
-  const moreLikeThisItems: CatalogDiscoveryItem[] = [];
+  const moreLikeThisItems = title?.moreLikeThis ?? [];
   const titleMediaFiles = React.useMemo<MediaFileOnDisk[]>(
     () =>
       (title?.mediaFiles ?? []).flatMap((file) => {

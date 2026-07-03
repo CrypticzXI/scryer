@@ -1,5 +1,7 @@
 import { Check, Download, Loader2, X } from "lucide-react";
+import { DownloadClientConfigField } from "@/components/common/download-client-config-field";
 import { DownloadClientRemotePathMappingsField } from "@/components/common/download-client-remote-path-mappings-field";
+import { PluginVisualLabel } from "@/components/common/plugin-visual";
 import { Button } from "@/components/ui/button";
 import {
   SetupBackButton,
@@ -11,17 +13,15 @@ import { Input, integerInputProps, sanitizeDigits } from "@/components/ui/input"
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import type { ConfigFieldDef } from "@/lib/types";
 import type { DownloadClientDraft, DownloadClientTypeOption } from "@/lib/types/download-clients";
-import { buildWeaverApiKeyUrl } from "@/lib/utils/download-clients";
+import {
+  buildWeaverApiKeyUrl,
+  downloadClientConfigFieldValue,
+  FIXED_DOWNLOAD_CLIENT_CONFIG_FIELD_KEYS,
+} from "@/lib/utils/download-clients";
 import type { LocalPathStyle } from "@/lib/utils/local-path-style";
 import * as React from "react";
-
-const DOWNLOAD_CLIENT_TYPE_ICON_SRC_BY_VALUE: Record<string, string> = {
-  nzbget: "/download-clients/nzbget.svg",
-  sabnzbd: "/download-clients/sabnzbd.svg",
-  weaver: "/download-clients/weaver.webp",
-  qbittorrent: "/download-clients/qbittorrent.svg",
-};
 
 function DownloadClientTypeOptionContent({
   typeValue,
@@ -30,21 +30,12 @@ function DownloadClientTypeOptionContent({
   typeValue: string;
   label: string;
 }) {
-  const normalizedTypeValue = typeValue.trim().toLowerCase();
-  const iconSrc = DOWNLOAD_CLIENT_TYPE_ICON_SRC_BY_VALUE[normalizedTypeValue];
-
   return (
-    <span className="inline-flex min-w-0 items-center gap-2">
-      {iconSrc ? (
-        <img
-          src={iconSrc}
-          alt=""
-          aria-hidden="true"
-          className="h-4 w-4 shrink-0 object-contain"
-        />
-      ) : null}
-      <span className="truncate">{label}</span>
-    </span>
+    <PluginVisualLabel
+      providerType={typeValue}
+      pluginType="download_client"
+      label={label}
+    />
   );
 }
 
@@ -52,6 +43,7 @@ interface SetupDownloadClientViewProps {
   t: (key: string) => string;
   draft: DownloadClientDraft;
   downloadClientTypeOptions: DownloadClientTypeOption[];
+  configFields: ConfigFieldDef[];
   localPathStyle: LocalPathStyle | undefined;
   onDraftChange: (updates: Partial<DownloadClientDraft>) => void;
   onTestConnection: () => void;
@@ -69,6 +61,7 @@ export function SetupDownloadClientView({
   t,
   draft,
   downloadClientTypeOptions,
+  configFields,
   localPathStyle,
   onDraftChange,
   onTestConnection,
@@ -85,16 +78,27 @@ export function SetupDownloadClientView({
   const [isFilesystemPathMappingOpen, setIsFilesystemPathMappingOpen] = React.useState(() =>
     draft.remotePathMappings.trim().length > 0,
   );
-  const showApiKey = draft.clientType === "sabnzbd" || draft.clientType === "weaver";
-  const showCredentials =
-    draft.clientType === "nzbget" ||
-    draft.clientType === "qbittorrent" ||
-    draft.clientType === "sabnzbd";
-  const showSabAlternativeAuth = draft.clientType === "sabnzbd";
-  const showDecypharrFilesystemHelp =
-    draft.clientType === "sabnzbd" || draft.clientType === "qbittorrent";
-  const weaverApiKeyUrl = draft.clientType === "weaver" ? buildWeaverApiKeyUrl(draft) : "";
   const normalizedClientType = draft.clientType.trim().toLowerCase();
+  const dynamicConfigFields = configFields.filter(
+    (field) => !FIXED_DOWNLOAD_CLIENT_CONFIG_FIELD_KEYS.has(field.key),
+  );
+  const selectedFieldKeys = new Set(configFields.map((field) => field.key));
+  const hasDescriptorApiKeyField =
+    selectedFieldKeys.has("api_key") || selectedFieldKeys.has("apiKey");
+  const hasDescriptorCredentialFields =
+    selectedFieldKeys.has("username") || selectedFieldKeys.has("password");
+  const showApiKey =
+    !hasDescriptorApiKeyField &&
+    (normalizedClientType === "sabnzbd" || normalizedClientType === "weaver");
+  const showCredentials =
+    !hasDescriptorCredentialFields &&
+    (normalizedClientType === "nzbget" ||
+      normalizedClientType === "qbittorrent" ||
+      normalizedClientType === "sabnzbd");
+  const showSabAlternativeAuth = normalizedClientType === "sabnzbd";
+  const showDecypharrFilesystemHelp =
+    normalizedClientType === "sabnzbd" || normalizedClientType === "qbittorrent";
+  const weaverApiKeyUrl = normalizedClientType === "weaver" ? buildWeaverApiKeyUrl(draft) : "";
   const selectedDownloadClientLabel =
     downloadClientTypeOptions.find((option) => option.value === normalizedClientType)?.label ??
     (draft.clientType.trim() || "Download client");
@@ -119,8 +123,8 @@ export function SetupDownloadClientView({
         title={t("setup.downloadClientTitle")}
         subtitle={t("setup.downloadClientDescription")}
       />
-      <div className="mx-auto flex w-full max-w-md flex-col gap-4">
-        <div className="space-y-2">
+      <div className="mx-auto grid w-full max-w-4xl gap-x-6 gap-y-4 md:grid-cols-2">
+        <div className="space-y-2 md:col-span-2">
           <Label htmlFor="setup-download-client-name">{t("label.name")}</Label>
           <Input
             id="setup-download-client-name"
@@ -132,7 +136,7 @@ export function SetupDownloadClientView({
         <div className="space-y-2">
           <Label htmlFor="setup-download-client-type">{t("label.type")}</Label>
           <Select value={draft.clientType} onValueChange={(v) => onDraftChange({ clientType: v })}>
-            <SelectTrigger id="setup-download-client-type">
+            <SelectTrigger id="setup-download-client-type" className="w-full">
               <SelectValue aria-label={selectedDownloadClientLabel}>
                 <DownloadClientTypeOptionContent
                   typeValue={draft.clientType}
@@ -156,7 +160,7 @@ export function SetupDownloadClientView({
             </SelectContent>
           </Select>
         </div>
-        <div className="grid grid-cols-[1fr_auto] gap-2">
+        <div className="grid grid-cols-[minmax(0,1fr)_6rem] gap-2 md:col-span-2 md:grid-cols-[minmax(0,1fr)_8rem]">
           <div className="space-y-2">
             <Label htmlFor="setup-download-client-host">{t("settings.host")}</Label>
             <Input
@@ -178,7 +182,7 @@ export function SetupDownloadClientView({
             />
           </div>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 md:col-span-2">
           <Checkbox
             id="setup-download-client-ssl"
             checked={draft.useSsl}
@@ -187,7 +191,7 @@ export function SetupDownloadClientView({
           <Label htmlFor="setup-download-client-ssl" className="text-sm">SSL</Label>
         </div>
         {showApiKey && (
-          <div className="space-y-2">
+          <div className="space-y-2 md:col-span-2">
             <Label htmlFor="setup-download-client-api-key">{t("settings.apiKey")}</Label>
             <Input
               id="setup-download-client-api-key"
@@ -195,7 +199,7 @@ export function SetupDownloadClientView({
               value={draft.apiKey}
               onChange={(e) => onDraftChange({ apiKey: e.target.value })}
             />
-            {draft.clientType === "weaver" ? (
+            {normalizedClientType === "weaver" ? (
               <p className="text-xs text-muted-foreground">
                 Create an integration API key in Weaver:{" "}
                 {weaverApiKeyUrl ? (
@@ -211,7 +215,7 @@ export function SetupDownloadClientView({
                   <span>finish the Weaver URL above to generate the link.</span>
                 )}
               </p>
-            ) : draft.clientType === "sabnzbd" ? (
+            ) : normalizedClientType === "sabnzbd" ? (
               <div className="space-y-2 text-xs text-muted-foreground">
                 <p>{t("settings.downloadClientSabnzbdAuthHelp")}</p>
                 <p>{t("settings.downloadClientSabnzbdNzbdavHelp")}</p>
@@ -244,21 +248,41 @@ export function SetupDownloadClientView({
                 onChange={(e) => onDraftChange({ password: e.target.value })}
               />
             </div>
-            {draft.clientType === "qbittorrent" ? (
-              <p className="text-xs text-muted-foreground">
+            {normalizedClientType === "qbittorrent" ? (
+              <p className="text-xs text-muted-foreground md:col-span-2">
                 {t("settings.downloadClientQbittorrentDecypharrHelp")}
               </p>
             ) : null}
           </>
         )}
+        {dynamicConfigFields.map((field) => (
+          <div
+            key={field.key}
+            className={field.fieldType === "multiline" ? "md:col-span-2" : undefined}
+          >
+            <DownloadClientConfigField
+              field={field}
+              value={downloadClientConfigFieldValue(draft, field)}
+              idPrefix="setup-download-client-field"
+              onChange={(key, value) =>
+                onDraftChange({
+                  configValues: {
+                    ...draft.configValues,
+                    [key]: value,
+                  },
+                })
+              }
+            />
+          </div>
+        ))}
         {showDecypharrFilesystemHelp ? (
-          <p className="text-xs text-muted-foreground">
+          <p className="text-xs text-muted-foreground md:col-span-2">
             {t("settings.downloadClientDecypharrFilesystemHelp")}
           </p>
         ) : null}
         <details
           id="setup-download-client-filesystem-path-mapping"
-          className="rounded-xl border border-border bg-card p-3"
+          className="rounded-xl border border-border bg-card p-3 md:col-span-2"
           open={isFilesystemPathMappingOpen}
           onToggle={(event) =>
             setIsFilesystemPathMappingOpen(event.currentTarget.open)
@@ -286,7 +310,7 @@ export function SetupDownloadClientView({
             />
           </div>
         </details>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-3 md:col-span-2">
           <Button
             id="setup-download-client-test-connection"
             variant="outline"
@@ -315,9 +339,9 @@ export function SetupDownloadClientView({
             </span>
           )}
         </div>
-        {error && <p id="setup-download-client-error" className="text-sm text-destructive">{error}</p>}
+        {error && <p id="setup-download-client-error" className="text-sm text-destructive md:col-span-2">{error}</p>}
         {saved && (
-          <p id="setup-download-client-saved" className="text-sm text-[var(--scry-success-text-soft)]">{t("setup.saved")}</p>
+          <p id="setup-download-client-saved" className="text-sm text-[var(--scry-success-text-soft)] md:col-span-2">{t("setup.saved")}</p>
         )}
       </div>
       <div className="flex items-center justify-between pt-2">

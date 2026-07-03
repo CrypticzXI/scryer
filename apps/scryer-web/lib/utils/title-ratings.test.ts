@@ -4,9 +4,31 @@ import test from "node:test";
 import { ratingSourceInfo, ratingValueLabel } from "./title-ratings.ts";
 
 test("MDB Rotten Tomatoes sources render as percentages with logos", () => {
-  for (const source of ["rottentomatoes", "tomatoes", "audience", "popcorn"]) {
+  for (const source of ["rottentomatoes", "tomatoes"]) {
     const info = ratingSourceInfo(source);
     assert.equal(info.logoSrc, "/rating-sources/rotten-tomatoes.svg");
+    assert.equal(info.format, "percent");
+    assert.equal(
+      ratingValueLabel(
+        {
+          source,
+          value: 94,
+          score: null,
+          normalized: 9.4,
+          votes: null,
+          url: "",
+        },
+        info,
+      ),
+      "94%",
+    );
+  }
+});
+
+test("MDB Rotten Tomatoes audience sources use the Popcornmeter logo", () => {
+  for (const source of ["audience", "popcorn", "popcornmeter"]) {
+    const info = ratingSourceInfo(source);
+    assert.equal(info.logoSrc, "/rating-sources/popcornmeter.svg");
     assert.equal(info.format, "percent");
     assert.equal(
       ratingValueLabel(

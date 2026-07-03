@@ -17,12 +17,12 @@ use crate::{
     DiscoveryDashboardResult, DiscoveryDashboardSection, DiscoveryFacetRecord, DiscoveryHomeQuery,
     DiscoveryItemRecord, DiscoveryItemsQuery, DiscoveryPendingContextChangeRecord,
     DiscoveryPublicFeedCommit, DiscoveryPublicFeedInput, DiscoveryRawPageRecord,
-    DiscoveryRepository, DiscoverySectionRecord, DiscoverySnapshotFacetGroup,
-    DiscoverySnapshotFacetValue, DiscoverySubmittedSubjectRecord, DiscoverySyncRunRecord,
-    DiscoverySyncStateRecord, DiscoveryTitle, DomainEventRepository, JobCategory, JobKey, JobRun,
-    JobRunStatus, JobSection, JobTriggerSource, LibraryRootDraft, MetadataGateway,
-    MetadataSearchItem, MetadataSearchQuery, MovieMetadata, MultiMetadataSearchResult,
-    RichMetadataSearchItem, SeriesMetadata,
+    DiscoveryRelatedResult, DiscoveryRepository, DiscoverySectionRecord,
+    DiscoverySnapshotFacetGroup, DiscoverySnapshotFacetValue, DiscoverySubmittedSubjectRecord,
+    DiscoverySyncRunRecord, DiscoverySyncStateRecord, DiscoveryTitle, DomainEventRepository,
+    JobCategory, JobKey, JobRun, JobRunStatus, JobSection, JobTriggerSource, LibraryRootDraft,
+    MetadataGateway, MetadataSearchItem, MetadataSearchQuery, MovieMetadata,
+    MultiMetadataSearchResult, RichMetadataSearchItem, SeriesMetadata, TitleRecommendationsInput,
 };
 use async_trait::async_trait;
 use chrono::{DateTime, TimeZone, Utc};
@@ -1163,50 +1163,56 @@ async fn title_more_like_this_filters_readable_library_titles_and_refills_limit(
         .await
         .extend([source_title, owned_title]);
 
-    discovery.title_more_like_this_items.lock().await.insert(
-        "source-title".to_string(),
-        vec![
-            discovery_item_record(
-                "title-more-like-this-run",
-                "title-more-like-this-run",
-                None,
-                "tmdb:movie:603",
-                "Owned Recommendation",
-                "movie",
-                100.0,
-                &["Action"],
-                &[],
-                false,
-                true,
-            ),
-            discovery_item_record(
-                "title-more-like-this-run",
-                "title-more-like-this-run",
-                None,
-                "tmdb:movie:604",
-                "Fresh Recommendation One",
-                "movie",
-                90.0,
-                &["Drama"],
-                &[],
-                false,
-                true,
-            ),
-            discovery_item_record(
-                "title-more-like-this-run",
-                "title-more-like-this-run",
-                None,
-                "tmdb:movie:605",
-                "Fresh Recommendation Two",
-                "movie",
-                80.0,
-                &["Comedy"],
-                &[],
-                false,
-                true,
-            ),
-        ],
-    );
+    let mut cached_items = vec![
+        discovery_item_record(
+            "title-more-like-this-run",
+            "title-more-like-this-run",
+            None,
+            "tmdb:movie:603",
+            "Owned Recommendation",
+            "movie",
+            100.0,
+            &["Action"],
+            &[],
+            false,
+            true,
+        ),
+        discovery_item_record(
+            "title-more-like-this-run",
+            "title-more-like-this-run",
+            None,
+            "tmdb:movie:604",
+            "Fresh Recommendation One",
+            "movie",
+            90.0,
+            &["Drama"],
+            &[],
+            false,
+            true,
+        ),
+        discovery_item_record(
+            "title-more-like-this-run",
+            "title-more-like-this-run",
+            None,
+            "tmdb:movie:605",
+            "Fresh Recommendation Two",
+            "movie",
+            80.0,
+            &["Comedy"],
+            &[],
+            false,
+            true,
+        ),
+    ];
+    let fresh_updated_at = Utc::now();
+    for item in &mut cached_items {
+        item.updated_at = fresh_updated_at;
+    }
+    discovery
+        .title_more_like_this_items
+        .lock()
+        .await
+        .insert("source-title".to_string(), cached_items);
 
     let items = app
         .title_more_like_this(&viewer, "source-title", 2)
@@ -1222,6 +1228,56 @@ async fn title_more_like_this_filters_readable_library_titles_and_refills_limit(
     );
     assert!(items.iter().all(|item| !item.owned_in_input));
     assert!(items.iter().all(|item| item.resolved_title_id.is_none()));
+}
+
+#[tokio::test]
+async fn title_more_like_this_refreshes_empty_cache_from_metadata_gateway() {
+    let gateway = Arc::new(SnapshotMetadataGateway::default());
+    let mut recommendation = test_discovery_title();
+    recommendation.target_key = "tmdb:movie:604".to_string();
+    recommendation.display_title = "Fresh Gateway Recommendation".to_string();
+    gateway
+        .title_recommendation_results
+        .lock()
+        .await
+        .push(recommendation);
+    let (app, _admin, titles) = bootstrap_with_metadata_gateway_and_titles(gateway.clone());
+    let discovery = Arc::new(RecordingDiscoveryRepository::default());
+    let app = app.with_test_overrides(|builder| builder.with_discovery_store(discovery.clone()));
+    let movie_library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Movie);
+    let viewer = library_permission_user(
+        "title-more-like-this-refresh-viewer",
+        &movie_library_id,
+        &[scryer_domain::LibraryPermission::View],
+    );
+
+    let mut source_title = test_title(
+        "source-title",
+        "Source Movie",
+        MediaFacet::Movie,
+        vec![("tmdb_movie", "100"), ("tvdb", "200")],
+    );
+    source_title.library_id = movie_library_id.clone();
+    titles.store.lock().await.push(source_title);
+
+    let items = app
+        .title_more_like_this(&viewer, "source-title", 12)
+        .await
+        .expect("title more-like-this should refresh and load");
+
+    assert_eq!(
+        items
+            .iter()
+            .map(|item| item.display_title.as_str())
+            .collect::<Vec<_>>(),
+        vec!["Fresh Gateway Recommendation"]
+    );
+    let inputs = gateway.title_recommendation_inputs.lock().await;
+    assert_eq!(inputs.len(), 1);
+    assert_eq!(inputs[0].subject.tvdb_id, Some(200));
+    assert_eq!(inputs[0].subject.tmdb_id, Some(100));
+    assert_eq!(inputs[0].subject.facet.as_deref(), Some("movie"));
+    assert!(inputs[0].include_unresolved);
 }
 
 #[tokio::test]
@@ -3216,6 +3272,8 @@ struct SnapshotMetadataGateway {
     submitted_inputs: Mutex<Vec<DiscoveryContextSnapshotSubmitInput>>,
     change_inputs: Mutex<Vec<DiscoveryContextChangesInput>>,
     public_feed_inputs: Mutex<Vec<DiscoveryPublicFeedInput>>,
+    title_recommendation_inputs: Mutex<Vec<TitleRecommendationsInput>>,
+    title_recommendation_results: Mutex<Vec<DiscoveryTitle>>,
     status_requests: Mutex<Vec<String>>,
     page_requests: Mutex<Vec<(String, i32)>>,
     ack_requests: Mutex<Vec<String>>,
@@ -3281,6 +3339,22 @@ impl MetadataGateway for SnapshotMetadataGateway {
         _language: &str,
     ) -> AppResult<BulkMetadataResult> {
         Err(unused_gateway_call())
+    }
+
+    async fn title_recommendations(
+        &self,
+        input: &TitleRecommendationsInput,
+    ) -> AppResult<DiscoveryRelatedResult> {
+        self.title_recommendation_inputs
+            .lock()
+            .await
+            .push(input.clone());
+        Ok(DiscoveryRelatedResult {
+            subject_key: input.subject.key.clone().unwrap_or_default(),
+            query: input.query.clone(),
+            generated_at: "2026-06-25T00:00:04Z".to_string(),
+            results: self.title_recommendation_results.lock().await.clone(),
+        })
     }
 
     async fn discover_public_feed(

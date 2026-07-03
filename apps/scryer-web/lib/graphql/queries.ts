@@ -1192,6 +1192,9 @@ export const TITLE_SELECTED_PANEL_FIELDS = `${TITLE_PANEL_FIELDS}
     collections {${TITLE_COLLECTION_FIELDS}
     }
     mediaFiles {${TITLE_MEDIA_FILE_FIELDS}
+    }
+    moreLikeThis(limit: 12) {
+${TITLE_MORE_LIKE_THIS_ITEM_FIELDS}
     }`;
 
 export const TITLE_COMMAND_PALETTE_FIELDS = `
@@ -1420,6 +1423,9 @@ export const seriesTitlePanelDetailQuery = `query SeriesTitlePanelDetail($id: ID
   title(id: $id) {
 ${TITLE_PANEL_FIELDS}
     collections {${TITLE_COLLECTION_BASIC_FIELDS}
+    }
+    moreLikeThis(limit: 12) {
+${TITLE_MORE_LIKE_THIS_ITEM_FIELDS}
     }
   }
 }`;

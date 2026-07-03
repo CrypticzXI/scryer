@@ -1,4 +1,5 @@
 import type { DownloadClientRoutingEntry } from "./download-clients";
+import type { CatalogDiscoveryItem } from "./discovery";
 import type { ImportMode } from "./settings";
 
 export type Facet = "movie" | "series" | "anime";
@@ -166,6 +167,7 @@ export type TitleRecord = {
   recapPolicy?: string | null;
   collections?: TitleCollectionRecord[] | null;
   mediaFiles?: TitleMediaFileRecord[] | null;
+  moreLikeThis?: CatalogDiscoveryItem[] | null;
 };
 
 export type RootFolderOption = {

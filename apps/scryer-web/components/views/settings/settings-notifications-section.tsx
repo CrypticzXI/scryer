@@ -4,6 +4,7 @@ import { Bell, Edit, Loader2, Plus, Power, PowerOff, Send, Trash2 } from "lucide
 import { Link } from "react-router-dom";
 import { AddNewButton } from "@/components/common/add-new-button";
 import { InfoHelp } from "@/components/common/info-help";
+import { PluginVisualLabel } from "@/components/common/plugin-visual";
 import { TitleAutocompletePicker } from "@/components/common/title-autocomplete-picker";
 import { LocalRemotePathMappingsField } from "@/components/common/local-remote-path-mappings-field";
 import type { LocalPathStyle } from "@/lib/utils/local-path-style";
@@ -585,7 +586,17 @@ export function SettingsNotificationsSection({
                         </span>
                       </div>
                     </TableCell>
-                    <TableCell>{providerLabel}</TableCell>
+                    <TableCell>
+                      <PluginVisualLabel
+                        providerType={target.providerType}
+                        pluginType={
+                          target.targetKind === "media_server_connection"
+                            ? "media_server"
+                            : "notification"
+                        }
+                        label={providerLabel}
+                      />
+                    </TableCell>
                     <TableCell className="text-center">
                       <RenderBooleanIcon
                         value={target.isEnabled}
@@ -702,7 +713,15 @@ export function SettingsNotificationsSection({
                      }}
                    >
                      <SelectTrigger id="settings-notification-channel-provider-type" className="w-full">
-                       <SelectValue placeholder={t("settings.notificationProviderType")} />
+                       <SelectValue placeholder={t("settings.notificationProviderType")}>
+                         {selectedProvider ? (
+                           <PluginVisualLabel
+                             providerType={selectedProvider.providerType}
+                             pluginType="notification"
+                             label={selectedProvider.name}
+                           />
+                         ) : null}
+                       </SelectValue>
                      </SelectTrigger>
                      <SelectContent>
                       {providerTypeOptions.map((opt) => (
@@ -711,7 +730,11 @@ export function SettingsNotificationsSection({
                            key={opt.value}
                            value={opt.value}
                          >
-                           {opt.label}
+                           <PluginVisualLabel
+                             providerType={opt.value}
+                             pluginType="notification"
+                             label={opt.label}
+                           />
                          </SelectItem>
                        ))}
                      </SelectContent>

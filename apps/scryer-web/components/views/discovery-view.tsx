@@ -9,7 +9,6 @@ import {
   Heart,
   Loader2,
   Palette,
-  Play,
   Plus,
   Rocket,
   Scale,
@@ -602,20 +601,33 @@ function DiscoveryActionButton({
   const disabled = owned || (!canManageTitle && !canRequestMedia);
   const titleLabel = discoveryItemDisplayTitle(item);
 
+  if (compact) {
+    return (
+      <button
+        type="button"
+        aria-label={`${label}: ${titleLabel}`}
+        disabled={disabled}
+        onClick={() => onAction(item)}
+        className="inline-flex h-7 w-7 items-center justify-center gap-2 rounded-[10px] border border-white/20 bg-slate-950/75 text-white backdrop-blur transition hover:border-[var(--scry-accent)] hover:bg-[var(--scry-accent)] disabled:cursor-default disabled:border-white/10 disabled:bg-slate-950/45 disabled:text-white/60"
+      >
+        <Icon className="h-3.5 w-3.5" />
+      </button>
+    );
+  }
+
   return (
-    <button
+    <Button
       type="button"
+      variant="primary"
+      size="lg"
       aria-label={`${label}: ${titleLabel}`}
       disabled={disabled}
       onClick={() => onAction(item)}
-      className={cn(
-        "inline-flex items-center justify-center gap-2 rounded-[10px] border border-white/20 bg-slate-950/75 text-white backdrop-blur transition hover:border-[var(--scry-accent)] hover:bg-[var(--scry-accent)] disabled:cursor-default disabled:border-white/10 disabled:bg-slate-950/45 disabled:text-white/60",
-        compact ? "h-7 w-7" : "h-10 px-5 text-[13.5px] font-semibold",
-      )}
+      className="h-12 rounded-[12px] px-7 text-[15px] font-semibold shadow-[0_16px_30px_rgba(var(--scry-accent-rgb),0.22)]"
     >
-      <Icon className={compact ? "h-3.5 w-3.5" : "h-4 w-4"} />
-      {compact ? null : <span>{label}</span>}
-    </button>
+      <Icon className="h-5 w-5" />
+      <span>{label}</span>
+    </Button>
   );
 }
 
@@ -903,11 +915,6 @@ function DiscoveryHero({
             canRequestMedia={canRequestMedia}
             onAction={onAction}
           />
-          <span className="inline-flex h-10 cursor-not-allowed items-center justify-center gap-2 rounded-[10px] border border-white/15 bg-white/10 px-4 text-[13.5px] font-semibold text-[var(--scry-ink3)] opacity-70 backdrop-blur">
-            <Play className="h-4 w-4" aria-hidden="true" />
-            <span>{t("discovery.trailer")}</span>
-            <span className="sr-only">{t("discovery.trailerUnavailable")}</span>
-          </span>
         </div>
       </div>
     </section>

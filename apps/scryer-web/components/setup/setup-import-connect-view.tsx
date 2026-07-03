@@ -92,7 +92,7 @@ export function SetupImportConnectView({
   };
 
   return (
-    <div data-slot="import-connect-view" className="w-full">
+    <div id="setup-import-connect-view" data-slot="import-connect-view" className="w-full">
       {wizard.secretDraftOwnedByOther ? (
         <div
           role="status"
@@ -144,10 +144,11 @@ export function SetupImportConnectView({
                 </span>
               </div>
 
-              {instances.map((inst) => (
+              {instances.map((inst, index) => (
                 <InstanceCard
                   key={inst.id}
                   inst={inst}
+                  instanceIndex={index}
                   urlPlaceholder={column.urlPlaceholder}
                   t={t}
                   onName={(name) => setInstanceName(inst.id, name)}
@@ -160,6 +161,7 @@ export function SetupImportConnectView({
               ))}
 
               <AddNewButton
+                id={`setup-import-${column.kind}-add-instance`}
                 data-slot="import-add-instance"
                 icon={Plus}
                 label={t("setup.addInstance", { product: column.productName })}
@@ -189,6 +191,7 @@ function settingsUrl(rawBaseUrl: string): string | null {
 
 interface InstanceCardProps {
   inst: ImportInstance;
+  instanceIndex: number;
   urlPlaceholder: string;
   t: (key: string, values?: Record<string, unknown>) => string;
   onName: (name: string) => void;
@@ -199,6 +202,7 @@ interface InstanceCardProps {
 
 function InstanceCard({
   inst,
+  instanceIndex,
   urlPlaceholder,
   t,
   onName,
@@ -212,10 +216,17 @@ function InstanceCard({
 
   const named = inst.name.trim().length > 0;
   const nameDisplay = named ? inst.name : t("setup.unnamedInstance");
+  const fieldId = (field: "url" | "api-key") =>
+    instanceIndex === 0
+      ? `setup-import-${inst.kind}-${field}`
+      : `setup-import-${inst.kind}-${instanceIndex + 1}-${field}`;
 
   return (
     <div
+      id={`setup-import-${inst.kind}-${instanceIndex + 1}-instance`}
       data-slot="import-instance-card"
+      data-kind={inst.kind}
+      data-instance-index={instanceIndex}
       className="flex flex-col gap-[11px]"
       style={{
         border: "1px solid var(--scry-border)",
@@ -296,6 +307,7 @@ function InstanceCard({
       <div>
         <label style={FIELD_LABEL_STYLE}>URL</label>
         <Input
+          id={fieldId("url")}
           value={inst.baseUrl}
           spellCheck={false}
           autoComplete="off"
@@ -325,6 +337,7 @@ function InstanceCard({
           ) : null}
         </div>
         <Input
+          id={fieldId("api-key")}
           type="password"
           value={inst.apiKey}
           spellCheck={false}

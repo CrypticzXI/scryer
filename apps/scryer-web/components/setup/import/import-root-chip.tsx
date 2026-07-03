@@ -69,6 +69,9 @@ export function ImportRootChip({
     <span
       data-rootchip
       data-slot="import-root-chip"
+      data-root-kind={root.kind}
+      data-root-path={effective}
+      data-root-variant={variant}
       aria-label={`${root.instanceLabel} ${effective}`}
       style={{
         display: "inline-flex",
@@ -85,6 +88,10 @@ export function ImportRootChip({
       {/* Drag grip — desktop only */}
       {!isMobile ? (
         <span
+          data-root-drag-handle
+          data-root-kind={root.kind}
+          data-root-path={effective}
+          data-root-variant={variant}
           aria-hidden={!draggable}
           draggable={draggable}
           onDragStart={onDragStart}

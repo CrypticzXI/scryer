@@ -3,6 +3,7 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import { useClient } from "urql";
 
 import {
+  browsePathQuery,
   qualityProfilesInitQuery,
   setupStatusQuery,
   setupWizardProviderTypesInitQuery,
@@ -44,6 +45,9 @@ import { SetupPluginsView } from "./setup-plugins-view";
 import { SetupRestoreView } from "./setup-restore-view";
 
 const FALLBACK_PROVIDER_OPTIONS: SetupIndexerProviderOption[] = [];
+
+type SetupMediaPathField = "movies" | "series" | "anime";
+type InvalidMediaPathFields = Partial<Record<SetupMediaPathField, boolean>>;
 
 interface SetupWizardContainerProps {
   t: (
@@ -179,6 +183,8 @@ export function SetupWizardContainer({
   const [animePath, setAnimePath] = useState("");
   const [mediaPathsSaving, setMediaPathsSaving] = useState(false);
   const [mediaPathsError, setMediaPathsError] = useState<string | null>(null);
+  const [invalidMediaPathFields, setInvalidMediaPathFields] =
+    useState<InvalidMediaPathFields>({});
 
   // ── Step 4 (fresh): Download Client ─────────────────────────────────
   const {
@@ -187,6 +193,7 @@ export function SetupWizardContainer({
     setDcLocalPathStyle,
     setDcTypeOptions,
     availableDcTypeOptions,
+    selectedDcConfigFields,
     dcTesting,
     dcTestResult,
     dcSaving,
@@ -367,6 +374,84 @@ export function SetupWizardContainer({
   );
 
   // ── Media paths save ────────────────────────────────────────────────
+  const clearInvalidMediaPathField = useCallback(
+    (field: SetupMediaPathField) => {
+      setInvalidMediaPathFields((current) => {
+        if (current[field] !== true) {
+          return current;
+        }
+        const next = { ...current };
+        delete next[field];
+        return next;
+      });
+    },
+    [],
+  );
+
+  const handleMoviesPathChange = useCallback(
+    (value: string) => {
+      setMoviesPath(value);
+      clearInvalidMediaPathField("movies");
+    },
+    [clearInvalidMediaPathField],
+  );
+
+  const handleSeriesPathChange = useCallback(
+    (value: string) => {
+      setSeriesPath(value);
+      clearInvalidMediaPathField("series");
+    },
+    [clearInvalidMediaPathField],
+  );
+
+  const handleAnimePathChange = useCallback(
+    (value: string) => {
+      setAnimePath(value);
+      clearInvalidMediaPathField("anime");
+    },
+    [clearInvalidMediaPathField],
+  );
+
+  const validateMediaPaths = useCallback(async () => {
+    const pathCandidates: Array<{ field: SetupMediaPathField; path: string }> = [
+      { field: "movies", path: moviesPath.trim() },
+      { field: "series", path: seriesPath.trim() },
+      { field: "anime", path: animePath.trim() },
+    ];
+    const candidates = pathCandidates.filter(({ path }) => path.length > 0);
+
+    if (candidates.length === 0) {
+      setInvalidMediaPathFields({});
+      return true;
+    }
+
+    const results = await Promise.all(
+      candidates.map(async ({ field, path }) => {
+        try {
+          const { error } = await client
+            .query(
+              browsePathQuery,
+              { path },
+              { requestPolicy: "network-only" },
+            )
+            .toPromise();
+          return { field, valid: !error };
+        } catch {
+          return { field, valid: false };
+        }
+      }),
+    );
+
+    const nextInvalidFields: InvalidMediaPathFields = {};
+    results.forEach(({ field, valid }) => {
+      if (!valid) {
+        nextInvalidFields[field] = true;
+      }
+    });
+    setInvalidMediaPathFields(nextInvalidFields);
+    return results.every(({ valid }) => valid);
+  }, [animePath, client, moviesPath, seriesPath]);
+
   const saveMediaPaths = useCallback(async () => {
     setMediaPathsSaving(true);
     setMediaPathsError(null);
@@ -375,7 +460,12 @@ export function SetupWizardContainer({
       const trimmedSeries = seriesPath.trim();
       const trimmedAnime = animePath.trim();
       if (!trimmedMovies && !trimmedSeries && !trimmedAnime) {
+        setInvalidMediaPathFields({});
         goToStep(3);
+        return;
+      }
+      const pathsAreValid = await validateMediaPaths();
+      if (!pathsAreValid) {
         return;
       }
       const { error } = await client
@@ -394,7 +484,14 @@ export function SetupWizardContainer({
     } finally {
       setMediaPathsSaving(false);
     }
-  }, [client, moviesPath, seriesPath, animePath, goToStep]);
+  }, [
+    animePath,
+    client,
+    goToStep,
+    moviesPath,
+    seriesPath,
+    validateMediaPaths,
+  ]);
 
   // ── Complete setup ──────────────────────────────────────────────────
   const navigateAfterSetup = useCallback(() => {
@@ -434,10 +531,13 @@ export function SetupWizardContainer({
   const isMediumImportStep =
     wizardPath === "import" && (currentStep === 3 || currentStep === 4);
   const isPersonaStep = wizardPath === "fresh" && currentStep === 1;
+  const isPluginsStep = wizardPath === "fresh" && currentStep === 3;
   const shellMaxWidth = isWideImportStep
     ? "max-w-6xl"
     : isMediumImportStep
       ? "max-w-4xl"
+      : isPluginsStep
+        ? "max-w-6xl"
       : isPersonaStep
         ? "max-w-3xl"
         : "max-w-2xl";
@@ -500,14 +600,15 @@ export function SetupWizardContainer({
           moviesPath={moviesPath}
           seriesPath={seriesPath}
           animePath={animePath}
-          onMoviesPathChange={setMoviesPath}
-          onSeriesPathChange={setSeriesPath}
-          onAnimePathChange={setAnimePath}
+          onMoviesPathChange={handleMoviesPathChange}
+          onSeriesPathChange={handleSeriesPathChange}
+          onAnimePathChange={handleAnimePathChange}
           onNext={saveMediaPaths}
           onBack={() => goToStep(1)}
           onSkip={() => goToStep(3)}
           saving={mediaPathsSaving}
           error={mediaPathsError}
+          invalidPathFields={invalidMediaPathFields}
         />
       )}
 
@@ -534,6 +635,7 @@ export function SetupWizardContainer({
           t={t}
           draft={dcDraft}
           downloadClientTypeOptions={availableDcTypeOptions}
+          configFields={selectedDcConfigFields}
           localPathStyle={dcLocalPathStyle}
           onDraftChange={handleDcDraftChange}
           onTestConnection={dcSaved ? testDownloadClient : handleDcTestAndSave}

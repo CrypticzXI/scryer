@@ -59,7 +59,8 @@ export function SetupPanel({
   id,
   className,
   children,
-}: {
+  ...props
+}: React.HTMLAttributes<HTMLDivElement> & {
   id?: string;
   className?: string;
   children: React.ReactNode;
@@ -67,6 +68,7 @@ export function SetupPanel({
   return (
     <div
       id={id}
+      {...props}
       className={cn(
         "w-full rounded-[18px] border border-[var(--scry-border2)] bg-[var(--scry-surf)] p-6 shadow-[0_24px_56px_rgba(2,6,23,0.4)] [backdrop-filter:blur(14px)] sm:p-8",
         className,

@@ -1,26 +1,17 @@
 import { Clock3 } from "lucide-react";
 
 import { ExternalMediaLinkButton } from "@/components/common/external-media-links";
+import { TitleRatingsDisplay } from "@/components/common/title-ratings-display";
 import { TitlePoster } from "@/components/title-poster";
 import {
   DialogDescription,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
 import type { MetadataTvdbSearchItem } from "@/lib/graphql/smg-queries";
 import type { Facet } from "@/lib/types";
 import { selectPosterVariantUrl } from "@/lib/utils/poster-images";
-import {
-  ratingSourceInfo,
-  ratingValueLabel,
-  type TitleExternalRating,
-} from "@/lib/utils/title-ratings";
+import type { TitleExternalRating } from "@/lib/utils/title-ratings";
 
 type CatalogActionDialogSummaryProps = {
   result: MetadataTvdbSearchItem;
@@ -241,56 +232,6 @@ function runtimeLabel(runtimeMinutes: number | null) {
   return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
 }
 
-function SummaryRatingPill({ rating }: { rating: TitleExternalRating }) {
-  const source = ratingSourceInfo(rating.source);
-  const value = ratingValueLabel(rating, source);
-  const className =
-    "inline-flex items-center gap-1.5 rounded border border-border/70 bg-background/45 px-2 py-1 text-xs";
-  const label = `${source.label}: ${value}`;
-  const content = (
-    <>
-      {source.logoSrc ? (
-        <img
-          src={source.logoSrc}
-          alt=""
-          aria-hidden="true"
-          className="h-3.5 w-3.5 shrink-0 object-contain"
-          loading="lazy"
-        />
-      ) : null}
-      <span className="font-[var(--font-code)] text-card-foreground">
-        {value}
-      </span>
-    </>
-  );
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        {rating.url.trim() ? (
-          <a
-            href={rating.url}
-            target="_blank"
-            rel="noreferrer"
-            aria-label={label}
-            className={className}
-          >
-            {content}
-          </a>
-        ) : (
-          <span
-            tabIndex={0}
-            aria-label={label}
-            className={className}
-          >
-            {content}
-          </span>
-        )}
-      </TooltipTrigger>
-      <TooltipContent>{source.label}</TooltipContent>
-    </Tooltip>
-  );
-}
-
 export function CatalogActionDialogSummary({
   result,
   facet,
@@ -352,18 +293,7 @@ export function CatalogActionDialogSummary({
             </DialogDescription>
           </div>
 
-          {ratings.length > 0 ? (
-            <TooltipProvider delayDuration={200}>
-              <div className="flex flex-wrap gap-2">
-                {ratings.map((rating, index) => (
-                  <SummaryRatingPill
-                    key={`${rating.source}-${index}`}
-                    rating={rating}
-                  />
-                ))}
-              </div>
-            </TooltipProvider>
-          ) : null}
+          <TitleRatingsDisplay externalRatings={ratings} />
 
           {genres.length > 0 || runtime ? (
             <div className="flex flex-wrap items-center gap-2">

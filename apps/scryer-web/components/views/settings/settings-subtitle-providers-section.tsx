@@ -10,6 +10,7 @@ import {
   Trash2,
 } from "lucide-react";
 import { AddNewButton } from "@/components/common/add-new-button";
+import { PluginVisualLabel } from "@/components/common/plugin-visual";
 import { Button } from "@/components/ui/button";
 import { IconButton } from "@/components/ui/icon-button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -537,7 +538,15 @@ export function SettingsSubtitleProvidersSection({
                     className="border-[var(--scry-border3)] hover:bg-[var(--scry-rowHover)]"
                   >
                     <TableCell className="truncate font-medium text-[var(--scry-ink2)]">{provider.name}</TableCell>
-                    <TableCell className="text-center text-[var(--scry-ink2)]">{provider.providerType}</TableCell>
+                    <TableCell className="text-center text-[var(--scry-ink2)]">
+                      <span className="inline-flex justify-center">
+                        <PluginVisualLabel
+                          providerType={provider.providerType}
+                          pluginType="subtitle_provider"
+                          label={provider.providerType}
+                        />
+                      </span>
+                    </TableCell>
                     <TableCell className="text-center">
                       <span className={provider.isEnabled ? "text-[var(--scry-success-text-soft)]" : PROVIDER_MUTED_TEXT_CLASS}>
                         {provider.isEnabled ? t("label.enabled") : t("label.disabled")}
@@ -621,7 +630,21 @@ export function SettingsSubtitleProvidersSection({
                   onValueChange={handleProviderTypeChange}
                 >
                   <SelectTrigger id="settings-subtitle-provider-type" className="w-full">
-                    <SelectValue placeholder={t("form.providerTypePlaceholder")} />
+                    <SelectValue placeholder={t("form.providerTypePlaceholder")}>
+                      {normalizedProviderType ? (
+                        <PluginVisualLabel
+                          providerType={normalizedProviderType}
+                          pluginType="subtitle_provider"
+                          label={
+                            selectedProvider?.name ??
+                            providerTypeOptions.find(
+                              (option) => option.value === normalizedProviderType,
+                            )?.label ??
+                            normalizedProviderType
+                          }
+                        />
+                      ) : null}
+                    </SelectValue>
                   </SelectTrigger>
                   <SelectContent>
                     {providerTypeOptions.map((option) => (
@@ -633,7 +656,11 @@ export function SettingsSubtitleProvidersSection({
                         key={option.value}
                         value={option.value}
                       >
-                        {option.label}
+                        <PluginVisualLabel
+                          providerType={option.value}
+                          pluginType="subtitle_provider"
+                          label={option.label}
+                        />
                       </SelectItem>
                     ))}
                   </SelectContent>

@@ -778,7 +778,8 @@ export function SettingsRulesSection({
   return (
     <div id="settings-rules-section" className="space-y-4 text-sm">
       <div className="flex flex-col gap-4 xl:flex-row xl:items-start">
-        <div className="min-w-0 flex-1 space-y-4 xl:max-w-[1280px]">
+        <div className="min-w-0 flex-1">
+          <div className="mx-auto w-full max-w-[1280px] space-y-4">
       <div className="rounded border border-border">
         <div className="flex items-center justify-between border-b border-border px-3 py-2">
           <CardTitle className="text-base">
@@ -1094,6 +1095,7 @@ export function SettingsRulesSection({
           />
         </div>
       )}
+          </div>
         </div>
         <div className="@container w-full space-y-4 xl:w-[44%] xl:max-w-[880px] xl:shrink-0">
           <RuleLibrary

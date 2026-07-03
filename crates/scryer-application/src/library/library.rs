@@ -42,7 +42,7 @@ use crate::library_scan_unmatched::{
 use crate::settings::settings::{
     effective_scan_roots_from_root_folders, root_folder_entries_from_library_roots,
 };
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
 const LIBRARY_SCAN_MOVIE_BATCH_SIZE: usize = 32;
 const LIBRARY_SCAN_SERIES_BATCH_SIZE: usize = 8;

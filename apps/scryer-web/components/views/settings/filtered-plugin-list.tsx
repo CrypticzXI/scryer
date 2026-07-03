@@ -9,6 +9,7 @@ import {
   RefreshCw,
   Trash2,
 } from "lucide-react";
+import { PluginLogo } from "@/components/common/plugin-visual";
 import type { ProviderCatalogFamily } from "@/lib/hooks/use-provider-catalog-subscription";
 import { usePluginManagement } from "@/lib/hooks/use-plugin-management";
 import {
@@ -144,51 +145,60 @@ export function FilteredPluginList({
                 className="min-w-0 rounded-[12px] border border-[var(--scry-line2)] bg-[var(--scry-card2)] p-3"
               >
                 <div className="flex items-center justify-between gap-2">
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-2">
-                      {plugin.isInstalled && plugin.isEnabled ? (
-                        <span
-                          className="h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--scry-success-solid)]"
-                          aria-hidden="true"
-                        />
-                      ) : null}
-                      <span className="truncate text-[13px] font-semibold text-[var(--scry-ink2)]">
-                        {plugin.name}
-                      </span>
-                    </div>
-                    {plugin.description ? (
-                      <p className={`mt-0.5 line-clamp-2 text-[11.5px] leading-snug ${FILTERED_PLUGIN_MUTED_CLASS}`}>
-                        {plugin.description}
-                      </p>
-                    ) : null}
-                    {hasStatusBadges ? (
-                      <div className="mt-1.5 flex flex-wrap items-center gap-1">
-                        {plugin.builtin ? (
-                          <Badge tone="info">{t("settings.pluginBuiltin")}</Badge>
+                  <div className="flex min-w-0 items-start gap-2">
+                    <PluginLogo
+                      id={plugin.id}
+                      name={plugin.name}
+                      providerType={plugin.providerType}
+                      pluginType={plugin.pluginType}
+                      className="h-7 w-7 rounded-lg"
+                    />
+                    <div className="min-w-0">
+                      <div className="flex min-w-0 items-center gap-2">
+                        {plugin.isInstalled && plugin.isEnabled ? (
+                          <span
+                            className="h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--scry-success-solid)]"
+                            aria-hidden="true"
+                          />
                         ) : null}
-                        {plugin.official ? (
-                          <Badge tone="info">{t("settings.pluginOfficial")}</Badge>
-                        ) : null}
-                        {plugin.supportTier === "verified_community" ? (
-                          <Badge tone="positive">
-                            {t("settings.pluginVerifiedCommunity")}
-                          </Badge>
-                        ) : null}
-                        {plugin.supportTier === "unverified" ? (
-                          <Badge tone="warning">
-                            {t("settings.pluginUnverified")}
-                          </Badge>
-                        ) : null}
-                        {plugin.status === "beta" ? (
-                          <Badge tone="warning">{t("settings.pluginBeta")}</Badge>
-                        ) : null}
-                        {plugin.builtin && plugin.sourceKind === "downloaded" ? (
-                          <Badge tone="warning">
-                            {t("settings.pluginOverride")}
-                          </Badge>
-                        ) : null}
+                        <span className="truncate text-[13px] font-semibold text-[var(--scry-ink2)]">
+                          {plugin.name}
+                        </span>
                       </div>
-                    ) : null}
+                      {plugin.description ? (
+                        <p className={`mt-0.5 line-clamp-2 text-[11.5px] leading-snug ${FILTERED_PLUGIN_MUTED_CLASS}`}>
+                          {plugin.description}
+                        </p>
+                      ) : null}
+                      {hasStatusBadges ? (
+                        <div className="mt-1.5 flex flex-wrap items-center gap-1">
+                          {plugin.builtin ? (
+                            <Badge tone="info">{t("settings.pluginBuiltin")}</Badge>
+                          ) : null}
+                          {plugin.official ? (
+                            <Badge tone="info">{t("settings.pluginOfficial")}</Badge>
+                          ) : null}
+                          {plugin.supportTier === "verified_community" ? (
+                            <Badge tone="positive">
+                              {t("settings.pluginVerifiedCommunity")}
+                            </Badge>
+                          ) : null}
+                          {plugin.supportTier === "unverified" ? (
+                            <Badge tone="warning">
+                              {t("settings.pluginUnverified")}
+                            </Badge>
+                          ) : null}
+                          {plugin.status === "beta" ? (
+                            <Badge tone="warning">{t("settings.pluginBeta")}</Badge>
+                          ) : null}
+                          {plugin.builtin && plugin.sourceKind === "downloaded" ? (
+                            <Badge tone="warning">
+                              {t("settings.pluginOverride")}
+                            </Badge>
+                          ) : null}
+                        </div>
+                      ) : null}
+                      </div>
                   </div>
                   {running ? null : (
                     <div className="flex shrink-0 items-center self-center gap-1">

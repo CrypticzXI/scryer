@@ -2046,7 +2046,7 @@ impl AppUseCase {
             }
         }
 
-        info!(
+        debug!(
             title_id = %title.id,
             title_name = %title.name,
             files = discovered_file_count,

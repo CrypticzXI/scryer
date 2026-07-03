@@ -1858,6 +1858,7 @@ async fn fetch_catalog_public_sections(
               AND s.surface = 'public'
               AND UPPER(TRIM(s.section_type)) <> 'COMPLETE_THE_COLLECTION'
               AND {}
+              AND {}
               {owned_clause}
               {excluded_identity_clause}
               {resolved_clause}
@@ -1880,6 +1881,7 @@ async fn fetch_catalog_public_sections(
         ORDER BY section_sort_index ASC, section_rank ASC, id ASC",
         discovery_item_projection("i", "t"),
         authoritative_media_kind_clause("t", media_kind),
+        displayable_discovery_title_clause(datastore, "t"),
         discovery_item_row_columns()
     );
     args.push(SqlArg::I64(limit_per_section));
@@ -4126,6 +4128,18 @@ mod tests {
             .map(|item| item.target_key.as_str())
             .collect::<Vec<_>>();
         assert_eq!(target_keys, vec!["tmdb:movie:1", "tvdb:movie:5"]);
+
+        let catalog_sections = store
+            .list_catalog_public_discovery_sections(run_id, &[], &[], "movie", true, 10)
+            .await
+            .expect("catalog public sections should list");
+        assert_eq!(catalog_sections.len(), 1);
+        let catalog_target_keys = catalog_sections[0]
+            .items
+            .iter()
+            .map(|item| item.target_key.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(catalog_target_keys, vec!["tmdb:movie:1", "tvdb:movie:5"]);
 
         let _ = std::fs::remove_file(db);
     }

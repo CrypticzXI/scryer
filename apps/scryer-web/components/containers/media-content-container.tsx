@@ -321,6 +321,10 @@ function mergePreferLoadedImageFields(
       incoming.mediaFiles === undefined
         ? current.mediaFiles
         : incoming.mediaFiles,
+    moreLikeThis:
+      incoming.moreLikeThis === undefined
+        ? current.moreLikeThis
+        : incoming.moreLikeThis,
     metadataFetchedAt: incoming.metadataFetchedAt ?? current.metadataFetchedAt,
   };
 }
@@ -445,25 +449,7 @@ function isPendingHydrationPosterTitle(
 }
 
 function hasSelectedTitlePanelDetails(title: TitleRecord): boolean {
-  return Boolean(
-    title.overview?.trim() ||
-    title.backgroundUrl ||
-    title.backgroundSourceUrl ||
-    title.runtimeMinutes ||
-    (title.genres && title.genres.length > 0) ||
-    title.language ||
-    title.firstAired ||
-    title.network ||
-    title.studio ||
-    title.country ||
-    title.metadataLanguage ||
-    title.monitorType ||
-    title.useSeasonFolders != null ||
-    title.monitorSpecials != null ||
-    title.interSeasonMovies != null ||
-    title.fillerPolicy ||
-    title.recapPolicy,
-  );
+  return title.overview !== undefined && title.moreLikeThis !== undefined;
 }
 
 function hasSelectedTitleEpisodeDetails(title: TitleRecord): boolean {
@@ -899,6 +885,20 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     shouldLoadMediaSettingsForSection || bulkEditDialogOpen;
   const [debouncedTitleFilter, setDebouncedTitleFilter] = React.useState("");
   const [libraries, setLibraries] = React.useState<LibraryRecord[]>([]);
+  const effectiveLibraryScanTargetId = React.useMemo(() => {
+    const explicitSelectedLibraryIds = selectedLibraryIds.filter(
+      (libraryId) => libraryId !== ALL_LIBRARIES_VALUE,
+    );
+    const selectedLibraryId = singleSelectedLibraryId(
+      explicitSelectedLibraryIds,
+    );
+    if (selectedLibraryId) {
+      return selectedLibraryId;
+    }
+    return explicitSelectedLibraryIds.length === 0 && libraries.length === 1
+      ? (libraries[0]?.id ?? null)
+      : null;
+  }, [libraries, selectedLibraryIds]);
   const [librariesLoading, setLibrariesLoading] = React.useState(false);
   const [libraryDownloadClients, setLibraryDownloadClients] = React.useState<
     DownloadClientRecord[]
@@ -3886,8 +3886,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
 
   const handleLibraryScan = React.useCallback(
     async (libraryId?: string) => {
-      const targetLibraryId =
-        libraryId ?? singleSelectedLibraryId(selectedLibraryIds);
+      const targetLibraryId = libraryId ?? effectiveLibraryScanTargetId;
       if (!targetLibraryId) {
         setLibraryScanNotice("Choose a library to scan.");
         return;
@@ -3963,7 +3962,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
       activeFacetLabel,
       activeLibraryScanSession,
       client,
-      selectedLibraryIds,
+      effectiveLibraryScanTargetId,
       refreshLibraryScanSessions,
       setLibraryScanLoading,
       setLibraryScanNotice,
@@ -4335,7 +4334,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
           onToggleRuleFacet,
           libraryScanLoading: libraryScanInProgress,
           libraryScanDisabled:
-            libraryScanInProgress || selectedLibraryIds.length !== 1,
+            libraryScanInProgress || effectiveLibraryScanTargetId == null,
           libraryScanNotice,
           libraryScanSummary,
           libraries,

@@ -1,4 +1,5 @@
 import { Check, Loader2, Search, X } from "lucide-react";
+import { PluginVisualLabel } from "@/components/common/plugin-visual";
 import { Button } from "@/components/ui/button";
 import {
   SetupBackButton,
@@ -233,11 +234,25 @@ export function SetupIndexerView({
         <div className="space-y-2">
           <Label htmlFor="setup-indexer-provider">{t("settings.indexerProvider")}</Label>
           <Select value={providerType} onValueChange={onProviderTypeChange}>
-            <SelectTrigger id="setup-indexer-provider"><SelectValue placeholder="Select provider" /></SelectTrigger>
+            <SelectTrigger id="setup-indexer-provider">
+              <SelectValue placeholder="Select provider">
+                {selectedProvider ? (
+                  <PluginVisualLabel
+                    providerType={selectedProvider.value}
+                    pluginType="indexer"
+                    label={selectedProvider.label}
+                  />
+                ) : null}
+              </SelectValue>
+            </SelectTrigger>
             <SelectContent>
               {providerOptions.map((opt) => (
                 <SelectItem key={opt.value} value={opt.value}>
-                  {opt.label}
+                  <PluginVisualLabel
+                    providerType={opt.value}
+                    pluginType="indexer"
+                    label={opt.label}
+                  />
                 </SelectItem>
               ))}
             </SelectContent>

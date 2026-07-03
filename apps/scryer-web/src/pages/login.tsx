@@ -776,7 +776,7 @@ export default function LoginPage() {
                         <option
                           id={selectorId(
                             "login-jellyfin-connection-option",
-                            connection.displayName,
+                            connection.id,
                           )}
                           key={connection.id}
                           value={connection.id}

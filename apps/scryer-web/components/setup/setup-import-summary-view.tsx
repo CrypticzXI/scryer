@@ -164,7 +164,11 @@ export default function SetupImportSummaryView({
         : 0;
 
   return (
-    <div data-slot="setup-import-summary" className="flex flex-col gap-5">
+    <div
+      id="setup-import-summary-view"
+      data-slot="setup-import-summary"
+      className="flex flex-col gap-5"
+    >
       {/* ── Stat list card ─────────────────────────────────────────────── */}
       <div style={cardStyle}>
         {rows.map((row, index) => {

@@ -302,7 +302,7 @@ pub(super) async fn run_library_scan_pipeline(
     .await;
     let mut pool = LibraryScanMediaAnalysisPool::for_policy(app, actor, pool_policy).await?;
     let analysis_profile = pool.analysis_profile();
-    info!(
+    debug!(
         path = %library_path,
         facet = facet.as_str(),
         title_group_concurrency = analysis_profile.title_group_concurrency,
@@ -362,7 +362,7 @@ pub(super) async fn run_library_scan_pipeline(
                     Some(ScanCandidateJobEvent::EvidenceDone { metrics }) => {
                         candidate_events_seen = candidate_events_seen.saturating_add(1);
                         evidence_done = true;
-                        info!(
+                        debug!(
                             path = %library_path,
                             facet = facet.as_str(),
                             candidates = metrics.candidates_emitted,
@@ -474,7 +474,7 @@ pub(super) async fn run_library_scan_pipeline(
                     }
                     Some(ScanMatchWorkerEvent::Done(report)) => {
                         match_events_seen = match_events_seen.saturating_add(1);
-                        info!(
+                        debug!(
                             path = %library_path,
                             facet = facet.as_str(),
                             scanned = report.summary.scanned,
@@ -497,7 +497,7 @@ pub(super) async fn run_library_scan_pipeline(
             hydrated = hydration.join_next(), if hydration.has_in_flight() => {
                 hydration_batches_completed = hydration_batches_completed.saturating_add(1);
                 let batch = hydrated?;
-                info!(
+                debug!(
                     path = %library_path,
                     facet = facet.as_str(),
                     hydrated = batch.ready.len(),
@@ -696,7 +696,7 @@ pub(super) async fn run_library_scan_pipeline(
                 .await?;
             }
             Some(ScanMatchWorkerEvent::Done(report)) => {
-                info!(
+                debug!(
                     path = %library_path,
                     facet = facet.as_str(),
                     scanned = report.summary.scanned,
@@ -760,7 +760,7 @@ pub(super) async fn run_library_scan_pipeline(
 
         pool.close_input();
         summary.absorb(&pool.finish().await?);
-        info!(
+        debug!(
             path = %library_path,
             facet = facet.as_str(),
             imported = summary.imported,
@@ -781,7 +781,7 @@ pub(super) async fn run_library_scan_pipeline(
             coordinator.publish_progress().await;
         }
 
-        info!(
+        debug!(
             path = %library_path,
             facet = facet.as_str(),
             scanned = summary.scanned,
@@ -800,14 +800,14 @@ pub(super) async fn run_library_scan_pipeline(
         );
 
         if !report.unmatched_items.is_empty() {
-            info!(
+            debug!(
                 count = report.unmatched_items.len(),
                 facet = facet.as_str(),
                 "{} library scan unmatched items follow",
                 facet.as_str()
             );
             for unmatched in &report.unmatched_items {
-                info!(
+                debug!(
                     path = %unmatched.item_path,
                     display_name = %unmatched.display_name,
                     query = %unmatched.query,
@@ -1113,7 +1113,7 @@ async fn try_mark_file_total_known(ctx: TotalKnownLatchContext<'_>) -> AppResult
     ctx.coordinator.publish_progress().await;
     *ctx.file_total_marked = true;
     let diagnostics = ctx.pool.diagnostics();
-    info!(
+    debug!(
         path = %ctx.library_path,
         facet = ctx.facet.as_str(),
         file_total = ctx.media_file_total_counted,
@@ -1387,7 +1387,7 @@ async fn drain_hydration_into_media(ctx: StreamingHydrationDrainContext<'_>) -> 
         .await?;
 
         let diagnostics = ctx.pool.diagnostics();
-        info!(
+        debug!(
             path = %ctx.library_path,
             facet = ctx.facet.as_str(),
             batch_len,
@@ -1602,7 +1602,7 @@ impl ScanHydrationBatcher {
                 self.flush_requested = true;
                 self.first_pending_at = Some(Instant::now());
             }
-            info!(
+            debug!(
                 batch_len = batch.len(),
                 pending = self.pending.len(),
                 in_flight = self.in_flight.len(),
@@ -1685,7 +1685,7 @@ async fn hydrate_library_scan_title_works(
         }
         ready.push(reservation);
     }
-    info!(
+    debug!(
         batch_len = ready.len().saturating_add(failed_reservations.len()),
         hydrated = ready.len(),
         failed = failed_reservations.len(),
@@ -1799,7 +1799,7 @@ impl<'a> CandidateJobRunner<'a> {
                     .candidates_emitted
                     .is_multiple_of(LIBRARY_SCAN_DIAGNOSTIC_ITEM_INTERVAL)
                 {
-                    info!(
+                    debug!(
                         kind = ?self.ctx.kind,
                         candidates_emitted = self.metrics.candidates_emitted,
                         skipped = self.metrics.skipped,
@@ -2066,7 +2066,7 @@ async fn run_movie_candidate_jobs(ctx: &CandidateJobContext) -> AppResult<()> {
                     Some(Ok(batch)) => {
                         let batch_len = batch.len();
                         pending_entries.extend(batch);
-                        info!(
+                        debug!(
                             kind = ?ctx.kind,
                             batch_len,
                             pending_entries = pending_entries.len(),
@@ -2173,7 +2173,7 @@ async fn run_series_candidate_jobs(ctx: &CandidateJobContext) -> AppResult<()> {
                     Some(Ok(batch)) => {
                         let batch_len = batch.len();
                         pending_folders.extend(batch);
-                        info!(
+                        debug!(
                             kind = ?ctx.kind,
                             batch_len,
                             pending_folders = pending_folders.len(),
@@ -2402,7 +2402,7 @@ async fn run_scan_match_worker(
                     in_flight_keys.remove(key);
                 }
                 flush_blocked = false;
-                info!(
+                debug!(
                     facet = ctx.facet.as_str(),
                     batch_keys = chunk.len(),
                     exact_id_keys = chunk.iter().filter(|key| key.has_external_id()).count(),
@@ -2552,7 +2552,7 @@ async fn run_scan_match_worker(
                 }
             }
             metadata_batches_started = metadata_batches_started.saturating_add(1);
-            info!(
+            debug!(
                 facet = ctx.facet.as_str(),
                 batch_keys = chunk.len(),
                 exact_id_keys = chunk.iter().filter(|key| key.has_external_id()).count(),
@@ -2939,7 +2939,7 @@ async fn resolve_ready_candidate_burst(
         resolved_count = resolved_count.saturating_add(1);
         if candidate_elapsed_ms >= 1000 {
             slow_resolved_count = slow_resolved_count.saturating_add(1);
-            info!(
+            debug!(
                 facet = ctx.facet.as_str(),
                 key,
                 candidate_kind,

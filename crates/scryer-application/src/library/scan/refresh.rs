@@ -372,7 +372,7 @@ pub(super) async fn background_refresh_series(
     summary.absorb(&executor.finish().await?);
     coordinator.publish_progress().await;
 
-    info!(
+    debug!(
         path = %library_path,
         facet = facet.as_str(),
         scanned = summary.scanned,
@@ -542,7 +542,7 @@ pub(super) async fn background_refresh_movies(
     summary.absorb(&executor.finish().await?);
     coordinator.publish_progress().await;
 
-    info!(
+    debug!(
         path = %library_path,
         scanned = summary.scanned,
         imported = summary.imported,

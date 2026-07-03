@@ -5,18 +5,18 @@ import type {
   DownloadClientTypeOption,
   ConfigFieldDef,
   ProviderTypeInfo,
-} from "@/lib/types";
+} from "../types/index.ts";
 import {
   BUILT_IN_DOWNLOAD_CLIENT_TYPE_LABELS,
   BUILT_IN_DOWNLOAD_CLIENT_TYPES,
   DEFAULT_DOWNLOAD_CLIENT_TYPE,
   DEFAULT_DOWNLOAD_CLIENT_DRAFT,
   WEAVER_API_KEY_SETUP_PATH,
-} from "@/lib/constants/download-clients";
+} from "../constants/download-clients.ts";
 import {
   type ProviderConfigValueInput,
   providerConfigValuesToRecord,
-} from "@/lib/utils/provider-config";
+} from "./provider-config.ts";
 
 type BuiltInDownloadClientType = (typeof BUILT_IN_DOWNLOAD_CLIENT_TYPES)[number];
 
@@ -78,8 +78,58 @@ export function ensureDownloadClientTypeOption(
   ];
 }
 
+export const FIXED_DOWNLOAD_CLIENT_CONFIG_FIELD_KEYS = new Set([
+  "host",
+  "port",
+  "use_ssl",
+  "useSsl",
+  "url_base",
+  "urlBase",
+  "base_url",
+  "baseUrl",
+  "remote_path_mappings",
+  "remotePathMappings",
+  "client_type",
+]);
+
+export function defaultDownloadClientConfigValuesForFields(
+  fields: ConfigFieldDef[],
+) {
+  return Object.fromEntries(
+    fields.map((field) => [
+      field.key,
+      field.defaultValue ?? (field.fieldType === "bool" ? "false" : ""),
+    ]),
+  );
+}
+
+export function downloadClientConfigFieldValue(
+  draft: DownloadClientDraft,
+  field: ConfigFieldDef,
+  hasStoredSecretValue = false,
+) {
+  return (
+    draft.configValues[field.key] ??
+    (hasStoredSecretValue ? "" : field.defaultValue) ??
+    (field.fieldType === "bool" ? "false" : "")
+  );
+}
+
 function configFieldByKey(fields: ConfigFieldDef[]) {
   return new Map(fields.map((field) => [field.key, field]));
+}
+
+function normalizedConfigFieldKeys(fields: ConfigFieldDef[]) {
+  return new Set(fields.map((field) => field.key.trim().toLowerCase()));
+}
+
+function descriptorOwnsAnyField(
+  fieldKeys: Set<string>,
+  candidates: string[],
+): boolean {
+  return candidates.some((candidate) =>
+    fieldKeys.has(candidate.trim().toLowerCase()),
+  );
 }
 
 function configValueInput(
@@ -277,24 +327,61 @@ export function cleanPayloadObject(payload: Record<string, unknown>) {
   }, {});
 }
 
+export function isFileBackedDownloadClientConfigField(field: ConfigFieldDef): boolean {
+  const key = field.key.trim().toLowerCase();
+  const role = field.role?.trim().toLowerCase() ?? "";
+  const valueSource = field.valueSource?.trim().toLowerCase() ?? "";
+  const hostBinding = field.hostBinding?.trim().toLowerCase() ?? "";
+  const pathPattern = /(?:^|[_\-.])(path|folder|directory|file)(?:$|[_\-.])/;
+
+  return (
+    field.fieldType === "path" ||
+    pathPattern.test(key) ||
+    key.endsWith("path") ||
+    key.endsWith("folder") ||
+    key.endsWith("directory") ||
+    key.endsWith("file") ||
+    role.includes("path") ||
+    role.includes("folder") ||
+    role.includes("directory") ||
+    role.includes("file") ||
+    valueSource.includes("path") ||
+    valueSource.includes("folder") ||
+    valueSource.includes("directory") ||
+    valueSource.includes("file") ||
+    hostBinding.includes("path") ||
+    hostBinding.includes("folder") ||
+    hostBinding.includes("directory") ||
+    hostBinding.includes("file")
+  );
+}
+
 export function buildDownloadClientConfigValues(
   draft: DownloadClientDraft,
   fields: ConfigFieldDef[] = [],
 ) {
   const normalizedClientType = normalizeDownloadClientType(draft.clientType);
+  const descriptorFieldKeys = normalizedConfigFieldKeys(fields);
   const payload: DownloadClientConfigPayloadRecord = {
     ...draft.configValues,
     host: draft.host.trim(),
     port: draft.port.trim(),
     use_ssl: draft.useSsl,
     url_base: draft.urlBase.trim(),
-    username: draft.username.trim(),
-    password: draft.password.trim(),
     remote_path_mappings: draft.remotePathMappings,
     client_type: normalizedClientType,
   };
 
-  if (normalizedClientType === "sabnzbd" || normalizedClientType === "weaver") {
+  if (!descriptorOwnsAnyField(descriptorFieldKeys, ["username", "user_name"])) {
+    payload.username = draft.username.trim();
+  }
+  if (!descriptorOwnsAnyField(descriptorFieldKeys, ["password"])) {
+    payload.password = draft.password.trim();
+  }
+  if (
+    (normalizedClientType === "sabnzbd" || normalizedClientType === "weaver") &&
+    !descriptorOwnsAnyField(descriptorFieldKeys, ["api_key", "apiKey", "apikey"])
+  ) {
     payload.api_key = draft.apiKey.trim();
   }
 

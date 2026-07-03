@@ -266,7 +266,7 @@ async fn ensure_movie_collection_for_file(
         .create_collection(collection)
         .await
     {
-        info!(
+        debug!(
             title_id = %title.id,
             path = %file.path,
             error = %err,

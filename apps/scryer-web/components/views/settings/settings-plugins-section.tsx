@@ -1,6 +1,7 @@
 import { useState, useMemo, useRef } from "react";
 import { createPortal } from "react-dom";
 import { ArrowUpCircle, Download, ExternalLink, Loader2, Power, PowerOff, RefreshCw, Trash2, Upload } from "lucide-react";
+import { PluginLogo } from "@/components/common/plugin-visual";
 import { RenderBooleanIcon } from "@/components/common/boolean-icon";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -416,37 +417,47 @@ function PluginTable({
                 className={PLUGIN_TABLE_ROW_CLASS}
               >
                 <TableCell className={cn(nameColumnClass, PLUGIN_TABLE_CELL_CLASS)}>
-                  <div>
-                    <div className="font-medium text-[var(--scry-ink2)]">{plugin.name}</div>
-                    <div className={`whitespace-normal break-words text-xs ${PLUGIN_MUTED_TEXT_CLASS}`}>
-                      {plugin.description}
-                    </div>
-                    {(sourceLink || showDocsLink) && (
-                      <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
-                        {sourceLink && (
-                          <a
-                            href={sourceLink}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="inline-flex items-center gap-1 text-primary hover:underline"
-                          >
-                            {t("settings.pluginSource")}
-                            <ExternalLink className="h-3 w-3" />
-                          </a>
-                        )}
-                        {showDocsLink && plugin.docsUrl && (
-                          <a
-                            href={plugin.docsUrl}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="inline-flex items-center gap-1 text-primary hover:underline"
-                          >
-                            {t("settings.pluginDocs")}
-                            <ExternalLink className="h-3 w-3" />
-                          </a>
-                        )}
+                  <div className="flex min-w-0 items-start gap-3">
+                    <PluginLogo
+                      id={plugin.id}
+                      name={plugin.name}
+                      providerType={plugin.providerType}
+                      pluginType={plugin.pluginType}
+                      appearance="bare"
+                      className="h-10 w-10"
+                    />
+                    <div className="min-w-0">
+                      <div className="font-medium text-[var(--scry-ink2)]">{plugin.name}</div>
+                      <div className={`whitespace-normal break-words text-xs ${PLUGIN_MUTED_TEXT_CLASS}`}>
+                        {plugin.description}
                       </div>
-                    )}
+                      {(sourceLink || showDocsLink) && (
+                        <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
+                          {sourceLink && (
+                            <a
+                              href={sourceLink}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="inline-flex items-center gap-1 text-primary hover:underline"
+                            >
+                              {t("settings.pluginSource")}
+                              <ExternalLink className="h-3 w-3" />
+                            </a>
+                          )}
+                          {showDocsLink && plugin.docsUrl && (
+                            <a
+                              href={plugin.docsUrl}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="inline-flex items-center gap-1 text-primary hover:underline"
+                            >
+                              {t("settings.pluginDocs")}
+                              <ExternalLink className="h-3 w-3" />
+                            </a>
+                          )}
+                        </div>
+                      )}
+                    </div>
                   </div>
                 </TableCell>
                 <TableCell className={cn(typeColumnClass, PLUGIN_TABLE_CELL_CLASS, "text-sm text-[var(--scry-ink2)]")}>{categoryLabel(plugin.pluginType, t)}</TableCell>

@@ -144,9 +144,10 @@ pub(super) fn title_media_file_matches_snapshot(
         &media_file.source_signature_scheme,
         &media_file.source_signature_value,
     ) {
-        // Rows without a source signature need one analysis pass before
-        // future scans can use the cheap size + mtime reuse check.
-        (None, None) => false,
+        // Rows created before source signatures existed can reuse their
+        // persisted analysis when size/status still match; finalization
+        // backfills the current mtime signature without rerunning MediaInfo.
+        (None, None) => true,
         (Some(scheme), Some(value)) => snapshot
             .signature
             .as_ref()
@@ -629,7 +630,7 @@ mod tests {
     }
 
     #[test]
-    fn title_media_file_requires_current_mtime_signature() {
+    fn title_media_file_reuses_analysis_without_source_signature() {
         let media_file = build_test_media_file(1234, None, None, true);
         let snapshot = FileSourceSnapshot {
             size_bytes: 1234,
@@ -639,7 +640,7 @@ mod tests {
             }),
         };
 
-        assert!(!title_media_file_matches_snapshot(&media_file, &snapshot));
+        assert!(title_media_file_matches_snapshot(&media_file, &snapshot));
     }
 
     #[test]

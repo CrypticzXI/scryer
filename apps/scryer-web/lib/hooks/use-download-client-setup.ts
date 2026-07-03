@@ -12,6 +12,7 @@ import {
 import {
   buildDownloadClientConfigValues,
   buildDownloadClientTypeOptions,
+  defaultDownloadClientConfigValuesForFields,
   ensureDownloadClientTypeOption,
   normalizeDownloadClientType,
 } from "@/lib/utils/download-clients";
@@ -73,16 +74,47 @@ export function useDownloadClientSetup({ client }: UseDownloadClientSetupArgs) {
     [dcDraft.clientType, dcTypeOptions],
   );
 
+  useEffect(() => {
+    if (selectedDcConfigFields.length === 0) {
+      return;
+    }
+    setDcDraft((current) => {
+      const defaults =
+        defaultDownloadClientConfigValuesForFields(selectedDcConfigFields);
+      const missingDefaults = Object.entries(defaults).filter(
+        ([key]) => current.configValues[key] === undefined,
+      );
+      if (missingDefaults.length === 0) {
+        return current;
+      }
+      return {
+        ...current,
+        configValues: {
+          ...defaults,
+          ...current.configValues,
+        },
+      };
+    });
+  }, [selectedDcConfigFields]);
+
   const handleDcDraftChange = useCallback(
     (updates: Partial<DownloadClientDraft>) => {
       const next = { ...dcDraft, ...updates };
       if (updates.clientType && updates.clientType !== dcDraft.clientType) {
+        const nextClientType = updates.clientType;
         const prevDefault =
           DEFAULT_PORT_FOR_CLIENT_TYPE[dcDraft.clientType] ?? "8080";
         if (dcDraft.port === "" || dcDraft.port === prevDefault) {
           next.port =
-            DEFAULT_PORT_FOR_CLIENT_TYPE[updates.clientType] ?? "8080";
+            DEFAULT_PORT_FOR_CLIENT_TYPE[nextClientType] ?? "8080";
         }
+        const nextFields =
+          dcTypeOptions.find(
+            (option) =>
+              option.value === normalizeDownloadClientType(nextClientType),
+          )?.configFields ?? [];
+        next.configValues =
+          defaultDownloadClientConfigValuesForFields(nextFields);
       }
 
       const hasChanged = (
@@ -98,7 +130,7 @@ export function useDownloadClientSetup({ client }: UseDownloadClientSetupArgs) {
       setDcTestResult(null);
       setDcError(null);
     },
-    [dcDraft],
+    [dcDraft, dcTypeOptions],
   );
 
   // ── Download client test ────────────────────────────────────────────
@@ -195,6 +227,7 @@ export function useDownloadClientSetup({ client }: UseDownloadClientSetupArgs) {
     setDcLocalPathStyle,
     setDcTypeOptions,
     availableDcTypeOptions,
+    selectedDcConfigFields,
     dcTesting,
     dcTestResult,
     dcSaving,
