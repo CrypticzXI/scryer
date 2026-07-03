@@ -600,6 +600,7 @@ export default function LoginPage() {
             <>
               {showLoginMethodChooser ? (
                 <button
+                  id="login-password-method"
                   type="button"
                   onClick={() =>
                     setActiveMethod((current) =>
@@ -834,12 +835,17 @@ export default function LoginPage() {
             <div className="space-y-3">
               {plexConnections.length > 1 ? (
                 <select
+                  id="login-plex-connection"
                   className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
                   value={plexConnectionId}
                   onChange={(event) => setPlexConnectionId(event.target.value)}
                 >
                   {plexConnections.map((connection) => (
-                    <option key={connection.id} value={connection.id}>
+                    <option
+                      id={selectorId("login-plex-connection-option", connection.id)}
+                      key={connection.id}
+                      value={connection.id}
+                    >
                       {connectionOptionLabel(connection)}
                     </option>
                   ))}

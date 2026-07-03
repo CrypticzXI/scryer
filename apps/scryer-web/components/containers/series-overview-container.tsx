@@ -1351,6 +1351,9 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
         }
         confirmLabel={t("label.delete")}
         cancelLabel={t("label.cancel")}
+        contentId="title-delete-dialog"
+        confirmButtonId="title-delete-confirm"
+        cancelButtonId="title-delete-cancel"
         isBusy={deleteLoading}
         confirmDisabled={deleteTitleConfirmDisabled}
         onConfirm={handleConfirmDeleteTitle}
@@ -1359,6 +1362,7 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
         <div className="space-y-3">
           <label className="flex items-center gap-2">
             <Checkbox
+              id="title-delete-files-on-disk"
               checked={deleteFilesOnDisk}
               onCheckedChange={(checked) => setDeleteFilesOnDisk(checked === true)}
               disabled={deleteLoading}
@@ -1372,6 +1376,8 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
               error={titleDeletePreviewError}
               typedConfirmation={titleDeleteTypedConfirmation}
               onTypedConfirmationChange={setTitleDeleteTypedConfirmation}
+              typedConfirmationPromptId="title-delete-typed-confirmation-prompt"
+              typedConfirmationInputId="title-delete-typed-confirmation"
             />
           ) : null}
         </div>

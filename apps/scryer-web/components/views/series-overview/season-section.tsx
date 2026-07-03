@@ -25,6 +25,7 @@ import {
   seriesOverviewSeasonMonitorId,
   seriesOverviewSeasonSectionId,
   seriesOverviewSeasonSearchId,
+  seriesOverviewSeasonToggleId,
 } from "@/lib/utils/dom-ids";
 import {
   EpisodeProgressBar,
@@ -234,6 +235,7 @@ export function SeasonSection({
     >
       {showCollectionHeader ? (
         <div
+          id={seriesOverviewSeasonToggleId(collection.collectionIndex)}
           role="button"
           tabIndex={0}
           aria-expanded={expanded}

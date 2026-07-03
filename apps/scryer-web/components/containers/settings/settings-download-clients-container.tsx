@@ -620,6 +620,8 @@ export function SettingsDownloadClientsContainer({
               : t("label.discard")
         }
         cancelLabel={t("label.cancel")}
+        confirmButtonId="settings-download-client-editor-action-confirm"
+        cancelButtonId="settings-download-client-editor-action-cancel"
         isBusy={mutatingDownloadClientId !== null}
         onConfirm={confirmPendingEditorAction}
         onCancel={() => setPendingEditorAction(null)}

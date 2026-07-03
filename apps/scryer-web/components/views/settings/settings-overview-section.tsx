@@ -221,7 +221,11 @@ export function SettingsOverviewSection({
               </div>
             </div>
 
-            <Button onClick={onSaveGeneralSettings} disabled={generalSaving}>
+            <Button
+              id="settings-general-save"
+              onClick={onSaveGeneralSettings}
+              disabled={generalSaving}
+            >
               {generalSaving ? (
                 <>
                   <Loader2 className="mr-2 h-4 w-4 animate-spin" />

@@ -290,12 +290,18 @@ export function SetupIndexerView({
             {t("label.testConnection")}
           </Button>
           {testResult === "success" && (
-            <span className="flex items-center gap-1 text-sm text-[var(--scry-success-text-soft)]">
+            <span
+              id="setup-indexer-test-result-success"
+              className="flex items-center gap-1 text-sm text-[var(--scry-success-text-soft)]"
+            >
               <Check className="h-4 w-4" /> {t("setup.connectionSuccess")}
             </span>
           )}
           {testResult === "failed" && (
-            <span className="flex items-center gap-1 text-sm text-destructive">
+            <span
+              id="setup-indexer-test-result-failed"
+              className="flex items-center gap-1 text-sm text-destructive"
+            >
               <X className="h-4 w-4" /> {t("setup.connectionFailed")}
             </span>
           )}

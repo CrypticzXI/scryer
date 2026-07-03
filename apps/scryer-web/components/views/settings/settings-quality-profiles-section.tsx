@@ -867,6 +867,10 @@ export function SettingsQualityProfilesSection({
                       >
                         <span className="text-xs">{getQualityTierLabel(qualityTier)}</span>
                         <Button
+                          id={selectorId(
+                            "settings-quality-profile-tier-remove",
+                            qualityTier,
+                          )}
                           type="button"
                           variant="destructive"
                           size="sm"
@@ -900,6 +904,10 @@ export function SettingsQualityProfilesSection({
                       >
                         <span className="text-xs">{option.label}</span>
                         <Button
+                          id={selectorId(
+                            "settings-quality-profile-tier-add",
+                            option.value,
+                          )}
                           type="button"
                           variant="secondary"
                           size="sm"
@@ -927,7 +935,10 @@ export function SettingsQualityProfilesSection({
                   </span>
                 </Label>
                 <Select value={qualityProfileDraft.archival_quality || "__default__"} onValueChange={(v) => updateQualityProfileDraft({ archival_quality: v === "__default__" ? "" : v })}>
-                  <SelectTrigger className="w-full">
+                  <SelectTrigger
+                    id="settings-quality-profile-archival-quality"
+                    className="w-full"
+                  >
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -1056,7 +1067,10 @@ export function SettingsQualityProfilesSection({
 
               {/* Scoring overrides */}
               <details className="overflow-hidden rounded-[10px] border border-[var(--scry-border3)] bg-[var(--scry-inset)]">
-                <summary className={`cursor-pointer select-none px-3 py-2 text-xs font-medium ${QUALITY_MUTED_TEXT_CLASS}`}>
+                <summary
+                  id="settings-quality-profile-scoring-overrides-summary"
+                  className={`cursor-pointer select-none px-3 py-2 text-xs font-medium ${QUALITY_MUTED_TEXT_CLASS}`}
+                >
                   <span className="inline-flex items-center gap-2">
                     {t("qualityProfile.scoringOverrides")}
                     <InfoHelp
@@ -1091,12 +1105,36 @@ export function SettingsQualityProfilesSection({
                             updateQualityProfileDraft({ scoring_overrides: nextOverrides });
                           }}
                         >
-                          <SelectTrigger className="w-28 shrink-0">
+                          <SelectTrigger
+                            id={selectorId(
+                              "settings-quality-profile-scoring-override",
+                              key,
+                            )}
+                            className="w-28 shrink-0"
+                          >
                             <SelectValue />
                           </SelectTrigger>
                           <SelectContent>
-                            <SelectItem value="true">{t("label.yes")}</SelectItem>
-                            <SelectItem value="false">{t("label.no")}</SelectItem>
+                            <SelectItem
+                              id={selectorId(
+                                "settings-quality-profile-scoring-override-option",
+                                key,
+                                "true",
+                              )}
+                              value="true"
+                            >
+                              {t("label.yes")}
+                            </SelectItem>
+                            <SelectItem
+                              id={selectorId(
+                                "settings-quality-profile-scoring-override-option",
+                                key,
+                                "false",
+                              )}
+                              value="false"
+                            >
+                              {t("label.no")}
+                            </SelectItem>
                           </SelectContent>
                         </Select>
                         <span className="inline-flex items-center gap-2 text-sm">
@@ -1520,6 +1558,8 @@ export function SettingsQualityProfilesSection({
             : t("label.discard")
       }
       cancelLabel={t("label.cancel")}
+      confirmButtonId="settings-quality-profile-editor-action-confirm"
+      cancelButtonId="settings-quality-profile-editor-action-cancel"
       isBusy={qualityProfilesSaving}
       onConfirm={confirmPendingEditorAction}
       onCancel={() => setPendingEditorAction(null)}

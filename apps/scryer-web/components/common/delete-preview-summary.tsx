@@ -8,6 +8,8 @@ type DeletePreviewSummaryProps = {
   error: string | null;
   typedConfirmation: string;
   onTypedConfirmationChange: (value: string) => void;
+  typedConfirmationPromptId?: string;
+  typedConfirmationInputId?: string;
 };
 
 export function DeletePreviewSummary({
@@ -16,6 +18,8 @@ export function DeletePreviewSummary({
   error,
   typedConfirmation,
   onTypedConfirmationChange,
+  typedConfirmationPromptId,
+  typedConfirmationInputId,
 }: DeletePreviewSummaryProps) {
   const t = useTranslate();
 
@@ -71,10 +75,14 @@ export function DeletePreviewSummary({
       ) : null}
       {preview.requiresTypedConfirmation ? (
         <div className="space-y-2">
-          <p className="text-xs font-medium text-foreground">
+          <p
+            id={typedConfirmationPromptId}
+            className="text-xs font-medium text-foreground"
+          >
             {preview.typedConfirmationPrompt ?? t("deletePreview.confirmPrompt")}
           </p>
           <Input
+            id={typedConfirmationInputId}
             value={typedConfirmation}
             onChange={(event) => onTypedConfirmationChange(event.target.value)}
             placeholder="DELETE"

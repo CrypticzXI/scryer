@@ -810,7 +810,9 @@ export function SettingsRulesSection({
                   id={selectorId("settings-rule-row", record.id)}
                 >
                   <TableCell className="font-medium">
-                    {record.name}
+                    <span id={selectorId("settings-rule-name", record.name)}>
+                      {record.name}
+                    </span>
                     {record.isManaged && record.managedKey ? (
                       <ManagedBadge managedKey={record.managedKey} />
                     ) : null}

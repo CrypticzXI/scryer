@@ -533,7 +533,7 @@ export function SettingsSubtitleProvidersSection({
                 providerConfigs.map((provider) => (
                   <TableRow
                     key={provider.id}
-                    id={selectorId("settings-subtitle-provider-row", provider.id)}
+                    id={selectorId("settings-subtitle-provider-row", provider.name)}
                     className="border-[var(--scry-border3)] hover:bg-[var(--scry-rowHover)]"
                   >
                     <TableCell className="truncate font-medium text-[var(--scry-ink2)]">{provider.name}</TableCell>
@@ -625,7 +625,14 @@ export function SettingsSubtitleProvidersSection({
                   </SelectTrigger>
                   <SelectContent>
                     {providerTypeOptions.map((option) => (
-                      <SelectItem key={option.value} value={option.value}>
+                      <SelectItem
+                        id={selectorId(
+                          "settings-subtitle-provider-type-option",
+                          option.value,
+                        )}
+                        key={option.value}
+                        value={option.value}
+                      >
                         {option.label}
                       </SelectItem>
                     ))}

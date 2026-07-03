@@ -346,7 +346,10 @@ export function ManualImportDialog({
                             <SelectValue placeholder="Select target..." />
                           </SelectTrigger>
                           <SelectContent className="max-h-[300px]">
-                            <SelectItem value={UNASSIGNED}>
+                            <SelectItem
+                              id={selectorId("activity-manual-import-skip-option")}
+                              value={UNASSIGNED}
+                            >
                               <span className="text-muted-foreground/60">Skip (unassigned)</span>
                             </SelectItem>
                             {seriesMovies.length > 0 && (

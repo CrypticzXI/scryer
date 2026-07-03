@@ -915,6 +915,7 @@ export function SettingsBackupsContainer() {
                     className="font-[var(--font-code)]"
                   />
                   <Button
+                    id="backup-location-browse"
                     type="button"
                     variant="outline"
                     className="shrink-0"
@@ -931,7 +932,10 @@ export function SettingsBackupsContainer() {
                 <p className={`text-xs font-medium uppercase ${BACKUPS_MUTED_TEXT_CLASS}`}>
                   {t("settings.backupLocationEffectivePath")}
                 </p>
-                <p className="break-all font-[var(--font-code)] text-sm text-[var(--scry-ink2)]">
+                <p
+                  id="backup-location-effective-path"
+                  className="break-all font-[var(--font-code)] text-sm text-[var(--scry-ink2)]"
+                >
                   {savedBackupSettings.effectiveBackupPath || savedBackupSettings.defaultBackupPath}
                 </p>
               </div>
@@ -943,6 +947,7 @@ export function SettingsBackupsContainer() {
 
             <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
               <Button
+                id="backup-location-save"
                 type="button"
                 variant="primary"
                 onClick={() => void handleSaveBackupSettings()}
@@ -1027,7 +1032,14 @@ export function SettingsBackupsContainer() {
                       >
                         <TableCell className="align-top">
                           <div className="space-y-1">
-                            <div className="font-medium text-[var(--scry-ink2)]">
+                            <div
+                              id={selectorId(
+                                "settings-backup-filename",
+                                "created-at",
+                                backup.createdAt,
+                              )}
+                              className="font-medium text-[var(--scry-ink2)]"
+                            >
                               {backup.filename}
                             </div>
                             <div className={`flex flex-wrap items-center gap-2 text-xs ${BACKUPS_MUTED_TEXT_CLASS}`}>

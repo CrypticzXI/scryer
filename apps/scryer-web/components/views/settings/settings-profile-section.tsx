@@ -886,7 +886,14 @@ export function SettingsProfileSection({
                   </SelectTrigger>
                   <SelectContent>
                     {selectedLinkConnections.map((connection) => (
-                      <SelectItem key={connection.id} value={connection.id}>
+                      <SelectItem
+                        id={selectorId(
+                          "profile-link-jellyfin-connection-option",
+                          connection.id,
+                        )}
+                        key={connection.id}
+                        value={connection.id}
+                      >
                         {connectionLabel(connection)}
                       </SelectItem>
                     ))}
@@ -989,7 +996,14 @@ export function SettingsProfileSection({
                   </SelectTrigger>
                   <SelectContent>
                     {selectedLinkConnections.map((connection) => (
-                      <SelectItem key={connection.id} value={connection.id}>
+                      <SelectItem
+                        id={selectorId(
+                          "profile-link-plex-connection-option",
+                          connection.id,
+                        )}
+                        key={connection.id}
+                        value={connection.id}
+                      >
                         {connectionLabel(connection)}
                       </SelectItem>
                     ))}

@@ -136,6 +136,10 @@ export const IndexerRoutingPanel = React.memo(function IndexerRoutingPanel({
                             "indexer-routing-categories-panel",
                             indexer.name,
                           )}
+                          categoryIdPrefix={selectorId(
+                            "indexer-routing-category",
+                            indexer.name,
+                          )}
                           value={routing.categories}
                           scope={activeQualityScopeId}
                           disabled={indexerRoutingLoading}

@@ -416,7 +416,10 @@ export function SubtitleSearchModal({
                 </TableHeader>
                 <TableBody>
                   {results.map((r) => (
-                    <TableRow key={r.providerFileId}>
+                    <TableRow
+                      key={r.providerFileId}
+                      id={selectorId("subtitle-search-result-row", r.providerFileId)}
+                    >
                       <TableCell className="min-w-0">
                         <span className="block break-words text-xs leading-relaxed">
                           {r.releaseInfo || "—"}

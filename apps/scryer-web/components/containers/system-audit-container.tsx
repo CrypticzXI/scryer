@@ -19,6 +19,7 @@ import { CODE_FONT } from "@/lib/fonts";
 import type { AuditLogEvent } from "@/lib/types";
 import type { UiDateTimeFormat } from "@/lib/types/settings";
 import { formatUiDateTime } from "@/lib/utils/date-format";
+import { selectorId } from "@/lib/utils/dom-ids";
 
 const PAGE_SIZE = 100;
 const AUDIT_PANEL_CLASS =
@@ -153,7 +154,7 @@ export const SystemAuditContainer = React.memo(function SystemAuditContainer() {
 
   return (
     <div className="space-y-4">
-      <section className={AUDIT_PANEL_CLASS}>
+      <section id="system-audit-section" className={AUDIT_PANEL_CLASS}>
         <div className={AUDIT_PANEL_HEADER_CLASS}>
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div className="min-w-0 space-y-1">
@@ -208,7 +209,14 @@ export const SystemAuditContainer = React.memo(function SystemAuditContainer() {
                   const isExpanded = expanded[event.eventId] ?? false;
                   return (
                     <React.Fragment key={event.eventId}>
-                      <TableRow className="border-[var(--scry-border3)] hover:bg-[var(--scry-rowHover)]">
+                      <TableRow
+                        id={selectorId(
+                          "system-audit-event-row",
+                          event.eventType,
+                          event.eventId,
+                        )}
+                        className="border-[var(--scry-border3)] hover:bg-[var(--scry-rowHover)]"
+                      >
                         <TableCell className="text-center">
                           <button
                             type="button"
@@ -231,7 +239,14 @@ export const SystemAuditContainer = React.memo(function SystemAuditContainer() {
                           {formatTimestamp(event.occurredAt, dateTimeFormat)}
                         </TableCell>
                         <TableCell className="align-top">
-                          <div className="text-sm font-medium text-[var(--scry-ink2)]">
+                          <div
+                            id={selectorId(
+                              "system-audit-event-type",
+                              event.eventType,
+                              event.eventId,
+                            )}
+                            className="text-sm font-medium text-[var(--scry-ink2)]"
+                          >
                             {formatLabel(event.eventType)}
                           </div>
                           <div className={`mt-1 text-xs ${AUDIT_MUTED_TEXT_CLASS}`}>
@@ -239,7 +254,14 @@ export const SystemAuditContainer = React.memo(function SystemAuditContainer() {
                           </div>
                         </TableCell>
                         <TableCell className="align-top text-center">
-                          <div className="truncate text-sm text-[var(--scry-ink2)]">
+                          <div
+                            id={selectorId(
+                              "system-audit-event-actor",
+                              event.eventType,
+                              event.eventId,
+                            )}
+                            className="truncate text-sm text-[var(--scry-ink2)]"
+                          >
                             {event.actorDisplayName}
                           </div>
                           <div className={`mt-1 text-xs ${AUDIT_MUTED_TEXT_CLASS}`}>
@@ -247,7 +269,14 @@ export const SystemAuditContainer = React.memo(function SystemAuditContainer() {
                           </div>
                         </TableCell>
                         <TableCell className={`align-top text-center text-sm ${AUDIT_MUTED_TEXT_CLASS}`}>
-                          <span className="block truncate">
+                          <span
+                            id={selectorId(
+                              "system-audit-event-target",
+                              event.eventType,
+                              event.eventId,
+                            )}
+                            className="block truncate"
+                          >
                             {event.titleId ?? event.facet ?? "\u2014"}
                           </span>
                         </TableCell>

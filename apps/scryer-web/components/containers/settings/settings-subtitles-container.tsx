@@ -1026,6 +1026,7 @@ export function SettingsSubtitlesContainer({
             </button>
             <div className="flex shrink-0 justify-end">
               <SettingsToggleSwitch
+                id="settings-subtitles-enabled"
                 checked={settings.enabled}
                 disabled={loading}
                 size="lg"

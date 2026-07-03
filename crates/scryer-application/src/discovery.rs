@@ -19,7 +19,7 @@ use crate::{AppError, AppResult, AppUseCase};
 use chrono::{DateTime, Utc};
 use scryer_domain::{
     DomainEvent, DomainEventPayload, DomainExternalIds, ExternalId, LibraryPermission, MediaFacet,
-    Title, TitleContextSnapshot, User,
+    Title, TitleContextSnapshot, User, title_catalog_sort_input,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
@@ -3044,9 +3044,9 @@ fn discovery_item_record(
         target_kind: item.target_kind.clone(),
         resolved: item.resolved,
         resolved_title_id: None,
-        display_title: item.display_title.clone(),
-        original_title: non_empty_string(&item.original_title),
-        sort_title: non_empty_string(&item.display_title),
+        display_title: discovery_display_title(item).unwrap_or_default(),
+        original_title: non_identifier_discovery_title(&item.original_title).map(str::to_string),
+        sort_title: discovery_sort_title(item),
         year: item.year,
         poster_path: non_empty_string(&item.poster_path),
         poster_url: non_empty_string(&item.poster_url),
@@ -3705,6 +3705,50 @@ fn non_empty_string(value: &str) -> Option<String> {
     (!value.is_empty()).then(|| value.to_string())
 }
 
+fn non_identifier_discovery_title(value: &str) -> Option<&str> {
+    let value = value.trim();
+    if value.is_empty() || value.chars().all(|ch| ch.is_ascii_digit()) {
+        return None;
+    }
+    let mut parts = value.splitn(3, ':');
+    let Some(provider) = parts.next() else {
+        return Some(value);
+    };
+    let Some(kind) = parts.next() else {
+        return Some(value);
+    };
+    let Some(_) = parts.next() else {
+        return Some(value);
+    };
+    let source_like = !provider.is_empty()
+        && provider
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '+' | '-'))
+        && provider
+            .chars()
+            .next()
+            .is_some_and(|ch| ch.is_ascii_alphabetic())
+        && !kind.is_empty()
+        && kind
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '+' | '-'));
+    (!source_like).then_some(value)
+}
+
+fn discovery_display_title(item: &DiscoveryTitle) -> Option<String> {
+    non_identifier_discovery_title(&item.display_title)
+        .or_else(|| non_identifier_discovery_title(&item.original_title))
+        .map(str::to_string)
+}
+
+fn discovery_sort_title(item: &DiscoveryTitle) -> Option<String> {
+    let title = discovery_display_title(item)?;
+    let sort_title = title_catalog_sort_input(&title);
+    non_identifier_discovery_title(&sort_title)
+        .or_else(|| non_identifier_discovery_title(&title))
+        .map(str::to_string)
+}
+
 fn discovery_json_error(error: serde_json::Error) -> AppError {
     AppError::Repository(format!("failed to encode discovery payload JSON: {error}"))
 }
@@ -4306,6 +4350,26 @@ mod tests {
 
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].resolved_title_id, None);
+    }
+
+    #[test]
+    fn discovery_item_records_derive_local_sort_title_from_human_title() {
+        let now = Utc.timestamp_opt(0, 0).unwrap();
+        let item = DiscoveryTitle {
+            target_key: "tvdb:movie:603".to_string(),
+            target_kind: "movie".to_string(),
+            resolved: true,
+            display_title: "tvdb:movie:603".to_string(),
+            original_title: "\u{ff34}\u{ff48}\u{ff45} Matrix".to_string(),
+            ..DiscoveryTitle::default()
+        };
+
+        let records = snapshot_item_records("run-1", "run-1", &[item], &HashMap::new(), now)
+            .expect("discovery item records should build");
+
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].display_title, "\u{ff34}\u{ff48}\u{ff45} Matrix");
+        assert_eq!(records[0].sort_title.as_deref(), Some("Matrix"));
     }
 
     #[test]

@@ -144,7 +144,12 @@ function ScriptRunsTable({
           return (
             <TableRow
               key={run.id}
-              id={selectorId("settings-post-processing-run-row", run.id)}
+              id={selectorId(
+                "settings-post-processing-run-row",
+                run.status,
+                run.titleName || run.titleId || "unknown-title",
+                run.id,
+              )}
             >
               <TableCell className="text-xs">
                 {run.titleName || run.titleId || "--"}
@@ -269,7 +274,7 @@ export const SettingsPostProcessingSection = React.memo(
                 {scripts.map((script) => (
                   <React.Fragment key={script.id}>
                     <TableRow
-                      id={selectorId("settings-post-processing-row", script.id)}
+                      id={selectorId("settings-post-processing-row", script.name)}
                       className="cursor-pointer"
                       onClick={() => handleToggleExpand(script.id)}
                     >

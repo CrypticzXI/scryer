@@ -38,6 +38,7 @@ import type { Release, TitleRecord } from "@/lib/types";
 import type { ParsedQualityProfile } from "@/lib/types/quality-profiles";
 import { cn } from "@/lib/utils";
 import {
+  titleOverviewDeleteButtonId,
   titleOverviewInteractiveSearchButtonId,
   titleOverviewInteractiveSearchPanelId,
   titleOverviewOpenButtonId,
@@ -907,6 +908,7 @@ export function CompactTitleTable({
                   </TitleTableTooltipActionButton>
                 ) : null}
                 <TitleTableTooltipActionButton
+                  id={titleOverviewDeleteButtonId(item.id)}
                   tone="delete"
                   label={t("label.delete")}
                   onClick={() => onDelete(item)}

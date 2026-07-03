@@ -38,6 +38,7 @@ import type { ParsedQualityProfile } from "@/lib/types/quality-profiles";
 import { selectPosterVariantUrl } from "@/lib/utils/poster-images";
 import { cn } from "@/lib/utils";
 import {
+  titleOverviewDeleteButtonId,
   titleOverviewInteractiveSearchButtonId,
   titleOverviewInteractiveSearchPanelId,
   titleOverviewOpenButtonId,
@@ -793,6 +794,7 @@ export function TitleTable({
                   </TitleTableTooltipActionButton>
                 ) : null}
                 <TitleTableTooltipActionButton
+                  id={titleOverviewDeleteButtonId(item.id)}
                   tone="delete"
                   label={t("label.delete")}
                   onClick={() => onDelete(item)}

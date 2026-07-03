@@ -139,7 +139,10 @@ export function TitleHistoryModal({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="w-[calc(100%-1rem)] max-w-[95vw] sm:max-w-5xl lg:max-w-6xl max-h-[85vh] overflow-hidden flex flex-col">
+      <DialogContent
+        id="title-history-dialog"
+        className="w-[calc(100%-1rem)] max-w-[95vw] sm:max-w-5xl lg:max-w-6xl max-h-[85vh] overflow-hidden flex flex-col"
+      >
         <DialogHeader>
           <DialogTitle>{titleName} — {t("history.title")}</DialogTitle>
         </DialogHeader>

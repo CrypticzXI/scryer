@@ -2508,13 +2508,88 @@ async fn graphql_local_password_login_requires_mfa_enrollment_when_enabled() {
     assert!(login_payload["mfaVerifiedUntil"].as_str().is_some());
     assert_eq!(login_payload["user"]["username"], "localmfa");
     let full_token = login_payload["token"].as_str().expect("full token");
-    let (_user, full_claims) = ctx
+    let (mfa_user, full_claims) = ctx
         .app
         .authenticate_token_with_claims(full_token)
         .await
         .expect("authenticate full token");
     assert_eq!(full_claims.session_scope, JwtSessionScope::Full);
     assert!(full_claims.mfa_verified_until.is_some());
+
+    let totp_store = TotpStore::new(ctx.db.datastore(), ctx.db.encryption_key_state());
+    let mut credential = totp_store
+        .get_credential_for_user(&mfa_user.id)
+        .await
+        .expect("load Jellyfin user TOTP credential")
+        .expect("Jellyfin user TOTP credential");
+    credential.last_accepted_step = None;
+    totp_store
+        .upsert_credential(credential)
+        .await
+        .expect("reset accepted Jellyfin TOTP step");
+
+    let missing_code = gql(
+        &ctx,
+        r#"
+        mutation LoginWithJellyfin($connectionId: ID!, $username: String!, $password: String!) {
+          loginWithJellyfin(input: {
+            connectionId: $connectionId
+            username: $username
+            password: $password
+          }) {
+            token
+          }
+        }
+        "#,
+        json!({
+            "connectionId": "jellyfin-main",
+            "username": "jellyfin-mfa",
+            "password": "jellyfin-pass1",
+        }),
+    )
+    .await;
+    assert_mfa_step_up_required(&missing_code);
+
+    let verified_login = gql(
+        &ctx,
+        r#"
+        mutation LoginWithJellyfin($connectionId: ID!, $username: String!, $password: String!, $totpCode: String!) {
+          loginWithJellyfin(input: {
+            connectionId: $connectionId
+            username: $username
+            password: $password
+            totpCode: $totpCode
+          }) {
+            token
+            mfaEnrollmentRequired
+            mfaVerifiedUntil
+            user { username }
+          }
+        }
+        "#,
+        json!({
+            "connectionId": "jellyfin-main",
+            "username": "jellyfin-mfa",
+            "password": "jellyfin-pass1",
+            "totpCode": test_totp_code(secret_base32),
+        }),
+    )
+    .await;
+    assert_no_errors(&verified_login);
+    let verified_payload = &verified_login["data"]["loginWithJellyfin"];
+    assert_eq!(verified_payload["mfaEnrollmentRequired"], false);
+    assert!(verified_payload["mfaVerifiedUntil"].as_str().is_some());
+    assert_eq!(verified_payload["user"]["username"], "jellyfin-mfa");
+    let verified_token = verified_payload["token"]
+        .as_str()
+        .expect("verified Jellyfin login token");
+    let (_user, verified_claims) = ctx
+        .app
+        .authenticate_token_with_claims(verified_token)
+        .await
+        .expect("authenticate verified Jellyfin token");
+    assert_eq!(verified_claims.session_scope, JwtSessionScope::Full);
+    assert!(verified_claims.mfa_verified_until.is_some());
 }
 
 #[tokio::test]

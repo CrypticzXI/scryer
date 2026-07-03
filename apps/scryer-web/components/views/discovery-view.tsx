@@ -525,11 +525,7 @@ function filterDiscoverySections(
     .map((section) => ({
       ...section,
       items: section.items.filter((item) => {
-        if (
-          !usefulDiscoveryTitle(item.displayTitle) &&
-          !usefulDiscoveryTitle(item.sortTitle) &&
-          !usefulDiscoveryTitle(item.originalTitle)
-        ) {
+        if (!discoveryItemHasUsefulTitle(item)) {
           return false;
         }
         const contentType = itemContentType(item);
@@ -540,6 +536,14 @@ function filterDiscoverySections(
       }),
     }))
     .filter((section) => section.items.length > 0);
+}
+
+function discoveryItemHasUsefulTitle(item: DiscoveryItem) {
+  return Boolean(
+    usefulDiscoveryTitle(item.displayTitle) ||
+      usefulDiscoveryTitle(item.sortTitle) ||
+      usefulDiscoveryTitle(item.originalTitle),
+  );
 }
 
 function findHeroRailSection(sections: DiscoverySection[]) {
@@ -1315,7 +1319,10 @@ export function DiscoveryView({
     [sections],
   );
   const heroItem = React.useMemo(
-    () => home?.heroItem ?? firstHeroItem(heroSections),
+    () =>
+      home?.heroItem && discoveryItemHasUsefulTitle(home.heroItem)
+        ? home.heroItem
+        : firstHeroItem(heroSections),
     [heroSections, home?.heroItem],
   );
   const genreTiles = React.useMemo(() => buildGenreTiles(allItems), [allItems]);
