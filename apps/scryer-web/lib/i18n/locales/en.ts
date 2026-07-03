@@ -116,7 +116,6 @@ const en: LocaleDictionary = {
   "discovery.tab.popular": "Popular",
   "discovery.tab.upcoming": "Upcoming",
   "discovery.tab.topRated": "Top Rated",
-  "discovery.tab.recentlyAdded": "Recently Added",
   "discovery.filters": "Filters",
   "discovery.contentType": "Content Type",
   "discovery.type.movies": "Movies",

@@ -129,6 +129,16 @@ function isDiscoveryItem(value: unknown) {
     Array.isArray(value.relationSubtypes) &&
     Array.isArray(value.facetTerms) &&
     Array.isArray(value.contextTerms) &&
+    (!("externalIds" in value) ||
+      (Array.isArray(value.externalIds) &&
+        value.externalIds.every(
+          (externalId) =>
+            isRecord(externalId) &&
+            typeof externalId.source === "string" &&
+            typeof externalId.kind === "string" &&
+            typeof externalId.id === "string" &&
+            typeof externalId.key === "string",
+        ))) &&
     typeof value.ownedInInput === "boolean"
   );
 }

@@ -152,12 +152,6 @@ pub(crate) struct PreparedMovieLibraryScanCandidate {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) enum PreparedMovieLibraryScanEntry {
-    Candidate(Box<PreparedMovieLibraryScanCandidate>),
-    Skipped { item_path: String },
-}
-
-#[derive(Clone, Debug)]
 pub(crate) struct PreparedSeriesLibraryScanCandidate {
     pub(crate) folder_path: PathBuf,
     pub(crate) folder_name: Option<String>,
@@ -1018,7 +1012,7 @@ pub(crate) async fn prepare_movie_library_scan_entries(
     entries: &[MovieTopLevelEntry],
     library_path: &str,
     scan_hints: Option<&LibraryScanHintSet>,
-) -> AppResult<Vec<PreparedMovieLibraryScanEntry>> {
+) -> AppResult<Vec<PreparedMovieLibraryScanCandidate>> {
     let mut prepared_results = vec![None; entries.len()];
 
     for (chunk_index, entry_chunk) in entries.chunks(MOVIE_ENTRY_PREP_CONCURRENCY).enumerate() {
@@ -1059,48 +1053,19 @@ async fn prepare_movie_library_scan_entry(
     entry: MovieTopLevelEntry,
     library_path: String,
     scan_hints: Option<&LibraryScanHintSet>,
-) -> AppResult<PreparedMovieLibraryScanEntry> {
-    let entry_path = path_to_stored_string(&entry.path);
-    let mut discovered_files = if entry.is_dir {
-        library_scanner
-            .scan_directory(path_to_stored_string(&entry.path).as_str())
-            .await?
-    } else {
-        vec![LibraryFile {
-            path: entry_path.clone(),
-            display_name: entry
-                .path
-                .file_stem()
-                .map(|stem| stem.to_string_lossy().into_owned())
-                .unwrap_or_default()
-                .trim()
-                .to_string(),
-            nfo_path: None,
-            size_bytes: None,
-            source_signature_scheme: None,
-            source_signature_value: None,
-        }]
-    };
-
-    if discovered_files.is_empty() {
-        return Ok(PreparedMovieLibraryScanEntry::Skipped {
-            item_path: entry_path,
-        });
+) -> AppResult<PreparedMovieLibraryScanCandidate> {
+    match prepare_movie_candidate_evidence(library_scanner, entry, library_path, scan_hints).await?
+    {
+        MovieCandidateEvidence::Candidate {
+            mut candidate,
+            inline_inventory,
+        } => {
+            if let Some(files) = inline_inventory {
+                candidate.discovered_files = files;
+            }
+            Ok(*candidate)
+        }
     }
-
-    discovered_files.sort_by(|left, right| left.path.cmp(&right.path));
-    let file = build_movie_entry_representative_file(&entry, &discovered_files).await?;
-
-    Ok(PreparedMovieLibraryScanEntry::Candidate(Box::new(
-        build_prepared_movie_library_scan_candidate(
-            file,
-            false,
-            discovered_files,
-            library_path,
-            scan_hints,
-        )
-        .await?,
-    )))
 }
 
 /// Evidence-only movie candidate preparation for the streaming scan pipeline.
@@ -3788,7 +3753,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn prepare_movie_directory_entry_uses_directory_scan() {
+    async fn prepare_movie_directory_entry_uses_shallow_evidence_candidate() {
         let scanner = DelayedLibraryScanner::default();
         scanner.set_response(
             "/library/Fast Movie",
@@ -3812,14 +3777,36 @@ mod tests {
         .await
         .expect("prepare movie directory entry");
 
-        match prepared {
-            PreparedMovieLibraryScanEntry::Candidate(candidate) => {
-                assert_eq!(candidate.file.display_name, "Fast.Movie.2024");
-            }
-            PreparedMovieLibraryScanEntry::Skipped { item_path } => {
-                panic!("unexpected skipped entry for {item_path}");
-            }
-        }
+        assert_eq!(prepared.file.display_name, "Fast.Movie.2024");
+        assert!(!prepared.representative_is_directory);
+        assert!(prepared.discovered_files.is_empty());
+        assert_eq!(scanner.scan_directory_call_count(), 1);
+        assert_eq!(scanner.scan_library_call_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn prepare_movie_directory_entry_keeps_empty_folder_candidate() {
+        let scanner = DelayedLibraryScanner::default();
+        scanner.set_response("/library/Empty Movie (2024)", 0, Vec::new());
+
+        let entry = MovieTopLevelEntry {
+            path: PathBuf::from("/library/Empty Movie (2024)"),
+            is_dir: true,
+        };
+
+        let prepared = prepare_movie_library_scan_entry(
+            Arc::new(scanner.clone()),
+            entry,
+            "/library".to_string(),
+            None,
+        )
+        .await
+        .expect("prepare empty movie directory entry");
+
+        assert_eq!(prepared.file.path, "/library/Empty Movie (2024)");
+        assert_eq!(prepared.file.display_name, "Empty Movie (2024)");
+        assert!(prepared.representative_is_directory);
+        assert!(prepared.discovered_files.is_empty());
         assert_eq!(scanner.scan_directory_call_count(), 1);
         assert_eq!(scanner.scan_library_call_count(), 0);
     }

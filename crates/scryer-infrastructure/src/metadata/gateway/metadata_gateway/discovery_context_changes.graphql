@@ -41,6 +41,12 @@ fragment DiscoveryContextChangesTitleFields on DiscoveryContextChangesTitle {
     votes
     url
   }
+  external_ids {
+    source
+    kind
+    id
+    key
+  }
   status_tags
   background_url
   source_tags {

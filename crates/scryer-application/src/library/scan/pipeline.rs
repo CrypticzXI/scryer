@@ -6,6 +6,10 @@ use crate::library_scan_metadata::{
     prepare_movie_candidate_evidence, prepare_series_library_scan_candidate,
     prepare_series_library_scan_candidate_from_file, split_ready_metadata_candidates,
 };
+use crate::library_scan_unmatched::{
+    IgnoredLibraryScanItemArgs, LIBRARY_SCAN_SKIPPED_UNUSABLE_TITLE_EVIDENCE,
+    persist_ignored_library_scan_item,
+};
 use crate::stored_paths::path_to_stored_string;
 use std::collections::VecDeque;
 
@@ -374,6 +378,11 @@ pub(super) async fn run_library_scan_pipeline(
                     Some(event) => {
                         candidate_events_seen = candidate_events_seen.saturating_add(1);
                         if let Err(error) = handle_candidate_job_event(CandidateEventContext {
+                            app,
+                            facet,
+                            library_id,
+                            library_path,
+                            session_id,
                             coordinator: &coordinator,
                             summary: &mut summary,
                             candidates: &mut candidates,
@@ -606,6 +615,11 @@ pub(super) async fn run_library_scan_pipeline(
             event => {
                 if let Err(error) = handle_candidate_job_event(
                     CandidateEventContext {
+                        app,
+                        facet,
+                        library_id,
+                        library_path,
+                        session_id,
                         coordinator: &coordinator,
                         summary: &mut summary,
                         candidates: &mut candidates,
@@ -895,6 +909,11 @@ fn candidate_runtime_state_counts(
 }
 
 struct CandidateEventContext<'a> {
+    app: &'a AppUseCase,
+    facet: &'a MediaFacet,
+    library_id: &'a str,
+    library_path: &'a str,
+    session_id: &'a str,
     coordinator: &'a LibraryScanCoordinator,
     summary: &'a mut LibraryScanSummary,
     candidates: &'a mut HashMap<ScanCandidateKey, CandidateRuntime>,
@@ -944,8 +963,37 @@ async fn handle_candidate_job_event(
                 error = %error,
                 "library scan candidate evidence failed"
             );
+            let display_name = std::path::Path::new(&item_path)
+                .file_name()
+                .map(|value| value.to_string_lossy().into_owned())
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| item_path.clone());
+            if let Err(persist_error) = persist_ignored_library_scan_item(
+                ctx.app,
+                ctx.facet,
+                ctx.library_id,
+                IgnoredLibraryScanItemArgs {
+                    title_id: None,
+                    session_id: Some(ctx.session_id),
+                    library_path: ctx.library_path,
+                    item_path: &item_path,
+                    display_name: &display_name,
+                    query: &display_name,
+                    year_hint: None,
+                    reason_code: LIBRARY_SCAN_SKIPPED_UNUSABLE_TITLE_EVIDENCE,
+                    error_message: Some(error.to_string()),
+                },
+            )
+            .await
+            {
+                warn!(
+                    item_path = %item_path,
+                    error = %persist_error,
+                    "failed to persist ignored library scan evidence failure"
+                );
+            }
             ctx.summary.scanned += 1;
-            ctx.summary.unmatched += 1;
+            ctx.summary.skipped += 1;
             ctx.coordinator.mark_title_match_completed(1).await;
             ctx.coordinator.publish_progress().await;
         }
@@ -1103,7 +1151,7 @@ async fn handle_inventory_ready(
         early_inventory.insert(key, CandidateInventoryState::Ready(files));
         return Ok(());
     };
-    if (key as usize) % LIBRARY_SCAN_DIAGNOSTIC_ITEM_INTERVAL == 0 {
+    if (key as usize).is_multiple_of(LIBRARY_SCAN_DIAGNOSTIC_ITEM_INTERVAL) {
         debug!(
             key,
             files = files.len(),
@@ -1251,7 +1299,7 @@ async fn handle_match_decision(
         }
     }
     let elapsed_ms = elapsed_ms_u64(started_at);
-    if elapsed_ms >= 500 || (key as usize) % LIBRARY_SCAN_DIAGNOSTIC_ITEM_INTERVAL == 0 {
+    if elapsed_ms >= 500 || (key as usize).is_multiple_of(LIBRARY_SCAN_DIAGNOSTIC_ITEM_INTERVAL) {
         debug!(
             key,
             title_name = matched_title_name.as_deref(),
@@ -1422,7 +1470,7 @@ async fn dispatch_media_work(
             Ok(())
         }
         ScanHydrationSubmission::Ready(reservation) => {
-            pool.commit_reserved(reservation);
+            pool.commit_reserved(*reservation);
             pool.pump().await?;
             coordinator.publish_progress().await;
             let diagnostics = pool.diagnostics();
@@ -1476,7 +1524,7 @@ struct ScanHydrationBatchResult {
 
 enum ScanHydrationSubmission {
     Queued,
-    Ready(LibraryScanMediaWorkReservation),
+    Ready(Box<LibraryScanMediaWorkReservation>),
 }
 
 struct ScanHydrationBatcher {
@@ -1517,7 +1565,7 @@ impl ScanHydrationBatcher {
             }
             Ok(ScanHydrationSubmission::Queued)
         } else {
-            Ok(ScanHydrationSubmission::Ready(reservation))
+            Ok(ScanHydrationSubmission::Ready(Box::new(reservation)))
         }
     }
 
@@ -1746,7 +1794,11 @@ impl<'a> CandidateJobRunner<'a> {
                     return false;
                 }
                 self.metrics.candidates_emitted = self.metrics.candidates_emitted.saturating_add(1);
-                if self.metrics.candidates_emitted % LIBRARY_SCAN_DIAGNOSTIC_ITEM_INTERVAL == 0 {
+                if self
+                    .metrics
+                    .candidates_emitted
+                    .is_multiple_of(LIBRARY_SCAN_DIAGNOSTIC_ITEM_INTERVAL)
+                {
                     info!(
                         kind = ?self.ctx.kind,
                         candidates_emitted = self.metrics.candidates_emitted,
@@ -2403,7 +2455,8 @@ async fn run_scan_match_worker(
                             break;
                         }
                         candidates_intaken = candidates_intaken.saturating_add(1);
-                        if candidates_intaken % LIBRARY_SCAN_DIAGNOSTIC_ITEM_INTERVAL == 0 {
+                        if candidates_intaken.is_multiple_of(LIBRARY_SCAN_DIAGNOSTIC_ITEM_INTERVAL)
+                        {
                             debug!(
                                 facet = ctx.facet.as_str(),
                                 candidates_intaken,
@@ -2670,7 +2723,9 @@ async fn intake_candidate(
                 queued_at: Instant::now(),
             });
             let elapsed_ms = elapsed_ms_u64(candidate_started_at);
-            if elapsed_ms >= 500 || (key as usize) % LIBRARY_SCAN_DIAGNOSTIC_ITEM_INTERVAL == 0 {
+            if elapsed_ms >= 500
+                || (key as usize).is_multiple_of(LIBRARY_SCAN_DIAGNOSTIC_ITEM_INTERVAL)
+            {
                 debug!(
                     facet = ctx.facet.as_str(),
                     key,
@@ -2688,7 +2743,9 @@ async fn intake_candidate(
         }
         None => {
             let elapsed_ms = elapsed_ms_u64(candidate_started_at);
-            if elapsed_ms >= 500 || (key as usize) % LIBRARY_SCAN_DIAGNOSTIC_ITEM_INTERVAL == 0 {
+            if elapsed_ms >= 500
+                || (key as usize).is_multiple_of(LIBRARY_SCAN_DIAGNOSTIC_ITEM_INTERVAL)
+            {
                 debug!(
                     facet = ctx.facet.as_str(),
                     key,
@@ -2897,7 +2954,7 @@ async fn resolve_ready_candidate_burst(
                 unmatched = state.report.summary.unmatched,
                 "library scan match worker slow resolved candidate"
             );
-        } else if resolved_count % LIBRARY_SCAN_DIAGNOSTIC_ITEM_INTERVAL == 0 {
+        } else if resolved_count.is_multiple_of(LIBRARY_SCAN_DIAGNOSTIC_ITEM_INTERVAL) {
             debug!(
                 facet = ctx.facet.as_str(),
                 resolved_count,

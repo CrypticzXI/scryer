@@ -1767,6 +1767,16 @@ pub fn from_discovery_item(item: DiscoveryItemRecord) -> DiscoveryItemPayload {
                 url: rating.url,
             })
             .collect(),
+        external_ids: item
+            .external_ids
+            .into_iter()
+            .map(|external_id| DiscoveryExternalIdPayload {
+                source: external_id.source,
+                kind: external_id.kind,
+                id: external_id.id,
+                key: external_id.key,
+            })
+            .collect(),
         status_tags: item.status_tags,
         source_tags: item
             .source_tags

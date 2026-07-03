@@ -19,12 +19,12 @@ use crate::library_scan_helpers::{
 };
 use crate::library_scan_metadata::{
     LIBRARY_SCAN_METADATA_SEARCH_BATCH_SIZE, MetadataLookupBatchStats, MetadataSearchResults,
-    PreparedMovieLibraryScanCandidate, PreparedMovieLibraryScanEntry,
-    PreparedSeriesLibraryScanCandidate, build_movie_metadata_batch_stats,
-    build_series_metadata_batch_stats, movie_candidate_batch_search_keys,
-    prepare_movie_library_scan_entries, prepare_series_library_scan_candidates,
-    resolve_refresh_metadata_batches, select_movie_metadata_from_batch_results,
-    select_series_metadata_from_batch_results, series_candidate_batch_search_keys,
+    PreparedMovieLibraryScanCandidate, PreparedSeriesLibraryScanCandidate,
+    build_movie_metadata_batch_stats, build_series_metadata_batch_stats,
+    movie_candidate_batch_search_keys, prepare_movie_library_scan_entries,
+    prepare_series_library_scan_candidates, resolve_refresh_metadata_batches,
+    select_movie_metadata_from_batch_results, select_series_metadata_from_batch_results,
+    series_candidate_batch_search_keys,
 };
 use crate::library_scan_titles::{
     append_movie_title, append_series_title, build_movie_probe_path_indexes,

@@ -406,6 +406,34 @@ fn merge_default_movie_title_work(
     ))
 }
 
+fn merge_movie_refresh_title_work(
+    executor: &mut dyn LibraryScanTitleWorkQueue,
+    title: Title,
+    scope: LibraryScanTitleWorkScope,
+    mode: LibraryScanTitleWalkMode,
+    cleanup: LibraryScanMovieCleanupContext,
+    created_in_scan: bool,
+) -> bool {
+    executor.enqueue(LibraryScanTitleWork {
+        title,
+        facet_plan: LibraryScanTitleFacetPlan::Movie(cleanup),
+        scope,
+        mode,
+        created_in_scan,
+    })
+}
+
+fn movie_refresh_title_work_scope(
+    scan_folder_path: Option<&str>,
+    discovered_files: Vec<LibraryFile>,
+) -> LibraryScanTitleWorkScope {
+    if scan_folder_path.is_some() && discovered_files.is_empty() {
+        LibraryScanTitleWorkScope::FullFolder
+    } else {
+        LibraryScanTitleWorkScope::ScopedFiles(discovered_files)
+    }
+}
+
 pub(super) fn episodic_title_work(
     title: Title,
     pre_scanned_files: Vec<LibraryFile>,
@@ -1458,10 +1486,12 @@ pub(super) async fn process_movie_refresh_candidate(
                     index,
                 );
             }
-            let queued = merge_default_movie_title_work(
+            let scope =
+                movie_refresh_title_work_scope(scan_folder_path.as_deref(), discovered_files);
+            let queued = merge_movie_refresh_title_work(
                 executor,
                 title,
-                discovered_files,
+                scope,
                 LibraryScanTitleWalkMode::Additive,
                 movie_cleanup_context(canonical_folder_path, scan_folder_path),
                 false,
@@ -1540,10 +1570,12 @@ pub(super) async fn process_resolved_movie_refresh_candidate(
                     index,
                 );
             }
-            let queued = merge_default_movie_title_work(
+            let scope =
+                movie_refresh_title_work_scope(scan_folder_path.as_deref(), discovered_files);
+            let queued = merge_movie_refresh_title_work(
                 executor,
                 title,
-                discovered_files,
+                scope,
                 LibraryScanTitleWalkMode::Additive,
                 movie_cleanup_context(canonical_folder_path, scan_folder_path),
                 false,
@@ -1571,10 +1603,12 @@ pub(super) async fn process_resolved_movie_refresh_candidate(
                 &representative_path,
                 index,
             );
-            let queued = merge_default_movie_title_work(
+            let scope =
+                movie_refresh_title_work_scope(scan_folder_path.as_deref(), discovered_files);
+            let queued = merge_movie_refresh_title_work(
                 executor,
                 title,
-                discovered_files,
+                scope,
                 LibraryScanTitleWalkMode::Additive,
                 movie_cleanup_context(canonical_folder_path, scan_folder_path),
                 true,
@@ -1676,6 +1710,18 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct CapturingTitleWorkQueue {
+        queued: Vec<LibraryScanTitleWork>,
+    }
+
+    impl LibraryScanTitleWorkQueue for CapturingTitleWorkQueue {
+        fn enqueue(&mut self, work: LibraryScanTitleWork) -> bool {
+            self.queued.push(work);
+            true
+        }
+    }
+
     fn build_library_file(path: &str) -> LibraryFile {
         LibraryFile {
             path: path.to_string(),
@@ -1689,6 +1735,14 @@ mod tests {
             source_signature_scheme: None,
             source_signature_value: None,
         }
+    }
+
+    fn build_movie_title(id: &str) -> Title {
+        let mut title = build_series_title(id);
+        title.name = "Test Movie".to_string();
+        title.facet = MediaFacet::Movie;
+        title.catalog_sort_key = "test movie".to_string();
+        title
     }
 
     fn build_series_title(id: &str) -> Title {
@@ -1810,12 +1864,32 @@ mod tests {
     }
 
     #[test]
+    fn movie_refresh_directory_without_pre_scanned_files_queues_full_folder_work() {
+        let mut queue = CapturingTitleWorkQueue::default();
+
+        assert!(merge_movie_refresh_title_work(
+            &mut queue,
+            build_movie_title("title-1"),
+            movie_refresh_title_work_scope(Some("/library/Movie"), Vec::new()),
+            LibraryScanTitleWalkMode::Additive,
+            movie_cleanup_context(None, Some("/library/Movie".to_string())),
+            false,
+        ));
+
+        assert_eq!(queue.queued.len(), 1);
+        assert!(matches!(
+            queue.queued[0].scope,
+            LibraryScanTitleWorkScope::FullFolder
+        ));
+    }
+
+    #[test]
     fn merge_library_scan_title_work_preserves_full_walk_requirement() {
         let title = build_series_title("title-1");
-        let mut workset = HashMap::new();
+        let mut merged_work = HashMap::new();
 
         assert!(merge_library_scan_title_work(
-            &mut workset,
+            &mut merged_work,
             episodic_title_work(
                 title.clone(),
                 vec![build_library_file("/library/Show/loose.mkv")],
@@ -1824,7 +1898,7 @@ mod tests {
             ),
         ));
         assert_eq!(
-            workset
+            merged_work
                 .get("title-1")
                 .and_then(LibraryScanTitleWork::discovered_files)
                 .map(Vec::len),
@@ -1832,18 +1906,18 @@ mod tests {
         );
 
         assert!(merge_library_scan_title_work(
-            &mut workset,
+            &mut merged_work,
             deferred_episodic_title_work(title.clone(), LibraryScanTitleWalkMode::Full, false),
         ));
         assert!(
-            workset
+            merged_work
                 .get("title-1")
                 .expect("merged title work")
                 .requires_folder_enumeration()
         );
 
         assert!(merge_library_scan_title_work(
-            &mut workset,
+            &mut merged_work,
             episodic_title_work(
                 title,
                 vec![build_library_file("/library/Show/another.mkv")],
@@ -1852,7 +1926,7 @@ mod tests {
             ),
         ));
         assert!(
-            workset
+            merged_work
                 .get("title-1")
                 .expect("merged title work")
                 .requires_folder_enumeration()

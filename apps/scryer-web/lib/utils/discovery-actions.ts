@@ -27,6 +27,11 @@ export function discoveryItemFacet(item: CatalogDiscoveryItem): Facet | null {
 
 type DiscoveryExternalIdSignals = {
   targetKey: string;
+  externalIds?: Array<{
+    source?: string | null;
+    id?: string | null;
+    key?: string | null;
+  }> | null;
   sourceTags?: string[] | null;
 };
 
@@ -115,10 +120,40 @@ function externalIdFromDiscoveryKey(value: string): ExternalId | null {
   return id ? { source, value: id } : null;
 }
 
+function externalIdFromExplicitDiscoveryId(
+  value: NonNullable<DiscoveryExternalIdSignals["externalIds"]>[number],
+): ExternalId | null {
+  const source = normalizedExternalIdSource(value.source);
+  const id = value.id?.trim();
+  if (source && id) {
+    return { source, value: id };
+  }
+
+  const key = value.key?.trim();
+  if (!key) {
+    return null;
+  }
+  const keyExternalId = externalIdFromDiscoveryKey(key);
+  if (keyExternalId && (!source || keyExternalId.source === source)) {
+    return keyExternalId;
+  }
+  return source ? { source, value: key } : null;
+}
+
 export function externalIdsFromDiscoverySignals(
   item: DiscoveryExternalIdSignals,
 ): ExternalId[] {
   const ids = new Map<string, string>();
+  for (const explicitId of item.externalIds ?? []) {
+    const externalId = externalIdFromExplicitDiscoveryId(explicitId);
+    if (externalId && !ids.has(externalId.source)) {
+      ids.set(externalId.source, externalId.value);
+    }
+  }
+  if (ids.size > 0) {
+    return Array.from(ids, ([source, value]) => ({ source, value }));
+  }
+
   for (const candidate of [item.targetKey, ...(item.sourceTags ?? [])]) {
     const externalId = externalIdFromDiscoveryKey(candidate);
     if (externalId && !ids.has(externalId.source)) {

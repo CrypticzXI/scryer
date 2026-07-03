@@ -800,7 +800,7 @@ pub(crate) enum LibraryScanFileTotalMode {
     BackgroundRefreshAggregate,
     /// Streaming full scans: the pool aggregates totals per accepted work,
     /// but the pipeline coordinator owns the `file_total_known` latch.
-    AggregateLatchedExternally,
+    FullScanAggregate,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1015,7 +1015,7 @@ impl LibraryScanMediaAnalysisPolicy {
             session_id,
             cancel_token,
             hydration_source,
-            LibraryScanFileTotalMode::AggregateLatchedExternally,
+            LibraryScanFileTotalMode::FullScanAggregate,
             LibraryScanMediaAnalysisProfile::for_facet(facet),
         )
     }
@@ -1695,7 +1695,8 @@ fn launch_pending_title_scan_analysis_tasks(
     file_analysis_concurrency: usize,
     cancel_token: Option<&CancellationToken>,
 ) {
-    while !library_scan_cancel_requested(cancel_token) && analysis_set.len() < file_analysis_concurrency
+    while !library_scan_cancel_requested(cancel_token)
+        && analysis_set.len() < file_analysis_concurrency
     {
         let Some(plan) = pending_analysis_plans.pop_front() else {
             break;
@@ -1710,7 +1711,9 @@ fn launch_pending_title_scan_analysis_tasks(
                 .await
                 .map_err(|error| AppError::Repository(error.to_string()))?;
             let analysis_started = Instant::now();
-            let outcome = analyzer.analyze_file(stored_path_to_path_buf(&file_path)).await?;
+            let outcome = analyzer
+                .analyze_file(stored_path_to_path_buf(&file_path))
+                .await?;
             tracing::debug!(file_path = %file_path, "title scan analysis task: complete");
             Ok::<(PlannedTitleScanFile, MediaAnalysisOutcome, Duration), AppError>((
                 plan,

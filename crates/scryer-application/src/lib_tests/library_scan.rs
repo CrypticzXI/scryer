@@ -399,6 +399,53 @@ impl MediaAnalyzer for BlockingMediaAnalyzer {
 }
 
 #[derive(Clone, Default)]
+struct CountingValidMediaAnalyzer {
+    analyze_calls: Arc<AtomicUsize>,
+}
+
+impl CountingValidMediaAnalyzer {
+    fn analyze_calls(&self) -> usize {
+        self.analyze_calls.load(Ordering::SeqCst)
+    }
+}
+
+fn test_valid_media_analysis() -> MediaFileAnalysis {
+    MediaFileAnalysis {
+        video_codec: None,
+        video_width: Some(1920),
+        video_height: Some(1080),
+        video_bitrate_kbps: None,
+        video_bit_depth: None,
+        video_hdr_format: None,
+        video_frame_rate: None,
+        video_profile: None,
+        audio_codec: None,
+        audio_profile: None,
+        audio_channels: None,
+        audio_bitrate_kbps: None,
+        audio_languages: Vec::new(),
+        audio_streams: Vec::new(),
+        subtitle_languages: Vec::new(),
+        subtitle_codecs: Vec::new(),
+        subtitle_streams: Vec::new(),
+        has_multiaudio: false,
+        duration_seconds: Some(60),
+        num_chapters: None,
+        container_format: Some("Matroska".to_string()),
+    }
+}
+
+#[async_trait]
+impl MediaAnalyzer for CountingValidMediaAnalyzer {
+    async fn analyze_file(&self, _path: std::path::PathBuf) -> AppResult<MediaAnalysisOutcome> {
+        self.analyze_calls.fetch_add(1, Ordering::SeqCst);
+        Ok(MediaAnalysisOutcome::Valid(Box::new(
+            test_valid_media_analysis(),
+        )))
+    }
+}
+
+#[derive(Clone, Default)]
 struct RecordingExactIdMetadataGateway {
     batch_queries: Arc<Mutex<Vec<Vec<MetadataSearchQuery>>>>,
     detail_calls: Arc<AtomicUsize>,
@@ -961,6 +1008,100 @@ async fn movie_title_scan_multiple_files_picks_initial_primary_and_marks_rest_ad
     assert_eq!(
         media_file_role_for_path(&files, small_path.as_path()),
         MediaFileRole::Additional
+    );
+}
+
+#[tokio::test]
+async fn movie_title_scan_backfills_legacy_source_signature_then_skips_current_signature() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let title_dir = tempdir.path().join("Signature Backfill (2026)");
+    std::fs::create_dir(&title_dir).expect("create movie folder");
+    let movie_path = title_dir.join("Signature.Backfill.2026.1080p.WEB-DL.mkv");
+    std::fs::write(&movie_path, b"stable media bytes").expect("write movie file");
+
+    let (base_app, user, _) = bootstrap_movie_scan_app(
+        tempdir.path(),
+        Vec::new(),
+        Arc::new(EmptySearchMetadataGateway),
+    )
+    .await;
+    let analyzer = Arc::new(CountingValidMediaAnalyzer::default());
+    let app = base_app.with_test_overrides(|builder| builder.with_media_analyzer(analyzer.clone()));
+    let title =
+        create_movie_title_with_folder(&app, &user, "Signature Backfill", title_dir.as_path())
+            .await;
+    let file_id = app
+        .services
+        .library
+        .media_files
+        .insert_media_file(&InsertMediaFileInput {
+            title_id: title.id.clone(),
+            file_path: movie_path.to_string_lossy().to_string(),
+            size_bytes: 18,
+            role: MediaFileRole::Primary,
+            source_signature_scheme: Some("unix_mtime_nsec_v1".to_string()),
+            source_signature_value: Some("1:2".to_string()),
+            quality_label: Some("1080p".to_string()),
+            ..Default::default()
+        })
+        .await
+        .expect("seed legacy media file");
+    app.services
+        .library
+        .media_files
+        .update_media_file_analysis(&file_id, test_valid_media_analysis())
+        .await
+        .expect("mark seeded file analyzed");
+
+    app.scan_title_library_with_discovered_files(
+        &user,
+        title.clone(),
+        vec![build_test_library_file(
+            movie_path.to_string_lossy().as_ref(),
+        )],
+    )
+    .await
+    .expect("scan legacy signature file");
+    assert_eq!(
+        analyzer.analyze_calls(),
+        1,
+        "legacy source signature should force one MediaInfo re-analysis"
+    );
+    let files = app
+        .services
+        .library
+        .media_files
+        .list_media_files_for_title(&title.id)
+        .await
+        .expect("list media files after backfill");
+    let file = files
+        .iter()
+        .find(|file| file.file_path == movie_path.to_string_lossy())
+        .expect("media file exists after backfill");
+    assert_eq!(
+        file.source_signature_scheme.as_deref(),
+        Some("blake3_head_tail_1mib_v1")
+    );
+    assert!(
+        file.source_signature_value
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty()),
+        "backfilled signature value should be stored"
+    );
+
+    app.scan_title_library_with_discovered_files(
+        &user,
+        title,
+        vec![build_test_library_file(
+            movie_path.to_string_lossy().as_ref(),
+        )],
+    )
+    .await
+    .expect("scan current signature file");
+    assert_eq!(
+        analyzer.analyze_calls(),
+        1,
+        "current sampled source signature should skip MediaInfo"
     );
 }
 

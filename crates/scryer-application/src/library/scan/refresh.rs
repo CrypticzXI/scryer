@@ -473,39 +473,27 @@ pub(super) async fn background_refresh_movies(
         .await?;
         let mut unresolved_candidates = Vec::new();
 
-        for prepared_entry in prepared_entries {
-            match prepared_entry {
-                PreparedMovieLibraryScanEntry::Candidate(candidate) => {
-                    let candidate = process_movie_refresh_candidate(
-                        app,
-                        actor,
-                        library_id,
-                        *candidate,
-                        &mut executor,
-                        &mut existing_titles,
-                        &mut existing_titles_by_name,
-                        &mut existing_titles_by_tvdb_id,
-                        &mut existing_titles_by_imdb_id,
-                        &mut existing_titles_by_tmdb_id,
-                        root,
-                        &mut existing_titles_by_probe_path,
-                        &mut summary,
-                    )
-                    .await?;
-                    if let Some(candidate) = candidate {
-                        unresolved_candidates.push(candidate);
-                    } else {
-                        coordinator.mark_title_match_completed(1).await;
-                    }
-                }
-                PreparedMovieLibraryScanEntry::Skipped { item_path } => {
-                    debug!(
-                        item_path = %item_path,
-                        "background movie refresh skipped entry without media files"
-                    );
-                    summary.skipped += 1;
-                    coordinator.mark_title_match_completed(1).await;
-                }
+        for candidate in prepared_entries {
+            let candidate = process_movie_refresh_candidate(
+                app,
+                actor,
+                library_id,
+                candidate,
+                &mut executor,
+                &mut existing_titles,
+                &mut existing_titles_by_name,
+                &mut existing_titles_by_tvdb_id,
+                &mut existing_titles_by_imdb_id,
+                &mut existing_titles_by_tmdb_id,
+                root,
+                &mut existing_titles_by_probe_path,
+                &mut summary,
+            )
+            .await?;
+            if let Some(candidate) = candidate {
+                unresolved_candidates.push(candidate);
+            } else {
+                coordinator.mark_title_match_completed(1).await;
             }
         }
         executor.pump().await?;

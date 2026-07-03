@@ -239,6 +239,37 @@ mod tests {
     }
 
     #[test]
+    fn sampled_proof_hashes_small_file_once() {
+        let size = IMPORT_CONTENT_PROOF_SAMPLE_BYTES / 2;
+        let mut reader = RecordingReader::new(vec![b'x'; size]);
+
+        let proof = sampled_content_proof_from_reader(&mut reader, "recording", size as u64)
+            .expect("sampled proof");
+
+        assert_eq!(proof.size_bytes, size as u64);
+        assert_eq!(proof.sample_bytes, size as u64);
+        assert_eq!(reader.seeks, vec![0]);
+        assert_eq!(reader.reads, vec![size]);
+    }
+
+    #[test]
+    fn sampled_proof_hashes_between_one_and_two_windows_without_overlap() {
+        let size = IMPORT_CONTENT_PROOF_SAMPLE_BYTES + 123;
+        let mut reader = RecordingReader::new(vec![b'x'; size]);
+
+        let proof = sampled_content_proof_from_reader(&mut reader, "recording", size as u64)
+            .expect("sampled proof");
+
+        assert_eq!(proof.size_bytes, size as u64);
+        assert_eq!(proof.sample_bytes, size as u64);
+        assert_eq!(
+            reader.seeks,
+            vec![0, IMPORT_CONTENT_PROOF_SAMPLE_BYTES as u64]
+        );
+        assert_eq!(reader.reads, vec![IMPORT_CONTENT_PROOF_SAMPLE_BYTES, 123]);
+    }
+
+    #[test]
     fn same_sample_blake3_different_size_fails() {
         let dir = tempfile::tempdir().unwrap();
         let a = dir.path().join("a.bin");

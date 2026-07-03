@@ -2463,7 +2463,7 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/graphql"))
-            .and(body_string_contains(&format!(
+            .and(body_string_contains(format!(
                 "\"operationName\":\"{OP_METADATA_BULK}\""
             )))
             .and(body_string_contains("\"movieTvdbIds\":[101]"))
@@ -3116,6 +3116,7 @@ mod tests {
         assert!(graphql_docs::TITLE_RECOMMENDATIONS_QUERY.contains("rating_provenance"));
         assert!(graphql_docs::TITLE_RECOMMENDATIONS_QUERY.contains("rating_source"));
         assert!(graphql_docs::TITLE_RECOMMENDATIONS_QUERY.contains("metadata_source"));
+        assert!(graphql_docs::TITLE_RECOMMENDATIONS_QUERY.contains("external_ids"));
         assert!(!graphql_docs::TITLE_RECOMMENDATIONS_QUERY.contains("external_ratings"));
     }
 
@@ -3134,6 +3135,10 @@ mod tests {
             assert!(query.contains("rating_provenance"));
             assert!(query.contains("rating_source"));
             assert!(query.contains("metadata_source"));
+            assert!(query.contains("external_ids"));
+            assert!(query.contains("source"));
+            assert!(query.contains("kind"));
+            assert!(query.contains("key"));
             assert!(!query.contains("external_ratings"));
         }
     }

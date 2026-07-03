@@ -404,6 +404,14 @@ pub struct DiscoverySourceTagRecord {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DiscoveryExternalIdRecord {
+    pub source: String,
+    pub kind: String,
+    pub id: String,
+    pub key: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DiscoveryRankComponentRecord {
     pub component_index: i32,
     pub component_name: Option<String>,
@@ -442,6 +450,7 @@ pub struct DiscoveryItemRecord {
     pub rating: Option<f64>,
     pub rating_sources: Vec<String>,
     pub external_ratings: Vec<TitleExternalRating>,
+    pub external_ids: Vec<DiscoveryExternalIdRecord>,
     pub status_tags: Vec<String>,
     pub source_tags: Vec<DiscoverySourceTagRecord>,
     pub sources: Vec<String>,

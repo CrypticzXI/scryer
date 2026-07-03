@@ -588,7 +588,19 @@ async fn discovery_home_and_items_use_local_rows_and_library_view_rbac() {
         .await
         .expect("public discovery home should load");
     assert!(!public_home.can_view_personalized);
-    assert_eq!(public_home.public_sections.len(), 1);
+    let public_section_types = public_home
+        .public_sections
+        .iter()
+        .map(|section| section.section_type.as_str())
+        .collect::<Vec<_>>();
+    assert!(public_section_types.contains(&"TOP_RATED"));
+    assert!(public_home.public_sections.iter().any(|section| {
+        section.section_type != "TOP_RATED"
+            && section
+                .items
+                .iter()
+                .any(|item| item.display_title == "Public Movie")
+    }));
     assert!(public_home.personalized_sections.is_empty());
     assert!(public_home.complete_collection.is_none());
     assert!(
@@ -1381,9 +1393,23 @@ async fn discovery_home_uses_live_public_feed_when_snapshot_and_public_generatio
         .await
         .expect("discovery home should load live public feed");
 
-    assert_eq!(result.public_sections.len(), 1);
-    assert_eq!(result.public_sections[0].section_type, "TRENDING_NOW");
-    assert_eq!(result.public_sections[0].items.len(), 1);
+    let public_section_types = result
+        .public_sections
+        .iter()
+        .map(|section| section.section_type.as_str())
+        .collect::<Vec<_>>();
+    assert!(public_section_types.contains(&"TRENDING_NOW"));
+    assert!(public_section_types.contains(&"TOP_RATED"));
+    assert_eq!(
+        result
+            .public_sections
+            .iter()
+            .find(|section| section.section_type == "TRENDING_NOW")
+            .expect("trending section")
+            .items
+            .len(),
+        1
+    );
     assert!(result.personalized_sections.is_empty());
     assert!(result.complete_collection.is_none());
     assert!(result.status.state.last_success_generation_id.is_none());
@@ -4674,6 +4700,7 @@ fn discovery_item_record(
         rating: Some(7.5),
         rating_sources: Vec::new(),
         external_ratings: Vec::new(),
+        external_ids: Vec::new(),
         status_tags: Vec::new(),
         source_tags: Vec::new(),
         sources: vec!["smg".to_string()],
@@ -4829,6 +4856,7 @@ fn test_discovery_title() -> DiscoveryTitle {
         rating: Some(7.5),
         rating_sources: vec!["smg".to_string()],
         external_ratings: Vec::new(),
+        external_ids: Vec::new(),
         rating_provenance: Vec::new(),
         status_tags: Vec::new(),
         background_url: String::new(),

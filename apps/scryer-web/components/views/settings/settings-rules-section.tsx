@@ -31,7 +31,10 @@ import {
   sanitizeDigits,
 } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { LazyRegoEditor } from "@/components/common/lazy-rego-editor";
+import {
+  LazyRegoEditor,
+  type RegoEditorDiagnostic,
+} from "@/components/common/lazy-rego-editor";
 import { RenderBooleanIcon } from "@/components/common/boolean-icon";
 import {
   Table,
@@ -87,6 +90,102 @@ type RefField = { field: string; type: string; descKey: string };
 
 type RefSectionDef = { titleKey: string; path: string; fields: RefField[] };
 const REF_SECTIONS = ruleInputContract.sections as RefSectionDef[];
+// The validator prepends one hidden import line before compiling user-authored Rego.
+const RULE_VALIDATION_HIDDEN_LINE_OFFSET = 1;
+
+function toVisibleRuleLine(line: number): number {
+  return Math.max(1, line - RULE_VALIDATION_HIDDEN_LINE_OFFSET);
+}
+
+function adjustRuleValidationLocations(text: string): string {
+  return text.replace(/(\S+\.rego:)(\d+)(:\d+)/g, (_, prefix: string, lineText: string, suffix: string) => {
+    const line = Number.parseInt(lineText, 10);
+    return Number.isFinite(line)
+      ? `${prefix}${toVisibleRuleLine(line)}${suffix}`
+      : `${prefix}${lineText}${suffix}`;
+  });
+}
+
+function formatRuleValidationError(error: string): string {
+  const normalized = error.replace(/\r\n/g, "\n").trim();
+  if (normalized.includes("\n")) {
+    return adjustRuleValidationLocations(normalized).replace(
+      /^(\s*)(\d+)(\s+\|)/gm,
+      (match, prefix: string, lineText: string, suffix: string) => {
+        const line = Number.parseInt(lineText, 10);
+        return Number.isFinite(line)
+          ? `${prefix}${toVisibleRuleLine(line)}${suffix}`
+          : match;
+      },
+    );
+  }
+
+  const parts = normalized.split(/\s+\|\s+/);
+  if (parts.length < 4) {
+    return normalized;
+  }
+
+  const [location, lineNumber, source, ...hintParts] = parts;
+  const rawLine = Number.parseInt(lineNumber, 10);
+  const visibleLineNumber = Number.isFinite(rawLine)
+    ? String(toVisibleRuleLine(rawLine))
+    : lineNumber;
+  const gutterWidth = Math.max(visibleLineNumber.length, 1);
+  const columnMatch = location.match(/:(\d+):(\d+)(?:\D*$|$)/);
+  const column = columnMatch ? Number.parseInt(columnMatch[2] ?? "", 10) : null;
+  const hint = hintParts.join(" | ").trim();
+  const visibleLocation = adjustRuleValidationLocations(location.trim());
+  const locationMatch = visibleLocation.match(/^(.*?:)\s*(-->\s+.+)$/);
+  const locationLines = locationMatch
+    ? [locationMatch[1], locationMatch[2]]
+    : [visibleLocation];
+  const pointerErrorMatch = hint.match(/^(\^+)\s+((?:error|warning|note):\s*.+)$/);
+  const pointerMarker = pointerErrorMatch?.[1] ?? hint;
+  const trailingDiagnostic = pointerErrorMatch?.[2];
+  const pointer =
+    column && Number.isFinite(column) && pointerMarker.startsWith("^")
+      ? `${" ".repeat(Math.max(0, column - 1))}${pointerMarker}`
+      : pointerMarker;
+
+  return [
+    ...locationLines,
+    `${" ".repeat(gutterWidth)} |`,
+    `${visibleLineNumber.padStart(gutterWidth)} | ${source.trim()}`,
+    `${" ".repeat(gutterWidth)} | ${pointer}`,
+    trailingDiagnostic,
+  ].filter((line): line is string => Boolean(line)).join("\n");
+}
+
+function parseRuleValidationDiagnostic(error: string): RegoEditorDiagnostic | null {
+  const match = error.match(/\S+\.rego:(\d+):(\d+)/);
+  if (!match) {
+    return null;
+  }
+
+  const rawLine = Number.parseInt(match[1] ?? "", 10);
+  const column = Number.parseInt(match[2] ?? "", 10);
+  if (!Number.isFinite(rawLine) || rawLine < 1) {
+    return null;
+  }
+
+  return {
+    line: toVisibleRuleLine(rawLine),
+    column: Number.isFinite(column) && column > 0 ? column : null,
+    message: formatRuleValidationError(error),
+  };
+}
+
+function getRuleValidationDiagnostics(
+  validationResult: RuleValidationResult | null,
+): RegoEditorDiagnostic[] {
+  if (!validationResult || validationResult.valid) {
+    return [];
+  }
+
+  return validationResult.errors
+    .map(parseRuleValidationDiagnostic)
+    .filter((diagnostic): diagnostic is RegoEditorDiagnostic => Boolean(diagnostic));
+}
 
 function RefFieldTable({ section }: { section: RefSectionDef }) {
   const t = useTranslate();
@@ -671,6 +770,11 @@ export function SettingsRulesSection({
   applyTemplate,
 }: SettingsRulesSectionProps) {
   const t = useTranslate();
+  const validationDiagnostics = React.useMemo(
+    () => getRuleValidationDiagnostics(validationResult),
+    [validationResult],
+  );
+
   return (
     <div id="settings-rules-section" className="space-y-4 text-sm">
       <div className="flex flex-col gap-4 xl:flex-row xl:items-start">
@@ -853,8 +957,9 @@ export function SettingsRulesSection({
                         regoSource: value,
                       }))
                     }
-                    minLines={20}
-                    maxLines={50}
+                    diagnostics={validationDiagnostics}
+                    minLines={10}
+                    maxLines={35}
                   />
                 </div>
 
@@ -919,11 +1024,16 @@ export function SettingsRulesSection({
                     {validationResult.valid ? (
                       t("settings.ruleValid")
                     ) : (
-                      <ul className="list-inside list-disc space-y-1">
+                      <div className="space-y-2">
                         {validationResult.errors.map((err, i) => (
-                          <li key={i}>{err}</li>
+                          <pre
+                            key={i}
+                            className="overflow-x-auto whitespace-pre rounded-[9px] border border-[var(--scry-danger-border)] bg-[var(--scry-danger-bg)] p-3 font-mono font-[var(--font-code)] text-[12px] leading-5 text-[var(--scry-danger-text)]"
+                          >
+                            {formatRuleValidationError(err)}
+                          </pre>
                         ))}
-                      </ul>
+                      </div>
                     )}
                   </div>
                 ) : null}

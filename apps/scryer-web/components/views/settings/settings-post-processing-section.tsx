@@ -22,7 +22,7 @@ import {
 } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
-import { LazyRegoEditor } from "@/components/common/lazy-rego-editor";
+import { LazyCodeEditor } from "@/components/common/lazy-code-editor";
 import { RenderBooleanIcon } from "@/components/common/boolean-icon";
 import { FolderBrowserDialog } from "@/components/setup/folder-browser-dialog";
 import {
@@ -457,14 +457,15 @@ export const SettingsPostProcessingSection = React.memo(
                     <Label className="mb-2 block">
                       {t("settings.pp.inlineHelp")}
                     </Label>
-                    <LazyRegoEditor
+                    <LazyCodeEditor
                       id="settings-post-processing-script-content"
                       value={scriptDraft.scriptContent}
                       onChange={(value) =>
                         setScriptDraft((prev) => ({ ...prev, scriptContent: value }))
                       }
-                      minLines={20}
-                      maxLines={50}
+                      language="shell"
+                      minLines={10}
+                      maxLines={35}
                     />
                   </>
                 ) : (

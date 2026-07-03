@@ -2,13 +2,13 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use scryer_application::{
     AppResult, CatalogDiscoveryCandidatesRecord, CatalogDiscoverySectionCandidatesRecord,
-    DiscoveryContextIncrementalCommit, DiscoveryContextSnapshotCommit, DiscoveryFacetRecord,
-    DiscoveryItemLibraryProvenanceRecord, DiscoveryItemRecord, DiscoveryItemsPageRecord,
-    DiscoveryItemsStorageQuery, DiscoveryPendingContextChangeRecord, DiscoveryPruneReport,
-    DiscoveryPublicFeedCommit, DiscoveryRankComponentRecord, DiscoveryRawPageRecord,
-    DiscoveryRepository, DiscoverySectionItemsRecord, DiscoverySectionRecord,
-    DiscoverySourceTagRecord, DiscoverySubmittedSubjectRecord, DiscoverySyncRunRecord,
-    DiscoverySyncStateRecord, TitleExternalRating,
+    DiscoveryContextIncrementalCommit, DiscoveryContextSnapshotCommit, DiscoveryExternalIdRecord,
+    DiscoveryFacetRecord, DiscoveryItemLibraryProvenanceRecord, DiscoveryItemRecord,
+    DiscoveryItemsPageRecord, DiscoveryItemsStorageQuery, DiscoveryPendingContextChangeRecord,
+    DiscoveryPruneReport, DiscoveryPublicFeedCommit, DiscoveryRankComponentRecord,
+    DiscoveryRawPageRecord, DiscoveryRepository, DiscoverySectionItemsRecord,
+    DiscoverySectionRecord, DiscoverySourceTagRecord, DiscoverySubmittedSubjectRecord,
+    DiscoverySyncRunRecord, DiscoverySyncStateRecord, TitleExternalRating,
 };
 use serde_json::Value as JsonValue;
 use std::collections::{HashMap, HashSet};
@@ -2562,6 +2562,7 @@ fn item_from_row(row: &SqlRow) -> AppResult<DiscoveryItemRecord> {
         rating: row.opt_f64("rating")?,
         rating_sources: Vec::new(),
         external_ratings: Vec::new(),
+        external_ids: Vec::new(),
         status_tags: Vec::new(),
         source_tags: Vec::new(),
         sources: Vec::new(),
@@ -2707,6 +2708,7 @@ async fn hydrate_discovery_title_children(
     hydrate_title_terms(datastore, items, &unique_title_ids, &title_indexes).await?;
     hydrate_title_source_tags(datastore, items, &unique_title_ids, &title_indexes).await?;
     hydrate_title_ratings(datastore, items, &unique_title_ids, &title_indexes).await?;
+    hydrate_title_external_ids(datastore, items, &unique_title_ids, &title_indexes).await?;
     Ok(())
 }
 
@@ -2864,6 +2866,39 @@ async fn hydrate_title_ratings(
             if let Some(rating) = &rating {
                 items[*index].external_ratings.push(rating.clone());
             }
+        }
+    }
+    Ok(())
+}
+
+async fn hydrate_title_external_ids(
+    datastore: &StoreDatastore,
+    items: &mut [DiscoveryItemRecord],
+    discovery_title_ids: &[String],
+    title_indexes: &HashMap<String, Vec<usize>>,
+) -> AppResult<()> {
+    let rows = fetch_child_rows(
+        datastore,
+        "SELECT discovery_title_id, source, external_kind, external_id, external_key, sort_index
+         FROM discovery_title_external_ids
+         WHERE discovery_title_id IN ({})
+         ORDER BY discovery_title_id ASC, sort_index ASC, source ASC, external_kind ASC",
+        discovery_title_ids,
+    )
+    .await?;
+    for row in rows {
+        let discovery_title_id = row.text("discovery_title_id")?;
+        let Some(indexes) = title_indexes.get(&discovery_title_id) else {
+            continue;
+        };
+        let external_id = DiscoveryExternalIdRecord {
+            source: row.text("source")?,
+            kind: row.text("external_kind")?,
+            id: row.text("external_id")?,
+            key: row.text("external_key")?,
+        };
+        for index in indexes {
+            items[*index].external_ids.push(external_id.clone());
         }
     }
     Ok(())
@@ -3364,6 +3399,9 @@ async fn insert_title_children_tx(
     for (index, source_tag) in item.source_tags.iter().enumerate() {
         insert_title_source_tag_tx(tx, discovery_title_id, source_tag, index as i32).await?;
     }
+    for (index, external_id) in item.external_ids.iter().enumerate() {
+        insert_title_external_id_tx(tx, discovery_title_id, external_id, index as i32).await?;
+    }
     if item.external_ratings.is_empty() {
         for (index, source) in item.rating_sources.iter().enumerate() {
             insert_title_rating_tx(tx, discovery_title_id, source, None, index as i32).await?;
@@ -3481,6 +3519,43 @@ async fn insert_title_source_tag_value_tx(
             SqlArg::I32(source_tag_sort_index),
             SqlArg::Text(value.to_string()),
             SqlArg::I32(value_sort_index),
+        ],
+    )
+    .await?;
+    Ok(())
+}
+
+async fn insert_title_external_id_tx(
+    tx: &mut SqlTx<'_>,
+    discovery_title_id: &str,
+    external_id: &DiscoveryExternalIdRecord,
+    index: i32,
+) -> AppResult<()> {
+    let source = external_id.source.trim();
+    let id = external_id.id.trim();
+    let key = external_id.key.trim();
+    if source.is_empty() || (id.is_empty() && key.is_empty()) {
+        return Ok(());
+    }
+    SqlRuntime::execute(
+        SqlExec::Tx(tx),
+        "INSERT INTO discovery_title_external_ids
+         (discovery_title_id, source, external_kind, external_id, external_key, sort_index)
+         VALUES ({}, {}, {}, {}, {}, {})
+         ON CONFLICT(discovery_title_id, source, external_kind, external_id, external_key)
+         DO UPDATE SET
+            sort_index = CASE
+                WHEN discovery_title_external_ids.sort_index <= excluded.sort_index
+                    THEN discovery_title_external_ids.sort_index
+                ELSE excluded.sort_index
+            END",
+        &[
+            SqlArg::Text(discovery_title_id.to_string()),
+            SqlArg::Text(source.to_ascii_lowercase()),
+            SqlArg::Text(external_id.kind.trim().to_ascii_lowercase()),
+            SqlArg::Text(id.to_string()),
+            SqlArg::Text(key.to_string()),
+            SqlArg::I32(index),
         ],
     )
     .await?;
@@ -3984,6 +4059,20 @@ mod tests {
                             votes: Some(1234),
                             url: "https://www.imdb.com/title/tt0000010/".to_string(),
                         }],
+                        external_ids: vec![
+                            DiscoveryExternalIdRecord {
+                                source: "tmdb".to_string(),
+                                kind: "movie".to_string(),
+                                id: "10".to_string(),
+                                key: "tmdb:movie:10".to_string(),
+                            },
+                            DiscoveryExternalIdRecord {
+                                source: "imdb".to_string(),
+                                kind: "movie".to_string(),
+                                id: "tt0000010".to_string(),
+                                key: "imdb:movie:tt0000010".to_string(),
+                            },
+                        ],
                         status_tags: vec!["available".to_string()],
                         source_tags: vec![DiscoverySourceTagRecord {
                             category: Some("theme".to_string()),
@@ -4069,6 +4158,7 @@ mod tests {
                         rating: None,
                         rating_sources: Vec::new(),
                         external_ratings: Vec::new(),
+                        external_ids: Vec::new(),
                         status_tags: Vec::new(),
                         source_tags: Vec::new(),
                         sources: vec!["smg".to_string()],
@@ -4156,6 +4246,13 @@ mod tests {
         assert_eq!(read_item.external_ratings[0].source, "imdb");
         assert_eq!(read_item.external_ratings[0].normalized, 0.82);
         assert_eq!(read_item.external_ratings[0].votes, Some(1234));
+        assert_eq!(read_item.external_ids.len(), 2);
+        assert_eq!(read_item.external_ids[0].source, "tmdb");
+        assert_eq!(read_item.external_ids[0].kind, "movie");
+        assert_eq!(read_item.external_ids[0].id, "10");
+        assert_eq!(read_item.external_ids[0].key, "tmdb:movie:10");
+        assert_eq!(read_item.external_ids[1].source, "imdb");
+        assert_eq!(read_item.external_ids[1].id, "tt0000010");
         assert_eq!(read_item.source_tags.len(), 1);
         assert_eq!(
             read_item.source_tags[0].values,
@@ -4928,6 +5025,7 @@ mod tests {
             rating: None,
             rating_sources: Vec::new(),
             external_ratings: Vec::new(),
+            external_ids: Vec::new(),
             status_tags: Vec::new(),
             source_tags: Vec::new(),
             sources: Vec::new(),

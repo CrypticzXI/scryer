@@ -7,13 +7,13 @@ use crate::library_scan::{
 use crate::ports::{
     CatalogDiscoveryGroup, CatalogDiscoveryGroupKind, CatalogDiscoveryQuery,
     CatalogDiscoveryResult, CatalogDiscoverySectionCandidatesRecord, CatalogDiscoverySurface,
-    DISCOVERY_DEFAULT_SCOPE_KEY, DiscoveryFacetRecord, DiscoveryHomeQuery, DiscoveryHomeResult,
-    DiscoveryItemDetailQuery, DiscoveryItemLibraryProvenanceRecord, DiscoveryItemRecord,
-    DiscoveryItemsQuery, DiscoveryItemsResult, DiscoveryItemsStorageQuery,
-    DiscoveryPendingContextChangeRecord, DiscoveryRankComponentRecord, DiscoveryRawPageRecord,
-    DiscoverySectionItemsRecord, DiscoverySectionRecord, DiscoverySectionResult,
-    DiscoverySourceTagRecord, DiscoverySubmittedSubjectRecord, DiscoverySyncStatus,
-    TitleExternalIdLookup,
+    DISCOVERY_DEFAULT_SCOPE_KEY, DiscoveryExternalIdRecord, DiscoveryFacetRecord,
+    DiscoveryHomeQuery, DiscoveryHomeResult, DiscoveryItemDetailQuery,
+    DiscoveryItemLibraryProvenanceRecord, DiscoveryItemRecord, DiscoveryItemsQuery,
+    DiscoveryItemsResult, DiscoveryItemsStorageQuery, DiscoveryPendingContextChangeRecord,
+    DiscoveryRankComponentRecord, DiscoveryRawPageRecord, DiscoverySectionItemsRecord,
+    DiscoverySectionRecord, DiscoverySectionResult, DiscoverySourceTagRecord,
+    DiscoverySubmittedSubjectRecord, DiscoverySyncStatus, TitleExternalIdLookup,
 };
 use crate::{AppError, AppResult, AppUseCase};
 use chrono::{DateTime, Utc};
@@ -233,6 +233,7 @@ impl AppUseCase {
             .await?;
 
         let mut public_sections = Vec::<DiscoverySectionResult>::new();
+        let mut top_rated_public_sections = Vec::<DiscoverySectionResult>::new();
         if query.include_public {
             let public_candidate_limit = public_home_candidate_limit(limit);
             if let Some(public_run_id) = status.state.last_public_feed_generation_id.as_deref() {
@@ -246,19 +247,32 @@ impl AppUseCase {
                         public_candidate_limit as i64,
                     )
                     .await?;
+                let public_section_results = public_section_items
+                    .into_iter()
+                    .filter_map(section_items_record_to_result)
+                    .collect::<Vec<_>>();
+                top_rated_public_sections = filter_discovery_sections_for_owned_items(
+                    public_section_results.clone(),
+                    &owned_visibility,
+                    public_candidate_limit,
+                );
                 public_sections = filter_discovery_sections_for_owned_items(
-                    public_section_items
-                        .into_iter()
-                        .filter_map(section_items_record_to_result)
-                        .collect(),
+                    public_section_results,
                     &owned_visibility,
                     limit,
                 );
             }
             if public_sections.is_empty() && status.state.last_success_generation_id.is_none() {
+                let live_public_sections = self
+                    .live_public_section_results(include_unresolved, public_candidate_limit)
+                    .await?;
+                top_rated_public_sections = filter_discovery_sections_for_owned_items(
+                    live_public_sections.clone(),
+                    &owned_visibility,
+                    public_candidate_limit,
+                );
                 public_sections = filter_discovery_sections_for_owned_items(
-                    self.live_public_section_results(include_unresolved, public_candidate_limit)
-                        .await?,
+                    live_public_sections,
                     &owned_visibility,
                     limit,
                 );
@@ -266,6 +280,7 @@ impl AppUseCase {
         }
 
         let mut personalized_sections = Vec::new();
+        let mut top_rated_personalized_items = Vec::new();
         let mut complete_collection = None;
         let mut facets = Vec::new();
         if can_view_personalized
@@ -292,6 +307,7 @@ impl AppUseCase {
             let submitted_subjects =
                 filter_submitted_subjects_for_libraries(&submitted_subjects, &readable_library_ids);
             resolve_discovery_matched_subjects(&mut personalized_items, &submitted_subjects)?;
+            top_rated_personalized_items = personalized_items.clone();
             let library_profile = self
                 .discovery_library_affinity_profile(&readable_library_ids, &submitted_subjects)
                 .await?;
@@ -328,6 +344,23 @@ impl AppUseCase {
                     include_unresolved,
                 )
                 .await?;
+        }
+
+        if let Some(top_rated_section) = top_rated_discovery_home_section(
+            &top_rated_public_sections,
+            &top_rated_personalized_items,
+            include_unresolved,
+            limit,
+        ) {
+            if top_rated_section
+                .items
+                .iter()
+                .any(discovery_home_item_is_personalized)
+            {
+                personalized_sections.push(top_rated_section);
+            } else {
+                public_sections.push(top_rated_section);
+            }
         }
 
         let hero_item = select_discovery_home_hero(&public_sections, &personalized_sections);
@@ -846,6 +879,39 @@ fn select_discovery_home_hero(
         .or_else(|| select_public_discovery_home_hero(public_sections))
 }
 
+fn top_rated_discovery_home_section(
+    public_sections: &[DiscoverySectionResult],
+    personalized_items: &[DiscoveryItemRecord],
+    include_unresolved: bool,
+    limit: usize,
+) -> Option<DiscoverySectionResult> {
+    let mut candidates = public_sections
+        .iter()
+        .flat_map(|section| section.items.iter())
+        .chain(personalized_items.iter())
+        .filter(|item| !item.owned_in_input && home_item_visible(item, include_unresolved))
+        .cloned()
+        .collect::<Vec<_>>();
+    candidates.sort_by(compare_top_rated_discovery_home_items);
+    let mut seen = HashSet::new();
+    candidates.retain(|item| seen.insert(discovery_item_identity_key(item).to_string()));
+    section_result(
+        "top_rated".to_string(),
+        "TOP_RATED".to_string(),
+        "Top Rated".to_string(),
+        "mixed".to_string(),
+        candidates,
+        limit,
+    )
+}
+
+fn discovery_home_item_is_personalized(item: &DiscoveryItemRecord) -> bool {
+    !item
+        .source_run_kind
+        .trim()
+        .eq_ignore_ascii_case("public_feed")
+}
+
 fn select_personalized_discovery_home_hero(
     sections: &[DiscoverySectionResult],
 ) -> Option<DiscoveryItemRecord> {
@@ -919,6 +985,54 @@ fn compare_discovery_item_rating_desc(
     discovery_item_comparable_rating(right)
         .partial_cmp(&discovery_item_comparable_rating(left))
         .unwrap_or(Ordering::Equal)
+}
+
+fn compare_top_rated_discovery_home_items(
+    left: &DiscoveryItemRecord,
+    right: &DiscoveryItemRecord,
+) -> Ordering {
+    let left_external_rating = discovery_item_best_external_rating_score(left);
+    let right_external_rating = discovery_item_best_external_rating_score(right);
+    right_external_rating
+        .is_some()
+        .cmp(&left_external_rating.is_some())
+        .then_with(|| compare_optional_f64_desc(left_external_rating, right_external_rating))
+        .then_with(|| {
+            discovery_item_external_rating_vote_count(right)
+                .cmp(&discovery_item_external_rating_vote_count(left))
+        })
+        .then_with(|| compare_discovery_item_rating_desc(left, right))
+        .then_with(|| compare_optional_f64_desc(left.rank_score, right.rank_score))
+        .then_with(|| {
+            right
+                .source_count
+                .unwrap_or_default()
+                .cmp(&left.source_count.unwrap_or_default())
+        })
+        .then_with(|| discovery_item_identity_key(left).cmp(discovery_item_identity_key(right)))
+}
+
+fn discovery_item_best_external_rating_score(item: &DiscoveryItemRecord) -> Option<f64> {
+    item.external_ratings
+        .iter()
+        .filter_map(|rating| {
+            let normalized = rating.normalized;
+            normalized.is_finite().then_some(if normalized <= 1.0 {
+                normalized * 10.0
+            } else {
+                normalized
+            })
+        })
+        .filter(|rating| *rating > 0.0)
+        .max_by(|left, right| left.partial_cmp(right).unwrap_or(Ordering::Equal))
+}
+
+fn discovery_item_external_rating_vote_count(item: &DiscoveryItemRecord) -> i32 {
+    item.external_ratings
+        .iter()
+        .filter_map(|rating| rating.votes)
+        .max()
+        .unwrap_or_default()
 }
 
 fn compare_optional_f64_desc(left: Option<f64>, right: Option<f64>) -> Ordering {
@@ -2917,6 +3031,7 @@ fn discovery_item_record(
         rating: item.rating,
         rating_sources: item.rating_sources.clone(),
         external_ratings: item.external_ratings.clone(),
+        external_ids: discovery_external_id_records(item),
         status_tags: item.status_tags.clone(),
         source_tags: discovery_source_tag_records(&item.source_tags),
         sources: item.sources.clone(),
@@ -3237,6 +3352,26 @@ fn discovery_source_tag_records(values: &[JsonValue]) -> Vec<DiscoverySourceTagR
         .collect()
 }
 
+fn discovery_external_id_records(item: &DiscoveryTitle) -> Vec<DiscoveryExternalIdRecord> {
+    item.external_ids
+        .iter()
+        .filter_map(|external_id| {
+            let source = external_id.source.trim();
+            let id = external_id.id.trim();
+            let key = external_id.key.trim();
+            if source.is_empty() || (id.is_empty() && key.is_empty()) {
+                return None;
+            }
+            Some(DiscoveryExternalIdRecord {
+                source: source.to_ascii_lowercase(),
+                kind: external_id.kind.trim().to_ascii_lowercase(),
+                id: id.to_string(),
+                key: key.to_string(),
+            })
+        })
+        .collect()
+}
+
 fn discovery_canonical_facet_terms(item: &DiscoveryTitle) -> Vec<String> {
     let mut values = item.facet_terms.clone();
     values.extend(
@@ -3551,6 +3686,7 @@ fn discovery_json_error(error: serde_json::Error) -> AppError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::TitleExternalRating;
     use chrono::{TimeZone, Utc};
     use scryer_domain::{ExternalId, MediaFacet};
 
@@ -3800,6 +3936,76 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["Visible", "Refill"]
         );
+    }
+
+    #[test]
+    fn discovery_home_top_rated_prefers_external_rating_provenance_and_dedupes() {
+        let mut scalar_only = test_discovery_item("scalar", "movie", Some("movie"));
+        scalar_only.source_run_kind = "public_feed".to_string();
+        scalar_only.target_key = "tmdb:movie:scalar".to_string();
+        scalar_only.rating = Some(10.0);
+        scalar_only.rank_score = Some(100.0);
+
+        let mut weaker_public_duplicate =
+            test_discovery_item("shared-public", "movie", Some("movie"));
+        weaker_public_duplicate.source_run_kind = "public_feed".to_string();
+        weaker_public_duplicate.target_key = "tmdb:movie:shared".to_string();
+        weaker_public_duplicate.rating = Some(6.0);
+        weaker_public_duplicate.rank_score = Some(1.0);
+
+        let mut external_rated = test_discovery_item("shared-context", "movie", Some("movie"));
+        external_rated.target_key = "tmdb:movie:shared".to_string();
+        external_rated.rating = Some(5.0);
+        external_rated.external_ratings = vec![TitleExternalRating {
+            source: "imdb".to_string(),
+            value: Some(8.8),
+            score: Some(8.8),
+            normalized: 0.88,
+            votes: Some(100_000),
+            url: "https://imdb.com/title/tt0000001".to_string(),
+        }];
+
+        let section = top_rated_discovery_home_section(
+            &[test_discovery_section(
+                "public",
+                vec![scalar_only, weaker_public_duplicate],
+            )],
+            &[external_rated],
+            true,
+            10,
+        )
+        .expect("top rated section");
+
+        assert_eq!(section.section_type, "TOP_RATED");
+        assert_eq!(section.total_count, 2);
+        assert_eq!(
+            section
+                .items
+                .iter()
+                .map(|item| item.target_key.as_str())
+                .collect::<Vec<_>>(),
+            vec!["tmdb:movie:shared", "tmdb:movie:scalar"]
+        );
+    }
+
+    #[test]
+    fn discovery_home_top_rated_keeps_short_sections() {
+        let mut only_item = test_discovery_item("only", "series", Some("series"));
+        only_item.source_run_kind = "public_feed".to_string();
+        only_item.target_key = "tmdb:series:only".to_string();
+        only_item.rating = Some(7.0);
+
+        let section = top_rated_discovery_home_section(
+            &[test_discovery_section("public", vec![only_item])],
+            &[],
+            true,
+            6,
+        )
+        .expect("top rated section");
+
+        assert_eq!(section.total_count, 1);
+        assert_eq!(section.items.len(), 1);
+        assert_eq!(section.items[0].target_key, "tmdb:series:only");
     }
 
     #[test]
@@ -4394,6 +4600,7 @@ mod tests {
             rating: None,
             rating_sources: Vec::new(),
             external_ratings: Vec::new(),
+            external_ids: Vec::new(),
             status_tags: Vec::new(),
             source_tags: Vec::new(),
             sources: Vec::new(),

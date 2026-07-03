@@ -328,6 +328,14 @@ pub struct DiscoveryContextChangesResult {
     pub items: Vec<DiscoveryTitle>,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DiscoveryExternalId {
+    pub source: String,
+    pub kind: String,
+    pub id: String,
+    pub key: String,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct DiscoveryTitle {
     pub target_key: String,
@@ -348,6 +356,8 @@ pub struct DiscoveryTitle {
     pub rating_sources: Vec<String>,
     #[serde(default)]
     pub external_ratings: Vec<TitleExternalRating>,
+    #[serde(default)]
+    pub external_ids: Vec<DiscoveryExternalId>,
     #[serde(default, skip_serializing)]
     pub rating_provenance: Vec<DiscoveryRatingProvenance>,
     #[serde(default)]

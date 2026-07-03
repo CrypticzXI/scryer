@@ -11,7 +11,6 @@ import { createPortal } from "react-dom";
 import { useNavigate } from "react-router-dom";
 import { useClient } from "urql";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import {
   Popover,
   PopoverContent,
@@ -1367,7 +1366,7 @@ export const RootHeader = React.memo(function RootHeader({
                           <div className="relative flex h-12 min-w-0 flex-1 items-center gap-3 rounded-[14px] border-2 border-primary/70 bg-[rgba(var(--scry-accent-rgb),0.055)] px-4 shadow-[0_0_0_1px_rgba(var(--scry-accent-rgb),0.10),0_12px_28px_rgba(var(--scry-accent-rgb),0.08)]">
                             <Search className="h-[22px] w-[22px] shrink-0 text-primary" />
                             <div className="min-w-0 flex-1">
-                              <Input
+                              <input
                                 id="global-search-input"
                                 ref={globalSearchInputRef}
                                 autoFocus
@@ -1375,7 +1374,7 @@ export const RootHeader = React.memo(function RootHeader({
                                 onChange={handleSearchChange}
                                 onKeyDown={handleDesktopSearchKeyDown}
                                 data-ui="global-search"
-                                className="h-10 border-0 bg-transparent px-0 text-[18px] font-medium text-[var(--scry-ink2)] shadow-none placeholder:text-[18px] placeholder:font-normal placeholder:text-[var(--scry-muted3)] focus-visible:ring-0"
+                                className="h-10 w-full min-w-0 appearance-none border-0 bg-transparent px-0 text-[18px] font-medium text-[var(--scry-ink2)] caret-primary shadow-none outline-none placeholder:text-[18px] placeholder:font-normal placeholder:text-[var(--scry-muted3)] focus-visible:outline-none"
                                 placeholder={searchOverlayPlaceholder}
                                 aria-label={searchOverlayPlaceholder}
                                 aria-controls="global-search-results-panel"

@@ -158,6 +158,16 @@ CREATE TABLE IF NOT EXISTS discovery_title_source_tag_values (
     UNIQUE (discovery_title_id, source_tag_sort_index, source_tag_value)
 );
 
+CREATE TABLE IF NOT EXISTS discovery_title_external_ids (
+    discovery_title_id TEXT NOT NULL REFERENCES discovery_titles(id) ON DELETE CASCADE,
+    source TEXT NOT NULL,
+    external_kind TEXT NOT NULL DEFAULT '',
+    external_id TEXT NOT NULL DEFAULT '',
+    external_key TEXT NOT NULL DEFAULT '',
+    sort_index INTEGER NOT NULL DEFAULT 0,
+    UNIQUE (discovery_title_id, source, external_kind, external_id, external_key)
+);
+
 CREATE TABLE IF NOT EXISTS discovery_title_ratings (
     discovery_title_id TEXT NOT NULL REFERENCES discovery_titles(id) ON DELETE CASCADE,
     rating_source TEXT NOT NULL,
@@ -258,6 +268,8 @@ CREATE INDEX IF NOT EXISTS idx_discovery_title_source_tags_title
     ON discovery_title_source_tags(discovery_title_id, sort_index);
 CREATE INDEX IF NOT EXISTS idx_discovery_title_source_tag_values_title
     ON discovery_title_source_tag_values(discovery_title_id, source_tag_sort_index, value_sort_index);
+CREATE INDEX IF NOT EXISTS idx_discovery_title_external_ids_title
+    ON discovery_title_external_ids(discovery_title_id, sort_index);
 CREATE INDEX IF NOT EXISTS idx_discovery_title_ratings_title
     ON discovery_title_ratings(discovery_title_id, sort_index);
 CREATE INDEX IF NOT EXISTS idx_discovery_items_active_title

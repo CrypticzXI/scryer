@@ -67,8 +67,7 @@ type DiscoveryTabKey =
   | "trending"
   | "popular"
   | "upcoming"
-  | "topRated"
-  | "recentlyAdded";
+  | "topRated";
 
 type DiscoveryContentType = "movie" | "series" | "anime";
 
@@ -85,7 +84,6 @@ const TAB_DEFINITIONS: Array<{ id: DiscoveryTabKey; labelKey: string }> = [
   { id: "popular", labelKey: "discovery.tab.popular" },
   { id: "upcoming", labelKey: "discovery.tab.upcoming" },
   { id: "topRated", labelKey: "discovery.tab.topRated" },
-  { id: "recentlyAdded", labelKey: "discovery.tab.recentlyAdded" },
 ] as const;
 
 const DISCOVERY_CONTENT_TYPES: DiscoveryContentType[] = [
@@ -272,9 +270,9 @@ function sectionMatchesTab(section: DiscoverySection, activeTab: DiscoveryTabKey
     return haystack.includes("upcoming") || haystack.includes("future");
   }
   if (activeTab === "topRated") {
-    return haystack.includes("top") || haystack.includes("rated");
+    return discoverySectionType(section) === "TOP_RATED";
   }
-  return haystack.includes("recent") || haystack.includes("added");
+  return false;
 }
 
 const WEEKLY_FOR_YOU_SECTION_TYPES = [

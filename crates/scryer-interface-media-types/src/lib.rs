@@ -1715,6 +1715,14 @@ pub struct DiscoveryExternalRatingPayload {
 }
 
 #[derive(SimpleObject, Clone)]
+pub struct DiscoveryExternalIdPayload {
+    pub source: String,
+    pub kind: String,
+    pub id: String,
+    pub key: String,
+}
+
+#[derive(SimpleObject, Clone)]
 pub struct DiscoveryItemPayload {
     pub id: ID,
     pub target_key: String,
@@ -1733,6 +1741,7 @@ pub struct DiscoveryItemPayload {
     pub rating: Option<f64>,
     pub rating_sources: Vec<String>,
     pub external_ratings: Vec<DiscoveryExternalRatingPayload>,
+    pub external_ids: Vec<DiscoveryExternalIdPayload>,
     pub status_tags: Vec<String>,
     pub source_tags: Vec<String>,
     pub sources: Vec<String>,

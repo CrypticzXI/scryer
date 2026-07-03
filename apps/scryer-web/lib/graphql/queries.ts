@@ -14,6 +14,12 @@ export const DISCOVERY_ITEM_FIELDS = `
     contentType
     genres
     rating
+    externalIds {
+      source
+      kind
+      id
+      key
+    }
     statusTags
     sourceTags
     sources
@@ -55,6 +61,12 @@ const DISCOVERY_HOME_ITEM_FIELDS = `
     backgroundUrl
     contentType
     rating
+    externalIds {
+      source
+      kind
+      id
+      key
+    }
     statusTags
     sourceCount
     rankScore
@@ -161,6 +173,12 @@ const CATALOG_DISCOVERY_ITEM_FIELDS = `
     posterUrl
     backgroundUrl
     contentType
+    externalIds {
+      source
+      kind
+      id
+      key
+    }
     statusTags
     sourceTags
     rankScore

@@ -229,11 +229,11 @@ pub(super) fn title_metadata_refresh_decision(
 ) -> Option<MetadataRefreshDecision> {
     let (class, transport, interval) = title_refresh_class(title, now)?;
     let interval = interval.max(METADATA_REFRESH_MINIMUM_INTERVAL);
-    if !forced {
-        let fetched_at = title.metadata_fetched_at?;
-        if fetched_at + interval > now {
-            return None;
-        }
+    if !forced
+        && let Some(fetched_at) = title.metadata_fetched_at
+        && fetched_at + interval > now
+    {
+        return None;
     }
 
     Some(MetadataRefreshDecision {
@@ -418,6 +418,19 @@ mod tests {
         assert_eq!(decision.class, MetadataRefreshClass::EpisodicActive);
         assert_eq!(decision.transport, MetadataRefreshTransport::SingleApq);
         assert_eq!(decision.interval, chrono::Duration::hours(12));
+    }
+
+    #[test]
+    fn never_hydrated_title_is_due_for_refresh() {
+        let now = DateTime::from_timestamp(60, 0).expect("valid timestamp");
+        let mut title = title(MediaFacet::Series);
+        title.monitored = true;
+        title.content_status = Some("Continuing".to_string());
+        title.metadata_fetched_at = None;
+
+        let decision = title_metadata_refresh_decision(&title, now, false).expect("due");
+        assert_eq!(decision.class, MetadataRefreshClass::EpisodicActive);
+        assert_eq!(decision.transport, MetadataRefreshTransport::SingleApq);
     }
 
     #[test]

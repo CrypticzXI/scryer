@@ -1,5 +1,12 @@
 import type { TitleExternalRating } from "@/lib/utils/title-ratings";
 
+export type DiscoveryExternalId = {
+  source: string;
+  kind: string;
+  id: string;
+  key: string;
+};
+
 export type DiscoveryHomeInput = {
   includePublic?: boolean | null;
   includePersonalized?: boolean | null;
@@ -49,6 +56,7 @@ export type DiscoveryItem = {
   rating: number | null;
   ratingSources?: string[];
   externalRatings?: TitleExternalRating[];
+  externalIds?: DiscoveryExternalId[];
   statusTags: string[];
   sourceTags: string[];
   sources: string[];
@@ -144,6 +152,7 @@ export type CatalogDiscoveryItem = Pick<
       | "facetTerms"
       | "genres"
       | "externalRatings"
+      | "externalIds"
       | "overview"
       | "rating"
       | "sources"
