@@ -1379,37 +1379,12 @@ impl LibraryScanMediaAnalysisPool {
             let Some(queued) = self.pop_analysis_ready_work() else {
                 break;
             };
-            let permit = match self
-                .app
-                .runtime
-                .library
-                .library_scan_title_analysis_group_limit
-                .clone()
-                .try_acquire_owned()
-            {
-                Ok(permit) => permit,
-                Err(tokio::sync::TryAcquireError::NoPermits) => {
-                    self.analysis_ready.push_front(queued);
-                    debug!(
-                        analysis_ready = self.analysis_ready.len(),
-                        in_flight = self.in_flight.len(),
-                        walk_tasks = self.work_set.len(),
-                        "library scan media analysis launch waiting for analysis group permit"
-                    );
-                    break;
-                }
-                Err(error) => return Err(AppError::Repository(error.to_string())),
-            };
-            self.spawn_walk(queued, permit).await?;
+            self.spawn_walk(queued).await?;
         }
         Ok(())
     }
 
-    async fn spawn_walk(
-        &mut self,
-        queued: QueuedLibraryScanTitleAnalysisWork,
-        permit: tokio::sync::OwnedSemaphorePermit,
-    ) -> AppResult<()> {
+    async fn spawn_walk(&mut self, queued: QueuedLibraryScanTitleAnalysisWork) -> AppResult<()> {
         let QueuedLibraryScanTitleAnalysisWork { work, coverage } = queued;
         let title_id = work.title.id.clone();
         self.in_flight.insert(title_id.clone(), coverage.clone());
@@ -1435,7 +1410,6 @@ impl LibraryScanMediaAnalysisPool {
         let hydration_source = self.hydration_source;
         let file_analysis_concurrency = self.analysis_profile.file_analysis_concurrency_per_title;
         self.work_set.spawn(async move {
-            let _permit = permit;
             let (discovered_file_count, result) = hydrate_enumerate_and_walk_title_work(
                 &app,
                 &actor,

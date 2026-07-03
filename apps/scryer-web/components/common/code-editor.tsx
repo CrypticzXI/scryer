@@ -5,17 +5,13 @@ import {
   EditorView,
   lineNumbers,
   keymap,
+  ViewPlugin,
 } from "@codemirror/view";
 import { EditorState, StateEffect, StateField, type Extension } from "@codemirror/state";
 import { javascript } from "@codemirror/lang-javascript";
 import { shell } from "@codemirror/legacy-modes/mode/shell";
 import { oneDarkHighlightStyle } from "@codemirror/theme-one-dark";
-import {
-  defaultHighlightStyle,
-  StreamLanguage,
-  syntaxHighlighting,
-  type StreamParser,
-} from "@codemirror/language";
+import { StreamLanguage, syntaxHighlighting } from "@codemirror/language";
 import { defaultKeymap, indentWithTab } from "@codemirror/commands";
 import { useTheme } from "next-themes";
 import "@fontsource-variable/jetbrains-mono";
@@ -61,20 +57,7 @@ const regoKeywords = new Set([
 ]);
 
 const regoBuiltins = new Set([
-  "abs",
-  "all",
-  "any",
-  "array",
-  "base64",
-  "bits",
-  "ceil",
-  "concat",
-  "contains",
-  "count",
   "data",
-  "endswith",
-  "floor",
-  "glob",
   "input",
   "is_array",
   "is_boolean",
@@ -83,56 +66,157 @@ const regoBuiltins = new Set([
   "is_object",
   "is_set",
   "is_string",
-  "json",
   "lower",
-  "max",
-  "min",
-  "numbers",
-  "object",
-  "regex",
   "replace",
   "round",
-  "set",
-  "sort",
   "split",
   "sprintf",
   "startswith",
-  "strings",
   "sum",
   "time",
   "to_number",
   "trim",
   "type_name",
   "upper",
-  "urlquery",
 ]);
 
-const regoParser: StreamParser<null> = {
-  name: "rego",
-  token(stream) {
-    if (stream.eatSpace()) return null;
-    if (stream.match("#")) {
-      stream.skipToEnd();
-      return "comment";
-    }
-    if (stream.match(/"(?:[^"\\]|\\.)*"?/)) return "string";
-    if (stream.match(/`[^`]*`?/)) return "string";
-    if (stream.match(/\d+(?:\.\d+)?/)) return "number";
-    if (stream.match(/[{}()[\],.;:]/)) return "punctuation";
-    if (stream.match(/==|!=|<=|>=|:=|[_+\-*/%<>=|&!]+/)) return "operator";
-
-    const word = stream.match(/[A-Za-z_][A-Za-z0-9_]*/);
-    if (word && word !== true) {
-      const value = word[0];
-      if (regoKeywords.has(value)) return "keyword";
-      if (regoBuiltins.has(value)) return "variableName.special";
-      return "variableName";
-    }
-
-    stream.next();
-    return null;
+const regoHighlightTheme = EditorView.theme({
+  ".cm-scryer-rego-keyword": {
+    color: "var(--scry-accent-text)",
+    fontWeight: "600",
   },
-};
+  ".cm-scryer-rego-builtin": {
+    color: "var(--scry-accent-text)",
+  },
+  ".cm-scryer-rego-variable": {
+    color: "var(--scry-info-text)",
+  },
+  ".cm-scryer-rego-property": {
+    color: "var(--scry-ink2)",
+  },
+  ".cm-scryer-rego-string": {
+    color: "var(--scry-success-text)",
+  },
+  ".cm-scryer-rego-number": {
+    color: "var(--scry-warning-text)",
+  },
+  ".cm-scryer-rego-comment": {
+    color: "var(--scry-faint)",
+    fontStyle: "italic",
+  },
+  ".cm-scryer-rego-operator": {
+    color: "var(--scry-ink2)",
+  },
+});
+
+function regoDecoration(className: string): Decoration {
+  return Decoration.mark({ class: className });
+}
+
+function buildRegoHighlightDecorations(state: EditorState): DecorationSet {
+  const ranges: Array<ReturnType<Decoration["range"]>> = [];
+
+  for (let lineNumber = 1; lineNumber <= state.doc.lines; lineNumber += 1) {
+    const line = state.doc.line(lineNumber);
+    const text = line.text;
+    let index = 0;
+
+    while (index < text.length) {
+      const char = text[index];
+      if (!char || /\s/.test(char)) {
+        index += 1;
+        continue;
+      }
+
+      const from = line.from + index;
+      if (char === "#") {
+        ranges.push(regoDecoration("cm-scryer-rego-comment").range(from, line.to));
+        break;
+      }
+
+      if (char === "\"" || char === "`") {
+        const quote = char;
+        let end = index + 1;
+        while (end < text.length) {
+          const current = text[end];
+          if (current === "\\" && quote === "\"") {
+            end += 2;
+            continue;
+          }
+          end += 1;
+          if (current === quote) {
+            break;
+          }
+        }
+        ranges.push(
+          regoDecoration("cm-scryer-rego-string").range(from, line.from + end),
+        );
+        index = end;
+        continue;
+      }
+
+      const number = text.slice(index).match(/^\d+(?:\.\d+)?/);
+      if (number) {
+        const end = index + number[0].length;
+        ranges.push(
+          regoDecoration("cm-scryer-rego-number").range(from, line.from + end),
+        );
+        index = end;
+        continue;
+      }
+
+      const identifier = text.slice(index).match(/^[A-Za-z_][A-Za-z0-9_]*/);
+      if (identifier) {
+        const value = identifier[0];
+        const end = index + value.length;
+        const previousChar = index > 0 ? text[index - 1] : "";
+        const className = regoKeywords.has(value)
+          ? "cm-scryer-rego-keyword"
+          : regoBuiltins.has(value)
+            ? "cm-scryer-rego-builtin"
+            : previousChar === "."
+              ? "cm-scryer-rego-property"
+              : "cm-scryer-rego-variable";
+        ranges.push(regoDecoration(className).range(from, line.from + end));
+        index = end;
+        continue;
+      }
+
+      const operator = text.slice(index).match(/^(?:==|!=|<=|>=|:=|[_+\-*/%<>=|&!]+|[{}()[\],.;:])/);
+      if (operator) {
+        const end = index + operator[0].length;
+        ranges.push(
+          regoDecoration("cm-scryer-rego-operator").range(from, line.from + end),
+        );
+        index = end;
+        continue;
+      }
+
+      index += 1;
+    }
+  }
+
+  return Decoration.set(ranges);
+}
+
+const regoHighlightPlugin = ViewPlugin.fromClass(
+  class {
+    decorations: DecorationSet;
+
+    constructor(view: EditorView) {
+      this.decorations = buildRegoHighlightDecorations(view.state);
+    }
+
+    update(update: { docChanged: boolean; state: EditorState }) {
+      if (update.docChanged) {
+        this.decorations = buildRegoHighlightDecorations(update.state);
+      }
+    }
+  },
+  {
+    decorations: (plugin) => plugin.decorations,
+  },
+);
 
 const setDiagnosticsEffect = StateEffect.define<CodeEditorDiagnostic[]>();
 
@@ -287,13 +371,10 @@ export default function CodeEditor({
         onChangeRef.current(update.state.doc.toString());
       }
     });
-    const highlightStyle =
-      usePrideTheme || useDarkTheme ? oneDarkHighlightStyle : defaultHighlightStyle;
-
     const extensions = [
       lineNumbers(),
       ...languageExtensions(language),
-      syntaxHighlighting(highlightStyle),
+      syntaxHighlighting(scryerHighlightStyle),
       keymap.of([...defaultKeymap, indentWithTab]),
       updateListener,
       diagnosticField,

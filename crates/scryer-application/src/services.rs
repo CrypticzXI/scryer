@@ -967,7 +967,6 @@ pub struct AppRuntimeLibraryState {
     pub library_scan_cancellation_tokens:
         Arc<Mutex<HashMap<String, tokio_util::sync::CancellationToken>>>,
     pub library_scan_title_walk_limit: Arc<Semaphore>,
-    pub library_scan_title_analysis_group_limit: Arc<Semaphore>,
     pub library_scan_analysis_limit: Arc<Semaphore>,
 }
 
@@ -1183,9 +1182,6 @@ impl AppRuntimeState {
                 library_scan_cancellation_tokens: Arc::new(Mutex::new(HashMap::new())),
                 library_scan_title_walk_limit: Arc::new(Semaphore::new(
                     LIBRARY_SCAN_GLOBAL_TITLE_WALK_CONCURRENCY,
-                )),
-                library_scan_title_analysis_group_limit: Arc::new(Semaphore::new(
-                    LIBRARY_SCAN_GLOBAL_TITLE_ANALYSIS_GROUP_CONCURRENCY,
                 )),
                 library_scan_analysis_limit: Arc::new(Semaphore::new(
                     GLOBAL_LIBRARY_SCAN_ANALYSIS_CONCURRENCY,

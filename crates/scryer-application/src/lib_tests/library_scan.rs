@@ -1,5 +1,20 @@
 use super::*;
 
+#[cfg(windows)]
+fn current_media_source_signature_scheme() -> &'static str {
+    "windows_last_write_100ns_v1"
+}
+
+#[cfg(unix)]
+fn current_media_source_signature_scheme() -> &'static str {
+    "unix_mtime_nsec_v1"
+}
+
+#[cfg(all(not(unix), not(windows)))]
+fn current_media_source_signature_scheme() -> &'static str {
+    "system_time_nsec_v1"
+}
+
 #[derive(Clone, Default)]
 struct NotifyingLibraryScanner {
     library_files: Arc<Mutex<Vec<LibraryFile>>>,
@@ -1012,7 +1027,7 @@ async fn movie_title_scan_multiple_files_picks_initial_primary_and_marks_rest_ad
 }
 
 #[tokio::test]
-async fn movie_title_scan_backfills_legacy_source_signature_then_skips_current_signature() {
+async fn movie_title_scan_backfills_stale_mtime_signature_then_skips_current_signature() {
     let tempdir = tempfile::tempdir().expect("tempdir");
     let title_dir = tempdir.path().join("Signature Backfill (2026)");
     std::fs::create_dir(&title_dir).expect("create movie folder");
@@ -1039,8 +1054,8 @@ async fn movie_title_scan_backfills_legacy_source_signature_then_skips_current_s
             file_path: movie_path.to_string_lossy().to_string(),
             size_bytes: 18,
             role: MediaFileRole::Primary,
-            source_signature_scheme: Some("unix_mtime_nsec_v1".to_string()),
-            source_signature_value: Some("1:2".to_string()),
+            source_signature_scheme: Some(current_media_source_signature_scheme().to_string()),
+            source_signature_value: Some("stale".to_string()),
             quality_label: Some("1080p".to_string()),
             ..Default::default()
         })
@@ -1061,11 +1076,11 @@ async fn movie_title_scan_backfills_legacy_source_signature_then_skips_current_s
         )],
     )
     .await
-    .expect("scan legacy signature file");
+    .expect("scan stale signature file");
     assert_eq!(
         analyzer.analyze_calls(),
         1,
-        "legacy source signature should force one MediaInfo re-analysis"
+        "stale source signature should force one MediaInfo re-analysis"
     );
     let files = app
         .services
@@ -1080,7 +1095,7 @@ async fn movie_title_scan_backfills_legacy_source_signature_then_skips_current_s
         .expect("media file exists after backfill");
     assert_eq!(
         file.source_signature_scheme.as_deref(),
-        Some("blake3_head_tail_1mib_v1")
+        Some(current_media_source_signature_scheme())
     );
     assert!(
         file.source_signature_value
@@ -1101,7 +1116,7 @@ async fn movie_title_scan_backfills_legacy_source_signature_then_skips_current_s
     assert_eq!(
         analyzer.analyze_calls(),
         1,
-        "current sampled source signature should skip MediaInfo"
+        "current mtime source signature should skip MediaInfo"
     );
 }
 

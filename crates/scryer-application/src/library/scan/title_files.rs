@@ -12,9 +12,12 @@ pub(crate) struct FileSourceSnapshot {
     pub(crate) signature: Option<FileSourceSignature>,
 }
 
-pub(crate) const MEDIA_FILE_SOURCE_SIGNATURE_SCHEME: &str = "blake3_head_tail_1mib_v1";
-static MEDIA_FILE_SOURCE_SIGNATURE_READ_LIMIT: tokio::sync::Semaphore =
-    tokio::sync::Semaphore::const_new(1);
+#[cfg(windows)]
+pub(crate) const MEDIA_FILE_SOURCE_SIGNATURE_SCHEME: &str = "windows_last_write_100ns_v1";
+#[cfg(unix)]
+pub(crate) const MEDIA_FILE_SOURCE_SIGNATURE_SCHEME: &str = "unix_mtime_nsec_v1";
+#[cfg(all(not(unix), not(windows)))]
+pub(crate) const MEDIA_FILE_SOURCE_SIGNATURE_SCHEME: &str = "system_time_nsec_v1";
 
 #[cfg(test)]
 #[derive(Clone, Debug, Default)]
@@ -48,25 +51,60 @@ pub(crate) enum PlannedTitleScanRecord {
 pub(crate) async fn file_source_snapshot_from_path(
     path: &std::path::Path,
 ) -> AppResult<FileSourceSnapshot> {
-    let _permit = MEDIA_FILE_SOURCE_SIGNATURE_READ_LIMIT
-        .acquire()
-        .await
-        .map_err(|error| {
-            AppError::Repository(format!("source signature limiter closed: {error}"))
-        })?;
-    let path = path.to_path_buf();
-    tokio::task::spawn_blocking(move || {
-        let proof = crate::fs_integrity::import_content_proof(&path)?;
-        Ok(FileSourceSnapshot {
-            size_bytes: i64::try_from(proof.size_bytes).unwrap_or(i64::MAX),
-            signature: Some(FileSourceSignature {
-                scheme: MEDIA_FILE_SOURCE_SIGNATURE_SCHEME.to_string(),
-                value: proof.sample_blake3,
-            }),
-        })
+    let metadata = tokio::fs::metadata(path).await.map_err(|error| {
+        AppError::Repository(format!(
+            "failed to stat media file {}: {error}",
+            path.display()
+        ))
+    })?;
+
+    Ok(FileSourceSnapshot {
+        size_bytes: i64::try_from(metadata.len()).unwrap_or(i64::MAX),
+        signature: Some(file_source_signature_from_metadata(&metadata)?),
     })
-    .await
-    .map_err(|error| AppError::Repository(format!("source signature task failed: {error}")))?
+}
+
+fn file_source_signature_from_metadata(
+    metadata: &std::fs::Metadata,
+) -> AppResult<FileSourceSignature> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+
+        Ok(FileSourceSignature {
+            scheme: MEDIA_FILE_SOURCE_SIGNATURE_SCHEME.to_string(),
+            value: metadata.last_write_time().to_string(),
+        })
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+
+        Ok(FileSourceSignature {
+            scheme: MEDIA_FILE_SOURCE_SIGNATURE_SCHEME.to_string(),
+            value: format!("{}:{}", metadata.mtime(), metadata.mtime_nsec()),
+        })
+    }
+
+    #[cfg(all(not(unix), not(windows)))]
+    {
+        let modified = metadata.modified().map_err(|error| {
+            AppError::Repository(format!("failed to read media file modified time: {error}"))
+        })?;
+        let value = match modified.duration_since(std::time::UNIX_EPOCH) {
+            Ok(duration) => format!("{}:{}", duration.as_secs(), duration.subsec_nanos()),
+            Err(error) => {
+                let duration = error.duration();
+                format!("-{}:{}", duration.as_secs(), duration.subsec_nanos())
+            }
+        };
+
+        Ok(FileSourceSignature {
+            scheme: MEDIA_FILE_SOURCE_SIGNATURE_SCHEME.to_string(),
+            value,
+        })
+    }
 }
 
 pub(crate) fn file_source_snapshot_from_library_file(
@@ -106,8 +144,8 @@ pub(super) fn title_media_file_matches_snapshot(
         &media_file.source_signature_scheme,
         &media_file.source_signature_value,
     ) {
-        // Rows without the current sampled content signature must be
-        // re-analyzed once so the stronger signature can be persisted.
+        // Rows without a source signature need one analysis pass before
+        // future scans can use the cheap size + mtime reuse check.
         (None, None) => false,
         (Some(scheme), Some(value)) => snapshot
             .signature
@@ -573,23 +611,25 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn file_source_snapshot_uses_sampled_blake3_scheme() {
+    async fn file_source_snapshot_uses_mtime_signature_scheme() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("movie.mkv");
         std::fs::write(&path, b"video").expect("write test file");
 
         let snapshot = file_source_snapshot_from_path(&path)
             .await
-            .expect("sampled source snapshot");
+            .expect("mtime source snapshot");
         let signature = snapshot.signature.expect("signature");
 
         assert_eq!(snapshot.size_bytes, 5);
         assert_eq!(signature.scheme, MEDIA_FILE_SOURCE_SIGNATURE_SCHEME);
+        #[cfg(any(unix, all(not(unix), not(windows))))]
+        assert!(signature.value.contains(':'));
         assert!(!signature.value.trim().is_empty());
     }
 
     #[test]
-    fn title_media_file_requires_current_sampled_signature() {
+    fn title_media_file_requires_current_mtime_signature() {
         let media_file = build_test_media_file(1234, None, None, true);
         let snapshot = FileSourceSnapshot {
             size_bytes: 1234,
@@ -603,7 +643,7 @@ mod tests {
     }
 
     #[test]
-    fn title_media_file_rejects_legacy_mtime_signature() {
+    fn title_media_file_rejects_different_mtime_signature() {
         let media_file = build_test_media_file(1234, Some("unix_mtime_nsec_v1"), Some("1:2"), true);
         let snapshot = FileSourceSnapshot {
             size_bytes: 1234,
@@ -617,7 +657,7 @@ mod tests {
     }
 
     #[test]
-    fn title_media_file_matches_current_sampled_signature() {
+    fn title_media_file_matches_current_mtime_signature() {
         let media_file = build_test_media_file(
             1234,
             Some(MEDIA_FILE_SOURCE_SIGNATURE_SCHEME),

@@ -44,6 +44,9 @@ importers:
       '@fullcalendar/react':
         specifier: ^6.1.20
         version: 6.1.21(@fullcalendar/core@6.1.21)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
+      '@lezer/highlight':
+        specifier: ^1.2.3
+        version: 1.2.3
       '@melloware/react-logviewer':
         specifier: ^6.5.2
         version: 6.5.5(react-dom@19.2.7(react@19.2.7))(react@19.2.7)

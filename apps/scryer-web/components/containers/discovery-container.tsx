@@ -13,12 +13,6 @@ import {
 import { useGlobalStatus } from "@/lib/context/global-status-context";
 import { useSearchContext } from "@/lib/context/search-context";
 import { useTranslate } from "@/lib/context/translate-context";
-import {
-  clearDiscoveryHomeCache,
-  discoveryHomeCacheKey,
-  readDiscoveryHomeCache,
-  writeDiscoveryHomeCache,
-} from "@/lib/discovery-home-cache";
 import { canonicalDiscoveryFacetLabels } from "@/lib/discovery-facets";
 import type { LocaleCode } from "@/lib/i18n";
 import { discoveryItemDisplayTitle } from "@/lib/utils/discovery-display";
@@ -127,7 +121,7 @@ export const DiscoveryContainer = memo(function DiscoveryContainer({
   const [requestDialogOpen, setRequestDialogOpen] = useState(false);
   const refreshRequestIdRef = useRef(0);
   const mountedRef = useRef(true);
-  const cacheKeyRef = useRef<string | null>(null);
+  const scopeKeyRef = useRef<string | null>(null);
 
   useEffect(() => {
     clientRef.current = client;
@@ -146,22 +140,13 @@ export const DiscoveryContainer = memo(function DiscoveryContainer({
   const refresh = useCallback(async () => {
     const requestId = refreshRequestIdRef.current + 1;
     refreshRequestIdRef.current = requestId;
-    const cacheScope = {
-      userId,
-      uiLanguage,
-      authorizationSignature,
-      input: DISCOVERY_HOME_INPUT,
-    };
-    const cacheKey = discoveryHomeCacheKey(cacheScope);
-    const sameCacheScope = cacheKeyRef.current === cacheKey;
-    cacheKeyRef.current = cacheKey;
-    const cachedHome = readDiscoveryHomeCache(cacheScope);
+    const scopeKey = JSON.stringify({ userId, uiLanguage, authorizationSignature });
+    const sameScope = scopeKeyRef.current === scopeKey;
+    scopeKeyRef.current = scopeKey;
     if (!mountedRef.current || refreshRequestIdRef.current !== requestId) {
       return;
     }
-    if (cachedHome) {
-      setHome(cachedHome);
-    } else if (!sameCacheScope) {
+    if (!sameScope) {
       setHome(null);
     }
     setLoading(true);
@@ -184,11 +169,6 @@ export const DiscoveryContainer = memo(function DiscoveryContainer({
         | DiscoveryHomePayload
         | null;
       setHome(nextHome);
-      if (nextHome) {
-        writeDiscoveryHomeCache(cacheScope, nextHome);
-      } else {
-        clearDiscoveryHomeCache(cacheScope);
-      }
     } catch (caught) {
       if (!mountedRef.current || refreshRequestIdRef.current !== requestId) {
         return;

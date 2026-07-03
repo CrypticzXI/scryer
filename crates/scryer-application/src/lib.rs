@@ -300,8 +300,6 @@ pub(crate) const LIBRARY_SCAN_MOVIE_TITLE_ANALYSIS_GROUP_CONCURRENCY: usize = 24
 pub(crate) const LIBRARY_SCAN_EPISODIC_TITLE_ANALYSIS_GROUP_CONCURRENCY: usize = 4;
 pub(crate) const LIBRARY_SCAN_MOVIE_FILE_ANALYSIS_CONCURRENCY_PER_WALK: usize = 1;
 pub(crate) const LIBRARY_SCAN_EPISODIC_FILE_ANALYSIS_CONCURRENCY_PER_WALK: usize = 6;
-pub(crate) const LIBRARY_SCAN_GLOBAL_TITLE_ANALYSIS_GROUP_CONCURRENCY: usize =
-    LIBRARY_SCAN_MOVIE_TITLE_ANALYSIS_GROUP_CONCURRENCY;
 pub(crate) const GLOBAL_LIBRARY_SCAN_ANALYSIS_CONCURRENCY: usize = 24;
 pub use acquisition::release_search::release_strategy_kind_for_label;
 pub use app_usecase_integration::publish_download_queue_snapshot_events;

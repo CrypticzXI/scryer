@@ -70,7 +70,7 @@ const Toaster = ({ style, toastOptions, ...props }: ToasterProps) => {
           success:
             "border-[var(--scry-success-border)] bg-[linear-gradient(0deg,var(--scry-success-bg),var(--scry-success-bg)),var(--scry-bg)] text-[var(--scry-success-text)]",
           error:
-            "border-[var(--scry-danger-border)] bg-[linear-gradient(0deg,var(--scry-danger-bg),var(--scry-danger-bg)),var(--scry-bg)] text-[var(--scry-danger-text)]",
+            "border-[var(--scry-danger-border-strong)] bg-[var(--scry-danger-solid)] text-[var(--scry-danger-on-solid)]",
           warning:
             "border-[var(--scry-warning-border)] bg-[linear-gradient(0deg,var(--scry-warning-bg),var(--scry-warning-bg)),var(--scry-bg)] text-[var(--scry-warning-text)]",
           info:
