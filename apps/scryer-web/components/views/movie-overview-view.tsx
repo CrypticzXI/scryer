@@ -118,7 +118,7 @@ function formatTitleTag(t: Translate, tag: string, qualityProfiles?: { id: strin
     const value = profile ? profile.name : prettifyTagValue(rawId);
     return {
       label: `${t("settings.qualityProfileSection")}: ${value}`,
-      className: "bg-indigo-500/20 text-indigo-200",
+      className: "bg-[rgba(var(--scry-accent-rgb),0.2)] text-[var(--scry-accent-text)]",
     };
   }
 
@@ -126,7 +126,7 @@ function formatTitleTag(t: Translate, tag: string, qualityProfiles?: { id: strin
     const value = tag.slice(monitorPrefix.length).trim();
     return {
       label: `${t("search.addConfigMonitorType")}: ${resolveMonitorTypeLabel(t, value)}`,
-      className: "bg-sky-500/20 text-sky-200",
+      className: "bg-[var(--scry-info-bg-strong)] text-[var(--scry-info-text)]",
     };
   }
 
@@ -140,7 +140,7 @@ function formatTitleTag(t: Translate, tag: string, qualityProfiles?: { id: strin
           : value;
     return {
       label: `${t("search.addConfigSeasonFolder")}: ${translatedValue}`,
-      className: "bg-emerald-500/20 text-emerald-700 dark:text-emerald-200",
+      className: "bg-[var(--scry-success-bg-strong)] text-[var(--scry-success-text)]",
     };
   }
 
@@ -155,11 +155,11 @@ const MONITOR_TYPE_TAG_PREFIX = "scryer:monitor-type:";
 function wantedStatusClass(status: WantedStatus) {
   switch (status) {
     case "wanted":
-      return "bg-blue-500/20 text-blue-300";
+      return "bg-[var(--scry-info-bg-strong)] text-[var(--scry-info-text)]";
     case "grabbed":
-      return "bg-amber-500/20 text-amber-300";
+      return "bg-[var(--scry-warning-bg-strong)] text-[var(--scry-warning-text)]";
     case "completed":
-      return "bg-emerald-500/20 text-emerald-300";
+      return "bg-[var(--scry-success-bg-strong)] text-[var(--scry-success-text)]";
     case "paused":
       return "bg-muted text-muted-foreground";
     default:
@@ -170,12 +170,12 @@ function wantedStatusClass(status: WantedStatus) {
 function wantedPhaseClass(phase: WantedSearchPhase) {
   switch (phase) {
     case "primary":
-      return "bg-emerald-500/15 text-emerald-300";
+      return "bg-[var(--scry-success-bg)] text-[var(--scry-success-text)]";
     case "pre_release":
     case "pre_air":
-      return "bg-fuchsia-500/15 text-fuchsia-300";
+      return "bg-[rgba(var(--scry-accent-rgb),0.16)] text-[var(--scry-accent-text)]";
     case "secondary":
-      return "bg-yellow-500/15 text-yellow-300";
+      return "bg-[var(--scry-warning-bg)] text-[var(--scry-warning-text)]";
     default:
       return "bg-muted text-muted-foreground";
   }
@@ -579,7 +579,7 @@ export function MovieOverviewView({
         searchPrerequisiteNotice
       ) : searching ? (
         <div className="flex flex-col items-center gap-4 py-8">
-          <Loader2 className="h-8 w-8 animate-spin text-emerald-500" />
+          <Loader2 className="h-8 w-8 animate-spin text-[var(--scry-accent-text)]" />
           <p className="text-sm text-muted-foreground">{t("title.searchingReleases")}</p>
           <div className="w-full space-y-2">
             {[1, 2, 3].map((index) => (
@@ -676,7 +676,7 @@ export function MovieOverviewView({
               </h1>
 
               <div className="mt-2 flex flex-wrap items-center gap-2">
-                <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${title.monitored ? "bg-emerald-500/20 text-emerald-700 dark:text-emerald-300" : "bg-accent text-muted-foreground"}`}>
+                <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${title.monitored ? "bg-[var(--scry-success-bg-strong)] text-[var(--scry-success-text)]" : "bg-accent text-muted-foreground"}`}>
                   {title.monitored
                     ? t("title.monitored")
                     : t("search.monitorType.unmonitored")}

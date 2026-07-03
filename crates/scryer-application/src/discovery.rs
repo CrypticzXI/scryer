@@ -875,10 +875,8 @@ fn compare_personalized_discovery_home_hero_items(
     left: &DiscoveryItemRecord,
     right: &DiscoveryItemRecord,
 ) -> Ordering {
-    right
-        .background_url
-        .is_some()
-        .cmp(&left.background_url.is_some())
+    discovery_item_has_hero_backdrop(right)
+        .cmp(&discovery_item_has_hero_backdrop(left))
         .then_with(|| right.matched_subject_count.cmp(&left.matched_subject_count))
         .then_with(|| compare_optional_f64_desc(left.rank_score, right.rank_score))
         .then_with(|| compare_discovery_item_rating_desc(left, right))
@@ -895,10 +893,8 @@ fn compare_public_discovery_home_hero_items(
     left: &DiscoveryItemRecord,
     right: &DiscoveryItemRecord,
 ) -> Ordering {
-    right
-        .background_url
-        .is_some()
-        .cmp(&left.background_url.is_some())
+    discovery_item_has_hero_backdrop(right)
+        .cmp(&discovery_item_has_hero_backdrop(left))
         .then_with(|| compare_discovery_item_rating_desc(left, right))
         .then_with(|| compare_optional_f64_desc(left.rank_score, right.rank_score))
         .then_with(|| {
@@ -908,6 +904,12 @@ fn compare_public_discovery_home_hero_items(
                 .cmp(&left.source_count.unwrap_or_default())
         })
         .then_with(|| left.target_key.cmp(&right.target_key))
+}
+
+fn discovery_item_has_hero_backdrop(item: &DiscoveryItemRecord) -> bool {
+    item.background_url
+        .as_deref()
+        .is_some_and(|url| !url.trim().is_empty())
 }
 
 fn compare_discovery_item_rating_desc(
@@ -3878,6 +3880,32 @@ mod tests {
         .expect("hero item");
 
         assert_eq!(hero.target_key, "tmdb:movie:higher");
+    }
+
+    #[test]
+    fn discovery_home_hero_treats_blank_backdrop_as_missing() {
+        let mut blank_backdrop = test_discovery_item("blank", "movie", Some("movie"));
+        blank_backdrop.target_key = "tmdb:movie:blank".to_string();
+        blank_backdrop.rating = Some(10.0);
+        blank_backdrop.rank_score = Some(100.0);
+        blank_backdrop.background_url = Some("   ".to_string());
+
+        let mut real_backdrop = test_discovery_item("real", "movie", Some("movie"));
+        real_backdrop.target_key = "tmdb:movie:real".to_string();
+        real_backdrop.rating = Some(1.0);
+        real_backdrop.rank_score = Some(1.0);
+        real_backdrop.background_url = Some("https://images.example/real.jpg".to_string());
+
+        let hero = select_discovery_home_hero(
+            &[test_discovery_section(
+                "public",
+                vec![blank_backdrop, real_backdrop],
+            )],
+            &[],
+        )
+        .expect("hero item");
+
+        assert_eq!(hero.target_key, "tmdb:movie:real");
     }
 
     #[test]

@@ -4,7 +4,7 @@ import type { ComponentProps } from "react";
 type TitlePosterProps = Omit<ComponentProps<"img">, "src"> & {
   /** Local AVIF URL (from posterUrl). */
   src?: string | null;
-  /** Original source JPG URL (from posterSourceUrl) — used as <img> fallback. */
+  /** Source JPG URL (from posterSourceUrl) — used as <img> fallback. */
   sourceSrc?: string | null;
 };
 

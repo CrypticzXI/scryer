@@ -275,13 +275,13 @@ function requestStatusTone(
       return {
         label: requestStatusLabel(t, status),
         Icon: Clock,
-        className: "border-amber-400/30 bg-amber-500/15 text-amber-300",
+        className: "border-[var(--scry-warning-border)] bg-[var(--scry-warning-bg)] text-[var(--scry-warning-text)]",
       };
     case "approved":
       return {
         label: requestStatusLabel(t, status),
         Icon: Check,
-        className: "border-emerald-400/25 bg-emerald-500/15 text-emerald-300",
+        className: "border-[var(--scry-success-border)] bg-[var(--scry-success-bg)] text-[var(--scry-success-text)]",
       };
     case "rejected":
       return {

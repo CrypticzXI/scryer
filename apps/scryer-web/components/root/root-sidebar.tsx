@@ -432,7 +432,7 @@ function navBadgeToneClass(tone: NavBadgeTone) {
     case "danger":
       return "bg-[var(--scry-danger-solid)] text-[var(--scry-danger-on-solid)]";
     case "request":
-      return "bg-emerald-600 text-white dark:bg-emerald-500 dark:text-emerald-950";
+      return "bg-[var(--scry-success-solid)] text-[var(--scry-success-on-solid)]";
     case "cta":
     default:
       return "bg-primary text-primary-foreground";
@@ -967,11 +967,11 @@ function RootSidebarContent({
         className="overflow-hidden border-r border-[var(--scry-border3)] bg-[var(--scry-bg)] shadow-[12px_0_40px_rgba(2,6,23,0.22)] min-[981px]:sticky min-[981px]:top-[var(--root-shell-top-offset,0px)] min-[981px]:h-[calc(100dvh-var(--root-shell-top-offset,0px))] min-[981px]:max-h-[calc(100dvh-var(--root-shell-top-offset,0px))] min-[981px]:self-start"
       >
         <SidebarHeader className="px-5 pb-3 pt-5">
-          <div className="flex items-center gap-3">
-            <ScryerLogo className="h-[38px]! w-[38px]! drop-shadow-[0_10px_18px_rgba(var(--scry-accent-rgb),0.28)]" />
+          <div className="flex items-center gap-3.5">
+            <ScryerLogo className="h-[44px]! w-[44px]! drop-shadow-[0_12px_22px_rgba(var(--scry-accent-rgb),0.32)]" />
             <span
               data-slot="brand-wordmark"
-              className="text-[21px] font-bold leading-none text-[var(--scry-ink2)]"
+              className="text-[24px] font-bold leading-none text-[var(--scry-ink2)]"
               style={{
                 fontFamily:
                   "var(--font-space-grotesk), var(--font-inter), ui-sans-serif, system-ui, -apple-system, sans-serif",
@@ -1463,14 +1463,14 @@ function RootSidebarContent({
             {!uiSettings.hideSponsorButton ? (
               <a
                 id="root-sidebar-sponsor-link"
-                href="https://opencollective.com/scryer-media/projects/scryer"
+                href="https://www.scryer.media/scryer/donate/"
                 target="_blank"
                 rel="noreferrer"
                 className={cn(
                   "flex min-w-0 items-center justify-center gap-1.5 rounded-lg border border-[var(--scry-border2)] bg-[var(--scry-card2)] px-2 py-1 text-xs font-semibold text-[var(--scry-ink2)] transition hover:border-[var(--scry-accent)] hover:bg-[var(--scry-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/25 group-data-[collapsible=icon]:hidden",
                 )}
               >
-                <Heart className="h-3.5 w-3.5 text-rose-400" />
+                <Heart className="h-3.5 w-3.5 text-[var(--scry-danger-text-soft)]" />
                 <span className="truncate">Sponsor</span>
               </a>
             ) : null}

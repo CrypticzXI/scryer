@@ -801,52 +801,6 @@ pub trait LibraryScanner: Send + Sync {
     }
 }
 
-pub fn source_signature_from_std_metadata(
-    metadata: &std::fs::Metadata,
-) -> Option<(String, String)> {
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::MetadataExt;
-
-        Some((
-            "windows_last_write_100ns_v1".to_string(),
-            metadata.last_write_time().to_string(),
-        ))
-    }
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-
-        Some((
-            "unix_mtime_nsec_v1".to_string(),
-            format!("{}:{}", metadata.mtime(), metadata.mtime_nsec()),
-        ))
-    }
-
-    #[cfg(not(any(unix, windows)))]
-    {
-        use std::time::UNIX_EPOCH;
-
-        metadata
-            .modified()
-            .ok()
-            .and_then(|modified| match modified.duration_since(UNIX_EPOCH) {
-                Ok(duration) => Some((
-                    "system_time_nsec_v1".to_string(),
-                    format!("{}:{}", duration.as_secs(), duration.subsec_nanos()),
-                )),
-                Err(error) => {
-                    let duration = error.duration();
-                    Some((
-                        "system_time_nsec_v1".to_string(),
-                        format!("-{}:{}", duration.as_secs(), duration.subsec_nanos()),
-                    ))
-                }
-            })
-    }
-}
-
 #[derive(Default)]
 pub struct NullLibraryScanner;
 

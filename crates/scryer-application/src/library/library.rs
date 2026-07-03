@@ -11,7 +11,7 @@ use crate::library_discovery::{
     list_movie_top_level_entries, matching_movie_nfo_path, run_background_refresh_probe_with_delta,
     stream_child_directories_batched, stream_movie_top_level_entries_batched,
 };
-use crate::library_scan::{LibraryDirectoryScanResult, source_signature_from_std_metadata};
+use crate::library_scan::LibraryDirectoryScanResult;
 use crate::library_scan_coordinator::LibraryScanCoordinator;
 use crate::library_scan_helpers::{
     LibraryScanSessionDropGuard, spawn_library_discovery_queue,
@@ -23,7 +23,7 @@ use crate::library_scan_metadata::{
     PreparedSeriesLibraryScanCandidate, build_movie_metadata_batch_stats,
     build_series_metadata_batch_stats, movie_candidate_batch_search_keys,
     prepare_movie_library_scan_entries, prepare_series_library_scan_candidates,
-    resolve_full_scan_metadata_batches, select_movie_metadata_from_batch_results,
+    resolve_refresh_metadata_batches, select_movie_metadata_from_batch_results,
     select_series_metadata_from_batch_results, series_candidate_batch_search_keys,
 };
 use crate::library_scan_titles::{
@@ -51,6 +51,8 @@ const TITLE_SCAN_FILE_BATCH_SIZE: usize = 128;
 mod scan_candidates;
 #[path = "scan/full.rs"]
 mod scan_full;
+#[path = "scan/metadata_refresh.rs"]
+mod scan_metadata_refresh;
 #[path = "scan/pipeline.rs"]
 mod scan_pipeline;
 #[path = "scan/refresh.rs"]
@@ -79,7 +81,7 @@ use scan_refresh::{
 };
 pub(crate) use scan_title_files::{
     FileSourceSnapshot, PlannedTitleScanFile, PlannedTitleScanRecord,
-    file_source_signature_from_metadata, file_source_snapshot_from_library_file,
+    file_source_snapshot_from_library_file, file_source_snapshot_from_path,
 };
 use scan_title_files::{
     TitleScanLayoutSummary, classify_title_scan_layout, merge_title_scan_option_tags,
@@ -87,10 +89,10 @@ use scan_title_files::{
 };
 use scan_title_finalize::finalize_movie_scan_file;
 pub(crate) use scan_title_finalize::finalize_title_scan_file;
-use scan_title_scan::LibraryScanMediaAnalysisPool;
+use scan_title_scan::{LibraryScanMediaAnalysisPolicy, LibraryScanMediaAnalysisPool};
 
 /// Destination for matched title work. Implemented by the media-analysis pool
-/// (direct dispatch for refresh and one-off scans) and by the streaming scan
+/// (direct dispatch for background refresh and one-off scans) and by the full-scan
 /// pipeline's staging sink (rendezvous with candidate inventory).
 trait LibraryScanTitleWorkQueue: Send {
     fn enqueue(&mut self, work: LibraryScanTitleWork) -> bool;
@@ -133,21 +135,88 @@ enum LibraryScanTitleFacetPlan {
 pub(crate) struct LibraryScanTitleWork {
     title: Title,
     facet_plan: LibraryScanTitleFacetPlan,
-    discovered_files: Option<Vec<LibraryFile>>,
+    scope: LibraryScanTitleWorkScope,
     mode: LibraryScanTitleWalkMode,
     created_in_scan: bool,
-    /// True when `discovered_files` covers the title's whole folder (pipeline
-    /// inventory rendezvous), so missing-file cleanup may treat the walk as
-    /// full-folder coverage even though a scoped file list is attached.
-    full_folder: bool,
 }
 
 impl LibraryScanTitleWork {
     fn discovered_file_count(&self) -> usize {
-        self.discovered_files
-            .as_ref()
-            .map(Vec::len)
-            .unwrap_or_default()
+        self.scope.discovered_file_count()
+    }
+
+    fn discovered_files(&self) -> Option<&Vec<LibraryFile>> {
+        self.scope.discovered_files()
+    }
+
+    fn discovered_files_mut(&mut self) -> Option<&mut Vec<LibraryFile>> {
+        self.scope.discovered_files_mut()
+    }
+
+    fn has_full_folder_coverage(&self) -> bool {
+        self.scope.has_full_folder_coverage()
+    }
+
+    fn requires_folder_enumeration(&self) -> bool {
+        matches!(self.scope, LibraryScanTitleWorkScope::FullFolder)
+    }
+}
+
+#[derive(Clone, Debug)]
+enum LibraryScanTitleWorkScope {
+    FullFolder,
+    PreEnumeratedFullFolder(Vec<LibraryFile>),
+    ScopedFiles(Vec<LibraryFile>),
+}
+
+impl LibraryScanTitleWorkScope {
+    fn discovered_file_count(&self) -> usize {
+        self.discovered_files().map(Vec::len).unwrap_or_default()
+    }
+
+    fn discovered_files(&self) -> Option<&Vec<LibraryFile>> {
+        match self {
+            Self::FullFolder => None,
+            Self::PreEnumeratedFullFolder(files) | Self::ScopedFiles(files) => Some(files),
+        }
+    }
+
+    fn discovered_files_mut(&mut self) -> Option<&mut Vec<LibraryFile>> {
+        match self {
+            Self::FullFolder => None,
+            Self::PreEnumeratedFullFolder(files) | Self::ScopedFiles(files) => Some(files),
+        }
+    }
+
+    fn has_full_folder_coverage(&self) -> bool {
+        matches!(self, Self::FullFolder | Self::PreEnumeratedFullFolder(_))
+    }
+
+    fn into_discovered_files(self) -> Option<Vec<LibraryFile>> {
+        match self {
+            Self::FullFolder => None,
+            Self::PreEnumeratedFullFolder(files) | Self::ScopedFiles(files) => Some(files),
+        }
+    }
+
+    fn merge(&mut self, other: Self) {
+        let current = std::mem::replace(self, Self::ScopedFiles(Vec::new()));
+        *self = match (current, other) {
+            (Self::FullFolder, _) | (_, Self::FullFolder) => Self::FullFolder,
+            (Self::PreEnumeratedFullFolder(mut existing), Self::PreEnumeratedFullFolder(files))
+            | (Self::PreEnumeratedFullFolder(mut existing), Self::ScopedFiles(files)) => {
+                append_unique_library_files(&mut existing, files);
+                Self::PreEnumeratedFullFolder(existing)
+            }
+            (Self::ScopedFiles(mut existing), Self::ScopedFiles(files)) => {
+                append_unique_library_files(&mut existing, files);
+                Self::ScopedFiles(existing)
+            }
+            (Self::ScopedFiles(mut existing), Self::PreEnumeratedFullFolder(files)) => {
+                append_unique_library_files(&mut existing, files);
+                Self::PreEnumeratedFullFolder(existing)
+            }
+        };
     }
 }
 
@@ -183,7 +252,7 @@ fn movie_work_folders_match(left: Option<&str>, right: Option<&str>) -> bool {
 
 fn merge_library_scan_title_work(
     workset: &mut HashMap<String, LibraryScanTitleWork>,
-    mut work: LibraryScanTitleWork,
+    work: LibraryScanTitleWork,
 ) -> bool {
     let title_id = work.title.id.clone();
     match workset.get_mut(&title_id) {
@@ -220,16 +289,7 @@ fn merge_library_scan_title_work(
                 }
             }
 
-            match work.discovered_files.take() {
-                Some(files) => {
-                    if let Some(existing_files) = existing.discovered_files.as_mut() {
-                        append_unique_library_files(existing_files, files);
-                    }
-                }
-                None => {
-                    existing.discovered_files = None;
-                }
-            }
+            existing.scope.merge(work.scope);
 
             if let (
                 LibraryScanTitleFacetPlan::Movie(existing_cleanup),
@@ -249,7 +309,6 @@ fn merge_library_scan_title_work(
             existing.title = work.title;
             existing.mode = work.mode;
             existing.created_in_scan |= work.created_in_scan;
-            existing.full_folder |= work.full_folder;
             true
         }
         None => {

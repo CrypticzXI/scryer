@@ -62,7 +62,6 @@ const FACET_CONFIG: Record<Facet, FacetConfig> = {
 };
 
 const DEFAULT_AUTO_DISMISS_MS = 5_000;
-const SUCCESS_GREEN = "95,213,140";
 
 type ToastVisualState =
   | "scanning"
@@ -259,8 +258,11 @@ function ScanPhaseBar({
 
   if (status === "done") {
     Icon = CircleCheck;
-    iconColor = "#5fd58c";
-    fillStyle = { width: `${percent}%`, background: `rgba(${SUCCESS_GREEN},.45)` };
+    iconColor = "var(--scry-success-text-soft)";
+    fillStyle = {
+      width: `${percent}%`,
+      background: "var(--scry-success-bg-strong)",
+    };
     labelColor = "var(--scry-text2)";
     countColor = "var(--scry-muted2)";
   } else if (status === "active") {
@@ -358,7 +360,9 @@ export function LibraryScanToast({
   const autoDismiss =
     !!onDismiss && (visualState === "success" || visualState === "canceled");
   const countdownColor =
-    visualState === "success" ? `rgba(${SUCCESS_GREEN},.2)` : "rgba(255,255,255,.12)";
+    visualState === "success"
+      ? "rgba(var(--scry-success-rgb),.2)"
+      : "rgba(255,255,255,.12)";
 
   const [cancelPending, setCancelPending] = React.useState(false);
   const [nowMs, setNowMs] = React.useState(() => Date.now());
@@ -602,9 +606,9 @@ export function LibraryScanToast({
     visualState === "scanning"
       ? facet.grad
       : visualState === "success"
-        ? "linear-gradient(90deg,#38b46f,#5fd58c)"
+        ? "linear-gradient(90deg,var(--scry-success-solid-hover),var(--scry-success-solid))"
         : visualState === "issues"
-          ? "linear-gradient(90deg,#e08b3c,#f0a35e)"
+          ? "linear-gradient(90deg,var(--scry-warning-solid-hover),var(--scry-warning-solid))"
           : visualState === "failed"
             ? "linear-gradient(90deg,var(--scry-danger-solid-hover),var(--scry-danger-text-soft))"
             : "linear-gradient(90deg,#5b6478,#8b94a8)";
@@ -621,17 +625,17 @@ export function LibraryScanToast({
       ? {
           label: t("settings.libraryScanBadgeDone"),
           Icon: Check,
-          color: "#6fce8f",
-          bg: "rgba(95,213,140,.14)",
-          border: "rgba(95,213,140,.3)",
+          color: "var(--scry-success-text-soft)",
+          bg: "var(--scry-success-bg)",
+          border: "var(--scry-success-border)",
         }
       : visualState === "issues"
         ? {
             label: t("settings.libraryScanBadgeReview"),
             Icon: TriangleAlert,
-            color: "#f0a35e",
-            bg: "rgba(240,163,94,.14)",
-            border: "rgba(240,163,94,.32)",
+            color: "var(--scry-warning-text)",
+            bg: "var(--scry-warning-bg)",
+            border: "var(--scry-warning-border)",
           }
         : visualState === "failed"
           ? {
@@ -664,9 +668,9 @@ export function LibraryScanToast({
     if (text) {
       chip = {
         Icon: Sparkles,
-        color: "#6fce8f",
-        bg: "rgba(95,213,140,.08)",
-        border: "rgba(95,213,140,.2)",
+        color: "var(--scry-success-text-soft)",
+        bg: "var(--scry-success-bg)",
+        border: "var(--scry-success-border)",
         text,
       };
     }
@@ -675,9 +679,9 @@ export function LibraryScanToast({
     if (text) {
       chip = {
         Icon: CircleAlert,
-        color: "#f0a35e",
-        bg: "rgba(240,163,94,.09)",
-        border: "rgba(240,163,94,.24)",
+        color: "var(--scry-warning-text)",
+        bg: "var(--scry-warning-bg)",
+        border: "var(--scry-warning-border)",
         text,
       };
     }
@@ -787,9 +791,9 @@ export function LibraryScanToast({
             onClick={onReviewUnmatched}
             className="flex h-9 flex-1 items-center justify-center gap-[7px] rounded-[9px] text-[12.5px] font-semibold transition hover:brightness-110"
             style={{
-              border: "1px solid rgba(240,163,94,.3)",
-              background: "rgba(240,163,94,.1)",
-              color: "#f0a35e",
+              border: "1px solid var(--scry-warning-border)",
+              background: "var(--scry-warning-bg)",
+              color: "var(--scry-warning-text)",
             }}
           >
             <ListChecks className="h-3.5 w-3.5" aria-hidden="true" />

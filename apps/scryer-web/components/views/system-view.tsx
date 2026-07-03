@@ -100,15 +100,15 @@ function quotaBadgeClass(current: number | null, max: number | null): string {
   const pct = current / max;
   if (pct >= 1) return "text-[var(--scry-danger-text-soft)] font-semibold";
   if (pct >= 0.9) return "text-[var(--scry-danger-text-soft)]";
-  if (pct >= 0.75) return "text-yellow-400";
-  return "text-green-400";
+  if (pct >= 0.75) return "text-[var(--scry-warning-text)]";
+  return "text-[var(--scry-success-text-soft)]";
 }
 
 const LOG_LEVEL_COLORS: Record<string, string> = {
   error: "text-[var(--scry-danger-text)]",
-  warn: "text-amber-300",
-  info: "text-sky-300",
-  debug: "text-emerald-300",
+  warn: "text-[var(--scry-warning-text)]",
+  info: "text-[var(--scry-info-text)]",
+  debug: "text-[var(--scry-success-text)]",
   trace: "text-[var(--scry-muted3)]",
 };
 
@@ -216,7 +216,7 @@ function HighlightedLine({ entry }: { entry: LogLineEntry }) {
     }
     fragments.push(
       <span key={`k${kv.start}`}>
-        <span className="text-cyan-300">{kv.key}</span>
+        <span className="text-[var(--scry-info-text)]">{kv.key}</span>
         <span className="text-[var(--scry-muted3)]">=</span>
         <span className="text-[var(--scry-ink2)]">{kv.value}</span>
       </span>,
@@ -469,12 +469,12 @@ function LogViewer() {
           <div className="flex flex-wrap items-center gap-2 text-xs">
             <span className="inline-flex items-center gap-1.5 rounded-full border border-[var(--scry-border3)] bg-[var(--scry-inset)] px-2.5 py-1 text-[var(--scry-ink2)]">
               <span
-                className={`size-2 rounded-full ${connected ? "bg-emerald-400" : "bg-[var(--scry-danger-solid)]"}`}
+                className={`size-2 rounded-full ${connected ? "bg-[var(--scry-success-solid)]" : "bg-[var(--scry-danger-solid)]"}`}
               />
               {connected ? "Live" : "Disconnected"}
             </span>
             {paused ? (
-              <span className="rounded-full border border-amber-400/30 bg-amber-500/12 px-2.5 py-1 text-amber-200">
+              <span className="rounded-full border border-[var(--scry-warning-border)] bg-[var(--scry-warning-bg)] px-2.5 py-1 text-[var(--scry-warning-text)]">
                 Paused
               </span>
             ) : null}
@@ -554,7 +554,7 @@ function LogViewer() {
           </div>
         </div>
         {liveTailNotice ? (
-          <div className="rounded-[10px] border border-sky-400/25 bg-sky-500/10 px-3 py-2 text-xs text-sky-200">
+          <div className="rounded-[10px] border border-[var(--scry-info-border)] bg-[var(--scry-info-bg)] px-3 py-2 text-xs text-[var(--scry-info-text)]">
             {liveTailNotice}
           </div>
         ) : null}

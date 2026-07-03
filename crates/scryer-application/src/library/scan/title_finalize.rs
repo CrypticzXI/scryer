@@ -459,23 +459,18 @@ pub(super) async fn finalize_movie_scan_file(
     let snapshot = if let Some(snapshot) = file_source_snapshot_from_library_file(file) {
         snapshot
     } else {
-        let metadata = match tokio::fs::metadata(&file_path).await {
-            Ok(metadata) => metadata,
+        match file_source_snapshot_from_path(&file_path).await {
+            Ok(snapshot) => snapshot,
             Err(error) => {
                 warn!(
                     error = %error,
                     title_id = %title.id,
                     file_path = %file.path,
-                    "failed to read movie file metadata during library scan"
+                    "failed to read movie file source signature during library scan"
                 );
                 summary.skipped += 1;
                 return;
             }
-        };
-
-        FileSourceSnapshot {
-            size_bytes: i64::try_from(metadata.len()).unwrap_or(i64::MAX),
-            signature: file_source_signature_from_metadata(&metadata),
         }
     };
 

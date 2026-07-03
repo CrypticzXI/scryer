@@ -9,7 +9,7 @@ import {
   Trash2,
   XCircle,
 } from "lucide-react";
-import { Fragment, memo } from "react";
+import { Fragment, memo, type ReactNode } from "react";
 
 import { ActivityProgressBar } from "@/components/views/activity-progress-bar";
 import {
@@ -19,7 +19,13 @@ import {
 } from "@/components/views/activity/queue-row-presentation";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
-import { TableCell, TableRow } from "@/components/ui/table";
+import {
+  TableCell,
+  TableCheckboxCell,
+  TableCodeCell,
+  TableRow,
+} from "@/components/ui/table";
+import { ActionTooltip } from "@/components/ui/tooltip";
 import type { DownloadQueueItem } from "@/lib/types";
 import {
   type ActivityTab,
@@ -56,6 +62,43 @@ export type QueueTableRowProps = {
   onMarkFailedOnly: () => void;
   onRequestDelete: () => void;
 };
+
+type QueueIconActionProps = {
+  id?: string;
+  className: string;
+  disabled: boolean;
+  label: string;
+  tooltip?: ReactNode;
+  children: ReactNode;
+  onClick: () => void;
+};
+
+function QueueIconAction({
+  id,
+  className,
+  disabled,
+  label,
+  tooltip,
+  children,
+  onClick,
+}: QueueIconActionProps) {
+  return (
+    <ActionTooltip content={tooltip ?? label} wrapperTabIndex={disabled ? 0 : undefined}>
+      <Button
+        id={id}
+        type="button"
+        size="sm"
+        variant="secondary"
+        className={className}
+        disabled={disabled}
+        aria-label={label}
+        onClick={onClick}
+      >
+        {children}
+      </Button>
+    </ActionTooltip>
+  );
+}
 
 export const QueueTableRow = memo(function QueueTableRow({
   queueItem,
@@ -98,7 +141,7 @@ export const QueueTableRow = memo(function QueueTableRow({
         data-activity-client-type={queueItem.clientType}
       >
         {activeTab === "import" ? (
-          <TableCell className="w-12 min-w-12 text-center align-middle">
+          <TableCheckboxCell>
             <Checkbox
               checked={isImportSelected}
               aria-label={t("activity.selectImportItem")}
@@ -106,21 +149,21 @@ export const QueueTableRow = memo(function QueueTableRow({
               size="table"
               className="mx-auto"
             />
-          </TableCell>
+          </TableCheckboxCell>
         ) : null}
-        <TableCell className="w-[28%] min-w-72">
+        <TableCell className="w-[32%]">
           <ActivityQueueTitleContent
             displayTitle={row.displayTitle}
             releaseTitle={row.releaseTitle}
           />
         </TableCell>
-        <TableCell className="w-36 min-w-36 align-middle">
+        <TableCell className="w-[13%] align-middle">
           <p className="break-words whitespace-normal text-sm">
             {queueItem.clientName || queueItem.clientType}
           </p>
           <p className="text-xs text-muted-foreground">{queueItem.clientType}</p>
         </TableCell>
-        <TableCell className="w-44 min-w-44 align-middle">
+        <TableCell className="w-[15%] align-middle">
           <ActivityQueueStatusBadge
             stateKey={row.displayStateKey}
             statusLabel={row.statusLabel}
@@ -143,7 +186,7 @@ export const QueueTableRow = memo(function QueueTableRow({
           )}
         </TableCell>
         {activeTab === "activity" || activeTab === "import" ? (
-          <TableCell className="w-48 min-w-48 align-middle">
+          <TableCell className="w-[16%] align-middle">
             <ActivityProgressBar
               percent={row.percent}
               remainingLabel={row.remainingLabel}
@@ -151,20 +194,16 @@ export const QueueTableRow = memo(function QueueTableRow({
             />
           </TableCell>
         ) : null}
-        <TableCell className="w-24 min-w-24 align-middle font-[var(--font-code)]">
+        <TableCodeCell className="w-28 text-center align-middle text-muted-foreground">
           {formatBytes(queueItem.sizeBytes)}
-        </TableCell>
-        <TableCell className="w-44 min-w-44 align-middle text-right">
-          <div className="flex items-center justify-end gap-2">
+        </TableCodeCell>
+        <TableCell className="w-52 align-middle text-center">
+          <div className="flex flex-wrap items-center justify-center gap-1.5">
             {row.canPause && (
-              <Button
-                type="button"
-                size="sm"
-                variant="secondary"
+              <QueueIconAction
                 className={`h-10 w-10 border border-border/50 bg-muted/70 text-foreground hover:bg-accent/90 ${rowActionVisualClass}`}
                 disabled={isRowFullyBusy}
-                title={t("queue.pause")}
-                aria-label={t("queue.pause")}
+                label={t("queue.pause")}
                 onClick={() => {
                   if (
                     isActionLoading || isRowBlocked
@@ -175,17 +214,13 @@ export const QueueTableRow = memo(function QueueTableRow({
                 }}
               >
                 <Pause className="h-6 w-6" />
-              </Button>
+              </QueueIconAction>
             )}
             {row.canResume && (
-              <Button
-                type="button"
-                size="sm"
-                variant="secondary"
+              <QueueIconAction
                 className={`h-10 w-10 border border-border/50 bg-muted/70 text-foreground hover:bg-accent/90 ${rowActionVisualClass}`}
                 disabled={isRowFullyBusy}
-                title={t("queue.resume")}
-                aria-label={t("queue.resume")}
+                label={t("queue.resume")}
                 onClick={() => {
                   if (
                     isActionLoading || isRowBlocked
@@ -196,22 +231,14 @@ export const QueueTableRow = memo(function QueueTableRow({
                 }}
               >
                 <Play className="h-6 w-6" />
-              </Button>
+              </QueueIconAction>
             )}
             {(row.canInteractiveManualImport || row.canDirectManualImport) && (
-              <Button
+              <QueueIconAction
                 id={selectorId("activity", activeTab, "manual-import", rowSelectorKey)}
-                type="button"
-                size="sm"
-                variant="secondary"
-                className={`h-10 w-10 border border-emerald-500/60 dark:border-emerald-500/50 bg-emerald-600/20 dark:bg-emerald-600/15 text-emerald-700 dark:text-emerald-200 hover:bg-emerald-600/30 dark:hover:bg-emerald-600/25 ${rowActionVisualClass}`}
+                className={`h-10 w-10 border border-[var(--scry-success-border-strong)] bg-[var(--scry-success-bg)] text-[var(--scry-success-text)] hover:bg-[var(--scry-success-bg-strong)] ${rowActionVisualClass}`}
                 disabled={isRowFullyBusy}
-                title={
-                  isManualImportPending
-                    ? t("queue.manualImporting")
-                    : t("queue.manualImportTooltip")
-                }
-                aria-label={
+                label={
                   isManualImportPending
                     ? t("queue.manualImporting")
                     : t("queue.manualImportTooltip")
@@ -230,22 +257,14 @@ export const QueueTableRow = memo(function QueueTableRow({
                 ) : (
                   <ArrowDownToLine className="h-5 w-5" />
                 )}
-              </Button>
+              </QueueIconAction>
             )}
             {row.canAssignTitle && (
-              <Button
+              <QueueIconAction
                 id={selectorId("activity", activeTab, "assign-title", rowSelectorKey)}
-                type="button"
-                size="sm"
-                variant="secondary"
-                className={`h-10 w-10 border border-amber-500/60 bg-amber-600/15 text-amber-200 hover:bg-amber-600/25 ${rowActionVisualClass}`}
+                className={`h-10 w-10 border border-[var(--scry-warning-border-strong)] bg-[var(--scry-warning-bg)] text-[var(--scry-warning-text)] hover:bg-[var(--scry-warning-bg-strong)] ${rowActionVisualClass}`}
                 disabled={isRowFullyBusy}
-                title={
-                  row.trackedMatchTypeKey === "unmatched" || !queueItem.titleId
-                    ? t("queue.assignTitle")
-                    : t("queue.reassignTitle")
-                }
-                aria-label={
+                label={
                   row.trackedMatchTypeKey === "unmatched" || !queueItem.titleId
                     ? t("queue.assignTitle")
                     : t("queue.reassignTitle")
@@ -260,17 +279,13 @@ export const QueueTableRow = memo(function QueueTableRow({
                 }}
               >
                 <Link2 className="h-5 w-5" />
-              </Button>
+              </QueueIconAction>
             )}
             {row.canIgnore && (
-              <Button
-                type="button"
-                size="sm"
-                variant="secondary"
+              <QueueIconAction
                 className={`h-10 w-10 border border-border/50 bg-muted/70 text-foreground hover:bg-accent/90 ${rowActionVisualClass}`}
                 disabled={isRowFullyBusy}
-                title={t("queue.ignore")}
-                aria-label={t("queue.ignore")}
+                label={t("queue.ignore")}
                 onClick={() => {
                   if (
                     isActionLoading || isRowBlocked
@@ -281,17 +296,13 @@ export const QueueTableRow = memo(function QueueTableRow({
                 }}
               >
                 <CircleOff className="h-5 w-5" />
-              </Button>
+              </QueueIconAction>
             )}
             {row.canMarkFailed && (
-              <Button
-                type="button"
-                size="sm"
-                variant="secondary"
-                className={`h-10 w-10 border border-orange-500/50 bg-orange-600/15 text-orange-200 hover:bg-orange-600/25 ${rowActionVisualClass}`}
+              <QueueIconAction
+                className={`h-10 w-10 border border-[var(--scry-warning-border)] bg-[var(--scry-warning-bg)] text-[var(--scry-warning-text)] hover:bg-[var(--scry-warning-bg-strong)] ${rowActionVisualClass}`}
                 disabled={isRowFullyBusy}
-                title={t("queue.markFailedSearchAgain")}
-                aria-label={t("queue.markFailedSearchAgain")}
+                label={t("queue.markFailedSearchAgain")}
                 onClick={() => {
                   if (isActionLoading || isRowBlocked) {
                     return;
@@ -300,17 +311,13 @@ export const QueueTableRow = memo(function QueueTableRow({
                 }}
               >
                 <CircleAlert className="h-5 w-5" />
-              </Button>
+              </QueueIconAction>
             )}
             {row.canMarkFailed && (
-              <Button
-                type="button"
-                size="sm"
-                variant="secondary"
+              <QueueIconAction
                 className={`h-10 w-10 border border-[var(--scry-danger-border)] bg-[var(--scry-danger-bg)] text-[var(--scry-danger-text)] hover:bg-[var(--scry-danger-bg-strong)] ${rowActionVisualClass}`}
                 disabled={isRowFullyBusy}
-                title={t("queue.markFailedOnly")}
-                aria-label={t("queue.markFailedOnly")}
+                label={t("queue.markFailedOnly")}
                 onClick={() => {
                   if (isActionLoading || isRowBlocked) {
                     return;
@@ -319,16 +326,12 @@ export const QueueTableRow = memo(function QueueTableRow({
                 }}
               >
                 <XCircle className="h-5 w-5" />
-              </Button>
+              </QueueIconAction>
             )}
-            <Button
-              type="button"
-              size="sm"
-              variant="secondary"
+            <QueueIconAction
               className={`h-10 w-10 border border-[var(--scry-danger-border)] bg-[var(--scry-danger-bg)] text-[var(--scry-danger-text)] hover:bg-[var(--scry-danger-bg-strong)] ${rowActionVisualClass}`}
               disabled={isRowFullyBusy}
-              title={t("label.delete")}
-              aria-label={t("label.delete")}
+              label={t("label.delete")}
               onClick={() => {
                 if (
                   isActionLoading || isRowBlocked
@@ -339,7 +342,7 @@ export const QueueTableRow = memo(function QueueTableRow({
               }}
             >
               <Trash2 className="h-6 w-6" />
-            </Button>
+            </QueueIconAction>
           </div>
         </TableCell>
       </TableRow>

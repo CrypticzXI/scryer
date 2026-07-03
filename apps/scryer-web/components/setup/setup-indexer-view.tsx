@@ -290,7 +290,7 @@ export function SetupIndexerView({
             {t("label.testConnection")}
           </Button>
           {testResult === "success" && (
-            <span className="flex items-center gap-1 text-sm text-emerald-500">
+            <span className="flex items-center gap-1 text-sm text-[var(--scry-success-text-soft)]">
               <Check className="h-4 w-4" /> {t("setup.connectionSuccess")}
             </span>
           )}
@@ -302,7 +302,7 @@ export function SetupIndexerView({
         </div>
         {error && <p id="setup-indexer-error" className="text-sm text-destructive">{error}</p>}
         {saved && (
-          <p id="setup-indexer-saved" className="text-sm text-emerald-500">{t("setup.saved")}</p>
+          <p id="setup-indexer-saved" className="text-sm text-[var(--scry-success-text-soft)]">{t("setup.saved")}</p>
         )}
       </div>
       <div className="flex items-center justify-between pt-2">

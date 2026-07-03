@@ -171,7 +171,7 @@ function AudioTracksPopover({ streams }: { streams: AudioStreamDetail[] }) {
       <PopoverTrigger asChild>
         <button
           type="button"
-          className="inline-flex cursor-pointer items-center gap-1 rounded border border-sky-500/40 bg-sky-500/20 px-1.5 py-0.5 text-[11px] font-medium text-sky-700 hover:bg-sky-500/30 dark:border-sky-500/30 dark:bg-sky-500/15 dark:text-sky-300 dark:hover:bg-sky-500/25"
+          className="inline-flex cursor-pointer items-center gap-1 rounded border border-[var(--scry-info-border)] bg-[var(--scry-info-bg)] px-1.5 py-0.5 text-[11px] font-medium text-[var(--scry-info-text)] hover:bg-[var(--scry-info-bg-strong)]"
         >
           {t("mediaFile.audioCount", { count: streams.length })}
           <ChevronDown className="h-3 w-3 opacity-70" />

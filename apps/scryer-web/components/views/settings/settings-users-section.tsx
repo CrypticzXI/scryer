@@ -102,7 +102,7 @@ function AuthFactorStatusBadge({ enabled }: { enabled: boolean }) {
       className={cn(
         "inline-flex min-w-24 items-center justify-center rounded-full border px-2 py-1 text-xs font-medium",
         enabled
-          ? "border-emerald-500/35 bg-emerald-500/10 text-emerald-700 dark:text-emerald-200"
+          ? "border-[var(--scry-success-border)] bg-[var(--scry-success-bg)] text-[var(--scry-success-text)]"
           : "border-[var(--scry-border3)] bg-[var(--scry-inset)] text-[var(--scry-muted3)]",
       )}
     >

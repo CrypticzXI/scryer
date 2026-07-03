@@ -184,7 +184,7 @@ export function SetupSummaryView({
         <CardContent className="flex flex-col gap-3 p-5">
           {items.map((item) => (
             <div key={item.label} className="flex items-start gap-3">
-              <Check className="mt-0.5 h-4 w-4 flex-none text-emerald-500" />
+              <Check className="mt-0.5 h-4 w-4 flex-none text-[var(--scry-success-text-soft)]" />
               <div>
                 <p className="text-sm font-medium">{item.label}</p>
                 <p className={item.code ? "font-[var(--font-code)] text-sm text-muted-foreground" : "text-sm text-muted-foreground"}>
@@ -196,7 +196,7 @@ export function SetupSummaryView({
         </CardContent>
       </Card>
       {showWarmupCard ? (
-        <Card className="mx-auto w-full max-w-md border-emerald-500/30">
+        <Card className="mx-auto w-full max-w-md border-[var(--scry-success-border)]">
           <CardContent className="flex flex-col gap-3 p-5">
             <div className="space-y-1">
               <p className="text-sm font-medium">{t("setup.monitorWarmupTitle")}</p>
@@ -219,7 +219,7 @@ export function SetupSummaryView({
                 <Progress
                   value={warmupPercent ?? undefined}
                   indeterminate={warmupPercent === null}
-                  indicatorClassName="bg-emerald-500"
+                  indicatorClassName="bg-[var(--scry-success-solid)]"
                 />
                 <p className="text-xs text-muted-foreground">
                   {warmupPhaseState.totalKnown

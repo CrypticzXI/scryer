@@ -98,9 +98,9 @@ export function SetupImportConnectView({
           role="status"
           className="mb-4 flex items-start gap-2 rounded-lg border px-3 py-2 text-xs"
           style={{
-            background: "rgba(234, 179, 8, 0.1)",
-            borderColor: "rgba(234, 179, 8, 0.3)",
-            color: "#e7c66a",
+            background: "var(--scry-warning-bg)",
+            borderColor: "var(--scry-warning-border)",
+            color: "var(--scry-warning-text)",
           }}
         >
           <CircleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
@@ -357,7 +357,7 @@ function StatusRow({
       {inst.status === "connected" ? (
         <span
           className="flex items-center gap-1.5"
-          style={{ color: "#4ade80", fontWeight: 600 }}
+          style={{ color: "var(--scry-success-text-soft)", fontWeight: 600 }}
         >
           <CircleCheckBig style={{ width: 15, height: 15 }} />
           {t("setup.connected")}
@@ -412,7 +412,7 @@ function statusDotColor(
 ): string {
   switch (status) {
     case "connected":
-      return "#4ade80";
+      return "var(--scry-success-text-soft)";
     case "testing":
       return "var(--scry-accent)";
     case "error":

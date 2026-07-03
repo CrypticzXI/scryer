@@ -19,12 +19,6 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
 import { useTranslate } from "@/lib/context/translate-context";
 import { PERSONA_OVERRIDE_DEFAULTS } from "@/lib/constants/quality-profiles";
 import { selectorId } from "@/lib/utils/dom-ids";
@@ -325,7 +319,7 @@ function ProfileListEditor({
               sortedAllowed.map((option) => (
                 <div
                   key={option.value}
-                  className="mb-1 flex items-center justify-between rounded-[9px] border border-emerald-400/35 bg-emerald-500/10 px-2 py-1.5 text-[var(--scry-ink2)] ring-1 ring-inset ring-emerald-500/20 hover:border-emerald-400/60"
+                  className="mb-1 flex items-center justify-between rounded-[9px] border border-[var(--scry-success-border)] bg-[var(--scry-success-bg)] px-2 py-1.5 text-[var(--scry-ink2)] ring-1 ring-inset ring-[var(--scry-success-border)] hover:border-[var(--scry-success-border-strong)]"
                 >
                   <span className="text-xs">{option.label}</span>
                   <Button
@@ -718,7 +712,7 @@ export function SettingsQualityProfilesSection({
                   <TableRow
                     key={profile.id}
                     id={selectorId("settings-quality-profile-row", profile.name)}
-                    className="border-[var(--scry-border3)] hover:bg-[var(--scry-hover)]"
+                    className="border-[var(--scry-border3)] hover:bg-[var(--scry-rowHover)]"
                   >
                     <TableCell className="font-medium text-[var(--scry-ink2)]">{profile.name}</TableCell>
                     <TableCell>
@@ -806,24 +800,15 @@ export function SettingsQualityProfilesSection({
                               disabled={qualityProfilesSaving || isInUse}
                               onClick={() => setPendingDeleteProfile({ id: profile.id, name: profile.name })}
                               label={t("label.delete")}
+                              tooltip={
+                                isInUse
+                                  ? t("qualityProfile.deleteDisabledInUse")
+                                  : undefined
+                              }
                             >
                               <Trash2 className="h-4 w-4" />
                             </QualityProfileActionButton>
                           );
-                          if (isInUse) {
-                            return (
-                              <TooltipProvider>
-                                <Tooltip>
-                                  <TooltipTrigger asChild>
-                                    <span tabIndex={0}>{deleteButton}</span>
-                                  </TooltipTrigger>
-                                  <TooltipContent>
-                                    {t("qualityProfile.deleteDisabledInUse")}
-                                  </TooltipContent>
-                                </Tooltip>
-                              </TooltipProvider>
-                            );
-                          }
                           return deleteButton;
                         })()}
                       </div>
@@ -919,7 +904,7 @@ export function SettingsQualityProfilesSection({
                           variant="secondary"
                           size="sm"
                           onClick={() => addQualityTier(option.value)}
-                          className="border border-emerald-200 bg-emerald-50 text-emerald-700 hover:border-emerald-300 hover:bg-emerald-100 hover:text-emerald-800 dark:border-emerald-500/35 dark:bg-emerald-500/15 dark:text-emerald-100 dark:hover:bg-emerald-500/25 dark:hover:text-emerald-50"
+                          className="border border-[var(--scry-success-border)] bg-[var(--scry-success-bg)] text-[var(--scry-success-text)] hover:border-[var(--scry-success-border-strong)] hover:bg-[var(--scry-success-bg-strong)] hover:text-[var(--scry-success-text)]"
                           aria-label={t("qualityProfile.addQualityTier", { value: option.label })}
                         >
                           <Plus className="h-4 w-4" />

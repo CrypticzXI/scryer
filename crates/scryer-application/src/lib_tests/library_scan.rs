@@ -91,6 +91,7 @@ impl LibraryScanner for NotifyingLibraryScanner {
 struct CountingRecommendationMetadataGateway {
     movies: HashMap<i64, MovieMetadata>,
     title_recommendation_calls: Arc<AtomicUsize>,
+    recommendation_release: Option<Arc<Notify>>,
 }
 
 #[async_trait]
@@ -170,6 +171,9 @@ impl MetadataGateway for CountingRecommendationMetadataGateway {
     ) -> AppResult<DiscoveryRelatedResult> {
         self.title_recommendation_calls
             .fetch_add(1, Ordering::SeqCst);
+        if let Some(release) = &self.recommendation_release {
+            release.notified().await;
+        }
         Ok(DiscoveryRelatedResult {
             subject_key: "tvdb:movie:1".to_string(),
             query: String::new(),
@@ -5681,54 +5685,40 @@ async fn hydrate_titles_bulk_persists_movie_tmdb_external_id() {
 #[tokio::test]
 async fn background_hydration_completes_without_inline_recommendation_refresh() {
     let recommendation_calls = Arc::new(AtomicUsize::new(0));
+    let recommendation_release = Arc::new(Notify::new());
     let metadata_gateway = Arc::new(CountingRecommendationMetadataGateway {
         movies: HashMap::from([(91_601, make_movie_metadata(91_601, "Hydrated Movie"))]),
         title_recommendation_calls: Arc::clone(&recommendation_calls),
+        recommendation_release: Some(Arc::clone(&recommendation_release)),
     });
     let (app, _user, titles) = bootstrap_with_metadata_gateway_and_titles(metadata_gateway);
     let title = make_due_hydration_title("movie-background-hydration", MediaFacet::Movie, 91_601);
     TitleRepository::create(&*titles, title.clone())
         .await
         .expect("seed due movie title");
-    let permit_a = app
-        .runtime
-        .catalog
-        .title_recommendation_refresh_limit
-        .clone()
-        .acquire_owned()
-        .await
-        .expect("first recommendation permit");
-    let permit_b = app
-        .runtime
-        .catalog
-        .title_recommendation_refresh_limit
-        .clone()
-        .acquire_owned()
-        .await
-        .expect("second recommendation permit");
-
-    let mut outcome = app
-        .hydrate_titles_bulk(vec![crate::catalog_workflow::HydrationTarget {
+    let mut outcome = timeout(
+        Duration::from_secs(2),
+        app.hydrate_titles_bulk(vec![crate::catalog_workflow::HydrationTarget {
             title: title.clone(),
             requested_tvdb_id: None,
             sync_wanted_after_completion: false,
             source: crate::catalog_workflow::HydrationSource::BackgroundDue,
-        }])
-        .await
-        .expect("hydrate title");
+        }]),
+    )
+    .await
+    .expect("background hydration should not wait for recommendation refresh")
+    .expect("hydrate title");
+
+    recommendation_release.notify_one();
 
     assert!(
         outcome.hydrated_titles.remove(&title.id).is_some(),
         "metadata persistence should complete hydration"
     );
-    assert_eq!(
-        recommendation_calls.load(Ordering::SeqCst),
-        0,
-        "background hydration must not call recommendations inline"
+    assert!(
+        recommendation_calls.load(Ordering::SeqCst) <= 1,
+        "background hydration may queue one async recommendation refresh"
     );
-
-    drop(permit_a);
-    drop(permit_b);
 }
 
 #[tokio::test]
@@ -5737,6 +5727,7 @@ async fn interactive_hydration_refreshes_recommendations_inline() {
     let metadata_gateway = Arc::new(CountingRecommendationMetadataGateway {
         movies: HashMap::from([(91_602, make_movie_metadata(91_602, "Hydrated Movie"))]),
         title_recommendation_calls: Arc::clone(&recommendation_calls),
+        recommendation_release: None,
     });
     let (app, _user, titles) = bootstrap_with_metadata_gateway_and_titles(metadata_gateway);
     let title = make_due_hydration_title("movie-interactive-hydration", MediaFacet::Movie, 91_602);
@@ -5758,173 +5749,6 @@ async fn interactive_hydration_refreshes_recommendations_inline() {
         1,
         "interactive hydration should keep recommendation refresh inline"
     );
-}
-
-#[tokio::test]
-async fn background_title_hydrator_skips_full_scan_owned_facets_and_hydrates_other_due_titles() {
-    let metadata_gateway = Arc::new(MockMetadataGateway {
-        movies: HashMap::from([(101, make_movie_metadata(101, "Eligible Movie"))]),
-    });
-    let (app, _user, titles) = bootstrap_with_metadata_gateway_and_titles(metadata_gateway);
-
-    TitleRepository::create(
-        &*titles,
-        make_due_hydration_title("movie-due", MediaFacet::Movie, 101),
-    )
-    .await
-    .expect("seed due movie title");
-    TitleRepository::create(
-        &*titles,
-        make_due_hydration_title("series-due", MediaFacet::Series, 202),
-    )
-    .await
-    .expect("seed due series title");
-
-    app.runtime
-        .library
-        .library_scan_tracker
-        .start_session_with_id(
-            "series-scan-owned".to_string(),
-            MediaFacet::Series,
-            LibraryScanMode::Full,
-        )
-        .await
-        .expect("start series scan");
-
-    let token = tokio_util::sync::CancellationToken::new();
-    let handle = tokio::spawn(start_background_title_hydration_loop(
-        app.clone(),
-        token.child_token(),
-    ));
-
-    let hydrated_movie = timeout(Duration::from_secs(1), async {
-        loop {
-            let title = app
-                .services
-                .catalog
-                .titles
-                .get_by_id("movie-due")
-                .await
-                .expect("load movie title")
-                .expect("movie title should exist");
-            if title.metadata_fetched_at.is_some() {
-                break title;
-            }
-            sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("movie due title should hydrate");
-
-    let skipped_series = app
-        .services
-        .catalog
-        .titles
-        .get_by_id("series-due")
-        .await
-        .expect("load series title")
-        .expect("series title should exist");
-
-    token.cancel();
-    handle
-        .await
-        .expect("title hydration loop should stop cleanly");
-
-    assert!(hydrated_movie.metadata_fetched_at.is_some());
-    assert!(
-        skipped_series.metadata_fetched_at.is_none(),
-        "background worker should not hydrate titles for the facet owned by the active scan"
-    );
-}
-
-#[tokio::test]
-async fn background_title_hydrator_retries_scan_owned_movie_titles_after_scan_clears() {
-    for mode in [LibraryScanMode::Full, LibraryScanMode::Additive] {
-        let metadata_gateway = Arc::new(MockMetadataGateway {
-            movies: HashMap::from([(303, make_movie_metadata(303, "Recovered Movie"))]),
-        });
-        let (app, _user, titles) = bootstrap_with_metadata_gateway_and_titles(metadata_gateway);
-
-        let title_id = format!("movie-due-{}", mode.as_str());
-        let session_id = format!("scan-owned-{}", mode.as_str());
-        TitleRepository::create(
-            &*titles,
-            make_due_hydration_title(&title_id, MediaFacet::Movie, 303),
-        )
-        .await
-        .expect("seed due movie title");
-
-        app.runtime
-            .library
-            .library_scan_tracker
-            .start_session_with_id(session_id.clone(), MediaFacet::Movie, mode.clone())
-            .await
-            .expect("start movie scan");
-
-        let token = tokio_util::sync::CancellationToken::new();
-        let handle = tokio::spawn(start_background_title_hydration_loop(
-            app.clone(),
-            token.child_token(),
-        ));
-
-        let premature_hydration = timeout(Duration::from_millis(250), async {
-            loop {
-                let title = app
-                    .services
-                    .catalog
-                    .titles
-                    .get_by_id(&title_id)
-                    .await
-                    .expect("load movie title")
-                    .expect("movie title should exist");
-                if title.metadata_fetched_at.is_some() {
-                    break title;
-                }
-                sleep(Duration::from_millis(10)).await;
-            }
-        })
-        .await;
-        assert!(
-            premature_hydration.is_err(),
-            "background worker should not hydrate a scan-owned movie title while the scan is active"
-        );
-
-        app.runtime
-            .library
-            .library_scan_tracker
-            .cancel_session(&session_id)
-            .await
-            .expect("clear scan-owned session");
-
-        let hydrated = timeout(Duration::from_secs(1), async {
-            loop {
-                let title = app
-                    .services
-                    .catalog
-                    .titles
-                    .get_by_id(&title_id)
-                    .await
-                    .expect("load movie title after scan clear")
-                    .expect("movie title should still exist");
-                if title.metadata_fetched_at.is_some() {
-                    break title;
-                }
-                sleep(Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .expect("movie due title should hydrate after scan clears");
-
-        token.cancel();
-        handle
-            .await
-            .expect("title hydration loop should stop cleanly");
-
-        assert!(
-            hydrated.metadata_fetched_at.is_some(),
-            "scan-owned movie title should remain due and hydrate after the scan clears"
-        );
-    }
 }
 
 #[tokio::test]

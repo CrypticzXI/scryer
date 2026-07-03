@@ -9,12 +9,6 @@ import {
   Search,
   Zap,
 } from "lucide-react";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
 import { SearchResultBuckets } from "@/components/common/release-search-results";
 import { TitleSearchDownloadClientNotice } from "@/components/common/title-search-download-client-notice";
 import { useTranslate } from "@/lib/context/translate-context";
@@ -113,7 +107,7 @@ function SeriesMovieTimelineContent({
       {searchBlockedForMovie ? <TitleSearchDownloadClientNotice /> : null}
       {!searchBlockedForMovie && searchLoading ? (
         <div className="flex flex-col items-center justify-center gap-4 py-16">
-          <Loader2 className="h-10 w-10 animate-spin text-emerald-500" />
+          <Loader2 className="h-10 w-10 animate-spin text-[var(--scry-accent-text)]" />
           <p className="text-lg text-muted-foreground">{t("label.searching")}</p>
         </div>
       ) : null}
@@ -275,7 +269,7 @@ export function SeriesMovieTimelineSection(props: SeriesMovieTimelineContentProp
               "inline-flex size-6 shrink-0 items-center justify-center rounded transition-colors",
               seriesMovieToggling && "opacity-50",
               link.monitored
-                ? "text-emerald-600 dark:text-emerald-300"
+                ? "text-[var(--scry-success-text-soft)]"
                 : "text-muted-foreground/60",
             )}
             onClick={handleToggleSeriesMovieMonitored}
@@ -300,56 +294,38 @@ export function SeriesMovieTimelineSection(props: SeriesMovieTimelineContentProp
               {sizeLabel}
             </span>
           ) : null}
-          <TooltipProvider delayDuration={150}>
-            <div className="flex items-center justify-end gap-2">
-              {onAutoSearchSeriesMovie ? (
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <span>
-                      <EpisodeTableActionButton
-                        id={seriesOverviewSeriesMovieAutoSearchId(link.id)}
-                        tone="auto"
-                        onClick={handleAutoSearch}
-                        disabled={autoSearchLoading}
-                        label={t("title.queueLatest")}
-                        showTitleAttribute={false}
-                      >
-                        {autoSearchLoading ? (
-                          <Loader2 className="h-4 w-4 animate-spin" />
-                        ) : (
-                          <Zap className="h-4 w-4" />
-                        )}
-                      </EpisodeTableActionButton>
-                    </span>
-                  </TooltipTrigger>
-                  <TooltipContent side="top" sideOffset={8} className="max-w-[18rem] whitespace-normal break-words text-left text-sm leading-snug">
-                    {t("help.autoSearchTooltip")}
-                  </TooltipContent>
-                </Tooltip>
-              ) : null}
-              {onRunSeriesMovieSearch ? (
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <span>
-                      <EpisodeTableActionButton
-                        id={seriesOverviewSeriesMovieInteractiveSearchId(link.id)}
-                        tone="search"
-                        onClick={handleInteractiveSearch}
-                        disabled={searchLoading}
-                        label={t("title.searchReleasesAction")}
-                        showTitleAttribute={false}
-                      >
-                        <Search className="h-4 w-4" />
-                      </EpisodeTableActionButton>
-                    </span>
-                  </TooltipTrigger>
-                  <TooltipContent side="top" sideOffset={8} className="max-w-[18rem] whitespace-normal break-words text-left text-sm leading-snug">
-                    {t("help.interactiveSearchTooltip")}
-                  </TooltipContent>
-                </Tooltip>
-              ) : null}
-            </div>
-          </TooltipProvider>
+          <div className="flex items-center justify-end gap-2">
+            {onAutoSearchSeriesMovie ? (
+              <EpisodeTableActionButton
+                id={seriesOverviewSeriesMovieAutoSearchId(link.id)}
+                tone="auto"
+                onClick={handleAutoSearch}
+                disabled={autoSearchLoading}
+                label={t("title.queueLatest")}
+                tooltip={t("help.autoSearchTooltip")}
+                showTitleAttribute={false}
+              >
+                {autoSearchLoading ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Zap className="h-4 w-4" />
+                )}
+              </EpisodeTableActionButton>
+            ) : null}
+            {onRunSeriesMovieSearch ? (
+              <EpisodeTableActionButton
+                id={seriesOverviewSeriesMovieInteractiveSearchId(link.id)}
+                tone="search"
+                onClick={handleInteractiveSearch}
+                disabled={searchLoading}
+                label={t("title.searchReleasesAction")}
+                tooltip={t("help.interactiveSearchTooltip")}
+                showTitleAttribute={false}
+              >
+                <Search className="h-4 w-4" />
+              </EpisodeTableActionButton>
+            ) : null}
+          </div>
         </div>
       </div>
       {expanded ? (

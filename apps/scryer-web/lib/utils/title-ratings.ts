@@ -58,6 +58,9 @@ export function ratingSourceInfo(source: string): RatingSourceInfo {
       };
     case "tmdb":
       return { label: "TMDb", logoSrc: "/rating-sources/tmdb.svg", format: "default" };
+    case "tvdb":
+    case "thetvdb":
+      return { label: "TVDB", logoSrc: "/media-sites/tvdb.svg", format: "default" };
     case "trakt":
       return { label: "Trakt", logoSrc: "/rating-sources/trakt.svg", format: "default" };
     case "letterboxd":

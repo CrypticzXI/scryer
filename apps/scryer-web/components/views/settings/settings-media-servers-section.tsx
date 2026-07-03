@@ -274,7 +274,7 @@ export function SettingsMediaServersSection({
                   <TableCell>
                     {connection.provider === "plex" ? (
                       connection.machineIdPresent ? (
-                        <span className="inline-flex items-center gap-1 text-emerald-700 dark:text-emerald-300">
+                        <span className="inline-flex items-center gap-1 text-[var(--scry-success-text)]">
                           <CheckCircle2 className="h-3.5 w-3.5" />
                           {t("settings.plexServerSelected")}
                         </span>
@@ -282,7 +282,7 @@ export function SettingsMediaServersSection({
                         <span className="text-muted-foreground">{t("settings.plexServerMissing")}</span>
                       )
                     ) : connection.apiKeyPresent ? (
-                      <span className="inline-flex items-center gap-1 text-emerald-700 dark:text-emerald-300">
+                      <span className="inline-flex items-center gap-1 text-[var(--scry-success-text)]">
                         <KeyRound className="h-3.5 w-3.5" />
                         {t("settings.apiKeyConfigured")}
                       </span>
@@ -470,7 +470,7 @@ export function SettingsMediaServersSection({
                         {t("settings.discoverPlexServers")}
                       </Button>
                       {draft.machineIdPresent && !draft.plexServerId ? (
-                        <span className="inline-flex items-center gap-1 text-sm text-emerald-700 dark:text-emerald-300">
+                        <span className="inline-flex items-center gap-1 text-sm text-[var(--scry-success-text)]">
                           <CheckCircle2 className="h-3.5 w-3.5" />
                           {t("settings.plexServerSelected")}
                         </span>

@@ -210,6 +210,40 @@ async fn maybe_probe_existing_movie_title_for_background_refresh(
     Ok(())
 }
 
+async fn load_titles_for_background_refresh(
+    app: &AppUseCase,
+    facet: MediaFacet,
+    library_ids: &[String],
+) -> AppResult<Vec<Title>> {
+    let mut existing_titles = app
+        .services
+        .catalog
+        .titles
+        .list_for_libraries(Some(facet.clone()), library_ids, None)
+        .await?;
+    let forced_metadata_refresh_ids = app
+        .services
+        .catalog
+        .titles
+        .list_title_ids_with_metadata_hydration_due(Some(facet), library_ids)
+        .await?
+        .into_iter()
+        .collect::<HashSet<_>>();
+    super::scan_metadata_refresh::refresh_titles_metadata_for_scan_policy(
+        app,
+        &mut existing_titles,
+        &forced_metadata_refresh_ids,
+        super::scan_metadata_refresh::LibraryScanMetadataRefreshMode::BackgroundRefresh,
+    )
+    .await?;
+    super::scan_metadata_refresh::queue_title_recommendations_for_background_refresh(
+        app,
+        &existing_titles,
+    )
+    .await;
+    Ok(existing_titles)
+}
+
 pub(super) async fn background_refresh_series(
     app: &AppUseCase,
     actor: &User,
@@ -230,16 +264,14 @@ pub(super) async fn background_refresh_series(
 
     let mut summary = LibraryScanSummary::default();
     let mut metadata_lookup_stats = MetadataLookupBatchStats::default();
-    let mut executor = LibraryScanMediaAnalysisPool::for_scan(app, actor, session_id, None).await?;
+    let pool_policy =
+        LibraryScanMediaAnalysisPolicy::background_refresh(app, session_id, None).await;
+    let mut executor = LibraryScanMediaAnalysisPool::for_policy(app, actor, pool_policy).await?;
     let metadata_language = app.metadata_language().await;
 
     let library_ids = vec![library_id.to_string()];
-    let mut existing_titles = app
-        .services
-        .catalog
-        .titles
-        .list_for_libraries(Some(facet.clone()), &library_ids, None)
-        .await?;
+    let mut existing_titles =
+        load_titles_for_background_refresh(app, facet.clone(), &library_ids).await?;
     let (
         mut existing_titles_by_name,
         mut existing_titles_by_tvdb_id,
@@ -296,7 +328,7 @@ pub(super) async fn background_refresh_series(
         }
         executor.pump().await?;
 
-        let (ready_candidate_batches, batch_search_results) = resolve_full_scan_metadata_batches(
+        let (ready_candidate_batches, batch_search_results) = resolve_refresh_metadata_batches(
             app.services.library.metadata_gateway.clone(),
             &metadata_language,
             &coordinator,
@@ -377,14 +409,12 @@ pub(super) async fn background_refresh_movies(
 
     let mut summary = LibraryScanSummary::default();
     let mut metadata_lookup_stats = MetadataLookupBatchStats::default();
-    let mut executor = LibraryScanMediaAnalysisPool::for_scan(app, actor, session_id, None).await?;
+    let pool_policy =
+        LibraryScanMediaAnalysisPolicy::background_refresh(app, session_id, None).await;
+    let mut executor = LibraryScanMediaAnalysisPool::for_policy(app, actor, pool_policy).await?;
     let library_ids = vec![library_id.to_string()];
-    let mut existing_titles = app
-        .services
-        .catalog
-        .titles
-        .list_for_libraries(Some(MediaFacet::Movie), &library_ids, None)
-        .await?;
+    let mut existing_titles =
+        load_titles_for_background_refresh(app, MediaFacet::Movie, &library_ids).await?;
     let (
         mut existing_titles_by_name,
         mut existing_titles_by_tvdb_id,
@@ -480,7 +510,7 @@ pub(super) async fn background_refresh_movies(
         }
         executor.pump().await?;
 
-        let (ready_candidate_batches, batch_search_results) = resolve_full_scan_metadata_batches(
+        let (ready_candidate_batches, batch_search_results) = resolve_refresh_metadata_batches(
             app.services.library.metadata_gateway.clone(),
             &metadata_language,
             &coordinator,

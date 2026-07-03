@@ -148,7 +148,7 @@ export function FilteredPluginList({
                     <div className="flex items-center gap-2">
                       {plugin.isInstalled && plugin.isEnabled ? (
                         <span
-                          className="h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-400"
+                          className="h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--scry-success-solid)]"
                           aria-hidden="true"
                         />
                       ) : null}

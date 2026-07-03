@@ -17,8 +17,11 @@ import { MultiSelectOptionList } from "@/components/ui/multi-select-dropdown";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
   Table,
+  TableActionsCell,
+  TableActionsHead,
   TableBody,
   TableCell,
+  TableCodeCell,
   TableHead,
   TableHeader,
   TableRow,
@@ -372,9 +375,9 @@ function wantedItemSubtitle(item: WantedItem, t: Translate): string {
 
 function statusBadge(status: WantedStatus, t: Translate) {
   const colors: Record<WantedStatus, string> = {
-    wanted: "bg-blue-500/20 text-blue-400",
-    grabbed: "bg-amber-500/20 text-amber-400",
-    completed: "bg-green-500/20 text-green-400",
+    wanted: "bg-[var(--scry-info-bg-strong)] text-[var(--scry-info-text)]",
+    grabbed: "bg-[var(--scry-warning-bg-strong)] text-[var(--scry-warning-text)]",
+    completed: "bg-[var(--scry-success-bg-strong)] text-[var(--scry-success-text)]",
     paused: "bg-muted text-muted-foreground",
   };
   return (
@@ -388,10 +391,10 @@ function statusBadge(status: WantedStatus, t: Translate) {
 
 function phaseBadge(phase: WantedSearchPhase, t: Translate) {
   const colors: Record<WantedSearchPhase, string> = {
-    primary: "bg-green-500/20 text-green-400",
-    pre_release: "bg-purple-500/20 text-purple-400",
-    pre_air: "bg-purple-500/20 text-purple-400",
-    secondary: "bg-yellow-500/20 text-yellow-400",
+    primary: "bg-[var(--scry-success-bg-strong)] text-[var(--scry-success-text)]",
+    pre_release: "bg-[rgba(var(--scry-accent-rgb),0.2)] text-[var(--scry-accent-text)]",
+    pre_air: "bg-[rgba(var(--scry-accent-rgb),0.2)] text-[var(--scry-accent-text)]",
+    secondary: "bg-[var(--scry-warning-bg-strong)] text-[var(--scry-warning-text)]",
     long_tail: "bg-muted text-muted-foreground",
   };
   return (
@@ -405,18 +408,18 @@ function phaseBadge(phase: WantedSearchPhase, t: Translate) {
 
 function decisionBadge(code: string, t: Translate) {
   const colors: Record<string, string> = {
-    eligible: "bg-green-500/20 text-green-400",
+    eligible: "bg-[var(--scry-success-bg-strong)] text-[var(--scry-success-text)]",
     title_mismatch: "bg-[var(--scry-danger-bg-strong)] text-[var(--scry-danger-text-soft)]",
     quality_blocked: "bg-[var(--scry-danger-bg-strong)] text-[var(--scry-danger-text-soft)]",
-    upgrade_rejected: "bg-amber-500/20 text-amber-400",
-    pending_delay: "bg-yellow-500/20 text-yellow-400",
+    upgrade_rejected: "bg-[var(--scry-warning-bg-strong)] text-[var(--scry-warning-text)]",
+    pending_delay: "bg-[var(--scry-warning-bg-strong)] text-[var(--scry-warning-text)]",
     already_active: "bg-muted text-muted-foreground",
-    download_client_unavailable: "bg-yellow-500/20 text-yellow-400",
+    download_client_unavailable: "bg-[var(--scry-warning-bg-strong)] text-[var(--scry-warning-text)]",
     repack_group_mismatch: "bg-[var(--scry-danger-bg-strong)] text-[var(--scry-danger-text-soft)]",
-    accept_initial: "bg-green-500/20 text-green-400",
-    accept_upgrade: "bg-green-500/20 text-green-400",
+    accept_initial: "bg-[var(--scry-success-bg-strong)] text-[var(--scry-success-text)]",
+    accept_upgrade: "bg-[var(--scry-success-bg-strong)] text-[var(--scry-success-text)]",
     reject_insufficient_delta: "bg-[var(--scry-danger-bg-strong)] text-[var(--scry-danger-text-soft)]",
-    reject_cooldown: "bg-amber-500/20 text-amber-400",
+    reject_cooldown: "bg-[var(--scry-warning-bg-strong)] text-[var(--scry-warning-text)]",
     reject_not_allowed: "bg-[var(--scry-danger-bg-strong)] text-[var(--scry-danger-text-soft)]",
   };
   return (
@@ -929,33 +932,33 @@ function WantedItemsCard({
           <div
             className={
               shouldScrollDesktopTable
-                ? "min-h-0 flex-1 overflow-auto rounded-[14px] border border-[var(--scry-border2)] bg-[var(--scry-surfC)]"
-                : "overflow-x-auto rounded-[14px] border border-[var(--scry-border2)] bg-[var(--scry-surfC)]"
+                ? "min-h-0 flex-1 overflow-y-auto rounded-[14px] border border-[var(--scry-border2)] bg-[var(--scry-surfC)]"
+                : "overflow-hidden rounded-[14px] border border-[var(--scry-border2)] bg-[var(--scry-surfC)]"
             }
           >
-            <Table className="min-w-[980px]">
+            <Table overflow="clip" layout="fixed" density="dense">
               <TableHeader
                 className={shouldScrollDesktopTable ? "[&_th]:sticky [&_th]:top-0 [&_th]:z-10" : undefined}
               >
                 <TableRow>
-                  <TableHead className="w-8" />
+                  <TableHead className="w-10 text-center" />
                   <TableHead>{t("wanted.colTitle")}</TableHead>
-                  <TableHead>Library</TableHead>
-                  <TableHead>{t("wanted.colType")}</TableHead>
-                  <TableHead>{t("wanted.colStatus")}</TableHead>
-                  <TableHead>{t("wanted.colPhase")}</TableHead>
-                  <TableHead>{t("wanted.colLatestDecision")}</TableHead>
-                  <TableHead>{t("wanted.colNextSearch")}</TableHead>
-                  <TableHead>{t("wanted.colScore")}</TableHead>
-                  <TableHead>{t("wanted.colSearches")}</TableHead>
-                  <TableHead>{t("label.actions")}</TableHead>
+                  <TableHead className="w-32 text-center">Library</TableHead>
+                  <TableHead className="w-24 text-center">{t("wanted.colType")}</TableHead>
+                  <TableHead className="w-28 text-center">{t("wanted.colStatus")}</TableHead>
+                  <TableHead className="w-28 text-center">{t("wanted.colPhase")}</TableHead>
+                  <TableHead className="w-36 text-center">{t("wanted.colLatestDecision")}</TableHead>
+                  <TableHead className="w-32 text-center">{t("wanted.colNextSearch")}</TableHead>
+                  <TableHead className="w-20 text-center">{t("wanted.colScore")}</TableHead>
+                  <TableHead className="w-24 text-center">{t("wanted.colSearches")}</TableHead>
+                  <TableActionsHead className="w-36">{t("label.actions")}</TableActionsHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {items.map((item) => (
                   <Fragment key={item.id}>
                     <TableRow className="group">
-                      <TableCell>
+                      <TableCell className="text-center">
                         <button
                           className="p-0.5 text-muted-foreground hover:text-foreground"
                           onClick={() => void loadDecisions(item.id)}
@@ -967,10 +970,13 @@ function WantedItemsCard({
                           )}
                         </button>
                       </TableCell>
-                      <TableCell className="max-w-[260px] text-sm" title={item.titleName ?? item.titleId}>
+                      <TableCell
+                        className="min-w-0 text-sm"
+                        title={item.titleName ?? item.titleId}
+                      >
                         <button
                           type="button"
-                          className="min-w-0 text-left hover:text-foreground"
+                          className="block min-w-0 max-w-full text-left hover:text-foreground"
                           onClick={() => openWantedItemOverview(item)}
                         >
                           <div className="truncate font-medium hover:underline">
@@ -981,15 +987,21 @@ function WantedItemsCard({
                           </div>
                         </button>
                       </TableCell>
-                      <TableCell className="max-w-[160px] text-xs text-muted-foreground">
+                      <TableCell className="text-center text-xs text-muted-foreground">
                         <span className="block truncate">
                           {item.libraryName ?? item.libraryId ?? "Library"}
                         </span>
                       </TableCell>
-                      <TableCell>{formatWantedMediaType(item.mediaType, t)}</TableCell>
-                      <TableCell>{statusBadge(item.status, t)}</TableCell>
-                      <TableCell>{phaseBadge(item.searchPhase, t)}</TableCell>
-                      <TableCell className="text-xs">
+                      <TableCell className="text-center">
+                        {formatWantedMediaType(item.mediaType, t)}
+                      </TableCell>
+                      <TableCell className="text-center">
+                        {statusBadge(item.status, t)}
+                      </TableCell>
+                      <TableCell className="text-center">
+                        {phaseBadge(item.searchPhase, t)}
+                      </TableCell>
+                      <TableCell className="text-center text-xs">
                         {item.latestReleaseDecision ? (
                           <div className="space-y-1">
                             {decisionBadge(item.latestReleaseDecision.decisionCode, t)}
@@ -1004,13 +1016,17 @@ function WantedItemsCard({
                           "—"
                         )}
                       </TableCell>
-                      <TableCell className="text-xs">
+                      <TableCell className="text-center text-xs">
                         {formatDate(item.nextSearchAt, dateTimeFormat)}
                       </TableCell>
-                      <TableCell>{item.currentScore ?? "—"}</TableCell>
-                      <TableCell>{item.searchCount}</TableCell>
-                      <TableCell>
-                        <div className="flex gap-1">
+                      <TableCodeCell className="text-center">
+                        {item.currentScore ?? "—"}
+                      </TableCodeCell>
+                      <TableCodeCell className="text-center">
+                        {item.searchCount}
+                      </TableCodeCell>
+                      <TableActionsCell className="w-36">
+                        <div className="flex flex-wrap justify-center gap-1">
                           <IconButton
                             label={t("wanted.searchNow")}
                             appearance="ghost"
@@ -1057,7 +1073,7 @@ function WantedItemsCard({
                             </IconButton>
                           ) : null}
                         </div>
-                      </TableCell>
+                      </TableActionsCell>
                     </TableRow>
                     {expandedItemId === item.id && (
                       <TableRow>
@@ -1071,16 +1087,30 @@ function WantedItemsCard({
                               {t("wanted.noDecisions")}
                             </p>
                           ) : (
-                            <Table className="min-w-[720px]">
+                            <Table
+                              overflow="clip"
+                              layout="fixed"
+                              density="dense"
+                            >
                               <TableHeader>
                                 <TableRow>
-                                  <TableHead className="w-8" />
+                                  <TableHead className="w-10 text-center" />
                                   <TableHead>{t("wanted.decRelease")}</TableHead>
-                                  <TableHead>{t("wanted.decDecision")}</TableHead>
-                                  <TableHead>{t("wanted.decScore")}</TableHead>
-                                  <TableHead>{t("wanted.decDelta")}</TableHead>
-                                  <TableHead>{t("wanted.decSize")}</TableHead>
-                                  <TableHead>{t("wanted.decDate")}</TableHead>
+                                  <TableHead className="w-28 text-center">
+                                    {t("wanted.decDecision")}
+                                  </TableHead>
+                                  <TableHead className="w-24 text-center">
+                                    {t("wanted.decScore")}
+                                  </TableHead>
+                                  <TableHead className="w-24 text-center">
+                                    {t("wanted.decDelta")}
+                                  </TableHead>
+                                  <TableHead className="w-28 text-center">
+                                    {t("wanted.decSize")}
+                                  </TableHead>
+                                  <TableHead className="w-32 text-center">
+                                    {t("wanted.decDate")}
+                                  </TableHead>
                                 </TableRow>
                               </TableHeader>
                               <TableBody>
@@ -1092,7 +1122,7 @@ function WantedItemsCard({
                                   return (
                                     <Fragment key={d.id}>
                                       <TableRow>
-                                        <TableCell>
+                                        <TableCell className="text-center">
                                           {hasScoringBreakdown ? (
                                             <button
                                               type="button"
@@ -1108,20 +1138,24 @@ function WantedItemsCard({
                                           ) : null}
                                         </TableCell>
                                         <TableCell
-                                          className="max-w-[300px] truncate text-xs"
+                                          className="truncate text-xs"
                                           title={d.releaseTitle}
                                         >
                                           {d.releaseTitle}
                                         </TableCell>
-                                        <TableCell>
+                                        <TableCell className="text-center">
                                           {decisionBadge(d.decisionCode, t)}
                                         </TableCell>
-                                        <TableCell>{d.candidateScore}</TableCell>
-                                        <TableCell>{d.scoreDelta ?? "—"}</TableCell>
-                                        <TableCell className="text-xs">
+                                        <TableCodeCell className="text-center">
+                                          {d.candidateScore}
+                                        </TableCodeCell>
+                                        <TableCodeCell className="text-center">
+                                          {d.scoreDelta ?? "—"}
+                                        </TableCodeCell>
+                                        <TableCodeCell className="text-center text-xs">
                                           {formatBytes(d.releaseSizeBytes)}
-                                        </TableCell>
-                                        <TableCell className="text-xs">
+                                        </TableCodeCell>
+                                        <TableCell className="text-center text-xs">
                                           {formatDate(d.createdAt, dateTimeFormat)}
                                         </TableCell>
                                       </TableRow>
@@ -1145,7 +1179,7 @@ function WantedItemsCard({
                 ))}
                 {items.length === 0 && !loading && (
                   <TableRow>
-                    <TableCell colSpan={10} className="text-center text-muted-foreground">
+                    <TableCell colSpan={11} className="text-center text-muted-foreground">
                       {t("wanted.noItems")}
                     </TableCell>
                   </TableRow>
@@ -1238,13 +1272,13 @@ function formatPendingStatus(status: PendingReleaseStatus): string {
 function pendingStatusBadge(status: PendingReleaseStatus) {
   const cls =
     status === "grabbed"
-      ? "border-emerald-500/30 bg-emerald-500/15 text-emerald-300"
+      ? "border-[var(--scry-success-border)] bg-[var(--scry-success-bg)] text-[var(--scry-success-text)]"
       : status === "expired" || status === "dismissed"
         ? "border-[var(--scry-danger-border)] bg-[var(--scry-danger-bg)] text-[var(--scry-danger-text)]"
         : status === "processing"
-          ? "border-sky-500/30 bg-sky-500/14 text-sky-300"
+          ? "border-[var(--scry-info-border)] bg-[var(--scry-info-bg)] text-[var(--scry-info-text)]"
           : status === "superseded"
-            ? "border-amber-500/30 bg-amber-500/14 text-amber-300"
+            ? "border-[var(--scry-warning-border)] bg-[var(--scry-warning-bg)] text-[var(--scry-warning-text)]"
             : "border-[var(--scry-border2)] bg-[var(--scry-chip)] text-[var(--scry-muted2)]";
   return (
     <span className={`inline-flex rounded-full border px-2 py-0.5 text-xs font-medium ${cls}`}>
@@ -1419,20 +1453,20 @@ function PendingReleasesCard({ state }: { state: PendingViewState }) {
             </div>
           )
         ) : (
-          <div className="overflow-auto rounded-[14px] border border-[var(--scry-border2)] bg-[var(--scry-surfC)]">
-            <Table className="min-w-[980px]">
+          <div className="overflow-hidden rounded-[14px] border border-[var(--scry-border2)] bg-[var(--scry-surfC)]">
+            <Table overflow="clip" layout="fixed" density="dense">
               <TableHeader>
                 <TableRow>
-                  <TableHead className="w-8" />
+                  <TableHead className="w-10 text-center" />
                   <TableHead>{t("pending.colRelease")}</TableHead>
-                  <TableHead>{t("wanted.colStatus")}</TableHead>
-                  <TableHead>{t("wanted.colPhase")}</TableHead>
-                  <TableHead>{t("pending.colScore")}</TableHead>
-                  <TableHead>{t("pending.colSize")}</TableHead>
-                  <TableHead>{t("pending.colIndexer")}</TableHead>
-                  <TableHead>{t("pending.colAddedAt")}</TableHead>
-                  <TableHead>{t("pending.colDelayUntil")}</TableHead>
-                  <TableHead>{t("label.actions")}</TableHead>
+                  <TableHead className="w-28 text-center">{t("wanted.colStatus")}</TableHead>
+                  <TableHead className="w-28 text-center">{t("wanted.colPhase")}</TableHead>
+                  <TableHead className="w-20 text-center">{t("pending.colScore")}</TableHead>
+                  <TableHead className="w-28 text-center">{t("pending.colSize")}</TableHead>
+                  <TableHead className="w-32 text-center">{t("pending.colIndexer")}</TableHead>
+                  <TableHead className="w-32 text-center">{t("pending.colAddedAt")}</TableHead>
+                  <TableHead className="w-32 text-center">{t("pending.colDelayUntil")}</TableHead>
+                  <TableActionsHead className="w-24">{t("label.actions")}</TableActionsHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -1441,7 +1475,7 @@ function PendingReleasesCard({ state }: { state: PendingViewState }) {
                   return (
                     <Fragment key={item.id}>
                       <TableRow>
-                        <TableCell>
+                        <TableCell className="text-center">
                           <button
                             type="button"
                             className="p-0.5 text-muted-foreground hover:text-foreground"
@@ -1454,26 +1488,26 @@ function PendingReleasesCard({ state }: { state: PendingViewState }) {
                             )}
                           </button>
                         </TableCell>
-                        <TableCell className="max-w-[340px] truncate text-sm" title={item.releaseTitle}>
+                        <TableCell className="truncate text-sm" title={item.releaseTitle}>
                           {item.releaseTitle}
                         </TableCell>
-                        <TableCell>{pendingStatusBadge(item.status)}</TableCell>
-                        <TableCell>{pendingPhaseBadge(item.status)}</TableCell>
-                        <TableCell>{item.releaseScore}</TableCell>
-                        <TableCell className="font-[var(--font-code)] text-xs">
+                        <TableCell className="text-center">{pendingStatusBadge(item.status)}</TableCell>
+                        <TableCell className="text-center">{pendingPhaseBadge(item.status)}</TableCell>
+                        <TableCodeCell className="text-center">{item.releaseScore}</TableCodeCell>
+                        <TableCodeCell className="text-center text-xs">
                           {item.releaseSizeBytes == null ? "—" : formatBytes(item.releaseSizeBytes)}
-                        </TableCell>
-                        <TableCell className="text-xs">{item.indexerSource ?? "—"}</TableCell>
-                        <TableCell className="text-xs">
+                        </TableCodeCell>
+                        <TableCell className="text-center text-xs">{item.indexerSource ?? "—"}</TableCell>
+                        <TableCell className="text-center text-xs">
                           {formatDate(item.addedAt, dateTimeFormat)}
                         </TableCell>
-                        <TableCell className="text-xs">
+                        <TableCell className="text-center text-xs">
                           <span title={formatDate(item.delayUntil, dateTimeFormat)}>
                             {formatTimeRemaining(item.delayUntil, t)}
                           </span>
                         </TableCell>
-                        <TableCell>
-                          <div className="flex gap-1">
+                        <TableActionsCell className="w-24">
+                          <div className="flex justify-center gap-1">
                             <IconButton
                               label={t("pending.forceGrab")}
                               appearance="ghost"
@@ -1491,7 +1525,7 @@ function PendingReleasesCard({ state }: { state: PendingViewState }) {
                               <X className="h-3.5 w-3.5" />
                             </IconButton>
                           </div>
-                        </TableCell>
+                        </TableActionsCell>
                       </TableRow>
                       {expanded ? (
                         <TableRow>

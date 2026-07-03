@@ -1552,11 +1552,8 @@ async fn process_single_wanted_item(
     Ok(())
 }
 
-const SCHEDULER_INSTANCE_ID_KEY: &str = "scheduler.instance_id";
 const FRUITLESS_WANTED_RESET_COOLDOWN_HOURS: i64 = 24;
 const INTERNAL_SETTINGS_SOURCE: &str = "system";
-const METADATA_REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(12 * 60 * 60);
-const METADATA_REFRESH_NEXT_RUN_MIN_DELAY: std::time::Duration = std::time::Duration::from_secs(1);
 
 fn fruitless_wanted_reset_cooldown_active(now: DateTime<Utc>, last_run_at: DateTime<Utc>) -> bool {
     last_run_at + Duration::hours(FRUITLESS_WANTED_RESET_COOLDOWN_HOURS) > now
@@ -1658,108 +1655,6 @@ async fn reset_fruitless_wanted_items_after_cooldown(app: &AppUseCase) {
     }
 }
 
-async fn scheduler_instance_id(app: &AppUseCase) -> AppResult<String> {
-    if let Some(existing) = app
-        .read_setting_string_value(SCHEDULER_INSTANCE_ID_KEY, None)
-        .await?
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-    {
-        return Ok(existing);
-    }
-
-    let seed = uuid::Uuid::new_v4().to_string();
-    let value_json =
-        serde_json::to_string(&seed).map_err(|error| AppError::Repository(error.to_string()))?;
-    app.services
-        .config
-        .settings
-        .upsert_setting_json(
-            SETTINGS_SCOPE_SYSTEM,
-            SCHEDULER_INSTANCE_ID_KEY,
-            None,
-            value_json,
-            INTERNAL_SETTINGS_SOURCE,
-            None,
-        )
-        .await?;
-    Ok(seed)
-}
-
-fn metadata_refresh_phase(seed: &str) -> std::time::Duration {
-    let digest = blake3::hash(format!("scryer:scheduler:metadata_refresh:{seed}").as_bytes());
-    let mut raw = [0_u8; 8];
-    raw.copy_from_slice(&digest.as_bytes()[..8]);
-    std::time::Duration::from_secs(u64::from_be_bytes(raw) % METADATA_REFRESH_INTERVAL.as_secs())
-}
-
-fn next_phased_delay_at(
-    now: std::time::SystemTime,
-    interval: std::time::Duration,
-    phase: std::time::Duration,
-    minimum_delay: std::time::Duration,
-) -> std::time::Duration {
-    let interval_secs = interval.as_secs().max(1);
-    let now_secs = now
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    let phase_secs = phase.as_secs() % interval_secs;
-
-    let mut next_slot = (now_secs / interval_secs) * interval_secs + phase_secs;
-    if next_slot <= now_secs {
-        next_slot = next_slot.saturating_add(interval_secs);
-    }
-
-    let earliest = now_secs.saturating_add(minimum_delay.as_secs());
-    if next_slot < earliest {
-        let delta = earliest - next_slot;
-        let skips = delta.div_ceil(interval_secs);
-        next_slot = next_slot.saturating_add(skips.saturating_mul(interval_secs));
-    }
-
-    std::time::Duration::from_secs(next_slot.saturating_sub(now_secs))
-}
-
-fn metadata_refresh_first_delay(
-    now: std::time::SystemTime,
-    phase: std::time::Duration,
-) -> std::time::Duration {
-    next_phased_delay_at(
-        now,
-        METADATA_REFRESH_INTERVAL,
-        phase,
-        METADATA_REFRESH_INTERVAL,
-    )
-}
-
-fn metadata_refresh_next_delay(
-    now: std::time::SystemTime,
-    phase: std::time::Duration,
-) -> std::time::Duration {
-    next_phased_delay_at(
-        now,
-        METADATA_REFRESH_INTERVAL,
-        phase,
-        METADATA_REFRESH_NEXT_RUN_MIN_DELAY,
-    )
-}
-
-fn new_metadata_refresh_interval(first_delay: std::time::Duration) -> tokio::time::Interval {
-    let mut interval = tokio::time::interval_at(
-        tokio::time::Instant::now() + first_delay,
-        METADATA_REFRESH_INTERVAL,
-    );
-    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    interval
-}
-
-fn next_run_at_after_delay(delay: std::time::Duration) -> DateTime<Utc> {
-    Utc::now()
-        + Duration::from_std(delay)
-            .expect("metadata refresh schedule delays should fit in chrono duration")
-}
-
 pub async fn start_background_acquisition_poller(
     app: AppUseCase,
     token: tokio_util::sync::CancellationToken,
@@ -1849,28 +1744,9 @@ pub async fn start_background_acquisition_poller(
         });
     }
 
-    let scheduler_seed = match scheduler_instance_id(&app).await {
-        Ok(seed) => seed,
-        Err(error) => {
-            warn!(
-                error = %error,
-                "metadata refresh scheduler seed unavailable; using ephemeral seed"
-            );
-            uuid::Uuid::new_v4().to_string()
-        }
-    };
-    let metadata_refresh_poll_phase = metadata_refresh_phase(&scheduler_seed);
-    let metadata_refresh_first_delay =
-        metadata_refresh_first_delay(std::time::SystemTime::now(), metadata_refresh_poll_phase);
-
     app.set_job_next_run_at(
         JobKey::WantedSync,
         Utc::now() + chrono::Duration::seconds(settings.sync_interval_seconds.max(1) as i64),
-    )
-    .await;
-    app.set_job_next_run_at(
-        JobKey::MetadataRefresh,
-        next_run_at_after_delay(metadata_refresh_first_delay),
     )
     .await;
     app.set_job_next_run_at(
@@ -1912,7 +1788,6 @@ pub async fn start_background_acquisition_poller(
     let mut sync_interval = tokio::time::interval(std::time::Duration::from_secs(
         settings.sync_interval_seconds.max(1) as u64,
     ));
-    let mut metadata_refresh_interval = new_metadata_refresh_interval(metadata_refresh_first_delay);
     let mut registry_refresh_interval = tokio::time::interval(std::time::Duration::from_hours(24));
     let mut health_check_interval = tokio::time::interval(std::time::Duration::from_hours(6));
     let mut staged_nzb_prune_interval = tokio::time::interval(std::time::Duration::from_hours(1));
@@ -1923,7 +1798,7 @@ pub async fn start_background_acquisition_poller(
     let mut rss_sync_interval = tokio::time::interval(std::time::Duration::from_mins(15));
     let mut pending_release_interval = tokio::time::interval(std::time::Duration::from_mins(1));
 
-    // Consume immediate intervals; metadata refresh starts at its phased first delay.
+    // Consume immediate intervals.
     poll_interval.tick().await;
     sync_interval.tick().await;
     registry_refresh_interval.tick().await;
@@ -2001,22 +1876,6 @@ pub async fn start_background_acquisition_poller(
                     if let Err(err) = app.run_scheduled_job_now(JobKey::WantedSync, JobTriggerSource::ScheduledInterval).await {
                         warn!(error = %err, "periodic wanted state sync failed");
                         metrics::counter!("scryer_task_errors_total", "task" => "sync_state").increment(1);
-                    }
-                }).await;
-            }
-            _ = metadata_refresh_interval.tick() => {
-                let app = app.clone();
-                run_task("metadata_refresh", async move {
-                    let next_delay = metadata_refresh_next_delay(
-                        std::time::SystemTime::now(),
-                        metadata_refresh_poll_phase,
-                    );
-                    app.set_job_next_run_at(
-                        JobKey::MetadataRefresh,
-                        next_run_at_after_delay(next_delay),
-                    ).await;
-                    if let Err(err) = app.run_scheduled_job_now(JobKey::MetadataRefresh, JobTriggerSource::ScheduledInterval).await {
-                        warn!(error = %err, "periodic metadata refresh failed");
                     }
                 }).await;
             }
@@ -2194,64 +2053,6 @@ fn discovery_sync_delay_until(next_run_at: DateTime<Utc>) -> std::time::Duration
 #[cfg(test)]
 mod task_runner_tests {
     use super::*;
-
-    #[test]
-    fn metadata_refresh_phase_is_stable_and_bounded() {
-        let first = metadata_refresh_phase("instance-a");
-        let second = metadata_refresh_phase("instance-a");
-        let different = metadata_refresh_phase("instance-b");
-
-        assert_eq!(first, second);
-        assert_ne!(first, different);
-        assert!(first < METADATA_REFRESH_INTERVAL);
-        assert!(different < METADATA_REFRESH_INTERVAL);
-    }
-
-    #[test]
-    fn metadata_refresh_first_delay_uses_next_phase_after_twelve_hours() {
-        let now = std::time::UNIX_EPOCH + std::time::Duration::from_secs(12 * 60 * 60 + 5 * 60);
-        let phase = std::time::Duration::from_secs(10 * 60);
-        let delay = metadata_refresh_first_delay(now, phase);
-
-        assert_eq!(delay, std::time::Duration::from_secs(12 * 60 * 60 + 5 * 60));
-        assert!(delay >= METADATA_REFRESH_INTERVAL);
-        assert!(delay < METADATA_REFRESH_INTERVAL.saturating_mul(2));
-    }
-
-    #[test]
-    fn metadata_refresh_next_delay_advances_to_next_nonzero_phase_slot() {
-        let now = std::time::UNIX_EPOCH + std::time::Duration::from_secs(12 * 60 * 60 + 10 * 60);
-        let phase = std::time::Duration::from_secs(10 * 60);
-        let delay = metadata_refresh_next_delay(now, phase);
-
-        assert_eq!(delay, METADATA_REFRESH_INTERVAL);
-        assert!(!delay.is_zero());
-    }
-
-    #[test]
-    fn metadata_refresh_first_next_run_matches_seed_phase_slot() {
-        let seed = "stable-scheduler-seed";
-        let phase = metadata_refresh_phase(seed);
-        let now_secs = 12345;
-        let now = std::time::UNIX_EPOCH + std::time::Duration::from_secs(now_secs);
-        let delay = metadata_refresh_first_delay(now, phase);
-        let next_run_secs = now_secs + delay.as_secs();
-        let interval_secs = METADATA_REFRESH_INTERVAL.as_secs();
-
-        assert_eq!(next_run_secs % interval_secs, phase.as_secs());
-        assert!(next_run_secs >= now_secs + interval_secs);
-        assert!(next_run_secs < now_secs + interval_secs * 2);
-    }
-
-    #[tokio::test]
-    async fn metadata_refresh_interval_uses_skip_missed_tick_behavior() {
-        let interval = new_metadata_refresh_interval(std::time::Duration::from_secs(60));
-
-        assert_eq!(
-            interval.missed_tick_behavior(),
-            tokio::time::MissedTickBehavior::Skip
-        );
-    }
 
     #[test]
     fn non_metadata_scheduled_job_intervals_remain_unchanged() {

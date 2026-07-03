@@ -1,4 +1,3 @@
-
 import * as React from "react"
 import { Tooltip as TooltipPrimitive } from "radix-ui"
 
@@ -62,6 +61,7 @@ type ActionTooltipProps = {
   delayDuration?: React.ComponentProps<typeof TooltipPrimitive.Provider>["delayDuration"]
   className?: string
   wrapperClassName?: string
+  wrapperTabIndex?: number
 }
 
 function ActionTooltip({
@@ -73,6 +73,7 @@ function ActionTooltip({
   delayDuration = 300,
   className,
   wrapperClassName,
+  wrapperTabIndex,
 }: ActionTooltipProps) {
   if (content == null || content === false) {
     return children
@@ -82,7 +83,12 @@ function ActionTooltip({
     <TooltipProvider delayDuration={delayDuration}>
       <Tooltip>
         <TooltipTrigger asChild>
-          <span className={cn("inline-flex", wrapperClassName)}>{children}</span>
+          <span
+            className={cn("inline-flex", wrapperClassName)}
+            tabIndex={wrapperTabIndex}
+          >
+            {children}
+          </span>
         </TooltipTrigger>
         <TooltipContent
           side={side}

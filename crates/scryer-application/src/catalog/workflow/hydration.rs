@@ -1,5 +1,6 @@
 pub(crate) const HYDRATION_BULK_BATCH_SIZE: usize = 20;
 const TITLE_MORE_LIKE_THIS_HYDRATION_LIMIT: usize = 24;
+const TITLE_MORE_LIKE_THIS_BACKGROUND_REFRESH_HOURS: i64 = 24;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct HydrationCompletionOptions {
     sync_wanted_after_completion: bool,
@@ -27,6 +28,113 @@ impl HydrationSource {
         matches!(self, Self::Interactive | Self::Maintenance)
     }
 }
+
+const TITLE_RECOMMENDATION_REFRESH_WORKER_COUNT: usize = 2;
+
+fn title_more_like_this_refresh_due(
+    now: chrono::DateTime<chrono::Utc>,
+    refreshed_at: Option<chrono::DateTime<chrono::Utc>>,
+) -> bool {
+    refreshed_at.is_none_or(|refreshed_at| {
+        now.signed_duration_since(refreshed_at)
+            >= chrono::Duration::hours(TITLE_MORE_LIKE_THIS_BACKGROUND_REFRESH_HOURS)
+    })
+}
+
+pub(crate) struct TitleRecommendationRefreshJob {
+    title: Title,
+    external_ids: Vec<scryer_domain::ExternalId>,
+    seeded_more_like_this: Vec<crate::DiscoveryTitle>,
+    source: HydrationSource,
+    queued_at: Instant,
+}
+
+impl TitleRecommendationRefreshJob {
+    fn new(
+        title: Title,
+        external_ids: Vec<scryer_domain::ExternalId>,
+        seeded_more_like_this: Vec<crate::DiscoveryTitle>,
+        source: HydrationSource,
+    ) -> Self {
+        Self {
+            title,
+            external_ids,
+            seeded_more_like_this,
+            source,
+            queued_at: Instant::now(),
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum TitleRecommendationRefreshEnqueueOutcome {
+    Queued,
+    ReplacedPending,
+    QueuedAfterInFlight,
+}
+
+#[derive(Default)]
+pub(crate) struct TitleRecommendationRefreshQueue {
+    pending_order: VecDeque<String>,
+    pending: HashMap<String, TitleRecommendationRefreshJob>,
+    in_flight: HashSet<String>,
+    workers_started: bool,
+}
+
+impl TitleRecommendationRefreshQueue {
+    fn mark_workers_started(&mut self) -> bool {
+        if self.workers_started {
+            false
+        } else {
+            self.workers_started = true;
+            true
+        }
+    }
+
+    fn enqueue(
+        &mut self,
+        job: TitleRecommendationRefreshJob,
+    ) -> TitleRecommendationRefreshEnqueueOutcome {
+        let title_id = job.title.id.clone();
+        let was_pending = self.pending.insert(title_id.clone(), job).is_some();
+        if !was_pending {
+            self.pending_order.push_back(title_id.clone());
+        }
+
+        if was_pending {
+            TitleRecommendationRefreshEnqueueOutcome::ReplacedPending
+        } else if self.in_flight.contains(&title_id) {
+            TitleRecommendationRefreshEnqueueOutcome::QueuedAfterInFlight
+        } else {
+            TitleRecommendationRefreshEnqueueOutcome::Queued
+        }
+    }
+
+    fn take_next(&mut self) -> Option<TitleRecommendationRefreshJob> {
+        let queued = self.pending_order.len();
+        for _ in 0..queued {
+            let title_id = self.pending_order.pop_front()?;
+            if self.in_flight.contains(&title_id) {
+                self.pending_order.push_back(title_id);
+                continue;
+            }
+            if let Some(job) = self.pending.remove(&title_id) {
+                self.in_flight.insert(title_id);
+                return Some(job);
+            }
+        }
+        None
+    }
+
+    fn complete(&mut self, title_id: &str) {
+        self.in_flight.remove(title_id);
+    }
+
+    fn has_pending(&self) -> bool {
+        !self.pending.is_empty()
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct HydrationTarget {
     pub(crate) title: Title,
@@ -43,6 +151,115 @@ impl AppUseCase {
     async fn emit_hydration_started(&self, title: &Title) {
         self.emit_metadata_hydration_updated_event(title, MetadataHydrationState::Started, None)
             .await;
+    }
+}
+
+#[cfg(test)]
+mod title_recommendation_refresh_queue_tests {
+    use super::*;
+    use chrono::Utc;
+
+    fn queue_title(id: &str, name: &str) -> Title {
+        Title {
+            id: id.to_string(),
+            library_id: scryer_domain::default_library_id_for_facet(&MediaFacet::Movie),
+            name: name.to_string(),
+            facet: MediaFacet::Movie,
+            monitored: true,
+            tags: Vec::new(),
+            external_ids: Vec::new(),
+            root_folder_id: "root".to_string(),
+            created_by: None,
+            created_at: Utc::now(),
+            year: None,
+            overview: None,
+            poster_url: None,
+            poster_source_url: None,
+            background_url: None,
+            background_source_url: None,
+            sort_title: None,
+            catalog_sort_key: name.to_string(),
+            slug: None,
+            imdb_id: None,
+            runtime_minutes: None,
+            genres: Vec::new(),
+            content_status: None,
+            language: None,
+            first_aired: None,
+            network: None,
+            studio: None,
+            country: None,
+            aliases: Vec::new(),
+            tagged_aliases: Vec::new(),
+            metadata_language: None,
+            metadata_fetched_at: None,
+            min_availability: None,
+            digital_release_date: None,
+            folder_path: None,
+        }
+    }
+
+    fn job(id: &str, name: &str) -> TitleRecommendationRefreshJob {
+        TitleRecommendationRefreshJob::new(
+            queue_title(id, name),
+            Vec::new(),
+            Vec::new(),
+            HydrationSource::BackgroundDue,
+        )
+    }
+
+    #[test]
+    fn queue_replaces_pending_refresh_with_newest_payload() {
+        let mut queue = TitleRecommendationRefreshQueue::default();
+
+        assert_eq!(
+            queue.enqueue(job("title-1", "Old")),
+            TitleRecommendationRefreshEnqueueOutcome::Queued
+        );
+        assert_eq!(
+            queue.enqueue(job("title-1", "New")),
+            TitleRecommendationRefreshEnqueueOutcome::ReplacedPending
+        );
+
+        let next = queue.take_next().expect("queued job");
+        assert_eq!(next.title.name, "New");
+        assert!(queue.take_next().is_none());
+    }
+
+    #[test]
+    fn queue_preserves_follow_up_refresh_for_in_flight_title() {
+        let mut queue = TitleRecommendationRefreshQueue::default();
+        queue.enqueue(job("title-1", "Initial"));
+        let first = queue.take_next().expect("initial job");
+        assert_eq!(first.title.name, "Initial");
+
+        assert_eq!(
+            queue.enqueue(job("title-1", "Follow Up")),
+            TitleRecommendationRefreshEnqueueOutcome::QueuedAfterInFlight
+        );
+        assert!(
+            queue.take_next().is_none(),
+            "same title must not run concurrently"
+        );
+
+        queue.complete("title-1");
+        let follow_up = queue.take_next().expect("follow-up job");
+        assert_eq!(follow_up.title.name, "Follow Up");
+    }
+
+    #[test]
+    fn title_more_like_this_refresh_due_after_twenty_four_hours() {
+        let now = Utc::now();
+
+        assert!(title_more_like_this_refresh_due(now, None));
+        assert!(!title_more_like_this_refresh_due(
+            now,
+            Some(now - chrono::Duration::hours(23))
+        ));
+        assert!(title_more_like_this_refresh_due(
+            now,
+            Some(now - chrono::Duration::hours(24))
+        ));
     }
 }
 impl AppUseCase {
@@ -455,6 +672,65 @@ impl AppUseCase {
     }
 }
 impl AppUseCase {
+    pub(crate) async fn hydrate_title_single_apq(
+        &self,
+        target: HydrationTarget,
+    ) -> AppResult<Title> {
+        let language = self.metadata_language().await;
+        self.emit_hydration_started(&target.title).await;
+        let tvdb_id = target
+            .requested_tvdb_id
+            .or_else(|| extract_tvdb_id(&target.title))
+            .ok_or_else(|| AppError::Repository("no tvdb external id found".to_string()))?;
+
+        let result = match target.title.facet {
+            MediaFacet::Movie => {
+                let movie = self
+                    .services
+                    .library
+                    .metadata_gateway
+                    .get_movie(tvdb_id, &language)
+                    .await?;
+                super::movie_to_hydration_result(movie, &language)
+            }
+            MediaFacet::Series | MediaFacet::Anime => {
+                let series = self
+                    .services
+                    .library
+                    .metadata_gateway
+                    .get_series(tvdb_id, &language)
+                    .await?;
+                super::series_to_hydration_result(series, &language)
+            }
+        };
+
+        let source = target.source;
+        let hydrated = self
+            .apply_hydration_result(target.title, result, source)
+            .await;
+        self.complete_title_hydration(
+            &hydrated,
+            HydrationCompletionOptions {
+                sync_wanted_after_completion: target.sync_wanted_after_completion,
+            },
+        )
+        .await;
+        let refreshed = self
+            .services
+            .catalog
+            .titles
+            .get_by_id(&hydrated.id)
+            .await?
+            .unwrap_or(hydrated);
+        if refreshed.metadata_fetched_at.is_some() {
+            Ok(refreshed)
+        } else {
+            Err(AppError::Repository(
+                "metadata could not be persisted".to_string(),
+            ))
+        }
+    }
+
     pub(crate) async fn hydrate_titles_bulk(
         &self,
         targets: Vec<HydrationTarget>,
@@ -614,87 +890,169 @@ impl AppUseCase {
             return;
         }
 
-        let title_id = title.id.clone();
-        let inserted = {
-            let mut in_flight = self
+        self.ensure_title_recommendation_refresh_workers_started()
+            .await;
+        let job = TitleRecommendationRefreshJob::new(
+            title.clone(),
+            external_ids.to_vec(),
+            seeded_more_like_this.to_vec(),
+            source,
+        );
+        let outcome = {
+            let mut queue = self
                 .runtime
                 .catalog
-                .title_recommendation_refresh_inflight
+                .title_recommendation_refresh_queue
                 .lock()
                 .await;
-            in_flight.insert(title_id.clone())
+            queue.enqueue(job)
         };
-        if !inserted {
+
+        match outcome {
+            TitleRecommendationRefreshEnqueueOutcome::Queued => info!(
+                hydration_source = source.as_str(),
+                facet = title.facet.as_str(),
+                title_id = %title.id,
+                seeded_count = seeded_more_like_this.len(),
+                "queued title recommendations refresh after hydration"
+            ),
+            TitleRecommendationRefreshEnqueueOutcome::ReplacedPending => debug!(
+                hydration_source = source.as_str(),
+                facet = title.facet.as_str(),
+                title_id = %title.id,
+                seeded_count = seeded_more_like_this.len(),
+                "coalesced pending title recommendations refresh after hydration"
+            ),
+            TitleRecommendationRefreshEnqueueOutcome::QueuedAfterInFlight => debug!(
+                hydration_source = source.as_str(),
+                facet = title.facet.as_str(),
+                title_id = %title.id,
+                seeded_count = seeded_more_like_this.len(),
+                "queued follow-up title recommendations refresh after in-flight refresh"
+            ),
+        }
+        self.runtime
+            .catalog
+            .title_recommendation_refresh_wake
+            .notify_one();
+    }
+
+    pub(crate) async fn queue_title_more_like_this_refresh_if_due(
+        &self,
+        title: &Title,
+        source: HydrationSource,
+    ) -> AppResult<bool> {
+        if crate::discovery::title_recommendations_subject(title, &[]).is_none() {
             debug!(
                 hydration_source = source.as_str(),
                 facet = title.facet.as_str(),
                 title_id = %title.id,
-                "title recommendations refresh already queued"
+                "skipping background title recommendations freshness check: title has no recommendation subject ids"
             );
+            return Ok(false);
+        }
+
+        let existing = self
+            .services
+            .library
+            .discovery
+            .list_title_more_like_this_items(&title.id, 1)
+            .await?;
+        let now = self.runtime.environment.now();
+        // A successful zero-result refresh intentionally stores no marker row;
+        // those titles stay due so sparse SMG recommendation coverage can fill
+        // in as upstream discovery data improves.
+        let due =
+            title_more_like_this_refresh_due(now, existing.first().map(|item| item.updated_at));
+        if !due {
+            return Ok(false);
+        }
+
+        self.refresh_or_queue_title_more_like_this_after_hydration(title, &[], &[], source)
+            .await;
+        Ok(true)
+    }
+
+    async fn ensure_title_recommendation_refresh_workers_started(&self) {
+        let should_start = {
+            let mut queue = self
+                .runtime
+                .catalog
+                .title_recommendation_refresh_queue
+                .lock()
+                .await;
+            queue.mark_workers_started()
+        };
+        if !should_start {
             return;
         }
 
-        info!(
-            hydration_source = source.as_str(),
-            facet = title.facet.as_str(),
-            title_id = %title.id,
-            seeded_count = seeded_more_like_this.len(),
-            "queued title recommendations refresh after hydration"
-        );
+        for worker_index in 0..TITLE_RECOMMENDATION_REFRESH_WORKER_COUNT {
+            let app = self.clone();
+            tokio::spawn(async move {
+                app.run_title_recommendation_refresh_worker(worker_index)
+                    .await;
+            });
+        }
+    }
 
-        let app = self.clone();
-        let title = title.clone();
-        let external_ids = external_ids.to_vec();
-        let seeded_more_like_this = seeded_more_like_this.to_vec();
-        tokio::spawn(async move {
-            app.run_queued_title_more_like_this_refresh(
-                title,
-                external_ids,
-                seeded_more_like_this,
-                source,
-            )
+    async fn run_title_recommendation_refresh_worker(&self, worker_index: usize) {
+        loop {
+            let Some(job) = self.take_next_title_recommendation_refresh_job().await else {
+                self.runtime
+                    .catalog
+                    .title_recommendation_refresh_wake
+                    .notified()
+                    .await;
+                continue;
+            };
+            let title_id = job.title.id.clone();
+            self.run_queued_title_more_like_this_refresh(job, worker_index)
+                .await;
+            let has_pending = {
+                let mut queue = self
+                    .runtime
+                    .catalog
+                    .title_recommendation_refresh_queue
+                    .lock()
+                    .await;
+                queue.complete(&title_id);
+                queue.has_pending()
+            };
+            if has_pending {
+                self.runtime
+                    .catalog
+                    .title_recommendation_refresh_wake
+                    .notify_one();
+            }
+        }
+    }
+
+    async fn take_next_title_recommendation_refresh_job(
+        &self,
+    ) -> Option<TitleRecommendationRefreshJob> {
+        let mut queue = self
+            .runtime
+            .catalog
+            .title_recommendation_refresh_queue
+            .lock()
             .await;
-        });
+        queue.take_next()
     }
 
     async fn run_queued_title_more_like_this_refresh(
         &self,
-        title: Title,
-        external_ids: Vec<scryer_domain::ExternalId>,
-        seeded_more_like_this: Vec<crate::DiscoveryTitle>,
-        source: HydrationSource,
+        job: TitleRecommendationRefreshJob,
+        worker_index: usize,
     ) {
-        let queued_at = Instant::now();
-        let title_id = title.id.clone();
-        let permit = match self
-            .runtime
-            .catalog
-            .title_recommendation_refresh_limit
-            .clone()
-            .acquire_owned()
-            .await
-        {
-            Ok(permit) => permit,
-            Err(err) => {
-                warn!(
-                    hydration_source = source.as_str(),
-                    facet = title.facet.as_str(),
-                    title_id = %title.id,
-                    error = %err,
-                    "title recommendations refresh worker unavailable"
-                );
-                let mut in_flight = self
-                    .runtime
-                    .catalog
-                    .title_recommendation_refresh_inflight
-                    .lock()
-                    .await;
-                in_flight.remove(&title_id);
-                return;
-            }
-        };
+        let TitleRecommendationRefreshJob {
+            title,
+            external_ids,
+            seeded_more_like_this,
+            source,
+            queued_at,
+        } = job;
 
-        let _permit = permit;
         let mut last_error = None;
         for attempt in 1_u32..=3 {
             let attempt_started_at = Instant::now();
@@ -712,18 +1070,12 @@ impl AppUseCase {
                         hydration_source = source.as_str(),
                         facet = title.facet.as_str(),
                         title_id = %title.id,
+                        worker_index,
                         attempts = attempt,
                         elapsed_ms = queued_at.elapsed().as_millis(),
                         attempt_elapsed_ms = attempt_started_at.elapsed().as_millis(),
                         "completed queued title recommendations refresh"
                     );
-                    let mut in_flight = self
-                        .runtime
-                        .catalog
-                        .title_recommendation_refresh_inflight
-                        .lock()
-                        .await;
-                    in_flight.remove(&title_id);
                     return;
                 }
                 Err(err) => {
@@ -732,6 +1084,7 @@ impl AppUseCase {
                         hydration_source = source.as_str(),
                         facet = title.facet.as_str(),
                         title_id = %title.id,
+                        worker_index,
                         attempt,
                         error = %error,
                         attempt_elapsed_ms = attempt_started_at.elapsed().as_millis(),
@@ -749,18 +1102,12 @@ impl AppUseCase {
             hydration_source = source.as_str(),
             facet = title.facet.as_str(),
             title_id = %title.id,
+            worker_index,
             attempts = 3,
             error = %last_error.unwrap_or_else(|| "unknown error".to_string()),
             elapsed_ms = queued_at.elapsed().as_millis(),
             "queued title recommendations refresh exhausted retries"
         );
-        let mut in_flight = self
-            .runtime
-            .catalog
-            .title_recommendation_refresh_inflight
-            .lock()
-            .await;
-        in_flight.remove(&title_id);
     }
 
     async fn refresh_title_more_like_this_after_hydration_once(

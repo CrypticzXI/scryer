@@ -11,12 +11,11 @@ import {
 import { TextActionButton } from "@/components/ui/text-action-button";
 import { Badge } from "@/components/ui/badge";
 import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
-import { TableCell, TableRow } from "@/components/ui/table";
+  TableActionsCell,
+  TableCell,
+  TableCodeCell,
+  TableRow,
+} from "@/components/ui/table";
 import { EpisodeQueueIndicator } from "@/components/common/download-queue-overview";
 import { useTranslate } from "@/lib/context/translate-context";
 import { useUiDateTimeFormat } from "@/lib/context/ui-settings-context";
@@ -343,7 +342,7 @@ export const EpisodeRow = React.memo(function EpisodeRow({
               "mt-0.5 inline-flex size-6 shrink-0 items-center justify-center rounded transition-colors",
               episodeToggling && "opacity-50",
               episode.monitored
-                ? "text-emerald-600 dark:text-emerald-300"
+                ? "text-[var(--scry-success-text-soft)]"
                 : "text-muted-foreground/60",
             )}
             onClick={handleToggleEpisodeMonitored}
@@ -451,8 +450,8 @@ export const EpisodeRow = React.memo(function EpisodeRow({
         data-episode-id={episode.id}
         className={`cv-auto-row-sm${episode.monitored ? "" : " opacity-50"}`}
       >
-        <TableCell className="pl-2 pr-0 text-right align-middle">
-          <div className="flex items-center justify-end">
+        <TableCell className="px-2 text-center align-middle">
+          <div className="flex items-center justify-center">
             <button
               id={selectorId("series-overview-episode-monitor", episode.id)}
               type="button"
@@ -462,7 +461,7 @@ export const EpisodeRow = React.memo(function EpisodeRow({
                 "inline-flex size-6 items-center justify-center rounded transition-colors",
                 episodeToggling && "opacity-50",
                 episode.monitored
-                  ? "text-emerald-600 dark:text-emerald-300"
+                  ? "text-[var(--scry-success-text-soft)]"
                   : "text-muted-foreground/60",
               )}
               onClick={handleToggleEpisodeMonitored}
@@ -475,7 +474,7 @@ export const EpisodeRow = React.memo(function EpisodeRow({
             </button>
           </div>
         </TableCell>
-        <TableCell className="text-center align-middle font-[var(--font-code)] text-sm text-card-foreground">
+        <TableCodeCell className="text-center align-middle text-sm text-card-foreground">
           <div className="flex flex-col items-center gap-0.5">
             <span>{episode.episodeNumber ?? episode.episodeLabel ?? "—"}</span>
             {episode.absoluteNumber && facet === "anime" ? (
@@ -484,7 +483,7 @@ export const EpisodeRow = React.memo(function EpisodeRow({
               </span>
             ) : null}
           </div>
-        </TableCell>
+        </TableCodeCell>
         <TableCell
           id={selectorId("series-overview-episode-details-toggle", episode.id)}
           className="cursor-pointer align-middle text-sm text-card-foreground hover:text-foreground"
@@ -503,8 +502,8 @@ export const EpisodeRow = React.memo(function EpisodeRow({
             </span>
           ) : null}
         </TableCell>
-        <TableCell className="text-muted-foreground">
-          <span className="inline-flex items-center gap-1">
+        <TableCell className="text-center text-muted-foreground">
+          <span className="inline-flex items-center justify-center gap-1">
             <CalendarDays className="h-3.5 w-3.5" />
             {formattedAirDate}
           </span>
@@ -514,67 +513,49 @@ export const EpisodeRow = React.memo(function EpisodeRow({
             {qualityCell}
           </div>
         </TableCell>
-        <TableCell className="text-right">
-          <TooltipProvider>
-            <div className="inline-flex items-center justify-end gap-2">
-              {onAutoSearchEpisode ? (
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <span>
-                      <EpisodeTableActionButton
-                        id={seriesOverviewEpisodeAutoSearchId(
-                          facet,
-                          episode.seasonNumber,
-                          episode.episodeNumber,
-                          episode.absoluteNumber,
-                        )}
-                        tone="auto"
-                        onClick={handleAutoSearchClick}
-                        disabled={autoSearching}
-                        label={t("label.search")}
-                        showTitleAttribute={false}
-                      >
-                        {autoSearching ? (
-                          <Loader2 className="h-4 w-4 animate-spin" />
-                        ) : (
-                          <Zap className="h-4 w-4" />
-                        )}
-                      </EpisodeTableActionButton>
-                    </span>
-                  </TooltipTrigger>
-                  <TooltipContent side="top" sideOffset={8} className="max-w-[18rem] whitespace-normal break-words text-left text-sm leading-snug">
-                    {t("help.autoSearchTooltip")}
-                  </TooltipContent>
-                </Tooltip>
-              ) : null}
-              {onRunEpisodeSearch && onQueueFromEpisodeSearch ? (
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <span>
-                      <EpisodeTableActionButton
-                        id={seriesOverviewEpisodeInteractiveSearchId(
-                          facet,
-                          episode.seasonNumber,
-                          episode.episodeNumber,
-                          episode.absoluteNumber,
-                        )}
-                        tone="search"
-                        onClick={handleToggleEpisodeSearch}
-                        label={t("label.search")}
-                        showTitleAttribute={false}
-                      >
-                        <Search className="h-4 w-4" />
-                      </EpisodeTableActionButton>
-                    </span>
-                  </TooltipTrigger>
-                  <TooltipContent side="top" sideOffset={8} className="max-w-[18rem] whitespace-normal break-words text-left text-sm leading-snug">
-                    {t("help.interactiveSearchTooltip")}
-                  </TooltipContent>
-                </Tooltip>
-              ) : null}
-            </div>
-          </TooltipProvider>
-        </TableCell>
+        <TableActionsCell className="w-28">
+          <div className="inline-flex items-center justify-center gap-2">
+            {onAutoSearchEpisode ? (
+              <EpisodeTableActionButton
+                id={seriesOverviewEpisodeAutoSearchId(
+                  facet,
+                  episode.seasonNumber,
+                  episode.episodeNumber,
+                  episode.absoluteNumber,
+                )}
+                tone="auto"
+                onClick={handleAutoSearchClick}
+                disabled={autoSearching}
+                label={t("label.search")}
+                tooltip={t("help.autoSearchTooltip")}
+                showTitleAttribute={false}
+              >
+                {autoSearching ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Zap className="h-4 w-4" />
+                )}
+              </EpisodeTableActionButton>
+            ) : null}
+            {onRunEpisodeSearch && onQueueFromEpisodeSearch ? (
+              <EpisodeTableActionButton
+                id={seriesOverviewEpisodeInteractiveSearchId(
+                  facet,
+                  episode.seasonNumber,
+                  episode.episodeNumber,
+                  episode.absoluteNumber,
+                )}
+                tone="search"
+                onClick={handleToggleEpisodeSearch}
+                label={t("label.search")}
+                tooltip={t("help.interactiveSearchTooltip")}
+                showTitleAttribute={false}
+              >
+                <Search className="h-4 w-4" />
+              </EpisodeTableActionButton>
+            ) : null}
+          </div>
+        </TableActionsCell>
       </TableRow>
       {isPanelOpen ? (
         <TableRow id={selectorId("series-overview-episode-panel", episode.id)}>

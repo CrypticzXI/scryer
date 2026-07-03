@@ -912,7 +912,7 @@ export function SettingsRulesSection({
                   <div
                     className={`rounded border px-3 py-2 text-sm ${
                       validationResult.valid
-                        ? "border-emerald-700/50 bg-emerald-900/30 text-emerald-300"
+                        ? "border-[var(--scry-success-border)] bg-[var(--scry-success-bg)] text-[var(--scry-success-text)]"
                         : "border-[var(--scry-danger-border)] bg-[var(--scry-danger-bg)] text-[var(--scry-danger-text)]"
                     }`}
                   >

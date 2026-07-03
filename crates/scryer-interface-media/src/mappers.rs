@@ -1754,6 +1754,7 @@ pub fn from_discovery_item(item: DiscoveryItemRecord) -> DiscoveryItemPayload {
         content_type: item.content_type,
         genres: item.genres,
         rating: item.rating,
+        rating_sources: item.rating_sources,
         external_ratings: item
             .external_ratings
             .into_iter()

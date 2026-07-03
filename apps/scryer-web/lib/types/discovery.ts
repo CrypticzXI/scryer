@@ -47,6 +47,7 @@ export type DiscoveryItem = {
   contentType: string | null;
   genres: string[];
   rating: number | null;
+  ratingSources?: string[];
   externalRatings?: TitleExternalRating[];
   statusTags: string[];
   sourceTags: string[];

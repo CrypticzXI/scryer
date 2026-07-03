@@ -18,7 +18,7 @@ const buttonVariants = cva(
         warning:
           "border border-[var(--scry-warning-border)] bg-[var(--scry-warning-bg)] text-[var(--scry-warning-text)] hover:border-[var(--scry-warning-border-strong)] hover:bg-[var(--scry-warning-bg-strong)] focus-visible:ring-[var(--scry-warning-border-strong)]",
         success:
-          "border border-emerald-200 bg-emerald-50 text-emerald-700 hover:border-emerald-300 hover:bg-emerald-100 hover:text-emerald-800 focus-visible:ring-emerald-300 dark:border-emerald-500/35 dark:bg-emerald-500/12 dark:text-emerald-200 dark:hover:border-emerald-400/45 dark:hover:bg-emerald-500/22 dark:hover:text-emerald-50",
+          "border border-[var(--scry-success-border)] bg-[var(--scry-success-bg)] text-[var(--scry-success-text)] hover:border-[var(--scry-success-border-strong)] hover:bg-[var(--scry-success-bg-strong)] focus-visible:ring-[var(--scry-success-border-strong)]",
         outline:
           "border border-[var(--scry-border2)] bg-[var(--scry-inset)] text-[var(--scry-ink2)] shadow-none hover:bg-[var(--scry-hover)] hover:text-[var(--scry-ink2)] focus-visible:ring-[var(--scry-accent-ring)]",
         secondary:

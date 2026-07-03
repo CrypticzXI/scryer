@@ -58,24 +58,24 @@ const statusClasses: Record<ImportRecordStatus, string> = {
   pending:
     "border-border/40 bg-muted-foreground/10 text-card-foreground",
   running:
-    "border-indigo-500/40 bg-indigo-500/10 text-indigo-700 dark:text-indigo-200",
+    "border-[rgba(var(--scry-accent-rgb),0.4)] bg-[rgba(var(--scry-accent-rgb),0.1)] text-[var(--scry-accent-text)]",
   processing:
-    "border-sky-500/40 bg-sky-500/10 text-sky-700 dark:text-sky-200",
+    "border-[var(--scry-info-border)] bg-[var(--scry-info-bg)] text-[var(--scry-info-text)]",
   completed:
-    "border-emerald-500/40 bg-emerald-500/15 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-200",
+    "border-[var(--scry-success-border)] bg-[var(--scry-success-bg)] text-[var(--scry-success-text)]",
   failed: "border-[var(--scry-danger-border)] bg-[var(--scry-danger-bg)] text-[var(--scry-danger-text)]",
-  skipped: "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-200",
+  skipped: "border-[var(--scry-warning-border)] bg-[var(--scry-warning-bg)] text-[var(--scry-warning-text)]",
 };
 
 const decisionClasses: Record<ImportDecision, string> = {
   imported:
-    "border-emerald-500/40 bg-emerald-500/15 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-200",
+    "border-[var(--scry-success-border)] bg-[var(--scry-success-bg)] text-[var(--scry-success-text)]",
   rejected:
     "border-[var(--scry-danger-border)] bg-[var(--scry-danger-bg)] text-[var(--scry-danger-text)]",
   skipped:
-    "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-200",
+    "border-[var(--scry-warning-border)] bg-[var(--scry-warning-bg)] text-[var(--scry-warning-text)]",
   conflict:
-    "border-violet-500/40 bg-violet-500/10 text-violet-700 dark:text-violet-200",
+    "border-[rgba(var(--scry-accent-rgb),0.4)] bg-[rgba(var(--scry-accent-rgb),0.1)] text-[var(--scry-accent-text)]",
   unmatched:
     "border-slate-500/40 bg-slate-500/10 text-slate-700 dark:text-slate-200",
   failed: "border-[var(--scry-danger-border)] bg-[var(--scry-danger-bg)] text-[var(--scry-danger-text)]",

@@ -9,8 +9,8 @@ use tracing::warn;
 
 use super::*;
 use crate::library::library::{
-    PlannedTitleScanFile, PlannedTitleScanRecord, file_source_signature_from_metadata,
-    file_source_snapshot_from_library_file, finalize_title_scan_file,
+    PlannedTitleScanFile, PlannedTitleScanRecord, file_source_snapshot_from_path,
+    finalize_title_scan_file,
 };
 use crate::stored_paths::{path_to_stored_string, stored_path_to_path_buf};
 
@@ -114,7 +114,6 @@ async fn build_pending_import_library_file(
         ));
     }
 
-    let signature = file_source_signature_from_metadata(&metadata);
     let display_name = if item.display_name.trim().is_empty() {
         path.file_name()
             .and_then(|value| value.to_str())
@@ -129,8 +128,8 @@ async fn build_pending_import_library_file(
         display_name,
         nfo_path: None,
         size_bytes: Some(metadata.len() as i64),
-        source_signature_scheme: signature.as_ref().map(|value| value.scheme.clone()),
-        source_signature_value: signature.map(|value| value.value),
+        source_signature_scheme: None,
+        source_signature_value: None,
     })
 }
 
@@ -1030,9 +1029,7 @@ impl AppUseCase {
             crate::build_release_parse_context_for_title(&title, &available_episodes, None);
         let parsed =
             crate::parse_release_metadata_for_target(parse_raw_name.as_str(), &parse_context);
-        let snapshot = file_source_snapshot_from_library_file(&file).ok_or_else(|| {
-            AppError::Validation("pending import file metadata is incomplete".into())
-        })?;
+        let snapshot = file_source_snapshot_from_path(&stored_path_to_path_buf(&file.path)).await?;
         let analysis_outcome = match self
             .services
             .library

@@ -265,7 +265,7 @@ export function SetupPluginsView({
                               <div className="flex flex-wrap items-center gap-2">
                                 <span className="font-medium">{plugin.name}</span>
                                 {plugin.status === "beta" && (
-                                  <span className="rounded bg-yellow-900/40 px-1.5 py-0.5 text-xs text-yellow-300">
+                                  <span className="rounded bg-[var(--scry-warning-bg)] px-1.5 py-0.5 text-xs text-[var(--scry-warning-text)]">
                                     {t("settings.pluginBeta")}
                                   </span>
                                 )}

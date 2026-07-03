@@ -36,8 +36,10 @@ function IconButton({
   ...props
 }: IconButtonProps) {
   const ariaLabel = props["aria-label"] ?? label
-  const tooltipContent =
-    tooltip === undefined ? (showTitleAttribute ? title ?? label : false) : tooltip
+  let tooltipContent = tooltip
+  if (tooltipContent === undefined) {
+    tooltipContent = showTitleAttribute === false ? false : title ?? label
+  }
 
   const button = (
     <Button
@@ -62,6 +64,11 @@ function IconButton({
       content={tooltipContent}
       side={tooltipSide}
       className={tooltipClassName}
+      wrapperTabIndex={
+        props.disabled && tooltipContent !== false && tooltipContent != null
+          ? 0
+          : undefined
+      }
     >
       {button}
     </ActionTooltip>

@@ -5,6 +5,7 @@ import { useClient } from "urql";
 import { TitlePoster } from "@/components/title-poster";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverAnchor, PopoverContent } from "@/components/ui/popover";
+import { ActionTooltip } from "@/components/ui/tooltip";
 import { sectionLabelForFacet } from "@/lib/facets/helpers";
 import { titleListEntryQuery, titlesQuery } from "@/lib/graphql/queries";
 import { useTranslate } from "@/lib/context/translate-context";
@@ -234,16 +235,17 @@ export function TitleAutocompletePicker({
                 ? formatSelectedTitleLabel(resolvedSelectedTitle)
                 : t("label.unknown")}
             </span>
-            <button
-              type="button"
-              onClick={clearSelection}
-              disabled={disabled}
-              className="inline-flex h-7 w-8 items-center justify-center border-l border-accent-foreground/15 text-accent-foreground/80 transition-colors hover:bg-accent-foreground/10 hover:text-accent-foreground disabled:cursor-not-allowed disabled:opacity-50"
-              aria-label={t("label.clear")}
-              title={t("label.clear")}
-            >
-              <X className="h-4 w-4" />
-            </button>
+            <ActionTooltip content={t("label.clear")}>
+              <button
+                type="button"
+                onClick={clearSelection}
+                disabled={disabled}
+                className="inline-flex h-7 w-8 items-center justify-center border-l border-accent-foreground/15 text-accent-foreground/80 transition-colors hover:bg-accent-foreground/10 hover:text-accent-foreground disabled:cursor-not-allowed disabled:opacity-50"
+                aria-label={t("label.clear")}
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </ActionTooltip>
           </div>
         </div>
       ) : (

@@ -11,6 +11,7 @@ import {
   type RatingSourceInfo,
   type TitleExternalRating,
 } from "@/lib/utils/title-ratings";
+import { cn } from "@/lib/utils";
 
 export type TitleRatings = {
   rating: number | null;
@@ -20,9 +21,16 @@ export type TitleRatings = {
 
 type TitleRatingsStripProps = {
   ratings?: TitleRatings | null;
+  variant?: "default" | "hero";
 };
 
-function RatingSourceLogo({ source }: { source: RatingSourceInfo }) {
+function RatingSourceLogo({
+  source,
+  variant,
+}: {
+  source: RatingSourceInfo;
+  variant: "default" | "hero";
+}) {
   if (!source.logoSrc) {
     return null;
   }
@@ -31,7 +39,10 @@ function RatingSourceLogo({ source }: { source: RatingSourceInfo }) {
       src={source.logoSrc}
       alt=""
       aria-hidden="true"
-      className="h-3.5 w-3.5 shrink-0 object-contain"
+      className={cn(
+        "shrink-0 object-contain",
+        variant === "hero" ? "h-4 w-4" : "h-3.5 w-3.5",
+      )}
       loading="lazy"
     />
   );
@@ -41,18 +52,31 @@ function RatingPill({
   source,
   value,
   href,
+  variant,
 }: {
   source: RatingSourceInfo;
   value: string;
   href: string;
+  variant: "default" | "hero";
 }) {
-  const className =
-    "inline-flex items-center gap-1.5 rounded border border-border/70 bg-background/45 px-2 py-1 text-xs";
+  const className = cn(
+    "inline-flex items-center gap-1.5 rounded border",
+    variant === "hero"
+      ? "border-white/15 bg-black/35 px-2.5 py-1.5 text-sm shadow-[inset_0_1px_0_rgba(255,255,255,0.08)] backdrop-blur-sm"
+      : "border-border/70 bg-background/45 px-2 py-1 text-xs",
+  );
   const label = `${source.label}: ${value}`;
   const content = (
     <>
-      <RatingSourceLogo source={source} />
-      <span className="font-[var(--font-code)] text-card-foreground">{value}</span>
+      <RatingSourceLogo source={source} variant={variant} />
+      <span
+        className={cn(
+          "font-[var(--font-code)]",
+          variant === "hero" ? "text-white" : "text-card-foreground",
+        )}
+      >
+        {value}
+      </span>
     </>
   );
 
@@ -80,15 +104,26 @@ function RatingPill({
   );
 }
 
-export function TitleRatingsStrip({ ratings }: TitleRatingsStripProps) {
+export function TitleRatingsStrip({
+  ratings,
+  variant = "default",
+}: TitleRatingsStripProps) {
   const externalRatings = ratings?.externalRatings ?? [];
   if (externalRatings.length === 0 && ratings?.rating == null) {
     return null;
   }
+  const fallbackSource = ratings?.ratingSources.find(
+    (source) => source.trim().length > 0,
+  );
 
   return (
     <TooltipProvider delayDuration={200}>
-      <div className="mt-3 flex flex-wrap gap-2">
+      <div
+        className={cn(
+          "flex flex-wrap gap-2",
+          variant === "default" ? "mt-3" : "mb-3",
+        )}
+      >
         {externalRatings.map((rating, index) => {
           const source = ratingSourceInfo(rating.source);
           return (
@@ -97,14 +132,16 @@ export function TitleRatingsStrip({ ratings }: TitleRatingsStripProps) {
               source={source}
               value={ratingValueLabel(rating, source)}
               href={rating.url}
+              variant={variant}
             />
           );
         })}
         {externalRatings.length === 0 && ratings?.rating != null ? (
           <RatingPill
-            source={ratingSourceInfo("mdblist")}
+            source={ratingSourceInfo(fallbackSource ?? "mdblist")}
             value={compactRatingNumber(ratings.rating)}
             href=""
+            variant={variant}
           />
         ) : null}
       </div>

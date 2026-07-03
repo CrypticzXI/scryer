@@ -277,7 +277,7 @@ export function ManualImportDialog({
             id="activity-manual-import-loading"
             className="flex items-center justify-center gap-3 py-12"
           >
-            <Loader2 className="h-5 w-5 animate-spin text-emerald-500" />
+            <Loader2 className="h-5 w-5 animate-spin text-[var(--scry-accent-text)]" />
             <span className="text-sm text-muted-foreground">Scanning files...</span>
           </div>
         ) : error && files.length === 0 ? (

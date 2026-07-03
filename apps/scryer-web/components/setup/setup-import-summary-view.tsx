@@ -310,7 +310,7 @@ export default function SetupImportSummaryView({
               fontFamily: "var(--font-space-grotesk)",
               fontWeight: 700,
               fontSize: 22,
-              color: warmupComplete ? "#4ade80" : "#fff",
+              color: warmupComplete ? "var(--scry-success-text-soft)" : "#fff",
               letterSpacing: "-0.02em",
             }}
           >
@@ -322,7 +322,7 @@ export default function SetupImportSummaryView({
           value={pct}
           className="mt-3.5 h-2"
           style={{ background: "var(--scry-page2)" }}
-          indicatorClassName={warmupComplete ? "bg-emerald-400" : undefined}
+          indicatorClassName={warmupComplete ? "bg-[var(--scry-success-solid)]" : undefined}
         />
 
         <div
@@ -340,7 +340,9 @@ export default function SetupImportSummaryView({
               alignItems: "center",
               gap: 7,
               fontSize: 12.5,
-              color: warmupComplete ? "#4ade80" : "var(--scry-accent-text)",
+              color: warmupComplete
+                ? "var(--scry-success-text-soft)"
+                : "var(--scry-accent-text)",
             }}
           >
             {warmupComplete ? (
@@ -384,12 +386,12 @@ export default function SetupImportSummaryView({
         <div
           style={{
             ...cardStyle,
-            borderColor: "rgba(251, 191, 36, 0.4)",
+            borderColor: "var(--scry-warning-border)",
             display: "flex",
             alignItems: "center",
             gap: 10,
             fontSize: 12.5,
-            color: "#fbbf24",
+            color: "var(--scry-warning-text)",
           }}
         >
           <TriangleAlert

@@ -39,7 +39,6 @@ export type JobKey =
   | "background_library_refresh_anime"
   | "rss_sync"
   | "subtitle_search"
-  | "metadata_refresh"
   | "plugin_registry_refresh"
   | "housekeeping"
   | "health_checks"

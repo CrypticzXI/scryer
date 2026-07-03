@@ -109,13 +109,13 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
         .filter_map(|ty| ty["name"].as_str())
         .collect();
 
-    assert_eq!(query_field_count, 110);
-    assert_eq!(mutation_field_count, 161);
+    assert_eq!(query_field_count, 113);
+    assert_eq!(mutation_field_count, 162);
     assert_eq!(subscription_field_count, 13);
-    assert_eq!(public_types.len(), 479);
-    assert_eq!(kind_count("OBJECT"), 247);
-    assert_eq!(kind_count("INPUT_OBJECT"), 147);
-    assert_eq!(kind_count("ENUM"), 75);
+    assert_eq!(public_types.len(), 489);
+    assert_eq!(kind_count("OBJECT"), 253);
+    assert_eq!(kind_count("INPUT_OBJECT"), 149);
+    assert_eq!(kind_count("ENUM"), 77);
     assert_eq!(kind_count("SCALAR"), 10);
     assert!(query_field_names.contains(&"backupSettings"));
     assert!(query_field_names.contains(&"externalImportSetupSecretDraft"));
@@ -3452,7 +3452,14 @@ async fn graphql_introspection_external_import_finalize_uses_payload_results() {
         .iter()
         .filter_map(|field| field["name"].as_str())
         .collect();
-    assert_eq!(finalize_fields, vec!["finalized", "monitorWarmupSessionId"]);
+    assert_eq!(
+        finalize_fields,
+        vec![
+            "finalized",
+            "monitorWarmupSessionId",
+            "librarySettingApplications"
+        ]
+    );
 }
 
 fn graphql_type_leaf_name(type_value: &Value) -> Option<&str> {

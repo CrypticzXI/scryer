@@ -271,9 +271,9 @@ export function SettingsOverviewSection({
             </Button>
           </CollapsibleTrigger>
           <CollapsibleContent className="space-y-4 pt-4">
-            <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm">
+            <div className="rounded-lg border border-[var(--scry-warning-border)] bg-[var(--scry-warning-bg)] p-3 text-sm">
               <div className="flex items-start gap-2">
-                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-700 dark:text-amber-300" />
+                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-[var(--scry-warning-text)]" />
                 <div className="space-y-1">
                   <p className="font-medium">{t("settings.pluginHttpTrustWarningTitle")}</p>
                   <p className="text-muted-foreground">

@@ -89,13 +89,13 @@ function FacetBadges({ facets }: { facets: string[] }) {
 function statusColor(status: string): string {
   switch (status) {
     case "success":
-      return "text-emerald-400";
+      return "text-[var(--scry-success-text-soft)]";
     case "failed":
       return "text-[var(--scry-danger-text-soft)]";
     case "timeout":
-      return "text-yellow-400";
+      return "text-[var(--scry-warning-text)]";
     case "running":
-      return "text-blue-400";
+      return "text-[var(--scry-info-text-soft)]";
     default:
       return "text-muted-foreground";
   }

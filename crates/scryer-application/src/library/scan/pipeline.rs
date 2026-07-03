@@ -15,8 +15,7 @@ use super::scan_title_scan::{LibraryScanMediaWorkReservation, title_requires_sca
 /// readdir plus at most two sidecar reads), so this can run much wider than
 /// the recursive inventory walks without hammering SMB mounts.
 const LIBRARY_SCAN_EVIDENCE_CONCURRENCY: usize = 32;
-/// SMG match batches allowed in flight at once. Supersedes the old
-/// scan-path `LIBRARY_METADATA_LOOKUP_CONCURRENCY` gate.
+/// SMG match batches allowed in flight at once for a scan root.
 const LIBRARY_SCAN_METADATA_IN_FLIGHT_BATCHES: usize = 2;
 /// Timer flush for the match batcher: a partial batch is dispatched this long
 /// after its first candidate arrived.
@@ -290,14 +289,14 @@ pub(super) async fn run_library_scan_pipeline(
         cancel_token.clone(),
     ));
 
-    let mut pool = LibraryScanMediaAnalysisPool::for_scan_pipeline(
+    let pool_policy = LibraryScanMediaAnalysisPolicy::full_scan_pipeline(
         app,
-        actor,
         session_id,
         facet,
         cancel_token.clone(),
     )
-    .await?;
+    .await;
+    let mut pool = LibraryScanMediaAnalysisPool::for_policy(app, actor, pool_policy).await?;
     let analysis_profile = pool.analysis_profile();
     info!(
         path = %library_path,
@@ -322,7 +321,8 @@ pub(super) async fn run_library_scan_pipeline(
     let mut media_file_total_counted = 0usize;
     let mut discovery_error: Option<AppError> = None;
     // Duplicate candidates resolving to already-covered title work are
-    // deduplicated by the analysis pool; they count as skipped, not matched.
+    // deduplicated by the analysis pool; they correct matched totals but are
+    // not user-visible skipped imports.
     let mut media_dedup_skips = 0usize;
     let mut candidate_events_seen = 0usize;
     let mut inventory_events_seen = 0usize;
@@ -725,7 +725,6 @@ pub(super) async fn run_library_scan_pipeline(
         summary.absorb(&report.summary);
         if media_dedup_skips > 0 {
             summary.matched = summary.matched.saturating_sub(media_dedup_skips);
-            summary.skipped = summary.skipped.saturating_add(media_dedup_skips);
         }
         try_mark_file_total_known(TotalKnownLatchContext {
             coordinator: &coordinator,
@@ -1180,7 +1179,7 @@ async fn handle_match_decision(
         Some(work) if runtime.scoped => {
             // Scoped work already carries its own file list.
             runtime.match_state = CandidateMatchState::Dispatched;
-            let files = work.discovered_files.clone().unwrap_or_default();
+            let files = work.discovered_files().cloned().unwrap_or_default();
             file_count = files.len();
             outcome = "dispatched_scoped";
             dispatch_media_work(
@@ -1371,13 +1370,12 @@ async fn dispatch_media_work(
     let title_id = work.title.id.clone();
     let title_name = work.title.name.clone();
     let input_file_count = files.len();
-    if work
-        .discovered_files
-        .as_ref()
-        .is_none_or(|existing| existing.is_empty())
+    if matches!(work.scope, LibraryScanTitleWorkScope::FullFolder)
+        || work
+            .discovered_files()
+            .is_some_and(|existing| existing.is_empty())
     {
-        work.full_folder = true;
-        work.discovered_files = Some(files);
+        work.scope = LibraryScanTitleWorkScope::PreEnumeratedFullFolder(files);
     }
 
     let Some(reservation) = pool.reserve_work(work) else {
@@ -1604,8 +1602,6 @@ async fn hydrate_library_scan_title_works(
     reservations: Vec<LibraryScanMediaWorkReservation>,
     cancel_token: Option<&CancellationToken>,
 ) -> AppResult<ScanHydrationBatchResult> {
-    let session = None::<()>;
-    let _ = session;
     let started_at = Instant::now();
     let targets = reservations
         .iter()

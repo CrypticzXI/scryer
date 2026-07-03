@@ -77,7 +77,7 @@ export function AnimeMetadataPanel({ tags, episodesByCollection }: AnimeMetadata
               <div>
                 <p className="text-xs font-medium text-muted-foreground">{t("anime.malScore")}</p>
                 <p className="flex items-center gap-1 text-sm font-semibold text-foreground">
-                  <Star className="h-3.5 w-3.5 text-amber-500" />
+                  <Star className="h-3.5 w-3.5 text-[var(--scry-warning-text)]" />
                   {malScore}
                 </p>
               </div>

@@ -557,7 +557,7 @@ const HighlightedTemplateInput = React.forwardRef<HTMLInputElement, HighlightedT
               {segments.map((segment, index) => (
                 <span
                   key={`${index}-${segment.text}`}
-                  className={segment.isToken ? "text-emerald-600 dark:text-emerald-400" : "text-foreground"}
+                  className={segment.isToken ? "text-[var(--scry-accent-text)]" : "text-foreground"}
                 >
                   {segment.text}
                 </span>
@@ -798,7 +798,7 @@ function TokenAutocompleteInput({
                     setDismissedKey(null);
                   }}
                 >
-                  <code className="font-[var(--font-code)] text-emerald-600 dark:text-emerald-400">{item.code}</code>
+                  <code className="font-[var(--font-code)] text-[var(--scry-accent-text)]">{item.code}</code>
                   <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
                     {translateLabel(item.labelKey)}
                   </span>
@@ -844,7 +844,7 @@ function RenameTokenReferenceList({
             className="flex items-center justify-between gap-3 rounded-md border border-border/70 bg-muted/40 px-2.5 py-2"
           >
             <div className="min-w-0 space-y-1">
-              <code className="block font-[var(--font-code)] text-xs text-emerald-600 dark:text-emerald-400">
+              <code className="block font-[var(--font-code)] text-xs text-[var(--scry-accent-text)]">
                 {`{${item.token}}`}
               </code>
               <p className="text-xs leading-snug text-muted-foreground">
@@ -856,7 +856,7 @@ function RenameTokenReferenceList({
                 <button
                   key={`${item.token}-${scope}`}
                   type="button"
-                  className="rounded-full border border-border bg-background/70 px-2 py-0.5 text-[10px] font-semibold uppercase text-muted-foreground transition-colors hover:border-emerald-500 hover:bg-accent hover:text-foreground"
+                  className="rounded-full border border-border bg-background/70 px-2 py-0.5 text-[10px] font-semibold uppercase text-muted-foreground transition-colors hover:border-[var(--scry-accent)] hover:bg-accent hover:text-foreground"
                   onClick={() => applicabilityActions[scope](item.token)}
                 >
                   {applicabilityLabels[scope]}
@@ -881,7 +881,7 @@ function RenameFunctionReference({ t }: { t: Translate }) {
           <p className="text-sm font-medium text-card-foreground">
             {t("settings.renameFunctionTruncateTitle")}
           </p>
-          <code className="mt-1 block break-all font-[var(--font-code)] text-xs text-emerald-600 dark:text-emerald-400">
+          <code className="mt-1 block break-all font-[var(--font-code)] text-xs text-[var(--scry-accent-text)]">
             {"{title|truncate:N}"}
           </code>
           <p className="mt-1 text-xs leading-snug text-muted-foreground">
@@ -902,7 +902,7 @@ function RenameFunctionReference({ t }: { t: Translate }) {
                 key={item.code}
                 className="rounded border border-border/60 bg-background/50 px-2 py-1.5"
               >
-                <code className="font-[var(--font-code)] text-xs text-emerald-600 dark:text-emerald-400">
+                <code className="font-[var(--font-code)] text-xs text-[var(--scry-accent-text)]">
                   {item.code}
                 </code>
                 <p className="mt-0.5 text-[11px] leading-snug text-muted-foreground">
@@ -918,7 +918,7 @@ function RenameFunctionReference({ t }: { t: Translate }) {
             <p className="text-sm font-medium text-card-foreground">
               {t("settings.renameFunctionPaddingTitle")}
             </p>
-            <code className="mt-1 block break-all font-[var(--font-code)] text-xs text-emerald-600 dark:text-emerald-400">
+            <code className="mt-1 block break-all font-[var(--font-code)] text-xs text-[var(--scry-accent-text)]">
               {"{season:2}"}
             </code>
             <p className="mt-1 text-xs leading-snug text-muted-foreground">
@@ -930,7 +930,7 @@ function RenameFunctionReference({ t }: { t: Translate }) {
             <p className="text-sm font-medium text-card-foreground">
               {t("settings.renameFunctionChainTitle")}
             </p>
-            <code className="mt-1 block break-all font-[var(--font-code)] text-xs text-emerald-600 dark:text-emerald-400">
+            <code className="mt-1 block break-all font-[var(--font-code)] text-xs text-[var(--scry-accent-text)]">
               {"{title|truncate:64|space:_}"}
             </code>
             <p className="mt-1 text-xs leading-snug text-muted-foreground">
@@ -942,7 +942,7 @@ function RenameFunctionReference({ t }: { t: Translate }) {
             <p className="text-sm font-medium text-card-foreground">
               {t("settings.renameFunctionBracesTitle")}
             </p>
-            <code className="mt-1 block break-all font-[var(--font-code)] text-xs text-emerald-600 dark:text-emerald-400">
+            <code className="mt-1 block break-all font-[var(--font-code)] text-xs text-[var(--scry-accent-text)]">
               {"{{edition-{edition}}}"}
             </code>
             <p className="mt-1 text-xs leading-snug text-muted-foreground">
@@ -1190,7 +1190,7 @@ export function RenameSettingsPanel({
                   folderTemplateValue.trim()
                     ? folderValidationError
                       ? "border-[var(--scry-danger-border-strong)]"
-                      : "border-emerald-500/60"
+                      : "border-[var(--scry-accent)]"
                     : undefined
                 }
               />
@@ -1238,7 +1238,7 @@ export function RenameSettingsPanel({
                       templateValue.trim()
                         ? renameValidationError
                           ? "border-[var(--scry-danger-border-strong)]"
-                          : "border-emerald-500/60"
+                          : "border-[var(--scry-accent)]"
                         : undefined
                     }
                   />

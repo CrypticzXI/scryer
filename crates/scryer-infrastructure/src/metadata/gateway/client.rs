@@ -456,6 +456,7 @@ fn metadata_bulk_unknown_field_error(error: &AppError) -> bool {
     message.contains("Cannot query field \"metadataBulk\"")
         || (message.contains("Cannot query field") && message.contains("metadataBulk"))
         || message.contains("missing field `metadataBulk`")
+        || message.contains("unsupported GraphQL operation")
 }
 
 pub struct MetadataGatewayClient {
@@ -1386,7 +1387,8 @@ impl MetadataGatewayClient {
                     "metadata gateway request failed after re-enrollment"
                 );
                 return Err(AppError::Repository(format!(
-                    "metadata gateway request failed ({retry_status})"
+                    "metadata gateway request failed ({retry_status}): {}",
+                    preview.escaped_text()
                 )));
             }
             let retry_text = retry_resp
@@ -1410,7 +1412,8 @@ impl MetadataGatewayClient {
                 "metadata gateway request failed"
             );
             return Err(AppError::Repository(format!(
-                "metadata gateway request failed ({status})"
+                "metadata gateway request failed ({status}): {}",
+                preview.escaped_text()
             )));
         }
 
@@ -2542,6 +2545,38 @@ mod tests {
             .get_metadata_bulk(&[101], &[], "eng")
             .await
             .expect("alias-shaped metadataBulk response should fall back");
+
+        assert_eq!(*counts.lock().expect("count lock"), (1, 1));
+    }
+
+    #[tokio::test]
+    async fn get_metadata_bulk_falls_back_on_unsupported_operation_response() {
+        let server = MockServer::start().await;
+        let counts = Arc::new(Mutex::new((0usize, 0usize)));
+        let counts_for_mock = Arc::clone(&counts);
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .respond_with(move |request: &Request| {
+                let body = String::from_utf8_lossy(&request.body);
+                let mut counts = counts_for_mock.lock().expect("count lock");
+                if body.contains("metadataBulk") {
+                    counts.0 += 1;
+                    ResponseTemplate::new(400)
+                        .set_body_json(json!({ "error": "unsupported GraphQL operation" }))
+                } else {
+                    counts.1 += 1;
+                    ResponseTemplate::new(200).set_body_json(bulk_alias_payload())
+                }
+            })
+            .expect(2)
+            .mount(&server)
+            .await;
+        let client = unsigned_gateway_client(format!("{}/graphql", server.uri()));
+
+        client
+            .get_metadata_bulk(&[101], &[], "eng")
+            .await
+            .expect("unsupported metadataBulk operation should fall back");
 
         assert_eq!(*counts.lock().expect("count lock"), (1, 1));
     }

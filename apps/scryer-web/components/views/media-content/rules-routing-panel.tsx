@@ -75,11 +75,11 @@ export const RulesRoutingPanel = React.memo(function RulesRoutingPanel({
                     <TableCell className="text-center">{rule.priority}</TableCell>
                     <TableCell className="text-center">
                       {isGlobal ? (
-                        <span className="rounded bg-blue-900/40 px-1.5 py-0.5 text-xs text-blue-300">
+                        <span className="rounded bg-[var(--scry-info-bg)] px-1.5 py-0.5 text-xs text-[var(--scry-info-text)]">
                           {t("settings.ruleGlobal")}
                         </span>
                       ) : isEnabledForFacet ? (
-                        <span className="rounded bg-emerald-900/40 px-1.5 py-0.5 text-xs text-emerald-300">
+                        <span className="rounded bg-[var(--scry-success-bg)] px-1.5 py-0.5 text-xs text-[var(--scry-success-text)]">
                           {t("label.enabled")}
                         </span>
                       ) : (
@@ -102,7 +102,7 @@ export const RulesRoutingPanel = React.memo(function RulesRoutingPanel({
                           className={
                             isEnabledForFacet
                               ? "border-[var(--scry-danger-border)] bg-[var(--scry-danger-bg)] text-[var(--scry-danger-text)] hover:bg-[var(--scry-danger-bg-strong)] hover:text-[var(--scry-danger-text)]"
-                              : "border-emerald-300/70 dark:border-emerald-700/70 bg-emerald-100 dark:bg-emerald-900/60 text-emerald-800 dark:text-emerald-100 hover:bg-emerald-200 dark:hover:bg-emerald-800/80"
+                              : "border-[var(--scry-success-border)] bg-[var(--scry-success-bg)] text-[var(--scry-success-text)] hover:border-[var(--scry-success-border-strong)] hover:bg-[var(--scry-success-bg-strong)]"
                           }
                         >
                           <Power className="mr-1 h-3.5 w-3.5" />

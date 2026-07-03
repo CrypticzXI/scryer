@@ -517,45 +517,6 @@ impl AppUseCase {
         })
     }
 }
-impl AppUseCase {
-    /// Re-fetch metadata from SMG for all monitored series/anime titles.
-    /// This updates episode air dates (TBA → actual), adds newly announced
-    /// episodes, and refreshes other metadata fields.
-    pub(crate) async fn run_metadata_refresh_job(&self) -> AppResult<u32> {
-        let titles = match self.services.catalog.titles.list(None, None).await {
-            Ok(t) => t,
-            Err(err) => {
-                warn!(error = %err, "metadata refresh: failed to list titles");
-                return Err(err);
-            }
-        };
-
-        let targets = titles
-            .into_iter()
-            .filter(|title| title.monitored)
-            .filter(|title| {
-                self.facet_registry
-                    .get(&title.facet)
-                    .is_some_and(|handler| handler.has_episodes())
-            })
-            .map(|title| HydrationTarget {
-                title,
-                requested_tvdb_id: None,
-                sync_wanted_after_completion: false,
-                source: HydrationSource::Maintenance,
-            })
-            .collect::<Vec<_>>();
-
-        let refreshed = targets.len() as u32;
-        let _ = self.hydrate_titles_bulk(targets).await?;
-
-        if refreshed > 0 {
-            info!(count = refreshed, "periodic metadata refresh completed");
-        }
-
-        Ok(refreshed)
-    }
-}
 /// Extract a boolean from a `scryer:{prefix}:true/false` tag.
 /// Returns `None` when no matching tag exists (caller falls back to global setting).
 fn extract_tag_bool(tags: &[String], prefix: &str) -> Option<bool> {

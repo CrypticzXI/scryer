@@ -3,6 +3,7 @@ import { Clock, Eye, EyeOff, Plus, Send } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import type { Facet } from "@/lib/types/titles";
 import { TitlePosterSlot } from "@/components/title-poster-slot";
+import { ActionTooltip } from "@/components/ui/tooltip";
 import { useTranslate } from "@/lib/context/translate-context";
 import { facetById } from "@/lib/facets/registry";
 import { cn } from "@/lib/utils";
@@ -231,7 +232,7 @@ function TitleCardImpl({
         {monitored != null ? (
           <span className="flex h-[25px] w-[25px] items-center justify-center rounded-[7px] border border-white/10 bg-[rgba(4,6,12,0.82)]">
             {monitored ? (
-              <Eye className="h-3.5 w-3.5 text-emerald-400" />
+              <Eye className="h-3.5 w-3.5 text-[var(--scry-success-text-soft)]" />
             ) : (
               <EyeOff className="h-3.5 w-3.5 text-[var(--scry-faint2)]" />
             )}
@@ -248,15 +249,16 @@ function TitleCardImpl({
           )}
         >
           {requested ? (
-            <span
-              className={cn(actionVisualClass, "cursor-default")}
-              style={REQUESTED_ACTION_STYLE}
-              role="img"
-              aria-label={t("discovery.requested")}
-              title={t("discovery.requested")}
-            >
-              <Clock className={plusIconClass} />
-            </span>
+            <ActionTooltip content={t("discovery.requested")}>
+              <span
+                className={cn(actionVisualClass, "cursor-default")}
+                style={REQUESTED_ACTION_STYLE}
+                role="img"
+                aria-label={t("discovery.requested")}
+              >
+                <Clock className={plusIconClass} />
+              </span>
+            </ActionTooltip>
           ) : wholeCardActs ? (
             <span
               className={actionVisualClass}
@@ -271,26 +273,28 @@ function TitleCardImpl({
             </span>
           ) : (
             <>
-              <button
-                type="button"
-                onClick={onAdd}
-                className={actionButtonClass}
-                style={ACCENT_ACTION_STYLE}
-                title={t("discovery.add")}
-                aria-label={`${t("discovery.add")}: ${title}`}
-              >
-                <Plus className={plusIconClass} />
-              </button>
-              <button
-                type="button"
-                onClick={onRequest}
-                className={actionButtonClass}
-                style={ACCENT_ACTION_STYLE}
-                title={t("discovery.request")}
-                aria-label={`${t("discovery.request")}: ${title}`}
-              >
-                <Send className={sendIconClass} />
-              </button>
+              <ActionTooltip content={t("discovery.add")}>
+                <button
+                  type="button"
+                  onClick={onAdd}
+                  className={actionButtonClass}
+                  style={ACCENT_ACTION_STYLE}
+                  aria-label={`${t("discovery.add")}: ${title}`}
+                >
+                  <Plus className={plusIconClass} />
+                </button>
+              </ActionTooltip>
+              <ActionTooltip content={t("discovery.request")}>
+                <button
+                  type="button"
+                  onClick={onRequest}
+                  className={actionButtonClass}
+                  style={ACCENT_ACTION_STYLE}
+                  aria-label={`${t("discovery.request")}: ${title}`}
+                >
+                  <Send className={sendIconClass} />
+                </button>
+              </ActionTooltip>
             </>
           )}
         </div>

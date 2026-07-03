@@ -181,7 +181,7 @@ export function ExternalSubtitleSection({
               >
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div className="flex flex-wrap items-center gap-2">
-                    <span className="rounded-full border border-sky-500/30 bg-sky-500/15 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-sky-700 dark:text-sky-300">
+                    <span className="rounded-full border border-[var(--scry-info-border)] bg-[var(--scry-info-bg)] px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-[var(--scry-info-text)]">
                       {download.language}
                     </span>
                     {download.provider ? (
@@ -190,26 +190,26 @@ export function ExternalSubtitleSection({
                       </span>
                     ) : null}
                     {download.sourceKind === "discovered" ? (
-                      <span className="rounded-full border border-emerald-500/30 bg-emerald-500/15 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 dark:text-emerald-300">
+                      <span className="rounded-full border border-[var(--scry-success-border)] bg-[var(--scry-success-bg)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--scry-success-text)]">
                         {t("subtitle.onDisk")}
                       </span>
                     ) : null}
                     {download.synced ? (
                       <SubtitleFlag
                         label={t("subtitle.synced")}
-                        className="bg-emerald-500/15 text-emerald-700 dark:text-emerald-300"
+                        className="bg-[var(--scry-success-bg)] text-[var(--scry-success-text)]"
                       />
                     ) : null}
                     {download.hearingImpaired ? (
                       <SubtitleFlag
                         label={t("subtitle.hearingImpaired")}
-                        className="bg-amber-500/20 text-amber-700 dark:text-amber-300"
+                        className="bg-[var(--scry-warning-bg-strong)] text-[var(--scry-warning-text)]"
                       />
                     ) : null}
                     {download.forced ? (
                       <SubtitleFlag
                         label={t("subtitle.forced")}
-                        className="bg-purple-500/20 text-purple-700 dark:text-purple-300"
+                        className="bg-[rgba(var(--scry-accent-rgb),0.2)] text-[var(--scry-accent-text)]"
                       />
                     ) : null}
                     {download.aiTranslated ? (

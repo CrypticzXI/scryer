@@ -1951,7 +1951,7 @@ function AuthenticatedHomePage({
                             <Suspense fallback={<ViewLoadingFallback />}>
                               {settingsStepUpPolicyLoadFailed ? (
                                 <div className="mx-auto flex min-h-[360px] w-full max-w-md flex-col items-center justify-center gap-3 px-6 py-12 text-center">
-                                  <div className="flex h-12 w-12 items-center justify-center rounded-[14px] border border-[var(--scry-border2)] bg-[var(--scry-chip)] text-amber-500 shadow-[0_12px_28px_rgba(2,6,23,0.12)]">
+                                  <div className="flex h-12 w-12 items-center justify-center rounded-[14px] border border-[var(--scry-warning-border)] bg-[var(--scry-warning-bg)] text-[var(--scry-warning-text)] shadow-[0_12px_28px_rgba(2,6,23,0.12)]">
                                     <AlertTriangle
                                       className="h-6 w-6"
                                       aria-hidden="true"

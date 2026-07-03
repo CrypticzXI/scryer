@@ -250,6 +250,7 @@ export function LibraryScanProgressProvider({
       <Toaster
         position="bottom-right"
         duration={10000}
+        expand
         visibleToasts={MAX_VISIBLE_GENERAL_TOASTS}
       />
     </LibraryScanProgressContext.Provider>

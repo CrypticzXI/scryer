@@ -46,9 +46,9 @@ type EventMeta = {
 const eventMeta: Record<string, EventMeta> = {
   grabbed: {
     icon: ArrowDownToLine,
-    iconClassName: "text-sky-400",
+    iconClassName: "text-[var(--scry-info-text-soft)]",
     labelKey: "history.grabbed",
-    badgeClassName: "border-sky-500/40 bg-sky-500/10 text-sky-200",
+    badgeClassName: "border-[var(--scry-info-border)] bg-[var(--scry-info-bg)] text-[var(--scry-info-text)]",
   },
   download_failed: {
     icon: AlertTriangle,
@@ -58,15 +58,15 @@ const eventMeta: Record<string, EventMeta> = {
   },
   blocklisted: {
     icon: Ban,
-    iconClassName: "text-amber-400",
+    iconClassName: "text-[var(--scry-warning-text)]",
     labelKey: "history.blocklisted",
-    badgeClassName: "border-amber-500/40 bg-amber-500/10 text-amber-200",
+    badgeClassName: "border-[var(--scry-warning-border)] bg-[var(--scry-warning-bg)] text-[var(--scry-warning-text)]",
   },
   imported: {
     icon: HardDrive,
-    iconClassName: "text-emerald-400",
+    iconClassName: "text-[var(--scry-success-text-soft)]",
     labelKey: "history.imported",
-    badgeClassName: "border-emerald-500/40 bg-emerald-500/10 text-emerald-200",
+    badgeClassName: "border-[var(--scry-success-border)] bg-[var(--scry-success-bg)] text-[var(--scry-success-text)]",
   },
   import_failed: {
     icon: XCircle,
@@ -76,21 +76,21 @@ const eventMeta: Record<string, EventMeta> = {
   },
   import_skipped: {
     icon: SkipForward,
-    iconClassName: "text-amber-400",
+    iconClassName: "text-[var(--scry-warning-text)]",
     labelKey: "history.importSkipped",
-    badgeClassName: "border-amber-500/40 bg-amber-500/10 text-amber-200",
+    badgeClassName: "border-[var(--scry-warning-border)] bg-[var(--scry-warning-bg)] text-[var(--scry-warning-text)]",
   },
   file_upgraded: {
     icon: Replace,
-    iconClassName: "text-emerald-400",
+    iconClassName: "text-[var(--scry-success-text-soft)]",
     labelKey: "history.fileUpgraded",
-    badgeClassName: "border-emerald-500/40 bg-emerald-500/10 text-emerald-200",
+    badgeClassName: "border-[var(--scry-success-border)] bg-[var(--scry-success-bg)] text-[var(--scry-success-text)]",
   },
   file_recycled: {
     icon: ArchiveRestore,
-    iconClassName: "text-amber-400",
+    iconClassName: "text-[var(--scry-warning-text)]",
     labelKey: "history.fileRecycled",
-    badgeClassName: "border-amber-500/40 bg-amber-500/10 text-amber-200",
+    badgeClassName: "border-[var(--scry-warning-border)] bg-[var(--scry-warning-bg)] text-[var(--scry-warning-text)]",
   },
   file_deleted: {
     icon: Trash2,
@@ -100,15 +100,15 @@ const eventMeta: Record<string, EventMeta> = {
   },
   file_renamed: {
     icon: FileEdit,
-    iconClassName: "text-cyan-400",
+    iconClassName: "text-[var(--scry-info-text-soft)]",
     labelKey: "history.fileRenamed",
-    badgeClassName: "border-cyan-500/40 bg-cyan-500/10 text-cyan-200",
+    badgeClassName: "border-[var(--scry-info-border)] bg-[var(--scry-info-bg)] text-[var(--scry-info-text)]",
   },
   rematched: {
     icon: RefreshCcw,
-    iconClassName: "text-violet-400",
+    iconClassName: "text-[var(--scry-accent-text)]",
     labelKey: "history.rematched",
-    badgeClassName: "border-violet-500/40 bg-violet-500/10 text-violet-200",
+    badgeClassName: "border-[rgba(var(--scry-accent-rgb),0.4)] bg-[rgba(var(--scry-accent-rgb),0.1)] text-[var(--scry-accent-text)]",
   },
 };
 

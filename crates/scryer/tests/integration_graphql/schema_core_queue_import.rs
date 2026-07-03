@@ -520,7 +520,14 @@ async fn graphql_introspection_lists_title_fields() {
         .collect();
     assert_eq!(
         title_catalog_fields,
-        vec!["items", "limit", "offset", "hasMore", "totalCount"]
+        vec![
+            "items",
+            "limit",
+            "offset",
+            "hasMore",
+            "totalCount",
+            "filterCounts"
+        ]
     );
     let subscription_fields = body["data"]["subscriptionRoot"]["fields"]
         .as_array()

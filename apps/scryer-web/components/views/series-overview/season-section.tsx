@@ -8,13 +8,8 @@ import {
   Zap,
 } from "lucide-react";
 import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
-import {
   Table,
+  TableActionsHead,
   TableBody,
   TableHead,
   TableHeader,
@@ -261,9 +256,9 @@ export function SeasonSection({
                 "inline-flex size-6 shrink-0 items-center justify-center rounded transition-colors",
                 seasonToggling && "opacity-50",
                 seasonCheckedState === true
-                  ? "text-emerald-600 dark:text-emerald-300"
+                  ? "text-[var(--scry-success-text-soft)]"
                   : seasonCheckedState === "indeterminate"
-                    ? "text-amber-500 dark:text-amber-400"
+                    ? "text-[var(--scry-warning-text)]"
                     : "text-muted-foreground/60",
               )}
               onClick={(event) => {
@@ -306,35 +301,27 @@ export function SeasonSection({
               />
             ) : null}
             {onRunSeasonSearch ? (
-              <TooltipProvider>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <span>
-                      <EpisodeTableActionButton
-                        id={seriesOverviewSeasonSearchId(collection.id)}
-                        tone="auto"
-                        aria-label={t("series.searchSeason")}
-                        showTitleAttribute={false}
-                        disabled={seasonSearchLoading === true}
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          onRunSeasonSearch();
-                        }}
-                        label={t("series.searchSeason")}
-                      >
-                        {seasonSearchLoading === true ? (
-                          <Loader2 className="h-4 w-4 animate-spin" />
-                        ) : (
-                          <Zap className="h-4 w-4" />
-                        )}
-                      </EpisodeTableActionButton>
-                    </span>
-                  </TooltipTrigger>
-                  <TooltipContent side="left" sideOffset={8} className="w-auto text-left">
-                    {t("help.seasonSearchTooltip")}
-                  </TooltipContent>
-                </Tooltip>
-              </TooltipProvider>
+              <EpisodeTableActionButton
+                id={seriesOverviewSeasonSearchId(collection.id)}
+                tone="auto"
+                aria-label={t("series.searchSeason")}
+                showTitleAttribute={false}
+                disabled={seasonSearchLoading === true}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onRunSeasonSearch();
+                }}
+                label={t("series.searchSeason")}
+                tooltip={t("help.seasonSearchTooltip")}
+                tooltipSide="left"
+                tooltipClassName="w-auto text-left"
+              >
+                {seasonSearchLoading === true ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Zap className="h-4 w-4" />
+                )}
+              </EpisodeTableActionButton>
             ) : null}
           </div>
         </div>
@@ -398,16 +385,16 @@ export function SeasonSection({
                 </div>
               </div>
             ) : (
-              <div className={cn(showCollectionHeader && "border-t border-border", "overflow-x-auto")}>
-                <Table className="min-w-[672px]">
+              <div className={cn(showCollectionHeader && "border-t border-border")}>
+                <Table overflow="clip" layout="fixed" density="dense">
                   <TableHeader>
                     <TableRow>
                       <TableHead className="w-10 text-center" />
                       <TableHead className="w-12 text-center">{t("episode.numberLabel")}</TableHead>
                       <TableHead>{t("label.title")}</TableHead>
-                      <TableHead className="w-40">{t("episode.airDate")}</TableHead>
+                      <TableHead className="w-44 text-center">{t("episode.airDate")}</TableHead>
                       <TableHead className="w-32 text-center">{t("episode.quality")}</TableHead>
-                      <TableHead className="w-24 text-right">{t("label.actions")}</TableHead>
+                      <TableActionsHead className="w-28">{t("label.actions")}</TableActionsHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>

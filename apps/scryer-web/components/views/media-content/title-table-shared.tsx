@@ -63,11 +63,16 @@ export const TITLE_TABLE_HEADER_CELL_CLASS =
   "text-[11px] font-bold uppercase tracking-[0.05em] text-[var(--scry-faint2)]";
 
 export const TITLE_TABLE_ROW_CLASS =
-  "border-b border-[var(--scry-line2)] transition-colors hover:bg-[var(--scry-hover)]";
+  "border-b border-[var(--scry-line2)] transition-colors hover:bg-[var(--scry-rowHover)]";
 
 export const TITLE_TABLE_ACTION_BUTTON_CLASS = "h-9 w-9 rounded-[8px]";
 
 export const COMPACT_TITLE_TABLE_ACTION_BUTTON_CLASS = "size-7 rounded-[7px]";
+
+export const TITLE_TABLE_INTERACTIVE_PANEL_ESTIMATED_HEIGHT = 448;
+
+export const TITLE_TABLE_INTERACTIVE_PANEL_BODY_CLASS =
+  "max-h-[min(28rem,calc(100vh-14rem))] overflow-y-auto overscroll-contain px-4 py-3";
 
 export type TitleTableSortDirection = "asc" | "desc";
 
@@ -259,8 +264,8 @@ function normalizeEpisodeProgressCounts(item: TitleRecord) {
 function episodeProgressIndicatorClass(item: TitleRecord, percent: number) {
   if (percent >= 100) {
     return item.contentStatus?.trim().toLowerCase() === "ended"
-      ? "bg-emerald-600 dark:bg-emerald-600"
-      : "bg-sky-600 dark:bg-sky-500";
+      ? "bg-[var(--scry-success-solid)]"
+      : "bg-[var(--scry-info-solid)]";
   }
 
   const missingMonitoredEpisodes =
@@ -278,7 +283,7 @@ function collectionEpisodeProgressIndicatorClass(
   percent: number,
 ) {
   if (percent >= 100) {
-    return "bg-emerald-600 dark:bg-emerald-600";
+    return "bg-[var(--scry-success-solid)]";
   }
 
   return missingMonitoredEpisodes
@@ -507,14 +512,14 @@ export function StatusBadge({
   }
   if (normalized === "upcoming") {
     return (
-      <span className="rounded bg-blue-900/50 px-2 py-0.5 text-xs text-blue-300">
+      <span className="rounded bg-[var(--scry-info-bg-strong)] px-2 py-0.5 text-xs text-[var(--scry-info-text)]">
         {t("title.upcoming")}
       </span>
     );
   }
   if (normalized === "continuing") {
     return (
-      <span className="rounded bg-emerald-900/50 px-2 py-0.5 text-xs text-emerald-300">
+      <span className="rounded bg-[var(--scry-success-bg-strong)] px-2 py-0.5 text-xs text-[var(--scry-success-text)]">
         {t("title.continuing")}
       </span>
     );

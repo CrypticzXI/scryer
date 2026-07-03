@@ -82,7 +82,7 @@ export function ActivityQueueDetailsPanel({
   return (
     <div
       id={detailId}
-      className="rounded-lg border border-amber-500/25 bg-amber-500/5 p-3"
+      className="rounded-lg border border-[var(--scry-warning-border)] bg-[var(--scry-warning-bg)] p-3"
     >
       <div className="grid gap-4 md:grid-cols-2">
         <div>

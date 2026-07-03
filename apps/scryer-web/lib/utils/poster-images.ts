@@ -4,6 +4,12 @@ export type LocalBackdropVariant = "original" | "w1280";
 const LOCAL_TITLE_POSTER_PATH_RE = /^(.*\/images\/titles\/[^/]+\/poster\/)(original|w500|w250|w70)$/;
 const LOCAL_TITLE_BACKDROP_PATH_RE = /^(.*\/images\/titles\/[^/]+\/fanart\/)(original|w\d+)$/;
 const TMDB_IMAGE_PATH_RE = /^(\/t\/p\/)(original|w\d+)(\/.+)$/;
+const TMDB_POSTER_VARIANT_BY_LOCAL_VARIANT: Record<LocalPosterVariant, string> = {
+  original: "original",
+  w500: "w500",
+  w250: "w300",
+  w70: "w92",
+};
 
 export function selectPosterVariantUrl(
   posterUrl: string | null | undefined,
@@ -16,20 +22,37 @@ export function selectPosterVariantUrl(
   try {
     const parsed = new URL(posterUrl, "http://scryer.local");
     const match = parsed.pathname.match(LOCAL_TITLE_POSTER_PATH_RE);
-    if (!match) {
+    if (match) {
+      const [, prefix, currentVariant] = match;
+      if (currentVariant === "original" || currentVariant === desiredVariant) {
+        return posterUrl;
+      }
+
+      parsed.pathname = `${prefix}${desiredVariant}`;
+      parsed.searchParams.delete("v");
+      return isRelativeUrl(posterUrl)
+        ? `${parsed.pathname}${parsed.search}${parsed.hash}`
+        : parsed.toString();
+    }
+
+    if (parsed.hostname !== "image.tmdb.org") {
       return posterUrl;
     }
 
-    const [, prefix, currentVariant] = match;
-    if (currentVariant === "original" || currentVariant === desiredVariant) {
+    const tmdbMatch = parsed.pathname.match(TMDB_IMAGE_PATH_RE);
+    if (!tmdbMatch) {
       return posterUrl;
     }
 
-    parsed.pathname = `${prefix}${desiredVariant}`;
-    parsed.searchParams.delete("v");
-    return isRelativeUrl(posterUrl)
-      ? `${parsed.pathname}${parsed.search}${parsed.hash}`
-      : parsed.toString();
+    const [, prefix, currentVariant, suffix] = tmdbMatch;
+    const desiredTmdbVariant =
+      TMDB_POSTER_VARIANT_BY_LOCAL_VARIANT[desiredVariant];
+    if (currentVariant === desiredTmdbVariant) {
+      return posterUrl;
+    }
+
+    parsed.pathname = `${prefix}${desiredTmdbVariant}${suffix}`;
+    return parsed.toString();
   } catch {
     return posterUrl;
   }

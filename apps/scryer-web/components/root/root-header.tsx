@@ -1295,13 +1295,13 @@ export const RootHeader = React.memo(function RootHeader({
             </div>
           ) : null}
           <div className="relative flex min-w-0 flex-1 items-center gap-3">
-            <div ref={searchShellRef} className="relative w-full max-w-[560px]">
+            <div ref={searchShellRef} className="relative w-full max-w-[660px]">
               {isMobile ? (
                 <button
                   id="global-search-mobile-trigger"
                   ref={searchTriggerRef}
                   type="button"
-                  className="relative flex h-10 w-full items-center gap-3 rounded-[11px] border border-[var(--scry-border2)] bg-[var(--scry-bg)] py-0 pl-10 pr-3 text-left text-[13.5px] text-[var(--scry-faint)] shadow-none transition active:bg-accent/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/25"
+                  className="relative flex h-11 w-full items-center gap-3 overflow-hidden rounded-[13px] bg-[linear-gradient(135deg,rgba(var(--scry-accent-rgb),1),rgba(var(--scry-accent-rgb),0.48),rgba(var(--scry-accent-rgb),0.96))] py-0 pl-11 pr-3 text-left text-[15px] font-medium text-[var(--scry-ink2)] shadow-[0_0_0_1px_rgba(var(--scry-accent-rgb),0.16),0_10px_24px_rgba(var(--scry-accent-rgb),0.12)] transition before:pointer-events-none before:absolute before:inset-[2px] before:rounded-[11px] before:bg-[var(--scry-bg)] before:content-[''] active:shadow-[0_0_0_1px_rgba(var(--scry-accent-rgb),0.28),0_12px_28px_rgba(var(--scry-accent-rgb),0.16)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--scry-accent-ring)]"
                   onClick={() => openGlobalSearchPanel(true)}
                   aria-label={t("search.title")}
                   aria-haspopup="dialog"
@@ -1309,8 +1309,8 @@ export const RootHeader = React.memo(function RootHeader({
                   aria-controls="mobile-global-search-panel"
                   aria-keyshortcuts="Meta+K Control+K /"
                 >
-                  <Search className="absolute left-3.5 top-1/2 h-[17px] w-[17px] -translate-y-1/2 shrink-0 text-[var(--scry-faint2)]" />
-                  <span className="min-w-0 flex-1 truncate">
+                  <Search className="absolute left-4 top-1/2 z-10 h-5 w-5 -translate-y-1/2 shrink-0 text-primary" />
+                  <span className="relative z-10 min-w-0 flex-1 truncate">
                     {globalSearch.trim() || searchTriggerPlaceholder}
                   </span>
                 </button>
@@ -1320,9 +1320,9 @@ export const RootHeader = React.memo(function RootHeader({
                   ref={searchTriggerRef}
                   type="button"
                   className={cn(
-                    "relative flex h-10 w-full items-center gap-3 rounded-[11px] border border-[var(--scry-border2)] bg-[var(--scry-bg)] py-0 pl-10 pr-3 text-left text-[13.5px] text-[var(--scry-faint)] shadow-none transition hover:border-[var(--scry-bhover2)] hover:text-[var(--scry-muted)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/35",
+                    "relative flex h-12 w-full items-center gap-3 overflow-hidden rounded-[13px] bg-[linear-gradient(135deg,rgba(var(--scry-accent-rgb),1),rgba(var(--scry-accent-rgb),0.48),rgba(var(--scry-accent-rgb),0.96))] py-0 pl-12 pr-4 text-left text-[15px] font-medium text-[var(--scry-ink2)] shadow-[0_0_0_1px_rgba(var(--scry-accent-rgb),0.16),0_12px_28px_rgba(var(--scry-accent-rgb),0.12)] transition before:pointer-events-none before:absolute before:inset-[2px] before:rounded-[11px] before:bg-[var(--scry-bg)] before:content-[''] hover:shadow-[0_0_0_1px_rgba(var(--scry-accent-rgb),0.28),0_14px_32px_rgba(var(--scry-accent-rgb),0.16)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--scry-accent-ring)]",
                     isGlobalSearchPanelOpen
-                      ? "border-[var(--scry-baccent)] bg-[var(--scry-hover)] text-[var(--scry-muted)] shadow-[0_0_0_1px_rgba(var(--scry-accent-rgb),0.10),0_10px_24px_rgba(0,0,0,0.18)]"
+                      ? "before:bg-[rgba(var(--scry-accent-rgb),0.08)] shadow-[0_0_0_1px_rgba(var(--scry-accent-rgb),0.30),0_16px_36px_rgba(var(--scry-accent-rgb),0.18)]"
                       : null,
                   )}
                   onClick={() => openGlobalSearchPanel(true)}
@@ -1332,11 +1332,11 @@ export const RootHeader = React.memo(function RootHeader({
                   aria-controls="global-search-panel"
                   aria-keyshortcuts="Meta+K Control+K /"
                 >
-                  <Search className="absolute left-3.5 top-1/2 h-[17px] w-[17px] -translate-y-1/2 shrink-0 text-[var(--scry-faint2)]" />
-                  <span className="min-w-0 flex-1 truncate">
+                  <Search className="absolute left-4 top-1/2 z-10 h-5 w-5 -translate-y-1/2 shrink-0 text-primary" />
+                  <span className="relative z-10 min-w-0 flex-1 truncate">
                     {globalSearch.trim() || searchTriggerPlaceholder}
                   </span>
-                  <kbd className="rounded-md border border-[var(--scry-kbdbd)] bg-[var(--scry-kbdbg)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--scry-muted)]">
+                  <kbd className="relative z-10 rounded-md border border-primary/45 bg-primary/10 px-2 py-0.5 text-[11px] font-semibold text-primary">
                     {searchShortcutHint}
                   </kbd>
                 </button>
@@ -1364,55 +1364,57 @@ export const RootHeader = React.memo(function RootHeader({
                         onKeyDown={handleSearchPanelKeyDown}
                       >
                         <div className="flex items-center gap-[13px] border-b border-[var(--scry-border)] px-[18px] py-4">
-                          <Search className="h-[21px] w-[21px] shrink-0 text-[var(--scry-accent-ring)]" />
-                          <div className="min-w-0 flex-1">
-                            <Input
-                              id="global-search-input"
-                              ref={globalSearchInputRef}
-                              autoFocus
-                              value={globalSearch}
-                              onChange={handleSearchChange}
-                              onKeyDown={handleDesktopSearchKeyDown}
-                              data-ui="global-search"
-                              className="h-8 border-0 bg-transparent px-0 text-[17px] text-[var(--scry-ink2)] shadow-none placeholder:text-[17px] placeholder:text-[var(--scry-muted3)] focus-visible:ring-0"
-                              placeholder={searchOverlayPlaceholder}
-                              aria-label={searchOverlayPlaceholder}
-                              aria-controls="global-search-results-panel"
-                              aria-describedby="global-search-description global-search-status"
-                            />
-                            <p
-                              id="global-search-description"
-                              className="sr-only"
-                            >
-                              {globalSearch.trim()
-                                ? t("search.subtitleWithQuery", {
-                                    query: globalSearch.trim(),
-                                  })
-                                : searchSubtitle}
-                            </p>
-                            <p
-                              id="global-search-status"
-                              className="sr-only"
-                              role="status"
-                              aria-live="polite"
-                              aria-atomic="true"
-                            >
-                              {searchStatusLabel}
-                            </p>
+                          <div className="relative flex h-12 min-w-0 flex-1 items-center gap-3 rounded-[14px] border-2 border-primary/70 bg-[rgba(var(--scry-accent-rgb),0.055)] px-4 shadow-[0_0_0_1px_rgba(var(--scry-accent-rgb),0.10),0_12px_28px_rgba(var(--scry-accent-rgb),0.08)]">
+                            <Search className="h-[22px] w-[22px] shrink-0 text-primary" />
+                            <div className="min-w-0 flex-1">
+                              <Input
+                                id="global-search-input"
+                                ref={globalSearchInputRef}
+                                autoFocus
+                                value={globalSearch}
+                                onChange={handleSearchChange}
+                                onKeyDown={handleDesktopSearchKeyDown}
+                                data-ui="global-search"
+                                className="h-10 border-0 bg-transparent px-0 text-[18px] font-medium text-[var(--scry-ink2)] shadow-none placeholder:text-[18px] placeholder:font-normal placeholder:text-[var(--scry-muted3)] focus-visible:ring-0"
+                                placeholder={searchOverlayPlaceholder}
+                                aria-label={searchOverlayPlaceholder}
+                                aria-controls="global-search-results-panel"
+                                aria-describedby="global-search-description global-search-status"
+                              />
+                              <p
+                                id="global-search-description"
+                                className="sr-only"
+                              >
+                                {globalSearch.trim()
+                                  ? t("search.subtitleWithQuery", {
+                                      query: globalSearch.trim(),
+                                    })
+                                  : searchSubtitle}
+                              </p>
+                              <p
+                                id="global-search-status"
+                                className="sr-only"
+                                role="status"
+                                aria-live="polite"
+                                aria-atomic="true"
+                              >
+                                {searchStatusLabel}
+                              </p>
+                            </div>
+                            {globalSearch ? (
+                              <IconButton
+                                id="global-search-clear"
+                                type="button"
+                                label={t("label.clear")}
+                                appearance="ghost"
+                                className="h-[28px] w-[28px] shrink-0 rounded-[8px] bg-primary/10 text-primary"
+                                onClick={handleClearSearch}
+                              >
+                                <Eraser className="h-3.5 w-3.5" />
+                              </IconButton>
+                            ) : null}
                           </div>
-                          {globalSearch ? (
-                            <IconButton
-                              id="global-search-clear"
-                              type="button"
-                              label={t("label.clear")}
-                              appearance="ghost"
-                              className="h-[26px] w-[26px] shrink-0 rounded-[7px] bg-[var(--scry-kbdbg)]"
-                              onClick={handleClearSearch}
-                            >
-                              <Eraser className="h-3.5 w-3.5" />
-                            </IconButton>
-                          ) : null}
-                          <kbd className="rounded-[7px] border border-[var(--scry-kbdbd)] bg-[var(--scry-kbdbg)] px-2 py-1 text-[11px] font-medium text-[var(--scry-faint2)]">
+                          <kbd className="rounded-[7px] border border-primary/35 bg-primary/10 px-2 py-1 text-[11px] font-semibold text-primary">
                             ESC
                           </kbd>
                           <IconButton

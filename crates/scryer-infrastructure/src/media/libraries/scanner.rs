@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use scryer_application::filesystem_walk::{FilesystemWalker, WalkedDirectory};
 use scryer_application::{
     AppError, AppResult, LibraryDirectoryScanResult, LibraryFile, LibraryFileBatchReceiver,
-    LibraryScanner, source_signature_from_std_metadata, stored_paths::path_to_stored_string,
+    LibraryScanner, stored_paths::path_to_stored_string,
 };
 use scryer_domain::VIDEO_EXTENSIONS;
 use std::time::{Duration, Instant};
@@ -341,31 +341,25 @@ fn collect_directory_files_with_source_snapshot(
             continue;
         }
 
-        let (size_bytes, source_signature_scheme, source_signature_value) =
-            if include_source_snapshot {
-                let stat_started = Instant::now();
-                let metadata = stdfs::metadata(&path).ok();
-                *stat_elapsed = stat_elapsed.saturating_add(stat_started.elapsed());
+        let size_bytes = if include_source_snapshot {
+            let stat_started = Instant::now();
+            let metadata = stdfs::metadata(&path).ok();
+            *stat_elapsed = stat_elapsed.saturating_add(stat_started.elapsed());
 
-                let size_bytes = metadata
-                    .as_ref()
-                    .map(|metadata| i64::try_from(metadata.len()).unwrap_or(i64::MAX));
-                let (source_signature_scheme, source_signature_value) = metadata
-                    .as_ref()
-                    .and_then(source_signature_from_std_metadata)
-                    .map_or((None, None), |(scheme, value)| (Some(scheme), Some(value)));
-                (size_bytes, source_signature_scheme, source_signature_value)
-            } else {
-                (None, None, None)
-            };
+            metadata
+                .as_ref()
+                .map(|metadata| i64::try_from(metadata.len()).unwrap_or(i64::MAX))
+        } else {
+            None
+        };
 
         files.push(LibraryFile {
             path: path_to_stored_string(&path),
             display_name,
             nfo_path: None,
             size_bytes,
-            source_signature_scheme,
-            source_signature_value,
+            source_signature_scheme: None,
+            source_signature_value: None,
         });
     }
 

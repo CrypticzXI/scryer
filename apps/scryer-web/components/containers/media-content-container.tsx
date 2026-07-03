@@ -860,6 +860,9 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   const [selectedOverviewTitleId, setSelectedOverviewTitleId] = React.useState<
     string | null
   >(null);
+  const selectedOverviewTitleIdRef = React.useRef<string | null>(null);
+  const [selectedOverviewDetailTitle, setSelectedOverviewDetailTitle] =
+    React.useState<TitleRecord | null>(null);
   const [selectedOverviewDetailLoading, setSelectedOverviewDetailLoading] =
     React.useState(false);
   const [selectedOverviewBlocklistState, setSelectedOverviewBlocklistState] =
@@ -1252,8 +1255,16 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     if (routeOverviewPending && !routeOverviewTitleId) {
       return;
     }
+    selectedOverviewTitleIdRef.current = routeOverviewTitleId;
     setSelectedOverviewTitleId(routeOverviewTitleId);
   }, [routeOverviewPending, routeOverviewTitleId]);
+
+  React.useEffect(() => {
+    selectedOverviewTitleIdRef.current = selectedOverviewTitleId;
+    setSelectedOverviewDetailTitle((current) =>
+      current?.id === selectedOverviewTitleId ? current : null,
+    );
+  }, [selectedOverviewTitleId]);
 
   React.useEffect(() => {
     const visibleTitleIds = new Set(visibleTitles.map((title) => title.id));
@@ -2037,11 +2048,38 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
         return;
       }
 
-      setTitleContextTitles((current) => {
+      setSelectedOverviewDetailTitle((current) => {
+        if (
+          selectedOverviewTitleIdRef.current !== titleId &&
+          current?.id !== titleId
+        ) {
+          return current;
+        }
         if (!title) {
+          return current?.id === titleId ? null : current;
+        }
+        return current?.id === titleId
+          ? mergePreferLoadedImageFields(current, title)
+          : title;
+      });
+
+      setTitleContextTitles((current) => {
+        const existingIndex = current.findIndex((item) => item.id === titleId);
+        if (!title) {
+          if (existingIndex === -1) {
+            return current;
+          }
           return current.filter((item) => item.id !== titleId);
         }
-        return upsertCatalogTitleRecord(current, title);
+        if (existingIndex === -1) {
+          return current;
+        }
+        const next = [...current];
+        next[existingIndex] = mergePreferLoadedImageFields(
+          next[existingIndex],
+          title,
+        );
+        return next;
       });
 
       setMonitoredTitles((current) => {
@@ -2071,7 +2109,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
         }
 
         if (existingIndex === -1) {
-          next.push(title);
+          return current;
         } else {
           next[existingIndex] = mergePreferLoadedImageFields(
             next[existingIndex],
@@ -2300,19 +2338,33 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   );
 
   const selectedOverviewTitleForPanelHydration = React.useMemo(
-    () =>
-      selectedOverviewTitleId
-        ? (titleContextSourceTitles.find(
-            (title) => title.id === selectedOverviewTitleId,
-          ) ?? null)
-        : null,
-    [selectedOverviewTitleId, titleContextSourceTitles],
+    () => {
+      if (!selectedOverviewTitleId) {
+        return null;
+      }
+      return (
+        titleContextSourceTitles.find(
+          (title) => title.id === selectedOverviewTitleId,
+        ) ??
+        (selectedOverviewDetailTitle?.id === selectedOverviewTitleId
+          ? selectedOverviewDetailTitle
+          : null)
+      );
+    },
+    [
+      selectedOverviewDetailTitle,
+      selectedOverviewTitleId,
+      titleContextSourceTitles,
+    ],
   );
   const selectedPanelHydrationTitleId =
     selectedOverviewTitleForPanelHydration?.id ?? null;
   const selectedPanelHydrationIsRouteOverview =
     selectedPanelHydrationTitleId !== null &&
     selectedPanelHydrationTitleId === routeOverviewTitleId;
+  const selectedPanelHydrationHandledByRouteOverview =
+    selectedPanelHydrationIsRouteOverview &&
+    selectedOverviewTitleForPanelHydration?.facet !== "movie";
   const selectedPanelHydrationMetadataFetchedAt =
     selectedOverviewTitleForPanelHydration?.metadataFetchedAt ?? "";
   const selectedPanelHydrationCreatedAt =
@@ -2350,7 +2402,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
       if (
         !shouldLoadCatalogTitles ||
         !titleId ||
-        selectedPanelHydrationIsRouteOverview
+        selectedPanelHydrationHandledByRouteOverview
       ) {
         setSelectedOverviewExternalSubtitleState({
           titleId: null,
@@ -2376,7 +2428,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     },
     [
       loadSelectedOverviewExternalSubtitles,
-      selectedPanelHydrationIsRouteOverview,
+      selectedPanelHydrationHandledByRouteOverview,
       selectedPanelHydrationTitleId,
       shouldLoadCatalogTitles,
     ],
@@ -2386,7 +2438,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     if (
       !shouldLoadCatalogTitles ||
       !selectedPanelHydrationTitleId ||
-      selectedPanelHydrationIsRouteOverview
+      selectedPanelHydrationHandledByRouteOverview
     ) {
       selectedPanelHydrationKeyRef.current = null;
       return;
@@ -2463,7 +2515,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     selectedPanelHydrationCreatedAt,
     selectedPanelHydrationMetadataFetchedAt,
     selectedPanelHydrationTitleId,
-    selectedPanelHydrationIsRouteOverview,
+    selectedPanelHydrationHandledByRouteOverview,
     selectedPanelNeedsEpisodeDetails,
     selectedPanelNeedsPanelDetails,
     selectedOverviewTitleForPanelHydration,
@@ -2474,7 +2526,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     if (
       !shouldLoadCatalogTitles ||
       !selectedPanelHydrationTitleId ||
-      selectedPanelHydrationIsRouteOverview
+      selectedPanelHydrationHandledByRouteOverview
     ) {
       setSelectedOverviewExternalSubtitleState({ titleId: null, entries: [] });
       return;
@@ -2508,7 +2560,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     };
   }, [
     loadSelectedOverviewExternalSubtitles,
-    selectedPanelHydrationIsRouteOverview,
+    selectedPanelHydrationHandledByRouteOverview,
     selectedPanelHydrationTitleId,
     shouldLoadCatalogTitles,
   ]);
@@ -4305,6 +4357,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
           onOpenOverview,
           onCloseOverview,
           selectedOverviewTitleId,
+          selectedOverviewTitle: selectedOverviewTitleForPanelHydration,
           selectedOverviewDetailLoading,
           routeOverviewPending,
           routeOverviewEpisodeId,

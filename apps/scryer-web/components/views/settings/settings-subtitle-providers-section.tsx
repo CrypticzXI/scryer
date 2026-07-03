@@ -24,6 +24,8 @@ import {
 } from "@/components/ui/select";
 import {
   Table,
+  TableActionsCell,
+  TableActionsHead,
   TableBody,
   TableCell,
   TableHead,
@@ -78,6 +80,8 @@ const PROVIDER_PANEL_TITLE_CLASS =
   "text-[15px] font-semibold text-[var(--scry-ink2)]";
 const PROVIDER_PANEL_BODY_CLASS = "p-4 sm:p-5";
 const PROVIDER_MUTED_TEXT_CLASS = "text-[var(--scry-muted3)]";
+const PROVIDER_TABLE_HEADER_CELL_CLASS =
+  "text-center font-semibold text-[var(--scry-muted3)]";
 
 function looksLikeSecretConfigKey(key: string): boolean {
   const normalized = key.trim().toLowerCase();
@@ -149,7 +153,7 @@ function SubtitleProviderStatusCell({
     if (until > new Date()) {
       return (
         <span
-          className="text-yellow-600 dark:text-yellow-400"
+          className="text-[var(--scry-warning-text)]"
           title={provider.disabledUntil}
         >
           {t("settings.subtitleProviderDisabledUntil", {
@@ -503,16 +507,16 @@ export function SettingsSubtitleProvidersSection({
             {t("settings.existingSubtitleProviders")}
           </h2>
         </div>
-        <div className="overflow-x-auto">
-          <Table className="min-w-[920px]">
+        <div className="overflow-hidden">
+          <Table overflow="clip" layout="fixed" density="dense">
             <TableHeader>
               <TableRow className="border-[var(--scry-border3)] bg-[var(--scry-inset)] hover:bg-[var(--scry-inset)]">
-                <TableHead className={`font-semibold ${PROVIDER_MUTED_TEXT_CLASS}`}>{t("label.name")}</TableHead>
-                <TableHead className={`font-semibold ${PROVIDER_MUTED_TEXT_CLASS}`}>{t("settings.subtitleProviderType")}</TableHead>
-                <TableHead className={`text-center font-semibold ${PROVIDER_MUTED_TEXT_CLASS}`}>{t("label.enabled")}</TableHead>
-                <TableHead className={`font-semibold ${PROVIDER_MUTED_TEXT_CLASS}`}>{t("settings.subtitleProviderFacets")}</TableHead>
-                <TableHead className={`font-semibold ${PROVIDER_MUTED_TEXT_CLASS}`}>{t("settings.subtitleProviderStatus")}</TableHead>
-                <TableHead className={`text-right font-semibold ${PROVIDER_MUTED_TEXT_CLASS}`}>{t("label.actions")}</TableHead>
+                <TableHead className={`w-[24%] font-semibold ${PROVIDER_MUTED_TEXT_CLASS}`}>{t("label.name")}</TableHead>
+                <TableHead className={PROVIDER_TABLE_HEADER_CELL_CLASS}>{t("settings.subtitleProviderType")}</TableHead>
+                <TableHead className={`w-24 ${PROVIDER_TABLE_HEADER_CELL_CLASS}`}>{t("label.enabled")}</TableHead>
+                <TableHead className={PROVIDER_TABLE_HEADER_CELL_CLASS}>{t("settings.subtitleProviderFacets")}</TableHead>
+                <TableHead className={PROVIDER_TABLE_HEADER_CELL_CLASS}>{t("settings.subtitleProviderStatus")}</TableHead>
+                <TableActionsHead className="w-36">{t("label.actions")}</TableActionsHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -530,23 +534,23 @@ export function SettingsSubtitleProvidersSection({
                   <TableRow
                     key={provider.id}
                     id={selectorId("settings-subtitle-provider-row", provider.id)}
-                    className="border-[var(--scry-border3)] hover:bg-[var(--scry-hover)]"
+                    className="border-[var(--scry-border3)] hover:bg-[var(--scry-rowHover)]"
                   >
-                    <TableCell className="font-medium text-[var(--scry-ink2)]">{provider.name}</TableCell>
-                    <TableCell className="text-[var(--scry-ink2)]">{provider.providerType}</TableCell>
+                    <TableCell className="truncate font-medium text-[var(--scry-ink2)]">{provider.name}</TableCell>
+                    <TableCell className="text-center text-[var(--scry-ink2)]">{provider.providerType}</TableCell>
                     <TableCell className="text-center">
-                      <span className={provider.isEnabled ? "text-emerald-300" : PROVIDER_MUTED_TEXT_CLASS}>
+                      <span className={provider.isEnabled ? "text-[var(--scry-success-text-soft)]" : PROVIDER_MUTED_TEXT_CLASS}>
                         {provider.isEnabled ? t("label.enabled") : t("label.disabled")}
                       </span>
                     </TableCell>
-                    <TableCell>
+                    <TableCell className="text-center">
                       <SubtitleProviderFacetChips facets={provider.enabledFacets ?? []} />
                     </TableCell>
-                    <TableCell>
+                    <TableCell className="text-center">
                       <SubtitleProviderStatusCell provider={provider} />
                     </TableCell>
-                    <TableCell className="text-right">
-                      <div className="inline-flex items-center gap-2">
+                    <TableActionsCell className="w-36">
+                      <div className="inline-flex items-center justify-center gap-2">
                         <SubtitleProviderActionButton
                           id={selectorId("settings-subtitle-provider-edit", provider.id)}
                           label={t("label.edit")}
@@ -581,7 +585,7 @@ export function SettingsSubtitleProvidersSection({
                           <Trash2 className="h-4 w-4" />
                         </SubtitleProviderActionButton>
                       </div>
-                    </TableCell>
+                    </TableActionsCell>
                   </TableRow>
                 ))
               )}
@@ -699,9 +703,9 @@ export function SettingsSubtitleProvidersSection({
                 ))}
               </div>
             ) : normalizedProviderType ? (
-              <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-900 dark:text-amber-100">
+              <div className="rounded-lg border border-[var(--scry-warning-border)] bg-[var(--scry-warning-bg)] px-3 py-2 text-sm text-[var(--scry-warning-text)]">
                 <div className="flex items-start gap-2">
-                  <CircleAlert className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />
+                  <CircleAlert className="mt-0.5 h-4 w-4 shrink-0 text-[var(--scry-warning-text)]" />
                   <p>{t("settings.subtitleProviderUnknownType")}</p>
                 </div>
               </div>

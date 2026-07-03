@@ -24,6 +24,7 @@ import { TitlePosterSlot } from "@/components/title-poster-slot";
 import { SearchResultBuckets } from "@/components/common/release-search-results";
 import { releaseSupportsAdditionalFileQueue } from "@/lib/utils/release-queue-scope";
 import { Checkbox } from "@/components/ui/checkbox";
+import { ActionTooltip } from "@/components/ui/tooltip";
 import {
   TableBody,
   TableCell,
@@ -56,6 +57,8 @@ import {
   TITLE_TABLE_ACTION_BUTTON_CLASS,
   TITLE_TABLE_HEADER_CELL_CLASS,
   TITLE_TABLE_HEADER_ROW_CLASS,
+  TITLE_TABLE_INTERACTIVE_PANEL_BODY_CLASS,
+  TITLE_TABLE_INTERACTIVE_PANEL_ESTIMATED_HEIGHT,
   TITLE_TABLE_ROW_CLASS,
   DEFAULT_TITLE_TABLE_VISIBLE_COLUMNS,
   type TitleTableSortDirection,
@@ -254,12 +257,24 @@ export function TitleTable({
       readOverviewSavedScroll(location.pathname, scrollStorageKeySuffix) ?? 0,
     [location.pathname, scrollStorageKeySuffix],
   );
+  const expandedInteractiveRowSignature = React.useMemo(
+    () => Array.from(expandedInteractiveRows).sort().join("|"),
+    [expandedInteractiveRows],
+  );
 
   const titleVirtualizer = useVirtualizer({
     count: sortedTitles.length,
     getScrollElement: () => titleTableScrollRef.current,
     getItemKey: (index) => sortedTitles[index]?.id ?? index,
-    estimateSize: () => 100,
+    estimateSize: (index) => {
+      const titleId = sortedTitles[index]?.id;
+      return (
+        100 +
+        (titleId && expandedInteractiveRows.has(titleId)
+          ? TITLE_TABLE_INTERACTIVE_PANEL_ESTIMATED_HEIGHT
+          : 0)
+      );
+    },
     initialOffset: initialScrollOffset,
     overscan: 5,
   });
@@ -268,7 +283,7 @@ export function TitleTable({
     loading: titleLoading,
     rebuildKey: `${
       selectedPaneMode ? "selected-pane" : "full-table"
-    }:${visibleColumnSignature}`,
+    }:${visibleColumnSignature}:${expandedInteractiveRowSignature}`,
     scrollRef: titleTableScrollRef,
     titleVirtualizer,
   });
@@ -670,17 +685,18 @@ export function TitleTable({
           ) : null}
           {showMonitoredColumn ? (
             <TableCell className="text-center align-middle">
-              <span
-                className="inline-flex h-6 w-6 shrink-0 items-center justify-center"
-                title={`${t("title.table.monitored")}: ${item.name}`}
-                aria-label={`${t("title.table.monitored")}: ${item.name}`}
-              >
-                {item.monitored ? (
-                  <Eye className="size-[17px] text-emerald-600 dark:text-[#4ade80]" />
-                ) : (
-                  <EyeOff className="size-[17px] text-[var(--scry-faint2)]" />
-                )}
-              </span>
+              <ActionTooltip content={`${t("title.table.monitored")}: ${item.name}`}>
+                <span
+                  className="inline-flex h-6 w-6 shrink-0 items-center justify-center"
+                  aria-label={`${t("title.table.monitored")}: ${item.name}`}
+                >
+                  {item.monitored ? (
+                    <Eye className="size-[17px] text-[var(--scry-success-text-soft)]" />
+                  ) : (
+                    <EyeOff className="size-[17px] text-[var(--scry-faint2)]" />
+                  )}
+                </span>
+              </ActionTooltip>
             </TableCell>
           ) : null}
           {showQualityColumn ? (
@@ -732,7 +748,7 @@ export function TitleTable({
                     <Loader2
                       className={cn(
                         posterActionIconClassName,
-                        "animate-spin text-emerald-500",
+                        "animate-spin text-[var(--scry-accent-text)]",
                       )}
                     />
                   ) : (
@@ -804,7 +820,7 @@ export function TitleTable({
               colSpan={columnCount}
               className="border-t border-border bg-popover/40 p-0"
             >
-              <div className="px-4 py-3">
+              <div className={TITLE_TABLE_INTERACTIVE_PANEL_BODY_CLASS}>
                 <div className="mb-2 flex items-center justify-between gap-3">
                   <p className="text-sm text-card-foreground">
                     {t("nzb.searchResultsFor", { name: item.name })}
@@ -827,7 +843,7 @@ export function TitleTable({
                 </div>
                 {interactiveSearchLoading ? (
                   <div className="flex items-center gap-3 py-3">
-                    <Loader2 className="h-5 w-5 animate-spin text-emerald-500" />
+                    <Loader2 className="h-5 w-5 animate-spin text-[var(--scry-accent-text)]" />
                     <p className="text-sm text-muted-foreground">
                       {t("label.searching")}
                     </p>

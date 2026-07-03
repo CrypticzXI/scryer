@@ -747,7 +747,7 @@ where
     clippy::too_many_arguments,
     reason = "batched metadata resolution coordinates gateway, progress, and candidate state explicitly"
 )]
-pub(crate) async fn resolve_full_scan_metadata_batches<T, BuildStats, CandidateKeys>(
+pub(crate) async fn resolve_refresh_metadata_batches<T, BuildStats, CandidateKeys>(
     metadata_gateway: Arc<dyn MetadataGateway>,
     metadata_language: &str,
     coordinator: &LibraryScanCoordinator,

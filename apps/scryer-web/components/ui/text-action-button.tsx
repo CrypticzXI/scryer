@@ -41,7 +41,7 @@ function TextActionButton({
       type="button"
       variant="outline"
       size={size}
-      title={showTitleAttribute ? titleText : title}
+      title={showTitleAttribute ? titleText : undefined}
       className={cn(
         boxedTextActionButtonBaseClass,
         boxedActionButtonToneClass[tone],

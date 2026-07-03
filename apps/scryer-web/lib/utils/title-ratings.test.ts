@@ -60,3 +60,11 @@ test("MAL rating pill reuses the existing media-site logo", () => {
     assert.equal(info.logoSrc, "/media-sites/mal.svg");
   }
 });
+
+test("TVDB rating pill reuses the existing media-site logo", () => {
+  for (const source of ["tvdb", "thetvdb", "the-tvdb"]) {
+    const info = ratingSourceInfo(source);
+    assert.equal(info.label, "TVDB");
+    assert.equal(info.logoSrc, "/media-sites/tvdb.svg");
+  }
+});

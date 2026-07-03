@@ -130,7 +130,7 @@ function SearchResultRow({
   ) : null;
   const approvedBadge =
     !blocked && decision?.allowed ? (
-      <span className="inline-flex items-center gap-1 rounded-[6px] bg-emerald-500/15 px-[7px] py-px text-[10px] font-bold text-[#4ade80]">
+      <span className="inline-flex items-center gap-1 rounded-[6px] bg-[var(--scry-success-bg-strong)] px-[7px] py-px text-[10px] font-bold text-[var(--scry-success-text-soft)]">
         <Check className="h-2.5 w-2.5" />
         Approved
       </span>
@@ -146,19 +146,19 @@ function SearchResultRow({
   const parsedMetadata = result.parsedRelease
     ? [
         result.parsedRelease.detectedHdr
-          ? { label: "HDR", className: "bg-cyan-500/20 text-cyan-300" }
+          ? { label: "HDR", className: "bg-[var(--scry-info-bg-strong)] text-[var(--scry-info-text)]" }
           : null,
         result.parsedRelease.isDolbyVision
           ? {
               label: "Dolby Vision",
-              className: "bg-indigo-500/20 text-indigo-300",
+              className: "bg-[rgba(var(--scry-accent-rgb),0.2)] text-[var(--scry-accent-text)]",
             }
           : null,
         result.parsedRelease.isProperUpload
-          ? { label: "Proper", className: "bg-amber-500/20 text-amber-300" }
+          ? { label: "Proper", className: "bg-[var(--scry-warning-bg-strong)] text-[var(--scry-warning-text)]" }
           : null,
         result.parsedRelease.isRemux
-          ? { label: "Remux", className: "bg-violet-500/20 text-violet-300" }
+          ? { label: "Remux", className: "bg-[rgba(var(--scry-accent-rgb),0.2)] text-[var(--scry-accent-text)]" }
           : null,
         result.parsedRelease.isBdDisk
           ? { label: "BD", className: "bg-[var(--scry-danger-bg-strong)] text-[var(--scry-danger-text)]" }
@@ -167,7 +167,7 @@ function SearchResultRow({
           ? { label: "AI Enhanced", className: "bg-[var(--scry-danger-bg-strong)] text-[var(--scry-danger-text)]" }
           : null,
         result.parsedRelease.isAtmos
-          ? { label: "Atmos", className: "bg-purple-500/20 text-purple-300" }
+          ? { label: "Atmos", className: "bg-[var(--scry-info-bg-strong)] text-[var(--scry-info-text)]" }
           : null,
       ]
         .filter(Boolean)
@@ -245,8 +245,8 @@ function SearchResultRow({
   if (presentation === "selected-title") {
     const scoreToneClassName = decision
       ? decision.releaseScore < 0
-        ? "text-[#ef6a7a]"
-        : "text-[#4ade80]"
+        ? "text-[var(--scry-danger-text-soft)]"
+        : "text-[var(--scry-success-text-soft)]"
       : "text-[var(--scry-faint)]";
     const selectedTitleTags = [
       ...parsedBits.map((metadataBit, index) => ({
@@ -332,10 +332,10 @@ function SearchResultRow({
             onClick={handleQueueClick}
             disabled={queueDisabled}
             className={cn(
-              "h-[38px] justify-center gap-[7px] rounded-[10px] border-0 text-[12.5px] font-bold text-white shadow-[0_6px_16px_rgba(34,197,94,0.28)]",
+              "h-[38px] justify-center gap-[7px] rounded-[10px] border-0 text-[12.5px] font-bold text-[var(--scry-success-on-solid)] shadow-[0_6px_16px_rgba(var(--scry-success-rgb),0.28)]",
               queueButtonMuted
                 ? "border border-[var(--scry-border2)] bg-[var(--scry-soft)] text-[var(--scry-muted3)] shadow-none hover:bg-[var(--scry-soft)] hover:text-[var(--scry-muted3)]"
-                : "bg-[linear-gradient(135deg,#1f9d57,#22c55e)] hover:bg-[linear-gradient(135deg,#22b863,#2ad06a)]",
+                : "bg-[var(--scry-success-solid)] hover:bg-[var(--scry-success-solid-hover)]",
             )}
           >
             {queueRequested ? (
@@ -362,7 +362,7 @@ function SearchResultRow({
               className={cn(
                 "h-[34px] justify-center gap-[7px] rounded-[10px] border-[var(--scry-baccent)] bg-[rgba(var(--scry-accent-rgb),0.16)] text-[11.5px] font-semibold text-[var(--scry-accent-text)] shadow-none hover:border-[var(--scry-accent)] hover:bg-[rgba(var(--scry-accent-rgb),0.26)] hover:text-[var(--scry-accent-text)]",
                 additionalQueueRequested &&
-                  "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 hover:bg-emerald-500/15 hover:text-emerald-800 dark:text-emerald-200 dark:hover:text-emerald-100",
+                  "border-[var(--scry-success-border)] bg-[var(--scry-success-bg)] text-[var(--scry-success-text)] hover:border-[var(--scry-success-border-strong)] hover:bg-[var(--scry-success-bg-strong)] hover:text-[var(--scry-success-text)]",
               )}
             >
               {additionalQueueRequested ? (
@@ -449,8 +449,8 @@ function SearchResultRow({
                 queueButtonMuted
                   ? "w-full"
                   : queueRequested
-                    ? "w-full border border-emerald-500/50 dark:border-emerald-300/70 bg-emerald-200 dark:bg-emerald-900/80 text-emerald-800 dark:text-emerald-100"
-                    : "w-full bg-emerald-600 text-foreground hover:bg-emerald-500 focus-visible:ring-emerald-300/70 border border-emerald-500/60 dark:border-emerald-400/50"
+                    ? "w-full border border-[var(--scry-success-border-strong)] bg-[var(--scry-success-bg-strong)] text-[var(--scry-success-text)]"
+                    : "w-full border border-[var(--scry-success-border-strong)] bg-[var(--scry-success-solid)] text-[var(--scry-success-on-solid)] hover:bg-[var(--scry-success-solid-hover)] focus-visible:ring-[var(--scry-success-border-strong)]"
               }
               variant={queueButtonMuted ? "ghost" : "default"}
             >
@@ -475,7 +475,7 @@ function SearchResultRow({
                 className={cn(
                   "w-full border-[rgba(var(--scry-accent-rgb),0.30)] bg-[rgba(var(--scry-accent-rgb),0.08)] text-[var(--scry-accent-text)] shadow-none hover:bg-[rgba(var(--scry-accent-rgb),0.13)] hover:text-[var(--scry-accent-text)] focus-visible:ring-[rgba(var(--scry-accent-rgb),0.25)]",
                   additionalQueueRequested &&
-                    "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 hover:bg-emerald-500/15 hover:text-emerald-800 dark:text-emerald-200 dark:hover:text-emerald-100",
+                    "border-[var(--scry-success-border)] bg-[var(--scry-success-bg)] text-[var(--scry-success-text)] hover:border-[var(--scry-success-border-strong)] hover:bg-[var(--scry-success-bg-strong)] hover:text-[var(--scry-success-text)]",
                 )}
               >
                 {additionalQueueRequested ? (
@@ -555,7 +555,7 @@ function SearchResultRow({
             hasLog ? (
               <button
                 type="button"
-                className={`text-sm font-[var(--font-code)] underline-offset-2 hover:underline ${decision.releaseScore < 0 ? "text-[var(--scry-danger-text-soft)]" : "text-emerald-700 dark:text-emerald-300"}`}
+                className={`text-sm font-[var(--font-code)] underline-offset-2 hover:underline ${decision.releaseScore < 0 ? "text-[var(--scry-danger-text-soft)]" : "text-[var(--scry-success-text)]"}`}
                 onClick={() => setExpanded((prev) => !prev)}
                 aria-label={
                   expanded ? t("nzb.hideScoringLog") : t("nzb.showScoringLog")
@@ -565,7 +565,7 @@ function SearchResultRow({
               </button>
             ) : (
               <span
-                className={`text-sm font-[var(--font-code)] ${decision.releaseScore < 0 ? "text-[var(--scry-danger-text-soft)]" : "text-emerald-700 dark:text-emerald-300"}`}
+                className={`text-sm font-[var(--font-code)] ${decision.releaseScore < 0 ? "text-[var(--scry-danger-text-soft)]" : "text-[var(--scry-success-text)]"}`}
               >
                 {getScoreText(decision.releaseScore)}
               </span>
@@ -591,8 +591,8 @@ function SearchResultRow({
                 queueButtonMuted
                   ? "h-10"
                   : queueRequested
-                    ? "h-10 border border-emerald-500/50 dark:border-emerald-300/70 bg-emerald-200 dark:bg-emerald-900/80 text-emerald-800 dark:text-emerald-100"
-                    : "h-10 bg-emerald-600 text-foreground hover:bg-emerald-500 focus-visible:ring-emerald-300/70 border border-emerald-500/60 dark:border-emerald-400/50"
+                    ? "h-10 border border-[var(--scry-success-border-strong)] bg-[var(--scry-success-bg-strong)] text-[var(--scry-success-text)]"
+                    : "h-10 border border-[var(--scry-success-border-strong)] bg-[var(--scry-success-solid)] text-[var(--scry-success-on-solid)] hover:bg-[var(--scry-success-solid-hover)] focus-visible:ring-[var(--scry-success-border-strong)]"
               }
               variant={queueButtonMuted ? "ghost" : "default"}
             >
@@ -617,7 +617,7 @@ function SearchResultRow({
                 className={cn(
                   "h-9 border-[rgba(var(--scry-accent-rgb),0.30)] bg-[rgba(var(--scry-accent-rgb),0.08)] text-[var(--scry-accent-text)] shadow-none hover:bg-[rgba(var(--scry-accent-rgb),0.13)] hover:text-[var(--scry-accent-text)] focus-visible:ring-[rgba(var(--scry-accent-rgb),0.25)]",
                   additionalQueueRequested &&
-                    "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 hover:bg-emerald-500/15 hover:text-emerald-800 dark:text-emerald-200 dark:hover:text-emerald-100",
+                    "border-[var(--scry-success-border)] bg-[var(--scry-success-bg)] text-[var(--scry-success-text)] hover:border-[var(--scry-success-border-strong)] hover:bg-[var(--scry-success-bg-strong)] hover:text-[var(--scry-success-text)]",
                 )}
               >
                 {additionalQueueRequested ? (
@@ -677,7 +677,7 @@ function SearchResultRow({
                         className={
                           entry.delta < 0
                             ? "text-[var(--scry-danger-text-soft)]"
-                            : "text-emerald-600 dark:text-emerald-400"
+                            : "text-[var(--scry-success-text-soft)]"
                         }
                       >
                         {entry.delta > 0 ? "+" : ""}
@@ -693,7 +693,7 @@ function SearchResultRow({
                   className={
                     decision.releaseScore < 0
                       ? "text-[var(--scry-danger-text-soft)]"
-                      : "text-emerald-600 dark:text-emerald-400"
+                      : "text-[var(--scry-success-text-soft)]"
                   }
                 >
                   {getScoreText(decision.releaseScore)}

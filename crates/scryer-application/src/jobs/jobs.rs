@@ -8,6 +8,7 @@ use crate::discovery::{
 };
 use crate::domain_events::{DomainEventActor, new_job_run_domain_event};
 use crate::event_views::replay_library_scan_state;
+use crate::scheduler;
 use chrono::{DateTime, Utc};
 use scryer_domain::{
     DomainEvent, DomainEventFilter, DomainEventPayload, DomainEventType,
@@ -16,11 +17,11 @@ use scryer_domain::{
 };
 use serde_json::json;
 use std::collections::{BTreeSet, HashMap};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::UNIX_EPOCH;
 use tokio::sync::broadcast;
 use tracing::{info, warn};
 
-const BACKGROUND_LIBRARY_REFRESH_INTERVAL_SECONDS: i64 = 3600;
+const BACKGROUND_LIBRARY_REFRESH_INTERVAL_SECONDS: i64 = 6 * 60 * 60;
 const BACKGROUND_LIBRARY_REFRESH_STAGGER_SECONDS: i64 = 15 * 60;
 const DISCOVERY_SYNC_INCREMENTAL_CADENCE_SECONDS: i64 = 4 * 60 * 60;
 const DISCOVERY_SYNC_LEASE_SECONDS: i64 = 30 * 60;
@@ -83,11 +84,13 @@ fn background_library_refresh_enabled() -> bool {
 }
 
 fn discovery_jitter_seconds(seed: &str, stream: &str, window_seconds: i64) -> i64 {
-    let window_seconds = window_seconds.max(1) as u64;
-    let hash = blake3::hash(format!("{seed}:discovery_sync:{stream}").as_bytes());
-    let mut prefix = [0_u8; 8];
-    prefix.copy_from_slice(&hash.as_bytes()[0..8]);
-    (u64::from_le_bytes(prefix) % window_seconds) as i64
+    scheduler::stable_jitter_offset(
+        seed,
+        "discovery_sync",
+        stream,
+        std::time::Duration::from_secs(window_seconds.max(1) as u64),
+    )
+    .as_secs() as i64
 }
 
 fn discovery_status_is(actual: &str, expected: &str) -> bool {
@@ -264,22 +267,17 @@ fn next_hash_jittered_bucket(
     jitter_seconds: i64,
 ) -> chrono::DateTime<Utc> {
     let cadence = DISCOVERY_SYNC_INCREMENTAL_CADENCE_SECONDS;
-    let jitter_seconds = jitter_seconds.clamp(0, cadence - 1);
-    let now_seconds = now.timestamp();
-    let bucket_start = now_seconds.div_euclid(cadence) * cadence;
-    let candidate = bucket_start + jitter_seconds;
-    let next_seconds = if now_seconds < candidate {
-        candidate
-    } else {
-        bucket_start + cadence + jitter_seconds
-    };
+    let now_system_time =
+        UNIX_EPOCH + std::time::Duration::from_secs(now.timestamp().max(0) as u64);
+    let delay = scheduler::next_jittered_cycle_delay(
+        now_system_time,
+        std::time::Duration::from_secs(cadence as u64),
+        std::time::Duration::from_secs(jitter_seconds.clamp(0, cadence - 1) as u64),
+        std::time::Duration::ZERO,
+    );
+    let next_seconds = now.timestamp().saturating_add(delay.as_secs() as i64);
     chrono::DateTime::from_timestamp(next_seconds, 0)
         .unwrap_or_else(|| now + chrono::Duration::seconds(cadence))
-}
-
-#[derive(Clone, Debug, serde::Serialize)]
-struct MetadataRefreshSummary {
-    refreshed_titles: u32,
 }
 
 #[derive(Clone, Debug, serde::Serialize)]
@@ -1128,13 +1126,6 @@ impl AppUseCase {
                 Some(self.run_subtitle_search_job().await?),
                 None,
             )),
-            JobKey::MetadataRefresh => {
-                let refreshed_titles = self.run_metadata_refresh_job().await?;
-                Ok(JobExecutionOutcome::new(
-                    Some(format!("Refreshed metadata for {refreshed_titles} titles")),
-                    serde_json::to_string(&MetadataRefreshSummary { refreshed_titles }).ok(),
-                ))
-            }
             JobKey::PluginRegistryRefresh => {
                 self.refresh_plugin_catalog_internal().await?;
                 Ok(JobExecutionOutcome::new(
@@ -2765,10 +2756,16 @@ pub async fn start_background_library_refresh_loop(
         return;
     }
 
-    let startup_seed = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_nanos() as u64)
-        .unwrap_or_default();
+    let scheduler_seed = match app.discovery_scheduler_seed().await {
+        Ok(seed) => seed,
+        Err(error) => {
+            warn!(
+                error = %error,
+                "background library refresh scheduler seed unavailable; using ephemeral seed"
+            );
+            uuid::Uuid::new_v4().to_string()
+        }
+    };
 
     for job_key in [
         JobKey::BackgroundLibraryRefreshMovies,
@@ -2778,7 +2775,7 @@ pub async fn start_background_library_refresh_loop(
         let app = app.clone();
         let token = token.child_token();
         let initial_delay_seconds =
-            background_library_refresh_initial_delay_seconds(startup_seed, job_key)
+            background_library_refresh_initial_delay_seconds(&scheduler_seed, job_key)
                 .expect("background refresh job");
         tokio::spawn(async move {
             run_background_library_refresh_worker(app, token, job_key, initial_delay_seconds).await;
@@ -2815,6 +2812,7 @@ async fn run_background_library_refresh_worker(
     }
 
     let mut interval = tokio::time::interval(std::time::Duration::from_secs(interval_seconds));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     interval.tick().await;
     app.set_job_next_run_at(
         job_key,
@@ -2842,7 +2840,7 @@ async fn run_background_library_refresh_worker(
 }
 
 fn background_library_refresh_initial_delay_seconds(
-    startup_seed: u64,
+    scheduler_seed: &str,
     job_key: JobKey,
 ) -> Option<i64> {
     let order = match job_key {
@@ -2852,9 +2850,17 @@ fn background_library_refresh_initial_delay_seconds(
         _ => return None,
     };
 
-    let randomized_base =
-        (startup_seed % BACKGROUND_LIBRARY_REFRESH_INTERVAL_SECONDS as u64) as i64;
-    Some(randomized_base + order * BACKGROUND_LIBRARY_REFRESH_STAGGER_SECONDS)
+    let base = scheduler::stable_jitter_offset(
+        scheduler_seed,
+        "background_library_refresh",
+        "base",
+        std::time::Duration::from_secs(BACKGROUND_LIBRARY_REFRESH_INTERVAL_SECONDS as u64),
+    )
+    .as_secs() as i64;
+    Some(
+        (base + order * BACKGROUND_LIBRARY_REFRESH_STAGGER_SECONDS)
+            .rem_euclid(BACKGROUND_LIBRARY_REFRESH_INTERVAL_SECONDS),
+    )
 }
 
 fn job_key_library_facet(job_key: JobKey) -> Option<MediaFacet> {
@@ -2883,26 +2889,34 @@ mod tests {
 
     #[test]
     fn background_library_refresh_initial_delays_are_staggered_by_facet() {
-        let startup_seed = 1_234_u64;
+        let scheduler_seed = "stable-scheduler-seed";
         let movie = background_library_refresh_initial_delay_seconds(
-            startup_seed,
+            scheduler_seed,
             JobKey::BackgroundLibraryRefreshMovies,
         )
         .expect("movie delay");
         let series = background_library_refresh_initial_delay_seconds(
-            startup_seed,
+            scheduler_seed,
             JobKey::BackgroundLibraryRefreshSeries,
         )
         .expect("series delay");
         let anime = background_library_refresh_initial_delay_seconds(
-            startup_seed,
+            scheduler_seed,
             JobKey::BackgroundLibraryRefreshAnime,
         )
         .expect("anime delay");
 
-        assert_eq!(movie, 1_234);
-        assert_eq!(series - movie, BACKGROUND_LIBRARY_REFRESH_STAGGER_SECONDS);
-        assert_eq!(anime - series, BACKGROUND_LIBRARY_REFRESH_STAGGER_SECONDS);
+        assert!((0..BACKGROUND_LIBRARY_REFRESH_INTERVAL_SECONDS).contains(&movie));
+        assert!((0..BACKGROUND_LIBRARY_REFRESH_INTERVAL_SECONDS).contains(&series));
+        assert!((0..BACKGROUND_LIBRARY_REFRESH_INTERVAL_SECONDS).contains(&anime));
+        assert_eq!(
+            (series - movie).rem_euclid(BACKGROUND_LIBRARY_REFRESH_INTERVAL_SECONDS),
+            BACKGROUND_LIBRARY_REFRESH_STAGGER_SECONDS
+        );
+        assert_eq!(
+            (anime - series).rem_euclid(BACKGROUND_LIBRARY_REFRESH_INTERVAL_SECONDS),
+            BACKGROUND_LIBRARY_REFRESH_STAGGER_SECONDS
+        );
     }
 
     #[test]

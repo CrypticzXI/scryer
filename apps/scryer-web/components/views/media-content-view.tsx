@@ -1191,7 +1191,7 @@ function TitleContextPanel({
                   className={cn(
                     "inline-flex h-6 items-center gap-1 rounded-[7px] px-2.5 text-[11px] font-semibold",
                     title.monitored
-                      ? "bg-emerald-500/15 text-emerald-200"
+                      ? "bg-[var(--scry-success-bg)] text-[var(--scry-success-text)]"
                       : "bg-white/[0.06] text-[var(--scry-muted2)]",
                   )}
                 >
@@ -1776,6 +1776,7 @@ export function MediaContentView({
       overviewTarget: OverviewTitleTarget,
     ) => void;
     selectedOverviewTitleId: string | null;
+    selectedOverviewTitle: TitleRecord | null;
     selectedOverviewDetailLoading: boolean;
     routeOverviewPending: boolean;
     routeOverviewEpisodeId: string | null;
@@ -1967,6 +1968,7 @@ export function MediaContentView({
     scanLibrary,
     onOpenOverview,
     selectedOverviewTitleId,
+    selectedOverviewTitle: selectedOverviewTitleOverride,
     selectedOverviewDetailLoading,
     routeOverviewPending,
     routeOverviewEpisodeId,
@@ -2060,6 +2062,9 @@ export function MediaContentView({
   const selectedOverviewTitle = React.useMemo(
     () => {
       if (selectedOverviewTitleId) {
+        if (selectedOverviewTitleOverride?.id === selectedOverviewTitleId) {
+          return selectedOverviewTitleOverride;
+        }
         return (
           deferredTitleContextTitles.find(
             (title) => title.id === selectedOverviewTitleId,
@@ -2075,7 +2080,12 @@ export function MediaContentView({
       }
       return null;
     },
-    [deferredTitleContextTitles, routeOverviewSlug, selectedOverviewTitleId],
+    [
+      deferredTitleContextTitles,
+      routeOverviewSlug,
+      selectedOverviewTitleId,
+      selectedOverviewTitleOverride,
+    ],
   );
   const activeOverviewTitle = selectedOverviewTitle;
   const activeOverviewTitleId = activeOverviewTitle?.id ?? null;

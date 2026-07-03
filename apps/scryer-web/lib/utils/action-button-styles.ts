@@ -6,23 +6,23 @@ export const boxedTextActionButtonBaseClass =
 
 export const boxedActionButtonToneClass = {
   auto:
-    "border-emerald-200 bg-emerald-50 text-emerald-700 hover:border-emerald-300 hover:bg-emerald-100 hover:text-emerald-800 dark:border-emerald-500/35 dark:bg-emerald-500/12 dark:text-emerald-200 dark:hover:border-emerald-400/45 dark:hover:bg-emerald-500/22 dark:hover:text-emerald-50",
+    "border-[var(--scry-success-border)] bg-[var(--scry-success-bg)] text-[var(--scry-success-text)] hover:border-[var(--scry-success-border-strong)] hover:bg-[var(--scry-success-bg-strong)] hover:text-[var(--scry-success-text)]",
   search:
-    "border-sky-200 bg-sky-50 text-sky-700 hover:border-sky-300 hover:bg-sky-100 hover:text-sky-800 dark:border-sky-500/35 dark:bg-sky-500/12 dark:text-sky-200 dark:hover:border-sky-400/45 dark:hover:bg-sky-500/22 dark:hover:text-sky-50",
+    "border-[var(--scry-info-border)] bg-[var(--scry-info-bg)] text-[var(--scry-info-text)] hover:border-[var(--scry-info-border-strong)] hover:bg-[var(--scry-info-bg-strong)] hover:text-[var(--scry-info-text)]",
   accent:
     "border-[rgba(var(--scry-accent-rgb),0.3)] bg-[rgba(var(--scry-accent-rgb),0.1)] text-[var(--scry-accent-text)] hover:border-[rgba(var(--scry-accent-rgb),0.45)] hover:bg-[rgba(var(--scry-accent-rgb),0.2)] hover:text-[var(--scry-accent-text)]",
   edit:
-    "border-sky-200 bg-sky-50 text-sky-700 hover:border-sky-300 hover:bg-sky-100 hover:text-sky-800 dark:border-sky-500/35 dark:bg-sky-500/12 dark:text-sky-200 dark:hover:border-sky-400/45 dark:hover:bg-sky-500/22 dark:hover:text-sky-50",
+    "border-[var(--scry-info-border)] bg-[var(--scry-info-bg)] text-[var(--scry-info-text)] hover:border-[var(--scry-info-border-strong)] hover:bg-[var(--scry-info-bg-strong)] hover:text-[var(--scry-info-text)]",
   reorder:
-    "border-indigo-200 bg-indigo-50 text-indigo-700 hover:border-indigo-300 hover:bg-indigo-100 hover:text-indigo-800 dark:border-sky-500/35 dark:bg-sky-500/12 dark:text-sky-200 dark:hover:border-sky-400/45 dark:hover:bg-sky-500/22 dark:hover:text-sky-50",
+    "border-[rgba(var(--scry-accent-rgb),0.3)] bg-[rgba(var(--scry-accent-rgb),0.1)] text-[var(--scry-accent-text)] hover:border-[rgba(var(--scry-accent-rgb),0.45)] hover:bg-[rgba(var(--scry-accent-rgb),0.2)] hover:text-[var(--scry-accent-text)]",
   neutral:
-    "border-slate-200 bg-slate-50 text-slate-700 hover:border-slate-300 hover:bg-slate-100 hover:text-slate-800 dark:border-slate-500/35 dark:bg-slate-500/12 dark:text-slate-200 dark:hover:border-slate-400/45 dark:hover:bg-slate-500/22 dark:hover:text-slate-50",
+    "border-[var(--scry-border2)] bg-[var(--scry-chip)] text-[var(--scry-muted)] hover:border-[var(--scry-bhover)] hover:bg-[var(--scry-hover)] hover:text-[var(--scry-ink2)]",
   install:
     "border-[rgba(var(--scry-accent-rgb),0.55)] bg-[rgb(var(--scry-accent-rgb))] text-white hover:border-[rgba(var(--scry-accent-rgb),0.72)] hover:bg-[var(--scry-accent-dark)] hover:text-white",
   upgrade:
     "border-[var(--scry-warning-border)] bg-[var(--scry-warning-bg)] text-[var(--scry-warning-text)] hover:border-[var(--scry-warning-border-strong)] hover:bg-[var(--scry-warning-bg-strong)] hover:text-[var(--scry-warning-text)]",
   enabled:
-    "border-emerald-200 bg-emerald-50 text-emerald-700 hover:border-emerald-300 hover:bg-emerald-100 hover:text-emerald-800 dark:border-emerald-500/35 dark:bg-emerald-500/12 dark:text-emerald-200 dark:hover:border-emerald-400/45 dark:hover:bg-emerald-500/22 dark:hover:text-emerald-50",
+    "border-[var(--scry-success-border)] bg-[var(--scry-success-bg)] text-[var(--scry-success-text)] hover:border-[var(--scry-success-border-strong)] hover:bg-[var(--scry-success-bg-strong)] hover:text-[var(--scry-success-text)]",
   disabled:
     "border-[var(--scry-danger-border)] bg-[var(--scry-danger-bg)] text-[var(--scry-danger-text)] hover:border-[var(--scry-danger-border-strong)] hover:bg-[var(--scry-danger-bg-strong)] hover:text-[var(--scry-danger-text)]",
   delete:

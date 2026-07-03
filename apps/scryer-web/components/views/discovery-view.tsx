@@ -18,22 +18,32 @@ import {
   SlidersHorizontal,
   Smile,
   Sparkles,
-  Star,
   Swords,
   Video,
   WandSparkles,
   X,
 } from "lucide-react";
 import { useTranslate } from "@/lib/context/translate-context";
+import {
+  AnidbExternalLink,
+  AnilistExternalLink,
+  ImdbExternalLink,
+  MalExternalLink,
+  TmdbExternalLink,
+  TvdbMovieExternalLink,
+  TvdbSeriesExternalLink,
+} from "@/components/common/external-media-links";
 import { Button } from "@/components/ui/button";
 import { MultiSelectDropdown } from "@/components/ui/multi-select-dropdown";
 import { TitleCard } from "@/components/title-card";
+import { TitleRatingsStrip } from "@/components/views/title-ratings-strip";
 import {
   canonicalDiscoveryFacetLabels,
   canonicalDiscoveryFilterOptions,
 } from "@/lib/discovery-facets";
 import { facetById } from "@/lib/facets/registry";
 import { discoveryItemDisplayTitle } from "@/lib/utils/discovery-display";
+import { externalIdsFromDiscoverySignals } from "@/lib/utils/discovery-actions";
 import { selectBackdropVariantUrl } from "@/lib/utils/poster-images";
 import { cn } from "@/lib/utils";
 import type {
@@ -438,6 +448,18 @@ function itemContentType(item: DiscoveryItem): DiscoveryContentType | null {
     : normalizedDiscoveryContentType(item.targetKind);
 }
 
+function discoveryExternalIdMap(item: DiscoveryItem) {
+  const ids = new Map<string, string>();
+  for (const externalId of externalIdsFromDiscoverySignals(item)) {
+    const source = externalId.source.trim().toLowerCase();
+    const value = externalId.value.trim();
+    if (source && value && !ids.has(source)) {
+      ids.set(source, value);
+    }
+  }
+  return ids;
+}
+
 function discoveryItemDisplayGenreLabels(item: DiscoveryItem): string[] {
   return canonicalDiscoveryFacetLabels(item, "genre");
 }
@@ -697,11 +719,20 @@ function DiscoveryHero({
 }) {
   const t = useTranslate();
   const titleLabel = discoveryItemDisplayTitle(item);
-  const score = formatScore(item.rating);
   const match = itemMatchScore(item);
   const genres = discoveryItemDisplayGenreLabels(item).slice(0, 3);
   const facet = itemContentType(item);
   const FacetIcon = discoveryFacetIcon(facet);
+  const externalIds = discoveryExternalIdMap(item);
+  const hasExternalLinks = [
+    "imdb",
+    "tmdb",
+    "tvdb",
+    "mal",
+    "anilist",
+    "anidb",
+  ].some((source) => externalIds.has(source));
+  const tmdbMediaType = facet === "movie" ? "movie" : "tv";
   const statusLabel =
     item.statusTags
       .find((tag) => tag.trim().length > 0)
@@ -724,7 +755,7 @@ function DiscoveryHero({
           alt=""
           aria-hidden="true"
           data-discovery-hero-backdrop="true"
-          className="absolute inset-0 h-full w-full object-cover opacity-80"
+          className="absolute inset-0 h-full w-full object-cover"
         />
       ) : (
         <div
@@ -733,8 +764,8 @@ function DiscoveryHero({
           data-discovery-hero-backdrop-fallback="true"
         />
       )}
-      <div className="absolute inset-0 bg-gradient-to-r from-slate-950 via-slate-950/75 to-slate-950/5" />
-      <div className="absolute inset-0 bg-gradient-to-t from-slate-950/85 to-transparent" />
+      <div className="absolute inset-0 bg-gradient-to-r from-slate-950/80 via-slate-950/45 to-slate-950/0" />
+      <div className="absolute inset-0 bg-gradient-to-t from-slate-950/55 via-slate-950/15 to-transparent" />
       <div className="relative flex h-full max-w-[min(62%,540px)] flex-col p-8 max-lg:max-w-[78%] max-sm:max-w-full">
         <div className="mb-3.5 flex flex-wrap gap-2">
           <span className="rounded-[7px] border border-[rgba(var(--scry-accent-rgb),0.4)] bg-[rgba(var(--scry-accent-rgb),0.22)] px-2.5 py-1 text-[11px] font-bold uppercase tracking-[0.04em] text-[#c3c9ff]">
@@ -766,33 +797,72 @@ function DiscoveryHero({
               <span className="font-semibold capitalize">{detail}</span>
             </React.Fragment>
           ))}
-          {score ? (
-            <span className="inline-flex items-center gap-1 rounded-[7px] bg-yellow-400/15 px-2 py-0.5 font-bold text-yellow-300">
-              <Star className="h-3.5 w-3.5" />
-              {score}
-            </span>
-          ) : null}
           {match ? (
-            <span className="inline-flex items-center gap-1 rounded-[7px] bg-emerald-500/15 px-2 py-0.5 font-bold text-emerald-400">
+            <span className="inline-flex items-center gap-1 rounded-[7px] bg-[var(--scry-success-bg)] px-2 py-0.5 font-bold text-[var(--scry-success-text-soft)]">
               <Heart className="h-3.5 w-3.5" />
               {match}
             </span>
           ) : null}
         </div>
+        <TitleRatingsStrip
+          ratings={{
+            rating: item.rating,
+            ratingSources: item.ratingSources ?? [],
+            externalRatings: item.externalRatings ?? [],
+          }}
+          variant="hero"
+        />
         {item.overview ? (
           <p className="m-0 mb-4 line-clamp-4 max-w-[430px] text-[13.5px] leading-6 text-[#b7c0dd]">
             {item.overview}
           </p>
         ) : null}
-        <div className="mb-auto flex flex-wrap gap-2">
-          {genres.map((genre) => (
-            <span
-              key={genre}
-              className="rounded-[8px] border border-white/10 bg-white/10 px-3 py-1.5 text-xs text-[#cfd7ee]"
-            >
-              {genre}
-            </span>
-          ))}
+        <div className="mb-auto space-y-3">
+          {genres.length > 0 ? (
+            <div className="flex flex-wrap gap-2">
+              {genres.map((genre) => (
+                <span
+                  key={genre}
+                  className="rounded-[8px] border border-white/10 bg-white/10 px-3 py-1.5 text-xs text-[#cfd7ee]"
+                >
+                  {genre}
+                </span>
+              ))}
+            </div>
+          ) : null}
+          {hasExternalLinks ? (
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="mr-1 text-[11px] font-bold uppercase tracking-[0.08em] text-[#8995bd]">
+                Open In
+              </span>
+              <ImdbExternalLink imdbId={externalIds.get("imdb")} size="compact" />
+              <TmdbExternalLink
+                tmdbId={externalIds.get("tmdb")}
+                mediaType={tmdbMediaType}
+                size="compact"
+              />
+              {facet === "movie" ? (
+                <TvdbMovieExternalLink
+                  tvdbId={externalIds.get("tvdb")}
+                  size="compact"
+                />
+              ) : (
+                <TvdbSeriesExternalLink
+                  tvdbId={externalIds.get("tvdb")}
+                  size="compact"
+                />
+              )}
+              <MalExternalLink malId={externalIds.get("mal")} size="compact" />
+              <AnilistExternalLink
+                anilistId={externalIds.get("anilist")}
+                size="compact"
+              />
+              <AnidbExternalLink
+                anidbId={externalIds.get("anidb")}
+                size="compact"
+              />
+            </div>
+          ) : null}
         </div>
         <div className="mt-5 flex gap-3">
           <DiscoveryActionButton
@@ -1231,10 +1301,11 @@ export function DiscoveryView({
   );
   const railSections = React.useMemo(
     () =>
-      sections.filter(
-        (section) => section.sectionId !== heroRailSection?.sectionId,
-      ),
-    [heroRailSection, sections],
+      sections
+        .filter((section) => section.sectionId !== heroRailSection?.sectionId)
+        .map((section) => sectionWithoutItem(section, heroItem))
+        .filter((section): section is DiscoverySection => Boolean(section)),
+    [heroItem, heroRailSection, sections],
   );
   const primaryRailSections = React.useMemo(
     () => railSections.filter((section) => !sectionIsUpcoming(section)),

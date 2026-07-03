@@ -911,7 +911,7 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
           </p>
         </div>
         {!pendingLoading && !pendingError && pendingConnection.total > 0 ? (
-          <span className="inline-flex h-[30px] items-center gap-2 rounded-[9px] border border-amber-500/30 bg-amber-500/10 px-3 text-xs font-semibold tabular-nums text-amber-600 dark:text-amber-300">
+          <span className="inline-flex h-[30px] items-center gap-2 rounded-[9px] border border-[var(--scry-warning-border)] bg-[var(--scry-warning-bg)] px-3 text-xs font-semibold tabular-nums text-[var(--scry-warning-text)]">
             <TriangleAlertIcon className="h-3.5 w-3.5" />
             {pendingConnection.total === 1
               ? t("pendingImports.unresolvedCountOne")

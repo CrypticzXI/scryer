@@ -61,6 +61,19 @@ const DISCOVERY_HOME_ITEM_FIELDS = `
     ownedInInput
     facetTerms`;
 
+const DISCOVERY_HOME_HERO_ITEM_FIELDS = `${DISCOVERY_HOME_ITEM_FIELDS}
+    overview
+    sourceTags
+    ratingSources
+    externalRatings {
+      source
+      value
+      score
+      normalized
+      votes
+      url
+    }`;
+
 export const DISCOVERY_SECTION_FIELDS = `
     sectionId
     sectionType
@@ -85,7 +98,7 @@ export const discoveryHomeQuery = `query DiscoveryHome($input: DiscoveryHomeInpu
   discoveryHome(input: $input) {
     canViewPersonalized
     heroItem {
-${DISCOVERY_HOME_ITEM_FIELDS}
+${DISCOVERY_HOME_HERO_ITEM_FIELDS}
     }
     status {
       pendingContextChangeCount

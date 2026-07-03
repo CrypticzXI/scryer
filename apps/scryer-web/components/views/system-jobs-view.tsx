@@ -95,13 +95,13 @@ function runStatusTone(status: JobRun["status"] | "idle"): string {
     case "failed":
       return "text-[var(--scry-danger-text-soft)]";
     case "warning":
-      return "text-amber-400";
+      return "text-[var(--scry-warning-text)]";
     case "completed":
-      return "text-emerald-400";
+      return "text-[var(--scry-success-text-soft)]";
     case "queued":
     case "discovering":
     case "running":
-      return "text-sky-400";
+      return "text-[var(--scry-info-text-soft)]";
     default:
       return "text-muted-foreground";
   }
@@ -174,9 +174,9 @@ function healthCheckStatusTone(status: string): string {
     case "error":
       return "text-[var(--scry-danger-text-soft)]";
     case "warning":
-      return "text-amber-400";
+      return "text-[var(--scry-warning-text)]";
     case "ok":
-      return "text-emerald-400";
+      return "text-[var(--scry-success-text-soft)]";
     default:
       return "text-muted-foreground";
   }

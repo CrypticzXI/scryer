@@ -800,11 +800,27 @@ pub const BACKUP_TABLE_CATALOG: &[BackupTableCatalogEntry] = &[
         classification: BackupTableClassification::Export,
     },
     BackupTableCatalogEntry {
+        table: "title_external_ratings",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
         table: "title_image_variants",
         classification: BackupTableClassification::Rebuild,
     },
     BackupTableCatalogEntry {
         table: "title_images",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
+        table: "title_more_like_this_items",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
+        table: "title_rating_sources",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
+        table: "title_rating_summaries",
         classification: BackupTableClassification::Export,
     },
     BackupTableCatalogEntry {

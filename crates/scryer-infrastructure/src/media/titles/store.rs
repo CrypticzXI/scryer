@@ -800,6 +800,37 @@ impl TitleRepository for TitleStore {
             .collect()
     }
 
+    async fn list_title_ids_with_metadata_hydration_due(
+        &self,
+        facet: Option<MediaFacet>,
+        library_ids: &[String],
+    ) -> AppResult<Vec<String>> {
+        if library_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut sql = String::from(
+            "SELECT id
+               FROM titles
+              WHERE metadata_hydration_next_attempt_at IS NOT NULL
+                AND metadata_hydration_next_attempt_at <= {}",
+        );
+        let mut args = vec![SqlArg::Timestamp(Utc::now())];
+        if let Some(facet) = facet {
+            sql.push_str(" AND facet = {}");
+            args.push(SqlArg::Text(facet.as_str().to_string()));
+        }
+        let placeholders = std::iter::repeat_n("{}", library_ids.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        sql.push_str(&format!(" AND library_id IN ({placeholders})"));
+        args.extend(library_ids.iter().cloned().map(SqlArg::Text));
+        sql.push_str(" ORDER BY metadata_hydration_next_attempt_at ASC, id ASC");
+
+        let rows = SqlRuntime::fetch_all(self.datastore.read_exec(), &sql, &args).await?;
+        rows.into_iter().map(|row| row.text("id")).collect()
+    }
+
     async fn list_anime_title_ids_missing_anibridge_scoped_external_ids(
         &self,
         limit: usize,

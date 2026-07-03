@@ -64,11 +64,11 @@ function formatDate(iso: string, dateTimeFormat: UiDateTimeFormat): string {
 }
 
 const REASON_LABELS: Record<string, { label: string; className: string }> = {
-  upgrade_replaced: { label: "Upgrade", className: "bg-blue-900/40 text-blue-300" },
+  upgrade_replaced: { label: "Upgrade", className: "bg-[var(--scry-info-bg-strong)] text-[var(--scry-info-text)]" },
   file_deleted: { label: "Deleted", className: "bg-[var(--scry-danger-bg)] text-[var(--scry-danger-text)]" },
-  invalid_file: { label: "Invalid", className: "bg-yellow-900/40 text-yellow-300" },
-  language_mismatch: { label: "Language", className: "bg-orange-900/40 text-orange-300" },
-  post_download_rule_blocked: { label: "Rule blocked", className: "bg-purple-900/40 text-purple-300" },
+  invalid_file: { label: "Invalid", className: "bg-[var(--scry-warning-bg-strong)] text-[var(--scry-warning-text)]" },
+  language_mismatch: { label: "Language", className: "bg-[var(--scry-warning-bg-strong)] text-[var(--scry-warning-text)]" },
+  post_download_rule_blocked: { label: "Rule blocked", className: "bg-[rgba(var(--scry-accent-rgb),0.2)] text-[var(--scry-accent-text)]" },
 };
 
 function ReasonBadge({ reason }: { reason: string }) {

@@ -3,6 +3,7 @@ import { Check, Loader2, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 import { TitlePosterSlot } from "@/components/title-poster-slot";
+import { ActionTooltip } from "@/components/ui/tooltip";
 import { selectPosterVariantUrl } from "@/lib/utils/poster-images";
 
 export function TitleWorkspaceHero({
@@ -29,14 +30,19 @@ export function TitleWorkspaceHero({
         />
       ) : null}
       <div className="absolute inset-0 bg-[linear-gradient(105deg,rgba(8,12,22,0.96)_30%,rgba(8,12,22,0.55)_70%,rgba(8,12,22,0.2))]" />
-      <button
-        type="button"
-        aria-label={closeLabel}
-        className="absolute right-2.5 top-2.5 z-10 flex size-8 items-center justify-center rounded-[9px] border border-white/15 bg-slate-950/60 text-[#dde4f5] backdrop-blur-md transition hover:bg-slate-950/75 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--scry-focus)]"
-        onClick={onClose}
+      <ActionTooltip
+        content={closeLabel}
+        wrapperClassName="absolute right-2.5 top-2.5 z-10"
       >
-        <X className="h-4 w-4" />
-      </button>
+        <button
+          type="button"
+          aria-label={closeLabel}
+          className="flex size-8 items-center justify-center rounded-[9px] border border-white/15 bg-slate-950/60 text-[#dde4f5] backdrop-blur-md transition hover:bg-slate-950/75 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--scry-focus)]"
+          onClick={onClose}
+        >
+          <X className="h-4 w-4" />
+        </button>
+      </ActionTooltip>
       <div className="relative flex gap-4 p-[18px] pr-14 sm:pr-16">
         {children}
       </div>
@@ -256,7 +262,10 @@ export function TitleBulkPosterStack({
           >
             <TitlePosterSlot
               src={selectPosterVariantUrl(title.posterUrl, "w250")}
-              sourceSrc={title.posterSourceUrl}
+              sourceSrc={selectPosterVariantUrl(
+                title.posterSourceUrl,
+                "w250",
+              )}
               metadataFetchedAt={title.metadataFetchedAt}
               createdAt={title.createdAt}
               emptyLabel=""

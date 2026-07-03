@@ -147,7 +147,6 @@ pub enum JobKey {
     ProwlarrSync,
     RssSync,
     SubtitleSearch,
-    MetadataRefresh,
     PluginRegistryRefresh,
     Housekeeping,
     HealthChecks,
@@ -172,7 +171,6 @@ impl JobKey {
             Self::ProwlarrSync => "prowlarr_sync",
             Self::RssSync => "rss_sync",
             Self::SubtitleSearch => "subtitle_search",
-            Self::MetadataRefresh => "metadata_refresh",
             Self::PluginRegistryRefresh => "plugin_registry_refresh",
             Self::Housekeeping => "housekeeping",
             Self::HealthChecks => "health_checks",
@@ -197,7 +195,6 @@ impl JobKey {
             "prowlarr_sync" => Some(Self::ProwlarrSync),
             "rss_sync" => Some(Self::RssSync),
             "subtitle_search" => Some(Self::SubtitleSearch),
-            "metadata_refresh" => Some(Self::MetadataRefresh),
             "plugin_registry_refresh" => Some(Self::PluginRegistryRefresh),
             "housekeeping" => Some(Self::Housekeeping),
             "health_checks" => Some(Self::HealthChecks),
@@ -223,7 +220,6 @@ impl JobKey {
             Self::ProwlarrSync => "Prowlarr Sync",
             Self::RssSync => "RSS Sync",
             Self::SubtitleSearch => "Subtitle Search",
-            Self::MetadataRefresh => "Metadata Refresh",
             Self::PluginRegistryRefresh => "Plugin Catalog Refresh",
             Self::Housekeeping => "Housekeeping",
             Self::HealthChecks => "Health Checks",
@@ -256,7 +252,6 @@ impl JobKey {
             }
             Self::RssSync => "Fetch RSS feeds from enabled indexers and evaluate new releases.",
             Self::SubtitleSearch => "Search for missing subtitles for monitored media.",
-            Self::MetadataRefresh => "Refresh metadata for monitored episodic titles.",
             Self::PluginRegistryRefresh => "Refresh the installed plugin catalog metadata.",
             Self::Housekeeping => "Clean stale records and purge expired artifacts.",
             Self::HealthChecks => "Run configured system health checks.",
@@ -286,7 +281,7 @@ impl JobKey {
             | Self::BackgroundLibraryRefreshMovies
             | Self::BackgroundLibraryRefreshSeries
             | Self::BackgroundLibraryRefreshAnime => JobCategory::Library,
-            Self::ProwlarrSync | Self::RssSync | Self::MetadataRefresh => JobCategory::Acquisition,
+            Self::ProwlarrSync | Self::RssSync => JobCategory::Acquisition,
             Self::SubtitleSearch => JobCategory::Subtitles,
             Self::PluginRegistryRefresh
             | Self::HealthChecks
@@ -318,7 +313,6 @@ impl JobKey {
             Self::ProwlarrSync
             | Self::RssSync
             | Self::SubtitleSearch
-            | Self::MetadataRefresh
             | Self::PluginRegistryRefresh
             | Self::Housekeeping
             | Self::HealthChecks
@@ -339,11 +333,10 @@ impl JobKey {
         match self {
             Self::BackgroundLibraryRefreshMovies
             | Self::BackgroundLibraryRefreshSeries
-            | Self::BackgroundLibraryRefreshAnime => "Hourly",
+            | Self::BackgroundLibraryRefreshAnime => "Every 2 hours",
             Self::ProwlarrSync => "Every 5 minutes",
             Self::RssSync => "Every 15 minutes",
             Self::SubtitleSearch => "Based on subtitle settings interval",
-            Self::MetadataRefresh => "Every 12 hours",
             Self::PluginRegistryRefresh => "Every 24 hours",
             Self::Housekeeping => "Every 24 hours",
             Self::HealthChecks => "Every 6 hours",
@@ -364,10 +357,9 @@ impl JobKey {
         match self {
             Self::BackgroundLibraryRefreshMovies
             | Self::BackgroundLibraryRefreshSeries
-            | Self::BackgroundLibraryRefreshAnime => Some(3600),
+            | Self::BackgroundLibraryRefreshAnime => Some(2 * 3600),
             Self::ProwlarrSync => Some(5 * 60),
             Self::RssSync => Some(15 * 60),
-            Self::MetadataRefresh => Some(12 * 3600),
             Self::PluginRegistryRefresh => Some(24 * 3600),
             Self::Housekeeping => Some(24 * 3600),
             Self::HealthChecks => Some(6 * 3600),
@@ -407,7 +399,7 @@ impl JobKey {
     }
 }
 
-pub const ALL_JOB_KEYS: [JobKey; 18] = [
+pub const ALL_JOB_KEYS: [JobKey; 17] = [
     JobKey::LibraryScanMovies,
     JobKey::LibraryScanSeries,
     JobKey::LibraryScanAnime,
@@ -416,7 +408,6 @@ pub const ALL_JOB_KEYS: [JobKey; 18] = [
     JobKey::BackgroundLibraryRefreshAnime,
     JobKey::RssSync,
     JobKey::SubtitleSearch,
-    JobKey::MetadataRefresh,
     JobKey::PluginRegistryRefresh,
     JobKey::Housekeeping,
     JobKey::HealthChecks,
@@ -771,10 +762,10 @@ mod tests {
     use crate::{LibraryScanMode, LibraryScanPhaseProgress, MediaFacet};
 
     #[test]
-    fn background_library_refresh_definitions_advertise_hourly_schedule() {
+    fn background_library_refresh_definitions_advertise_two_hour_schedule() {
         let definition = JobDefinition::from_key(JobKey::BackgroundLibraryRefreshMovies, None);
 
-        assert_eq!(definition.schedule.description, "Hourly");
+        assert_eq!(definition.schedule.description, "Every 2 hours");
         assert_eq!(definition.schedule.initial_delay_seconds, None);
     }
 

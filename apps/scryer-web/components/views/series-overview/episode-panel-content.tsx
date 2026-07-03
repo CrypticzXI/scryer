@@ -143,7 +143,7 @@ export const EpisodePanelContent = React.memo(function EpisodePanelContent({
         )}
         {searchBlocked ? null : episodeLoading ? (
           <div className="flex flex-col items-center justify-center gap-4 py-16">
-            <Loader2 className="h-10 w-10 animate-spin text-emerald-500" />
+            <Loader2 className="h-10 w-10 animate-spin text-[var(--scry-accent-text)]" />
             <p className="text-lg text-muted-foreground">{t("label.searching")}</p>
           </div>
         ) : episodeResults.length === 0 ? (

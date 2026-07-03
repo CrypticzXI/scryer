@@ -210,7 +210,7 @@ export function SettingsSecuritySection({
         </div>
 
         {settings.envOverrideActive ? (
-          <div className="space-y-3 rounded-[14px] border border-amber-500/30 bg-amber-500/10 p-4 shadow-[0_10px_24px_rgba(0,0,0,0.16)]">
+          <div className="space-y-3 rounded-[14px] border border-[var(--scry-warning-border)] bg-[var(--scry-warning-bg)] p-4 shadow-[0_10px_24px_rgba(0,0,0,0.16)]">
             <div className="space-y-1">
               <h4 className="text-sm font-medium text-[var(--scry-ink2)]">{t("settings.securityOverrideTitle")}</h4>
               <p className="text-xs text-[var(--scry-muted3)]">
@@ -276,7 +276,7 @@ export function SettingsSecuritySection({
         confirmButtonId="settings-security-enable-confirm"
         cancelButtonId="settings-security-enable-cancel"
         confirmButtonVariant="default"
-        confirmButtonClassName="bg-emerald-600 text-white hover:bg-emerald-700 focus-visible:ring-emerald-600 dark:bg-emerald-500 dark:text-emerald-950 dark:hover:bg-emerald-400"
+        confirmButtonClassName="bg-[var(--scry-success-solid)] text-[var(--scry-success-on-solid)] hover:bg-[var(--scry-success-solid-hover)] focus-visible:ring-[var(--scry-success-border-strong)]"
         isBusy={confirmBusy}
         confirmDisabled={confirmDisabled}
         onConfirm={onConfirmEnable}

@@ -861,6 +861,13 @@ pub trait TitleRepository: Send + Sync {
         limit: usize,
         excluded_facets: &[MediaFacet],
     ) -> AppResult<Vec<PendingTitleHydration>>;
+    async fn list_title_ids_with_metadata_hydration_due(
+        &self,
+        _facet: Option<MediaFacet>,
+        _library_ids: &[String],
+    ) -> AppResult<Vec<String>> {
+        Ok(Vec::new())
+    }
     async fn list_anime_title_ids_missing_anibridge_scoped_external_ids(
         &self,
         limit: usize,

@@ -39,6 +39,7 @@ import {
   Table,
   TableBody,
   TableCell,
+  TableCheckboxHead,
   TableHead,
   TableHeader,
   TableRow,
@@ -127,19 +128,19 @@ const importFilterOptions: ActivityFilterChipOption<DownloadImportStatus>[] = [
     value: "importing",
     labelKey: "activity.importFilter.importing",
     icon: HardDrive,
-    iconClassName: "text-sky-400",
+    iconClassName: "text-[var(--scry-info-text-soft)]",
   },
   {
     value: "pending",
     labelKey: "activity.importFilter.pending",
     icon: Clock3,
-    iconClassName: "text-indigo-400",
+    iconClassName: "text-[var(--scry-accent-text)]",
   },
   {
     value: "blocked",
     labelKey: "activity.importFilter.blocked",
     icon: CircleAlert,
-    iconClassName: "text-amber-400",
+    iconClassName: "text-[var(--scry-warning-text)]",
   },
   {
     value: "failed",
@@ -154,25 +155,25 @@ const activityFilterOptions: ActivityFilterChipOption<DownloadActivityStatus>[] 
     value: "downloading",
     labelKey: "activity.activityFilter.downloading",
     icon: ArrowDownToLine,
-    iconClassName: "text-sky-400",
+    iconClassName: "text-[var(--scry-info-text-soft)]",
   },
   {
     value: "queued",
     labelKey: "activity.activityFilter.queued",
     icon: Clock3,
-    iconClassName: "text-amber-400",
+    iconClassName: "text-[var(--scry-warning-text)]",
   },
   {
     value: "paused",
     labelKey: "activity.activityFilter.paused",
     icon: Pause,
-    iconClassName: "text-purple-400",
+    iconClassName: "text-[var(--scry-warning-text)]",
   },
   {
     value: "post_processing",
     labelKey: "activity.activityFilter.postProcessing",
     icon: HardDrive,
-    iconClassName: "text-cyan-400",
+    iconClassName: "text-[var(--scry-info-text-soft)]",
   },
 ];
 
@@ -181,7 +182,7 @@ const historyFilterOptions: ActivityFilterChipOption<DownloadHistoryStatus>[] = 
     value: "success",
     labelKey: "activity.historyFilter.success",
     icon: CheckCircle2,
-    iconClassName: "text-emerald-400",
+    iconClassName: "text-[var(--scry-success-text-soft)]",
   },
   {
     value: "failed",
@@ -1114,65 +1115,88 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
               onScroll={handleResultsScroll}
               className={`${scrollHeightClass} overflow-y-auto rounded-xl border border-border/60`}
             >
-              <div className="overflow-x-auto">
-                <Table
-                  className={cn(
-                    "table-fixed",
-                    activeTab === "activity" || activeTab === "import"
-                      ? "min-w-[1160px]"
-                      : "min-w-[700px]",
-                  )}
-                >
-                  <TableHeader>
-                    <TableRow>
-                      {activeTab === "import" ? (
-                        <TableHead className="w-12 min-w-12 text-center">
-                          <Checkbox
-                            checked={
-                              allVisibleImportItemsSelected
-                                ? true
-                                : someVisibleImportItemsSelected
-                                  ? "indeterminate"
-                                  : false
-                            }
-                            disabled={visibleImportKeys.length === 0}
-                            aria-label={t("activity.selectAllImportItems")}
-                            onCheckedChange={toggleAllVisibleImportItemsSelected}
-                            size="table"
-                            className="mx-auto"
-                          />
-                        </TableHead>
-                      ) : null}
-                      {renderSortableHeader("title", t("queue.title"), "w-[28%] min-w-72")}
-                      {renderSortableHeader("client", t("queue.client"), "w-36 min-w-36")}
-                      {renderSortableHeader("status", t("queue.status"), "w-44 min-w-44")}
-                      {activeTab === "activity" || activeTab === "import"
-                        ? renderSortableHeader("progress", t("queue.progress"), "w-48 min-w-48")
-                        : null}
-                      {renderSortableHeader("size", t("queue.size"), "w-24 min-w-24")}
-                      <TableHead className="w-44 min-w-44 text-right">{t("label.actions")}</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {sortedQueueItems.length === 0 ? (
-                      <TableRow>
-                        <TableCell
-                          colSpan={activeTab === "activity" ? 6 : activeTab === "import" ? 7 : 5}
-                          className={queueLoading ? "p-0" : "text-sm text-muted-foreground"}
-                        >
-                          {queueLoading ? (
-                            <ActivityTableLoadingMask label={t("label.loading")} />
-                          ) : (
-                            emptyStateLabel
-                          )}
-                        </TableCell>
-                      </TableRow>
-                    ) : (
-                      renderDesktopQueueRows(sortedQueueItems, queueLoadingMore)
+              <Table overflow="clip" layout="fixed" density="dense">
+                <TableHeader>
+                  <TableRow>
+                    {activeTab === "import" ? (
+                      <TableCheckboxHead>
+                        <Checkbox
+                          checked={
+                            allVisibleImportItemsSelected
+                              ? true
+                              : someVisibleImportItemsSelected
+                                ? "indeterminate"
+                                : false
+                          }
+                          disabled={visibleImportKeys.length === 0}
+                          aria-label={t("activity.selectAllImportItems")}
+                          onCheckedChange={toggleAllVisibleImportItemsSelected}
+                          size="table"
+                          className="mx-auto"
+                        />
+                      </TableCheckboxHead>
+                    ) : null}
+                    {renderSortableHeader(
+                      "title",
+                      t("queue.title"),
+                      "w-[32%]",
                     )}
-                  </TableBody>
-                </Table>
-              </div>
+                    {renderSortableHeader(
+                      "client",
+                      t("queue.client"),
+                      "w-[13%]",
+                    )}
+                    {renderSortableHeader(
+                      "status",
+                      t("queue.status"),
+                      "w-[15%]",
+                    )}
+                    {activeTab === "activity" || activeTab === "import"
+                      ? renderSortableHeader(
+                          "progress",
+                          t("queue.progress"),
+                          "w-[16%]",
+                        )
+                      : null}
+                    {renderSortableHeader(
+                      "size",
+                      t("queue.size"),
+                      "w-28 text-center [&_button]:justify-center [&_button]:text-center",
+                    )}
+                    <TableHead className="w-52 text-center">
+                      {t("label.actions")}
+                    </TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {sortedQueueItems.length === 0 ? (
+                    <TableRow>
+                      <TableCell
+                        colSpan={
+                          activeTab === "activity"
+                            ? 6
+                            : activeTab === "import"
+                              ? 7
+                              : 5
+                        }
+                        className={
+                          queueLoading
+                            ? "p-0"
+                            : "text-sm text-muted-foreground"
+                        }
+                      >
+                        {queueLoading ? (
+                          <ActivityTableLoadingMask label={t("label.loading")} />
+                        ) : (
+                          emptyStateLabel
+                        )}
+                      </TableCell>
+                    </TableRow>
+                  ) : (
+                    renderDesktopQueueRows(sortedQueueItems, queueLoadingMore)
+                  )}
+                </TableBody>
+              </Table>
             </div>
           )}
           {activeTab === "history" && historyTotalPages > 1 ? (

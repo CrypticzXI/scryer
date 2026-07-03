@@ -10,6 +10,8 @@ import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import {
   Table,
+  TableActionsCell,
+  TableActionsHead,
   TableBody,
   TableCell,
   TableHead,
@@ -56,6 +58,8 @@ const DELAY_PANEL_TITLE_CLASS =
   "text-[15px] font-semibold text-[var(--scry-ink2)]";
 const DELAY_PANEL_BODY_CLASS = "p-4 sm:p-5";
 const DELAY_MUTED_TEXT_CLASS = "text-[var(--scry-muted3)]";
+const DELAY_TABLE_HEADER_CELL_CLASS =
+  "text-center font-semibold text-[var(--scry-muted3)]";
 
 export function SettingsDelayProfilesSection({
   loading,
@@ -119,20 +123,20 @@ export function SettingsDelayProfilesSection({
               {t("settings.delayProfileNone")}
             </p>
           ) : (
-            <div className="overflow-x-auto">
-              <Table className="min-w-[1180px]">
+            <div className="overflow-hidden">
+              <Table overflow="clip" layout="fixed" density="dense">
                 <TableHeader>
                   <TableRow className="border-[var(--scry-border3)] bg-[var(--scry-inset)] hover:bg-[var(--scry-inset)]">
-                    <TableHead className={`font-semibold ${DELAY_MUTED_TEXT_CLASS}`}>{t("settings.delayProfileNameLabel")}</TableHead>
-                    <TableHead className={`font-semibold ${DELAY_MUTED_TEXT_CLASS}`}>{t("settings.delayProfileUsenetDelay")}</TableHead>
-                    <TableHead className={`font-semibold ${DELAY_MUTED_TEXT_CLASS}`}>{t("settings.delayProfileTorrentDelay")}</TableHead>
-                    <TableHead className={`font-semibold ${DELAY_MUTED_TEXT_CLASS}`}>{t("settings.delayProfilePreferred")}</TableHead>
-                    <TableHead className={`font-semibold ${DELAY_MUTED_TEXT_CLASS}`}>{t("settings.delayProfileMinAge")}</TableHead>
-                    <TableHead className={`font-semibold ${DELAY_MUTED_TEXT_CLASS}`}>{t("settings.delayProfileBypassLabel")}</TableHead>
-                    <TableHead className={`font-semibold ${DELAY_MUTED_TEXT_CLASS}`}>{t("settings.delayProfileFacetsLabel")}</TableHead>
-                    <TableHead className={`font-semibold ${DELAY_MUTED_TEXT_CLASS}`}>{t("settings.delayProfilePriorityLabel")}</TableHead>
-                    <TableHead className={`text-center font-semibold ${DELAY_MUTED_TEXT_CLASS}`}>{t("settings.delayProfileEnabledLabel")}</TableHead>
-                    <TableHead className="w-24" />
+                    <TableHead className={`w-[18%] font-semibold ${DELAY_MUTED_TEXT_CLASS}`}>{t("settings.delayProfileNameLabel")}</TableHead>
+                    <TableHead className={`w-28 ${DELAY_TABLE_HEADER_CELL_CLASS}`}>{t("settings.delayProfileUsenetDelay")}</TableHead>
+                    <TableHead className={`w-28 ${DELAY_TABLE_HEADER_CELL_CLASS}`}>{t("settings.delayProfileTorrentDelay")}</TableHead>
+                    <TableHead className={`w-28 ${DELAY_TABLE_HEADER_CELL_CLASS}`}>{t("settings.delayProfilePreferred")}</TableHead>
+                    <TableHead className={`w-24 ${DELAY_TABLE_HEADER_CELL_CLASS}`}>{t("settings.delayProfileMinAge")}</TableHead>
+                    <TableHead className={`w-32 ${DELAY_TABLE_HEADER_CELL_CLASS}`}>{t("settings.delayProfileBypassLabel")}</TableHead>
+                    <TableHead className={`w-[16%] ${DELAY_TABLE_HEADER_CELL_CLASS}`}>{t("settings.delayProfileFacetsLabel")}</TableHead>
+                    <TableHead className={`w-24 ${DELAY_TABLE_HEADER_CELL_CLASS}`}>{t("settings.delayProfilePriorityLabel")}</TableHead>
+                    <TableHead className={`w-24 ${DELAY_TABLE_HEADER_CELL_CLASS}`}>{t("settings.delayProfileEnabledLabel")}</TableHead>
+                    <TableActionsHead className="w-24">{t("label.actions")}</TableActionsHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -140,34 +144,34 @@ export function SettingsDelayProfilesSection({
                     <TableRow
                       key={profile.id}
                       id={selectorId("settings-delay-profile-row", profile.id)}
-                      className="border-[var(--scry-border3)] hover:bg-[var(--scry-hover)]"
+                      className="border-[var(--scry-border3)] hover:bg-[var(--scry-rowHover)]"
                     >
-                      <TableCell className="font-medium text-[var(--scry-ink2)]">{profile.name}</TableCell>
-                      <TableCell className={DELAY_MUTED_TEXT_CLASS}>{profile.usenet_delay_minutes}m</TableCell>
-                      <TableCell className={DELAY_MUTED_TEXT_CLASS}>{profile.torrent_delay_minutes}m</TableCell>
-                      <TableCell className="capitalize text-[var(--scry-ink2)]">{profile.preferred_protocol}</TableCell>
-                      <TableCell>{profile.min_age_minutes > 0 ? `${profile.min_age_minutes}m` : "—"}</TableCell>
-                      <TableCell>
+                      <TableCell className="truncate font-medium text-[var(--scry-ink2)]">{profile.name}</TableCell>
+                      <TableCell className={`text-center ${DELAY_MUTED_TEXT_CLASS}`}>{profile.usenet_delay_minutes}m</TableCell>
+                      <TableCell className={`text-center ${DELAY_MUTED_TEXT_CLASS}`}>{profile.torrent_delay_minutes}m</TableCell>
+                      <TableCell className="text-center capitalize text-[var(--scry-ink2)]">{profile.preferred_protocol}</TableCell>
+                      <TableCell className="text-center">{profile.min_age_minutes > 0 ? `${profile.min_age_minutes}m` : "—"}</TableCell>
+                      <TableCell className="text-center">
                         {profile.bypass_score_threshold != null
                           ? `≥ ${profile.bypass_score_threshold}`
                           : "—"}
                       </TableCell>
-                      <TableCell>
+                      <TableCell className="truncate text-center">
                         {profile.applies_to_facets.length === 0
                           ? t("settings.delayProfileAllFacets")
                           : profile.applies_to_facets
                               .map((f) => FACET_LABELS[f] ?? f)
                               .join(", ")}
                       </TableCell>
-                      <TableCell>{profile.priority}</TableCell>
+                      <TableCell className="text-center">{profile.priority}</TableCell>
                       <TableCell className="text-center">
                         <RenderBooleanIcon
                           value={profile.enabled}
                           label={`${t("settings.delayProfileEnabledLabel")}: ${profile.name}`}
                         />
                       </TableCell>
-                      <TableCell>
-                        <div className="flex justify-end gap-1">
+                      <TableActionsCell className="w-24">
+                        <div className="flex items-center justify-center gap-1">
                           <IconButton
                             id={selectorId("settings-delay-profile-edit", profile.id)}
                             label={t("label.edit")}
@@ -187,7 +191,7 @@ export function SettingsDelayProfilesSection({
                             <Trash2 className="h-4 w-4" />
                           </IconButton>
                         </div>
-                      </TableCell>
+                      </TableActionsCell>
                     </TableRow>
                   ))}
                 </TableBody>

@@ -863,7 +863,7 @@ export function SeriesOverviewView({
                 <span
                   className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${
                     title.monitored
-                      ? "bg-emerald-500/20 text-emerald-700 dark:text-emerald-300"
+                      ? "bg-[var(--scry-success-bg)] text-[var(--scry-success-text)]"
                       : "bg-accent text-muted-foreground"
                   }`}
                 >

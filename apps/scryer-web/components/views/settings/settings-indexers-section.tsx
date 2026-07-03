@@ -163,7 +163,7 @@ function IndexerStatusCell({ indexer }: { indexer: IndexerRecord }) {
     if (until > new Date()) {
       return (
         <span
-          className="text-yellow-600 dark:text-yellow-400"
+          className="text-[var(--scry-warning-text)]"
           title={indexer.disabledUntil}
         >
           {t("settings.indexerDisabledUntil", {
@@ -504,7 +504,7 @@ export function SettingsIndexersSection({
                       <div className="font-medium">{indexer.name}</div>
                       {indexer.isManaged ? (
                         <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
-                          <span className="inline-flex items-center gap-1 rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 font-medium text-amber-700 dark:border-amber-500/35 dark:bg-amber-500/12 dark:text-amber-200">
+                          <span className="inline-flex items-center gap-1 rounded-full border border-[var(--scry-warning-border)] bg-[var(--scry-warning-bg)] px-2 py-0.5 font-medium text-[var(--scry-warning-text)]">
                             <Lock className="h-3 w-3" />
                             {t("settings.managedIndexerBadge")}
                           </span>

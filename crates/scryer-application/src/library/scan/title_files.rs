@@ -12,6 +12,10 @@ pub(crate) struct FileSourceSnapshot {
     pub(crate) signature: Option<FileSourceSignature>,
 }
 
+pub(crate) const MEDIA_FILE_SOURCE_SIGNATURE_SCHEME: &str = "blake3_head_tail_1mib_v1";
+static MEDIA_FILE_SOURCE_SIGNATURE_READ_LIMIT: tokio::sync::Semaphore =
+    tokio::sync::Semaphore::const_new(1);
+
 #[cfg(test)]
 #[derive(Clone, Debug, Default)]
 pub(super) struct TitleEpisodeLookup {
@@ -41,11 +45,28 @@ pub(crate) enum PlannedTitleScanRecord {
     New,
 }
 
-pub(crate) fn file_source_signature_from_metadata(
-    metadata: &std::fs::Metadata,
-) -> Option<FileSourceSignature> {
-    source_signature_from_std_metadata(metadata)
-        .map(|(scheme, value)| FileSourceSignature { scheme, value })
+pub(crate) async fn file_source_snapshot_from_path(
+    path: &std::path::Path,
+) -> AppResult<FileSourceSnapshot> {
+    let _permit = MEDIA_FILE_SOURCE_SIGNATURE_READ_LIMIT
+        .acquire()
+        .await
+        .map_err(|error| {
+            AppError::Repository(format!("source signature limiter closed: {error}"))
+        })?;
+    let path = path.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        let proof = crate::fs_integrity::import_content_proof(&path)?;
+        Ok(FileSourceSnapshot {
+            size_bytes: i64::try_from(proof.size_bytes).unwrap_or(i64::MAX),
+            signature: Some(FileSourceSignature {
+                scheme: MEDIA_FILE_SOURCE_SIGNATURE_SCHEME.to_string(),
+                value: proof.sample_blake3,
+            }),
+        })
+    })
+    .await
+    .map_err(|error| AppError::Repository(format!("source signature task failed: {error}")))?
 }
 
 pub(crate) fn file_source_snapshot_from_library_file(
@@ -56,9 +77,13 @@ pub(crate) fn file_source_snapshot_from_library_file(
         file.source_signature_scheme.clone(),
         file.source_signature_value.clone(),
     ) {
-        (Some(scheme), Some(value)) => Some(FileSourceSignature { scheme, value }),
+        (Some(scheme), Some(value)) if scheme == MEDIA_FILE_SOURCE_SIGNATURE_SCHEME => {
+            Some(FileSourceSignature { scheme, value })
+        }
         _ => None,
     };
+
+    signature.as_ref()?;
 
     Some(FileSourceSnapshot {
         size_bytes,
@@ -81,10 +106,9 @@ pub(super) fn title_media_file_matches_snapshot(
         &media_file.source_signature_scheme,
         &media_file.source_signature_value,
     ) {
-        // Older rows created before source signatures existed can safely reuse
-        // the previous analysis on the first post-migration scan when size and
-        // scan status still match. The signature gets backfilled separately.
-        (None, None) => true,
+        // Rows without the current sampled content signature must be
+        // re-analyzed once so the stronger signature can be persisted.
+        (None, None) => false,
         (Some(scheme), Some(value)) => snapshot
             .signature
             .as_ref()
@@ -548,33 +572,63 @@ mod tests {
         );
     }
 
-    #[test]
-    fn file_source_signature_uses_platform_scheme() {
+    #[tokio::test]
+    async fn file_source_snapshot_uses_sampled_blake3_scheme() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("movie.mkv");
         std::fs::write(&path, b"video").expect("write test file");
 
-        let metadata = std::fs::metadata(&path).expect("metadata");
-        let signature = file_source_signature_from_metadata(&metadata).expect("signature");
+        let snapshot = file_source_snapshot_from_path(&path)
+            .await
+            .expect("sampled source snapshot");
+        let signature = snapshot.signature.expect("signature");
 
-        #[cfg(unix)]
-        assert_eq!(signature.scheme, "unix_mtime_nsec_v1");
-        #[cfg(windows)]
-        assert_eq!(signature.scheme, "windows_last_write_100ns_v1");
-        #[cfg(all(not(unix), not(windows)))]
-        assert_eq!(signature.scheme, "system_time_nsec_v1");
-
+        assert_eq!(snapshot.size_bytes, 5);
+        assert_eq!(signature.scheme, MEDIA_FILE_SOURCE_SIGNATURE_SCHEME);
         assert!(!signature.value.trim().is_empty());
     }
 
     #[test]
-    fn title_media_file_matches_snapshot_backfills_missing_signatures_without_reanalysis() {
+    fn title_media_file_requires_current_sampled_signature() {
         let media_file = build_test_media_file(1234, None, None, true);
         let snapshot = FileSourceSnapshot {
             size_bytes: 1234,
             signature: Some(FileSourceSignature {
-                scheme: "unix_mtime_nsec_v1".into(),
-                value: "1:2".into(),
+                scheme: MEDIA_FILE_SOURCE_SIGNATURE_SCHEME.into(),
+                value: "sample".into(),
+            }),
+        };
+
+        assert!(!title_media_file_matches_snapshot(&media_file, &snapshot));
+    }
+
+    #[test]
+    fn title_media_file_rejects_legacy_mtime_signature() {
+        let media_file = build_test_media_file(1234, Some("unix_mtime_nsec_v1"), Some("1:2"), true);
+        let snapshot = FileSourceSnapshot {
+            size_bytes: 1234,
+            signature: Some(FileSourceSignature {
+                scheme: MEDIA_FILE_SOURCE_SIGNATURE_SCHEME.into(),
+                value: "sample".into(),
+            }),
+        };
+
+        assert!(!title_media_file_matches_snapshot(&media_file, &snapshot));
+    }
+
+    #[test]
+    fn title_media_file_matches_current_sampled_signature() {
+        let media_file = build_test_media_file(
+            1234,
+            Some(MEDIA_FILE_SOURCE_SIGNATURE_SCHEME),
+            Some("sample"),
+            true,
+        );
+        let snapshot = FileSourceSnapshot {
+            size_bytes: 1234,
+            signature: Some(FileSourceSignature {
+                scheme: MEDIA_FILE_SOURCE_SIGNATURE_SCHEME.into(),
+                value: "sample".into(),
             }),
         };
 
@@ -583,12 +637,16 @@ mod tests {
 
     #[test]
     fn title_media_file_matches_snapshot_requires_persisted_analysis() {
-        let media_file =
-            build_test_media_file(1234, Some("unix_mtime_nsec_v1"), Some("1:2"), false);
+        let media_file = build_test_media_file(
+            1234,
+            Some(MEDIA_FILE_SOURCE_SIGNATURE_SCHEME),
+            Some("1:2"),
+            false,
+        );
         let snapshot = FileSourceSnapshot {
             size_bytes: 1234,
             signature: Some(FileSourceSignature {
-                scheme: "unix_mtime_nsec_v1".into(),
+                scheme: MEDIA_FILE_SOURCE_SIGNATURE_SCHEME.into(),
                 value: "1:2".into(),
             }),
         };

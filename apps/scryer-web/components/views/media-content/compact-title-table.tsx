@@ -25,6 +25,7 @@ import { TitlePosterSlot } from "@/components/title-poster-slot";
 import { releaseSupportsAdditionalFileQueue } from "@/lib/utils/release-queue-scope";
 import { selectPosterVariantUrl } from "@/lib/utils/poster-images";
 import { Checkbox } from "@/components/ui/checkbox";
+import { ActionTooltip } from "@/components/ui/tooltip";
 import {
   TableBody,
   TableCell,
@@ -57,6 +58,8 @@ import {
   DEFAULT_TITLE_TABLE_VISIBLE_COLUMNS,
   TITLE_TABLE_HEADER_CELL_CLASS,
   TITLE_TABLE_HEADER_ROW_CLASS,
+  TITLE_TABLE_INTERACTIVE_PANEL_BODY_CLASS,
+  TITLE_TABLE_INTERACTIVE_PANEL_ESTIMATED_HEIGHT,
   TITLE_TABLE_ROW_CLASS,
   type TitleTableSortDirection,
   type TitleTableSortKey,
@@ -274,12 +277,27 @@ export function CompactTitleTable({
       readOverviewSavedScroll(location.pathname, scrollStorageKeySuffix) ?? 0,
     [location.pathname, scrollStorageKeySuffix],
   );
+  const expandedInteractiveRowSignature = React.useMemo(
+    () => Array.from(expandedInteractiveRows).sort().join("|"),
+    [expandedInteractiveRows],
+  );
+  const compactTitleRowHeight = selectedDrawerMode ? 70 : 48;
 
   const titleVirtualizer = useVirtualizer({
     count: sortedTitles.length,
     getScrollElement: () => titleTableScrollRef.current,
     getItemKey: (index) => sortedTitles[index]?.id ?? index,
-    estimateSize: () => (selectedDrawerMode ? 70 : 48),
+    estimateSize: (index) => {
+      const titleId = sortedTitles[index]?.id;
+      return (
+        compactTitleRowHeight +
+        (!selectedDrawerMode &&
+        titleId &&
+        expandedInteractiveRows.has(titleId)
+          ? TITLE_TABLE_INTERACTIVE_PANEL_ESTIMATED_HEIGHT
+          : 0)
+      );
+    },
     initialOffset: initialScrollOffset,
     overscan: 8,
   });
@@ -288,7 +306,7 @@ export function CompactTitleTable({
     loading: titleLoading,
     rebuildKey: `${
       selectedPaneMode ? "selected-pane" : "full-table"
-    }:${visibleColumnSignature}`,
+    }:${visibleColumnSignature}:${expandedInteractiveRowSignature}`,
     scrollRef: titleTableScrollRef,
     titleVirtualizer,
   });
@@ -714,17 +732,18 @@ export function CompactTitleTable({
             </button>
           </TableCell>
           <TableCell className="text-center align-middle">
-            <span
-              className="inline-flex h-4 w-4 shrink-0 items-center justify-center"
-              title={`${t("title.table.monitored")}: ${item.name}`}
-              aria-label={`${t("title.table.monitored")}: ${item.name}`}
-            >
-              {item.monitored ? (
-                <Eye className="size-4 text-emerald-600 dark:text-[#4ade80]" />
-              ) : (
-                <EyeOff className="size-4 text-[var(--scry-faint2)]" />
-              )}
-            </span>
+            <ActionTooltip content={`${t("title.table.monitored")}: ${item.name}`}>
+              <span
+                className="inline-flex h-4 w-4 shrink-0 items-center justify-center"
+                aria-label={`${t("title.table.monitored")}: ${item.name}`}
+              >
+                {item.monitored ? (
+                  <Eye className="size-4 text-[var(--scry-success-text-soft)]" />
+                ) : (
+                  <EyeOff className="size-4 text-[var(--scry-faint2)]" />
+                )}
+              </span>
+            </ActionTooltip>
           </TableCell>
           <TableCell className="whitespace-nowrap px-2 py-2 text-center align-middle font-[var(--font-code)] text-[12.5px] tabular-nums text-[var(--scry-text4)]">
             {bytesToReadable(item.sizeBytes)}
@@ -790,17 +809,18 @@ export function CompactTitleTable({
           ) : null}
           {showMonitoredColumn ? (
             <TableCell className="text-center align-middle">
-              <span
-                className="inline-flex h-4 w-4 shrink-0 items-center justify-center"
-                title={`${t("title.table.monitored")}: ${item.name}`}
-                aria-label={`${t("title.table.monitored")}: ${item.name}`}
-              >
-                {item.monitored ? (
-                  <Eye className="size-4 text-emerald-600 dark:text-[#4ade80]" />
-                ) : (
-                  <EyeOff className="size-4 text-[var(--scry-faint2)]" />
-                )}
-              </span>
+              <ActionTooltip content={`${t("title.table.monitored")}: ${item.name}`}>
+                <span
+                  className="inline-flex h-4 w-4 shrink-0 items-center justify-center"
+                  aria-label={`${t("title.table.monitored")}: ${item.name}`}
+                >
+                  {item.monitored ? (
+                    <Eye className="size-4 text-[var(--scry-success-text-soft)]" />
+                  ) : (
+                    <EyeOff className="size-4 text-[var(--scry-faint2)]" />
+                  )}
+                </span>
+              </ActionTooltip>
             </TableCell>
           ) : null}
           {showQualityColumn ? (
@@ -849,7 +869,7 @@ export function CompactTitleTable({
                   className={COMPACT_TITLE_TABLE_ACTION_BUTTON_CLASS}
                 >
                   {autoQueueLoading ? (
-                    <Loader2 className="h-3.5 w-3.5 animate-spin text-emerald-500" />
+                    <Loader2 className="h-3.5 w-3.5 animate-spin text-[var(--scry-accent-text)]" />
                   ) : (
                     <Zap className="h-3.5 w-3.5" />
                   )}
@@ -912,7 +932,7 @@ export function CompactTitleTable({
               colSpan={columnCount}
               className="border-t border-border bg-popover/40 p-0"
             >
-              <div className="px-4 py-3">
+              <div className={TITLE_TABLE_INTERACTIVE_PANEL_BODY_CLASS}>
                 <div className="mb-2 flex items-center justify-between gap-3">
                   <p className="text-sm text-card-foreground">
                     {t("nzb.searchResultsFor", { name: item.name })}
@@ -935,7 +955,7 @@ export function CompactTitleTable({
                 </div>
                 {interactiveSearchLoading ? (
                   <div className="flex items-center gap-3 py-3">
-                    <Loader2 className="h-5 w-5 animate-spin text-emerald-500" />
+                    <Loader2 className="h-5 w-5 animate-spin text-[var(--scry-accent-text)]" />
                     <p className="text-sm text-muted-foreground">
                       {t("label.searching")}
                     </p>

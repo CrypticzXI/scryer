@@ -12,8 +12,11 @@ import { Progress } from "@/components/ui/progress";
 import { SingleSelectField } from "@/components/ui/select";
 import {
   Table,
+  TableActionsCell,
+  TableActionsHead,
   TableBody,
   TableCell,
+  TableCodeCell,
   TableHead,
   TableHeader,
   TableRow,
@@ -33,6 +36,8 @@ const PLUGIN_PANEL_BODY_CLASS = "p-4 sm:p-5";
 const PLUGIN_INSET_CLASS =
   "rounded-[12px] border border-[var(--scry-line2)] bg-[var(--scry-card2)]";
 const PLUGIN_MUTED_TEXT_CLASS = "text-[var(--scry-muted3)]";
+const PLUGIN_TABLE_HEADER_CELL_CLASS =
+  "font-semibold text-[var(--scry-muted3)]";
 
 export type RegistryPluginRecord = {
   id: string;
@@ -338,20 +343,17 @@ function PluginTable({
 }) {
   const t = useTranslate();
   const nameColumnClass =
-    showActions === "installed" ? "w-[34%]" : "w-[38%]";
+    showActions === "installed" ? "w-[30%]" : "w-[36%]";
   const typeColumnClass =
-    showActions === "installed" ? "w-[13%]" : "w-[14%]";
+    showActions === "installed" ? "w-[13%] text-center" : "w-[14%] text-center";
   const versionColumnClass =
-    showActions === "installed" ? "w-[10%]" : "w-[11%]";
-  const sizeColumnClass =
-    showActions === "installed" ? "w-[8%]" : "w-[10%]";
+    showActions === "installed" ? "w-[12%] text-center" : "w-[12%] text-center";
+  const sizeColumnClass = "w-24 text-center";
   const statusColumnClass =
-    showActions === "installed" ? "w-[13%]" : "w-[12%]";
-  const enabledColumnClass = "w-[8%] text-center";
+    showActions === "installed" ? "w-[15%] text-center" : "w-[16%] text-center";
+  const enabledColumnClass = "w-20 text-center";
   const actionsColumnClass =
-    showActions === "installed"
-      ? "w-[14%] overflow-hidden pl-4 pr-5 text-right"
-      : "w-[15%] overflow-hidden pl-4 pr-5 text-right";
+    showActions === "installed" ? "w-40 text-center" : "w-32 text-center";
   if (plugins.length === 0) {
     return <p className={`${PLUGIN_PANEL_BODY_CLASS} text-sm ${PLUGIN_MUTED_TEXT_CLASS}`}>{emptyMessage}</p>;
   }
@@ -360,19 +362,21 @@ function PluginTable({
     <div className="overflow-hidden">
       <Table
         id={showActions === "installed" ? "settings-plugins-installed-table" : "settings-plugins-available-table"}
-        className="w-full table-fixed"
+        overflow="clip"
+        layout="fixed"
+        density="dense"
       >
         <TableHeader>
           <TableRow className="border-[var(--scry-border3)] bg-[var(--scry-inset)] hover:bg-[var(--scry-inset)]">
-            <TableHead className={cn(nameColumnClass, "font-semibold", PLUGIN_MUTED_TEXT_CLASS)}>{t("label.name")}</TableHead>
-            <TableHead className={cn(typeColumnClass, "font-semibold", PLUGIN_MUTED_TEXT_CLASS)}>{t("label.type")}</TableHead>
-            <TableHead className={cn(versionColumnClass, "font-semibold", PLUGIN_MUTED_TEXT_CLASS)}>{t("label.version")}</TableHead>
-            <TableHead className={cn(sizeColumnClass, "font-semibold", PLUGIN_MUTED_TEXT_CLASS)}>{t("queue.size")}</TableHead>
-            <TableHead className={cn(statusColumnClass, "font-semibold", PLUGIN_MUTED_TEXT_CLASS)}>{t("label.status")}</TableHead>
+            <TableHead className={cn(nameColumnClass, PLUGIN_TABLE_HEADER_CELL_CLASS)}>{t("label.name")}</TableHead>
+            <TableHead className={cn(typeColumnClass, PLUGIN_TABLE_HEADER_CELL_CLASS)}>{t("label.type")}</TableHead>
+            <TableHead className={cn(versionColumnClass, PLUGIN_TABLE_HEADER_CELL_CLASS)}>{t("label.version")}</TableHead>
+            <TableHead className={cn(sizeColumnClass, PLUGIN_TABLE_HEADER_CELL_CLASS)}>{t("queue.size")}</TableHead>
+            <TableHead className={cn(statusColumnClass, PLUGIN_TABLE_HEADER_CELL_CLASS)}>{t("label.status")}</TableHead>
             {showActions === "installed" && (
-              <TableHead className={cn(enabledColumnClass, "font-semibold", PLUGIN_MUTED_TEXT_CLASS)}>{t("label.enabled")}</TableHead>
+              <TableHead className={cn(enabledColumnClass, PLUGIN_TABLE_HEADER_CELL_CLASS)}>{t("label.enabled")}</TableHead>
             )}
-            <TableHead className={cn(actionsColumnClass, "font-semibold", PLUGIN_MUTED_TEXT_CLASS)}>{t("label.actions")}</TableHead>
+            <TableActionsHead className={cn(actionsColumnClass, PLUGIN_TABLE_HEADER_CELL_CLASS)}>{t("label.actions")}</TableActionsHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -406,12 +410,12 @@ function PluginTable({
                 data-plugin-installed={plugin.isInstalled ? "true" : "false"}
                 data-plugin-enabled={plugin.isEnabled ? "true" : "false"}
                 data-plugin-update-available={plugin.updateAvailable ? "true" : "false"}
-                className="border-[var(--scry-border3)] hover:bg-[var(--scry-hover)]"
+                className="border-[var(--scry-border3)] hover:bg-[var(--scry-rowHover)]"
               >
-                <TableCell className={nameColumnClass}>
+                <TableCell className={cn(nameColumnClass, "align-top")}>
                   <div>
                     <div className="font-medium text-[var(--scry-ink2)]">{plugin.name}</div>
-                    <div className={`max-w-[300px] whitespace-normal break-words text-xs ${PLUGIN_MUTED_TEXT_CLASS}`}>
+                    <div className={`whitespace-normal break-words text-xs ${PLUGIN_MUTED_TEXT_CLASS}`}>
                       {plugin.description}
                     </div>
                     {(sourceLink || showDocsLink) && (
@@ -442,11 +446,11 @@ function PluginTable({
                     )}
                   </div>
                 </TableCell>
-                <TableCell className={cn(typeColumnClass, "text-sm text-[var(--scry-ink2)]")}>{categoryLabel(plugin.pluginType, t)}</TableCell>
-                <TableCell className={cn(versionColumnClass, "text-sm")}>
+                <TableCell className={cn(typeColumnClass, "align-top text-sm text-[var(--scry-ink2)]")}>{categoryLabel(plugin.pluginType, t)}</TableCell>
+                <TableCell className={cn(versionColumnClass, "align-top text-sm")}>
                   {t("settings.pluginVersion", { version: displayVersion })}
                   {plugin.updateAvailable && (
-                    <div className="text-xs text-yellow-400">
+                    <div className="text-xs text-[var(--scry-warning-text)]">
                       {sameVersionOptimizedUpgrade
                         ? t("settings.pluginOptimizedBuildAvailable")
                         : t("settings.pluginUpdateAvailable", { version: plugin.version })}
@@ -458,18 +462,18 @@ function PluginTable({
                   </div>
                 )}
                 </TableCell>
-                <TableCell
+                <TableCodeCell
                   className={cn(
                     sizeColumnClass,
-                    "font-[var(--font-code)] text-sm",
+                    "align-top text-sm",
                     PLUGIN_MUTED_TEXT_CLASS,
                   )}
                   title={plugin.bytes != null ? `${plugin.bytes} bytes` : undefined}
                 >
                   {bytesLabel ?? "—"}
-                </TableCell>
-                <TableCell className={statusColumnClass}>
-                  <div className="flex flex-wrap items-center gap-2">
+                </TableCodeCell>
+                <TableCell className={cn(statusColumnClass, "align-top")}>
+                  <div className="flex flex-wrap items-center justify-center gap-2">
                     {plugin.builtin && (
                       <Badge tone="info">{t("settings.pluginBuiltin")}</Badge>
                     )}
@@ -500,10 +504,10 @@ function PluginTable({
                     />
                   </TableCell>
                 )}
-                <TableCell className={actionsColumnClass}>
+                <TableActionsCell className={cn(actionsColumnClass, "align-top")}>
                   {showActions === "installed" ? (
-                    <div className="ml-auto flex w-full max-w-32 min-w-0 flex-col items-end gap-2">
-                      <div className="flex w-full flex-wrap items-center justify-end gap-1">
+                    <div className="mx-auto flex w-full min-w-0 flex-col items-center gap-2">
+                      <div className="flex w-full flex-wrap items-center justify-center gap-1">
                         <PluginActionButton
                           id={selectorId("settings-plugin-toggle", plugin.name)}
                           tone={plugin.isEnabled ? "disabled" : "enabled"}
@@ -557,13 +561,13 @@ function PluginTable({
                       )}
                     </div>
                   ) : (
-                    <div className="ml-auto grid w-full max-w-36 grid-cols-[minmax(0,1fr)_auto] items-center gap-2">
-                      <div className="min-w-0">
+                    <div className="mx-auto flex w-full min-w-0 flex-col items-center gap-2">
+                      <div className="min-w-0 self-stretch">
                         {runningProgress ? (
                           <PluginInstallProgressBar progress={runningProgress} />
                         ) : null}
                       </div>
-                      <div className="flex justify-end">
+                      <div className="flex justify-center">
                         <PluginActionButton
                           id={selectorId("settings-plugin-install", plugin.name)}
                           tone="install"
@@ -580,7 +584,7 @@ function PluginTable({
                       </div>
                     </div>
                   )}
-                </TableCell>
+                </TableActionsCell>
               </TableRow>
             );
           })}
@@ -706,13 +710,13 @@ export function SettingsPluginsSection({
       ) : null}
 
       {catalogStatus?.outageMessage && (
-        <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-100">
+        <div className="rounded-lg border border-[var(--scry-warning-border)] bg-[var(--scry-warning-bg)] p-3 text-sm text-[var(--scry-warning-text)]">
           {catalogStatus.outageMessage}
         </div>
       )}
 
       {catalogStatus && catalogStatus.restoreWarnings.length > 0 && (
-        <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-100">
+        <div className="rounded-lg border border-[var(--scry-warning-border)] bg-[var(--scry-warning-bg)] p-3 text-sm text-[var(--scry-warning-text)]">
           <div className="font-medium">Restore warnings</div>
           <ul className="mt-2 list-disc space-y-1 pl-5">
             {catalogStatus.restoreWarnings.map((warning) => (
@@ -822,7 +826,7 @@ export function SettingsPluginsSection({
                   <div className={`text-sm ${PLUGIN_MUTED_TEXT_CLASS}`}>
                     {manualPreview.plugin.description}
                   </div>
-                  <div className="mt-1 text-xs text-amber-300">
+                  <div className="mt-1 text-xs text-[var(--scry-warning-text)]">
                     {t("settings.pluginUnverified")}
                   </div>
                 </div>

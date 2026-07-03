@@ -274,14 +274,14 @@ export function SubtitleSearchModal({
             {hasEnabledProviders === false ? (
               <div
                 role="alert"
-                className="flex items-start gap-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-950 dark:text-amber-100"
+                className="flex items-start gap-3 rounded-lg border border-[var(--scry-warning-border)] bg-[var(--scry-warning-bg)] px-3 py-2 text-sm text-[var(--scry-warning-text)]"
               >
-                <CircleAlert className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />
+                <CircleAlert className="mt-0.5 h-4 w-4 shrink-0 text-[var(--scry-warning-text)]" />
                 <div className="space-y-1">
                   <p className="font-medium">
                     {t("subtitle.providersRequiredTitle")}
                   </p>
-                  <p className="text-xs text-amber-950/80 dark:text-amber-100/80">
+                  <p className="text-xs text-[var(--scry-warning-text)] opacity-80">
                     {t("subtitle.providersRequiredBody")}
                   </p>
                   <Button
@@ -289,7 +289,7 @@ export function SubtitleSearchModal({
                     asChild
                     size="sm"
                     variant="outline"
-                    className="border-amber-500/30 bg-background/80"
+                    className="border-[var(--scry-warning-border)] bg-background/80"
                   >
                     <Link
                       to="/settings/subtitles"
@@ -304,14 +304,14 @@ export function SubtitleSearchModal({
               hasOpenSubtitlesApiKey === false ? (
               <div
                 role="alert"
-                className="flex items-start gap-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-950 dark:text-amber-100"
+                className="flex items-start gap-3 rounded-lg border border-[var(--scry-warning-border)] bg-[var(--scry-warning-bg)] px-3 py-2 text-sm text-[var(--scry-warning-text)]"
               >
-                <CircleAlert className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />
+                <CircleAlert className="mt-0.5 h-4 w-4 shrink-0 text-[var(--scry-warning-text)]" />
                 <div className="space-y-1">
                   <p className="font-medium">
                     {t("subtitle.apiKeyRequiredTitle")}
                   </p>
-                  <p className="text-xs text-amber-950/80 dark:text-amber-100/80">
+                  <p className="text-xs text-[var(--scry-warning-text)] opacity-80">
                     {t("subtitle.apiKeyRequiredBody")}
                   </p>
                 </div>
@@ -431,7 +431,7 @@ export function SubtitleSearchModal({
                         <span className="inline-flex items-center gap-1 text-xs font-medium">
                           {r.score}
                           {r.hashMatched ? (
-                            <Hash className="h-3 w-3 text-emerald-400" />
+                            <Hash className="h-3 w-3 text-[var(--scry-success-text-soft)]" />
                           ) : null}
                         </span>
                       </TableCell>

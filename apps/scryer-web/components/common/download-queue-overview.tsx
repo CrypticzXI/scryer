@@ -11,15 +11,15 @@ import {
 } from "@/lib/utils/download-queue";
 
 const queueStateClasses: Record<string, string> = {
-  queued: "border-amber-500/40 bg-amber-500/10 text-amber-200",
-  downloading: "border-sky-500/40 bg-sky-500/10 text-sky-200",
-  post_processing: "border-cyan-500/40 bg-cyan-500/10 text-cyan-200",
-  paused: "border-purple-500/40 bg-purple-500/10 text-purple-200",
-  completed: "border-emerald-500/40 bg-emerald-500/15 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-200",
-  importing: "border-sky-500/40 bg-sky-500/10 text-sky-200",
-  removing: "border-sky-500/40 bg-sky-500/10 text-sky-200",
-  import_pending: "border-indigo-500/40 bg-indigo-500/10 text-indigo-200",
-  import_blocked: "border-amber-500/40 bg-amber-500/10 text-amber-200",
+  queued: "border-[var(--scry-warning-border)] bg-[var(--scry-warning-bg)] text-[var(--scry-warning-text)]",
+  downloading: "border-[var(--scry-info-border)] bg-[var(--scry-info-bg)] text-[var(--scry-info-text)]",
+  post_processing: "border-[var(--scry-info-border)] bg-[var(--scry-info-bg)] text-[var(--scry-info-text)]",
+  paused: "border-[var(--scry-warning-border)] bg-[var(--scry-warning-bg)] text-[var(--scry-warning-text)]",
+  completed: "border-[var(--scry-success-border)] bg-[var(--scry-success-bg)] text-[var(--scry-success-text)]",
+  importing: "border-[var(--scry-info-border)] bg-[var(--scry-info-bg)] text-[var(--scry-info-text)]",
+  removing: "border-[var(--scry-info-border)] bg-[var(--scry-info-bg)] text-[var(--scry-info-text)]",
+  import_pending: "border-[rgba(var(--scry-accent-rgb),0.4)] bg-[rgba(var(--scry-accent-rgb),0.1)] text-[var(--scry-accent-text)]",
+  import_blocked: "border-[var(--scry-warning-border)] bg-[var(--scry-warning-bg)] text-[var(--scry-warning-text)]",
   import_failed: "border-[var(--scry-danger-border)] bg-[var(--scry-danger-bg)] text-[var(--scry-danger-text)]",
   remove_failed: "border-[var(--scry-danger-border)] bg-[var(--scry-danger-bg)] text-[var(--scry-danger-text)]",
   failed: "border-[var(--scry-danger-border)] bg-[var(--scry-danger-bg)] text-[var(--scry-danger-text)]",
@@ -124,20 +124,20 @@ function formatRemainingDuration(remainingSeconds: number | null): string | null
 function getProgressBarColor(stateKey: string): string {
   switch (stateKey) {
     case "completed":
-      return "bg-emerald-500";
+      return "bg-[var(--scry-success-solid)]";
     case "failed":
     case "remove_failed":
       return "bg-[var(--scry-danger-solid)]";
     case "paused":
-      return "bg-amber-500";
+      return "bg-[var(--scry-warning-solid)]";
     case "import_pending":
-      return "bg-indigo-500";
+      return "bg-[rgb(var(--scry-accent-rgb))]";
     case "downloading":
     case "removing":
     case "importing":
-      return "bg-sky-500";
+      return "bg-[var(--scry-info-solid)]";
     case "post_processing":
-      return "bg-cyan-500";
+      return "bg-[var(--scry-info-solid)]";
     case "queued":
       return "bg-gray-400";
     default:

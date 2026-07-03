@@ -405,7 +405,7 @@ export function RenameSettingsForm({
                   templateValue.trim()
                     ? renameValidationError
                       ? "text-[var(--scry-danger-text-soft)] border-[var(--scry-danger-border-strong)]"
-                      : "text-emerald-600 dark:text-emerald-400 border-emerald-500/60"
+                      : "border-[var(--scry-accent)] text-[var(--scry-accent-text)]"
                     : undefined
                 }
               />
@@ -439,11 +439,11 @@ export function RenameSettingsForm({
                 <button
                   key={item.token}
                   type="button"
-                  className="inline-flex items-center gap-1 rounded-md border border-border bg-muted px-2.5 py-1 text-xs text-card-foreground transition-colors hover:border-emerald-500 hover:bg-accent hover:text-foreground"
+                  className="inline-flex items-center gap-1 rounded-md border border-border bg-muted px-2.5 py-1 text-xs text-card-foreground transition-colors hover:border-[var(--scry-accent)] hover:bg-accent hover:text-foreground"
                   title={t(item.labelKey)}
                   onClick={() => insertToken(item.token)}
                 >
-                  <code className="text-emerald-600 dark:text-emerald-400">{`{${item.token}}`}</code>
+                  <code className="text-[var(--scry-accent-text)]">{`{${item.token}}`}</code>
                   <span className="leading-none text-muted-foreground">{t(item.labelKey)}</span>
                 </button>
               ))}
@@ -451,11 +451,11 @@ export function RenameSettingsForm({
             <div className="grid gap-2 text-xs text-muted-foreground sm:grid-cols-2">
               <p>
                 <span className="font-medium text-card-foreground">{t("settings.renameLiteralBracesLabel")}:</span>{" "}
-                <code className="text-emerald-600 dark:text-emerald-400">{"{{edition-{edition}}}"}</code>
+                <code className="text-[var(--scry-accent-text)]">{"{{edition-{edition}}}"}</code>
               </p>
               <p>
                 <span className="font-medium text-card-foreground">{t("settings.renameSpaceFilterLabel")}:</span>{" "}
-                <code className="text-emerald-600 dark:text-emerald-400">{"{title|space:_}"}</code>
+                <code className="text-[var(--scry-accent-text)]">{"{title|space:_}"}</code>
               </p>
             </div>
           </div>

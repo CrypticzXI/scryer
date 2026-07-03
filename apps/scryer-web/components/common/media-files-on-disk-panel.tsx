@@ -230,8 +230,8 @@ export function MediaFilesOnDiskPanel<TFile extends MediaFileOnDisk>({
                           id={selectorId(roleIdPrefix ?? fileRowIdPrefix, "primary", file.id)}
                           className={cn(
                             selectedTitlePresentation
-                              ? "rounded-[6px] bg-emerald-500/15 px-2 py-0.5 text-[10.5px] font-bold text-emerald-300"
-                              : "rounded-full border border-emerald-500/30 bg-emerald-500/15 px-1.5 py-0.5 text-emerald-700 dark:text-emerald-300",
+                              ? "rounded-[6px] bg-[var(--scry-success-bg)] px-2 py-0.5 text-[10.5px] font-bold text-[var(--scry-success-text)]"
+                              : "rounded-full border border-[var(--scry-success-border)] bg-[var(--scry-success-bg)] px-1.5 py-0.5 text-[var(--scry-success-text)]",
                           )}
                         >
                           {t("mediaFile.primary")}
@@ -242,8 +242,8 @@ export function MediaFilesOnDiskPanel<TFile extends MediaFileOnDisk>({
                           id={selectorId(roleIdPrefix ?? fileRowIdPrefix, "additional", file.id)}
                           className={cn(
                             selectedTitlePresentation
-                              ? "rounded-[6px] bg-sky-500/15 px-2 py-0.5 text-[10.5px] font-bold text-sky-300"
-                              : "rounded-full border border-sky-500/30 bg-sky-500/15 px-1.5 py-0.5 text-sky-700 dark:text-sky-300",
+                              ? "rounded-[6px] bg-[var(--scry-info-bg)] px-2 py-0.5 text-[10.5px] font-bold text-[var(--scry-info-text)]"
+                              : "rounded-full border border-[var(--scry-info-border)] bg-[var(--scry-info-bg)] px-1.5 py-0.5 text-[var(--scry-info-text)]",
                           )}
                         >
                           {t("mediaFile.additional")}

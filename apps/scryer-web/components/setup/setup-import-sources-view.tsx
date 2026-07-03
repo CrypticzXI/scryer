@@ -200,7 +200,7 @@ export default function SetupImportSourcesView({
                     ) : null}
                     {needsPassword && selected ? (
                       <div className="mt-2 space-y-1">
-                        <p className="text-xs text-[#e7b94a]">
+                        <p className="text-xs text-[var(--scry-warning-text)]">
                           {t("setup.passwordRequired")}
                         </p>
                         <Input

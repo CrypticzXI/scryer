@@ -372,10 +372,9 @@ pub(super) fn movie_title_work(
     LibraryScanTitleWork {
         title,
         facet_plan: LibraryScanTitleFacetPlan::Movie(cleanup),
-        discovered_files: Some(pre_scanned_files),
+        scope: LibraryScanTitleWorkScope::ScopedFiles(pre_scanned_files),
         mode,
         created_in_scan,
-        full_folder: false,
     }
 }
 
@@ -416,10 +415,9 @@ pub(super) fn episodic_title_work(
     LibraryScanTitleWork {
         title,
         facet_plan: LibraryScanTitleFacetPlan::Episodic,
-        discovered_files: Some(pre_scanned_files),
+        scope: LibraryScanTitleWorkScope::ScopedFiles(pre_scanned_files),
         mode,
         created_in_scan,
-        full_folder: false,
     }
 }
 
@@ -431,10 +429,9 @@ fn deferred_episodic_title_work(
     LibraryScanTitleWork {
         title,
         facet_plan: LibraryScanTitleFacetPlan::Episodic,
-        discovered_files: None,
+        scope: LibraryScanTitleWorkScope::FullFolder,
         mode,
         created_in_scan,
-        full_folder: false,
     }
 }
 
@@ -1809,7 +1806,7 @@ mod tests {
             false,
         );
 
-        assert!(work.discovered_files.is_none());
+        assert!(work.requires_folder_enumeration());
     }
 
     #[test]
@@ -1829,7 +1826,7 @@ mod tests {
         assert_eq!(
             workset
                 .get("title-1")
-                .and_then(|work| work.discovered_files.as_ref())
+                .and_then(LibraryScanTitleWork::discovered_files)
                 .map(Vec::len),
             Some(1),
         );
@@ -1842,8 +1839,7 @@ mod tests {
             workset
                 .get("title-1")
                 .expect("merged title work")
-                .discovered_files
-                .is_none()
+                .requires_folder_enumeration()
         );
 
         assert!(merge_library_scan_title_work(
@@ -1859,8 +1855,7 @@ mod tests {
             workset
                 .get("title-1")
                 .expect("merged title work")
-                .discovered_files
-                .is_none()
+                .requires_folder_enumeration()
         );
     }
 

@@ -12,6 +12,8 @@ import {
 } from "@/components/ui/select";
 import {
   Table,
+  TableActionsCell,
+  TableActionsHead,
   TableBody,
   TableCell,
   TableHead,
@@ -116,8 +118,8 @@ function cutoffOverviewHref(item: CutoffUnmetItem, includeEpisode: boolean): str
 function qualityBadge(tier: string, variant: "current" | "target") {
   const cls =
     variant === "current"
-      ? "bg-amber-500/20 text-amber-400"
-      : "bg-green-500/20 text-green-400";
+      ? "bg-[var(--scry-warning-bg-strong)] text-[var(--scry-warning-text)]"
+      : "bg-[var(--scry-success-bg-strong)] text-[var(--scry-success-text)]";
   return (
     <span
       className={`inline-block rounded px-2 py-0.5 text-xs font-medium ${cls}`}
@@ -354,15 +356,15 @@ export function CutoffUnmetView({ state }: { state: CutoffUnmetViewState }) {
             </div>
           )
         ) : (
-          <div className="overflow-auto rounded-[14px] border border-[var(--scry-border2)] bg-[var(--scry-surfC)]">
-            <Table className="min-w-[900px]">
+          <div className="overflow-hidden rounded-[14px] border border-[var(--scry-border2)] bg-[var(--scry-surfC)]">
+            <Table overflow="clip" layout="fixed" density="dense">
               <TableHeader>
                 <TableRow>
                   <TableHead>{t("cutoff.colTitleEpisode")}</TableHead>
-                  <TableHead>Library</TableHead>
-                  <TableHead>{t("cutoff.colCurrentQuality")}</TableHead>
-                  <TableHead>{t("cutoff.colTargetQuality")}</TableHead>
-                  <TableHead>{t("label.actions")}</TableHead>
+                  <TableHead className="w-36 text-center">Library</TableHead>
+                  <TableHead className="w-36 text-center">{t("cutoff.colCurrentQuality")}</TableHead>
+                  <TableHead className="w-36 text-center">{t("cutoff.colTargetQuality")}</TableHead>
+                  <TableActionsHead className="w-64">{t("label.actions")}</TableActionsHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -374,19 +376,19 @@ export function CutoffUnmetView({ state }: { state: CutoffUnmetViewState }) {
                   return (
                     <Fragment key={itemKey}>
                       <TableRow>
-                        <TableCell className="min-w-[320px] align-top">
+                        <TableCell className="align-top">
                           <TitleCell item={item} />
                         </TableCell>
-                        <TableCell className="align-top text-sm text-muted-foreground">
+                        <TableCell className="align-top text-center text-sm text-muted-foreground">
                           {item.libraryName ?? item.libraryId}
                         </TableCell>
-                        <TableCell className="align-top">
+                        <TableCell className="align-top text-center">
                           {qualityBadge(item.currentTier, "current")}
                         </TableCell>
-                        <TableCell className="align-top">
+                        <TableCell className="align-top text-center">
                           {qualityBadge(item.targetTier, "target")}
                         </TableCell>
-                        <TableCell className="align-top">
+                        <TableActionsCell className="w-64 align-top">
                           <ActionButtons
                             item={item}
                             autoSearchingId={autoSearchingId}
@@ -395,7 +397,7 @@ export function CutoffUnmetView({ state }: { state: CutoffUnmetViewState }) {
                             triggerAutoSearch={triggerAutoSearch}
                             triggerInteractiveSearch={triggerInteractiveSearch}
                           />
-                        </TableCell>
+                        </TableActionsCell>
                       </TableRow>
                       {showResults ? (
                         <TableRow>

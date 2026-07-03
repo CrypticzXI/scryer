@@ -285,13 +285,13 @@ function formatDateTime(value: string, dateTimeFormat: UiDateTimeFormat): string
 function statusTone(status: BackupInfoRecord["status"]): string {
   switch (status) {
     case "creating":
-      return "border-amber-500/30 bg-amber-500/10 text-amber-300";
+      return "border-[var(--scry-warning-border)] bg-[var(--scry-warning-bg)] text-[var(--scry-warning-text)]";
     case "invalid":
     case "failed":
       return "border-destructive/40 bg-destructive/10 text-destructive";
     case "ready":
     default:
-      return "border-emerald-500/30 bg-emerald-500/10 text-emerald-300";
+      return "border-[var(--scry-success-border)] bg-[var(--scry-success-bg)] text-[var(--scry-success-text)]";
   }
 }
 
@@ -1023,7 +1023,7 @@ export function SettingsBackupsContainer() {
                       <TableRow
                         key={backup.filename}
                         id={selectorId("settings-backup-row", "created-at", backup.createdAt)}
-                        className="border-[var(--scry-border3)] hover:bg-[var(--scry-hover)]"
+                        className="border-[var(--scry-border3)] hover:bg-[var(--scry-rowHover)]"
                       >
                         <TableCell className="align-top">
                           <div className="space-y-1">

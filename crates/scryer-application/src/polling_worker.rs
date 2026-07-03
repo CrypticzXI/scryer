@@ -1,8 +1,5 @@
 use std::fmt::Display;
-use std::future::Future;
-use std::time::Duration;
 
-use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
@@ -24,47 +21,6 @@ impl PollingWorker {
                 false
             }
             _ = interval.tick() => true,
-        }
-    }
-
-    pub(crate) async fn wait_for_wake_or_timeout(&self, wake: &Notify, timeout: Duration) -> bool {
-        tokio::select! {
-            _ = self.token.cancelled() => {
-                self.log_shutdown();
-                false
-            }
-            _ = wake.notified() => true,
-            _ = tokio::time::sleep(timeout) => true,
-        }
-    }
-
-    pub(crate) async fn wait_for_future_or_wake_or_timeout<F>(
-        &self,
-        wake: &Notify,
-        future: F,
-        timeout: Duration,
-    ) -> bool
-    where
-        F: Future<Output = ()>,
-    {
-        tokio::select! {
-            _ = self.token.cancelled() => {
-                self.log_shutdown();
-                false
-            }
-            _ = wake.notified() => true,
-            _ = future => true,
-            _ = tokio::time::sleep(timeout) => true,
-        }
-    }
-
-    pub(crate) async fn wait_for_sleep(&self, duration: Duration) -> bool {
-        tokio::select! {
-            _ = self.token.cancelled() => {
-                self.log_shutdown();
-                false
-            }
-            _ = tokio::time::sleep(duration) => true,
         }
     }
 

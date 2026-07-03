@@ -1,4 +1,3 @@
-
 import {
   CircleCheckIcon,
   InfoIcon,
@@ -22,18 +21,18 @@ const Toaster = ({ style, toastOptions, ...props }: ToasterProps) => {
           "--normal-border": "var(--border-color)",
           "--normal-bg-hover": "var(--card)",
           "--normal-border-hover": "var(--border-color)",
-          "--success-bg": "rgb(2, 23, 18)",
-          "--success-border": "rgb(16, 185, 129)",
-          "--success-text": "rgb(209, 250, 229)",
+          "--success-bg": "var(--scry-success-bg)",
+          "--success-border": "var(--scry-success-border)",
+          "--success-text": "var(--scry-success-text)",
           "--error-bg": "var(--scry-danger-bg)",
           "--error-border": "var(--scry-danger-border)",
           "--error-text": "var(--scry-danger-text)",
           "--warning-bg": "var(--scry-warning-bg)",
           "--warning-border": "var(--scry-warning-border)",
           "--warning-text": "var(--scry-warning-text)",
-          "--info-bg": "rgb(7, 22, 42)",
-          "--info-border": "rgb(96, 165, 250)",
-          "--info-text": "rgb(219, 234, 254)",
+          "--info-bg": "var(--scry-info-bg)",
+          "--info-border": "var(--scry-info-border)",
+          "--info-text": "var(--scry-info-text)",
           "--border-radius": "var(--radius)",
         }
       : {
@@ -42,18 +41,18 @@ const Toaster = ({ style, toastOptions, ...props }: ToasterProps) => {
           "--normal-border": "var(--border-color)",
           "--normal-bg-hover": "var(--card)",
           "--normal-border-hover": "var(--border-color)",
-          "--success-bg": "rgb(240, 253, 244)",
-          "--success-border": "rgb(16, 185, 129)",
-          "--success-text": "rgb(5, 46, 22)",
+          "--success-bg": "var(--scry-success-bg)",
+          "--success-border": "var(--scry-success-border)",
+          "--success-text": "var(--scry-success-text)",
           "--error-bg": "var(--scry-danger-bg)",
           "--error-border": "var(--scry-danger-border)",
           "--error-text": "var(--scry-danger-text)",
           "--warning-bg": "var(--scry-warning-bg)",
           "--warning-border": "var(--scry-warning-border)",
           "--warning-text": "var(--scry-warning-text)",
-          "--info-bg": "rgb(239, 246, 255)",
-          "--info-border": "rgb(96, 165, 250)",
-          "--info-text": "rgb(30, 58, 138)",
+          "--info-bg": "var(--scry-info-bg)",
+          "--info-border": "var(--scry-info-border)",
+          "--info-text": "var(--scry-info-text)",
           "--border-radius": "var(--radius)",
         }
   ) as React.CSSProperties
@@ -64,13 +63,18 @@ const Toaster = ({ style, toastOptions, ...props }: ToasterProps) => {
       richColors
       className="toaster group"
       toastOptions={{
-        className: "bg-background shadow-sm shadow-black/35",
+        className: "shadow-[0_18px_48px_rgba(0,0,0,0.34)]",
         classNames: {
-          toast: "rounded-lg border border-border/30",
-          success: isDark ? "border-emerald-500 bg-emerald-950" : "border-emerald-500 bg-emerald-50",
-          error: "border-[var(--scry-danger-border)] bg-[var(--scry-danger-bg)]",
-          warning: "border-[var(--scry-warning-border)] bg-[var(--scry-warning-bg)]",
-          info: "border-sky-400/55",
+          toast:
+            "rounded-[12px] border border-[var(--scry-border2)] bg-[var(--scry-surf)]",
+          success:
+            "border-[var(--scry-success-border)] bg-[linear-gradient(0deg,var(--scry-success-bg),var(--scry-success-bg)),var(--scry-bg)] text-[var(--scry-success-text)]",
+          error:
+            "border-[var(--scry-danger-border)] bg-[linear-gradient(0deg,var(--scry-danger-bg),var(--scry-danger-bg)),var(--scry-bg)] text-[var(--scry-danger-text)]",
+          warning:
+            "border-[var(--scry-warning-border)] bg-[linear-gradient(0deg,var(--scry-warning-bg),var(--scry-warning-bg)),var(--scry-bg)] text-[var(--scry-warning-text)]",
+          info:
+            "border-[var(--scry-info-border)] bg-[linear-gradient(0deg,var(--scry-info-bg),var(--scry-info-bg)),var(--scry-bg)] text-[var(--scry-info-text)]",
         },
         ...toastOptions,
       }}

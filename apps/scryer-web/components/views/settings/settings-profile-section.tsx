@@ -643,7 +643,7 @@ export function SettingsProfileSection({
             </div>
 
             {totpRecoveryCodes.length > 0 ? (
-              <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-3">
+              <div className="rounded-md border border-[var(--scry-warning-border)] bg-[var(--scry-warning-bg)] p-3">
                 <div className="mb-2 text-sm font-medium">
                   {t("profile.totpRecoveryCodes")}
                 </div>
