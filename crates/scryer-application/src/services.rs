@@ -2183,6 +2183,14 @@ impl AppUseCase {
             .await
     }
 
+    pub async fn flush_upstream_scheduler(&self) -> AppResult<()> {
+        self.services
+            .integrations
+            .upstream_scheduler
+            .flush_pending()
+            .await
+    }
+
     pub fn outbound_rate_limit_snapshot(&self) -> scryer_outbound_http::RateLimitRegistrySnapshot {
         scryer_outbound_http::RateLimitRegistry::new().snapshot()
     }

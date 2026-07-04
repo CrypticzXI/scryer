@@ -36,7 +36,6 @@ fn sample_title() -> Title {
         imdb_id: Some("tt456".to_string()),
         runtime_minutes: None,
         popularity: None,
-        genres: vec![],
         content_status: None,
         language: None,
         first_aired: None,

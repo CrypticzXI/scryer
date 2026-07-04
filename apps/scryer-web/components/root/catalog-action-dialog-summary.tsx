@@ -220,7 +220,6 @@ export function CatalogActionDialogSummary({
   const backgroundUrl =
     selectPosterVariantUrl(result.backgroundUrl, "original") ?? posterSourceUrl;
   const links = externalLinks(result, facet);
-  const genres = (result.genres ?? []).slice(0, 4);
   const runtime = runtimeLabel(result.runtimeMinutes);
   const ratingSources = [
     result.ratingSource,
@@ -284,22 +283,12 @@ export function CatalogActionDialogSummary({
             variant="hero"
           />
 
-          {genres.length > 0 || runtime ? (
+          {runtime ? (
             <div className="flex flex-wrap items-center gap-2">
-              {genres.map((genre) => (
-                <span
-                  key={genre}
-                  className="rounded-lg border border-border/80 bg-background/45 px-3 py-1 text-sm font-medium text-foreground"
-                >
-                  {genre}
-                </span>
-              ))}
-              {runtime ? (
-                <span className="inline-flex items-center gap-1.5 px-1 py-1 text-sm font-medium text-muted-foreground">
-                  <Clock3 className="h-4 w-4" />
-                  {runtime}
-                </span>
-              ) : null}
+              <span className="inline-flex items-center gap-1.5 px-1 py-1 text-sm font-medium text-muted-foreground">
+                <Clock3 className="h-4 w-4" />
+                {runtime}
+              </span>
             </div>
           ) : null}
 

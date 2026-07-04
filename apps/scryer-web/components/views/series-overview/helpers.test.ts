@@ -46,7 +46,6 @@ function movieEntity(id: string, title: string): MovieEntity {
     language: null,
     runtimeMinutes: 60,
     contentStatus: null,
-    genres: [],
     studio: null,
     digitalReleaseDate: null,
     imdbId: null,

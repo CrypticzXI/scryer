@@ -121,7 +121,6 @@ impl NotificationClient for WasmNotificationClient {
                 sort_title: title.sort_title.clone(),
                 background_url: title.background_url.clone(),
                 poster_url: title.poster_url.clone(),
-                genres: title.genres.clone(),
                 tags: title.tags.clone(),
                 aliases: title.aliases.clone(),
                 original_language: title.original_language.clone(),

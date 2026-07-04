@@ -821,7 +821,6 @@ mod tests {
             imdb_id: Some("tt0133093".into()),
             runtime_minutes: Some(136),
             popularity: None,
-            genres: vec!["Action".into(), "Sci-Fi".into()],
             content_status: None,
             language: None,
             first_aired: None,

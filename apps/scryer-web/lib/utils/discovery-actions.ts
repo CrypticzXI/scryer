@@ -246,13 +246,7 @@ export function metadataResultForDiscoveryItem(
     language: null,
     runtimeMinutes: null,
     sortTitle: item.sortTitle,
-    genres:
-      item.facetTerms && item.facetTerms.length > 0
-        ? canonicalDiscoveryFacetLabels(
-            { facetTerms: item.facetTerms },
-            "genre",
-          )
-        : item.genres,
+    genres: canonicalDiscoveryFacetLabels(item, "genre"),
     rating: item.rating ?? null,
     ratingSource: item.sources?.[0] ?? item.bestSource ?? null,
     externalRatings: item.externalRatings ?? [],

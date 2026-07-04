@@ -123,7 +123,6 @@ function isDiscoveryItem(value: unknown) {
     typeof value.targetKey === "string" &&
     typeof value.targetKind === "string" &&
     typeof value.displayTitle === "string" &&
-    Array.isArray(value.genres) &&
     Array.isArray(value.statusTags) &&
     Array.isArray(value.sourceTags) &&
     Array.isArray(value.relationSubtypes) &&

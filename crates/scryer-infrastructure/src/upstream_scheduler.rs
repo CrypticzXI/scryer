@@ -332,6 +332,10 @@ impl UpstreamScheduler for InMemoryUpstreamScheduler {
 
         Ok(SchedulerSnapshot { entries })
     }
+
+    async fn flush_pending(&self) -> AppResult<()> {
+        InMemoryUpstreamScheduler::flush_pending(self).await
+    }
 }
 
 fn record_decision_in_state(
@@ -887,6 +891,18 @@ fn decide_candidate(
         };
     }
 
+    if candidate.deadline_at.is_some_and(|deadline| {
+        RateLimitRegistry::new()
+            .preview_host_rps_wait(&candidate.host_key)
+            .and_then(|wait| chrono::Duration::from_std(wait).ok())
+            .is_some_and(|wait| now + wait >= deadline)
+    }) {
+        return SchedulerAdmission::Skip {
+            candidate_id: candidate.candidate_id,
+            reason: SkipReason::HostRpsDeadline,
+        };
+    }
+
     if should_defer(&candidate, now) {
         let reason = deferral_reason(&candidate);
         let retry_after = retry_after_for_deferral(&candidate);
@@ -1154,6 +1170,7 @@ fn skip_reason_label(reason: SkipReason) -> &'static str {
         SkipReason::LearningSuppressed => "skip:learning_suppressed",
         SkipReason::AccountQuotaExhausted => "skip:account_quota_exhausted",
         SkipReason::DestinationCooldown => "skip:destination_cooldown",
+        SkipReason::HostRpsDeadline => "skip:host_rps_deadline",
         SkipReason::HostUnavailable => "skip:host_unavailable",
     }
 }
@@ -1365,6 +1382,46 @@ mod tests {
             decision.decisions.as_slice(),
             [SchedulerAdmission::Skip {
                 reason: SkipReason::DestinationCooldown,
+                ..
+            }]
+        ));
+    }
+
+    #[tokio::test]
+    async fn host_rps_wait_past_deadline_skips_interactive_candidate() {
+        let scheduler = InMemoryUpstreamScheduler::new();
+        let host = HostKey::from(format!("host-rps-{}.example.test", Uuid::new_v4()));
+        let destination = DestinationKey::from(host.to_string());
+        let registry = RateLimitRegistry::new();
+
+        assert_eq!(registry.acquire_host_rps(&host).await, None);
+        assert_eq!(registry.acquire_host_rps(&host).await, None);
+        assert_eq!(registry.acquire_host_rps(&host).await, None);
+        assert!(registry.preview_host_rps_wait(&host).is_some());
+
+        let now = Utc::now();
+        let mut candidate = candidate(SchedulerIntent::InteractiveSearch, 1.0);
+        candidate.host_key = host;
+        candidate.destination_key = destination;
+        candidate.account_quota_key = Some(AccountQuotaKey::from(format!(
+            "host-rps-{}",
+            Uuid::new_v4()
+        )));
+        candidate.deadline_at = Some(now + chrono::Duration::milliseconds(10));
+
+        let decision = scheduler
+            .admit_batch(SchedulerBatchRequest {
+                batch_id: "batch".to_string(),
+                now,
+                candidates: vec![candidate],
+            })
+            .await
+            .expect("admission should succeed");
+
+        assert!(matches!(
+            decision.decisions.as_slice(),
+            [SchedulerAdmission::Skip {
+                reason: SkipReason::HostRpsDeadline,
                 ..
             }]
         ));

@@ -8,11 +8,12 @@ use scryer_application::{
     IndexerPluginProvider, IndexerRoutingPlan, IndexerSearchLearningContext,
     IndexerSearchLearningKey, IndexerSearchLearningRecord, IndexerSearchLearningRepository,
     IndexerSearchResponse, IndexerSearchResult, IndexerStatsTracker, IndexerSystemBackoff,
-    NullIndexerSearchLearningRepository, NullUpstreamScheduler, ReleaseCandidateProvenance,
-    ReleaseSearchSubjectKind, RssFreshnessContext, SchedulerAdmission, SchedulerBatchDecision,
-    SchedulerBatchRequest, SchedulerCandidate, SchedulerCandidateId, SchedulerFeedback,
-    SchedulerFeedbackOutcome, SchedulerIntent, SchedulerLease, SchedulerOperation,
-    SchedulerPluginKind, SchedulerSnapshot, SearchLearningContext, SearchMode, UpstreamScheduler,
+    NullIndexerSearchLearningRepository, NullUpstreamScheduler, RateLimitSignal,
+    ReleaseCandidateProvenance, ReleaseSearchSubjectKind, RssFreshnessContext, SchedulerAdmission,
+    SchedulerBatchDecision, SchedulerBatchRequest, SchedulerCandidate, SchedulerCandidateId,
+    SchedulerFeedback, SchedulerFeedbackOutcome, SchedulerIntent, SchedulerLease,
+    SchedulerOperation, SchedulerPluginKind, SchedulerSnapshot, SearchLearningContext, SearchMode,
+    UpstreamScheduler,
 };
 use scryer_domain::{
     IndexerCapsSearchNode, IndexerCapsSnapshot, IndexerConfig, IndexerProviderCapabilities,
@@ -316,22 +317,11 @@ fn should_run_fallback_tier(
 }
 
 fn retry_after_from_error(error: &AppError) -> Option<std::time::Duration> {
-    parse_retry_after_seconds(&error.to_string())
+    RateLimitSignal::from_error(error).and_then(|signal| signal.retry_after)
 }
 
 fn error_looks_rate_limited(error: &AppError) -> bool {
-    if retry_after_from_error(error).is_some() {
-        return true;
-    }
-
-    let message = error.to_string().to_ascii_lowercase();
-    message.contains("rate limit")
-        || message.contains("rate-limit")
-        || message.contains("too many requests")
-        || message.contains("retry_after")
-        || message.contains("retry-after")
-        || message.contains("retry after")
-        || message.contains("http 429")
+    RateLimitSignal::from_error(error).is_some()
 }
 
 fn indexer_rss_feedback_summary(
@@ -386,33 +376,6 @@ fn parse_indexer_published_at(value: &str) -> Option<DateTime<Utc>> {
     DateTime::parse_from_rfc3339(value)
         .ok()
         .map(|value| value.with_timezone(&Utc))
-}
-
-fn parse_retry_after_seconds(message: &str) -> Option<std::time::Duration> {
-    let lower = message.to_ascii_lowercase();
-    for marker in [
-        "retry_after_seconds=",
-        "retry after",
-        "retry-after",
-        "retry_after",
-    ] {
-        let Some(index) = lower.find(marker) else {
-            continue;
-        };
-        let suffix = lower[index + marker.len()..]
-            .trim_start_matches(|ch: char| ch == ':' || ch == '=' || ch == ' ' || ch == '_');
-        let digits = suffix
-            .chars()
-            .skip_while(|ch| !ch.is_ascii_digit())
-            .take_while(|ch| ch.is_ascii_digit())
-            .collect::<String>();
-        if let Ok(seconds) = digits.parse::<u64>()
-            && seconds > 0
-        {
-            return Some(std::time::Duration::from_secs(seconds));
-        }
-    }
-    None
 }
 
 /// Records transport metrics per outbound indexer request.
@@ -6350,15 +6313,20 @@ mod tests {
 
     #[test]
     fn retry_after_parser_extracts_seconds_from_plugin_error_text() {
-        let retry_after =
-            parse_retry_after_seconds("HTTP 429: rate limited; retry_after_seconds=900")
-                .expect("retry after should parse");
+        let retry_after = retry_after_from_error(&AppError::Repository(
+            "HTTP 429: rate limited; retry_after_seconds=900".to_string(),
+        ))
+        .expect("retry after should parse");
         assert_eq!(retry_after, std::time::Duration::from_secs(900));
-        let prowlarr_retry_after =
-            parse_retry_after_seconds("Prowlarr rate limited (retry after 120s)")
-                .expect("Prowlarr retry after should parse");
+        let prowlarr_retry_after = retry_after_from_error(&AppError::Repository(
+            "Prowlarr rate limited (retry after 120s)".to_string(),
+        ))
+        .expect("Prowlarr retry after should parse");
         assert_eq!(prowlarr_retry_after, std::time::Duration::from_secs(120));
-        assert!(parse_retry_after_seconds("HTTP 429: rate limited").is_none());
+        assert!(
+            retry_after_from_error(&AppError::Repository("HTTP 429: rate limited".to_string()))
+                .is_none()
+        );
     }
 
     #[test]

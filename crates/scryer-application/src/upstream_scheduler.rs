@@ -226,6 +226,7 @@ pub enum SkipReason {
     LearningSuppressed,
     AccountQuotaExhausted,
     DestinationCooldown,
+    HostRpsDeadline,
     HostUnavailable,
 }
 
@@ -330,4 +331,8 @@ pub trait UpstreamScheduler: Send + Sync {
     async fn record_feedback(&self, feedback: SchedulerFeedback) -> AppResult<()>;
 
     async fn snapshot(&self, filter: SchedulerSnapshotFilter) -> AppResult<SchedulerSnapshot>;
+
+    async fn flush_pending(&self) -> AppResult<()> {
+        Ok(())
+    }
 }

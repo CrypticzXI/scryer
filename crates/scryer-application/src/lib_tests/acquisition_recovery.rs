@@ -5389,7 +5389,6 @@ async fn monitored_series_movie_link_reconciles_stale_episode_wanted_items() {
             imdb_id: None,
             runtime_minutes: None,
             popularity: None,
-            genres: vec![],
             content_status: None,
             language: None,
             first_aired: None,

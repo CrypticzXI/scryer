@@ -172,7 +172,6 @@ export type TitleRecord = {
   mediaHdr?: string | null;
   mediaAudioCodec?: string | null;
   ratings?: TitleRatingRecord | null;
-  genres?: string[];
   canonicalTags?: CanonicalMediaTag[];
   language?: string | null;
   firstAired?: string | null;

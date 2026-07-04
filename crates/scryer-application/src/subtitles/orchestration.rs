@@ -20,9 +20,9 @@ use crate::subtitles::sync;
 use crate::subtitles::wanted::{SubtitleLanguagePref, compute_missing_subtitles_from_streams};
 use crate::{
     AccountQuotaKey, AppError, AppResult, AppUseCase, EstimatedCost, JobKey, JobTriggerSource,
-    ParsedReleaseMetadata, SchedulerAdmission, SchedulerBatchRequest, SchedulerCandidate,
-    SchedulerCandidateId, SchedulerFeedback, SchedulerFeedbackOutcome, SchedulerIntent,
-    SchedulerLease, SchedulerOperation, SchedulerPluginKind, ScopedExternalId,
+    ParsedReleaseMetadata, RateLimitSignal, SchedulerAdmission, SchedulerBatchRequest,
+    SchedulerCandidate, SchedulerCandidateId, SchedulerFeedback, SchedulerFeedbackOutcome,
+    SchedulerIntent, SchedulerLease, SchedulerOperation, SchedulerPluginKind, ScopedExternalId,
     SubtitleProviderClient, SubtitleProviderConfigUpdate, SubtitleSettings as AppSubtitleSettings,
     parse_release_metadata,
 };
@@ -242,47 +242,15 @@ async fn record_subtitle_scheduler_feedback(
 }
 
 fn subtitle_retry_after_from_error(error: &AppError) -> Option<Duration> {
-    parse_retry_after_seconds_from_text(&error.to_string()).map(Duration::from_secs)
+    RateLimitSignal::from_error(error).and_then(|signal| signal.retry_after)
 }
 
 fn subtitle_scheduler_outcome_for_error(error: &AppError) -> SchedulerFeedbackOutcome {
-    let error_text = error.to_string().to_ascii_lowercase();
-    if subtitle_retry_after_from_error(error).is_some()
-        || error_text.contains("rate limit")
-        || error_text.contains("rate-limit")
-        || error_text.contains("too many requests")
-        || error_text.contains("http 429")
-        || error_text.contains("status 429")
-        || error_text.contains("retry_after")
-        || error_text.contains("retry-after")
-    {
+    if RateLimitSignal::from_error(error).is_some() {
         SchedulerFeedbackOutcome::RateLimited
     } else {
         SchedulerFeedbackOutcome::ProviderFailure
     }
-}
-
-fn parse_retry_after_seconds_from_text(text: &str) -> Option<u64> {
-    let lower = text.to_ascii_lowercase();
-    for marker in ["retry after", "retry_after", "retry-after"] {
-        let Some(index) = lower.find(marker) else {
-            continue;
-        };
-        let suffix = lower[index + marker.len()..]
-            .trim_start_matches(|ch: char| ch == ':' || ch == '=' || ch == ' ' || ch == '_');
-        let digits = suffix
-            .chars()
-            .skip_while(|ch| !ch.is_ascii_digit())
-            .take_while(|ch| ch.is_ascii_digit())
-            .collect::<String>();
-        if let Ok(seconds) = digits.parse::<u64>()
-            && seconds > 0
-        {
-            return Some(seconds);
-        }
-    }
-
-    None
 }
 
 async fn configured_runtime_subtitle_providers(
@@ -2277,7 +2245,6 @@ mod tests {
             imdb_id: None,
             runtime_minutes: None,
             popularity: None,
-            genres: vec![],
             content_status: None,
             language: None,
             first_aired: None,

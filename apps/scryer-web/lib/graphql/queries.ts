@@ -12,7 +12,6 @@ export const DISCOVERY_ITEM_FIELDS = `
     backgroundUrl
     overview
     contentType
-    genres
     canonicalTags {
       key
       category
@@ -263,7 +262,6 @@ export const TITLE_CORE_FIELDS = `
     slug
     imdbId
     runtimeMinutes
-    genres
     canonicalTags {
       key
       category
@@ -348,7 +346,6 @@ const SERIES_MOVIE_LINK_FIELDS = `
         tmdbId
         malId
         anidbId
-      genres
       studio
       digitalReleaseDate
         createdAt
@@ -1311,7 +1308,6 @@ export const TITLE_PANEL_FIELDS = `${TITLE_LIST_FIELDS}
     backgroundUrl
     backgroundSourceUrl
     runtimeMinutes
-    genres
     canonicalTags {
       key
       category
@@ -3283,7 +3279,6 @@ export const metadataMovieQuery = `query MetadataMovie($input: MetadataMovieInpu
     runtimeMinutes
     sortTitle
     imdbId
-    genres
     studio
     tmdbReleaseDate
   }
@@ -3303,7 +3298,6 @@ export const metadataSeriesQuery = `query MetadataSeries($input: MetadataSeriesI
     runtimeMinutes
     posterUrl
     country
-    genres
     aliases
     seasons {
       tvdbId

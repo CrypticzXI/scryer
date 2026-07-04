@@ -228,7 +228,6 @@ mod tests {
             imdb_id: Some("tt123".to_string()),
             runtime_minutes: Some(120),
             popularity: None,
-            genres: vec!["Drama".to_string()],
             content_status: Some("released".to_string()),
             language: Some("en".to_string()),
             first_aired: Some("2026-01-01".to_string()),

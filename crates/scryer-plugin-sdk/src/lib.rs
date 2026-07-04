@@ -1880,8 +1880,6 @@ pub struct PluginNotificationTitle {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub poster_url: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub genres: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub aliases: Vec<String>,
@@ -3430,7 +3428,6 @@ mod tests {
                 sort_title: Some("Example Show".to_string()),
                 background_url: None,
                 poster_url: Some("https://example.invalid/poster.jpg".to_string()),
-                genres: vec!["Drama".to_string()],
                 tags: vec!["tag-1".to_string()],
                 aliases: vec!["Example Alias".to_string()],
                 original_language: Some("ja".to_string()),

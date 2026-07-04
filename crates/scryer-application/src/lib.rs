@@ -49,6 +49,7 @@ mod plugins;
 mod polling_worker;
 mod ports;
 mod quality;
+mod rate_limit_signal;
 mod rules;
 mod scheduler;
 mod security;
@@ -422,6 +423,7 @@ pub use quality_profile::{
     default_quality_profile_1080p_for_search, default_quality_profile_for_search,
     evaluate_against_profile, parse_profile_catalog_from_json,
 };
+pub use rate_limit_signal::{RateLimitSignal, RateLimitSignalSource};
 pub use services::{
     AppServices, AppServicesBuilder, AppUseCase, ExternalImportArrSourceKind,
     ExternalImportArrSourceSeriesEntry, ExternalImportArrSourceWarmupResult,

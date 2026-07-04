@@ -4236,7 +4236,6 @@ mod tests {
         let mut later_key = test_discovery_item("later", "anime", Some("anime"));
         later_key.target_key = "tmdb:anime:z".to_string();
         later_key.background_url = Some("https://images.example/z.jpg".to_string());
-        later_key.genres = vec!["raw anime label".to_string()];
         later_key.source_tags = vec![DiscoverySourceTagRecord {
             category: Some("theme".to_string()),
             name: Some("Isekai".to_string()),
@@ -4405,13 +4404,6 @@ mod tests {
             target_kind: "movie".to_string(),
             resolved: true,
             display_title: "The Example".to_string(),
-            genres: vec![
-                "Drama".to_string(),
-                "action".to_string(),
-                "canonical:genre:action".to_string(),
-                "canonical:genre:drama".to_string(),
-                "canonical:genre:action".to_string(),
-            ],
             source_tags: vec![
                 serde_json::json!({
                     "source": "mal",
@@ -4422,6 +4414,18 @@ mod tests {
                 serde_json::json!("canonical:theme:survival"),
             ],
             canonical_tags: vec![
+                serde_json::json!({
+                    "key": "canonical:genre:action",
+                    "category": "genre",
+                    "name": "action",
+                    "confidence": 1.0,
+                }),
+                serde_json::json!({
+                    "key": "canonical:genre:drama",
+                    "category": "genre",
+                    "name": "Drama",
+                    "confidence": 1.0,
+                }),
                 serde_json::json!({
                     "key": "canonical:theme:isekai",
                     "category": "theme",
@@ -4446,8 +4450,6 @@ mod tests {
             .expect("discovery item records should build");
 
         assert_eq!(records.len(), 1);
-        assert!(records[0].genres.contains(&"Drama".to_string()));
-        assert!(records[0].genres.contains(&"action".to_string()));
         assert!(records[0].facet_terms.contains(&"raw:compat".to_string()));
         assert!(
             records[0]
@@ -4487,12 +4489,9 @@ mod tests {
                 .facet_terms
                 .contains(&"canonical:theme:adult-cast".to_string())
         );
-        assert!(records[0].source_tags.iter().any(|source_tag| {
-            source_tag
-                .values
-                .iter()
-                .any(|value| value == "mal:theme:psychological")
-        }));
+        assert!(!records[0]
+            .facet_terms
+            .contains(&"canonical:theme:psychological".to_string()));
     }
 
     #[test]
@@ -4501,7 +4500,6 @@ mod tests {
             item_matches_discovery_items_query(
                 item,
                 &DiscoveryItemsQuery {
-                    genres: vec![genre.to_string()],
                     include_unresolved: false,
                     ..DiscoveryItemsQuery::default()
                 },
@@ -4509,7 +4507,6 @@ mod tests {
         }
 
         let mut item = test_discovery_item("canonical", "movie", Some("movie"));
-        item.genres = vec!["Drama".to_string(), "action".to_string()];
         item.facet_terms = vec!["canonical:genre:action".to_string()];
 
         assert!(matches_genre(&item, "Action"));
@@ -4535,7 +4532,6 @@ mod tests {
         assert!(!matches_target_kind(&anime, "series"));
 
         let mut series = test_discovery_item("series", "series", Some("series"));
-        series.genres = vec!["Animation".to_string(), "Adventure".to_string()];
         assert!(matches_target_kind(&series, "series"));
         assert!(!matches_target_kind(&series, "anime"));
 
@@ -4557,7 +4553,7 @@ mod tests {
         fn discovery_item(
             id: &str,
             title: &str,
-            genres: &[&str],
+            genre_labels: &[&str],
             rank_score: f64,
             matched_subject_count: i32,
         ) -> DiscoveryItemRecord {
@@ -4565,8 +4561,7 @@ mod tests {
             item.target_key = format!("tmdb:movie:{id}");
             item.display_title = title.to_string();
             item.sort_title = Some(title.to_string());
-            item.genres = genres.iter().map(|genre| (*genre).to_string()).collect();
-            item.facet_terms = genres
+            item.facet_terms = genre_labels
                 .iter()
                 .map(|genre| format!("canonical:genre:{}", genre.to_ascii_lowercase()))
                 .collect();
@@ -4692,7 +4687,6 @@ mod tests {
             imdb_id: None,
             runtime_minutes: None,
             popularity: None,
-            genres: Vec::new(),
             content_status: None,
             language: None,
             first_aired: None,
@@ -4735,7 +4729,6 @@ mod tests {
             background_url: None,
             overview: None,
             content_type: content_type.map(str::to_string),
-            genres: Vec::new(),
             canonical_tags: vec![],
             rating: None,
             rating_sources: Vec::new(),

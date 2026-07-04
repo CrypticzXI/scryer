@@ -393,7 +393,6 @@ mod anime_movie_mapping_tests {
             runtime_minutes: 95,
             sort_title: "Sample Movie".into(),
             imdb_id: "tt123".into(),
-            genres: vec!["Action".into()],
             studio: "Studio".into(),
             digital_release_date: Some("2024-02-01".into()),
             association_confidence: "high".into(),

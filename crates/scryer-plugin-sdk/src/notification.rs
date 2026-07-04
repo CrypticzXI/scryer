@@ -199,9 +199,6 @@ pub fn to_script_environment(request: &PluginNotificationRequest) -> BTreeMap<St
         if let Some(slug) = &title.slug {
             env.insert("SCRYER_TITLE_SLUG".to_string(), slug.clone());
         }
-        if !title.genres.is_empty() {
-            env.insert("SCRYER_TITLE_GENRES".to_string(), title.genres.join(","));
-        }
         if !title.tags.is_empty() {
             env.insert("SCRYER_TITLE_TAGS".to_string(), title.tags.join(","));
         }

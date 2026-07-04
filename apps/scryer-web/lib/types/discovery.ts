@@ -53,7 +53,6 @@ export type DiscoveryItem = {
   backgroundUrl: string | null;
   overview: string | null;
   contentType: string | null;
-  genres: string[];
   canonicalTags?: CanonicalMediaTag[];
   rating: number | null;
   ratingSources?: string[];

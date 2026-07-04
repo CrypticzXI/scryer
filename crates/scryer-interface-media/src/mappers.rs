@@ -1219,7 +1219,6 @@ pub fn from_title(title: Title) -> TitlePayload {
         imdb_id: title.imdb_id,
         runtime_minutes: title.runtime_minutes,
         popularity: title.popularity,
-        genres: title.genres,
         canonical_tags: title
             .canonical_tags
             .into_iter()
@@ -1772,7 +1771,6 @@ pub fn from_discovery_item(item: DiscoveryItemRecord) -> DiscoveryItemPayload {
         background_url: item.background_url,
         overview: item.overview,
         content_type: item.content_type,
-        genres: item.genres,
         canonical_tags: item
             .canonical_tags
             .into_iter()
@@ -1960,7 +1958,6 @@ pub fn from_movie_entity(movie: scryer_domain::MovieEntity) -> MovieEntityPayloa
         language: movie.language,
         runtime_minutes: movie.runtime_minutes,
         content_status: movie.content_status,
-        genres: movie.genres,
         studio: movie.studio,
         digital_release_date: parse_date(movie.digital_release_date),
         imdb_id: movie.imdb_id,

@@ -1749,7 +1749,6 @@ pub struct DiscoveryItemPayload {
     pub background_url: Option<String>,
     pub overview: Option<String>,
     pub content_type: Option<String>,
-    pub genres: Vec<String>,
     pub canonical_tags: Vec<CanonicalMediaTagPayload>,
     pub rating: Option<f64>,
     pub rating_sources: Vec<String>,
@@ -3844,7 +3843,6 @@ pub struct MetadataMoviePayload {
     pub runtime_minutes: i32,
     pub sort_title: String,
     pub imdb_id: String,
-    pub genres: Vec<String>,
     pub studio: String,
     pub tmdb_release_date: Option<Date>,
 }
@@ -3863,7 +3861,6 @@ pub struct MetadataSeriesPayload {
     pub runtime_minutes: i32,
     pub poster_url: String,
     pub country: String,
-    pub genres: Vec<String>,
     pub aliases: Vec<String>,
     pub seasons: Vec<MetadataSeasonPayload>,
     pub episodes: Vec<MetadataEpisodePayload>,

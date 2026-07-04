@@ -314,7 +314,6 @@ mod tests {
             poster_url: String::new(),
             background_url: None,
             country: String::new(),
-            genres: vec![],
             canonical_tags: vec![],
             aliases: vec![],
             tagged_aliases: vec![],

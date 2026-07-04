@@ -280,7 +280,6 @@ function mergePreferLoadedImageFields(
       incoming.runtimeMinutes === undefined
         ? current.runtimeMinutes
         : incoming.runtimeMinutes,
-    genres: incoming.genres === undefined ? current.genres : incoming.genres,
     language:
       incoming.language === undefined ? current.language : incoming.language,
     firstAired:

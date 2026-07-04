@@ -597,6 +597,23 @@ impl RateLimitRegistry {
         classify_host_rps_profile(host.as_str())
     }
 
+    pub fn preview_host_rps_wait(&self, host: &HostKey) -> Option<Duration> {
+        let assignment = self.profile_for_host(host);
+        let interval = assignment.profile.interval()?;
+        let host_deadlines = self
+            .state
+            .host_deadlines
+            .lock()
+            .expect("host RPS lock poisoned");
+        let (wait_duration, _) = next_host_rps_reservation(
+            host_deadlines.get(host).copied(),
+            Instant::now(),
+            interval,
+            assignment.profile.burst,
+        );
+        (!wait_duration.is_zero()).then_some(wait_duration)
+    }
+
     pub async fn record_cooldown(
         &self,
         scope: &RateLimitScopeKey,
@@ -730,17 +747,29 @@ impl RateLimitRegistry {
             .lock()
             .expect("host RPS lock poisoned");
         let now = Instant::now();
-        let burst_credit = interval.saturating_mul(assignment.profile.burst);
-        let earliest_base = now.checked_sub(burst_credit).unwrap_or(now);
-        let base = host_deadlines
-            .get(host)
-            .copied()
-            .filter(|deadline| *deadline > earliest_base)
-            .unwrap_or(earliest_base);
-        let wait_duration = base.saturating_duration_since(now);
-        host_deadlines.insert(host.clone(), base + interval);
+        let (wait_duration, next_deadline) = next_host_rps_reservation(
+            host_deadlines.get(host).copied(),
+            now,
+            interval,
+            assignment.profile.burst,
+        );
+        host_deadlines.insert(host.clone(), next_deadline);
         wait_duration
     }
+}
+
+fn next_host_rps_reservation(
+    current_deadline: Option<Instant>,
+    now: Instant,
+    interval: Duration,
+    burst: u32,
+) -> (Duration, Instant) {
+    let burst_credit = interval.saturating_mul(burst);
+    let earliest_base = now.checked_sub(burst_credit).unwrap_or(now);
+    let base = current_deadline
+        .filter(|deadline| *deadline > earliest_base)
+        .unwrap_or(earliest_base);
+    (base.saturating_duration_since(now), base + interval)
 }
 
 impl Default for RateLimitRegistry {
@@ -1967,6 +1996,20 @@ mod tests {
         assert_eq!(second_wait, None);
         assert_eq!(third_wait, None);
         assert!(fourth_wait.is_some());
+    }
+
+    #[tokio::test]
+    async fn host_rps_preview_does_not_reserve_capacity() {
+        let registry = RateLimitRegistry::isolated();
+        let host: HostKey = "preview.example.test".into();
+
+        assert_eq!(registry.preview_host_rps_wait(&host), None);
+        assert_eq!(registry.preview_host_rps_wait(&host), None);
+
+        assert_eq!(registry.acquire_host_rps(&host).await, None);
+        assert_eq!(registry.acquire_host_rps(&host).await, None);
+        assert_eq!(registry.acquire_host_rps(&host).await, None);
+        assert!(registry.preview_host_rps_wait(&host).is_some());
     }
 
     #[tokio::test]

@@ -19,7 +19,6 @@ export type MetadataTvdbSearchItem = {
   language: string | null;
   runtimeMinutes: number | null;
   sortTitle: string | null;
-  genres?: string[];
   rating?: number | null;
   ratingSource?: string | null;
   ratingSources?: string[];
@@ -38,7 +37,6 @@ export type MetadataMoviePayload = {
   runtimeMinutes: number;
   sortTitle: string;
   imdbId: string;
-  genres: string[];
   studio: string;
   tmdbReleaseDate: string | null;
 };
@@ -56,7 +54,6 @@ export type MetadataSeriesPayload = {
   runtimeMinutes: number;
   posterUrl: string;
   country: string;
-  genres: string[];
   aliases: string[];
   seasons: MetadataSeason[];
   episodes: MetadataEpisode[];

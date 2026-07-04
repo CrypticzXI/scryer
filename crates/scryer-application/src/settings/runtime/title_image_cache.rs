@@ -446,7 +446,6 @@ mod title_image_cache_refresh_tests {
             imdb_id: None,
             runtime_minutes: None,
             popularity: None,
-            genres: Vec::new(),
             content_status: None,
             language: None,
             first_aired: None,
