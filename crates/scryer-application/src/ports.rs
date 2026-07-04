@@ -2,8 +2,8 @@ use super::*;
 use crate::types::TitleCatalogFilterCounts;
 use async_trait::async_trait;
 use scryer_domain::{
-    ImportTransferPhase, ImportType, IndexerCapsSnapshot, PersistedPluginWasmPayload,
-    title_catalog_name_tie_key, title_catalog_sort_key_for_title,
+    CanonicalMediaTag, ImportTransferPhase, ImportType, IndexerCapsSnapshot,
+    PersistedPluginWasmPayload, title_catalog_name_tie_key, title_catalog_sort_key_for_title,
 };
 use scryer_plugin_sdk::{SubtitleSyncAlignResponse, SubtitleSyncAudioCodec, SubtitleSyncOptions};
 use std::cmp::Ordering;
@@ -447,6 +447,7 @@ pub struct DiscoveryItemRecord {
     pub overview: Option<String>,
     pub content_type: Option<String>,
     pub genres: Vec<String>,
+    pub canonical_tags: Vec<CanonicalMediaTag>,
     pub rating: Option<f64>,
     pub rating_sources: Vec<String>,
     pub external_ratings: Vec<TitleExternalRating>,
@@ -831,6 +832,16 @@ pub trait TitleRepository: Send + Sync {
     async fn get_title_ratings(&self, _title_id: &str) -> AppResult<TitleRatingSummary> {
         Ok(TitleRatingSummary::default())
     }
+    async fn list_title_ratings(
+        &self,
+        title_ids: &[String],
+    ) -> AppResult<Vec<(String, TitleRatingSummary)>> {
+        let mut ratings = Vec::with_capacity(title_ids.len());
+        for title_id in title_ids {
+            ratings.push((title_id.clone(), self.get_title_ratings(title_id).await?));
+        }
+        Ok(ratings)
+    }
     async fn get_by_facet_and_slug(
         &self,
         facet: MediaFacet,
@@ -956,36 +967,109 @@ pub trait TitleRepository: Send + Sync {
 }
 
 fn sort_titles_for_catalog(titles: &mut [Title], sort: TitleCatalogSort) {
-    titles.sort_by(|left, right| {
-        let ordering = match sort.key {
-            TitleCatalogSortKey::Title => compare_titles_by_catalog_title(left, right),
-            TitleCatalogSortKey::Library => left
-                .library_id
-                .cmp(&right.library_id)
-                .then_with(|| compare_titles_by_catalog_title(left, right)),
-            TitleCatalogSortKey::Monitored => left
-                .monitored
-                .cmp(&right.monitored)
-                .then_with(|| compare_titles_by_catalog_title(left, right)),
-            TitleCatalogSortKey::Quality => title_catalog_quality_profile_id(left)
-                .cmp(&title_catalog_quality_profile_id(right))
-                .then_with(|| compare_titles_by_catalog_title(left, right)),
-            TitleCatalogSortKey::Status => title_catalog_status_sort_value(left)
-                .cmp(&title_catalog_status_sort_value(right))
-                .then_with(|| compare_titles_by_catalog_title(left, right)),
-            TitleCatalogSortKey::Episodes | TitleCatalogSortKey::Size => {
-                compare_titles_by_catalog_title(left, right)
+    titles.sort_by(|left, right| match sort.key {
+        TitleCatalogSortKey::Year => {
+            compare_nullable_ord_null_last(left.year, right.year, sort.direction)
+                .then_with(|| compare_titles_by_catalog_title(left, right))
+        }
+        TitleCatalogSortKey::Runtime => compare_nullable_ord_null_last(
+            left.runtime_minutes,
+            right.runtime_minutes,
+            sort.direction,
+        )
+        .then_with(|| compare_titles_by_catalog_title(left, right)),
+        TitleCatalogSortKey::Popularity => {
+            compare_nullable_partial_null_last(left.popularity, right.popularity, sort.direction)
+                .then_with(|| compare_titles_by_catalog_title(left, right))
+        }
+        _ => {
+            let ordering = match sort.key {
+                TitleCatalogSortKey::Title => compare_titles_by_catalog_title(left, right),
+                TitleCatalogSortKey::Library => left
+                    .library_id
+                    .cmp(&right.library_id)
+                    .then_with(|| compare_titles_by_catalog_title(left, right)),
+                TitleCatalogSortKey::Monitored => left
+                    .monitored
+                    .cmp(&right.monitored)
+                    .then_with(|| compare_titles_by_catalog_title(left, right)),
+                TitleCatalogSortKey::Quality => title_catalog_quality_profile_id(left)
+                    .cmp(&title_catalog_quality_profile_id(right))
+                    .then_with(|| compare_titles_by_catalog_title(left, right)),
+                TitleCatalogSortKey::Status => title_catalog_status_sort_value(left)
+                    .cmp(&title_catalog_status_sort_value(right))
+                    .then_with(|| compare_titles_by_catalog_title(left, right)),
+                TitleCatalogSortKey::Episodes
+                | TitleCatalogSortKey::Size
+                | TitleCatalogSortKey::Root
+                | TitleCatalogSortKey::MediaResolution
+                | TitleCatalogSortKey::MediaHdr
+                | TitleCatalogSortKey::MediaAudioCodec
+                | TitleCatalogSortKey::RatingScryer
+                | TitleCatalogSortKey::RatingImdb
+                | TitleCatalogSortKey::RatingRottenTomatoes
+                | TitleCatalogSortKey::RatingPopcornmeter
+                | TitleCatalogSortKey::RatingMetacritic
+                | TitleCatalogSortKey::RatingMetacriticUser
+                | TitleCatalogSortKey::RatingLetterboxd
+                | TitleCatalogSortKey::RatingTmdb
+                | TitleCatalogSortKey::RatingTvdb
+                | TitleCatalogSortKey::RatingTrakt
+                | TitleCatalogSortKey::RatingMyanimelist
+                | TitleCatalogSortKey::RatingAnilist
+                | TitleCatalogSortKey::RatingAnidb
+                | TitleCatalogSortKey::RatingMdblist => {
+                    compare_titles_by_catalog_title(left, right)
+                }
+                TitleCatalogSortKey::Added => left
+                    .created_at
+                    .cmp(&right.created_at)
+                    .then_with(|| compare_titles_by_catalog_title(left, right)),
+                TitleCatalogSortKey::Year
+                | TitleCatalogSortKey::Runtime
+                | TitleCatalogSortKey::Popularity => Ordering::Equal,
+            };
+            match sort.direction {
+                SortDirection::Asc => ordering,
+                SortDirection::Desc => ordering.reverse(),
             }
-            TitleCatalogSortKey::Added => left
-                .created_at
-                .cmp(&right.created_at)
-                .then_with(|| compare_titles_by_catalog_title(left, right)),
-        };
-        match sort.direction {
-            SortDirection::Asc => ordering,
-            SortDirection::Desc => ordering.reverse(),
         }
     });
+}
+
+fn compare_nullable_ord_null_last<T: Ord>(
+    left: Option<T>,
+    right: Option<T>,
+    direction: SortDirection,
+) -> Ordering {
+    match (left, right) {
+        (Some(left), Some(right)) => match direction {
+            SortDirection::Asc => left.cmp(&right),
+            SortDirection::Desc => right.cmp(&left),
+        },
+        (Some(_), None) => Ordering::Less,
+        (None, Some(_)) => Ordering::Greater,
+        (None, None) => Ordering::Equal,
+    }
+}
+
+fn compare_nullable_partial_null_last(
+    left: Option<f64>,
+    right: Option<f64>,
+    direction: SortDirection,
+) -> Ordering {
+    match (left, right) {
+        (Some(left), Some(right)) => {
+            let ordering = left.partial_cmp(&right).unwrap_or(Ordering::Equal);
+            match direction {
+                SortDirection::Asc => ordering,
+                SortDirection::Desc => ordering.reverse(),
+            }
+        }
+        (Some(_), None) => Ordering::Less,
+        (None, Some(_)) => Ordering::Greater,
+        (None, None) => Ordering::Equal,
+    }
 }
 
 fn compare_titles_by_catalog_title(left: &Title, right: &Title) -> Ordering {
@@ -2621,6 +2705,11 @@ pub trait MediaFileRepository: Send + Sync {
         title_ids: &[String],
     ) -> AppResult<Vec<TitleQualitySummary>>;
 
+    async fn list_title_movie_media_summaries(
+        &self,
+        title_ids: &[String],
+    ) -> AppResult<Vec<TitleMovieMediaSummary>>;
+
     async fn list_cutoff_unmet_quality_summaries(
         &self,
         title_ids: &[String],
@@ -2630,6 +2719,11 @@ pub trait MediaFileRepository: Send + Sync {
         &self,
         title_ids: &[String],
     ) -> AppResult<Vec<TitleEpisodeProgressSummary>>;
+
+    async fn list_collection_episode_progress_summaries(
+        &self,
+        title_ids: &[String],
+    ) -> AppResult<Vec<CollectionEpisodeProgressSummary>>;
 
     async fn update_media_file_analysis(
         &self,

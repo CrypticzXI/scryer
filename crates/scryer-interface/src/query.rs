@@ -34,8 +34,9 @@ use crate::mappers::{
     from_media_request_counts, from_pending_import_connection, from_pending_import_counts,
     from_pending_release, from_provider_type, from_runtime_path_style,
     from_smg_scryer_update_notice, from_smg_version_compatibility_notice, from_system_health,
-    from_title, from_title_acquisition_diagnostics, from_title_history_page,
-    from_title_release_blocklist_entry, from_user_with_auth_factor_status, from_wanted_item,
+    from_title, from_title_acquisition_diagnostics, from_title_history_page, from_title_media_file,
+    from_title_rating_summary, from_title_release_blocklist_entry,
+    from_user_with_auth_factor_status, from_wanted_item,
 };
 use crate::types::*;
 
@@ -143,6 +144,27 @@ fn title_catalog_sort_from_input(sort: Option<TitleCatalogSortInput>) -> TitleCa
         TitleCatalogSortKeyValue::Status => TitleCatalogSortKey::Status,
         TitleCatalogSortKeyValue::Size => TitleCatalogSortKey::Size,
         TitleCatalogSortKeyValue::Added => TitleCatalogSortKey::Added,
+        TitleCatalogSortKeyValue::Year => TitleCatalogSortKey::Year,
+        TitleCatalogSortKeyValue::Runtime => TitleCatalogSortKey::Runtime,
+        TitleCatalogSortKeyValue::Root => TitleCatalogSortKey::Root,
+        TitleCatalogSortKeyValue::Popularity => TitleCatalogSortKey::Popularity,
+        TitleCatalogSortKeyValue::MediaResolution => TitleCatalogSortKey::MediaResolution,
+        TitleCatalogSortKeyValue::MediaHdr => TitleCatalogSortKey::MediaHdr,
+        TitleCatalogSortKeyValue::MediaAudioCodec => TitleCatalogSortKey::MediaAudioCodec,
+        TitleCatalogSortKeyValue::RatingScryer => TitleCatalogSortKey::RatingScryer,
+        TitleCatalogSortKeyValue::RatingImdb => TitleCatalogSortKey::RatingImdb,
+        TitleCatalogSortKeyValue::RatingRottenTomatoes => TitleCatalogSortKey::RatingRottenTomatoes,
+        TitleCatalogSortKeyValue::RatingPopcornmeter => TitleCatalogSortKey::RatingPopcornmeter,
+        TitleCatalogSortKeyValue::RatingMetacritic => TitleCatalogSortKey::RatingMetacritic,
+        TitleCatalogSortKeyValue::RatingMetacriticUser => TitleCatalogSortKey::RatingMetacriticUser,
+        TitleCatalogSortKeyValue::RatingLetterboxd => TitleCatalogSortKey::RatingLetterboxd,
+        TitleCatalogSortKeyValue::RatingTmdb => TitleCatalogSortKey::RatingTmdb,
+        TitleCatalogSortKeyValue::RatingTvdb => TitleCatalogSortKey::RatingTvdb,
+        TitleCatalogSortKeyValue::RatingTrakt => TitleCatalogSortKey::RatingTrakt,
+        TitleCatalogSortKeyValue::RatingMyanimelist => TitleCatalogSortKey::RatingMyanimelist,
+        TitleCatalogSortKeyValue::RatingAnilist => TitleCatalogSortKey::RatingAnilist,
+        TitleCatalogSortKeyValue::RatingAnidb => TitleCatalogSortKey::RatingAnidb,
+        TitleCatalogSortKeyValue::RatingMdblist => TitleCatalogSortKey::RatingMdblist,
     };
     let direction = sort
         .direction
@@ -243,7 +265,7 @@ async fn title_payloads_from_titles(
 
     let title_ids: Vec<String> = titles.iter().map(|t| t.id.clone()).collect();
     let libraries = async {
-        if selection.include_library_context {
+        if selection.include_library_context || selection.include_root_folder_path {
             app.list_libraries_for_permission(actor, None, scryer_domain::LibraryPermission::View)
                 .await
         } else {
@@ -287,6 +309,29 @@ async fn title_payloads_from_titles(
             Ok(std::collections::HashMap::new())
         }
     };
+    let collection_episode_progress_summaries = async {
+        if selection.include_collection_episode_progress {
+            app.list_collection_episode_progress_summaries(actor, &title_ids)
+                .await
+        } else {
+            Ok(Vec::new())
+        }
+    };
+    let ratings = async {
+        if selection.include_ratings {
+            app.list_title_ratings(actor, &title_ids).await
+        } else {
+            Ok(Vec::new())
+        }
+    };
+    let movie_media_summaries = async {
+        if selection.include_movie_media_summary {
+            app.list_title_movie_media_summaries(actor, &title_ids)
+                .await
+        } else {
+            Ok(Vec::new())
+        }
+    };
     let (
         libraries,
         summaries,
@@ -294,6 +339,9 @@ async fn title_payloads_from_titles(
         quality_summaries,
         episode_progress_summaries,
         collections_by_title_id,
+        collection_episode_progress_summaries,
+        ratings,
+        movie_media_summaries,
     ) = tokio::try_join!(
         libraries,
         summaries,
@@ -301,11 +349,19 @@ async fn title_payloads_from_titles(
         quality_summaries,
         episode_progress_summaries,
         collections_by_title_id,
+        collection_episode_progress_summaries,
+        ratings,
+        movie_media_summaries,
     )
     .map_err(to_gql_error)?;
     let library_map: std::collections::HashMap<&str, (&String, &String)> = libraries
         .iter()
         .map(|library| (library.id.as_str(), (&library.name, &library.slug)))
+        .collect();
+    let root_folder_path_map: std::collections::HashMap<&str, &String> = libraries
+        .iter()
+        .flat_map(|library| library.roots.iter())
+        .map(|root| (root.id.as_str(), &root.path))
         .collect();
     let summary_map: std::collections::HashMap<&str, _> =
         summaries.iter().map(|s| (s.title_id.as_str(), s)).collect();
@@ -321,12 +377,26 @@ async fn title_payloads_from_titles(
         .iter()
         .map(|summary| (summary.title_id.as_str(), summary))
         .collect();
+    let collection_episode_progress_map: std::collections::HashMap<&str, _> =
+        collection_episode_progress_summaries
+            .iter()
+            .map(|summary| (summary.collection_id.as_str(), summary))
+            .collect();
+    let ratings_map: std::collections::HashMap<&str, _> = ratings
+        .iter()
+        .map(|(title_id, summary)| (title_id.as_str(), summary))
+        .collect();
+    let movie_media_map: std::collections::HashMap<&str, _> = movie_media_summaries
+        .iter()
+        .map(|summary| (summary.title_id.as_str(), summary))
+        .collect();
 
     Ok(titles
         .into_iter()
         .map(|t| {
             let id = t.id.clone();
             let library_id = t.library_id.clone();
+            let root_folder_id = t.root_folder_id.clone();
             let mut payload = from_title(t);
             if let Some((library_name, library_slug)) = library_map.get(library_id.as_str()) {
                 payload.library_name = Some((*library_name).clone());
@@ -344,6 +414,17 @@ async fn title_payloads_from_titles(
                 payload.episodes_monitored = Some(summary.monitored_episodes);
                 payload.episodes_total = Some(summary.total_episodes);
             }
+            if let Some(summary) = ratings_map.get(id.as_str()) {
+                payload.preloaded_ratings = Some(from_title_rating_summary((*summary).clone()));
+            }
+            if let Some(path) = root_folder_path_map.get(root_folder_id.as_str()) {
+                payload.preloaded_root_folder_path = Some((*path).clone());
+            }
+            if let Some(summary) = movie_media_map.get(id.as_str()) {
+                payload.media_resolution = summary.resolution.clone();
+                payload.media_hdr = summary.hdr_format.clone();
+                payload.media_audio_codec = summary.audio_codec.clone();
+            }
             if selection.include_collections {
                 payload.preloaded_collections = Some(
                     collections_by_title_id
@@ -351,7 +432,18 @@ async fn title_payloads_from_titles(
                         .cloned()
                         .unwrap_or_default()
                         .into_iter()
-                        .map(from_collection)
+                        .map(|collection| {
+                            let collection_id = collection.id.clone();
+                            let mut payload = from_collection(collection);
+                            if let Some(summary) =
+                                collection_episode_progress_map.get(collection_id.as_str())
+                            {
+                                payload.episodes_owned = Some(summary.owned_episodes);
+                                payload.episodes_monitored = Some(summary.monitored_episodes);
+                                payload.episodes_total = Some(summary.total_episodes);
+                            }
+                            payload
+                        })
                         .collect(),
                 );
             }
@@ -368,7 +460,11 @@ struct TitlePayloadSelection {
     include_current_quality_tier: bool,
     include_size_bytes: bool,
     include_episode_progress: bool,
+    include_collection_episode_progress: bool,
     include_collections: bool,
+    include_ratings: bool,
+    include_root_folder_path: bool,
+    include_movie_media_summary: bool,
 }
 
 impl TitlePayloadSelection {
@@ -376,6 +472,14 @@ impl TitlePayloadSelection {
         let lookahead = ctx.look_ahead();
         let title_field_exists = |name: &str| {
             lookahead.field(name).exists() || lookahead.field("items").field(name).exists()
+        };
+        let collection_field_exists = |name: &str| {
+            lookahead.field("collections").field(name).exists()
+                || lookahead
+                    .field("items")
+                    .field("collections")
+                    .field(name)
+                    .exists()
         };
         Self {
             include_external_ids: title_field_exists("externalIds"),
@@ -387,7 +491,15 @@ impl TitlePayloadSelection {
             include_episode_progress: title_field_exists("episodesOwned")
                 || title_field_exists("episodesMonitored")
                 || title_field_exists("episodesTotal"),
+            include_collection_episode_progress: collection_field_exists("episodesOwned")
+                || collection_field_exists("episodesMonitored")
+                || collection_field_exists("episodesTotal"),
             include_collections: title_field_exists("collections"),
+            include_ratings: title_field_exists("ratings"),
+            include_root_folder_path: title_field_exists("rootFolderPath"),
+            include_movie_media_summary: title_field_exists("mediaResolution")
+                || title_field_exists("mediaHdr")
+                || title_field_exists("mediaAudioCodec"),
         }
     }
 }
@@ -760,6 +872,21 @@ impl CatalogQueries {
         };
         let mut payloads = title_payloads_from_titles(&app, &actor, vec![title], selection).await?;
         Ok(payloads.pop())
+    }
+
+    async fn episode_media_files(
+        &self,
+        ctx: &Context<'_>,
+        title_id: ID,
+        episode_id: ID,
+    ) -> GqlResult<Vec<TitleMediaFilePayload>> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let files = app
+            .list_episode_media_files(&actor, title_id.as_ref(), episode_id.as_ref())
+            .await
+            .map_err(to_gql_error)?;
+        Ok(files.into_iter().map(from_title_media_file).collect())
     }
 
     async fn title_by_slug(
@@ -2368,7 +2495,9 @@ impl UtilityQueries {
             .map_err(to_gql_error)?;
         downloads
             .into_iter()
-            .map(|d| {
+            .map(|listing| {
+                let score_percent = listing.score_percent;
+                let d = listing.download;
                 Ok(ExternalSubtitlePayload {
                     id: d.id.into(),
                     media_file_id: d.media_file_id.into(),
@@ -2380,6 +2509,7 @@ impl UtilityQueries {
                     provider_file_id: d.provider_file_id,
                     file_path: d.file_path,
                     score: d.score,
+                    score_percent,
                     hearing_impaired: d.hearing_impaired,
                     forced: d.forced,
                     ai_translated: d.ai_translated,

@@ -393,6 +393,7 @@ async fn title_writes_generate_and_refresh_catalog_sort_key_sqlite() {
         &catalog,
         &title.id,
         TitleMetadataUpdate {
+            canonical_subject_key: None,
             name: Some("鋼の錬金術師".to_string()),
             year: None,
             overview: None,
@@ -402,7 +403,9 @@ async fn title_writes_generate_and_refresh_catalog_sort_key_sqlite() {
             slug: None,
             imdb_id: None,
             runtime_minutes: None,
+            popularity: None,
             genres: vec![],
+            canonical_tags: vec![],
             content_status: None,
             language: None,
             first_aired: None,

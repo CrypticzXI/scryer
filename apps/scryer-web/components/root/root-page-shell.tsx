@@ -871,7 +871,11 @@ function AuthenticatedHomePage({
       } else {
         parsedView = "settings";
         settingsPathSegment = routeSection;
-        if (["rules", "post-procesing", "post-processing"].includes(routeSection ?? "")) {
+        if (
+          ["rules", "subtitles", "post-procesing", "post-processing"].includes(
+            routeSection ?? "",
+          )
+        ) {
           canonicalRoutePath = buildViewPath(
             "settings",
             parseSettingsSectionFromPath(settingsPathSegment),
@@ -912,6 +916,7 @@ function AuthenticatedHomePage({
       if (
         [
           "rules",
+          "subtitles",
           "post-processing",
           "indexers",
           "downloadClients",
@@ -1077,7 +1082,7 @@ function AuthenticatedHomePage({
   } = useSmgNotices();
   const [resolvedOverviewTarget, setResolvedOverviewTarget] =
     useState<OverviewTitleTarget | null>(null);
-  const [, setOverviewSlugLoading] = useState(false);
+  const [overviewSlugLoading, setOverviewSlugLoading] = useState(false);
 
   const setLanguagePreferenceFromShell = useCallback(
     (code: string) => {
@@ -1394,7 +1399,10 @@ function AuthenticatedHomePage({
     ? (navigationOverviewTarget?.id ?? resolvedOverviewTarget?.id ?? null)
     : legacyOverviewTitleId;
   const overviewTitleRoutePending = Boolean(
-    parsedOverviewSlug && isMediaView(view),
+    parsedOverviewSlug &&
+      isMediaView(view) &&
+      overviewSlugLoading &&
+      !overviewTitleId,
   );
 
   const handleOpenOverview = useCallback(

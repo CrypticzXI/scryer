@@ -42,6 +42,8 @@ const RATING_SOURCE_ORDER = new Map<string, number>([
   ["mal", 80],
   ["myanimelist", 80],
   ["myanimelistnet", 80],
+  ["anilist", 81],
+  ["anidb", 82],
   ["mdblist", 90],
 ]);
 
@@ -111,6 +113,10 @@ export function ratingSourceInfo(source: string): RatingSourceInfo {
     case "myanimelist":
     case "myanimelistnet":
       return { label: "MyAnimeList", logoSrc: "/media-sites/mal.svg", format: "default" };
+    case "anilist":
+      return { label: "AniList", logoSrc: "/media-sites/anilist.svg", format: "default" };
+    case "anidb":
+      return { label: "AniDB", logoSrc: "/media-sites/anidb.png", format: "default" };
     default:
       return { label: fallbackSourceLabel(source), logoSrc: null, format: "default" };
   }

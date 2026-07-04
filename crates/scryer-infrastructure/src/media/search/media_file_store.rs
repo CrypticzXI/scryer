@@ -1,9 +1,10 @@
 use async_trait::async_trait;
 use chrono::Utc;
 use scryer_application::{
-    AppError, AppResult, CutoffUnmetQualitySummary, EpisodeScopedMediaFile, InsertMediaFileInput,
-    MediaFileAnalysis, MediaFileRepository, TitleEpisodeProgressSummary, TitleMediaFile,
-    TitleMediaSizeSummary, TitleQualitySummary,
+    AppError, AppResult, CollectionEpisodeProgressSummary, CutoffUnmetQualitySummary,
+    EpisodeScopedMediaFile, InsertMediaFileInput, MediaFileAnalysis, MediaFileRepository,
+    TitleEpisodeProgressSummary, TitleMediaFile, TitleMediaSizeSummary, TitleMovieMediaSummary,
+    TitleQualitySummary,
 };
 use scryer_domain::Id;
 use serde::de::DeserializeOwned;
@@ -330,6 +331,63 @@ impl MediaFileRepository for MediaFileStore {
             .collect()
     }
 
+    async fn list_title_movie_media_summaries(
+        &self,
+        title_ids: &[String],
+    ) -> AppResult<Vec<TitleMovieMediaSummary>> {
+        if title_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let placeholders = placeholders(title_ids.len());
+        let dialect = dialect_for_datastore(&self.datastore);
+        let resolution_expression = normalized_quality_expression("media_files");
+        let audio_codec_expression = "COALESCE(NULLIF(TRIM(media_files.audio_codec_parsed), ''), NULLIF(TRIM(media_files.audio_codec), ''))";
+        let hdr_expression = "NULLIF(TRIM(media_files.video_hdr_format), '')";
+        let sql = format!(
+            "SELECT title_id, resolution, hdr_format, audio_codec
+             FROM (
+                SELECT media_files.title_id AS title_id,
+                       {resolution_expression} AS resolution,
+                       {hdr_expression} AS hdr_format,
+                       {audio_codec_expression} AS audio_codec,
+                       ROW_NUMBER() OVER (
+                          PARTITION BY media_files.title_id
+                          ORDER BY CASE WHEN media_files.size_bytes > 0 THEN media_files.size_bytes ELSE 0 END DESC,
+                                   media_files.created_at DESC,
+                                   media_files.id DESC
+                       ) AS media_row
+                  FROM media_files
+                  JOIN titles ON titles.id = media_files.title_id
+                 WHERE media_files.title_id IN ({placeholders})
+                   AND titles.facet = 'movie'
+                   AND {}
+                   AND media_files.role = 'primary'
+             ) ranked
+             WHERE media_row = 1",
+            live_media_file_predicate(dialect, "media_files")
+        );
+        let args = title_ids
+            .iter()
+            .cloned()
+            .map(SqlArg::Text)
+            .collect::<Vec<_>>();
+        SqlRuntime::fetch_all(self.datastore.read_exec(), &sql, &args)
+            .await?
+            .iter()
+            .map(|row| {
+                Ok(TitleMovieMediaSummary {
+                    title_id: row.text("title_id")?,
+                    resolution: row.opt_text("resolution")?,
+                    hdr_format: row
+                        .opt_text("hdr_format")?
+                        .filter(|value| !value.trim().is_empty()),
+                    audio_codec: row.opt_text("audio_codec")?,
+                })
+            })
+            .collect()
+    }
+
     async fn list_cutoff_unmet_quality_summaries(
         &self,
         title_ids: &[String],
@@ -434,6 +492,52 @@ impl MediaFileRepository for MediaFileStore {
             .map(|row| {
                 Ok(TitleEpisodeProgressSummary {
                     title_id: row.text("title_id")?,
+                    owned_episodes: row.i64("owned_episodes")?,
+                    monitored_episodes: row.i64("monitored_episodes")?,
+                    total_episodes: row.i64("total_episodes")?,
+                })
+            })
+            .collect()
+    }
+
+    async fn list_collection_episode_progress_summaries(
+        &self,
+        title_ids: &[String],
+    ) -> AppResult<Vec<CollectionEpisodeProgressSummary>> {
+        if title_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let dialect = dialect_for_datastore(&self.datastore);
+        let placeholders = placeholders(title_ids.len());
+        let sql = format!(
+            "SELECT e.collection_id,
+                    COUNT(DISTINCT e.id) AS total_episodes,
+                    COUNT(DISTINCT CASE WHEN {} THEN e.id END) AS monitored_episodes,
+                    COUNT(DISTINCT CASE WHEN mf.id IS NOT NULL THEN e.id END) AS owned_episodes
+             FROM episodes e
+             LEFT JOIN file_episode_map fem ON fem.episode_id = e.id
+             LEFT JOIN media_files mf ON mf.id = fem.file_id AND {} AND mf.role = 'primary'
+             WHERE e.title_id IN ({placeholders})
+               AND e.collection_id IS NOT NULL
+               AND trim(COALESCE(e.title, '')) <> ''
+               AND upper(trim(e.title)) NOT IN ('TBA', 'TBD')
+               AND trim(COALESCE(e.air_date, '')) <> ''
+             GROUP BY e.collection_id",
+            bool_column_is_true(dialect, "e.monitored"),
+            live_media_file_predicate(dialect, "mf")
+        );
+        let args = title_ids
+            .iter()
+            .cloned()
+            .map(SqlArg::Text)
+            .collect::<Vec<_>>();
+        SqlRuntime::fetch_all(self.datastore.read_exec(), &sql, &args)
+            .await?
+            .iter()
+            .map(|row| {
+                Ok(CollectionEpisodeProgressSummary {
+                    collection_id: row.text("collection_id")?,
                     owned_episodes: row.i64("owned_episodes")?,
                     monitored_episodes: row.i64("monitored_episodes")?,
                     total_episodes: row.i64("total_episodes")?,
@@ -1110,6 +1214,7 @@ mod tests {
             library_id: scryer_domain::default_library_id_for_facet(&MediaFacet::Series),
             monitored: true,
             tags: vec![],
+            canonical_tags: vec![],
             external_ids: vec![],
             root_folder_id: scryer_domain::root_folder_id_for_path("/data/series"),
             created_by: None,
@@ -1125,6 +1230,7 @@ mod tests {
             slug: None,
             imdb_id: None,
             runtime_minutes: None,
+            popularity: None,
             genres: vec![],
             content_status: None,
             language: None,
@@ -1302,6 +1408,16 @@ mod tests {
         assert_eq!(episode_progress[0].total_episodes, 2);
         assert_eq!(episode_progress[0].monitored_episodes, 2);
         assert_eq!(episode_progress[0].owned_episodes, 1);
+
+        let collection_progress = media_files
+            .list_collection_episode_progress_summaries(std::slice::from_ref(&title.id))
+            .await
+            .expect("collection episode progress summaries should succeed");
+        assert_eq!(collection_progress.len(), 1);
+        assert_eq!(collection_progress[0].collection_id, collection.id);
+        assert_eq!(collection_progress[0].total_episodes, 2);
+        assert_eq!(collection_progress[0].monitored_episodes, 2);
+        assert_eq!(collection_progress[0].owned_episodes, 1);
 
         let _ = std::fs::remove_file(db);
     }

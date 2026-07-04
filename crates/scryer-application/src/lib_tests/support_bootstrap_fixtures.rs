@@ -326,13 +326,22 @@ pub(super) async fn wait_for_title_image_cache_clear_idle(app: &AppUseCase) {
 pub(super) fn bootstrap_with_metadata_gateway_and_titles(
     metadata_gateway: Arc<dyn MetadataGateway>,
 ) -> (AppUseCase, User, Arc<MockTitleRepo>) {
+    bootstrap_with_metadata_gateway_settings_and_titles(
+        metadata_gateway,
+        Arc::new(StoredSettingsRepo::default()),
+    )
+}
+
+pub(super) fn bootstrap_with_metadata_gateway_settings_and_titles(
+    metadata_gateway: Arc<dyn MetadataGateway>,
+    settings: Arc<dyn SettingsRepository>,
+) -> (AppUseCase, User, Arc<MockTitleRepo>) {
     let titles = Arc::new(MockTitleRepo::default());
     let shows = Arc::new(MockShowRepo::default());
     let users = Arc::new(MockUserRepo::default());
     let indexer_configs = Arc::new(MockIndexerConfigRepo::default());
     let download_client_configs = Arc::new(MockDownloadClientConfigRepo::default());
     let release_attempts = Arc::new(MockReleaseAttemptRepo::default());
-    let settings = Arc::new(StoredSettingsRepo::default());
     let quality_profiles = Arc::new(MockQualityProfileRepo);
     let download_client = Arc::new(StubDownloadClient::default());
     let indexer_client = Arc::new(MockIndexerClient);
@@ -385,6 +394,7 @@ pub(super) fn make_due_hydration_title(id: &str, facet: MediaFacet, tvdb_id: i64
         facet,
         monitored: true,
         tags: vec![],
+        canonical_tags: vec![],
         external_ids: vec![ExternalId {
             source: "tvdb".to_string(),
             value: tvdb_id.to_string(),
@@ -402,6 +412,7 @@ pub(super) fn make_due_hydration_title(id: &str, facet: MediaFacet, tvdb_id: i64
         slug: None,
         imdb_id: None,
         runtime_minutes: None,
+        popularity: None,
         genres: vec![],
         content_status: None,
         language: None,
@@ -421,6 +432,7 @@ pub(super) fn make_due_hydration_title(id: &str, facet: MediaFacet, tvdb_id: i64
 
 pub(super) fn make_movie_metadata(tvdb_id: i64, name: &str) -> MovieMetadata {
     MovieMetadata {
+        target_key: None,
         tvdb_id,
         name: name.to_string(),
         slug: name.to_ascii_lowercase().replace(' ', "-"),
@@ -434,8 +446,10 @@ pub(super) fn make_movie_metadata(tvdb_id: i64, name: &str) -> MovieMetadata {
         sort_title: name.to_string(),
         imdb_id: format!("tt{tvdb_id:07}"),
         tmdb_id: None,
+        popularity: None,
         anidb_id: None,
         genres: vec!["Drama".to_string()],
+        canonical_tags: vec![],
         studio: "Test Studio".to_string(),
         tmdb_release_date: Some("2026-01-01".to_string()),
         ratings: Default::default(),

@@ -472,6 +472,22 @@ pub const BACKUP_TABLE_CATALOG: &[BackupTableCatalogEntry] = &[
         classification: BackupTableClassification::Export,
     },
     BackupTableCatalogEntry {
+        table: "canonical_media_subjects",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
+        table: "canonical_media_tags",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
+        table: "canonical_media_tag_sources",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
+        table: "canonical_media_tag_source_keys",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
         table: "discovery_facets",
         classification: BackupTableClassification::Export,
     },
@@ -517,6 +533,10 @@ pub const BACKUP_TABLE_CATALOG: &[BackupTableCatalogEntry] = &[
     },
     BackupTableCatalogEntry {
         table: "discovery_sync_state",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
+        table: "discovery_title_external_ids",
         classification: BackupTableClassification::Export,
     },
     BackupTableCatalogEntry {

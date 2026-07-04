@@ -73,6 +73,9 @@ impl LibraryPayload {
 #[ComplexObject]
 impl TitlePayload {
     async fn ratings(&self, ctx: &Context<'_>) -> GqlResult<TitleRatingPayload> {
+        if let Some(ratings) = &self.preloaded_ratings {
+            return Ok(ratings.clone());
+        }
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
         app.title_ratings(&actor, self.id.as_ref())
@@ -96,6 +99,9 @@ impl TitlePayload {
     }
 
     async fn root_folder_path(&self, ctx: &Context<'_>) -> GqlResult<String> {
+        if let Some(path) = &self.preloaded_root_folder_path {
+            return Ok(path.clone());
+        }
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
         app.require_library_permission(

@@ -11,6 +11,7 @@ fn sample_title() -> Title {
         root_folder_id: scryer_domain::root_folder_id_for_path("/data/test"),
         monitored: true,
         tags: vec![],
+        canonical_tags: vec![],
         external_ids: vec![
             ExternalId {
                 source: "tvdb".to_string(),
@@ -34,6 +35,7 @@ fn sample_title() -> Title {
         slug: None,
         imdb_id: Some("tt456".to_string()),
         runtime_minutes: None,
+        popularity: None,
         genres: vec![],
         content_status: None,
         language: None,

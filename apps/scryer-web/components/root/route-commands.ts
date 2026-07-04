@@ -386,9 +386,9 @@ export function buildRouteCommands({
           onSelect: buildNavigate(onNavigate, "settings", "post-processing"),
         } satisfies RouteCommand, {
           id: "settings-subtitles",
-          label: `${settingsGroupLabel} / ${t("settings.subtitles")}`,
+          label: `${automationGroupLabel} / ${t("settings.subtitles")}`,
           description: t("settings.subtitles"),
-          groupLabel: settingsGroupLabel,
+          groupLabel: automationGroupLabel,
           keywords: ["settings", "subtitles", "captions", "srt", "opensubtitles"],
           icon: Captions,
           onSelect: buildNavigate(onNavigate, "settings", "subtitles"),

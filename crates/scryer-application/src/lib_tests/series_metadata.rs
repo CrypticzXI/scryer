@@ -157,6 +157,7 @@ async fn anime_hybrid_movie_mapping_creates_series_movie_link() {
             movies: HashMap::from([(
                 131_963,
                 MovieMetadata {
+                    target_key: None,
                     tvdb_id: 131_963,
                     name: "Mugen Train".into(),
                     slug: "mugen-train".into(),
@@ -170,8 +171,10 @@ async fn anime_hybrid_movie_mapping_creates_series_movie_link() {
                     sort_title: "Mugen Train".into(),
                     imdb_id: "tt11032374".into(),
                     tmdb_id: None,
+                    popularity: None,
                     anidb_id: None,
                     genres: vec!["Action".into(), "Anime".into()],
+                    canonical_tags: vec![],
                     studio: "ufotable".into(),
                     tmdb_release_date: Some("2020-10-16".into()),
                     ratings: Default::default(),

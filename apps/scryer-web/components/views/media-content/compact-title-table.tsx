@@ -46,10 +46,18 @@ import {
   titleOverviewSearchButtonId,
 } from "@/lib/utils/dom-ids";
 import {
+  ANIME_TITLE_TABLE_RATING_COLUMNS,
   bytesToReadable,
+  formatAudioCodecLabel,
+  formatCatalogPopularity,
+  formatHdrLabel,
+  formatResolutionLabel,
+  formatRuntimeMinutes,
   formatTitleDate,
   resolveDisplayedQualityLabel,
   resolveOverviewTargetView,
+  SHARED_TITLE_TABLE_RATING_COLUMNS,
+  StatusBadge,
   TitleEpisodeProgressBar,
   TitleCollectionEmptyState,
   TitleTableEmptyState,
@@ -62,6 +70,8 @@ import {
   TITLE_TABLE_INTERACTIVE_PANEL_BODY_CLASS,
   TITLE_TABLE_INTERACTIVE_PANEL_ESTIMATED_HEIGHT,
   TITLE_TABLE_ROW_CLASS,
+  titleTableRatingColumnLabel,
+  titleTableRatingColumnValue,
   type TitleTableSortDirection,
   type TitleTableSortKey,
   type TitleTableVisibleColumns,
@@ -167,6 +177,7 @@ export function CompactTitleTable({
   const t = useTranslate();
   const dateTimeFormat = useUiDateTimeFormat();
   const isMovieView = view === "movies";
+  const isAnimeView = view === "anime";
   const overviewTargetView: ViewId = resolveOverviewTargetView(view);
   const selectedPaneMode =
     selectedTitleId !== null && onSelectTitle !== undefined;
@@ -190,14 +201,66 @@ export function CompactTitleTable({
     !selectedDrawerMode && visibleColumns.library && columnWidthBudget >= 760;
   const showAddedColumn =
     !selectedDrawerMode && visibleColumns.added && columnWidthBudget >= 870;
+  const showYearColumn =
+    !selectedDrawerMode &&
+    isMovieView &&
+    visibleColumns.year &&
+    columnWidthBudget >= 520;
+  const showRuntimeColumn =
+    !selectedDrawerMode && visibleColumns.runtime && columnWidthBudget >= 610;
+  const showStatusColumn =
+    !selectedDrawerMode &&
+    !isMovieView &&
+    visibleColumns.status &&
+    columnWidthBudget >= 660;
+  const showRootColumn =
+    !selectedDrawerMode && visibleColumns.root && columnWidthBudget >= 900;
+  const showPopularityColumn =
+    !selectedDrawerMode &&
+    isMovieView &&
+    visibleColumns.popularity &&
+    columnWidthBudget >= 720;
+  const showResolutionColumn =
+    !selectedDrawerMode &&
+    isMovieView &&
+    visibleColumns.resolution &&
+    columnWidthBudget >= 690;
+  const showHdrColumn =
+    !selectedDrawerMode &&
+    isMovieView &&
+    visibleColumns.hdr &&
+    columnWidthBudget >= 780;
+  const showAudioCodecColumn =
+    !selectedDrawerMode &&
+    isMovieView &&
+    visibleColumns.audioCodec &&
+    columnWidthBudget >= 850;
+  const supportedRatingColumns = isAnimeView
+    ? ANIME_TITLE_TABLE_RATING_COLUMNS
+    : SHARED_TITLE_TABLE_RATING_COLUMNS;
+  const showRatingColumns = selectedDrawerMode
+    ? []
+    : supportedRatingColumns.filter(
+        (key, index) =>
+          visibleColumns[key] && columnWidthBudget >= 930 + index * 64,
+      );
   const columnCount = selectedDrawerMode
     ? 3
     : 2 +
+      (showYearColumn ? 1 : 0) +
       (showLibraryColumn ? 1 : 0) +
       (showMonitoredColumn ? 1 : 0) +
       (showQualityColumn ? 1 : 0) +
       (showEpisodesColumn ? 1 : 0) +
+      (showRuntimeColumn ? 1 : 0) +
+      (showStatusColumn ? 1 : 0) +
       (showSizeColumn ? 1 : 0) +
+      (showResolutionColumn ? 1 : 0) +
+      (showHdrColumn ? 1 : 0) +
+      (showAudioCodecColumn ? 1 : 0) +
+      (showPopularityColumn ? 1 : 0) +
+      (showRootColumn ? 1 : 0) +
+      showRatingColumns.length +
       (showAddedColumn ? 1 : 0) +
       (showActionsColumn ? 1 : 0);
   const selectedVisibleCount = titles.filter((title) =>
@@ -220,11 +283,22 @@ export function CompactTitleTable({
     <colgroup>
       <col style={{ width: "3rem" }} />
       <col />
+      {showYearColumn ? <col style={{ width: "4.75rem" }} /> : null}
       {showLibraryColumn ? <col style={{ width: "7rem" }} /> : null}
       {showMonitoredColumn ? <col style={{ width: "4rem" }} /> : null}
       {showQualityColumn ? <col style={{ width: "7rem" }} /> : null}
       {showEpisodesColumn ? <col style={{ width: "7.5rem" }} /> : null}
+      {showRuntimeColumn ? <col style={{ width: "6rem" }} /> : null}
+      {showStatusColumn ? <col style={{ width: "6.75rem" }} /> : null}
       {showSizeColumn ? <col style={{ width: "7.5rem" }} /> : null}
+      {showResolutionColumn ? <col style={{ width: "5.75rem" }} /> : null}
+      {showHdrColumn ? <col style={{ width: "7rem" }} /> : null}
+      {showAudioCodecColumn ? <col style={{ width: "7.25rem" }} /> : null}
+      {showPopularityColumn ? <col style={{ width: "6rem" }} /> : null}
+      {showRootColumn ? <col style={{ width: "11rem" }} /> : null}
+      {showRatingColumns.map((key) => (
+        <col key={key} style={{ width: "5.5rem" }} />
+      ))}
       {showAddedColumn ? <col style={{ width: "6.5rem" }} /> : null}
       {showActionsColumn ? <col style={{ width: "8.5rem" }} /> : null}
     </colgroup>
@@ -232,11 +306,20 @@ export function CompactTitleTable({
   const visibleColumnSignature = selectedDrawerMode
     ? "drawer"
     : [
+        showYearColumn && "year",
         showLibraryColumn && "library",
         showMonitoredColumn && "monitored",
         showQualityColumn && "quality",
         showEpisodesColumn && "episodes",
+        showRuntimeColumn && "runtime",
+        showStatusColumn && "status",
         showSizeColumn && "size",
+        showResolutionColumn && "resolution",
+        showHdrColumn && "hdr",
+        showAudioCodecColumn && "audioCodec",
+        showPopularityColumn && "popularity",
+        showRootColumn && "root",
+        ...showRatingColumns,
         showAddedColumn && "added",
         showActionsColumn && "actions",
       ]
@@ -801,6 +884,11 @@ export function CompactTitleTable({
               <span className="block truncate">{item.name}</span>
             </button>
           </TableCell>
+          {showYearColumn ? (
+            <TableCell className="whitespace-nowrap py-1.5 text-center align-middle font-[var(--font-code)] text-[12.5px] tabular-nums text-[var(--scry-text4)]">
+              {item.year ?? "—"}
+            </TableCell>
+          ) : null}
           {showLibraryColumn ? (
             <TableCell className="overflow-hidden py-1.5 text-center align-middle text-[12px] text-[var(--scry-muted)]">
               <span className="block truncate">
@@ -841,11 +929,60 @@ export function CompactTitleTable({
               <TitleEpisodeProgressBar item={item} t={t} compact />
             </TableCell>
           ) : null}
+          {showRuntimeColumn ? (
+            <TableCell className="whitespace-nowrap py-1.5 text-center align-middle font-[var(--font-code)] text-[12.5px] tabular-nums text-[var(--scry-text4)]">
+              {formatRuntimeMinutes(item.runtimeMinutes)}
+            </TableCell>
+          ) : null}
+          {showStatusColumn ? (
+            <TableCell className="whitespace-nowrap py-1.5 text-center align-middle text-[12px]">
+              {item.contentStatus ? (
+                <StatusBadge status={item.contentStatus} t={t} />
+              ) : (
+                <span className="text-[var(--scry-faint2)]">—</span>
+              )}
+            </TableCell>
+          ) : null}
           {showSizeColumn ? (
             <TableCell className="whitespace-nowrap py-1.5 text-center align-middle font-[var(--font-code)] text-[12.5px] tabular-nums text-[var(--scry-text4)]">
               {bytesToReadable(item.sizeBytes)}
             </TableCell>
           ) : null}
+          {showResolutionColumn ? (
+            <TableCell className="whitespace-nowrap py-1.5 text-center align-middle font-[var(--font-code)] text-[12.5px] tabular-nums text-[var(--scry-text4)]">
+              {formatResolutionLabel(item.mediaResolution)}
+            </TableCell>
+          ) : null}
+          {showHdrColumn ? (
+            <TableCell className="whitespace-nowrap py-1.5 text-center align-middle text-[12.5px] text-[var(--scry-text4)]">
+              {formatHdrLabel(item.mediaHdr)}
+            </TableCell>
+          ) : null}
+          {showAudioCodecColumn ? (
+            <TableCell className="whitespace-nowrap py-1.5 text-center align-middle text-[12.5px] text-[var(--scry-text4)]">
+              {formatAudioCodecLabel(item.mediaAudioCodec)}
+            </TableCell>
+          ) : null}
+          {showPopularityColumn ? (
+            <TableCell className="whitespace-nowrap py-1.5 text-center align-middle font-[var(--font-code)] text-[12.5px] tabular-nums text-[var(--scry-text4)]">
+              {formatCatalogPopularity(item.popularity)}
+            </TableCell>
+          ) : null}
+          {showRootColumn ? (
+            <TableCell className="overflow-hidden py-1.5 text-center align-middle text-[12px] text-[var(--scry-muted)]">
+              <span className="block truncate" title={item.rootFolderPath ?? ""}>
+                {item.rootFolderPath ?? item.rootFolderId ?? "—"}
+              </span>
+            </TableCell>
+          ) : null}
+          {showRatingColumns.map((columnKey) => (
+            <TableCell
+              key={columnKey}
+              className="whitespace-nowrap py-1.5 text-center align-middle font-[var(--font-code)] text-[12.5px] tabular-nums text-[var(--scry-text4)]"
+            >
+              {titleTableRatingColumnValue(item, columnKey)}
+            </TableCell>
+          ))}
           {showAddedColumn ? (
             <TableCell className="whitespace-nowrap py-1.5 text-center align-middle text-[12px] text-[var(--scry-muted)]">
               {addedLabel}
@@ -1047,6 +1184,14 @@ export function CompactTitleTable({
           t("label.name"),
           TITLE_TABLE_HEADER_CELL_CLASS,
         )}
+        {showYearColumn
+          ? renderSortableHeader(
+              "year",
+              t("title.table.year"),
+              cn("whitespace-nowrap text-center", TITLE_TABLE_HEADER_CELL_CLASS),
+              "justify-center text-center uppercase tracking-[0.05em] text-[var(--scry-faint2)]",
+            )
+          : null}
         {showLibraryColumn
           ? renderSortableHeader(
               "library",
@@ -1079,6 +1224,24 @@ export function CompactTitleTable({
               "justify-center text-center uppercase tracking-[0.05em] text-[var(--scry-faint2)]",
             )
           : null}
+        {showRuntimeColumn
+          ? renderSortableHeader(
+              "runtime",
+              isMovieView
+                ? t("title.table.runtime")
+                : t("title.table.avgRuntime"),
+              cn("whitespace-nowrap text-center", TITLE_TABLE_HEADER_CELL_CLASS),
+              "justify-center text-center uppercase tracking-[0.05em] text-[var(--scry-faint2)]",
+            )
+          : null}
+        {showStatusColumn
+          ? renderSortableHeader(
+              "status",
+              t("title.table.status"),
+              cn("whitespace-nowrap text-center", TITLE_TABLE_HEADER_CELL_CLASS),
+              "justify-center text-center uppercase tracking-[0.05em] text-[var(--scry-faint2)]",
+            )
+          : null}
         {showSizeColumn
           ? renderSortableHeader(
               "size",
@@ -1087,6 +1250,54 @@ export function CompactTitleTable({
               "justify-center text-center uppercase tracking-[0.05em] text-[var(--scry-faint2)]",
             )
           : null}
+        {showResolutionColumn
+          ? renderSortableHeader(
+              "resolution",
+              t("title.table.resolution"),
+              cn("whitespace-nowrap text-center", TITLE_TABLE_HEADER_CELL_CLASS),
+              "justify-center text-center uppercase tracking-[0.05em] text-[var(--scry-faint2)]",
+            )
+          : null}
+        {showHdrColumn
+          ? renderSortableHeader(
+              "hdr",
+              t("title.table.hdr"),
+              cn("whitespace-nowrap text-center", TITLE_TABLE_HEADER_CELL_CLASS),
+              "justify-center text-center uppercase tracking-[0.05em] text-[var(--scry-faint2)]",
+            )
+          : null}
+        {showAudioCodecColumn
+          ? renderSortableHeader(
+              "audioCodec",
+              t("title.table.audioCodec"),
+              cn("whitespace-nowrap text-center", TITLE_TABLE_HEADER_CELL_CLASS),
+              "justify-center text-center uppercase tracking-[0.05em] text-[var(--scry-faint2)]",
+            )
+          : null}
+        {showPopularityColumn
+          ? renderSortableHeader(
+              "popularity",
+              t("title.table.popularity"),
+              cn("whitespace-nowrap text-center", TITLE_TABLE_HEADER_CELL_CLASS),
+              "justify-center text-center uppercase tracking-[0.05em] text-[var(--scry-faint2)]",
+            )
+          : null}
+        {showRootColumn
+          ? renderSortableHeader(
+              "root",
+              t("title.table.root"),
+              cn("whitespace-nowrap text-center", TITLE_TABLE_HEADER_CELL_CLASS),
+              "justify-center text-center uppercase tracking-[0.05em] text-[var(--scry-faint2)]",
+            )
+          : null}
+        {showRatingColumns.map((columnKey) =>
+          renderSortableHeader(
+            columnKey as TitleTableSortKey,
+            titleTableRatingColumnLabel(columnKey),
+            cn("whitespace-nowrap text-center", TITLE_TABLE_HEADER_CELL_CLASS),
+            "justify-center text-center uppercase tracking-[0.05em] text-[var(--scry-faint2)]",
+          ),
+        )}
         {showAddedColumn
           ? renderSortableHeader(
               "added",

@@ -344,6 +344,13 @@ impl MediaFileRepository for MockMediaFileRepo {
         Ok(out)
     }
 
+    async fn list_title_movie_media_summaries(
+        &self,
+        _title_ids: &[String],
+    ) -> AppResult<Vec<TitleMovieMediaSummary>> {
+        Ok(Vec::new())
+    }
+
     async fn list_cutoff_unmet_quality_summaries(
         &self,
         title_ids: &[String],
@@ -376,6 +383,13 @@ impl MediaFileRepository for MockMediaFileRepo {
         &self,
         _title_ids: &[String],
     ) -> AppResult<Vec<TitleEpisodeProgressSummary>> {
+        Ok(Vec::new())
+    }
+
+    async fn list_collection_episode_progress_summaries(
+        &self,
+        _title_ids: &[String],
+    ) -> AppResult<Vec<CollectionEpisodeProgressSummary>> {
         Ok(Vec::new())
     }
 

@@ -224,9 +224,9 @@ export function ExternalSubtitleSection({
                         className="bg-[var(--scry-danger-bg-strong)] text-[var(--scry-danger-text)]"
                       />
                     ) : null}
-                    {download.score != null ? (
+                    {download.scorePercent != null ? (
                       <span className="text-[11px] text-muted-foreground">
-                        {t("subtitle.scoreWithValue", { score: download.score })}
+                        {t("subtitle.scoreWithValue", { score: `${download.scorePercent}%` })}
                       </span>
                     ) : null}
                   </div>

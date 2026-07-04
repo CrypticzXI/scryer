@@ -903,6 +903,30 @@ impl AppUseCase {
             .await;
     }
 
+    pub(crate) async fn refresh_public_discovery_feed_now(
+        &self,
+        trigger_source: JobTriggerSource,
+    ) -> AppResult<()> {
+        let now = self.runtime.environment.now();
+        let mut state = self
+            .services
+            .library
+            .discovery
+            .get_discovery_sync_state(DISCOVERY_DEFAULT_SCOPE_KEY)
+            .await?
+            .unwrap_or_default();
+        state.next_public_feed_eligible_at = Some(now);
+        state.updated_at = now;
+        self.services
+            .library
+            .discovery
+            .upsert_discovery_sync_state(&state)
+            .await?;
+        self.set_job_next_run_at(JobKey::DiscoverySync, now).await;
+        self.run_scheduled_job_now(JobKey::DiscoverySync, trigger_source)
+            .await
+    }
+
     pub async fn clear_job_next_run_at(&self, job_key: JobKey) {
         self.runtime
             .jobs
@@ -1311,7 +1335,8 @@ impl AppUseCase {
         let now = self.runtime.environment.now();
         let scheduler_seed = self.discovery_scheduler_seed().await?;
         let titles = self.services.catalog.titles.list(None, None).await?;
-        let defaults = DiscoveryContextDefaults::default();
+        let mut defaults = DiscoveryContextDefaults::default();
+        defaults.language = self.metadata_language().await;
         let library_context = build_discovery_library_context(&titles, defaults.clone());
         let existing_state = self
             .services

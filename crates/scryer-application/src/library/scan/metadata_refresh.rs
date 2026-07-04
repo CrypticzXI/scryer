@@ -372,6 +372,7 @@ mod tests {
             facet,
             monitored: false,
             tags: Vec::new(),
+            canonical_tags: vec![],
             external_ids: vec![ExternalId {
                 source: "tvdb".to_string(),
                 value: "123".to_string(),
@@ -390,6 +391,7 @@ mod tests {
             slug: None,
             imdb_id: None,
             runtime_minutes: None,
+            popularity: None,
             genres: Vec::new(),
             content_status: None,
             language: None,

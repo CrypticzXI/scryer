@@ -209,6 +209,7 @@ mod tests {
             facet: MediaFacet::Movie,
             monitored: true,
             tags: vec!["tag".to_string()],
+            canonical_tags: vec![],
             external_ids: vec![ExternalId {
                 source: "tvdb".to_string(),
                 value: "123".to_string(),
@@ -226,6 +227,7 @@ mod tests {
             slug: Some("example".to_string()),
             imdb_id: Some("tt123".to_string()),
             runtime_minutes: Some(120),
+            popularity: None,
             genres: vec!["Drama".to_string()],
             content_status: Some("released".to_string()),
             language: Some("en".to_string()),

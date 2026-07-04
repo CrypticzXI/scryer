@@ -1,17 +1,16 @@
 import { Clock3 } from "lucide-react";
 
 import { ExternalMediaLinkButton } from "@/components/common/external-media-links";
-import { TitleRatingsDisplay } from "@/components/common/title-ratings-display";
 import { TitlePoster } from "@/components/title-poster";
 import {
   DialogDescription,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { TitleRatingsStrip } from "@/components/views/title-ratings-strip";
 import type { MetadataTvdbSearchItem } from "@/lib/graphql/smg-queries";
 import type { Facet } from "@/lib/types";
 import { selectPosterVariantUrl } from "@/lib/utils/poster-images";
-import type { TitleExternalRating } from "@/lib/utils/title-ratings";
 
 type CatalogActionDialogSummaryProps = {
   result: MetadataTvdbSearchItem;
@@ -200,26 +199,6 @@ function externalLinks(result: MetadataTvdbSearchItem, facet: Facet): ExternalSi
   return links;
 }
 
-function ratingEntries(result: MetadataTvdbSearchItem): TitleExternalRating[] {
-  const externalRatings = result.externalRatings ?? [];
-  if (externalRatings.length > 0) {
-    return externalRatings.slice(0, 4);
-  }
-  if (result.rating == null) {
-    return [];
-  }
-  return [
-    {
-      source: result.ratingSource ?? result.ratingSources?.[0] ?? "mdblist",
-      value: result.rating,
-      score: result.rating,
-      normalized: result.rating,
-      votes: null,
-      url: "",
-    },
-  ];
-}
-
 function runtimeLabel(runtimeMinutes: number | null) {
   if (runtimeMinutes == null || runtimeMinutes <= 0) {
     return null;
@@ -240,10 +219,13 @@ export function CatalogActionDialogSummary({
   const posterSourceUrl = selectPosterVariantUrl(result.posterUrl, "original");
   const backgroundUrl =
     selectPosterVariantUrl(result.backgroundUrl, "original") ?? posterSourceUrl;
-  const ratings = ratingEntries(result);
   const links = externalLinks(result, facet);
   const genres = (result.genres ?? []).slice(0, 4);
   const runtime = runtimeLabel(result.runtimeMinutes);
+  const ratingSources = [
+    result.ratingSource,
+    ...(result.ratingSources ?? []),
+  ].filter((source): source is string => Boolean(source?.trim()));
 
   return (
     <DialogHeader className="relative isolate overflow-hidden rounded-t-lg border-b border-border/70 p-5 text-left sm:p-7">
@@ -293,7 +275,14 @@ export function CatalogActionDialogSummary({
             </DialogDescription>
           </div>
 
-          <TitleRatingsDisplay externalRatings={ratings} />
+          <TitleRatingsStrip
+            ratings={{
+              rating: result.rating ?? null,
+              ratingSources,
+              externalRatings: result.externalRatings ?? [],
+            }}
+            variant="hero"
+          />
 
           {genres.length > 0 || runtime ? (
             <div className="flex flex-wrap items-center gap-2">
@@ -322,9 +311,6 @@ export function CatalogActionDialogSummary({
 
           {links.length > 0 ? (
             <div className="flex flex-wrap items-center gap-2 pt-1">
-              <span className="mr-1 text-xs font-semibold uppercase text-muted-foreground">
-                Open In
-              </span>
               {links.map((link) => (
                 <ExternalMediaLinkButton
                   key={link.id}

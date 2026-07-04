@@ -38,12 +38,13 @@ import {
   TitleMoreLikeThisStrip,
   type TitleMoreLikeThisStripActions,
 } from "@/components/views/title-more-like-this-strip";
-import { TitleRatingsStrip } from "@/components/views/title-ratings-strip";
+import { TitleRatingsDisplay } from "@/components/common/title-ratings-display";
 import {
   localizedTitleStatus,
   localizedWantedPhase,
   localizedWantedStatus,
 } from "@/components/views/overview-localization";
+import { titleGenreLabels } from "@/lib/utils/title-genres";
 import { TitlePosterSlot } from "@/components/title-poster-slot";
 import type { TitleOptionUpdates } from "@/lib/types/title-options";
 import type { LibraryRootRecord } from "@/lib/types/titles";
@@ -548,7 +549,7 @@ export function MovieOverviewView({
 
   const posterUrl = title.posterUrl;
   const overview = title.overview;
-  const genres = title.genres ?? [];
+  const genres = titleGenreLabels(title);
   const runtime = formatRuntime(title.runtimeMinutes);
   const year = title.year;
   const studio = title.studio;
@@ -655,7 +656,7 @@ export function MovieOverviewView({
               />
             </div>
 
-            <div className="relative min-w-0 flex-1 flex flex-col pr-12">
+            <div className="relative min-w-0 flex-1 flex flex-col pr-12 sm:min-h-[270px]">
               {onBackToList ? (
                 <IconButton
                   label={t("label.close")}
@@ -798,26 +799,35 @@ export function MovieOverviewView({
                 </div>
               ) : null}
 
-              <TitleRatingsStrip ratings={title.ratings} />
+              <TitleRatingsDisplay
+                externalRatings={title.ratings?.externalRatings ?? []}
+                fallbackRating={title.ratings?.rating}
+                fallbackSource={title.ratings?.ratingSources.find(
+                  (source) => source.trim().length > 0,
+                )}
+                className="mt-3"
+              />
 
               {overview ? (
                 <p className="mt-4 text-sm leading-relaxed text-foreground/70">{overview}</p>
               ) : null}
 
-              <div className="mt-auto flex flex-wrap gap-3 pt-3 text-sm">
-                <ImdbExternalLink imdbId={imdbId} />
-                <TvdbMovieExternalLink tvdbId={tvdbId} slug={title.slug} />
-                <TmdbExternalLink mediaType="movie" tmdbId={tmdbId} />
-                <AnidbExternalLink anidbId={anidbId} />
-                {(title.externalIds ?? [])
-                  .filter((e) => e.source !== "imdb" && e.source !== "tvdb" && e.source !== "anidb" && e.source !== "tmdb")
-                  .map((e) => (
-                    <div key={e.source}>
-                      <span className="text-muted-foreground capitalize">{e.source} </span>
-                      <span className="font-[var(--font-code)] text-card-foreground">{e.value}</span>
-                    </div>
-                  ))}
-                <span className="ml-auto text-xs text-muted-foreground/60">
+              <div className="mt-auto flex w-full flex-wrap items-center gap-2 pt-3 text-sm">
+                <div className="flex min-w-0 flex-wrap items-center gap-2">
+                  <ImdbExternalLink imdbId={imdbId} size="compact" />
+                  <TvdbMovieExternalLink tvdbId={tvdbId} slug={title.slug} size="compact" />
+                  <TmdbExternalLink mediaType="movie" tmdbId={tmdbId} size="compact" />
+                  <AnidbExternalLink anidbId={anidbId} size="compact" />
+                  {(title.externalIds ?? [])
+                    .filter((e) => e.source !== "imdb" && e.source !== "tvdb" && e.source !== "anidb" && e.source !== "tmdb")
+                    .map((e) => (
+                      <div key={e.source}>
+                        <span className="text-muted-foreground capitalize">{e.source} </span>
+                        <span className="font-[var(--font-code)] text-card-foreground">{e.value}</span>
+                      </div>
+                    ))}
+                </div>
+                <span className="ml-auto shrink-0 text-xs text-muted-foreground/60">
                   {t("title.addedAt", {
                     date: formatDate(title.createdAt, dateTimeFormat),
                   })}

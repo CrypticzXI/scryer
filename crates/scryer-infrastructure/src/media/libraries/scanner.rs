@@ -3,6 +3,7 @@ use std::fs as stdfs;
 use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
+use scryer_application::file_source_signature::file_source_signature_from_metadata;
 use scryer_application::filesystem_walk::{FilesystemWalker, WalkedDirectory};
 use scryer_application::{
     AppError, AppResult, LibraryDirectoryScanResult, LibraryFile, LibraryFileBatchReceiver,
@@ -341,25 +342,33 @@ fn collect_directory_files_with_source_snapshot(
             continue;
         }
 
-        let size_bytes = if include_source_snapshot {
+        let (size_bytes, source_signature) = if include_source_snapshot {
             let stat_started = Instant::now();
             let metadata = stdfs::metadata(&path).ok();
             *stat_elapsed = stat_elapsed.saturating_add(stat_started.elapsed());
 
-            metadata
+            let size_bytes = metadata
                 .as_ref()
-                .map(|metadata| i64::try_from(metadata.len()).unwrap_or(i64::MAX))
+                .map(|metadata| i64::try_from(metadata.len()).unwrap_or(i64::MAX));
+            let source_signature = metadata
+                .as_ref()
+                .and_then(|metadata| file_source_signature_from_metadata(metadata).ok());
+
+            (size_bytes, source_signature)
         } else {
-            None
+            (None, None)
         };
+        let (source_signature_scheme, source_signature_value) = source_signature
+            .map(|signature| (Some(signature.scheme), Some(signature.value)))
+            .unwrap_or((None, None));
 
         files.push(LibraryFile {
             path: path_to_stored_string(&path),
             display_name,
             nfo_path: None,
             size_bytes,
-            source_signature_scheme: None,
-            source_signature_value: None,
+            source_signature_scheme,
+            source_signature_value,
         });
     }
 

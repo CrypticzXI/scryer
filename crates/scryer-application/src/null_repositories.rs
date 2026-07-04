@@ -24,10 +24,10 @@ use scryer_domain::BlocklistEntry;
 
 use crate::{
     AppError, AppResult, BlocklistRepository, BuiltinDownloadClientConnectionTester,
-    CutoffUnmetQualitySummary, DiscoveryContextIncrementalCommit, DiscoveryContextSnapshotCommit,
-    DiscoveryFacetRecord, DiscoveryItemRecord, DiscoveryItemsPageRecord,
-    DiscoveryItemsStorageQuery, DiscoveryPendingContextChangeRecord, DiscoveryPruneReport,
-    DiscoveryPublicFeedCommit, DiscoveryRawPageRecord, DiscoveryRepository,
+    CollectionEpisodeProgressSummary, CutoffUnmetQualitySummary, DiscoveryContextIncrementalCommit,
+    DiscoveryContextSnapshotCommit, DiscoveryFacetRecord, DiscoveryItemRecord,
+    DiscoveryItemsPageRecord, DiscoveryItemsStorageQuery, DiscoveryPendingContextChangeRecord,
+    DiscoveryPruneReport, DiscoveryPublicFeedCommit, DiscoveryRawPageRecord, DiscoveryRepository,
     DiscoverySectionItemsRecord, DiscoverySectionRecord, DiscoverySubmittedSubjectRecord,
     DiscoverySyncRunRecord, DiscoverySyncStateRecord, DomainEventRepository,
     DownloadQueueCommandRecord, DownloadQueueCommandRepository, DownloadSourceIdentity,
@@ -49,13 +49,14 @@ use crate::{
     RuleSetRepository, SettingsRepository, StagedNzbRef, StagedNzbStore, SystemInfoProvider,
     TitleEpisodeProgressSummary, TitleImageBlob, TitleImageKind, TitleImageProcessor,
     TitleImageRepository, TitleImageSourceResult, TitleImageSyncTask, TitleImageVariantSpec,
-    TitleMediaFile, TitleMediaSizeSummary, TitleQualitySummary, UiSettings, UiSettingsUpdate,
-    UserExternalAccountRepository, UserUiSettingsRepository, VerifiedExternalIdentity, WantedItem,
-    WantedItemRepository, WebauthnChallengeRecord, WebauthnCredentialRecord, WebauthnRepository,
-    WorkflowOperationInfo, WorkflowOperationRepository, ports::CatalogDiscoveryCandidatesRecord,
-    ports::DatastoreInfo, ports::LogicalBackupExporter, ports::TotpRepository,
-    types::TotpCredentialRecord, types::TotpEnrollmentChallengeRecord,
-    types::TotpFailedAttemptRecord, types::TotpRecoveryCodeRecord,
+    TitleMediaFile, TitleMediaSizeSummary, TitleMovieMediaSummary, TitleQualitySummary, UiSettings,
+    UiSettingsUpdate, UserExternalAccountRepository, UserUiSettingsRepository,
+    VerifiedExternalIdentity, WantedItem, WantedItemRepository, WebauthnChallengeRecord,
+    WebauthnCredentialRecord, WebauthnRepository, WorkflowOperationInfo,
+    WorkflowOperationRepository, ports::CatalogDiscoveryCandidatesRecord, ports::DatastoreInfo,
+    ports::LogicalBackupExporter, ports::TotpRepository, types::TotpCredentialRecord,
+    types::TotpEnrollmentChallengeRecord, types::TotpFailedAttemptRecord,
+    types::TotpRecoveryCodeRecord,
 };
 
 #[derive(Default)]
@@ -649,6 +650,13 @@ impl MediaFileRepository for NullMediaFileRepository {
         Ok(Vec::new())
     }
 
+    async fn list_title_movie_media_summaries(
+        &self,
+        _title_ids: &[String],
+    ) -> AppResult<Vec<TitleMovieMediaSummary>> {
+        Ok(Vec::new())
+    }
+
     async fn list_cutoff_unmet_quality_summaries(
         &self,
         _title_ids: &[String],
@@ -660,6 +668,13 @@ impl MediaFileRepository for NullMediaFileRepository {
         &self,
         _title_ids: &[String],
     ) -> AppResult<Vec<TitleEpisodeProgressSummary>> {
+        Ok(Vec::new())
+    }
+
+    async fn list_collection_episode_progress_summaries(
+        &self,
+        _title_ids: &[String],
+    ) -> AppResult<Vec<CollectionEpisodeProgressSummary>> {
         Ok(Vec::new())
     }
 

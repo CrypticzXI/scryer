@@ -25,6 +25,9 @@ function collection(
     firstEpisodeNumber: null,
     lastEpisodeNumber: null,
     monitored: true,
+    episodesOwned: null,
+    episodesMonitored: null,
+    episodesTotal: null,
     episodes: [],
     createdAt: "2026-01-01T00:00:00Z",
   };

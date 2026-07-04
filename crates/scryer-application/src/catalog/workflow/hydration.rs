@@ -167,6 +167,7 @@ mod title_recommendation_refresh_queue_tests {
             facet: MediaFacet::Movie,
             monitored: true,
             tags: Vec::new(),
+            canonical_tags: vec![],
             external_ids: Vec::new(),
             root_folder_id: "root".to_string(),
             created_by: None,
@@ -182,6 +183,7 @@ mod title_recommendation_refresh_queue_tests {
             slug: None,
             imdb_id: None,
             runtime_minutes: None,
+            popularity: None,
             genres: Vec::new(),
             content_status: None,
             language: None,
@@ -329,6 +331,7 @@ impl AppUseCase {
             facet: request.facet,
             monitored: request.monitored,
             tags: normalize_tags(&request.tags),
+            canonical_tags: vec![],
             external_ids: sanitize_ids(request.external_ids),
             root_folder_id,
             created_by: Some(actor.id.clone()),
@@ -347,6 +350,7 @@ impl AppUseCase {
             slug: request.slug,
             imdb_id: None,
             runtime_minutes: request.runtime_minutes,
+            popularity: None,
             genres: vec![],
             content_status: request.content_status,
             language: request.language,
@@ -1233,6 +1237,28 @@ impl AppUseCase {
             .titles
             .clear_metadata_language_for_all()
             .await?;
+        let discovery_app = self.clone();
+        let discovery_language = language.clone();
+        tokio::spawn(async move {
+            match discovery_app
+                .refresh_public_discovery_feed_now(JobTriggerSource::SystemInternal)
+                .await
+            {
+                Ok(()) => {
+                    info!(
+                        language = %discovery_language,
+                        "public discovery feed refreshed after metadata language change"
+                    );
+                }
+                Err(error) => {
+                    warn!(
+                        error = %error,
+                        language = %discovery_language,
+                        "public discovery feed refresh failed after metadata language change"
+                    );
+                }
+            }
+        });
         let app = self.clone();
         tokio::spawn(async move {
             match app.hydrate_all_titles_for_current_language().await {

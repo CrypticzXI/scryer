@@ -6,6 +6,7 @@ use async_trait::async_trait;
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use scryer_application::subtitles::scoring::{
     MOVIE_WEIGHTS, SERIES_WEIGHTS, SubtitleScoreKind, compute_verified_score,
+    normalized_score_percent,
 };
 use scryer_application::subtitles::{
     SubtitleFile, SubtitleMatch, SubtitleMediaKind, SubtitleQuery,
@@ -493,6 +494,7 @@ fn map_candidate_to_match(
         SubtitleMediaKind::Episode => (SERIES_WEIGHTS.weights(), SubtitleScoreKind::Episode),
     };
     let score = compute_verified_score(&weights, kind, &matches, query.season == Some(0));
+    let score_percent = normalized_score_percent(kind, score);
 
     SubtitleMatch {
         provider: provider_name.to_string(),
@@ -500,6 +502,7 @@ fn map_candidate_to_match(
         language: candidate.language,
         release_info: candidate.release_info,
         score,
+        score_percent,
         hearing_impaired: candidate.hearing_impaired,
         forced: candidate.forced,
         ai_translated: candidate.ai_translated,

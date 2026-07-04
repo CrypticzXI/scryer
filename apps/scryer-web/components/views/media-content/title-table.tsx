@@ -46,10 +46,18 @@ import {
   titleOverviewSearchButtonId,
 } from "@/lib/utils/dom-ids";
 import {
+  ANIME_TITLE_TABLE_RATING_COLUMNS,
   bytesToReadable,
+  formatAudioCodecLabel,
+  formatCatalogPopularity,
+  formatHdrLabel,
+  formatResolutionLabel,
+  formatRuntimeMinutes,
   formatTitleDate,
   resolveDisplayedQualityLabel,
   resolveOverviewTargetView,
+  SHARED_TITLE_TABLE_RATING_COLUMNS,
+  StatusBadge,
   TitleEpisodeProgressBar,
   TitleCollectionEmptyState,
   TitleTableEmptyState,
@@ -62,6 +70,8 @@ import {
   TITLE_TABLE_INTERACTIVE_PANEL_ESTIMATED_HEIGHT,
   TITLE_TABLE_ROW_CLASS,
   DEFAULT_TITLE_TABLE_VISIBLE_COLUMNS,
+  titleTableRatingColumnLabel,
+  titleTableRatingColumnValue,
   type TitleTableSortDirection,
   type TitleTableSortKey,
   type TitleTableVisibleColumns,
@@ -165,6 +175,7 @@ export function TitleTable({
   const t = useTranslate();
   const dateTimeFormat = useUiDateTimeFormat();
   const isMovieView = view === "movies";
+  const isAnimeView = view === "anime";
   const overviewTargetView: ViewId = resolveOverviewTargetView(view);
   const [tableWidth, setTableWidth] = React.useState<number | null>(null);
   // Drop lower-priority columns as the table narrows so the Name column stays
@@ -179,13 +190,43 @@ export function TitleTable({
   const showSizeColumn = visibleColumns.size && columnWidthBudget >= 700;
   const showLibraryColumn = visibleColumns.library && columnWidthBudget >= 810;
   const showAddedColumn = visibleColumns.added && columnWidthBudget >= 930;
+  const showYearColumn =
+    isMovieView && visibleColumns.year && columnWidthBudget >= 560;
+  const showRuntimeColumn =
+    visibleColumns.runtime && columnWidthBudget >= 640;
+  const showStatusColumn =
+    !isMovieView && visibleColumns.status && columnWidthBudget >= 700;
+  const showRootColumn = visibleColumns.root && columnWidthBudget >= 960;
+  const showPopularityColumn =
+    isMovieView && visibleColumns.popularity && columnWidthBudget >= 760;
+  const showResolutionColumn =
+    isMovieView && visibleColumns.resolution && columnWidthBudget >= 720;
+  const showHdrColumn =
+    isMovieView && visibleColumns.hdr && columnWidthBudget >= 820;
+  const showAudioCodecColumn =
+    isMovieView && visibleColumns.audioCodec && columnWidthBudget >= 900;
+  const supportedRatingColumns = isAnimeView
+    ? ANIME_TITLE_TABLE_RATING_COLUMNS
+    : SHARED_TITLE_TABLE_RATING_COLUMNS;
+  const showRatingColumns = supportedRatingColumns.filter(
+    (key, index) => visibleColumns[key] && columnWidthBudget >= 980 + index * 70,
+  );
   const columnCount =
     2 +
+    (showYearColumn ? 1 : 0) +
     (showLibraryColumn ? 1 : 0) +
     (showMonitoredColumn ? 1 : 0) +
     (showQualityColumn ? 1 : 0) +
     (showEpisodesColumn ? 1 : 0) +
+    (showRuntimeColumn ? 1 : 0) +
+    (showStatusColumn ? 1 : 0) +
     (showSizeColumn ? 1 : 0) +
+    (showResolutionColumn ? 1 : 0) +
+    (showHdrColumn ? 1 : 0) +
+    (showAudioCodecColumn ? 1 : 0) +
+    (showPopularityColumn ? 1 : 0) +
+    (showRootColumn ? 1 : 0) +
+    showRatingColumns.length +
     (showAddedColumn ? 1 : 0) +
     (showActionsColumn ? 1 : 0);
   const selectedVisibleCount = titles.filter((title) =>
@@ -202,21 +243,41 @@ export function TitleTable({
     <colgroup>
       <col style={{ width: "3rem" }} />
       <col />
+      {showYearColumn ? <col style={{ width: "5rem" }} /> : null}
       {showLibraryColumn ? <col style={{ width: "7rem" }} /> : null}
       {showMonitoredColumn ? <col style={{ width: "5.25rem" }} /> : null}
       {showQualityColumn ? <col style={{ width: "8rem" }} /> : null}
       {showEpisodesColumn ? <col style={{ width: "9.5rem" }} /> : null}
+      {showRuntimeColumn ? <col style={{ width: "6.5rem" }} /> : null}
+      {showStatusColumn ? <col style={{ width: "7rem" }} /> : null}
       {showSizeColumn ? <col style={{ width: "7rem" }} /> : null}
+      {showResolutionColumn ? <col style={{ width: "6rem" }} /> : null}
+      {showHdrColumn ? <col style={{ width: "7.5rem" }} /> : null}
+      {showAudioCodecColumn ? <col style={{ width: "8rem" }} /> : null}
+      {showPopularityColumn ? <col style={{ width: "6.5rem" }} /> : null}
+      {showRootColumn ? <col style={{ width: "12rem" }} /> : null}
+      {showRatingColumns.map((key) => (
+        <col key={key} style={{ width: "5.75rem" }} />
+      ))}
       {showAddedColumn ? <col style={{ width: "7.5rem" }} /> : null}
       {showActionsColumn ? <col style={{ width: "11.5rem" }} /> : null}
     </colgroup>
   );
   const visibleColumnSignature = [
+    showYearColumn && "year",
     showLibraryColumn && "library",
     showMonitoredColumn && "monitored",
     showQualityColumn && "quality",
     showEpisodesColumn && "episodes",
+    showRuntimeColumn && "runtime",
+    showStatusColumn && "status",
     showSizeColumn && "size",
+    showResolutionColumn && "resolution",
+    showHdrColumn && "hdr",
+    showAudioCodecColumn && "audioCodec",
+    showPopularityColumn && "popularity",
+    showRootColumn && "root",
+    ...showRatingColumns,
     showAddedColumn && "added",
     showActionsColumn && "actions",
   ]
@@ -677,6 +738,11 @@ export function TitleTable({
               <span className="block min-w-0 truncate">{item.name}</span>
             </button>
           </TableCell>
+          {showYearColumn ? (
+            <TableCell className="whitespace-nowrap text-center align-middle font-[var(--font-code)] text-[12.5px] tabular-nums text-[var(--scry-text4)]">
+              {item.year ?? "—"}
+            </TableCell>
+          ) : null}
           {showLibraryColumn ? (
             <TableCell className="overflow-hidden text-center align-middle text-[12.5px] text-[var(--scry-muted)]">
               <span className="block truncate">
@@ -717,11 +783,60 @@ export function TitleTable({
               <TitleEpisodeProgressBar item={item} t={t} />
             </TableCell>
           ) : null}
+          {showRuntimeColumn ? (
+            <TableCell className="whitespace-nowrap text-center align-middle font-[var(--font-code)] text-[12.5px] tabular-nums text-[var(--scry-text4)]">
+              {formatRuntimeMinutes(item.runtimeMinutes)}
+            </TableCell>
+          ) : null}
+          {showStatusColumn ? (
+            <TableCell className="whitespace-nowrap text-center align-middle text-[12px]">
+              {item.contentStatus ? (
+                <StatusBadge status={item.contentStatus} t={t} />
+              ) : (
+                <span className="text-[var(--scry-faint2)]">—</span>
+              )}
+            </TableCell>
+          ) : null}
           {showSizeColumn ? (
             <TableCell className="whitespace-nowrap text-center align-middle font-[var(--font-code)] text-[12.5px] tabular-nums text-[var(--scry-text4)]">
               {bytesToReadable(item.sizeBytes)}
             </TableCell>
           ) : null}
+          {showResolutionColumn ? (
+            <TableCell className="whitespace-nowrap text-center align-middle font-[var(--font-code)] text-[12.5px] tabular-nums text-[var(--scry-text4)]">
+              {formatResolutionLabel(item.mediaResolution)}
+            </TableCell>
+          ) : null}
+          {showHdrColumn ? (
+            <TableCell className="whitespace-nowrap text-center align-middle text-[12.5px] text-[var(--scry-text4)]">
+              {formatHdrLabel(item.mediaHdr)}
+            </TableCell>
+          ) : null}
+          {showAudioCodecColumn ? (
+            <TableCell className="whitespace-nowrap text-center align-middle text-[12.5px] text-[var(--scry-text4)]">
+              {formatAudioCodecLabel(item.mediaAudioCodec)}
+            </TableCell>
+          ) : null}
+          {showPopularityColumn ? (
+            <TableCell className="whitespace-nowrap text-center align-middle font-[var(--font-code)] text-[12.5px] tabular-nums text-[var(--scry-text4)]">
+              {formatCatalogPopularity(item.popularity)}
+            </TableCell>
+          ) : null}
+          {showRootColumn ? (
+            <TableCell className="overflow-hidden text-center align-middle text-[12px] text-[var(--scry-muted)]">
+              <span className="block truncate" title={item.rootFolderPath ?? ""}>
+                {item.rootFolderPath ?? item.rootFolderId ?? "—"}
+              </span>
+            </TableCell>
+          ) : null}
+          {showRatingColumns.map((columnKey) => (
+            <TableCell
+              key={columnKey}
+              className="whitespace-nowrap text-center align-middle font-[var(--font-code)] text-[12.5px] tabular-nums text-[var(--scry-text4)]"
+            >
+              {titleTableRatingColumnValue(item, columnKey)}
+            </TableCell>
+          ))}
           {showAddedColumn ? (
             <TableCell className="whitespace-nowrap text-center align-middle text-[12px] text-[var(--scry-muted)]">
               {addedLabel}
@@ -897,6 +1012,14 @@ export function TitleTable({
           t("label.name"),
           TITLE_TABLE_HEADER_CELL_CLASS,
         )}
+        {showYearColumn
+          ? renderSortableHeader(
+              "year",
+              t("title.table.year"),
+              cn("whitespace-nowrap text-center", TITLE_TABLE_HEADER_CELL_CLASS),
+              "justify-center text-center uppercase tracking-[0.05em] text-[var(--scry-faint2)]",
+            )
+          : null}
         {showLibraryColumn
           ? renderSortableHeader(
               "library",
@@ -929,6 +1052,24 @@ export function TitleTable({
               "justify-center text-center uppercase tracking-[0.05em] text-[var(--scry-faint2)]",
             )
           : null}
+        {showRuntimeColumn
+          ? renderSortableHeader(
+              "runtime",
+              isMovieView
+                ? t("title.table.runtime")
+                : t("title.table.avgRuntime"),
+              cn("whitespace-nowrap text-center", TITLE_TABLE_HEADER_CELL_CLASS),
+              "justify-center text-center uppercase tracking-[0.05em] text-[var(--scry-faint2)]",
+            )
+          : null}
+        {showStatusColumn
+          ? renderSortableHeader(
+              "status",
+              t("title.table.status"),
+              cn("whitespace-nowrap text-center", TITLE_TABLE_HEADER_CELL_CLASS),
+              "justify-center text-center uppercase tracking-[0.05em] text-[var(--scry-faint2)]",
+            )
+          : null}
         {showSizeColumn
           ? renderSortableHeader(
               "size",
@@ -937,6 +1078,54 @@ export function TitleTable({
               "justify-center text-center uppercase tracking-[0.05em] text-[var(--scry-faint2)]",
             )
           : null}
+        {showResolutionColumn
+          ? renderSortableHeader(
+              "resolution",
+              t("title.table.resolution"),
+              cn("whitespace-nowrap text-center", TITLE_TABLE_HEADER_CELL_CLASS),
+              "justify-center text-center uppercase tracking-[0.05em] text-[var(--scry-faint2)]",
+            )
+          : null}
+        {showHdrColumn
+          ? renderSortableHeader(
+              "hdr",
+              t("title.table.hdr"),
+              cn("whitespace-nowrap text-center", TITLE_TABLE_HEADER_CELL_CLASS),
+              "justify-center text-center uppercase tracking-[0.05em] text-[var(--scry-faint2)]",
+            )
+          : null}
+        {showAudioCodecColumn
+          ? renderSortableHeader(
+              "audioCodec",
+              t("title.table.audioCodec"),
+              cn("whitespace-nowrap text-center", TITLE_TABLE_HEADER_CELL_CLASS),
+              "justify-center text-center uppercase tracking-[0.05em] text-[var(--scry-faint2)]",
+            )
+          : null}
+        {showPopularityColumn
+          ? renderSortableHeader(
+              "popularity",
+              t("title.table.popularity"),
+              cn("whitespace-nowrap text-center", TITLE_TABLE_HEADER_CELL_CLASS),
+              "justify-center text-center uppercase tracking-[0.05em] text-[var(--scry-faint2)]",
+            )
+          : null}
+        {showRootColumn
+          ? renderSortableHeader(
+              "root",
+              t("title.table.root"),
+              cn("whitespace-nowrap text-center", TITLE_TABLE_HEADER_CELL_CLASS),
+              "justify-center text-center uppercase tracking-[0.05em] text-[var(--scry-faint2)]",
+            )
+          : null}
+        {showRatingColumns.map((columnKey) =>
+          renderSortableHeader(
+            columnKey as TitleTableSortKey,
+            titleTableRatingColumnLabel(columnKey),
+            cn("whitespace-nowrap text-center", TITLE_TABLE_HEADER_CELL_CLASS),
+            "justify-center text-center uppercase tracking-[0.05em] text-[var(--scry-faint2)]",
+          ),
+        )}
         {showAddedColumn
           ? renderSortableHeader(
               "added",

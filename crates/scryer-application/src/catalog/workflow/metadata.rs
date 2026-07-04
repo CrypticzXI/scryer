@@ -113,6 +113,21 @@ impl AppUseCase {
             .get_title_ratings(title_id)
             .await
     }
+
+    pub async fn list_title_ratings(
+        &self,
+        actor: &User,
+        title_ids: &[String],
+    ) -> AppResult<Vec<(String, TitleRatingSummary)>> {
+        let title_ids = self
+            .filter_title_ids_for_permission(
+                actor,
+                title_ids,
+                scryer_domain::LibraryPermission::View,
+            )
+            .await?;
+        self.services.catalog.titles.list_title_ratings(&title_ids).await
+    }
 }
 impl AppUseCase {
     pub(crate) async fn apply_title_metadata_update(

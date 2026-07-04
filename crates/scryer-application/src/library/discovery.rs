@@ -332,10 +332,23 @@ pub(crate) async fn stream_movie_top_level_entries_batched(
 }
 
 pub(crate) fn is_ignored_library_dir_name(name: &str) -> bool {
-    let normalized = name.trim().to_ascii_lowercase();
+    let trimmed = name.trim();
+    let normalized = trimmed.to_ascii_lowercase();
     normalized.starts_with('.')
         || normalized.ends_with(".trickplay")
+        || is_mangled_short_dir_name(trimmed)
         || LIBRARY_IGNORED_DIR_NAMES.contains(&normalized.as_str())
+}
+
+fn is_mangled_short_dir_name(name: &str) -> bool {
+    let Some((stem, suffix)) = name.split_once('~') else {
+        return false;
+    };
+    stem.len() == 6
+        && !suffix.is_empty()
+        && suffix.len() <= 6
+        && stem.chars().all(|ch| ch.is_ascii_alphanumeric())
+        && suffix.chars().all(|ch| ch.is_ascii_digit())
 }
 
 pub(crate) fn is_ignored_library_file_name(name: &str) -> bool {
@@ -776,12 +789,35 @@ mod tests {
         assert_eq!(walk.tvdb_id.as_deref(), Some("366972"));
     }
 
+    #[test]
+    fn ignored_library_dir_name_skips_mangled_short_names() {
+        for name in ["D061DC~9", "ABC123~1", "abcdef~12"] {
+            assert!(
+                is_ignored_library_dir_name(name),
+                "{name} should be ignored as a mangled short name"
+            );
+        }
+
+        for name in ["Canonical Show", "Season 01", "Show~Archive", "ABCDEF"] {
+            assert!(
+                !is_ignored_library_dir_name(name),
+                "{name} should remain a valid library directory"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn list_child_directories_skips_library_junk_directories() {
         let dir = tempfile::tempdir().expect("tempdir");
         tokio::fs::create_dir_all(dir.path().join("Show A"))
             .await
             .expect("show a");
+        tokio::fs::create_dir_all(dir.path().join("Canonical Show"))
+            .await
+            .expect("canonical show dir");
+        tokio::fs::create_dir_all(dir.path().join("D061DC~9"))
+            .await
+            .expect("mangled short name dir");
         tokio::fs::create_dir_all(dir.path().join("@eaDir"))
             .await
             .expect("@eaDir");
@@ -796,7 +832,10 @@ mod tests {
             .await
             .expect("child dirs");
 
-        assert_eq!(child_dirs, vec![dir.path().join("Show A")]);
+        assert_eq!(
+            child_dirs,
+            vec![dir.path().join("Canonical Show"), dir.path().join("Show A"),]
+        );
     }
 
     #[tokio::test]
@@ -1070,6 +1109,7 @@ mod tests {
             root_folder_id: scryer_domain::root_folder_id_for_path("/data/test"),
             monitored: true,
             tags: vec![],
+            canonical_tags: vec![],
             external_ids: vec![],
             created_by: None,
             created_at: Utc::now(),
@@ -1084,6 +1124,7 @@ mod tests {
             slug: None,
             imdb_id: None,
             runtime_minutes: None,
+            popularity: None,
             genres: vec![],
             content_status: None,
             language: None,

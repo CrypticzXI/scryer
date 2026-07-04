@@ -3,10 +3,10 @@ import * as React from "react";
 import {
   deleteMediaFilePreviewQuery,
   deleteTitlePreviewQuery,
+  episodeMediaFilesQuery,
   librariesQuery,
   seriesTitleOverviewNativeQuery,
   seriesOverviewSettingsInitQuery,
-  titleMediaFilesQuery,
 } from "@/lib/graphql/queries";
 import {
   clearTitleReleaseBlocklistEntryMutation,
@@ -129,6 +129,9 @@ export type TitleCollection = {
   firstEpisodeNumber: string | null;
   lastEpisodeNumber: string | null;
   monitored: boolean;
+  episodesOwned: number | null;
+  episodesMonitored: number | null;
+  episodesTotal: number | null;
   episodes?: CollectionEpisode[];
   createdAt: string;
 };
@@ -586,8 +589,8 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
       try {
         const { data, error } = await client
           .query(
-            titleMediaFilesQuery,
-            { id: requestedTitleId },
+            episodeMediaFilesQuery,
+            { titleId: requestedTitleId, episodeId },
             { requestPolicy: "network-only" },
           )
           .toPromise();
@@ -598,20 +601,20 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
           return;
         }
 
-        const mediaFiles = (data?.title?.mediaFiles ?? []) as EpisodeMediaFile[];
+        const mediaFiles = (data?.episodeMediaFiles ?? []) as EpisodeMediaFile[];
         const mediaFilesByEpisode = groupMediaFilesByEpisode(mediaFiles);
-        setMediaFilesByEpisode(mediaFilesByEpisode);
-        setMediaFilesBySeriesMovieLink(groupMediaFilesBySeriesMovieLink(mediaFiles));
-        setEpisodeMediaFilesLoaded(() => {
-          const loaded = new Set<string>([episodeId]);
-          for (const episodes of Object.values(episodesByCollection)) {
-            for (const episode of episodes) {
-              loaded.add(episode.id);
-            }
-          }
-          for (const loadedEpisodeId of Object.keys(mediaFilesByEpisode)) {
-            loaded.add(loadedEpisodeId);
-          }
+        const mediaFilesForEpisode = mediaFilesByEpisode[episodeId] ?? [];
+        setMediaFilesByEpisode((current) => ({
+          ...current,
+          [episodeId]: mediaFilesForEpisode,
+        }));
+        setMediaFilesBySeriesMovieLink((current) => ({
+          ...current,
+          ...groupMediaFilesBySeriesMovieLink(mediaFiles),
+        }));
+        setEpisodeMediaFilesLoaded((current) => {
+          const loaded = new Set(current);
+          loaded.add(episodeId);
           return loaded;
         });
       } catch (error: unknown) {
@@ -632,7 +635,6 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
       client,
       episodeMediaFilesLoaded,
       episodeMediaFilesLoading,
-      episodesByCollection,
       setGlobalStatus,
       t,
       titleId,

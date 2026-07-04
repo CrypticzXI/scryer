@@ -13,6 +13,16 @@ export const DISCOVERY_ITEM_FIELDS = `
     overview
     contentType
     genres
+    canonicalTags {
+      key
+      category
+      name
+      confidence
+      sources
+      sourceTagKeys
+      isAdult
+      isSpoiler
+    }
     rating
     externalIds {
       source
@@ -60,6 +70,16 @@ const DISCOVERY_HOME_ITEM_FIELDS = `
     posterUrl
     backgroundUrl
     contentType
+    canonicalTags {
+      key
+      category
+      name
+      confidence
+      sources
+      sourceTagKeys
+      isAdult
+      isSpoiler
+    }
     rating
     externalIds {
       source
@@ -173,6 +193,16 @@ const CATALOG_DISCOVERY_ITEM_FIELDS = `
     posterUrl
     backgroundUrl
     contentType
+    canonicalTags {
+      key
+      category
+      name
+      confidence
+      sources
+      sourceTagKeys
+      isAdult
+      isSpoiler
+    }
     externalIds {
       source
       kind
@@ -234,6 +264,16 @@ export const TITLE_CORE_FIELDS = `
     imdbId
     runtimeMinutes
     genres
+    canonicalTags {
+      key
+      category
+      name
+      confidence
+      sources
+      sourceTagKeys
+      isAdult
+      isSpoiler
+    }
     contentStatus
     language
     firstAired
@@ -381,6 +421,9 @@ const TITLE_COLLECTION_BASIC_FIELDS = `
       firstEpisodeNumber
       lastEpisodeNumber
       monitored
+      episodesOwned
+      episodesMonitored
+      episodesTotal
       createdAt
       episodes {${COLLECTION_EPISODE_BASIC_FIELDS}
       }`;
@@ -572,6 +615,7 @@ const EXTERNAL_SUBTITLE_FIELDS = `
     providerFileId
     filePath
     score
+    scorePercent
     hearingImpaired
     forced
     aiTranslated
@@ -901,6 +945,11 @@ export const titleMediaFilesQuery = `query TitleMediaFiles($id: ID!) {
   }
 }`;
 
+export const episodeMediaFilesQuery = `query EpisodeMediaFiles($titleId: ID!, $episodeId: ID!) {
+  episodeMediaFiles(titleId: $titleId, episodeId: $episodeId) {${TITLE_MEDIA_FILE_FIELDS}
+  }
+}`;
+
 export const deleteTitlePreviewQuery = `query DeleteTitlePreview($titleId: ID!) {
   deleteTitlePreview(titleId: $titleId) {${DELETE_PREVIEW_FIELDS}
   }
@@ -1164,6 +1213,94 @@ export const TITLE_LIST_FIELDS = `
     metadataFetchedAt
     createdAt`;
 
+export type TitleCatalogTitleProjection = {
+  library?: boolean;
+  quality?: boolean;
+  size?: boolean;
+  episodes?: boolean;
+  runtime?: boolean;
+  root?: boolean;
+  ratings?: boolean;
+  movieMedia?: boolean;
+  popularity?: boolean;
+};
+
+const TITLE_CATALOG_BASE_FIELDS = `
+    id
+    name
+    facet
+    libraryId
+    monitored
+    tags
+    slug
+    year
+    posterUrl
+    posterSourceUrl
+    contentStatus
+    metadataFetchedAt
+    createdAt`;
+
+function titleCatalogListFields(
+  projection: TitleCatalogTitleProjection = {},
+) {
+  const fields = [TITLE_CATALOG_BASE_FIELDS];
+  if (projection.library) {
+    fields.push(`
+    libraryName
+    librarySlug`);
+  }
+  if (projection.quality) {
+    fields.push(`
+    qualityTier
+    currentQualityTier`);
+  }
+  if (projection.size) {
+    fields.push(`
+    sizeBytes`);
+  }
+  if (projection.episodes) {
+    fields.push(`
+    episodesOwned
+    episodesMonitored
+    episodesTotal`);
+  }
+  if (projection.runtime) {
+    fields.push(`
+    runtimeMinutes`);
+  }
+  if (projection.root) {
+    fields.push(`
+    rootFolderId
+    rootFolderPath`);
+  }
+  if (projection.popularity) {
+    fields.push(`
+    popularity`);
+  }
+  if (projection.movieMedia) {
+    fields.push(`
+    mediaResolution
+    mediaHdr
+    mediaAudioCodec`);
+  }
+  if (projection.ratings) {
+    fields.push(`
+    ratings {
+      rating
+      ratingSources
+      externalRatings {
+        source
+        value
+        score
+        normalized
+        votes
+        url
+      }
+    }`);
+  }
+  return fields.join("");
+}
+
 export const TITLE_PANEL_FIELDS = `${TITLE_LIST_FIELDS}
     externalIds {
       source
@@ -1175,6 +1312,16 @@ export const TITLE_PANEL_FIELDS = `${TITLE_LIST_FIELDS}
     backgroundSourceUrl
     runtimeMinutes
     genres
+    canonicalTags {
+      key
+      category
+      name
+      confidence
+      sources
+      sourceTagKeys
+      isAdult
+      isSpoiler
+    }
     language
     firstAired
     network
@@ -1350,7 +1497,10 @@ export const librarySettingsQuery = `query LibrarySettings($libraryId: ID!) {
   }
 }`;
 
-export const titlesQuery = `query Titles(
+export function buildTitlesQuery(
+  projection: TitleCatalogTitleProjection = {},
+) {
+  return `query Titles(
   $facet: MediaFacetValue,
   $libraryIds: [ID!],
   $query: String,
@@ -1369,7 +1519,7 @@ export const titlesQuery = `query Titles(
     offset: $offset
   ) {
     items {
-${TITLE_LIST_FIELDS}
+${titleCatalogListFields(projection)}
     }
     limit
     offset
@@ -1384,6 +1534,9 @@ ${TITLE_LIST_FIELDS}
     }
   }
 }`;
+}
+
+export const titlesQuery = buildTitlesQuery();
 
 export const catalogSearchTitlesQuery = `query CatalogSearchTitles($facet: MediaFacetValue, $libraryIds: [ID!], $query: String, $limit: Int = 25) {
   titles(facet: $facet, libraryIds: $libraryIds, query: $query, limit: $limit) {

@@ -108,6 +108,52 @@ CREATE TABLE IF NOT EXISTS discovery_sections (
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS canonical_media_subjects (
+    id TEXT PRIMARY KEY NOT NULL,
+    subject_key TEXT NOT NULL,
+    subject_key_norm TEXT NOT NULL,
+    language TEXT NOT NULL,
+    target_kind TEXT NOT NULL DEFAULT '',
+    title_id TEXT REFERENCES titles(id) ON DELETE SET NULL,
+    display_title TEXT NOT NULL DEFAULT '',
+    year INTEGER,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (subject_key_norm, language)
+);
+
+CREATE TABLE IF NOT EXISTS canonical_media_tags (
+    subject_id TEXT NOT NULL REFERENCES canonical_media_subjects(id) ON DELETE CASCADE,
+    tag_key TEXT NOT NULL,
+    category TEXT NOT NULL,
+    name TEXT NOT NULL,
+    confidence REAL,
+    is_adult INTEGER NOT NULL DEFAULT 0,
+    is_spoiler INTEGER NOT NULL DEFAULT 0,
+    sort_index INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (subject_id, tag_key)
+);
+
+CREATE TABLE IF NOT EXISTS canonical_media_tag_sources (
+    subject_id TEXT NOT NULL,
+    tag_key TEXT NOT NULL,
+    source TEXT NOT NULL,
+    sort_index INTEGER NOT NULL DEFAULT 0,
+    FOREIGN KEY (subject_id, tag_key)
+        REFERENCES canonical_media_tags(subject_id, tag_key) ON DELETE CASCADE,
+    UNIQUE (subject_id, tag_key, source)
+);
+
+CREATE TABLE IF NOT EXISTS canonical_media_tag_source_keys (
+    subject_id TEXT NOT NULL,
+    tag_key TEXT NOT NULL,
+    source_tag_key TEXT NOT NULL,
+    sort_index INTEGER NOT NULL DEFAULT 0,
+    FOREIGN KEY (subject_id, tag_key)
+        REFERENCES canonical_media_tags(subject_id, tag_key) ON DELETE CASCADE,
+    UNIQUE (subject_id, tag_key, source_tag_key)
+);
+
 CREATE TABLE IF NOT EXISTS discovery_titles (
     id TEXT PRIMARY KEY NOT NULL,
     target_key TEXT NOT NULL,
@@ -116,6 +162,7 @@ CREATE TABLE IF NOT EXISTS discovery_titles (
     target_kind TEXT NOT NULL,
     resolved INTEGER NOT NULL DEFAULT 0,
     resolved_title_id TEXT REFERENCES titles(id) ON DELETE SET NULL,
+    canonical_subject_id TEXT REFERENCES canonical_media_subjects(id) ON DELETE SET NULL,
     display_title TEXT NOT NULL,
     original_title TEXT,
     sort_title TEXT,
@@ -259,6 +306,12 @@ CREATE INDEX IF NOT EXISTS idx_discovery_pending_changes_scope_sequence
     ON discovery_pending_context_changes(scope_key, last_seen_sequence);
 CREATE INDEX IF NOT EXISTS idx_discovery_sections_run_surface
     ON discovery_sections(run_id, surface, sort_index);
+CREATE INDEX IF NOT EXISTS idx_canonical_media_subjects_title
+    ON canonical_media_subjects(title_id);
+CREATE INDEX IF NOT EXISTS idx_canonical_media_subjects_key_language
+    ON canonical_media_subjects(subject_key_norm, language);
+CREATE INDEX IF NOT EXISTS idx_canonical_media_tags_category_name
+    ON canonical_media_tags(category, name, subject_id);
 CREATE INDEX IF NOT EXISTS idx_discovery_titles_key_language
     ON discovery_titles(target_key_norm, language);
 CREATE INDEX IF NOT EXISTS idx_discovery_title_terms_kind_value

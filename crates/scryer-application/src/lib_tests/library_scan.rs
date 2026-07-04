@@ -5578,6 +5578,7 @@ async fn resolve_pending_import_creates_unmonitored_movie_title_and_clears_item(
             movies: HashMap::from([(
                 123_456,
                 MovieMetadata {
+                    target_key: None,
                     tvdb_id: 123_456,
                     name: "Matched Movie".into(),
                     slug: "matched-movie".into(),
@@ -5591,8 +5592,10 @@ async fn resolve_pending_import_creates_unmonitored_movie_title_and_clears_item(
                     sort_title: "Matched Movie".into(),
                     imdb_id: "tt0123456".into(),
                     tmdb_id: None,
+                    popularity: None,
                     anidb_id: None,
                     genres: vec!["Drama".into()],
+                    canonical_tags: vec![],
                     studio: "Test Studio".into(),
                     tmdb_release_date: Some("2020-01-01".into()),
                     ratings: Default::default(),
@@ -5665,6 +5668,7 @@ async fn resolve_ignored_pending_import_creates_unmonitored_movie_title_and_clea
             movies: HashMap::from([(
                 123_456,
                 MovieMetadata {
+                    target_key: None,
                     tvdb_id: 123_456,
                     name: "Matched Movie".into(),
                     slug: "matched-movie".into(),
@@ -5678,8 +5682,10 @@ async fn resolve_ignored_pending_import_creates_unmonitored_movie_title_and_clea
                     sort_title: "Matched Movie".into(),
                     imdb_id: "tt0123456".into(),
                     tmdb_id: None,
+                    popularity: None,
                     anidb_id: None,
                     genres: vec!["Drama".into()],
+                    canonical_tags: vec![],
                     studio: "Test Studio".into(),
                     tmdb_release_date: Some("2020-01-01".into()),
                     ratings: Default::default(),
@@ -5787,6 +5793,7 @@ async fn hydrate_titles_bulk_updates_title_name_for_selected_metadata_language()
             movies: HashMap::from([(
                 123_456,
                 MovieMetadata {
+                    target_key: None,
                     tvdb_id: 123_456,
                     name: "デューン".into(),
                     slug: "dune".into(),
@@ -5800,8 +5807,10 @@ async fn hydrate_titles_bulk_updates_title_name_for_selected_metadata_language()
                     sort_title: "デューン".into(),
                     imdb_id: "tt1160419".into(),
                     tmdb_id: None,
+                    popularity: None,
                     anidb_id: None,
                     genres: vec!["Science Fiction".into()],
+                    canonical_tags: vec![],
                     studio: "Legendary".into(),
                     tmdb_release_date: Some("2021-10-22".into()),
                     ratings: Default::default(),

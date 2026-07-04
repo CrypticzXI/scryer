@@ -427,6 +427,7 @@ mod title_image_cache_refresh_tests {
             facet: MediaFacet::Movie,
             monitored: true,
             tags: Vec::new(),
+            canonical_tags: vec![],
             external_ids: vec![scryer_domain::ExternalId {
                 source: "tvdb".to_string(),
                 value: "123".to_string(),
@@ -444,6 +445,7 @@ mod title_image_cache_refresh_tests {
             slug: None,
             imdb_id: None,
             runtime_minutes: None,
+            popularity: None,
             genres: Vec::new(),
             content_status: None,
             language: None,

@@ -13,6 +13,11 @@ use scryer_application::{
 use serde_json::Value as JsonValue;
 use std::collections::{HashMap, HashSet};
 
+use crate::media::canonical_tags::{
+    CanonicalMediaSubjectInput, load_canonical_tags_for_subject_ids,
+    normalize_canonical_subject_key, replace_canonical_media_tags_tx,
+    upsert_canonical_media_subject_tx,
+};
 use crate::queries::sql_runtime::{
     SqlArg, SqlExec, SqlRow, SqlRuntime, SqlTx, StoreDatastore, repo_err,
 };
@@ -99,6 +104,7 @@ const TITLE_COLUMNS: &[&str] = &[
     "target_kind",
     "resolved",
     "resolved_title_id",
+    "canonical_subject_id",
     "display_title",
     "original_title",
     "sort_title",
@@ -939,11 +945,13 @@ impl DiscoveryRepository for DiscoveryStore {
                  JOIN discovery_titles t
                    ON t.id = title_more_like_this_items.discovery_title_id
                  WHERE source_title_id = {{}}
+                   AND {}
                  ORDER BY sort_index ASC,
                           COALESCE(rank_score, 0) DESC,
                           discovery_title_id ASC
                  LIMIT {{}}",
-                title_more_like_this_projection()
+                title_more_like_this_projection(),
+                displayable_discovery_title_clause(&self.datastore, "t")
             ),
             &[
                 SqlArg::Text(title_id.to_string()),
@@ -1304,6 +1312,29 @@ fn discovery_title_target_key_norm(item: &DiscoveryItemRecord) -> String {
         )
     } else {
         target_key
+    }
+}
+
+fn canonical_subject_input_for_discovery_item(
+    item: &DiscoveryItemRecord,
+    target_key_norm: &str,
+    language: &str,
+) -> CanonicalMediaSubjectInput {
+    CanonicalMediaSubjectInput {
+        subject_key: {
+            let value = item.target_key.trim();
+            if value.is_empty() {
+                target_key_norm.to_string()
+            } else {
+                value.to_string()
+            }
+        },
+        subject_key_norm: normalize_canonical_subject_key(target_key_norm),
+        language: normalize_discovery_language(language),
+        target_kind: item.target_kind.trim().to_string(),
+        title_id: item.resolved_title_id.clone(),
+        display_title: item.display_title.trim().to_string(),
+        year: item.year,
     }
 }
 
@@ -2456,6 +2487,10 @@ fn upsert_discovery_title_sql() -> String {
                 NULLIF(excluded.resolved_title_id, ''),
                 discovery_titles.resolved_title_id
             ),
+            canonical_subject_id = COALESCE(
+                NULLIF(excluded.canonical_subject_id, ''),
+                discovery_titles.canonical_subject_id
+            ),
             display_title = COALESCE(
                 NULLIF(excluded.display_title, ''),
                 discovery_titles.display_title
@@ -2839,6 +2874,7 @@ fn item_from_row(row: &SqlRow) -> AppResult<DiscoveryItemRecord> {
         overview: row.opt_text("overview")?,
         content_type: row.opt_text("content_type")?,
         genres: Vec::new(),
+        canonical_tags: Vec::new(),
         rating: row.opt_f64("rating")?,
         rating_sources: Vec::new(),
         external_ratings: Vec::new(),
@@ -2985,10 +3021,70 @@ async fn hydrate_discovery_title_children(
     }
     let mut unique_title_ids = title_indexes.keys().cloned().collect::<Vec<_>>();
     unique_title_ids.sort();
+    hydrate_title_canonical_tags(datastore, items, &unique_title_ids, &title_indexes).await?;
     hydrate_title_terms(datastore, items, &unique_title_ids, &title_indexes).await?;
     hydrate_title_source_tags(datastore, items, &unique_title_ids, &title_indexes).await?;
     hydrate_title_ratings(datastore, items, &unique_title_ids, &title_indexes).await?;
     hydrate_title_external_ids(datastore, items, &unique_title_ids, &title_indexes).await?;
+    Ok(())
+}
+
+async fn hydrate_title_canonical_tags(
+    datastore: &StoreDatastore,
+    items: &mut [DiscoveryItemRecord],
+    discovery_title_ids: &[String],
+    title_indexes: &HashMap<String, Vec<usize>>,
+) -> AppResult<()> {
+    let rows = fetch_child_rows(
+        datastore,
+        "SELECT id AS discovery_title_id, canonical_subject_id
+         FROM discovery_titles
+         WHERE id IN ({}) AND canonical_subject_id IS NOT NULL",
+        discovery_title_ids,
+    )
+    .await?;
+
+    let mut subject_to_discovery_titles = HashMap::<String, Vec<String>>::new();
+    for row in rows {
+        let discovery_title_id = row.text("discovery_title_id")?;
+        let Some(subject_id) = row.opt_text("canonical_subject_id")? else {
+            continue;
+        };
+        if subject_id.trim().is_empty() {
+            continue;
+        }
+        subject_to_discovery_titles
+            .entry(subject_id)
+            .or_default()
+            .push(discovery_title_id);
+    }
+    if subject_to_discovery_titles.is_empty() {
+        return Ok(());
+    }
+
+    let mut subject_ids = subject_to_discovery_titles
+        .keys()
+        .cloned()
+        .collect::<Vec<_>>();
+    subject_ids.sort();
+    let tags_by_subject =
+        load_canonical_tags_for_subject_ids(datastore.read_exec(), &subject_ids).await?;
+    for (subject_id, tags) in tags_by_subject {
+        if tags.is_empty() {
+            continue;
+        }
+        let Some(discovery_title_ids) = subject_to_discovery_titles.get(&subject_id) else {
+            continue;
+        };
+        for discovery_title_id in discovery_title_ids {
+            let Some(indexes) = title_indexes.get(discovery_title_id) else {
+                continue;
+            };
+            for index in indexes {
+                items[*index].canonical_tags = tags.clone();
+            }
+        }
+    }
     Ok(())
 }
 
@@ -3508,12 +3604,26 @@ async fn upsert_discovery_title_tx(
     let language = normalize_discovery_language(language);
     let target_key_norm = discovery_title_target_key_norm(item);
     let discovery_title_id = discovery_title_id_for(&target_key_norm, &language);
+    let canonical_subject_id = upsert_canonical_media_subject_tx(
+        tx,
+        &canonical_subject_input_for_discovery_item(item, &target_key_norm, &language),
+    )
+    .await?;
     SqlRuntime::execute(
         SqlExec::Tx(tx),
         &upsert_discovery_title_sql(),
-        &title_args(item, &discovery_title_id, &target_key_norm, &language),
+        &title_args(
+            item,
+            &discovery_title_id,
+            &target_key_norm,
+            &language,
+            &canonical_subject_id,
+        ),
     )
     .await?;
+    if !item.canonical_tags.is_empty() {
+        replace_canonical_media_tags_tx(tx, &canonical_subject_id, &item.canonical_tags).await?;
+    }
     insert_title_children_tx(tx, item, &discovery_title_id).await?;
     Ok(discovery_title_id)
 }
@@ -3523,6 +3633,7 @@ fn title_args(
     discovery_title_id: &str,
     target_key_norm: &str,
     language: &str,
+    canonical_subject_id: &str,
 ) -> Vec<SqlArg> {
     vec![
         SqlArg::Text(discovery_title_id.to_string()),
@@ -3532,6 +3643,7 @@ fn title_args(
         SqlArg::Text(item.target_kind.clone()),
         SqlArg::Bool(item.resolved),
         SqlArg::OptText(item.resolved_title_id.clone()),
+        SqlArg::Text(canonical_subject_id.to_string()),
         SqlArg::Text(item.display_title.clone()),
         SqlArg::OptText(item.original_title.clone()),
         SqlArg::OptText(item.sort_title.clone()),
@@ -4449,6 +4561,7 @@ mod tests {
                         overview: Some("Rich canonical overview".to_string()),
                         content_type: Some(String::new()),
                         genres: vec!["Drama".to_string(), "Drama".to_string()],
+                        canonical_tags: vec![],
                         rating: Some(7.5),
                         rating_sources: vec!["tmdb".to_string(), "tmdb".to_string()],
                         external_ratings: vec![TitleExternalRating {
@@ -4561,6 +4674,7 @@ mod tests {
                         overview: None,
                         content_type: Some("series".to_string()),
                         genres: vec!["Drama".to_string()],
+                        canonical_tags: vec![],
                         rating: None,
                         rating_sources: Vec::new(),
                         external_ratings: Vec::new(),
@@ -4698,8 +4812,24 @@ mod tests {
         sparse_title_rec_item.external_ratings.clear();
         sparse_title_rec_item.source_tags.clear();
         sparse_title_rec_item.facet_terms.clear();
+        let mut invalid_identifier_rec_item = sparse_title_rec_item.clone();
+        invalid_identifier_rec_item.id = "title-rec-invalid-identifier".to_string();
+        invalid_identifier_rec_item.target_key = "tvdb:movie:".to_string();
+        invalid_identifier_rec_item.display_title.clear();
+        invalid_identifier_rec_item.original_title = None;
+        invalid_identifier_rec_item.sort_title = None;
+        invalid_identifier_rec_item.year = None;
+        invalid_identifier_rec_item.poster_url = None;
+        invalid_identifier_rec_item.background_url = None;
+        invalid_identifier_rec_item.overview = None;
+        invalid_identifier_rec_item.content_type = None;
+        invalid_identifier_rec_item.external_ids.clear();
         store
-            .replace_title_more_like_this_items("source-title-1", "eng", &[sparse_title_rec_item])
+            .replace_title_more_like_this_items(
+                "source-title-1",
+                "eng",
+                &[invalid_identifier_rec_item, sparse_title_rec_item],
+            )
             .await
             .expect("title recommendations should replace");
         let more_like_this = store
@@ -5428,6 +5558,7 @@ mod tests {
             overview: None,
             content_type: Some("movie".to_string()),
             genres: Vec::new(),
+            canonical_tags: Vec::new(),
             rating: None,
             rating_sources: Vec::new(),
             external_ratings: Vec::new(),

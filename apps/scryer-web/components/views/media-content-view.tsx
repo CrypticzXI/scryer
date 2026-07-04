@@ -121,12 +121,14 @@ import {
 } from "./media-content/title-workspace-primitives";
 import {
   TitleTableActionButton,
-  DEFAULT_TITLE_TABLE_VISIBLE_COLUMNS,
-  TITLE_TABLE_COLUMN_KEYS,
   TitleCollectionLoadingState,
   bytesToReadable,
   formatTitleDate,
+  isTitleTableColumnSupportedForView,
+  isTitleTableRatingColumn,
   resolveDisplayedQualityLabel,
+  titleTableRatingColumnLabel,
+  titleTableSupportedRatingColumnsForView,
   type TitleTableColumnKey,
   type TitleTableSortDirection,
   type TitleTableSortKey,
@@ -149,6 +151,7 @@ import type {
 import { buildViewPath } from "@/lib/utils/routing";
 import { selectPosterVariantUrl } from "@/lib/utils/poster-images";
 import { discoveryItemDisplayTitle } from "@/lib/utils/discovery-display";
+import { titleGenreLabels } from "@/lib/utils/title-genres";
 import { cn } from "@/lib/utils";
 import { persistOverviewWindowScroll } from "@/lib/hooks/use-overview-window-scroll-restoration";
 import { releaseSupportsAdditionalFileQueue } from "@/lib/utils/release-queue-scope";
@@ -162,7 +165,11 @@ type Facet = "movie" | "series" | "anime";
 function titleTableColumnLabel(
   key: TitleTableColumnKey,
   t: Translate,
+  view?: ViewId,
 ): string {
+  if (isTitleTableRatingColumn(key)) {
+    return titleTableRatingColumnLabel(key);
+  }
   switch (key) {
     case "library":
       return t("title.table.library");
@@ -172,6 +179,24 @@ function titleTableColumnLabel(
       return t("title.table.qualityTier");
     case "episodes":
       return t("title.table.episodes");
+    case "year":
+      return t("title.table.year");
+    case "runtime":
+      return view === "movies"
+        ? t("title.table.runtime")
+        : t("title.table.avgRuntime");
+    case "status":
+      return t("title.table.status");
+    case "root":
+      return t("title.table.root");
+    case "popularity":
+      return t("title.table.popularity");
+    case "resolution":
+      return t("title.table.resolution");
+    case "hdr":
+      return t("title.table.hdr");
+    case "audioCodec":
+      return t("title.table.audioCodec");
     case "size":
       return t("title.table.size");
     case "added":
@@ -179,6 +204,7 @@ function titleTableColumnLabel(
     case "actions":
       return t("label.actions");
   }
+  return key;
 }
 
 type ParsedQualityProfile = {
@@ -1118,10 +1144,7 @@ function TitleContextPanel({
     runtimeLabel,
     studioOrNetworkLabel,
   ].filter((value): value is string => Boolean(value));
-  const heroGenreLabels = (title.genres ?? [])
-    .map((genre) => genre.trim())
-    .filter(Boolean)
-    .slice(0, 4);
+  const heroGenreLabels = titleGenreLabels(title).slice(0, 4);
   const autoQueueLoading = autoQueueLoadingTitleId === title.id;
   const releaseSearchPanelId = `title-context-release-search-${title.id}`;
   const handleAutoQueue = async () => {
@@ -1176,7 +1199,7 @@ function TitleContextPanel({
               decoding="async"
             />
           </TitleWorkspacePosterFrame>
-            <div className="min-w-0 flex-1">
+            <div className="flex min-w-0 flex-1 flex-col">
               <h2 className="text-[21px] font-bold leading-[1.1] tracking-normal text-white">
                 {title.name}
                 {yearLabel ? (
@@ -1236,25 +1259,25 @@ function TitleContextPanel({
               <p className="mt-3 line-clamp-5 text-[12.5px] leading-5 text-[#b7c0dd]">
                 {overviewText}
               </p>
-              {hasExternalLinks ? (
-                <div className="mt-3 flex flex-wrap gap-2 [&_a]:h-8 [&_a]:rounded-[8px] [&_a]:border-white/10 [&_a]:bg-white/[0.07] [&_a]:px-2.5 [&_a]:py-1 [&_a]:text-[11px] [&_a]:text-[#dbe4fb] [&_a:hover]:bg-white/[0.12] [&_img]:h-4 [&_img]:w-4 [&_span]:text-[#dbe4fb]">
-                  <ImdbExternalLink imdbId={imdbId} />
-                  {view === "movies" ? (
-                    <TvdbMovieExternalLink tvdbId={tvdbId} slug={title.slug} />
-                  ) : (
-                    <TvdbSeriesExternalLink tvdbId={tvdbId} slug={title.slug} />
-                  )}
-                  <TmdbExternalLink
-                    mediaType={view === "movies" ? "movie" : "tv"}
-                    tmdbId={tmdbId}
-                  />
-                  <MalExternalLink malId={malId} />
-                  <AnilistExternalLink anilistId={anilistId} />
-                  <AnidbExternalLink anidbId={anidbId} />
-                </div>
-              ) : null}
-              <div className="mt-3 flex flex-wrap items-center gap-2 text-[11px] text-[var(--scry-faint2)]">
-                <span>
+              <div className="mt-auto flex flex-wrap items-center gap-2 pt-3 text-[11px] text-[var(--scry-faint2)]">
+                {hasExternalLinks ? (
+                  <div className="flex flex-wrap items-center gap-2 [&_a]:h-8 [&_a]:rounded-[8px] [&_a]:border-white/10 [&_a]:bg-white/[0.07] [&_a]:px-2.5 [&_a]:py-1 [&_a]:text-[11px] [&_a]:text-[#dbe4fb] [&_a:hover]:bg-white/[0.12] [&_img]:h-4 [&_img]:w-4 [&_span]:text-[#dbe4fb]">
+                    <ImdbExternalLink imdbId={imdbId} />
+                    {view === "movies" ? (
+                      <TvdbMovieExternalLink tvdbId={tvdbId} slug={title.slug} />
+                    ) : (
+                      <TvdbSeriesExternalLink tvdbId={tvdbId} slug={title.slug} />
+                    )}
+                    <TmdbExternalLink
+                      mediaType={view === "movies" ? "movie" : "tv"}
+                      tmdbId={tmdbId}
+                    />
+                    <MalExternalLink malId={malId} />
+                    <AnilistExternalLink anilistId={anilistId} />
+                    <AnidbExternalLink anidbId={anidbId} />
+                  </div>
+                ) : null}
+                <span className="ml-auto shrink-0">
                   {t("title.contextAdded")}: {addedAtLabel}
                 </span>
               </div>
@@ -1669,6 +1692,11 @@ export function MediaContentView({
     titleCatalogSortKey: TitleTableSortKey;
     titleCatalogSortDirection: TitleTableSortDirection;
     updateTitleCatalogSort: (key: TitleTableSortKey) => void;
+    visibleTitleTableColumns: TitleTableVisibleColumns;
+    setTitleTableColumnVisible: (
+      key: TitleTableColumnKey,
+      checked: boolean,
+    ) => void;
     catalogBootstrapLoading: boolean;
     catalogInitialLoadComplete: boolean;
     monitoredTitles: TitleRecord[];
@@ -1916,6 +1944,8 @@ export function MediaContentView({
     titleCatalogSortKey,
     titleCatalogSortDirection,
     updateTitleCatalogSort,
+    visibleTitleTableColumns,
+    setTitleTableColumnVisible,
     catalogBootstrapLoading,
     catalogInitialLoadComplete,
     monitoredTitles,
@@ -2020,26 +2050,84 @@ export function MediaContentView({
       return candidate;
     }
   }, [location.pathname, routeOverviewPending]);
-  const [visibleTitleTableColumns, setVisibleTitleTableColumns] =
-    React.useState<TitleTableVisibleColumns>(() => ({
-      ...DEFAULT_TITLE_TABLE_VISIBLE_COLUMNS,
-    }));
-  const titleTableColumnOptions = React.useMemo(
-    () =>
-      TITLE_TABLE_COLUMN_KEYS.filter(
-        (key) => key !== "episodes" || view !== "movies",
-      ),
+  const titleTableSupportedRatingColumns = React.useMemo(
+    () => titleTableSupportedRatingColumnsForView(view),
     [view],
+  );
+  const isTitleTableColumnSupported = React.useCallback(
+    (key: TitleTableColumnKey) =>
+      isTitleTableColumnSupportedForView(key, view),
+    [view],
+  );
+  const titleTableColumnGroups = React.useMemo(
+    () =>
+      [
+        {
+          id: "core",
+          label: t("title.table.groupCore"),
+          columns: [
+            "library",
+            "monitored",
+            "quality",
+            "episodes",
+            "year",
+            "runtime",
+            "status",
+          ] satisfies TitleTableColumnKey[],
+        },
+        {
+          id: "ratings",
+          label: t("title.table.groupRatings"),
+          columns: [...titleTableSupportedRatingColumns],
+        },
+        {
+          id: "media",
+          label: t("title.table.groupMedia"),
+          columns: [
+            "size",
+            "resolution",
+            "hdr",
+            "audioCodec",
+            "popularity",
+          ] satisfies TitleTableColumnKey[],
+        },
+        {
+          id: "operational",
+          label: t("title.table.groupOperational"),
+          columns: ["root", "added", "actions"] satisfies TitleTableColumnKey[],
+        },
+      ]
+        .map((group) => ({
+          ...group,
+          columns: group.columns.filter(isTitleTableColumnSupported),
+        }))
+        .filter((group) => group.columns.length > 0),
+    [isTitleTableColumnSupported, t, titleTableSupportedRatingColumns],
   );
   const toggleTitleTableColumn = React.useCallback(
     (key: TitleTableColumnKey, checked: boolean) => {
-      setVisibleTitleTableColumns((current) => ({
-        ...current,
-        [key]: checked,
-      }));
+      setTitleTableColumnVisible(key, checked);
     },
-    [],
+    [setTitleTableColumnVisible],
   );
+
+  React.useEffect(() => {
+    if (titleCatalogSortKey === "name") {
+      return;
+    }
+    const columnKey = titleCatalogSortKey as TitleTableColumnKey;
+    if (
+      !isTitleTableColumnSupported(columnKey) ||
+      visibleTitleTableColumns[columnKey] !== true
+    ) {
+      updateTitleCatalogSort("name");
+    }
+  }, [
+    isTitleTableColumnSupported,
+    titleCatalogSortKey,
+    updateTitleCatalogSort,
+    visibleTitleTableColumns,
+  ]);
 
   React.useEffect(() => {
     setTitleFilterInputValue((current) =>
@@ -3119,37 +3207,48 @@ export function MediaContentView({
                           </PopoverTrigger>
                           <PopoverContent
                             align="end"
-                            className="w-[194px] rounded-[11px] border border-[var(--scry-border2)] bg-[var(--scry-soft)] p-[7px] shadow-[0_18px_44px_rgba(0,0,0,0.55)]"
+                            className="w-[236px] rounded-[11px] border border-[var(--scry-border2)] bg-[var(--scry-soft)] p-[7px] shadow-[0_18px_44px_rgba(0,0,0,0.55)]"
                           >
                             <div className="px-2 pb-2 pt-1 text-[10.5px] font-bold uppercase tracking-[0.06em] text-[var(--scry-faint2)]">
                               {t("title.toggleColumns")}
                             </div>
-                            <div>
-                              {titleTableColumnOptions.map((columnKey) => (
-                                <label
-                                  key={columnKey}
-                                  className="flex cursor-pointer items-center gap-2.5 rounded-[8px] px-2 py-[7px] text-[13px] text-[var(--scry-text2)] transition hover:bg-[var(--scry-hover)]"
-                                >
-                                  <Checkbox
-                                    checked={
-                                      visibleTitleTableColumns[columnKey]
-                                    }
-                                    onCheckedChange={(checked) =>
-                                      toggleTitleTableColumn(
-                                        columnKey,
-                                        checked === true,
-                                      )
-                                    }
-                                    aria-label={titleTableColumnLabel(
+                            <div className="max-h-[min(32rem,70vh)] overflow-y-auto pr-1">
+                              {titleTableColumnGroups.map((group) => (
+                                <div key={group.id} className="pb-1.5 last:pb-0">
+                                  <div className="px-2 pb-1 pt-1.5 text-[10px] font-bold uppercase tracking-[0.06em] text-[var(--scry-faint3)]">
+                                    {group.label}
+                                  </div>
+                                  {group.columns.map((columnKey) => {
+                                    const label = titleTableColumnLabel(
                                       columnKey,
                                       t,
-                                    )}
-                                    size="compact"
-                                  />
-                                  <span className="min-w-0 truncate">
-                                    {titleTableColumnLabel(columnKey, t)}
-                                  </span>
-                                </label>
+                                      view,
+                                    );
+                                    return (
+                                      <label
+                                        key={columnKey}
+                                        className="flex cursor-pointer items-center gap-2.5 rounded-[8px] px-2 py-[7px] text-[13px] text-[var(--scry-text2)] transition hover:bg-[var(--scry-hover)]"
+                                      >
+                                        <Checkbox
+                                          checked={
+                                            visibleTitleTableColumns[columnKey]
+                                          }
+                                          onCheckedChange={(checked) =>
+                                            toggleTitleTableColumn(
+                                              columnKey,
+                                              checked === true,
+                                            )
+                                          }
+                                          aria-label={label}
+                                          size="compact"
+                                        />
+                                        <span className="min-w-0 truncate">
+                                          {label}
+                                        </span>
+                                      </label>
+                                    );
+                                  })}
+                                </div>
                               ))}
                             </div>
                           </PopoverContent>

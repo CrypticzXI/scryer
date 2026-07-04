@@ -1,6 +1,7 @@
 query GetSeries($id: String!, $includeEpisodes: Boolean!, $language: String!) {
   series(id: $id, includeEpisodes: $includeEpisodes, language: $language) {
     series {
+      target_key
       tvdb_id
       name
       sort_name
@@ -14,6 +15,16 @@ query GetSeries($id: String!, $includeEpisodes: Boolean!, $language: String!) {
       poster_url
       country
       genres
+      canonical_tags {
+        key
+        category
+        name
+        confidence
+        sources
+        source_tag_keys
+        is_adult
+        is_spoiler
+      }
       aliases
       tagged_aliases {
         name

@@ -166,7 +166,6 @@ function TitleCardImpl({
     <div
       className={cn(
         "group relative aspect-[2/3] w-full overflow-hidden rounded-[16px] border border-[var(--scry-border2)] bg-[var(--scry-card2)]",
-        selected && "ring-2 ring-[var(--scry-accent-ring)]",
         className,
       )}
     >

@@ -53,7 +53,7 @@ import {
   TitleMoreLikeThisStrip,
   type TitleMoreLikeThisStripActions,
 } from "../title-more-like-this-strip";
-import { TitleRatingsStrip } from "../title-ratings-strip";
+import { TitleRatingsDisplay } from "@/components/common/title-ratings-display";
 import { TitleSettingsPanel } from "./title-settings-panel";
 import { SeasonSection, SeriesMovieTimelineSection } from "./season-section";
 import type { TitleOptionUpdates } from "@/lib/types/title-options";
@@ -68,6 +68,7 @@ import {
   TmdbExternalLink,
   TvdbSeriesExternalLink,
 } from "@/components/common/external-media-links";
+import { titleGenreLabels } from "@/lib/utils/title-genres";
 
 const EPISODE_QUEUE_PRECEDENCE: Record<string, number> = {
   downloading: 0,
@@ -884,9 +885,9 @@ export function SeriesOverviewView({
                 ) : null}
               </div>
 
-              {title.genres.length > 0 ? (
+              {titleGenreLabels(title).length > 0 ? (
                 <div className="mt-2 flex flex-wrap gap-1.5">
-                  {title.genres.map((genre) => (
+                  {titleGenreLabels(title).map((genre) => (
                     <span
                       key={genre}
                       className="rounded bg-muted px-2 py-0.5 text-xs text-muted-foreground"
@@ -897,7 +898,14 @@ export function SeriesOverviewView({
                 </div>
               ) : null}
 
-              <TitleRatingsStrip ratings={title.ratings} />
+              <TitleRatingsDisplay
+                externalRatings={title.ratings?.externalRatings ?? []}
+                fallbackRating={title.ratings?.rating}
+                fallbackSource={title.ratings?.ratingSources.find(
+                  (source) => source.trim().length > 0,
+                )}
+                className="mt-3"
+              />
 
               {title.overview ? (
                 <p className="mt-4 text-sm leading-relaxed text-foreground/70">
@@ -905,19 +913,24 @@ export function SeriesOverviewView({
                 </p>
               ) : null}
 
-              <div className="mt-auto flex flex-wrap items-center gap-3 pt-3">
+              <div className="mt-auto flex flex-wrap items-center gap-2 pt-3">
                 {(() => {
                   const externalIds = title.externalIds ?? [];
                   return (
                     <>
-                      <ImdbExternalLink imdbId={externalIds.find((e) => e.source === "imdb")?.value} />
+                      <ImdbExternalLink
+                        imdbId={externalIds.find((e) => e.source === "imdb")?.value}
+                        size="compact"
+                      />
                       <TvdbSeriesExternalLink
                         tvdbId={externalIds.find((e) => e.source === "tvdb")?.value}
                         slug={title.slug}
+                        size="compact"
                       />
                       <TmdbExternalLink
                         mediaType="tv"
                         tmdbId={externalIds.find((e) => e.source === "tmdb")?.value}
+                        size="compact"
                       />
                     </>
                   );
@@ -928,9 +941,18 @@ export function SeriesOverviewView({
                       const externalIds = title.externalIds ?? [];
                       return (
                         <>
-                          <MalExternalLink malId={externalIds.find((e) => e.source === "mal")?.value} />
-                          <AnilistExternalLink anilistId={externalIds.find((e) => e.source === "anilist")?.value} />
-                          <AnidbExternalLink anidbId={externalIds.find((e) => e.source === "anidb")?.value} />
+                          <MalExternalLink
+                            malId={externalIds.find((e) => e.source === "mal")?.value}
+                            size="compact"
+                          />
+                          <AnilistExternalLink
+                            anilistId={externalIds.find((e) => e.source === "anilist")?.value}
+                            size="compact"
+                          />
+                          <AnidbExternalLink
+                            anidbId={externalIds.find((e) => e.source === "anidb")?.value}
+                            size="compact"
+                          />
                         </>
                       );
                     })()}

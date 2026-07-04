@@ -103,6 +103,10 @@ pub fn raw_score_to_percent(kind: SubtitleScoreKind, score: i32) -> f64 {
     (score.max(0) as f64 * 100.0) / max_score as f64
 }
 
+pub fn normalized_score_percent(kind: SubtitleScoreKind, score: i32) -> i32 {
+    raw_score_to_percent(kind, score).round().clamp(0.0, 100.0) as i32
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MatchFlag {
     Hash = 0,
@@ -391,6 +395,26 @@ mod tests {
     fn raw_scores_convert_to_percent_for_display() {
         let percent = raw_score_to_percent(SubtitleScoreKind::Episode, 242);
         assert!((percent - 67.222).abs() < 0.01);
+    }
+
+    #[test]
+    fn normalized_scores_round_and_clamp_for_display() {
+        assert_eq!(
+            normalized_score_percent(SubtitleScoreKind::Episode, 335),
+            93
+        );
+        assert_eq!(
+            normalized_score_percent(SubtitleScoreKind::Episode, 332),
+            92
+        );
+        assert_eq!(
+            normalized_score_percent(SubtitleScoreKind::Episode, 185),
+            51
+        );
+        assert_eq!(normalized_score_percent(SubtitleScoreKind::Episode, 3), 1);
+        assert_eq!(normalized_score_percent(SubtitleScoreKind::Movie, 84), 70);
+        assert_eq!(normalized_score_percent(SubtitleScoreKind::Movie, -10), 0);
+        assert_eq!(normalized_score_percent(SubtitleScoreKind::Movie, 200), 100);
     }
 
     // ── Partial match tests ─────────────────────────────────────────

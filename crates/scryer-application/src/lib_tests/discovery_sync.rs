@@ -1,5 +1,7 @@
+use super::StoredSettingsRepo;
 use super::support_bootstrap_fixtures::{
-    TestPermissionPreset, bootstrap_with_metadata_gateway_and_titles, create_authenticated_user,
+    TestPermissionPreset, bootstrap_with_metadata_gateway_and_titles,
+    bootstrap_with_metadata_gateway_settings_and_titles, create_authenticated_user,
     library_permission_user, library_permission_user_with_grants,
 };
 use crate::ports::{
@@ -7,6 +9,7 @@ use crate::ports::{
     DiscoveryItemLibraryProvenanceRecord, DiscoveryItemsPageRecord, DiscoveryItemsStorageQuery,
     DiscoverySectionItemsRecord, DiscoverySourceTagRecord,
 };
+use crate::settings::keys::{METADATA_LANGUAGE_KEY, SETTINGS_SCOPE_SYSTEM};
 use crate::{
     AppError, AppResult, BulkMetadataResult, CatalogDiscoveryGroupKind, CatalogDiscoveryQuery,
     CatalogDiscoverySurface, DiscoveryContextChangeType, DiscoveryContextChangesInput,
@@ -1233,6 +1236,15 @@ async fn title_more_like_this_filters_readable_library_titles_and_refills_limit(
 #[tokio::test]
 async fn title_more_like_this_refreshes_empty_cache_from_metadata_gateway() {
     let gateway = Arc::new(SnapshotMetadataGateway::default());
+    let mut malformed_recommendation = test_discovery_title();
+    malformed_recommendation.target_key = "tvdb:movie:".to_string();
+    malformed_recommendation.display_title.clear();
+    malformed_recommendation.original_title.clear();
+    malformed_recommendation.year = None;
+    malformed_recommendation.poster_url.clear();
+    malformed_recommendation.background_url.clear();
+    malformed_recommendation.overview.clear();
+    malformed_recommendation.content_type.clear();
     let mut recommendation = test_discovery_title();
     recommendation.target_key = "tmdb:movie:604".to_string();
     recommendation.display_title = "Fresh Gateway Recommendation".to_string();
@@ -1240,7 +1252,7 @@ async fn title_more_like_this_refreshes_empty_cache_from_metadata_gateway() {
         .title_recommendation_results
         .lock()
         .await
-        .push(recommendation);
+        .extend([malformed_recommendation, recommendation]);
     let (app, _admin, titles) = bootstrap_with_metadata_gateway_and_titles(gateway.clone());
     let discovery = Arc::new(RecordingDiscoveryRepository::default());
     let app = app.with_test_overrides(|builder| builder.with_discovery_store(discovery.clone()));
@@ -1543,6 +1555,109 @@ async fn discovery_sync_initial_snapshot_submits_smg_and_commits_local_generatio
     assert!(
         runs.iter().any(|run| run.raw_ack_json.is_some()),
         "ack payload should be written back to the run ledger"
+    );
+}
+
+#[tokio::test]
+async fn discovery_sync_uses_configured_metadata_language() {
+    let gateway = Arc::new(SnapshotMetadataGateway::default());
+    let settings = Arc::new(StoredSettingsRepo::default());
+    settings
+        .set_value(SETTINGS_SCOPE_SYSTEM, METADATA_LANGUAGE_KEY, "jpn")
+        .await;
+    let (app, _admin, titles) =
+        bootstrap_with_metadata_gateway_settings_and_titles(gateway.clone(), settings);
+    let discovery = Arc::new(RecordingDiscoveryRepository::default());
+    let app = app.with_test_overrides(|builder| builder.with_discovery_store(discovery.clone()));
+    let due_at = Utc.timestamp_opt(0, 0).unwrap();
+    *discovery.state.lock().await = Some(DiscoverySyncStateRecord {
+        bootstrap_started_at: Some(due_at),
+        bootstrap_quiet_until: Some(due_at),
+        updated_at: due_at,
+        ..DiscoverySyncStateRecord::default()
+    });
+
+    titles.store.lock().await.push(test_title(
+        "title-1",
+        "The Example Movie",
+        MediaFacet::Movie,
+        vec![("tmdb_movie", "603")],
+    ));
+
+    app.run_scheduled_job_now(JobKey::DiscoverySync, JobTriggerSource::ScheduledInterval)
+        .await
+        .expect("discovery sync should run");
+
+    let submitted_inputs = gateway.submitted_inputs.lock().await;
+    assert_eq!(submitted_inputs.len(), 1);
+    assert_eq!(submitted_inputs[0].language, "jpn");
+    drop(submitted_inputs);
+
+    let commits = discovery.commits.lock().await;
+    assert_eq!(commits.len(), 1);
+    assert_eq!(commits[0].run.language, "jpn");
+}
+
+#[tokio::test]
+async fn metadata_language_change_refreshes_public_discovery_feed() {
+    let gateway = Arc::new(SnapshotMetadataGateway::default());
+    let settings = Arc::new(StoredSettingsRepo::default());
+    settings
+        .set_value(SETTINGS_SCOPE_SYSTEM, METADATA_LANGUAGE_KEY, "eng")
+        .await;
+    let (app, admin, titles) =
+        bootstrap_with_metadata_gateway_settings_and_titles(gateway.clone(), settings);
+    let discovery = Arc::new(RecordingDiscoveryRepository::default());
+    let app = app.with_test_overrides(|builder| builder.with_discovery_store(discovery.clone()));
+    let now = Utc::now();
+    *discovery.state.lock().await = Some(DiscoverySyncStateRecord {
+        last_success_generation_id: Some("snapshot-old".to_string()),
+        last_public_feed_generation_id: Some("public-old".to_string()),
+        next_context_snapshot_eligible_at: Some(now - chrono::Duration::minutes(1)),
+        next_incremental_reload_eligible_at: Some(now + chrono::Duration::hours(4)),
+        next_public_feed_eligible_at: Some(now + chrono::Duration::hours(24)),
+        updated_at: now,
+        ..DiscoverySyncStateRecord::default()
+    });
+    titles.store.lock().await.push(test_title(
+        "title-1",
+        "The Example Movie",
+        MediaFacet::Movie,
+        vec![("tmdb_movie", "603")],
+    ));
+
+    app.rehydrate_all_metadata(&admin, "jpn")
+        .await
+        .expect("language change should be accepted");
+
+    for _ in 0..50 {
+        if !gateway.public_feed_inputs.lock().await.is_empty()
+            && !gateway.submitted_inputs.lock().await.is_empty()
+        {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+
+    let submitted_inputs = gateway.submitted_inputs.lock().await;
+    assert_eq!(submitted_inputs.len(), 1);
+    assert_eq!(submitted_inputs[0].language, "jpn");
+    drop(submitted_inputs);
+
+    let public_feed_inputs = gateway.public_feed_inputs.lock().await;
+    assert_eq!(public_feed_inputs.len(), 1);
+    assert_eq!(public_feed_inputs[0].language, "jpn");
+    drop(public_feed_inputs);
+
+    let runs = discovery.runs.lock().await;
+    let public_run = runs
+        .iter()
+        .find(|run| run.kind == "public_feed")
+        .expect("public discovery feed should run");
+    assert_eq!(public_run.language, "jpn");
+    assert_eq!(
+        public_run.trigger_source,
+        JobTriggerSource::SystemInternal.as_str()
     );
 }
 
@@ -4883,6 +4998,7 @@ fn discovery_item_record(
         overview: None,
         content_type: Some(target_kind.to_string()),
         genres: genres.iter().map(|genre| (*genre).to_string()).collect(),
+        canonical_tags: vec![],
         rating: Some(7.5),
         rating_sources: Vec::new(),
         external_ratings: Vec::new(),
@@ -4964,6 +5080,7 @@ fn test_title(id: &str, name: &str, facet: MediaFacet, external_ids: Vec<(&str, 
         facet,
         monitored: true,
         tags: Vec::new(),
+        canonical_tags: vec![],
         external_ids: external_ids
             .into_iter()
             .map(|(source, value)| ExternalId {
@@ -4985,6 +5102,7 @@ fn test_title(id: &str, name: &str, facet: MediaFacet, external_ids: Vec<(&str, 
         slug: None,
         imdb_id: None,
         runtime_minutes: None,
+        popularity: None,
         genres: Vec::new(),
         content_status: None,
         language: None,

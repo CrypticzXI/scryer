@@ -1218,7 +1218,22 @@ pub fn from_title(title: Title) -> TitlePayload {
         slug: title.slug,
         imdb_id: title.imdb_id,
         runtime_minutes: title.runtime_minutes,
+        popularity: title.popularity,
         genres: title.genres,
+        canonical_tags: title
+            .canonical_tags
+            .into_iter()
+            .map(|tag| CanonicalMediaTagPayload {
+                key: tag.key,
+                category: tag.category,
+                name: tag.name,
+                confidence: tag.confidence,
+                sources: tag.sources,
+                source_tag_keys: tag.source_tag_keys,
+                is_adult: tag.is_adult,
+                is_spoiler: tag.is_spoiler,
+            })
+            .collect(),
         content_status: title.content_status,
         language: title.language,
         first_aired: parse_date(title.first_aired),
@@ -1244,7 +1259,12 @@ pub fn from_title(title: Title) -> TitlePayload {
         episodes_owned: None,
         episodes_monitored: None,
         episodes_total: None,
+        media_resolution: None,
+        media_hdr: None,
+        media_audio_codec: None,
         preloaded_collections: None,
+        preloaded_ratings: None,
+        preloaded_root_folder_path: None,
     }
 }
 
@@ -1753,6 +1773,20 @@ pub fn from_discovery_item(item: DiscoveryItemRecord) -> DiscoveryItemPayload {
         overview: item.overview,
         content_type: item.content_type,
         genres: item.genres,
+        canonical_tags: item
+            .canonical_tags
+            .into_iter()
+            .map(|tag| CanonicalMediaTagPayload {
+                key: tag.key,
+                category: tag.category,
+                name: tag.name,
+                confidence: tag.confidence,
+                sources: tag.sources,
+                source_tag_keys: tag.source_tag_keys,
+                is_adult: tag.is_adult,
+                is_spoiler: tag.is_spoiler,
+            })
+            .collect(),
         rating: item.rating,
         rating_sources: item.rating_sources,
         external_ratings: item
@@ -1906,6 +1940,9 @@ pub fn from_collection(collection: Collection) -> CollectionPayload {
         first_episode_number: collection.first_episode_number,
         last_episode_number: collection.last_episode_number,
         monitored: collection.monitored,
+        episodes_owned: None,
+        episodes_monitored: None,
+        episodes_total: None,
         created_at: collection.created_at,
     }
 }

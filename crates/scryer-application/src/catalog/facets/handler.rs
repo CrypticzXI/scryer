@@ -147,6 +147,7 @@ pub fn movie_to_hydration_result(movie: MovieMetadata, language: &str) -> Hydrat
     }
 
     let update = TitleMetadataUpdate {
+        canonical_subject_key: movie.target_key.and_then(non_empty),
         name: non_empty(movie.name),
         year: movie.year.filter(|&y| y > 0),
         overview: non_empty(movie.overview),
@@ -160,7 +161,9 @@ pub fn movie_to_hydration_result(movie: MovieMetadata, language: &str) -> Hydrat
         } else {
             None
         },
+        popularity: movie.popularity.filter(|value| value.is_finite()),
         genres: movie.genres,
+        canonical_tags: movie.canonical_tags,
         content_status: non_empty(movie.content_status),
         language: non_empty(movie.language),
         first_aired: None,
@@ -189,6 +192,7 @@ pub fn movie_to_hydration_result(movie: MovieMetadata, language: &str) -> Hydrat
 pub fn series_to_hydration_result(series: SeriesMetadata, language: &str) -> HydrationResult {
     let extra_external_ids = primary_anime_mapping_extra_external_ids(&series.anime_mappings);
     let update = TitleMetadataUpdate {
+        canonical_subject_key: series.target_key.and_then(non_empty),
         name: non_empty(series.name),
         year: series.year.filter(|&y| y > 0),
         overview: non_empty(series.overview),
@@ -203,6 +207,7 @@ pub fn series_to_hydration_result(series: SeriesMetadata, language: &str) -> Hyd
             None
         },
         genres: series.genres,
+        canonical_tags: series.canonical_tags,
         content_status: non_empty(series.content_status),
         language: None,
         first_aired: non_empty(series.first_aired),
@@ -297,6 +302,7 @@ mod tests {
 
     fn test_series(anime_mappings: Vec<AnimeMapping>) -> SeriesMetadata {
         SeriesMetadata {
+            target_key: None,
             tvdb_id: 12345,
             name: "Sword Art Online".to_string(),
             sort_name: "Sword Art Online".to_string(),
@@ -311,6 +317,7 @@ mod tests {
             background_url: None,
             country: String::new(),
             genres: vec![],
+            canonical_tags: vec![],
             aliases: vec![],
             tagged_aliases: vec![],
             seasons: vec![],

@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use scryer_domain::CanonicalMediaTag;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tokio::sync::mpsc;
@@ -456,6 +457,7 @@ impl DiscoveryRatingProvenance {
 
 #[derive(Debug, Clone)]
 pub struct MovieMetadata {
+    pub target_key: Option<String>,
     pub tvdb_id: i64,
     pub name: String,
     pub slug: String,
@@ -469,8 +471,10 @@ pub struct MovieMetadata {
     pub sort_title: String,
     pub imdb_id: String,
     pub tmdb_id: Option<i64>,
+    pub popularity: Option<f64>,
     pub anidb_id: Option<i64>,
     pub genres: Vec<String>,
+    pub canonical_tags: Vec<CanonicalMediaTag>,
     pub studio: String,
     pub tmdb_release_date: Option<String>,
     pub ratings: crate::TitleRatingSummary,
@@ -478,6 +482,7 @@ pub struct MovieMetadata {
 
 #[derive(Debug, Clone)]
 pub struct SeriesMetadata {
+    pub target_key: Option<String>,
     pub tvdb_id: i64,
     pub name: String,
     pub sort_name: String,
@@ -492,6 +497,7 @@ pub struct SeriesMetadata {
     pub background_url: Option<String>,
     pub country: String,
     pub genres: Vec<String>,
+    pub canonical_tags: Vec<CanonicalMediaTag>,
     pub aliases: Vec<String>,
     pub tagged_aliases: Vec<scryer_domain::TaggedAlias>,
     pub seasons: Vec<SeasonMetadata>,

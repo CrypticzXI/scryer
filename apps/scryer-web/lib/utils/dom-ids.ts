@@ -45,6 +45,14 @@ export function titleOverviewRowId(titleId: string): string {
   return selectorId("title-overview-row", titleId);
 }
 
+export function wantedItemRowId(wantedItemId: string): string {
+  return selectorId("wanted-item-row", wantedItemId);
+}
+
+export function wantedItemSearchNowId(wantedItemId: string): string {
+  return selectorId("wanted-item-search-now", wantedItemId);
+}
+
 export function titleOverviewSearchButtonId(titleId: string): string {
   return selectorId("title-overview-search", titleId);
 }

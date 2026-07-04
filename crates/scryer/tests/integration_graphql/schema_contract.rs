@@ -109,17 +109,18 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
         .filter_map(|ty| ty["name"].as_str())
         .collect();
 
-    assert_eq!(query_field_count, 113);
+    assert_eq!(query_field_count, 114);
     assert_eq!(mutation_field_count, 162);
     assert_eq!(subscription_field_count, 13);
-    assert_eq!(public_types.len(), 489);
-    assert_eq!(kind_count("OBJECT"), 253);
+    assert_eq!(public_types.len(), 491);
+    assert_eq!(kind_count("OBJECT"), 255);
     assert_eq!(kind_count("INPUT_OBJECT"), 149);
     assert_eq!(kind_count("ENUM"), 77);
     assert_eq!(kind_count("SCALAR"), 10);
     assert!(query_field_names.contains(&"backupSettings"));
     assert!(query_field_names.contains(&"externalImportSetupSecretDraft"));
     assert!(query_field_names.contains(&"externalImportSetupSecretDraftStatus"));
+    assert!(query_field_names.contains(&"episodeMediaFiles"));
     assert!(query_field_names.contains(&"runtimeInfo"));
     assert!(mutation_field_names.contains(&"clearExternalImportSetupSecretDraft"));
     assert!(mutation_field_names.contains(&"saveExternalImportSetupSecretDraft"));
@@ -2946,6 +2947,9 @@ async fn graphql_introspection_subtitle_actions_use_payload_results() {
           searchInput: __type(name: "SearchSubtitlesInput") {
             inputFields { name type { kind name ofType { kind name } } }
           }
+          searchPayload: __type(name: "SubtitleSearchResult") {
+            fields { name type { kind name ofType { kind name } } }
+          }
           downloadInput: __type(name: "DownloadSubtitleInput") {
             inputFields { name type { kind name ofType { kind name } } }
           }
@@ -3054,6 +3058,8 @@ async fn graphql_introspection_subtitle_actions_use_payload_results() {
 
     assert_input_non_null("searchInput", "mediaFileId", "ID");
     assert_input_non_null("searchInput", "language", "String");
+    assert_payload_non_null("searchPayload", "score", "Int");
+    assert_payload_non_null("searchPayload", "scorePercent", "Int");
     assert_input_non_null("downloadInput", "mediaFileId", "ID");
     assert_input_non_null("downloadInput", "providerFileId", "String");
     assert_input_non_null("downloadInput", "language", "String");
@@ -3114,6 +3120,8 @@ async fn graphql_introspection_subtitle_actions_use_payload_results() {
     }
     assert_payload_optional("externalSubtitlePayload", "episodeId", "ID");
     assert_payload_optional("externalSubtitlePayload", "providerFileId", "String");
+    assert_payload_optional("externalSubtitlePayload", "score", "Int");
+    assert_payload_optional("externalSubtitlePayload", "scorePercent", "Int");
 
     for field_name in ["id", "mediaFileId"] {
         assert_payload_non_null("externalSubtitleBlocklistEntryPayload", field_name, "ID");

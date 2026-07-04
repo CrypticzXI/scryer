@@ -1,12 +1,30 @@
+import type { CanonicalMediaTag } from "./canonical-tags";
 import type { DownloadClientRoutingEntry } from "./download-clients";
 import type { CatalogDiscoveryItem } from "./discovery";
 import type { ImportMode } from "./settings";
+
+export type { CanonicalMediaTag };
 
 export type Facet = "movie" | "series" | "anime";
 
 export type ExternalId = {
   source: string;
   value: string;
+};
+
+export type TitleExternalRatingRecord = {
+  source: string;
+  value?: number | null;
+  score?: number | null;
+  normalized: number;
+  votes?: number | null;
+  url?: string | null;
+};
+
+export type TitleRatingRecord = {
+  rating?: number | null;
+  ratingSources: string[];
+  externalRatings: TitleExternalRatingRecord[];
 };
 
 export type TitleCollectionEpisodeRecord = {
@@ -43,6 +61,9 @@ export type TitleCollectionRecord = {
   firstEpisodeNumber?: string | number | null;
   lastEpisodeNumber?: string | number | null;
   monitored?: boolean | null;
+  episodesOwned?: number | null;
+  episodesMonitored?: number | null;
+  episodesTotal?: number | null;
   episodes?: TitleCollectionEpisodeRecord[] | null;
   createdAt?: string | null;
 };
@@ -146,7 +167,13 @@ export type TitleRecord = {
   backgroundUrl?: string | null;
   backgroundSourceUrl?: string | null;
   runtimeMinutes?: number | null;
+  popularity?: number | null;
+  mediaResolution?: string | null;
+  mediaHdr?: string | null;
+  mediaAudioCodec?: string | null;
+  ratings?: TitleRatingRecord | null;
   genres?: string[];
+  canonicalTags?: CanonicalMediaTag[];
   language?: string | null;
   firstAired?: string | null;
   network?: string | null;

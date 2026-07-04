@@ -1,3 +1,4 @@
+pub(crate) mod canonical_tags;
 pub(crate) mod images;
 pub(crate) mod libraries;
 pub(crate) mod requests;

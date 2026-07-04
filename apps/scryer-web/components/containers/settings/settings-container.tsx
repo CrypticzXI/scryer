@@ -289,18 +289,14 @@ export const SettingsContainer = memo(function SettingsContainer({
       icon: Puzzle,
       visible: canManageSystemSettings,
     },
-    {
-      section: "subtitles" as const,
-      label: t("settings.subtitles"),
-      icon: Captions,
-      visible: canManageCatalogSettings,
-    },
   ].filter((item) => item.visible);
   const showPrimarySettingsSubnav = primarySettingsNav.some(
     (item) => item.section === settingsSection,
   );
   const usesAutomationHeader =
-    settingsSection === "rules" || settingsSection === "post-processing";
+    settingsSection === "rules" ||
+    settingsSection === "subtitles" ||
+    settingsSection === "post-processing";
   const usesIntegrationsHeader =
     settingsSection === "downloadClients" ||
     settingsSection === "indexers" ||
@@ -314,6 +310,8 @@ export const SettingsContainer = memo(function SettingsContainer({
         return SlidersHorizontal;
       case "post-processing":
         return FolderCog;
+      case "subtitles":
+        return Captions;
       case "indexers":
         return Database;
       case "downloadClients":
@@ -459,8 +457,7 @@ export const SettingsContainer = memo(function SettingsContainer({
                 settingsSection !== "general" &&
                 settingsSection !== "qualityProfiles" &&
                 settingsSection !== "delayProfiles" &&
-                settingsSection !== "plugins" &&
-                settingsSection !== "subtitles" ? (
+                settingsSection !== "plugins" ? (
                   <p className="mt-1 max-w-[640px] text-[13.5px] text-[var(--scry-muted)]">
                     {t("settings.sectionTitle", { section: settingsSectionLabel })}
                   </p>

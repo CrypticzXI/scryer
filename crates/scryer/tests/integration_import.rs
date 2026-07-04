@@ -101,6 +101,7 @@ async fn add_movie_title(ctx: &TestContext, id: &str, name: &str, media_root: &s
         library_id: scryer_domain::default_library_id_for_facet(&MediaFacet::Movie),
         monitored: true,
         tags: vec![],
+        canonical_tags: vec![],
         external_ids: vec![],
         root_folder_id,
         created_by: None,
@@ -119,6 +120,7 @@ async fn add_movie_title(ctx: &TestContext, id: &str, name: &str, media_root: &s
         // short-form so runtime-sample validation does not preempt unrelated
         // import-path, rule, dedupe, or symlink assertions.
         runtime_minutes: Some(1),
+        popularity: None,
         genres: vec![],
         content_status: None,
         language: None,
@@ -165,6 +167,7 @@ async fn add_series_title_with_runtime(
         library_id: scryer_domain::default_library_id_for_facet(&MediaFacet::Series),
         monitored: true,
         tags: vec![],
+        canonical_tags: vec![],
         external_ids: vec![],
         root_folder_id,
         created_by: None,
@@ -180,6 +183,7 @@ async fn add_series_title_with_runtime(
         slug: None,
         imdb_id: None,
         runtime_minutes,
+        popularity: None,
         genres: vec![],
         content_status: None,
         language: None,

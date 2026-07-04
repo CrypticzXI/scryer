@@ -47,14 +47,14 @@ use chrono::{Duration, Utc};
 use scryer_application::testing::AppUseCaseTestExt;
 use scryer_application::{
     AppError, AppResult, BackupInfo, BackupStatus, BackupTrigger, BlocklistRepository,
-    CutoffUnmetQualitySummary, DownloadSubmissionRepository, EpisodeScopedMediaFile, EpisodeUpdate,
-    InsertMediaFileInput, JwtSessionScope, LibraryRepository, LibraryRootDraft, MediaFileAnalysis,
-    MediaFileRepository, MediaFileRole, MediaServerConnectionRepository, PendingRelease,
-    PendingReleaseRepository, ReleaseDecision, ShowRepository, TitleEpisodeProgressSummary,
-    TitleMediaFile, TitleMediaSizeSummary, TitleQualitySummary, TitleRepository,
-    TotpEnrollmentChallengeRecord, TotpFailedAttemptRecord, TotpRepository, UserRepository,
-    WantedItem, WantedItemRepository, WebauthnCredentialRecord, WebauthnRepository,
-    start_background_download_delete_poller,
+    CollectionEpisodeProgressSummary, CutoffUnmetQualitySummary, DownloadSubmissionRepository,
+    EpisodeScopedMediaFile, EpisodeUpdate, InsertMediaFileInput, JwtSessionScope,
+    LibraryRepository, LibraryRootDraft, MediaFileAnalysis, MediaFileRepository, MediaFileRole,
+    MediaServerConnectionRepository, PendingRelease, PendingReleaseRepository, ReleaseDecision,
+    ShowRepository, TitleEpisodeProgressSummary, TitleMediaFile, TitleMediaSizeSummary,
+    TitleMovieMediaSummary, TitleQualitySummary, TitleRepository, TotpEnrollmentChallengeRecord,
+    TotpFailedAttemptRecord, TotpRepository, UserRepository, WantedItem, WantedItemRepository,
+    WebauthnCredentialRecord, WebauthnRepository, start_background_download_delete_poller,
 };
 use scryer_domain::{
     AppPermissionMask, Collection, CollectionType, DomainEventActorKind, DomainEventPayload,
@@ -442,6 +442,13 @@ impl MediaFileRepository for FailingMediaFileRepo {
         self.inner.list_title_quality_summaries(title_ids).await
     }
 
+    async fn list_title_movie_media_summaries(
+        &self,
+        title_ids: &[String],
+    ) -> AppResult<Vec<TitleMovieMediaSummary>> {
+        self.inner.list_title_movie_media_summaries(title_ids).await
+    }
+
     async fn list_cutoff_unmet_quality_summaries(
         &self,
         title_ids: &[String],
@@ -457,6 +464,15 @@ impl MediaFileRepository for FailingMediaFileRepo {
     ) -> AppResult<Vec<TitleEpisodeProgressSummary>> {
         self.inner
             .list_title_episode_progress_summaries(title_ids)
+            .await
+    }
+
+    async fn list_collection_episode_progress_summaries(
+        &self,
+        title_ids: &[String],
+    ) -> AppResult<Vec<CollectionEpisodeProgressSummary>> {
+        self.inner
+            .list_collection_episode_progress_summaries(title_ids)
             .await
     }
 
@@ -1439,6 +1455,7 @@ async fn create_series_scan_title(
         library_id: series_library_id,
         monitored: true,
         tags,
+        canonical_tags: vec![],
         external_ids: vec![],
         root_folder_id,
         created_by: None,
@@ -1454,6 +1471,7 @@ async fn create_series_scan_title(
         slug: None,
         imdb_id: None,
         runtime_minutes: Some(24),
+        popularity: None,
         genres: vec![],
         content_status: None,
         language: None,
@@ -1509,6 +1527,7 @@ async fn create_catalog_title(
         facet,
         monitored,
         tags,
+        canonical_tags: vec![],
         external_ids,
         root_folder_id,
         created_by: None,
@@ -1524,6 +1543,7 @@ async fn create_catalog_title(
         slug: Some("old-slug".to_string()),
         imdb_id: Some("tt0000001".to_string()),
         runtime_minutes: Some(100),
+        popularity: None,
         genres: vec!["Drama".to_string()],
         content_status: Some("ended".to_string()),
         language: Some("eng".to_string()),

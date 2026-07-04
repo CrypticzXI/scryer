@@ -4,22 +4,12 @@ import type { LucideIcon } from "lucide-react";
 import {
   Check,
   ChevronRight,
-  Compass,
-  Drama,
   Heart,
   Loader2,
-  Palette,
   Plus,
-  Rocket,
-  Scale,
   Send,
-  Skull,
   SlidersHorizontal,
-  Smile,
   Sparkles,
-  Swords,
-  Video,
-  WandSparkles,
   X,
 } from "lucide-react";
 import { useTranslate } from "@/lib/context/translate-context";
@@ -64,29 +54,7 @@ type DiscoveryViewProps = {
   onAction: (item: DiscoveryItem) => void;
 };
 
-type DiscoveryTabKey =
-  | "forYou"
-  | "trending"
-  | "popular"
-  | "upcoming"
-  | "topRated";
-
 type DiscoveryContentType = "movie" | "series" | "anime";
-
-type GenreTile = {
-  name: string;
-  count: number;
-  icon: LucideIcon;
-  className: string;
-};
-
-const TAB_DEFINITIONS: Array<{ id: DiscoveryTabKey; labelKey: string }> = [
-  { id: "forYou", labelKey: "discovery.tab.forYou" },
-  { id: "trending", labelKey: "discovery.tab.trending" },
-  { id: "popular", labelKey: "discovery.tab.popular" },
-  { id: "upcoming", labelKey: "discovery.tab.upcoming" },
-  { id: "topRated", labelKey: "discovery.tab.topRated" },
-] as const;
 
 const DISCOVERY_CONTENT_TYPES: DiscoveryContentType[] = [
   "movie",
@@ -115,31 +83,6 @@ function discoveryFacetIcon(
   return facet ? (facetById(facet)?.icon ?? null) : null;
 }
 
-const GENRE_ICONS: LucideIcon[] = [
-  Swords,
-  Compass,
-  Palette,
-  Smile,
-  Scale,
-  Video,
-  Drama,
-  WandSparkles,
-  Skull,
-  Rocket,
-];
-
-const GENRE_TILE_CLASS_NAMES = [
-  "from-rose-600 to-red-950",
-  "from-orange-600 to-orange-950",
-  "from-violet-600 to-violet-950",
-  "from-yellow-600 to-yellow-950",
-  "from-blue-600 to-blue-950",
-  "from-emerald-600 to-emerald-950",
-  "from-pink-600 to-pink-950",
-  "from-teal-600 to-teal-950",
-  "from-red-800 to-red-950",
-  "from-cyan-700 to-cyan-950",
-];
 const FILTER_RANGE_CLASS_NAME =
   "h-1.5 w-full appearance-none rounded-full bg-transparent accent-[var(--scry-accent)] [&::-moz-range-progress]:h-1.5 [&::-moz-range-progress]:rounded-full [&::-moz-range-progress]:bg-transparent [&::-moz-range-thumb]:h-[15px] [&::-moz-range-thumb]:w-[15px] [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:border-0 [&::-moz-range-thumb]:bg-white [&::-moz-range-thumb]:shadow-[0_1px_5px_rgba(0,0,0,0.5)] [&::-moz-range-track]:h-1.5 [&::-moz-range-track]:rounded-full [&::-moz-range-track]:bg-transparent [&::-webkit-slider-runnable-track]:h-1.5 [&::-webkit-slider-runnable-track]:rounded-full [&::-webkit-slider-runnable-track]:bg-transparent [&::-webkit-slider-thumb]:mt-[-4.5px] [&::-webkit-slider-thumb]:h-[15px] [&::-webkit-slider-thumb]:w-[15px] [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-white [&::-webkit-slider-thumb]:shadow-[0_1px_5px_rgba(0,0,0,0.5)]";
 const FILTER_RANGE_THUMB_POINTER_CLASS_NAME =
@@ -257,26 +200,6 @@ function normalizedSectionText(section: DiscoverySection) {
   return `${section.sectionId} ${section.sectionType} ${section.title} ${section.surface}`.toLowerCase();
 }
 
-function sectionMatchesTab(section: DiscoverySection, activeTab: DiscoveryTabKey) {
-  if (activeTab === "forYou") {
-    return true;
-  }
-  const haystack = normalizedSectionText(section);
-  if (activeTab === "trending") {
-    return haystack.includes("trend");
-  }
-  if (activeTab === "popular") {
-    return haystack.includes("popular");
-  }
-  if (activeTab === "upcoming") {
-    return haystack.includes("upcoming") || haystack.includes("future");
-  }
-  if (activeTab === "topRated") {
-    return discoverySectionType(section) === "TOP_RATED";
-  }
-  return false;
-}
-
 const WEEKLY_FOR_YOU_SECTION_TYPES = [
   "TOP_MOVIES_THIS_WEEK",
   "TOP_SERIES_THIS_WEEK",
@@ -302,68 +225,60 @@ function sectionIsCompleteCollection(section: DiscoverySection) {
   );
 }
 
-function sectionsForTab(
-  home: DiscoveryHomePayload | null,
-  activeTab: DiscoveryTabKey,
-) {
+function orderedHomeSections(home: DiscoveryHomePayload | null) {
   const sections = allHomeSections(home);
-  if (activeTab === "forYou") {
-    const personalizedSections = (home?.personalizedSections ?? []).filter(
-      (section) => section.items.length > 0,
-    );
-    const completeCollection =
-      home?.completeCollection && home.completeCollection.items.length > 0
-        ? home.completeCollection
-        : null;
-    const usedPersonalizedSections = new Set<DiscoverySection>();
-    const takePersonalizedSections = (sectionType: string) =>
-      personalizedSections.filter((section) => {
-        if (discoverySectionType(section) !== sectionType) {
-          return false;
-        }
-        usedPersonalizedSections.add(section);
-        return true;
-      });
-    const promotedSections = [
-      ...WEEKLY_FOR_YOU_SECTION_TYPES.flatMap(takePersonalizedSections),
-      ...takePersonalizedSections("BECAUSE_YOU_LIKE_GENRE"),
-      ...takePersonalizedSections("BECAUSE_YOU_LIKE_TAG"),
-      ...takePersonalizedSections("TOP_RATED_ACCLAIMED_NOT_IN_LIBRARY"),
-    ];
-    const unknownPersonalizedSections = personalizedSections.filter(
+  const personalizedSections = (home?.personalizedSections ?? []).filter(
+    (section) => section.items.length > 0,
+  );
+  const completeCollection =
+    home?.completeCollection && home.completeCollection.items.length > 0
+      ? home.completeCollection
+      : null;
+  const usedPersonalizedSections = new Set<DiscoverySection>();
+  const takePersonalizedSections = (sectionType: string) =>
+    personalizedSections.filter((section) => {
+      if (discoverySectionType(section) !== sectionType) {
+        return false;
+      }
+      usedPersonalizedSections.add(section);
+      return true;
+    });
+  const promotedSections = [
+    ...WEEKLY_FOR_YOU_SECTION_TYPES.flatMap(takePersonalizedSections),
+    ...takePersonalizedSections("BECAUSE_YOU_LIKE_GENRE"),
+    ...takePersonalizedSections("BECAUSE_YOU_LIKE_TAG"),
+    ...takePersonalizedSections("TOP_RATED_ACCLAIMED_NOT_IN_LIBRARY"),
+  ];
+  const unknownPersonalizedSections = personalizedSections.filter(
+    (section) =>
+      !usedPersonalizedSections.has(section) &&
+      !GENERIC_FOR_YOU_FALLBACK_SECTION_TYPES.has(discoverySectionType(section)),
+  );
+  const hasLibrarySections =
+    promotedSections.length > 0 ||
+    completeCollection !== null ||
+    unknownPersonalizedSections.length > 0;
+  const fallbackSections = hasLibrarySections
+    ? []
+    : personalizedSections.filter((section) =>
+        GENERIC_FOR_YOU_FALLBACK_SECTION_TYPES.has(discoverySectionType(section)),
+      );
+  const orderedSections = [
+    ...promotedSections,
+    ...(completeCollection ? [completeCollection] : []),
+    ...unknownPersonalizedSections,
+    ...fallbackSections,
+  ];
+  const orderedSectionSet = new Set(orderedSections);
+  return [
+    ...orderedSections,
+    ...sections.filter(
       (section) =>
-        !usedPersonalizedSections.has(section) &&
-        !GENERIC_FOR_YOU_FALLBACK_SECTION_TYPES.has(
-          discoverySectionType(section),
-        ),
-    );
-    const hasLibrarySections =
-      promotedSections.length > 0 ||
-      completeCollection !== null ||
-      unknownPersonalizedSections.length > 0;
-    const fallbackSections = hasLibrarySections
-      ? []
-      : personalizedSections.filter((section) =>
-          GENERIC_FOR_YOU_FALLBACK_SECTION_TYPES.has(discoverySectionType(section)),
-        );
-    const orderedSections = [
-      ...promotedSections,
-      ...(completeCollection ? [completeCollection] : []),
-      ...unknownPersonalizedSections,
-      ...fallbackSections,
-    ];
-    const orderedSectionSet = new Set(orderedSections);
-    return [
-      ...orderedSections,
-      ...sections.filter(
-        (section) =>
-          !orderedSectionSet.has(section) &&
-          !personalizedSections.includes(section) &&
-          section !== completeCollection,
-      ),
-    ].filter((section) => section.items.length > 0);
-  }
-  return sections.filter((section) => sectionMatchesTab(section, activeTab));
+        !orderedSectionSet.has(section) &&
+        !personalizedSections.includes(section) &&
+        section !== completeCollection,
+    ),
+  ].filter((section) => section.items.length > 0);
 }
 
 function sectionIsUpcoming(section: DiscoverySection) {
@@ -555,24 +470,6 @@ function findHeroRailSection(sections: DiscoverySection[]) {
   );
 }
 
-function buildGenreTiles(items: DiscoveryItem[]): GenreTile[] {
-  const counts = new Map<string, number>();
-  for (const item of items) {
-    for (const label of canonicalDiscoveryFacetLabels(item, "genre")) {
-      counts.set(label, (counts.get(label) ?? 0) + 1);
-    }
-  }
-  return [...counts.entries()]
-    .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
-    .slice(0, 10)
-    .map(([name, count], index) => ({
-      name,
-      count,
-      icon: GENRE_ICONS[index % GENRE_ICONS.length],
-      className: GENRE_TILE_CLASS_NAMES[index % GENRE_TILE_CLASS_NAMES.length],
-    }));
-}
-
 function contentTypeCount(items: DiscoveryItem[], kind: string) {
   return items.filter((item) => itemContentType(item) === kind).length;
 }
@@ -623,7 +520,7 @@ function DiscoveryActionButton({
       aria-label={`${label}: ${titleLabel}`}
       disabled={disabled}
       onClick={() => onAction(item)}
-      className="h-12 rounded-[12px] px-7 text-[15px] font-semibold shadow-[0_16px_30px_rgba(var(--scry-accent-rgb),0.22)]"
+      className="h-12 w-96 max-w-full rounded-[12px] px-7 text-[15px] font-semibold shadow-[0_16px_30px_rgba(var(--scry-accent-rgb),0.22)]"
     >
       <Icon className="h-5 w-5" />
       <span>{label}</span>
@@ -804,60 +701,60 @@ function DiscoveryHero({
       )}
       <div className="absolute inset-0 bg-gradient-to-r from-slate-950/80 via-slate-950/45 to-slate-950/0" />
       <div className="absolute inset-0 bg-gradient-to-t from-slate-950/55 via-slate-950/15 to-transparent" />
-      <div className="relative flex h-full max-w-[min(62%,540px)] flex-col p-8 max-lg:max-w-[78%] max-sm:max-w-full">
-        <div className="mb-3.5 flex flex-wrap gap-2">
-          <span className="rounded-[7px] border border-[rgba(var(--scry-accent-rgb),0.4)] bg-[rgba(var(--scry-accent-rgb),0.22)] px-2.5 py-1 text-[11px] font-bold uppercase tracking-[0.04em] text-[#c3c9ff]">
-            {t("discovery.featured")}
-          </span>
-          <span
-            className={cn(
-              "inline-flex items-center gap-1.5 rounded-[8px] px-2.5 py-1 text-[11px] font-black uppercase tracking-[0.035em] shadow-[inset_0_1px_0_rgba(255,255,255,0.28),0_8px_18px_rgba(0,0,0,0.22)]",
-              facet
-                ? DISCOVERY_FACET_PILL_CLASS[facet]
-                : "bg-white/15 text-[#cfd7ee]",
-            )}
-          >
-            {FacetIcon ? (
-              <FacetIcon className="h-3.5 w-3.5" aria-hidden="true" />
-            ) : null}
-            {itemTypeLabel(item)}
-          </span>
-        </div>
-        <h2 className="m-0 mb-3 font-[var(--font-space-grotesk)] text-[clamp(2rem,4vw,42px)] font-bold leading-none text-white drop-shadow">
-          {titleLabel}
-        </h2>
-        <div className="mb-3.5 flex flex-wrap items-center gap-3 text-[13px] text-[var(--scry-text2)]">
-          {detailItems.map((detail, index) => (
-            <React.Fragment key={`${detail}-${index}`}>
-              {index > 0 ? (
-                <span className="h-1 w-1 rounded-full bg-[var(--scry-faint2)]" />
-              ) : null}
-              <span className="font-semibold capitalize">{detail}</span>
-            </React.Fragment>
-          ))}
-          {match ? (
-            <span className="inline-flex items-center gap-1 rounded-[7px] bg-[var(--scry-success-bg)] px-2 py-0.5 font-bold text-[var(--scry-success-text-soft)]">
-              <Heart className="h-3.5 w-3.5" />
-              {match}
+      <div className="relative flex min-h-[340px] flex-col p-8 pb-28 max-sm:pb-8">
+        <div className="max-w-[min(72%,760px)] max-lg:max-w-[82%] max-sm:max-w-full">
+          <div className="mb-3.5 flex flex-wrap gap-2">
+            <span className="rounded-[7px] border border-[rgba(var(--scry-accent-rgb),0.4)] bg-[rgba(var(--scry-accent-rgb),0.22)] px-2.5 py-1 text-[11px] font-bold uppercase tracking-[0.04em] text-[#c3c9ff]">
+              {t("discovery.featured")}
             </span>
+            <span
+              className={cn(
+                "inline-flex items-center gap-1.5 rounded-[8px] px-2.5 py-1 text-[11px] font-black uppercase tracking-[0.035em] shadow-[inset_0_1px_0_rgba(255,255,255,0.28),0_8px_18px_rgba(0,0,0,0.22)]",
+                facet
+                  ? DISCOVERY_FACET_PILL_CLASS[facet]
+                  : "bg-white/15 text-[#cfd7ee]",
+              )}
+            >
+              {FacetIcon ? (
+                <FacetIcon className="h-3.5 w-3.5" aria-hidden="true" />
+              ) : null}
+              {itemTypeLabel(item)}
+            </span>
+          </div>
+          <h2 className="m-0 mb-3 font-[var(--font-space-grotesk)] text-[clamp(2rem,3.5vw,46px)] font-bold leading-none text-white drop-shadow">
+            {titleLabel}
+          </h2>
+          <div className="mb-3.5 flex flex-wrap items-center gap-3 text-[13px] text-[var(--scry-text2)]">
+            {detailItems.map((detail, index) => (
+              <React.Fragment key={`${detail}-${index}`}>
+                {index > 0 ? (
+                  <span className="h-1 w-1 rounded-full bg-[var(--scry-faint2)]" />
+                ) : null}
+                <span className="font-semibold capitalize">{detail}</span>
+              </React.Fragment>
+            ))}
+            {match ? (
+              <span className="inline-flex items-center gap-1 rounded-[7px] bg-[var(--scry-success-bg)] px-2 py-0.5 font-bold text-[var(--scry-success-text-soft)]">
+                <Heart className="h-3.5 w-3.5" />
+                {match}
+              </span>
+            ) : null}
+          </div>
+          <TitleRatingsStrip
+            ratings={{
+              rating: item.rating,
+              ratingSources: item.ratingSources ?? [],
+              externalRatings: item.externalRatings ?? [],
+            }}
+            variant="hero"
+          />
+          {item.overview ? (
+            <p className="m-0 line-clamp-4 max-w-[620px] text-[13.5px] leading-6 text-[#b7c0dd]">
+              {item.overview}
+            </p>
           ) : null}
-        </div>
-        <TitleRatingsStrip
-          ratings={{
-            rating: item.rating,
-            ratingSources: item.ratingSources ?? [],
-            externalRatings: item.externalRatings ?? [],
-          }}
-          variant="hero"
-        />
-        {item.overview ? (
-          <p className="m-0 mb-4 line-clamp-4 max-w-[430px] text-[13.5px] leading-6 text-[#b7c0dd]">
-            {item.overview}
-          </p>
-        ) : null}
-        <div className="mb-auto space-y-3">
           {genres.length > 0 ? (
-            <div className="flex flex-wrap gap-2">
+            <div className="mt-4 flex flex-wrap gap-2">
               {genres.map((genre) => (
                 <span
                   key={genre}
@@ -868,47 +765,10 @@ function DiscoveryHero({
               ))}
             </div>
           ) : null}
-          {hasExternalLinks ? (
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="mr-1 text-[11px] font-bold uppercase tracking-[0.08em] text-[#8995bd]">
-                Open In
-              </span>
-              <ImdbExternalLink
-                imdbId={externalIds.bySource("imdb")}
-                size="compact"
-              />
-              <TmdbExternalLink
-                tmdbId={externalIds.bySourceKind("tmdb", tmdbMediaType)}
-                mediaType={tmdbMediaType}
-                size="compact"
-              />
-              {facet === "movie" ? (
-                <TvdbMovieExternalLink
-                  tvdbId={externalIds.bySourceKind("tvdb", tvdbKind)}
-                  size="compact"
-                />
-              ) : (
-                <TvdbSeriesExternalLink
-                  tvdbId={externalIds.bySourceKind("tvdb", tvdbKind)}
-                  size="compact"
-                />
-              )}
-              <MalExternalLink
-                malId={externalIds.bySource("mal")}
-                size="compact"
-              />
-              <AnilistExternalLink
-                anilistId={externalIds.bySource("anilist")}
-                size="compact"
-              />
-              <AnidbExternalLink
-                anidbId={externalIds.bySource("anidb")}
-                size="compact"
-              />
-            </div>
-          ) : null}
         </div>
-        <div className="mt-5 flex gap-3">
+      </div>
+      <div className="absolute inset-x-8 bottom-8 z-10 flex flex-col items-start gap-3 max-sm:static max-sm:mt-6 max-sm:items-stretch">
+        <div className="flex justify-start">
           <DiscoveryActionButton
             item={item}
             canManageTitle={canManageTitle}
@@ -916,15 +776,45 @@ function DiscoveryHero({
             onAction={onAction}
           />
         </div>
+        {hasExternalLinks ? (
+          <div className="flex flex-wrap items-center justify-start gap-2">
+            <ImdbExternalLink
+              imdbId={externalIds.bySource("imdb")}
+              size="compact"
+            />
+            <TmdbExternalLink
+              tmdbId={externalIds.bySourceKind("tmdb", tmdbMediaType)}
+              mediaType={tmdbMediaType}
+              size="compact"
+            />
+            {facet === "movie" ? (
+              <TvdbMovieExternalLink
+                tvdbId={externalIds.bySourceKind("tvdb", tvdbKind)}
+                size="compact"
+              />
+            ) : (
+              <TvdbSeriesExternalLink
+                tvdbId={externalIds.bySourceKind("tvdb", tvdbKind)}
+                size="compact"
+              />
+            )}
+            <MalExternalLink
+              malId={externalIds.bySource("mal")}
+              size="compact"
+            />
+            <AnilistExternalLink
+              anilistId={externalIds.bySource("anilist")}
+              size="compact"
+            />
+            <AnidbExternalLink
+              anidbId={externalIds.bySource("anidb")}
+              size="compact"
+            />
+          </div>
+        ) : null}
       </div>
     </section>
   );
-}
-
-function toggleSelectedFilterValue(selectedValues: string[], value: string) {
-  return selectedValues.includes(value)
-    ? selectedValues.filter((selectedValue) => selectedValue !== value)
-    : [...selectedValues, value];
 }
 
 function DiscoveryFilterMultiSelect({
@@ -1259,7 +1149,6 @@ export function DiscoveryView({
   onAction,
 }: DiscoveryViewProps) {
   const t = useTranslate();
-  const [activeTab, setActiveTab] = React.useState<DiscoveryTabKey>("forYou");
   const [selectedContentTypes, setSelectedContentTypes] = React.useState<
     DiscoveryContentType[]
   >(DEFAULT_DISCOVERY_CONTENT_TYPES);
@@ -1274,10 +1163,7 @@ export function DiscoveryView({
     DEFAULT_MINIMUM_RATING,
   );
   const [filtersOpen, setFiltersOpen] = React.useState(false);
-  const rawSections = React.useMemo(
-    () => sectionsForTab(home, activeTab),
-    [activeTab, home],
-  );
+  const rawSections = React.useMemo(() => orderedHomeSections(home), [home]);
   const rawItems = React.useMemo(
     () => rawSections.flatMap((section) => section.items),
     [rawSections],
@@ -1317,10 +1203,6 @@ export function DiscoveryView({
       selectedTags,
     ],
   );
-  const allItems = React.useMemo(
-    () => sections.flatMap((section) => section.items),
-    [sections],
-  );
   const heroSections = React.useMemo(
     () => sections.filter((section) => !sectionIsCompleteCollection(section)),
     [sections],
@@ -1332,7 +1214,6 @@ export function DiscoveryView({
         : firstHeroItem(heroSections),
     [heroSections, home?.heroItem],
   );
-  const genreTiles = React.useMemo(() => buildGenreTiles(allItems), [allItems]);
   const heroRailSection = React.useMemo(
     () => findHeroRailSection(heroSections),
     [heroSections],
@@ -1360,8 +1241,7 @@ export function DiscoveryView({
   const hasRenderableContent =
     heroItem !== null ||
     primaryRailSections.length > 0 ||
-    upcomingRailSections.length > 0 ||
-    genreTiles.length > 0;
+    upcomingRailSections.length > 0;
   const toggleContentType = React.useCallback(
     (contentType: DiscoveryContentType) => {
       setSelectedContentTypes((current) =>
@@ -1425,32 +1305,12 @@ export function DiscoveryView({
   return (
     <div className="flex min-h-0 flex-1">
       <main className="min-w-0 flex-1 overflow-y-auto px-7 py-6 pb-16 max-sm:px-4">
-        <div className="mb-5 flex items-center justify-between gap-3 border-b border-[var(--scry-border3)]">
-          <div className="flex min-w-0 items-center gap-1.5 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-            {TAB_DEFINITIONS.map((tab) => (
-              <button
-                key={tab.id}
-                type="button"
-                onClick={() => setActiveTab(tab.id)}
-                className={cn(
-                  "relative shrink-0 px-3.5 py-2.5 text-[13.5px] font-semibold",
-                  activeTab === tab.id
-                    ? "text-white"
-                    : "text-[var(--scry-muted)] hover:text-[var(--scry-ink2)]",
-                )}
-              >
-                {t(tab.labelKey)}
-                {activeTab === tab.id ? (
-                  <span className="absolute bottom-[-1px] left-2 right-2 h-[2.5px] rounded-full bg-[var(--scry-accent-ring)]" />
-                ) : null}
-              </button>
-            ))}
-          </div>
+        <div className="mb-5 hidden justify-end max-xl:flex">
           <button
             type="button"
             aria-label={t("discovery.openFilters")}
             onClick={() => setFiltersOpen(true)}
-            className="hidden h-9 shrink-0 items-center gap-2 rounded-[9px] border border-[var(--scry-border2)] bg-[var(--scry-bg)] px-3 text-[12.5px] font-semibold text-[var(--scry-ink2)] max-xl:inline-flex"
+            className="inline-flex h-9 shrink-0 items-center gap-2 rounded-[9px] border border-[var(--scry-border2)] bg-[var(--scry-bg)] px-3 text-[12.5px] font-semibold text-[var(--scry-ink2)]"
           >
             <SlidersHorizontal className="h-4 w-4 text-[var(--scry-accent-text)]" />
             {t("discovery.filters")}
@@ -1511,44 +1371,6 @@ export function DiscoveryView({
               {t("discovery.emptyDescription")}
             </p>
           </div>
-        ) : null}
-
-        {genreTiles.length > 0 ? (
-          <section className="mb-7">
-            <h3 className="mb-3.5 font-[var(--font-space-grotesk)] text-lg font-semibold text-[var(--scry-ink2)]">
-              {t("discovery.browseByGenre")}
-            </h3>
-            <div className="grid grid-cols-[repeat(auto-fit,minmax(150px,1fr))] gap-3">
-              {genreTiles.map((genre) => {
-                const Icon = genre.icon;
-                return (
-                  <button
-                    key={genre.name}
-                    type="button"
-                    onClick={() =>
-                      setSelectedGenres((current) =>
-                        toggleSelectedFilterValue(current, genre.name),
-                      )
-                    }
-                    className={cn(
-                      "flex h-[88px] flex-col justify-between overflow-hidden rounded-[13px] border border-white/10 bg-gradient-to-br p-3.5 text-left text-white transition hover:-translate-y-0.5 hover:border-white/30",
-                      genre.className,
-                    )}
-                  >
-                    <Icon className="h-[22px] w-[22px] drop-shadow" />
-                    <div>
-                      <div className="truncate text-sm font-bold drop-shadow">
-                        {genre.name}
-                      </div>
-                      <div className="text-[11.5px] text-white/75">
-                        {t("discovery.genreCount", { count: genre.count })}
-                      </div>
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
-          </section>
         ) : null}
 
         {upcomingRailSections.map((section) => (

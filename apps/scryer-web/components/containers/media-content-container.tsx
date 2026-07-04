@@ -44,7 +44,7 @@ import {
   seriesTitlePanelDetailQuery,
   titlePanelDetailQuery,
   titleReleaseBlocklistQuery,
-  titlesQuery,
+  buildTitlesQuery,
 } from "@/lib/graphql/queries";
 import {
   CATEGORY_SCOPE_MAP,
@@ -70,6 +70,7 @@ import {
 import {
   EMPTY_TITLE_QUICK_FILTERS,
   buildTitleCatalogQueryVariables,
+  titleCatalogProjectionForTable,
   titleCatalogQueryKey,
 } from "@/lib/utils/title-catalog-query";
 import { releaseQueueScopeInput } from "@/lib/utils/release-queue-scope";
@@ -79,6 +80,7 @@ import { useIndexerRouting } from "@/lib/hooks/use-indexer-routing";
 import { useMediaSettings } from "@/lib/hooks/use-media-settings";
 import { useIsMobile } from "@/lib/hooks/use-mobile";
 import { useQueueFormState } from "@/lib/hooks/use-queue-form-state";
+import { useTitleListReactiveRefresh } from "@/lib/hooks/use-title-list-reactive-refresh";
 import { useTitleManagementState } from "@/lib/hooks/use-title-management-state";
 import type {
   DownloadClientRecord,
@@ -133,9 +135,13 @@ import {
   type TitleQuickFilters,
 } from "@/components/views/media-content/title-quick-filters";
 import {
+  DEFAULT_TITLE_TABLE_VISIBLE_COLUMNS,
   defaultSortDirectionForTitleKey,
+  isTitleTableColumnSupportedForView,
+  type TitleTableColumnKey,
   type TitleTableSortDirection,
   type TitleTableSortKey,
+  type TitleTableVisibleColumns,
 } from "@/components/views/media-content/title-table-shared";
 import {
   assertNoReplaceConflict,
@@ -148,6 +154,7 @@ const TITLE_DELETION_JOB_FALLBACK_DELAYS_MS = [
   10_000, 60_000, 180_000,
 ] as const;
 const TITLE_CATALOG_PAGE_SIZE = 72;
+const LIBRARY_SCAN_TITLE_REFRESH_THROTTLE_MS = 1_000;
 const ALL_LIBRARIES_VALUE = "__all__";
 
 type MediaContentContainerProps = {
@@ -777,11 +784,8 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     CATEGORY_SCOPE_MAP[view as keyof typeof CATEGORY_SCOPE_MAP] ?? "movie";
   const isMediaView =
     view === "movies" || view === "series" || view === "anime";
-  const routeOverviewActive = routeOverviewPending;
   const shouldLoadCatalogTitles =
-    isMediaView &&
-    contentSettingsSection === "overview" &&
-    !routeOverviewActive;
+    isMediaView && contentSettingsSection === "overview";
   const shouldLoadMediaSettingsForSection =
     isMediaView &&
     (contentSettingsSection === "library" ||
@@ -875,10 +879,45 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     React.useState<TitleQuickFilters>(EMPTY_TITLE_QUICK_FILTERS);
   const [titleCatalogSort, setTitleCatalogSort] =
     React.useState<TitleCatalogSortState>(defaultTitleCatalogSortState);
-  const effectiveTitleCatalogSort =
-    effectiveViewMode === "poster"
-      ? defaultTitleCatalogSortState
-      : titleCatalogSort;
+  const [visibleTitleTableColumns, setVisibleTitleTableColumns] =
+    React.useState<TitleTableVisibleColumns>(() => ({
+      ...DEFAULT_TITLE_TABLE_VISIBLE_COLUMNS,
+    }));
+  const setTitleTableColumnVisible = React.useCallback(
+    (key: TitleTableColumnKey, checked: boolean) => {
+      setVisibleTitleTableColumns((current) => ({
+        ...current,
+        [key]: checked,
+      }));
+    },
+    [],
+  );
+  const effectiveTitleCatalogSort = React.useMemo<TitleCatalogSortState>(() => {
+    if (effectiveViewMode === "poster") {
+      return defaultTitleCatalogSortState;
+    }
+    if (titleCatalogSort.key === "name") {
+      return titleCatalogSort;
+    }
+    const columnKey = titleCatalogSort.key as TitleTableColumnKey;
+    if (
+      !isTitleTableColumnSupportedForView(columnKey, view) ||
+      visibleTitleTableColumns[columnKey] !== true
+    ) {
+      return defaultTitleCatalogSortState;
+    }
+    return titleCatalogSort;
+  }, [effectiveViewMode, titleCatalogSort, view, visibleTitleTableColumns]);
+  const titleCatalogProjection = React.useMemo(
+    () =>
+      titleCatalogProjectionForTable({
+        facet: activeFacet,
+        visibleColumns:
+          effectiveViewMode === "poster" ? {} : visibleTitleTableColumns,
+        sort: effectiveTitleCatalogSort,
+      }),
+    [activeFacet, effectiveTitleCatalogSort, effectiveViewMode, visibleTitleTableColumns],
+  );
   const [bulkActionBusy, setBulkActionBusy] = React.useState(false);
   const [bulkEditDialogOpen, setBulkEditDialogOpen] = React.useState(false);
   const shouldLoadMediaSettings =
@@ -979,6 +1018,10 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   const catalogBootstrapRequestSeqRef = React.useRef(0);
   const catalogPageLoadInFlightRef = React.useRef(false);
   const catalogQueryKeyRef = React.useRef("");
+  const libraryScanTitleRefreshRef = React.useRef<{
+    key: string;
+    refreshedAt: number;
+  }>({ key: "", refreshedAt: 0 });
   const latestCriticalMutationEpochRef = React.useRef(0);
   const selectedPanelHydrationKeyRef = React.useRef<string | null>(null);
   const skipNextCatalogOverviewReloadRef = React.useRef(false);
@@ -1291,6 +1334,9 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     }
 
     setSelectedOverviewTitleId((current) => {
+      if (current && current === routeOverviewTitleId) {
+        return current;
+      }
       return current &&
         titleContextSourceTitles.some((title) => title.id === current)
         ? current
@@ -1298,6 +1344,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     });
   }, [
     contentSettingsSection,
+    routeOverviewTitleId,
     shouldLoadCatalogTitles,
     titleContextSourceTitles,
   ]);
@@ -1606,6 +1653,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
         libraryIds,
         filters: effectiveTitleQuickFilters,
         sort: effectiveTitleCatalogSort,
+        projection: titleCatalogProjection,
       });
       activeCatalogListFiltersRef.current = buildActiveCatalogListFilters(
         activeFacet,
@@ -1620,7 +1668,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
       try {
         const { data, error } = await client
           .query(
-            titlesQuery,
+            buildTitlesQuery(titleCatalogProjection),
             buildTitleCatalogQueryVariables({
               facet: activeFacet,
               libraryIds,
@@ -1698,6 +1746,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
       setTitleLoading,
       setTitleStatus,
       t,
+      titleCatalogProjection,
     ],
   );
 
@@ -1785,6 +1834,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
       libraryIds: selectedLibraryIds,
       filters: effectiveTitleQuickFilters,
       sort: effectiveTitleCatalogSort,
+      projection: titleCatalogProjection,
     });
     if (catalogPaginationState.queryKey !== queryKey) {
       return;
@@ -1796,7 +1846,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     try {
       const { data, error } = await client
         .query(
-          titlesQuery,
+          buildTitlesQuery(titleCatalogProjection),
           buildTitleCatalogQueryVariables({
             facet: activeFacet,
             libraryIds: selectedLibraryIds,
@@ -1881,6 +1931,109 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     setTitleStatus,
     shouldLoadCatalogTitles,
     t,
+    titleCatalogProjection,
+  ]);
+
+  const refreshLoadedCatalogTitlesQuietly = React.useCallback(async () => {
+    if (
+      !shouldLoadCatalogTitles ||
+      titleLoading ||
+      catalogPageLoadInFlightRef.current ||
+      catalogPaginationState.queryKey === ""
+    ) {
+      return;
+    }
+
+    const requestSeq = catalogTitleRequestSeqRef.current;
+    const query = activeCatalogQueryRef.current.trim();
+    const queryKey = titleCatalogQueryKey({
+      facet: activeFacet,
+      query,
+      libraryIds: selectedLibraryIds,
+      filters: effectiveTitleQuickFilters,
+      sort: effectiveTitleCatalogSort,
+      projection: titleCatalogProjection,
+    });
+    if (catalogPaginationState.queryKey !== queryKey) {
+      return;
+    }
+
+    const limit = Math.max(
+      TITLE_CATALOG_PAGE_SIZE,
+      catalogPaginationState.nextOffset || TITLE_CATALOG_PAGE_SIZE,
+    );
+
+    try {
+      const { data, error } = await client
+        .query(
+          buildTitlesQuery(titleCatalogProjection),
+          buildTitleCatalogQueryVariables({
+            facet: activeFacet,
+            libraryIds: selectedLibraryIds,
+            query,
+            filters: effectiveTitleQuickFilters,
+            sort: effectiveTitleCatalogSort,
+            limit,
+            offset: 0,
+          }),
+          { requestPolicy: "network-only" },
+        )
+        .toPromise();
+      if (error) {
+        throw error;
+      }
+      if (
+        requestSeq !== catalogTitleRequestSeqRef.current ||
+        catalogQueryKeyRef.current !== queryKey
+      ) {
+        return;
+      }
+
+      const page = data?.titles ?? {};
+      const nextTitles = (page.items ?? []) as TitleRecord[];
+      const filterCounts = titleCatalogFilterCountsFromPage(
+        page,
+        catalogPaginationState.filterCounts,
+      );
+      setMonitoredTitles((current) =>
+        mergeCatalogTitlesPreservingImages(current, nextTitles),
+      );
+      mergeTitleContextTitles(nextTitles);
+      setCatalogPaginationState((current) => {
+        if (current.queryKey !== queryKey) {
+          return current;
+        }
+        return {
+          ...current,
+          hasMore: Boolean(page.hasMore),
+          nextOffset:
+            typeof page.offset === "number" && typeof page.limit === "number"
+              ? page.offset + nextTitles.length
+              : nextTitles.length,
+          totalCount:
+            typeof page.totalCount === "number"
+              ? page.totalCount
+              : current.totalCount,
+          filterCounts,
+        };
+      });
+    } catch (error) {
+      console.error("[title-list-reactive-refresh] catalog refresh failed:", error);
+    }
+  }, [
+    activeFacet,
+    catalogPaginationState.filterCounts,
+    catalogPaginationState.nextOffset,
+    catalogPaginationState.queryKey,
+    client,
+    effectiveTitleQuickFilters,
+    effectiveTitleCatalogSort,
+    mergeTitleContextTitles,
+    selectedLibraryIds,
+    setMonitoredTitles,
+    shouldLoadCatalogTitles,
+    titleCatalogProjection,
+    titleLoading,
   ]);
 
   const recordCriticalCatalogMutation = React.useCallback(() => {
@@ -2122,6 +2275,68 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     },
     [setMonitoredTitles, setTitleStatus, t],
   );
+
+  useTitleListReactiveRefresh({
+    facet: activeFacet,
+    pause: !shouldLoadCatalogTitles,
+    onTitleRefreshed: applyRefreshedTitleRecord,
+  });
+
+  React.useEffect(() => {
+    if (!shouldLoadCatalogTitles) {
+      libraryScanTitleRefreshRef.current = { key: "", refreshedAt: 0 };
+      return;
+    }
+
+    if (!activeLibraryScanSession) {
+      if (libraryScanTitleRefreshRef.current.key) {
+        libraryScanTitleRefreshRef.current = { key: "", refreshedAt: 0 };
+        void refreshLoadedCatalogTitlesQuietly();
+      }
+      return;
+    }
+
+    const selectedConcreteLibraryIds = selectedLibraryIds.filter(
+      (libraryId) => libraryId !== ALL_LIBRARIES_VALUE,
+    );
+    if (
+      activeLibraryScanSession.libraryId &&
+      selectedConcreteLibraryIds.length > 0 &&
+      !selectedConcreteLibraryIds.includes(activeLibraryScanSession.libraryId)
+    ) {
+      return;
+    }
+
+    const progressKey = [
+      activeLibraryScanSession.sessionId,
+      activeLibraryScanSession.mediaAnalysisProgress.total,
+      activeLibraryScanSession.mediaAnalysisProgress.completed,
+      activeLibraryScanSession.mediaAnalysisProgress.failed,
+      activeLibraryScanSession.summary?.imported ?? 0,
+      activeLibraryScanSession.updatedAt,
+    ].join(":");
+    const now =
+      typeof performance !== "undefined" ? performance.now() : Date.now();
+    const previous = libraryScanTitleRefreshRef.current;
+    if (
+      previous.key === progressKey ||
+      (previous.key !== "" &&
+        now - previous.refreshedAt < LIBRARY_SCAN_TITLE_REFRESH_THROTTLE_MS)
+    ) {
+      return;
+    }
+
+    libraryScanTitleRefreshRef.current = {
+      key: progressKey,
+      refreshedAt: now,
+    };
+    void refreshLoadedCatalogTitlesQuietly();
+  }, [
+    activeLibraryScanSession,
+    refreshLoadedCatalogTitlesQuietly,
+    selectedLibraryIds,
+    shouldLoadCatalogTitles,
+  ]);
 
   const pendingHydrationPosterTitleIds = React.useMemo(() => {
     const nowMs = Date.now();
@@ -4293,6 +4508,8 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
           titleCatalogSortKey: titleCatalogSort.key,
           titleCatalogSortDirection: titleCatalogSort.direction,
           updateTitleCatalogSort,
+          visibleTitleTableColumns,
+          setTitleTableColumnVisible,
           catalogBootstrapLoading,
           catalogInitialLoadComplete,
           monitoredTitles: visibleTitles,

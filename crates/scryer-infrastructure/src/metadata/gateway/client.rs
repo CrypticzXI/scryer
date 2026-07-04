@@ -22,6 +22,7 @@ use scryer_application::{
     SeriesMetadata, SettingsRepository, SmgScryerUpdateNotice, TitleArtworkUrls,
     TitleExternalRating, TitleRatingSummary, TitleRecommendationsInput,
 };
+use scryer_domain::CanonicalMediaTag;
 use scryer_outbound_http::{
     OutboundHttpClient, OutboundHttpError, OutboundRequestError, RateLimitRegistry, RequestPolicy,
     smg_reqwest_client,
@@ -2093,6 +2094,7 @@ fn merge_bulk_metadata_partial(
 
 fn movie_metadata_from_item(m: MovieItem) -> MovieMetadata {
     MovieMetadata {
+        target_key: m.target_key,
         tvdb_id: m.tvdb_id,
         name: m.name,
         slug: m.slug,
@@ -2106,8 +2108,10 @@ fn movie_metadata_from_item(m: MovieItem) -> MovieMetadata {
         sort_title: m.sort_title,
         imdb_id: m.imdb_id,
         tmdb_id: m.tmdb_id,
+        popularity: m.tmdb_popularity,
         anidb_id: m.anidb_id,
         genres: m.genres,
+        canonical_tags: canonical_tags_from_gateway(m.canonical_tags),
         studio: m.studio,
         tmdb_release_date: m.tmdb_release_date,
         ratings: rating_summary_from_gateway(m.rating, m.rating_sources, m.external_ratings),
@@ -2116,6 +2120,7 @@ fn movie_metadata_from_item(m: MovieItem) -> MovieMetadata {
 
 fn series_metadata_from_item(s: SeriesItem) -> SeriesMetadata {
     SeriesMetadata {
+        target_key: s.target_key,
         tvdb_id: s.tvdb_id,
         name: s.name,
         sort_name: s.sort_name,
@@ -2130,6 +2135,7 @@ fn series_metadata_from_item(s: SeriesItem) -> SeriesMetadata {
         background_url: pick_artwork_url(&s.artworks, "background"),
         country: s.country,
         genres: s.genres,
+        canonical_tags: canonical_tags_from_gateway(s.canonical_tags),
         aliases: s.aliases,
         tagged_aliases: s
             .tagged_aliases
@@ -3804,6 +3810,8 @@ struct MovieResult {
 
 #[derive(Deserialize)]
 struct MovieItem {
+    #[serde(default)]
+    target_key: Option<String>,
     tvdb_id: i64,
     name: String,
     slug: String,
@@ -3818,8 +3826,12 @@ struct MovieItem {
     #[serde(default)]
     tmdb_id: Option<i64>,
     #[serde(default)]
+    tmdb_popularity: Option<f64>,
+    #[serde(default)]
     anidb_id: Option<i64>,
     genres: Vec<String>,
+    #[serde(default)]
+    canonical_tags: Vec<CanonicalTagItem>,
     studio: String,
     tmdb_release_date: Option<String>,
     #[serde(default)]
@@ -3843,6 +3855,23 @@ struct ExternalRatingItem {
     #[serde(default)]
     votes: Option<i32>,
     url: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct CanonicalTagItem {
+    key: String,
+    category: String,
+    name: String,
+    #[serde(default)]
+    confidence: Option<f64>,
+    #[serde(default)]
+    sources: Vec<String>,
+    #[serde(default)]
+    source_tag_keys: Vec<String>,
+    #[serde(default)]
+    is_adult: bool,
+    #[serde(default)]
+    is_spoiler: bool,
 }
 
 fn rating_summary_from_gateway(
@@ -3879,6 +3908,31 @@ fn rating_summary_from_gateway(
         rating_sources,
         external_ratings,
     }
+}
+
+fn canonical_tags_from_gateway(items: Vec<CanonicalTagItem>) -> Vec<CanonicalMediaTag> {
+    items
+        .into_iter()
+        .filter_map(|item| {
+            let key = item.key.trim();
+            let category = item.category.trim();
+            let name = item.name.trim();
+            if key.is_empty() || category.is_empty() || name.is_empty() {
+                return None;
+            }
+
+            Some(CanonicalMediaTag {
+                key: key.to_string(),
+                category: category.to_string(),
+                name: name.to_string(),
+                confidence: item.confidence.filter(|value| value.is_finite()),
+                sources: item.sources,
+                source_tag_keys: item.source_tag_keys,
+                is_adult: item.is_adult,
+                is_spoiler: item.is_spoiler,
+            })
+        })
+        .collect()
 }
 
 // --- Artwork helper ---
@@ -4024,6 +4078,8 @@ struct SeriesResult {
 
 #[derive(Deserialize)]
 struct SeriesItem {
+    #[serde(default)]
+    target_key: Option<String>,
     tvdb_id: i64,
     name: String,
     sort_name: String,
@@ -4037,6 +4093,8 @@ struct SeriesItem {
     poster_url: String,
     country: String,
     genres: Vec<String>,
+    #[serde(default)]
+    canonical_tags: Vec<CanonicalTagItem>,
     #[serde(default)]
     rating: Option<f64>,
     #[serde(default)]
@@ -4396,6 +4454,7 @@ impl MetadataGateway for MetadataGatewayClient {
         let m = data.movie.movie;
 
         Ok(MovieMetadata {
+            target_key: m.target_key,
             tvdb_id: m.tvdb_id,
             name: m.name,
             slug: m.slug,
@@ -4409,8 +4468,10 @@ impl MetadataGateway for MetadataGatewayClient {
             sort_title: m.sort_title,
             imdb_id: m.imdb_id,
             tmdb_id: m.tmdb_id,
+            popularity: m.tmdb_popularity,
             anidb_id: m.anidb_id,
             genres: m.genres,
+            canonical_tags: canonical_tags_from_gateway(m.canonical_tags),
             studio: m.studio,
             tmdb_release_date: m.tmdb_release_date,
             ratings: rating_summary_from_gateway(m.rating, m.rating_sources, m.external_ratings),
@@ -4435,6 +4496,7 @@ impl MetadataGateway for MetadataGatewayClient {
         let s = data.series.series;
 
         Ok(SeriesMetadata {
+            target_key: s.target_key,
             tvdb_id: s.tvdb_id,
             name: s.name,
             sort_name: s.sort_name,
@@ -4449,6 +4511,7 @@ impl MetadataGateway for MetadataGatewayClient {
             background_url: pick_artwork_url(&s.artworks, "background"),
             country: s.country,
             genres: s.genres,
+            canonical_tags: canonical_tags_from_gateway(s.canonical_tags),
             aliases: s.aliases,
             tagged_aliases: s
                 .tagged_aliases

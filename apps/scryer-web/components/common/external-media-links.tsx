@@ -1,6 +1,7 @@
 import { useTranslate } from "@/lib/context/translate-context";
 import { cn } from "@/lib/utils";
 import { buildTvdbMovieUrl, buildTvdbSeriesUrl } from "@/lib/utils/external-media-links";
+import { ExternalLink } from "lucide-react";
 
 const imdbLogoUrl = `${import.meta.env.BASE_URL}media-sites/imdb.svg`;
 const tvdbLogoUrl = `${import.meta.env.BASE_URL}media-sites/tvdb.svg`;
@@ -59,6 +60,15 @@ export function ExternalMediaLinkButton({
       >
         {label}
       </span>
+      <ExternalLink
+        className={cn(
+          "shrink-0",
+          size === "compact"
+            ? "h-3.5 w-3.5 text-[var(--scry-muted3)]"
+            : "h-4 w-4 text-muted-foreground",
+        )}
+        aria-hidden="true"
+      />
     </a>
   );
 }

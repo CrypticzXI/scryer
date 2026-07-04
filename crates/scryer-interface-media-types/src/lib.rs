@@ -1723,6 +1723,18 @@ pub struct DiscoveryExternalIdPayload {
 }
 
 #[derive(SimpleObject, Clone)]
+pub struct CanonicalMediaTagPayload {
+    pub key: String,
+    pub category: String,
+    pub name: String,
+    pub confidence: Option<f64>,
+    pub sources: Vec<String>,
+    pub source_tag_keys: Vec<String>,
+    pub is_adult: bool,
+    pub is_spoiler: bool,
+}
+
+#[derive(SimpleObject, Clone)]
 pub struct DiscoveryItemPayload {
     pub id: ID,
     pub target_key: String,
@@ -1738,6 +1750,7 @@ pub struct DiscoveryItemPayload {
     pub overview: Option<String>,
     pub content_type: Option<String>,
     pub genres: Vec<String>,
+    pub canonical_tags: Vec<CanonicalMediaTagPayload>,
     pub rating: Option<f64>,
     pub rating_sources: Vec<String>,
     pub external_ratings: Vec<DiscoveryExternalRatingPayload>,
@@ -4860,6 +4873,7 @@ pub struct ExternalSubtitlePayload {
     pub provider_file_id: Option<String>,
     pub file_path: String,
     pub score: Option<i32>,
+    pub score_percent: Option<i32>,
     pub hearing_impaired: bool,
     pub forced: bool,
     pub ai_translated: bool,

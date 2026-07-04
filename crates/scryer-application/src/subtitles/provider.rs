@@ -72,6 +72,8 @@ pub struct SubtitleMatch {
     pub release_info: Option<String>,
     /// Computed match score.
     pub score: i32,
+    /// Computed match score normalized to a 0-100 percentage for display.
+    pub score_percent: i32,
     /// Whether this subtitle is hearing-impaired.
     pub hearing_impaired: bool,
     /// Whether this subtitle is forced (foreign parts only).
@@ -334,6 +336,7 @@ mod tests {
                 language: "eng".into(),
                 release_info: None,
                 score: 100,
+                score_percent: 28,
                 hearing_impaired: false,
                 forced: false,
                 ai_translated: false,
@@ -348,6 +351,7 @@ mod tests {
                 language: "eng".into(),
                 release_info: None,
                 score: 300,
+                score_percent: 83,
                 hearing_impaired: false,
                 forced: false,
                 ai_translated: false,

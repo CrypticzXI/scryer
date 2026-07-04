@@ -260,6 +260,7 @@ export const SystemAuditContainer = React.memo(function SystemAuditContainer() {
                               event.eventType,
                               event.eventId,
                             )}
+                            data-audit-actor={event.actorDisplayName}
                             className="truncate text-sm text-[var(--scry-ink2)]"
                           >
                             {event.actorDisplayName}
@@ -275,6 +276,7 @@ export const SystemAuditContainer = React.memo(function SystemAuditContainer() {
                               event.eventType,
                               event.eventId,
                             )}
+                            data-audit-target={event.titleId ?? event.facet ?? ""}
                             className="block truncate"
                           >
                             {event.titleId ?? event.facet ?? "\u2014"}

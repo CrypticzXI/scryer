@@ -419,6 +419,8 @@ export function SubtitleSearchModal({
                     <TableRow
                       key={r.providerFileId}
                       id={selectorId("subtitle-search-result-row", r.providerFileId)}
+                      data-ui="subtitle-search-result-row"
+                      data-subtitle-release-info={r.releaseInfo}
                     >
                       <TableCell className="min-w-0">
                         <span className="block break-words text-xs leading-relaxed">
@@ -432,7 +434,7 @@ export function SubtitleSearchModal({
                       </TableCell>
                       <TableCell className="text-center">
                         <span className="inline-flex items-center gap-1 text-xs font-medium">
-                          {r.score}
+                          {r.scorePercent}%
                           {r.hashMatched ? (
                             <Hash className="h-3 w-3 text-[var(--scry-success-text-soft)]" />
                           ) : null}

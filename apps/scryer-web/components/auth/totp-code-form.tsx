@@ -59,8 +59,8 @@ export function TotpCodeForm({
       className={cn("space-y-4", className)}
     >
       <div className="space-y-1 text-center">
-        <h2 className="text-base font-semibold">{title}</h2>
-        <p className="text-sm text-muted-foreground">{description}</p>
+        <h2 className="text-base font-semibold text-[var(--scry-ink)]">{title}</h2>
+        <p className="text-sm leading-6 text-[var(--scry-muted)]">{description}</p>
       </div>
       <Input
         {...integerInputProps}
@@ -71,12 +71,13 @@ export function TotpCodeForm({
         value={code}
         onChange={(event) => onCodeChange(sanitizeTotpCode(event.target.value))}
         placeholder={title}
+        className="h-10 rounded-[9px] border-[var(--scry-border3)] bg-[var(--scry-inset)] text-[var(--scry-ink2)] placeholder:text-[var(--scry-muted3)] focus-visible:border-[var(--scry-accent-ring)] focus-visible:ring-[rgba(var(--scry-accent-rgb),0.25)]"
       />
       <button
         id={submitId}
         type="submit"
         disabled={submitDisabled}
-        className="flex w-full items-center justify-center gap-2 rounded-md bg-[var(--scry-success-solid)] px-4 py-2 text-sm font-medium text-[var(--scry-success-on-solid)] hover:bg-[var(--scry-success-solid-hover)] disabled:opacity-50"
+        className="flex h-10 w-full items-center justify-center gap-2 rounded-[9px] bg-primary px-4 text-sm font-semibold text-primary-foreground shadow-none transition-colors hover:bg-primary/90 disabled:opacity-50"
       >
         {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
         {busy && busyLabel ? busyLabel : submitLabel}
@@ -87,7 +88,7 @@ export function TotpCodeForm({
           type="button"
           onClick={onCancel}
           disabled={disabled || busy}
-          className="w-full rounded-md border border-border bg-background px-4 py-2 text-sm font-medium text-foreground hover:bg-muted disabled:opacity-50"
+          className="h-10 w-full rounded-[9px] border border-[var(--scry-border2)] bg-[var(--scry-inset)] px-4 text-sm font-semibold text-[var(--scry-ink2)] shadow-none transition-colors hover:bg-[var(--scry-hover)] disabled:opacity-50"
         >
           {cancelLabel}
         </button>

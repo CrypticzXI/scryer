@@ -413,6 +413,7 @@ impl AppUseCase {
         limit: usize,
     ) -> AppResult<Vec<DiscoverySectionResult>> {
         let defaults = DiscoveryContextDefaults {
+            language: self.metadata_language().await,
             include_unresolved,
             ..DiscoveryContextDefaults::default()
         };
@@ -3067,6 +3068,7 @@ fn discovery_item_record(
         overview: non_empty_string(&item.overview),
         content_type: non_empty_string(&item.content_type),
         genres: item.genres.clone(),
+        canonical_tags: discovery_canonical_tags(item),
         rating: item.rating,
         rating_sources: item.rating_sources.clone(),
         external_ratings: item.external_ratings.clone(),
@@ -3122,6 +3124,8 @@ pub(crate) fn title_more_like_this_item_records(
     for item in items {
         let target_key = item.target_key.trim();
         if target_key.is_empty()
+            || discovery_target_key_parts(target_key).is_none()
+            || discovery_display_title(item).is_none()
             || source_keys.contains(target_key)
             || !seen.insert(target_key.to_string())
         {
@@ -3429,6 +3433,13 @@ fn discovery_canonical_facet_terms(item: &DiscoveryTitle) -> Vec<String> {
         values.extend(canonical_discovery_terms_from_canonical_tag(canonical_tag));
     }
     unique_discovery_text_terms(values)
+}
+
+fn discovery_canonical_tags(item: &DiscoveryTitle) -> Vec<scryer_domain::CanonicalMediaTag> {
+    item.canonical_tags
+        .iter()
+        .filter_map(|value| serde_json::from_value(value.clone()).ok())
+        .collect()
 }
 
 fn canonical_discovery_terms_from_canonical_tag(value: &JsonValue) -> Vec<String> {
@@ -4657,6 +4668,7 @@ mod tests {
             facet,
             monitored: true,
             tags: Vec::new(),
+            canonical_tags: vec![],
             external_ids: external_ids
                 .into_iter()
                 .map(|(source, value)| ExternalId {
@@ -4678,6 +4690,7 @@ mod tests {
             slug: None,
             imdb_id: None,
             runtime_minutes: None,
+            popularity: None,
             genres: Vec::new(),
             content_status: None,
             language: None,
@@ -4722,6 +4735,7 @@ mod tests {
             overview: None,
             content_type: content_type.map(str::to_string),
             genres: Vec::new(),
+            canonical_tags: vec![],
             rating: None,
             rating_sources: Vec::new(),
             external_ratings: Vec::new(),

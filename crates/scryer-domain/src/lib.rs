@@ -633,13 +633,25 @@ pub struct ExternalId {
     pub value: String,
 }
 
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct CanonicalMediaTag {
+    pub key: String,
+    pub category: String,
+    pub name: String,
+    pub confidence: Option<f64>,
+    pub sources: Vec<String>,
+    pub source_tag_keys: Vec<String>,
+    pub is_adult: bool,
+    pub is_spoiler: bool,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TaggedAlias {
     pub name: String,
     pub language: String,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Title {
     pub id: String,
     pub library_id: String,
@@ -663,7 +675,9 @@ pub struct Title {
     pub slug: Option<String>,
     pub imdb_id: Option<String>,
     pub runtime_minutes: Option<i32>,
+    pub popularity: Option<f64>,
     pub genres: Vec<String>,
+    pub canonical_tags: Vec<CanonicalMediaTag>,
     pub content_status: Option<String>,
     pub language: Option<String>,
     pub first_aired: Option<String>,

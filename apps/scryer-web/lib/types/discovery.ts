@@ -1,4 +1,5 @@
 import type { TitleExternalRating } from "@/lib/utils/title-ratings";
+import type { CanonicalMediaTag } from "./canonical-tags";
 
 export type DiscoveryExternalId = {
   source: string;
@@ -53,6 +54,7 @@ export type DiscoveryItem = {
   overview: string | null;
   contentType: string | null;
   genres: string[];
+  canonicalTags?: CanonicalMediaTag[];
   rating: number | null;
   ratingSources?: string[];
   externalRatings?: TitleExternalRating[];
@@ -149,6 +151,7 @@ export type CatalogDiscoveryItem = Pick<
       DiscoveryItem,
       | "backgroundUrl"
       | "bestSource"
+      | "canonicalTags"
       | "facetTerms"
       | "genres"
       | "externalRatings"

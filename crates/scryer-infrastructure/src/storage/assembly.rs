@@ -2467,6 +2467,7 @@ mod tests {
             facet: MediaFacet::Movie,
             monitored: true,
             tags: vec!["backup".to_string(), "lattice".to_string()],
+            canonical_tags: vec![],
             external_ids: vec![ExternalId {
                 source: "tmdb".to_string(),
                 value: "424242".to_string(),
@@ -2485,6 +2486,7 @@ mod tests {
             slug: Some("backup-lattice-movie".to_string()),
             imdb_id: Some("tt4242420".to_string()),
             runtime_minutes: Some(101),
+            popularity: None,
             genres: vec!["Drama".to_string()],
             content_status: Some("released".to_string()),
             language: Some("eng".to_string()),

@@ -28,7 +28,9 @@ pub struct TitlePayload {
     pub slug: Option<String>,
     pub imdb_id: Option<String>,
     pub runtime_minutes: Option<i32>,
+    pub popularity: Option<f64>,
     pub genres: Vec<String>,
+    pub canonical_tags: Vec<CanonicalMediaTagPayload>,
     pub content_status: Option<String>,
     pub language: Option<String>,
     pub first_aired: Option<Date>,
@@ -60,8 +62,18 @@ pub struct TitlePayload {
     pub episodes_monitored: Option<i64>,
     /// Total episode count, excluding specials, populated in list queries.
     pub episodes_total: Option<i64>,
+    /// Primary movie media resolution, populated in list queries when projected.
+    pub media_resolution: Option<String>,
+    /// Primary movie media HDR format, populated in list queries when projected.
+    pub media_hdr: Option<String>,
+    /// Primary movie media audio codec, populated in list queries when projected.
+    pub media_audio_codec: Option<String>,
     #[graphql(skip)]
     pub preloaded_collections: Option<Vec<CollectionPayload>>,
+    #[graphql(skip)]
+    pub preloaded_ratings: Option<TitleRatingPayload>,
+    #[graphql(skip)]
+    pub preloaded_root_folder_path: Option<String>,
 }
 
 #[derive(SimpleObject, Clone)]
@@ -92,6 +104,27 @@ pub enum TitleCatalogSortKeyValue {
     Status,
     Size,
     Added,
+    Year,
+    Runtime,
+    Root,
+    Popularity,
+    MediaResolution,
+    MediaHdr,
+    MediaAudioCodec,
+    RatingScryer,
+    RatingImdb,
+    RatingRottenTomatoes,
+    RatingPopcornmeter,
+    RatingMetacritic,
+    RatingMetacriticUser,
+    RatingLetterboxd,
+    RatingTmdb,
+    RatingTvdb,
+    RatingTrakt,
+    RatingMyanimelist,
+    RatingAnilist,
+    RatingAnidb,
+    RatingMdblist,
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
@@ -146,6 +179,12 @@ pub struct CollectionPayload {
     pub first_episode_number: Option<String>,
     pub last_episode_number: Option<String>,
     pub monitored: bool,
+    /// Owned-vs-total episode progress for this collection, populated when requested.
+    pub episodes_owned: Option<i64>,
+    /// Monitored episode count for this collection, populated when requested.
+    pub episodes_monitored: Option<i64>,
+    /// Total countable episode count for this collection, populated when requested.
+    pub episodes_total: Option<i64>,
     pub created_at: DateTime<Utc>,
 }
 

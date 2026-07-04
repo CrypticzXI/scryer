@@ -1320,6 +1320,7 @@ mod tests {
             root_folder_id: scryer_domain::root_folder_id_for_path("/data/test"),
             monitored: true,
             tags: vec![],
+            canonical_tags: vec![],
             external_ids: vec![ExternalId {
                 source: "tvdb".into(),
                 value: "12345".into(),
@@ -1337,6 +1338,7 @@ mod tests {
             slug: None,
             imdb_id: None,
             runtime_minutes: None,
+            popularity: None,
             genres: vec![],
             content_status: None,
             language: None,

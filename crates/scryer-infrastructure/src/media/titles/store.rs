@@ -16,6 +16,10 @@ use serde_json::Value as JsonValue;
 use sqlx::{QueryBuilder, Row, Sqlite, postgres::PgRow};
 use unicode_normalization::UnicodeNormalization;
 
+use crate::media::canonical_tags::{
+    attach_canonical_tags_to_titles, canonical_subject_input_for_title_with_key,
+    replace_canonical_media_tags_tx, upsert_canonical_media_subject_tx,
+};
 use crate::queries::{
     common::parse_utc_datetime,
     sql_runtime::{SqlArg, SqlExec, SqlRow, SqlRuntime, SqlTx, StoreDatastore, repo_err},
@@ -31,14 +35,14 @@ use crate::title_images::normalized_base_path_from_env;
 const TITLE_INSERT_SQL: &str = "INSERT INTO titles (
     id, library_id, name, facet, monitored, tags, external_ids, root_folder_id, created_by, created_at,
     year, overview, poster_url, background_url, sort_title, catalog_sort_key, slug, imdb_id,
-    runtime_minutes, genres, content_status, language, first_aired, network, studio,
+    runtime_minutes, popularity, genres, content_status, language, first_aired, network, studio,
     country, aliases, metadata_language, metadata_fetched_at, min_availability,
     digital_release_date, folder_path, tagged_aliases_json,
     metadata_hydration_next_attempt_at, metadata_hydration_attempt_count
 ) VALUES (
     {}, {}, {}, {}, {}, {}, {}, {}, {}, {},
     {}, {}, {}, {}, {}, {}, {}, {},
-    {}, {}, {}, {}, {}, {}, {},
+    {}, {}, {}, {}, {}, {}, {}, {},
     {}, {}, {}, {}, {},
     {}, {}, {}, {}, {}
 )";
@@ -46,14 +50,14 @@ const TITLE_INSERT_SQL: &str = "INSERT INTO titles (
 const TITLE_UPSERT_SQL: &str = "INSERT INTO titles (
     id, library_id, name, facet, monitored, tags, external_ids, root_folder_id, created_by, created_at,
     year, overview, poster_url, background_url, sort_title, catalog_sort_key, slug, imdb_id,
-    runtime_minutes, genres, content_status, language, first_aired, network, studio,
+    runtime_minutes, popularity, genres, content_status, language, first_aired, network, studio,
     country, aliases, metadata_language, metadata_fetched_at, min_availability,
     digital_release_date, folder_path, tagged_aliases_json,
     metadata_hydration_next_attempt_at, metadata_hydration_attempt_count
 ) VALUES (
     {}, {}, {}, {}, {}, {}, {}, {}, {}, {},
     {}, {}, {}, {}, {}, {}, {}, {},
-    {}, {}, {}, {}, {}, {}, {},
+    {}, {}, {}, {}, {}, {}, {}, {},
     {}, {}, {}, {}, {},
     {}, {}, {}, {}, {}
 )
@@ -84,6 +88,7 @@ ON CONFLICT (id) DO UPDATE SET
     slug = excluded.slug,
     imdb_id = excluded.imdb_id,
     runtime_minutes = excluded.runtime_minutes,
+    popularity = excluded.popularity,
     genres = excluded.genres,
     content_status = excluded.content_status,
     language = excluded.language,
@@ -205,7 +210,9 @@ impl TitleStore {
             }
         };
 
-        decode_runtime_title_rows(&rows, mode, include_external_ids)
+        let mut titles = decode_runtime_title_rows(&rows, mode, include_external_ids)?;
+        attach_canonical_tags_to_titles(self.datastore.read_exec(), &mut titles).await?;
+        Ok(titles)
     }
 
     async fn get_by_id_internal(
@@ -221,11 +228,19 @@ impl TitleStore {
         )
         .await?;
 
-        decode_optional_runtime_title_row(
+        let mut title = decode_optional_runtime_title_row(
             row.as_ref(),
             PersistedTitleReadMode::Presentation,
             include_external_ids,
-        )
+        )?;
+        if let Some(title) = title.as_mut() {
+            attach_canonical_tags_to_titles(
+                self.datastore.read_exec(),
+                std::slice::from_mut(title),
+            )
+            .await?;
+        }
+        Ok(title)
     }
 }
 
@@ -571,6 +586,13 @@ impl TitleRepository for TitleStore {
 
     async fn get_title_ratings(&self, title_id: &str) -> AppResult<TitleRatingSummary> {
         load_title_ratings(&self.datastore, title_id).await
+    }
+
+    async fn list_title_ratings(
+        &self,
+        title_ids: &[String],
+    ) -> AppResult<Vec<(String, TitleRatingSummary)>> {
+        load_title_ratings_batch(&self.datastore, title_ids).await
     }
 
     async fn get_by_facet_and_slug(
@@ -1069,6 +1091,8 @@ impl TitleRepository for TitleStore {
                 let metadata = metadata.clone();
                 Box::pin(async move {
                     let ratings = metadata.ratings.clone();
+                    let canonical_tags = metadata.canonical_tags.clone();
+                    let canonical_subject_key = metadata.canonical_subject_key.clone();
                     let mut title = load_title_canonical_tx_or_not_found(tx, &id, true).await?;
                     apply_title_metadata_update(&mut title, metadata)?;
                     let hydration_state = if metadata_marks_fetched {
@@ -1079,6 +1103,15 @@ impl TitleRepository for TitleStore {
                     persist_title_tx(tx, &title, hydration_state).await?;
                     if let Some(ratings) = ratings {
                         replace_title_ratings_tx(tx, &id, &ratings).await?;
+                    }
+                    if !canonical_tags.is_empty() {
+                        let subject_input = canonical_subject_input_for_title_with_key(
+                            &title,
+                            canonical_subject_key.as_deref(),
+                        );
+                        let subject_id =
+                            upsert_canonical_media_subject_tx(tx, &subject_input).await?;
+                        replace_canonical_media_tags_tx(tx, &subject_id, &canonical_tags).await?;
                     }
                     load_title_tx_or_not_found(tx, &id, true).await
                 })
@@ -1286,6 +1319,7 @@ trait TitleProjectionRow {
     fn timestamp(&self, column: &str) -> AppResult<DateTime<Utc>>;
     fn opt_timestamp(&self, column: &str) -> AppResult<Option<DateTime<Utc>>>;
     fn opt_i32(&self, column: &str) -> AppResult<Option<i32>>;
+    fn opt_f64(&self, column: &str) -> AppResult<Option<f64>>;
     fn opt_json_value(&self, column: &str) -> AppResult<Option<serde_json::Value>>;
 }
 
@@ -1320,6 +1354,10 @@ impl TitleProjectionRow for sqlx::sqlite::SqliteRow {
         self.try_get(column).map_err(repo_err)
     }
 
+    fn opt_f64(&self, column: &str) -> AppResult<Option<f64>> {
+        self.try_get(column).map_err(repo_err)
+    }
+
     fn opt_json_value(&self, column: &str) -> AppResult<Option<serde_json::Value>> {
         let raw: Option<String> = self.try_get(column).map_err(repo_err)?;
         match raw {
@@ -1351,6 +1389,10 @@ impl TitleProjectionRow for PgRow {
     }
 
     fn opt_i32(&self, column: &str) -> AppResult<Option<i32>> {
+        self.try_get(column).map_err(repo_err)
+    }
+
+    fn opt_f64(&self, column: &str) -> AppResult<Option<f64>> {
         self.try_get(column).map_err(repo_err)
     }
 
@@ -1399,6 +1441,10 @@ impl TitleProjectionRow for SqlRow {
                 })
             })
             .transpose()
+    }
+
+    fn opt_f64(&self, column: &str) -> AppResult<Option<f64>> {
+        SqlRow::opt_f64(self, column)
     }
 
     fn opt_json_value(&self, column: &str) -> AppResult<Option<serde_json::Value>> {
@@ -1483,7 +1529,9 @@ where
         slug: row.opt_text("slug")?,
         imdb_id: row.opt_text("imdb_id")?,
         runtime_minutes: row.opt_i32("runtime_minutes")?,
+        popularity: row.opt_f64("popularity")?,
         genres: decode_title_json_or_default(row, "genres")?,
+        canonical_tags: vec![],
         content_status: row.opt_text("content_status")?,
         language: row.opt_text("language")?,
         first_aired: row.opt_text("first_aired")?,
@@ -1534,6 +1582,7 @@ fn apply_title_metadata_update(title: &mut Title, metadata: TitleMetadataUpdate)
     if metadata.runtime_minutes.is_some() {
         title.runtime_minutes = metadata.runtime_minutes;
     }
+    title.popularity = metadata.popularity;
     if !metadata.genres.is_empty() {
         title.genres = metadata.genres;
     }
@@ -1868,11 +1917,48 @@ fn build_title_catalog_sort_join_sql(
             " LEFT JOIN ({}) catalog_episode_progress ON catalog_episode_progress.title_id = titles.id",
             title_catalog_episode_progress_subquery(dialect)
         ),
+        TitleCatalogSortKey::Root => " LEFT JOIN library_roots title_catalog_root
+               ON title_catalog_root.id = titles.root_folder_id
+              AND title_catalog_root.library_id = titles.library_id"
+            .to_string(),
+        TitleCatalogSortKey::MediaResolution
+        | TitleCatalogSortKey::MediaHdr
+        | TitleCatalogSortKey::MediaAudioCodec => format!(
+            " LEFT JOIN ({}) catalog_movie_media ON catalog_movie_media.title_id = titles.id",
+            title_catalog_movie_media_subquery(dialect)
+        ),
+        TitleCatalogSortKey::RatingScryer => {
+            " LEFT JOIN title_rating_summaries catalog_rating_scryer
+               ON catalog_rating_scryer.title_id = titles.id"
+                .to_string()
+        }
+        key @ (TitleCatalogSortKey::RatingImdb
+        | TitleCatalogSortKey::RatingRottenTomatoes
+        | TitleCatalogSortKey::RatingPopcornmeter
+        | TitleCatalogSortKey::RatingMetacritic
+        | TitleCatalogSortKey::RatingMetacriticUser
+        | TitleCatalogSortKey::RatingLetterboxd
+        | TitleCatalogSortKey::RatingTmdb
+        | TitleCatalogSortKey::RatingTvdb
+        | TitleCatalogSortKey::RatingTrakt
+        | TitleCatalogSortKey::RatingMyanimelist
+        | TitleCatalogSortKey::RatingAnilist
+        | TitleCatalogSortKey::RatingAnidb
+        | TitleCatalogSortKey::RatingMdblist) => {
+            let sources = title_catalog_rating_sources_for_sort_key(key).unwrap_or(&[]);
+            format!(
+                " LEFT JOIN ({}) catalog_external_rating ON catalog_external_rating.title_id = titles.id",
+                title_catalog_external_rating_subquery(sources)
+            )
+        }
         TitleCatalogSortKey::Title
         | TitleCatalogSortKey::Monitored
         | TitleCatalogSortKey::Quality
         | TitleCatalogSortKey::Status
-        | TitleCatalogSortKey::Added => String::new(),
+        | TitleCatalogSortKey::Added
+        | TitleCatalogSortKey::Year
+        | TitleCatalogSortKey::Runtime
+        | TitleCatalogSortKey::Popularity => String::new(),
     }
 }
 
@@ -1942,7 +2028,65 @@ fn build_title_catalog_order_sql(
             "ORDER BY created_at {direction}, {}",
             title_catalog_ascending_tie_order_sql()
         ),
+        TitleCatalogSortKey::Year => format!(
+            "ORDER BY CASE WHEN year IS NULL THEN 1 ELSE 0 END ASC, year {direction}, {}",
+            title_catalog_ascending_tie_order_sql()
+        ),
+        TitleCatalogSortKey::Runtime => format!(
+            "ORDER BY CASE WHEN runtime_minutes IS NULL THEN 1 ELSE 0 END ASC, runtime_minutes {direction}, {}",
+            title_catalog_ascending_tie_order_sql()
+        ),
+        TitleCatalogSortKey::Root => format!(
+            "ORDER BY CASE WHEN NULLIF(TRIM(COALESCE(title_catalog_root.path, '')), '') IS NULL THEN 1 ELSE 0 END ASC,
+             LOWER(TRIM(COALESCE(title_catalog_root.path, ''))) {direction}, {}",
+            title_catalog_ascending_tie_order_sql()
+        ),
+        TitleCatalogSortKey::Popularity => format!(
+            "ORDER BY CASE WHEN popularity IS NULL THEN 1 ELSE 0 END ASC, popularity {direction}, {}",
+            title_catalog_ascending_tie_order_sql()
+        ),
+        TitleCatalogSortKey::MediaResolution => format!(
+            "ORDER BY CASE WHEN catalog_movie_media.resolution_rank IS NULL THEN 1 ELSE 0 END ASC,
+             catalog_movie_media.resolution_rank {direction}, {}",
+            title_catalog_ascending_tie_order_sql()
+        ),
+        TitleCatalogSortKey::MediaHdr => format!(
+            "ORDER BY CASE WHEN catalog_movie_media.hdr_rank IS NULL THEN 1 ELSE 0 END ASC,
+             catalog_movie_media.hdr_rank {direction}, {}",
+            title_catalog_ascending_tie_order_sql()
+        ),
+        TitleCatalogSortKey::MediaAudioCodec => format!(
+            "ORDER BY CASE WHEN NULLIF(TRIM(COALESCE(catalog_movie_media.audio_codec, '')), '') IS NULL THEN 1 ELSE 0 END ASC,
+             LOWER(TRIM(COALESCE(catalog_movie_media.audio_codec, ''))) {direction}, {}",
+            title_catalog_ascending_tie_order_sql()
+        ),
+        TitleCatalogSortKey::RatingScryer => title_catalog_numeric_sort_order_sql(
+            "catalog_rating_scryer.rating",
+            direction,
+        ),
+        TitleCatalogSortKey::RatingImdb
+        | TitleCatalogSortKey::RatingRottenTomatoes
+        | TitleCatalogSortKey::RatingPopcornmeter
+        | TitleCatalogSortKey::RatingMetacritic
+        | TitleCatalogSortKey::RatingMetacriticUser
+        | TitleCatalogSortKey::RatingLetterboxd
+        | TitleCatalogSortKey::RatingTmdb
+        | TitleCatalogSortKey::RatingTvdb
+        | TitleCatalogSortKey::RatingTrakt
+        | TitleCatalogSortKey::RatingMyanimelist
+        | TitleCatalogSortKey::RatingAnilist
+        | TitleCatalogSortKey::RatingAnidb
+        | TitleCatalogSortKey::RatingMdblist => {
+            title_catalog_numeric_sort_order_sql("catalog_external_rating.normalized", direction)
+        }
     }
+}
+
+fn title_catalog_numeric_sort_order_sql(expression: &str, direction: &str) -> String {
+    format!(
+        "ORDER BY CASE WHEN {expression} IS NULL THEN 1 ELSE 0 END ASC, {expression} {direction}, {}",
+        title_catalog_ascending_tie_order_sql()
+    )
 }
 
 fn sql_string_literal(value: &str) -> String {
@@ -2054,6 +2198,130 @@ fn title_catalog_quality_profile_expression(dialect: TitleCatalogSqlDialect) -> 
             ), '')"
         ),
     }
+}
+
+fn title_catalog_rating_sources_for_sort_key(
+    key: TitleCatalogSortKey,
+) -> Option<&'static [&'static str]> {
+    match key {
+        TitleCatalogSortKey::RatingImdb => Some(&["imdb"]),
+        TitleCatalogSortKey::RatingRottenTomatoes => Some(&["rottentomatoes", "tomatoes"]),
+        TitleCatalogSortKey::RatingPopcornmeter => Some(&["popcornmeter", "popcorn", "audience"]),
+        TitleCatalogSortKey::RatingMetacritic => Some(&["metacritic"]),
+        TitleCatalogSortKey::RatingMetacriticUser => Some(&["metacriticuser", "mcuser"]),
+        TitleCatalogSortKey::RatingLetterboxd => Some(&["letterboxd"]),
+        TitleCatalogSortKey::RatingTmdb => Some(&["tmdb"]),
+        TitleCatalogSortKey::RatingTvdb => Some(&["tvdb", "thetvdb"]),
+        TitleCatalogSortKey::RatingTrakt => Some(&["trakt"]),
+        TitleCatalogSortKey::RatingMyanimelist => Some(&["mal", "myanimelist", "myanimelistnet"]),
+        TitleCatalogSortKey::RatingAnilist => Some(&["anilist"]),
+        TitleCatalogSortKey::RatingAnidb => Some(&["anidb"]),
+        TitleCatalogSortKey::RatingMdblist => Some(&["mdblist"]),
+        _ => None,
+    }
+}
+
+fn title_catalog_normalized_rating_source_expression(alias: &str) -> String {
+    format!("LOWER(REPLACE(REPLACE(REPLACE(TRIM({alias}.source), ' ', ''), '_', ''), '-', ''))")
+}
+
+fn title_catalog_external_rating_subquery(sources: &[&str]) -> String {
+    let source_list = sources
+        .iter()
+        .map(|source| sql_string_literal(source))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let source_expression = title_catalog_normalized_rating_source_expression("ter");
+    format!(
+        "SELECT ter.title_id, MAX(ter.normalized) AS normalized
+           FROM title_external_ratings ter
+          WHERE {source_expression} IN ({source_list})
+          GROUP BY ter.title_id"
+    )
+}
+
+fn title_catalog_movie_media_resolution_expression(alias: &str) -> String {
+    format!(
+        "CASE
+            WHEN {alias}.video_width >= 7680 OR {alias}.video_height >= 4200 THEN '4320P'
+            WHEN {alias}.video_width >= 3840 OR {alias}.video_height >= 2100 THEN '2160P'
+            WHEN {alias}.video_height >= 1300 THEN '1440P'
+            WHEN {alias}.video_width >= 1920 OR {alias}.video_height >= 1000 THEN '1080P'
+            WHEN {alias}.video_width >= 1280 OR {alias}.video_height >= 700 THEN '720P'
+            WHEN {alias}.video_width >= 854 OR {alias}.video_height >= 480 THEN '480P'
+            WHEN {alias}.video_height >= 300 THEN '360P'
+            WHEN TRIM(COALESCE({alias}.quality_id, '')) = '' THEN NULL
+            ELSE UPPER(TRIM({alias}.quality_id))
+         END"
+    )
+}
+
+fn title_catalog_movie_media_resolution_rank_expression(alias: &str) -> String {
+    format!(
+        "CASE
+            WHEN {alias}.video_width >= 7680 OR {alias}.video_height >= 4200 THEN 4320
+            WHEN {alias}.video_width >= 3840 OR {alias}.video_height >= 2100 THEN 2160
+            WHEN {alias}.video_height >= 1300 THEN 1440
+            WHEN {alias}.video_width >= 1920 OR {alias}.video_height >= 1000 THEN 1080
+            WHEN {alias}.video_width >= 1280 OR {alias}.video_height >= 700 THEN 720
+            WHEN {alias}.video_width >= 854 OR {alias}.video_height >= 480 THEN 480
+            WHEN {alias}.video_height >= 300 THEN 360
+            ELSE CASE UPPER(TRIM(COALESCE({alias}.quality_id, '')))
+                WHEN '4320P' THEN 4320
+                WHEN '2160P' THEN 2160
+                WHEN '1440P' THEN 1440
+                WHEN '1080P' THEN 1080
+                WHEN '1080I' THEN 1080
+                WHEN '720P' THEN 720
+                WHEN '480P' THEN 480
+                WHEN '360P' THEN 360
+                ELSE NULL
+            END
+         END"
+    )
+}
+
+fn title_catalog_movie_media_hdr_rank_expression(alias: &str) -> String {
+    format!(
+        "CASE
+            WHEN UPPER(TRIM(COALESCE({alias}.video_hdr_format, ''))) LIKE '%DOLBY%'
+              OR UPPER(TRIM(COALESCE({alias}.video_hdr_format, ''))) = 'DV' THEN 4
+            WHEN UPPER(TRIM(COALESCE({alias}.video_hdr_format, ''))) LIKE '%HDR10+%' THEN 3
+            WHEN UPPER(TRIM(COALESCE({alias}.video_hdr_format, ''))) LIKE '%HDR10%' THEN 2
+            WHEN TRIM(COALESCE({alias}.video_hdr_format, '')) <> '' THEN 1
+            ELSE 0
+         END"
+    )
+}
+
+fn title_catalog_movie_media_subquery(dialect: TitleCatalogSqlDialect) -> String {
+    let resolution = title_catalog_movie_media_resolution_expression("mf");
+    let resolution_rank = title_catalog_movie_media_resolution_rank_expression("mf");
+    let hdr_rank = title_catalog_movie_media_hdr_rank_expression("mf");
+    format!(
+        "SELECT title_id, resolution, hdr_format, audio_codec, resolution_rank, hdr_rank
+           FROM (
+                SELECT mf.title_id,
+                       {resolution} AS resolution,
+                       NULLIF(TRIM(mf.video_hdr_format), '') AS hdr_format,
+                       COALESCE(NULLIF(TRIM(mf.audio_codec_parsed), ''), NULLIF(TRIM(mf.audio_codec), '')) AS audio_codec,
+                       {resolution_rank} AS resolution_rank,
+                       {hdr_rank} AS hdr_rank,
+                       ROW_NUMBER() OVER (
+                          PARTITION BY mf.title_id
+                          ORDER BY CASE WHEN mf.size_bytes > 0 THEN mf.size_bytes ELSE 0 END DESC,
+                                   mf.created_at DESC,
+                                   mf.id DESC
+                       ) AS media_row
+                  FROM media_files mf
+                  JOIN titles t ON t.id = mf.title_id
+                 WHERE t.facet = 'movie'
+                   AND {}
+                   AND mf.role = 'primary'
+           ) ranked
+          WHERE media_row = 1",
+        title_catalog_live_media_file_predicate(dialect, "mf")
+    )
 }
 
 fn title_catalog_media_size_subquery(dialect: TitleCatalogSqlDialect) -> String {
@@ -2204,7 +2472,11 @@ async fn load_title_tx_with_mode(
     let sql = format!("SELECT {TITLE_COLUMNS} FROM titles WHERE id = {{}}");
     let row =
         SqlRuntime::fetch_optional(SqlExec::Tx(tx), &sql, &[SqlArg::Text(id.to_string())]).await?;
-    decode_optional_runtime_title_row(row.as_ref(), mode, include_external_ids)
+    let mut title = decode_optional_runtime_title_row(row.as_ref(), mode, include_external_ids)?;
+    if let Some(title) = title.as_mut() {
+        attach_canonical_tags_to_titles(SqlExec::Tx(tx), std::slice::from_mut(title)).await?;
+    }
+    Ok(title)
 }
 
 async fn load_title_tx_or_not_found(
@@ -2362,6 +2634,7 @@ fn title_write_args(
         SqlArg::OptText(title.slug.clone()),
         SqlArg::OptText(title.imdb_id.clone()),
         SqlArg::OptI64(title.runtime_minutes.map(i64::from)),
+        SqlArg::OptF64(title.popularity),
         SqlArg::Json(serde_json::to_value(&title.genres).unwrap_or(JsonValue::Array(Vec::new()))),
         SqlArg::OptText(title.content_status.clone()),
         SqlArg::OptText(title.language.clone()),
@@ -2432,6 +2705,72 @@ async fn load_title_ratings(
         rating_sources,
         external_ratings,
     })
+}
+
+async fn load_title_ratings_batch(
+    datastore: &StoreDatastore,
+    title_ids: &[String],
+) -> AppResult<Vec<(String, TitleRatingSummary)>> {
+    if title_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let placeholders = std::iter::repeat_n("{}", title_ids.len())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let args = title_ids
+        .iter()
+        .cloned()
+        .map(SqlArg::Text)
+        .collect::<Vec<_>>();
+    let mut by_title_id = title_ids
+        .iter()
+        .map(|title_id| (title_id.clone(), TitleRatingSummary::default()))
+        .collect::<std::collections::HashMap<_, _>>();
+
+    let summary_sql = format!(
+        "SELECT title_id, rating FROM title_rating_summaries WHERE title_id IN ({placeholders})"
+    );
+    for row in SqlRuntime::fetch_all(datastore.read_exec(), &summary_sql, &args).await? {
+        if let Some(summary) = by_title_id.get_mut(&row.text("title_id")?) {
+            summary.rating = row.opt_f64("rating")?;
+        }
+    }
+
+    let sources_sql = format!(
+        "SELECT title_id, source
+           FROM title_rating_sources
+          WHERE title_id IN ({placeholders})
+          ORDER BY title_id ASC, sort_index ASC, source ASC"
+    );
+    for row in SqlRuntime::fetch_all(datastore.read_exec(), &sources_sql, &args).await? {
+        if let Some(summary) = by_title_id.get_mut(&row.text("title_id")?) {
+            summary.rating_sources.push(row.text("source")?);
+        }
+    }
+
+    let external_sql = format!(
+        "SELECT title_id, source, value, score, normalized, votes, url
+           FROM title_external_ratings
+          WHERE title_id IN ({placeholders})
+          ORDER BY title_id ASC, sort_index ASC, source ASC"
+    );
+    for row in SqlRuntime::fetch_all(datastore.read_exec(), &external_sql, &args).await? {
+        if let Some(summary) = by_title_id.get_mut(&row.text("title_id")?) {
+            summary
+                .external_ratings
+                .push(title_external_rating_from_row(&row)?);
+        }
+    }
+
+    Ok(title_ids
+        .iter()
+        .filter_map(|title_id| {
+            by_title_id
+                .remove(title_id)
+                .map(|summary| (title_id.clone(), summary))
+        })
+        .collect())
 }
 
 fn title_external_rating_from_row(row: &SqlRow) -> AppResult<TitleExternalRating> {

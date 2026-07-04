@@ -1,8 +1,6 @@
 use std::collections::{BTreeMap, HashMap};
 
-use scryer_domain::DownloadQueueCommandAction;
-use scryer_domain::ExternalId;
-use scryer_domain::Title;
+use scryer_domain::{CanonicalMediaTag, DownloadQueueCommandAction, ExternalId, Title};
 use serde::{Deserialize, Serialize};
 
 use crate::SubmissionScope;
@@ -35,6 +33,7 @@ pub struct TitleRatingSummary {
 
 #[derive(Clone, Debug, Default)]
 pub struct TitleMetadataUpdate {
+    pub canonical_subject_key: Option<String>,
     pub name: Option<String>,
     pub year: Option<i32>,
     pub overview: Option<String>,
@@ -44,7 +43,9 @@ pub struct TitleMetadataUpdate {
     pub slug: Option<String>,
     pub imdb_id: Option<String>,
     pub runtime_minutes: Option<i32>,
+    pub popularity: Option<f64>,
     pub genres: Vec<String>,
+    pub canonical_tags: Vec<CanonicalMediaTag>,
     pub content_status: Option<String>,
     pub language: Option<String>,
     pub first_aired: Option<String>,
@@ -707,6 +708,27 @@ pub enum TitleCatalogSortKey {
     Status,
     Size,
     Added,
+    Year,
+    Runtime,
+    Root,
+    Popularity,
+    MediaResolution,
+    MediaHdr,
+    MediaAudioCodec,
+    RatingScryer,
+    RatingImdb,
+    RatingRottenTomatoes,
+    RatingPopcornmeter,
+    RatingMetacritic,
+    RatingMetacriticUser,
+    RatingLetterboxd,
+    RatingTmdb,
+    RatingTvdb,
+    RatingTrakt,
+    RatingMyanimelist,
+    RatingAnilist,
+    RatingAnidb,
+    RatingMdblist,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1724,6 +1746,15 @@ pub struct TitleQualitySummary {
     pub quality_tier: String,
 }
 
+/// Primary movie media technical summary for title list projections.
+#[derive(Clone, Debug)]
+pub struct TitleMovieMediaSummary {
+    pub title_id: String,
+    pub resolution: Option<String>,
+    pub hdr_format: Option<String>,
+    pub audio_codec: Option<String>,
+}
+
 /// Aggregated current quality tier per movie title or per episodic item, based
 /// on the lowest-quality live media file linked to that item.
 #[derive(Clone, Debug)]
@@ -1739,6 +1770,15 @@ pub struct CutoffUnmetQualitySummary {
 #[derive(Clone, Debug)]
 pub struct TitleEpisodeProgressSummary {
     pub title_id: String,
+    pub owned_episodes: i64,
+    pub monitored_episodes: i64,
+    pub total_episodes: i64,
+}
+
+/// Aggregated episode progress counts per collection.
+#[derive(Clone, Debug)]
+pub struct CollectionEpisodeProgressSummary {
+    pub collection_id: String,
     pub owned_episodes: i64,
     pub monitored_episodes: i64,
     pub total_episodes: i64,

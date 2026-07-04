@@ -22,6 +22,7 @@ query MetadataBulk(
 }
 
 fragment MovieFields on TvdbMovie {
+  target_key
   tvdb_id
   name
   slug
@@ -36,6 +37,16 @@ fragment MovieFields on TvdbMovie {
   tmdb_id
   anidb_id
   genres
+  canonical_tags {
+    key
+    category
+    name
+    confidence
+    sources
+    source_tag_keys
+    is_adult
+    is_spoiler
+  }
   studio
   tmdb_release_date
   rating
@@ -55,6 +66,7 @@ fragment MovieFields on TvdbMovie {
 }
 
 fragment SeriesFields on TvdbSeries {
+  target_key
   tvdb_id
   name
   sort_name
@@ -68,6 +80,16 @@ fragment SeriesFields on TvdbSeries {
   poster_url
   country
   genres
+  canonical_tags {
+    key
+    category
+    name
+    confidence
+    sources
+    source_tag_keys
+    is_adult
+    is_spoiler
+  }
   rating
   rating_sources
   external_ratings {

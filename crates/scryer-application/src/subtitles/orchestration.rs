@@ -11,7 +11,9 @@ use crate::stored_paths::{path_to_stored_string, stored_path_to_path_buf};
 use crate::subtitles::provider::{
     SubtitleFile, SubtitleMatch, SubtitleMediaKind, SubtitleProvider, SubtitleQuery,
 };
-use crate::subtitles::scoring::{SubtitleScoreKind, percent_to_raw_threshold};
+use crate::subtitles::scoring::{
+    SubtitleScoreKind, normalized_score_percent, percent_to_raw_threshold,
+};
 use crate::subtitles::search::SubtitleSearchOrchestrator;
 use crate::subtitles::sync;
 use crate::subtitles::wanted::{SubtitleLanguagePref, compute_missing_subtitles_from_streams};
@@ -44,6 +46,11 @@ pub struct DownloadSubtitleForMediaFileRequest {
     pub uploader: Option<String>,
     pub ai_translated: bool,
     pub machine_translated: bool,
+}
+
+pub struct ExternalSubtitleListing {
+    pub download: SubtitleDownload,
+    pub score_percent: Option<i32>,
 }
 
 #[derive(Clone)]
@@ -383,7 +390,7 @@ impl AppUseCase {
         &self,
         actor: &User,
         title_id: &str,
-    ) -> AppResult<Vec<SubtitleDownload>> {
+    ) -> AppResult<Vec<ExternalSubtitleListing>> {
         let title = self
             .services
             .catalog
@@ -397,11 +404,22 @@ impl AppUseCase {
             scryer_domain::LibraryPermission::View,
         )
         .await?;
-        self.services
+        let score_kind = subtitle_score_kind(subtitle_media_kind(&title));
+        let downloads = self
+            .services
             .workflow
             .subtitle_downloads
             .list_for_title(title_id)
-            .await
+            .await?;
+        Ok(downloads
+            .into_iter()
+            .map(|download| ExternalSubtitleListing {
+                score_percent: download
+                    .score
+                    .map(|score| normalized_score_percent(score_kind, score)),
+                download,
+            })
+            .collect())
     }
 
     pub async fn list_external_subtitle_blocklist_for_media_file(
@@ -1880,6 +1898,7 @@ mod tests {
             facet,
             monitored: true,
             tags: vec![],
+            canonical_tags: vec![],
             external_ids: vec![ExternalId {
                 source: "imdb".into(),
                 value: "tt7654321".into(),
@@ -1897,6 +1916,7 @@ mod tests {
             slug: None,
             imdb_id: None,
             runtime_minutes: None,
+            popularity: None,
             genres: vec![],
             content_status: None,
             language: None,

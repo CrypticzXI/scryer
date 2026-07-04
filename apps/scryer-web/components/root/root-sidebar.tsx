@@ -167,6 +167,7 @@ const TOP_NAV_GROUPS: TopNavGroupDefinition[] = [
       { kind: "view", id: "wanted" },
       { kind: "view", id: "calendar" },
       { kind: "view", id: "activity" },
+      { kind: "settings", id: "subtitles", icon: Captions },
       { kind: "settings", id: "rules", icon: SlidersHorizontal },
       { kind: "settings", id: "post-processing", icon: FolderCog },
     ],
@@ -225,7 +226,6 @@ const DEFAULT_SETTINGS_SECTION_ORDER: SettingsSection[] = [
   "qualityProfiles",
   "delayProfiles",
   "plugins",
-  "subtitles",
 ];
 const MEDIA_NAV_VIEW_IDS: ViewId[] = ["movies", "series", "anime"];
 
@@ -369,7 +369,6 @@ const SETTINGS_NAV_GROUPS: Array<{
       "qualityProfiles",
       "delayProfiles",
       "plugins",
-      "subtitles",
     ],
   },
 ];

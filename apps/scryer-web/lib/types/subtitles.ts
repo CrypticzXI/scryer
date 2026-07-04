@@ -11,6 +11,7 @@ export type ExternalSubtitleRecord = {
   providerFileId: string | null;
   filePath: string;
   score: number | null;
+  scorePercent: number | null;
   hearingImpaired: boolean;
   forced: boolean;
   aiTranslated: boolean;

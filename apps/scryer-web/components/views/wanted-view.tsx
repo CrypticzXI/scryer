@@ -9,6 +9,7 @@ import { useUiDateTimeFormat } from "@/lib/context/ui-settings-context";
 import type { Translate } from "@/components/root/types";
 import { buildViewPath } from "@/lib/utils/routing";
 import { formatUiDateTime } from "@/lib/utils/date-format";
+import { wantedItemRowId, wantedItemSearchNowId } from "@/lib/utils/dom-ids";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { IconButton } from "@/components/ui/icon-button";
@@ -957,7 +958,13 @@ function WantedItemsCard({
               <TableBody>
                 {items.map((item) => (
                   <Fragment key={item.id}>
-                    <TableRow className="group">
+                    <TableRow
+                      id={wantedItemRowId(item.id)}
+                      data-ui="wanted-item-row"
+                      data-wanted-item-id={item.id}
+                      data-wanted-title={item.titleName ?? item.titleId}
+                      className="group"
+                    >
                       <TableCell className="text-center">
                         <button
                           className="p-0.5 text-muted-foreground hover:text-foreground"
@@ -1028,6 +1035,9 @@ function WantedItemsCard({
                       <TableActionsCell className="w-36">
                         <div className="flex flex-wrap justify-center gap-1">
                           <IconButton
+                            id={wantedItemSearchNowId(item.id)}
+                            data-ui="wanted-item-search-now"
+                            data-wanted-item-id={item.id}
                             label={t("wanted.searchNow")}
                             appearance="ghost"
                             className="h-7 w-7"

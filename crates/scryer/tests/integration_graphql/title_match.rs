@@ -405,54 +405,61 @@ fn graphql_fix_title_match_series_rebuilds_and_relinks_library() {
     );
 }
 
-#[tokio::test]
-async fn graphql_fix_title_match_rejects_duplicate_target_tvdb_id() {
-    let ctx = TestContext::new().await;
-    let existing = create_catalog_title(
-        &ctx,
-        "Existing Correct Match",
-        MediaFacet::Movie,
-        vec![ExternalId {
-            source: "tvdb".to_string(),
-            value: "123456".to_string(),
-        }],
-        vec![],
-        true,
-    )
-    .await;
-    let broken = create_catalog_title(
-        &ctx,
-        "Broken Match",
-        MediaFacet::Movie,
-        vec![ExternalId {
-            source: "tvdb".to_string(),
-            value: "999".to_string(),
-        }],
-        vec![],
-        true,
-    )
-    .await;
+#[test]
+fn graphql_fix_title_match_rejects_duplicate_target_tvdb_id() {
+    run_large_stack_graphql_test(
+        "graphql_fix_title_match_rejects_duplicate_target_tvdb_id",
+        || async {
+            let ctx = TestContext::new().await;
+            let existing = create_catalog_title(
+                &ctx,
+                "Existing Correct Match",
+                MediaFacet::Movie,
+                vec![ExternalId {
+                    source: "tvdb".to_string(),
+                    value: "123456".to_string(),
+                }],
+                vec![],
+                true,
+            )
+            .await;
+            let broken = create_catalog_title(
+                &ctx,
+                "Broken Match",
+                MediaFacet::Movie,
+                vec![ExternalId {
+                    source: "tvdb".to_string(),
+                    value: "999".to_string(),
+                }],
+                vec![],
+                true,
+            )
+            .await;
+            let existing_name = existing.name;
+            let broken_id = broken.id;
 
-    let body = gql(
-        &ctx,
-        r#"
+            let body = gql(
+                &ctx,
+                r#"
         mutation FixTitleMatch($input: FixTitleMatchInput!) {
           fixTitleMatch(input: $input) {
             title { id }
           }
         }
         "#,
-        json!({ "input": { "titleId": broken.id, "tvdbId": "123456" } }),
-    )
-    .await;
+                json!({ "input": { "titleId": broken_id, "tvdbId": "123456" } }),
+            )
+            .await;
 
-    assert!(
-        body.get("errors").is_some(),
-        "expected graphql errors: {body}"
+            assert!(
+                body.get("errors").is_some(),
+                "expected graphql errors: {body}"
+            );
+            let message = body["errors"][0]["message"]
+                .as_str()
+                .expect("graphql error message");
+            assert!(message.contains("tvdb id 123456 is already assigned to title"));
+            assert!(message.contains(&existing_name));
+        },
     );
-    let message = body["errors"][0]["message"]
-        .as_str()
-        .expect("graphql error message");
-    assert!(message.contains("tvdb id 123456 is already assigned to title"));
-    assert!(message.contains(&existing.name));
 }

@@ -10,6 +10,14 @@ import type { TitleRecord } from "@/lib/types";
 import type { UiDateTimeFormat } from "@/lib/types/settings";
 import type { ParsedQualityProfile } from "@/lib/types/quality-profiles";
 import { formatUiDate } from "@/lib/utils/date-format";
+import {
+  compactRatingNumber,
+  normalizedRatingSource,
+  ratingSourceInfo,
+  ratingValueLabel,
+  visibleTitleExternalRatings,
+  type TitleExternalRating,
+} from "@/lib/utils/title-ratings";
 import { cn } from "@/lib/utils";
 import type { BoxedActionButtonTone } from "@/lib/utils/action-button-styles";
 
@@ -23,7 +31,28 @@ export type TitleTableSortKey =
   | "episodes"
   | "status"
   | "size"
-  | "added";
+  | "added"
+  | "year"
+  | "runtime"
+  | "root"
+  | "popularity"
+  | "resolution"
+  | "hdr"
+  | "audioCodec"
+  | "ratingScryer"
+  | "ratingImdb"
+  | "ratingRottenTomatoes"
+  | "ratingPopcornmeter"
+  | "ratingMetacritic"
+  | "ratingMetacriticUser"
+  | "ratingLetterboxd"
+  | "ratingTmdb"
+  | "ratingTvdb"
+  | "ratingTrakt"
+  | "ratingMyanimelist"
+  | "ratingAnilist"
+  | "ratingAnidb"
+  | "ratingMdblist";
 
 export type TitleTableColumnKey =
   | "library"
@@ -32,6 +61,28 @@ export type TitleTableColumnKey =
   | "episodes"
   | "size"
   | "added"
+  | "year"
+  | "runtime"
+  | "status"
+  | "root"
+  | "popularity"
+  | "resolution"
+  | "hdr"
+  | "audioCodec"
+  | "ratingScryer"
+  | "ratingImdb"
+  | "ratingRottenTomatoes"
+  | "ratingPopcornmeter"
+  | "ratingMetacritic"
+  | "ratingMetacriticUser"
+  | "ratingLetterboxd"
+  | "ratingTmdb"
+  | "ratingTvdb"
+  | "ratingTrakt"
+  | "ratingMyanimelist"
+  | "ratingAnilist"
+  | "ratingAnidb"
+  | "ratingMdblist"
   | "actions";
 
 export type TitleTableVisibleColumns = Record<TitleTableColumnKey, boolean>;
@@ -43,6 +94,28 @@ export const DEFAULT_TITLE_TABLE_VISIBLE_COLUMNS: TitleTableVisibleColumns = {
   episodes: true,
   size: true,
   added: false,
+  year: false,
+  runtime: false,
+  status: false,
+  root: false,
+  popularity: false,
+  resolution: false,
+  hdr: false,
+  audioCodec: false,
+  ratingScryer: false,
+  ratingImdb: false,
+  ratingRottenTomatoes: false,
+  ratingPopcornmeter: false,
+  ratingMetacritic: false,
+  ratingMetacriticUser: false,
+  ratingLetterboxd: false,
+  ratingTmdb: false,
+  ratingTvdb: false,
+  ratingTrakt: false,
+  ratingMyanimelist: false,
+  ratingAnilist: false,
+  ratingAnidb: false,
+  ratingMdblist: false,
   actions: true,
 };
 
@@ -53,8 +126,95 @@ export const TITLE_TABLE_COLUMN_KEYS: readonly TitleTableColumnKey[] = [
   "episodes",
   "size",
   "added",
+  "year",
+  "runtime",
+  "status",
+  "root",
+  "popularity",
+  "resolution",
+  "hdr",
+  "audioCodec",
+  "ratingScryer",
+  "ratingImdb",
+  "ratingRottenTomatoes",
+  "ratingPopcornmeter",
+  "ratingMetacritic",
+  "ratingMetacriticUser",
+  "ratingLetterboxd",
+  "ratingTmdb",
+  "ratingTvdb",
+  "ratingTrakt",
+  "ratingMyanimelist",
+  "ratingAnilist",
+  "ratingAnidb",
+  "ratingMdblist",
   "actions",
 ];
+
+export const MOVIE_TITLE_TABLE_ONLY_COLUMNS = new Set<TitleTableColumnKey>([
+  "year",
+  "resolution",
+  "hdr",
+  "audioCodec",
+  "popularity",
+]);
+
+export const SERIES_TITLE_TABLE_ONLY_COLUMNS = new Set<TitleTableColumnKey>([
+  "status",
+]);
+
+export const ANIME_TITLE_TABLE_RATING_COLUMNS: readonly TitleTableColumnKey[] = [
+  "ratingScryer",
+  "ratingImdb",
+  "ratingTmdb",
+  "ratingTvdb",
+  "ratingTrakt",
+  "ratingMyanimelist",
+  "ratingAnilist",
+  "ratingAnidb",
+  "ratingMdblist",
+];
+
+export const SHARED_TITLE_TABLE_RATING_COLUMNS: readonly TitleTableColumnKey[] = [
+  "ratingScryer",
+  "ratingImdb",
+  "ratingRottenTomatoes",
+  "ratingPopcornmeter",
+  "ratingMetacritic",
+  "ratingMetacriticUser",
+  "ratingLetterboxd",
+  "ratingTmdb",
+  "ratingTvdb",
+  "ratingTrakt",
+  "ratingMdblist",
+];
+
+export function titleTableSupportedRatingColumnsForView(
+  view: ViewId,
+): readonly TitleTableColumnKey[] {
+  return view === "anime"
+    ? ANIME_TITLE_TABLE_RATING_COLUMNS
+    : SHARED_TITLE_TABLE_RATING_COLUMNS;
+}
+
+export function isTitleTableColumnSupportedForView(
+  key: TitleTableColumnKey,
+  view: ViewId,
+): boolean {
+  if (isTitleTableRatingColumn(key)) {
+    return titleTableSupportedRatingColumnsForView(view).includes(key);
+  }
+  if (view !== "movies" && MOVIE_TITLE_TABLE_ONLY_COLUMNS.has(key)) {
+    return false;
+  }
+  if (view === "movies" && SERIES_TITLE_TABLE_ONLY_COLUMNS.has(key)) {
+    return false;
+  }
+  if (key === "episodes" && view === "movies") {
+    return false;
+  }
+  return true;
+}
 
 export const TITLE_TABLE_HEADER_ROW_CLASS =
   "sticky top-0 z-10 h-11 border-b border-[var(--scry-border)] bg-[var(--scry-surfD)]";
@@ -206,6 +366,198 @@ export function bytesToReadable(raw: number | null | undefined) {
     return `${(raw / 1024).toFixed(2)} KB`;
   }
   return `${raw} B`;
+}
+
+export function formatRuntimeMinutes(
+  minutes: number | null | undefined,
+): string {
+  if (!minutes || minutes <= 0) {
+    return "—";
+  }
+  const hours = Math.floor(minutes / 60);
+  const remainingMinutes = minutes % 60;
+  if (hours <= 0) {
+    return `${remainingMinutes}m`;
+  }
+  if (remainingMinutes <= 0) {
+    return `${hours}h`;
+  }
+  return `${hours}h ${remainingMinutes}m`;
+}
+
+export function formatCatalogPopularity(value: number | null | undefined) {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return "—";
+  }
+  if (Math.abs(value) >= 100) {
+    return Math.round(value).toString();
+  }
+  return compactRatingNumber(value);
+}
+
+export function formatResolutionLabel(value: string | null | undefined) {
+  const trimmed = value?.trim();
+  if (!trimmed) {
+    return "—";
+  }
+  const normalized = trimmed.toLowerCase();
+  if (normalized === "4k" || normalized === "uhd") {
+    return "2160p";
+  }
+  if (/^\d{3,4}p$/.test(normalized)) {
+    return normalized;
+  }
+  return trimmed.toUpperCase();
+}
+
+export function formatHdrLabel(value: string | null | undefined) {
+  const trimmed = value?.trim();
+  if (!trimmed) {
+    return "—";
+  }
+  const normalized = trimmed.toLowerCase().replace(/[\s_.-]+/g, "");
+  if (normalized === "sdr") {
+    return "SDR";
+  }
+  if (normalized.includes("dolbyvision") || normalized === "dv") {
+    return "Dolby Vision";
+  }
+  if (normalized.includes("hdr10plus") || normalized.includes("hdr10+")) {
+    return "HDR10+";
+  }
+  if (normalized.includes("hdr10")) {
+    return "HDR10";
+  }
+  if (normalized.includes("hdr")) {
+    return "HDR";
+  }
+  return trimmed;
+}
+
+export function formatAudioCodecLabel(value: string | null | undefined) {
+  const trimmed = value?.trim();
+  if (!trimmed) {
+    return "—";
+  }
+  const normalized = trimmed.toLowerCase().replace(/[\s_.-]+/g, "");
+  switch (normalized) {
+    case "truehd":
+      return "TrueHD";
+    case "dtshdma":
+    case "dtshdmasteraudio":
+      return "DTS-HD MA";
+    case "dtshd":
+      return "DTS-HD";
+    case "dtsx":
+      return "DTS:X";
+    case "eac3":
+    case "eac3joc":
+    case "ddplus":
+      return "E-AC-3";
+    case "ac3":
+      return "AC-3";
+    case "aac":
+      return "AAC";
+    case "flac":
+      return "FLAC";
+    case "opus":
+      return "Opus";
+    case "mp3":
+      return "MP3";
+    case "pcm":
+      return "PCM";
+    default:
+      return trimmed;
+  }
+}
+
+type RatingColumnDefinition = {
+  label: string;
+  aliases: readonly string[];
+};
+
+const RATING_COLUMN_DEFINITIONS: Partial<
+  Record<TitleTableColumnKey, RatingColumnDefinition>
+> = {
+  ratingImdb: { label: "IMDb", aliases: ["imdb"] },
+  ratingRottenTomatoes: {
+    label: "Rotten Tomatoes",
+    aliases: ["rottentomatoes", "tomatoes"],
+  },
+  ratingPopcornmeter: {
+    label: "Popcornmeter",
+    aliases: ["popcornmeter", "popcorn", "audience"],
+  },
+  ratingMetacritic: { label: "Metacritic", aliases: ["metacritic"] },
+  ratingMetacriticUser: {
+    label: "Metacritic User",
+    aliases: ["metacriticuser", "mcuser"],
+  },
+  ratingLetterboxd: { label: "Letterboxd", aliases: ["letterboxd"] },
+  ratingTmdb: { label: "TMDB", aliases: ["tmdb"] },
+  ratingTvdb: { label: "TVDB", aliases: ["tvdb", "thetvdb"] },
+  ratingTrakt: { label: "Trakt", aliases: ["trakt"] },
+  ratingMyanimelist: {
+    label: "MyAnimeList",
+    aliases: ["myanimelist", "mal", "myanimelistnet"],
+  },
+  ratingAnilist: { label: "AniList", aliases: ["anilist"] },
+  ratingAnidb: { label: "AniDB", aliases: ["anidb"] },
+  ratingMdblist: { label: "MDBList", aliases: ["mdblist"] },
+};
+
+export function isTitleTableRatingColumn(key: TitleTableColumnKey): boolean {
+  return key.startsWith("rating");
+}
+
+export function titleTableRatingColumnLabel(
+  key: TitleTableColumnKey,
+): string {
+  if (key === "ratingScryer") {
+    return "Scryer Rating";
+  }
+  return RATING_COLUMN_DEFINITIONS[key]?.label ?? key;
+}
+
+function normalizeExternalRating(
+  rating: TitleRecord["ratings"] extends infer T
+    ? T extends { externalRatings: (infer U)[] }
+      ? U
+      : never
+    : never,
+): TitleExternalRating {
+  return {
+    source: rating.source,
+    value: rating.value ?? null,
+    score: rating.score ?? null,
+    normalized: rating.normalized,
+    votes: rating.votes ?? null,
+    url: rating.url ?? "",
+  };
+}
+
+export function titleTableRatingColumnValue(
+  item: TitleRecord,
+  key: TitleTableColumnKey,
+): string {
+  const ratings = item.ratings;
+  if (!ratings) {
+    return "—";
+  }
+  if (key === "ratingScryer") {
+    return typeof ratings.rating === "number" && Number.isFinite(ratings.rating)
+      ? compactRatingNumber(ratings.rating)
+      : "—";
+  }
+  const definition = RATING_COLUMN_DEFINITIONS[key];
+  if (!definition) {
+    return "—";
+  }
+  const aliases = new Set(definition.aliases);
+  const match = visibleTitleExternalRatings(
+    ratings.externalRatings.map(normalizeExternalRating),
+  ).find((rating) => aliases.has(normalizedRatingSource(rating.source)));
+  return match ? ratingValueLabel(match, ratingSourceInfo(match.source)) : "—";
 }
 
 export function formatEpisodeProgress(
@@ -468,11 +820,19 @@ export function resolveDisplayedQualityLabel(
 export function defaultSortDirectionForTitleKey(
   key: TitleTableSortKey,
 ): TitleTableSortDirection {
+  if (key.startsWith("rating")) {
+    return "desc";
+  }
   switch (key) {
     case "monitored":
     case "episodes":
     case "size":
     case "added":
+    case "year":
+    case "runtime":
+    case "popularity":
+    case "resolution":
+    case "hdr":
       return "desc";
     default:
       return "asc";

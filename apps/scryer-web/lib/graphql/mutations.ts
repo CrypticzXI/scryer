@@ -2046,6 +2046,7 @@ export const searchSubtitlesMutation = `mutation SearchSubtitles($input: SearchS
     language
     releaseInfo
     score
+    scorePercent
     hearingImpaired
     forced
     aiTranslated
@@ -2169,6 +2170,7 @@ export type SubtitleSearchResult = {
   language: string;
   releaseInfo: string | null;
   score: number;
+  scorePercent: number;
   hearingImpaired: boolean;
   forced: boolean;
   aiTranslated: boolean;

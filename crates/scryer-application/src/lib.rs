@@ -15,6 +15,7 @@ pub use download_identity::{
 };
 mod events;
 pub mod external_import;
+pub mod file_source_signature;
 pub mod fs_integrity;
 mod fs_safety;
 mod health;
@@ -463,13 +464,13 @@ pub(crate) use types::ReleaseCandidateTokenClaims;
 pub use types::{
     AddTitleAndQueueDownloadOutcome, AddTitleHydrationState, AddTitleOutcome,
     AuthenticatedTokenClaims, BackupDownloadTicket, BackupInfo, BackupStatus, BackupTrigger,
-    CancelLibraryScanResult, CreateTitleOutcome, CutoffUnmetItem, CutoffUnmetQualitySummary,
-    DecisionCodeCount, DiskSpaceInfo, DownloadActivityFilter, DownloadDisplayState,
-    DownloadGrabResult, DownloadHistoryFilter, DownloadHistoryPage, DownloadHistorySort,
-    DownloadHistorySortKey, DownloadImportFilter, DownloadImportPage, DownloadQueueCommandRecord,
-    DownloadSourceKind, EpisodeScopedMediaFile, FixTitleMatchResult, HealthCheckResult,
-    HealthCheckStatus, HousekeepingReport, IgnorePendingImportResult, IndexerQueryStats,
-    JwtAuthConfig, JwtSessionScope, LibraryRootDraft, LibraryScanUnmatchedItem,
+    CancelLibraryScanResult, CollectionEpisodeProgressSummary, CreateTitleOutcome, CutoffUnmetItem,
+    CutoffUnmetQualitySummary, DecisionCodeCount, DiskSpaceInfo, DownloadActivityFilter,
+    DownloadDisplayState, DownloadGrabResult, DownloadHistoryFilter, DownloadHistoryPage,
+    DownloadHistorySort, DownloadHistorySortKey, DownloadImportFilter, DownloadImportPage,
+    DownloadQueueCommandRecord, DownloadSourceKind, EpisodeScopedMediaFile, FixTitleMatchResult,
+    HealthCheckResult, HealthCheckStatus, HousekeepingReport, IgnorePendingImportResult,
+    IndexerQueryStats, JwtAuthConfig, JwtSessionScope, LibraryRootDraft, LibraryScanUnmatchedItem,
     LibraryScanUnmatchedSearchAttempt, LoginFailureTimingClass, MediaRequestCounts,
     OAuthAuthorizationCodeRecord, OAuthAuthorizationSource, OAuthConnectedAppRecord,
     OAuthRefreshGrantRecord, OAuthRefreshRotation, OAuthRefreshRotationOutcome,
@@ -483,8 +484,8 @@ pub use types::{
     TitleCatalogFilterCounts, TitleCatalogResult, TitleCatalogSort, TitleCatalogSortKey,
     TitleEpisodeProgressSummary, TitleExternalRating, TitleImageBlob, TitleImageKind,
     TitleImageSourceResult, TitleImageSyncTask, TitleImageVariantRecord, TitleImageVariantSpec,
-    TitleMediaFile, TitleMediaSizeSummary, TitleMetadataUpdate, TitleQualitySummary,
-    TitleRatingSummary, TitleReleaseBlocklistEntry, TotpCredentialRecord,
+    TitleMediaFile, TitleMediaSizeSummary, TitleMetadataUpdate, TitleMovieMediaSummary,
+    TitleQualitySummary, TitleRatingSummary, TitleReleaseBlocklistEntry, TotpCredentialRecord,
     TotpEnrollmentChallengeRecord, TotpEnrollmentComplete, TotpEnrollmentStart,
     TotpFailedAttemptRecord, TotpRecoveryCodeRecord, TotpStatus, UiDateTimeFormat,
     UiDefaultLandingView, UiDensity, UiSettings, UiSettingsFacet, UiSettingsUpdate, UiSidebarMode,

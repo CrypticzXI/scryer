@@ -113,6 +113,7 @@ fn assert_external_ids(external_ids: &[ExternalId], expected: &[(&str, &str)]) {
 
 fn make_series_metadata(tvdb_id: i64, name: &str) -> SeriesMetadata {
     SeriesMetadata {
+        target_key: None,
         tvdb_id,
         name: name.to_string(),
         sort_name: name.to_string(),
@@ -127,6 +128,7 @@ fn make_series_metadata(tvdb_id: i64, name: &str) -> SeriesMetadata {
         background_url: None,
         country: "JP".to_string(),
         genres: vec!["Animation".to_string()],
+        canonical_tags: vec![],
         aliases: Vec::new(),
         tagged_aliases: Vec::new(),
         seasons: Vec::new(),

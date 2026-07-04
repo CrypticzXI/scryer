@@ -241,6 +241,7 @@ mod tests {
                 .update_title_hydrated_metadata(
                     &title.id,
                     TitleMetadataUpdate {
+                        canonical_subject_key: None,
                         name: None,
                         year: Some(2024),
                         overview: Some("postgres blank install smoke".to_string()),
@@ -250,7 +251,9 @@ mod tests {
                         slug: Some("postgres-blank-install-smoke".to_string()),
                         imdb_id: Some("tt1234567".to_string()),
                         runtime_minutes: Some(123),
+                        popularity: None,
                         genres: vec!["Drama".to_string()],
+                        canonical_tags: vec![],
                         content_status: Some("released".to_string()),
                         language: Some("eng".to_string()),
                         first_aired: Some("2024-01-01".to_string()),
@@ -1378,6 +1381,7 @@ mod tests {
             facet: MediaFacet::Movie,
             monitored: true,
             tags: Vec::new(),
+            canonical_tags: vec![],
             external_ids: Vec::new(),
             root_folder_id: scryer_domain::root_folder_id_for_path("/data/movies"),
             created_by: None,
@@ -1393,6 +1397,7 @@ mod tests {
             slug: Some("postgres-blank-install-smoke".to_string()),
             imdb_id: None,
             runtime_minutes: None,
+            popularity: None,
             genres: Vec::new(),
             content_status: None,
             language: None,

@@ -1455,6 +1455,7 @@ async fn library_series_scan_existing_unhydrated_title_without_episodes_complete
             library_id: scryer_domain::default_library_id_for_facet(&MediaFacet::Series),
             monitored: false,
             tags: vec![],
+            canonical_tags: vec![],
             external_ids: vec![ExternalId {
                 source: "tvdb".to_string(),
                 value: "345679".to_string(),
@@ -1473,6 +1474,7 @@ async fn library_series_scan_existing_unhydrated_title_without_episodes_complete
             slug: Some("pending-series".to_string()),
             imdb_id: None,
             runtime_minutes: None,
+            popularity: None,
             genres: vec![],
             content_status: None,
             language: None,

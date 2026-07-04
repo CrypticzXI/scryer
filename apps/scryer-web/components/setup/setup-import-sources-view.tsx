@@ -159,6 +159,8 @@ export default function SetupImportSourcesView({
               <div key={dc.dedupKey}>
                 <label
                   id={selectorId("setup-import-source-client-row", dc.dedupKey)}
+                  data-source-count={dc.sourceKeys.length}
+                  data-source-keys={dc.sourceKeys.join("|")}
                   className={cn(
                     "flex items-start gap-3 rounded px-2 py-2 text-sm",
                     dc.supported

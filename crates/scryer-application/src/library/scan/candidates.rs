@@ -56,6 +56,21 @@ fn movie_scan_folder_conflicts(
     )
 }
 
+fn movie_scan_folder_conflict_counts_as_skipped(
+    canonical_folder_path: Option<&str>,
+    scan_root: &Path,
+) -> bool {
+    let Some(canonical_folder_path) =
+        normalize_title_folder_path(canonical_folder_path.map(ToString::to_string))
+    else {
+        return false;
+    };
+
+    stored_path_to_path_buf(&canonical_folder_path)
+        .strip_prefix(scan_root)
+        .is_err()
+}
+
 fn scanned_movie_entry_folder_path(
     scan_root: &Path,
     representative_path: &str,
@@ -665,6 +680,12 @@ pub(super) async fn process_movie_full_scan_candidate(
             scan_folder_path.as_deref(),
         ) {
             clear_library_scan_unmatched_item(app, facet, library_id, &item_path).await?;
+            if movie_scan_folder_conflict_counts_as_skipped(
+                canonical_folder_path.as_deref(),
+                scan_root,
+            ) {
+                summary.skipped += 1;
+            }
             coordinator.mark_title_match_completed(1).await;
             return Ok(None);
         }
@@ -752,6 +773,12 @@ pub(super) async fn process_movie_full_scan_candidate(
                 scan_folder_path.as_deref(),
             ) {
                 clear_library_scan_unmatched_item(app, facet, library_id, &item_path).await?;
+                if movie_scan_folder_conflict_counts_as_skipped(
+                    canonical_folder_path.as_deref(),
+                    scan_root,
+                ) {
+                    summary.skipped += 1;
+                }
                 coordinator.mark_title_match_completed(1).await;
                 return Ok(None);
             }
@@ -981,6 +1008,12 @@ pub(super) async fn process_resolved_movie_full_scan_candidate(
             ) {
                 clear_library_scan_unmatched_item(app, facet, library_id, &candidate.file.path)
                     .await?;
+                if movie_scan_folder_conflict_counts_as_skipped(
+                    canonical_folder_path.as_deref(),
+                    scan_root,
+                ) {
+                    summary.skipped += 1;
+                }
                 coordinator.mark_title_match_completed(1).await;
                 return Ok(());
             }
@@ -1732,6 +1765,7 @@ mod tests {
             facet: MediaFacet::Series,
             monitored: true,
             tags: Vec::new(),
+            canonical_tags: vec![],
             external_ids: Vec::new(),
             root_folder_id: "root".to_string(),
             created_by: None,
@@ -1747,6 +1781,7 @@ mod tests {
             slug: None,
             imdb_id: None,
             runtime_minutes: None,
+            popularity: None,
             genres: Vec::new(),
             content_status: None,
             language: None,

@@ -154,6 +154,19 @@ export function SeasonSection({
 
   const collectionMetrics = React.useMemo(() => {
     const uniqueFiles = new Map<string, EpisodeMediaFile>();
+    const aggregateTotalEpisodes =
+      typeof collection.episodesTotal === "number" && collection.episodesTotal >= 0
+        ? collection.episodesTotal
+        : null;
+    const aggregateMonitoredEpisodes =
+      typeof collection.episodesMonitored === "number" &&
+      collection.episodesMonitored >= 0
+        ? collection.episodesMonitored
+        : null;
+    const aggregateOwnedEpisodes =
+      typeof collection.episodesOwned === "number" && collection.episodesOwned >= 0
+        ? collection.episodesOwned
+        : null;
     let totalEpisodes = 0;
     let monitoredEpisodes = 0;
     let ownedEpisodes = 0;
@@ -190,12 +203,18 @@ export function SeasonSection({
     }
 
     return {
-      totalEpisodes,
-      monitoredEpisodes,
-      ownedEpisodes,
+      totalEpisodes: aggregateTotalEpisodes ?? totalEpisodes,
+      monitoredEpisodes: aggregateMonitoredEpisodes ?? monitoredEpisodes,
+      ownedEpisodes: aggregateOwnedEpisodes ?? ownedEpisodes,
       matchedSizeBytes,
     };
-  }, [episodes, mediaFilesByEpisode]);
+  }, [
+    collection.episodesMonitored,
+    collection.episodesOwned,
+    collection.episodesTotal,
+    episodes,
+    mediaFilesByEpisode,
+  ]);
 
   const collectionEpisodeProgress = React.useMemo(
     () => {

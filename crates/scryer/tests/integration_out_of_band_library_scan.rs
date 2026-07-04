@@ -141,6 +141,7 @@ async fn seed_series_title(
         facet,
         monitored: true,
         tags: vec![],
+        canonical_tags: vec![],
         external_ids: tvdb_id
             .map(|value| {
                 vec![ExternalId {
@@ -165,6 +166,7 @@ async fn seed_series_title(
         slug: None,
         imdb_id: None,
         runtime_minutes: None,
+        popularity: None,
         genres: vec![],
         content_status: None,
         language: None,
