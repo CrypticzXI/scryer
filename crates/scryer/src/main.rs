@@ -996,6 +996,10 @@ async fn bootstrap_application(
     ));
     let indexer_stats = datastore.indexer_stats_tracker();
     let indexer_learning = datastore.indexer_search_learning_repository();
+    let upstream_scheduler = datastore
+        .upstream_scheduler()
+        .await
+        .map_err(|e| format!("failed to initialize upstream scheduler: {e}"))?;
 
     let dynamic_provider = Arc::new(scryer_plugins::DynamicPluginProvider::new(
         scryer_plugins::build_indexer_plugin_provider_from_runtime_plugins(
@@ -1019,7 +1023,8 @@ async fn bootstrap_application(
         indexer_stats.clone(),
         plugin_provider.clone(),
     )
-    .with_search_learning_repository(indexer_learning);
+    .with_search_learning_repository(indexer_learning)
+    .with_upstream_scheduler(upstream_scheduler.clone());
 
     let indexer_client = Arc::new(indexer_client);
     let title_images_for_route: Arc<dyn TitleImageRepository> = datastore.title_images();
@@ -1144,8 +1149,10 @@ async fn bootstrap_application(
         .with_staged_nzb_store(staged_nzb_store)
         .with_staged_nzb_pipeline_limit(staged_nzb_pipeline_limit)
         .with_indexer_stats(indexer_stats)
+        .with_upstream_scheduler(upstream_scheduler.clone())
         .with_indexer_caps_refresher(Arc::new(
-            scryer_infrastructure::indexer_caps::DirectNabCapsSnapshotRefresher::new(),
+            scryer_infrastructure::indexer_caps::DirectNabCapsSnapshotRefresher::new()
+                .with_upstream_scheduler(upstream_scheduler.clone()),
         ))
         .with_plugin_http_trust_runtime(plugin_http_runtime)
         .with_plugin_provider(plugin_provider)

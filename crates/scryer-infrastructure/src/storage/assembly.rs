@@ -9,7 +9,7 @@ use scryer_application::{
     MediaRequestRepository, MediaServerConnectionRepository, OAuthRepository,
     PluginInstallationRepository, PostProcessingScriptRepository, QualityProfileRepository,
     RuleSetRepository, SettingsRepository, ShowRepository, SubtitleProviderConfigRepository,
-    TitleImageProcessor, TitleImageRepository, TitleRepository, TotpRepository,
+    TitleImageProcessor, TitleImageRepository, TitleRepository, TotpRepository, UpstreamScheduler,
     UserExternalAccountRepository, UserRepository, UserUiSettingsRepository, WebauthnRepository,
 };
 
@@ -1189,6 +1189,20 @@ impl DatastoreAssembly {
                 Arc::new(IndexerSearchLearningStore::new(db.datastore()))
             }
         }
+    }
+
+    pub async fn upstream_scheduler(&self) -> AppResult<Arc<dyn UpstreamScheduler>> {
+        let scheduler = match &self.stores {
+            DatastoreStores::Sqlite { db, .. } => {
+                crate::upstream_scheduler::InMemoryUpstreamScheduler::new_persistent(db.datastore())
+                    .await?
+            }
+            DatastoreStores::Postgres { db, .. } => {
+                crate::upstream_scheduler::InMemoryUpstreamScheduler::new_persistent(db.datastore())
+                    .await?
+            }
+        };
+        Ok(Arc::new(scheduler))
     }
 
     pub fn metadata_gateway_client(

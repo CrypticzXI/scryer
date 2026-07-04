@@ -448,6 +448,14 @@ pub const BACKUP_TABLE_CATALOG: &[BackupTableCatalogEntry] = &[
         classification: BackupTableClassification::Ignore,
     },
     BackupTableCatalogEntry {
+        table: "upstream_scheduler_states",
+        classification: BackupTableClassification::Ignore,
+    },
+    BackupTableCatalogEntry {
+        table: "upstream_scheduler_rss_cadence",
+        classification: BackupTableClassification::Ignore,
+    },
+    BackupTableCatalogEntry {
         table: "settings_definitions",
         classification: BackupTableClassification::Export,
     },

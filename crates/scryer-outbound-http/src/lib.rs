@@ -4,17 +4,16 @@ use std::convert::Infallible;
 use std::fmt;
 use std::future::Future;
 use std::net::{IpAddr, SocketAddr};
-use std::sync::{Arc, LazyLock, OnceLock};
+use std::sync::{Arc, LazyLock, Mutex, OnceLock};
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use metrics::{counter, histogram};
-use reqwest::header::{HeaderMap, RETRY_AFTER};
+use reqwest::header::{HeaderMap, LOCATION, RETRY_AFTER};
 use reqwest::{
     Certificate, Client, RequestBuilder, Response, StatusCode, blocking::Client as BlockingClient,
 };
 use thiserror::Error;
-use tokio::sync::Mutex;
 use tokio::time::{Instant, sleep};
 use tracing::debug;
 
@@ -58,6 +57,24 @@ pub enum RetryAfterSource {
     Seconds,
     FallbackBackoff,
     ExistingCooldown,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct RateLimitRegistrySnapshot {
+    pub host_rps: Vec<HostRpsSnapshotEntry>,
+    pub destination_cooldowns: Vec<DestinationCooldownSnapshotEntry>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct HostRpsSnapshotEntry {
+    pub host_key: HostKey,
+    pub available_in: Duration,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct DestinationCooldownSnapshotEntry {
+    pub destination_key: DestinationKey,
+    pub available_in: Duration,
 }
 
 #[derive(Clone, Debug)]
@@ -140,14 +157,127 @@ impl RequestPolicy {
     }
 }
 
-#[derive(Clone, Default)]
+pub const DEFAULT_HOST_RPS: f64 = 1.0;
+pub const DEFAULT_HOST_RPS_BURST: u32 = 2;
+const MAX_MANUAL_REDIRECTS: usize = 10;
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct HostKey(Arc<str>);
+
+impl HostKey {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for HostKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl From<&str> for HostKey {
+    fn from(value: &str) -> Self {
+        Self(Arc::<str>::from(normalize_host_key(value)))
+    }
+}
+
+impl From<String> for HostKey {
+    fn from(value: String) -> Self {
+        Self::from(value.as_str())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct DestinationKey(Arc<str>);
+
+impl DestinationKey {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for DestinationKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl From<&str> for DestinationKey {
+    fn from(value: &str) -> Self {
+        Self(Arc::<str>::from(normalize_host_key(value)))
+    }
+}
+
+impl From<String> for DestinationKey {
+    fn from(value: String) -> Self {
+        Self::from(value.as_str())
+    }
+}
+
+#[derive(Default)]
+struct RateLimitRegistryState {
+    deadlines: Mutex<HashMap<RateLimitScopeKey, Instant>>,
+    host_deadlines: Mutex<HashMap<HostKey, Instant>>,
+    destination_deadlines: Mutex<HashMap<DestinationKey, Instant>>,
+}
+
+#[derive(Clone)]
 pub struct RateLimitRegistry {
-    deadlines: Arc<Mutex<HashMap<RateLimitScopeKey, Instant>>>,
+    state: Arc<RateLimitRegistryState>,
 }
 
 impl RateLimitRegistry {
     pub fn new() -> Self {
-        Self::default()
+        static SHARED: LazyLock<RateLimitRegistry> = LazyLock::new(RateLimitRegistry::isolated);
+        SHARED.clone()
+    }
+
+    pub fn isolated() -> Self {
+        Self {
+            state: Arc::new(RateLimitRegistryState::default()),
+        }
+    }
+
+    pub fn snapshot(&self) -> RateLimitRegistrySnapshot {
+        let now = Instant::now();
+        let mut host_rps = self
+            .state
+            .host_deadlines
+            .lock()
+            .expect("host RPS lock poisoned")
+            .iter()
+            .map(|(host_key, deadline)| HostRpsSnapshotEntry {
+                host_key: host_key.clone(),
+                available_in: deadline.saturating_duration_since(now),
+            })
+            .collect::<Vec<_>>();
+        host_rps.sort_by(|left, right| left.host_key.as_str().cmp(right.host_key.as_str()));
+
+        let mut destination_cooldowns = self
+            .state
+            .destination_deadlines
+            .lock()
+            .expect("destination deadline lock poisoned")
+            .iter()
+            .filter_map(|(destination_key, deadline)| {
+                let available_in = deadline.saturating_duration_since(now);
+                (!available_in.is_zero()).then(|| DestinationCooldownSnapshotEntry {
+                    destination_key: destination_key.clone(),
+                    available_in,
+                })
+            })
+            .collect::<Vec<_>>();
+        destination_cooldowns.sort_by(|left, right| {
+            left.destination_key
+                .as_str()
+                .cmp(right.destination_key.as_str())
+        });
+
+        RateLimitRegistrySnapshot {
+            host_rps,
+            destination_cooldowns,
+        }
     }
 
     pub async fn wait_if_needed(&self, scope: &RateLimitScopeKey) -> Option<Duration> {
@@ -155,7 +285,11 @@ impl RateLimitRegistry {
 
         loop {
             let wait_duration = {
-                let mut deadlines = self.deadlines.lock().await;
+                let mut deadlines = self
+                    .state
+                    .deadlines
+                    .lock()
+                    .expect("rate limit deadline lock poisoned");
                 let Some(deadline) = deadlines.get(scope).copied() else {
                     break;
                 };
@@ -176,6 +310,94 @@ impl RateLimitRegistry {
         (!total_wait.is_zero()).then_some(total_wait)
     }
 
+    pub async fn wait_for_destination_if_needed(
+        &self,
+        destination: &DestinationKey,
+    ) -> Option<Duration> {
+        let mut total_wait = Duration::ZERO;
+
+        loop {
+            let wait_duration = {
+                let mut deadlines = self
+                    .state
+                    .destination_deadlines
+                    .lock()
+                    .expect("destination deadline lock poisoned");
+                let Some(deadline) = deadlines.get(destination).copied() else {
+                    break;
+                };
+                let now = Instant::now();
+                let remaining = deadline.saturating_duration_since(now);
+                if remaining.is_zero() {
+                    deadlines.remove(destination);
+                    break;
+                } else {
+                    remaining
+                }
+            };
+
+            total_wait += wait_duration;
+            sleep(wait_duration).await;
+        }
+
+        (!total_wait.is_zero()).then_some(total_wait)
+    }
+
+    pub fn wait_for_destination_if_needed_blocking(
+        &self,
+        destination: &DestinationKey,
+    ) -> Option<Duration> {
+        let mut total_wait = Duration::ZERO;
+
+        loop {
+            let wait_duration = {
+                let mut deadlines = self
+                    .state
+                    .destination_deadlines
+                    .lock()
+                    .expect("destination deadline lock poisoned");
+                let Some(deadline) = deadlines.get(destination).copied() else {
+                    break;
+                };
+                let now = Instant::now();
+                let remaining = deadline.saturating_duration_since(now);
+                if remaining.is_zero() {
+                    deadlines.remove(destination);
+                    break;
+                } else {
+                    remaining
+                }
+            };
+
+            total_wait += wait_duration;
+            std::thread::sleep(wait_duration);
+        }
+
+        (!total_wait.is_zero()).then_some(total_wait)
+    }
+
+    pub async fn acquire_host_rps(&self, host: &HostKey) -> Option<Duration> {
+        let wait_duration = self.reserve_host_rps(host);
+
+        if wait_duration.is_zero() {
+            None
+        } else {
+            sleep(wait_duration).await;
+            Some(wait_duration)
+        }
+    }
+
+    pub fn acquire_host_rps_blocking(&self, host: &HostKey) -> Option<Duration> {
+        let wait_duration = self.reserve_host_rps(host);
+
+        if wait_duration.is_zero() {
+            None
+        } else {
+            std::thread::sleep(wait_duration);
+            Some(wait_duration)
+        }
+    }
+
     pub async fn record_cooldown(
         &self,
         scope: &RateLimitScopeKey,
@@ -188,7 +410,11 @@ impl RateLimitRegistry {
 
         let now = Instant::now();
         let new_deadline = now + delay;
-        let mut deadlines = self.deadlines.lock().await;
+        let mut deadlines = self
+            .state
+            .deadlines
+            .lock()
+            .expect("rate limit deadline lock poisoned");
 
         let existing_deadline = deadlines
             .get(scope)
@@ -209,6 +435,113 @@ impl RateLimitRegistry {
         };
 
         (effective_delay, effective_source)
+    }
+
+    pub async fn record_destination_cooldown(
+        &self,
+        destination: &DestinationKey,
+        delay: Duration,
+        source: RetryAfterSource,
+    ) -> (Duration, RetryAfterSource) {
+        if delay.is_zero() {
+            return (Duration::ZERO, source);
+        }
+
+        let now = Instant::now();
+        let new_deadline = now + delay;
+        let mut deadlines = self
+            .state
+            .destination_deadlines
+            .lock()
+            .expect("destination deadline lock poisoned");
+
+        let existing_deadline = deadlines
+            .get(destination)
+            .copied()
+            .filter(|deadline| *deadline > now);
+
+        let effective_deadline = match existing_deadline {
+            Some(existing) if existing > new_deadline => existing,
+            _ => new_deadline,
+        };
+
+        deadlines.insert(destination.clone(), effective_deadline);
+
+        let effective_delay = effective_deadline.saturating_duration_since(now);
+        let effective_source = match existing_deadline {
+            Some(existing) if existing > new_deadline => RetryAfterSource::ExistingCooldown,
+            _ => source,
+        };
+
+        (effective_delay, effective_source)
+    }
+
+    pub fn record_destination_cooldown_blocking(
+        &self,
+        destination: &DestinationKey,
+        delay: Duration,
+        source: RetryAfterSource,
+    ) -> (Duration, RetryAfterSource) {
+        if delay.is_zero() {
+            return (Duration::ZERO, source);
+        }
+
+        let now = Instant::now();
+        let new_deadline = now + delay;
+        let mut deadlines = self
+            .state
+            .destination_deadlines
+            .lock()
+            .expect("destination deadline lock poisoned");
+
+        let existing_deadline = deadlines
+            .get(destination)
+            .copied()
+            .filter(|deadline| *deadline > now);
+
+        let effective_deadline = match existing_deadline {
+            Some(existing) if existing > new_deadline => existing,
+            _ => new_deadline,
+        };
+
+        deadlines.insert(destination.clone(), effective_deadline);
+
+        let effective_delay = effective_deadline.saturating_duration_since(now);
+        let effective_source = match existing_deadline {
+            Some(existing) if existing > new_deadline => RetryAfterSource::ExistingCooldown,
+            _ => source,
+        };
+
+        (effective_delay, effective_source)
+    }
+
+    fn reserve_host_rps(&self, host: &HostKey) -> Duration {
+        if host_is_loopback(host.as_str()) {
+            return Duration::ZERO;
+        }
+        let mut host_deadlines = self
+            .state
+            .host_deadlines
+            .lock()
+            .expect("host RPS lock poisoned");
+        let now = Instant::now();
+        let interval = default_host_rps_interval();
+        let burst_credit = interval.saturating_mul(DEFAULT_HOST_RPS_BURST);
+        let earliest_base = now.checked_sub(burst_credit).unwrap_or(now);
+        let base = host_deadlines
+            .get(host)
+            .copied()
+            .filter(|deadline| *deadline > earliest_base)
+            .unwrap_or(earliest_base);
+        let wait_duration = base.saturating_duration_since(now);
+        host_deadlines.insert(host.clone(), base + interval);
+        wait_duration
+    }
+}
+
+impl Default for RateLimitRegistry {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -434,6 +767,7 @@ fn reqwest_client_builder() -> reqwest::ClientBuilder {
     Client::builder()
         .min_tls_version(reqwest::tls::Version::TLS_1_2)
         .timeout(STANDARD_HTTP_TIMEOUT)
+        .redirect(reqwest::redirect::Policy::none())
         .user_agent(DEFAULT_USER_AGENT)
         .gzip(true)
         .brotli(true)
@@ -446,6 +780,7 @@ fn blocking_reqwest_client_builder() -> reqwest::blocking::ClientBuilder {
     BlockingClient::builder()
         .min_tls_version(reqwest::tls::Version::TLS_1_2)
         .timeout(STANDARD_HTTP_TIMEOUT)
+        .redirect(reqwest::redirect::Policy::none())
         .user_agent(DEFAULT_USER_AGENT)
         .gzip(true)
         .brotli(true)
@@ -529,13 +864,63 @@ pub fn blocking_reqwest_client() -> Result<BlockingClient, reqwest::Error> {
 }
 
 pub async fn send_reqwest_request(request: RequestBuilder) -> Result<Response, reqwest::Error> {
-    request.send().await
+    let registry = RateLimitRegistry::new();
+    let destination = request
+        .try_clone()
+        .and_then(|clone| clone.build().ok())
+        .and_then(|request| destination_key_from_url(request.url()));
+    let host = request
+        .try_clone()
+        .and_then(|clone| clone.build().ok())
+        .and_then(|request| host_key_from_url(request.url()));
+
+    if let Some(destination) = destination.as_ref() {
+        let _ = registry.wait_for_destination_if_needed(destination).await;
+    }
+    if let Some(host) = host.as_ref() {
+        let _ = registry.acquire_host_rps(host).await;
+    }
+
+    let response = request.send().await?;
+    if response.status() == StatusCode::TOO_MANY_REQUESTS
+        && let Some(destination) = destination_key_from_url(response.url()).or(destination)
+    {
+        let (delay, source) = retry_after_delay(response.headers(), Duration::from_secs(1));
+        let _ = registry
+            .record_destination_cooldown(&destination, delay, source)
+            .await;
+    }
+    Ok(response)
 }
 
 pub fn send_blocking_reqwest_request(
     request: reqwest::blocking::RequestBuilder,
 ) -> Result<reqwest::blocking::Response, reqwest::Error> {
-    request.send()
+    let registry = RateLimitRegistry::new();
+    let destination = request
+        .try_clone()
+        .and_then(|clone| clone.build().ok())
+        .and_then(|request| destination_key_from_url(request.url()));
+    let host = request
+        .try_clone()
+        .and_then(|clone| clone.build().ok())
+        .and_then(|request| host_key_from_url(request.url()));
+
+    if let Some(destination) = destination.as_ref() {
+        let _ = registry.wait_for_destination_if_needed_blocking(destination);
+    }
+    if let Some(host) = host.as_ref() {
+        let _ = registry.acquire_host_rps_blocking(host);
+    }
+
+    let response = request.send()?;
+    if response.status() == StatusCode::TOO_MANY_REQUESTS
+        && let Some(destination) = destination_key_from_url(response.url()).or(destination)
+    {
+        let (delay, source) = retry_after_delay(response.headers(), Duration::from_secs(1));
+        let _ = registry.record_destination_cooldown_blocking(&destination, delay, source);
+    }
+    Ok(response)
 }
 
 fn uploaded_root_certificates(bundle_pem: &str) -> Result<Vec<Certificate>, String> {
@@ -571,6 +956,37 @@ impl OutboundHttpClient {
 
     pub fn registry(&self) -> &RateLimitRegistry {
         &self.registry
+    }
+
+    async fn send_builder_with_manual_redirects(
+        &self,
+        builder: RequestBuilder,
+        request_label: &str,
+    ) -> Result<Response, reqwest::Error> {
+        let mut response = builder.send().await?;
+        for _ in 0..MAX_MANUAL_REDIRECTS {
+            let Some(next_url) = redirect_target_url(&response) else {
+                return Ok(response);
+            };
+            if let Some(destination) = destination_key_from_url(&next_url) {
+                let _ = self
+                    .registry
+                    .wait_for_destination_if_needed(&destination)
+                    .await;
+            }
+            if let Some(host) = host_key_from_url(&next_url)
+                && let Some(wait_duration) = self.registry.acquire_host_rps(&host).await
+            {
+                debug!(
+                    host = %host,
+                    request_label,
+                    wait_ms = wait_duration.as_millis(),
+                    "outbound HTTP redirect host RPS wait"
+                );
+            }
+            response = self.client.get(next_url).send().await?;
+        }
+        Ok(response)
     }
 
     pub async fn send<F>(
@@ -628,8 +1044,69 @@ impl OutboundHttpClient {
 
             attempt += 1;
             let builder = build_request().await.map_err(OutboundRequestError::Build)?;
+            let request_destination = builder
+                .try_clone()
+                .and_then(|clone| clone.build().ok())
+                .and_then(|request| destination_key_from_url(request.url()));
 
-            match builder.send().await {
+            if let Some(destination) = request_destination.as_ref() {
+                if let Some(wait_duration) = self
+                    .registry
+                    .wait_for_destination_if_needed(destination)
+                    .await
+                {
+                    counter!(
+                        "scryer_outbound_http_destination_cooldown_wait_total",
+                        "destination" => destination.to_string(),
+                        "request_label" => policy.request_label.to_string()
+                    )
+                    .increment(1);
+                    histogram!(
+                        "scryer_outbound_http_destination_cooldown_wait_seconds",
+                        "destination" => destination.to_string(),
+                        "request_label" => policy.request_label.to_string()
+                    )
+                    .record(wait_duration.as_secs_f64());
+                    debug!(
+                        destination = %destination,
+                        request_label = policy.request_label.as_ref(),
+                        wait_ms = wait_duration.as_millis(),
+                        "outbound HTTP destination cooldown wait"
+                    );
+                }
+            }
+
+            if let Some(host) = builder
+                .try_clone()
+                .and_then(|clone| clone.build().ok())
+                .and_then(|request| host_key_from_url(request.url()))
+            {
+                if let Some(wait_duration) = self.registry.acquire_host_rps(&host).await {
+                    counter!(
+                        "scryer_outbound_http_host_rps_wait_total",
+                        "host" => host.to_string(),
+                        "request_label" => policy.request_label.to_string()
+                    )
+                    .increment(1);
+                    histogram!(
+                        "scryer_outbound_http_host_rps_wait_seconds",
+                        "host" => host.to_string(),
+                        "request_label" => policy.request_label.to_string()
+                    )
+                    .record(wait_duration.as_secs_f64());
+                    debug!(
+                        host = %host,
+                        request_label = policy.request_label.as_ref(),
+                        wait_ms = wait_duration.as_millis(),
+                        "outbound HTTP host RPS wait"
+                    );
+                }
+            }
+
+            match self
+                .send_builder_with_manual_redirects(builder, policy.request_label.as_ref())
+                .await
+            {
                 Ok(response) if response.status() != StatusCode::TOO_MANY_REQUESTS => {
                     return Ok(response);
                 }
@@ -643,6 +1120,18 @@ impl OutboundHttpClient {
                         .registry
                         .record_cooldown(&policy.scope, candidate_delay, candidate_source)
                         .await;
+                    let response_destination =
+                        destination_key_from_url(response.url()).or(request_destination);
+                    if let Some(destination) = response_destination.as_ref() {
+                        let _ = self
+                            .registry
+                            .record_destination_cooldown(
+                                destination,
+                                candidate_delay,
+                                candidate_source,
+                            )
+                            .await;
+                    }
 
                     counter!(
                         "scryer_outbound_http_429_total",
@@ -803,6 +1292,48 @@ pub fn parse_retry_after(raw_value: &str) -> Option<(Duration, RetryAfterSource)
     None
 }
 
+pub fn host_key_from_url(url: &reqwest::Url) -> Option<HostKey> {
+    url.host_str().map(HostKey::from)
+}
+
+pub fn destination_key_from_url(url: &reqwest::Url) -> Option<DestinationKey> {
+    url.host_str().map(DestinationKey::from)
+}
+
+fn redirect_target_url(response: &Response) -> Option<reqwest::Url> {
+    if !response.status().is_redirection() {
+        return None;
+    }
+    let location = response.headers().get(LOCATION)?.to_str().ok()?;
+    response.url().join(location).ok()
+}
+
+fn normalize_host_key(value: &str) -> String {
+    value
+        .trim()
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .trim_end_matches('.')
+        .to_ascii_lowercase()
+}
+
+fn host_is_loopback(host: &str) -> bool {
+    matches!(host, "localhost" | "::1")
+        || host
+            .parse::<IpAddr>()
+            .map(|ip| ip.is_loopback())
+            .unwrap_or(false)
+}
+
+fn default_host_rps_interval() -> Duration {
+    let rps = std::env::var("SCRYER_OUTBOUND_HOST_RPS")
+        .ok()
+        .and_then(|value| value.trim().parse::<f64>().ok())
+        .filter(|value| value.is_finite() && *value > 0.0)
+        .unwrap_or(DEFAULT_HOST_RPS);
+    Duration::from_secs_f64(1.0 / rps)
+}
+
 fn bounded_exponential_backoff(base: Duration, max: Duration, retry_index: u32) -> Duration {
     if base.is_zero() || max.is_zero() {
         return Duration::ZERO;
@@ -960,7 +1491,7 @@ mod tests {
 
     #[tokio::test]
     async fn cooldowns_are_isolated_per_scope() {
-        let registry = RateLimitRegistry::new();
+        let registry = RateLimitRegistry::isolated();
         let alpha: RateLimitScopeKey = "alpha".into();
         let beta: RateLimitScopeKey = "beta".into();
 
@@ -991,7 +1522,8 @@ mod tests {
         ])
         .await;
 
-        let client = OutboundHttpClient::new(generic_reqwest_client(), RateLimitRegistry::new());
+        let client =
+            OutboundHttpClient::new(generic_reqwest_client(), RateLimitRegistry::isolated());
         let policy = RequestPolicy::safe_read("test-server", "retry-test")
             .with_max_retries(1)
             .with_backoff(Duration::from_millis(5), Duration::from_millis(5));
@@ -1010,7 +1542,8 @@ mod tests {
         let (url, hits) =
             spawn_http_server(vec![http_response(429, &[("Retry-After", "bogus")], "")]).await;
 
-        let client = OutboundHttpClient::new(generic_reqwest_client(), RateLimitRegistry::new());
+        let client =
+            OutboundHttpClient::new(generic_reqwest_client(), RateLimitRegistry::isolated());
         let policy = RequestPolicy::no_retry("test-server", "no-retry")
             .with_backoff(Duration::from_millis(5), Duration::from_millis(5));
 
@@ -1036,7 +1569,7 @@ mod tests {
 
     #[tokio::test]
     async fn existing_cooldown_source_wins_when_longer() {
-        let registry = RateLimitRegistry::new();
+        let registry = RateLimitRegistry::isolated();
         let scope: RateLimitScopeKey = "scope".into();
 
         let _ = registry
@@ -1051,6 +1584,145 @@ mod tests {
             .await;
 
         assert_eq!(source, RetryAfterSource::ExistingCooldown);
+    }
+
+    #[test]
+    fn host_keys_are_normalized() {
+        assert_eq!(HostKey::from("Example.COM.").as_str(), "example.com");
+        assert_eq!(HostKey::from("[2001:db8::1]").as_str(), "2001:db8::1");
+    }
+
+    #[test]
+    fn registry_new_returns_shared_state() {
+        let first = RateLimitRegistry::new();
+        let second = RateLimitRegistry::new();
+
+        assert!(Arc::ptr_eq(&first.state, &second.state));
+    }
+
+    #[tokio::test]
+    async fn host_rps_is_shared_per_host() {
+        let registry = RateLimitRegistry::isolated();
+        let host: HostKey = "rps.example.test".into();
+
+        let first_wait = registry.acquire_host_rps(&host).await;
+        let second_wait = registry.acquire_host_rps(&host).await;
+        let third_wait = registry.acquire_host_rps(&host).await;
+        let fourth_wait = registry.acquire_host_rps(&host).await;
+
+        assert_eq!(first_wait, None);
+        assert_eq!(second_wait, None);
+        assert_eq!(third_wait, None);
+        assert!(fourth_wait.is_some());
+    }
+
+    #[tokio::test]
+    async fn loopback_hosts_bypass_default_rps() {
+        let registry = RateLimitRegistry::isolated();
+        let host: HostKey = "127.0.0.1".into();
+
+        for _ in 0..8 {
+            assert_eq!(registry.acquire_host_rps(&host).await, None);
+        }
+    }
+
+    #[tokio::test]
+    async fn snapshot_reports_host_rps_and_destination_cooldowns() {
+        let registry = RateLimitRegistry::isolated();
+        let host: HostKey = "snapshot.example.test".into();
+        let destination: DestinationKey = "snapshot.example.test".into();
+
+        let _ = registry.acquire_host_rps(&host).await;
+        let _ = registry
+            .record_destination_cooldown(
+                &destination,
+                Duration::from_secs(1),
+                RetryAfterSource::Seconds,
+            )
+            .await;
+
+        let snapshot = registry.snapshot();
+
+        assert!(snapshot.host_rps.iter().any(|entry| entry.host_key == host));
+        assert!(
+            snapshot
+                .destination_cooldowns
+                .iter()
+                .any(|entry| entry.destination_key == destination && !entry.available_in.is_zero())
+        );
+    }
+
+    #[tokio::test]
+    async fn outbound_client_paces_redirect_target_host() {
+        let (target_bound_url, target_hits) = spawn_http_server(vec![http_response(
+            200,
+            &[("Content-Type", "text/plain")],
+            "ok",
+        )])
+        .await;
+        let target_addr = bound_url_socket_addr(&target_bound_url);
+        let (origin_bound_url, origin_hits) = spawn_http_server(vec![http_response(
+            302,
+            &[("Location", "http://target.test/test")],
+            "",
+        )])
+        .await;
+        let origin_addr = bound_url_socket_addr(&origin_bound_url);
+        let registry = RateLimitRegistry::isolated();
+        let client = reqwest_client_builder()
+            .resolve_to_addrs("origin.test", &[origin_addr])
+            .resolve_to_addrs("target.test", &[target_addr])
+            .build()
+            .expect("client should build");
+        let outbound = OutboundHttpClient::new(client.clone(), registry.clone());
+
+        let response = outbound
+            .send(
+                RequestPolicy::safe_read("redirect-test", "redirect-test"),
+                || client.get("http://origin.test/test"),
+            )
+            .await
+            .expect("redirected request should succeed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(origin_hits.load(Ordering::SeqCst), 1);
+        assert_eq!(target_hits.load(Ordering::SeqCst), 1);
+        let snapshot = registry.snapshot();
+        assert!(
+            snapshot
+                .host_rps
+                .iter()
+                .any(|entry| entry.host_key == HostKey::from("origin.test"))
+        );
+        assert!(
+            snapshot
+                .host_rps
+                .iter()
+                .any(|entry| entry.host_key == HostKey::from("target.test"))
+        );
+    }
+
+    #[tokio::test]
+    async fn destination_cooldowns_are_isolated_from_legacy_scopes() {
+        let registry = RateLimitRegistry::isolated();
+        let scope: RateLimitScopeKey = "legacy-scope".into();
+        let destination: DestinationKey = "cooldown.example.test".into();
+
+        let _ = registry
+            .record_destination_cooldown(
+                &destination,
+                Duration::from_millis(10),
+                RetryAfterSource::Seconds,
+            )
+            .await;
+
+        assert!(
+            registry
+                .wait_for_destination_if_needed(&destination)
+                .await
+                .is_some()
+        );
+        assert_eq!(registry.wait_if_needed(&scope).await, None);
     }
 
     fn http_response(status: u16, headers: &[(&str, &str)], body: &str) -> String {
@@ -1094,6 +1766,17 @@ mod tests {
         });
 
         (format!("http://{address}/test"), hits)
+    }
+
+    fn bound_url_socket_addr(url: &str) -> SocketAddr {
+        let url = reqwest::Url::parse(url).expect("bound URL should parse");
+        SocketAddr::new(
+            url.host_str()
+                .expect("bound URL should include host")
+                .parse()
+                .expect("bound URL host should parse"),
+            url.port().expect("bound URL should include port"),
+        )
     }
 
     async fn read_request(stream: &mut tokio::net::TcpStream) -> io::Result<()> {

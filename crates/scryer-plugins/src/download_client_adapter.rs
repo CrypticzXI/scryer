@@ -1033,6 +1033,7 @@ mod tests {
                 slug: None,
                 imdb_id: None,
                 runtime_minutes: None,
+                popularity: None,
                 genres: Vec::new(),
                 content_status: None,
                 language: None,

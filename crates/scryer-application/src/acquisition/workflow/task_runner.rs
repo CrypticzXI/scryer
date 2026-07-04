@@ -1774,7 +1774,7 @@ pub async fn start_background_acquisition_poller(
         Utc::now() + chrono::Duration::minutes(5),
     )
     .await;
-    app.set_job_next_run_at(JobKey::RssSync, Utc::now() + chrono::Duration::minutes(15))
+    app.set_job_next_run_at(JobKey::RssSync, Utc::now() + chrono::Duration::minutes(1))
         .await;
     app.set_job_next_run_at(
         JobKey::PendingReleaseProcessing,
@@ -1795,7 +1795,7 @@ pub async fn start_background_acquisition_poller(
     let mut prowlarr_sync_interval = tokio::time::interval(std::time::Duration::from_mins(5));
     let mut direct_indexer_caps_interval =
         tokio::time::interval(std::time::Duration::from_hours(24));
-    let mut rss_sync_interval = tokio::time::interval(std::time::Duration::from_mins(15));
+    let mut rss_sync_interval = tokio::time::interval(std::time::Duration::from_mins(1));
     let mut pending_release_interval = tokio::time::interval(std::time::Duration::from_mins(1));
 
     // Consume immediate intervals.
@@ -1971,7 +1971,7 @@ pub async fn start_background_acquisition_poller(
                 run_task("rss_sync", async move {
                     app.set_job_next_run_at(
                         JobKey::RssSync,
-                        Utc::now() + chrono::Duration::minutes(15),
+                        Utc::now() + chrono::Duration::minutes(1),
                     ).await;
                     if let Err(e) = app.run_scheduled_job_now(JobKey::RssSync, JobTriggerSource::ScheduledInterval).await {
                         warn!(error = %e, "periodic RSS sync failed");

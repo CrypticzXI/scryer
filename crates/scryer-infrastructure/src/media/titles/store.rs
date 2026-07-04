@@ -18,7 +18,8 @@ use unicode_normalization::UnicodeNormalization;
 
 use crate::media::canonical_tags::{
     attach_canonical_tags_to_titles, canonical_subject_input_for_title_with_key,
-    replace_canonical_media_tags_tx, upsert_canonical_media_subject_tx,
+    prefer_canonical_media_subject_for_title_tx, replace_canonical_media_tags_tx,
+    upsert_canonical_media_subject_tx,
 };
 use crate::queries::{
     common::parse_utc_datetime,
@@ -1104,14 +1105,32 @@ impl TitleRepository for TitleStore {
                     if let Some(ratings) = ratings {
                         replace_title_ratings_tx(tx, &id, &ratings).await?;
                     }
-                    if !canonical_tags.is_empty() {
+                    if canonical_subject_key
+                        .as_deref()
+                        .is_some_and(|key| !key.trim().is_empty())
+                        || !canonical_tags.is_empty()
+                    {
                         let subject_input = canonical_subject_input_for_title_with_key(
                             &title,
                             canonical_subject_key.as_deref(),
                         );
                         let subject_id =
                             upsert_canonical_media_subject_tx(tx, &subject_input).await?;
-                        replace_canonical_media_tags_tx(tx, &subject_id, &canonical_tags).await?;
+                        if canonical_subject_key
+                            .as_deref()
+                            .is_some_and(|key| !key.trim().is_empty())
+                        {
+                            prefer_canonical_media_subject_for_title_tx(
+                                tx,
+                                &subject_id,
+                                &subject_input,
+                            )
+                            .await?;
+                        }
+                        if !canonical_tags.is_empty() {
+                            replace_canonical_media_tags_tx(tx, &subject_id, &canonical_tags)
+                                .await?;
+                        }
                     }
                     load_title_tx_or_not_found(tx, &id, true).await
                 })

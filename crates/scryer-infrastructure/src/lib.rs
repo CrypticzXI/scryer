@@ -11,6 +11,7 @@ mod oauth;
 pub mod security;
 mod settings;
 pub mod storage;
+mod upstream_scheduler;
 mod users;
 mod workflow;
 
@@ -128,6 +129,10 @@ pub(crate) mod migration_hook_ids {
 
 pub mod migrations {
     pub use crate::storage::migrations::*;
+}
+
+pub mod upstream_scheduling {
+    pub use crate::upstream_scheduler::InMemoryUpstreamScheduler;
 }
 
 pub(crate) mod notification_store {

@@ -99,6 +99,42 @@ pub(crate) async fn upsert_canonical_media_subject_tx(
     Ok(subject_id)
 }
 
+pub(crate) async fn prefer_canonical_media_subject_for_title_tx(
+    tx: &mut SqlTx<'_>,
+    preferred_subject_id: &str,
+    input: &CanonicalMediaSubjectInput,
+) -> AppResult<()> {
+    let Some(title_id) = input
+        .title_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+    else {
+        return Ok(());
+    };
+    let target_kind = input.target_kind.trim();
+    if target_kind.is_empty() {
+        return Ok(());
+    }
+
+    tx.execute(
+        "UPDATE canonical_media_subjects
+            SET title_id = NULL,
+                updated_at = {}
+          WHERE title_id = {}
+            AND target_kind = {}
+            AND id <> {}",
+        &[
+            SqlArg::Timestamp(Utc::now()),
+            SqlArg::Text(title_id.to_string()),
+            SqlArg::Text(target_kind.to_string()),
+            SqlArg::Text(preferred_subject_id.to_string()),
+        ],
+    )
+    .await?;
+    Ok(())
+}
+
 pub(crate) async fn replace_canonical_media_tags_tx(
     tx: &mut SqlTx<'_>,
     subject_id: &str,

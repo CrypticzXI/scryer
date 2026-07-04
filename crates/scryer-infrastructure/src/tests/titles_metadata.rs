@@ -520,6 +520,86 @@ async fn hydrated_title_metadata_persists_external_ratings() {
 }
 
 #[tokio::test]
+async fn smg_canonical_subject_preference_detaches_external_id_fallback_subjects() {
+    let db = std::env::temp_dir().join(format!(
+        "scryer_title_canonical_subject_preference_{}.db",
+        chrono::Utc::now().timestamp_micros()
+    ));
+    let services = SqliteServices::new(db.to_string_lossy())
+        .await
+        .expect("db should initialize");
+    let catalog = title_store(&services);
+
+    let mut title = make_test_title("title-canonical-preference", None);
+    title.facet = MediaFacet::Movie;
+    title.external_ids = vec![ExternalId {
+        source: "tvdb".to_string(),
+        value: "123456".to_string(),
+    }];
+    TitleRepository::create(&catalog, title.clone())
+        .await
+        .expect("title should insert");
+
+    let fallback_tag = scryer_domain::CanonicalMediaTag {
+        key: "canonical:genre:legacy".to_string(),
+        category: "genre".to_string(),
+        name: "Legacy".to_string(),
+        confidence: Some(0.5),
+        sources: vec!["test".to_string()],
+        source_tag_keys: vec!["legacy".to_string()],
+        is_adult: false,
+        is_spoiler: false,
+    };
+    TitleRepository::update_title_hydrated_metadata(
+        &catalog,
+        &title.id,
+        TitleMetadataUpdate {
+            metadata_language: Some("ja".to_string()),
+            metadata_fetched_at: Some(Utc::now().to_rfc3339()),
+            canonical_tags: vec![fallback_tag.clone()],
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("fallback canonical tag should persist");
+
+    let fallback = TitleRepository::get_by_id(&catalog, &title.id)
+        .await
+        .expect("title lookup should succeed")
+        .expect("title should exist");
+    assert_eq!(fallback.canonical_tags, vec![fallback_tag]);
+
+    let updated = TitleRepository::update_title_hydrated_metadata(
+        &catalog,
+        &title.id,
+        TitleMetadataUpdate {
+            canonical_subject_key: Some("smg:movie:preferred-title".to_string()),
+            metadata_language: Some("en".to_string()),
+            metadata_fetched_at: Some(Utc::now().to_rfc3339()),
+            canonical_tags: vec![],
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("smg canonical subject preference should persist");
+
+    assert_eq!(
+        updated.canonical_tags,
+        Vec::<scryer_domain::CanonicalMediaTag>::new()
+    );
+    let reloaded = TitleRepository::get_by_id(&catalog, &title.id)
+        .await
+        .expect("title lookup should succeed")
+        .expect("title should exist");
+    assert_eq!(
+        reloaded.canonical_tags,
+        Vec::<scryer_domain::CanonicalMediaTag>::new()
+    );
+
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
 async fn title_queries_change_local_version_when_cached_poster_changes() {
     let db = std::env::temp_dir().join(format!(
         "scryer_title_poster_version_{}.db",

@@ -18,13 +18,18 @@ use crate::subtitles::search::SubtitleSearchOrchestrator;
 use crate::subtitles::sync;
 use crate::subtitles::wanted::{SubtitleLanguagePref, compute_missing_subtitles_from_streams};
 use crate::{
-    AppError, AppResult, AppUseCase, JobKey, JobTriggerSource, ParsedReleaseMetadata,
-    ScopedExternalId, SubtitleProviderClient, SubtitleProviderConfigUpdate,
-    SubtitleSettings as AppSubtitleSettings, parse_release_metadata,
+    AccountQuotaKey, AppError, AppResult, AppUseCase, JobKey, JobTriggerSource,
+    ParsedReleaseMetadata, SchedulerAdmission, SchedulerBatchRequest, SchedulerCandidate,
+    SchedulerCandidateId, SchedulerFeedback, SchedulerFeedbackOutcome, SchedulerIntent,
+    SchedulerLease, SchedulerOperation, SchedulerPluginKind, ScopedExternalId,
+    SubtitleProviderClient, SubtitleProviderConfigUpdate, SubtitleSettings as AppSubtitleSettings,
+    parse_release_metadata,
 };
 use scryer_domain::{
-    ExternalSubtitleSourceKind, SubtitleBlocklistEntry, SubtitleDownload, Title, User,
+    ExternalSubtitleSourceKind, SubtitleBlocklistEntry, SubtitleDownload, SubtitleProviderConfig,
+    Title, User,
 };
+use scryer_outbound_http::{DestinationKey, HostKey};
 
 const ON_IMPORT_SUBTITLE_SEARCH_CONCURRENCY_LIMIT: usize = 2;
 static ON_IMPORT_SUBTITLE_SEARCH_LIMIT: LazyLock<Arc<tokio::sync::Semaphore>> =
@@ -59,6 +64,8 @@ struct PluginSubtitleProviderAdapter {
     config_id: String,
     provider_name: String,
     enabled_facets: Vec<String>,
+    host_key: HostKey,
+    destination_key: DestinationKey,
 }
 
 #[async_trait::async_trait]
@@ -73,6 +80,143 @@ impl SubtitleProvider for PluginSubtitleProviderAdapter {
 
     fn name(&self) -> &str {
         self.provider_name.as_str()
+    }
+}
+
+fn subtitle_scheduler_keys(config: &SubtitleProviderConfig) -> (HostKey, DestinationKey) {
+    subtitle_config_host(config.config_json.as_str())
+        .map(|host| (HostKey::from(host.clone()), DestinationKey::from(host)))
+        .unwrap_or_else(|| {
+            let fallback = format!("subtitle:{}:{}", config.provider_type, config.id);
+            (
+                HostKey::from(fallback.clone()),
+                DestinationKey::from(fallback),
+            )
+        })
+}
+
+fn subtitle_config_host(config_json: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(config_json).ok()?;
+    let object = value.as_object()?;
+    object.values().find_map(|value| {
+        let raw = value.as_str()?.trim();
+        let url = reqwest::Url::parse(raw).ok()?;
+        url.host_str().map(|host| host.to_ascii_lowercase())
+    })
+}
+
+async fn admit_subtitle_provider(
+    app: &AppUseCase,
+    provider: &PluginSubtitleProviderAdapter,
+    intent: SchedulerIntent,
+    operation: SchedulerOperation,
+) -> AppResult<Option<SchedulerLease>> {
+    let candidate_id = SchedulerCandidateId::new();
+    let decision = app
+        .services
+        .integrations
+        .upstream_scheduler
+        .admit_batch(SchedulerBatchRequest {
+            batch_id: format!("subtitle:{}:{}", provider.config_id, candidate_id),
+            now: Utc::now(),
+            candidates: vec![SchedulerCandidate {
+                candidate_id,
+                plugin_config_id: Some(provider.config_id.clone()),
+                plugin_kind: SchedulerPluginKind::Subtitle,
+                operation,
+                intent,
+                host_key: provider.host_key.clone(),
+                destination_key: provider.destination_key.clone(),
+                account_quota_key: Some(AccountQuotaKey::from(provider.config_id.clone())),
+                estimated_cost: Default::default(),
+                expected_value: Default::default(),
+                learning_context: None,
+                deadline_at: None,
+                freshness: None,
+                cancel_token: tokio_util::sync::CancellationToken::new(),
+            }],
+        })
+        .await?;
+
+    match decision.decisions.into_iter().next() {
+        Some(SchedulerAdmission::Admit { reason, lease, .. }) => {
+            debug!(
+                subtitle_provider = provider.name(),
+                scheduler_reason = ?reason,
+                "scheduler admitted subtitle provider"
+            );
+            Ok(Some(lease))
+        }
+        Some(SchedulerAdmission::Defer {
+            reason,
+            retry_after,
+            ..
+        }) => {
+            info!(
+                subtitle_provider = provider.name(),
+                scheduler_reason = ?reason,
+                retry_after_secs = retry_after.map(|delay| delay.as_secs()),
+                "scheduler deferred subtitle provider"
+            );
+            Ok(None)
+        }
+        Some(SchedulerAdmission::Skip { reason, .. }) => {
+            info!(
+                subtitle_provider = provider.name(),
+                scheduler_reason = ?reason,
+                "scheduler skipped subtitle provider"
+            );
+            Ok(None)
+        }
+        None => Ok(None),
+    }
+}
+
+async fn record_subtitle_scheduler_feedback(
+    app: &AppUseCase,
+    provider: &PluginSubtitleProviderAdapter,
+    lease: Option<SchedulerLease>,
+    outcome: SchedulerFeedbackOutcome,
+) {
+    if let Err(error) = app
+        .services
+        .integrations
+        .upstream_scheduler
+        .record_feedback(SchedulerFeedback {
+            lease,
+            host_key: provider.host_key.clone(),
+            destination_key: provider.destination_key.clone(),
+            account_quota_key: Some(AccountQuotaKey::from(provider.config_id.clone())),
+            outcome,
+            observed_api_current: None,
+            observed_api_max: None,
+            observed_grab_current: None,
+            observed_grab_max: None,
+            retry_after: None,
+            observed_at: Utc::now(),
+        })
+        .await
+    {
+        warn!(
+            subtitle_provider = provider.name(),
+            error = %error,
+            "failed to record subtitle scheduler feedback"
+        );
+    }
+}
+
+fn subtitle_scheduler_outcome_for_error(error: &AppError) -> SchedulerFeedbackOutcome {
+    let error = error.to_string().to_ascii_lowercase();
+    if error.contains("rate limit")
+        || error.contains("rate-limit")
+        || error.contains("too many requests")
+        || error.contains("429")
+        || error.contains("retry_after")
+        || error.contains("retry-after")
+    {
+        SchedulerFeedbackOutcome::RateLimited
+    } else {
+        SchedulerFeedbackOutcome::ProviderFailure
     }
 }
 
@@ -122,12 +266,17 @@ async fn configured_runtime_subtitle_providers(
     let mut first_error = None;
     for config in enabled_configs {
         match app.subtitle_provider_client_for_config(&config).await {
-            Ok(client) => providers.push(PluginSubtitleProviderAdapter {
-                client,
-                config_id: config.id,
-                provider_name: config.provider_type,
-                enabled_facets: config.enabled_facets,
-            }),
+            Ok(client) => {
+                let (host_key, destination_key) = subtitle_scheduler_keys(&config);
+                providers.push(PluginSubtitleProviderAdapter {
+                    client,
+                    config_id: config.id,
+                    provider_name: config.provider_type,
+                    enabled_facets: config.enabled_facets,
+                    host_key,
+                    destination_key,
+                })
+            }
             Err(error) => {
                 warn!(
                     subtitle_provider = config.name.as_str(),
@@ -186,12 +335,17 @@ async fn runtime_subtitle_provider_for_download(
             })
     {
         return match app.subtitle_provider_client_for_config(&config).await {
-            Ok(client) => Ok(PluginSubtitleProviderAdapter {
-                client,
-                config_id: config.id,
-                provider_name: config.provider_type,
-                enabled_facets: config.enabled_facets,
-            }),
+            Ok(client) => {
+                let (host_key, destination_key) = subtitle_scheduler_keys(&config);
+                Ok(PluginSubtitleProviderAdapter {
+                    client,
+                    config_id: config.id,
+                    provider_name: config.provider_type,
+                    enabled_facets: config.enabled_facets,
+                    host_key,
+                    destination_key,
+                })
+            }
             Err(error) => Err(error),
         };
     }
@@ -224,6 +378,16 @@ async fn search_all_subtitle_providers(
     let file_path = file_path.to_path_buf();
 
     for provider in filtered_providers {
+        let Some(scheduler_lease) = admit_subtitle_provider(
+            app,
+            &provider,
+            SchedulerIntent::SubtitleSearch,
+            SchedulerOperation::Search,
+        )
+        .await?
+        else {
+            continue;
+        };
         let permit = Arc::clone(&semaphore)
             .acquire_owned()
             .await
@@ -236,19 +400,33 @@ async fn search_all_subtitle_providers(
             let _permit = permit;
             let provider_config_id = provider.config_id.clone();
             let provider_name = provider.name().to_string();
+            let feedback_provider = provider.clone();
             let orchestrator = SubtitleSearchOrchestrator::new(min_score);
             let result = orchestrator
                 .search(&provider, &task_file_path, &task_query)
                 .await;
-            (provider_name, provider_config_id, result)
+            (
+                provider_name,
+                provider_config_id,
+                feedback_provider,
+                scheduler_lease,
+                result,
+            )
         });
     }
 
     while let Some(join_result) = tasks.join_next().await {
-        let (provider_name, provider_config_id, result) = join_result
+        let (provider_name, provider_config_id, provider, scheduler_lease, result) = join_result
             .map_err(|err| AppError::Repository(format!("subtitle provider task failed: {err}")))?;
         match result {
             Ok(results) => {
+                record_subtitle_scheduler_feedback(
+                    app,
+                    &provider,
+                    Some(scheduler_lease),
+                    SchedulerFeedbackOutcome::Success,
+                )
+                .await;
                 record_subtitle_provider_search_success(
                     app,
                     &provider_name,
@@ -267,6 +445,9 @@ async fn search_all_subtitle_providers(
                 }
             }
             Err(error) => {
+                let outcome = subtitle_scheduler_outcome_for_error(&error);
+                record_subtitle_scheduler_feedback(app, &provider, Some(scheduler_lease), outcome)
+                    .await;
                 record_subtitle_provider_search_failure(
                     app,
                     &provider_name,
@@ -566,10 +747,22 @@ impl AppUseCase {
         let settings = self.subtitle_settings().await?;
         let provider =
             runtime_subtitle_provider_for_download(self, &settings, &provider_name).await?;
+        let Some(scheduler_lease) = admit_subtitle_provider(
+            self,
+            &provider,
+            SchedulerIntent::SubtitleDownload,
+            SchedulerOperation::Download,
+        )
+        .await?
+        else {
+            return Err(AppError::Repository(format!(
+                "subtitle provider '{provider_name}' was deferred by upstream scheduler"
+            )));
+        };
 
         let file_path = stored_path_to_path_buf(&media_file.file_path);
         let episode_context = media_file_episode_context(self, &media_file).await;
-        let (dest_path, _) = crate::subtitles::download::download_and_save_with_selection(
+        let download_result = crate::subtitles::download::download_and_save_with_selection(
             &provider,
             &provider_file_id,
             file_path.as_path(),
@@ -581,7 +774,28 @@ impl AppUseCase {
                 absolute_episode: episode_context.absolute_episode,
             },
         )
-        .await?;
+        .await;
+        match &download_result {
+            Ok(_) => {
+                record_subtitle_scheduler_feedback(
+                    self,
+                    &provider,
+                    Some(scheduler_lease),
+                    SchedulerFeedbackOutcome::Success,
+                )
+                .await;
+            }
+            Err(error) => {
+                record_subtitle_scheduler_feedback(
+                    self,
+                    &provider,
+                    Some(scheduler_lease),
+                    subtitle_scheduler_outcome_for_error(error),
+                )
+                .await;
+            }
+        }
+        let (dest_path, _) = download_result?;
 
         let record = SubtitleDownload {
             id: scryer_domain::Id::new().0,
@@ -1493,8 +1707,18 @@ async fn run_subtitle_search_for_file(
                     continue;
                 }
             };
+        let Some(scheduler_lease) = admit_subtitle_provider(
+            app,
+            &download_provider,
+            SchedulerIntent::SubtitleDownload,
+            SchedulerOperation::Download,
+        )
+        .await?
+        else {
+            continue;
+        };
 
-        match crate::subtitles::download::download_and_save_with_selection(
+        let download_result = crate::subtitles::download::download_and_save_with_selection(
             &download_provider,
             &best.provider_file_id,
             file_path.as_path(),
@@ -1506,8 +1730,19 @@ async fn run_subtitle_search_for_file(
                 absolute_episode: query.absolute_episode,
             },
         )
-        .await
-        {
+        .await;
+        let scheduler_outcome = match &download_result {
+            Ok(_) => SchedulerFeedbackOutcome::Success,
+            Err(error) => subtitle_scheduler_outcome_for_error(error),
+        };
+        record_subtitle_scheduler_feedback(
+            app,
+            &download_provider,
+            Some(scheduler_lease),
+            scheduler_outcome,
+        )
+        .await;
+        match download_result {
             Ok((dest_path, _)) => {
                 let record = SubtitleDownload {
                     id: scryer_domain::Id::new().0,
@@ -1735,8 +1970,18 @@ async fn run_subtitle_search_cycle(app: &AppUseCase) -> AppResult<()> {
                             continue;
                         }
                     };
+                let Some(scheduler_lease) = admit_subtitle_provider(
+                    app,
+                    &download_provider,
+                    SchedulerIntent::SubtitleDownload,
+                    SchedulerOperation::Download,
+                )
+                .await?
+                else {
+                    continue;
+                };
 
-                match crate::subtitles::download::download_and_save_with_selection(
+                let download_result = crate::subtitles::download::download_and_save_with_selection(
                     &download_provider,
                     &best.provider_file_id,
                     file_path.as_path(),
@@ -1748,8 +1993,19 @@ async fn run_subtitle_search_cycle(app: &AppUseCase) -> AppResult<()> {
                         absolute_episode: query.absolute_episode,
                     },
                 )
-                .await
-                {
+                .await;
+                let scheduler_outcome = match &download_result {
+                    Ok(_) => SchedulerFeedbackOutcome::Success,
+                    Err(error) => subtitle_scheduler_outcome_for_error(error),
+                };
+                record_subtitle_scheduler_feedback(
+                    app,
+                    &download_provider,
+                    Some(scheduler_lease),
+                    scheduler_outcome,
+                )
+                .await;
+                match download_result {
                     Ok((dest_path, _file)) => {
                         // Record in database
                         let record = SubtitleDownload {

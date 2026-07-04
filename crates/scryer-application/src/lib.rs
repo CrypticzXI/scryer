@@ -58,6 +58,7 @@ pub mod stored_paths;
 pub mod subtitles;
 pub mod testing;
 mod types;
+pub mod upstream_scheduler;
 
 pub(crate) use acquisition::acquisition as acquisition_workflow;
 pub(crate) use acquisition::coverage as acquisition_coverage;
@@ -139,6 +140,14 @@ pub use quality::release_dedup;
 pub use services::{
     PluginInstallInProgressError, PluginInstallOperationKind, PluginInstallProgressSnapshot,
     PluginInstallState, RuntimeFeature, RuntimePerformanceClass, RuntimePerformanceSnapshot,
+};
+pub use upstream_scheduler::{
+    AccountQuotaKey, AdmissionReason, DeferralReason, EstimatedCost, ExpectedValueHint,
+    RssFreshnessContext, SchedulerAdmission, SchedulerBatchDecision, SchedulerBatchRequest,
+    SchedulerCandidate, SchedulerCandidateId, SchedulerFeedback, SchedulerFeedbackOutcome,
+    SchedulerIntent, SchedulerLease, SchedulerOperation, SchedulerPluginKind, SchedulerSnapshot,
+    SchedulerSnapshotEntry, SchedulerSnapshotFilter, SearchLearningContext, SkipReason,
+    UpstreamScheduler,
 };
 pub const SCRYER_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const LIBRARY_SCAN_MAX_RECURSIVE_DEPTH: usize =
@@ -355,7 +364,7 @@ pub use null_repositories::{
     NullPluginInstallationRepository, NullPostProcessingScriptRepository, NullRuleSetRepository,
     NullSettingsRepository, NullStagedNzbStore, NullSubtitleDownloadRepository,
     NullSystemInfoProvider, NullTitleImageProcessor, NullTitleImageRepository,
-    NullWantedItemRepository, NullWorkflowOperationRepository,
+    NullUpstreamScheduler, NullWantedItemRepository, NullWorkflowOperationRepository,
 };
 pub use ports::{
     AcquisitionStateRepository, BlocklistRepository, BuiltinDownloadClientConnectionTester,

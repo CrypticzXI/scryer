@@ -46,11 +46,13 @@ use crate::{
     OAuthRefreshGrantRecord, OAuthRefreshRotationOutcome, OAuthRefreshTokenRecord, OAuthRepository,
     PendingRelease, PendingReleaseRepository, PendingStagedNzb, PluginDescriptorLoader,
     PluginInstallationRepository, PostProcessingScriptRepository, ReleaseDecision,
-    RuleSetRepository, SettingsRepository, StagedNzbRef, StagedNzbStore, SystemInfoProvider,
+    RuleSetRepository, SchedulerAdmission, SchedulerBatchDecision, SchedulerBatchRequest,
+    SchedulerFeedback, SchedulerLease, SchedulerSnapshot, SchedulerSnapshotFilter,
+    SettingsRepository, StagedNzbRef, StagedNzbStore, SystemInfoProvider,
     TitleEpisodeProgressSummary, TitleImageBlob, TitleImageKind, TitleImageProcessor,
     TitleImageRepository, TitleImageSourceResult, TitleImageSyncTask, TitleImageVariantSpec,
     TitleMediaFile, TitleMediaSizeSummary, TitleMovieMediaSummary, TitleQualitySummary, UiSettings,
-    UiSettingsUpdate, UserExternalAccountRepository, UserUiSettingsRepository,
+    UiSettingsUpdate, UpstreamScheduler, UserExternalAccountRepository, UserUiSettingsRepository,
     VerifiedExternalIdentity, WantedItem, WantedItemRepository, WebauthnChallengeRecord,
     WebauthnCredentialRecord, WebauthnRepository, WorkflowOperationInfo,
     WorkflowOperationRepository, ports::CatalogDiscoveryCandidatesRecord, ports::DatastoreInfo,
@@ -1205,6 +1207,46 @@ impl IndexerStatsTracker for NullIndexerStatsTracker {
     }
     fn all_stats(&self) -> Vec<IndexerQueryStats> {
         vec![]
+    }
+}
+
+#[derive(Default)]
+pub struct NullUpstreamScheduler;
+
+#[async_trait]
+impl UpstreamScheduler for NullUpstreamScheduler {
+    async fn admit_batch(
+        &self,
+        request: SchedulerBatchRequest,
+    ) -> AppResult<SchedulerBatchDecision> {
+        let decisions = request
+            .candidates
+            .into_iter()
+            .map(|candidate| SchedulerAdmission::Admit {
+                candidate_id: candidate.candidate_id.clone(),
+                lease: SchedulerLease {
+                    lease_id: candidate.candidate_id.to_string(),
+                    candidate_id: candidate.candidate_id,
+                    host_key: candidate.host_key,
+                    destination_key: candidate.destination_key,
+                    account_quota_key: candidate.account_quota_key,
+                    issued_at: request.now,
+                },
+                reason: crate::AdmissionReason::BackgroundValue,
+            })
+            .collect();
+        Ok(SchedulerBatchDecision {
+            batch_id: request.batch_id,
+            decisions,
+        })
+    }
+
+    async fn record_feedback(&self, _feedback: SchedulerFeedback) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn snapshot(&self, _filter: SchedulerSnapshotFilter) -> AppResult<SchedulerSnapshot> {
+        Ok(SchedulerSnapshot::default())
     }
 }
 

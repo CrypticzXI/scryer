@@ -1293,6 +1293,7 @@ pub struct AppIntegrationServices {
     pub(crate) external_identity_verifier: Arc<dyn ExternalIdentityVerifier>,
     pub(crate) media_server_connections: Arc<dyn MediaServerConnectionRepository>,
     pub(crate) indexer_stats: Arc<dyn IndexerStatsTracker>,
+    pub(crate) upstream_scheduler: Arc<dyn UpstreamScheduler>,
     pub(crate) plugin_provider: RuntimeFeature<Arc<dyn IndexerPluginProvider>>,
     pub(crate) download_client_plugin_provider:
         RuntimeFeature<Arc<dyn DownloadClientPluginProvider>>,
@@ -1521,6 +1522,7 @@ impl AppServices {
                     null_repositories::NullMediaServerConnectionRepository,
                 ),
                 indexer_stats: Arc::new(NullIndexerStatsTracker),
+                upstream_scheduler: Arc::new(NullUpstreamScheduler),
                 plugin_provider: RuntimeFeature::Disabled,
                 download_client_plugin_provider: RuntimeFeature::Disabled,
                 subtitle_plugin_provider: RuntimeFeature::Disabled,
@@ -2070,6 +2072,11 @@ impl AppServicesBuilder {
         integrations.indexer_stats,
         Arc<dyn IndexerStatsTracker>
     );
+    app_services_builder_setter!(
+        with_upstream_scheduler,
+        integrations.upstream_scheduler,
+        Arc<dyn UpstreamScheduler>
+    );
     app_services_builder_runtime_feature_setter!(
         with_indexer_caps_refresher,
         integrations.indexer_caps_refresher,
@@ -2165,6 +2172,21 @@ pub struct AppUseCase {
 }
 
 impl AppUseCase {
+    pub async fn upstream_scheduler_snapshot(
+        &self,
+        filter: SchedulerSnapshotFilter,
+    ) -> AppResult<SchedulerSnapshot> {
+        self.services
+            .integrations
+            .upstream_scheduler
+            .snapshot(filter)
+            .await
+    }
+
+    pub fn outbound_rate_limit_snapshot(&self) -> scryer_outbound_http::RateLimitRegistrySnapshot {
+        scryer_outbound_http::RateLimitRegistry::new().snapshot()
+    }
+
     pub fn set_recovery_admin_login_enabled(&self, enabled: bool) {
         self.runtime
             .security

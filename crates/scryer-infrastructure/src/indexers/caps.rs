@@ -1,19 +1,28 @@
 use std::collections::BTreeMap;
 use std::io::Cursor;
+use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use chrono::Utc;
 use quick_xml::Reader;
 use quick_xml::events::{BytesStart, Event};
-use scryer_application::{AppError, AppResult, IndexerCapsSnapshotRefresher};
+use scryer_application::{
+    AppError, AppResult, EstimatedCost, ExpectedValueHint, IndexerCapsSnapshotRefresher,
+    NullUpstreamScheduler, SchedulerAdmission, SchedulerBatchRequest, SchedulerCandidate,
+    SchedulerCandidateId, SchedulerFeedback, SchedulerFeedbackOutcome, SchedulerIntent,
+    SchedulerLease, SchedulerOperation, SchedulerPluginKind, UpstreamScheduler,
+};
 use scryer_domain::{
     IndexerCapsSearchNode, IndexerCapsSnapshot, IndexerCategoryDescriptor, IndexerCategoryModel,
     IndexerCategoryValueKind, IndexerConfig,
 };
 use scryer_outbound_http::{
-    OutboundHttpClient, OutboundHttpError, RateLimitRegistry, RequestPolicy, generic_reqwest_client,
+    DestinationKey, HostKey, OutboundHttpClient, OutboundHttpError, RateLimitRegistry,
+    RequestPolicy, generic_reqwest_client,
 };
 use serde_json::Value;
+use tokio_util::sync::CancellationToken;
 
 const DIRECT_NAB_CAPS_USER_AGENT: &str = "scryer-indexer-caps/0.1";
 
@@ -262,6 +271,7 @@ fn is_direct_nab_control_query_key(key: &str) -> bool {
 #[derive(Clone)]
 pub struct DirectNabCapsSnapshotRefresher {
     outbound_http: OutboundHttpClient,
+    upstream_scheduler: Arc<dyn UpstreamScheduler>,
 }
 
 impl DirectNabCapsSnapshotRefresher {
@@ -271,7 +281,13 @@ impl DirectNabCapsSnapshotRefresher {
                 generic_reqwest_client(),
                 RateLimitRegistry::new(),
             ),
+            upstream_scheduler: Arc::new(NullUpstreamScheduler),
         }
+    }
+
+    pub fn with_upstream_scheduler(mut self, scheduler: Arc<dyn UpstreamScheduler>) -> Self {
+        self.upstream_scheduler = scheduler;
+        self
     }
 }
 
@@ -292,8 +308,53 @@ impl IndexerCapsSnapshotRefresher for DirectNabCapsSnapshotRefresher {
         }
 
         let direct_config = DirectNabConfig::from_indexer_config(config)?;
+        let (host_key, destination_key) = scheduler_keys_for_caps(&direct_config.base_url);
+        let candidate_id = SchedulerCandidateId::new();
+        let scheduler_decision = self
+            .upstream_scheduler
+            .admit_batch(SchedulerBatchRequest {
+                batch_id: format!("indexer-caps:{}:{}", config.id, candidate_id),
+                now: Utc::now(),
+                candidates: vec![SchedulerCandidate {
+                    candidate_id: candidate_id.clone(),
+                    plugin_config_id: Some(config.id.clone()),
+                    plugin_kind: SchedulerPluginKind::Maintenance,
+                    operation: SchedulerOperation::CapsRefresh,
+                    intent: SchedulerIntent::Maintenance,
+                    host_key: host_key.clone(),
+                    destination_key: destination_key.clone(),
+                    account_quota_key: Some(config.id.clone().into()),
+                    estimated_cost: EstimatedCost::ONE_API_CALL,
+                    expected_value: ExpectedValueHint::NEUTRAL,
+                    learning_context: None,
+                    deadline_at: None,
+                    freshness: None,
+                    cancel_token: CancellationToken::new(),
+                }],
+            })
+            .await?;
+        let scheduler_lease = match scheduler_decision.decisions.into_iter().next() {
+            Some(SchedulerAdmission::Admit { lease, .. }) => Some(lease),
+            Some(SchedulerAdmission::Defer { reason, .. }) => {
+                tracing::debug!(
+                    indexer = config.name.as_str(),
+                    scheduler_reason = ?reason,
+                    "scheduler deferred indexer caps refresh"
+                );
+                return Ok(None);
+            }
+            Some(SchedulerAdmission::Skip { reason, .. }) => {
+                tracing::debug!(
+                    indexer = config.name.as_str(),
+                    scheduler_reason = ?reason,
+                    "scheduler skipped indexer caps refresh"
+                );
+                return Ok(None);
+            }
+            None => return Ok(None),
+        };
         let url = direct_config.caps_url()?;
-        let response = self
+        let response_result = self
             .outbound_http
             .send(
                 RequestPolicy::safe_read(
@@ -313,23 +374,47 @@ impl IndexerCapsSnapshotRefresher for DirectNabCapsSnapshotRefresher {
                         .header("User-Agent", DIRECT_NAB_CAPS_USER_AGENT)
                 },
             )
-            .await
-            .map_err(|error| match error {
-                OutboundHttpError::RateLimited(rate_limited) => {
-                    match rate_limited.retry_after.filter(|delay| !delay.is_zero()) {
-                        Some(delay) => AppError::Repository(format!(
-                            "indexer caps refresh was rate limited (retry after {}s)",
-                            delay.as_secs()
-                        )),
-                        None => AppError::Repository(
-                            "indexer caps refresh was rate limited".to_string(),
-                        ),
+            .await;
+        let response = match response_result {
+            Ok(response) => response,
+            Err(error) => {
+                let (outcome, retry_after) = match &error {
+                    OutboundHttpError::RateLimited(rate_limited) => (
+                        SchedulerFeedbackOutcome::RateLimited,
+                        rate_limited.retry_after,
+                    ),
+                    OutboundHttpError::Transport { .. } => {
+                        (SchedulerFeedbackOutcome::TransportFailure, None)
                     }
-                }
-                OutboundHttpError::Transport { source, .. } => {
-                    AppError::Repository(format!("indexer caps request failed: {source}"))
-                }
-            })?;
+                };
+                record_caps_scheduler_feedback(
+                    self.upstream_scheduler.as_ref(),
+                    scheduler_lease.clone(),
+                    host_key.clone(),
+                    destination_key.clone(),
+                    Some(config.id.clone().into()),
+                    outcome,
+                    retry_after,
+                )
+                .await;
+                return Err(match error {
+                    OutboundHttpError::RateLimited(rate_limited) => {
+                        match rate_limited.retry_after.filter(|delay| !delay.is_zero()) {
+                            Some(delay) => AppError::Repository(format!(
+                                "indexer caps refresh was rate limited (retry after {}s)",
+                                delay.as_secs()
+                            )),
+                            None => AppError::Repository(
+                                "indexer caps refresh was rate limited".to_string(),
+                            ),
+                        }
+                    }
+                    OutboundHttpError::Transport { source, .. } => {
+                        AppError::Repository(format!("indexer caps request failed: {source}"))
+                    }
+                });
+            }
+        };
 
         let status = response.status();
         let body = response.bytes().await.map_err(|error| {
@@ -337,6 +422,16 @@ impl IndexerCapsSnapshotRefresher for DirectNabCapsSnapshotRefresher {
         })?;
         if !status.is_success() {
             let body_snippet = String::from_utf8_lossy(&body);
+            record_caps_scheduler_feedback(
+                self.upstream_scheduler.as_ref(),
+                scheduler_lease,
+                host_key,
+                destination_key,
+                Some(config.id.clone().into()),
+                SchedulerFeedbackOutcome::ProviderFailure,
+                None,
+            )
+            .await;
             return Err(AppError::Repository(format!(
                 "indexer caps request failed with status {}: {}",
                 status,
@@ -344,7 +439,72 @@ impl IndexerCapsSnapshotRefresher for DirectNabCapsSnapshotRefresher {
             )));
         }
 
-        parse_caps_snapshot_xml(&body).map(Some)
+        let snapshot = parse_caps_snapshot_xml(&body).map(Some);
+        record_caps_scheduler_feedback(
+            self.upstream_scheduler.as_ref(),
+            scheduler_lease,
+            host_key,
+            destination_key,
+            Some(config.id.clone().into()),
+            if snapshot.is_ok() {
+                SchedulerFeedbackOutcome::Success
+            } else {
+                SchedulerFeedbackOutcome::ProviderFailure
+            },
+            None,
+        )
+        .await;
+        snapshot
+    }
+}
+
+fn scheduler_keys_for_caps(base_url: &str) -> (HostKey, DestinationKey) {
+    reqwest::Url::parse(base_url)
+        .ok()
+        .and_then(|url| {
+            let host = url.host_str()?;
+            Some((HostKey::from(host), DestinationKey::from(host)))
+        })
+        .unwrap_or_else(|| {
+            let fallback = base_url.trim().trim_end_matches('/').trim().to_string();
+            let fallback = if fallback.is_empty() {
+                "indexer-caps".to_string()
+            } else {
+                fallback
+            };
+            (
+                HostKey::from(fallback.clone()),
+                DestinationKey::from(fallback),
+            )
+        })
+}
+
+async fn record_caps_scheduler_feedback(
+    scheduler: &dyn UpstreamScheduler,
+    lease: Option<SchedulerLease>,
+    host_key: HostKey,
+    destination_key: DestinationKey,
+    account_quota_key: Option<scryer_application::AccountQuotaKey>,
+    outcome: SchedulerFeedbackOutcome,
+    retry_after: Option<Duration>,
+) {
+    if let Err(error) = scheduler
+        .record_feedback(SchedulerFeedback {
+            lease,
+            host_key,
+            destination_key,
+            account_quota_key,
+            outcome,
+            observed_api_current: None,
+            observed_api_max: None,
+            observed_grab_current: None,
+            observed_grab_max: None,
+            retry_after,
+            observed_at: Utc::now(),
+        })
+        .await
+    {
+        tracing::warn!(error = %error, "failed to record caps scheduler feedback");
     }
 }
 
