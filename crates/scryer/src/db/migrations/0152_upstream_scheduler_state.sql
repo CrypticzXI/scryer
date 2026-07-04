@@ -10,7 +10,6 @@ CREATE TABLE IF NOT EXISTS upstream_scheduler_states (
     quota_probe_after TEXT,
     quota_reset_at TEXT,
     quota_source TEXT,
-    cooldown_until TEXT,
     last_decision TEXT,
     last_feedback_at TEXT,
     last_successful_at TEXT,
@@ -23,7 +22,21 @@ CREATE TABLE IF NOT EXISTS upstream_scheduler_states (
 );
 
 CREATE INDEX IF NOT EXISTS idx_upstream_scheduler_states_destination
-    ON upstream_scheduler_states (destination_key, cooldown_until);
+    ON upstream_scheduler_states (destination_key);
+
+CREATE TABLE IF NOT EXISTS upstream_destination_cooldowns (
+    destination_key TEXT PRIMARY KEY,
+    cooldown_until TEXT NOT NULL,
+    retry_after_seconds INTEGER,
+    source TEXT NOT NULL,
+    status_code INTEGER,
+    message TEXT,
+    observed_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_upstream_destination_cooldowns_until
+    ON upstream_destination_cooldowns (cooldown_until);
 
 CREATE TABLE IF NOT EXISTS upstream_scheduler_rss_cadence (
     account_quota_key TEXT NOT NULL,

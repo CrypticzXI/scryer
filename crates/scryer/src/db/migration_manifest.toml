@@ -774,6 +774,23 @@ file = "postgres/migrations/0152_upstream_scheduler_state.sql"
 engine = "postgres"
 scope = "all"
 
+[[migration]]
+version = 153
+description = "canonical media ratings"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0153_canonical_media_ratings.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0153_canonical_media_ratings.sql"
+engine = "postgres"
+scope = "all"
+
 [[baseline]]
 through_version = 122
 file = "baselines/0122_baseline.sql"

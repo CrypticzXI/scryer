@@ -65,6 +65,27 @@ pub enum RetryAfterSource {
     ExistingCooldown,
 }
 
+impl RetryAfterSource {
+    pub fn as_persistent_str(self) -> &'static str {
+        match self {
+            Self::HttpDate => "http_date",
+            Self::Seconds => "seconds",
+            Self::FallbackBackoff => "fallback_backoff",
+            Self::ExistingCooldown => "existing_cooldown",
+        }
+    }
+
+    pub fn from_persistent_str(value: &str) -> Option<Self> {
+        match value {
+            "http_date" => Some(Self::HttpDate),
+            "seconds" => Some(Self::Seconds),
+            "fallback_backoff" => Some(Self::FallbackBackoff),
+            "existing_cooldown" => Some(Self::ExistingCooldown),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct RateLimitRegistrySnapshot {
     pub host_rps: Vec<HostRpsSnapshotEntry>,
@@ -83,6 +104,17 @@ pub struct HostRpsSnapshotEntry {
 pub struct DestinationCooldownSnapshotEntry {
     pub destination_key: DestinationKey,
     pub available_in: Duration,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct PersistedDestinationCooldown {
+    pub destination_key: DestinationKey,
+    pub cooldown_until: DateTime<Utc>,
+    pub retry_after: Option<Duration>,
+    pub source: RetryAfterSource,
+    pub status_code: Option<u16>,
+    pub message: Option<String>,
+    pub observed_at: DateTime<Utc>,
 }
 
 #[derive(Clone, Debug)]
@@ -282,6 +314,8 @@ struct RateLimitRegistryState {
     host_deadlines: Mutex<HashMap<HostKey, Instant>>,
     host_profiles: Mutex<HashMap<HostKey, HostRpsProfileAssignment>>,
     destination_deadlines: Mutex<HashMap<DestinationKey, Instant>>,
+    destination_cooldowns: Mutex<HashMap<DestinationKey, PersistedDestinationCooldown>>,
+    dirty_destination_cooldowns: Mutex<HashMap<DestinationKey, PersistedDestinationCooldown>>,
 }
 
 #[derive(Clone)]
@@ -427,6 +461,59 @@ impl RateLimitRegistry {
         }
     }
 
+    pub fn hydrate_destination_cooldowns<I>(&self, cooldowns: I)
+    where
+        I: IntoIterator<Item = PersistedDestinationCooldown>,
+    {
+        let now_wall = Utc::now();
+        let now_instant = Instant::now();
+        let mut deadlines = self
+            .state
+            .destination_deadlines
+            .lock()
+            .expect("destination deadline lock poisoned");
+        let mut metadata = self
+            .state
+            .destination_cooldowns
+            .lock()
+            .expect("destination cooldown metadata lock poisoned");
+
+        for cooldown in cooldowns {
+            let Ok(delay) = (cooldown.cooldown_until - now_wall).to_std() else {
+                continue;
+            };
+            if delay.is_zero() {
+                continue;
+            }
+            deadlines.insert(cooldown.destination_key.clone(), now_instant + delay);
+            metadata.insert(cooldown.destination_key.clone(), cooldown);
+        }
+    }
+
+    pub fn drain_dirty_destination_cooldowns(&self) -> Vec<PersistedDestinationCooldown> {
+        self.state
+            .dirty_destination_cooldowns
+            .lock()
+            .expect("dirty destination cooldown lock poisoned")
+            .drain()
+            .map(|(_, cooldown)| cooldown)
+            .collect()
+    }
+
+    pub fn requeue_dirty_destination_cooldowns<I>(&self, cooldowns: I)
+    where
+        I: IntoIterator<Item = PersistedDestinationCooldown>,
+    {
+        let mut dirty = self
+            .state
+            .dirty_destination_cooldowns
+            .lock()
+            .expect("dirty destination cooldown lock poisoned");
+        for cooldown in cooldowns {
+            dirty.insert(cooldown.destination_key.clone(), cooldown);
+        }
+    }
+
     pub fn wait_for_destination_if_needed_blocking(
         &self,
         destination: &DestinationKey,
@@ -555,40 +642,19 @@ impl RateLimitRegistry {
         delay: Duration,
         source: RetryAfterSource,
     ) -> (Duration, RetryAfterSource) {
-        if delay.is_zero() {
-            return (Duration::ZERO, source);
-        }
-
-        let now = Instant::now();
-        let new_deadline = now + delay;
-        let mut deadlines = self
-            .state
-            .destination_deadlines
-            .lock()
-            .expect("destination deadline lock poisoned");
-
-        let existing_deadline = deadlines
-            .get(destination)
-            .copied()
-            .filter(|deadline| *deadline > now);
-
-        let effective_deadline = match existing_deadline {
-            Some(existing) if existing > new_deadline => existing,
-            _ => new_deadline,
-        };
-
-        deadlines.insert(destination.clone(), effective_deadline);
-
-        let effective_delay = effective_deadline.saturating_duration_since(now);
-        let effective_source = match existing_deadline {
-            Some(existing) if existing > new_deadline => RetryAfterSource::ExistingCooldown,
-            _ => source,
-        };
-
-        (effective_delay, effective_source)
+        self.record_destination_cooldown_inner(destination, delay, source)
     }
 
     pub fn record_destination_cooldown_blocking(
+        &self,
+        destination: &DestinationKey,
+        delay: Duration,
+        source: RetryAfterSource,
+    ) -> (Duration, RetryAfterSource) {
+        self.record_destination_cooldown_inner(destination, delay, source)
+    }
+
+    fn record_destination_cooldown_inner(
         &self,
         destination: &DestinationKey,
         delay: Duration,
@@ -598,8 +664,9 @@ impl RateLimitRegistry {
             return (Duration::ZERO, source);
         }
 
-        let now = Instant::now();
-        let new_deadline = now + delay;
+        let now_instant = Instant::now();
+        let observed_at = Utc::now();
+        let new_deadline = now_instant + delay;
         let mut deadlines = self
             .state
             .destination_deadlines
@@ -609,7 +676,7 @@ impl RateLimitRegistry {
         let existing_deadline = deadlines
             .get(destination)
             .copied()
-            .filter(|deadline| *deadline > now);
+            .filter(|deadline| *deadline > now_instant);
 
         let effective_deadline = match existing_deadline {
             Some(existing) if existing > new_deadline => existing,
@@ -618,11 +685,35 @@ impl RateLimitRegistry {
 
         deadlines.insert(destination.clone(), effective_deadline);
 
-        let effective_delay = effective_deadline.saturating_duration_since(now);
+        let effective_delay = effective_deadline.saturating_duration_since(now_instant);
         let effective_source = match existing_deadline {
             Some(existing) if existing > new_deadline => RetryAfterSource::ExistingCooldown,
             _ => source,
         };
+
+        if effective_source != RetryAfterSource::ExistingCooldown
+            && let Ok(effective_chrono_delay) = chrono::Duration::from_std(effective_delay)
+        {
+            let cooldown = PersistedDestinationCooldown {
+                destination_key: destination.clone(),
+                cooldown_until: observed_at + effective_chrono_delay,
+                retry_after: Some(delay),
+                source,
+                status_code: None,
+                message: None,
+                observed_at,
+            };
+            self.state
+                .destination_cooldowns
+                .lock()
+                .expect("destination cooldown metadata lock poisoned")
+                .insert(destination.clone(), cooldown.clone());
+            self.state
+                .dirty_destination_cooldowns
+                .lock()
+                .expect("dirty destination cooldown lock poisoned")
+                .insert(destination.clone(), cooldown);
+        }
 
         (effective_delay, effective_source)
     }
@@ -1668,6 +1759,50 @@ mod tests {
 
         assert!(alpha_wait.is_some());
         assert_eq!(beta_wait, None);
+    }
+
+    #[tokio::test]
+    async fn destination_cooldown_records_dirty_persisted_state() {
+        let registry = RateLimitRegistry::isolated();
+        let destination: DestinationKey = "example.test".into();
+
+        let _ = registry
+            .record_destination_cooldown(
+                &destination,
+                Duration::from_secs(30),
+                RetryAfterSource::Seconds,
+            )
+            .await;
+
+        let dirty = registry.drain_dirty_destination_cooldowns();
+        assert_eq!(dirty.len(), 1);
+        assert_eq!(dirty[0].destination_key, destination);
+        assert_eq!(dirty[0].retry_after, Some(Duration::from_secs(30)));
+        assert_eq!(dirty[0].source, RetryAfterSource::Seconds);
+        assert!(dirty[0].cooldown_until > Utc::now());
+        assert!(registry.drain_dirty_destination_cooldowns().is_empty());
+
+        registry.requeue_dirty_destination_cooldowns(dirty.clone());
+        assert_eq!(registry.drain_dirty_destination_cooldowns(), dirty);
+    }
+
+    #[test]
+    fn hydrate_destination_cooldowns_restores_active_deadline_without_dirty_state() {
+        let registry = RateLimitRegistry::isolated();
+        let destination: DestinationKey = "example.test".into();
+
+        registry.hydrate_destination_cooldowns([PersistedDestinationCooldown {
+            destination_key: destination.clone(),
+            cooldown_until: Utc::now() + chrono::Duration::seconds(30),
+            retry_after: Some(Duration::from_secs(30)),
+            source: RetryAfterSource::ExistingCooldown,
+            status_code: Some(429),
+            message: Some("rate limited".to_string()),
+            observed_at: Utc::now(),
+        }]);
+
+        assert!(registry.active_destination_cooldown(&destination).is_some());
+        assert!(registry.drain_dirty_destination_cooldowns().is_empty());
     }
 
     #[tokio::test]

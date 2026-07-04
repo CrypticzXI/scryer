@@ -19,7 +19,7 @@ use crate::subtitles::search::SubtitleSearchOrchestrator;
 use crate::subtitles::sync;
 use crate::subtitles::wanted::{SubtitleLanguagePref, compute_missing_subtitles_from_streams};
 use crate::{
-    AccountQuotaKey, AppError, AppResult, AppUseCase, JobKey, JobTriggerSource,
+    AccountQuotaKey, AppError, AppResult, AppUseCase, EstimatedCost, JobKey, JobTriggerSource,
     ParsedReleaseMetadata, SchedulerAdmission, SchedulerBatchRequest, SchedulerCandidate,
     SchedulerCandidateId, SchedulerFeedback, SchedulerFeedbackOutcome, SchedulerIntent,
     SchedulerLease, SchedulerOperation, SchedulerPluginKind, ScopedExternalId,
@@ -136,7 +136,7 @@ async fn admit_subtitle_provider(
                 host_key: provider.host_key.clone(),
                 destination_key: provider.destination_key.clone(),
                 account_quota_key: Some(AccountQuotaKey::from(provider.config_id.clone())),
-                estimated_cost: Default::default(),
+                estimated_cost: EstimatedCost::ONE_API_CALL,
                 expected_value: Default::default(),
                 learning_context: None,
                 deadline_at: None,
@@ -178,7 +178,7 @@ async fn admit_subtitle_provider(
                         provider.name()
                     ),
                 };
-                return Err(AppError::Repository(message));
+                return Err(AppError::temporary_unavailable(message, retry_after));
             }
             Ok(None)
         }
@@ -189,10 +189,13 @@ async fn admit_subtitle_provider(
                 "scheduler skipped subtitle provider"
             );
             if failure_mode == SubtitleAdmissionFailureMode::ReturnTemporaryError {
-                return Err(AppError::Repository(format!(
-                    "subtitle provider '{}' is unavailable by upstream scheduler ({reason:?})",
-                    provider.name()
-                )));
+                return Err(AppError::temporary_unavailable(
+                    format!(
+                        "subtitle provider '{}' is unavailable by upstream scheduler ({reason:?})",
+                        provider.name()
+                    ),
+                    None,
+                ));
             }
             Ok(None)
         }
@@ -248,7 +251,8 @@ fn subtitle_scheduler_outcome_for_error(error: &AppError) -> SchedulerFeedbackOu
         || error_text.contains("rate limit")
         || error_text.contains("rate-limit")
         || error_text.contains("too many requests")
-        || error_text.contains("429")
+        || error_text.contains("http 429")
+        || error_text.contains("status 429")
         || error_text.contains("retry_after")
         || error_text.contains("retry-after")
     {

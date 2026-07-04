@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, HashSet};
 
 use chrono::Utc;
-use scryer_application::AppResult;
+use scryer_application::{AppResult, TitleExternalRating, TitleRatingSummary};
 use scryer_domain::{CanonicalMediaTag, MediaFacet, Title};
 
 use crate::queries::sql_runtime::{SqlArg, SqlExec, SqlRuntime, SqlTx};
@@ -217,6 +217,129 @@ pub(crate) async fn attach_canonical_tags_to_titles(
     Ok(())
 }
 
+pub(crate) async fn replace_canonical_media_ratings_tx(
+    tx: &mut SqlTx<'_>,
+    subject_id: &str,
+    ratings: &TitleRatingSummary,
+) -> AppResult<()> {
+    tx.execute(
+        "DELETE FROM canonical_media_external_ratings WHERE subject_id = {}",
+        &[SqlArg::Text(subject_id.to_string())],
+    )
+    .await?;
+    tx.execute(
+        "DELETE FROM canonical_media_rating_sources WHERE subject_id = {}",
+        &[SqlArg::Text(subject_id.to_string())],
+    )
+    .await?;
+    tx.execute(
+        "DELETE FROM canonical_media_rating_summaries WHERE subject_id = {}",
+        &[SqlArg::Text(subject_id.to_string())],
+    )
+    .await?;
+
+    let now = Utc::now();
+    if ratings.rating.is_some() {
+        tx.execute(
+            "INSERT INTO canonical_media_rating_summaries
+                (subject_id, rating, created_at, updated_at)
+             VALUES ({}, {}, {}, {})",
+            &[
+                SqlArg::Text(subject_id.to_string()),
+                SqlArg::OptF64(ratings.rating),
+                SqlArg::Timestamp(now),
+                SqlArg::Timestamp(now),
+            ],
+        )
+        .await?;
+    }
+
+    let mut seen_sources = HashSet::new();
+    for (sort_index, source) in ratings.rating_sources.iter().enumerate() {
+        let source = source.trim();
+        if source.is_empty() || !seen_sources.insert(source.to_ascii_lowercase()) {
+            continue;
+        }
+        tx.execute(
+            "INSERT INTO canonical_media_rating_sources
+                (subject_id, source, sort_index, created_at, updated_at)
+             VALUES ({}, {}, {}, {}, {})",
+            &[
+                SqlArg::Text(subject_id.to_string()),
+                SqlArg::Text(source.to_string()),
+                SqlArg::I32(sort_index as i32),
+                SqlArg::Timestamp(now),
+                SqlArg::Timestamp(now),
+            ],
+        )
+        .await?;
+    }
+
+    let mut seen_external = HashSet::new();
+    for (sort_index, rating) in ratings.external_ratings.iter().enumerate() {
+        let source = rating.source.trim();
+        if source.is_empty() || !seen_external.insert(source.to_ascii_lowercase()) {
+            continue;
+        }
+        tx.execute(
+            "INSERT INTO canonical_media_external_ratings
+                (subject_id, source, sort_index, value, score, normalized, votes, url, created_at, updated_at)
+             VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {})",
+            &[
+                SqlArg::Text(subject_id.to_string()),
+                SqlArg::Text(source.to_string()),
+                SqlArg::I32(sort_index as i32),
+                SqlArg::OptF64(rating.value.filter(|value| value.is_finite())),
+                SqlArg::OptF64(rating.score.filter(|value| value.is_finite())),
+                SqlArg::OptF64(Some(rating.normalized).filter(|value| value.is_finite())),
+                SqlArg::OptI32(rating.votes),
+                SqlArg::Text(rating.url.trim().to_string()),
+                SqlArg::Timestamp(now),
+                SqlArg::Timestamp(now),
+            ],
+        )
+        .await?;
+    }
+
+    Ok(())
+}
+
+pub(crate) async fn load_canonical_ratings_for_subject_ids(
+    exec: SqlExec<'_, '_>,
+    subject_ids: &[String],
+) -> AppResult<BTreeMap<String, TitleRatingSummary>> {
+    if subject_ids.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+    let placeholders = bind_placeholders(subject_ids.len());
+    let sql = canonical_rating_select_sql(&format!("s.id IN ({placeholders})"));
+    let args = subject_ids
+        .iter()
+        .cloned()
+        .map(SqlArg::Text)
+        .collect::<Vec<_>>();
+    let rows = SqlRuntime::fetch_all(exec, &sql, &args).await?;
+    rows_to_ratings_by_subject(&rows)
+}
+
+pub(crate) async fn load_canonical_ratings_for_title_ids(
+    exec: SqlExec<'_, '_>,
+    title_ids: &[String],
+) -> AppResult<BTreeMap<String, TitleRatingSummary>> {
+    if title_ids.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+    let placeholders = bind_placeholders(title_ids.len());
+    let sql = canonical_rating_select_sql(&format!("s.title_id IN ({placeholders})"));
+    let args = title_ids
+        .iter()
+        .cloned()
+        .map(SqlArg::Text)
+        .collect::<Vec<_>>();
+    let rows = SqlRuntime::fetch_all(exec, &sql, &args).await?;
+    rows_to_ratings_by_title(&rows)
+}
+
 async fn insert_tag_values_tx(
     tx: &mut SqlTx<'_>,
     table: &str,
@@ -305,6 +428,36 @@ fn canonical_tag_select_sql(filter: &str) -> String {
     )
 }
 
+fn canonical_rating_select_sql(filter: &str) -> String {
+    format!(
+        "SELECT
+            s.id AS subject_id,
+            s.title_id AS title_id,
+            summary.rating AS rating,
+            source.source AS rating_source,
+            external.source AS external_source,
+            external.value AS external_value,
+            external.score AS external_score,
+            external.normalized AS external_normalized,
+            external.votes AS external_votes,
+            external.url AS external_url
+         FROM canonical_media_subjects s
+         LEFT JOIN canonical_media_rating_summaries summary
+            ON summary.subject_id = s.id
+         LEFT JOIN canonical_media_rating_sources source
+            ON source.subject_id = s.id
+         LEFT JOIN canonical_media_external_ratings external
+            ON external.subject_id = s.id
+         WHERE {filter}
+           AND (
+                summary.subject_id IS NOT NULL
+                OR source.subject_id IS NOT NULL
+                OR external.subject_id IS NOT NULL
+           )
+         ORDER BY s.id, source.sort_index, source.source, external.sort_index, external.source"
+    )
+}
+
 fn rows_to_tags_by_title(
     rows: &[crate::queries::sql_runtime::SqlRow],
 ) -> AppResult<BTreeMap<String, Vec<CanonicalMediaTag>>> {
@@ -375,6 +528,59 @@ fn rows_to_tags_by_subject(
             (subject_id, values)
         })
         .collect())
+}
+
+fn rows_to_ratings_by_title(
+    rows: &[crate::queries::sql_runtime::SqlRow],
+) -> AppResult<BTreeMap<String, TitleRatingSummary>> {
+    let mut by_subject = rows_to_ratings_by_subject(rows)?;
+    let mut by_title = BTreeMap::new();
+    for row in rows {
+        let Some(title_id) = row.opt_text("title_id")? else {
+            continue;
+        };
+        let subject_id = row.text("subject_id")?;
+        if let Some(ratings) = by_subject.remove(&subject_id) {
+            by_title.insert(title_id, ratings);
+        }
+    }
+    Ok(by_title)
+}
+
+fn rows_to_ratings_by_subject(
+    rows: &[crate::queries::sql_runtime::SqlRow],
+) -> AppResult<BTreeMap<String, TitleRatingSummary>> {
+    let mut ratings_by_subject = BTreeMap::<String, TitleRatingSummary>::new();
+    for row in rows {
+        let subject_id = row.text("subject_id")?;
+        let ratings = ratings_by_subject.entry(subject_id).or_default();
+        if ratings.rating.is_none() {
+            ratings.rating = row.opt_f64("rating")?;
+        }
+        push_unique_opt(&mut ratings.rating_sources, row.opt_text("rating_source")?);
+        let Some(source) = row.opt_text("external_source")? else {
+            continue;
+        };
+        if source.trim().is_empty()
+            || ratings
+                .external_ratings
+                .iter()
+                .any(|rating| rating.source == source)
+        {
+            continue;
+        }
+        ratings.external_ratings.push(TitleExternalRating {
+            source,
+            value: row.opt_f64("external_value")?,
+            score: row.opt_f64("external_score")?,
+            normalized: row.opt_f64("external_normalized")?.unwrap_or_default(),
+            votes: row
+                .opt_i64("external_votes")?
+                .and_then(|value| i32::try_from(value).ok()),
+            url: row.opt_text("external_url")?.unwrap_or_default(),
+        });
+    }
+    Ok(ratings_by_subject)
 }
 
 fn push_unique_opt(values: &mut Vec<String>, value: Option<String>) {

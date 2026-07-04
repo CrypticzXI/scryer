@@ -16,7 +16,6 @@ query GetMovie($tvdbId: Int!, $language: String!) {
       tmdb_id
       tmdb_popularity
       anidb_id
-      genres
       canonical_tags {
         key
         category

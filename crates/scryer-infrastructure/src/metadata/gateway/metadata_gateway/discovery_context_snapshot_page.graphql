@@ -30,7 +30,6 @@ fragment DiscoveryContextSnapshotTitleFields on DiscoveryContextSnapshotTitle {
   poster_url
   overview
   content_type
-  genres
   rating
   rating_sources
   rating_provenance {

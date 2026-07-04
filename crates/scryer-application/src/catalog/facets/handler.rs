@@ -162,7 +162,6 @@ pub fn movie_to_hydration_result(movie: MovieMetadata, language: &str) -> Hydrat
             None
         },
         popularity: movie.popularity.filter(|value| value.is_finite()),
-        genres: movie.genres,
         canonical_tags: movie.canonical_tags,
         content_status: non_empty(movie.content_status),
         language: non_empty(movie.language),
@@ -206,7 +205,6 @@ pub fn series_to_hydration_result(series: SeriesMetadata, language: &str) -> Hyd
         } else {
             None
         },
-        genres: series.genres,
         canonical_tags: series.canonical_tags,
         content_status: non_empty(series.content_status),
         language: None,

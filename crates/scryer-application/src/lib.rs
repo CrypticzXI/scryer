@@ -541,6 +541,12 @@ pub enum AppError {
     #[error("{0}")]
     DownloadSubmitUnavailable(String),
 
+    #[error("{message}")]
+    TemporaryUnavailable {
+        message: String,
+        retry_after: Option<std::time::Duration>,
+    },
+
     #[error("{0}")]
     MfaStepUpRequired(String),
 
@@ -570,6 +576,16 @@ impl AppError {
 
     pub fn download_submit_unavailable(message: impl Into<String>) -> Self {
         Self::DownloadSubmitUnavailable(message.into())
+    }
+
+    pub fn temporary_unavailable(
+        message: impl Into<String>,
+        retry_after: Option<std::time::Duration>,
+    ) -> Self {
+        Self::TemporaryUnavailable {
+            message: message.into(),
+            retry_after,
+        }
     }
 
     pub fn into_download_submit_unavailable(self) -> Self {

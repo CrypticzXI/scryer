@@ -44,7 +44,6 @@ pub struct TitleMetadataUpdate {
     pub imdb_id: Option<String>,
     pub runtime_minutes: Option<i32>,
     pub popularity: Option<f64>,
-    pub genres: Vec<String>,
     pub canonical_tags: Vec<CanonicalMediaTag>,
     pub content_status: Option<String>,
     pub language: Option<String>,

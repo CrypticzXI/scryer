@@ -452,6 +452,10 @@ pub const BACKUP_TABLE_CATALOG: &[BackupTableCatalogEntry] = &[
         classification: BackupTableClassification::Ignore,
     },
     BackupTableCatalogEntry {
+        table: "upstream_destination_cooldowns",
+        classification: BackupTableClassification::Ignore,
+    },
+    BackupTableCatalogEntry {
         table: "upstream_scheduler_rss_cadence",
         classification: BackupTableClassification::Ignore,
     },

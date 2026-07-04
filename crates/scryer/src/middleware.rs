@@ -6,7 +6,7 @@ use aws_lc_rs::rand::{SecureRandom, SystemRandom};
 use axum::Json;
 use axum::body::Body;
 use axum::extract::{ConnectInfo, State, WebSocketUpgrade};
-use axum::http::{HeaderMap, Method, Request, StatusCode, Uri, header};
+use axum::http::{HeaderMap, HeaderValue, Method, Request, StatusCode, Uri, header};
 use axum::middleware::Next;
 use axum::response::{Html, IntoResponse, Response};
 use scryer_application::{
@@ -2047,6 +2047,22 @@ pub(crate) fn map_app_error(error: AppError) -> Response {
         AppError::DownloadSubmitUnavailable(message) => {
             (StatusCode::BAD_GATEWAY, Json(ErrorResponse::new(message))).into_response()
         }
+        AppError::TemporaryUnavailable {
+            message,
+            retry_after,
+        } => {
+            let mut response = (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(ErrorResponse::new(message)),
+            )
+                .into_response();
+            if let Some(delay) = retry_after
+                && let Ok(value) = HeaderValue::from_str(&delay.as_secs().to_string())
+            {
+                response.headers_mut().insert(header::RETRY_AFTER, value);
+            }
+            response
+        }
         AppError::MfaStepUpRequired(message)
         | AppError::TotpEnrollmentRequired(message)
         | AppError::MfaEnrollmentRequired(message)
@@ -2411,6 +2427,27 @@ mod tests {
         let body: Value = serde_json::from_slice(&body).expect("response body is json");
 
         assert_eq!(body["error"], "bad request");
+        assert!(body.get("error_id").is_none());
+    }
+
+    #[tokio::test]
+    async fn temporary_unavailable_response_preserves_retry_after() {
+        let response = map_app_error(AppError::temporary_unavailable(
+            "subtitle provider is temporarily deferred",
+            Some(Duration::from_secs(120)),
+        ));
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            response.headers().get(header::RETRY_AFTER),
+            Some(&HeaderValue::from_static("120"))
+        );
+
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read response body");
+        let body: Value = serde_json::from_slice(&body).expect("response body is json");
+        assert_eq!(body["error"], "subtitle provider is temporarily deferred");
         assert!(body.get("error_id").is_none());
     }
 

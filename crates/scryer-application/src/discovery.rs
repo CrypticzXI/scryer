@@ -18,8 +18,8 @@ use crate::ports::{
 use crate::{AppError, AppResult, AppUseCase};
 use chrono::{DateTime, Utc};
 use scryer_domain::{
-    DomainEvent, DomainEventPayload, DomainExternalIds, ExternalId, LibraryPermission, MediaFacet,
-    Title, TitleContextSnapshot, User, title_catalog_sort_input,
+    CanonicalMediaTag, DomainEvent, DomainEventPayload, DomainExternalIds, ExternalId,
+    LibraryPermission, MediaFacet, Title, TitleContextSnapshot, User, title_catalog_sort_input,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
@@ -824,7 +824,11 @@ impl AppUseCase {
                 .await?;
         }
         Ok(DiscoveryLibraryAffinityProfile {
-            genre_labels: top_owned_title_labels(&titles, |title| title.genres.iter(), 2),
+            genre_labels: top_owned_title_labels(
+                &titles,
+                |title| canonical_tag_labels(&title.canonical_tags, "genre"),
+                2,
+            ),
             tag_labels: top_owned_title_labels(&titles, |title| title.tags.iter(), 2),
         })
     }
@@ -1777,6 +1781,14 @@ fn push_unique_discovery_label(
     }
 }
 
+fn canonical_tag_labels(tags: &[CanonicalMediaTag], category: &str) -> Vec<String> {
+    tags.iter()
+        .filter(|tag| tag.category.eq_ignore_ascii_case(category))
+        .map(|tag| tag.name.trim().to_string())
+        .filter(|name| !name.is_empty())
+        .collect()
+}
+
 fn top_owned_title_labels<'a, F, I>(
     titles: &'a [Title],
     labels_for_title: F,
@@ -1784,12 +1796,14 @@ fn top_owned_title_labels<'a, F, I>(
 ) -> Vec<String>
 where
     F: Fn(&'a Title) -> I,
-    I: IntoIterator<Item = &'a String>,
+    I: IntoIterator,
+    I::Item: AsRef<str>,
 {
     let mut counts = HashMap::<String, (String, usize)>::new();
     for title in titles {
         let mut seen_for_title = HashSet::new();
         for raw_label in labels_for_title(title) {
+            let raw_label = raw_label.as_ref();
             let label_key = normalize_discovery_affinity_key(raw_label);
             if label_key.is_empty()
                 || discovery_affinity_label_is_generic(&label_key)
@@ -3067,7 +3081,6 @@ fn discovery_item_record(
         background_url: non_empty_string(&item.background_url),
         overview: non_empty_string(&item.overview),
         content_type: non_empty_string(&item.content_type),
-        genres: item.genres.clone(),
         canonical_tags: discovery_canonical_tags(item),
         rating: item.rating,
         rating_sources: item.rating_sources.clone(),
@@ -3417,18 +3430,6 @@ fn discovery_external_id_records(item: &DiscoveryTitle) -> Vec<DiscoveryExternal
 
 fn discovery_canonical_facet_terms(item: &DiscoveryTitle) -> Vec<String> {
     let mut values = item.facet_terms.clone();
-    values.extend(
-        item.genres
-            .iter()
-            .filter_map(|value| canonical_discovery_term(value).map(str::to_string)),
-    );
-    for source_tag in &item.source_tags {
-        values.extend(
-            unique_json_text_values(source_tag)
-                .into_iter()
-                .filter_map(|value| canonical_discovery_term(&value).map(str::to_string)),
-        );
-    }
     for canonical_tag in &item.canonical_tags {
         values.extend(canonical_discovery_terms_from_canonical_tag(canonical_tag));
     }

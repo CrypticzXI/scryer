@@ -14,7 +14,6 @@ fragment MovieFields on TvdbMovie {
   tmdb_id
   tmdb_popularity
   anidb_id
-  genres
   canonical_tags {
     key
     category

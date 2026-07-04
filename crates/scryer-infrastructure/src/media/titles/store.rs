@@ -4,8 +4,8 @@ use scryer_application::{
     AppError, AppResult, CreateTitleOutcome, PendingTitleHydration, SortDirection,
     TitleArtworkUrlUpdate, TitleCatalogContentStatus, TitleCatalogFilter, TitleCatalogFilterCounts,
     TitleCatalogResult, TitleCatalogSort, TitleCatalogSortKey, TitleDeletePreviewInfo,
-    TitleExternalIdLookup, TitleExternalIdLookupMatch, TitleExternalRating, TitleMetadataUpdate,
-    TitleRatingSummary, TitleRepository,
+    TitleExternalIdLookup, TitleExternalIdLookupMatch, TitleMetadataUpdate, TitleRatingSummary,
+    TitleRepository,
     persisted_records::{
         PersistedTitleDecodeOptions, PersistedTitleReadMode, finalize_persisted_title,
     },
@@ -18,7 +18,8 @@ use unicode_normalization::UnicodeNormalization;
 
 use crate::media::canonical_tags::{
     attach_canonical_tags_to_titles, canonical_subject_input_for_title_with_key,
-    prefer_canonical_media_subject_for_title_tx, replace_canonical_media_tags_tx,
+    load_canonical_ratings_for_title_ids, prefer_canonical_media_subject_for_title_tx,
+    replace_canonical_media_ratings_tx, replace_canonical_media_tags_tx,
     upsert_canonical_media_subject_tx,
 };
 use crate::queries::{
@@ -36,7 +37,7 @@ use crate::title_images::normalized_base_path_from_env;
 const TITLE_INSERT_SQL: &str = "INSERT INTO titles (
     id, library_id, name, facet, monitored, tags, external_ids, root_folder_id, created_by, created_at,
     year, overview, poster_url, background_url, sort_title, catalog_sort_key, slug, imdb_id,
-    runtime_minutes, popularity, genres, content_status, language, first_aired, network, studio,
+    runtime_minutes, popularity, content_status, language, first_aired, network, studio,
     country, aliases, metadata_language, metadata_fetched_at, min_availability,
     digital_release_date, folder_path, tagged_aliases_json,
     metadata_hydration_next_attempt_at, metadata_hydration_attempt_count
@@ -45,13 +46,13 @@ const TITLE_INSERT_SQL: &str = "INSERT INTO titles (
     {}, {}, {}, {}, {}, {}, {}, {},
     {}, {}, {}, {}, {}, {}, {}, {},
     {}, {}, {}, {}, {},
-    {}, {}, {}, {}, {}
+    {}, {}, {}, {}
 )";
 
 const TITLE_UPSERT_SQL: &str = "INSERT INTO titles (
     id, library_id, name, facet, monitored, tags, external_ids, root_folder_id, created_by, created_at,
     year, overview, poster_url, background_url, sort_title, catalog_sort_key, slug, imdb_id,
-    runtime_minutes, popularity, genres, content_status, language, first_aired, network, studio,
+    runtime_minutes, popularity, content_status, language, first_aired, network, studio,
     country, aliases, metadata_language, metadata_fetched_at, min_availability,
     digital_release_date, folder_path, tagged_aliases_json,
     metadata_hydration_next_attempt_at, metadata_hydration_attempt_count
@@ -60,7 +61,7 @@ const TITLE_UPSERT_SQL: &str = "INSERT INTO titles (
     {}, {}, {}, {}, {}, {}, {}, {},
     {}, {}, {}, {}, {}, {}, {}, {},
     {}, {}, {}, {}, {},
-    {}, {}, {}, {}, {}
+    {}, {}, {}, {}
 )
 ON CONFLICT (id) DO UPDATE SET
     library_id = excluded.library_id,
@@ -90,7 +91,6 @@ ON CONFLICT (id) DO UPDATE SET
     imdb_id = excluded.imdb_id,
     runtime_minutes = excluded.runtime_minutes,
     popularity = excluded.popularity,
-    genres = excluded.genres,
     content_status = excluded.content_status,
     language = excluded.language,
     first_aired = excluded.first_aired,
@@ -1102,13 +1102,11 @@ impl TitleRepository for TitleStore {
                         HydrationStateWrite::Preserve
                     };
                     persist_title_tx(tx, &title, hydration_state).await?;
-                    if let Some(ratings) = ratings {
-                        replace_title_ratings_tx(tx, &id, &ratings).await?;
-                    }
                     if canonical_subject_key
                         .as_deref()
                         .is_some_and(|key| !key.trim().is_empty())
                         || !canonical_tags.is_empty()
+                        || ratings.is_some()
                     {
                         let subject_input = canonical_subject_input_for_title_with_key(
                             &title,
@@ -1130,6 +1128,9 @@ impl TitleRepository for TitleStore {
                         if !canonical_tags.is_empty() {
                             replace_canonical_media_tags_tx(tx, &subject_id, &canonical_tags)
                                 .await?;
+                        }
+                        if let Some(ratings) = ratings {
+                            replace_canonical_media_ratings_tx(tx, &subject_id, &ratings).await?;
                         }
                     }
                     load_title_tx_or_not_found(tx, &id, true).await
@@ -1164,7 +1165,6 @@ impl TitleRepository for TitleStore {
                 title.slug = None;
                 title.imdb_id = None;
                 title.runtime_minutes = None;
-                title.genres.clear();
                 title.content_status = None;
                 title.language = None;
                 title.first_aired = None;
@@ -1549,7 +1549,6 @@ where
         imdb_id: row.opt_text("imdb_id")?,
         runtime_minutes: row.opt_i32("runtime_minutes")?,
         popularity: row.opt_f64("popularity")?,
-        genres: decode_title_json_or_default(row, "genres")?,
         canonical_tags: vec![],
         content_status: row.opt_text("content_status")?,
         language: row.opt_text("language")?,
@@ -1602,9 +1601,6 @@ fn apply_title_metadata_update(title: &mut Title, metadata: TitleMetadataUpdate)
         title.runtime_minutes = metadata.runtime_minutes;
     }
     title.popularity = metadata.popularity;
-    if !metadata.genres.is_empty() {
-        title.genres = metadata.genres;
-    }
     merge_optional_title_text(&mut title.content_status, metadata.content_status);
     merge_optional_title_text(&mut title.language, metadata.language);
     merge_optional_title_text(&mut title.first_aired, metadata.first_aired);
@@ -1947,8 +1943,11 @@ fn build_title_catalog_sort_join_sql(
             title_catalog_movie_media_subquery(dialect)
         ),
         TitleCatalogSortKey::RatingScryer => {
-            " LEFT JOIN title_rating_summaries catalog_rating_scryer
-               ON catalog_rating_scryer.title_id = titles.id"
+            " LEFT JOIN canonical_media_subjects catalog_rating_subject
+               ON catalog_rating_subject.title_id = titles.id
+              AND catalog_rating_subject.target_kind = titles.facet
+              LEFT JOIN canonical_media_rating_summaries catalog_rating_scryer
+               ON catalog_rating_scryer.subject_id = catalog_rating_subject.id"
                 .to_string()
         }
         key @ (TitleCatalogSortKey::RatingImdb
@@ -2252,10 +2251,12 @@ fn title_catalog_external_rating_subquery(sources: &[&str]) -> String {
         .join(", ");
     let source_expression = title_catalog_normalized_rating_source_expression("ter");
     format!(
-        "SELECT ter.title_id, MAX(ter.normalized) AS normalized
-           FROM title_external_ratings ter
-          WHERE {source_expression} IN ({source_list})
-          GROUP BY ter.title_id"
+        "SELECT cms.title_id, MAX(ter.normalized) AS normalized
+           FROM canonical_media_subjects cms
+           JOIN canonical_media_external_ratings ter ON ter.subject_id = cms.id
+          WHERE cms.title_id IS NOT NULL
+            AND {source_expression} IN ({source_list})
+          GROUP BY cms.title_id"
     )
 }
 
@@ -2654,7 +2655,6 @@ fn title_write_args(
         SqlArg::OptText(title.imdb_id.clone()),
         SqlArg::OptI64(title.runtime_minutes.map(i64::from)),
         SqlArg::OptF64(title.popularity),
-        SqlArg::Json(serde_json::to_value(&title.genres).unwrap_or(JsonValue::Array(Vec::new()))),
         SqlArg::OptText(title.content_status.clone()),
         SqlArg::OptText(title.language.clone()),
         SqlArg::OptText(title.first_aired.clone()),
@@ -2679,51 +2679,10 @@ async fn load_title_ratings(
     datastore: &StoreDatastore,
     title_id: &str,
 ) -> AppResult<TitleRatingSummary> {
-    let summary_row = SqlRuntime::fetch_optional(
-        datastore.read_exec(),
-        "SELECT rating FROM title_rating_summaries WHERE title_id = {}",
-        &[SqlArg::Text(title_id.to_string())],
-    )
-    .await?;
-    let rating = summary_row
-        .as_ref()
-        .map(|row| row.opt_f64("rating"))
-        .transpose()?
-        .flatten();
-
-    let source_rows = SqlRuntime::fetch_all(
-        datastore.read_exec(),
-        "SELECT source
-           FROM title_rating_sources
-          WHERE title_id = {}
-          ORDER BY sort_index ASC, source ASC",
-        &[SqlArg::Text(title_id.to_string())],
-    )
-    .await?;
-    let rating_sources = source_rows
-        .iter()
-        .map(|row| row.text("source"))
-        .collect::<AppResult<Vec<_>>>()?;
-
-    let external_rows = SqlRuntime::fetch_all(
-        datastore.read_exec(),
-        "SELECT source, value, score, normalized, votes, url
-           FROM title_external_ratings
-          WHERE title_id = {}
-          ORDER BY sort_index ASC, source ASC",
-        &[SqlArg::Text(title_id.to_string())],
-    )
-    .await?;
-    let external_ratings = external_rows
-        .iter()
-        .map(title_external_rating_from_row)
-        .collect::<AppResult<Vec<_>>>()?;
-
-    Ok(TitleRatingSummary {
-        rating,
-        rating_sources,
-        external_ratings,
-    })
+    let mut ratings =
+        load_canonical_ratings_for_title_ids(datastore.read_exec(), &[title_id.to_string()])
+            .await?;
+    Ok(ratings.remove(title_id).unwrap_or_default())
 }
 
 async fn load_title_ratings_batch(
@@ -2734,174 +2693,18 @@ async fn load_title_ratings_batch(
         return Ok(Vec::new());
     }
 
-    let placeholders = std::iter::repeat_n("{}", title_ids.len())
-        .collect::<Vec<_>>()
-        .join(", ");
-    let args = title_ids
-        .iter()
-        .cloned()
-        .map(SqlArg::Text)
-        .collect::<Vec<_>>();
-    let mut by_title_id = title_ids
-        .iter()
-        .map(|title_id| (title_id.clone(), TitleRatingSummary::default()))
+    let mut by_title_id = load_canonical_ratings_for_title_ids(datastore.read_exec(), title_ids)
+        .await?
+        .into_iter()
         .collect::<std::collections::HashMap<_, _>>();
-
-    let summary_sql = format!(
-        "SELECT title_id, rating FROM title_rating_summaries WHERE title_id IN ({placeholders})"
-    );
-    for row in SqlRuntime::fetch_all(datastore.read_exec(), &summary_sql, &args).await? {
-        if let Some(summary) = by_title_id.get_mut(&row.text("title_id")?) {
-            summary.rating = row.opt_f64("rating")?;
-        }
-    }
-
-    let sources_sql = format!(
-        "SELECT title_id, source
-           FROM title_rating_sources
-          WHERE title_id IN ({placeholders})
-          ORDER BY title_id ASC, sort_index ASC, source ASC"
-    );
-    for row in SqlRuntime::fetch_all(datastore.read_exec(), &sources_sql, &args).await? {
-        if let Some(summary) = by_title_id.get_mut(&row.text("title_id")?) {
-            summary.rating_sources.push(row.text("source")?);
-        }
-    }
-
-    let external_sql = format!(
-        "SELECT title_id, source, value, score, normalized, votes, url
-           FROM title_external_ratings
-          WHERE title_id IN ({placeholders})
-          ORDER BY title_id ASC, sort_index ASC, source ASC"
-    );
-    for row in SqlRuntime::fetch_all(datastore.read_exec(), &external_sql, &args).await? {
-        if let Some(summary) = by_title_id.get_mut(&row.text("title_id")?) {
-            summary
-                .external_ratings
-                .push(title_external_rating_from_row(&row)?);
-        }
-    }
 
     Ok(title_ids
         .iter()
-        .filter_map(|title_id| {
-            by_title_id
-                .remove(title_id)
-                .map(|summary| (title_id.clone(), summary))
+        .map(|title_id| {
+            let summary = by_title_id.remove(title_id).unwrap_or_default();
+            (title_id.clone(), summary)
         })
         .collect())
-}
-
-fn title_external_rating_from_row(row: &SqlRow) -> AppResult<TitleExternalRating> {
-    Ok(TitleExternalRating {
-        source: row.text("source")?,
-        value: row.opt_f64("value")?,
-        score: row.opt_f64("score")?,
-        normalized: row.opt_f64("normalized")?.unwrap_or_default(),
-        votes: row
-            .opt_i64("votes")?
-            .and_then(|value| i32::try_from(value).ok()),
-        url: row.text("url")?,
-    })
-}
-
-async fn replace_title_ratings_tx(
-    tx: &mut SqlTx<'_>,
-    title_id: &str,
-    ratings: &TitleRatingSummary,
-) -> AppResult<()> {
-    SqlRuntime::execute(
-        SqlExec::Tx(tx),
-        "DELETE FROM title_external_ratings WHERE title_id = {}",
-        &[SqlArg::Text(title_id.to_string())],
-    )
-    .await?;
-    SqlRuntime::execute(
-        SqlExec::Tx(tx),
-        "DELETE FROM title_rating_sources WHERE title_id = {}",
-        &[SqlArg::Text(title_id.to_string())],
-    )
-    .await?;
-    SqlRuntime::execute(
-        SqlExec::Tx(tx),
-        "DELETE FROM title_rating_summaries WHERE title_id = {}",
-        &[SqlArg::Text(title_id.to_string())],
-    )
-    .await?;
-
-    let now = Utc::now();
-    if ratings.rating.is_some() {
-        SqlRuntime::execute(
-            SqlExec::Tx(tx),
-            "INSERT INTO title_rating_summaries (title_id, rating, created_at, updated_at)
-             VALUES ({}, {}, {}, {})",
-            &[
-                SqlArg::Text(title_id.to_string()),
-                SqlArg::OptF64(ratings.rating),
-                SqlArg::Timestamp(now),
-                SqlArg::Timestamp(now),
-            ],
-        )
-        .await?;
-    }
-
-    for (index, source) in ratings.rating_sources.iter().enumerate() {
-        let source = source.trim();
-        if source.is_empty() {
-            continue;
-        }
-        SqlRuntime::execute(
-            SqlExec::Tx(tx),
-            "INSERT INTO title_rating_sources
-             (title_id, source, sort_index, created_at, updated_at)
-             VALUES ({}, {}, {}, {}, {})
-             ON CONFLICT (title_id, source) DO NOTHING",
-            &[
-                SqlArg::Text(title_id.to_string()),
-                SqlArg::Text(source.to_string()),
-                SqlArg::I64(index as i64),
-                SqlArg::Timestamp(now),
-                SqlArg::Timestamp(now),
-            ],
-        )
-        .await?;
-    }
-
-    for (index, rating) in ratings.external_ratings.iter().enumerate() {
-        let source = rating.source.trim();
-        if source.is_empty() {
-            continue;
-        }
-        SqlRuntime::execute(
-            SqlExec::Tx(tx),
-            "INSERT INTO title_external_ratings
-             (title_id, source, sort_index, value, score, normalized, votes, url, created_at, updated_at)
-             VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {})
-             ON CONFLICT (title_id, source) DO UPDATE SET
-                sort_index = excluded.sort_index,
-                value = excluded.value,
-                score = excluded.score,
-                normalized = excluded.normalized,
-                votes = excluded.votes,
-                url = excluded.url,
-                updated_at = excluded.updated_at",
-            &[
-                SqlArg::Text(title_id.to_string()),
-                SqlArg::Text(source.to_string()),
-                SqlArg::I64(index as i64),
-                SqlArg::OptF64(rating.value),
-                SqlArg::OptF64(rating.score),
-                SqlArg::F64(rating.normalized),
-                SqlArg::OptI64(rating.votes.map(i64::from)),
-                SqlArg::Text(rating.url.trim().to_string()),
-                SqlArg::Timestamp(now),
-                SqlArg::Timestamp(now),
-            ],
-        )
-        .await?;
-    }
-
-    Ok(())
 }
 
 fn is_title_external_id_conflict_error(error: &AppError) -> bool {

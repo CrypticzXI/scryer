@@ -36,7 +36,6 @@ fragment MovieFields on TvdbMovie {
   imdb_id
   tmdb_id
   anidb_id
-  genres
   canonical_tags {
     key
     category
@@ -79,7 +78,6 @@ fragment SeriesFields on TvdbSeries {
   runtime_minutes
   poster_url
   country
-  genres
   canonical_tags {
     key
     category
@@ -169,7 +167,6 @@ fragment SeriesFields on TvdbSeries {
     runtime_minutes
     sort_title
     imdb_id
-    genres
     studio
     digital_release_date
     association_confidence

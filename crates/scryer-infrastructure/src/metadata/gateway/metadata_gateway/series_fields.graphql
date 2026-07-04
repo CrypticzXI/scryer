@@ -12,7 +12,6 @@ fragment SeriesFields on TvdbSeries {
   runtime_minutes
   poster_url
   country
-  genres
   canonical_tags {
     key
     category
@@ -102,7 +101,6 @@ fragment SeriesFields on TvdbSeries {
     runtime_minutes
     sort_title
     imdb_id
-    genres
     studio
     digital_release_date
     association_confidence

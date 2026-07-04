@@ -256,6 +256,15 @@ pub fn to_gql_error(err: AppError) -> Error {
         AppError::DownloadSubmitUnavailable(message) => {
             coded_gql_error(message, "DOWNLOAD_SUBMIT_UNAVAILABLE")
         }
+        AppError::TemporaryUnavailable {
+            message,
+            retry_after,
+        } => Error::new(message).extend_with(|_, extensions| {
+            extensions.set("code", "TEMPORARY_UNAVAILABLE");
+            if let Some(delay) = retry_after {
+                extensions.set("retryAfterSeconds", delay.as_secs());
+            }
+        }),
         AppError::PluginInstallInProgress(message) => {
             coded_gql_error(message, "PLUGIN_INSTALL_IN_PROGRESS")
         }
@@ -321,6 +330,7 @@ fn app_error_kind(err: &AppError) -> &'static str {
         AppError::DownloadFeedbackTimeout(_) => "DownloadFeedbackTimeout",
         AppError::DownloadSubmitAmbiguous(_) => "DownloadSubmitAmbiguous",
         AppError::DownloadSubmitUnavailable(_) => "DownloadSubmitUnavailable",
+        AppError::TemporaryUnavailable { .. } => "TemporaryUnavailable",
         AppError::MfaStepUpRequired(_) => "MfaStepUpRequired",
         AppError::TotpEnrollmentRequired(_) => "TotpEnrollmentRequired",
         AppError::MfaEnrollmentRequired(_) => "MfaEnrollmentRequired",
@@ -562,6 +572,11 @@ mod tests {
                 "DOWNLOAD_SUBMIT_UNAVAILABLE",
             ),
             (
+                AppError::temporary_unavailable("provider is deferred", None),
+                "provider is deferred",
+                "TEMPORARY_UNAVAILABLE",
+            ),
+            (
                 AppError::MfaStepUpRequired("MFA code is required".into()),
                 "MFA code is required",
                 "MFA_STEP_UP_REQUIRED",
@@ -591,6 +606,23 @@ mod tests {
             assert_eq!(error.message, expected_message);
             assert_eq!(graphql_error_code(&error), Some(expected_code));
         }
+    }
+
+    #[test]
+    fn temporary_unavailable_graphql_error_preserves_retry_after() {
+        let error = to_gql_error(AppError::temporary_unavailable(
+            "subtitle provider is temporarily deferred",
+            Some(std::time::Duration::from_secs(120)),
+        ));
+
+        assert_eq!(error.message, "subtitle provider is temporarily deferred");
+        assert_eq!(graphql_error_code(&error), Some("TEMPORARY_UNAVAILABLE"));
+        let retry_after = error
+            .extensions
+            .as_ref()
+            .and_then(|extensions| extensions.get("retryAfterSeconds"))
+            .expect("retryAfterSeconds extension should be present");
+        assert_eq!(retry_after.to_string(), "120");
     }
 
     #[test]

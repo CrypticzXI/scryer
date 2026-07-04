@@ -27,8 +27,8 @@ const SERIES_MOVIE_LINK_COLUMNS: &str = "sml.id AS link_id, sml.series_title_id,
     me.slug AS movie_slug, me.year AS movie_year, me.overview AS movie_overview, \
     me.poster_url AS movie_poster_url, me.background_url AS movie_background_url, \
     me.language AS movie_language, me.runtime_minutes AS movie_runtime_minutes, \
-    me.content_status AS movie_content_status, me.genres_json AS movie_genres_json, \
-    me.studio AS movie_studio, me.digital_release_date AS movie_digital_release_date, \
+    me.content_status AS movie_content_status, me.studio AS movie_studio, \
+    me.digital_release_date AS movie_digital_release_date, \
     me.imdb_id AS movie_imdb_id, me.tvdb_id AS movie_tvdb_id, me.tmdb_id AS movie_tmdb_id, \
     me.mal_id AS movie_mal_id, me.anidb_id AS movie_anidb_id, me.created_at AS movie_created_at, \
     me.updated_at AS movie_updated_at";
@@ -599,10 +599,10 @@ async fn upsert_movie_entity_tx(tx: &mut SqlTx<'_>, movie: &MovieEntity) -> AppR
     tx.execute(
         "INSERT INTO movie_entities (
              id, title, sort_title, slug, year, overview, poster_url, background_url, language,
-             runtime_minutes, content_status, genres_json, studio, digital_release_date,
+             runtime_minutes, content_status, studio, digital_release_date,
              imdb_id, tvdb_id, tmdb_id, mal_id, anidb_id, created_at, updated_at
          ) VALUES (
-             {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}
+             {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}
          )
          ON CONFLICT(id) DO UPDATE SET
              title = excluded.title,
@@ -615,7 +615,6 @@ async fn upsert_movie_entity_tx(tx: &mut SqlTx<'_>, movie: &MovieEntity) -> AppR
              language = excluded.language,
              runtime_minutes = excluded.runtime_minutes,
              content_status = excluded.content_status,
-             genres_json = excluded.genres_json,
              studio = excluded.studio,
              digital_release_date = excluded.digital_release_date,
              imdb_id = COALESCE(excluded.imdb_id, movie_entities.imdb_id),
@@ -636,7 +635,6 @@ async fn upsert_movie_entity_tx(tx: &mut SqlTx<'_>, movie: &MovieEntity) -> AppR
             SqlArg::OptText(movie.language.clone()),
             SqlArg::OptI32(movie.runtime_minutes),
             SqlArg::OptText(movie.content_status.clone()),
-            SqlArg::Text(canonical_json_text(&movie.genres)?),
             SqlArg::OptText(movie.studio.clone()),
             SqlArg::OptText(movie.digital_release_date.clone()),
             SqlArg::OptText(movie.imdb_id.clone()),
@@ -1487,13 +1485,6 @@ fn row_to_collection(row: &SqlRow) -> AppResult<Collection> {
 }
 
 fn row_to_series_movie_link(row: &SqlRow) -> AppResult<SeriesMovieLink> {
-    let genres = row
-        .opt_json("movie_genres_json")?
-        .map(serde_json::from_value::<Vec<String>>)
-        .transpose()
-        .map_err(repo_err)?
-        .unwrap_or_default();
-
     Ok(SeriesMovieLink {
         id: row.text("link_id")?,
         series_title_id: row.text("series_title_id")?,
@@ -1509,7 +1500,6 @@ fn row_to_series_movie_link(row: &SqlRow) -> AppResult<SeriesMovieLink> {
             language: row.opt_text("movie_language")?,
             runtime_minutes: row.opt_i32("movie_runtime_minutes")?,
             content_status: row.opt_text("movie_content_status")?,
-            genres,
             studio: row.opt_text("movie_studio")?,
             digital_release_date: row.opt_text("movie_digital_release_date")?,
             imdb_id: row.opt_text("movie_imdb_id")?,

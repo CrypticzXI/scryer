@@ -8,14 +8,15 @@ use scryer_application::{
     DiscoveryPruneReport, DiscoveryPublicFeedCommit, DiscoveryRankComponentRecord,
     DiscoveryRawPageRecord, DiscoveryRepository, DiscoverySectionItemsRecord,
     DiscoverySectionRecord, DiscoverySourceTagRecord, DiscoverySubmittedSubjectRecord,
-    DiscoverySyncRunRecord, DiscoverySyncStateRecord, TitleExternalRating,
+    DiscoverySyncRunRecord, DiscoverySyncStateRecord, TitleExternalRating, TitleRatingSummary,
 };
 use serde_json::Value as JsonValue;
 use std::collections::{HashMap, HashSet};
 
 use crate::media::canonical_tags::{
-    CanonicalMediaSubjectInput, load_canonical_tags_for_subject_ids,
-    normalize_canonical_subject_key, replace_canonical_media_tags_tx,
+    CanonicalMediaSubjectInput, load_canonical_ratings_for_subject_ids,
+    load_canonical_tags_for_subject_ids, normalize_canonical_subject_key,
+    replace_canonical_media_ratings_tx, replace_canonical_media_tags_tx,
     upsert_canonical_media_subject_tx,
 };
 use crate::queries::sql_runtime::{
@@ -114,7 +115,6 @@ const TITLE_COLUMNS: &[&str] = &[
     "background_url",
     "overview",
     "content_type",
-    "rating",
     "tmdb_collection_id",
     "tmdb_collection_name",
     "created_at",
@@ -1221,7 +1221,7 @@ fn discovery_item_projection(item_alias: &str, title_alias: &str) -> String {
         format!("{title_alias}.background_url AS background_url"),
         format!("{title_alias}.overview AS overview"),
         format!("{title_alias}.content_type AS content_type"),
-        format!("{title_alias}.rating AS rating"),
+        "NULL AS rating".to_string(),
         format!("{item_alias}.best_source AS best_source"),
         format!("{item_alias}.source_count AS source_count"),
         format!("{item_alias}.edge_count AS edge_count"),
@@ -1589,15 +1589,15 @@ async fn fetch_discovery_home_top_rated_items(
                     CASE WHEN TRIM(t.target_key) = '' THEN LOWER(i.id) ELSE LOWER(TRIM(t.target_key)) END AS identity_key,
                     (
                         SELECT MAX(CASE WHEN r.normalized <= 1.0 THEN r.normalized * 10.0 ELSE r.normalized END)
-                        FROM discovery_title_ratings r
-                        WHERE r.discovery_title_id = t.id
+                        FROM canonical_media_external_ratings r
+                        WHERE r.subject_id = t.canonical_subject_id
                           AND r.normalized IS NOT NULL
                           AND r.normalized > 0
                     ) AS external_rating_score,
                     (
                         SELECT MAX(COALESCE(r.votes, 0))
-                        FROM discovery_title_ratings r
-                        WHERE r.discovery_title_id = t.id
+                        FROM canonical_media_external_ratings r
+                        WHERE r.subject_id = t.canonical_subject_id
                           AND r.normalized IS NOT NULL
                           AND r.normalized > 0
                     ) AS external_rating_votes
@@ -1655,15 +1655,15 @@ async fn fetch_discovery_home_top_rated_items(
                     CASE WHEN TRIM(t.target_key) = '' THEN LOWER(i.id) ELSE LOWER(TRIM(t.target_key)) END AS identity_key,
                     (
                         SELECT MAX(CASE WHEN r.normalized <= 1.0 THEN r.normalized * 10.0 ELSE r.normalized END)
-                        FROM discovery_title_ratings r
-                        WHERE r.discovery_title_id = t.id
+                        FROM canonical_media_external_ratings r
+                        WHERE r.subject_id = t.canonical_subject_id
                           AND r.normalized IS NOT NULL
                           AND r.normalized > 0
                     ) AS external_rating_score,
                     (
                         SELECT MAX(COALESCE(r.votes, 0))
-                        FROM discovery_title_ratings r
-                        WHERE r.discovery_title_id = t.id
+                        FROM canonical_media_external_ratings r
+                        WHERE r.subject_id = t.canonical_subject_id
                           AND r.normalized IS NOT NULL
                           AND r.normalized > 0
                     ) AS external_rating_votes
@@ -2302,14 +2302,21 @@ fn append_canonical_facet_filter(
         return;
     }
     let placeholders = placeholders(values.len());
+    args.push(SqlArg::Text(kind.trim().to_ascii_lowercase()));
+    args.extend(values.iter().cloned().map(SqlArg::Text));
     args.extend(values.into_iter().map(SqlArg::Text));
     clauses.push(format!(
         "EXISTS (
             SELECT 1
-            FROM discovery_title_terms t
-            WHERE t.discovery_title_id = i.discovery_title_id
-              AND t.term_kind = 'facet_term'
-              AND LOWER(t.term_value) IN ({placeholders})
+            FROM discovery_titles dt
+            JOIN canonical_media_tags tag
+              ON tag.subject_id = dt.canonical_subject_id
+            WHERE dt.id = i.discovery_title_id
+              AND LOWER(tag.category) = {{}}
+              AND (
+                    LOWER(tag.tag_key) IN ({placeholders})
+                    OR LOWER(tag.name) IN ({placeholders})
+              )
          )"
     ));
 }
@@ -2322,10 +2329,10 @@ fn canonical_facet_filter_values(kind: &str, filters: &[String]) -> Vec<String> 
         if normalized.is_empty() {
             continue;
         }
+        if seen.insert(normalized.clone()) {
+            values.push(normalized.clone());
+        }
         if normalized.starts_with(&format!("canonical:{kind}:")) {
-            if seen.insert(normalized.clone()) {
-                values.push(normalized);
-            }
             continue;
         }
         let parts = normalized
@@ -2512,7 +2519,6 @@ fn upsert_discovery_title_sql() -> String {
                 NULLIF(excluded.content_type, ''),
                 discovery_titles.content_type
             ),
-            rating = COALESCE(excluded.rating, discovery_titles.rating),
             tmdb_collection_id = COALESCE(
                 NULLIF(excluded.tmdb_collection_id, ''),
                 discovery_titles.tmdb_collection_id
@@ -2873,7 +2879,6 @@ fn item_from_row(row: &SqlRow) -> AppResult<DiscoveryItemRecord> {
         background_url: row.opt_text("background_url")?,
         overview: row.opt_text("overview")?,
         content_type: row.opt_text("content_type")?,
-        genres: Vec::new(),
         canonical_tags: Vec::new(),
         rating: row.opt_f64("rating")?,
         rating_sources: Vec::new(),
@@ -3113,12 +3118,6 @@ async fn hydrate_title_terms(
         for index in indexes {
             let item = &mut items[*index];
             match term_kind.as_str() {
-                "genre" => item.genres.push(term_value.clone()),
-                "rating_source" => {
-                    if !item.rating_sources.iter().any(|value| value == &term_value) {
-                        item.rating_sources.push(term_value.clone());
-                    }
-                }
                 "status_tag" => item.status_tags.push(term_value.clone()),
                 "source" => item.sources.push(term_value.clone()),
                 "relation_type" => item.relation_types.push(term_value.clone()),
@@ -3206,41 +3205,50 @@ async fn hydrate_title_ratings(
 ) -> AppResult<()> {
     let rows = fetch_child_rows(
         datastore,
-        "SELECT discovery_title_id, rating_source, rating_value, rating_score, normalized, votes, url, sort_index
-         FROM discovery_title_ratings
-         WHERE discovery_title_id IN ({})
-         ORDER BY discovery_title_id ASC, sort_index ASC",
+        "SELECT id AS discovery_title_id, canonical_subject_id
+         FROM discovery_titles
+         WHERE id IN ({}) AND canonical_subject_id IS NOT NULL",
         discovery_title_ids,
     )
     .await?;
+
+    let mut subject_to_discovery_titles = HashMap::<String, Vec<String>>::new();
     for row in rows {
         let discovery_title_id = row.text("discovery_title_id")?;
-        let Some(indexes) = title_indexes.get(&discovery_title_id) else {
+        let Some(subject_id) = row.opt_text("canonical_subject_id")? else {
             continue;
         };
-        let source = row.text("rating_source")?;
-        let rating = if let Some(normalized) = row.opt_f64("normalized")? {
-            Some(TitleExternalRating {
-                source: source.clone(),
-                value: row.opt_f64("rating_value")?,
-                score: row.opt_f64("rating_score")?,
-                normalized,
-                votes: row.opt_i32("votes")?,
-                url: row.opt_text("url")?.unwrap_or_default(),
-            })
-        } else {
-            None
+        if subject_id.trim().is_empty() {
+            continue;
+        }
+        subject_to_discovery_titles
+            .entry(subject_id)
+            .or_default()
+            .push(discovery_title_id);
+    }
+    if subject_to_discovery_titles.is_empty() {
+        return Ok(());
+    }
+
+    let mut subject_ids = subject_to_discovery_titles
+        .keys()
+        .cloned()
+        .collect::<Vec<_>>();
+    subject_ids.sort();
+    let ratings_by_subject =
+        load_canonical_ratings_for_subject_ids(datastore.read_exec(), &subject_ids).await?;
+    for (subject_id, ratings) in ratings_by_subject {
+        let Some(discovery_title_ids) = subject_to_discovery_titles.get(&subject_id) else {
+            continue;
         };
-        for index in indexes {
-            if !items[*index]
-                .rating_sources
-                .iter()
-                .any(|value| value == &source)
-            {
-                items[*index].rating_sources.push(source.clone());
-            }
-            if let Some(rating) = &rating {
-                items[*index].external_ratings.push(rating.clone());
+        for discovery_title_id in discovery_title_ids {
+            let Some(indexes) = title_indexes.get(discovery_title_id) else {
+                continue;
+            };
+            for index in indexes {
+                items[*index].rating = ratings.rating;
+                items[*index].rating_sources = ratings.rating_sources.clone();
+                items[*index].external_ratings = ratings.external_ratings.clone();
             }
         }
     }
@@ -3624,6 +3632,17 @@ async fn upsert_discovery_title_tx(
     if !item.canonical_tags.is_empty() {
         replace_canonical_media_tags_tx(tx, &canonical_subject_id, &item.canonical_tags).await?;
     }
+    let ratings = TitleRatingSummary {
+        rating: item.rating,
+        rating_sources: item.rating_sources.clone(),
+        external_ratings: item.external_ratings.clone(),
+    };
+    if ratings.rating.is_some()
+        || !ratings.rating_sources.is_empty()
+        || !ratings.external_ratings.is_empty()
+    {
+        replace_canonical_media_ratings_tx(tx, &canonical_subject_id, &ratings).await?;
+    }
     insert_title_children_tx(tx, item, &discovery_title_id).await?;
     Ok(discovery_title_id)
 }
@@ -3653,7 +3672,6 @@ fn title_args(
         SqlArg::OptText(item.background_url.clone()),
         SqlArg::OptText(item.overview.clone()),
         SqlArg::OptText(item.content_type.clone()),
-        SqlArg::OptF64(item.rating),
         SqlArg::OptText(item.tmdb_collection_id.clone()),
         SqlArg::OptText(item.tmdb_collection_name.clone()),
         SqlArg::Timestamp(item.created_at),
@@ -3719,15 +3737,6 @@ async fn insert_title_children_tx(
     item: &DiscoveryItemRecord,
     discovery_title_id: &str,
 ) -> AppResult<()> {
-    insert_title_terms_tx(tx, discovery_title_id, "genre", None, &item.genres).await?;
-    insert_title_terms_tx(
-        tx,
-        discovery_title_id,
-        "rating_source",
-        None,
-        &item.rating_sources,
-    )
-    .await?;
     insert_title_terms_tx(
         tx,
         discovery_title_id,
@@ -3793,22 +3802,6 @@ async fn insert_title_children_tx(
     }
     for (index, external_id) in item.external_ids.iter().enumerate() {
         insert_title_external_id_tx(tx, discovery_title_id, external_id, index as i32).await?;
-    }
-    if item.external_ratings.is_empty() {
-        for (index, source) in item.rating_sources.iter().enumerate() {
-            insert_title_rating_tx(tx, discovery_title_id, source, None, index as i32).await?;
-        }
-    } else {
-        for (index, rating) in item.external_ratings.iter().enumerate() {
-            insert_title_rating_tx(
-                tx,
-                discovery_title_id,
-                &rating.source,
-                Some(rating),
-                index as i32,
-            )
-            .await?;
-        }
     }
     Ok(())
 }
@@ -3949,44 +3942,6 @@ async fn insert_title_external_id_tx(
             SqlArg::Text(id.to_string()),
             SqlArg::Text(key.to_string()),
             SqlArg::Text(identity.to_string()),
-            SqlArg::I32(index),
-        ],
-    )
-    .await?;
-    Ok(())
-}
-
-async fn insert_title_rating_tx(
-    tx: &mut SqlTx<'_>,
-    discovery_title_id: &str,
-    source: &str,
-    rating: Option<&TitleExternalRating>,
-    index: i32,
-) -> AppResult<()> {
-    SqlRuntime::execute(
-        SqlExec::Tx(tx),
-        "INSERT INTO discovery_title_ratings
-         (discovery_title_id, rating_source, rating_value, rating_score, normalized, votes, url, sort_index)
-         VALUES ({}, {}, {}, {}, {}, {}, {}, {})
-         ON CONFLICT(discovery_title_id, rating_source) DO UPDATE SET
-            rating_value = COALESCE(excluded.rating_value, discovery_title_ratings.rating_value),
-            rating_score = COALESCE(excluded.rating_score, discovery_title_ratings.rating_score),
-            normalized = COALESCE(excluded.normalized, discovery_title_ratings.normalized),
-            votes = COALESCE(excluded.votes, discovery_title_ratings.votes),
-            url = COALESCE(NULLIF(excluded.url, ''), discovery_title_ratings.url),
-            sort_index = CASE
-                WHEN discovery_title_ratings.sort_index <= excluded.sort_index
-                    THEN discovery_title_ratings.sort_index
-                ELSE excluded.sort_index
-            END",
-        &[
-            SqlArg::Text(discovery_title_id.to_string()),
-            SqlArg::Text(source.to_string()),
-            SqlArg::OptF64(rating.and_then(|rating| rating.value)),
-            SqlArg::OptF64(rating.and_then(|rating| rating.score)),
-            SqlArg::OptF64(rating.map(|rating| rating.normalized)),
-            SqlArg::OptI32(rating.and_then(|rating| rating.votes)),
-            SqlArg::Text(rating.map(|rating| rating.url.clone()).unwrap_or_default()),
             SqlArg::I32(index),
         ],
     )

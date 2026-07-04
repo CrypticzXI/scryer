@@ -32,6 +32,16 @@ impl NfoMetadata {
     }
 }
 
+fn canonical_title_genres(title: &Title) -> Vec<String> {
+    title
+        .canonical_tags
+        .iter()
+        .filter(|tag| tag.category.eq_ignore_ascii_case("genre"))
+        .map(|tag| tag.name.trim().to_string())
+        .filter(|name| !name.is_empty())
+        .collect()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum NfoRootKind {
     Movie,
@@ -352,9 +362,9 @@ pub(crate) fn render_movie_nfo(title: &Title) -> String {
     if let Some(runtime) = title.runtime_minutes.filter(|runtime| *runtime > 0) {
         write_element(&mut w, "runtime", &runtime.to_string());
     }
-    for genre in &title.genres {
+    for genre in canonical_title_genres(title) {
         if !genre.is_empty() {
-            write_element(&mut w, "genre", genre);
+            write_element(&mut w, "genre", &genre);
         }
     }
     write_optional_non_empty_element(&mut w, "studio", title.studio.as_deref());
@@ -380,9 +390,9 @@ pub(crate) fn render_tvshow_nfo(title: &Title) -> String {
         write_element(&mut w, "year", &year.to_string());
     }
     write_optional_non_empty_element(&mut w, "plot", title.overview.as_deref());
-    for genre in &title.genres {
+    for genre in canonical_title_genres(title) {
         if !genre.is_empty() {
-            write_element(&mut w, "genre", genre);
+            write_element(&mut w, "genre", &genre);
         }
     }
     write_optional_non_empty_element(&mut w, "studio", title.network.as_deref());

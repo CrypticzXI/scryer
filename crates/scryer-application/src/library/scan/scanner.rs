@@ -350,8 +350,6 @@ pub struct DiscoveryTitle {
     pub poster_url: String,
     pub overview: String,
     pub content_type: String,
-    #[serde(default)]
-    pub genres: Vec<String>,
     pub rating: Option<f64>,
     #[serde(default)]
     pub rating_sources: Vec<String>,
@@ -473,7 +471,6 @@ pub struct MovieMetadata {
     pub tmdb_id: Option<i64>,
     pub popularity: Option<f64>,
     pub anidb_id: Option<i64>,
-    pub genres: Vec<String>,
     pub canonical_tags: Vec<CanonicalMediaTag>,
     pub studio: String,
     pub tmdb_release_date: Option<String>,
@@ -496,7 +493,6 @@ pub struct SeriesMetadata {
     pub poster_url: String,
     pub background_url: Option<String>,
     pub country: String,
-    pub genres: Vec<String>,
     pub canonical_tags: Vec<CanonicalMediaTag>,
     pub aliases: Vec<String>,
     pub tagged_aliases: Vec<scryer_domain::TaggedAlias>,
@@ -554,7 +550,6 @@ pub struct AnimeMovie {
     pub runtime_minutes: i32,
     pub sort_title: String,
     pub imdb_id: String,
-    pub genres: Vec<String>,
     pub studio: String,
     pub digital_release_date: Option<String>,
     pub association_confidence: String,

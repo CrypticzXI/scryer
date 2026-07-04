@@ -203,7 +203,6 @@ pub(crate) fn movie_entity_from_anime_movie(movie: &AnimeMovie) -> MovieEntity {
         language: non_empty_owned(movie.language.as_str()),
         runtime_minutes: (movie.runtime_minutes > 0).then_some(movie.runtime_minutes),
         content_status: non_empty_owned(movie.content_status.as_str()),
-        genres: movie.genres.clone(),
         studio: non_empty_owned(movie.studio.as_str()),
         digital_release_date: movie.digital_release_date.clone(),
         imdb_id: movie

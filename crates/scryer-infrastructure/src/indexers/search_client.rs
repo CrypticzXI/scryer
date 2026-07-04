@@ -4,7 +4,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
 use scryer_application::{
-    AppError, AppResult, ExpectedValueHint, IndexerClient, IndexerConfigRepository,
+    AppError, AppResult, EstimatedCost, ExpectedValueHint, IndexerClient, IndexerConfigRepository,
     IndexerPluginProvider, IndexerRoutingPlan, IndexerSearchLearningContext,
     IndexerSearchLearningKey, IndexerSearchLearningRecord, IndexerSearchLearningRepository,
     IndexerSearchResponse, IndexerSearchResult, IndexerStatsTracker, IndexerSystemBackoff,
@@ -53,6 +53,13 @@ struct SchedulerRssActivity {
     destination_recent_activity_at: Option<DateTime<Utc>>,
 }
 
+struct SchedulerEligibleIndexer<'a> {
+    config: &'a IndexerConfig,
+    had_persisted_system_backoff: bool,
+    candidate_id: SchedulerCandidateId,
+    category_request: Option<Vec<String>>,
+}
+
 #[derive(Debug)]
 struct StrategyExecutionOutcome {
     label: String,
@@ -60,6 +67,30 @@ struct StrategyExecutionOutcome {
     response: AppResult<IndexerSearchResponse>,
     elapsed: std::time::Duration,
     retry_after: Option<std::time::Duration>,
+    rate_limited: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct IndexerQuotaObservation {
+    api_current: Option<u32>,
+    api_max: Option<u32>,
+    grab_current: Option<u32>,
+    grab_max: Option<u32>,
+}
+
+impl IndexerQuotaObservation {
+    fn merge_response(&mut self, response: &IndexerSearchResponse) {
+        merge_max_u32(&mut self.api_current, response.api_current);
+        merge_max_u32(&mut self.api_max, response.api_max);
+        merge_max_u32(&mut self.grab_current, response.grab_current);
+        merge_max_u32(&mut self.grab_max, response.grab_max);
+    }
+}
+
+fn merge_max_u32(target: &mut Option<u32>, candidate: Option<u32>) {
+    if let Some(candidate) = candidate {
+        *target = Some(target.map_or(candidate, |existing| existing.max(candidate)));
+    }
 }
 
 #[derive(Clone)]
@@ -154,6 +185,7 @@ struct StrategyBatchHealth {
     any_success: bool,
     any_error: bool,
     retry_after: Option<std::time::Duration>,
+    had_rate_limit: bool,
 }
 
 impl StrategyBatchHealth {
@@ -161,8 +193,9 @@ impl StrategyBatchHealth {
         self.any_success = true;
     }
 
-    fn mark_error(&mut self, retry_after: Option<std::time::Duration>) {
+    fn mark_error(&mut self, retry_after: Option<std::time::Duration>, rate_limited: bool) {
         self.any_error = true;
+        self.had_rate_limit |= rate_limited;
         if let Some(retry_after) = retry_after
             && self.retry_after.is_none_or(|current| retry_after > current)
         {
@@ -188,7 +221,7 @@ impl StrategyBatchHealth {
                 )
                 .await;
             }
-        } else if self.any_error && self.retry_after.is_none() {
+        } else if self.any_error && !self.had_rate_limit {
             let backoff = backoff_tracker
                 .record_failure(indexer_id, self.retry_after)
                 .await;
@@ -286,6 +319,21 @@ fn retry_after_from_error(error: &AppError) -> Option<std::time::Duration> {
     parse_retry_after_seconds(&error.to_string())
 }
 
+fn error_looks_rate_limited(error: &AppError) -> bool {
+    if retry_after_from_error(error).is_some() {
+        return true;
+    }
+
+    let message = error.to_string().to_ascii_lowercase();
+    message.contains("rate limit")
+        || message.contains("rate-limit")
+        || message.contains("too many requests")
+        || message.contains("retry_after")
+        || message.contains("retry-after")
+        || message.contains("retry after")
+        || message.contains("http 429")
+}
+
 fn indexer_rss_feedback_summary(
     lease: &SchedulerLease,
     response: &IndexerSearchResponse,
@@ -341,16 +389,30 @@ fn parse_indexer_published_at(value: &str) -> Option<DateTime<Utc>> {
 }
 
 fn parse_retry_after_seconds(message: &str) -> Option<std::time::Duration> {
-    let marker = "retry_after_seconds=";
-    let (_, rest) = message.split_once(marker)?;
-    let digits = rest
-        .chars()
-        .take_while(|ch| ch.is_ascii_digit())
-        .collect::<String>();
-    if digits.is_empty() {
-        return None;
+    let lower = message.to_ascii_lowercase();
+    for marker in [
+        "retry_after_seconds=",
+        "retry after",
+        "retry-after",
+        "retry_after",
+    ] {
+        let Some(index) = lower.find(marker) else {
+            continue;
+        };
+        let suffix = lower[index + marker.len()..]
+            .trim_start_matches(|ch: char| ch == ':' || ch == '=' || ch == ' ' || ch == '_');
+        let digits = suffix
+            .chars()
+            .skip_while(|ch| !ch.is_ascii_digit())
+            .take_while(|ch| ch.is_ascii_digit())
+            .collect::<String>();
+        if let Ok(seconds) = digits.parse::<u64>()
+            && seconds > 0
+        {
+            return Some(std::time::Duration::from_secs(seconds));
+        }
     }
-    Some(std::time::Duration::from_secs(digits.parse::<u64>().ok()?))
+    None
 }
 
 /// Records transport metrics per outbound indexer request.
@@ -1255,12 +1317,7 @@ impl MultiIndexerSearchClient {
             grab_max: None,
         };
         let retry_after = retry_after_from_error(error);
-        let outcome = if retry_after.is_some()
-            || error
-                .to_string()
-                .to_ascii_lowercase()
-                .contains("rate limit")
-        {
+        let outcome = if error_looks_rate_limited(error) {
             SchedulerFeedbackOutcome::RateLimited
         } else {
             SchedulerFeedbackOutcome::ProviderFailure
@@ -1610,6 +1667,7 @@ impl MultiIndexerSearchClient {
                             response: Err(AppError::canceled("indexer strategy canceled")),
                             elapsed: std::time::Duration::ZERO,
                             retry_after: None,
+                            rate_limited: false,
                         };
                     }
                     permit = search_limit.acquire_owned() => permit,
@@ -1624,6 +1682,7 @@ impl MultiIndexerSearchClient {
                                     response: Err(AppError::canceled("indexer strategy canceled")),
                                     elapsed: std::time::Duration::ZERO,
                                     retry_after: None,
+                                    rate_limited: false,
                                 };
                             }
                             _ = rate_limiter.acquire(&indexer_id, rate_limit_seconds, mode) => {}
@@ -1679,6 +1738,8 @@ impl MultiIndexerSearchClient {
                             }),
                         };
                         let retry_after = response.as_ref().err().and_then(retry_after_from_error);
+                        let rate_limited =
+                            response.as_ref().err().is_some_and(error_looks_rate_limited);
 
                         return StrategyExecutionOutcome {
                             label: strategy_label,
@@ -1686,6 +1747,7 @@ impl MultiIndexerSearchClient {
                             response,
                             elapsed: start.elapsed(),
                             retry_after,
+                            rate_limited,
                         };
                     }
                     Err(error) => Err(AppError::Repository(format!(
@@ -1699,6 +1761,7 @@ impl MultiIndexerSearchClient {
                     response,
                     elapsed: std::time::Duration::ZERO,
                     retry_after: None,
+                    rate_limited: false,
                 }
             });
         }
@@ -1715,6 +1778,7 @@ impl MultiIndexerSearchClient {
                         response: Err(AppError::canceled("indexer strategy tier canceled")),
                         elapsed: std::time::Duration::ZERO,
                         retry_after: None,
+                        rate_limited: false,
                     });
                     break;
                 }
@@ -1735,6 +1799,7 @@ impl MultiIndexerSearchClient {
                     ))),
                     elapsed: std::time::Duration::ZERO,
                     retry_after: None,
+                    rate_limited: false,
                 }),
             }
         }
@@ -1918,7 +1983,6 @@ impl IndexerClient for MultiIndexerSearchClient {
         } else {
             None
         };
-        let mut scheduler_candidate_ids: HashMap<String, SchedulerCandidateId> = HashMap::new();
         let mut scheduler_candidates = Vec::new();
         let mut scheduler_eligible = Vec::new();
         for (config, had_persisted_system_backoff) in &enabled {
@@ -2020,6 +2084,37 @@ impl IndexerClient for MultiIndexerSearchClient {
             } else {
                 ExpectedValueHint::default()
             };
+            // Use per-indexer categories from routing if available. Prowlarr
+            // proxy children may fall back to per-facet defaults when no
+            // routed categories exist yet; direct *nab indexers stay broad.
+            let per_indexer_categories = routing_entry
+                .map(|entry| {
+                    if entry.categories.is_empty() {
+                        if Self::is_prowlarr_nab_proxy(config) {
+                            newznab_categories
+                                .clone()
+                                .or_else(|| Self::default_newznab_categories_for_facet(&facet))
+                        } else {
+                            newznab_categories.clone()
+                        }
+                    } else {
+                        Some(entry.categories.clone())
+                    }
+                })
+                .unwrap_or_else(|| {
+                    if Self::is_prowlarr_nab_proxy(config) {
+                        newznab_categories
+                            .clone()
+                            .or_else(|| Self::default_newznab_categories_for_facet(&facet))
+                    } else {
+                        newznab_categories.clone()
+                    }
+                });
+            let category_requests = if is_rss_request {
+                Self::split_rss_category_requests(per_indexer_categories)
+            } else {
+                vec![per_indexer_categories]
+            };
             let rss_activity = if is_rss_request {
                 Self::scheduler_rss_activity(
                     scheduler_snapshot.as_ref(),
@@ -2030,37 +2125,44 @@ impl IndexerClient for MultiIndexerSearchClient {
             } else {
                 SchedulerRssActivity::default()
             };
-            let scheduler_candidate_id = SchedulerCandidateId::new();
-            scheduler_candidate_ids.insert(config.id.clone(), scheduler_candidate_id.clone());
-            scheduler_candidates.push(SchedulerCandidate {
-                candidate_id: scheduler_candidate_id,
-                plugin_config_id: Some(config.id.clone()),
-                plugin_kind: SchedulerPluginKind::Indexer,
-                operation: if is_rss_request {
-                    SchedulerOperation::Rss
-                } else {
-                    SchedulerOperation::Search
-                },
-                intent: scheduler_intent,
-                host_key,
-                destination_key,
-                account_quota_key,
-                estimated_cost: Default::default(),
-                expected_value,
-                learning_context: scheduler_learning_context,
-                deadline_at: if matches!(mode, SearchMode::Interactive) {
-                    Some(
-                        scheduler_now
-                            + chrono::Duration::seconds(INDEXER_SEARCH_TIMEOUT_SECS as i64),
-                    )
-                } else {
-                    None
-                },
-                freshness: is_rss_request
-                    .then(|| Self::rss_freshness_context(config, scheduler_now, rss_activity)),
-                cancel_token: cancel_token.child_token(),
-            });
-            scheduler_eligible.push((*config, *had_persisted_system_backoff));
+            for category_request in category_requests {
+                let scheduler_candidate_id = SchedulerCandidateId::new();
+                scheduler_candidates.push(SchedulerCandidate {
+                    candidate_id: scheduler_candidate_id.clone(),
+                    plugin_config_id: Some(config.id.clone()),
+                    plugin_kind: SchedulerPluginKind::Indexer,
+                    operation: if is_rss_request {
+                        SchedulerOperation::Rss
+                    } else {
+                        SchedulerOperation::Search
+                    },
+                    intent: scheduler_intent,
+                    host_key: host_key.clone(),
+                    destination_key: destination_key.clone(),
+                    account_quota_key: account_quota_key.clone(),
+                    estimated_cost: EstimatedCost::ONE_API_CALL,
+                    expected_value,
+                    learning_context: scheduler_learning_context.clone(),
+                    deadline_at: if matches!(mode, SearchMode::Interactive) {
+                        Some(
+                            scheduler_now
+                                + chrono::Duration::seconds(INDEXER_SEARCH_TIMEOUT_SECS as i64),
+                        )
+                    } else {
+                        None
+                    },
+                    freshness: is_rss_request.then(|| {
+                        Self::rss_freshness_context(config, scheduler_now, rss_activity.clone())
+                    }),
+                    cancel_token: cancel_token.child_token(),
+                });
+                scheduler_eligible.push(SchedulerEligibleIndexer {
+                    config,
+                    had_persisted_system_backoff: *had_persisted_system_backoff,
+                    candidate_id: scheduler_candidate_id,
+                    category_request,
+                });
+            }
         }
 
         if scheduler_candidates.is_empty() {
@@ -2106,11 +2208,11 @@ impl IndexerClient for MultiIndexerSearchClient {
             AppResult<IndexerSearchResponse>,
         )>::new();
         let search_limit = self.search_limit_for_mode(mode);
-        for (config, had_persisted_system_backoff) in scheduler_eligible {
-            let Some(candidate_id) = scheduler_candidate_ids.get(&config.id) else {
-                continue;
-            };
-            let scheduler_lease = match scheduler_decisions.remove(candidate_id.as_str()) {
+        for dispatch in scheduler_eligible {
+            let config = dispatch.config;
+            let had_persisted_system_backoff = dispatch.had_persisted_system_backoff;
+            let request_categories = dispatch.category_request.clone();
+            let scheduler_lease = match scheduler_decisions.remove(dispatch.candidate_id.as_str()) {
                 Some(SchedulerAdmission::Admit { reason, lease, .. }) => {
                     debug!(
                         indexer = config.name.as_str(),
@@ -2147,42 +2249,6 @@ impl IndexerClient for MultiIndexerSearchClient {
                     );
                     continue;
                 }
-            };
-
-            let routing_entry = indexer_routing
-                .as_ref()
-                .and_then(|plan| plan.entries.get(&config.id));
-
-            // Use per-indexer categories from routing if available. Prowlarr
-            // proxy children may fall back to per-facet defaults when no
-            // routed categories exist yet; direct *nab indexers stay broad.
-            let per_indexer_categories = routing_entry
-                .map(|entry| {
-                    if entry.categories.is_empty() {
-                        if Self::is_prowlarr_nab_proxy(config) {
-                            newznab_categories
-                                .clone()
-                                .or_else(|| Self::default_newznab_categories_for_facet(&facet))
-                        } else {
-                            newznab_categories.clone()
-                        }
-                    } else {
-                        Some(entry.categories.clone())
-                    }
-                })
-                .unwrap_or_else(|| {
-                    if Self::is_prowlarr_nab_proxy(config) {
-                        newznab_categories
-                            .clone()
-                            .or_else(|| Self::default_newznab_categories_for_facet(&facet))
-                    } else {
-                        newznab_categories.clone()
-                    }
-                });
-            let rss_category_requests = if is_rss_request {
-                Self::split_rss_category_requests(per_indexer_categories.clone())
-            } else {
-                vec![per_indexer_categories.clone()]
             };
 
             let static_caps = self
@@ -2273,34 +2339,34 @@ impl IndexerClient for MultiIndexerSearchClient {
             // regardless of query — the caller matches results downstream.
             let is_rss_only = !caps.supports_any_search() && caps.rss;
             if is_rss_only {
-                for rss_category_request in rss_category_requests {
-                    let cell = {
-                        let mut cache = self.rss_feed_cache.lock().await;
-                        cache
-                            .entry(Self::rss_feed_cache_key(
-                                &config.id,
-                                rss_category_request.as_deref(),
-                            ))
-                            .or_insert_with(|| Arc::new(tokio::sync::OnceCell::new()))
-                            .clone()
-                    };
-                    let client = client.clone();
-                    let query = query.clone();
-                    let category = category.clone();
-                    let tagged_aliases = tagged_aliases.clone();
-                    let indexer_id = config.id.clone();
-                    let indexer_name = config.name.clone();
-                    let rate_limiter = self.rate_limiter.clone();
-                    let rate_limit_seconds = config.rate_limit_seconds;
-                    let stats_tracker = self.stats_tracker.clone();
-                    let backoff_tracker = self.backoff_tracker.clone();
-                    let indexer_configs = self.indexer_configs.clone();
-                    let facet = facet.clone();
-                    let search_limit = search_limit.clone();
-                    let task_cancel_token = cancel_token.child_token();
-                    let scheduler_lease_for_task = scheduler_lease.clone();
+                let rss_category_request = request_categories.clone();
+                let cell = {
+                    let mut cache = self.rss_feed_cache.lock().await;
+                    cache
+                        .entry(Self::rss_feed_cache_key(
+                            &config.id,
+                            rss_category_request.as_deref(),
+                        ))
+                        .or_insert_with(|| Arc::new(tokio::sync::OnceCell::new()))
+                        .clone()
+                };
+                let client = client.clone();
+                let query = query.clone();
+                let category = category.clone();
+                let tagged_aliases = tagged_aliases.clone();
+                let indexer_id = config.id.clone();
+                let indexer_name = config.name.clone();
+                let rate_limiter = self.rate_limiter.clone();
+                let rate_limit_seconds = config.rate_limit_seconds;
+                let stats_tracker = self.stats_tracker.clone();
+                let backoff_tracker = self.backoff_tracker.clone();
+                let indexer_configs = self.indexer_configs.clone();
+                let facet = facet.clone();
+                let search_limit = search_limit.clone();
+                let task_cancel_token = cancel_token.child_token();
+                let scheduler_lease_for_task = scheduler_lease.clone();
 
-                    set.spawn(async move {
+                set.spawn(async move {
                         let cached_results = tokio::select! {
                             _ = task_cancel_token.cancelled() => {
                                 return (
@@ -2391,8 +2457,7 @@ impl IndexerClient for MultiIndexerSearchClient {
                                         }
                                         warn!(indexer = indexer_name.as_str(), error = %err, "RSS feed fetch failed");
                                         stats_tracker.record_query(&indexer_id, &indexer_name, false);
-                                        let retry_after = retry_after_from_error(&err);
-                                        if retry_after.is_none() {
+                                        if !error_looks_rate_limited(&err) {
                                             let backoff = backoff_tracker
                                                 .record_failure(&indexer_id, None)
                                                 .await;
@@ -2463,8 +2528,7 @@ impl IndexerClient for MultiIndexerSearchClient {
                             grab_max: None,
                         };
                         (indexer_id, indexer_name, scheduler_lease_for_task.clone(), Ok(response))
-                    });
-                }
+                });
                 continue;
             }
 
@@ -2573,60 +2637,181 @@ impl IndexerClient for MultiIndexerSearchClient {
                 );
             }
 
-            for rss_category_request in rss_category_requests {
-                let indexer_id = config.id.clone();
-                let indexer_name = config.name.clone();
-                let facet = facet.clone();
-                let search_query = query.clone();
-                let category_for_indexer = category.clone();
-                let tagged_aliases_for_indexer = tagged_aliases.clone();
-                let stats_tracker = self.stats_tracker.clone();
-                let search_learning = self.search_learning.clone();
-                let learning_context = learning_context.clone();
-                let backoff_tracker = self.backoff_tracker.clone();
-                let indexer_configs = self.indexer_configs.clone();
-                let client = client.clone();
-                let primary_strategies = primary_strategies.clone();
-                let fallback_strategies = fallback_strategies.clone();
-                let search_limit = search_limit.clone();
-                let rate_limiter = self.rate_limiter.clone();
-                let rate_limit_seconds = config.rate_limit_seconds;
-                let task_cancel_token = cancel_token.child_token();
-                let scheduler_lease_for_task = scheduler_lease.clone();
+            let rss_category_request = request_categories.clone();
+            let indexer_id = config.id.clone();
+            let indexer_name = config.name.clone();
+            let facet = facet.clone();
+            let search_query = query.clone();
+            let category_for_indexer = category.clone();
+            let tagged_aliases_for_indexer = tagged_aliases.clone();
+            let stats_tracker = self.stats_tracker.clone();
+            let search_learning = self.search_learning.clone();
+            let learning_context = learning_context.clone();
+            let backoff_tracker = self.backoff_tracker.clone();
+            let indexer_configs = self.indexer_configs.clone();
+            let client = client.clone();
+            let primary_strategies = primary_strategies.clone();
+            let fallback_strategies = fallback_strategies.clone();
+            let search_limit = search_limit.clone();
+            let rate_limiter = self.rate_limiter.clone();
+            let rate_limit_seconds = config.rate_limit_seconds;
+            let task_cancel_token = cancel_token.child_token();
+            let scheduler_lease_for_task = scheduler_lease.clone();
 
-                set.spawn(async move {
-                    if task_cancel_token.is_cancelled() {
-                        return (
-                            indexer_id,
-                            indexer_name,
-                            scheduler_lease_for_task.clone(),
-                            Err(AppError::canceled("indexer search canceled")),
-                        );
+            set.spawn(async move {
+                if task_cancel_token.is_cancelled() {
+                    return (
+                        indexer_id,
+                        indexer_name,
+                        scheduler_lease_for_task.clone(),
+                        Err(AppError::canceled("indexer search canceled")),
+                    );
+                }
+                let mut collected_results = Vec::new();
+                let mut primary_attempted = false;
+                let mut primary_had_error = false;
+                let mut batch_health = StrategyBatchHealth::default();
+                let mut quota_observation = IndexerQuotaObservation::default();
+
+                let primary_outcomes = Self::execute_strategy_tier(
+                    StrategyTierContext {
+                        client: client.clone(),
+                        search_limit: search_limit.clone(),
+                        rate_limiter: rate_limiter.clone(),
+                        indexer_id: indexer_id.clone(),
+                        rate_limit_seconds,
+                        category: category_for_indexer.clone(),
+                        per_indexer_categories: rss_category_request.clone(),
+                        mode,
+                        tagged_aliases: tagged_aliases_for_indexer.clone(),
+                        cancel_token: task_cancel_token.child_token(),
+                    },
+                    primary_strategies,
+                )
+                .await;
+
+                for outcome in primary_outcomes {
+                    primary_attempted = true;
+                    match outcome.response {
+                        Ok(mut response) => {
+                            batch_health.mark_success();
+                            debug!(
+                                indexer = indexer_name.as_str(),
+                                strategy = outcome.label.as_str(),
+                                count = response.results.len(),
+                                "indexer returned results"
+                            );
+                            stats_tracker.record_query(&indexer_id, &indexer_name, true);
+                            stats_tracker.record_api_limits(
+                                &indexer_id,
+                                response.api_current,
+                                response.api_max,
+                                response.grab_current,
+                                response.grab_max,
+                            );
+                            quota_observation.merge_response(&response);
+
+                            record_strategy_metrics(
+                                &indexer_name,
+                                &outcome.label,
+                                "success",
+                                outcome.elapsed,
+                                Some(response.results.len()),
+                            );
+
+                            filter_strategy_results(
+                                &mut response.results,
+                                &FilterStrategyContext {
+                                    query: &search_query,
+                                    season,
+                                    episode,
+                                    tagged_aliases: &tagged_aliases_for_indexer,
+                                    title_guard_mode: outcome.title_guard_mode,
+                                    strategy_label: &outcome.label,
+                                    is_rss_request,
+                                },
+                            );
+                            record_strategy_learning_outcome(
+                                &search_learning,
+                                learning_context.as_ref(),
+                                mode,
+                                &indexer_id,
+                                &indexer_name,
+                                &outcome.label,
+                                response.results.len(),
+                            )
+                            .await;
+                            collected_results.append(&mut response.results);
+                        }
+                        Err(err) => {
+                            if err.is_canceled() {
+                                return (
+                                    indexer_id,
+                                    indexer_name,
+                                    scheduler_lease_for_task.clone(),
+                                    Err(AppError::canceled("indexer search canceled")),
+                                );
+                            }
+                            primary_had_error = true;
+                            batch_health.mark_error(outcome.retry_after, outcome.rate_limited);
+                            debug!(
+                                indexer = indexer_name.as_str(),
+                                strategy = outcome.label.as_str(),
+                                error = %err,
+                                "indexer search failed"
+                            );
+                            stats_tracker.record_query(&indexer_id, &indexer_name, false);
+                            Self::record_indexer_last_error(
+                                &indexer_configs,
+                                &indexer_id,
+                                &indexer_name,
+                            )
+                            .await;
+
+                            record_strategy_metrics(
+                                &indexer_name,
+                                &outcome.label,
+                                "error",
+                                outcome.elapsed,
+                                None,
+                            );
+                        }
                     }
-                    let mut collected_results = Vec::new();
-                    let mut primary_attempted = false;
-                    let mut primary_had_error = false;
-                    let mut batch_health = StrategyBatchHealth::default();
+                }
 
-                    let primary_outcomes = Self::execute_strategy_tier(
+                if should_run_fallback_tier(
+                    mode,
+                    &collected_results,
+                    primary_attempted,
+                    primary_had_error,
+                    &fallback_strategies,
+                ) {
+                    info!(
+                        indexer = indexer_name.as_str(),
+                        facet = facet.as_str(),
+                        query = search_query.as_str(),
+                        reason = "zero_usable_results",
+                        "indexer search falling back to title tier"
+                    );
+
+                    let fallback_outcomes = Self::execute_strategy_tier(
                         StrategyTierContext {
-                            client: client.clone(),
-                            search_limit: search_limit.clone(),
-                            rate_limiter: rate_limiter.clone(),
+                            client,
+                            search_limit,
+                            rate_limiter,
                             indexer_id: indexer_id.clone(),
                             rate_limit_seconds,
-                            category: category_for_indexer.clone(),
-                            per_indexer_categories: rss_category_request.clone(),
+                            category: category_for_indexer,
+                            per_indexer_categories: rss_category_request,
                             mode,
                             tagged_aliases: tagged_aliases_for_indexer.clone(),
                             cancel_token: task_cancel_token.child_token(),
                         },
-                        primary_strategies,
+                        fallback_strategies,
                     )
                     .await;
 
-                    for outcome in primary_outcomes {
-                        primary_attempted = true;
+                    for outcome in fallback_outcomes {
                         match outcome.response {
                             Ok(mut response) => {
                                 batch_health.mark_success();
@@ -2634,7 +2819,7 @@ impl IndexerClient for MultiIndexerSearchClient {
                                     indexer = indexer_name.as_str(),
                                     strategy = outcome.label.as_str(),
                                     count = response.results.len(),
-                                    "indexer returned results"
+                                    "indexer returned fallback results"
                                 );
                                 stats_tracker.record_query(&indexer_id, &indexer_name, true);
                                 stats_tracker.record_api_limits(
@@ -2644,6 +2829,7 @@ impl IndexerClient for MultiIndexerSearchClient {
                                     response.grab_current,
                                     response.grab_max,
                                 );
+                                quota_observation.merge_response(&response);
 
                                 record_strategy_metrics(
                                     &indexer_name,
@@ -2686,13 +2872,12 @@ impl IndexerClient for MultiIndexerSearchClient {
                                         Err(AppError::canceled("indexer search canceled")),
                                     );
                                 }
-                                primary_had_error = true;
-                                batch_health.mark_error(outcome.retry_after);
+                                batch_health.mark_error(outcome.retry_after, outcome.rate_limited);
                                 debug!(
                                     indexer = indexer_name.as_str(),
                                     strategy = outcome.label.as_str(),
                                     error = %err,
-                                    "indexer search failed"
+                                    "indexer fallback search failed"
                                 );
                                 stats_tracker.record_query(&indexer_id, &indexer_name, false);
                                 Self::record_indexer_last_error(
@@ -2712,175 +2897,52 @@ impl IndexerClient for MultiIndexerSearchClient {
                             }
                         }
                     }
+                }
 
-                    if should_run_fallback_tier(
-                        mode,
-                        &collected_results,
-                        primary_attempted,
-                        primary_had_error,
-                        &fallback_strategies,
-                    ) {
-                        info!(
-                            indexer = indexer_name.as_str(),
-                            facet = facet.as_str(),
-                            query = search_query.as_str(),
-                            reason = "zero_usable_results",
-                            "indexer search falling back to title tier"
-                        );
-
-                        let fallback_outcomes = Self::execute_strategy_tier(
-                            StrategyTierContext {
-                                client,
-                                search_limit,
-                                rate_limiter,
-                                indexer_id: indexer_id.clone(),
-                                rate_limit_seconds,
-                                category: category_for_indexer,
-                                per_indexer_categories: rss_category_request,
-                                mode,
-                                tagged_aliases: tagged_aliases_for_indexer.clone(),
-                                cancel_token: task_cancel_token.child_token(),
-                            },
-                            fallback_strategies,
-                        )
+                let batch_had_success = batch_health.any_success;
+                let batch_had_error = batch_health.any_error;
+                batch_health
+                    .apply(
+                        &backoff_tracker,
+                        &indexer_configs,
+                        &indexer_id,
+                        &indexer_name,
+                        had_persisted_system_backoff,
+                    )
+                    .await;
+                if batch_had_success {
+                    Self::clear_indexer_last_error(&indexer_configs, &indexer_id, &indexer_name)
                         .await;
+                }
 
-                        for outcome in fallback_outcomes {
-                            match outcome.response {
-                                Ok(mut response) => {
-                                    batch_health.mark_success();
-                                    debug!(
-                                        indexer = indexer_name.as_str(),
-                                        strategy = outcome.label.as_str(),
-                                        count = response.results.len(),
-                                        "indexer returned fallback results"
-                                    );
-                                    stats_tracker.record_query(&indexer_id, &indexer_name, true);
-                                    stats_tracker.record_api_limits(
-                                        &indexer_id,
-                                        response.api_current,
-                                        response.api_max,
-                                        response.grab_current,
-                                        response.grab_max,
-                                    );
-
-                                    record_strategy_metrics(
-                                        &indexer_name,
-                                        &outcome.label,
-                                        "success",
-                                        outcome.elapsed,
-                                        Some(response.results.len()),
-                                    );
-
-                                    filter_strategy_results(
-                                        &mut response.results,
-                                        &FilterStrategyContext {
-                                            query: &search_query,
-                                            season,
-                                            episode,
-                                            tagged_aliases: &tagged_aliases_for_indexer,
-                                            title_guard_mode: outcome.title_guard_mode,
-                                            strategy_label: &outcome.label,
-                                            is_rss_request,
-                                        },
-                                    );
-                                    record_strategy_learning_outcome(
-                                        &search_learning,
-                                        learning_context.as_ref(),
-                                        mode,
-                                        &indexer_id,
-                                        &indexer_name,
-                                        &outcome.label,
-                                        response.results.len(),
-                                    )
-                                    .await;
-                                    collected_results.append(&mut response.results);
-                                }
-                                Err(err) => {
-                                    if err.is_canceled() {
-                                        return (
-                                            indexer_id,
-                                            indexer_name,
-                                            scheduler_lease_for_task.clone(),
-                                            Err(AppError::canceled("indexer search canceled")),
-                                        );
-                                    }
-                                    batch_health.mark_error(outcome.retry_after);
-                                    debug!(
-                                        indexer = indexer_name.as_str(),
-                                        strategy = outcome.label.as_str(),
-                                        error = %err,
-                                        "indexer fallback search failed"
-                                    );
-                                    stats_tracker.record_query(&indexer_id, &indexer_name, false);
-                                    Self::record_indexer_last_error(
-                                        &indexer_configs,
-                                        &indexer_id,
-                                        &indexer_name,
-                                    )
-                                    .await;
-
-                                    record_strategy_metrics(
-                                        &indexer_name,
-                                        &outcome.label,
-                                        "error",
-                                        outcome.elapsed,
-                                        None,
-                                    );
-                                }
-                            }
-                        }
-                    }
-
-                    let batch_had_success = batch_health.any_success;
-                    let batch_had_error = batch_health.any_error;
-                    batch_health
-                        .apply(
-                            &backoff_tracker,
-                            &indexer_configs,
-                            &indexer_id,
-                            &indexer_name,
-                            had_persisted_system_backoff,
-                        )
-                        .await;
-                    if batch_had_success {
-                        Self::clear_indexer_last_error(
-                            &indexer_configs,
-                            &indexer_id,
-                            &indexer_name,
-                        )
-                        .await;
-                    }
-
-                    if mode == SearchMode::Interactive
-                        && collected_results.is_empty()
-                        && !batch_had_success
-                        && batch_had_error
-                    {
-                        return (
-                            indexer_id,
-                            indexer_name,
-                            scheduler_lease_for_task.clone(),
-                            Err(AppError::Repository(
-                                "all attempted indexer strategies failed".to_string(),
-                            )),
-                        );
-                    }
-
-                    (
+                if mode == SearchMode::Interactive
+                    && collected_results.is_empty()
+                    && !batch_had_success
+                    && batch_had_error
+                {
+                    return (
                         indexer_id,
                         indexer_name,
                         scheduler_lease_for_task.clone(),
-                        Ok(IndexerSearchResponse {
-                            results: collected_results,
-                            api_current: None,
-                            api_max: None,
-                            grab_current: None,
-                            grab_max: None,
-                        }),
-                    )
-                });
-            }
+                        Err(AppError::Repository(
+                            "all attempted indexer strategies failed".to_string(),
+                        )),
+                    );
+                }
+
+                (
+                    indexer_id,
+                    indexer_name,
+                    scheduler_lease_for_task.clone(),
+                    Ok(IndexerSearchResponse {
+                        results: collected_results,
+                        api_current: quota_observation.api_current,
+                        api_max: quota_observation.api_max,
+                        grab_current: quota_observation.grab_current,
+                        grab_max: quota_observation.grab_max,
+                    }),
+                )
+            });
         }
 
         let mut all_results: Vec<IndexerSearchResult> = Vec::new();
@@ -3657,6 +3719,7 @@ mod tests {
     #[derive(Default)]
     struct RecordingScheduler {
         candidate_ids: StdArc<StdMutex<Vec<Vec<String>>>>,
+        feedback_candidate_ids: StdArc<StdMutex<Vec<String>>>,
     }
 
     #[async_trait]
@@ -3699,7 +3762,13 @@ mod tests {
             })
         }
 
-        async fn record_feedback(&self, _feedback: SchedulerFeedback) -> AppResult<()> {
+        async fn record_feedback(&self, feedback: SchedulerFeedback) -> AppResult<()> {
+            if let Some(lease) = feedback.lease {
+                self.feedback_candidate_ids
+                    .lock()
+                    .expect("scheduler feedback")
+                    .push(lease.candidate_id.to_string());
+            }
             Ok(())
         }
 
@@ -5702,6 +5771,10 @@ mod tests {
                     other
                 ))),
             });
+        let scheduler = Arc::new(RecordingScheduler::default());
+        let recorded_candidates = scheduler.candidate_ids.clone();
+        let recorded_feedback = scheduler.feedback_candidate_ids.clone();
+        let client = client.with_upstream_scheduler(scheduler);
 
         let response = client
             .search(
@@ -5730,6 +5803,14 @@ mod tests {
             categories,
             vec![vec!["2000".to_string()], vec!["5030".to_string()]]
         );
+        let scheduler_batches = recorded_candidates.lock().expect("scheduler candidates");
+        assert_eq!(scheduler_batches.len(), 1);
+        assert_eq!(
+            scheduler_batches[0],
+            vec!["idx-1".to_string(), "idx-1".to_string()]
+        );
+        let feedback_candidate_ids = recorded_feedback.lock().expect("scheduler feedback");
+        assert_eq!(feedback_candidate_ids.len(), 2);
         assert_eq!(response.results.len(), 2);
     }
 
@@ -6273,7 +6354,21 @@ mod tests {
             parse_retry_after_seconds("HTTP 429: rate limited; retry_after_seconds=900")
                 .expect("retry after should parse");
         assert_eq!(retry_after, std::time::Duration::from_secs(900));
+        let prowlarr_retry_after =
+            parse_retry_after_seconds("Prowlarr rate limited (retry after 120s)")
+                .expect("Prowlarr retry after should parse");
+        assert_eq!(prowlarr_retry_after, std::time::Duration::from_secs(120));
         assert!(parse_retry_after_seconds("HTTP 429: rate limited").is_none());
+    }
+
+    #[test]
+    fn rate_limit_classifier_does_not_match_bare_429_substrings() {
+        assert!(!error_looks_rate_limited(&AppError::Repository(
+            "release title contains 429 but no throttle signal".to_string()
+        )));
+        assert!(error_looks_rate_limited(&AppError::Repository(
+            "HTTP 429: too many requests".to_string()
+        )));
     }
 
     #[tokio::test]

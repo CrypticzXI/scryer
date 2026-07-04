@@ -1852,6 +1852,14 @@ impl MetadataGatewayClient {
         if let Some(errors) = parsed.get("errors")
             && let Some(arr) = errors.as_array()
         {
+            if parsed.get("data").is_none_or(serde_json::Value::is_null) {
+                let msg = arr
+                    .first()
+                    .and_then(|err| err.get("message"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("bulk metadata returned errors without data");
+                return Err(AppError::Repository(msg.to_string()));
+            }
             for err in arr {
                 let msg = err
                     .get("message")
@@ -2158,7 +2166,6 @@ fn movie_metadata_from_item(m: MovieItem) -> MovieMetadata {
         tmdb_id: m.tmdb_id,
         popularity: m.tmdb_popularity,
         anidb_id: m.anidb_id,
-        genres: m.genres,
         canonical_tags: canonical_tags_from_gateway(m.canonical_tags),
         studio: m.studio,
         tmdb_release_date: m.tmdb_release_date,
@@ -2182,7 +2189,6 @@ fn series_metadata_from_item(s: SeriesItem) -> SeriesMetadata {
         poster_url: normalize_artwork_url(&s.poster_url),
         background_url: pick_artwork_url(&s.artworks, "background"),
         country: s.country,
-        genres: s.genres,
         canonical_tags: canonical_tags_from_gateway(s.canonical_tags),
         aliases: s.aliases,
         tagged_aliases: s
@@ -2272,7 +2278,6 @@ fn series_metadata_from_item(s: SeriesItem) -> SeriesMetadata {
                 runtime_minutes: movie.runtime_minutes,
                 sort_title: movie.sort_title,
                 imdb_id: movie.imdb_id,
-                genres: movie.genres,
                 studio: movie.studio,
                 digital_release_date: movie.digital_release_date,
                 association_confidence: movie.association_confidence,
@@ -2725,7 +2730,7 @@ mod tests {
                     .expect("seen lock")
                     .push(has_target_key);
                 if has_target_key {
-                    ResponseTemplate::new(422)
+                    ResponseTemplate::new(200)
                         .set_body_json(target_key_unknown_field_payload("TvdbSeries"))
                 } else {
                     ResponseTemplate::new(200).set_body_json(bulk_alias_payload())
@@ -4101,7 +4106,6 @@ struct MovieItem {
     tmdb_popularity: Option<f64>,
     #[serde(default)]
     anidb_id: Option<i64>,
-    genres: Vec<String>,
     #[serde(default)]
     canonical_tags: Vec<CanonicalTagItem>,
     studio: String,
@@ -4364,7 +4368,6 @@ struct SeriesItem {
     runtime_minutes: i32,
     poster_url: String,
     country: String,
-    genres: Vec<String>,
     #[serde(default)]
     canonical_tags: Vec<CanonicalTagItem>,
     #[serde(default)]
@@ -4460,7 +4463,6 @@ struct AnimeMovieItem {
     runtime_minutes: i32,
     sort_title: String,
     imdb_id: String,
-    genres: Vec<String>,
     studio: String,
     digital_release_date: Option<String>,
     association_confidence: String,
@@ -4770,7 +4772,6 @@ impl MetadataGateway for MetadataGatewayClient {
             tmdb_id: m.tmdb_id,
             popularity: m.tmdb_popularity,
             anidb_id: m.anidb_id,
-            genres: m.genres,
             canonical_tags: canonical_tags_from_gateway(m.canonical_tags),
             studio: m.studio,
             tmdb_release_date: m.tmdb_release_date,
@@ -4838,7 +4839,6 @@ impl MetadataGateway for MetadataGatewayClient {
             poster_url: normalize_artwork_url(&s.poster_url),
             background_url: pick_artwork_url(&s.artworks, "background"),
             country: s.country,
-            genres: s.genres,
             canonical_tags: canonical_tags_from_gateway(s.canonical_tags),
             aliases: s.aliases,
             tagged_aliases: s
@@ -4928,7 +4928,6 @@ impl MetadataGateway for MetadataGatewayClient {
                     runtime_minutes: movie.runtime_minutes,
                     sort_title: movie.sort_title,
                     imdb_id: movie.imdb_id,
-                    genres: movie.genres,
                     studio: movie.studio,
                     digital_release_date: movie.digital_release_date,
                     association_confidence: movie.association_confidence,

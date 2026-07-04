@@ -351,7 +351,6 @@ impl AppUseCase {
             imdb_id: None,
             runtime_minutes: request.runtime_minutes,
             popularity: None,
-            genres: vec![],
             content_status: request.content_status,
             language: request.language,
             first_aired: None,
