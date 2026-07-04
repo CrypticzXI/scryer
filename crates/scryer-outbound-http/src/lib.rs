@@ -52,6 +52,12 @@ pub enum RetryMode {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RedirectMode {
+    NoFollow,
+    TrustedFollow { max_hops: usize },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RetryAfterSource {
     HttpDate,
     Seconds,
@@ -69,6 +75,8 @@ pub struct RateLimitRegistrySnapshot {
 pub struct HostRpsSnapshotEntry {
     pub host_key: HostKey,
     pub available_in: Duration,
+    pub profile: HostRpsProfile,
+    pub profile_source: HostRpsProfileSource,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -86,7 +94,7 @@ pub struct RequestPolicy {
     pub base_backoff: Duration,
     pub max_backoff: Duration,
     pub max_retry_after: Duration,
-    pub follow_redirects: bool,
+    pub redirect_mode: RedirectMode,
 }
 
 impl RequestPolicy {
@@ -109,7 +117,7 @@ impl RequestPolicy {
             base_backoff: Duration::from_secs(1),
             max_backoff: Duration::from_secs(30),
             max_retry_after: default_max_retry_after(),
-            follow_redirects: true,
+            redirect_mode: RedirectMode::NoFollow,
         }
     }
 
@@ -151,7 +159,12 @@ impl RequestPolicy {
     }
 
     pub fn without_redirects(mut self) -> Self {
-        self.follow_redirects = false;
+        self.redirect_mode = RedirectMode::NoFollow;
+        self
+    }
+
+    pub fn with_trusted_redirects(mut self, max_hops: usize) -> Self {
+        self.redirect_mode = RedirectMode::TrustedFollow { max_hops };
         self
     }
 
@@ -166,8 +179,49 @@ impl RequestPolicy {
 
 pub const DEFAULT_HOST_RPS: f64 = 1.0;
 pub const DEFAULT_HOST_RPS_BURST: u32 = 2;
-const MAX_MANUAL_REDIRECTS: usize = 10;
+pub const LOCAL_MANAGED_HOST_RPS: f64 = 10.0;
+pub const LOCAL_MANAGED_HOST_RPS_BURST: u32 = 20;
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HostRpsProfile {
+    pub requests_per_second: f64,
+    pub burst: u32,
+}
+
+impl HostRpsProfile {
+    pub const fn limited(requests_per_second: f64, burst: u32) -> Self {
+        Self {
+            requests_per_second,
+            burst,
+        }
+    }
+
+    pub const fn unthrottled() -> Self {
+        Self {
+            requests_per_second: f64::INFINITY,
+            burst: u32::MAX,
+        }
+    }
+
+    fn interval(self) -> Option<Duration> {
+        (self.requests_per_second.is_finite() && self.requests_per_second > 0.0)
+            .then(|| Duration::from_secs_f64(1.0 / self.requests_per_second))
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HostRpsProfileSource {
+    UnknownPublicDefault,
+    LocalOrManagedDefault,
+    Loopback,
+    ExplicitRegistration,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HostRpsProfileAssignment {
+    pub profile: HostRpsProfile,
+    pub source: HostRpsProfileSource,
+}
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct HostKey(Arc<str>);
 
@@ -226,6 +280,7 @@ impl From<String> for DestinationKey {
 struct RateLimitRegistryState {
     deadlines: Mutex<HashMap<RateLimitScopeKey, Instant>>,
     host_deadlines: Mutex<HashMap<HostKey, Instant>>,
+    host_profiles: Mutex<HashMap<HostKey, HostRpsProfileAssignment>>,
     destination_deadlines: Mutex<HashMap<DestinationKey, Instant>>,
 }
 
@@ -254,9 +309,14 @@ impl RateLimitRegistry {
             .lock()
             .expect("host RPS lock poisoned")
             .iter()
-            .map(|(host_key, deadline)| HostRpsSnapshotEntry {
-                host_key: host_key.clone(),
-                available_in: deadline.saturating_duration_since(now),
+            .map(|(host_key, deadline)| {
+                let assignment = self.profile_for_host(host_key);
+                HostRpsSnapshotEntry {
+                    host_key: host_key.clone(),
+                    available_in: deadline.saturating_duration_since(now),
+                    profile: assignment.profile,
+                    profile_source: assignment.source,
+                }
             })
             .collect::<Vec<_>>();
         host_rps.sort_by(|left, right| left.host_key.as_str().cmp(right.host_key.as_str()));
@@ -350,6 +410,23 @@ impl RateLimitRegistry {
         (!total_wait.is_zero()).then_some(total_wait)
     }
 
+    pub fn active_destination_cooldown(&self, destination: &DestinationKey) -> Option<Duration> {
+        let mut deadlines = self
+            .state
+            .destination_deadlines
+            .lock()
+            .expect("destination deadline lock poisoned");
+        let deadline = deadlines.get(destination).copied()?;
+        let now = Instant::now();
+        let remaining = deadline.saturating_duration_since(now);
+        if remaining.is_zero() {
+            deadlines.remove(destination);
+            None
+        } else {
+            Some(remaining)
+        }
+    }
+
     pub fn wait_for_destination_if_needed_blocking(
         &self,
         destination: &DestinationKey,
@@ -403,6 +480,34 @@ impl RateLimitRegistry {
             std::thread::sleep(wait_duration);
             Some(wait_duration)
         }
+    }
+
+    pub fn register_host_profile(
+        &self,
+        host: HostKey,
+        profile: HostRpsProfile,
+        source: HostRpsProfileSource,
+    ) {
+        self.state
+            .host_profiles
+            .lock()
+            .expect("host profile lock poisoned")
+            .insert(host, HostRpsProfileAssignment { profile, source });
+    }
+
+    pub fn profile_for_host(&self, host: &HostKey) -> HostRpsProfileAssignment {
+        if let Some(assignment) = self
+            .state
+            .host_profiles
+            .lock()
+            .expect("host profile lock poisoned")
+            .get(host)
+            .copied()
+        {
+            return assignment;
+        }
+
+        classify_host_rps_profile(host.as_str())
     }
 
     pub async fn record_cooldown(
@@ -523,17 +628,18 @@ impl RateLimitRegistry {
     }
 
     fn reserve_host_rps(&self, host: &HostKey) -> Duration {
-        if host_is_loopback(host.as_str()) {
+        let assignment = self.profile_for_host(host);
+        let Some(interval) = assignment.profile.interval() else {
             return Duration::ZERO;
-        }
+        };
+
         let mut host_deadlines = self
             .state
             .host_deadlines
             .lock()
             .expect("host RPS lock poisoned");
         let now = Instant::now();
-        let interval = default_host_rps_interval();
-        let burst_credit = interval.saturating_mul(DEFAULT_HOST_RPS_BURST);
+        let burst_credit = interval.saturating_mul(assignment.profile.burst);
         let earliest_base = now.checked_sub(burst_credit).unwrap_or(now);
         let base = host_deadlines
             .get(host)
@@ -965,13 +1071,14 @@ impl OutboundHttpClient {
         &self.registry
     }
 
-    async fn send_builder_with_manual_redirects(
+    async fn send_builder_with_trusted_redirects(
         &self,
         builder: RequestBuilder,
         request_label: &str,
+        max_hops: usize,
     ) -> Result<Response, reqwest::Error> {
         let mut response = builder.send().await?;
-        for _ in 0..MAX_MANUAL_REDIRECTS {
+        for _ in 0..max_hops {
             let Some(next_url) = redirect_target_url(&response) else {
                 return Ok(response);
             };
@@ -1110,11 +1217,16 @@ impl OutboundHttpClient {
                 }
             }
 
-            let send_result = if policy.follow_redirects {
-                self.send_builder_with_manual_redirects(builder, policy.request_label.as_ref())
+            let send_result = match policy.redirect_mode {
+                RedirectMode::NoFollow => builder.send().await,
+                RedirectMode::TrustedFollow { max_hops } => {
+                    self.send_builder_with_trusted_redirects(
+                        builder,
+                        policy.request_label.as_ref(),
+                        max_hops,
+                    )
                     .await
-            } else {
-                builder.send().await
+                }
             };
 
             match send_result {
@@ -1336,13 +1448,48 @@ fn host_is_loopback(host: &str) -> bool {
             .unwrap_or(false)
 }
 
-fn default_host_rps_interval() -> Duration {
+fn classify_host_rps_profile(host: &str) -> HostRpsProfileAssignment {
+    if host_is_loopback(host) {
+        return HostRpsProfileAssignment {
+            profile: HostRpsProfile::unthrottled(),
+            source: HostRpsProfileSource::Loopback,
+        };
+    }
+
+    if host_is_local_or_managed(host) {
+        return HostRpsProfileAssignment {
+            profile: HostRpsProfile::limited(LOCAL_MANAGED_HOST_RPS, LOCAL_MANAGED_HOST_RPS_BURST),
+            source: HostRpsProfileSource::LocalOrManagedDefault,
+        };
+    }
+
+    HostRpsProfileAssignment {
+        profile: default_public_host_rps_profile(),
+        source: HostRpsProfileSource::UnknownPublicDefault,
+    }
+}
+
+fn host_is_local_or_managed(host: &str) -> bool {
+    if let Ok(ip) = host.parse::<IpAddr>() {
+        return match ip {
+            IpAddr::V4(ip) => ip.is_private() || ip.is_link_local(),
+            IpAddr::V6(ip) => ip.is_unique_local() || ip.is_unicast_link_local(),
+        };
+    }
+
+    !host.contains('.')
+        || host.ends_with(".localhost")
+        || host.ends_with(".local")
+        || host.ends_with(".home.arpa")
+}
+
+fn default_public_host_rps_profile() -> HostRpsProfile {
     let rps = std::env::var("SCRYER_OUTBOUND_HOST_RPS")
         .ok()
         .and_then(|value| value.trim().parse::<f64>().ok())
         .filter(|value| value.is_finite() && *value > 0.0)
         .unwrap_or(DEFAULT_HOST_RPS);
-    Duration::from_secs_f64(1.0 / rps)
+    HostRpsProfile::limited(rps, DEFAULT_HOST_RPS_BURST)
 }
 
 fn bounded_exponential_backoff(base: Duration, max: Duration, retry_index: u32) -> Duration {
@@ -1374,6 +1521,8 @@ fn retry_after_source_label(source: RetryAfterSource) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const MAX_MANUAL_REDIRECTS: usize = 10;
     use std::io;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1611,6 +1760,64 @@ mod tests {
         assert!(Arc::ptr_eq(&first.state, &second.state));
     }
 
+    #[test]
+    fn host_rps_profiles_classify_public_local_and_loopback_hosts() {
+        let registry = RateLimitRegistry::isolated();
+
+        let public = registry.profile_for_host(&HostKey::from("feed.animetosho.xyz"));
+        assert_eq!(public.source, HostRpsProfileSource::UnknownPublicDefault);
+        assert_eq!(
+            public.profile,
+            HostRpsProfile::limited(DEFAULT_HOST_RPS, DEFAULT_HOST_RPS_BURST)
+        );
+
+        let private_ip = registry.profile_for_host(&HostKey::from("192.168.1.20"));
+        assert_eq!(
+            private_ip.source,
+            HostRpsProfileSource::LocalOrManagedDefault
+        );
+        assert_eq!(
+            private_ip.profile,
+            HostRpsProfile::limited(LOCAL_MANAGED_HOST_RPS, LOCAL_MANAGED_HOST_RPS_BURST)
+        );
+
+        let docker_service = registry.profile_for_host(&HostKey::from("prowlarr"));
+        assert_eq!(
+            docker_service.source,
+            HostRpsProfileSource::LocalOrManagedDefault
+        );
+
+        let local_domain = registry.profile_for_host(&HostKey::from("indexer.home.arpa"));
+        assert_eq!(
+            local_domain.source,
+            HostRpsProfileSource::LocalOrManagedDefault
+        );
+
+        let loopback = registry.profile_for_host(&HostKey::from("127.0.0.1"));
+        assert_eq!(loopback.source, HostRpsProfileSource::Loopback);
+        assert_eq!(loopback.profile, HostRpsProfile::unthrottled());
+    }
+
+    #[test]
+    fn explicit_host_rps_profile_registration_overrides_classification() {
+        let registry = RateLimitRegistry::isolated();
+        let host = HostKey::from("proxy.example.com");
+        let profile = HostRpsProfile::limited(LOCAL_MANAGED_HOST_RPS, LOCAL_MANAGED_HOST_RPS_BURST);
+
+        registry.register_host_profile(
+            host.clone(),
+            profile,
+            HostRpsProfileSource::ExplicitRegistration,
+        );
+
+        let assignment = registry.profile_for_host(&host);
+        assert_eq!(assignment.profile, profile);
+        assert_eq!(
+            assignment.source,
+            HostRpsProfileSource::ExplicitRegistration
+        );
+    }
+
     #[tokio::test]
     async fn host_rps_is_shared_per_host() {
         let registry = RateLimitRegistry::isolated();
@@ -1654,7 +1861,10 @@ mod tests {
 
         let snapshot = registry.snapshot();
 
-        assert!(snapshot.host_rps.iter().any(|entry| entry.host_key == host));
+        assert!(snapshot.host_rps.iter().any(|entry| {
+            entry.host_key == host
+                && entry.profile_source == HostRpsProfileSource::UnknownPublicDefault
+        }));
         assert!(
             snapshot
                 .destination_cooldowns
@@ -1689,7 +1899,8 @@ mod tests {
 
         let response = outbound
             .send(
-                RequestPolicy::safe_read("redirect-test", "redirect-test"),
+                RequestPolicy::safe_read("redirect-test", "redirect-test")
+                    .with_trusted_redirects(MAX_MANUAL_REDIRECTS),
                 || client.get("http://origin.test/test"),
             )
             .await
@@ -1711,6 +1922,39 @@ mod tests {
                 .iter()
                 .any(|entry| entry.host_key == HostKey::from("target.test"))
         );
+    }
+
+    #[tokio::test]
+    async fn outbound_client_does_not_follow_redirects_by_default() {
+        let (target_bound_url, target_hits) = spawn_http_server(vec![http_response(
+            200,
+            &[("Content-Type", "text/plain")],
+            "ok",
+        )])
+        .await;
+        let (origin_bound_url, origin_hits) = spawn_http_server(vec![http_response(
+            302,
+            &[("Location", target_bound_url.as_str())],
+            "",
+        )])
+        .await;
+        let registry = RateLimitRegistry::isolated();
+        let client = reqwest_client_builder()
+            .build()
+            .expect("client should build");
+        let outbound = OutboundHttpClient::new(client.clone(), registry);
+
+        let response = outbound
+            .send(
+                RequestPolicy::safe_read("redirect-test", "redirect-test"),
+                || client.get(origin_bound_url.clone()),
+            )
+            .await
+            .expect("redirect response should be returned");
+
+        assert_eq!(response.status(), StatusCode::FOUND);
+        assert_eq!(origin_hits.load(Ordering::SeqCst), 1);
+        assert_eq!(target_hits.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]

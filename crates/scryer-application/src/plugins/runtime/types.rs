@@ -75,6 +75,7 @@ fn plugin_request_policy(
     RequestPolicy::safe_read(scope.into(), request_label.into())
         .with_max_retries(2)
         .with_backoff(Duration::from_secs(1), Duration::from_secs(30))
+        .without_redirects()
 }
 fn primary_and_mirrors(primary_url: &str, mirror_urls: &[String]) -> Vec<String> {
     std::iter::once(primary_url.to_string())

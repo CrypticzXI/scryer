@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock};
+use std::time::Duration;
 
 use chrono::Utc;
 use tracing::{debug, info, warn};
@@ -38,6 +39,12 @@ static ON_IMPORT_SUBTITLE_SEARCH_LIMIT: LazyLock<Arc<tokio::sync::Semaphore>> =
             ON_IMPORT_SUBTITLE_SEARCH_CONCURRENCY_LIMIT,
         ))
     });
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SubtitleAdmissionFailureMode {
+    OmitProvider,
+    ReturnTemporaryError,
+}
 
 pub struct DownloadSubtitleForMediaFileRequest {
     pub media_file_id: String,
@@ -110,6 +117,7 @@ async fn admit_subtitle_provider(
     provider: &PluginSubtitleProviderAdapter,
     intent: SchedulerIntent,
     operation: SchedulerOperation,
+    failure_mode: SubtitleAdmissionFailureMode,
 ) -> AppResult<Option<SchedulerLease>> {
     let candidate_id = SchedulerCandidateId::new();
     let decision = app
@@ -158,6 +166,20 @@ async fn admit_subtitle_provider(
                 retry_after_secs = retry_after.map(|delay| delay.as_secs()),
                 "scheduler deferred subtitle provider"
             );
+            if failure_mode == SubtitleAdmissionFailureMode::ReturnTemporaryError {
+                let message = match retry_after {
+                    Some(delay) if !delay.is_zero() => format!(
+                        "subtitle provider '{}' is temporarily deferred by upstream scheduler ({reason:?}, retry after {}s)",
+                        provider.name(),
+                        delay.as_secs()
+                    ),
+                    _ => format!(
+                        "subtitle provider '{}' is temporarily deferred by upstream scheduler ({reason:?})",
+                        provider.name()
+                    ),
+                };
+                return Err(AppError::Repository(message));
+            }
             Ok(None)
         }
         Some(SchedulerAdmission::Skip { reason, .. }) => {
@@ -166,6 +188,12 @@ async fn admit_subtitle_provider(
                 scheduler_reason = ?reason,
                 "scheduler skipped subtitle provider"
             );
+            if failure_mode == SubtitleAdmissionFailureMode::ReturnTemporaryError {
+                return Err(AppError::Repository(format!(
+                    "subtitle provider '{}' is unavailable by upstream scheduler ({reason:?})",
+                    provider.name()
+                )));
+            }
             Ok(None)
         }
         None => Ok(None),
@@ -177,6 +205,7 @@ async fn record_subtitle_scheduler_feedback(
     provider: &PluginSubtitleProviderAdapter,
     lease: Option<SchedulerLease>,
     outcome: SchedulerFeedbackOutcome,
+    retry_after: Option<Duration>,
 ) {
     if let Err(error) = app
         .services
@@ -192,7 +221,7 @@ async fn record_subtitle_scheduler_feedback(
             observed_api_max: None,
             observed_grab_current: None,
             observed_grab_max: None,
-            retry_after: None,
+            retry_after,
             observed_at: Utc::now(),
         })
         .await
@@ -205,19 +234,47 @@ async fn record_subtitle_scheduler_feedback(
     }
 }
 
+fn subtitle_retry_after_from_error(error: &AppError) -> Option<Duration> {
+    parse_retry_after_seconds_from_text(&error.to_string()).map(Duration::from_secs)
+}
+
 fn subtitle_scheduler_outcome_for_error(error: &AppError) -> SchedulerFeedbackOutcome {
-    let error = error.to_string().to_ascii_lowercase();
-    if error.contains("rate limit")
-        || error.contains("rate-limit")
-        || error.contains("too many requests")
-        || error.contains("429")
-        || error.contains("retry_after")
-        || error.contains("retry-after")
+    let error_text = error.to_string().to_ascii_lowercase();
+    if subtitle_retry_after_from_error(error).is_some()
+        || error_text.contains("rate limit")
+        || error_text.contains("rate-limit")
+        || error_text.contains("too many requests")
+        || error_text.contains("429")
+        || error_text.contains("retry_after")
+        || error_text.contains("retry-after")
     {
         SchedulerFeedbackOutcome::RateLimited
     } else {
         SchedulerFeedbackOutcome::ProviderFailure
     }
+}
+
+fn parse_retry_after_seconds_from_text(text: &str) -> Option<u64> {
+    let lower = text.to_ascii_lowercase();
+    for marker in ["retry after", "retry_after", "retry-after"] {
+        let Some(index) = lower.find(marker) else {
+            continue;
+        };
+        let suffix = lower[index + marker.len()..]
+            .trim_start_matches(|ch: char| ch == ':' || ch == '=' || ch == ' ' || ch == '_');
+        let digits = suffix
+            .chars()
+            .skip_while(|ch| !ch.is_ascii_digit())
+            .take_while(|ch| ch.is_ascii_digit())
+            .collect::<String>();
+        if let Ok(seconds) = digits.parse::<u64>()
+            && seconds > 0
+        {
+            return Some(seconds);
+        }
+    }
+
+    None
 }
 
 async fn configured_runtime_subtitle_providers(
@@ -383,6 +440,7 @@ async fn search_all_subtitle_providers(
             &provider,
             SchedulerIntent::SubtitleSearch,
             SchedulerOperation::Search,
+            SubtitleAdmissionFailureMode::OmitProvider,
         )
         .await?
         else {
@@ -425,6 +483,7 @@ async fn search_all_subtitle_providers(
                     &provider,
                     Some(scheduler_lease),
                     SchedulerFeedbackOutcome::Success,
+                    None,
                 )
                 .await;
                 record_subtitle_provider_search_success(
@@ -446,8 +505,15 @@ async fn search_all_subtitle_providers(
             }
             Err(error) => {
                 let outcome = subtitle_scheduler_outcome_for_error(&error);
-                record_subtitle_scheduler_feedback(app, &provider, Some(scheduler_lease), outcome)
-                    .await;
+                let retry_after = subtitle_retry_after_from_error(&error);
+                record_subtitle_scheduler_feedback(
+                    app,
+                    &provider,
+                    Some(scheduler_lease),
+                    outcome,
+                    retry_after,
+                )
+                .await;
                 record_subtitle_provider_search_failure(
                     app,
                     &provider_name,
@@ -752,6 +818,7 @@ impl AppUseCase {
             &provider,
             SchedulerIntent::SubtitleDownload,
             SchedulerOperation::Download,
+            SubtitleAdmissionFailureMode::ReturnTemporaryError,
         )
         .await?
         else {
@@ -782,6 +849,7 @@ impl AppUseCase {
                     &provider,
                     Some(scheduler_lease),
                     SchedulerFeedbackOutcome::Success,
+                    None,
                 )
                 .await;
             }
@@ -791,6 +859,7 @@ impl AppUseCase {
                     &provider,
                     Some(scheduler_lease),
                     subtitle_scheduler_outcome_for_error(error),
+                    subtitle_retry_after_from_error(error),
                 )
                 .await;
             }
@@ -1712,6 +1781,7 @@ async fn run_subtitle_search_for_file(
             &download_provider,
             SchedulerIntent::SubtitleDownload,
             SchedulerOperation::Download,
+            SubtitleAdmissionFailureMode::OmitProvider,
         )
         .await?
         else {
@@ -1735,11 +1805,16 @@ async fn run_subtitle_search_for_file(
             Ok(_) => SchedulerFeedbackOutcome::Success,
             Err(error) => subtitle_scheduler_outcome_for_error(error),
         };
+        let scheduler_retry_after = match &download_result {
+            Ok(_) => None,
+            Err(error) => subtitle_retry_after_from_error(error),
+        };
         record_subtitle_scheduler_feedback(
             app,
             &download_provider,
             Some(scheduler_lease),
             scheduler_outcome,
+            scheduler_retry_after,
         )
         .await;
         match download_result {
@@ -1975,6 +2050,7 @@ async fn run_subtitle_search_cycle(app: &AppUseCase) -> AppResult<()> {
                     &download_provider,
                     SchedulerIntent::SubtitleDownload,
                     SchedulerOperation::Download,
+                    SubtitleAdmissionFailureMode::OmitProvider,
                 )
                 .await?
                 else {
@@ -1998,11 +2074,16 @@ async fn run_subtitle_search_cycle(app: &AppUseCase) -> AppResult<()> {
                     Ok(_) => SchedulerFeedbackOutcome::Success,
                     Err(error) => subtitle_scheduler_outcome_for_error(error),
                 };
+                let scheduler_retry_after = match &download_result {
+                    Ok(_) => None,
+                    Err(error) => subtitle_retry_after_from_error(error),
+                };
                 record_subtitle_scheduler_feedback(
                     app,
                     &download_provider,
                     Some(scheduler_lease),
                     scheduler_outcome,
+                    scheduler_retry_after,
                 )
                 .await;
                 match download_result {
@@ -2143,6 +2224,21 @@ mod tests {
 
         assert_eq!(settings.threshold_for(SubtitleMediaKind::Episode), 324);
         assert_eq!(settings.threshold_for(SubtitleMediaKind::Movie), 84);
+    }
+
+    #[test]
+    fn subtitle_retry_after_parser_extracts_seconds_from_rate_limit_errors() {
+        let error =
+            AppError::Repository("subtitle provider rate limited, retry after 42s".to_string());
+
+        assert_eq!(
+            subtitle_retry_after_from_error(&error),
+            Some(Duration::from_secs(42))
+        );
+        assert_eq!(
+            subtitle_scheduler_outcome_for_error(&error),
+            SchedulerFeedbackOutcome::RateLimited
+        );
     }
 
     fn sample_title(facet: MediaFacet, year: Option<i32>) -> Title {

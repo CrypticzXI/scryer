@@ -4,15 +4,15 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
 use scryer_application::{
-    AppError, AppResult, IndexerClient, IndexerConfigRepository, IndexerPluginProvider,
-    IndexerRoutingPlan, IndexerSearchLearningContext, IndexerSearchLearningKey,
-    IndexerSearchLearningRecord, IndexerSearchLearningRepository, IndexerSearchResponse,
-    IndexerSearchResult, IndexerStatsTracker, IndexerSystemBackoff,
+    AppError, AppResult, ExpectedValueHint, IndexerClient, IndexerConfigRepository,
+    IndexerPluginProvider, IndexerRoutingPlan, IndexerSearchLearningContext,
+    IndexerSearchLearningKey, IndexerSearchLearningRecord, IndexerSearchLearningRepository,
+    IndexerSearchResponse, IndexerSearchResult, IndexerStatsTracker, IndexerSystemBackoff,
     NullIndexerSearchLearningRepository, NullUpstreamScheduler, ReleaseCandidateProvenance,
     ReleaseSearchSubjectKind, RssFreshnessContext, SchedulerAdmission, SchedulerBatchDecision,
     SchedulerBatchRequest, SchedulerCandidate, SchedulerCandidateId, SchedulerFeedback,
     SchedulerFeedbackOutcome, SchedulerIntent, SchedulerLease, SchedulerOperation,
-    SchedulerPluginKind, SchedulerSnapshot, SearchMode, UpstreamScheduler,
+    SchedulerPluginKind, SchedulerSnapshot, SearchLearningContext, SearchMode, UpstreamScheduler,
 };
 use scryer_domain::{
     IndexerCapsSearchNode, IndexerCapsSnapshot, IndexerConfig, IndexerProviderCapabilities,
@@ -174,7 +174,7 @@ impl StrategyBatchHealth {
                 )
                 .await;
             }
-        } else if self.any_error {
+        } else if self.any_error && self.retry_after.is_none() {
             let backoff = backoff_tracker
                 .record_failure(indexer_id, self.retry_after)
                 .await;
@@ -190,6 +190,12 @@ impl StrategyBatchHealth {
                 disabled_until = %backoff.disabled_until,
                 escalation_level = backoff.escalation_level,
                 "indexer backoff escalated"
+            );
+        } else if self.any_error {
+            warn!(
+                indexer = indexer_name,
+                retry_after_secs = self.retry_after.map(|delay| delay.as_secs()),
+                "indexer rate-limit failure recorded without operational backoff"
             );
         }
     }
@@ -915,8 +921,9 @@ impl IndexerBackoffTracker {
 
 /// Short-lived cache for RSS feed results. Multiple concurrent callers
 /// awaiting the same indexer's feed will share a single HTTP fetch.
-type RssFeedCache =
-    Arc<Mutex<HashMap<String, Arc<tokio::sync::OnceCell<Vec<IndexerSearchResult>>>>>>;
+type RssFeedCache = Arc<
+    Mutex<HashMap<String, Arc<tokio::sync::OnceCell<Result<Vec<IndexerSearchResult>, String>>>>>,
+>;
 
 #[derive(Clone)]
 pub struct MultiIndexerSearchClient {
@@ -1089,6 +1096,7 @@ impl MultiIndexerSearchClient {
         lease: Option<SchedulerLease>,
         response: &IndexerSearchResponse,
         outcome: SchedulerFeedbackOutcome,
+        retry_after: Option<std::time::Duration>,
     ) {
         let Some(lease) = lease else {
             return;
@@ -1105,7 +1113,7 @@ impl MultiIndexerSearchClient {
                 observed_api_max: response.api_max.map(u64::from),
                 observed_grab_current: response.grab_current.map(u64::from),
                 observed_grab_max: response.grab_max.map(u64::from),
-                retry_after: None,
+                retry_after,
                 observed_at: chrono::Utc::now(),
             })
             .await
@@ -1126,7 +1134,8 @@ impl MultiIndexerSearchClient {
             grab_current: None,
             grab_max: None,
         };
-        let outcome = if retry_after_from_error(error).is_some()
+        let retry_after = retry_after_from_error(error);
+        let outcome = if retry_after.is_some()
             || error
                 .to_string()
                 .to_ascii_lowercase()
@@ -1136,7 +1145,7 @@ impl MultiIndexerSearchClient {
         } else {
             SchedulerFeedbackOutcome::ProviderFailure
         };
-        self.record_indexer_scheduler_feedback(lease, &response, outcome)
+        self.record_indexer_scheduler_feedback(lease, &response, outcome, retry_after)
             .await;
     }
 
@@ -1809,14 +1818,6 @@ impl IndexerClient for MultiIndexerSearchClient {
                 continue;
             }
 
-            if mode == SearchMode::Auto && self.stats_tracker.is_at_quota(&config.id) {
-                info!(
-                    indexer = config.name.as_str(),
-                    "skipping indexer: at API quota limit"
-                );
-                continue;
-            }
-
             let static_caps = self
                 .plugin_provider
                 .capabilities_for_provider(&config.provider_type);
@@ -1849,6 +1850,55 @@ impl IndexerClient for MultiIndexerSearchClient {
 
             let (host_key, destination_key) = Self::scheduler_keys_for_indexer(config);
             let account_quota_key = Some(config.id.clone().into());
+            let scheduler_learning_context = if mode == SearchMode::Auto && !is_rss_request {
+                if let Some(learning_context) = learning_context.as_ref() {
+                    match self
+                        .search_learning
+                        .list_for_title(
+                            &config.id,
+                            &learning_context.title_id,
+                            &learning_context.facet,
+                        )
+                        .await
+                    {
+                        Ok(records) => {
+                            let historically_useful = records.iter().any(|record| {
+                                record.usable_successes > 0
+                                    && !learned_suppression_is_active(record, now)
+                            });
+                            Some(SearchLearningContext {
+                                indexer_id: config.id.clone(),
+                                facet: learning_context.facet.clone(),
+                                strategy: "provider_history".to_string(),
+                                suppressed: false,
+                                historically_useful,
+                            })
+                        }
+                        Err(error) => {
+                            warn!(
+                                indexer = config.name.as_str(),
+                                title_id = learning_context.title_id.as_str(),
+                                facet = learning_context.facet.as_str(),
+                                error = %error,
+                                "failed to load scheduler learning hint"
+                            );
+                            None
+                        }
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            let expected_value = if scheduler_learning_context
+                .as_ref()
+                .is_some_and(|context| context.historically_useful)
+            {
+                ExpectedValueHint { score: 1.0 }
+            } else {
+                ExpectedValueHint::default()
+            };
             let (last_successful_poll_at, last_attempt_at) = if is_rss_request {
                 Self::scheduler_rss_activity(
                     scheduler_snapshot.as_ref(),
@@ -1875,8 +1925,8 @@ impl IndexerClient for MultiIndexerSearchClient {
                 destination_key,
                 account_quota_key,
                 estimated_cost: Default::default(),
-                expected_value: Default::default(),
-                learning_context: None,
+                expected_value,
+                learning_context: scheduler_learning_context,
                 deadline_at: if matches!(mode, SearchMode::Interactive) {
                     Some(
                         scheduler_now
@@ -2136,7 +2186,7 @@ impl IndexerClient for MultiIndexerSearchClient {
                     let scheduler_lease_for_task = scheduler_lease.clone();
 
                     set.spawn(async move {
-                        let results = tokio::select! {
+                        let cached_results = tokio::select! {
                             _ = task_cancel_token.cancelled() => {
                                 return (
                                     indexer_id,
@@ -2147,20 +2197,24 @@ impl IndexerClient for MultiIndexerSearchClient {
                             }
                             results = cell.get_or_init(|| async {
                                 let permit = tokio::select! {
-                                    _ = task_cancel_token.cancelled() => return vec![],
+                                    _ = task_cancel_token.cancelled() => {
+                                        return Err("RSS indexer search canceled".to_string());
+                                    }
                                     permit = search_limit.acquire_owned() => permit,
                                 };
                                 let search_result = match permit {
                                     Ok(_permit) => {
                                         tokio::select! {
-                                            _ = task_cancel_token.cancelled() => return vec![],
+                                            _ = task_cancel_token.cancelled() => {
+                                                return Err("RSS indexer search canceled".to_string());
+                                            }
                                             _ = rate_limiter.acquire(&indexer_id, rate_limit_seconds, mode) => {}
                                         }
                                         let start = std::time::Instant::now();
                                         let request_cancel_token = task_cancel_token.child_token();
                                         let response = tokio::select! {
                                             _ = task_cancel_token.cancelled() => {
-                                                return vec![];
+                                                return Err("RSS indexer search canceled".to_string());
                                             }
                                             response = tokio::time::timeout(
                                                 std::time::Duration::from_secs(
@@ -2188,7 +2242,7 @@ impl IndexerClient for MultiIndexerSearchClient {
                                     }
                                     Err(error) => {
                                         warn!(indexer = indexer_name.as_str(), error = %error, "RSS feed search limiter closed");
-                                        return vec![];
+                                        return Err(format!("RSS feed search limiter closed: {error}"));
                                     }
                                 };
                                 let (search_response, elapsed) = search_result;
@@ -2214,34 +2268,34 @@ impl IndexerClient for MultiIndexerSearchClient {
                                         .await;
                                         metrics::counter!("scryer_indexer_queries_total", "indexer" => indexer_name.clone(), "status" => "success", "mode" => "rss_cached").increment(1);
                                         metrics::histogram!("scryer_indexer_query_duration_seconds", "indexer" => indexer_name.clone(), "mode" => "rss_cached").record(elapsed.as_secs_f64());
-                                        response.results
+                                        Ok(response.results)
                                     }
                                     Ok(Err(err)) => {
                                         if err.is_canceled() {
-                                            return vec![];
+                                            return Err("RSS indexer search canceled".to_string());
                                         }
                                         warn!(indexer = indexer_name.as_str(), error = %err, "RSS feed fetch failed");
                                         stats_tracker.record_query(&indexer_id, &indexer_name, false);
-                                        let backoff = backoff_tracker
-                                            .record_failure(
+                                        let retry_after = retry_after_from_error(&err);
+                                        if retry_after.is_none() {
+                                            let backoff = backoff_tracker
+                                                .record_failure(&indexer_id, None)
+                                                .await;
+                                            Self::record_indexer_system_backoff(
+                                                &indexer_configs,
                                                 &indexer_id,
-                                                retry_after_from_error(&err),
+                                                &indexer_name,
+                                                backoff,
                                             )
                                             .await;
-                                        Self::record_indexer_system_backoff(
-                                            &indexer_configs,
-                                            &indexer_id,
-                                            &indexer_name,
-                                            backoff,
-                                        )
-                                        .await;
+                                        }
                                         Self::record_indexer_last_error(
                                             &indexer_configs,
                                             &indexer_id,
                                             &indexer_name,
                                         )
                                         .await;
-                                        vec![]
+                                        Err(format!("RSS feed fetch failed: {err}"))
                                     }
                                     Err(_) => {
                                         warn!(indexer = indexer_name.as_str(), "RSS feed fetch timed out");
@@ -2261,10 +2315,10 @@ impl IndexerClient for MultiIndexerSearchClient {
                                             &indexer_name,
                                         )
                                         .await;
-                                        vec![]
+                                        Err("RSS feed fetch timed out".to_string())
                                     }
                                 }
-                            }) => results,
+                            }) => results.clone(),
                         };
                         if task_cancel_token.is_cancelled() {
                             return (
@@ -2274,9 +2328,20 @@ impl IndexerClient for MultiIndexerSearchClient {
                                 Err(AppError::canceled("RSS indexer search canceled")),
                             );
                         }
+                        let results = match cached_results {
+                            Ok(results) => results,
+                            Err(error) => {
+                                return (
+                                    indexer_id,
+                                    indexer_name,
+                                    scheduler_lease_for_task.clone(),
+                                    Err(AppError::Repository(error)),
+                                );
+                            }
+                        };
 
                         let response = IndexerSearchResponse {
-                            results: results.clone(),
+                            results,
                             api_current: None,
                             api_max: None,
                             grab_current: None,
@@ -2728,6 +2793,7 @@ impl IndexerClient for MultiIndexerSearchClient {
                         scheduler_lease,
                         &response,
                         SchedulerFeedbackOutcome::Success,
+                        None,
                     )
                     .await;
                     successful_searches += 1;

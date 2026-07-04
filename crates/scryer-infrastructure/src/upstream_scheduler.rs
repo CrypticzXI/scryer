@@ -21,6 +21,8 @@ const LOW_VALUE_SUBTITLE_THRESHOLD: f64 = 0.15;
 const RSS_FRESHNESS_ESCALATION_THRESHOLD: f64 = 0.85;
 const BACKGROUND_SUFFICIENCY_MIN_ADMISSIONS: usize = 3;
 const LOW_ACCOUNT_QUOTA_REMAINING_FRACTION: f64 = 0.20;
+const QUOTA_OBSERVATION_STALE_AFTER: Duration = Duration::from_secs(24 * 60 * 60);
+const EXHAUSTED_QUOTA_PROBE_AFTER: Duration = Duration::from_secs(6 * 60 * 60);
 
 #[derive(Clone, Default)]
 pub struct InMemoryUpstreamScheduler {
@@ -52,6 +54,10 @@ struct SchedulerStateEntry {
     api_max: Option<u64>,
     grab_current: Option<u64>,
     grab_max: Option<u64>,
+    quota_observed_at: Option<DateTime<Utc>>,
+    quota_probe_after: Option<DateTime<Utc>>,
+    quota_reset_at: Option<DateTime<Utc>>,
+    quota_source: Option<String>,
     admitted_count: u64,
     deferred_count: u64,
     skipped_count: u64,
@@ -178,10 +184,24 @@ impl UpstreamScheduler for InMemoryUpstreamScheduler {
                 entry.last_successful_at = Some(feedback.observed_at);
             }
             entry.cooldown_until = later_cooldown(entry.cooldown_until, cooldown_until);
+            let observed_quota = feedback.observed_api_current.is_some()
+                || feedback.observed_api_max.is_some()
+                || feedback.observed_grab_current.is_some()
+                || feedback.observed_grab_max.is_some();
             entry.api_current = feedback.observed_api_current.or(entry.api_current);
             entry.api_max = feedback.observed_api_max.or(entry.api_max);
             entry.grab_current = feedback.observed_grab_current.or(entry.grab_current);
             entry.grab_max = feedback.observed_grab_max.or(entry.grab_max);
+            if observed_quota {
+                entry.quota_observed_at = Some(feedback.observed_at);
+                entry.quota_probe_after = observed_quota_exhausted(entry)
+                    .then(|| chrono::Duration::from_std(EXHAUSTED_QUOTA_PROBE_AFTER).ok())
+                    .flatten()
+                    .map(|delay| feedback.observed_at + delay);
+                entry
+                    .quota_source
+                    .get_or_insert_with(|| "scheduler_feedback".to_string());
+            }
             entry.last_decision = Some(
                 match feedback.outcome {
                     SchedulerFeedbackOutcome::Success => "feedback:success",
@@ -232,6 +252,11 @@ impl UpstreamScheduler for InMemoryUpstreamScheduler {
                 last_attempt_at: entry.last_attempt_at,
                 cooldown_until: active_cooldown_until(entry, Utc::now()),
                 api_remaining_fraction: api_remaining_fraction(entry),
+                quota_observed_at: entry.quota_observed_at,
+                quota_probe_after: entry.quota_probe_after,
+                quota_reset_at: entry.quota_reset_at,
+                quota_source: entry.quota_source.clone(),
+                quota_stale: quota_is_stale(entry, Utc::now()),
                 admitted_count: entry.admitted_count,
                 deferred_count: entry.deferred_count,
                 skipped_count: entry.skipped_count,
@@ -271,7 +296,8 @@ impl SqlUpstreamSchedulerStore {
         let rows = SqlRuntime::fetch_all(
             self.datastore.read_exec(),
             "SELECT host_key, destination_key, account_quota_key, api_current, api_max,
-                    grab_current, grab_max, cooldown_until, last_decision, last_feedback_at,
+                    grab_current, grab_max, quota_observed_at, quota_probe_after,
+                    quota_reset_at, quota_source, cooldown_until, last_decision, last_feedback_at,
                     last_successful_at, last_attempt_at,
                     admitted_count, deferred_count, skipped_count
              FROM upstream_scheduler_states",
@@ -300,17 +326,34 @@ impl SqlUpstreamSchedulerStore {
                 self.datastore.read_exec(),
                 "INSERT INTO upstream_scheduler_states (
                     host_key, destination_key, account_quota_key, api_current, api_max,
-                    grab_current, grab_max, cooldown_until, last_decision, last_feedback_at,
+                    grab_current, grab_max, quota_observed_at, quota_probe_after,
+                    quota_reset_at, quota_source, cooldown_until, last_decision, last_feedback_at,
                     last_successful_at, last_attempt_at, admitted_count, deferred_count,
                     skipped_count, updated_at
                  )
-                 VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})
+                 VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})
                  ON CONFLICT (host_key, destination_key, account_quota_key)
                  DO UPDATE SET
-                    api_current = COALESCE(excluded.api_current, upstream_scheduler_states.api_current),
-                    api_max = COALESCE(excluded.api_max, upstream_scheduler_states.api_max),
-                    grab_current = COALESCE(excluded.grab_current, upstream_scheduler_states.grab_current),
-                    grab_max = COALESCE(excluded.grab_max, upstream_scheduler_states.grab_max),
+                    api_current = CASE
+                        WHEN excluded.quota_observed_at IS NOT NULL THEN excluded.api_current
+                        ELSE upstream_scheduler_states.api_current
+                    END,
+                    api_max = CASE
+                        WHEN excluded.quota_observed_at IS NOT NULL THEN excluded.api_max
+                        ELSE upstream_scheduler_states.api_max
+                    END,
+                    grab_current = CASE
+                        WHEN excluded.quota_observed_at IS NOT NULL THEN excluded.grab_current
+                        ELSE upstream_scheduler_states.grab_current
+                    END,
+                    grab_max = CASE
+                        WHEN excluded.quota_observed_at IS NOT NULL THEN excluded.grab_max
+                        ELSE upstream_scheduler_states.grab_max
+                    END,
+                    quota_observed_at = COALESCE(excluded.quota_observed_at, upstream_scheduler_states.quota_observed_at),
+                    quota_probe_after = COALESCE(excluded.quota_probe_after, upstream_scheduler_states.quota_probe_after),
+                    quota_reset_at = COALESCE(excluded.quota_reset_at, upstream_scheduler_states.quota_reset_at),
+                    quota_source = COALESCE(excluded.quota_source, upstream_scheduler_states.quota_source),
                     cooldown_until = COALESCE(excluded.cooldown_until, upstream_scheduler_states.cooldown_until),
                     last_decision = COALESCE(excluded.last_decision, upstream_scheduler_states.last_decision),
                     last_feedback_at = COALESCE(excluded.last_feedback_at, upstream_scheduler_states.last_feedback_at),
@@ -333,6 +376,10 @@ impl SqlUpstreamSchedulerStore {
                     SqlArg::OptI64(entry.api_max.map(|value| value as i64)),
                     SqlArg::OptI64(entry.grab_current.map(|value| value as i64)),
                     SqlArg::OptI64(entry.grab_max.map(|value| value as i64)),
+                    SqlArg::OptTimestamp(entry.quota_observed_at),
+                    SqlArg::OptTimestamp(entry.quota_probe_after),
+                    SqlArg::OptTimestamp(entry.quota_reset_at),
+                    SqlArg::OptText(entry.quota_source),
                     SqlArg::OptTimestamp(entry.cooldown_until),
                     SqlArg::OptText(entry.last_decision),
                     SqlArg::OptTimestamp(entry.last_feedback_at),
@@ -404,6 +451,10 @@ fn row_to_scheduler_entry(row: &SqlRow) -> AppResult<(SchedulerStateKey, Schedul
                 .opt_i64("grab_current")?
                 .map(|value| value.max(0) as u64),
             grab_max: row.opt_i64("grab_max")?.map(|value| value.max(0) as u64),
+            quota_observed_at: row.opt_timestamp("quota_observed_at")?,
+            quota_probe_after: row.opt_timestamp("quota_probe_after")?,
+            quota_reset_at: row.opt_timestamp("quota_reset_at")?,
+            quota_source: row.opt_text("quota_source")?,
             admitted_count: row.i64("admitted_count")?.max(0) as u64,
             deferred_count: row.i64("deferred_count")?.max(0) as u64,
             skipped_count: row.i64("skipped_count")?.max(0) as u64,
@@ -452,14 +503,18 @@ fn decide_candidate(
         };
     }
 
-    if account_quota_exhausted(&candidate, state_entry) {
-        return SchedulerAdmission::Skip {
+    if let Some(retry_after) = account_quota_retry_after(&candidate, state_entry, now) {
+        return SchedulerAdmission::Defer {
             candidate_id: candidate.candidate_id,
-            reason: SkipReason::AccountQuotaExhausted,
+            retry_after,
+            reason: DeferralReason::AccountQuotaProbePending,
         };
     }
 
-    if state_entry.is_some_and(|entry| active_cooldown_until(entry, now).is_some()) {
+    if RateLimitRegistry::new()
+        .active_destination_cooldown(&candidate.destination_key)
+        .is_some()
+    {
         return SchedulerAdmission::Skip {
             candidate_id: candidate.candidate_id,
             reason: SkipReason::DestinationCooldown,
@@ -491,20 +546,41 @@ fn decide_candidate(
     }
 }
 
-fn account_quota_exhausted(
+fn account_quota_retry_after(
     candidate: &SchedulerCandidate,
     state_entry: Option<&SchedulerStateEntry>,
-) -> bool {
+    now: DateTime<Utc>,
+) -> Option<Option<Duration>> {
+    if candidate.intent == SchedulerIntent::InteractiveSearch {
+        return None;
+    }
+
     let Some(entry) = state_entry else {
-        return false;
+        return None;
     };
 
+    if quota_is_stale(entry, now) || quota_probe_is_due(entry, now) {
+        return None;
+    }
+
+    if quota_has_capacity_for(candidate, entry) {
+        return None;
+    }
+
+    Some(entry.quota_probe_after.and_then(|probe_after| {
+        (probe_after > now)
+            .then(|| (probe_after - now).to_std().ok())
+            .flatten()
+    }))
+}
+
+fn quota_has_capacity_for(candidate: &SchedulerCandidate, entry: &SchedulerStateEntry) -> bool {
     if candidate.estimated_cost.api_calls > 0.0
         && let (Some(current), Some(max)) = (entry.api_current, entry.api_max)
         && max > 0
         && (max.saturating_sub(current.min(max)) as f64) < candidate.estimated_cost.api_calls
     {
-        return true;
+        return false;
     }
 
     if candidate.estimated_cost.grab_calls > 0.0
@@ -512,10 +588,37 @@ fn account_quota_exhausted(
         && max > 0
         && (max.saturating_sub(current.min(max)) as f64) < candidate.estimated_cost.grab_calls
     {
+        return false;
+    }
+
+    true
+}
+
+fn observed_quota_exhausted(entry: &SchedulerStateEntry) -> bool {
+    let api_exhausted = matches!((entry.api_current, entry.api_max), (Some(current), Some(max)) if max > 0 && current >= max);
+    let grab_exhausted = matches!((entry.grab_current, entry.grab_max), (Some(current), Some(max)) if max > 0 && current >= max);
+    api_exhausted || grab_exhausted
+}
+
+fn quota_is_stale(entry: &SchedulerStateEntry, now: DateTime<Utc>) -> bool {
+    if entry.quota_reset_at.is_some_and(|reset_at| reset_at <= now) {
         return true;
     }
 
-    false
+    let Some(observed_at) = entry.quota_observed_at else {
+        return true;
+    };
+
+    let Ok(age) = (now - observed_at).to_std() else {
+        return false;
+    };
+    age >= QUOTA_OBSERVATION_STALE_AFTER
+}
+
+fn quota_probe_is_due(entry: &SchedulerStateEntry, now: DateTime<Utc>) -> bool {
+    entry
+        .quota_probe_after
+        .is_some_and(|probe_after| probe_after <= now)
 }
 
 fn should_conserve_low_capacity_background(
@@ -699,6 +802,7 @@ fn deferral_reason_label(reason: DeferralReason) -> &'static str {
         DeferralReason::RssCadence => "defer:rss_cadence",
         DeferralReason::SubtitleYieldedToAcquisition => "defer:subtitle_yielded_to_acquisition",
         DeferralReason::MaintenanceLowPriority => "defer:maintenance_low_priority",
+        DeferralReason::AccountQuotaProbePending => "defer:account_quota_probe_pending",
     }
 }
 
@@ -889,7 +993,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn account_quota_exhaustion_skips_candidate() {
+    async fn fresh_account_quota_exhaustion_defers_background_candidate() {
         let scheduler = InMemoryUpstreamScheduler::new();
         let candidate = candidate(SchedulerIntent::BackgroundAcquisition, 1.0);
         scheduler
@@ -920,8 +1024,89 @@ mod tests {
 
         assert!(matches!(
             decision.decisions.as_slice(),
-            [SchedulerAdmission::Skip {
-                reason: SkipReason::AccountQuotaExhausted,
+            [SchedulerAdmission::Defer {
+                reason: DeferralReason::AccountQuotaProbePending,
+                retry_after: Some(_),
+                ..
+            }]
+        ));
+    }
+
+    #[tokio::test]
+    async fn fresh_account_quota_exhaustion_does_not_block_interactive_probe() {
+        let scheduler = InMemoryUpstreamScheduler::new();
+        let mut candidate = candidate(SchedulerIntent::InteractiveSearch, 1.0);
+        scheduler
+            .record_feedback(SchedulerFeedback {
+                lease: None,
+                host_key: candidate.host_key.clone(),
+                destination_key: candidate.destination_key.clone(),
+                account_quota_key: candidate.account_quota_key.clone(),
+                outcome: SchedulerFeedbackOutcome::Success,
+                observed_api_current: Some(10),
+                observed_api_max: Some(10),
+                observed_grab_current: None,
+                observed_grab_max: None,
+                retry_after: None,
+                observed_at: Utc::now(),
+            })
+            .await
+            .expect("feedback should persist");
+
+        candidate.intent = SchedulerIntent::InteractiveSearch;
+        let decision = scheduler
+            .admit_batch(SchedulerBatchRequest {
+                batch_id: "batch".to_string(),
+                now: Utc::now(),
+                candidates: vec![candidate],
+            })
+            .await
+            .expect("admission should succeed");
+
+        assert!(matches!(
+            decision.decisions.as_slice(),
+            [SchedulerAdmission::Admit {
+                reason: AdmissionReason::InteractiveDeadline,
+                ..
+            }]
+        ));
+    }
+
+    #[tokio::test]
+    async fn stale_account_quota_exhaustion_allows_background_probe() {
+        let scheduler = InMemoryUpstreamScheduler::new();
+        let candidate = candidate(SchedulerIntent::BackgroundAcquisition, 1.0);
+        let now = Utc::now();
+        scheduler
+            .record_feedback(SchedulerFeedback {
+                lease: None,
+                host_key: candidate.host_key.clone(),
+                destination_key: candidate.destination_key.clone(),
+                account_quota_key: candidate.account_quota_key.clone(),
+                outcome: SchedulerFeedbackOutcome::Success,
+                observed_api_current: Some(10),
+                observed_api_max: Some(10),
+                observed_grab_current: None,
+                observed_grab_max: None,
+                retry_after: None,
+                observed_at: now - chrono::Duration::hours(25),
+            })
+            .await
+            .expect("feedback should persist");
+
+        let decision = scheduler
+            .admit_batch(SchedulerBatchRequest {
+                batch_id: "batch".to_string(),
+                now,
+                candidates: vec![candidate],
+            })
+            .await
+            .expect("admission should succeed");
+
+        assert!(matches!(
+            decision.decisions.as_slice(),
+            [SchedulerAdmission::Admit {
+                reason: AdmissionReason::HighCapacity,
                 ..
             }]
         ));

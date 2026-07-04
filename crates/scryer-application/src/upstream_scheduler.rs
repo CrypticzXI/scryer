@@ -214,6 +214,7 @@ pub enum DeferralReason {
     RssCadence,
     SubtitleYieldedToAcquisition,
     MaintenanceLowPriority,
+    AccountQuotaProbePending,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -292,6 +293,11 @@ pub struct SchedulerSnapshotEntry {
     pub last_attempt_at: Option<DateTime<Utc>>,
     pub cooldown_until: Option<DateTime<Utc>>,
     pub api_remaining_fraction: Option<f64>,
+    pub quota_observed_at: Option<DateTime<Utc>>,
+    pub quota_probe_after: Option<DateTime<Utc>>,
+    pub quota_reset_at: Option<DateTime<Utc>>,
+    pub quota_source: Option<String>,
+    pub quota_stale: bool,
     pub admitted_count: u64,
     pub deferred_count: u64,
     pub skipped_count: u64,
