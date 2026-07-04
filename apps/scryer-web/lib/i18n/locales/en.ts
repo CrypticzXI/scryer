@@ -589,8 +589,8 @@ const en: LocaleDictionary = {
   "settings.mediaServerConnection": "Media server connection",
   "settings.manualConfiguration": "Manual configuration",
   "settings.downloadClientSection": "Download client settings",
-  "settings.downloadClientCreate": "Save Download Client",
-  "settings.downloadClientCreateNew": "Create new download client",
+  "settings.downloadClientCreate": "Connect a download client",
+  "settings.downloadClientCreateNew": "Connect a download client",
   "settings.downloadClientUpdate": "Update Download Client",
   "settings.downloadClientConfirmDiscardTitle":
     "Discard current download client edits?",
@@ -1466,8 +1466,8 @@ const en: LocaleDictionary = {
   "settings.indexerSyncNow": "Sync now",
   "settings.indexerAdd": "Add indexer",
   "settings.indexerUpdate": "Update Indexer",
-  "settings.indexerCreate": "Create Indexer",
-  "settings.indexerCreateNew": "Create new indexer",
+  "settings.indexerCreate": "Connect an indexer",
+  "settings.indexerCreateNew": "Connect an indexer",
   "settings.indexerManagedParentHint":
     "Prowlarr parent configs are management-only. Search modes come from synced child indexers.",
   "settings.indexerConfirmDiscardTitle": "Discard current indexer edits?",

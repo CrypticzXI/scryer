@@ -6,8 +6,14 @@ pub(crate) const SEARCH_TVDB_RICH_QUERY: &str =
 pub(crate) const SEARCH_TVDB_MULTI_QUERY: &str =
     include_str!("metadata_gateway/search_tvdb_multi.graphql");
 pub(crate) const GET_MOVIE_QUERY: &str = include_str!("metadata_gateway/get_movie.graphql");
+pub(crate) const GET_MOVIE_LEGACY_QUERY: &str =
+    include_str!("metadata_gateway/get_movie_legacy.graphql");
 pub(crate) const GET_SERIES_QUERY: &str = include_str!("metadata_gateway/get_series.graphql");
+pub(crate) const GET_SERIES_LEGACY_QUERY: &str =
+    include_str!("metadata_gateway/get_series_legacy.graphql");
 pub(crate) const METADATA_BULK_QUERY: &str = include_str!("metadata_gateway/metadata_bulk.graphql");
+pub(crate) const METADATA_BULK_LEGACY_QUERY: &str =
+    include_str!("metadata_gateway/metadata_bulk_legacy.graphql");
 pub(crate) const DISCOVER_PUBLIC_FEED_QUERY: &str =
     include_str!("metadata_gateway/discover_public_feed.graphql");
 pub(crate) const TITLE_RECOMMENDATIONS_QUERY: &str =
@@ -26,5 +32,9 @@ pub(crate) const ACKNOWLEDGE_DISCOVERY_CONTEXT_SNAPSHOT_QUERY: &str =
     include_str!("metadata_gateway/acknowledge_discovery_context_snapshot.graphql");
 pub(crate) const MOVIE_FIELDS_FRAGMENT: &str =
     include_str!("metadata_gateway/movie_fields.graphql");
+pub(crate) const MOVIE_FIELDS_LEGACY_FRAGMENT: &str =
+    include_str!("metadata_gateway/movie_fields_legacy.graphql");
 pub(crate) const SERIES_FIELDS_FRAGMENT: &str =
     include_str!("metadata_gateway/series_fields.graphql");
+pub(crate) const SERIES_FIELDS_LEGACY_FRAGMENT: &str =
+    include_str!("metadata_gateway/series_fields_legacy.graphql");
