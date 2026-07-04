@@ -45,7 +45,10 @@ export function MediaRenamePlanPanel({
   const t = useTranslate();
 
   return (
-    <div className="mt-3 space-y-3">
+    <div
+      id={applyButtonId ? `${applyButtonId}-plan` : undefined}
+      className="mt-3 space-y-3"
+    >
       <div className="text-sm text-muted-foreground">
         {t("rename.planSummary", {
           total: plan.total,
@@ -69,10 +72,16 @@ export function MediaRenamePlanPanel({
                 key={`${item.collectionId ?? "none"}-${item.currentPath ?? ""}-${index}`}
                 className="border-t border-border"
               >
-                <td className="px-3 py-2 align-top font-[var(--font-code)] text-xs text-muted-foreground">
+                <td
+                  data-ui="media-rename-plan-current-path"
+                  className="px-3 py-2 align-top font-[var(--font-code)] text-xs text-muted-foreground"
+                >
                   {item.currentPath || "—"}
                 </td>
-                <td className="px-3 py-2 align-top font-[var(--font-code)] text-xs text-muted-foreground">
+                <td
+                  data-ui="media-rename-plan-proposed-path"
+                  className="px-3 py-2 align-top font-[var(--font-code)] text-xs text-muted-foreground"
+                >
                   {item.proposedPath ?? "—"}
                 </td>
               </tr>

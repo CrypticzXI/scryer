@@ -86,6 +86,7 @@ pub struct RequestPolicy {
     pub base_backoff: Duration,
     pub max_backoff: Duration,
     pub max_retry_after: Duration,
+    pub follow_redirects: bool,
 }
 
 impl RequestPolicy {
@@ -108,6 +109,7 @@ impl RequestPolicy {
             base_backoff: Duration::from_secs(1),
             max_backoff: Duration::from_secs(30),
             max_retry_after: default_max_retry_after(),
+            follow_redirects: true,
         }
     }
 
@@ -145,6 +147,11 @@ impl RequestPolicy {
 
     pub fn with_max_retry_after(mut self, max_retry_after: Duration) -> Self {
         self.max_retry_after = max_retry_after;
+        self
+    }
+
+    pub fn without_redirects(mut self) -> Self {
+        self.follow_redirects = false;
         self
     }
 
@@ -1103,10 +1110,14 @@ impl OutboundHttpClient {
                 }
             }
 
-            match self
-                .send_builder_with_manual_redirects(builder, policy.request_label.as_ref())
-                .await
-            {
+            let send_result = if policy.follow_redirects {
+                self.send_builder_with_manual_redirects(builder, policy.request_label.as_ref())
+                    .await
+            } else {
+                builder.send().await
+            };
+
+            match send_result {
                 Ok(response) if response.status() != StatusCode::TOO_MANY_REQUESTS => {
                     return Ok(response);
                 }

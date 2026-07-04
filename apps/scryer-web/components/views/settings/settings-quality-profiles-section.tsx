@@ -1048,6 +1048,7 @@ export function SettingsQualityProfilesSection({
                 </label>
                 <label className="mb-2 flex items-center gap-3">
                   <Checkbox
+                    id={selectorId("settings-quality-profile-allow-bd-disk")}
                     checked={qualityProfileDraft.allow_bd_disk}
                     onCheckedChange={(checked) =>
                       updateQualityProfileDraft({
@@ -1066,7 +1067,10 @@ export function SettingsQualityProfilesSection({
               </div>
 
               {/* Scoring overrides */}
-              <details className="overflow-hidden rounded-[10px] border border-[var(--scry-border3)] bg-[var(--scry-inset)]">
+              <details
+                id={selectorId("settings-quality-profile-scoring-overrides")}
+                className="overflow-hidden rounded-[10px] border border-[var(--scry-border3)] bg-[var(--scry-inset)]"
+              >
                 <summary
                   id="settings-quality-profile-scoring-overrides-summary"
                   className={`cursor-pointer select-none px-3 py-2 text-xs font-medium ${QUALITY_MUTED_TEXT_CLASS}`}

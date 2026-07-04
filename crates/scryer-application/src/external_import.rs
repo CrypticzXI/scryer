@@ -908,6 +908,7 @@ impl ExternalArrClient {
         )
         .with_max_retries(2)
         .with_backoff(Duration::from_secs(1), Duration::from_secs(15))
+        .without_redirects()
     }
 }
 
