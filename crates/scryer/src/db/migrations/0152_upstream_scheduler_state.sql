@@ -35,6 +35,10 @@ CREATE TABLE IF NOT EXISTS upstream_scheduler_rss_cadence (
     estimated_feed_depth INTEGER,
     freshness_risk REAL NOT NULL DEFAULT 0,
     destination_recent_activity_at TEXT,
+    last_seen_release_identity TEXT,
+    last_seen_release_published_at TEXT,
+    last_feed_gap_start_at TEXT,
+    last_feed_gap_end_at TEXT,
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     PRIMARY KEY (account_quota_key, destination_key)
 );

@@ -500,6 +500,10 @@ async fn record_caps_scheduler_feedback(
             observed_grab_current: None,
             observed_grab_max: None,
             retry_after,
+            rss_last_seen_release_identity: None,
+            rss_last_seen_release_published_at: None,
+            rss_feed_result_count: None,
+            rss_seen_release_identities: Vec::new(),
             observed_at: Utc::now(),
         })
         .await

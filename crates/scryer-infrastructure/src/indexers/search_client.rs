@@ -23,7 +23,10 @@ use tokio::sync::{Mutex, Semaphore};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
-use scryer_outbound_http::{DestinationKey, HostKey};
+use scryer_outbound_http::{
+    DestinationKey, HostKey, HostRpsProfile, HostRpsProfileSource, LOCAL_MANAGED_HOST_RPS,
+    LOCAL_MANAGED_HOST_RPS_BURST, RateLimitRegistry,
+};
 
 /// A single search strategy dispatched as an independent parallel task.
 /// Each strategy carries the raw query/ID params to pass through to the plugin.
@@ -37,6 +40,17 @@ struct SearchStrategy {
     absolute_episode: Option<u32>,
     generic_query_only: bool,
     label: String,
+}
+
+#[derive(Clone, Default)]
+struct SchedulerRssActivity {
+    last_successful_poll_at: Option<DateTime<Utc>>,
+    last_attempt_at: Option<DateTime<Utc>>,
+    target_interval: Option<std::time::Duration>,
+    latest_safe_poll_at: Option<DateTime<Utc>>,
+    estimated_feed_depth: Option<u32>,
+    freshness_risk: Option<f64>,
+    destination_recent_activity_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug)]
@@ -270,6 +284,60 @@ fn should_run_fallback_tier(
 
 fn retry_after_from_error(error: &AppError) -> Option<std::time::Duration> {
     parse_retry_after_seconds(&error.to_string())
+}
+
+fn indexer_rss_feedback_summary(
+    lease: &SchedulerLease,
+    response: &IndexerSearchResponse,
+) -> (
+    Option<String>,
+    Option<DateTime<Utc>>,
+    Option<u32>,
+    Vec<String>,
+) {
+    if lease.operation != SchedulerOperation::Rss && lease.intent != SchedulerIntent::BackgroundRss
+    {
+        return (None, None, None, Vec::new());
+    }
+
+    let mut newest_identity = None;
+    let mut newest_published_at = None;
+    let mut fallback_identity = None;
+    let mut seen_identities = Vec::with_capacity(response.results.len());
+    for result in &response.results {
+        let identity = result
+            .guid
+            .clone()
+            .or_else(|| result.link.clone())
+            .or_else(|| result.download_url.clone())
+            .unwrap_or_else(|| result.title.clone());
+        fallback_identity.get_or_insert_with(|| identity.clone());
+        seen_identities.push(identity.clone());
+        let Some(published_at) = result
+            .published_at
+            .as_deref()
+            .and_then(parse_indexer_published_at)
+        else {
+            continue;
+        };
+        if newest_published_at.is_none_or(|current| published_at > current) {
+            newest_published_at = Some(published_at);
+            newest_identity = Some(identity);
+        }
+    }
+
+    (
+        newest_identity.or(fallback_identity),
+        newest_published_at,
+        Some(response.results.len().min(u32::MAX as usize) as u32),
+        seen_identities,
+    )
+}
+
+fn parse_indexer_published_at(value: &str) -> Option<DateTime<Utc>> {
+    DateTime::parse_from_rfc3339(value)
+        .ok()
+        .map(|value| value.with_timezone(&Utc))
 }
 
 fn parse_retry_after_seconds(message: &str) -> Option<std::time::Duration> {
@@ -1016,6 +1084,19 @@ impl MultiIndexerSearchClient {
             })
     }
 
+    fn register_managed_proxy_host_profile(config: &IndexerConfig, host_key: &HostKey) {
+        let is_managed_proxy =
+            config.managed_parent_config_id.is_some() || config.provider_type.trim() == "prowlarr";
+        if !is_managed_proxy {
+            return;
+        }
+        RateLimitRegistry::new().register_host_profile(
+            host_key.clone(),
+            HostRpsProfile::limited(LOCAL_MANAGED_HOST_RPS, LOCAL_MANAGED_HOST_RPS_BURST),
+            HostRpsProfileSource::ExplicitRegistration,
+        );
+    }
+
     fn scheduler_admission_candidate_id(admission: &SchedulerAdmission) -> &SchedulerCandidateId {
         match admission {
             SchedulerAdmission::Admit { candidate_id, .. }
@@ -1029,9 +1110,9 @@ impl MultiIndexerSearchClient {
         host_key: &HostKey,
         destination_key: &DestinationKey,
         account_quota_key: Option<&scryer_application::AccountQuotaKey>,
-    ) -> (Option<DateTime<Utc>>, Option<DateTime<Utc>>) {
+    ) -> SchedulerRssActivity {
         let Some(snapshot) = snapshot else {
-            return (None, None);
+            return SchedulerRssActivity::default();
         };
         snapshot
             .entries
@@ -1041,52 +1122,81 @@ impl MultiIndexerSearchClient {
                     && &entry.destination_key == destination_key
                     && entry.account_quota_key.as_ref() == account_quota_key
             })
-            .fold((None, None), |(last_success, last_attempt), entry| {
-                (
-                    last_success.max(entry.last_successful_at),
-                    last_attempt.max(entry.last_attempt_at),
-                )
+            .fold(SchedulerRssActivity::default(), |activity, entry| {
+                SchedulerRssActivity {
+                    last_successful_poll_at: activity.last_successful_poll_at.max(
+                        entry
+                            .rss_last_successful_poll_at
+                            .or(entry.last_successful_at),
+                    ),
+                    last_attempt_at: activity
+                        .last_attempt_at
+                        .max(entry.rss_last_attempt_at.or(entry.last_attempt_at)),
+                    target_interval: activity.target_interval.or(entry.rss_target_interval),
+                    latest_safe_poll_at: activity
+                        .latest_safe_poll_at
+                        .max(entry.rss_latest_safe_poll_at),
+                    estimated_feed_depth: activity
+                        .estimated_feed_depth
+                        .or(entry.rss_estimated_feed_depth),
+                    freshness_risk: activity.freshness_risk.or(entry.rss_freshness_risk),
+                    destination_recent_activity_at: activity
+                        .destination_recent_activity_at
+                        .max(entry.rss_destination_recent_activity_at),
+                }
             })
     }
 
     fn rss_freshness_context(
         config: &IndexerConfig,
         now: DateTime<Utc>,
-        last_successful_poll_at: Option<DateTime<Utc>>,
-        last_attempt_at: Option<DateTime<Utc>>,
+        activity: SchedulerRssActivity,
     ) -> RssFreshnessContext {
         const RSS_TARGET_INTERVAL_SECS: i64 = 15 * 60;
+        let last_successful_poll_at = activity.last_successful_poll_at;
+        let last_attempt_at = activity.last_attempt_at;
         let phase = stable_phase_seconds(&config.id, RSS_TARGET_INTERVAL_SECS as u64) as i64;
         let timestamp = now.timestamp();
         let window_start = timestamp - timestamp.rem_euclid(RSS_TARGET_INTERVAL_SECS);
         let phased_safe_poll_at =
             DateTime::<Utc>::from_timestamp(window_start + phase, 0).unwrap_or(now);
-        let target_interval = Duration::seconds(RSS_TARGET_INTERVAL_SECS);
+        let target_interval = activity
+            .target_interval
+            .and_then(|duration| chrono::Duration::from_std(duration).ok())
+            .unwrap_or_else(|| Duration::seconds(RSS_TARGET_INTERVAL_SECS));
         let latest_safe_poll_at = last_successful_poll_at
             .map(|last_activity| last_activity + target_interval)
+            .or(activity.latest_safe_poll_at)
             .unwrap_or(phased_safe_poll_at);
-        let freshness_risk = last_successful_poll_at
-            .map(|last_activity| {
-                let elapsed = (now - last_activity).num_seconds().max(0) as f64;
-                (elapsed / RSS_TARGET_INTERVAL_SECS as f64).clamp(0.0, 1.0)
-            })
-            .unwrap_or_else(|| {
-                if now >= latest_safe_poll_at {
-                    1.0
-                } else {
-                    let elapsed = timestamp - window_start;
-                    (elapsed as f64 / RSS_TARGET_INTERVAL_SECS as f64).clamp(0.0, 1.0)
-                }
-            });
+        let freshness_risk = activity.freshness_risk.unwrap_or_else(|| {
+            last_successful_poll_at
+                .map(|last_activity| {
+                    let elapsed = (now - last_activity).num_seconds().max(0) as f64;
+                    (elapsed / RSS_TARGET_INTERVAL_SECS as f64).clamp(0.0, 1.0)
+                })
+                .unwrap_or_else(|| {
+                    if now >= latest_safe_poll_at {
+                        1.0
+                    } else {
+                        let elapsed = timestamp - window_start;
+                        (elapsed as f64 / RSS_TARGET_INTERVAL_SECS as f64).clamp(0.0, 1.0)
+                    }
+                })
+        });
 
         RssFreshnessContext {
             last_successful_poll_at,
             last_attempt_at,
-            target_interval: std::time::Duration::from_secs(RSS_TARGET_INTERVAL_SECS as u64),
+            target_interval: activity
+                .target_interval
+                .unwrap_or_else(|| std::time::Duration::from_secs(RSS_TARGET_INTERVAL_SECS as u64)),
             latest_safe_poll_at,
-            estimated_feed_depth: None,
+            estimated_feed_depth: activity.estimated_feed_depth,
             freshness_risk,
-            destination_recent_activity_at: last_attempt_at.or(last_successful_poll_at),
+            destination_recent_activity_at: activity
+                .destination_recent_activity_at
+                .or(last_attempt_at)
+                .or(last_successful_poll_at),
             account_quota_budget: None,
         }
     }
@@ -1101,6 +1211,12 @@ impl MultiIndexerSearchClient {
         let Some(lease) = lease else {
             return;
         };
+        let (
+            rss_last_seen_release_identity,
+            rss_last_seen_release_published_at,
+            rss_feed_result_count,
+            rss_seen_release_identities,
+        ) = indexer_rss_feedback_summary(&lease, response);
         if let Err(error) = self
             .upstream_scheduler
             .record_feedback(SchedulerFeedback {
@@ -1114,6 +1230,10 @@ impl MultiIndexerSearchClient {
                 observed_grab_current: response.grab_current.map(u64::from),
                 observed_grab_max: response.grab_max.map(u64::from),
                 retry_after,
+                rss_last_seen_release_identity,
+                rss_last_seen_release_published_at,
+                rss_feed_result_count,
+                rss_seen_release_identities,
                 observed_at: chrono::Utc::now(),
             })
             .await
@@ -1849,6 +1969,7 @@ impl IndexerClient for MultiIndexerSearchClient {
             }
 
             let (host_key, destination_key) = Self::scheduler_keys_for_indexer(config);
+            Self::register_managed_proxy_host_profile(config, &host_key);
             let account_quota_key = Some(config.id.clone().into());
             let scheduler_learning_context = if mode == SearchMode::Auto && !is_rss_request {
                 if let Some(learning_context) = learning_context.as_ref() {
@@ -1899,7 +2020,7 @@ impl IndexerClient for MultiIndexerSearchClient {
             } else {
                 ExpectedValueHint::default()
             };
-            let (last_successful_poll_at, last_attempt_at) = if is_rss_request {
+            let rss_activity = if is_rss_request {
                 Self::scheduler_rss_activity(
                     scheduler_snapshot.as_ref(),
                     &host_key,
@@ -1907,7 +2028,7 @@ impl IndexerClient for MultiIndexerSearchClient {
                     account_quota_key.as_ref(),
                 )
             } else {
-                (None, None)
+                SchedulerRssActivity::default()
             };
             let scheduler_candidate_id = SchedulerCandidateId::new();
             scheduler_candidate_ids.insert(config.id.clone(), scheduler_candidate_id.clone());
@@ -1935,14 +2056,8 @@ impl IndexerClient for MultiIndexerSearchClient {
                 } else {
                     None
                 },
-                freshness: is_rss_request.then(|| {
-                    Self::rss_freshness_context(
-                        config,
-                        scheduler_now,
-                        last_successful_poll_at,
-                        last_attempt_at,
-                    )
-                }),
+                freshness: is_rss_request
+                    .then(|| Self::rss_freshness_context(config, scheduler_now, rss_activity)),
                 cancel_token: cancel_token.child_token(),
             });
             scheduler_eligible.push((*config, *had_persisted_system_backoff));
@@ -3571,6 +3686,8 @@ mod tests {
                         host_key: candidate.host_key,
                         destination_key: candidate.destination_key,
                         account_quota_key: candidate.account_quota_key,
+                        operation: candidate.operation,
+                        intent: candidate.intent,
                         issued_at: request.now,
                     },
                     reason: scryer_application::AdmissionReason::BackgroundValue,

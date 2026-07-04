@@ -194,6 +194,8 @@ pub struct SchedulerLease {
     pub host_key: HostKey,
     pub destination_key: DestinationKey,
     pub account_quota_key: Option<AccountQuotaKey>,
+    pub operation: SchedulerOperation,
+    pub intent: SchedulerIntent,
     pub issued_at: DateTime<Utc>,
 }
 
@@ -257,6 +259,10 @@ pub struct SchedulerFeedback {
     pub observed_grab_current: Option<u64>,
     pub observed_grab_max: Option<u64>,
     pub retry_after: Option<Duration>,
+    pub rss_last_seen_release_identity: Option<String>,
+    pub rss_last_seen_release_published_at: Option<DateTime<Utc>>,
+    pub rss_feed_result_count: Option<u32>,
+    pub rss_seen_release_identities: Vec<String>,
     pub observed_at: DateTime<Utc>,
 }
 
@@ -298,6 +304,17 @@ pub struct SchedulerSnapshotEntry {
     pub quota_reset_at: Option<DateTime<Utc>>,
     pub quota_source: Option<String>,
     pub quota_stale: bool,
+    pub rss_last_successful_poll_at: Option<DateTime<Utc>>,
+    pub rss_last_attempt_at: Option<DateTime<Utc>>,
+    pub rss_target_interval: Option<Duration>,
+    pub rss_latest_safe_poll_at: Option<DateTime<Utc>>,
+    pub rss_estimated_feed_depth: Option<u32>,
+    pub rss_freshness_risk: Option<f64>,
+    pub rss_destination_recent_activity_at: Option<DateTime<Utc>>,
+    pub rss_last_seen_release_identity: Option<String>,
+    pub rss_last_seen_release_published_at: Option<DateTime<Utc>>,
+    pub rss_last_feed_gap_start_at: Option<DateTime<Utc>>,
+    pub rss_last_feed_gap_end_at: Option<DateTime<Utc>>,
     pub admitted_count: u64,
     pub deferred_count: u64,
     pub skipped_count: u64,

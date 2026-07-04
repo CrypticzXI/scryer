@@ -7,8 +7,9 @@ use chrono::{DateTime, Utc};
 use scryer_application::{
     AccountQuotaKey, AdmissionReason, AppResult, DeferralReason, SchedulerAdmission,
     SchedulerBatchDecision, SchedulerBatchRequest, SchedulerCandidate, SchedulerFeedback,
-    SchedulerFeedbackOutcome, SchedulerIntent, SchedulerLease, SchedulerSnapshot,
-    SchedulerSnapshotEntry, SchedulerSnapshotFilter, SkipReason, UpstreamScheduler,
+    SchedulerFeedbackOutcome, SchedulerIntent, SchedulerLease, SchedulerOperation,
+    SchedulerSnapshot, SchedulerSnapshotEntry, SchedulerSnapshotFilter, SkipReason,
+    UpstreamScheduler,
 };
 use scryer_outbound_http::{DestinationKey, HostKey, RateLimitRegistry, RetryAfterSource};
 use tracing::warn;
@@ -21,6 +22,8 @@ const LOW_VALUE_SUBTITLE_THRESHOLD: f64 = 0.15;
 const RSS_FRESHNESS_ESCALATION_THRESHOLD: f64 = 0.85;
 const BACKGROUND_SUFFICIENCY_MIN_ADMISSIONS: usize = 3;
 const LOW_ACCOUNT_QUOTA_REMAINING_FRACTION: f64 = 0.20;
+const DEFAULT_RSS_TARGET_INTERVAL: Duration = Duration::from_secs(15 * 60);
+const LOW_QUOTA_RSS_TARGET_INTERVAL: Duration = Duration::from_secs(60 * 60);
 const QUOTA_OBSERVATION_STALE_AFTER: Duration = Duration::from_secs(24 * 60 * 60);
 const EXHAUSTED_QUOTA_PROBE_AFTER: Duration = Duration::from_secs(6 * 60 * 60);
 
@@ -33,7 +36,9 @@ pub struct InMemoryUpstreamScheduler {
 #[derive(Default)]
 struct SchedulerState {
     entries: HashMap<SchedulerStateKey, SchedulerStateEntry>,
+    rss_cadence: HashMap<SchedulerStateKey, RssCadenceEntry>,
     dirty: HashSet<SchedulerStateKey>,
+    dirty_rss_cadence: HashSet<SchedulerStateKey>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -63,6 +68,21 @@ struct SchedulerStateEntry {
     skipped_count: u64,
 }
 
+#[derive(Clone, Default)]
+struct RssCadenceEntry {
+    last_successful_poll_at: Option<DateTime<Utc>>,
+    last_attempt_at: Option<DateTime<Utc>>,
+    target_interval: Option<Duration>,
+    latest_safe_poll_at: Option<DateTime<Utc>>,
+    estimated_feed_depth: Option<u32>,
+    freshness_risk: f64,
+    destination_recent_activity_at: Option<DateTime<Utc>>,
+    last_seen_release_identity: Option<String>,
+    last_seen_release_published_at: Option<DateTime<Utc>>,
+    last_feed_gap_start_at: Option<DateTime<Utc>>,
+    last_feed_gap_end_at: Option<DateTime<Utc>>,
+}
+
 impl InMemoryUpstreamScheduler {
     pub fn new() -> Self {
         Self::default()
@@ -71,11 +91,14 @@ impl InMemoryUpstreamScheduler {
     pub async fn new_persistent(datastore: StoreDatastore) -> AppResult<Self> {
         let store = Arc::new(SqlUpstreamSchedulerStore::new(datastore));
         let entries = store.load_entries().await?;
+        let rss_cadence = store.load_rss_cadence().await?;
         hydrate_outbound_destination_cooldowns(&entries).await;
         let scheduler = Self {
             state: Arc::new(Mutex::new(SchedulerState {
                 entries,
+                rss_cadence,
                 dirty: HashSet::new(),
+                dirty_rss_cadence: HashSet::new(),
             })),
             persistence: Some(store),
         };
@@ -92,15 +115,18 @@ impl InMemoryUpstreamScheduler {
             let mut interval = tokio::time::interval(Duration::from_millis(500));
             loop {
                 interval.tick().await;
-                let entries = drain_dirty_entries(&state);
-                if entries.is_empty() {
-                    continue;
-                }
-                if let Err(error) = store.flush_entries(entries).await {
+                if let Err(error) = flush_dirty_state(&store, &state).await {
                     warn!(error = %error, "failed to flush upstream scheduler state");
                 }
             }
         });
+    }
+
+    pub async fn flush_pending(&self) -> AppResult<()> {
+        let Some(store) = self.persistence.clone() else {
+            return Ok(());
+        };
+        flush_dirty_state(&store, &self.state).await
     }
 }
 
@@ -161,6 +187,10 @@ impl UpstreamScheduler for InMemoryUpstreamScheduler {
     }
 
     async fn record_feedback(&self, feedback: SchedulerFeedback) -> AppResult<()> {
+        let is_rss_feedback = feedback.lease.as_ref().is_some_and(|lease| {
+            lease.operation == SchedulerOperation::Rss
+                || lease.intent == SchedulerIntent::BackgroundRss
+        });
         let key = SchedulerStateKey {
             host_key: feedback.host_key,
             destination_key: feedback.destination_key,
@@ -213,7 +243,64 @@ impl UpstreamScheduler for InMemoryUpstreamScheduler {
                 }
                 .to_string(),
             );
+            let quota_is_fresh = !quota_is_stale(entry, feedback.observed_at);
+            let quota_exhausted = quota_is_fresh && observed_quota_exhausted(entry);
+            let api_remaining = quota_is_fresh
+                .then(|| api_remaining_fraction(entry))
+                .flatten();
             state.dirty.insert(key.clone());
+            if is_rss_feedback {
+                let cadence = state.rss_cadence.entry(key.clone()).or_default();
+                cadence.last_attempt_at = Some(feedback.observed_at);
+                cadence.target_interval = Some(rss_target_interval_for_quota(
+                    api_remaining,
+                    quota_exhausted,
+                ));
+                if matches!(
+                    feedback.outcome,
+                    SchedulerFeedbackOutcome::Success | SchedulerFeedbackOutcome::EmptySuccess
+                ) {
+                    cadence.last_successful_poll_at = Some(feedback.observed_at);
+                    cadence.estimated_feed_depth = feedback.rss_feed_result_count;
+                    if let Some(previous_identity) = cadence.last_seen_release_identity.as_ref()
+                        && !feedback.rss_seen_release_identities.is_empty()
+                        && !feedback
+                            .rss_seen_release_identities
+                            .iter()
+                            .any(|identity| identity == previous_identity)
+                    {
+                        cadence.last_feed_gap_start_at = cadence
+                            .last_seen_release_published_at
+                            .or(cadence.last_successful_poll_at);
+                        cadence.last_feed_gap_end_at = feedback
+                            .rss_last_seen_release_published_at
+                            .or(Some(feedback.observed_at));
+                    }
+                    if let Some(identity) = feedback.rss_last_seen_release_identity.clone() {
+                        cadence.last_seen_release_identity = Some(identity);
+                    }
+                    if let Some(published_at) = feedback.rss_last_seen_release_published_at {
+                        cadence.last_seen_release_published_at = Some(published_at);
+                    }
+                }
+                let target_interval = cadence
+                    .target_interval
+                    .unwrap_or(DEFAULT_RSS_TARGET_INTERVAL);
+                cadence.latest_safe_poll_at = chrono::Duration::from_std(target_interval)
+                    .ok()
+                    .map(|duration| feedback.observed_at + duration);
+                cadence.freshness_risk = match feedback.outcome {
+                    SchedulerFeedbackOutcome::Success | SchedulerFeedbackOutcome::EmptySuccess => {
+                        0.0
+                    }
+                    SchedulerFeedbackOutcome::RateLimited => 0.5,
+                    SchedulerFeedbackOutcome::TransportFailure
+                    | SchedulerFeedbackOutcome::ProviderFailure => 0.75,
+                    SchedulerFeedbackOutcome::Cancelled => cadence.freshness_risk,
+                };
+                cadence.destination_recent_activity_at = Some(feedback.observed_at);
+                state.dirty_rss_cadence.insert(key.clone());
+            }
         }
         if let Some(delay) = cooldown_delay {
             let _ = RateLimitRegistry::new()
@@ -242,24 +329,43 @@ impl UpstreamScheduler for InMemoryUpstreamScheduler {
                         .as_ref()
                         .is_none_or(|account| Some(account) == key.account_quota_key.as_ref())
             })
-            .map(|(key, entry)| SchedulerSnapshotEntry {
-                host_key: key.host_key.clone(),
-                destination_key: key.destination_key.clone(),
-                account_quota_key: key.account_quota_key.clone(),
-                last_decision: entry.last_decision.clone(),
-                last_feedback_at: entry.last_feedback_at,
-                last_successful_at: entry.last_successful_at,
-                last_attempt_at: entry.last_attempt_at,
-                cooldown_until: active_cooldown_until(entry, Utc::now()),
-                api_remaining_fraction: api_remaining_fraction(entry),
-                quota_observed_at: entry.quota_observed_at,
-                quota_probe_after: entry.quota_probe_after,
-                quota_reset_at: entry.quota_reset_at,
-                quota_source: entry.quota_source.clone(),
-                quota_stale: quota_is_stale(entry, Utc::now()),
-                admitted_count: entry.admitted_count,
-                deferred_count: entry.deferred_count,
-                skipped_count: entry.skipped_count,
+            .map(|(key, entry)| {
+                let cadence = state.rss_cadence.get(key);
+                SchedulerSnapshotEntry {
+                    host_key: key.host_key.clone(),
+                    destination_key: key.destination_key.clone(),
+                    account_quota_key: key.account_quota_key.clone(),
+                    last_decision: entry.last_decision.clone(),
+                    last_feedback_at: entry.last_feedback_at,
+                    last_successful_at: entry.last_successful_at,
+                    last_attempt_at: entry.last_attempt_at,
+                    cooldown_until: active_cooldown_until(entry, Utc::now()),
+                    api_remaining_fraction: api_remaining_fraction(entry),
+                    quota_observed_at: entry.quota_observed_at,
+                    quota_probe_after: entry.quota_probe_after,
+                    quota_reset_at: entry.quota_reset_at,
+                    quota_source: entry.quota_source.clone(),
+                    quota_stale: quota_is_stale(entry, Utc::now()),
+                    rss_last_successful_poll_at: cadence
+                        .and_then(|entry| entry.last_successful_poll_at),
+                    rss_last_attempt_at: cadence.and_then(|entry| entry.last_attempt_at),
+                    rss_target_interval: cadence.and_then(|entry| entry.target_interval),
+                    rss_latest_safe_poll_at: cadence.and_then(|entry| entry.latest_safe_poll_at),
+                    rss_estimated_feed_depth: cadence.and_then(|entry| entry.estimated_feed_depth),
+                    rss_freshness_risk: cadence.map(|entry| entry.freshness_risk),
+                    rss_destination_recent_activity_at: cadence
+                        .and_then(|entry| entry.destination_recent_activity_at),
+                    rss_last_seen_release_identity: cadence
+                        .and_then(|entry| entry.last_seen_release_identity.clone()),
+                    rss_last_seen_release_published_at: cadence
+                        .and_then(|entry| entry.last_seen_release_published_at),
+                    rss_last_feed_gap_start_at: cadence
+                        .and_then(|entry| entry.last_feed_gap_start_at),
+                    rss_last_feed_gap_end_at: cadence.and_then(|entry| entry.last_feed_gap_end_at),
+                    admitted_count: entry.admitted_count,
+                    deferred_count: entry.deferred_count,
+                    skipped_count: entry.skipped_count,
+                }
             })
             .collect();
 
@@ -309,6 +415,57 @@ impl SqlUpstreamSchedulerStore {
         for row in rows {
             let (key, entry) = row_to_scheduler_entry(&row)?;
             entries.insert(key, entry);
+        }
+        Ok(entries)
+    }
+
+    async fn load_rss_cadence(&self) -> AppResult<HashMap<SchedulerStateKey, RssCadenceEntry>> {
+        let rows = SqlRuntime::fetch_all(
+            self.datastore.read_exec(),
+            "SELECT account_quota_key, destination_key, last_successful_poll_at,
+                    last_attempt_at, target_interval_seconds, latest_safe_poll_at,
+                    estimated_feed_depth, freshness_risk, destination_recent_activity_at,
+                    last_seen_release_identity, last_seen_release_published_at,
+                    last_feed_gap_start_at, last_feed_gap_end_at
+             FROM upstream_scheduler_rss_cadence",
+            &[],
+        )
+        .await?;
+
+        let mut entries = HashMap::new();
+        for row in rows {
+            let account_quota_key = row.text("account_quota_key")?.trim().to_string();
+            let destination_key = DestinationKey::from(row.text("destination_key")?);
+            let key = SchedulerStateKey {
+                host_key: HostKey::from(destination_key.to_string()),
+                destination_key,
+                account_quota_key: (!account_quota_key.is_empty())
+                    .then(|| AccountQuotaKey::from(account_quota_key)),
+            };
+            let target_interval = row
+                .opt_i64("target_interval_seconds")?
+                .and_then(|seconds| (seconds > 0).then(|| Duration::from_secs(seconds as u64)));
+            let estimated_feed_depth = row
+                .opt_i64("estimated_feed_depth")?
+                .map(|value| value.max(0).min(u32::MAX as i64) as u32);
+            entries.insert(
+                key,
+                RssCadenceEntry {
+                    last_successful_poll_at: row.opt_timestamp("last_successful_poll_at")?,
+                    last_attempt_at: row.opt_timestamp("last_attempt_at")?,
+                    target_interval,
+                    latest_safe_poll_at: row.opt_timestamp("latest_safe_poll_at")?,
+                    estimated_feed_depth,
+                    freshness_risk: row.opt_f64("freshness_risk")?.unwrap_or_default(),
+                    destination_recent_activity_at: row
+                        .opt_timestamp("destination_recent_activity_at")?,
+                    last_seen_release_identity: row.opt_text("last_seen_release_identity")?,
+                    last_seen_release_published_at: row
+                        .opt_timestamp("last_seen_release_published_at")?,
+                    last_feed_gap_start_at: row.opt_timestamp("last_feed_gap_start_at")?,
+                    last_feed_gap_end_at: row.opt_timestamp("last_feed_gap_end_at")?,
+                },
+            );
         }
         Ok(entries)
     }
@@ -395,17 +552,137 @@ impl SqlUpstreamSchedulerStore {
         }
         Ok(())
     }
+
+    async fn flush_rss_cadence(
+        &self,
+        entries: Vec<(SchedulerStateKey, RssCadenceEntry)>,
+    ) -> AppResult<()> {
+        if entries.is_empty() {
+            return Ok(());
+        }
+
+        for (key, entry) in entries {
+            let target_interval_seconds = entry
+                .target_interval
+                .unwrap_or_else(|| Duration::from_secs(15 * 60))
+                .as_secs()
+                .min(i64::MAX as u64) as i64;
+            SqlRuntime::execute(
+                self.datastore.read_exec(),
+                "INSERT INTO upstream_scheduler_rss_cadence (
+                    account_quota_key, destination_key, last_successful_poll_at,
+                    last_attempt_at, target_interval_seconds, latest_safe_poll_at,
+                    estimated_feed_depth, freshness_risk, destination_recent_activity_at,
+                    last_seen_release_identity, last_seen_release_published_at,
+                    last_feed_gap_start_at, last_feed_gap_end_at, updated_at
+                 )
+                 VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})
+                 ON CONFLICT (account_quota_key, destination_key)
+                 DO UPDATE SET
+                    last_successful_poll_at = COALESCE(excluded.last_successful_poll_at, upstream_scheduler_rss_cadence.last_successful_poll_at),
+                    last_attempt_at = COALESCE(excluded.last_attempt_at, upstream_scheduler_rss_cadence.last_attempt_at),
+                    target_interval_seconds = excluded.target_interval_seconds,
+                    latest_safe_poll_at = COALESCE(excluded.latest_safe_poll_at, upstream_scheduler_rss_cadence.latest_safe_poll_at),
+                    estimated_feed_depth = COALESCE(excluded.estimated_feed_depth, upstream_scheduler_rss_cadence.estimated_feed_depth),
+                    freshness_risk = excluded.freshness_risk,
+                    destination_recent_activity_at = COALESCE(excluded.destination_recent_activity_at, upstream_scheduler_rss_cadence.destination_recent_activity_at),
+                    last_seen_release_identity = COALESCE(excluded.last_seen_release_identity, upstream_scheduler_rss_cadence.last_seen_release_identity),
+                    last_seen_release_published_at = COALESCE(excluded.last_seen_release_published_at, upstream_scheduler_rss_cadence.last_seen_release_published_at),
+                    last_feed_gap_start_at = COALESCE(excluded.last_feed_gap_start_at, upstream_scheduler_rss_cadence.last_feed_gap_start_at),
+                    last_feed_gap_end_at = COALESCE(excluded.last_feed_gap_end_at, upstream_scheduler_rss_cadence.last_feed_gap_end_at),
+                    updated_at = excluded.updated_at",
+                &[
+                    SqlArg::Text(
+                        key.account_quota_key
+                            .as_ref()
+                            .map(ToString::to_string)
+                            .unwrap_or_default(),
+                    ),
+                    SqlArg::Text(key.destination_key.to_string()),
+                    SqlArg::OptTimestamp(entry.last_successful_poll_at),
+                    SqlArg::OptTimestamp(entry.last_attempt_at),
+                    SqlArg::I64(target_interval_seconds),
+                    SqlArg::OptTimestamp(entry.latest_safe_poll_at),
+                    SqlArg::OptI64(entry.estimated_feed_depth.map(i64::from)),
+                    SqlArg::F64(entry.freshness_risk),
+                    SqlArg::OptTimestamp(entry.destination_recent_activity_at),
+                    SqlArg::OptText(entry.last_seen_release_identity),
+                    SqlArg::OptTimestamp(entry.last_seen_release_published_at),
+                    SqlArg::OptTimestamp(entry.last_feed_gap_start_at),
+                    SqlArg::OptTimestamp(entry.last_feed_gap_end_at),
+                    SqlArg::Timestamp(Utc::now()),
+                ],
+            )
+            .await?;
+        }
+        Ok(())
+    }
 }
 
-fn drain_dirty_entries(
+fn drain_dirty_state(
     state: &Arc<Mutex<SchedulerState>>,
-) -> Vec<(SchedulerStateKey, SchedulerStateEntry)> {
+) -> (
+    Vec<(SchedulerStateKey, SchedulerStateEntry)>,
+    Vec<(SchedulerStateKey, RssCadenceEntry)>,
+) {
     let mut state = state.lock().expect("upstream scheduler lock poisoned");
     let dirty = std::mem::take(&mut state.dirty);
-    dirty
+    let dirty_rss = std::mem::take(&mut state.dirty_rss_cadence);
+    let entries = dirty
         .into_iter()
         .filter_map(|key| state.entries.get(&key).cloned().map(|entry| (key, entry)))
-        .collect()
+        .collect();
+    let rss_cadence = dirty_rss
+        .into_iter()
+        .filter_map(|key| {
+            state
+                .rss_cadence
+                .get(&key)
+                .cloned()
+                .map(|entry| (key, entry))
+        })
+        .collect();
+    (entries, rss_cadence)
+}
+
+async fn flush_dirty_state(
+    store: &SqlUpstreamSchedulerStore,
+    state: &Arc<Mutex<SchedulerState>>,
+) -> AppResult<()> {
+    let (entries, rss_cadence) = drain_dirty_state(state);
+    if entries.is_empty() && rss_cadence.is_empty() {
+        return Ok(());
+    }
+
+    let entry_keys = entries
+        .iter()
+        .map(|(key, _)| key.clone())
+        .collect::<Vec<_>>();
+    let rss_keys = rss_cadence
+        .iter()
+        .map(|(key, _)| key.clone())
+        .collect::<Vec<_>>();
+
+    if let Err(error) = store.flush_entries(entries).await {
+        requeue_dirty_entries(state, entry_keys);
+        requeue_dirty_rss_cadence(state, rss_keys);
+        return Err(error);
+    }
+    if let Err(error) = store.flush_rss_cadence(rss_cadence).await {
+        requeue_dirty_rss_cadence(state, rss_keys);
+        return Err(error);
+    }
+    Ok(())
+}
+
+fn requeue_dirty_entries(state: &Arc<Mutex<SchedulerState>>, keys: Vec<SchedulerStateKey>) {
+    let mut state = state.lock().expect("upstream scheduler lock poisoned");
+    state.dirty.extend(keys);
+}
+
+fn requeue_dirty_rss_cadence(state: &Arc<Mutex<SchedulerState>>, keys: Vec<SchedulerStateKey>) {
+    let mut state = state.lock().expect("upstream scheduler lock poisoned");
+    state.dirty_rss_cadence.extend(keys);
 }
 
 async fn hydrate_outbound_destination_cooldowns(
@@ -540,6 +817,8 @@ fn decide_candidate(
             host_key: candidate.host_key,
             destination_key: candidate.destination_key,
             account_quota_key: candidate.account_quota_key,
+            operation: candidate.operation,
+            intent: candidate.intent,
             issued_at: now,
         },
         reason,
@@ -652,6 +931,18 @@ fn low_account_quota(state_entry: Option<&SchedulerStateEntry>) -> bool {
     state_entry
         .and_then(api_remaining_fraction)
         .is_some_and(|remaining| remaining <= LOW_ACCOUNT_QUOTA_REMAINING_FRACTION)
+}
+
+fn rss_target_interval_for_quota(api_remaining: Option<f64>, quota_exhausted: bool) -> Duration {
+    if quota_exhausted {
+        return EXHAUSTED_QUOTA_PROBE_AFTER;
+    }
+
+    if api_remaining.is_some_and(|remaining| remaining <= LOW_ACCOUNT_QUOTA_REMAINING_FRACTION) {
+        return LOW_QUOTA_RSS_TARGET_INTERVAL;
+    }
+
+    DEFAULT_RSS_TARGET_INTERVAL
 }
 
 fn active_cooldown_until(entry: &SchedulerStateEntry, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
@@ -840,7 +1131,11 @@ mod tests {
             candidate_id: SchedulerCandidateId::new(),
             plugin_config_id: Some("plugin-a".to_string()),
             plugin_kind: SchedulerPluginKind::Indexer,
-            operation: SchedulerOperation::Search,
+            operation: if intent == SchedulerIntent::BackgroundRss {
+                SchedulerOperation::Rss
+            } else {
+                SchedulerOperation::Search
+            },
             intent,
             host_key: "example.test".into(),
             destination_key: "example.test".into(),
@@ -938,6 +1233,10 @@ mod tests {
                 observed_grab_current: None,
                 observed_grab_max: None,
                 retry_after: Some(Duration::from_secs(30)),
+                rss_last_seen_release_identity: None,
+                rss_last_seen_release_published_at: None,
+                rss_feed_result_count: None,
+                rss_seen_release_identities: Vec::new(),
                 observed_at,
             })
             .await
@@ -969,6 +1268,10 @@ mod tests {
                 observed_grab_current: None,
                 observed_grab_max: None,
                 retry_after: Some(Duration::from_secs(60)),
+                rss_last_seen_release_identity: None,
+                rss_last_seen_release_published_at: None,
+                rss_feed_result_count: None,
+                rss_seen_release_identities: Vec::new(),
                 observed_at: Utc::now(),
             })
             .await
@@ -1008,6 +1311,10 @@ mod tests {
                 observed_grab_current: None,
                 observed_grab_max: None,
                 retry_after: None,
+                rss_last_seen_release_identity: None,
+                rss_last_seen_release_published_at: None,
+                rss_feed_result_count: None,
+                rss_seen_release_identities: Vec::new(),
                 observed_at: Utc::now(),
             })
             .await
@@ -1048,6 +1355,10 @@ mod tests {
                 observed_grab_current: None,
                 observed_grab_max: None,
                 retry_after: None,
+                rss_last_seen_release_identity: None,
+                rss_last_seen_release_published_at: None,
+                rss_feed_result_count: None,
+                rss_seen_release_identities: Vec::new(),
                 observed_at: Utc::now(),
             })
             .await
@@ -1089,6 +1400,10 @@ mod tests {
                 observed_grab_current: None,
                 observed_grab_max: None,
                 retry_after: None,
+                rss_last_seen_release_identity: None,
+                rss_last_seen_release_published_at: None,
+                rss_feed_result_count: None,
+                rss_seen_release_identities: Vec::new(),
                 observed_at: now - chrono::Duration::hours(25),
             })
             .await
@@ -1132,6 +1447,10 @@ mod tests {
                 observed_grab_current: None,
                 observed_grab_max: None,
                 retry_after: None,
+                rss_last_seen_release_identity: None,
+                rss_last_seen_release_published_at: None,
+                rss_feed_result_count: None,
+                rss_seen_release_identities: Vec::new(),
                 observed_at: Utc::now(),
             })
             .await
@@ -1206,5 +1525,197 @@ mod tests {
                 ..
             }]
         ));
+    }
+
+    #[tokio::test]
+    async fn rss_feedback_records_cadence_and_feed_gap() {
+        let scheduler = InMemoryUpstreamScheduler::new();
+        let now = Utc::now();
+        let rss = candidate(SchedulerIntent::BackgroundRss, 1.0);
+        let decision = scheduler
+            .admit_batch(SchedulerBatchRequest {
+                batch_id: "batch".to_string(),
+                now,
+                candidates: vec![rss.clone()],
+            })
+            .await
+            .expect("admission should succeed");
+        let lease = match decision.decisions.into_iter().next() {
+            Some(SchedulerAdmission::Admit { lease, .. }) => lease,
+            other => panic!("expected RSS admit, got {other:?}"),
+        };
+
+        scheduler
+            .record_feedback(SchedulerFeedback {
+                lease: Some(lease.clone()),
+                host_key: rss.host_key.clone(),
+                destination_key: rss.destination_key.clone(),
+                account_quota_key: rss.account_quota_key.clone(),
+                outcome: SchedulerFeedbackOutcome::Success,
+                observed_api_current: None,
+                observed_api_max: None,
+                observed_grab_current: None,
+                observed_grab_max: None,
+                retry_after: None,
+                rss_last_seen_release_identity: Some("old-guid".to_string()),
+                rss_last_seen_release_published_at: Some(now),
+                rss_feed_result_count: Some(10),
+                rss_seen_release_identities: vec!["old-guid".to_string(), "older-guid".to_string()],
+                observed_at: now,
+            })
+            .await
+            .expect("feedback should record");
+
+        let later = now + chrono::Duration::minutes(20);
+        scheduler
+            .record_feedback(SchedulerFeedback {
+                lease: Some(lease),
+                host_key: rss.host_key.clone(),
+                destination_key: rss.destination_key.clone(),
+                account_quota_key: rss.account_quota_key.clone(),
+                outcome: SchedulerFeedbackOutcome::Success,
+                observed_api_current: None,
+                observed_api_max: None,
+                observed_grab_current: None,
+                observed_grab_max: None,
+                retry_after: None,
+                rss_last_seen_release_identity: Some("new-guid".to_string()),
+                rss_last_seen_release_published_at: Some(later),
+                rss_feed_result_count: Some(5),
+                rss_seen_release_identities: vec!["new-guid".to_string(), "newer-guid".to_string()],
+                observed_at: later,
+            })
+            .await
+            .expect("feedback should record");
+
+        let snapshot = scheduler
+            .snapshot(SchedulerSnapshotFilter::default())
+            .await
+            .expect("snapshot should succeed");
+        let entry = snapshot.entries.first().expect("snapshot entry");
+        assert_eq!(
+            entry.rss_last_seen_release_identity.as_deref(),
+            Some("new-guid")
+        );
+        assert_eq!(entry.rss_estimated_feed_depth, Some(5));
+        assert_eq!(entry.rss_last_feed_gap_start_at, Some(now));
+        assert_eq!(entry.rss_last_feed_gap_end_at, Some(later));
+    }
+
+    #[tokio::test]
+    async fn rss_feedback_widens_cadence_for_low_or_exhausted_quota() {
+        let scheduler = InMemoryUpstreamScheduler::new();
+        let now = Utc::now();
+        let rss = candidate(SchedulerIntent::BackgroundRss, 1.0);
+        let decision = scheduler
+            .admit_batch(SchedulerBatchRequest {
+                batch_id: "batch".to_string(),
+                now,
+                candidates: vec![rss.clone()],
+            })
+            .await
+            .expect("admission should succeed");
+        let lease = match decision.decisions.into_iter().next() {
+            Some(SchedulerAdmission::Admit { lease, .. }) => lease,
+            other => panic!("expected RSS admit, got {other:?}"),
+        };
+
+        scheduler
+            .record_feedback(SchedulerFeedback {
+                lease: Some(lease.clone()),
+                host_key: rss.host_key.clone(),
+                destination_key: rss.destination_key.clone(),
+                account_quota_key: rss.account_quota_key.clone(),
+                outcome: SchedulerFeedbackOutcome::Success,
+                observed_api_current: Some(90),
+                observed_api_max: Some(100),
+                observed_grab_current: None,
+                observed_grab_max: None,
+                retry_after: None,
+                rss_last_seen_release_identity: Some("low-quota-guid".to_string()),
+                rss_last_seen_release_published_at: Some(now),
+                rss_feed_result_count: Some(1),
+                rss_seen_release_identities: vec!["low-quota-guid".to_string()],
+                observed_at: now,
+            })
+            .await
+            .expect("feedback should record");
+        let snapshot = scheduler
+            .snapshot(SchedulerSnapshotFilter::default())
+            .await
+            .expect("snapshot should succeed");
+        assert_eq!(
+            snapshot
+                .entries
+                .first()
+                .and_then(|entry| entry.rss_target_interval),
+            Some(LOW_QUOTA_RSS_TARGET_INTERVAL)
+        );
+
+        let exhausted_at = now + chrono::Duration::minutes(1);
+        scheduler
+            .record_feedback(SchedulerFeedback {
+                lease: Some(lease.clone()),
+                host_key: rss.host_key.clone(),
+                destination_key: rss.destination_key.clone(),
+                account_quota_key: rss.account_quota_key.clone(),
+                outcome: SchedulerFeedbackOutcome::Success,
+                observed_api_current: Some(100),
+                observed_api_max: Some(100),
+                observed_grab_current: None,
+                observed_grab_max: None,
+                retry_after: None,
+                rss_last_seen_release_identity: Some("exhausted-quota-guid".to_string()),
+                rss_last_seen_release_published_at: Some(exhausted_at),
+                rss_feed_result_count: Some(1),
+                rss_seen_release_identities: vec!["exhausted-quota-guid".to_string()],
+                observed_at: exhausted_at,
+            })
+            .await
+            .expect("feedback should record");
+        let snapshot = scheduler
+            .snapshot(SchedulerSnapshotFilter::default())
+            .await
+            .expect("snapshot should succeed");
+        assert_eq!(
+            snapshot
+                .entries
+                .first()
+                .and_then(|entry| entry.rss_target_interval),
+            Some(EXHAUSTED_QUOTA_PROBE_AFTER)
+        );
+
+        let healthy_at = now + chrono::Duration::minutes(2);
+        scheduler
+            .record_feedback(SchedulerFeedback {
+                lease: Some(lease),
+                host_key: rss.host_key.clone(),
+                destination_key: rss.destination_key.clone(),
+                account_quota_key: rss.account_quota_key.clone(),
+                outcome: SchedulerFeedbackOutcome::Success,
+                observed_api_current: Some(10),
+                observed_api_max: Some(100),
+                observed_grab_current: None,
+                observed_grab_max: None,
+                retry_after: None,
+                rss_last_seen_release_identity: Some("healthy-quota-guid".to_string()),
+                rss_last_seen_release_published_at: Some(healthy_at),
+                rss_feed_result_count: Some(1),
+                rss_seen_release_identities: vec!["healthy-quota-guid".to_string()],
+                observed_at: healthy_at,
+            })
+            .await
+            .expect("feedback should record");
+        let snapshot = scheduler
+            .snapshot(SchedulerSnapshotFilter::default())
+            .await
+            .expect("snapshot should succeed");
+        assert_eq!(
+            snapshot
+                .entries
+                .first()
+                .and_then(|entry| entry.rss_target_interval),
+            Some(DEFAULT_RSS_TARGET_INTERVAL)
+        );
     }
 }
