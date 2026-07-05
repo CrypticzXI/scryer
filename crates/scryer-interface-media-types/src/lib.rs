@@ -1853,6 +1853,7 @@ pub struct TitleReleaseBlocklistEntryPayload {
 
 #[derive(SimpleObject, Clone)]
 pub struct IndexerSearchResultPayload {
+    pub indexer_id: Option<ID>,
     pub source: String,
     pub title: String,
     pub link: Option<String>,
@@ -1977,6 +1978,7 @@ pub struct IndexerConfigPayload {
     pub name: String,
     pub provider_type: String,
     pub base_url: String,
+    pub indexer_proxy_config_id: Option<ID>,
     pub has_api_key: bool,
     pub is_managed: bool,
     pub managed_parent_config_id: Option<ID>,
@@ -1994,6 +1996,30 @@ pub struct IndexerConfigPayload {
     pub config: Vec<ProviderConfigValuePayload>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct IndexerProxyConfigPayload {
+    pub id: ID,
+    pub name: String,
+    pub provider_type: String,
+    pub protocol: String,
+    pub base_url: String,
+    pub request_timeout_seconds: i32,
+    pub is_enabled: bool,
+    pub last_health_status: Option<String>,
+    pub last_error_message: Option<String>,
+    pub last_error_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct IndexerProxyTestResultPayload {
+    pub ok: bool,
+    pub status: String,
+    pub message: Option<String>,
+    pub duration_ms: Option<i32>,
 }
 
 #[derive(SimpleObject, Clone)]
@@ -3355,6 +3381,7 @@ pub struct UpdateIndexerRoutingInput {
 pub struct CreateIndexerConfigInput {
     pub name: String,
     pub provider_type: String,
+    pub indexer_proxy_config_id: Option<ID>,
     pub rate_limit_seconds: Option<i64>,
     pub rate_limit_burst: Option<i64>,
     pub is_enabled: Option<bool>,
@@ -3368,12 +3395,36 @@ pub struct UpdateIndexerConfigInput {
     pub id: ID,
     pub name: Option<String>,
     pub provider_type: Option<String>,
+    pub indexer_proxy_config_id: MaybeUndefined<ID>,
     pub rate_limit_seconds: Option<i64>,
     pub rate_limit_burst: Option<i64>,
     pub is_enabled: Option<bool>,
     pub enable_interactive_search: Option<bool>,
     pub enable_auto_search: Option<bool>,
     pub config: Option<Vec<ProviderConfigValueInput>>,
+}
+
+#[derive(InputObject)]
+pub struct CreateIndexerProxyConfigInput {
+    pub name: String,
+    pub provider_type: String,
+    pub base_url: String,
+    pub request_timeout_seconds: Option<i32>,
+    pub is_enabled: Option<bool>,
+}
+
+#[derive(InputObject)]
+pub struct UpdateIndexerProxyConfigInput {
+    pub id: ID,
+    pub name: Option<String>,
+    pub base_url: Option<String>,
+    pub request_timeout_seconds: Option<i32>,
+    pub is_enabled: Option<bool>,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct DeleteIndexerProxyConfigPayload {
+    pub ok: bool,
 }
 
 #[derive(SimpleObject, Clone)]

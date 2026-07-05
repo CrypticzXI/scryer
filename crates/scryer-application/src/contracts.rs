@@ -301,11 +301,47 @@ pub struct IndexerConfigUpdate {
     pub is_enabled: Option<bool>,
     pub enable_interactive_search: Option<bool>,
     pub enable_auto_search: Option<bool>,
+    pub indexer_proxy_config_id: Option<Option<String>>,
     pub managed_parent_config_id: Option<Option<String>>,
     pub managed_child_key: Option<Option<String>>,
     pub managed_metadata_json: Option<Option<String>>,
     pub caps_snapshot_json: Option<Option<String>>,
     pub config_json: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct NewIndexerProxyConfig {
+    pub name: String,
+    pub provider_type: scryer_domain::IndexerProxyProviderType,
+    pub base_url: String,
+    pub request_timeout_seconds: Option<u32>,
+    pub is_enabled: bool,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct IndexerProxyConfigUpdate {
+    pub id: String,
+    pub name: Option<String>,
+    pub base_url: Option<String>,
+    pub request_timeout_seconds: Option<u32>,
+    pub is_enabled: Option<bool>,
+}
+
+impl IndexerProxyConfigUpdate {
+    pub fn has_changes(&self) -> bool {
+        self.name.is_some()
+            || self.base_url.is_some()
+            || self.request_timeout_seconds.is_some()
+            || self.is_enabled.is_some()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IndexerProxyTestResult {
+    pub ok: bool,
+    pub status: scryer_domain::IndexerProxyHealthStatus,
+    pub message: Option<String>,
+    pub duration_ms: Option<u64>,
 }
 
 impl IndexerConfigUpdate {
@@ -318,6 +354,7 @@ impl IndexerConfigUpdate {
             || self.is_enabled.is_some()
             || self.enable_interactive_search.is_some()
             || self.enable_auto_search.is_some()
+            || self.indexer_proxy_config_id.is_some()
             || self.managed_parent_config_id.is_some()
             || self.managed_child_key.is_some()
             || self.managed_metadata_json.is_some()
@@ -754,6 +791,7 @@ pub struct DownloadClientAddRequest {
     pub download_id: Option<String>,
     pub source_hint: Option<String>,
     pub staged_nzb: Option<StagedNzbRef>,
+    pub resolved_download_artifact: Option<ResolvedDownloadArtifact>,
     pub source_kind: Option<DownloadSourceKind>,
     pub source_title: Option<String>,
     pub source_password: Option<String>,
@@ -762,6 +800,7 @@ pub struct DownloadClientAddRequest {
     pub download_directory: Option<String>,
     pub release_title: Option<String>,
     pub indexer_name: Option<String>,
+    pub indexer_id: Option<String>,
     pub info_hash_hint: Option<String>,
     pub seed_goal_ratio: Option<f64>,
     pub seed_goal_seconds: Option<i64>,
@@ -784,6 +823,7 @@ impl DownloadClientAddRequest {
             download_id: None,
             source_hint,
             staged_nzb: None,
+            resolved_download_artifact: None,
             source_kind,
             source_title,
             source_password,
@@ -792,6 +832,7 @@ impl DownloadClientAddRequest {
             download_directory: None,
             release_title: None,
             indexer_name: None,
+            indexer_id: None,
             info_hash_hint: None,
             seed_goal_ratio: None,
             seed_goal_seconds: None,
@@ -799,6 +840,25 @@ impl DownloadClientAddRequest {
             season_pack: None,
         }
     }
+}
+
+#[derive(Clone, Debug)]
+pub enum ResolvedDownloadArtifact {
+    Nzb {
+        bytes: Vec<u8>,
+        file_name: Option<String>,
+        content_type: Option<String>,
+    },
+    Magnet {
+        uri: String,
+        info_hash_hint: Option<String>,
+    },
+    TorrentFile {
+        bytes: Vec<u8>,
+        file_name: Option<String>,
+        content_type: Option<String>,
+        info_hash_hint: Option<String>,
+    },
 }
 
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize, PartialEq, Eq)]

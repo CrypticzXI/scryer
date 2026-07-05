@@ -1023,6 +1023,7 @@ async fn bootstrap_application(
         indexer_stats.clone(),
         plugin_provider.clone(),
     )
+    .with_indexer_proxy_config_repository(datastore.indexer_proxy_configs())
     .with_search_learning_repository(indexer_learning)
     .with_upstream_scheduler(upstream_scheduler.clone());
 

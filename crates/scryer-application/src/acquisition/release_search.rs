@@ -1312,6 +1312,7 @@ mod tests {
         provenance: Option<ReleaseCandidateProvenance>,
     ) -> IndexerSearchResult {
         IndexerSearchResult {
+            indexer_id: None,
             source: "nzbgeek".to_string(),
             title: release_title.to_string(),
             link: None,

@@ -374,6 +374,7 @@ fn request_with_staged_nzb(
         download_id: None,
         source_hint: None,
         staged_nzb: Some(staged_nzb),
+        resolved_download_artifact: None,
         source_kind: Some(DownloadSourceKind::NzbFile),
         source_title: Some(source_title.to_string()),
         source_password: None,

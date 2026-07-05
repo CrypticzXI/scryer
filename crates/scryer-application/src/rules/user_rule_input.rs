@@ -413,6 +413,7 @@ mod tests {
             &test_parsed(),
             &test_profile(),
             &IndexerSearchResult {
+                indexer_id: None,
                 source: "test-indexer".to_string(),
                 title: "Test Movie".to_string(),
                 link: None,
@@ -474,6 +475,7 @@ mod tests {
                 &test_parsed(),
                 &test_profile(),
                 &IndexerSearchResult {
+                    indexer_id: None,
                     source: "test-indexer".to_string(),
                     title: "Test Movie".to_string(),
                     link: None,
@@ -531,6 +533,7 @@ mod tests {
             &test_parsed(),
             &test_profile(),
             &IndexerSearchResult {
+                indexer_id: None,
                 source: "test-indexer".to_string(),
                 title: "Test Movie".to_string(),
                 link: None,

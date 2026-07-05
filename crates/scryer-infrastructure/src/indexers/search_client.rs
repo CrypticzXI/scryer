@@ -6,9 +6,10 @@ use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
 use scryer_application::{
     AppError, AppResult, EstimatedCost, ExpectedValueHint, IndexerClient, IndexerConfigRepository,
-    IndexerPluginProvider, IndexerRoutingPlan, IndexerSearchLearningContext,
-    IndexerSearchLearningKey, IndexerSearchLearningRecord, IndexerSearchLearningRepository,
-    IndexerSearchResponse, IndexerSearchResult, IndexerStatsTracker, IndexerSystemBackoff,
+    IndexerPluginProvider, IndexerProxyConfigRepository, IndexerRoutingPlan,
+    IndexerSearchLearningContext, IndexerSearchLearningKey, IndexerSearchLearningRecord,
+    IndexerSearchLearningRepository, IndexerSearchResponse, IndexerSearchResult,
+    IndexerStatsTracker, IndexerSystemBackoff, NullIndexerProxyConfigRepository,
     NullIndexerSearchLearningRepository, NullUpstreamScheduler, RateLimitCooldownAction,
     RateLimitSignal, ReleaseCandidateProvenance, ReleaseSearchSubjectKind, RssFreshnessContext,
     SchedulerAdmission, SchedulerBatchDecision, SchedulerBatchRequest, SchedulerCandidate,
@@ -1035,6 +1036,7 @@ impl RssFeedCacheEntry {
 #[derive(Clone)]
 pub struct MultiIndexerSearchClient {
     indexer_configs: Arc<dyn IndexerConfigRepository>,
+    indexer_proxy_configs: Arc<dyn IndexerProxyConfigRepository>,
     stats_tracker: Arc<dyn IndexerStatsTracker>,
     search_learning: Arc<dyn IndexerSearchLearningRepository>,
     plugin_provider: Arc<dyn IndexerPluginProvider>,
@@ -1054,6 +1056,7 @@ impl MultiIndexerSearchClient {
     ) -> Self {
         Self {
             indexer_configs,
+            indexer_proxy_configs: Arc::new(NullIndexerProxyConfigRepository),
             stats_tracker,
             search_learning: Arc::new(NullIndexerSearchLearningRepository),
             plugin_provider,
@@ -1068,6 +1071,14 @@ impl MultiIndexerSearchClient {
                 INTERACTIVE_INDEXER_SEARCH_CONCURRENCY_LIMIT,
             )),
         }
+    }
+
+    pub fn with_indexer_proxy_config_repository(
+        mut self,
+        indexer_proxy_configs: Arc<dyn IndexerProxyConfigRepository>,
+    ) -> Self {
+        self.indexer_proxy_configs = indexer_proxy_configs;
+        self
     }
 
     pub fn with_search_learning_repository(
@@ -1367,14 +1378,35 @@ impl MultiIndexerSearchClient {
         }
     }
 
-    fn client_from_config(
+    async fn client_from_config(
         config: &IndexerConfig,
         plugin_provider: &Arc<dyn IndexerPluginProvider>,
-    ) -> AppResult<Arc<dyn IndexerClient>> {
+        indexer_proxy_configs: &Arc<dyn IndexerProxyConfigRepository>,
+    ) -> AppResult<(Arc<dyn IndexerClient>, Option<String>)> {
         let provider = config.provider_type.trim().to_ascii_lowercase();
+        let (proxy_config, proxy_cache_key) =
+            if let Some(proxy_config_id) = config.indexer_proxy_config_id.as_deref() {
+                let proxy_config = indexer_proxy_configs
+                    .get_by_id(proxy_config_id)
+                    .await?
+                    .ok_or_else(|| {
+                        AppError::Validation("Indexer proxy configuration was not found.".into())
+                    })?;
+                if !proxy_config.is_enabled {
+                    return Err(AppError::Validation(
+                        "Indexer proxy is disabled for this indexer.".into(),
+                    ));
+                }
+                let proxy_cache_key = format!("{}:{}", proxy_config.id, proxy_config.updated_at);
+                (Some(proxy_config), Some(proxy_cache_key))
+            } else {
+                (None, None)
+            };
 
-        if let Some(client) = plugin_provider.client_for_provider(config) {
-            return Ok(client);
+        if let Some(client) =
+            plugin_provider.client_for_provider_with_proxy(config, proxy_config.as_ref())
+        {
+            return Ok((client, proxy_cache_key));
         }
 
         Err(AppError::Validation(format!(
@@ -2339,7 +2371,13 @@ impl IndexerClient for MultiIndexerSearchClient {
                 }
             }
 
-            let client = match Self::client_from_config(config, &self.plugin_provider) {
+            let (client, proxy_cache_key) = match Self::client_from_config(
+                config,
+                &self.plugin_provider,
+                &self.indexer_proxy_configs,
+            )
+            .await
+            {
                 Ok(c) => c,
                 Err(err) => {
                     warn!(
@@ -2359,9 +2397,17 @@ impl IndexerClient for MultiIndexerSearchClient {
                 let rss_category_request = request_categories.clone();
                 let rss_cache_key = rss_request_key
                     .as_ref()
-                    .map(|key| format!("{}:{key}", config.id))
+                    .map(|key| {
+                        format!(
+                            "{}:{}:{key}",
+                            config.id,
+                            proxy_cache_key.as_deref().unwrap_or("direct")
+                        )
+                    })
                     .unwrap_or_else(|| {
-                        Self::rss_feed_cache_key(&config.id, rss_category_request.as_deref())
+                        let base =
+                            Self::rss_feed_cache_key(&config.id, rss_category_request.as_deref());
+                        format!("{base}:{}", proxy_cache_key.as_deref().unwrap_or("direct"))
                     });
                 let cache_entry = {
                     let mut cache = self.rss_feed_cache.lock().await;
@@ -2772,6 +2818,9 @@ impl IndexerClient for MultiIndexerSearchClient {
                                 response.results.len(),
                             )
                             .await;
+                            for result in &mut response.results {
+                                result.indexer_id = Some(indexer_id.clone());
+                            }
                             collected_results.append(&mut response.results);
                         }
                         Err(err) => {
@@ -2893,6 +2942,9 @@ impl IndexerClient for MultiIndexerSearchClient {
                                     response.results.len(),
                                 )
                                 .await;
+                                for result in &mut response.results {
+                                    result.indexer_id = Some(indexer_id.clone());
+                                }
                                 collected_results.append(&mut response.results);
                             }
                             Err(err) => {
@@ -3968,6 +4020,7 @@ mod tests {
             is_enabled: true,
             enable_interactive_search: true,
             enable_auto_search: true,
+            indexer_proxy_config_id: None,
             managed_parent_config_id: None,
             managed_child_key: None,
             managed_metadata_json: None,
@@ -4362,6 +4415,7 @@ mod tests {
 
     fn search_result(title: &str) -> IndexerSearchResult {
         IndexerSearchResult {
+            indexer_id: None,
             source: "mock".into(),
             title: title.into(),
             link: None,

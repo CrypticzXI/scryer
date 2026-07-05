@@ -422,6 +422,7 @@ impl AppUseCase {
             } else {
                 input.enable_auto_search
             },
+            indexer_proxy_config_id: input.indexer_proxy_config_id,
             managed_parent_config_id: None,
             managed_child_key: None,
             managed_metadata_json: None,
@@ -569,6 +570,10 @@ impl AppUseCase {
                     .enable_auto_search
                     .unwrap_or(existing.enable_auto_search)
             },
+            indexer_proxy_config_id: update
+                .indexer_proxy_config_id
+                .clone()
+                .unwrap_or_else(|| existing.indexer_proxy_config_id.clone()),
             managed_parent_config_id: update
                 .managed_parent_config_id
                 .clone()
@@ -620,6 +625,7 @@ impl AppUseCase {
                 } else {
                     update.enable_auto_search
                 },
+                indexer_proxy_config_id: update.indexer_proxy_config_id,
                 managed_parent_config_id: update.managed_parent_config_id,
                 managed_child_key: update.managed_child_key,
                 managed_metadata_json: update.managed_metadata_json,
@@ -838,6 +844,7 @@ impl AppUseCase {
                             is_enabled: Some(desired.is_enabled),
                             enable_interactive_search: Some(desired.enable_interactive_search),
                             enable_auto_search: Some(desired.enable_auto_search),
+                            indexer_proxy_config_id: None,
                             managed_parent_config_id: Some(Some(parent.id.clone())),
                             managed_child_key: Some(Some(desired.child_key.clone())),
                             managed_metadata_json: Some(managed_metadata_json),
@@ -870,6 +877,7 @@ impl AppUseCase {
                             is_enabled: desired.is_enabled,
                             enable_interactive_search: desired.enable_interactive_search,
                             enable_auto_search: desired.enable_auto_search,
+                            indexer_proxy_config_id: None,
                             managed_parent_config_id: Some(parent.id.clone()),
                             managed_child_key: Some(desired.child_key.clone()),
                             managed_metadata_json: desired.managed_metadata_json.clone(),

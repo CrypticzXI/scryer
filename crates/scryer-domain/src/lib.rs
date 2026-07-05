@@ -885,6 +885,7 @@ pub struct IndexerConfig {
     pub is_enabled: bool,
     pub enable_interactive_search: bool,
     pub enable_auto_search: bool,
+    pub indexer_proxy_config_id: Option<String>,
     pub managed_parent_config_id: Option<String>,
     pub managed_child_key: Option<String>,
     pub managed_metadata_json: Option<String>,
@@ -892,6 +893,91 @@ pub struct IndexerConfig {
     pub last_health_status: Option<String>,
     pub last_error_at: Option<DateTime<Utc>>,
     pub config_json: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum IndexerProxyProviderType {
+    Byparr,
+}
+
+impl IndexerProxyProviderType {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Byparr => "byparr",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().replace('-', "_").as_str() {
+            "byparr" => Some(Self::Byparr),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ChallengeSolverProtocol {
+    RequestSolutionV1,
+}
+
+impl ChallengeSolverProtocol {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::RequestSolutionV1 => "request_solution_v1",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().replace('-', "_").as_str() {
+            "request_solution_v1" => Some(Self::RequestSolutionV1),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum IndexerProxyHealthStatus {
+    Unknown,
+    Healthy,
+    Unhealthy,
+}
+
+impl IndexerProxyHealthStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::Healthy => "healthy",
+            Self::Unhealthy => "unhealthy",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().replace('-', "_").as_str() {
+            "unknown" => Some(Self::Unknown),
+            "healthy" => Some(Self::Healthy),
+            "unhealthy" => Some(Self::Unhealthy),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct IndexerProxyConfig {
+    pub id: String,
+    pub name: String,
+    pub provider_type: IndexerProxyProviderType,
+    pub protocol: ChallengeSolverProtocol,
+    pub base_url: String,
+    pub request_timeout_seconds: u32,
+    pub is_enabled: bool,
+    pub last_health_status: Option<IndexerProxyHealthStatus>,
+    pub last_error_message: Option<String>,
+    pub last_error_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -949,6 +1035,7 @@ pub struct NewIndexerConfig {
     pub is_enabled: bool,
     pub enable_interactive_search: bool,
     pub enable_auto_search: bool,
+    pub indexer_proxy_config_id: Option<String>,
     pub config_json: Option<String>,
 }
 

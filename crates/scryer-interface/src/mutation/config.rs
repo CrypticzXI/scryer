@@ -1,15 +1,18 @@
 use async_graphql::{Context, ID, MaybeUndefined, Object, Result as GqlResult};
 use chrono::{DateTime, Utc};
 use scryer_application::{
-    AppError, DownloadClientConfigUpdate, IndexerConfigUpdate, SubtitleProviderConfigUpdate,
+    AppError, DownloadClientConfigUpdate, IndexerConfigUpdate, IndexerProxyConfigUpdate,
+    NewIndexerProxyConfig, SubtitleProviderConfigUpdate,
 };
-use scryer_domain::{AppPermission, NewDownloadClientConfig, NewIndexerConfig};
+use scryer_domain::{
+    AppPermission, IndexerProxyProviderType, NewDownloadClientConfig, NewIndexerConfig,
+};
 
 use crate::context::{actor_from_ctx, app_from_ctx, require_config_app_permission, to_gql_error};
 use crate::mappers::{
     from_download_client_config_with_fields, from_indexer_config_sync_result,
-    from_indexer_config_with_fields, from_rss_sync_report, from_subtitle_provider_config,
-    provider_config_values_to_json,
+    from_indexer_config_with_fields, from_indexer_proxy_config, from_indexer_proxy_test_result,
+    from_rss_sync_report, from_subtitle_provider_config, provider_config_values_to_json,
 };
 use crate::types::*;
 
@@ -25,6 +28,14 @@ fn optional_datetime_input(
         MaybeUndefined::Undefined => Ok(None),
         MaybeUndefined::Null => Ok(Some(None)),
         MaybeUndefined::Value(value) => Ok(Some(Some(value))),
+    }
+}
+
+fn optional_id_input(value: MaybeUndefined<ID>) -> Option<Option<String>> {
+    match value {
+        MaybeUndefined::Undefined => None,
+        MaybeUndefined::Null => Some(None),
+        MaybeUndefined::Value(value) => Some(Some(value.to_string())),
     }
 }
 
@@ -122,6 +133,7 @@ impl ConfigMutations {
                     is_enabled: input.is_enabled.unwrap_or(true),
                     enable_interactive_search: input.enable_interactive_search.unwrap_or(true),
                     enable_auto_search: input.enable_auto_search.unwrap_or(true),
+                    indexer_proxy_config_id: input.indexer_proxy_config_id.map(|id| id.to_string()),
                     config_json,
                 },
             )
@@ -159,6 +171,7 @@ impl ConfigMutations {
                     is_enabled: input.is_enabled,
                     enable_interactive_search: input.enable_interactive_search,
                     enable_auto_search: input.enable_auto_search,
+                    indexer_proxy_config_id: optional_id_input(input.indexer_proxy_config_id),
                     managed_parent_config_id: None,
                     managed_child_key: None,
                     managed_metadata_json: None,
@@ -172,6 +185,106 @@ impl ConfigMutations {
             .indexer_config_fields_for_provider_type(&config.provider_type)
             .unwrap_or_default();
         Ok(from_indexer_config_with_fields(config, &config_fields))
+    }
+
+    async fn create_indexer_proxy_config(
+        &self,
+        ctx: &Context<'_>,
+        input: CreateIndexerProxyConfigInput,
+    ) -> GqlResult<IndexerProxyConfigPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = require_config_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
+        let provider_type =
+            IndexerProxyProviderType::parse(&input.provider_type).ok_or_else(|| {
+                to_gql_error(AppError::Validation(format!(
+                    "unsupported indexer proxy provider '{}'",
+                    input.provider_type
+                )))
+            })?;
+        let request_timeout_seconds = input
+            .request_timeout_seconds
+            .map(|value| {
+                u32::try_from(value).map_err(|_| {
+                    to_gql_error(AppError::Validation(
+                        "request timeout seconds must be positive".into(),
+                    ))
+                })
+            })
+            .transpose()?;
+        let config = app
+            .create_indexer_proxy_config(
+                &actor,
+                NewIndexerProxyConfig {
+                    name: input.name,
+                    provider_type,
+                    base_url: input.base_url,
+                    request_timeout_seconds,
+                    is_enabled: input.is_enabled.unwrap_or(true),
+                },
+            )
+            .await
+            .map_err(to_gql_error)?;
+        Ok(from_indexer_proxy_config(config))
+    }
+
+    async fn update_indexer_proxy_config(
+        &self,
+        ctx: &Context<'_>,
+        input: UpdateIndexerProxyConfigInput,
+    ) -> GqlResult<IndexerProxyConfigPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = require_config_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
+        let request_timeout_seconds = input
+            .request_timeout_seconds
+            .map(|value| {
+                u32::try_from(value).map_err(|_| {
+                    to_gql_error(AppError::Validation(
+                        "request timeout seconds must be positive".into(),
+                    ))
+                })
+            })
+            .transpose()?;
+        let config = app
+            .update_indexer_proxy_config(
+                &actor,
+                IndexerProxyConfigUpdate {
+                    id: input.id.to_string(),
+                    name: input.name,
+                    base_url: input.base_url,
+                    request_timeout_seconds,
+                    is_enabled: input.is_enabled,
+                },
+            )
+            .await
+            .map_err(to_gql_error)?;
+        Ok(from_indexer_proxy_config(config))
+    }
+
+    async fn delete_indexer_proxy_config(
+        &self,
+        ctx: &Context<'_>,
+        id: ID,
+    ) -> GqlResult<DeleteIndexerProxyConfigPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = require_config_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
+        app.delete_indexer_proxy_config(&actor, id.as_ref())
+            .await
+            .map_err(to_gql_error)?;
+        Ok(DeleteIndexerProxyConfigPayload { ok: true })
+    }
+
+    async fn test_indexer_proxy_config(
+        &self,
+        ctx: &Context<'_>,
+        id: ID,
+    ) -> GqlResult<IndexerProxyTestResultPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = require_config_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
+        let result = app
+            .test_indexer_proxy_config(&actor, id.as_ref())
+            .await
+            .map_err(to_gql_error)?;
+        Ok(from_indexer_proxy_test_result(result))
     }
 
     async fn delete_indexer_config(

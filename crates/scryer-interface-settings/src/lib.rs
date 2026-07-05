@@ -7,10 +7,10 @@ use scryer_interface_core::{
 };
 use scryer_interface_media::mappers::{
     from_download_client_config_with_fields, from_download_client_routing_entry,
-    from_indexer_config_with_fields, from_indexer_routing_entry, from_jellyfin_server_user,
-    from_library_paths_settings, from_media_server_connection, from_media_server_user_group,
-    from_media_settings, from_quality_profile_settings, from_service_settings,
-    from_subtitle_provider_config, from_user_with_auth_factor_status,
+    from_indexer_config_with_fields, from_indexer_proxy_config, from_indexer_routing_entry,
+    from_jellyfin_server_user, from_library_paths_settings, from_media_server_connection,
+    from_media_server_user_group, from_media_settings, from_quality_profile_settings,
+    from_service_settings, from_subtitle_provider_config, from_user_with_auth_factor_status,
 };
 use scryer_interface_media::types::*;
 
@@ -823,6 +823,18 @@ impl SettingsQueries {
             }
         }
         Ok(payloads)
+    }
+
+    async fn indexer_proxy_configs(
+        &self,
+        ctx: &Context<'_>,
+    ) -> GqlResult<Vec<IndexerProxyConfigPayload>> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        app.list_indexer_proxy_configs(&actor)
+            .await
+            .map(|configs| configs.into_iter().map(from_indexer_proxy_config).collect())
+            .map_err(to_gql_error)
     }
 
     async fn root_folders(

@@ -36,15 +36,16 @@ use crate::{
     ExternalImportSetupSecretDraftInput, ExternalImportSetupSecretDraftRepository,
     ExternalImportSetupSecretDraftSaveResult, ExternalImportSetupSecretDraftStatus, FileImporter,
     HousekeepingRepository, ImportArtifact, ImportArtifactRepository, ImportRepository,
-    IndexerQueryStats, IndexerSearchLearningKey, IndexerSearchLearningRecord,
-    IndexerSearchLearningRepository, IndexerStatsTracker, JobKey, JobRunRecord, JobRunRepository,
-    LibraryProbeRepository, LibraryProbeSignature, LibraryRepository, LibraryRootDraft,
-    LibraryScanUnmatchedItem, LibraryScanUnmatchedItemRepository, MediaFileRepository,
-    MediaRequestCounts, MediaRequestQuery, MediaRequestRepository, MediaRequestResolution,
-    NewBlocklistEntry, NewMediaRequest, NotificationChannelRepository,
-    NotificationSubscriptionRepository, OAuthAuthorizationCodeRecord, OAuthConnectedAppRecord,
-    OAuthRefreshGrantRecord, OAuthRefreshRotationOutcome, OAuthRefreshTokenRecord, OAuthRepository,
-    PendingRelease, PendingReleaseRepository, PendingStagedNzb, PluginDescriptorLoader,
+    IndexerProxyConfigRepository, IndexerQueryStats, IndexerSearchLearningKey,
+    IndexerSearchLearningRecord, IndexerSearchLearningRepository, IndexerStatsTracker, JobKey,
+    JobRunRecord, JobRunRepository, LibraryProbeRepository, LibraryProbeSignature,
+    LibraryRepository, LibraryRootDraft, LibraryScanUnmatchedItem,
+    LibraryScanUnmatchedItemRepository, MediaFileRepository, MediaRequestCounts, MediaRequestQuery,
+    MediaRequestRepository, MediaRequestResolution, NewBlocklistEntry, NewMediaRequest,
+    NotificationChannelRepository, NotificationSubscriptionRepository,
+    OAuthAuthorizationCodeRecord, OAuthConnectedAppRecord, OAuthRefreshGrantRecord,
+    OAuthRefreshRotationOutcome, OAuthRefreshTokenRecord, OAuthRepository, PendingRelease,
+    PendingReleaseRepository, PendingStagedNzb, PluginDescriptorLoader,
     PluginInstallationRepository, PostProcessingScriptRepository, ReleaseDecision,
     RuleSetRepository, SchedulerAdmission, SchedulerBatchDecision, SchedulerBatchRequest,
     SchedulerFeedback, SchedulerLease, SchedulerSnapshot, SchedulerSnapshotFilter,
@@ -60,6 +61,41 @@ use crate::{
     types::TotpEnrollmentChallengeRecord, types::TotpFailedAttemptRecord,
     types::TotpRecoveryCodeRecord,
 };
+
+#[derive(Default)]
+pub struct NullIndexerProxyConfigRepository;
+
+#[async_trait]
+impl IndexerProxyConfigRepository for NullIndexerProxyConfigRepository {
+    async fn list(
+        &self,
+        _provider_type: Option<scryer_domain::IndexerProxyProviderType>,
+    ) -> AppResult<Vec<scryer_domain::IndexerProxyConfig>> {
+        Ok(Vec::new())
+    }
+
+    async fn get_by_id(&self, _id: &str) -> AppResult<Option<scryer_domain::IndexerProxyConfig>> {
+        Ok(None)
+    }
+
+    async fn create(
+        &self,
+        config: scryer_domain::IndexerProxyConfig,
+    ) -> AppResult<scryer_domain::IndexerProxyConfig> {
+        Ok(config)
+    }
+
+    async fn update(
+        &self,
+        config: scryer_domain::IndexerProxyConfig,
+    ) -> AppResult<scryer_domain::IndexerProxyConfig> {
+        Ok(config)
+    }
+
+    async fn delete(&self, _id: &str) -> AppResult<()> {
+        Ok(())
+    }
+}
 
 #[derive(Default)]
 pub struct NullDiscoveryRepository;

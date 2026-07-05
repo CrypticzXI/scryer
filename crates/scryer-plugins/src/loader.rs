@@ -12,8 +12,8 @@ use scryer_application::{
     SubtitleSyncClient,
 };
 use scryer_domain::{
-    DownloadClientConfig, IndexerConfig, NotificationChannelConfig, PluginHostBindingId,
-    SubtitleProviderConfig,
+    DownloadClientConfig, IndexerConfig, IndexerProxyConfig, NotificationChannelConfig,
+    PluginHostBindingId, SubtitleProviderConfig,
 };
 use tracing::{debug, info, warn};
 
@@ -39,7 +39,7 @@ use crate::types::{
 
 const INDEXER_PLUGIN_TYPES: &[&str] = &["indexer", "usenet_indexer", "torrent_indexer"];
 
-type IndexerClientCacheKey = (String, String, String);
+type IndexerClientCacheKey = (String, String, String, String, String);
 type IndexerClientCache = std::sync::Mutex<HashMap<IndexerClientCacheKey, Arc<dyn IndexerClient>>>;
 type DownloadClientCacheKey = (String, String, String);
 type DownloadClientCache =
@@ -684,6 +684,14 @@ impl IndexerPluginProvider for WasmIndexerPluginProvider {
     }
 
     fn client_for_provider(&self, config: &IndexerConfig) -> Option<Arc<dyn IndexerClient>> {
+        self.client_for_provider_with_proxy(config, None)
+    }
+
+    fn client_for_provider_with_proxy(
+        &self,
+        config: &IndexerConfig,
+        indexer_proxy_config: Option<&IndexerProxyConfig>,
+    ) -> Option<Arc<dyn IndexerClient>> {
         let provider = config.provider_type.trim().to_ascii_lowercase();
         let loaded = self.get_loaded(&provider)?;
 
@@ -705,6 +713,7 @@ impl IndexerPluginProvider for WasmIndexerPluginProvider {
             loaded.descriptor.clone(),
             config.name.clone(),
             config.clone(),
+            indexer_proxy_config.cloned(),
         ) {
             Ok(client) => Some(Arc::new(client)),
             Err(e) => {
@@ -745,7 +754,7 @@ impl DynamicPluginProvider {
             return;
         }
         if let Ok(mut cache) = self.client_cache.lock() {
-            cache.retain(|(provider_type, _, _), _| !provider_keys.contains(provider_type));
+            cache.retain(|(provider_type, _, _, _, _), _| !provider_keys.contains(provider_type));
         }
     }
 
@@ -766,11 +775,24 @@ impl DynamicPluginProvider {
 
 impl IndexerPluginProvider for DynamicPluginProvider {
     fn client_for_provider(&self, config: &IndexerConfig) -> Option<Arc<dyn IndexerClient>> {
+        self.client_for_provider_with_proxy(config, None)
+    }
+
+    fn client_for_provider_with_proxy(
+        &self,
+        config: &IndexerConfig,
+        indexer_proxy_config: Option<&IndexerProxyConfig>,
+    ) -> Option<Arc<dyn IndexerClient>> {
         let provider_key = config.provider_type.trim().to_ascii_lowercase();
+        let (proxy_id, proxy_revision) = indexer_proxy_config
+            .map(|config| (config.id.clone(), config.updated_at.to_rfc3339()))
+            .unwrap_or_else(|| (String::new(), String::new()));
         let cache_key = (
             provider_key.clone(),
             config.id.clone(),
             config.updated_at.to_rfc3339(),
+            proxy_id,
+            proxy_revision,
         );
 
         // Fast path: check cache first
@@ -785,7 +807,7 @@ impl IndexerPluginProvider for DynamicPluginProvider {
             .inner
             .read()
             .expect("DynamicPluginProvider lock poisoned");
-        let client = guard.client_for_provider(config)?;
+        let client = guard.client_for_provider_with_proxy(config, indexer_proxy_config)?;
 
         if let Ok(mut cache) = self.client_cache.lock() {
             return Some(insert_indexer_client_cache(
@@ -2502,13 +2524,31 @@ fn host_from_url(url: &str) -> Option<String> {
 }
 
 pub(crate) fn build_plugin(manifest: Manifest) -> Result<extism::Plugin, extism::Error> {
-    build_plugin_with_hosts(manifest, &SocketHost::disabled(), &ProcessHost::disabled())
+    build_plugin_with_hosts(
+        manifest,
+        &SocketHost::disabled(),
+        &ProcessHost::disabled(),
+        None,
+    )
+}
+
+pub(crate) fn build_plugin_with_indexer_proxy(
+    manifest: Manifest,
+    indexer_proxy_policy: plugin_http_host::IndexerProxyPolicy,
+) -> Result<extism::Plugin, extism::Error> {
+    build_plugin_with_hosts(
+        manifest,
+        &SocketHost::disabled(),
+        &ProcessHost::disabled(),
+        Some(indexer_proxy_policy),
+    )
 }
 
 fn build_plugin_with_hosts(
     manifest: Manifest,
     socket_host: &SocketHost,
     process_host: &ProcessHost,
+    indexer_proxy_policy: Option<plugin_http_host::IndexerProxyPolicy>,
 ) -> Result<extism::Plugin, extism::Error> {
     // Wasmtime's filesystem cache is not race-free when multiple identical
     // modules compile concurrently in the same process. Serialize the build
@@ -2519,7 +2559,10 @@ fn build_plugin_with_hosts(
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let mut functions = socket_host.functions();
     functions.extend(process_host.functions());
-    functions.extend(plugin_http_host::host_functions(&manifest));
+    functions.extend(plugin_http_host::host_functions_with_indexer_proxy(
+        &manifest,
+        indexer_proxy_policy,
+    ));
 
     extism::PluginBuilder::new(manifest)
         .with_wasi(true)
@@ -2779,7 +2822,7 @@ impl WasmNotificationPluginProvider {
             }
         }
 
-        match build_plugin_with_hosts(manifest, &socket_host, &process_host) {
+        match build_plugin_with_hosts(manifest, &socket_host, &process_host, None) {
             Ok(plugin) => {
                 let client = WasmNotificationClient::new(
                     plugin,

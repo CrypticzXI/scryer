@@ -9,22 +9,23 @@ use scryer_application::{
     DiscoveryItemRecord, DiscoveryItemsQuery, DiscoveryItemsResult, DiscoverySectionResult,
     DiscoverySyncRunRecord, DiscoverySyncStateRecord, DiscoverySyncStatus,
     DownloadClientRoutingSettingsEntry, FacetScoringPersonaSelection, IgnorePendingImportResult,
-    IndexerRoutingSettingsEntry, IndexerSearchResult, JobDefinition, JobRun, LibraryPathsSettings,
-    LibraryScanSummary, LibrarySettings, ManualPluginPreview, MediaRequestCounts, MediaSettings,
-    OutboundRateLimitSnapshot, ParsedEpisodeMetadata, ParsedReleaseMetadata,
-    PendingImportConnection, PendingImportCounts, PendingImportItem, PendingImportSearchAttempt,
-    PendingRelease, PluginCatalogStatus, QualityProfile, QualityProfileCriteria,
-    QualityProfileDecision, QualityProfileSelection, QualityProfileSettings, RegistryPlugin,
-    RenameApplyItemResult, RenameApplyResult, RenamePlan, RenamePlanItem,
-    ResolvePendingImportResult, RssSyncReport, SchedulerSnapshot, ScoringEntry, ScoringSource,
-    ServiceSettings, SmgScryerUpdateNotice, SmgVersionCompatibilityNotice, SubmissionScope,
-    SystemHealth, TitleHistoryPage, TitleRatingSummary, TitleReleaseBlocklistEntry,
+    IndexerProxyTestResult, IndexerRoutingSettingsEntry, IndexerSearchResult, JobDefinition,
+    JobRun, LibraryPathsSettings, LibraryScanSummary, LibrarySettings, ManualPluginPreview,
+    MediaRequestCounts, MediaSettings, OutboundRateLimitSnapshot, ParsedEpisodeMetadata,
+    ParsedReleaseMetadata, PendingImportConnection, PendingImportCounts, PendingImportItem,
+    PendingImportSearchAttempt, PendingRelease, PluginCatalogStatus, QualityProfile,
+    QualityProfileCriteria, QualityProfileDecision, QualityProfileSelection,
+    QualityProfileSettings, RegistryPlugin, RenameApplyItemResult, RenameApplyResult, RenamePlan,
+    RenamePlanItem, ResolvePendingImportResult, RssSyncReport, SchedulerSnapshot, ScoringEntry,
+    ScoringSource, ServiceSettings, SmgScryerUpdateNotice, SmgVersionCompatibilityNotice,
+    SubmissionScope, SystemHealth, TitleHistoryPage, TitleRatingSummary,
+    TitleReleaseBlocklistEntry,
 };
 use scryer_domain::{
     CalendarEpisode, Collection, ConfigFieldDef, ConfigFieldType, DomainEvent,
-    DownloadClientConfig, DownloadQueueItem, Episode, IndexerConfig, Library, MediaFacet,
-    MediaRequest, PluginInstallation, PluginSupportTier, RuleSet, SubtitleProviderConfig, Title,
-    TitleHistoryRecord, User,
+    DownloadClientConfig, DownloadQueueItem, Episode, IndexerConfig, IndexerProxyConfig, Library,
+    MediaFacet, MediaRequest, PluginInstallation, PluginSupportTier, RuleSet,
+    SubtitleProviderConfig, Title, TitleHistoryRecord, User,
 };
 use scryer_rules;
 use serde_json::Value;
@@ -648,6 +649,7 @@ pub fn from_search_result(result: IndexerSearchResult) -> IndexerSearchResultPay
         .and_then(|v| v.as_f64());
 
     IndexerSearchResultPayload {
+        indexer_id: result.indexer_id.map(Into::into),
         source: result.source,
         title: result.title,
         link: result.link,
@@ -832,6 +834,7 @@ pub fn from_indexer_config_with_fields(
         name: config.name,
         provider_type: config.provider_type,
         base_url: config.base_url,
+        indexer_proxy_config_id: config.indexer_proxy_config_id.map(Into::into),
         has_api_key,
         is_managed,
         managed_parent_config_id: managed_parent_config_id.map(Into::into),
@@ -849,6 +852,38 @@ pub fn from_indexer_config_with_fields(
         config: provider_config_values_from_json_with_fields(config_json.as_deref(), config_fields),
         created_at: config.created_at,
         updated_at: config.updated_at,
+    }
+}
+
+pub fn from_indexer_proxy_config(config: IndexerProxyConfig) -> IndexerProxyConfigPayload {
+    IndexerProxyConfigPayload {
+        id: config.id.into(),
+        name: config.name,
+        provider_type: config.provider_type.as_str().to_string(),
+        protocol: config.protocol.as_str().to_string(),
+        base_url: config.base_url,
+        request_timeout_seconds: i32::try_from(config.request_timeout_seconds).unwrap_or(i32::MAX),
+        is_enabled: config.is_enabled,
+        last_health_status: config
+            .last_health_status
+            .map(|status| status.as_str().to_string()),
+        last_error_message: config.last_error_message,
+        last_error_at: config.last_error_at,
+        created_at: config.created_at,
+        updated_at: config.updated_at,
+    }
+}
+
+pub fn from_indexer_proxy_test_result(
+    result: IndexerProxyTestResult,
+) -> IndexerProxyTestResultPayload {
+    IndexerProxyTestResultPayload {
+        ok: result.ok,
+        status: result.status.as_str().to_string(),
+        message: result.message,
+        duration_ms: result
+            .duration_ms
+            .map(|value| value.min(i32::MAX as u64) as i32),
     }
 }
 

@@ -9,7 +9,7 @@ use chrono::{DateTime, Utc};
 use scryer_application::{
     AppError, AppResult, DownloadClient, DownloadClientAddRequest,
     DownloadClientMarkImportedRequest, DownloadClientStatus, DownloadGrabResult,
-    DownloadSourceKind, StagedNzbRef,
+    DownloadSourceKind, ResolvedDownloadArtifact, StagedNzbRef,
 };
 use scryer_domain::{CompletedDownload, DownloadQueueItem, DownloadQueueState};
 use scryer_plugin_sdk::torrent::normalize_info_hash_pair;
@@ -396,6 +396,58 @@ fn select_plugin_input_kind(
     }
 }
 
+fn resolved_artifact_source(
+    artifact: &ResolvedDownloadArtifact,
+) -> (DownloadSourceKind, ResolvedTorrentSource) {
+    match artifact {
+        ResolvedDownloadArtifact::Nzb {
+            bytes,
+            file_name,
+            content_type,
+        } => (
+            DownloadSourceKind::NzbFile,
+            ResolvedTorrentSource {
+                download_url: None,
+                nzb_bytes_base64: Some(BASE64.encode(bytes)),
+                nzb_file_name: file_name.clone(),
+                nzb_content_type: content_type
+                    .clone()
+                    .or_else(|| Some("application/x-nzb".to_string())),
+                ..ResolvedTorrentSource::default()
+            },
+        ),
+        ResolvedDownloadArtifact::Magnet {
+            uri,
+            info_hash_hint: _,
+        } => (
+            DownloadSourceKind::MagnetUri,
+            ResolvedTorrentSource {
+                download_url: None,
+                magnet_uri: Some(uri.clone()),
+                ..ResolvedTorrentSource::default()
+            },
+        ),
+        ResolvedDownloadArtifact::TorrentFile {
+            bytes,
+            file_name,
+            content_type,
+            info_hash_hint: _,
+        } => (
+            DownloadSourceKind::TorrentFile,
+            ResolvedTorrentSource {
+                download_url: None,
+                torrent_url: None,
+                torrent_bytes_base64: Some(BASE64.encode(bytes)),
+                torrent_file_name: file_name.clone(),
+                torrent_content_type: content_type
+                    .clone()
+                    .or_else(|| Some("application/x-bittorrent".to_string())),
+                ..ResolvedTorrentSource::default()
+            },
+        ),
+    }
+}
+
 fn build_plugin_add_request(
     request: &DownloadClientAddRequest,
     source_kind: DownloadSourceKind,
@@ -515,22 +567,52 @@ impl DownloadClient for WasmDownloadClient {
             .source_kind
             .or_else(|| DownloadSourceKind::infer_from_hint(source_hint.as_deref()))
             .unwrap_or(DownloadSourceKind::TorrentFile);
+        let resolved_artifact = request
+            .resolved_download_artifact
+            .as_ref()
+            .map(resolved_artifact_source);
+        let source_kind = resolved_artifact
+            .as_ref()
+            .map(|(source_kind, _)| *source_kind)
+            .unwrap_or(source_kind);
 
         // When the source is a .torrent HTTP URL and we have no info_hash_hint,
         // pre-fetch the torrent file so the plugin can compute the hash directly.
         // Some trackers redirect .torrent URLs to magnet URIs — detect that and
         // switch to the magnet path.
-        let mut torrent_bytes_base64 = None;
-        let mut resolved_magnet_uri: Option<String> = None;
-        let mut resolved_download_url = source_hint.clone();
-        let mut torrent_url = source_hint.clone().filter(|url| {
-            matches!(source_kind, DownloadSourceKind::TorrentFile)
-                && (url.starts_with("http://") || url.starts_with("https://"))
-        });
-        let mut torrent_content_type = None;
-        let mut nzb_bytes_base64 = None;
-        let mut nzb_file_name = None;
-        let mut nzb_content_type = None;
+        let mut torrent_bytes_base64 = resolved_artifact
+            .as_ref()
+            .and_then(|(_, resolved)| resolved.torrent_bytes_base64.clone());
+        let mut resolved_magnet_uri: Option<String> = resolved_artifact
+            .as_ref()
+            .and_then(|(_, resolved)| resolved.magnet_uri.clone());
+        let mut resolved_download_url = resolved_artifact
+            .is_none()
+            .then(|| source_hint.clone())
+            .flatten();
+        let mut torrent_url = if resolved_artifact.is_none() {
+            source_hint.clone().filter(|url| {
+                matches!(source_kind, DownloadSourceKind::TorrentFile)
+                    && (url.starts_with("http://") || url.starts_with("https://"))
+            })
+        } else {
+            None
+        };
+        let mut torrent_content_type = resolved_artifact
+            .as_ref()
+            .and_then(|(_, resolved)| resolved.torrent_content_type.clone());
+        let mut torrent_file_name = resolved_artifact
+            .as_ref()
+            .and_then(|(_, resolved)| resolved.torrent_file_name.clone());
+        let mut nzb_bytes_base64 = resolved_artifact
+            .as_ref()
+            .and_then(|(_, resolved)| resolved.nzb_bytes_base64.clone());
+        let mut nzb_file_name = resolved_artifact
+            .as_ref()
+            .and_then(|(_, resolved)| resolved.nzb_file_name.clone());
+        let mut nzb_content_type = resolved_artifact
+            .as_ref()
+            .and_then(|(_, resolved)| resolved.nzb_content_type.clone());
         if matches!(
             source_kind,
             DownloadSourceKind::NzbFile | DownloadSourceKind::NzbUrl
@@ -543,6 +625,7 @@ impl DownloadClient for WasmDownloadClient {
 
         if matches!(source_kind, DownloadSourceKind::TorrentFile)
             && request.info_hash_hint.is_none()
+            && resolved_artifact.is_none()
             && let Some(url) = source_hint.as_ref()
             && (url.starts_with("http://") || url.starts_with("https://"))
             && !url.starts_with("magnet:")
@@ -575,6 +658,7 @@ impl DownloadClient for WasmDownloadClient {
                                     && !bytes.is_empty()
                                 {
                                     torrent_content_type = content_type;
+                                    torrent_file_name = derive_torrent_file_name(request);
                                     debug!(url = %url, bytes = bytes.len(), "pre-fetched torrent file (via redirect)");
                                     torrent_bytes_base64 = Some(BASE64.encode(&bytes));
                                 }
@@ -596,6 +680,7 @@ impl DownloadClient for WasmDownloadClient {
                     match resp.bytes().await {
                         Ok(bytes) if !bytes.is_empty() => {
                             torrent_content_type = content_type;
+                            torrent_file_name = derive_torrent_file_name(request);
                             debug!(url = %url, bytes = bytes.len(), "pre-fetched torrent file for hash derivation");
                             torrent_bytes_base64 = Some(BASE64.encode(&bytes));
                         }
@@ -629,7 +714,7 @@ impl DownloadClient for WasmDownloadClient {
                 magnet_uri,
                 torrent_bytes_base64,
                 torrent_url,
-                torrent_file_name: derive_torrent_file_name(request),
+                torrent_file_name,
                 torrent_content_type,
                 nzb_bytes_base64,
                 nzb_file_name,
@@ -1052,6 +1137,7 @@ mod tests {
             download_id: None,
             source_hint: Some("https://tracker.example/release.torrent".to_string()),
             staged_nzb: None,
+            resolved_download_artifact: None,
             source_kind: Some(DownloadSourceKind::TorrentFile),
             source_title: Some("Example.Release.torrent".to_string()),
             source_password: None,

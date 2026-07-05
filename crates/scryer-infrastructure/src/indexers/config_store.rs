@@ -18,13 +18,13 @@ use crate::queries::sql_runtime::{SqlArg, SqlExec, SqlRow, SqlRuntime, StoreData
 const INDEXER_COLUMNS: &str =
     "id, name, provider_type, base_url, api_key_encrypted, rate_limit_seconds,
     rate_limit_burst, disabled_until, is_enabled, enable_interactive_search, enable_auto_search,
-    managed_parent_config_id, managed_child_key, managed_metadata_json, caps_snapshot_json,
-    last_health_status, last_error_at, config_json, created_at, updated_at";
+    indexer_proxy_config_id, managed_parent_config_id, managed_child_key, managed_metadata_json,
+    caps_snapshot_json, last_health_status, last_error_at, config_json, created_at, updated_at";
 
 const INDEXER_INSERT_SQL: &str = "INSERT INTO indexers (
     id, name, provider_type, base_url, api_key_encrypted, rate_limit_seconds,
     rate_limit_burst, disabled_until, is_enabled, enable_interactive_search,
-    enable_auto_search, managed_parent_config_id, managed_child_key,
+    enable_auto_search, indexer_proxy_config_id, managed_parent_config_id, managed_child_key,
     managed_metadata_json, caps_snapshot_json, last_health_status,
     last_error_at, config_json, created_at, updated_at
 ) VALUES (
@@ -358,6 +358,10 @@ impl IndexerConfigRepository for IndexerConfigStore {
             assignments.push("enable_auto_search = {}".to_string());
             args.push(SqlArg::Bool(enable_auto_search));
         }
+        if let Some(indexer_proxy_config_id) = update.indexer_proxy_config_id.as_ref() {
+            assignments.push("indexer_proxy_config_id = {}".to_string());
+            args.push(SqlArg::OptText(indexer_proxy_config_id.clone()));
+        }
         if let Some(managed_parent_config_id) = update.managed_parent_config_id.as_ref() {
             assignments.push("managed_parent_config_id = {}".to_string());
             args.push(SqlArg::OptText(managed_parent_config_id.clone()));
@@ -455,6 +459,7 @@ fn indexer_insert_args(
         SqlArg::Bool(config.is_enabled),
         SqlArg::Bool(config.enable_interactive_search),
         SqlArg::Bool(config.enable_auto_search),
+        SqlArg::OptText(config.indexer_proxy_config_id.clone()),
         SqlArg::OptText(config.managed_parent_config_id.clone()),
         SqlArg::OptText(config.managed_child_key.clone()),
         SqlArg::OptText(config.managed_metadata_json.clone()),
@@ -513,6 +518,7 @@ fn row_to_indexer_config(
         is_enabled: row.bool("is_enabled")?,
         enable_interactive_search: row.bool("enable_interactive_search")?,
         enable_auto_search: row.bool("enable_auto_search")?,
+        indexer_proxy_config_id: row.opt_text("indexer_proxy_config_id")?,
         managed_parent_config_id: row.opt_text("managed_parent_config_id")?,
         managed_child_key: row.opt_text("managed_child_key")?,
         managed_metadata_json: row.opt_text("managed_metadata_json")?,
@@ -568,6 +574,7 @@ mod tests {
                 is_enabled INTEGER NOT NULL DEFAULT 1,
                 enable_interactive_search INTEGER NOT NULL DEFAULT 1,
                 enable_auto_search INTEGER NOT NULL DEFAULT 1,
+                indexer_proxy_config_id TEXT,
                 managed_parent_config_id TEXT,
                 managed_child_key TEXT,
                 managed_metadata_json TEXT,

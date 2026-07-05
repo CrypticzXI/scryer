@@ -1353,6 +1353,7 @@ pub struct ReleaseCandidateProvenance {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct IndexerSearchResult {
+    pub indexer_id: Option<String>,
     pub source: String,
     pub title: String,
     pub link: Option<String>,

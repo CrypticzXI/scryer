@@ -2549,6 +2549,7 @@ async fn acquisition_cycle_falls_back_to_episode_grabs_when_season_pack_is_not_s
 
             Ok(IndexerSearchResponse {
                 results: vec![IndexerSearchResult {
+                    indexer_id: None,
                     source: "nzbgeek".into(),
                     title: release_title.clone(),
                     link: Some(format!("https://example.invalid/info/{release_slug}")),
@@ -3662,6 +3663,7 @@ impl IndexerClient for PendingStatusAssertingIndexerClient {
 
         Ok(IndexerSearchResponse {
             results: vec![IndexerSearchResult {
+                indexer_id: None,
                 source: "nzbgeek".into(),
                 title: format!("{query}.2024.1080p.WEB-DL"),
                 link: Some("https://example.invalid/info/rss-ordering".to_string()),

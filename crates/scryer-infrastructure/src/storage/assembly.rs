@@ -26,13 +26,14 @@ use crate::{
     AcquisitionStore, BlocklistStore, DomainEventStore, DownloadClientConfigStore,
     DownloadQueueCommandStore, DownloadSubmissionStore, ExternalImportMonitorStore,
     ExternalImportSetupSecretDraftStore, FileSystemStagedNzbStore, HousekeepingStore, ImportStore,
-    InMemoryIndexerStatsTracker, IndexerConfigStore, IndexerSearchLearningStore, LibraryProbeStore,
-    LibraryScanUnmatchedStore, MediaFileStore, MediaRequestStore, MediaServerConnectionStore,
-    MetadataGatewayClient, MigrationMode, NotificationStore, OAuthStore, PendingReleaseStore,
-    PluginStore, PostProcessingScriptStore, QualityProfileStore, ReleaseStore, RuleSetStore,
-    SettingsStore, ShowStore, SmgEnrollmentConfig, SqliteLogicalBackupExporter, SqliteServices,
-    SubtitleDownloadStore, SubtitleProviderConfigStore, TitleImageStore, TitleStore, TotpStore,
-    WantedStore, WebauthnStore, WorkflowOperationStore,
+    InMemoryIndexerStatsTracker, IndexerConfigStore, IndexerProxyConfigStore,
+    IndexerSearchLearningStore, LibraryProbeStore, LibraryScanUnmatchedStore, MediaFileStore,
+    MediaRequestStore, MediaServerConnectionStore, MetadataGatewayClient, MigrationMode,
+    NotificationStore, OAuthStore, PendingReleaseStore, PluginStore, PostProcessingScriptStore,
+    QualityProfileStore, ReleaseStore, RuleSetStore, SettingsStore, ShowStore, SmgEnrollmentConfig,
+    SqliteLogicalBackupExporter, SqliteServices, SubtitleDownloadStore,
+    SubtitleProviderConfigStore, TitleImageStore, TitleStore, TotpStore, WantedStore,
+    WebauthnStore, WorkflowOperationStore,
 };
 use crate::{LibraryStore, UserStore};
 
@@ -624,6 +625,7 @@ enum DatastoreStores {
         totp_store: Arc<TotpStore>,
         oauth_store: Arc<OAuthStore>,
         indexer_config_store: Arc<IndexerConfigStore>,
+        indexer_proxy_config_store: Arc<IndexerProxyConfigStore>,
         download_client_config_store: Arc<DownloadClientConfigStore>,
         subtitle_provider_config_store: Arc<SubtitleProviderConfigStore>,
         rule_set_store: Arc<RuleSetStore>,
@@ -665,6 +667,7 @@ enum DatastoreStores {
         totp_store: Arc<TotpStore>,
         oauth_store: Arc<OAuthStore>,
         indexer_config_store: Arc<IndexerConfigStore>,
+        indexer_proxy_config_store: Arc<IndexerProxyConfigStore>,
         download_client_config_store: Arc<DownloadClientConfigStore>,
         subtitle_provider_config_store: Arc<SubtitleProviderConfigStore>,
         rule_set_store: Arc<RuleSetStore>,
@@ -728,6 +731,7 @@ impl DatastoreAssembly {
             datastore.clone(),
             db.encryption_key_state(),
         ));
+        let indexer_proxy_config_store = Arc::new(IndexerProxyConfigStore::new(datastore.clone()));
         let download_client_config_store = Arc::new(DownloadClientConfigStore::new(
             datastore.clone(),
             db.encryption_key_state(),
@@ -795,6 +799,7 @@ impl DatastoreAssembly {
             totp_store,
             oauth_store,
             indexer_config_store,
+            indexer_proxy_config_store,
             download_client_config_store,
             subtitle_provider_config_store,
             rule_set_store,
@@ -852,6 +857,7 @@ impl DatastoreAssembly {
             datastore.clone(),
             db.encryption_key_state(),
         ));
+        let indexer_proxy_config_store = Arc::new(IndexerProxyConfigStore::new(datastore.clone()));
         let download_client_config_store = Arc::new(DownloadClientConfigStore::new(
             datastore.clone(),
             db.encryption_key_state(),
@@ -917,6 +923,7 @@ impl DatastoreAssembly {
             totp_store,
             oauth_store,
             indexer_config_store,
+            indexer_proxy_config_store,
             download_client_config_store,
             subtitle_provider_config_store,
             rule_set_store,
@@ -1087,6 +1094,21 @@ impl DatastoreAssembly {
                 indexer_config_store,
                 ..
             } => indexer_config_store.clone(),
+        }
+    }
+
+    pub fn indexer_proxy_configs(
+        &self,
+    ) -> Arc<dyn scryer_application::IndexerProxyConfigRepository> {
+        match &self.stores {
+            DatastoreStores::Sqlite {
+                indexer_proxy_config_store,
+                ..
+            } => indexer_proxy_config_store.clone(),
+            DatastoreStores::Postgres {
+                indexer_proxy_config_store,
+                ..
+            } => indexer_proxy_config_store.clone(),
         }
     }
 
@@ -1299,6 +1321,7 @@ impl DatastoreAssembly {
                 .with_user_ui_settings_store(ui_settings)
                 .with_external_account_store(external_accounts)
                 .with_oauth_store(oauth)
+                .with_indexer_proxy_config_store(self.indexer_proxy_configs())
                 .with_external_identity_verifier(Arc::new(HttpExternalIdentityVerifier::new()))
                 .with_media_server_connection_store(media_server_connection_store.clone())
                 .with_webauthn_store(webauthn)
@@ -1398,6 +1421,7 @@ impl DatastoreAssembly {
                 .with_user_ui_settings_store(ui_settings)
                 .with_external_account_store(external_accounts)
                 .with_oauth_store(oauth)
+                .with_indexer_proxy_config_store(self.indexer_proxy_configs())
                 .with_external_identity_verifier(Arc::new(HttpExternalIdentityVerifier::new()))
                 .with_media_server_connection_store(media_server_connection_store.clone())
                 .with_webauthn_store(webauthn)

@@ -1254,6 +1254,7 @@ mod tests {
             is_enabled: true,
             enable_interactive_search: false,
             enable_auto_search: false,
+            indexer_proxy_config_id: None,
             managed_parent_config_id: None,
             managed_child_key: None,
             managed_metadata_json: None,

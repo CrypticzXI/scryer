@@ -325,6 +325,7 @@ impl AppUseCase {
                     rate_limit_seconds: provider.rate_limit_seconds_for_provider(&pt),
                     rate_limit_burst: None,
                     disabled_until: None,
+                    indexer_proxy_config_id: None,
                     managed_parent_config_id: None,
                     managed_child_key: None,
                     managed_metadata_json: None,

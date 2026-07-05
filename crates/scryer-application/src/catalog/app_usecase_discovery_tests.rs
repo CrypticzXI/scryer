@@ -110,6 +110,7 @@ fn make_search_result(
     source_kind: DownloadSourceKind,
 ) -> IndexerSearchResult {
     IndexerSearchResult {
+        indexer_id: None,
         source: source.to_string(),
         title: title.to_string(),
         link: None,
@@ -242,6 +243,7 @@ fn synthetic_indexer_config(
         is_enabled,
         enable_interactive_search,
         enable_auto_search,
+        indexer_proxy_config_id: None,
         managed_parent_config_id: managed_parent_config_id.map(str::to_string),
         managed_child_key: None,
         managed_metadata_json: None,

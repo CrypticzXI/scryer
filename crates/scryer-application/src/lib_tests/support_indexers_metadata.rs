@@ -30,6 +30,7 @@ impl IndexerClient for MockIndexerClient {
         }
         Ok(IndexerSearchResponse {
             results: vec![IndexerSearchResult {
+                indexer_id: None,
                 source: "nzbgeek".into(),
                 title: format!("match for {query}"),
                 link: None,
@@ -166,6 +167,7 @@ impl IndexerClient for TrackingIndexerClient {
 
         Ok(IndexerSearchResponse {
             results: vec![IndexerSearchResult {
+                indexer_id: None,
                 source: "nzbgeek".into(),
                 title: release_title.clone(),
                 link: Some(format!("https://example.invalid/info/{release_slug}")),
@@ -237,6 +239,7 @@ impl IndexerClient for FixedReleaseIndexerClient {
     ) -> AppResult<IndexerSearchResponse> {
         Ok(IndexerSearchResponse {
             results: vec![IndexerSearchResult {
+                indexer_id: None,
                 source: "nzbgeek".into(),
                 title: self.release_title.clone(),
                 link: Some("https://example.invalid/info".to_string()),
@@ -318,6 +321,7 @@ impl IndexerClient for SharedUrlMovieIndexerClient {
 
         Ok(IndexerSearchResponse {
             results: vec![IndexerSearchResult {
+                indexer_id: None,
                 source: "nzbgeek".into(),
                 title: release_title.clone(),
                 link: Some("https://example.invalid/info".to_string()),
@@ -419,6 +423,7 @@ impl IndexerClient for RecordingCategoriesIndexerClient {
 
         Ok(IndexerSearchResponse {
             results: vec![IndexerSearchResult {
+                indexer_id: None,
                 source: "nzbgeek".into(),
                 title: self.release_title.clone(),
                 link: Some("https://example.invalid/info".to_string()),
@@ -526,6 +531,7 @@ impl IndexerClient for MultiReleaseIndexerClient {
                 .iter()
                 .enumerate()
                 .map(|(index, release_title)| IndexerSearchResult {
+                    indexer_id: None,
                     source: "nzbgeek".into(),
                     title: release_title.clone(),
                     link: Some(format!("https://example.invalid/info/{index}")),

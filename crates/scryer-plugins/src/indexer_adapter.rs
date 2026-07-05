@@ -3,12 +3,15 @@ use scryer_application::{
     AppError, AppResult, DownloadSourceKind, IndexerClient, IndexerRoutingPlan,
     IndexerSearchResponse, IndexerSearchResult, SearchMode, normalize_release_password,
 };
-use scryer_domain::{IndexerConfig, TaggedAlias};
+use scryer_domain::{IndexerConfig, IndexerProxyConfig, TaggedAlias};
 use std::{collections::BTreeMap, sync::mpsc};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
-use crate::loader::{apply_allowed_hosts, build_plugin, parse_config_json_entries};
+use crate::loader::{
+    apply_allowed_hosts, build_plugin, build_plugin_with_indexer_proxy, parse_config_json_entries,
+};
+use crate::plugin_http_host::IndexerProxyPolicy;
 use crate::types::{
     ConfigFieldRole, EXPORT_INDEXER_ACTION, EXPORT_INDEXER_SEARCH, IndexerProtocol,
     IndexerSourceKind, PluginDescriptor, PluginSearchContext, PluginSearchOrigin,
@@ -39,6 +42,7 @@ impl IndexerPluginWorker {
         manifest: extism::Manifest,
         descriptor: &PluginDescriptor,
         indexer_name: &str,
+        indexer_proxy_policy: Option<IndexerProxyPolicy>,
     ) -> AppResult<Self> {
         let (tx, rx) = mpsc::channel::<IndexerPluginCommand>();
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
@@ -49,7 +53,11 @@ impl IndexerPluginWorker {
         std::thread::Builder::new()
             .name(thread_name)
             .spawn(move || {
-                let mut plugin = match build_plugin(manifest) {
+                let plugin_result = match indexer_proxy_policy {
+                    Some(policy) => build_plugin_with_indexer_proxy(manifest, policy),
+                    None => build_plugin(manifest),
+                };
+                let mut plugin = match plugin_result {
                     Ok(plugin) => {
                         let _ = ready_tx.send(Ok(()));
                         plugin
@@ -154,9 +162,22 @@ impl WasmIndexerClient {
         descriptor: PluginDescriptor,
         indexer_name: String,
         config: IndexerConfig,
+        indexer_proxy_config: Option<IndexerProxyConfig>,
     ) -> Result<Self, AppError> {
-        let manifest = build_manifest(wasm_bytes, &descriptor, &indexer_name, &config);
-        let worker = IndexerPluginWorker::start(manifest, &descriptor, &indexer_name)?;
+        let manifest = build_manifest(
+            wasm_bytes,
+            &descriptor,
+            &indexer_name,
+            &config,
+            indexer_proxy_config.as_ref(),
+        );
+        let indexer_proxy_policy = indexer_proxy_config.map(|proxy_config| IndexerProxyPolicy {
+            indexer_id: config.id.clone(),
+            indexer_name: indexer_name.clone(),
+            config: proxy_config,
+        });
+        let worker =
+            IndexerPluginWorker::start(manifest, &descriptor, &indexer_name, indexer_proxy_policy)?;
 
         info!(
             indexer = indexer_name.as_str(),
@@ -214,6 +235,7 @@ fn build_manifest(
     descriptor: &PluginDescriptor,
     indexer_name: &str,
     config: &IndexerConfig,
+    indexer_proxy_config: Option<&IndexerProxyConfig>,
 ) -> extism::Manifest {
     let mut manifest = extism::Manifest::new([extism::Wasm::data(wasm_bytes)]);
     let config_entries = build_config_entries(descriptor, indexer_name, config);
@@ -224,7 +246,11 @@ fn build_manifest(
         connection_url.as_deref(),
         config.config_json.as_deref(),
     );
-    manifest = manifest.with_timeout(std::time::Duration::from_secs(30));
+    let timeout_seconds = 30
+        + indexer_proxy_config
+            .map(|config| config.request_timeout_seconds as u64 + 5)
+            .unwrap_or(0);
+    manifest = manifest.with_timeout(std::time::Duration::from_secs(timeout_seconds));
 
     if let Some(map) = &config_entries {
         for (key, value) in map {
@@ -887,6 +913,7 @@ impl IndexerClient for WasmIndexerClient {
                 });
 
                 IndexerSearchResult {
+                    indexer_id: None,
                     source: source.clone(),
                     title: r.title,
                     link: r.link,
@@ -1223,6 +1250,7 @@ mod tests {
             is_enabled: true,
             enable_interactive_search: true,
             enable_auto_search: true,
+            indexer_proxy_config_id: None,
             managed_parent_config_id: managed_parent_config_id.map(ToString::to_string),
             managed_child_key: None,
             managed_metadata_json: None,

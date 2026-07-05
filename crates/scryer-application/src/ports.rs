@@ -1863,6 +1863,24 @@ pub trait IndexerConfigRepository: Send + Sync {
 }
 
 #[async_trait]
+pub trait IndexerProxyConfigRepository: Send + Sync {
+    async fn list(
+        &self,
+        provider_type: Option<scryer_domain::IndexerProxyProviderType>,
+    ) -> AppResult<Vec<scryer_domain::IndexerProxyConfig>>;
+    async fn get_by_id(&self, id: &str) -> AppResult<Option<scryer_domain::IndexerProxyConfig>>;
+    async fn create(
+        &self,
+        config: scryer_domain::IndexerProxyConfig,
+    ) -> AppResult<scryer_domain::IndexerProxyConfig>;
+    async fn update(
+        &self,
+        config: scryer_domain::IndexerProxyConfig,
+    ) -> AppResult<scryer_domain::IndexerProxyConfig>;
+    async fn delete(&self, id: &str) -> AppResult<()>;
+}
+
+#[async_trait]
 pub trait IndexerCapsSnapshotRefresher: Send + Sync {
     async fn fetch_for_config(
         &self,
@@ -3211,6 +3229,13 @@ pub trait IndexerClient: Send + Sync {
 
 pub trait IndexerPluginProvider: Send + Sync {
     fn client_for_provider(&self, config: &IndexerConfig) -> Option<Arc<dyn IndexerClient>>;
+    fn client_for_provider_with_proxy(
+        &self,
+        config: &IndexerConfig,
+        _proxy_config: Option<&scryer_domain::IndexerProxyConfig>,
+    ) -> Option<Arc<dyn IndexerClient>> {
+        self.client_for_provider(config)
+    }
     fn management_client_for_provider(
         &self,
         _config: &IndexerConfig,
