@@ -16,6 +16,15 @@ pub(crate) struct DownloadClientSnapshot {
     /// SABnzbd nzo_id, Weaver job UUID). Matched against `download_submissions`
     /// table to find which scryer title a failed download belongs to.
     failed_by_download_id: std::collections::HashMap<String, FailedDownloadSnapshot>,
+    /// True when `list_queue()` errored while building this snapshot. An
+    /// unobservable queue must be treated as "possibly active" for automatic
+    /// grabs so a transient client outage cannot cause a blind double-submit
+    /// (the Scryer-shaped analogue of Sonarr's download-client backoff).
+    queue_listing_failed: bool,
+    /// True when `list_history()` errored while building this snapshot. Failure
+    /// detection reads only history, so an unobservable history simply yields
+    /// no failures rather than acting on an empty map.
+    history_listing_failed: bool,
 }
 fn download_client_item_identity(client_id: Option<&str>, item_id: &str) -> String {
     let client_id = client_id
@@ -196,44 +205,56 @@ impl DownloadClientSnapshot {
         let mut completed_client_ids = std::collections::HashSet::new();
         let mut completed_raw_item_id_counts = std::collections::HashMap::new();
         let mut failed_by_download_id = std::collections::HashMap::new();
+        let mut queue_listing_failed = false;
+        let mut history_listing_failed = false;
 
         // Fetch current queue
-        if let Ok(queue) = app.services.integrations.download_client.list_queue().await {
-            for item in &queue {
-                match item.state {
-                    DownloadQueueState::Queued
-                    | DownloadQueueState::Downloading
-                    | DownloadQueueState::Paused => {
-                        active_titles.insert(item.title_name.to_ascii_lowercase());
-                        active_client_ids.insert(download_client_item_identity(
-                            Some(item.client_id.as_str()),
-                            &item.download_client_item_id,
-                        ));
-                        *active_raw_item_id_counts
-                            .entry(item.download_client_item_id.clone())
-                            .or_insert(0) += 1;
+        match app.services.integrations.download_client.list_queue().await {
+            Ok(queue) => {
+                for item in &queue {
+                    match item.state {
+                        DownloadQueueState::Queued
+                        | DownloadQueueState::Downloading
+                        | DownloadQueueState::Paused => {
+                            active_titles.insert(item.title_name.to_ascii_lowercase());
+                            active_client_ids.insert(download_client_item_identity(
+                                Some(item.client_id.as_str()),
+                                &item.download_client_item_id,
+                            ));
+                            *active_raw_item_id_counts
+                                .entry(item.download_client_item_id.clone())
+                                .or_insert(0) += 1;
+                        }
+                        _ => {}
                     }
-                    _ => {}
+                }
+                if !active_titles.is_empty() {
+                    info!(
+                        active_count = active_titles.len(),
+                        "download client snapshot: active queue items"
+                    );
                 }
             }
-            if !active_titles.is_empty() {
-                info!(
-                    active_count = active_titles.len(),
-                    "download client snapshot: active queue items"
+            Err(error) => {
+                queue_listing_failed = true;
+                warn!(
+                    error = %error,
+                    "download client snapshot: queue listing failed; treating queue as possibly-active to avoid blind double-submits"
                 );
             }
         }
 
         // Fetch recent history — key by download client job ID (works across all
         // clients: NZBGet, SABnzbd, Weaver).
-        if let Ok(history) = app
+        match app
             .services
             .integrations
             .download_client
             .list_history()
             .await
         {
-            for item in &history {
+            Ok(history) => {
+                for item in &history {
                 if item.state == DownloadQueueState::Completed {
                     completed_client_ids.insert(download_client_item_identity(
                         Some(item.client_id.as_str()),
@@ -262,10 +283,18 @@ impl DownloadClientSnapshot {
                     );
                 }
             }
-            if !failed_by_download_id.is_empty() {
-                debug!(
-                    failed_count = failed_by_download_id.len(),
-                    "download client snapshot: failed history items"
+                if !failed_by_download_id.is_empty() {
+                    debug!(
+                        failed_count = failed_by_download_id.len(),
+                        "download client snapshot: failed history items"
+                    );
+                }
+            }
+            Err(error) => {
+                history_listing_failed = true;
+                warn!(
+                    error = %error,
+                    "download client snapshot: history listing failed; failure detection is skipped this cycle"
                 );
             }
         }
@@ -277,13 +306,28 @@ impl DownloadClientSnapshot {
             completed_client_ids,
             completed_raw_item_id_counts,
             failed_by_download_id,
+            queue_listing_failed,
+            history_listing_failed,
         }
     }
 
-    /// Returns true if a release with this title is currently queued/downloading.
+    /// Returns true if a release with this title is currently
+    /// queued/downloading, or if the queue could not be observed this cycle (an
+    /// unknown queue is treated as possibly-active so automatic grabs skip/defer
+    /// instead of double-submitting blind).
     pub(crate) fn is_active(&self, release_title: &str) -> bool {
-        self.active_titles
-            .contains(&release_title.to_ascii_lowercase())
+        self.queue_listing_failed
+            || self
+                .active_titles
+                .contains(&release_title.to_ascii_lowercase())
+    }
+
+    /// Whether the queue could not be listed while building this snapshot.
+    /// Callers that would otherwise expire a release on an "already active"
+    /// signal must instead defer, since the signal here is "unknown", not
+    /// "confirmed active".
+    pub(crate) fn queue_listing_failed(&self) -> bool {
+        self.queue_listing_failed
     }
 
     /// If a download with this job ID failed in history with a blocklist-worthy
@@ -293,6 +337,11 @@ impl DownloadClientSnapshot {
         client_id: Option<&str>,
         download_client_item_id: &str,
     ) -> Option<&FailedDownloadSnapshot> {
+        // Failure detection reads only history; if it could not be observed we
+        // report no failures rather than acting on an incomplete map.
+        if self.history_listing_failed {
+            return None;
+        }
         self.failed_by_download_id
             .get(&download_client_item_identity(
                 client_id,
@@ -306,6 +355,9 @@ impl DownloadClientSnapshot {
         client_id: Option<&str>,
         download_client_item_id: &str,
     ) -> bool {
+        if self.queue_listing_failed {
+            return true;
+        }
         let exact_key = download_client_item_identity(client_id, download_client_item_id);
         self.active_client_ids.contains(&exact_key)
             || self.active_raw_item_id_counts.get(download_client_item_id) == Some(&1)
@@ -1079,6 +1131,23 @@ async fn recover_from_standby_candidates(
             continue;
         }
 
+        if dl_snapshot.queue_listing_failed() {
+            // Cannot confirm the release isn't already active; keep the standby
+            // for a later cycle rather than expiring it on an unknown signal.
+            info!(
+                title_id = item.title_id.as_str(),
+                standby_release = standby.release_title.as_str(),
+                "standby reacquisition: queue listing failed, keeping release pending"
+            );
+            let _ = app
+                .services
+                .workflow
+                .pending_releases
+                .update_pending_release_status(&standby.id, PendingReleaseStatus::Standby, None)
+                .await;
+            return StandbyRecoveryOutcome::Deferred;
+        }
+
         if dl_snapshot.is_active(&standby.release_title) {
             let _ = app
                 .services
@@ -1302,5 +1371,63 @@ async fn persist_standby_candidates(
             standby_candidates = persisted,
             "persisted standby candidates for failed-download recovery"
         );
+    }
+}
+
+#[cfg(test)]
+mod client_snapshot_tests {
+    use super::*;
+
+    fn snapshot(queue_listing_failed: bool, history_listing_failed: bool) -> DownloadClientSnapshot {
+        DownloadClientSnapshot {
+            active_titles: std::collections::HashSet::new(),
+            active_client_ids: std::collections::HashSet::new(),
+            active_raw_item_id_counts: std::collections::HashMap::new(),
+            completed_client_ids: std::collections::HashSet::new(),
+            completed_raw_item_id_counts: std::collections::HashMap::new(),
+            failed_by_download_id: std::collections::HashMap::new(),
+            queue_listing_failed,
+            history_listing_failed,
+        }
+    }
+
+    #[test]
+    fn queue_listing_failure_treats_everything_as_active() {
+        let snap = snapshot(true, false);
+        assert!(snap.queue_listing_failed());
+        // Any title / client item is treated as possibly-active so automatic
+        // grabs skip/defer instead of double-submitting blind.
+        assert!(snap.is_active("Some.Release.That.Is.Not.In.Any.Queue"));
+        assert!(snap.has_active_client_item(Some("client-1"), "nzo_missing"));
+        assert!(snap.has_active_client_item(None, "nzo_missing"));
+    }
+
+    #[test]
+    fn observable_empty_queue_reports_nothing_active() {
+        let snap = snapshot(false, false);
+        assert!(!snap.queue_listing_failed());
+        assert!(!snap.is_active("Some.Release"));
+        assert!(!snap.has_active_client_item(Some("client-1"), "nzo_missing"));
+    }
+
+    #[test]
+    fn history_listing_failure_reports_no_failures() {
+        let mut snap = snapshot(false, true);
+        snap.failed_by_download_id.insert(
+            "client-1:nzo_1".to_string(),
+            FailedDownloadSnapshot {
+                reason: "MISSING ARTICLES".to_string(),
+                download_client_item_id: "nzo_1".to_string(),
+                client_id: "client-1".to_string(),
+                client_name: None,
+            },
+        );
+        // Even with a populated map, an unobservable history must not surface
+        // failures (failure detection is skipped this cycle).
+        assert!(snap.failed_item(Some("client-1"), "nzo_1").is_none());
+
+        // With history observable, the same entry is reported.
+        snap.history_listing_failed = false;
+        assert!(snap.failed_item(Some("client-1"), "nzo_1").is_some());
     }
 }

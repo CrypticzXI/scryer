@@ -1754,7 +1754,17 @@ mod tests {
     #[tokio::test]
     async fn failed_feedback_records_attempt_but_not_success() {
         let scheduler = InMemoryUpstreamScheduler::new();
-        let candidate = candidate(SchedulerIntent::BackgroundRss, 1.0);
+        let mut candidate = candidate(SchedulerIntent::BackgroundRss, 1.0);
+        // Unique keys keep the fallback destination cooldown this records in the
+        // process-global RateLimitRegistry from leaking into sibling tests that
+        // admit the shared "example.test" destination.
+        let host = HostKey::from(format!("failed-feedback-{}.example.test", Uuid::new_v4()));
+        candidate.host_key = host.clone();
+        candidate.destination_key = DestinationKey::from(host.to_string());
+        candidate.account_quota_key = Some(AccountQuotaKey::from(format!(
+            "failed-feedback-{}",
+            Uuid::new_v4()
+        )));
         let observed_at = Utc::now();
         scheduler
             .record_feedback(SchedulerFeedback {
@@ -1791,7 +1801,16 @@ mod tests {
     #[tokio::test]
     async fn active_destination_cooldown_skips_candidate() {
         let scheduler = InMemoryUpstreamScheduler::new();
-        let candidate = candidate(SchedulerIntent::BackgroundAcquisition, 1.0);
+        let mut candidate = candidate(SchedulerIntent::BackgroundAcquisition, 1.0);
+        // Unique keys keep this test's fallback cooldown isolated in the
+        // process-global RateLimitRegistry.
+        let host = HostKey::from(format!("active-cooldown-{}.example.test", Uuid::new_v4()));
+        candidate.host_key = host.clone();
+        candidate.destination_key = DestinationKey::from(host.to_string());
+        candidate.account_quota_key = Some(AccountQuotaKey::from(format!(
+            "active-cooldown-{}",
+            Uuid::new_v4()
+        )));
         scheduler
             .record_feedback(SchedulerFeedback {
                 lease: None,

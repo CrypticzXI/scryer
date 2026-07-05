@@ -1256,6 +1256,8 @@ impl HousekeepingRepository for TrackingHousekeepingRepo {
 pub(super) enum StubSubmitError {
     SubmitUnavailable(String),
     Validation(String),
+    Rejected(String),
+    Ambiguous(String),
 }
 
 impl StubSubmitError {
@@ -1263,6 +1265,8 @@ impl StubSubmitError {
         match self {
             Self::SubmitUnavailable(message) => AppError::download_submit_unavailable(message),
             Self::Validation(message) => AppError::Validation(message),
+            Self::Rejected(message) => AppError::DownloadSubmitRejected(message),
+            Self::Ambiguous(message) => AppError::DownloadSubmitAmbiguous(message),
         }
     }
 }

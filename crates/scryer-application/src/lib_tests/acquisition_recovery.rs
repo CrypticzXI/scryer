@@ -3290,6 +3290,56 @@ async fn acquisition_cycle_non_unavailable_submit_error_still_records_failed_sig
 }
 
 #[tokio::test]
+async fn acquisition_cycle_rejected_submit_error_records_failed_signature_not_deferred() {
+    // A DownloadSubmitRejected error (definitive SAB rejection) must flow into
+    // the hard-failure path — recorded Failed and blocklist-worthy — never the
+    // deferred/pending path reserved for unavailable/ambiguous submits.
+    let release_title = "Rejected.Movie.2024.1080p.WEB-DL-GRP";
+    let download_client = Arc::new(StubDownloadClient::default());
+    download_client
+        .set_submit_error(Some(StubSubmitError::Rejected(
+            "sabnzbd rejected the nzb: Duplicate NZB".to_string(),
+        )))
+        .await;
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let wanted_items = Arc::new(TrackingWantedItemRepo::default());
+    let indexer_client = Arc::new(FixedReleaseIndexerClient::new(release_title));
+    let (app, user, release_attempts) =
+        bootstrap_with_acquisition_tracking_and_indexer_and_release_attempts(
+            download_client,
+            download_submissions.clone(),
+            pending_releases,
+            wanted_items.clone(),
+            indexer_client,
+        );
+
+    let (title, _) =
+        seed_movie_wanted_for_acquisition(&app, &user, &wanted_items, "Rejected Movie", 2024).await;
+
+    crate::acquisition_workflow::process_due_wanted_items_with_blocked_facets(&app, &[]).await;
+
+    let failed = release_attempts
+        .list_failed_release_signatures_for_title(&title.id, 10)
+        .await
+        .expect("list failed signatures");
+    assert_eq!(
+        failed.len(),
+        1,
+        "a rejected submit must record a failed (blocklist-worthy) signature"
+    );
+    assert_eq!(
+        failed[0].source_title.as_deref(),
+        Some("rejected.movie.2024.1080p.web-dl-grp")
+    );
+    // A definitive rejection records no download submission.
+    assert!(
+        download_submissions.store.lock().await.is_empty(),
+        "a rejected submit must not record a download submission"
+    );
+}
+
+#[tokio::test]
 async fn acquisition_cycle_duplicate_url_does_not_mark_second_wanted_grabbed_without_submission() {
     let download_client = Arc::new(StubDownloadClient::default());
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
@@ -3861,6 +3911,100 @@ async fn expired_pending_release_submit_unavailable_stays_waiting_and_retries() 
             .await
             .iter()
             .any(|submission| submission.source_title.as_deref() == Some(release_title))
+    );
+}
+
+#[tokio::test]
+async fn expired_pending_release_ambiguous_error_stays_waiting_and_retries() {
+    // An ambiguous submit (the request may have been accepted but the response
+    // was lost) must be deferred exactly like an unavailable client: the
+    // pending release stays Waiting, records a Pending (not Failed) attempt,
+    // and is never blocklisted — then retried successfully next cycle.
+    let release_title = "Ambiguous.Deferred.Movie.2024.1080p.WEB-DL-GRP";
+    let download_client = Arc::new(StubDownloadClient::default());
+    download_client
+        .set_submit_error(Some(StubSubmitError::Ambiguous(
+            "sabnzbd addfile response was lost after the upload was sent".to_string(),
+        )))
+        .await;
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let wanted_items = Arc::new(TrackingWantedItemRepo::default());
+    let (app, user, release_attempts) =
+        bootstrap_with_acquisition_tracking_and_indexer_and_release_attempts(
+            download_client.clone(),
+            download_submissions.clone(),
+            pending_releases.clone(),
+            wanted_items.clone(),
+            Arc::new(MockIndexerClient),
+        );
+    let (title, wanted_id) = seed_movie_wanted_for_acquisition(
+        &app,
+        &user,
+        &wanted_items,
+        "Ambiguous Deferred Movie",
+        2024,
+    )
+    .await;
+    let pending = pending_movie_release(
+        &wanted_id,
+        &title,
+        release_title,
+        PendingReleaseStatus::Waiting,
+    );
+    let pending_id = pending.id.clone();
+    pending_releases
+        .insert_pending_release(&pending)
+        .await
+        .expect("seed pending release");
+
+    let grabbed = app
+        .process_expired_pending_releases()
+        .await
+        .expect("process expired pending releases");
+
+    assert_eq!(grabbed, 0);
+    assert_eq!(
+        pending_releases
+            .get_pending_release(&pending_id)
+            .await
+            .expect("load pending release")
+            .expect("pending release exists")
+            .status,
+        PendingReleaseStatus::Waiting
+    );
+    assert!(download_submissions.store.lock().await.is_empty());
+    let attempts = release_attempts.attempts.lock().await.clone();
+    assert!(
+        attempts
+            .iter()
+            .all(|attempt| attempt.outcome != ReleaseDownloadAttemptOutcome::Failed)
+    );
+    assert!(attempts.iter().any(|attempt| {
+        attempt.source_title.as_deref() == Some(release_title)
+            && attempt.outcome == ReleaseDownloadAttemptOutcome::Pending
+    }));
+    let failed = release_attempts
+        .list_failed_release_signatures_for_title(&title.id, 10)
+        .await
+        .expect("list failed signatures");
+    assert!(failed.is_empty());
+
+    download_client.set_submit_error(None).await;
+    let grabbed = app
+        .process_expired_pending_releases()
+        .await
+        .expect("retry expired pending releases");
+
+    assert_eq!(grabbed, 1);
+    assert_eq!(
+        pending_releases
+            .get_pending_release(&pending_id)
+            .await
+            .expect("load pending release")
+            .expect("pending release exists")
+            .status,
+        PendingReleaseStatus::Grabbed
     );
 }
 

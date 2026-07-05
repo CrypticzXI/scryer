@@ -275,6 +275,9 @@ pub fn to_gql_error(err: AppError) -> Error {
         AppError::DownloadSubmitAmbiguous(message) => {
             coded_gql_error(message, "DOWNLOAD_SUBMIT_AMBIGUOUS")
         }
+        AppError::DownloadSubmitRejected(message) => {
+            coded_gql_error(message, "DOWNLOAD_SUBMIT_REJECTED")
+        }
         AppError::MfaStepUpRequired(message) => coded_gql_error(message, "MFA_STEP_UP_REQUIRED"),
         AppError::TotpEnrollmentRequired(message) => {
             coded_gql_error(message, "TOTP_ENROLLMENT_REQUIRED")
@@ -330,6 +333,7 @@ fn app_error_kind(err: &AppError) -> &'static str {
         AppError::NotFound(_) => "NotFound",
         AppError::DownloadFeedbackTimeout(_) => "DownloadFeedbackTimeout",
         AppError::DownloadSubmitAmbiguous(_) => "DownloadSubmitAmbiguous",
+        AppError::DownloadSubmitRejected(_) => "DownloadSubmitRejected",
         AppError::DownloadSubmitUnavailable(_) => "DownloadSubmitUnavailable",
         AppError::TemporaryUnavailable { .. } => "TemporaryUnavailable",
         AppError::MfaStepUpRequired(_) => "MfaStepUpRequired",
@@ -566,6 +570,11 @@ mod tests {
                 AppError::DownloadSubmitAmbiguous("download submission is ambiguous".into()),
                 "download submission is ambiguous",
                 "DOWNLOAD_SUBMIT_AMBIGUOUS",
+            ),
+            (
+                AppError::DownloadSubmitRejected("sabnzbd rejected the nzb: Duplicate NZB".into()),
+                "sabnzbd rejected the nzb: Duplicate NZB",
+                "DOWNLOAD_SUBMIT_REJECTED",
             ),
             (
                 AppError::DownloadSubmitUnavailable("download submitter unavailable".into()),

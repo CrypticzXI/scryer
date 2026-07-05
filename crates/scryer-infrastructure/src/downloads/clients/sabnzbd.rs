@@ -17,9 +17,9 @@ use serde_json::Value;
 use std::sync::Arc;
 use tokio::fs::File;
 use tokio::io::{AsyncWriteExt, BufReader, BufWriter};
-use tokio::sync::Semaphore;
+use tokio::sync::{OnceCell, Semaphore};
 use tokio_util::io::ReaderStream;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use super::{
     extract_f64_value, extract_i64_value, parse_duration_seconds, resolve_staged_nzb_for_request,
@@ -34,6 +34,14 @@ pub struct SabnzbdDownloadClient {
     outbound_http: OutboundHttpClient,
     staged_nzb_store: Arc<dyn StagedNzbStore>,
     staged_nzb_pipeline_limit: Arc<Semaphore>,
+    /// The SAB API path that answered a read for this backend, cached so
+    /// mutations (addfile) can be pinned to it instead of guessing between
+    /// `<base>/api` and `<base>/sabnzbd/api` on every submit. Real SABnzbd and
+    /// nzbdav answer at `/api`; altmount serves the SAB-compat API at
+    /// `/sabnzbd/api` (its `/api` is a different application). Discovering the
+    /// path with an idempotent GET and pinning the POST there is what lets a
+    /// landed-but-lost addfile be reconciled instead of blindly re-POSTed.
+    resolved_api_url: Arc<OnceCell<String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -188,6 +196,7 @@ impl SabnzbdDownloadClient {
             outbound_http: OutboundHttpClient::new(http_client.clone(), RateLimitRegistry::new()),
             staged_nzb_store,
             staged_nzb_pipeline_limit,
+            resolved_api_url: Arc::new(OnceCell::new()),
         }
     }
 
@@ -320,7 +329,12 @@ impl SabnzbdDownloadClient {
             })?;
 
             match evaluate_sab_api_response("sabnzbd api", request_mode, status, &body) {
-                SabApiResponseEvaluation::Success(json) => return Ok(json),
+                SabApiResponseEvaluation::Success(json) => {
+                    // Remember which API path this backend answers on so the
+                    // addfile mutation can be pinned to it (set-if-empty).
+                    let _ = self.resolved_api_url.set(url.clone());
+                    return Ok(json);
+                }
                 SabApiResponseEvaluation::Retry(error) if index + 1 < urls.len() => {
                     debug!(
                         request_mode,
@@ -486,16 +500,16 @@ impl SabnzbdDownloadClient {
                 }
             })
             .await
-            .map_err(|error| match error {
-                scryer_outbound_http::OutboundRequestError::Build(error) => error,
-                scryer_outbound_http::OutboundRequestError::Http(error) => {
-                    map_sabnzbd_outbound_error("sabnzbd addfile call", error)
-                }
-            })?;
+            .map_err(|error| map_sabnzbd_addfile_send_error("sabnzbd addfile call", error))?;
 
         let status = response.status();
         let body = response.text().await.map_err(|err| {
-            AppError::Repository(format!("sabnzbd addfile response read failed: {err}"))
+            // The request was fully sent; a failure while reading the response
+            // body means we cannot tell whether SABnzbd enqueued the job.
+            AppError::DownloadSubmitAmbiguous(format!(
+                "sabnzbd addfile response body was lost after the upload was sent: {}",
+                redact_sab_secret_values(&err.to_string())
+            ))
         })?;
 
         Ok((status, body))
@@ -651,89 +665,84 @@ impl DownloadClient for SabnzbdDownloadClient {
                 format!("{nzb_name}.nzb")
             };
 
-            let urls = self.api_urls();
-            let mut addfile_json = None;
-            let mut last_retryable_error = None;
-            for (index, url) in urls.iter().enumerate() {
-                let (status, body) = self
-                    .post_addfile_request(SabAddfileRequest {
-                        url,
-                        nzb_name: &nzb_name_owned,
-                        queue_priority: &queue_priority,
-                        upload_payload: SabAddfilePayload::File {
-                            path: nzb_path.clone(),
-                            len: nzb_len,
-                        },
-                        upload_filename: &plain_nzb_filename,
-                        upload_mime: "application/x-nzb",
-                        cat: cat.as_deref(),
-                        password: password.as_deref(),
-                    })
-                    .await
-                    .map_err(|error| {
-                        debug!(
-                            request_mode = "addfile",
-                            auth_strategy = self.api_auth_strategy_label(),
-                            title = title.name.as_str(),
-                            error = %error,
-                            "sabnzbd enqueue request failed before response"
-                        );
-                        error.into_download_submit_unavailable()
-                    })?;
+            // Discover (or reuse) the single API path this backend serves and
+            // POST the addfile there ONLY. Probing is an idempotent GET, so it
+            // is safe to try both candidate paths; the mutation is not, so it
+            // never falls through — a landed-but-lost response is reconciled
+            // instead of blindly re-POSTed to the alternate path.
+            let addfile_url = self.resolve_addfile_url().await?;
 
-                match evaluate_sab_api_response("sabnzbd addfile", Some("addfile"), status, &body) {
-                    SabApiResponseEvaluation::Success(json) => {
-                        addfile_json = Some(json);
-                        break;
+            let (status, body) = match self
+                .post_addfile_request(SabAddfileRequest {
+                    url: &addfile_url,
+                    nzb_name: &nzb_name_owned,
+                    queue_priority: &queue_priority,
+                    upload_payload: SabAddfilePayload::File {
+                        path: nzb_path.clone(),
+                        len: nzb_len,
+                    },
+                    upload_filename: &plain_nzb_filename,
+                    upload_mime: "application/x-nzb",
+                    cat: cat.as_deref(),
+                    password: password.as_deref(),
+                })
+                .await
+            {
+                Ok(response) => response,
+                Err(error) => {
+                    debug!(
+                        request_mode = "addfile",
+                        auth_strategy = self.api_auth_strategy_label(),
+                        title = title.name.as_str(),
+                        error = %error,
+                        "sabnzbd enqueue request failed before a usable response"
+                    );
+                    // An ambiguous transport failure may already have enqueued
+                    // the job — reconcile before giving up. A connect/build
+                    // failure (Unavailable) or a rate-limit refusal
+                    // (TemporaryUnavailable) never reached SAB and is safe to
+                    // defer as-is.
+                    if error.is_download_submit_ambiguous() {
+                        return self
+                            .reconcile_ambiguous_sab_addfile(&nzb_name_owned, error)
+                            .await;
                     }
-                    SabApiResponseEvaluation::Retry(error) if index + 1 < urls.len() => {
-                        debug!(
-                            request_mode = "addfile",
-                            auth_strategy = self.api_auth_strategy_label(),
-                            title = title.name.as_str(),
-                            url,
-                            error = %error,
-                            "retrying sab-compatible enqueue with alternate api path"
-                        );
-                        last_retryable_error = Some(error);
-                    }
-                    SabApiResponseEvaluation::Retry(error)
-                    | SabApiResponseEvaluation::Failure(error) => {
-                        return Err(error.into_download_submit_unavailable());
-                    }
+                    return Err(error);
+                }
+            };
+
+            match evaluate_sab_addfile_response(status, &body) {
+                SabAddfileOutcome::Accepted(nzo_id) => {
+                    debug!(
+                        nzo_id = nzo_id.as_str(),
+                        title = title.name.as_str(),
+                        nzb_name = nzb_name,
+                        "sabnzbd addfile succeeded"
+                    );
+                    Ok(DownloadGrabResult {
+                        job_id: nzo_id,
+                        client_id: None,
+                        client_type: "sabnzbd".to_string(),
+                        info_hash: None,
+                    })
+                }
+                SabAddfileOutcome::Rejected(detail) => {
+                    debug!(
+                        title = title.name.as_str(),
+                        nzb_name = nzb_name,
+                        detail = detail.as_str(),
+                        "sabnzbd rejected the enqueue request"
+                    );
+                    Err(AppError::DownloadSubmitRejected(detail))
+                }
+                SabAddfileOutcome::Auth(detail) => {
+                    Err(AppError::download_submit_unavailable(detail))
+                }
+                SabAddfileOutcome::Ambiguous(error) => {
+                    self.reconcile_ambiguous_sab_addfile(&nzb_name_owned, error)
+                        .await
                 }
             }
-
-            let json = addfile_json
-                .ok_or_else(|| {
-                    last_retryable_error.unwrap_or_else(|| {
-                        AppError::Repository(
-                            "sabnzbd addfile did not return a usable response".to_string(),
-                        )
-                    })
-                })
-                .map_err(AppError::into_download_submit_unavailable)?;
-
-            let nzo_id = sab_addfile_nzo_id(&json)
-                .map(str::to_string)
-                .ok_or_else(|| {
-                    AppError::Repository("sabnzbd addfile did not return an nzo_id".into())
-                })
-                .map_err(AppError::into_download_submit_unavailable)?;
-
-            debug!(
-                nzo_id = nzo_id.as_str(),
-                title = title.name.as_str(),
-                nzb_name = nzb_name,
-                "sabnzbd addfile succeeded"
-            );
-
-            Ok(DownloadGrabResult {
-                job_id: nzo_id,
-                client_id: None,
-                client_type: "sabnzbd".to_string(),
-                info_hash: None,
-            })
         }
         .await;
 
@@ -1144,6 +1153,156 @@ impl SabnzbdDownloadClient {
             std::time::Duration::from_secs(15),
         )
     }
+
+    /// Resolve the SAB API path to send the addfile POST to.
+    ///
+    /// Returns the cached path if a prior read already discovered it. Otherwise
+    /// probes with an idempotent GET (`mode=queue&limit=0`, exactly what
+    /// `test_connection` issues), which caches the winning path as a side
+    /// effect via `api_get`. The probe is idempotent, so trying both candidate
+    /// paths cannot create a duplicate. If the probe can't complete (backend
+    /// momentarily unreachable), fall back to the first candidate path rather
+    /// than failing the submit — the POST classification and reconciliation
+    /// still guard against duplicates, and an unresolved backend simply defers.
+    async fn resolve_addfile_url(&self) -> AppResult<String> {
+        if let Some(url) = self.resolved_api_url.get() {
+            return Ok(url.clone());
+        }
+
+        let _ = self.api_get(&[("mode", "queue"), ("limit", "0")]).await;
+
+        Ok(self
+            .resolved_api_url
+            .get()
+            .cloned()
+            .unwrap_or_else(|| self.api_urls().into_iter().next().unwrap_or_default()))
+    }
+
+    /// After an ambiguous addfile outcome, poll the queue then the history for
+    /// a job whose name matches the release we uploaded. Ports NZBGet's
+    /// `reconcile_append_after_transport_error` to SAB's server-side search
+    /// (`mode=queue&search=...` / `mode=history&search=...`). Returns the
+    /// adopted `nzo_id` on the first match, or `None` after the ladder is
+    /// exhausted.
+    async fn reconcile_addfile_after_ambiguous(&self, nzb_name: &str) -> Option<String> {
+        const RECONCILE_DELAYS: [std::time::Duration; 5] = [
+            std::time::Duration::from_millis(0),
+            std::time::Duration::from_millis(100),
+            std::time::Duration::from_millis(250),
+            std::time::Duration::from_millis(500),
+            std::time::Duration::from_millis(1000),
+        ];
+
+        let expected = normalize_sab_job_name(nzb_name);
+        warn!(
+            nzb_name,
+            "sabnzbd addfile response was ambiguous; reconciling queue and history before returning failure"
+        );
+
+        for delay in RECONCILE_DELAYS {
+            if !delay.is_zero() {
+                tokio::time::sleep(delay).await;
+            }
+
+            // Check the queue first — an active copy is the most relevant
+            // landing spot and minimizes adopting a stale same-name history
+            // entry.
+            match self
+                .api_get(&[("mode", "queue"), ("search", nzb_name), ("limit", "0")])
+                .await
+            {
+                Ok(json) => {
+                    let matched = json
+                        .get("queue")
+                        .and_then(slots_from_api_section)
+                        .or_else(|| json.get("slots").and_then(Value::as_array))
+                        .and_then(|slots| {
+                            slots.iter().find_map(|slot| {
+                                sab_reconcile_slot_nzo_id(slot, "filename", &expected)
+                            })
+                        });
+                    if let Some(nzo_id) = matched {
+                        info!(
+                            nzo_id = nzo_id.as_str(),
+                            nzb_name, "reconciled ambiguous sabnzbd addfile from queue"
+                        );
+                        return Some(nzo_id);
+                    }
+                }
+                Err(error) => {
+                    warn!(
+                        error = %error,
+                        nzb_name,
+                        "failed to read sabnzbd queue while reconciling ambiguous addfile"
+                    );
+                }
+            }
+
+            // History is a legitimate landing spot too (reject-to-history and
+            // fast-failing jobs, per SAB's process_single_nzb); the existing
+            // failure-detection flow handles a failed state normally.
+            match self
+                .api_get(&[
+                    ("mode", "history"),
+                    ("search", nzb_name),
+                    ("start", "0"),
+                    ("limit", "50"),
+                ])
+                .await
+            {
+                Ok(json) => {
+                    let matched = json
+                        .get("history")
+                        .and_then(slots_from_api_section)
+                        .or_else(|| json.get("slots").and_then(Value::as_array))
+                        .and_then(|slots| {
+                            slots
+                                .iter()
+                                .find_map(|slot| sab_reconcile_slot_nzo_id(slot, "name", &expected))
+                        });
+                    if let Some(nzo_id) = matched {
+                        info!(
+                            nzo_id = nzo_id.as_str(),
+                            nzb_name, "reconciled ambiguous sabnzbd addfile from history"
+                        );
+                        return Some(nzo_id);
+                    }
+                }
+                Err(error) => {
+                    warn!(
+                        error = %error,
+                        nzb_name,
+                        "failed to read sabnzbd history while reconciling ambiguous addfile"
+                    );
+                }
+            }
+        }
+
+        warn!(
+            nzb_name,
+            "ambiguous sabnzbd addfile was not found in queue or history"
+        );
+        None
+    }
+
+    /// Reconcile an ambiguous addfile outcome: adopt a matching queue/history
+    /// job if one is found, otherwise surface the ambiguous error so the
+    /// orchestration layer defers without blocklisting or failing over.
+    async fn reconcile_ambiguous_sab_addfile(
+        &self,
+        nzb_name: &str,
+        ambiguous_error: AppError,
+    ) -> AppResult<DownloadGrabResult> {
+        match self.reconcile_addfile_after_ambiguous(nzb_name).await {
+            Some(nzo_id) => Ok(DownloadGrabResult {
+                job_id: nzo_id,
+                client_id: None,
+                client_type: "sabnzbd".to_string(),
+                info_hash: None,
+            }),
+            None => Err(ambiguous_error),
+        }
+    }
 }
 
 fn map_sabnzbd_outbound_error(operation: &str, error: OutboundHttpError) -> AppError {
@@ -1168,6 +1327,56 @@ fn map_sabnzbd_outbound_error(operation: &str, error: OutboundHttpError) -> AppE
             "{operation} failed: {}",
             redact_sab_secret_values(&source.to_string())
         )),
+    }
+}
+
+/// Classify a transport-level failure of the addfile POST.
+///
+/// The mutation policy is `no_retry`, so there is exactly one POST attempt per
+/// URL. A failure that provably happened before the request left the client
+/// (request build failure or connect/DNS failure) enqueued nothing and is a
+/// plain "unavailable, retry later". A rate-limiter refusal likewise never sent
+/// the request. Any other transport failure (timeout, connection reset, body or
+/// decode error) may have reached SAB after the upload streamed, so it is
+/// ambiguous and must be reconciled — SABnzbd's addfile response carries no
+/// idempotency key, so a blind re-POST would risk a duplicate job.
+fn map_sabnzbd_addfile_send_error(
+    operation: &str,
+    error: scryer_outbound_http::OutboundRequestError<AppError>,
+) -> AppError {
+    match error {
+        scryer_outbound_http::OutboundRequestError::Build(error) => {
+            error.into_download_submit_unavailable()
+        }
+        scryer_outbound_http::OutboundRequestError::Http(OutboundHttpError::RateLimited(
+            rate_limited,
+        )) => map_sabnzbd_outbound_error(operation, OutboundHttpError::RateLimited(rate_limited)),
+        scryer_outbound_http::OutboundRequestError::Http(OutboundHttpError::Transport {
+            attempts,
+            source,
+            ..
+        }) => {
+            let redacted = redact_sab_secret_values(&source.to_string());
+            if source.is_connect() {
+                AppError::download_submit_unavailable(format!(
+                    "{operation} could not connect to sabnzbd: {redacted}"
+                ))
+            } else {
+                warn!(
+                    attempts,
+                    error = %source,
+                    is_timeout = source.is_timeout(),
+                    is_connect = source.is_connect(),
+                    is_request = source.is_request(),
+                    is_body = source.is_body(),
+                    is_decode = source.is_decode(),
+                    "sabnzbd addfile transport failed after sending the enqueue request"
+                );
+                AppError::DownloadSubmitAmbiguous(format!(
+                    "sabnzbd addfile response was lost after the upload was sent: {redacted}"
+                ))
+            }
+        }
     }
 }
 
@@ -1329,6 +1538,80 @@ fn evaluate_sab_api_response(
     SabApiResponseEvaluation::Success(json)
 }
 
+/// Classification of a fully-received SABnzbd addfile HTTP response.
+///
+/// The addfile POST is sent to a single, already-resolved API path (see
+/// [`SabnzbdDownloadClient::resolve_addfile_url`]), so — unlike the shared
+/// [`SabApiResponseEvaluation`] used for idempotent GET reads — it never falls
+/// through to an alternate path. Any non-definitive response is therefore
+/// ambiguous and must be reconciled rather than re-POSTed, since a blind
+/// re-POST would risk a duplicate job (SAB's addfile carries no idempotency
+/// key).
+#[derive(Debug)]
+enum SabAddfileOutcome {
+    /// `status:true` with an nzo_id — the job is in the queue.
+    Accepted(String),
+    /// Definitive rejection of this NZB (status:false, empty nzo_ids). Never
+    /// retried against this client; the release is blocklisted downstream.
+    Rejected(String),
+    /// Authentication failure — a configuration problem, nothing was enqueued.
+    Auth(String),
+    /// The POST was fully sent but the outcome is unknown (any non-success
+    /// status, non-JSON body, or unexpected shape). Reconcile against the
+    /// queue/history before failing.
+    Ambiguous(AppError),
+}
+
+fn evaluate_sab_addfile_response(status: StatusCode, body: &str) -> SabAddfileOutcome {
+    const OPERATION: &str = "sabnzbd addfile";
+
+    if !status.is_success() {
+        let detail = extract_sab_error_detail(body);
+        if status == StatusCode::UNAUTHORIZED
+            || status == StatusCode::FORBIDDEN
+            || is_sab_auth_error_message(&detail)
+        {
+            return SabAddfileOutcome::Auth(format!("sabnzbd authentication failed: {detail}"));
+        }
+        // The request was sent to the resolved API path but returned a
+        // non-success status; the job may or may not have been enqueued, so
+        // reconcile rather than guessing.
+        return SabAddfileOutcome::Ambiguous(AppError::DownloadSubmitAmbiguous(format!(
+            "{OPERATION} returned status {status} after the upload was sent: {detail}"
+        )));
+    }
+
+    let json: Value = match serde_json::from_str(body) {
+        Ok(json) => json,
+        Err(err) => {
+            return SabAddfileOutcome::Ambiguous(AppError::DownloadSubmitAmbiguous(format!(
+                "{OPERATION} returned a non-json response after the upload was sent: {err}"
+            )));
+        }
+    };
+
+    if !sab_api_mode_matches_response(Some("addfile"), &json) {
+        return SabAddfileOutcome::Ambiguous(AppError::DownloadSubmitAmbiguous(format!(
+            "{OPERATION} returned an unexpected response shape after the upload was sent"
+        )));
+    }
+
+    if sab_api_status_is_false(&json) {
+        let detail = sab_api_error_message(&json).unwrap_or("unknown error");
+        if is_sab_auth_error_message(detail) {
+            return SabAddfileOutcome::Auth(format!("sabnzbd authentication failed: {detail}"));
+        }
+        return SabAddfileOutcome::Rejected(format!("sabnzbd rejected the nzb: {detail}"));
+    }
+
+    match sab_addfile_nzo_id(&json) {
+        Some(nzo_id) => SabAddfileOutcome::Accepted(nzo_id.to_string()),
+        None => SabAddfileOutcome::Rejected(
+            "sabnzbd accepted the request but returned no nzo_id".to_string(),
+        ),
+    }
+}
+
 fn build_sab_api_urls(base_url: &str) -> Vec<String> {
     dedupe_strings(vec![
         build_sab_api_url_with_suffix(base_url, &["api"]),
@@ -1432,6 +1715,56 @@ fn sab_addfile_nzo_id(json: &Value) -> Option<&str> {
         .and_then(Value::as_array)
         .and_then(|ids| ids.first())
         .and_then(Value::as_str)
+}
+
+/// Normalize a name for comparing against SABnzbd job names during
+/// reconciliation.
+///
+/// Mirrors SAB's `create_work_name` →
+/// `sanitize_foldername(strip_extensions(...))` (`nzb/object.py`,
+/// `filesystem.py`) so the release title we sent and the `final_name` SAB
+/// derived compare equal. The full Windows / `sanitize_safe` illegal-char
+/// superset is folded on both sides, making the comparison insensitive to
+/// SAB's platform and `sanitize_safe` configuration.
+fn normalize_sab_job_name(value: &str) -> String {
+    use unicode_normalization::UnicodeNormalization;
+
+    // Strip one trailing .nzb / .par2 / .par extension (case-insensitive),
+    // then NFC-normalize and fold illegal / control characters to '_'.
+    let folded: String = strip_sab_nzb_extension(value.trim())
+        .nfc()
+        .map(|ch| {
+            if ch.is_control() || matches!(ch, '/' | '\\' | ':' | '"' | '*' | '?' | '<' | '>' | '|')
+            {
+                '_'
+            } else {
+                ch
+            }
+        })
+        .collect();
+
+    // Strip leading/trailing whitespace and any trailing dots (SAB keeps
+    // leading dots), then lowercase for a case-insensitive compare.
+    folded.trim().trim_end_matches(['.', ' ']).to_lowercase()
+}
+
+fn strip_sab_nzb_extension(value: &str) -> &str {
+    for ext in [".nzb", ".par2", ".par"] {
+        if value.len() > ext.len() && value[value.len() - ext.len()..].eq_ignore_ascii_case(ext) {
+            return &value[..value.len() - ext.len()];
+        }
+    }
+    value
+}
+
+/// Return the `nzo_id` of a queue/history slot whose name matches `expected`
+/// after normalization. `name_key` is `filename` for queue slots and `name`
+/// for history slots.
+fn sab_reconcile_slot_nzo_id(slot: &Value, name_key: &str, expected: &str) -> Option<String> {
+    let slot = slot.as_object()?;
+    let nzo_id = slot.get("nzo_id").and_then(Value::as_str)?;
+    let name = slot.get(name_key).and_then(Value::as_str)?;
+    (normalize_sab_job_name(name) == expected).then(|| nzo_id.to_string())
 }
 
 fn extract_sab_error_detail(body: &str) -> String {
@@ -1696,9 +2029,11 @@ fn is_localhost_base_url(base_url: &str) -> Option<bool> {
 #[cfg(test)]
 mod tests {
     use super::{
-        SAB_ADDFILE_UPLOAD_FIELD, SabApiAuth, SabApiResponseEvaluation, build_sab_api_urls,
-        evaluate_sab_api_response, extract_sabnzbd_category, map_sabnzbd_outbound_error,
+        SAB_ADDFILE_UPLOAD_FIELD, SabAddfileOutcome, SabApiAuth, SabApiResponseEvaluation,
+        build_sab_api_urls, evaluate_sab_addfile_response, evaluate_sab_api_response,
+        extract_sabnzbd_category, map_sabnzbd_outbound_error, normalize_sab_job_name,
         redact_sab_secret_values, sab_addfile_query_params, sab_api_mode_matches_response,
+        sab_reconcile_slot_nzo_id,
     };
     use reqwest::StatusCode;
     use scryer_application::AppError;
@@ -1865,5 +2200,168 @@ mod tests {
 
         assert!(matches!(not_found, SabApiResponseEvaluation::Retry(_)));
         assert!(matches!(server_error, SabApiResponseEvaluation::Retry(_)));
+    }
+
+    // The shared GET evaluator must keep retrying idempotent reads across the
+    // alternate API path (altmount/nzbdav compatibility); only the addfile
+    // POST classification below changes.
+    #[test]
+    fn evaluate_sab_api_response_get_success_is_unchanged() {
+        let outcome = evaluate_sab_api_response(
+            "sabnzbd api",
+            Some("queue"),
+            StatusCode::OK,
+            r#"{"queue":{"slots":[]}}"#,
+        );
+        assert!(matches!(outcome, SabApiResponseEvaluation::Success(_)));
+    }
+
+    #[test]
+    fn evaluate_sab_addfile_accepts_status_true_with_nzo_id() {
+        let outcome = evaluate_sab_addfile_response(
+            StatusCode::OK,
+            r#"{"status": true, "nzo_ids": ["SABnzbd_nzo_abc123"]}"#,
+        );
+        match outcome {
+            SabAddfileOutcome::Accepted(nzo_id) => assert_eq!(nzo_id, "SABnzbd_nzo_abc123"),
+            other => panic!("expected Accepted, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn evaluate_sab_addfile_empty_nzo_ids_is_rejected() {
+        let outcome =
+            evaluate_sab_addfile_response(StatusCode::OK, r#"{"status": true, "nzo_ids": []}"#);
+        assert!(matches!(outcome, SabAddfileOutcome::Rejected(_)));
+    }
+
+    #[test]
+    fn evaluate_sab_addfile_status_false_is_rejected_with_detail() {
+        let outcome = evaluate_sab_addfile_response(
+            StatusCode::OK,
+            r#"{"status": false, "error": "Duplicate NZB"}"#,
+        );
+        match outcome {
+            SabAddfileOutcome::Rejected(detail) => {
+                assert!(detail.contains("Duplicate NZB"), "detail was {detail}")
+            }
+            other => panic!("expected Rejected, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn evaluate_sab_addfile_auth_message_status_false_is_auth() {
+        let outcome = evaluate_sab_addfile_response(
+            StatusCode::OK,
+            r#"{"status": false, "error": "API Key Incorrect"}"#,
+        );
+        assert!(matches!(outcome, SabAddfileOutcome::Auth(_)));
+    }
+
+    #[test]
+    fn evaluate_sab_addfile_unauthorized_status_is_auth() {
+        let outcome = evaluate_sab_addfile_response(StatusCode::UNAUTHORIZED, "");
+        assert!(matches!(outcome, SabAddfileOutcome::Auth(_)));
+    }
+
+    #[test]
+    fn evaluate_sab_addfile_server_error_is_ambiguous() {
+        let outcome =
+            evaluate_sab_addfile_response(StatusCode::INTERNAL_SERVER_ERROR, "addfile failed");
+        assert!(matches!(
+            outcome,
+            SabAddfileOutcome::Ambiguous(AppError::DownloadSubmitAmbiguous(_))
+        ));
+    }
+
+    #[test]
+    fn evaluate_sab_addfile_non_json_body_is_ambiguous() {
+        let outcome = evaluate_sab_addfile_response(StatusCode::OK, "<html>gateway error</html>");
+        assert!(matches!(outcome, SabAddfileOutcome::Ambiguous(_)));
+    }
+
+    #[test]
+    fn evaluate_sab_addfile_unexpected_shape_is_ambiguous() {
+        let outcome =
+            evaluate_sab_addfile_response(StatusCode::OK, r#"{"data":{"api_key":"abc123"}}"#);
+        assert!(matches!(outcome, SabAddfileOutcome::Ambiguous(_)));
+    }
+
+    // The addfile POST targets an already-resolved API path, so a 404 there is
+    // ambiguous (reconcile) — never a silent alternate-path re-POST that could
+    // duplicate a landed job.
+    #[test]
+    fn evaluate_sab_addfile_not_found_is_ambiguous() {
+        let outcome = evaluate_sab_addfile_response(StatusCode::NOT_FOUND, "");
+        assert!(matches!(outcome, SabAddfileOutcome::Ambiguous(_)));
+    }
+
+    #[test]
+    fn normalize_sab_job_name_strips_nzb_extension() {
+        assert_eq!(
+            normalize_sab_job_name("Show.S01E05.1080p.WEB.nzb"),
+            normalize_sab_job_name("Show.S01E05.1080p.WEB")
+        );
+        assert_eq!(
+            normalize_sab_job_name("Show.S01E05.1080p.WEB.nzb"),
+            "show.s01e05.1080p.web"
+        );
+    }
+
+    #[test]
+    fn normalize_sab_job_name_strips_par_extensions() {
+        assert_eq!(
+            normalize_sab_job_name("archive.part1.par2"),
+            "archive.part1"
+        );
+        assert_eq!(normalize_sab_job_name("archive.PAR"), "archive");
+    }
+
+    #[test]
+    fn normalize_sab_job_name_folds_illegal_and_control_chars() {
+        assert_eq!(normalize_sab_job_name("A:B/C\"D"), "a_b_c_d");
+        assert_eq!(normalize_sab_job_name("A*B?C<D>E|F\\G"), "a_b_c_d_e_f_g");
+        assert_eq!(normalize_sab_job_name("tab\there"), "tab_here");
+    }
+
+    #[test]
+    fn normalize_sab_job_name_strips_trailing_dots_and_spaces() {
+        assert_eq!(normalize_sab_job_name("  Release.Name..  "), "release.name");
+    }
+
+    #[test]
+    fn normalize_sab_job_name_nfc_normalizes_and_case_folds() {
+        // Composed "é" (U+00E9) vs decomposed "e" + combining acute (U+0301).
+        let composed = "Caf\u{00e9}";
+        let decomposed = "Cafe\u{0301}";
+        assert_ne!(composed, decomposed);
+        assert_eq!(
+            normalize_sab_job_name(composed),
+            normalize_sab_job_name(decomposed)
+        );
+        assert_eq!(
+            normalize_sab_job_name("RELEASE"),
+            normalize_sab_job_name("release")
+        );
+    }
+
+    #[test]
+    fn sab_reconcile_slot_matches_normalized_name() {
+        let slot = json!({"nzo_id": "SABnzbd_nzo_1", "filename": "My.Movie.2024.1080p"});
+        let expected = normalize_sab_job_name("My.Movie.2024.1080p.nzb");
+        assert_eq!(
+            sab_reconcile_slot_nzo_id(&slot, "filename", &expected).as_deref(),
+            Some("SABnzbd_nzo_1")
+        );
+        assert_eq!(
+            sab_reconcile_slot_nzo_id(&slot, "filename", "different.release"),
+            None
+        );
+
+        let history_slot = json!({"nzo_id": "SABnzbd_nzo_2", "name": "My.Movie.2024.1080p"});
+        assert_eq!(
+            sab_reconcile_slot_nzo_id(&history_slot, "name", &expected).as_deref(),
+            Some("SABnzbd_nzo_2")
+        );
     }
 }

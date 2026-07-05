@@ -781,6 +781,13 @@ impl AppUseCase {
                     "pending release: download submission failed"
                 );
 
+                // An ambiguous submit (the request may have been accepted but
+                // the response was lost) is deferred exactly like an
+                // unavailable client: keep the release, retry next cycle, and
+                // never blocklist. Only a definitive failure expires it.
+                let defer = is_download_submit_unavailable_error(&err)
+                    || err.is_download_submit_ambiguous();
+
                 let _ = self
                     .services
                     .workflow
@@ -789,7 +796,7 @@ impl AppUseCase {
                         Some(title.id.clone()),
                         source_hint,
                         source_title,
-                        if is_download_submit_unavailable_error(&err) {
+                        if defer {
                             ReleaseDownloadAttemptOutcome::Pending
                         } else {
                             ReleaseDownloadAttemptOutcome::Failed
@@ -799,7 +806,7 @@ impl AppUseCase {
                     )
                     .await;
 
-                if is_download_submit_unavailable_error(&err) {
+                if defer {
                     Ok(PendingGrabOutcome::Deferred)
                 } else {
                     Ok(PendingGrabOutcome::Rejected)

@@ -545,6 +545,9 @@ pub enum AppError {
     DownloadSubmitAmbiguous(String),
 
     #[error("{0}")]
+    DownloadSubmitRejected(String),
+
+    #[error("{0}")]
     DownloadSubmitUnavailable(String),
 
     #[error("{message}")]
@@ -610,13 +613,19 @@ impl AppError {
 
     pub fn into_download_submit_unavailable(self) -> Self {
         match self {
-            Self::DownloadSubmitUnavailable(_) | Self::DownloadSubmitAmbiguous(_) => self,
+            Self::DownloadSubmitUnavailable(_)
+            | Self::DownloadSubmitAmbiguous(_)
+            | Self::DownloadSubmitRejected(_) => self,
             _ => Self::DownloadSubmitUnavailable(self.to_string()),
         }
     }
 
     pub fn is_download_submit_unavailable(&self) -> bool {
         matches!(self, Self::DownloadSubmitUnavailable(_))
+    }
+
+    pub fn is_download_submit_ambiguous(&self) -> bool {
+        matches!(self, Self::DownloadSubmitAmbiguous(_))
     }
 
     pub fn is_canceled(&self) -> bool {

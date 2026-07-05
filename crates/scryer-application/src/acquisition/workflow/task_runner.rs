@@ -2136,6 +2136,8 @@ mod task_runner_tests {
             completed_client_ids: Default::default(),
             completed_raw_item_id_counts: Default::default(),
             failed_by_download_id: Default::default(),
+            queue_listing_failed: false,
+            history_listing_failed: false,
         };
         if completed {
             snapshot.completed_client_ids.insert(key);
