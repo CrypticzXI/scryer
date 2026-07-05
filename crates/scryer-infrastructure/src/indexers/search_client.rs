@@ -2934,6 +2934,8 @@ impl IndexerClient for MultiIndexerSearchClient {
 
                 let batch_had_success = batch_health.any_success;
                 let batch_had_error = batch_health.any_error;
+                let batch_had_rate_limit = batch_health.had_rate_limit;
+                let batch_retry_after = batch_health.retry_after;
                 batch_health
                     .apply(
                         &backoff_tracker,
@@ -2957,9 +2959,18 @@ impl IndexerClient for MultiIndexerSearchClient {
                         indexer_id,
                         indexer_name,
                         scheduler_lease_for_task.clone(),
-                        Err(AppError::Repository(
-                            "all attempted indexer strategies failed".to_string(),
-                        )),
+                        Err(if batch_had_rate_limit {
+                            AppError::TemporaryUnavailable {
+                                message: "repository: all attempted indexer strategies failed"
+                                    .to_string(),
+                                retry_after: batch_retry_after,
+                                rate_limit_cooldown: RateLimitCooldownAction::AlreadyRecorded,
+                            }
+                        } else {
+                            AppError::Repository(
+                                "all attempted indexer strategies failed".to_string(),
+                            )
+                        }),
                         true,
                     );
                 }
@@ -2984,6 +2995,8 @@ impl IndexerClient for MultiIndexerSearchClient {
         let mut successful_searches = 0usize;
         let mut failed_searches = 0usize;
         let mut first_failure: Option<String> = None;
+        let mut first_rate_limit: Option<(Option<std::time::Duration>, RateLimitCooldownAction)> =
+            None;
         loop {
             let join_result = tokio::select! {
                 _ = cancel_token.cancelled() => {
@@ -3028,6 +3041,10 @@ impl IndexerClient for MultiIndexerSearchClient {
                     }
                     failed_searches += 1;
                     first_failure = first_failure.or_else(|| Some(err.to_string()));
+                    if first_rate_limit.is_none() {
+                        first_rate_limit = rate_limit_signal_from_error(&err)
+                            .map(|signal| (signal.retry_after, signal.cooldown_action));
+                    }
                     if should_record_feedback {
                         self.record_indexer_scheduler_error(scheduler_lease, &err)
                             .await;
@@ -3076,9 +3093,16 @@ impl IndexerClient for MultiIndexerSearchClient {
             && failed_searches > 0
             && mode == SearchMode::Interactive
         {
-            return Err(AppError::Repository(first_failure.unwrap_or_else(|| {
-                "all indexer search attempts failed".to_string()
-            })));
+            let failure =
+                first_failure.unwrap_or_else(|| "all indexer search attempts failed".to_string());
+            if let Some((retry_after, cooldown_action)) = first_rate_limit {
+                return Err(AppError::TemporaryUnavailable {
+                    message: format!("repository: {failure}"),
+                    retry_after,
+                    rate_limit_cooldown: cooldown_action,
+                });
+            }
+            return Err(AppError::Repository(failure));
         }
 
         for result in &mut all_results {
@@ -6101,6 +6125,48 @@ mod tests {
                 .to_string()
                 .contains("all attempted indexer strategies failed"),
             "unexpected error: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn interactive_search_all_strategies_failed_preserves_rate_limit_signal() {
+        let retry_after = std::time::Duration::from_secs(42);
+        let (client, _calls) = scripted_search_client(movie_caps(), move |_call| {
+            Err(AppError::TemporaryUnavailable {
+                message: "upstream returned 429".to_string(),
+                retry_after: Some(retry_after),
+                rate_limit_cooldown: RateLimitCooldownAction::AlreadyRecorded,
+            })
+        });
+
+        let error = client
+            .search(
+                "Mugen Train 2020".into(),
+                HashMap::from([("imdb_id".to_string(), "tt11032374".to_string())]),
+                Some("movie".into()),
+                Some("movie".into()),
+                None,
+                None,
+                None,
+                SearchMode::Interactive,
+                None,
+                None,
+                None,
+                vec![],
+            )
+            .await
+            .expect_err("interactive search should report all-failed attempts");
+
+        assert_eq!(
+            error.to_string(),
+            "repository: repository: all attempted indexer strategies failed"
+        );
+        let signal = scryer_application::RateLimitSignal::from_error(&error)
+            .expect("aggregated failure should preserve rate-limit signal");
+        assert_eq!(signal.retry_after, Some(retry_after));
+        assert_eq!(
+            signal.cooldown_action,
+            RateLimitCooldownAction::AlreadyRecorded
         );
     }
 

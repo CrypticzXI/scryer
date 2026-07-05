@@ -476,6 +476,7 @@ fn scheduler_keys_for_caps(base_url: &str) -> (HostKey, DestinationKey) {
         })
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn record_caps_scheduler_feedback(
     scheduler: &dyn UpstreamScheduler,
     lease: Option<SchedulerLease>,

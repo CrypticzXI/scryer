@@ -140,8 +140,7 @@ fn retry_after_from_text(message: &str) -> Option<(Duration, RateLimitSignalSour
         let Some(index) = lower.find(marker) else {
             continue;
         };
-        let suffix = lower[index + marker.len()..]
-            .trim_start_matches(|ch: char| ch == ':' || ch == '=' || ch == ' ' || ch == '_');
+        let suffix = lower[index + marker.len()..].trim_start_matches([':', '=', ' ', '_']);
         let digits = suffix
             .chars()
             .skip_while(|ch| !ch.is_ascii_digit())

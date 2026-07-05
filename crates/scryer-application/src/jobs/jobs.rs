@@ -1335,8 +1335,10 @@ impl AppUseCase {
         let now = self.runtime.environment.now();
         let scheduler_seed = self.discovery_scheduler_seed().await?;
         let titles = self.services.catalog.titles.list(None, None).await?;
-        let mut defaults = DiscoveryContextDefaults::default();
-        defaults.language = self.metadata_language().await;
+        let defaults = DiscoveryContextDefaults {
+            language: self.metadata_language().await,
+            ..DiscoveryContextDefaults::default()
+        };
         let library_context = build_discovery_library_context(&titles, defaults.clone());
         let existing_state = self
             .services

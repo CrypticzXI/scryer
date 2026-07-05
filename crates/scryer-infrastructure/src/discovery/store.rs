@@ -1537,6 +1537,7 @@ async fn fetch_personalized_items(
     fetch_items_with_sql(datastore, &sql, &args).await
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn fetch_discovery_home_top_rated_items(
     datastore: &StoreDatastore,
     public_run_id: Option<&str>,

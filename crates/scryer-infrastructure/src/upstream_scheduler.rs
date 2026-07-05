@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -28,6 +28,7 @@ const QUOTA_OBSERVATION_STALE_AFTER: Duration = Duration::from_secs(24 * 60 * 60
 const EXHAUSTED_QUOTA_PROBE_AFTER: Duration = Duration::from_secs(6 * 60 * 60);
 const SCHEDULER_STATE_RETENTION: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 const RATE_LIMIT_FALLBACK_COOLDOWN: Duration = Duration::from_secs(60);
+const SCHEDULER_PRUNE_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 
 #[derive(Clone, Default)]
 pub struct InMemoryUpstreamScheduler {
@@ -38,6 +39,7 @@ pub struct InMemoryUpstreamScheduler {
 #[derive(Default)]
 struct SchedulerState {
     entries: HashMap<SchedulerStateKey, SchedulerStateEntry>,
+    quota_by_account: HashMap<AccountQuotaKey, SchedulerStateEntry>,
     rss_cadence: HashMap<SchedulerStateKey, RssCadenceEntry>,
     dirty: HashSet<SchedulerStateKey>,
     dirty_rss_cadence: HashSet<SchedulerStateKey>,
@@ -94,12 +96,14 @@ impl InMemoryUpstreamScheduler {
         let store = Arc::new(SqlUpstreamSchedulerStore::new(datastore));
         store.prune_stale_rows(Utc::now()).await?;
         let entries = store.load_entries().await?;
+        let quota_by_account = quota_index_from_entries(&entries);
         let rss_cadence = store.load_rss_cadence().await?;
         let destination_cooldowns = store.load_destination_cooldowns().await?;
         RateLimitRegistry::new().hydrate_destination_cooldowns(destination_cooldowns);
         let scheduler = Self {
             state: Arc::new(Mutex::new(SchedulerState {
                 entries,
+                quota_by_account,
                 rss_cadence,
                 dirty: HashSet::new(),
                 dirty_rss_cadence: HashSet::new(),
@@ -117,10 +121,17 @@ impl InMemoryUpstreamScheduler {
         let state = self.state.clone();
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_millis(500));
+            let mut last_prune = Instant::now();
             loop {
                 interval.tick().await;
                 if let Err(error) = flush_dirty_state(&store, &state).await {
                     warn!(error = %error, "failed to flush upstream scheduler state");
+                }
+                if scheduler_prune_due(last_prune, Instant::now(), SCHEDULER_PRUNE_INTERVAL) {
+                    last_prune = Instant::now();
+                    if let Err(error) = store.prune_stale_rows(Utc::now()).await {
+                        warn!(error = %error, "failed to prune stale upstream scheduler state");
+                    }
                 }
             }
         });
@@ -160,7 +171,12 @@ impl UpstreamScheduler for InMemoryUpstreamScheduler {
                 let operation = candidate.operation;
                 let intent = candidate.intent;
                 let freshness = candidate.freshness.clone();
-                let decision = decide_candidate(candidate, request.now, state.entries.get(&key));
+                let quota_entry = candidate
+                    .account_quota_key
+                    .as_ref()
+                    .and_then(|account| state.quota_by_account.get(account));
+                let decision =
+                    decide_candidate(candidate, request.now, state.entries.get(&key), quota_entry);
                 record_decision_in_state(
                     &mut state,
                     key,
@@ -208,33 +224,48 @@ impl UpstreamScheduler for InMemoryUpstreamScheduler {
         };
         {
             let mut state = self.state.lock().expect("upstream scheduler lock poisoned");
-            let entry = state.entries.entry(key.clone()).or_default();
-            entry.last_feedback_at = Some(feedback.observed_at);
-            entry.last_attempt_at = Some(feedback.observed_at);
-            if matches!(
-                feedback.outcome,
-                SchedulerFeedbackOutcome::Success | SchedulerFeedbackOutcome::EmptySuccess
-            ) {
-                entry.last_successful_at = Some(feedback.observed_at);
-            }
-            apply_quota_observation(entry, &feedback);
-            entry.last_decision = Some(
-                match feedback.outcome {
-                    SchedulerFeedbackOutcome::Success => "feedback:success",
-                    SchedulerFeedbackOutcome::EmptySuccess => "feedback:empty_success",
-                    SchedulerFeedbackOutcome::RateLimited => "feedback:rate_limited",
-                    SchedulerFeedbackOutcome::TransportFailure => "feedback:transport_failure",
-                    SchedulerFeedbackOutcome::ProviderFailure => "feedback:provider_failure",
-                    SchedulerFeedbackOutcome::Cancelled => "feedback:cancelled",
+            let entry_snapshot = {
+                let entry = state.entries.entry(key.clone()).or_default();
+                entry.last_feedback_at = Some(feedback.observed_at);
+                entry.last_attempt_at = Some(feedback.observed_at);
+                if matches!(
+                    feedback.outcome,
+                    SchedulerFeedbackOutcome::Success | SchedulerFeedbackOutcome::EmptySuccess
+                ) {
+                    entry.last_successful_at = Some(feedback.observed_at);
                 }
-                .to_string(),
-            );
-            let quota_is_fresh = !quota_is_stale(entry, feedback.observed_at);
-            let quota_exhausted = quota_is_fresh && observed_quota_exhausted(entry);
-            let api_remaining = quota_is_fresh
-                .then(|| api_remaining_fraction(entry))
-                .flatten();
+                apply_quota_observation(entry, &feedback);
+                entry.last_decision = Some(
+                    match feedback.outcome {
+                        SchedulerFeedbackOutcome::Success => "feedback:success",
+                        SchedulerFeedbackOutcome::EmptySuccess => "feedback:empty_success",
+                        SchedulerFeedbackOutcome::RateLimited => "feedback:rate_limited",
+                        SchedulerFeedbackOutcome::TransportFailure => "feedback:transport_failure",
+                        SchedulerFeedbackOutcome::ProviderFailure => "feedback:provider_failure",
+                        SchedulerFeedbackOutcome::Cancelled => "feedback:cancelled",
+                    }
+                    .to_string(),
+                );
+                entry.clone()
+            };
             state.dirty.insert(key.clone());
+            if let Some(account_key) = key.account_quota_key.clone() {
+                update_account_quota_index(
+                    &mut state.quota_by_account,
+                    account_key,
+                    &entry_snapshot,
+                );
+            }
+            let quota_entry = key
+                .account_quota_key
+                .as_ref()
+                .and_then(|account| state.quota_by_account.get(account))
+                .unwrap_or(&entry_snapshot);
+            let quota_is_fresh = !quota_is_stale(quota_entry, feedback.observed_at);
+            let quota_exhausted = quota_is_fresh && observed_quota_exhausted(quota_entry);
+            let api_remaining = quota_is_fresh
+                .then(|| api_remaining_fraction(quota_entry))
+                .flatten();
             if is_rss_feedback {
                 let cadence = state.rss_cadence.entry(key.clone()).or_default();
                 cadence.last_attempt_at = Some(feedback.observed_at);
@@ -317,6 +348,12 @@ impl UpstreamScheduler for InMemoryUpstreamScheduler {
             })
             .map(|(key, entry)| {
                 let cadence = state.rss_cadence.get(key);
+                let quota_entry = key
+                    .account_quota_key
+                    .as_ref()
+                    .and_then(|account| state.quota_by_account.get(account))
+                    .unwrap_or(entry);
+                let now = Utc::now();
                 SchedulerSnapshotEntry {
                     host_key: key.host_key.clone(),
                     destination_key: key.destination_key.clone(),
@@ -326,13 +363,13 @@ impl UpstreamScheduler for InMemoryUpstreamScheduler {
                     last_feedback_at: entry.last_feedback_at,
                     last_successful_at: entry.last_successful_at,
                     last_attempt_at: entry.last_attempt_at,
-                    cooldown_until: destination_cooldown_until(&key.destination_key, Utc::now()),
-                    api_remaining_fraction: api_remaining_fraction(entry),
-                    quota_observed_at: entry.quota_observed_at,
-                    quota_probe_after: entry.quota_probe_after,
-                    quota_reset_at: entry.quota_reset_at,
-                    quota_source: entry.quota_source.clone(),
-                    quota_stale: quota_is_stale(entry, Utc::now()),
+                    cooldown_until: destination_cooldown_until(&key.destination_key, now),
+                    api_remaining_fraction: api_remaining_fraction(quota_entry),
+                    quota_observed_at: quota_entry.quota_observed_at,
+                    quota_probe_after: quota_entry.quota_probe_after,
+                    quota_reset_at: quota_entry.quota_reset_at,
+                    quota_source: quota_entry.quota_source.clone(),
+                    quota_stale: quota_is_stale(quota_entry, now),
                     rss_last_successful_poll_at: cadence
                         .and_then(|entry| entry.last_successful_poll_at),
                     rss_last_attempt_at: cadence.and_then(|entry| entry.last_attempt_at),
@@ -387,12 +424,72 @@ fn record_decision_in_state(
         && let Some(freshness) = freshness
     {
         let cadence = state.rss_cadence.entry(key.clone()).or_default();
-        cadence.target_interval = Some(freshness.target_interval);
+        cadence.target_interval = Some(match decision {
+            SchedulerAdmission::Defer {
+                reason: DeferralReason::AccountQuotaProbePending,
+                retry_after,
+                ..
+            } => std::cmp::max(
+                freshness.target_interval,
+                retry_after.unwrap_or(EXHAUSTED_QUOTA_PROBE_AFTER),
+            ),
+            _ => freshness.target_interval,
+        });
         cadence.latest_safe_poll_at = Some(freshness.latest_safe_poll_at);
         cadence.estimated_feed_depth = freshness.estimated_feed_depth;
         cadence.freshness_risk = freshness.freshness_risk;
         cadence.destination_recent_activity_at = freshness.destination_recent_activity_at;
         state.dirty_rss_cadence.insert(key);
+    }
+}
+
+fn quota_index_from_entries(
+    entries: &HashMap<SchedulerStateKey, SchedulerStateEntry>,
+) -> HashMap<AccountQuotaKey, SchedulerStateEntry> {
+    let mut quota_by_account = HashMap::new();
+    for (key, entry) in entries {
+        let Some(account_key) = key.account_quota_key.clone() else {
+            continue;
+        };
+        update_account_quota_index(&mut quota_by_account, account_key, entry);
+    }
+    quota_by_account
+}
+
+fn update_account_quota_index(
+    quota_by_account: &mut HashMap<AccountQuotaKey, SchedulerStateEntry>,
+    account_key: AccountQuotaKey,
+    candidate: &SchedulerStateEntry,
+) {
+    if !entry_has_quota_observation(candidate) {
+        return;
+    }
+
+    match quota_by_account.get(&account_key) {
+        Some(existing) if !quota_observation_is_newer(candidate, existing) => {}
+        _ => {
+            quota_by_account.insert(account_key, candidate.clone());
+        }
+    }
+}
+
+fn entry_has_quota_observation(entry: &SchedulerStateEntry) -> bool {
+    entry.quota_observed_at.is_some()
+        || entry.api_current.is_some()
+        || entry.api_max.is_some()
+        || entry.grab_current.is_some()
+        || entry.grab_max.is_some()
+}
+
+fn quota_observation_is_newer(
+    candidate: &SchedulerStateEntry,
+    existing: &SchedulerStateEntry,
+) -> bool {
+    match (candidate.quota_observed_at, existing.quota_observed_at) {
+        (Some(candidate_at), Some(existing_at)) => candidate_at >= existing_at,
+        (Some(_), None) => true,
+        (None, Some(_)) => false,
+        (None, None) => false,
     }
 }
 
@@ -429,6 +526,7 @@ fn apply_quota_observation(entry: &mut SchedulerStateEntry, feedback: &Scheduler
         .then(|| chrono::Duration::from_std(EXHAUSTED_QUOTA_PROBE_AFTER).ok())
         .flatten()
         .map(|delay| feedback.observed_at + delay);
+    // TODO: Populate quota_reset_at only when provider/plugin feedback supplies a trusted reset time.
     entry.quota_source = Some("scheduler_feedback".to_string());
 }
 
@@ -793,12 +891,12 @@ impl SqlUpstreamSchedulerStore {
     }
 }
 
+type DirtySchedulerEntries = Vec<(SchedulerStateKey, SchedulerStateEntry)>;
+type DirtyRssCadenceEntries = Vec<(SchedulerStateKey, RssCadenceEntry)>;
+
 fn drain_dirty_state(
     state: &Arc<Mutex<SchedulerState>>,
-) -> (
-    Vec<(SchedulerStateKey, SchedulerStateEntry)>,
-    Vec<(SchedulerStateKey, RssCadenceEntry)>,
-) {
+) -> (DirtySchedulerEntries, DirtyRssCadenceEntries) {
     let mut state = state.lock().expect("upstream scheduler lock poisoned");
     let dirty = std::mem::take(&mut state.dirty);
     let dirty_rss = std::mem::take(&mut state.dirty_rss_cadence);
@@ -869,6 +967,10 @@ fn requeue_dirty_rss_cadence(state: &Arc<Mutex<SchedulerState>>, keys: Vec<Sched
     state.dirty_rss_cadence.extend(keys);
 }
 
+fn scheduler_prune_due(last_prune: Instant, now: Instant, interval: Duration) -> bool {
+    now.duration_since(last_prune) >= interval
+}
+
 fn row_to_scheduler_entry(row: &SqlRow) -> AppResult<(SchedulerStateKey, SchedulerStateEntry)> {
     let account_quota_key = row.text("account_quota_key")?.trim().to_string();
     Ok((
@@ -916,6 +1018,7 @@ fn decide_candidate(
     candidate: SchedulerCandidate,
     now: DateTime<Utc>,
     state_entry: Option<&SchedulerStateEntry>,
+    quota_entry: Option<&SchedulerStateEntry>,
 ) -> SchedulerAdmission {
     if candidate.cancel_token.is_cancelled() {
         return SchedulerAdmission::Skip {
@@ -945,7 +1048,9 @@ fn decide_candidate(
         };
     }
 
-    if let Some(retry_after) = account_quota_retry_after(&candidate, state_entry, now) {
+    if let Some(retry_after) =
+        account_quota_retry_after(&candidate, quota_entry.or(state_entry), now)
+    {
         return SchedulerAdmission::Defer {
             candidate_id: candidate.candidate_id,
             retry_after,
@@ -1012,9 +1117,7 @@ fn account_quota_retry_after(
         return None;
     }
 
-    let Some(entry) = state_entry else {
-        return None;
-    };
+    let entry = state_entry?;
 
     if quota_is_stale(entry, now) || quota_probe_is_due(entry, now) {
         return None;
@@ -1158,7 +1261,7 @@ fn deferral_reason(candidate: &SchedulerCandidate) -> DeferralReason {
             DeferralReason::SubtitleYieldedToAcquisition
         }
         SchedulerIntent::Maintenance => DeferralReason::MaintenanceLowPriority,
-        _ => DeferralReason::LowCapacityBackground,
+        _ => DeferralReason::LowValueBackground,
     }
 }
 
@@ -1227,7 +1330,7 @@ fn admission_reason_label(reason: AdmissionReason) -> &'static str {
 
 fn deferral_reason_label(reason: DeferralReason) -> &'static str {
     match reason {
-        DeferralReason::LowCapacityBackground => "defer:low_capacity_background",
+        DeferralReason::LowValueBackground => "defer:low_value_background",
         DeferralReason::DestinationRecentlyUsed => "defer:destination_recently_used",
         DeferralReason::RssCadence => "defer:rss_cadence",
         DeferralReason::SubtitleYieldedToAcquisition => "defer:subtitle_yielded_to_acquisition",
@@ -1316,6 +1419,210 @@ mod tests {
         }
     }
 
+    fn lease_for(candidate: &SchedulerCandidate, issued_at: DateTime<Utc>) -> SchedulerLease {
+        SchedulerLease {
+            lease_id: format!("lease-{}", candidate.candidate_id),
+            candidate_id: candidate.candidate_id.clone(),
+            host_key: candidate.host_key.clone(),
+            destination_key: candidate.destination_key.clone(),
+            account_quota_key: candidate.account_quota_key.clone(),
+            rss_request_key: candidate.rss_request_key.clone(),
+            operation: candidate.operation,
+            intent: candidate.intent,
+            issued_at,
+        }
+    }
+
+    #[test]
+    fn scheduler_prune_due_only_after_interval() {
+        let last_prune = Instant::now();
+        assert!(!scheduler_prune_due(
+            last_prune,
+            last_prune + SCHEDULER_PRUNE_INTERVAL - Duration::from_secs(1),
+            SCHEDULER_PRUNE_INTERVAL,
+        ));
+        assert!(scheduler_prune_due(
+            last_prune,
+            last_prune + SCHEDULER_PRUNE_INTERVAL,
+            SCHEDULER_PRUNE_INTERVAL,
+        ));
+    }
+
+    #[tokio::test]
+    async fn rss_sharded_quota_defers_search_for_same_account() {
+        let scheduler = InMemoryUpstreamScheduler::new();
+        let now = Utc::now();
+        let mut rss = candidate(SchedulerIntent::BackgroundRss, 1.0);
+        rss.rss_request_key = Some("rss:5070".to_string());
+
+        let mut feedback = quota_feedback(&rss, Some(100), Some(100), now);
+        feedback.lease = Some(lease_for(&rss, now));
+        scheduler
+            .record_feedback(feedback)
+            .await
+            .expect("quota feedback should record");
+
+        let mut search = candidate(SchedulerIntent::BackgroundAcquisition, 1.0);
+        search.rss_request_key = None;
+        let decision = scheduler
+            .admit_batch(SchedulerBatchRequest {
+                batch_id: "batch".to_string(),
+                now,
+                candidates: vec![search],
+            })
+            .await
+            .expect("admission should succeed");
+
+        assert!(
+            matches!(
+                decision.decisions.as_slice(),
+                [SchedulerAdmission::Defer {
+                    reason: DeferralReason::AccountQuotaProbePending,
+                    ..
+                }]
+            ),
+            "unexpected decision: {:?}",
+            decision.decisions
+        );
+    }
+
+    #[tokio::test]
+    async fn newer_quota_observation_wins_across_rss_shards() {
+        let scheduler = InMemoryUpstreamScheduler::new();
+        let older = Utc::now() - chrono::Duration::hours(1);
+        let newer = Utc::now();
+        let mut rss_a = candidate(SchedulerIntent::BackgroundRss, 1.0);
+        rss_a.rss_request_key = Some("rss:5070".to_string());
+        let mut rss_b = candidate(SchedulerIntent::BackgroundRss, 1.0);
+        rss_b.rss_request_key = Some("rss:5071".to_string());
+
+        let mut exhausted = quota_feedback(&rss_a, Some(100), Some(100), older);
+        exhausted.lease = Some(lease_for(&rss_a, older));
+        scheduler
+            .record_feedback(exhausted)
+            .await
+            .expect("older feedback should record");
+
+        let mut healthy = quota_feedback(&rss_b, Some(1), Some(100), newer);
+        healthy.lease = Some(lease_for(&rss_b, newer));
+        scheduler
+            .record_feedback(healthy)
+            .await
+            .expect("newer feedback should record");
+
+        let decision = scheduler
+            .admit_batch(SchedulerBatchRequest {
+                batch_id: "batch".to_string(),
+                now: newer,
+                candidates: vec![candidate(SchedulerIntent::BackgroundAcquisition, 1.0)],
+            })
+            .await
+            .expect("admission should succeed");
+
+        assert!(
+            matches!(
+                decision.decisions.as_slice(),
+                [SchedulerAdmission::Admit { .. }]
+            ),
+            "unexpected decision: {:?}",
+            decision.decisions
+        );
+    }
+
+    #[tokio::test]
+    async fn stale_rss_sharded_quota_does_not_block_search_for_same_account() {
+        let scheduler = InMemoryUpstreamScheduler::new();
+        let observed_at = Utc::now() - chrono::Duration::hours(25);
+        let now = Utc::now();
+        let mut rss = candidate(SchedulerIntent::BackgroundRss, 1.0);
+        rss.rss_request_key = Some("rss:5070".to_string());
+
+        let mut feedback = quota_feedback(&rss, Some(100), Some(100), observed_at);
+        feedback.lease = Some(lease_for(&rss, observed_at));
+        scheduler
+            .record_feedback(feedback)
+            .await
+            .expect("stale feedback should record");
+
+        let decision = scheduler
+            .admit_batch(SchedulerBatchRequest {
+                batch_id: "batch".to_string(),
+                now,
+                candidates: vec![candidate(SchedulerIntent::BackgroundAcquisition, 1.0)],
+            })
+            .await
+            .expect("admission should succeed");
+
+        assert!(
+            matches!(
+                decision.decisions.as_slice(),
+                [SchedulerAdmission::Admit { .. }]
+            ),
+            "unexpected decision: {:?}",
+            decision.decisions
+        );
+    }
+
+    #[tokio::test]
+    async fn rss_quota_feedback_widens_other_rss_category_for_same_account() {
+        let scheduler = InMemoryUpstreamScheduler::new();
+        let now = Utc::now();
+        let mut rss_a = candidate(SchedulerIntent::BackgroundRss, 1.0);
+        rss_a.rss_request_key = Some("rss:5070".to_string());
+        let mut rss_b = candidate(SchedulerIntent::BackgroundRss, 1.0);
+        rss_b.rss_request_key = Some("rss:5071".to_string());
+        rss_b.freshness = Some(RssFreshnessContext {
+            last_successful_poll_at: None,
+            last_attempt_at: None,
+            target_interval: DEFAULT_RSS_TARGET_INTERVAL,
+            latest_safe_poll_at: now + chrono::Duration::hours(1),
+            estimated_feed_depth: None,
+            freshness_risk: 0.1,
+            destination_recent_activity_at: None,
+            account_quota_budget: None,
+        });
+
+        let mut feedback = quota_feedback(&rss_a, Some(100), Some(100), now);
+        feedback.lease = Some(lease_for(&rss_a, now));
+        scheduler
+            .record_feedback(feedback)
+            .await
+            .expect("quota feedback should record");
+
+        let decision = scheduler
+            .admit_batch(SchedulerBatchRequest {
+                batch_id: "batch".to_string(),
+                now,
+                candidates: vec![rss_b],
+            })
+            .await
+            .expect("admission should succeed");
+
+        assert!(
+            matches!(
+                decision.decisions.as_slice(),
+                [SchedulerAdmission::Defer {
+                    reason: DeferralReason::AccountQuotaProbePending,
+                    ..
+                }]
+            ),
+            "unexpected decision: {:?}",
+            decision.decisions
+        );
+
+        let snapshot = scheduler
+            .snapshot(SchedulerSnapshotFilter::default())
+            .await
+            .expect("snapshot should succeed");
+        let widened = snapshot
+            .entries
+            .iter()
+            .find(|entry| entry.rss_request_key.as_deref() == Some("rss:5071"))
+            .and_then(|entry| entry.rss_target_interval)
+            .expect("deferred RSS shard should have cadence");
+        assert!(widened > DEFAULT_RSS_TARGET_INTERVAL);
+    }
+
     #[tokio::test]
     async fn interactive_low_value_candidate_is_admitted() {
         let scheduler = InMemoryUpstreamScheduler::new();
@@ -1352,7 +1659,7 @@ mod tests {
         assert!(matches!(
             decision.decisions.as_slice(),
             [SchedulerAdmission::Defer {
-                reason: DeferralReason::LowCapacityBackground,
+                reason: DeferralReason::LowValueBackground,
                 ..
             }]
         ));
@@ -1379,7 +1686,7 @@ mod tests {
         assert_eq!(snapshot.entries[0].deferred_count, 1);
         assert_eq!(
             snapshot.entries[0].last_decision.as_deref(),
-            Some("defer:low_capacity_background")
+            Some("defer:low_value_background")
         );
     }
 
@@ -1861,19 +2168,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn background_batch_conserves_low_capacity_after_sufficient_coverage() {
+    async fn background_batch_defers_low_value_candidate() {
         let scheduler = InMemoryUpstreamScheduler::new();
-        let mut low_capacity = candidate(SchedulerIntent::BackgroundAcquisition, 0.0);
-        low_capacity.host_key = "low-cap.example".into();
-        low_capacity.destination_key = "low-cap.example".into();
-        low_capacity.account_quota_key = Some("low-cap".into());
+        let mut low_value = candidate(SchedulerIntent::BackgroundAcquisition, 0.0);
+        low_value.host_key = "low-value.example".into();
+        low_value.destination_key = "low-value.example".into();
+        low_value.account_quota_key = Some("low-value".into());
 
         scheduler
             .record_feedback(SchedulerFeedback {
                 lease: None,
-                host_key: low_capacity.host_key.clone(),
-                destination_key: low_capacity.destination_key.clone(),
-                account_quota_key: low_capacity.account_quota_key.clone(),
+                host_key: low_value.host_key.clone(),
+                destination_key: low_value.destination_key.clone(),
+                account_quota_key: low_value.account_quota_key.clone(),
                 outcome: SchedulerFeedbackOutcome::Success,
                 observed_api_current: Some(90),
                 observed_api_max: Some(100),
@@ -1905,7 +2212,7 @@ mod tests {
             .admit_batch(SchedulerBatchRequest {
                 batch_id: "batch".to_string(),
                 now: Utc::now(),
-                candidates: vec![low_capacity, high_a, high_b, high_c],
+                candidates: vec![low_value, high_a, high_b, high_c],
             })
             .await
             .expect("admission should succeed");
@@ -1921,7 +2228,7 @@ mod tests {
         assert!(decision.decisions.iter().any(|decision| matches!(
             decision,
             SchedulerAdmission::Defer {
-                reason: DeferralReason::LowCapacityBackground,
+                reason: DeferralReason::LowValueBackground,
                 ..
             }
         )));

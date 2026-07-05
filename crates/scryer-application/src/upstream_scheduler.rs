@@ -221,7 +221,7 @@ pub enum AdmissionReason {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DeferralReason {
-    LowCapacityBackground,
+    LowValueBackground,
     DestinationRecentlyUsed,
     RssCadence,
     SubtitleYieldedToAcquisition,

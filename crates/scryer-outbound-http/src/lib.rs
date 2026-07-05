@@ -117,6 +117,15 @@ pub struct PersistedDestinationCooldown {
     pub observed_at: DateTime<Utc>,
 }
 
+fn destination_cooldown_is_newer_or_equal(
+    candidate: &PersistedDestinationCooldown,
+    existing: &PersistedDestinationCooldown,
+) -> bool {
+    candidate.observed_at > existing.observed_at
+        || (candidate.observed_at == existing.observed_at
+            && candidate.cooldown_until >= existing.cooldown_until)
+}
+
 #[derive(Clone, Debug)]
 pub struct RequestPolicy {
     pub scope: RateLimitScopeKey,
@@ -510,7 +519,12 @@ impl RateLimitRegistry {
             .lock()
             .expect("dirty destination cooldown lock poisoned");
         for cooldown in cooldowns {
-            dirty.insert(cooldown.destination_key.clone(), cooldown);
+            match dirty.get(&cooldown.destination_key) {
+                Some(existing) if !destination_cooldown_is_newer_or_equal(&cooldown, existing) => {}
+                _ => {
+                    dirty.insert(cooldown.destination_key.clone(), cooldown);
+                }
+            }
         }
     }
 
@@ -1283,58 +1297,56 @@ impl OutboundHttpClient {
                 .and_then(|clone| clone.build().ok())
                 .and_then(|request| destination_key_from_url(request.url()));
 
-            if let Some(destination) = request_destination.as_ref() {
-                if let Some(wait_duration) = self
+            if let Some(destination) = request_destination.as_ref()
+                && let Some(wait_duration) = self
                     .registry
                     .wait_for_destination_if_needed(destination)
                     .await
-                {
-                    counter!(
-                        "scryer_outbound_http_destination_cooldown_wait_total",
-                        "destination" => destination.to_string(),
-                        "request_label" => policy.request_label.to_string()
-                    )
-                    .increment(1);
-                    histogram!(
-                        "scryer_outbound_http_destination_cooldown_wait_seconds",
-                        "destination" => destination.to_string(),
-                        "request_label" => policy.request_label.to_string()
-                    )
-                    .record(wait_duration.as_secs_f64());
-                    debug!(
-                        destination = %destination,
-                        request_label = policy.request_label.as_ref(),
-                        wait_ms = wait_duration.as_millis(),
-                        "outbound HTTP destination cooldown wait"
-                    );
-                }
+            {
+                counter!(
+                    "scryer_outbound_http_destination_cooldown_wait_total",
+                    "destination" => destination.to_string(),
+                    "request_label" => policy.request_label.to_string()
+                )
+                .increment(1);
+                histogram!(
+                    "scryer_outbound_http_destination_cooldown_wait_seconds",
+                    "destination" => destination.to_string(),
+                    "request_label" => policy.request_label.to_string()
+                )
+                .record(wait_duration.as_secs_f64());
+                debug!(
+                    destination = %destination,
+                    request_label = policy.request_label.as_ref(),
+                    wait_ms = wait_duration.as_millis(),
+                    "outbound HTTP destination cooldown wait"
+                );
             }
 
             if let Some(host) = builder
                 .try_clone()
                 .and_then(|clone| clone.build().ok())
                 .and_then(|request| host_key_from_url(request.url()))
+                && let Some(wait_duration) = self.registry.acquire_host_rps(&host).await
             {
-                if let Some(wait_duration) = self.registry.acquire_host_rps(&host).await {
-                    counter!(
-                        "scryer_outbound_http_host_rps_wait_total",
-                        "host" => host.to_string(),
-                        "request_label" => policy.request_label.to_string()
-                    )
-                    .increment(1);
-                    histogram!(
-                        "scryer_outbound_http_host_rps_wait_seconds",
-                        "host" => host.to_string(),
-                        "request_label" => policy.request_label.to_string()
-                    )
-                    .record(wait_duration.as_secs_f64());
-                    debug!(
-                        host = %host,
-                        request_label = policy.request_label.as_ref(),
-                        wait_ms = wait_duration.as_millis(),
-                        "outbound HTTP host RPS wait"
-                    );
-                }
+                counter!(
+                    "scryer_outbound_http_host_rps_wait_total",
+                    "host" => host.to_string(),
+                    "request_label" => policy.request_label.to_string()
+                )
+                .increment(1);
+                histogram!(
+                    "scryer_outbound_http_host_rps_wait_seconds",
+                    "host" => host.to_string(),
+                    "request_label" => policy.request_label.to_string()
+                )
+                .record(wait_duration.as_secs_f64());
+                debug!(
+                    host = %host,
+                    request_label = policy.request_label.as_ref(),
+                    wait_ms = wait_duration.as_millis(),
+                    "outbound HTTP host RPS wait"
+                );
             }
 
             let send_result = match policy.redirect_mode {
@@ -1813,6 +1825,36 @@ mod tests {
 
         registry.requeue_dirty_destination_cooldowns(dirty.clone());
         assert_eq!(registry.drain_dirty_destination_cooldowns(), dirty);
+    }
+
+    #[tokio::test]
+    async fn requeue_dirty_destination_cooldowns_keeps_newer_dirty_state() {
+        let registry = RateLimitRegistry::isolated();
+        let destination: DestinationKey = "example.test".into();
+
+        let _ = registry
+            .record_destination_cooldown(
+                &destination,
+                Duration::from_secs(30),
+                RetryAfterSource::Seconds,
+            )
+            .await;
+        let older = registry.drain_dirty_destination_cooldowns();
+
+        let _ = registry
+            .record_destination_cooldown(
+                &destination,
+                Duration::from_secs(120),
+                RetryAfterSource::FallbackBackoff,
+            )
+            .await;
+        registry.requeue_dirty_destination_cooldowns(older);
+
+        let dirty = registry.drain_dirty_destination_cooldowns();
+        assert_eq!(dirty.len(), 1);
+        assert_eq!(dirty[0].destination_key, destination);
+        assert_eq!(dirty[0].retry_after, Some(Duration::from_secs(120)));
+        assert_eq!(dirty[0].source, RetryAfterSource::FallbackBackoff);
     }
 
     #[test]

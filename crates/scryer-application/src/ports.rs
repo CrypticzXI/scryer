@@ -626,6 +626,7 @@ pub trait DiscoveryRepository: Send + Sync {
         readable_library_ids: &[String],
         include_unresolved: bool,
     ) -> AppResult<Vec<DiscoveryFacetRecord>>;
+    #[allow(clippy::too_many_arguments)]
     async fn list_discovery_home_top_rated_items(
         &self,
         public_run_id: Option<&str>,

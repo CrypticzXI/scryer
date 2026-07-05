@@ -1179,6 +1179,13 @@ async fn bootstrap_application(
         facet_registry,
         webauthn,
     );
+    tokio::spawn(flush_upstream_scheduler_after_shutdown(
+        shutdown_token.child_token(),
+        {
+            let app_use_case = app_use_case.clone();
+            move || async move { app_use_case.flush_upstream_scheduler().await }
+        },
+    ));
     tracing::info!(
         build_lane = %app_use_case.runtime_build_lane(),
         build_class = %app_use_case.runtime_build_class(),
@@ -1684,6 +1691,21 @@ async fn run_validate_only(config: DatastoreConfig) {
                 eprintln!("{error}");
             }
             std::process::exit(1);
+        }
+    }
+}
+
+async fn flush_upstream_scheduler_after_shutdown<F, Fut, E>(token: CancellationToken, flush: F)
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Result<(), E>>,
+    E: std::fmt::Display,
+{
+    token.cancelled().await;
+    match flush().await {
+        Ok(()) => tracing::debug!("flushed upstream scheduler state during shutdown"),
+        Err(error) => {
+            tracing::warn!(%error, "failed to flush upstream scheduler state during shutdown")
         }
     }
 }
@@ -2719,8 +2741,8 @@ mod tests {
         ResolvedLogFileConfig, SelfRestartController, UNAUTHENTICATED_PUBLIC_ACCESS_ALLOWLIST_ENV,
         bootstrap_plugin_installations, collect_runtime_plugin_load_candidates,
         comma_separated_env_has_entries, extract_data_dir, extract_log_file,
-        load_runtime_plugin_state, resolve_auth_mode, resolve_log_file_config,
-        restart_spec_from_parts, title_image_handler,
+        flush_upstream_scheduler_after_shutdown, load_runtime_plugin_state, resolve_auth_mode,
+        resolve_log_file_config, restart_spec_from_parts, title_image_handler,
         validate_unauthenticated_public_access_allowlist_config,
     };
     use chrono::Utc;
@@ -2745,6 +2767,31 @@ mod tests {
     use scryer_infrastructure::{DatastoreCustomizationStore, SqliteServices};
     use tempfile::tempdir;
     use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn shutdown_flush_waiter_flushes_scheduler_after_cancellation() {
+        let token = tokio_util::sync::CancellationToken::new();
+        let flush_count = Arc::new(AtomicUsize::new(0));
+        let flush_count_for_task = Arc::clone(&flush_count);
+        let handle = tokio::spawn(flush_upstream_scheduler_after_shutdown(
+            token.clone(),
+            move || async move {
+                flush_count_for_task.fetch_add(1, Ordering::SeqCst);
+                Ok::<(), &'static str>(())
+            },
+        ));
+
+        tokio::task::yield_now().await;
+        assert_eq!(flush_count.load(Ordering::SeqCst), 0);
+
+        token.cancel();
+        tokio::time::timeout(Duration::from_secs(1), handle)
+            .await
+            .expect("shutdown flush waiter should finish")
+            .expect("shutdown flush task should not panic");
+
+        assert_eq!(flush_count.load(Ordering::SeqCst), 1);
+    }
 
     #[test]
     fn restart_spec_builder_preserves_executable_args_and_env() {
