@@ -1,9 +1,12 @@
 use std::time::Duration;
 
-use crate::AppError;
+use crate::{AppError, RateLimitCooldownAction};
+use scryer_outbound_http::OutboundHttpError;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RateLimitSignalSource {
+    AppTemporaryUnavailable,
+    OutboundHttpRateLimited,
     RetryAfterText,
     RetryAfterSecondsText,
     RetryAfterHyphenText,
@@ -18,13 +21,47 @@ pub enum RateLimitSignalSource {
 pub struct RateLimitSignal {
     pub retry_after: Option<Duration>,
     pub source: RateLimitSignalSource,
+    pub cooldown_action: RateLimitCooldownAction,
     pub status_code: Option<u16>,
     pub message: Option<String>,
 }
 
 impl RateLimitSignal {
     pub fn from_error(error: &AppError) -> Option<Self> {
-        Self::from_text(&error.to_string())
+        match error {
+            AppError::TemporaryUnavailable {
+                message,
+                retry_after,
+                rate_limit_cooldown,
+            } if *rate_limit_cooldown != RateLimitCooldownAction::None => Some(Self {
+                retry_after: *retry_after,
+                source: RateLimitSignalSource::AppTemporaryUnavailable,
+                cooldown_action: *rate_limit_cooldown,
+                status_code: status_code_from_text(message),
+                message: Some(message.clone()),
+            }),
+            AppError::TemporaryUnavailable {
+                rate_limit_cooldown: RateLimitCooldownAction::None,
+                ..
+            } => None,
+            _ => Self::from_text(&error.to_string()),
+        }
+    }
+
+    pub fn from_outbound_http_error(error: &OutboundHttpError) -> Option<Self> {
+        match error {
+            OutboundHttpError::RateLimited(rate_limited) => Some(Self {
+                retry_after: rate_limited.retry_after,
+                source: RateLimitSignalSource::OutboundHttpRateLimited,
+                cooldown_action: RateLimitCooldownAction::AlreadyRecorded,
+                status_code: Some(429),
+                message: Some(format!(
+                    "outbound HTTP rate limited for {}",
+                    rate_limited.request_label
+                )),
+            }),
+            OutboundHttpError::Transport { .. } => None,
+        }
     }
 
     pub fn from_text(message: &str) -> Option<Self> {
@@ -32,6 +69,7 @@ impl RateLimitSignal {
             return Some(Self {
                 retry_after: Some(retry_after),
                 source,
+                cooldown_action: RateLimitCooldownAction::RecordFallback,
                 status_code: status_code_from_text(message),
                 message: Some(message.to_string()),
             });
@@ -53,6 +91,7 @@ impl RateLimitSignal {
         Some(Self {
             retry_after: None,
             source,
+            cooldown_action: RateLimitCooldownAction::RecordFallback,
             status_code: status_code_from_text(message),
             message: Some(message.to_string()),
         })
@@ -139,6 +178,7 @@ mod tests {
         let signal =
             RateLimitSignal::from_text("HTTP 429: too many requests").expect("429 should parse");
         assert_eq!(signal.retry_after, None);
+        assert_eq!(signal.status_code, Some(429));
         assert_eq!(signal.source, RateLimitSignalSource::TooManyRequestsPhrase);
     }
 
@@ -147,5 +187,60 @@ mod tests {
         assert!(RateLimitSignal::from_text("release title contains 429").is_none());
         assert!(RateLimitSignal::from_text("provider returned id 429001").is_none());
         assert!(RateLimitSignal::from_text("provider returned HTTP 429001").is_none());
+    }
+
+    #[test]
+    fn preserves_typed_temporary_unavailable_retry_after() {
+        let signal = RateLimitSignal::from_error(&AppError::rate_limited_temporary_unavailable(
+            "provider temporarily unavailable",
+            Some(Duration::from_secs(45)),
+            RateLimitCooldownAction::RecordFallback,
+        ))
+        .expect("typed retry-after should be preserved");
+
+        assert_eq!(signal.retry_after, Some(Duration::from_secs(45)));
+        assert_eq!(
+            signal.cooldown_action,
+            RateLimitCooldownAction::RecordFallback
+        );
+        assert_eq!(
+            signal.source,
+            RateLimitSignalSource::AppTemporaryUnavailable
+        );
+    }
+
+    #[test]
+    fn plain_temporary_unavailable_is_not_a_rate_limit_signal() {
+        assert!(
+            RateLimitSignal::from_error(&AppError::temporary_unavailable(
+                "provider temporarily unavailable",
+                Some(Duration::from_secs(45)),
+            ))
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn preserves_typed_outbound_http_retry_after() {
+        let error = OutboundHttpError::RateLimited(scryer_outbound_http::RateLimitedError {
+            scope: scryer_outbound_http::RateLimitScopeKey::from("plugin:artifact"),
+            retry_after: Some(Duration::from_secs(75)),
+            attempts: 1,
+            retry_after_source: scryer_outbound_http::RetryAfterSource::Seconds,
+            request_label: std::borrow::Cow::Borrowed("plugin artifact"),
+        });
+        let signal = RateLimitSignal::from_outbound_http_error(&error)
+            .expect("typed outbound rate limit should be preserved");
+
+        assert_eq!(signal.retry_after, Some(Duration::from_secs(75)));
+        assert_eq!(signal.status_code, Some(429));
+        assert_eq!(
+            signal.cooldown_action,
+            RateLimitCooldownAction::AlreadyRecorded
+        );
+        assert_eq!(
+            signal.source,
+            RateLimitSignalSource::OutboundHttpRateLimited
+        );
     }
 }

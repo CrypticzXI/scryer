@@ -1230,6 +1230,7 @@ impl UpstreamScheduler for NullUpstreamScheduler {
                     host_key: candidate.host_key,
                     destination_key: candidate.destination_key,
                     account_quota_key: candidate.account_quota_key,
+                    rss_request_key: candidate.rss_request_key,
                     operation: candidate.operation,
                     intent: candidate.intent,
                     issued_at: request.now,

@@ -480,6 +480,10 @@ async fn run_postgres_rust_hook(
             crate::migrations::title_catalog_sort_keys::migrate_title_catalog_sort_keys_postgres(tx)
                 .await
         }
+        "converge_post_0_16_6_prerelease_schema" => {
+            crate::migrations::post_0_16_6_prerelease::converge_post_0_16_6_prerelease_schema_postgres(tx)
+                .await
+        }
         #[cfg(test)]
         "test_insert_hook_marker" => {
             let marker = match install_kind {

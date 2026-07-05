@@ -783,7 +783,20 @@ mod tests {
 </tvshow>"#
     }
     use chrono::Utc;
-    use scryer_domain::{ExternalId, MediaFacet};
+    use scryer_domain::{CanonicalMediaTag, ExternalId, MediaFacet};
+
+    fn canonical_genre_tag(key: &str, name: &str) -> CanonicalMediaTag {
+        CanonicalMediaTag {
+            key: format!("canonical:genre:{key}"),
+            category: "genre".to_string(),
+            name: name.to_string(),
+            confidence: Some(1.0),
+            sources: Vec::new(),
+            source_tag_keys: Vec::new(),
+            is_adult: false,
+            is_spoiler: false,
+        }
+    }
 
     fn make_title() -> Title {
         Title {
@@ -794,7 +807,10 @@ mod tests {
             root_folder_id: scryer_domain::root_folder_id_for_path("/data/test"),
             monitored: true,
             tags: vec![],
-            canonical_tags: vec![],
+            canonical_tags: vec![
+                canonical_genre_tag("action", "Action"),
+                canonical_genre_tag("sci-fi", "Sci-Fi"),
+            ],
             external_ids: vec![
                 ExternalId {
                     source: "tvdb".into(),

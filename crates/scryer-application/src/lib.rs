@@ -144,11 +144,12 @@ pub use services::{
 };
 pub use upstream_scheduler::{
     AccountQuotaKey, AdmissionReason, DeferralReason, EstimatedCost, ExpectedValueHint,
-    RssFreshnessContext, SchedulerAdmission, SchedulerBatchDecision, SchedulerBatchRequest,
-    SchedulerCandidate, SchedulerCandidateId, SchedulerFeedback, SchedulerFeedbackOutcome,
-    SchedulerIntent, SchedulerLease, SchedulerOperation, SchedulerPluginKind, SchedulerSnapshot,
-    SchedulerSnapshotEntry, SchedulerSnapshotFilter, SearchLearningContext, SkipReason,
-    UpstreamScheduler,
+    OutboundDestinationCooldownSnapshotEntry, OutboundHostRpsSnapshotEntry,
+    OutboundRateLimitSnapshot, RateLimitCooldownAction, RssFreshnessContext, SchedulerAdmission,
+    SchedulerBatchDecision, SchedulerBatchRequest, SchedulerCandidate, SchedulerCandidateId,
+    SchedulerFeedback, SchedulerFeedbackOutcome, SchedulerIntent, SchedulerLease,
+    SchedulerOperation, SchedulerPluginKind, SchedulerSnapshot, SchedulerSnapshotEntry,
+    SchedulerSnapshotFilter, SearchLearningContext, SkipReason, UpstreamScheduler,
 };
 pub const SCRYER_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const LIBRARY_SCAN_MAX_RECURSIVE_DEPTH: usize =
@@ -547,6 +548,7 @@ pub enum AppError {
     TemporaryUnavailable {
         message: String,
         retry_after: Option<std::time::Duration>,
+        rate_limit_cooldown: RateLimitCooldownAction,
     },
 
     #[error("{0}")]
@@ -587,6 +589,19 @@ impl AppError {
         Self::TemporaryUnavailable {
             message: message.into(),
             retry_after,
+            rate_limit_cooldown: RateLimitCooldownAction::None,
+        }
+    }
+
+    pub fn rate_limited_temporary_unavailable(
+        message: impl Into<String>,
+        retry_after: Option<std::time::Duration>,
+        rate_limit_cooldown: RateLimitCooldownAction,
+    ) -> Self {
+        Self::TemporaryUnavailable {
+            message: message.into(),
+            retry_after,
+            rate_limit_cooldown,
         }
     }
 

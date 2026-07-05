@@ -13,7 +13,6 @@ import {
 import { useGlobalStatus } from "@/lib/context/global-status-context";
 import { useSearchContext } from "@/lib/context/search-context";
 import { useTranslate } from "@/lib/context/translate-context";
-import { canonicalDiscoveryFacetLabels } from "@/lib/discovery-facets";
 import type { LocaleCode } from "@/lib/i18n";
 import { discoveryItemDisplayTitle } from "@/lib/utils/discovery-display";
 import type { MetadataTvdbSearchItem } from "@/lib/graphql/smg-queries";
@@ -82,7 +81,6 @@ function metadataResultForDiscoveryItem(
     language: null,
     runtimeMinutes: null,
     sortTitle: item.sortTitle,
-    genres: canonicalDiscoveryFacetLabels(item, "genre"),
     rating: item.rating,
     ratingSource: item.sources[0] ?? item.bestSource,
     externalRatings: item.externalRatings ?? [],

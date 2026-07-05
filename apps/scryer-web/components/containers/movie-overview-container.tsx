@@ -36,7 +36,7 @@ import { handleFixTitleMatchComplete as applyFixTitleMatchCompletion } from "@/l
 import type { Release, TitleAcquisitionDiagnostics, WantedItem } from "@/lib/types";
 import type { CatalogDiscoveryItem } from "@/lib/types/discovery";
 import type { TitleRatings } from "@/components/views/title-ratings-strip";
-import type { LibraryRootRecord } from "@/lib/types/titles";
+import type { CanonicalMediaTag, LibraryRootRecord } from "@/lib/types/titles";
 import type { DownloadQueueItem } from "@/lib/types/download-queue";
 import {
   createEmptyTitleOverviewDownloadFeedbackSnapshot,
@@ -89,7 +89,7 @@ export type TitleDetail = {
   slug: string | null;
   imdbId: string | null;
   runtimeMinutes: number | null;
-  genres: string[];
+  canonicalTags?: CanonicalMediaTag[];
   contentStatus: string | null;
   language: string | null;
   firstAired: string | null;

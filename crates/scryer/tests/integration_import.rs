@@ -121,7 +121,6 @@ async fn add_movie_title(ctx: &TestContext, id: &str, name: &str, media_root: &s
         // import-path, rule, dedupe, or symlink assertions.
         runtime_minutes: Some(1),
         popularity: None,
-        genres: vec![],
         content_status: None,
         language: None,
         first_aired: None,
@@ -184,7 +183,6 @@ async fn add_series_title_with_runtime(
         imdb_id: None,
         runtime_minutes,
         popularity: None,
-        genres: vec![],
         content_status: None,
         language: None,
         first_aired: None,

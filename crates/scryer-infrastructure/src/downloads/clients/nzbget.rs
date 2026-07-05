@@ -9,7 +9,7 @@ use chrono::{DateTime, Utc};
 use futures_util::stream;
 use scryer_application::{
     AppError, AppResult, DownloadClient, DownloadClientAddRequest, DownloadGrabResult,
-    NullStagedNzbStore, StagedNzbRef, StagedNzbStore,
+    NullStagedNzbStore, RateLimitCooldownAction, StagedNzbRef, StagedNzbStore,
 };
 use scryer_domain::{DownloadQueueItem, DownloadQueueState};
 use scryer_outbound_http::{
@@ -1027,17 +1027,22 @@ impl NzbgetDownloadClient {
 
 fn map_nzbget_outbound_error(operation: &str, error: OutboundHttpError) -> AppError {
     match error {
-        OutboundHttpError::RateLimited(rate_limited) => AppError::Repository(
-            match rate_limited.retry_after.filter(|delay| !delay.is_zero()) {
-                Some(delay) => {
-                    format!(
-                        "{operation} was rate limited; retry after {}s",
-                        delay.as_secs()
-                    )
-                }
-                None => format!("{operation} was rate limited"),
-            },
-        ),
+        OutboundHttpError::RateLimited(rate_limited) => {
+            let retry_after = rate_limited.retry_after.filter(|delay| !delay.is_zero());
+            AppError::rate_limited_temporary_unavailable(
+                match retry_after {
+                    Some(delay) => {
+                        format!(
+                            "{operation} was rate limited; retry after {}s",
+                            delay.as_secs()
+                        )
+                    }
+                    None => format!("{operation} was rate limited"),
+                },
+                retry_after,
+                RateLimitCooldownAction::AlreadyRecorded,
+            )
+        }
         OutboundHttpError::Transport { source, .. } => {
             AppError::Repository(format!("{operation} failed: {source}"))
         }
@@ -1049,17 +1054,22 @@ fn map_nzbget_append_outbound_error(
     error: OutboundHttpError,
 ) -> AppError {
     match error {
-        OutboundHttpError::RateLimited(rate_limited) => AppError::Repository(
-            match rate_limited.retry_after.filter(|delay| !delay.is_zero()) {
-                Some(delay) => {
-                    format!(
-                        "nzbget append request was rate limited; retry after {}s",
-                        delay.as_secs()
-                    )
-                }
-                None => "nzbget append request was rate limited".to_string(),
-            },
-        ),
+        OutboundHttpError::RateLimited(rate_limited) => {
+            let retry_after = rate_limited.retry_after.filter(|delay| !delay.is_zero());
+            AppError::rate_limited_temporary_unavailable(
+                match retry_after {
+                    Some(delay) => {
+                        format!(
+                            "nzbget append request was rate limited; retry after {}s",
+                            delay.as_secs()
+                        )
+                    }
+                    None => "nzbget append request was rate limited".to_string(),
+                },
+                retry_after,
+                RateLimitCooldownAction::AlreadyRecorded,
+            )
+        }
         OutboundHttpError::Transport {
             attempts, source, ..
         } => {
@@ -2056,6 +2066,30 @@ fn derive_nzb_filename(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn outbound_rate_limit_preserves_retry_after() {
+        let error = OutboundHttpError::RateLimited(scryer_outbound_http::RateLimitedError {
+            scope: scryer_outbound_http::RateLimitScopeKey::from("nzbget"),
+            retry_after: Some(Duration::from_secs(30)),
+            attempts: 1,
+            retry_after_source: scryer_outbound_http::RetryAfterSource::Seconds,
+            request_label: std::borrow::Cow::Borrowed("nzbget"),
+        });
+        let error = map_nzbget_outbound_error("nzbget status", error);
+
+        match error {
+            AppError::TemporaryUnavailable {
+                message,
+                retry_after,
+                ..
+            } => {
+                assert!(message.contains("retry after 30s"));
+                assert_eq!(retry_after, Some(Duration::from_secs(30)));
+            }
+            other => panic!("expected temporary unavailable error, got {other:?}"),
+        }
+    }
 
     #[test]
     fn parse_nzbget_version_handles_common_formats() {

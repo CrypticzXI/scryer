@@ -128,7 +128,6 @@ async fn background_series_refresh_skips_non_relinked_titles_and_completes_job_r
             imdb_id: None,
             runtime_minutes: None,
             popularity: None,
-            genres: vec![],
             content_status: None,
             language: None,
             first_aired: None,

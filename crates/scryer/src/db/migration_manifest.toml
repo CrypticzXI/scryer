@@ -566,86 +566,167 @@ scope = "all"
 
 [[migration]]
 version = 141
-description = "discovery storage"
+description = "post 0.16.6 prerelease noop"
 checksum_algo = "blake3"
 
 [[migration.steps]]
 kind = "sql"
-file = "migrations/0141_discovery_storage.sql"
-engine = "sqlite"
-scope = "all"
-
-[[migration.steps]]
-kind = "sql"
-file = "postgres/migrations/0141_discovery_storage.sql"
-engine = "postgres"
+file = "migrations/0141_post_0_16_6_prerelease_noop.sql"
+engine = "all"
 scope = "all"
 
 [[migration]]
 version = 142
-description = "discovery sync resume and lease"
+description = "post 0.16.6 prerelease noop"
 checksum_algo = "blake3"
 
 [[migration.steps]]
 kind = "sql"
-file = "migrations/0142_discovery_sync_resume_and_lease.sql"
-engine = "sqlite"
-scope = "all"
-
-[[migration.steps]]
-kind = "sql"
-file = "postgres/migrations/0142_discovery_sync_resume_and_lease.sql"
-engine = "postgres"
+file = "migrations/0141_post_0_16_6_prerelease_noop.sql"
+engine = "all"
 scope = "all"
 
 [[migration]]
 version = 143
-description = "discovery sync transient failure count"
+description = "post 0.16.6 prerelease noop"
 checksum_algo = "blake3"
 
 [[migration.steps]]
 kind = "sql"
-file = "migrations/0143_discovery_sync_transient_failure_count.sql"
-engine = "sqlite"
-scope = "all"
-
-[[migration.steps]]
-kind = "sql"
-file = "postgres/migrations/0143_discovery_sync_transient_failure_count.sql"
-engine = "postgres"
+file = "migrations/0141_post_0_16_6_prerelease_noop.sql"
+engine = "all"
 scope = "all"
 
 [[migration]]
 version = 144
-description = "indexer search learning"
+description = "post 0.16.6 prerelease noop"
 checksum_algo = "blake3"
 
 [[migration.steps]]
 kind = "sql"
-file = "migrations/0144_indexer_search_learning.sql"
-engine = "sqlite"
-scope = "all"
-
-[[migration.steps]]
-kind = "sql"
-file = "postgres/migrations/0144_indexer_search_learning.sql"
-engine = "postgres"
+file = "migrations/0141_post_0_16_6_prerelease_noop.sql"
+engine = "all"
 scope = "all"
 
 [[migration]]
 version = 145
-description = "title catalog sort key"
+description = "post 0.16.6 prerelease noop"
 checksum_algo = "blake3"
 
 [[migration.steps]]
 kind = "sql"
-file = "migrations/0145_title_catalog_sort_key.sql"
+file = "migrations/0141_post_0_16_6_prerelease_noop.sql"
+engine = "all"
+scope = "all"
+
+[[migration]]
+version = 146
+description = "post 0.16.6 prerelease noop"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0141_post_0_16_6_prerelease_noop.sql"
+engine = "all"
+scope = "all"
+
+[[migration]]
+version = 147
+description = "post 0.16.6 prerelease noop"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0141_post_0_16_6_prerelease_noop.sql"
+engine = "all"
+scope = "all"
+
+[[migration]]
+version = 148
+description = "post 0.16.6 prerelease noop"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0141_post_0_16_6_prerelease_noop.sql"
+engine = "all"
+scope = "all"
+
+[[migration]]
+version = 149
+description = "post 0.16.6 prerelease noop"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0141_post_0_16_6_prerelease_noop.sql"
+engine = "all"
+scope = "all"
+
+[[migration]]
+version = 150
+description = "post 0.16.6 prerelease noop"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0141_post_0_16_6_prerelease_noop.sql"
+engine = "all"
+scope = "all"
+
+[[migration]]
+version = 151
+description = "post 0.16.6 prerelease noop"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0141_post_0_16_6_prerelease_noop.sql"
+engine = "all"
+scope = "all"
+
+[[migration]]
+version = 152
+description = "post 0.16.6 prerelease noop"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0141_post_0_16_6_prerelease_noop.sql"
+engine = "all"
+scope = "all"
+
+[[migration]]
+version = 153
+description = "post 0.16.6 prerelease noop"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0141_post_0_16_6_prerelease_noop.sql"
+engine = "all"
+scope = "all"
+
+[[migration]]
+version = 154
+description = "post 0.16.6 prerelease rollup"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "rust"
+hook_id = "converge_post_0_16_6_prerelease_schema"
+engine = "all"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0154_post_0_16_6_prerelease_rollup.sql"
 engine = "sqlite"
 scope = "all"
 
 [[migration.steps]]
 kind = "sql"
-file = "postgres/migrations/0145_title_catalog_sort_key.sql"
+file = "postgres/migrations/0154_post_0_16_6_prerelease_rollup.sql"
 engine = "postgres"
 scope = "all"
 
@@ -653,142 +734,6 @@ scope = "all"
 kind = "rust"
 hook_id = "migrate_title_catalog_sort_keys"
 engine = "all"
-scope = "all"
-
-[[migration]]
-version = 146
-description = "job run listing indexes"
-checksum_algo = "blake3"
-
-[[migration.steps]]
-kind = "sql"
-file = "migrations/0146_job_run_listing_indexes.sql"
-engine = "sqlite"
-scope = "all"
-
-[[migration.steps]]
-kind = "sql"
-file = "postgres/migrations/0146_job_run_listing_indexes.sql"
-engine = "postgres"
-scope = "all"
-
-[[migration]]
-version = 147
-description = "external import monitor source sessions"
-checksum_algo = "blake3"
-
-[[migration.steps]]
-kind = "sql"
-file = "migrations/0147_external_import_monitor_source_sessions.sql"
-engine = "sqlite"
-scope = "all"
-
-[[migration.steps]]
-kind = "sql"
-file = "postgres/migrations/0147_external_import_monitor_source_sessions.sql"
-engine = "postgres"
-scope = "all"
-
-[[migration]]
-version = 148
-description = "external import setup secret drafts"
-checksum_algo = "blake3"
-
-[[migration.steps]]
-kind = "sql"
-file = "migrations/0148_external_import_setup_secret_drafts.sql"
-engine = "sqlite"
-scope = "all"
-
-[[migration.steps]]
-kind = "sql"
-file = "postgres/migrations/0148_external_import_setup_secret_drafts.sql"
-engine = "postgres"
-scope = "all"
-
-[[migration]]
-version = 149
-description = "title more like this discovery"
-checksum_algo = "blake3"
-
-[[migration.steps]]
-kind = "sql"
-file = "migrations/0149_title_more_like_this_discovery.sql"
-engine = "sqlite"
-scope = "all"
-
-[[migration.steps]]
-kind = "sql"
-file = "postgres/migrations/0149_title_more_like_this_discovery.sql"
-engine = "postgres"
-scope = "all"
-
-[[migration]]
-version = 150
-description = "title external ratings"
-checksum_algo = "blake3"
-
-[[migration.steps]]
-kind = "sql"
-file = "migrations/0150_title_external_ratings.sql"
-engine = "sqlite"
-scope = "all"
-
-[[migration.steps]]
-kind = "sql"
-file = "postgres/migrations/0150_title_external_ratings.sql"
-engine = "postgres"
-scope = "all"
-
-[[migration]]
-version = 151
-description = "title popularity"
-checksum_algo = "blake3"
-
-[[migration.steps]]
-kind = "sql"
-file = "migrations/0151_title_popularity.sql"
-engine = "sqlite"
-scope = "all"
-
-[[migration.steps]]
-kind = "sql"
-file = "postgres/migrations/0151_title_popularity.sql"
-engine = "postgres"
-scope = "all"
-
-[[migration]]
-version = 152
-description = "upstream scheduler state"
-checksum_algo = "blake3"
-
-[[migration.steps]]
-kind = "sql"
-file = "migrations/0152_upstream_scheduler_state.sql"
-engine = "sqlite"
-scope = "all"
-
-[[migration.steps]]
-kind = "sql"
-file = "postgres/migrations/0152_upstream_scheduler_state.sql"
-engine = "postgres"
-scope = "all"
-
-[[migration]]
-version = 153
-description = "canonical media ratings"
-checksum_algo = "blake3"
-
-[[migration.steps]]
-kind = "sql"
-file = "migrations/0153_canonical_media_ratings.sql"
-engine = "sqlite"
-scope = "all"
-
-[[migration.steps]]
-kind = "sql"
-file = "postgres/migrations/0153_canonical_media_ratings.sql"
-engine = "postgres"
 scope = "all"
 
 [[baseline]]
@@ -799,4 +744,14 @@ engine = "sqlite"
 [[baseline]]
 through_version = 122
 file = "postgres/baselines/0122_baseline.sql"
+engine = "postgres"
+
+[[baseline]]
+through_version = 154
+file = "baselines/0154_baseline.sql"
+engine = "sqlite"
+
+[[baseline]]
+through_version = 154
+file = "postgres/baselines/0154_baseline.sql"
 engine = "postgres"

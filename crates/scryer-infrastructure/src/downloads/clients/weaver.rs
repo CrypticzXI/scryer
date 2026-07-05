@@ -5,7 +5,7 @@ use chrono::{DateTime, Utc};
 use reqwest::multipart;
 use scryer_application::{
     AppError, AppResult, DownloadClient, DownloadClientAddRequest, DownloadGrabResult,
-    NullStagedNzbStore, StagedNzbStore,
+    NullStagedNzbStore, RateLimitCooldownAction, StagedNzbStore,
 };
 use scryer_domain::{
     CompletedDownload, DownloadClientConfig, DownloadQueueItem, DownloadQueueState,
@@ -985,17 +985,22 @@ fn derive_nzb_filename(source_title: Option<&str>, source_hint: &str, title_name
 
 fn map_weaver_outbound_error(operation: &str, error: OutboundHttpError) -> AppError {
     match error {
-        OutboundHttpError::RateLimited(rate_limited) => AppError::Repository(
-            match rate_limited.retry_after.filter(|delay| !delay.is_zero()) {
-                Some(delay) => {
-                    format!(
-                        "{operation} was rate limited; retry after {}s",
-                        delay.as_secs()
-                    )
-                }
-                None => format!("{operation} was rate limited"),
-            },
-        ),
+        OutboundHttpError::RateLimited(rate_limited) => {
+            let retry_after = rate_limited.retry_after.filter(|delay| !delay.is_zero());
+            AppError::rate_limited_temporary_unavailable(
+                match retry_after {
+                    Some(delay) => {
+                        format!(
+                            "{operation} was rate limited; retry after {}s",
+                            delay.as_secs()
+                        )
+                    }
+                    None => format!("{operation} was rate limited"),
+                },
+                retry_after,
+                RateLimitCooldownAction::AlreadyRecorded,
+            )
+        }
         OutboundHttpError::Transport { source, .. } => {
             AppError::Repository(format!("{operation} failed: {source}"))
         }
@@ -1500,9 +1505,13 @@ mod tests {
     use wiremock::matchers::{body_string_contains, header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    use super::{WeaverDownloadClient, WeaverQueueItem, weaver_item_to_queue_item};
-    use scryer_application::DownloadClient;
+    use super::{
+        WeaverDownloadClient, WeaverQueueItem, map_weaver_outbound_error, weaver_item_to_queue_item,
+    };
+    use scryer_application::{AppError, DownloadClient};
     use scryer_domain::{DownloadClientConfig, DownloadQueueState};
+    use scryer_outbound_http::OutboundHttpError;
+    use std::time::Duration;
 
     fn test_config(config_json: &str) -> DownloadClientConfig {
         DownloadClientConfig {
@@ -1518,6 +1527,30 @@ mod tests {
             last_seen_at: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
+        }
+    }
+
+    #[test]
+    fn outbound_rate_limit_preserves_retry_after() {
+        let error = OutboundHttpError::RateLimited(scryer_outbound_http::RateLimitedError {
+            scope: scryer_outbound_http::RateLimitScopeKey::from("weaver"),
+            retry_after: Some(Duration::from_secs(40)),
+            attempts: 1,
+            retry_after_source: scryer_outbound_http::RetryAfterSource::Seconds,
+            request_label: std::borrow::Cow::Borrowed("weaver"),
+        });
+        let error = map_weaver_outbound_error("weaver queue", error);
+
+        match error {
+            AppError::TemporaryUnavailable {
+                message,
+                retry_after,
+                ..
+            } => {
+                assert!(message.contains("retry after 40s"));
+                assert_eq!(retry_after, Some(Duration::from_secs(40)));
+            }
+            other => panic!("expected temporary unavailable error, got {other:?}"),
         }
     }
 

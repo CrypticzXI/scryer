@@ -54,7 +54,7 @@ async fn graphql_metadata_movie() {
         &ctx,
         r#"query($input: MetadataMovieInput!) {
             metadataMovie(input: $input) {
-                name year runtimeMinutes genres overview
+                name year runtimeMinutes overview
             }
         }"#,
         json!({ "input": { "tvdbId": "123456" } }),

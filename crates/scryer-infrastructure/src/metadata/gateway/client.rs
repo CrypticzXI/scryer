@@ -18,8 +18,8 @@ use scryer_application::{
     DiscoveryContextSnapshotSubmitInput, DiscoveryContextSnapshotSubmitResult,
     DiscoveryDashboardResult, DiscoveryPublicFeedInput, DiscoveryRelatedResult, EpisodeArtworkUrls,
     EpisodeMetadata, MetadataGateway, MetadataSearchItem, MetadataSearchQuery, MovieMetadata,
-    MultiMetadataSearchResult, RichMetadataSearchItem, SeasonMetadata, SeriesArtworkUrls,
-    SeriesMetadata, SettingsRepository, SmgScryerUpdateNotice, TitleArtworkUrls,
+    MultiMetadataSearchResult, RateLimitCooldownAction, RichMetadataSearchItem, SeasonMetadata,
+    SeriesArtworkUrls, SeriesMetadata, SettingsRepository, SmgScryerUpdateNotice, TitleArtworkUrls,
     TitleExternalRating, TitleRatingSummary, TitleRecommendationsInput,
 };
 use scryer_domain::CanonicalMediaTag;
@@ -2362,14 +2362,14 @@ mod tests {
         build_bulk_artwork_url_query, build_bulk_mixed_query, build_search_tvdb_batch_query,
         canonical_request_host, canonical_request_path_and_query, compatibility_poll_phase,
         enrollment_retry_delay, is_version_incompatible_response,
-        next_version_compatibility_poll_delay_at, normalize_artwork_url,
-        normalize_optional_artwork_url, parse_version_compatibility_incompatible,
-        parse_version_compatibility_success, pick_artwork_url, sha256_hex,
-        validate_search_tvdb_batch_echo,
+        map_metadata_gateway_outbound_error, next_version_compatibility_poll_delay_at,
+        normalize_artwork_url, normalize_optional_artwork_url,
+        parse_version_compatibility_incompatible, parse_version_compatibility_success,
+        pick_artwork_url, sha256_hex, validate_search_tvdb_batch_echo,
     };
     use base64::Engine as _;
     use scryer_application::{
-        DiscoveryContextChangeType, DiscoveryContextChangedSubjectInput,
+        AppError, DiscoveryContextChangeType, DiscoveryContextChangedSubjectInput,
         DiscoveryContextChangesInput, DiscoveryPublicFeedInput, DiscoverySubjectInput,
         MetadataGateway,
     };
@@ -2392,6 +2392,35 @@ mod tests {
                 }
             }
         })
+    }
+
+    #[test]
+    fn metadata_gateway_outbound_rate_limit_preserves_retry_after() {
+        let error = scryer_outbound_http::OutboundHttpError::RateLimited(
+            scryer_outbound_http::RateLimitedError {
+                scope: scryer_outbound_http::RateLimitScopeKey::from("metadata:gateway"),
+                retry_after: Some(Duration::from_secs(90)),
+                attempts: 1,
+                retry_after_source: scryer_outbound_http::RetryAfterSource::Seconds,
+                request_label: std::borrow::Cow::Borrowed("metadata gateway"),
+            },
+        );
+        let error = map_metadata_gateway_outbound_error("metadata gateway", error);
+
+        match error {
+            AppError::TemporaryUnavailable {
+                message,
+                retry_after,
+                ..
+            } => {
+                assert!(
+                    message.contains("retry after 90s"),
+                    "unexpected message: {message}"
+                );
+                assert_eq!(retry_after, Some(Duration::from_secs(90)));
+            }
+            other => panic!("expected temporary unavailable error, got {other:?}"),
+        }
     }
 
     fn empty_metadata_bulk_payload() -> serde_json::Value {
@@ -2455,7 +2484,6 @@ mod tests {
             "sort_title": "fixture movie",
             "imdb_id": "tt1234567",
             "tmdb_id": 123,
-            "genres": [],
             "studio": "",
             "tmdb_release_date": null,
             "rating": null,
@@ -2479,7 +2507,6 @@ mod tests {
             "runtime_minutes": 45,
             "poster_url": "",
             "country": "",
-            "genres": [],
             "canonical_tags": [],
             "rating": null,
             "rating_sources": [],
@@ -3869,7 +3896,6 @@ mod tests {
                     "imdb_id": "tt9100100",
                     "tmdb_id": 810_010,
                     "anidb_id": null,
-                    "genres": ["Drama"],
                     "studio": "Test Studio",
                     "tmdb_release_date": "2026-01-01"
                 }
@@ -4271,12 +4297,17 @@ fn map_metadata_gateway_outbound_error(request_label: &str, error: OutboundHttpE
                 .retry_after
                 .filter(|delay| !delay.is_zero())
                 .map(|delay| delay.as_secs());
-            AppError::Repository(match retry_after_seconds {
+            let message = match retry_after_seconds {
                 Some(seconds) if seconds > 0 => format!(
                     "{request_label} was rate limited by the metadata gateway; retry after {seconds}s"
                 ),
                 _ => format!("{request_label} was rate limited by the metadata gateway"),
-            })
+            };
+            AppError::rate_limited_temporary_unavailable(
+                message,
+                rate_limited.retry_after.filter(|delay| !delay.is_zero()),
+                RateLimitCooldownAction::AlreadyRecorded,
+            )
         }
         OutboundHttpError::Transport { source, .. } => AppError::Repository(format!(
             "{request_label} failed: {}",

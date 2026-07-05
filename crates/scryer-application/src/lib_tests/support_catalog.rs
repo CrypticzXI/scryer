@@ -470,7 +470,6 @@ impl TitleRepository for MockTitleRepo {
         title.slug = metadata.slug;
         title.imdb_id = metadata.imdb_id;
         title.runtime_minutes = metadata.runtime_minutes;
-        title.genres = metadata.genres;
         title.content_status = metadata.content_status;
         title.language = metadata.language;
         title.first_aired = metadata.first_aired;

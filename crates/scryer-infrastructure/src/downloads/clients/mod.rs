@@ -14,7 +14,8 @@ use futures_util::StreamExt;
 use quick_xml::Reader;
 use quick_xml::events::Event;
 use scryer_application::{
-    AppError, AppResult, DownloadClientAddRequest, StagedNzbRef, StagedNzbStore,
+    AppError, AppResult, DownloadClientAddRequest, RateLimitCooldownAction, StagedNzbRef,
+    StagedNzbStore,
 };
 use scryer_outbound_http::{OutboundHttpClient, OutboundHttpError, RequestPolicy};
 use serde_json::{Value, json};
@@ -547,20 +548,7 @@ pub(crate) async fn stage_nzb_from_url(
             || client.client().get(url).header("User-Agent", "scryer/0.1"),
         )
         .await
-        .map_err(|error| match error {
-            OutboundHttpError::RateLimited(rate_limited) => AppError::Repository(
-                match rate_limited.retry_after.filter(|delay| !delay.is_zero()) {
-                    Some(delay) => format!(
-                        "nzb download request was rate limited; retry after {}s",
-                        delay.as_secs()
-                    ),
-                    None => "nzb download request was rate limited".to_string(),
-                },
-            ),
-            OutboundHttpError::Transport { source, .. } => {
-                AppError::Repository(format!("nzb download request failed: {source}"))
-            }
-        })?;
+        .map_err(map_nzb_download_outbound_error)?;
 
     let status = response.status();
     if !status.is_success() {
@@ -698,6 +686,28 @@ pub(crate) async fn resolve_staged_nzb_for_request(
     Ok(staged)
 }
 
+fn map_nzb_download_outbound_error(error: OutboundHttpError) -> AppError {
+    match error {
+        OutboundHttpError::RateLimited(rate_limited) => {
+            let retry_after = rate_limited.retry_after.filter(|delay| !delay.is_zero());
+            AppError::rate_limited_temporary_unavailable(
+                match retry_after {
+                    Some(delay) => format!(
+                        "nzb download request was rate limited; retry after {}s",
+                        delay.as_secs()
+                    ),
+                    None => "nzb download request was rate limited".to_string(),
+                },
+                retry_after,
+                RateLimitCooldownAction::AlreadyRecorded,
+            )
+        }
+        OutboundHttpError::Transport { source, .. } => {
+            AppError::Repository(format!("nzb download request failed: {source}"))
+        }
+    }
+}
+
 fn nzb_download_scope(url: &str) -> String {
     match reqwest::Url::parse(url)
         .ok()
@@ -711,13 +721,42 @@ fn nzb_download_scope(url: &str) -> String {
 #[cfg(test)]
 mod tests {
     use std::path::Path;
+    use std::time::Duration;
 
-    use scryer_application::StagedNzbStore;
+    use scryer_application::{AppError, StagedNzbStore};
+    use scryer_outbound_http::OutboundHttpError;
     use tempfile::TempDir;
 
     use crate::FileSystemStagedNzbStore;
 
-    use super::{MAX_NZB_BYTES, stream_validate_and_compress_nzb, validate_nzb_xml};
+    use super::{
+        MAX_NZB_BYTES, map_nzb_download_outbound_error, stream_validate_and_compress_nzb,
+        validate_nzb_xml,
+    };
+
+    #[test]
+    fn nzb_download_outbound_rate_limit_preserves_retry_after() {
+        let error = OutboundHttpError::RateLimited(scryer_outbound_http::RateLimitedError {
+            scope: scryer_outbound_http::RateLimitScopeKey::from("nzb-download"),
+            retry_after: Some(Duration::from_secs(50)),
+            attempts: 1,
+            retry_after_source: scryer_outbound_http::RetryAfterSource::Seconds,
+            request_label: std::borrow::Cow::Borrowed("nzb download"),
+        });
+        let error = map_nzb_download_outbound_error(error);
+
+        match error {
+            AppError::TemporaryUnavailable {
+                message,
+                retry_after,
+                ..
+            } => {
+                assert!(message.contains("retry after 50s"));
+                assert_eq!(retry_after, Some(Duration::from_secs(50)));
+            }
+            other => panic!("expected temporary unavailable error, got {other:?}"),
+        }
+    }
 
     fn load_real_nzb_fixture_bytes() -> Vec<u8> {
         let manifest_dir = env!("CARGO_MANIFEST_DIR");

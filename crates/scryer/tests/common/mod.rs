@@ -907,7 +907,20 @@ async fn mount_default_smg_metadata_mocks(server: &MockServer) {
                     "runtime_minutes": 142,
                     "sort_title": "Test Movie Title",
                     "imdb_id": "tt1234567",
-                    "genres": ["Action", "Thriller"],
+                    "canonical_tags": [
+                        {
+                            "key": "canonical:genre:action",
+                            "category": "genre",
+                            "name": "Action",
+                            "confidence": 1.0
+                        },
+                        {
+                            "key": "canonical:genre:thriller",
+                            "category": "genre",
+                            "name": "Thriller",
+                            "confidence": 1.0
+                        }
+                    ],
                     "studio": "Test Studios",
                     "tmdb_release_date": "2024-06-15"
                 }
@@ -926,7 +939,20 @@ async fn mount_default_smg_metadata_mocks(server: &MockServer) {
                     "runtime_minutes": 45,
                     "poster_url": "https://artworks.thetvdb.com/banners/series/345678/posters/test.jpg",
                     "country": "usa",
-                    "genres": ["Drama", "Thriller"],
+                    "canonical_tags": [
+                        {
+                            "key": "canonical:genre:drama",
+                            "category": "genre",
+                            "name": "Drama",
+                            "confidence": 1.0
+                        },
+                        {
+                            "key": "canonical:genre:thriller",
+                            "category": "genre",
+                            "name": "Thriller",
+                            "confidence": 1.0
+                        }
+                    ],
                     "aliases": ["Testing Show", "QA Chronicles"],
                     "tagged_aliases": [],
                     "seasons": [

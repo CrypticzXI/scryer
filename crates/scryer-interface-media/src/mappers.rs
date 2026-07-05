@@ -11,11 +11,12 @@ use scryer_application::{
     DownloadClientRoutingSettingsEntry, FacetScoringPersonaSelection, IgnorePendingImportResult,
     IndexerRoutingSettingsEntry, IndexerSearchResult, JobDefinition, JobRun, LibraryPathsSettings,
     LibraryScanSummary, LibrarySettings, ManualPluginPreview, MediaRequestCounts, MediaSettings,
-    ParsedEpisodeMetadata, ParsedReleaseMetadata, PendingImportConnection, PendingImportCounts,
-    PendingImportItem, PendingImportSearchAttempt, PendingRelease, PluginCatalogStatus,
-    QualityProfile, QualityProfileCriteria, QualityProfileDecision, QualityProfileSelection,
-    QualityProfileSettings, RegistryPlugin, RenameApplyItemResult, RenameApplyResult, RenamePlan,
-    RenamePlanItem, ResolvePendingImportResult, RssSyncReport, ScoringEntry, ScoringSource,
+    OutboundRateLimitSnapshot, ParsedEpisodeMetadata, ParsedReleaseMetadata,
+    PendingImportConnection, PendingImportCounts, PendingImportItem, PendingImportSearchAttempt,
+    PendingRelease, PluginCatalogStatus, QualityProfile, QualityProfileCriteria,
+    QualityProfileDecision, QualityProfileSelection, QualityProfileSettings, RegistryPlugin,
+    RenameApplyItemResult, RenameApplyResult, RenamePlan, RenamePlanItem,
+    ResolvePendingImportResult, RssSyncReport, SchedulerSnapshot, ScoringEntry, ScoringSource,
     ServiceSettings, SmgScryerUpdateNotice, SmgVersionCompatibilityNotice, SubmissionScope,
     SystemHealth, TitleHistoryPage, TitleRatingSummary, TitleReleaseBlocklistEntry,
 };
@@ -2546,6 +2547,78 @@ pub fn from_system_health(health: SystemHealth) -> SystemHealthPayload {
                 api_max: s.api_max.map(|v| v as i32),
                 grab_current: s.grab_current.map(|v| v as i32),
                 grab_max: s.grab_max.map(|v| v as i32),
+            })
+            .collect(),
+    }
+}
+
+pub fn from_upstream_scheduler_snapshot(
+    snapshot: SchedulerSnapshot,
+) -> UpstreamSchedulerSnapshotPayload {
+    UpstreamSchedulerSnapshotPayload {
+        entries: snapshot
+            .entries
+            .into_iter()
+            .map(|entry| UpstreamSchedulerSnapshotEntryPayload {
+                host_key: entry.host_key.to_string(),
+                destination_key: entry.destination_key.to_string(),
+                account_quota_key: entry.account_quota_key.map(|key| key.to_string()),
+                rss_request_key: entry.rss_request_key,
+                last_decision: entry.last_decision,
+                last_feedback_at: entry.last_feedback_at,
+                last_successful_at: entry.last_successful_at,
+                last_attempt_at: entry.last_attempt_at,
+                cooldown_until: entry.cooldown_until,
+                api_remaining_fraction: entry.api_remaining_fraction,
+                quota_observed_at: entry.quota_observed_at,
+                quota_probe_after: entry.quota_probe_after,
+                quota_reset_at: entry.quota_reset_at,
+                quota_source: entry.quota_source,
+                quota_stale: entry.quota_stale,
+                rss_last_successful_poll_at: entry.rss_last_successful_poll_at,
+                rss_last_attempt_at: entry.rss_last_attempt_at,
+                rss_target_interval_seconds: entry
+                    .rss_target_interval
+                    .map(|duration| Long::from_u64_saturating(duration.as_secs())),
+                rss_latest_safe_poll_at: entry.rss_latest_safe_poll_at,
+                rss_estimated_feed_depth: entry
+                    .rss_estimated_feed_depth
+                    .map(|value| i32::try_from(value).unwrap_or(i32::MAX)),
+                rss_freshness_risk: entry.rss_freshness_risk,
+                rss_destination_recent_activity_at: entry.rss_destination_recent_activity_at,
+                rss_last_seen_release_identity: entry.rss_last_seen_release_identity,
+                rss_last_seen_release_published_at: entry.rss_last_seen_release_published_at,
+                rss_last_feed_gap_start_at: entry.rss_last_feed_gap_start_at,
+                rss_last_feed_gap_end_at: entry.rss_last_feed_gap_end_at,
+                admitted_count: Long::from_u64_saturating(entry.admitted_count),
+                deferred_count: Long::from_u64_saturating(entry.deferred_count),
+                skipped_count: Long::from_u64_saturating(entry.skipped_count),
+            })
+            .collect(),
+    }
+}
+
+pub fn from_outbound_rate_limit_snapshot(
+    snapshot: OutboundRateLimitSnapshot,
+) -> OutboundRateLimitSnapshotPayload {
+    OutboundRateLimitSnapshotPayload {
+        host_rps: snapshot
+            .host_rps
+            .into_iter()
+            .map(|entry| OutboundHostRpsSnapshotEntryPayload {
+                host_key: entry.host_key,
+                available_in_seconds: Long::from_u64_saturating(entry.available_in.as_secs()),
+                requests_per_second: entry.requests_per_second,
+                burst: i32::try_from(entry.burst).unwrap_or(i32::MAX),
+                profile_source: entry.profile_source,
+            })
+            .collect(),
+        destination_cooldowns: snapshot
+            .destination_cooldowns
+            .into_iter()
+            .map(|entry| OutboundDestinationCooldownSnapshotEntryPayload {
+                destination_key: entry.destination_key,
+                available_in_seconds: Long::from_u64_saturating(entry.available_in.as_secs()),
             })
             .collect(),
     }

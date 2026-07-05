@@ -2050,6 +2050,7 @@ pub(crate) fn map_app_error(error: AppError) -> Response {
         AppError::TemporaryUnavailable {
             message,
             retry_after,
+            ..
         } => {
             let mut response = (
                 StatusCode::SERVICE_UNAVAILABLE,

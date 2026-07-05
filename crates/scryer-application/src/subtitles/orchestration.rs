@@ -20,11 +20,11 @@ use crate::subtitles::sync;
 use crate::subtitles::wanted::{SubtitleLanguagePref, compute_missing_subtitles_from_streams};
 use crate::{
     AccountQuotaKey, AppError, AppResult, AppUseCase, EstimatedCost, JobKey, JobTriggerSource,
-    ParsedReleaseMetadata, RateLimitSignal, SchedulerAdmission, SchedulerBatchRequest,
-    SchedulerCandidate, SchedulerCandidateId, SchedulerFeedback, SchedulerFeedbackOutcome,
-    SchedulerIntent, SchedulerLease, SchedulerOperation, SchedulerPluginKind, ScopedExternalId,
-    SubtitleProviderClient, SubtitleProviderConfigUpdate, SubtitleSettings as AppSubtitleSettings,
-    parse_release_metadata,
+    ParsedReleaseMetadata, RateLimitCooldownAction, RateLimitSignal, SchedulerAdmission,
+    SchedulerBatchRequest, SchedulerCandidate, SchedulerCandidateId, SchedulerFeedback,
+    SchedulerFeedbackOutcome, SchedulerIntent, SchedulerLease, SchedulerOperation,
+    SchedulerPluginKind, ScopedExternalId, SubtitleProviderClient, SubtitleProviderConfigUpdate,
+    SubtitleSettings as AppSubtitleSettings, parse_release_metadata,
 };
 use scryer_domain::{
     ExternalSubtitleSourceKind, SubtitleBlocklistEntry, SubtitleDownload, SubtitleProviderConfig,
@@ -136,6 +136,7 @@ async fn admit_subtitle_provider(
                 host_key: provider.host_key.clone(),
                 destination_key: provider.destination_key.clone(),
                 account_quota_key: Some(AccountQuotaKey::from(provider.config_id.clone())),
+                rss_request_key: None,
                 estimated_cost: EstimatedCost::ONE_API_CALL,
                 expected_value: Default::default(),
                 learning_context: None,
@@ -209,6 +210,7 @@ async fn record_subtitle_scheduler_feedback(
     lease: Option<SchedulerLease>,
     outcome: SchedulerFeedbackOutcome,
     retry_after: Option<Duration>,
+    cooldown_action: RateLimitCooldownAction,
 ) {
     if let Err(error) = app
         .services
@@ -225,6 +227,7 @@ async fn record_subtitle_scheduler_feedback(
             observed_grab_current: None,
             observed_grab_max: None,
             retry_after,
+            cooldown_action,
             rss_last_seen_release_identity: None,
             rss_last_seen_release_published_at: None,
             rss_feed_result_count: None,
@@ -242,15 +245,25 @@ async fn record_subtitle_scheduler_feedback(
 }
 
 fn subtitle_retry_after_from_error(error: &AppError) -> Option<Duration> {
-    RateLimitSignal::from_error(error).and_then(|signal| signal.retry_after)
+    subtitle_rate_limit_signal_from_error(error).and_then(|signal| signal.retry_after)
+}
+
+fn subtitle_cooldown_action_from_error(error: &AppError) -> RateLimitCooldownAction {
+    subtitle_rate_limit_signal_from_error(error)
+        .map(|signal| signal.cooldown_action)
+        .unwrap_or(RateLimitCooldownAction::None)
 }
 
 fn subtitle_scheduler_outcome_for_error(error: &AppError) -> SchedulerFeedbackOutcome {
-    if RateLimitSignal::from_error(error).is_some() {
+    if subtitle_rate_limit_signal_from_error(error).is_some() {
         SchedulerFeedbackOutcome::RateLimited
     } else {
         SchedulerFeedbackOutcome::ProviderFailure
     }
+}
+
+fn subtitle_rate_limit_signal_from_error(error: &AppError) -> Option<RateLimitSignal> {
+    RateLimitSignal::from_error(error)
 }
 
 async fn configured_runtime_subtitle_providers(
@@ -460,6 +473,7 @@ async fn search_all_subtitle_providers(
                     Some(scheduler_lease),
                     SchedulerFeedbackOutcome::Success,
                     None,
+                    RateLimitCooldownAction::None,
                 )
                 .await;
                 record_subtitle_provider_search_success(
@@ -488,6 +502,7 @@ async fn search_all_subtitle_providers(
                     Some(scheduler_lease),
                     outcome,
                     retry_after,
+                    subtitle_cooldown_action_from_error(&error),
                 )
                 .await;
                 record_subtitle_provider_search_failure(
@@ -826,6 +841,7 @@ impl AppUseCase {
                     Some(scheduler_lease),
                     SchedulerFeedbackOutcome::Success,
                     None,
+                    RateLimitCooldownAction::None,
                 )
                 .await;
             }
@@ -836,6 +852,7 @@ impl AppUseCase {
                     Some(scheduler_lease),
                     subtitle_scheduler_outcome_for_error(error),
                     subtitle_retry_after_from_error(error),
+                    subtitle_cooldown_action_from_error(error),
                 )
                 .await;
             }
@@ -1791,6 +1808,10 @@ async fn run_subtitle_search_for_file(
             Some(scheduler_lease),
             scheduler_outcome,
             scheduler_retry_after,
+            match &download_result {
+                Ok(_) => RateLimitCooldownAction::None,
+                Err(error) => subtitle_cooldown_action_from_error(error),
+            },
         )
         .await;
         match download_result {
@@ -2060,6 +2081,10 @@ async fn run_subtitle_search_cycle(app: &AppUseCase) -> AppResult<()> {
                     Some(scheduler_lease),
                     scheduler_outcome,
                     scheduler_retry_after,
+                    match &download_result {
+                        Ok(_) => RateLimitCooldownAction::None,
+                        Err(error) => subtitle_cooldown_action_from_error(error),
+                    },
                 )
                 .await;
                 match download_result {
@@ -2214,6 +2239,10 @@ mod tests {
         assert_eq!(
             subtitle_scheduler_outcome_for_error(&error),
             SchedulerFeedbackOutcome::RateLimited
+        );
+        assert_eq!(
+            subtitle_cooldown_action_from_error(&error),
+            RateLimitCooldownAction::RecordFallback
         );
     }
 

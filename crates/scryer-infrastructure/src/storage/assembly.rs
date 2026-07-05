@@ -2501,7 +2501,6 @@ mod tests {
             imdb_id: Some("tt4242420".to_string()),
             runtime_minutes: Some(101),
             popularity: None,
-            genres: vec!["Drama".to_string()],
             content_status: Some("released".to_string()),
             language: Some("eng".to_string()),
             first_aired: Some("2026-01-01".to_string()),

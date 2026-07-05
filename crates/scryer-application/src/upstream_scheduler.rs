@@ -129,6 +129,14 @@ impl ExpectedValueHint {
     pub const NEUTRAL: Self = Self { score: 1.0 };
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RateLimitCooldownAction {
+    #[default]
+    None,
+    AlreadyRecorded,
+    RecordFallback,
+}
+
 impl Default for ExpectedValueHint {
     fn default() -> Self {
         Self::NEUTRAL
@@ -166,6 +174,7 @@ pub struct SchedulerCandidate {
     pub host_key: HostKey,
     pub destination_key: DestinationKey,
     pub account_quota_key: Option<AccountQuotaKey>,
+    pub rss_request_key: Option<String>,
     pub estimated_cost: EstimatedCost,
     pub expected_value: ExpectedValueHint,
     pub learning_context: Option<SearchLearningContext>,
@@ -194,6 +203,7 @@ pub struct SchedulerLease {
     pub host_key: HostKey,
     pub destination_key: DestinationKey,
     pub account_quota_key: Option<AccountQuotaKey>,
+    pub rss_request_key: Option<String>,
     pub operation: SchedulerOperation,
     pub intent: SchedulerIntent,
     pub issued_at: DateTime<Utc>,
@@ -260,6 +270,7 @@ pub struct SchedulerFeedback {
     pub observed_grab_current: Option<u64>,
     pub observed_grab_max: Option<u64>,
     pub retry_after: Option<Duration>,
+    pub cooldown_action: RateLimitCooldownAction,
     pub rss_last_seen_release_identity: Option<String>,
     pub rss_last_seen_release_published_at: Option<DateTime<Utc>>,
     pub rss_feed_result_count: Option<u32>,
@@ -284,6 +295,20 @@ pub struct SchedulerSnapshotFilter {
     pub account_quota_key: Option<AccountQuotaKey>,
 }
 
+impl SchedulerSnapshotFilter {
+    pub fn from_raw_keys(
+        host_key: Option<String>,
+        destination_key: Option<String>,
+        account_quota_key: Option<String>,
+    ) -> Self {
+        Self {
+            host_key: host_key.map(HostKey::from),
+            destination_key: destination_key.map(DestinationKey::from),
+            account_quota_key: account_quota_key.map(AccountQuotaKey::from),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct SchedulerSnapshot {
     pub entries: Vec<SchedulerSnapshotEntry>,
@@ -294,6 +319,7 @@ pub struct SchedulerSnapshotEntry {
     pub host_key: HostKey,
     pub destination_key: DestinationKey,
     pub account_quota_key: Option<AccountQuotaKey>,
+    pub rss_request_key: Option<String>,
     pub last_decision: Option<String>,
     pub last_feedback_at: Option<DateTime<Utc>>,
     pub last_successful_at: Option<DateTime<Utc>>,
@@ -321,6 +347,53 @@ pub struct SchedulerSnapshotEntry {
     pub skipped_count: u64,
 }
 
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct OutboundRateLimitSnapshot {
+    pub host_rps: Vec<OutboundHostRpsSnapshotEntry>,
+    pub destination_cooldowns: Vec<OutboundDestinationCooldownSnapshotEntry>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct OutboundHostRpsSnapshotEntry {
+    pub host_key: String,
+    pub available_in: Duration,
+    pub requests_per_second: f64,
+    pub burst: u32,
+    pub profile_source: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct OutboundDestinationCooldownSnapshotEntry {
+    pub destination_key: String,
+    pub available_in: Duration,
+}
+
+impl From<scryer_outbound_http::RateLimitRegistrySnapshot> for OutboundRateLimitSnapshot {
+    fn from(snapshot: scryer_outbound_http::RateLimitRegistrySnapshot) -> Self {
+        Self {
+            host_rps: snapshot
+                .host_rps
+                .into_iter()
+                .map(|entry| OutboundHostRpsSnapshotEntry {
+                    host_key: entry.host_key.to_string(),
+                    available_in: entry.available_in,
+                    requests_per_second: entry.profile.requests_per_second,
+                    burst: entry.profile.burst,
+                    profile_source: format!("{:?}", entry.profile_source),
+                })
+                .collect(),
+            destination_cooldowns: snapshot
+                .destination_cooldowns
+                .into_iter()
+                .map(|entry| OutboundDestinationCooldownSnapshotEntry {
+                    destination_key: entry.destination_key.to_string(),
+                    available_in: entry.available_in,
+                })
+                .collect(),
+        }
+    }
+}
+
 #[async_trait]
 pub trait UpstreamScheduler: Send + Sync {
     async fn admit_batch(
@@ -334,5 +407,32 @@ pub trait UpstreamScheduler: Send + Sync {
 
     async fn flush_pending(&self) -> AppResult<()> {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SchedulerSnapshotFilter;
+
+    #[test]
+    fn snapshot_filter_from_raw_keys_normalizes_values() {
+        let filter = SchedulerSnapshotFilter::from_raw_keys(
+            Some("Feed.AnimeTosho.XYZ".to_string()),
+            Some("Indexer:Feed.AnimeTosho.XYZ".to_string()),
+            Some("Account:AnimeTosho".to_string()),
+        );
+
+        assert_eq!(
+            filter.host_key.as_ref().map(|key| key.to_string()),
+            Some("feed.animetosho.xyz".to_string())
+        );
+        assert_eq!(
+            filter.destination_key.as_ref().map(|key| key.to_string()),
+            Some("indexer:feed.animetosho.xyz".to_string())
+        );
+        assert_eq!(
+            filter.account_quota_key.as_ref().map(|key| key.to_string()),
+            Some("account:animetosho".to_string())
+        );
     }
 }

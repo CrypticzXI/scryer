@@ -235,7 +235,6 @@ async fn list_due_wanted_items_excludes_blocked_facets_before_limit() {
                 language: Some("ja".to_string()),
                 runtime_minutes: Some(100),
                 content_status: Some("released".to_string()),
-                genres: vec!["anime".to_string()],
                 studio: Some("Studio".to_string()),
                 digital_release_date: Some("2024-01-01".to_string()),
                 imdb_id: None,

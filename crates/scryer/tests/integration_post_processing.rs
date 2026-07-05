@@ -130,7 +130,6 @@ async fn seed_title(ctx: &TestContext, id: &str, name: &str, facet: MediaFacet) 
             imdb_id: None,
             runtime_minutes: None,
             popularity: None,
-            genres: vec![],
             content_status: None,
             language: None,
             first_aired: None,

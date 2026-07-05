@@ -1832,7 +1832,6 @@ async fn delete_media_file_honors_custom_library_permissions_after_library_refac
         imdb_id: Some("tt9988776".to_string()),
         runtime_minutes: Some(90),
         popularity: None,
-        genres: vec!["Drama".to_string()],
         content_status: Some("released".to_string()),
         language: Some("eng".to_string()),
         first_aired: Some("2024-01-01".to_string()),

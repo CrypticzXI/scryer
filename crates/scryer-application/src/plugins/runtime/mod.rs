@@ -13,6 +13,7 @@ use super::catalog::{
 use super::catalog::{ChildCatalog, ChildCatalogRelease};
 use super::*;
 use crate::ProviderCatalogFamily;
+use crate::RateLimitCooldownAction;
 use crate::ports::RuntimePluginLoad;
 use base64::Engine as _;
 use chrono::Utc;

@@ -30,12 +30,31 @@ use crate::{
 use async_trait::async_trait;
 use chrono::{DateTime, TimeZone, Utc};
 use scryer_domain::{
-    DomainEventPayload, DomainExternalIds, ExternalId, JobRunStartedEventData,
+    CanonicalMediaTag, DomainEventPayload, DomainExternalIds, ExternalId, JobRunStartedEventData,
     LibraryScanStartedEventData, MediaFacet, Title, TitleContextSnapshot, TitleUpdatedEventData,
 };
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use tokio::sync::Mutex;
+
+fn canonical_genre_tags(labels: &[&str]) -> Vec<CanonicalMediaTag> {
+    labels
+        .iter()
+        .map(|label| CanonicalMediaTag {
+            key: format!(
+                "canonical:genre:{}",
+                label.to_ascii_lowercase().replace(' ', "-")
+            ),
+            category: "genre".to_string(),
+            name: (*label).to_string(),
+            confidence: Some(1.0),
+            sources: Vec::new(),
+            source_tag_keys: Vec::new(),
+            is_adult: false,
+            is_spoiler: false,
+        })
+        .collect()
+}
 
 #[tokio::test]
 async fn discovery_sync_status_returns_state_recent_runs_and_pending_count() {
@@ -52,7 +71,7 @@ async fn discovery_sync_status_returns_state_recent_runs_and_pending_count() {
         vec![("tmdb_movie", "603")],
     );
     owned_drama_sci_fi.library_id = visible_movie_library_id.clone();
-    owned_drama_sci_fi.genres = vec!["Drama".to_string(), "Sci-Fi".to_string()];
+    owned_drama_sci_fi.canonical_tags = canonical_genre_tags(&["Drama", "Sci-Fi"]);
     owned_drama_sci_fi.tags = vec!["horror".to_string(), "isekai".to_string()];
     let mut owned_drama = test_title(
         "owned-2",
@@ -61,7 +80,7 @@ async fn discovery_sync_status_returns_state_recent_runs_and_pending_count() {
         vec![("tmdb_movie", "604")],
     );
     owned_drama.library_id = visible_movie_library_id.clone();
-    owned_drama.genres = vec!["Drama".to_string()];
+    owned_drama.canonical_tags = canonical_genre_tags(&["Drama"]);
     owned_drama.tags = vec!["horror".to_string()];
     let mut owned_sci_fi = test_title(
         "owned-3",
@@ -70,7 +89,7 @@ async fn discovery_sync_status_returns_state_recent_runs_and_pending_count() {
         vec![("tmdb_movie", "605")],
     );
     owned_sci_fi.library_id = visible_movie_library_id.clone();
-    owned_sci_fi.genres = vec!["Sci-Fi".to_string()];
+    owned_sci_fi.canonical_tags = canonical_genre_tags(&["Sci-Fi"]);
     owned_sci_fi.tags = vec!["isekai".to_string()];
     titles
         .store
@@ -179,7 +198,7 @@ async fn discovery_home_and_items_use_local_rows_and_library_view_rbac() {
         vec![("tmdb_movie", "603")],
     );
     owned_drama_sci_fi.library_id = visible_movie_library_id.clone();
-    owned_drama_sci_fi.genres = vec!["Drama".to_string(), "Sci-Fi".to_string()];
+    owned_drama_sci_fi.canonical_tags = canonical_genre_tags(&["Drama", "Sci-Fi"]);
     owned_drama_sci_fi.tags = vec!["horror".to_string(), "isekai".to_string()];
     let mut owned_drama = test_title(
         "owned-2",
@@ -188,7 +207,7 @@ async fn discovery_home_and_items_use_local_rows_and_library_view_rbac() {
         vec![("tmdb_movie", "604")],
     );
     owned_drama.library_id = visible_movie_library_id.clone();
-    owned_drama.genres = vec!["Drama".to_string()];
+    owned_drama.canonical_tags = canonical_genre_tags(&["Drama"]);
     owned_drama.tags = vec!["horror".to_string()];
     let mut owned_sci_fi = test_title(
         "owned-3",
@@ -197,7 +216,7 @@ async fn discovery_home_and_items_use_local_rows_and_library_view_rbac() {
         vec![("tmdb_movie", "605")],
     );
     owned_sci_fi.library_id = visible_movie_library_id.clone();
-    owned_sci_fi.genres = vec!["Sci-Fi".to_string()];
+    owned_sci_fi.canonical_tags = canonical_genre_tags(&["Sci-Fi"]);
     owned_sci_fi.tags = vec!["isekai".to_string()];
     titles
         .store
@@ -1328,7 +1347,7 @@ async fn catalog_discovery_scopes_personalized_rows_to_selected_readable_library
         vec![("tmdb_movie", "603")],
     );
     title_a.library_id = library_a_id.clone();
-    title_a.genres = vec!["Drama".to_string()];
+    title_a.canonical_tags = canonical_genre_tags(&["Drama"]);
     let mut title_b = test_title(
         "title-library-b",
         "Library B Title",
@@ -1336,7 +1355,7 @@ async fn catalog_discovery_scopes_personalized_rows_to_selected_readable_library
         vec![("tmdb_movie", "604")],
     );
     title_b.library_id = library_b.id.clone();
-    title_b.genres = vec!["Drama".to_string()];
+    title_b.canonical_tags = canonical_genre_tags(&["Drama"]);
     titles.store.lock().await.extend([title_a, title_b]);
 
     *discovery.state.lock().await = Some(DiscoverySyncStateRecord {
@@ -4956,7 +4975,7 @@ fn discovery_item_record(
     display_title: &str,
     target_kind: &str,
     rank_score: f64,
-    genres: &[&str],
+    genre_labels: &[&str],
     relation_subtypes: &[&str],
     owned_in_input: bool,
     resolved: bool,
@@ -4997,8 +5016,7 @@ fn discovery_item_record(
         background_url: None,
         overview: None,
         content_type: Some(target_kind.to_string()),
-        genres: genres.iter().map(|genre| (*genre).to_string()).collect(),
-        canonical_tags: vec![],
+        canonical_tags: canonical_genre_tags(genre_labels),
         rating: Some(7.5),
         rating_sources: Vec::new(),
         external_ratings: Vec::new(),
@@ -5031,16 +5049,13 @@ fn discovery_item_record(
             .contains(&"tmdb.collection")
             .then(|| "Example Collection".to_string()),
         owned_in_input,
-        facet_terms: genres
+        facet_terms: genre_labels
             .iter()
-            .flat_map(|genre| {
-                [
-                    (*genre).to_string(),
-                    format!(
-                        "canonical:genre:{}",
-                        genre.trim().to_ascii_lowercase().replace(' ', "_")
-                    ),
-                ]
+            .map(|genre| {
+                format!(
+                    "canonical:genre:{}",
+                    genre.trim().to_ascii_lowercase().replace(' ', "_")
+                )
             })
             .collect(),
         context_terms: Vec::new(),

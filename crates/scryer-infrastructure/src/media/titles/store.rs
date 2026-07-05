@@ -1105,6 +1105,7 @@ impl TitleRepository for TitleStore {
                     if canonical_subject_key
                         .as_deref()
                         .is_some_and(|key| !key.trim().is_empty())
+                        || metadata_marks_fetched
                         || !canonical_tags.is_empty()
                         || ratings.is_some()
                     {
@@ -1125,10 +1126,13 @@ impl TitleRepository for TitleStore {
                             )
                             .await?;
                         }
-                        if !canonical_tags.is_empty() {
+                        if metadata_marks_fetched || !canonical_tags.is_empty() {
                             replace_canonical_media_tags_tx(tx, &subject_id, &canonical_tags)
                                 .await?;
                         }
+                        // Full SMG metadata responses pass Some(...), including an empty
+                        // summary when SMG reports no ratings; None is reserved for callers
+                        // that are not updating ratings and must preserve existing rows.
                         if let Some(ratings) = ratings {
                             replace_canonical_media_ratings_tx(tx, &subject_id, &ratings).await?;
                         }
@@ -2251,7 +2255,11 @@ fn title_catalog_external_rating_subquery(sources: &[&str]) -> String {
         .join(", ");
     let source_expression = title_catalog_normalized_rating_source_expression("ter");
     format!(
-        "SELECT cms.title_id, MAX(ter.normalized) AS normalized
+        "SELECT cms.title_id,
+                MAX(CASE
+                    WHEN ter.normalized <= 1.0 THEN ter.normalized * 10.0
+                    ELSE ter.normalized
+                END) AS normalized
            FROM canonical_media_subjects cms
            JOIN canonical_media_external_ratings ter ON ter.subject_id = cms.id
           WHERE cms.title_id IS NOT NULL
@@ -2902,5 +2910,15 @@ mod tests {
             .expect_err("missing title should report not found");
         assert!(matches!(error, AppError::NotFound(_)));
         assert_eq!(learning_count(&pool, "missing-title").await, 1);
+    }
+
+    #[test]
+    fn title_catalog_rating_sort_scales_fractional_normalized_scores() {
+        let sql = title_catalog_external_rating_subquery(&["imdb"]);
+
+        assert!(
+            sql.contains("WHEN ter.normalized <= 1.0 THEN ter.normalized * 10.0"),
+            "rating sort should compare 0-1 and 0-10 normalized scores on the same scale: {sql}"
+        );
     }
 }

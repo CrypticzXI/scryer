@@ -152,7 +152,6 @@ export type CatalogDiscoveryItem = Pick<
       | "bestSource"
       | "canonicalTags"
       | "facetTerms"
-      | "genres"
       | "externalRatings"
       | "externalIds"
       | "overview"

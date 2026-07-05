@@ -347,7 +347,6 @@ fn make_test_title(id: &str, poster_url: Option<&str>) -> Title {
         imdb_id: None,
         runtime_minutes: None,
         popularity: None,
-        genres: vec![],
         content_status: None,
         language: None,
         first_aired: None,

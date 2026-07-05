@@ -7,10 +7,10 @@ use scryer_application::{
     ExternalImportSetupSecretDraft as AppExternalImportSetupSecretDraft,
     ExternalImportSetupSecretDraftStatus, ExternalImportSetupSecretInstanceKind,
     ExternalImportSetupSecretOverrideDraft, JwtSessionScope, MediaRequestCounts,
-    OAuthAuthorizationSource, PendingImportCounts, RuntimePathStyle, SCRYER_VERSION, SortDirection,
-    TitleCatalogContentStatus, TitleCatalogFilter, TitleCatalogSort, TitleCatalogSortKey,
-    TitleHistoryFilter, WantedItemsQuery, is_supported_title_history_event_type,
-    supported_title_history_event_types,
+    OAuthAuthorizationSource, PendingImportCounts, RuntimePathStyle, SCRYER_VERSION,
+    SchedulerSnapshotFilter, SortDirection, TitleCatalogContentStatus, TitleCatalogFilter,
+    TitleCatalogSort, TitleCatalogSortKey, TitleHistoryFilter, WantedItemsQuery,
+    is_supported_title_history_event_type, supported_title_history_event_types,
 };
 use scryer_domain::{AppPermission, LibraryPermission, TitleHistoryEventType};
 use scryer_interface_metadata::MetadataQueries;
@@ -31,12 +31,12 @@ use crate::mappers::{
     from_download_queue_item, from_episode, from_external_import_monitor_warmup_progress,
     from_job_definition, from_job_run, from_library, from_library_scan_session,
     from_library_settings, from_linked_account, from_media_rename_plan, from_media_request,
-    from_media_request_counts, from_pending_import_connection, from_pending_import_counts,
-    from_pending_release, from_provider_type, from_runtime_path_style,
+    from_media_request_counts, from_outbound_rate_limit_snapshot, from_pending_import_connection,
+    from_pending_import_counts, from_pending_release, from_provider_type, from_runtime_path_style,
     from_smg_scryer_update_notice, from_smg_version_compatibility_notice, from_system_health,
     from_title, from_title_acquisition_diagnostics, from_title_history_page, from_title_media_file,
     from_title_rating_summary, from_title_release_blocklist_entry,
-    from_user_with_auth_factor_status, from_wanted_item,
+    from_upstream_scheduler_snapshot, from_user_with_auth_factor_status, from_wanted_item,
 };
 use crate::types::*;
 
@@ -1716,6 +1716,37 @@ impl SystemQueries {
         let actor = actor_from_ctx(ctx)?;
         let health = app.system_health(&actor).await.map_err(to_gql_error)?;
         Ok(from_system_health(health))
+    }
+
+    async fn upstream_scheduler_snapshot(
+        &self,
+        ctx: &Context<'_>,
+        host_key: Option<String>,
+        destination_key: Option<String>,
+        account_quota_key: Option<String>,
+    ) -> GqlResult<UpstreamSchedulerSnapshotPayload> {
+        require_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
+        let app = app_from_ctx(ctx)?;
+        let snapshot = app
+            .upstream_scheduler_snapshot(SchedulerSnapshotFilter::from_raw_keys(
+                host_key,
+                destination_key,
+                account_quota_key,
+            ))
+            .await
+            .map_err(to_gql_error)?;
+        Ok(from_upstream_scheduler_snapshot(snapshot))
+    }
+
+    async fn outbound_rate_limit_snapshot(
+        &self,
+        ctx: &Context<'_>,
+    ) -> GqlResult<OutboundRateLimitSnapshotPayload> {
+        require_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
+        let app = app_from_ctx(ctx)?;
+        Ok(from_outbound_rate_limit_snapshot(
+            app.outbound_rate_limit_snapshot(),
+        ))
     }
 
     async fn scryer_version(&self, ctx: &Context<'_>) -> GqlResult<String> {

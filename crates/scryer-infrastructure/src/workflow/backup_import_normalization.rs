@@ -254,7 +254,6 @@ fn normalize_title_import_object(object: &mut JsonMap<String, JsonValue>) {
     for (record_field, source_field) in [
         ("tags", "tags"),
         ("external_ids", "external_ids"),
-        ("genres", "genres"),
         ("aliases", "aliases"),
         ("tagged_aliases", "tagged_aliases_json"),
     ] {

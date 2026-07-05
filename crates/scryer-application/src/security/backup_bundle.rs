@@ -500,6 +500,18 @@ pub const BACKUP_TABLE_CATALOG: &[BackupTableCatalogEntry] = &[
         classification: BackupTableClassification::Export,
     },
     BackupTableCatalogEntry {
+        table: "canonical_media_rating_summaries",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
+        table: "canonical_media_rating_sources",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
+        table: "canonical_media_external_ratings",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
         table: "discovery_facets",
         classification: BackupTableClassification::Export,
     },
@@ -549,10 +561,6 @@ pub const BACKUP_TABLE_CATALOG: &[BackupTableCatalogEntry] = &[
     },
     BackupTableCatalogEntry {
         table: "discovery_title_external_ids",
-        classification: BackupTableClassification::Export,
-    },
-    BackupTableCatalogEntry {
-        table: "discovery_title_ratings",
         classification: BackupTableClassification::Export,
     },
     BackupTableCatalogEntry {
@@ -832,10 +840,6 @@ pub const BACKUP_TABLE_CATALOG: &[BackupTableCatalogEntry] = &[
         classification: BackupTableClassification::Export,
     },
     BackupTableCatalogEntry {
-        table: "title_external_ratings",
-        classification: BackupTableClassification::Export,
-    },
-    BackupTableCatalogEntry {
         table: "title_image_variants",
         classification: BackupTableClassification::Rebuild,
     },
@@ -845,14 +849,6 @@ pub const BACKUP_TABLE_CATALOG: &[BackupTableCatalogEntry] = &[
     },
     BackupTableCatalogEntry {
         table: "title_more_like_this_items",
-        classification: BackupTableClassification::Export,
-    },
-    BackupTableCatalogEntry {
-        table: "title_rating_sources",
-        classification: BackupTableClassification::Export,
-    },
-    BackupTableCatalogEntry {
-        table: "title_rating_summaries",
         classification: BackupTableClassification::Export,
     },
     BackupTableCatalogEntry {

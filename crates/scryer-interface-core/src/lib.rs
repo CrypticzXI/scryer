@@ -259,6 +259,7 @@ pub fn to_gql_error(err: AppError) -> Error {
         AppError::TemporaryUnavailable {
             message,
             retry_after,
+            ..
         } => Error::new(message).extend_with(|_, extensions| {
             extensions.set("code", "TEMPORARY_UNAVAILABLE");
             if let Some(delay) = retry_after {

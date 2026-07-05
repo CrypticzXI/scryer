@@ -6,7 +6,7 @@ use chrono::{DateTime, Utc};
 use reqwest::{StatusCode, Url, multipart};
 use scryer_application::{
     AppError, AppResult, DownloadClient, DownloadClientAddRequest, DownloadClientStatus,
-    DownloadGrabResult, NullStagedNzbStore, StagedNzbRef, StagedNzbStore,
+    DownloadGrabResult, NullStagedNzbStore, RateLimitCooldownAction, StagedNzbRef, StagedNzbStore,
 };
 use scryer_domain::{CompletedDownload, DownloadQueueItem, DownloadQueueState};
 use scryer_outbound_http::{
@@ -1148,17 +1148,22 @@ impl SabnzbdDownloadClient {
 
 fn map_sabnzbd_outbound_error(operation: &str, error: OutboundHttpError) -> AppError {
     match error {
-        OutboundHttpError::RateLimited(rate_limited) => AppError::Repository(
-            match rate_limited.retry_after.filter(|delay| !delay.is_zero()) {
-                Some(delay) => {
-                    format!(
-                        "{operation} was rate limited; retry after {}s",
-                        delay.as_secs()
-                    )
-                }
-                None => format!("{operation} was rate limited"),
-            },
-        ),
+        OutboundHttpError::RateLimited(rate_limited) => {
+            let retry_after = rate_limited.retry_after.filter(|delay| !delay.is_zero());
+            AppError::rate_limited_temporary_unavailable(
+                match retry_after {
+                    Some(delay) => {
+                        format!(
+                            "{operation} was rate limited; retry after {}s",
+                            delay.as_secs()
+                        )
+                    }
+                    None => format!("{operation} was rate limited"),
+                },
+                retry_after,
+                RateLimitCooldownAction::AlreadyRecorded,
+            )
+        }
         OutboundHttpError::Transport { source, .. } => AppError::Repository(format!(
             "{operation} failed: {}",
             redact_sab_secret_values(&source.to_string())
@@ -1692,11 +1697,38 @@ fn is_localhost_base_url(base_url: &str) -> Option<bool> {
 mod tests {
     use super::{
         SAB_ADDFILE_UPLOAD_FIELD, SabApiAuth, SabApiResponseEvaluation, build_sab_api_urls,
-        evaluate_sab_api_response, extract_sabnzbd_category, redact_sab_secret_values,
-        sab_addfile_query_params, sab_api_mode_matches_response,
+        evaluate_sab_api_response, extract_sabnzbd_category, map_sabnzbd_outbound_error,
+        redact_sab_secret_values, sab_addfile_query_params, sab_api_mode_matches_response,
     };
     use reqwest::StatusCode;
+    use scryer_application::AppError;
+    use scryer_outbound_http::OutboundHttpError;
     use serde_json::json;
+    use std::time::Duration;
+
+    #[test]
+    fn outbound_rate_limit_preserves_retry_after() {
+        let error = OutboundHttpError::RateLimited(scryer_outbound_http::RateLimitedError {
+            scope: scryer_outbound_http::RateLimitScopeKey::from("sabnzbd"),
+            retry_after: Some(Duration::from_secs(35)),
+            attempts: 1,
+            retry_after_source: scryer_outbound_http::RetryAfterSource::Seconds,
+            request_label: std::borrow::Cow::Borrowed("sabnzbd"),
+        });
+        let error = map_sabnzbd_outbound_error("sabnzbd queue", error);
+
+        match error {
+            AppError::TemporaryUnavailable {
+                message,
+                retry_after,
+                ..
+            } => {
+                assert!(message.contains("retry after 35s"));
+                assert_eq!(retry_after, Some(Duration::from_secs(35)));
+            }
+            other => panic!("expected temporary unavailable error, got {other:?}"),
+        }
+    }
 
     #[test]
     fn extract_sabnzbd_category_trims_and_ignores_star() {

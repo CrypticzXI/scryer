@@ -4472,16 +4472,6 @@ mod tests {
         assert!(
             records[0]
                 .facet_terms
-                .contains(&"canonical:theme:psychological".to_string())
-        );
-        assert!(
-            records[0]
-                .facet_terms
-                .contains(&"canonical:theme:survival".to_string())
-        );
-        assert!(
-            records[0]
-                .facet_terms
                 .contains(&"canonical:theme:isekai".to_string())
         );
         assert!(
@@ -4489,9 +4479,11 @@ mod tests {
                 .facet_terms
                 .contains(&"canonical:theme:adult-cast".to_string())
         );
-        assert!(!records[0]
-            .facet_terms
-            .contains(&"canonical:theme:psychological".to_string()));
+        assert!(
+            !records[0]
+                .facet_terms
+                .contains(&"canonical:theme:psychological".to_string())
+        );
     }
 
     #[test]
@@ -4500,6 +4492,7 @@ mod tests {
             item_matches_discovery_items_query(
                 item,
                 &DiscoveryItemsQuery {
+                    genres: vec![genre.to_string()],
                     include_unresolved: false,
                     ..DiscoveryItemsQuery::default()
                 },
@@ -4531,7 +4524,7 @@ mod tests {
         assert!(matches_target_kind(&anime, "anime"));
         assert!(!matches_target_kind(&anime, "series"));
 
-        let mut series = test_discovery_item("series", "series", Some("series"));
+        let series = test_discovery_item("series", "series", Some("series"));
         assert!(matches_target_kind(&series, "series"));
         assert!(!matches_target_kind(&series, "anime"));
 

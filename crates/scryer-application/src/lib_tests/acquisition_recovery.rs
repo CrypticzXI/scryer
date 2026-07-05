@@ -3623,6 +3623,143 @@ async fn pending_release_submit_unavailable_records_pending_without_failed_signa
     assert!(failed.is_empty());
 }
 
+struct PendingStatusAssertingIndexerClient {
+    pending_releases: Arc<TrackingPendingReleaseRepo>,
+    searches: Arc<Mutex<Vec<String>>>,
+}
+
+#[async_trait::async_trait]
+impl IndexerClient for PendingStatusAssertingIndexerClient {
+    async fn search(
+        &self,
+        query: String,
+        _ids: std::collections::HashMap<String, String>,
+        _category: Option<String>,
+        _facet: Option<String>,
+        _id_search_facet: Option<String>,
+        _newznab_categories: Option<Vec<String>>,
+        _indexer_routing: Option<IndexerRoutingPlan>,
+        _mode: SearchMode,
+        _season: Option<u32>,
+        _episode: Option<u32>,
+        _absolute_episode: Option<u32>,
+        _tagged_aliases: Vec<TaggedAlias>,
+        _learning_context: Option<crate::IndexerSearchLearningContext>,
+        _cancel_token: tokio_util::sync::CancellationToken,
+    ) -> AppResult<IndexerSearchResponse> {
+        let pending_was_grabbed = self
+            .pending_releases
+            .store
+            .lock()
+            .await
+            .iter()
+            .any(|release| release.status == PendingReleaseStatus::Grabbed);
+        assert!(
+            pending_was_grabbed,
+            "scheduled RSS must process due pending releases before fresh RSS search"
+        );
+        self.searches.lock().await.push(query.clone());
+
+        Ok(IndexerSearchResponse {
+            results: vec![IndexerSearchResult {
+                source: "nzbgeek".into(),
+                title: format!("{query}.2024.1080p.WEB-DL"),
+                link: Some("https://example.invalid/info/rss-ordering".to_string()),
+                download_url: Some("https://example.invalid/download/rss-ordering.nzb".to_string()),
+                source_kind: Some(DownloadSourceKind::NzbUrl),
+                size_bytes: None,
+                published_at: Some("1970-01-01T00:00:00Z".into()),
+                thumbs_up: None,
+                thumbs_down: None,
+                indexer_languages: None,
+                indexer_subtitles: None,
+                indexer_grabs: None,
+                password_hint: None,
+                parsed_release_metadata: Some(crate::parse_release_metadata(&query)),
+                quality_profile_decision: None,
+                extra: Default::default(),
+                guid: Some("guid-rss-ordering".to_string()),
+                info_url: Some("https://example.invalid/info/rss-ordering".to_string()),
+                provenance: None,
+                auto_eligible: None,
+                auto_decision_code: None,
+                auto_decision_summary: None,
+                candidate_token: None,
+                queue_scope: None,
+            }],
+            api_current: None,
+            api_max: None,
+            grab_current: None,
+            grab_max: None,
+        })
+    }
+}
+
+#[tokio::test]
+async fn scheduled_rss_processes_due_pending_releases_before_fetching_fresh_rss() {
+    let pending_title = "Scheduled.Pending.Movie.2024.1080p.WEB-DL-GRP";
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let wanted_items = Arc::new(TrackingWantedItemRepo::default());
+    let indexer_searches = Arc::new(Mutex::new(Vec::new()));
+    let indexer_client = Arc::new(PendingStatusAssertingIndexerClient {
+        pending_releases: pending_releases.clone(),
+        searches: indexer_searches.clone(),
+    });
+    let (app, user) = bootstrap_with_acquisition_tracking_and_indexer(
+        download_client,
+        download_submissions.clone(),
+        pending_releases.clone(),
+        wanted_items.clone(),
+        indexer_client.clone(),
+    );
+    let (title, wanted_id) = seed_movie_wanted_for_acquisition(
+        &app,
+        &user,
+        &wanted_items,
+        "Scheduled Pending Movie",
+        2024,
+    )
+    .await;
+    let pending = pending_movie_release(
+        &wanted_id,
+        &title,
+        pending_title,
+        PendingReleaseStatus::Waiting,
+    );
+    let pending_id = pending.id.clone();
+    pending_releases
+        .insert_pending_release(&pending)
+        .await
+        .expect("seed pending release");
+
+    let report = app.run_scheduled_rss_sync().await.expect("run RSS sync");
+
+    assert_eq!(report.releases_grabbed, 0);
+    assert!(
+        !indexer_searches.lock().await.is_empty(),
+        "fresh RSS should still run after the pending pre-pass"
+    );
+    assert_eq!(
+        pending_releases
+            .get_pending_release(&pending_id)
+            .await
+            .expect("load pending release")
+            .expect("pending release exists")
+            .status,
+        PendingReleaseStatus::Grabbed
+    );
+    assert!(
+        download_submissions
+            .store
+            .lock()
+            .await
+            .iter()
+            .any(|submission| submission.source_title.as_deref() == Some(pending_title))
+    );
+}
+
 #[tokio::test]
 async fn expired_pending_release_submit_unavailable_stays_waiting_and_retries() {
     let release_title = "Delayed.Deferred.Movie.2024.1080p.WEB-DL-GRP";

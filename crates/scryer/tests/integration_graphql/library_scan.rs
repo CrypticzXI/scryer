@@ -708,7 +708,20 @@ async fn library_series_scan_hydrates_without_creating_wanted_for_unmonitored_ti
                     "runtime_minutes": 45,
                     "poster_url": "https://artworks.thetvdb.com/banners/series/345678/posters/test.jpg",
                     "country": "usa",
-                    "genres": ["Drama", "Thriller"],
+                    "canonical_tags": [
+                        {
+                            "key": "canonical:genre:drama",
+                            "category": "genre",
+                            "name": "Drama",
+                            "confidence": 1.0
+                        },
+                        {
+                            "key": "canonical:genre:thriller",
+                            "category": "genre",
+                            "name": "Thriller",
+                            "confidence": 1.0
+                        }
+                    ],
                     "aliases": ["Testing Show", "QA Chronicles"],
                     "tagged_aliases": [],
                     "artworks": [],
@@ -849,7 +862,14 @@ async fn library_anime_scan_hydrates_and_relinks_files_from_discovered_folder_pa
                     "runtime_minutes": 24,
                     "poster_url": "https://artworks.thetvdb.com/banners/series/456789/posters/test.jpg",
                     "country": "jpn",
-                    "genres": ["Animation"],
+                    "canonical_tags": [
+                        {
+                            "key": "canonical:genre:animation",
+                            "category": "genre",
+                            "name": "Animation",
+                            "confidence": 1.0
+                        }
+                    ],
                     "aliases": ["Hydrated Anime Alias"],
                     "tagged_aliases": [],
                     "artworks": [],
@@ -1002,7 +1022,20 @@ async fn library_anime_scan_prefers_tvshow_nfo_identity_for_nightfall_fixture() 
                     "runtime_minutes": 24,
                     "poster_url": "https://artworks.thetvdb.com/banners/series/415677/posters/test.jpg",
                     "country": "jpn",
-                    "genres": ["Animation", "Fantasy"],
+                    "canonical_tags": [
+                        {
+                            "key": "canonical:genre:animation",
+                            "category": "genre",
+                            "name": "Animation",
+                            "confidence": 1.0
+                        },
+                        {
+                            "key": "canonical:genre:fantasy",
+                            "category": "genre",
+                            "name": "Fantasy",
+                            "confidence": 1.0
+                        }
+                    ],
                     "aliases": ["Nightfall!! Kage no Requiem"],
                     "tagged_aliases": [],
                     "artworks": [],
@@ -1475,7 +1508,6 @@ async fn library_series_scan_existing_unhydrated_title_without_episodes_complete
             imdb_id: None,
             runtime_minutes: None,
             popularity: None,
-            genres: vec![],
             content_status: None,
             language: None,
             first_aired: None,

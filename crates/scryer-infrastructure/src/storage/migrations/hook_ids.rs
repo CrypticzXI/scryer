@@ -3,6 +3,7 @@ pub(crate) fn is_known_migration_hook_id(hook_id: &str) -> bool {
         "migrate_jellyfin_notification_channels_to_media_server_targets" => true,
         "migrate_title_root_folder_ids" => true,
         "migrate_title_catalog_sort_keys" => true,
+        "converge_post_0_16_6_prerelease_schema" => true,
         #[cfg(test)]
         "test_insert_hook_marker" => true,
         _ => false,

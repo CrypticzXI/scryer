@@ -51,6 +51,10 @@ CREATE TABLE IF NOT EXISTS discovery_sync_state (
     last_seen_domain_event_sequence BIGINT,
     inflight_subject_fingerprint TEXT,
     inflight_domain_event_sequence BIGINT,
+    inflight_context_snapshot_run_id TEXT,
+    lease_owner_id TEXT,
+    lease_expires_at TIMESTAMPTZ,
+    transient_failure_count BIGINT NOT NULL DEFAULT 0,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -172,7 +176,6 @@ CREATE TABLE IF NOT EXISTS discovery_titles (
     background_url TEXT,
     overview TEXT,
     content_type TEXT,
-    rating DOUBLE PRECISION,
     tmdb_collection_id TEXT,
     tmdb_collection_name TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -214,18 +217,6 @@ CREATE TABLE IF NOT EXISTS discovery_title_external_ids (
     external_identity TEXT NOT NULL DEFAULT '',
     sort_index INTEGER NOT NULL DEFAULT 0,
     UNIQUE (discovery_title_id, source, external_kind, external_identity)
-);
-
-CREATE TABLE IF NOT EXISTS discovery_title_ratings (
-    discovery_title_id TEXT NOT NULL REFERENCES discovery_titles(id) ON DELETE CASCADE,
-    rating_source TEXT NOT NULL,
-    rating_value DOUBLE PRECISION,
-    rating_score DOUBLE PRECISION,
-    normalized DOUBLE PRECISION,
-    votes INTEGER,
-    url TEXT NOT NULL DEFAULT '',
-    sort_index INTEGER NOT NULL DEFAULT 0,
-    UNIQUE (discovery_title_id, rating_source)
 );
 
 CREATE TABLE IF NOT EXISTS discovery_items (
@@ -324,8 +315,6 @@ CREATE INDEX IF NOT EXISTS idx_discovery_title_source_tag_values_title
     ON discovery_title_source_tag_values(discovery_title_id, source_tag_sort_index, value_sort_index);
 CREATE INDEX IF NOT EXISTS idx_discovery_title_external_ids_title
     ON discovery_title_external_ids(discovery_title_id, sort_index);
-CREATE INDEX IF NOT EXISTS idx_discovery_title_ratings_title
-    ON discovery_title_ratings(discovery_title_id, sort_index);
 CREATE INDEX IF NOT EXISTS idx_discovery_items_active_title
     ON discovery_items(base_generation_id, discovery_title_id, tombstoned_at);
 CREATE INDEX IF NOT EXISTS idx_discovery_items_run
@@ -346,3 +335,234 @@ CREATE INDEX IF NOT EXISTS idx_discovery_item_library_provenance_library
     ON discovery_item_library_provenance(run_id, library_id, item_id);
 CREATE INDEX IF NOT EXISTS idx_discovery_item_library_provenance_item
     ON discovery_item_library_provenance(item_id, subject_key, library_id, title_id);
+CREATE TABLE IF NOT EXISTS indexer_search_learning (
+    indexer_id TEXT NOT NULL,
+    title_id TEXT NOT NULL,
+    facet TEXT NOT NULL,
+    strategy_key TEXT NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    empty_successes INTEGER NOT NULL DEFAULT 0,
+    usable_successes INTEGER NOT NULL DEFAULT 0,
+    last_attempt_at TIMESTAMPTZ,
+    last_usable_at TIMESTAMPTZ,
+    suppressed BOOLEAN NOT NULL DEFAULT FALSE,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (indexer_id, title_id, facet, strategy_key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_indexer_search_learning_title
+    ON indexer_search_learning (indexer_id, title_id, facet);
+CREATE TABLE IF NOT EXISTS external_import_setup_secret_drafts (
+    draft_key text PRIMARY KEY NOT NULL
+        CHECK (draft_key = 'active'),
+    owner_user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at timestamptz NOT NULL,
+    updated_at timestamptz NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS external_import_setup_instance_api_keys (
+    draft_key text NOT NULL REFERENCES external_import_setup_secret_drafts(draft_key) ON DELETE CASCADE,
+    instance_id text NOT NULL,
+    kind text NOT NULL
+        CHECK (kind IN ('sonarr', 'radarr', 'prowlarr')),
+    api_key_encrypted text NOT NULL,
+    position integer NOT NULL
+        CHECK (position >= 0),
+    created_at timestamptz NOT NULL,
+    updated_at timestamptz NOT NULL,
+    PRIMARY KEY (draft_key, instance_id),
+    UNIQUE (draft_key, position)
+);
+
+CREATE TABLE IF NOT EXISTS external_import_setup_download_client_api_key_overrides (
+    draft_key text NOT NULL REFERENCES external_import_setup_secret_drafts(draft_key) ON DELETE CASCADE,
+    dedup_key text NOT NULL,
+    api_key_encrypted text NOT NULL,
+    position integer NOT NULL
+        CHECK (position >= 0),
+    created_at timestamptz NOT NULL,
+    updated_at timestamptz NOT NULL,
+    PRIMARY KEY (draft_key, dedup_key),
+    UNIQUE (draft_key, position)
+);
+
+CREATE TABLE IF NOT EXISTS external_import_setup_download_client_password_overrides (
+    draft_key text NOT NULL REFERENCES external_import_setup_secret_drafts(draft_key) ON DELETE CASCADE,
+    dedup_key text NOT NULL,
+    password_encrypted text NOT NULL,
+    position integer NOT NULL
+        CHECK (position >= 0),
+    created_at timestamptz NOT NULL,
+    updated_at timestamptz NOT NULL,
+    PRIMARY KEY (draft_key, dedup_key),
+    UNIQUE (draft_key, position)
+);
+
+CREATE TABLE IF NOT EXISTS external_import_setup_indexer_api_key_overrides (
+    draft_key text NOT NULL REFERENCES external_import_setup_secret_drafts(draft_key) ON DELETE CASCADE,
+    dedup_key text NOT NULL,
+    api_key_encrypted text NOT NULL,
+    position integer NOT NULL
+        CHECK (position >= 0),
+    created_at timestamptz NOT NULL,
+    updated_at timestamptz NOT NULL,
+    PRIMARY KEY (draft_key, dedup_key),
+    UNIQUE (draft_key, position)
+);
+CREATE TABLE IF NOT EXISTS title_more_like_this_items (
+    source_title_id text NOT NULL REFERENCES titles(id) ON DELETE CASCADE,
+    discovery_title_id text NOT NULL REFERENCES discovery_titles(id) ON DELETE CASCADE,
+    sort_index integer NOT NULL DEFAULT 0,
+    rank_score double precision,
+    best_source text,
+    source_count integer,
+    edge_count integer,
+    relation_count integer,
+    source_subject_count integer,
+    created_at timestamptz NOT NULL DEFAULT NOW(),
+    updated_at timestamptz NOT NULL DEFAULT NOW(),
+    UNIQUE (source_title_id, discovery_title_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_title_more_like_this_items_source_order
+    ON title_more_like_this_items(source_title_id, sort_index ASC, rank_score DESC);
+
+CREATE INDEX IF NOT EXISTS idx_title_more_like_this_items_title
+    ON title_more_like_this_items(discovery_title_id);
+CREATE TABLE IF NOT EXISTS upstream_scheduler_states (
+    host_key TEXT NOT NULL,
+    destination_key TEXT NOT NULL,
+    account_quota_key TEXT NOT NULL DEFAULT '',
+    rss_request_key TEXT NOT NULL DEFAULT '',
+    api_current BIGINT,
+    api_max BIGINT,
+    grab_current BIGINT,
+    grab_max BIGINT,
+    quota_observed_at TIMESTAMPTZ,
+    quota_probe_after TIMESTAMPTZ,
+    quota_reset_at TIMESTAMPTZ,
+    quota_source TEXT,
+    last_decision TEXT,
+    last_feedback_at TIMESTAMPTZ,
+    last_successful_at TIMESTAMPTZ,
+    last_attempt_at TIMESTAMPTZ,
+    admitted_count BIGINT NOT NULL DEFAULT 0,
+    deferred_count BIGINT NOT NULL DEFAULT 0,
+    skipped_count BIGINT NOT NULL DEFAULT 0,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (host_key, destination_key, account_quota_key, rss_request_key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_upstream_scheduler_states_destination
+    ON upstream_scheduler_states (destination_key);
+
+CREATE TABLE IF NOT EXISTS upstream_destination_cooldowns (
+    destination_key TEXT PRIMARY KEY,
+    cooldown_until TIMESTAMPTZ NOT NULL,
+    retry_after_seconds BIGINT,
+    source TEXT NOT NULL,
+    status_code BIGINT,
+    message TEXT,
+    observed_at TIMESTAMPTZ NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_upstream_destination_cooldowns_until
+    ON upstream_destination_cooldowns (cooldown_until);
+
+CREATE TABLE IF NOT EXISTS upstream_scheduler_rss_cadence (
+    host_key TEXT NOT NULL,
+    destination_key TEXT NOT NULL,
+    account_quota_key TEXT NOT NULL,
+    rss_request_key TEXT NOT NULL DEFAULT '',
+    last_successful_poll_at TIMESTAMPTZ,
+    last_attempt_at TIMESTAMPTZ,
+    target_interval_seconds BIGINT NOT NULL,
+    latest_safe_poll_at TIMESTAMPTZ,
+    estimated_feed_depth BIGINT,
+    freshness_risk DOUBLE PRECISION NOT NULL DEFAULT 0,
+    destination_recent_activity_at TIMESTAMPTZ,
+    last_seen_release_identity TEXT,
+    last_seen_release_published_at TIMESTAMPTZ,
+    last_feed_gap_start_at TIMESTAMPTZ,
+    last_feed_gap_end_at TIMESTAMPTZ,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (host_key, destination_key, account_quota_key, rss_request_key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_upstream_scheduler_rss_latest_safe_poll
+    ON upstream_scheduler_rss_cadence (latest_safe_poll_at);
+
+CREATE TABLE IF NOT EXISTS external_import_monitor_snapshot_chunks (
+    session_id text NOT NULL,
+    facet text NOT NULL
+        CHECK (facet IN ('movie', 'series', 'anime')),
+    entry_kind text NOT NULL
+        CHECK (entry_kind IN ('movie', 'series')),
+    chunk_index integer NOT NULL,
+    payload_ndjson text NOT NULL,
+    created_at timestamptz NOT NULL,
+    PRIMARY KEY (session_id, facet, entry_kind, chunk_index)
+);
+
+CREATE INDEX IF NOT EXISTS idx_titles_catalog_sort_key
+    ON titles(catalog_sort_key, name, year, id);
+
+CREATE INDEX IF NOT EXISTS idx_titles_popularity
+    ON titles(popularity);
+
+CREATE INDEX IF NOT EXISTS idx_workflow_operations_job_recent_started
+    ON workflow_operations (started_at DESC)
+    WHERE job_key IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_workflow_operations_actor_recent_started
+    ON workflow_operations (actor_user_id, started_at DESC)
+    WHERE job_key IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_workflow_operations_actor_job_started
+    ON workflow_operations (actor_user_id, job_key, started_at DESC)
+    WHERE job_key IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_workflow_operations_active_job_started
+    ON workflow_operations (started_at ASC)
+    WHERE job_key IS NOT NULL
+      AND status IN ('queued', 'running', 'discovering');
+
+CREATE TABLE IF NOT EXISTS canonical_media_rating_summaries (
+    subject_id text PRIMARY KEY NOT NULL REFERENCES canonical_media_subjects(id) ON DELETE CASCADE,
+    rating double precision,
+    created_at timestamptz NOT NULL DEFAULT NOW(),
+    updated_at timestamptz NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS canonical_media_rating_sources (
+    subject_id text NOT NULL REFERENCES canonical_media_subjects(id) ON DELETE CASCADE,
+    source text NOT NULL,
+    sort_index integer NOT NULL DEFAULT 0,
+    created_at timestamptz NOT NULL DEFAULT NOW(),
+    updated_at timestamptz NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (subject_id, source)
+);
+
+CREATE TABLE IF NOT EXISTS canonical_media_external_ratings (
+    subject_id text NOT NULL REFERENCES canonical_media_subjects(id) ON DELETE CASCADE,
+    source text NOT NULL,
+    sort_index integer NOT NULL DEFAULT 0,
+    value double precision,
+    score double precision,
+    normalized double precision NOT NULL,
+    votes integer,
+    url text NOT NULL DEFAULT '',
+    created_at timestamptz NOT NULL DEFAULT NOW(),
+    updated_at timestamptz NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (subject_id, source)
+);
+
+CREATE INDEX IF NOT EXISTS idx_canonical_media_rating_sources_order
+    ON canonical_media_rating_sources(subject_id, sort_index ASC, source ASC);
+
+CREATE INDEX IF NOT EXISTS idx_canonical_media_external_ratings_order
+    ON canonical_media_external_ratings(subject_id, sort_index ASC, source ASC);
+
+CREATE INDEX IF NOT EXISTS idx_canonical_media_external_ratings_source_norm
+    ON canonical_media_external_ratings(source, normalized, subject_id);

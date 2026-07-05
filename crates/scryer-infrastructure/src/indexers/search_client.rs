@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
@@ -8,12 +9,12 @@ use scryer_application::{
     IndexerPluginProvider, IndexerRoutingPlan, IndexerSearchLearningContext,
     IndexerSearchLearningKey, IndexerSearchLearningRecord, IndexerSearchLearningRepository,
     IndexerSearchResponse, IndexerSearchResult, IndexerStatsTracker, IndexerSystemBackoff,
-    NullIndexerSearchLearningRepository, NullUpstreamScheduler, RateLimitSignal,
-    ReleaseCandidateProvenance, ReleaseSearchSubjectKind, RssFreshnessContext, SchedulerAdmission,
-    SchedulerBatchDecision, SchedulerBatchRequest, SchedulerCandidate, SchedulerCandidateId,
-    SchedulerFeedback, SchedulerFeedbackOutcome, SchedulerIntent, SchedulerLease,
-    SchedulerOperation, SchedulerPluginKind, SchedulerSnapshot, SearchLearningContext, SearchMode,
-    UpstreamScheduler,
+    NullIndexerSearchLearningRepository, NullUpstreamScheduler, RateLimitCooldownAction,
+    RateLimitSignal, ReleaseCandidateProvenance, ReleaseSearchSubjectKind, RssFreshnessContext,
+    SchedulerAdmission, SchedulerBatchDecision, SchedulerBatchRequest, SchedulerCandidate,
+    SchedulerCandidateId, SchedulerFeedback, SchedulerFeedbackOutcome, SchedulerIntent,
+    SchedulerLease, SchedulerOperation, SchedulerPluginKind, SchedulerSnapshot,
+    SearchLearningContext, SearchMode, UpstreamScheduler,
 };
 use scryer_domain::{
     IndexerCapsSearchNode, IndexerCapsSnapshot, IndexerConfig, IndexerProviderCapabilities,
@@ -59,6 +60,7 @@ struct SchedulerEligibleIndexer<'a> {
     had_persisted_system_backoff: bool,
     candidate_id: SchedulerCandidateId,
     category_request: Option<Vec<String>>,
+    rss_request_key: Option<String>,
 }
 
 #[derive(Debug)]
@@ -316,12 +318,8 @@ fn should_run_fallback_tier(
     collected_results.is_empty() && primary_attempted && !fallback_strategies.is_empty()
 }
 
-fn retry_after_from_error(error: &AppError) -> Option<std::time::Duration> {
-    RateLimitSignal::from_error(error).and_then(|signal| signal.retry_after)
-}
-
-fn error_looks_rate_limited(error: &AppError) -> bool {
-    RateLimitSignal::from_error(error).is_some()
+fn rate_limit_signal_from_error(error: &AppError) -> Option<RateLimitSignal> {
+    RateLimitSignal::from_error(error)
 }
 
 fn indexer_rss_feedback_summary(
@@ -1014,9 +1012,25 @@ impl IndexerBackoffTracker {
 
 /// Short-lived cache for RSS feed results. Multiple concurrent callers
 /// awaiting the same indexer's feed will share a single HTTP fetch.
-type RssFeedCache = Arc<
-    Mutex<HashMap<String, Arc<tokio::sync::OnceCell<Result<Vec<IndexerSearchResult>, String>>>>>,
->;
+type RssFeedCache = Arc<Mutex<HashMap<String, Arc<RssFeedCacheEntry>>>>;
+
+struct RssFeedCacheEntry {
+    cell: tokio::sync::OnceCell<Result<Vec<IndexerSearchResult>, String>>,
+    feedback_claimed: AtomicBool,
+}
+
+impl RssFeedCacheEntry {
+    fn new() -> Self {
+        Self {
+            cell: tokio::sync::OnceCell::new(),
+            feedback_claimed: AtomicBool::new(false),
+        }
+    }
+
+    fn claim_feedback(&self) -> bool {
+        !self.feedback_claimed.swap(true, Ordering::AcqRel)
+    }
+}
 
 #[derive(Clone)]
 pub struct MultiIndexerSearchClient {
@@ -1135,6 +1149,7 @@ impl MultiIndexerSearchClient {
         host_key: &HostKey,
         destination_key: &DestinationKey,
         account_quota_key: Option<&scryer_application::AccountQuotaKey>,
+        rss_request_key: Option<&str>,
     ) -> SchedulerRssActivity {
         let Some(snapshot) = snapshot else {
             return SchedulerRssActivity::default();
@@ -1146,6 +1161,7 @@ impl MultiIndexerSearchClient {
                 &entry.host_key == host_key
                     && &entry.destination_key == destination_key
                     && entry.account_quota_key.as_ref() == account_quota_key
+                    && entry.rss_request_key.as_deref() == rss_request_key
             })
             .fold(SchedulerRssActivity::default(), |activity, entry| {
                 SchedulerRssActivity {
@@ -1232,6 +1248,7 @@ impl MultiIndexerSearchClient {
         response: &IndexerSearchResponse,
         outcome: SchedulerFeedbackOutcome,
         retry_after: Option<std::time::Duration>,
+        cooldown_action: RateLimitCooldownAction,
     ) {
         let Some(lease) = lease else {
             return;
@@ -1255,6 +1272,7 @@ impl MultiIndexerSearchClient {
                 observed_grab_current: response.grab_current.map(u64::from),
                 observed_grab_max: response.grab_max.map(u64::from),
                 retry_after,
+                cooldown_action,
                 rss_last_seen_release_identity,
                 rss_last_seen_release_published_at,
                 rss_feed_result_count,
@@ -1279,14 +1297,27 @@ impl MultiIndexerSearchClient {
             grab_current: None,
             grab_max: None,
         };
-        let retry_after = retry_after_from_error(error);
-        let outcome = if error_looks_rate_limited(error) {
+        let rate_limit_signal = rate_limit_signal_from_error(error);
+        let retry_after = rate_limit_signal
+            .as_ref()
+            .and_then(|signal| signal.retry_after);
+        let cooldown_action = rate_limit_signal
+            .as_ref()
+            .map(|signal| signal.cooldown_action)
+            .unwrap_or(RateLimitCooldownAction::None);
+        let outcome = if rate_limit_signal.is_some() {
             SchedulerFeedbackOutcome::RateLimited
         } else {
             SchedulerFeedbackOutcome::ProviderFailure
         };
-        self.record_indexer_scheduler_feedback(lease, &response, outcome, retry_after)
-            .await;
+        self.record_indexer_scheduler_feedback(
+            lease,
+            &response,
+            outcome,
+            retry_after,
+            cooldown_action,
+        )
+        .await;
     }
 
     #[expect(
@@ -1565,12 +1596,14 @@ impl MultiIndexerSearchClient {
     }
 
     fn split_rss_category_requests(categories: Option<Vec<String>>) -> Vec<Option<Vec<String>>> {
-        let normalized: Vec<String> = categories
+        let mut normalized: Vec<String> = categories
             .unwrap_or_default()
             .into_iter()
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty())
             .collect();
+        normalized.sort();
+        normalized.dedup();
 
         if normalized.is_empty() {
             vec![None]
@@ -1584,13 +1617,24 @@ impl MultiIndexerSearchClient {
         }
     }
 
-    fn rss_feed_cache_key(indexer_id: &str, categories: Option<&[String]>) -> String {
-        match categories {
-            Some(categories) if !categories.is_empty() => {
-                format!("{indexer_id}:{}", categories.join(","))
-            }
-            _ => indexer_id.to_string(),
+    fn rss_request_key(categories: Option<&[String]>) -> String {
+        let mut normalized: Vec<String> = categories
+            .unwrap_or_default()
+            .iter()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .collect();
+        normalized.sort();
+        normalized.dedup();
+        if normalized.is_empty() {
+            "rss:*".to_string()
+        } else {
+            format!("rss:{}", normalized.join(","))
         }
+    }
+
+    fn rss_feed_cache_key(indexer_id: &str, categories: Option<&[String]>) -> String {
+        format!("{indexer_id}:{}", Self::rss_request_key(categories))
     }
 
     async fn execute_strategy_tier(
@@ -1700,9 +1744,12 @@ impl MultiIndexerSearchClient {
                                 Err(AppError::Repository("indexer search timed out".into()))
                             }),
                         };
-                        let retry_after = response.as_ref().err().and_then(retry_after_from_error);
-                        let rate_limited =
-                            response.as_ref().err().is_some_and(error_looks_rate_limited);
+                        let rate_limit_signal =
+                            response.as_ref().err().and_then(rate_limit_signal_from_error);
+                        let retry_after = rate_limit_signal
+                            .as_ref()
+                            .and_then(|signal| signal.retry_after);
+                        let rate_limited = rate_limit_signal.is_some();
 
                         return StrategyExecutionOutcome {
                             label: strategy_label,
@@ -2078,18 +2125,21 @@ impl IndexerClient for MultiIndexerSearchClient {
             } else {
                 vec![per_indexer_categories]
             };
-            let rss_activity = if is_rss_request {
-                Self::scheduler_rss_activity(
-                    scheduler_snapshot.as_ref(),
-                    &host_key,
-                    &destination_key,
-                    account_quota_key.as_ref(),
-                )
-            } else {
-                SchedulerRssActivity::default()
-            };
             for category_request in category_requests {
                 let scheduler_candidate_id = SchedulerCandidateId::new();
+                let rss_request_key =
+                    is_rss_request.then(|| Self::rss_request_key(category_request.as_deref()));
+                let rss_activity = if is_rss_request {
+                    Self::scheduler_rss_activity(
+                        scheduler_snapshot.as_ref(),
+                        &host_key,
+                        &destination_key,
+                        account_quota_key.as_ref(),
+                        rss_request_key.as_deref(),
+                    )
+                } else {
+                    SchedulerRssActivity::default()
+                };
                 scheduler_candidates.push(SchedulerCandidate {
                     candidate_id: scheduler_candidate_id.clone(),
                     plugin_config_id: Some(config.id.clone()),
@@ -2103,6 +2153,7 @@ impl IndexerClient for MultiIndexerSearchClient {
                     host_key: host_key.clone(),
                     destination_key: destination_key.clone(),
                     account_quota_key: account_quota_key.clone(),
+                    rss_request_key: rss_request_key.clone(),
                     estimated_cost: EstimatedCost::ONE_API_CALL,
                     expected_value,
                     learning_context: scheduler_learning_context.clone(),
@@ -2124,6 +2175,7 @@ impl IndexerClient for MultiIndexerSearchClient {
                     had_persisted_system_backoff: *had_persisted_system_backoff,
                     candidate_id: scheduler_candidate_id,
                     category_request,
+                    rss_request_key,
                 });
             }
         }
@@ -2169,12 +2221,14 @@ impl IndexerClient for MultiIndexerSearchClient {
             String,
             Option<SchedulerLease>,
             AppResult<IndexerSearchResponse>,
+            bool,
         )>::new();
         let search_limit = self.search_limit_for_mode(mode);
         for dispatch in scheduler_eligible {
             let config = dispatch.config;
             let had_persisted_system_backoff = dispatch.had_persisted_system_backoff;
             let request_categories = dispatch.category_request.clone();
+            let rss_request_key = dispatch.rss_request_key.clone();
             let scheduler_lease = match scheduler_decisions.remove(dispatch.candidate_id.as_str()) {
                 Some(SchedulerAdmission::Admit { reason, lease, .. }) => {
                     debug!(
@@ -2303,14 +2357,17 @@ impl IndexerClient for MultiIndexerSearchClient {
             let is_rss_only = !caps.supports_any_search() && caps.rss;
             if is_rss_only {
                 let rss_category_request = request_categories.clone();
-                let cell = {
+                let rss_cache_key = rss_request_key
+                    .as_ref()
+                    .map(|key| format!("{}:{key}", config.id))
+                    .unwrap_or_else(|| {
+                        Self::rss_feed_cache_key(&config.id, rss_category_request.as_deref())
+                    });
+                let cache_entry = {
                     let mut cache = self.rss_feed_cache.lock().await;
                     cache
-                        .entry(Self::rss_feed_cache_key(
-                            &config.id,
-                            rss_category_request.as_deref(),
-                        ))
-                        .or_insert_with(|| Arc::new(tokio::sync::OnceCell::new()))
+                        .entry(rss_cache_key)
+                        .or_insert_with(|| Arc::new(RssFeedCacheEntry::new()))
                         .clone()
                 };
                 let client = client.clone();
@@ -2337,9 +2394,10 @@ impl IndexerClient for MultiIndexerSearchClient {
                                     indexer_name,
                                     scheduler_lease_for_task.clone(),
                                     Err(AppError::canceled("RSS indexer search canceled")),
+                                    false,
                                 );
                             }
-                            results = cell.get_or_init(|| async {
+                            results = cache_entry.cell.get_or_init(|| async {
                                 let permit = tokio::select! {
                                     _ = task_cancel_token.cancelled() => {
                                         return Err("RSS indexer search canceled".to_string());
@@ -2420,7 +2478,7 @@ impl IndexerClient for MultiIndexerSearchClient {
                                         }
                                         warn!(indexer = indexer_name.as_str(), error = %err, "RSS feed fetch failed");
                                         stats_tracker.record_query(&indexer_id, &indexer_name, false);
-                                        if !error_looks_rate_limited(&err) {
+                                        if rate_limit_signal_from_error(&err).is_none() {
                                             let backoff = backoff_tracker
                                                 .record_failure(&indexer_id, None)
                                                 .await;
@@ -2469,8 +2527,10 @@ impl IndexerClient for MultiIndexerSearchClient {
                                 indexer_name,
                                 scheduler_lease_for_task.clone(),
                                 Err(AppError::canceled("RSS indexer search canceled")),
+                                false,
                             );
                         }
+                        let should_record_feedback = cache_entry.claim_feedback();
                         let results = match cached_results {
                             Ok(results) => results,
                             Err(error) => {
@@ -2479,6 +2539,7 @@ impl IndexerClient for MultiIndexerSearchClient {
                                     indexer_name,
                                     scheduler_lease_for_task.clone(),
                                     Err(AppError::Repository(error)),
+                                    should_record_feedback,
                                 );
                             }
                         };
@@ -2490,7 +2551,13 @@ impl IndexerClient for MultiIndexerSearchClient {
                             grab_current: None,
                             grab_max: None,
                         };
-                        (indexer_id, indexer_name, scheduler_lease_for_task.clone(), Ok(response))
+                        (
+                            indexer_id,
+                            indexer_name,
+                            scheduler_lease_for_task.clone(),
+                            Ok(response),
+                            should_record_feedback,
+                        )
                 });
                 continue;
             }
@@ -2628,6 +2695,7 @@ impl IndexerClient for MultiIndexerSearchClient {
                         indexer_name,
                         scheduler_lease_for_task.clone(),
                         Err(AppError::canceled("indexer search canceled")),
+                        true,
                     );
                 }
                 let mut collected_results = Vec::new();
@@ -2713,6 +2781,7 @@ impl IndexerClient for MultiIndexerSearchClient {
                                     indexer_name,
                                     scheduler_lease_for_task.clone(),
                                     Err(AppError::canceled("indexer search canceled")),
+                                    true,
                                 );
                             }
                             primary_had_error = true;
@@ -2833,6 +2902,7 @@ impl IndexerClient for MultiIndexerSearchClient {
                                         indexer_name,
                                         scheduler_lease_for_task.clone(),
                                         Err(AppError::canceled("indexer search canceled")),
+                                        true,
                                     );
                                 }
                                 batch_health.mark_error(outcome.retry_after, outcome.rate_limited);
@@ -2890,6 +2960,7 @@ impl IndexerClient for MultiIndexerSearchClient {
                         Err(AppError::Repository(
                             "all attempted indexer strategies failed".to_string(),
                         )),
+                        true,
                     );
                 }
 
@@ -2904,6 +2975,7 @@ impl IndexerClient for MultiIndexerSearchClient {
                         grab_current: quota_observation.grab_current,
                         grab_max: quota_observation.grab_max,
                     }),
+                    true,
                 )
             });
         }
@@ -2928,14 +3000,17 @@ impl IndexerClient for MultiIndexerSearchClient {
             };
 
             match join_result {
-                Ok((_id, name, scheduler_lease, Ok(mut response))) => {
-                    self.record_indexer_scheduler_feedback(
-                        scheduler_lease,
-                        &response,
-                        SchedulerFeedbackOutcome::Success,
-                        None,
-                    )
-                    .await;
+                Ok((_id, name, scheduler_lease, Ok(mut response), should_record_feedback)) => {
+                    if should_record_feedback {
+                        self.record_indexer_scheduler_feedback(
+                            scheduler_lease,
+                            &response,
+                            SchedulerFeedbackOutcome::Success,
+                            None,
+                            RateLimitCooldownAction::None,
+                        )
+                        .await;
+                    }
                     successful_searches += 1;
                     debug!(
                         indexer = name.as_str(),
@@ -2944,7 +3019,7 @@ impl IndexerClient for MultiIndexerSearchClient {
                     );
                     all_results.append(&mut response.results);
                 }
-                Ok((id, name, scheduler_lease, Err(err))) => {
+                Ok((id, name, scheduler_lease, Err(err), should_record_feedback)) => {
                     if err.is_canceled() {
                         set.abort_all();
                         while set.join_next().await.is_some() {}
@@ -2953,8 +3028,10 @@ impl IndexerClient for MultiIndexerSearchClient {
                     }
                     failed_searches += 1;
                     first_failure = first_failure.or_else(|| Some(err.to_string()));
-                    self.record_indexer_scheduler_error(scheduler_lease, &err)
-                        .await;
+                    if should_record_feedback {
+                        self.record_indexer_scheduler_error(scheduler_lease, &err)
+                            .await;
+                    }
                     warn!(indexer = name.as_str(), error = %err, "indexer search failed");
                     let _ = id;
                 }
@@ -3552,6 +3629,14 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn rss_feed_cache_entry_allows_one_feedback_claim() {
+        let entry = RssFeedCacheEntry::new();
+
+        assert!(entry.claim_feedback());
+        assert!(!entry.claim_feedback());
+    }
+
     struct MockIndexerConfigRepository {
         configs: Vec<IndexerConfig>,
     }
@@ -3712,6 +3797,7 @@ mod tests {
                         host_key: candidate.host_key,
                         destination_key: candidate.destination_key,
                         account_quota_key: candidate.account_quota_key,
+                        rss_request_key: candidate.rss_request_key,
                         operation: candidate.operation,
                         intent: candidate.intent,
                         issued_at: request.now,
@@ -6313,30 +6399,41 @@ mod tests {
 
     #[test]
     fn retry_after_parser_extracts_seconds_from_plugin_error_text() {
-        let retry_after = retry_after_from_error(&AppError::Repository(
+        let retry_after = rate_limit_signal_from_error(&AppError::Repository(
             "HTTP 429: rate limited; retry_after_seconds=900".to_string(),
         ))
+        .and_then(|signal| signal.retry_after)
         .expect("retry after should parse");
         assert_eq!(retry_after, std::time::Duration::from_secs(900));
-        let prowlarr_retry_after = retry_after_from_error(&AppError::Repository(
+        let prowlarr_retry_after = rate_limit_signal_from_error(&AppError::Repository(
             "Prowlarr rate limited (retry after 120s)".to_string(),
         ))
+        .and_then(|signal| signal.retry_after)
         .expect("Prowlarr retry after should parse");
         assert_eq!(prowlarr_retry_after, std::time::Duration::from_secs(120));
         assert!(
-            retry_after_from_error(&AppError::Repository("HTTP 429: rate limited".to_string()))
-                .is_none()
+            rate_limit_signal_from_error(&AppError::Repository(
+                "HTTP 429: rate limited".to_string()
+            ))
+            .and_then(|signal| signal.retry_after)
+            .is_none()
         );
     }
 
     #[test]
     fn rate_limit_classifier_does_not_match_bare_429_substrings() {
-        assert!(!error_looks_rate_limited(&AppError::Repository(
-            "release title contains 429 but no throttle signal".to_string()
-        )));
-        assert!(error_looks_rate_limited(&AppError::Repository(
-            "HTTP 429: too many requests".to_string()
-        )));
+        assert!(
+            rate_limit_signal_from_error(&AppError::Repository(
+                "release title contains 429 but no throttle signal".to_string()
+            ))
+            .is_none()
+        );
+        assert!(
+            rate_limit_signal_from_error(&AppError::Repository(
+                "HTTP 429: too many requests".to_string()
+            ))
+            .is_some()
+        );
     }
 
     #[tokio::test]

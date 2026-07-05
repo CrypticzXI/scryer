@@ -502,6 +502,181 @@ async fn migrations_apply_then_validate_is_idempotent() {
 }
 
 #[tokio::test]
+async fn migration_0154_rollup_creates_scheduler_tables_and_rss_gap_columns() {
+    let db = std::env::temp_dir().join(format!(
+        "scryer_migration_0154_scheduler_{}.db",
+        chrono::Utc::now().timestamp_micros()
+    ));
+    let services = SqliteServices::new(db.to_string_lossy())
+        .await
+        .expect("db should initialize");
+
+    for table in [
+        "upstream_scheduler_states",
+        "upstream_destination_cooldowns",
+        "upstream_scheduler_rss_cadence",
+    ] {
+        let exists: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*)
+               FROM sqlite_master
+              WHERE type = 'table'
+                AND name = ?",
+        )
+        .bind(table)
+        .fetch_one(&services.pool)
+        .await
+        .expect("sqlite_master query should succeed");
+        assert_eq!(exists, 1, "{table} should exist after migrations apply");
+    }
+
+    let rss_columns: Vec<String> =
+        sqlx::query_scalar("SELECT name FROM pragma_table_info('upstream_scheduler_rss_cadence')")
+            .fetch_all(&services.pool)
+            .await
+            .expect("rss cadence columns should load");
+    for column in [
+        "host_key",
+        "account_quota_key",
+        "destination_key",
+        "rss_request_key",
+        "target_interval_seconds",
+        "latest_safe_poll_at",
+        "last_seen_release_identity",
+        "last_seen_release_published_at",
+        "last_feed_gap_start_at",
+        "last_feed_gap_end_at",
+    ] {
+        assert!(
+            rss_columns.iter().any(|name| name == column),
+            "upstream_scheduler_rss_cadence should include {column}; columns were {rss_columns:?}"
+        );
+    }
+
+    let destination_columns: Vec<String> =
+        sqlx::query_scalar("SELECT name FROM pragma_table_info('upstream_destination_cooldowns')")
+            .fetch_all(&services.pool)
+            .await
+            .expect("destination cooldown columns should load");
+    for column in [
+        "destination_key",
+        "cooldown_until",
+        "retry_after_seconds",
+        "source",
+        "observed_at",
+    ] {
+        assert!(
+            destination_columns.iter().any(|name| name == column),
+            "upstream_destination_cooldowns should include {column}; columns were {destination_columns:?}"
+        );
+    }
+
+    drop(services);
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn migration_0154_uses_canonical_rating_storage_only() {
+    let db = std::env::temp_dir().join(format!(
+        "scryer_migration_0154_canonical_ratings_{}.db",
+        chrono::Utc::now().timestamp_micros()
+    ));
+    let services = SqliteServices::new(db.to_string_lossy())
+        .await
+        .expect("db should initialize");
+
+    for table in [
+        "canonical_media_rating_summaries",
+        "canonical_media_rating_sources",
+        "canonical_media_external_ratings",
+    ] {
+        let exists: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*)
+               FROM sqlite_master
+              WHERE type = 'table'
+                AND name = ?",
+        )
+        .bind(table)
+        .fetch_one(&services.pool)
+        .await
+        .expect("canonical rating table lookup should succeed");
+        assert_eq!(exists, 1, "{table} should exist after migrations apply");
+    }
+
+    for table in [
+        "discovery_title_ratings",
+        "title_rating_summaries",
+        "title_rating_sources",
+        "title_external_ratings",
+    ] {
+        let exists: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*)
+               FROM sqlite_master
+              WHERE type = 'table'
+                AND name = ?",
+        )
+        .bind(table)
+        .fetch_one(&services.pool)
+        .await
+        .expect("legacy rating table lookup should succeed");
+        assert_eq!(exists, 0, "{table} should not exist after migrations apply");
+    }
+
+    let discovery_rating_columns: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*)
+           FROM pragma_table_info('discovery_titles')
+          WHERE name = 'rating'",
+    )
+    .fetch_one(&services.pool)
+    .await
+    .expect("discovery title columns should load");
+    assert_eq!(discovery_rating_columns, 0);
+
+    drop(services);
+    let _ = std::fs::remove_file(db);
+}
+
+#[test]
+fn migration_0154_sqlite_and_postgres_rollup_sources_include_scheduler_columns() {
+    let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let repo_root = manifest_dir
+        .parent()
+        .and_then(std::path::Path::parent)
+        .expect("crate should live under repo/crates");
+    let sqlite = std::fs::read_to_string(
+        repo_root.join("crates/scryer/src/db/migrations/0154_post_0_16_6_prerelease_rollup.sql"),
+    )
+    .expect("sqlite 0154 rollup migration should load");
+    let postgres =
+        std::fs::read_to_string(repo_root.join(
+            "crates/scryer/src/db/postgres/migrations/0154_post_0_16_6_prerelease_rollup.sql",
+        ))
+        .expect("postgres 0154 rollup migration should load");
+
+    for sql in [&sqlite, &postgres] {
+        for required in [
+            "CREATE TABLE IF NOT EXISTS upstream_scheduler_states",
+            "CREATE TABLE IF NOT EXISTS upstream_destination_cooldowns",
+            "CREATE TABLE IF NOT EXISTS upstream_scheduler_rss_cadence",
+            "quota_observed_at",
+            "quota_probe_after",
+            "quota_reset_at",
+            "retry_after_seconds",
+            "rss_request_key",
+            "host_key",
+            "last_seen_release_identity",
+            "last_seen_release_published_at",
+            "last_feed_gap_start_at",
+            "last_feed_gap_end_at",
+        ] {
+            assert!(
+                sql.contains(required),
+                "0154 rollup migration source should include {required}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
 async fn migration_0079_faceted_projection_allows_cross_facet_duplicates_and_seeds_only_tvdb_titles()
  {
     let db = std::env::temp_dir().join(format!(

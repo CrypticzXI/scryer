@@ -51,7 +51,7 @@ import { DeletePreviewSummary } from "@/components/common/delete-preview-summary
 import { Checkbox } from "@/components/ui/checkbox";
 import type { OverviewTitleTarget } from "@/components/root/types";
 import type { TitleOptionUpdates } from "@/lib/types/title-options";
-import type { LibraryRootRecord } from "@/lib/types/titles";
+import type { CanonicalMediaTag, LibraryRootRecord } from "@/lib/types/titles";
 import { useDeletePreview } from "@/lib/hooks/use-delete-preview";
 import {
   assertNoReplaceConflict,
@@ -89,7 +89,7 @@ export type TitleDetail = {
   slug: string | null;
   imdbId: string | null;
   runtimeMinutes: number | null;
-  genres: string[];
+  canonicalTags?: CanonicalMediaTag[];
   contentStatus: string | null;
   language: string | null;
   firstAired: string | null;
@@ -148,7 +148,6 @@ export type MovieEntity = {
   language: string | null;
   runtimeMinutes: number | null;
   contentStatus: string | null;
-  genres: string[];
   studio: string | null;
   digitalReleaseDate: string | null;
   imdbId: string | null;

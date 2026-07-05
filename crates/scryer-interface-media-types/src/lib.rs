@@ -1265,6 +1265,65 @@ pub struct SystemHealthPayload {
     pub indexer_stats: Vec<IndexerQueryStatsPayload>,
 }
 
+#[derive(SimpleObject, Clone)]
+pub struct UpstreamSchedulerSnapshotPayload {
+    pub entries: Vec<UpstreamSchedulerSnapshotEntryPayload>,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct UpstreamSchedulerSnapshotEntryPayload {
+    pub host_key: String,
+    pub destination_key: String,
+    pub account_quota_key: Option<String>,
+    pub rss_request_key: Option<String>,
+    pub last_decision: Option<String>,
+    pub last_feedback_at: Option<DateTime<Utc>>,
+    pub last_successful_at: Option<DateTime<Utc>>,
+    pub last_attempt_at: Option<DateTime<Utc>>,
+    pub cooldown_until: Option<DateTime<Utc>>,
+    pub api_remaining_fraction: Option<f64>,
+    pub quota_observed_at: Option<DateTime<Utc>>,
+    pub quota_probe_after: Option<DateTime<Utc>>,
+    pub quota_reset_at: Option<DateTime<Utc>>,
+    pub quota_source: Option<String>,
+    pub quota_stale: bool,
+    pub rss_last_successful_poll_at: Option<DateTime<Utc>>,
+    pub rss_last_attempt_at: Option<DateTime<Utc>>,
+    pub rss_target_interval_seconds: Option<Long>,
+    pub rss_latest_safe_poll_at: Option<DateTime<Utc>>,
+    pub rss_estimated_feed_depth: Option<i32>,
+    pub rss_freshness_risk: Option<f64>,
+    pub rss_destination_recent_activity_at: Option<DateTime<Utc>>,
+    pub rss_last_seen_release_identity: Option<String>,
+    pub rss_last_seen_release_published_at: Option<DateTime<Utc>>,
+    pub rss_last_feed_gap_start_at: Option<DateTime<Utc>>,
+    pub rss_last_feed_gap_end_at: Option<DateTime<Utc>>,
+    pub admitted_count: Long,
+    pub deferred_count: Long,
+    pub skipped_count: Long,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct OutboundRateLimitSnapshotPayload {
+    pub host_rps: Vec<OutboundHostRpsSnapshotEntryPayload>,
+    pub destination_cooldowns: Vec<OutboundDestinationCooldownSnapshotEntryPayload>,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct OutboundHostRpsSnapshotEntryPayload {
+    pub host_key: String,
+    pub available_in_seconds: Long,
+    pub requests_per_second: f64,
+    pub burst: i32,
+    pub profile_source: String,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct OutboundDestinationCooldownSnapshotEntryPayload {
+    pub destination_key: String,
+    pub available_in_seconds: Long,
+}
+
 #[derive(SimpleObject, Clone, Debug)]
 pub struct RuntimeInfoPayload {
     pub runtime_path_style: RuntimePathStyleValue,

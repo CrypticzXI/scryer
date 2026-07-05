@@ -404,7 +404,6 @@ async fn title_writes_generate_and_refresh_catalog_sort_key_sqlite() {
             imdb_id: None,
             runtime_minutes: None,
             popularity: None,
-            genres: vec![],
             canonical_tags: vec![],
             content_status: None,
             language: None,
@@ -504,6 +503,23 @@ async fn hydrated_title_metadata_persists_external_ratings() {
         &title.id,
         TitleMetadataUpdate {
             metadata_fetched_at: Some(Utc::now().to_rfc3339()),
+            ratings: None,
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("metadata update without ratings should preserve rows");
+
+    let preserved = TitleRepository::get_title_ratings(&catalog, &title.id)
+        .await
+        .expect("preserved ratings should load");
+    assert_eq!(preserved, ratings);
+
+    TitleRepository::update_title_hydrated_metadata(
+        &catalog,
+        &title.id,
+        TitleMetadataUpdate {
+            metadata_fetched_at: Some(Utc::now().to_rfc3339()),
             ratings: Some(TitleRatingSummary::default()),
             ..Default::default()
         },
@@ -595,6 +611,73 @@ async fn smg_canonical_subject_preference_detaches_external_id_fallback_subjects
         reloaded.canonical_tags,
         Vec::<scryer_domain::CanonicalMediaTag>::new()
     );
+
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn hydrated_metadata_empty_canonical_tags_clear_existing_tags() {
+    let db = std::env::temp_dir().join(format!(
+        "scryer_title_canonical_tags_clear_{}.db",
+        chrono::Utc::now().timestamp_micros()
+    ));
+    let services = SqliteServices::new(db.to_string_lossy())
+        .await
+        .expect("db should initialize");
+    let catalog = title_store(&services);
+
+    let mut title = make_test_title("title-canonical-tags-clear", None);
+    title.facet = MediaFacet::Movie;
+    title.external_ids = vec![ExternalId {
+        source: "tvdb".to_string(),
+        value: "123456".to_string(),
+    }];
+    TitleRepository::create(&catalog, title.clone())
+        .await
+        .expect("title should insert");
+
+    let tag = scryer_domain::CanonicalMediaTag {
+        key: "canonical:genre:obsolete".to_string(),
+        category: "genre".to_string(),
+        name: "Obsolete".to_string(),
+        confidence: Some(0.5),
+        sources: vec!["test".to_string()],
+        source_tag_keys: vec!["obsolete".to_string()],
+        is_adult: false,
+        is_spoiler: false,
+    };
+    TitleRepository::update_title_hydrated_metadata(
+        &catalog,
+        &title.id,
+        TitleMetadataUpdate {
+            metadata_language: Some("en".to_string()),
+            metadata_fetched_at: Some(Utc::now().to_rfc3339()),
+            canonical_tags: vec![tag],
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("canonical tag should persist");
+
+    let cleared = TitleRepository::update_title_hydrated_metadata(
+        &catalog,
+        &title.id,
+        TitleMetadataUpdate {
+            metadata_language: Some("en".to_string()),
+            metadata_fetched_at: Some(Utc::now().to_rfc3339()),
+            canonical_tags: vec![],
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("empty canonical tag hydration should clear tags");
+
+    assert!(cleared.canonical_tags.is_empty());
+    let reloaded = TitleRepository::get_by_id(&catalog, &title.id)
+        .await
+        .expect("title lookup should succeed")
+        .expect("title should exist");
+    assert!(reloaded.canonical_tags.is_empty());
 
     let _ = std::fs::remove_file(db);
 }

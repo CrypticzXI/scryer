@@ -1418,7 +1418,6 @@ async fn graphql_traverses_core_graph_relationships() {
         imdb_id: None,
         runtime_minutes: Some(24),
         popularity: None,
-        genres: vec![],
         content_status: None,
         language: None,
         first_aired: None,

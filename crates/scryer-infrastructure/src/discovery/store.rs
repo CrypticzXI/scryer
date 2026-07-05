@@ -1266,7 +1266,7 @@ fn title_more_like_this_projection() -> String {
         "t.background_url AS background_url".to_string(),
         "t.overview AS overview".to_string(),
         "t.content_type AS content_type".to_string(),
-        "t.rating AS rating".to_string(),
+        "NULL AS rating".to_string(),
         "title_more_like_this_items.best_source AS best_source".to_string(),
         "title_more_like_this_items.source_count AS source_count".to_string(),
         "title_more_like_this_items.edge_count AS edge_count".to_string(),
@@ -3474,7 +3474,7 @@ async fn insert_item_tx(
     item: &DiscoveryItemRecord,
     language: &str,
 ) -> AppResult<()> {
-    let discovery_title_id = upsert_discovery_title_tx(tx, item, language).await?;
+    let discovery_title_id = upsert_discovery_title_tx(tx, item, language, true, true).await?;
     SqlRuntime::execute(
         SqlExec::Tx(tx),
         &insert_sql("discovery_items", OCCURRENCE_COLUMNS),
@@ -3542,7 +3542,7 @@ async fn insert_title_more_like_this_item_tx(
     item: &DiscoveryItemRecord,
     language: &str,
 ) -> AppResult<()> {
-    let discovery_title_id = upsert_discovery_title_tx(tx, item, language).await?;
+    let discovery_title_id = upsert_discovery_title_tx(tx, item, language, false, false).await?;
     SqlRuntime::execute(
         SqlExec::Tx(tx),
         "INSERT INTO title_more_like_this_items
@@ -3608,6 +3608,8 @@ async fn upsert_discovery_title_tx(
     tx: &mut SqlTx<'_>,
     item: &DiscoveryItemRecord,
     language: &str,
+    replace_canonical_tags: bool,
+    replace_canonical_ratings: bool,
 ) -> AppResult<String> {
     let language = normalize_discovery_language(language);
     let target_key_norm = discovery_title_target_key_norm(item);
@@ -3629,7 +3631,7 @@ async fn upsert_discovery_title_tx(
         ),
     )
     .await?;
-    if !item.canonical_tags.is_empty() {
+    if replace_canonical_tags {
         replace_canonical_media_tags_tx(tx, &canonical_subject_id, &item.canonical_tags).await?;
     }
     let ratings = TitleRatingSummary {
@@ -3637,7 +3639,8 @@ async fn upsert_discovery_title_tx(
         rating_sources: item.rating_sources.clone(),
         external_ratings: item.external_ratings.clone(),
     };
-    if ratings.rating.is_some()
+    if replace_canonical_ratings
+        || ratings.rating.is_some()
         || !ratings.rating_sources.is_empty()
         || !ratings.external_ratings.is_empty()
     {
@@ -4052,9 +4055,66 @@ mod tests {
     use scryer_application::{
         DISCOVERY_DEFAULT_SCOPE_KEY, DiscoveryItemsQuery, DiscoveryItemsStorageQuery,
     };
+    use scryer_domain::CanonicalMediaTag;
     use serde_json::json;
 
     use crate::storage::sqlite::services::SqliteServices;
+
+    fn canonical_genre_tags(labels: &[&str]) -> Vec<CanonicalMediaTag> {
+        labels
+            .iter()
+            .map(|label| CanonicalMediaTag {
+                key: format!(
+                    "canonical:genre:{}",
+                    label.trim().to_ascii_lowercase().replace(' ', "_")
+                ),
+                category: "genre".to_string(),
+                name: (*label).to_string(),
+                confidence: Some(1.0),
+                sources: Vec::new(),
+                source_tag_keys: Vec::new(),
+                is_adult: false,
+                is_spoiler: false,
+            })
+            .collect()
+    }
+
+    async fn discovery_subject_tag_count(pool: &sqlx::SqlitePool, subject_key: &str) -> i64 {
+        sqlx::query_scalar(
+            "SELECT COUNT(*)
+               FROM canonical_media_tags tags
+               JOIN canonical_media_subjects subjects ON subjects.id = tags.subject_id
+              WHERE subjects.subject_key_norm = ?",
+        )
+        .bind(subject_key)
+        .fetch_one(pool)
+        .await
+        .expect("canonical tag count should load")
+    }
+
+    async fn discovery_subject_rating_row_count(pool: &sqlx::SqlitePool, subject_key: &str) -> i64 {
+        sqlx::query_scalar(
+            "SELECT
+                (SELECT COUNT(*)
+                   FROM canonical_media_rating_summaries ratings
+                   JOIN canonical_media_subjects subjects ON subjects.id = ratings.subject_id
+                  WHERE subjects.subject_key_norm = ?)
+              + (SELECT COUNT(*)
+                   FROM canonical_media_rating_sources ratings
+                   JOIN canonical_media_subjects subjects ON subjects.id = ratings.subject_id
+                  WHERE subjects.subject_key_norm = ?)
+              + (SELECT COUNT(*)
+                   FROM canonical_media_external_ratings ratings
+                   JOIN canonical_media_subjects subjects ON subjects.id = ratings.subject_id
+                  WHERE subjects.subject_key_norm = ?)",
+        )
+        .bind(subject_key)
+        .bind(subject_key)
+        .bind(subject_key)
+        .fetch_one(pool)
+        .await
+        .expect("canonical rating row count should load")
+    }
 
     #[test]
     fn canonical_facet_filter_values_accepts_labels_and_terms() {
@@ -4072,7 +4132,118 @@ mod tests {
         assert!(values.contains(&"canonical:genre:science-fiction".to_string()));
         assert!(values.contains(&"canonical:genre:science fiction".to_string()));
         assert!(values.contains(&"canonical:genre:drama".to_string()));
-        assert!(!values.contains(&"action".to_string()));
+    }
+
+    #[test]
+    fn title_more_like_this_projection_does_not_read_legacy_discovery_rating() {
+        let projection = title_more_like_this_projection();
+        assert!(projection.contains("NULL AS rating"));
+        assert!(!projection.contains("t.rating AS rating"));
+    }
+
+    #[tokio::test]
+    async fn discovery_item_upsert_empty_canonical_tags_clear_existing_tags() {
+        let db = std::env::temp_dir().join(format!(
+            "scryer_discovery_canonical_tags_clear_{}.db",
+            Utc::now().timestamp_micros()
+        ));
+        let services = SqliteServices::new(db.to_string_lossy())
+            .await
+            .expect("sqlite services should initialize");
+        let store = DiscoveryStore::new(services.datastore());
+        let now = Utc::now();
+        let run_id = "run-canonical-tags-clear";
+
+        store
+            .upsert_discovery_sync_run(&discovery_prune_run(
+                run_id,
+                "context_snapshot",
+                "complete",
+                now,
+            ))
+            .await
+            .expect("run should upsert");
+
+        let mut item = discovery_prune_item(run_id, now);
+        item.canonical_tags = canonical_genre_tags(&["Drama"]);
+        store
+            .replace_discovery_items(run_id, &[item.clone()])
+            .await
+            .expect("tagged item should upsert");
+        assert_eq!(
+            discovery_subject_tag_count(&services.pool, "tmdb:movie:604").await,
+            1
+        );
+
+        item.canonical_tags = Vec::new();
+        store
+            .replace_discovery_items(run_id, &[item])
+            .await
+            .expect("empty-tag item should upsert");
+        assert_eq!(
+            discovery_subject_tag_count(&services.pool, "tmdb:movie:604").await,
+            0
+        );
+
+        let _ = std::fs::remove_file(db);
+    }
+
+    #[tokio::test]
+    async fn discovery_item_upsert_empty_canonical_ratings_clear_existing_ratings() {
+        let db = std::env::temp_dir().join(format!(
+            "scryer_discovery_canonical_ratings_clear_{}.db",
+            Utc::now().timestamp_micros()
+        ));
+        let services = SqliteServices::new(db.to_string_lossy())
+            .await
+            .expect("sqlite services should initialize");
+        let store = DiscoveryStore::new(services.datastore());
+        let now = Utc::now();
+        let run_id = "run-canonical-ratings-clear";
+
+        store
+            .upsert_discovery_sync_run(&discovery_prune_run(
+                run_id,
+                "context_snapshot",
+                "complete",
+                now,
+            ))
+            .await
+            .expect("run should upsert");
+
+        let mut item = discovery_prune_item(run_id, now);
+        item.rating = Some(7.5);
+        item.rating_sources = vec!["tmdb".to_string()];
+        item.external_ratings = vec![TitleExternalRating {
+            source: "imdb".to_string(),
+            value: Some(8.2),
+            score: Some(82.0),
+            normalized: 0.82,
+            votes: Some(1234),
+            url: "https://www.imdb.com/title/tt0000604/".to_string(),
+        }];
+        store
+            .replace_discovery_items(run_id, &[item.clone()])
+            .await
+            .expect("rated item should upsert");
+        assert_eq!(
+            discovery_subject_rating_row_count(&services.pool, "tmdb:movie:604").await,
+            3
+        );
+
+        item.rating = None;
+        item.rating_sources.clear();
+        item.external_ratings.clear();
+        store
+            .replace_discovery_items(run_id, &[item])
+            .await
+            .expect("empty-rating item should upsert");
+        assert_eq!(
+            discovery_subject_rating_row_count(&services.pool, "tmdb:movie:604").await,
+            0
+        );
+
+        let _ = std::fs::remove_file(db);
     }
 
     #[test]
@@ -4515,8 +4686,7 @@ mod tests {
                         ),
                         overview: Some("Rich canonical overview".to_string()),
                         content_type: Some(String::new()),
-                        genres: vec!["Drama".to_string(), "Drama".to_string()],
-                        canonical_tags: vec![],
+                        canonical_tags: canonical_genre_tags(&["Drama", "Drama"]),
                         rating: Some(7.5),
                         rating_sources: vec!["tmdb".to_string(), "tmdb".to_string()],
                         external_ratings: vec![TitleExternalRating {
@@ -4628,8 +4798,7 @@ mod tests {
                         background_url: None,
                         overview: None,
                         content_type: Some("series".to_string()),
-                        genres: vec!["Drama".to_string()],
-                        canonical_tags: vec![],
+                        canonical_tags: canonical_genre_tags(&["Drama"]),
                         rating: None,
                         rating_sources: Vec::new(),
                         external_ratings: Vec::new(),
@@ -4659,10 +4828,7 @@ mod tests {
                         tmdb_collection_id: None,
                         tmdb_collection_name: None,
                         owned_in_input: false,
-                        facet_terms: vec![
-                            "Drama".to_string(),
-                            "mal:theme:psychological".to_string(),
-                        ],
+                        facet_terms: vec!["canonical:genre:drama".to_string()],
                         context_terms: Vec::new(),
                         change_subject_keys: Vec::new(),
                         removed_subject_keys: Vec::new(),
@@ -4712,11 +4878,10 @@ mod tests {
             read_item.overview.as_deref(),
             Some("Rich canonical overview")
         );
-        assert_eq!(read_item.genres, vec!["Drama".to_string()]);
-        assert_eq!(
-            read_item.rating_sources,
-            vec!["tmdb".to_string(), "imdb".to_string()]
-        );
+        assert_eq!(read_item.canonical_tags.len(), 1);
+        assert_eq!(read_item.canonical_tags[0].category, "genre");
+        assert_eq!(read_item.canonical_tags[0].name, "Drama");
+        assert_eq!(read_item.rating_sources, vec!["tmdb".to_string()]);
         assert_eq!(read_item.external_ratings.len(), 1);
         assert_eq!(read_item.external_ratings[0].source, "imdb");
         assert_eq!(read_item.external_ratings[0].normalized, 0.82);
@@ -4762,7 +4927,7 @@ mod tests {
         sparse_title_rec_item.background_url = None;
         sparse_title_rec_item.overview = None;
         sparse_title_rec_item.rating = None;
-        sparse_title_rec_item.genres.clear();
+        sparse_title_rec_item.canonical_tags.clear();
         sparse_title_rec_item.rating_sources.clear();
         sparse_title_rec_item.external_ratings.clear();
         sparse_title_rec_item.source_tags.clear();
@@ -4801,7 +4966,9 @@ mod tests {
             more_like_this[0].overview.as_deref(),
             Some("Rich canonical overview")
         );
-        assert_eq!(more_like_this[0].genres, vec!["Drama".to_string()]);
+        assert_eq!(more_like_this[0].canonical_tags.len(), 1);
+        assert_eq!(more_like_this[0].canonical_tags[0].category, "genre");
+        assert_eq!(more_like_this[0].canonical_tags[0].name, "Drama");
         assert_eq!(
             more_like_this[0].source_tags[0].values,
             vec!["theme".to_string(), "Isekai".to_string()]
@@ -4885,20 +5052,21 @@ mod tests {
             .await
             .expect("personalized facets should list from canonical terms");
         assert_eq!(personalized_facets.len(), 2);
-        assert!(personalized_facets.iter().all(|facet| {
-            facet.smg_count.is_none()
-                && facet.local_count == Some(1)
-                && !facet.facet_value.contains(':')
-        }));
         assert!(
             personalized_facets
                 .iter()
-                .any(|facet| facet.facet_name == "genre" && facet.facet_value == "Drama")
+                .any(|facet| facet.facet_name == "genre"
+                    && facet.facet_value == "Drama"
+                    && facet.smg_count.is_none()
+                    && facet.local_count == Some(2))
         );
         assert!(
             personalized_facets
                 .iter()
-                .any(|facet| facet.facet_name == "theme" && facet.facet_value == "Isekai")
+                .any(|facet| facet.facet_name == "theme"
+                    && facet.facet_value == "Isekai"
+                    && facet.smg_count.is_none()
+                    && facet.local_count == Some(1))
         );
         assert!(personalized_facets.iter().all(|facet| {
             facet.facet_value != "mal:theme:psychological" && facet.facet_value != "Drama:"
@@ -5512,7 +5680,6 @@ mod tests {
             background_url: None,
             overview: None,
             content_type: Some("movie".to_string()),
-            genres: Vec::new(),
             canonical_tags: Vec::new(),
             rating: None,
             rating_sources: Vec::new(),

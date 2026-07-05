@@ -9,9 +9,9 @@ use quick_xml::Reader;
 use quick_xml::events::{BytesStart, Event};
 use scryer_application::{
     AppError, AppResult, EstimatedCost, ExpectedValueHint, IndexerCapsSnapshotRefresher,
-    NullUpstreamScheduler, SchedulerAdmission, SchedulerBatchRequest, SchedulerCandidate,
-    SchedulerCandidateId, SchedulerFeedback, SchedulerFeedbackOutcome, SchedulerIntent,
-    SchedulerLease, SchedulerOperation, SchedulerPluginKind, UpstreamScheduler,
+    NullUpstreamScheduler, RateLimitCooldownAction, SchedulerAdmission, SchedulerBatchRequest,
+    SchedulerCandidate, SchedulerCandidateId, SchedulerFeedback, SchedulerFeedbackOutcome,
+    SchedulerIntent, SchedulerLease, SchedulerOperation, SchedulerPluginKind, UpstreamScheduler,
 };
 use scryer_domain::{
     IndexerCapsSearchNode, IndexerCapsSnapshot, IndexerCategoryDescriptor, IndexerCategoryModel,
@@ -324,6 +324,7 @@ impl IndexerCapsSnapshotRefresher for DirectNabCapsSnapshotRefresher {
                     host_key: host_key.clone(),
                     destination_key: destination_key.clone(),
                     account_quota_key: Some(config.id.clone().into()),
+                    rss_request_key: None,
                     estimated_cost: EstimatedCost::ONE_API_CALL,
                     expected_value: ExpectedValueHint::NEUTRAL,
                     learning_context: None,
@@ -335,10 +336,15 @@ impl IndexerCapsSnapshotRefresher for DirectNabCapsSnapshotRefresher {
             .await?;
         let scheduler_lease = match scheduler_decision.decisions.into_iter().next() {
             Some(SchedulerAdmission::Admit { lease, .. }) => Some(lease),
-            Some(SchedulerAdmission::Defer { reason, .. }) => {
+            Some(SchedulerAdmission::Defer {
+                reason,
+                retry_after,
+                ..
+            }) => {
                 tracing::debug!(
                     indexer = config.name.as_str(),
                     scheduler_reason = ?reason,
+                    retry_after_secs = retry_after.map(|delay| delay.as_secs()),
                     "scheduler deferred indexer caps refresh"
                 );
                 return Ok(None);
@@ -378,14 +384,17 @@ impl IndexerCapsSnapshotRefresher for DirectNabCapsSnapshotRefresher {
         let response = match response_result {
             Ok(response) => response,
             Err(error) => {
-                let (outcome, retry_after) = match &error {
+                let (outcome, retry_after, cooldown_action) = match &error {
                     OutboundHttpError::RateLimited(rate_limited) => (
                         SchedulerFeedbackOutcome::RateLimited,
                         rate_limited.retry_after,
+                        RateLimitCooldownAction::AlreadyRecorded,
                     ),
-                    OutboundHttpError::Transport { .. } => {
-                        (SchedulerFeedbackOutcome::TransportFailure, None)
-                    }
+                    OutboundHttpError::Transport { .. } => (
+                        SchedulerFeedbackOutcome::TransportFailure,
+                        None,
+                        RateLimitCooldownAction::None,
+                    ),
                 };
                 record_caps_scheduler_feedback(
                     self.upstream_scheduler.as_ref(),
@@ -395,24 +404,10 @@ impl IndexerCapsSnapshotRefresher for DirectNabCapsSnapshotRefresher {
                     Some(config.id.clone().into()),
                     outcome,
                     retry_after,
+                    cooldown_action,
                 )
                 .await;
-                return Err(match error {
-                    OutboundHttpError::RateLimited(rate_limited) => {
-                        match rate_limited.retry_after.filter(|delay| !delay.is_zero()) {
-                            Some(delay) => AppError::Repository(format!(
-                                "indexer caps refresh was rate limited (retry after {}s)",
-                                delay.as_secs()
-                            )),
-                            None => AppError::Repository(
-                                "indexer caps refresh was rate limited".to_string(),
-                            ),
-                        }
-                    }
-                    OutboundHttpError::Transport { source, .. } => {
-                        AppError::Repository(format!("indexer caps request failed: {source}"))
-                    }
-                });
+                return Err(map_caps_outbound_error(error));
             }
         };
 
@@ -430,6 +425,7 @@ impl IndexerCapsSnapshotRefresher for DirectNabCapsSnapshotRefresher {
                 Some(config.id.clone().into()),
                 SchedulerFeedbackOutcome::ProviderFailure,
                 None,
+                RateLimitCooldownAction::None,
             )
             .await;
             return Err(AppError::Repository(format!(
@@ -452,6 +448,7 @@ impl IndexerCapsSnapshotRefresher for DirectNabCapsSnapshotRefresher {
                 SchedulerFeedbackOutcome::ProviderFailure
             },
             None,
+            RateLimitCooldownAction::None,
         )
         .await;
         snapshot
@@ -487,6 +484,7 @@ async fn record_caps_scheduler_feedback(
     account_quota_key: Option<scryer_application::AccountQuotaKey>,
     outcome: SchedulerFeedbackOutcome,
     retry_after: Option<Duration>,
+    cooldown_action: RateLimitCooldownAction,
 ) {
     if let Err(error) = scheduler
         .record_feedback(SchedulerFeedback {
@@ -500,6 +498,7 @@ async fn record_caps_scheduler_feedback(
             observed_grab_current: None,
             observed_grab_max: None,
             retry_after,
+            cooldown_action,
             rss_last_seen_release_identity: None,
             rss_last_seen_release_published_at: None,
             rss_feed_result_count: None,
@@ -644,9 +643,55 @@ fn attr_i64(element: &BytesStart<'_>, key: &[u8]) -> AppResult<Option<i64>> {
     })
 }
 
+fn map_caps_outbound_error(error: OutboundHttpError) -> AppError {
+    match error {
+        OutboundHttpError::RateLimited(rate_limited) => {
+            let retry_after = rate_limited.retry_after.filter(|delay| !delay.is_zero());
+            AppError::rate_limited_temporary_unavailable(
+                match retry_after {
+                    Some(delay) => format!(
+                        "indexer caps refresh was rate limited (retry after {}s)",
+                        delay.as_secs()
+                    ),
+                    None => "indexer caps refresh was rate limited".to_string(),
+                },
+                retry_after,
+                RateLimitCooldownAction::AlreadyRecorded,
+            )
+        }
+        OutboundHttpError::Transport { source, .. } => {
+            AppError::Repository(format!("indexer caps request failed: {source}"))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn caps_outbound_rate_limit_preserves_retry_after() {
+        let error = OutboundHttpError::RateLimited(scryer_outbound_http::RateLimitedError {
+            scope: scryer_outbound_http::RateLimitScopeKey::from("caps"),
+            retry_after: Some(Duration::from_secs(55)),
+            attempts: 1,
+            retry_after_source: scryer_outbound_http::RetryAfterSource::Seconds,
+            request_label: std::borrow::Cow::Borrowed("caps"),
+        });
+        let error = map_caps_outbound_error(error);
+
+        match error {
+            AppError::TemporaryUnavailable {
+                message,
+                retry_after,
+                ..
+            } => {
+                assert!(message.contains("retry after 55s"));
+                assert_eq!(retry_after, Some(Duration::from_secs(55)));
+            }
+            other => panic!("expected temporary unavailable error, got {other:?}"),
+        }
+    }
 
     #[test]
     fn parse_caps_snapshot_xml_parses_search_nodes_limits_and_categories() {
