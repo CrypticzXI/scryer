@@ -1003,7 +1003,7 @@ export function SettingsSubtitlesContainer({
           )
         : null}
       <div className="space-y-4">
-        <section className={SUBTITLES_PANEL_CLASS}>
+        <section id="settings-subtitles-section" className={SUBTITLES_PANEL_CLASS}>
           <div className={SUBTITLES_PANEL_HEADER_CLASS}>
             <button
               type="button"

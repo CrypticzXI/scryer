@@ -177,40 +177,46 @@ export function TitleTable({
   const isMovieView = view === "movies";
   const isAnimeView = view === "anime";
   const overviewTargetView: ViewId = resolveOverviewTargetView(view);
-  const [tableWidth, setTableWidth] = React.useState<number | null>(null);
-  // Drop lower-priority columns as the table narrows so the Name column stays
-  // usable and the table never overflows (which would cut off row highlights).
-  const columnWidthBudget = tableWidth ?? Number.POSITIVE_INFINITY;
   const showActionsColumn = visibleColumns.actions;
-  const showMonitoredColumn =
-    visibleColumns.monitored && columnWidthBudget >= 480;
-  const showQualityColumn = visibleColumns.quality && columnWidthBudget >= 600;
-  const showEpisodesColumn =
-    !isMovieView && visibleColumns.episodes && columnWidthBudget >= 640;
-  const showSizeColumn = visibleColumns.size && columnWidthBudget >= 700;
-  const showLibraryColumn = visibleColumns.library && columnWidthBudget >= 810;
-  const showAddedColumn = visibleColumns.added && columnWidthBudget >= 930;
-  const showYearColumn =
-    isMovieView && visibleColumns.year && columnWidthBudget >= 560;
-  const showRuntimeColumn =
-    visibleColumns.runtime && columnWidthBudget >= 640;
-  const showStatusColumn =
-    !isMovieView && visibleColumns.status && columnWidthBudget >= 700;
-  const showRootColumn = visibleColumns.root && columnWidthBudget >= 960;
-  const showPopularityColumn =
-    isMovieView && visibleColumns.popularity && columnWidthBudget >= 760;
-  const showResolutionColumn =
-    isMovieView && visibleColumns.resolution && columnWidthBudget >= 720;
-  const showHdrColumn =
-    isMovieView && visibleColumns.hdr && columnWidthBudget >= 820;
-  const showAudioCodecColumn =
-    isMovieView && visibleColumns.audioCodec && columnWidthBudget >= 900;
+  const showMonitoredColumn = visibleColumns.monitored;
+  const showQualityColumn = visibleColumns.quality;
+  const showEpisodesColumn = !isMovieView && visibleColumns.episodes;
+  const showSizeColumn = visibleColumns.size;
+  const showLibraryColumn = visibleColumns.library;
+  const showAddedColumn = visibleColumns.added;
+  const showYearColumn = isMovieView && visibleColumns.year;
+  const showRuntimeColumn = visibleColumns.runtime;
+  const showStatusColumn = !isMovieView && visibleColumns.status;
+  const showRootColumn = visibleColumns.root;
+  const showPopularityColumn = isMovieView && visibleColumns.popularity;
+  const showResolutionColumn = isMovieView && visibleColumns.resolution;
+  const showHdrColumn = isMovieView && visibleColumns.hdr;
+  const showAudioCodecColumn = isMovieView && visibleColumns.audioCodec;
   const supportedRatingColumns = isAnimeView
     ? ANIME_TITLE_TABLE_RATING_COLUMNS
     : SHARED_TITLE_TABLE_RATING_COLUMNS;
   const showRatingColumns = supportedRatingColumns.filter(
-    (key, index) => visibleColumns[key] && columnWidthBudget >= 980 + index * 70,
+    (key) => visibleColumns[key],
   );
+  const titleTableMinWidthRem =
+    3 +
+    18 +
+    (showYearColumn ? 5 : 0) +
+    (showLibraryColumn ? 7 : 0) +
+    (showMonitoredColumn ? 5.25 : 0) +
+    (showQualityColumn ? 8 : 0) +
+    (showEpisodesColumn ? 9.5 : 0) +
+    (showRuntimeColumn ? 6.5 : 0) +
+    (showStatusColumn ? 7 : 0) +
+    (showSizeColumn ? 7 : 0) +
+    (showResolutionColumn ? 6 : 0) +
+    (showHdrColumn ? 7.5 : 0) +
+    (showAudioCodecColumn ? 8 : 0) +
+    (showPopularityColumn ? 6.5 : 0) +
+    (showRootColumn ? 12 : 0) +
+    showRatingColumns.length * 5.75 +
+    (showAddedColumn ? 7.5 : 0) +
+    (showActionsColumn ? 11.5 : 0);
   const columnCount =
     2 +
     (showYearColumn ? 1 : 0) +
@@ -296,20 +302,6 @@ export function TitleTable({
   >({});
 
   const titleTableScrollRef = React.useRef<HTMLDivElement>(null);
-  React.useLayoutEffect(() => {
-    const element = titleTableScrollRef.current;
-    if (!element || typeof ResizeObserver === "undefined") {
-      return;
-    }
-    const updateWidth = () => {
-      const next = Math.round(element.getBoundingClientRect().width);
-      setTableWidth((current) => (current === next ? current : next));
-    };
-    updateWidth();
-    const observer = new ResizeObserver(updateWidth);
-    observer.observe(element);
-    return () => observer.disconnect();
-  }, []);
   const sortedTitles = titles;
   const scrollStorageKeySuffix = selectedPaneMode
     ? "poster-table-selected"
@@ -1183,13 +1175,14 @@ export function TitleTable({
       data-slot="title-list-scroll"
       ref={titleTableScrollRef}
       className={cn(
-        "relative h-full min-h-[22rem] w-full overflow-x-hidden overflow-y-auto rounded-[14px] border border-[var(--scry-border)] bg-[var(--scry-surfD)]",
+        "relative h-full min-h-[22rem] w-full overflow-x-auto overflow-y-auto rounded-[14px] border border-[var(--scry-border)] bg-[var(--scry-surfD)]",
       )}
     >
       <table
         data-ui="title-table"
         data-view={view}
         className="w-full table-fixed caption-bottom text-sm"
+        style={{ minWidth: `${titleTableMinWidthRem}rem` }}
       >
         {titleTableColGroup}
         {titleTableHeader}

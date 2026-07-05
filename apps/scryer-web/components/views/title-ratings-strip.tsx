@@ -2,12 +2,15 @@ import {
   TitleRatingsDisplay,
   type TitleRatingsDisplayVariant,
 } from "@/components/common/title-ratings-display";
-import type { TitleExternalRating } from "@/lib/utils/title-ratings";
+import {
+  normalizeTitleExternalRating,
+  type TitleExternalRatingInput,
+} from "@/lib/utils/title-ratings";
 
 export type TitleRatings = {
-  rating: number | null;
-  ratingSources: string[];
-  externalRatings: TitleExternalRating[];
+  rating?: number | null;
+  ratingSources?: string[];
+  externalRatings?: TitleExternalRatingInput[];
 };
 
 type TitleRatingsStripProps = {
@@ -19,18 +22,21 @@ export function TitleRatingsStrip({
   ratings,
   variant = "default",
 }: TitleRatingsStripProps) {
-  const externalRatings = ratings?.externalRatings ?? [];
-  if (externalRatings.length === 0 && ratings?.rating == null) {
+  const externalRatings = (ratings?.externalRatings ?? []).map(
+    normalizeTitleExternalRating,
+  );
+  const fallbackRating = ratings?.rating ?? null;
+  if (externalRatings.length === 0 && fallbackRating == null) {
     return null;
   }
-  const fallbackSource = ratings?.ratingSources.find(
+  const fallbackSource = ratings?.ratingSources?.find(
     (source) => source.trim().length > 0,
   );
 
   return (
     <TitleRatingsDisplay
       externalRatings={externalRatings}
-      fallbackRating={ratings?.rating}
+      fallbackRating={fallbackRating}
       fallbackSource={fallbackSource}
       variant={variant}
       className={variant === "default" ? "mt-3" : "mb-3"}

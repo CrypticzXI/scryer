@@ -53,7 +53,7 @@ import {
   TitleMoreLikeThisStrip,
   type TitleMoreLikeThisStripActions,
 } from "../title-more-like-this-strip";
-import { TitleRatingsDisplay } from "@/components/common/title-ratings-display";
+import { TitleRatingsStrip } from "../title-ratings-strip";
 import { TitleSettingsPanel } from "./title-settings-panel";
 import { SeasonSection, SeriesMovieTimelineSection } from "./season-section";
 import type { TitleOptionUpdates } from "@/lib/types/title-options";
@@ -898,14 +898,7 @@ export function SeriesOverviewView({
                 </div>
               ) : null}
 
-              <TitleRatingsDisplay
-                externalRatings={title.ratings?.externalRatings ?? []}
-                fallbackRating={title.ratings?.rating}
-                fallbackSource={title.ratings?.ratingSources.find(
-                  (source) => source.trim().length > 0,
-                )}
-                className="mt-3"
-              />
+              <TitleRatingsStrip ratings={title.ratings} />
 
               {title.overview ? (
                 <p className="mt-4 text-sm leading-relaxed text-foreground/70">

@@ -1887,6 +1887,15 @@ pub trait IndexerProxyConfigRepository: Send + Sync {
         config: scryer_domain::IndexerProxyConfig,
     ) -> AppResult<scryer_domain::IndexerProxyConfig>;
     async fn delete(&self, id: &str) -> AppResult<()>;
+    /// Persist a health observation without bumping `updated_at`, which
+    /// doubles as the plugin client cache revision for proxied indexers.
+    async fn record_health(
+        &self,
+        id: &str,
+        status: scryer_domain::IndexerProxyHealthStatus,
+        error_message: Option<String>,
+        error_at: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> AppResult<()>;
 }
 
 #[async_trait]

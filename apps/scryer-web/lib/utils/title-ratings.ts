@@ -7,6 +7,15 @@ export type TitleExternalRating = {
   url: string;
 };
 
+export type TitleExternalRatingInput = {
+  source: string;
+  value?: number | null;
+  score?: number | null;
+  normalized: number;
+  votes?: number | null;
+  url?: string | null;
+};
+
 export type RatingSourceInfo = {
   label: string;
   logoSrc: string | null;
@@ -158,6 +167,19 @@ export function visibleTitleExternalRatings(
     .map(({ rating }) => rating);
 }
 
+export function normalizeTitleExternalRating(
+  rating: TitleExternalRatingInput,
+): TitleExternalRating {
+  return {
+    source: rating.source,
+    value: rating.value ?? null,
+    score: rating.score ?? null,
+    normalized: rating.normalized,
+    votes: rating.votes ?? null,
+    url: rating.url ?? "",
+  };
+}
+
 function scoreOutOfHundred(rating: TitleExternalRating): number {
   const score = rating.score ?? rating.value;
   if (score != null) {
@@ -184,4 +206,18 @@ export function ratingValueLabel(
   }
   const value = rating.value ?? rating.normalized;
   return compactRatingNumber(value);
+}
+
+export function externalRatingLabelForAliases(
+  ratings: TitleExternalRatingInput[],
+  aliases: readonly string[],
+): string | null {
+  const normalizedAliases = new Set(aliases.map(normalizedRatingSource));
+  const match = visibleTitleExternalRatings(
+    ratings.map(normalizeTitleExternalRating),
+  ).find((rating) =>
+    normalizedAliases.has(normalizedRatingSource(rating.source)),
+  );
+
+  return match ? ratingValueLabel(match, ratingSourceInfo(match.source)) : null;
 }

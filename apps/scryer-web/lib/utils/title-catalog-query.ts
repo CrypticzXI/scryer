@@ -85,7 +85,6 @@ const TITLE_CATALOG_SORT_KEYS: Record<string, string> = {
 };
 
 const SHARED_RATING_COLUMN_KEYS = new Set([
-  "ratingScryer",
   "ratingImdb",
   "ratingRottenTomatoes",
   "ratingPopcornmeter",
@@ -99,7 +98,6 @@ const SHARED_RATING_COLUMN_KEYS = new Set([
 ]);
 
 const ANIME_RATING_COLUMN_KEYS = new Set([
-  "ratingScryer",
   "ratingImdb",
   "ratingTmdb",
   "ratingTvdb",

@@ -137,6 +137,35 @@ impl IndexerProxyConfigRepository for IndexerProxyConfigStore {
         })
         .await
     }
+
+    async fn record_health(
+        &self,
+        id: &str,
+        status: IndexerProxyHealthStatus,
+        error_message: Option<String>,
+        error_at: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> AppResult<()> {
+        // Health is observational state: deliberately leave `updated_at`
+        // untouched so plugin client cache revisions only change on config
+        // edits.
+        let rows = SqlRuntime::execute(
+            self.datastore.read_exec(),
+            "UPDATE indexer_proxy_configs SET
+                    last_health_status = {}, last_error_message = {}, last_error_at = {}
+                 WHERE id = {}",
+            &[
+                SqlArg::Text(status.as_str().to_string()),
+                SqlArg::OptText(error_message),
+                SqlArg::OptTimestamp(error_at),
+                SqlArg::Text(id.to_string()),
+            ],
+        )
+        .await?;
+        if rows == 0 {
+            return Err(AppError::NotFound(format!("indexer proxy config {id}")));
+        }
+        Ok(())
+    }
 }
 
 fn proxy_insert_args(config: &IndexerProxyConfig) -> Vec<SqlArg> {

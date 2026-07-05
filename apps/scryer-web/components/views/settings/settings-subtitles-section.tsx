@@ -153,7 +153,7 @@ export function SettingsSubtitlesSection({
   }
 
   return (
-    <div id="settings-subtitles-section" className="space-y-4 text-sm">
+    <div className="space-y-4 text-sm">
       <div className={`space-y-4 ${disabled ? "pointer-events-none select-none opacity-40" : ""}`}>
         {/* Languages */}
         <div className={`${SUBTITLES_INSET_CLASS} space-y-3`}>

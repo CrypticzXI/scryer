@@ -331,6 +331,14 @@ function mergePreferLoadedImageFields(
       incoming.moreLikeThis === undefined
         ? current.moreLikeThis
         : incoming.moreLikeThis,
+    imdbId: incoming.imdbId === undefined ? current.imdbId : incoming.imdbId,
+    externalIds:
+      incoming.externalIds === undefined ? current.externalIds : incoming.externalIds,
+    canonicalTags:
+      incoming.canonicalTags === undefined
+        ? current.canonicalTags
+        : incoming.canonicalTags,
+    ratings: incoming.ratings === undefined ? current.ratings : incoming.ratings,
     metadataFetchedAt: incoming.metadataFetchedAt ?? current.metadataFetchedAt,
   };
 }
@@ -908,13 +916,15 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     return titleCatalogSort;
   }, [effectiveViewMode, titleCatalogSort, view, visibleTitleTableColumns]);
   const titleCatalogProjection = React.useMemo(
-    () =>
-      titleCatalogProjectionForTable({
+    () => ({
+      ...titleCatalogProjectionForTable({
         facet: activeFacet,
         visibleColumns:
           effectiveViewMode === "poster" ? {} : visibleTitleTableColumns,
         sort: effectiveTitleCatalogSort,
       }),
+      ratings: true,
+    }),
     [activeFacet, effectiveTitleCatalogSort, effectiveViewMode, visibleTitleTableColumns],
   );
   const [bulkActionBusy, setBulkActionBusy] = React.useState(false);

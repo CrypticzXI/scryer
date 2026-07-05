@@ -191,6 +191,7 @@ struct StrategyBatchHealth {
     any_error: bool,
     retry_after: Option<std::time::Duration>,
     had_rate_limit: bool,
+    had_solver_failure: bool,
 }
 
 impl StrategyBatchHealth {
@@ -206,6 +207,10 @@ impl StrategyBatchHealth {
         {
             self.retry_after = Some(retry_after);
         }
+    }
+
+    fn mark_solver_failure(&mut self) {
+        self.had_solver_failure = true;
     }
 
     async fn apply(
@@ -226,7 +231,7 @@ impl StrategyBatchHealth {
                 )
                 .await;
             }
-        } else if self.any_error && !self.had_rate_limit {
+        } else if self.any_error && !self.had_rate_limit && !self.had_solver_failure {
             let backoff = backoff_tracker
                 .record_failure(indexer_id, self.retry_after)
                 .await;
@@ -242,6 +247,13 @@ impl StrategyBatchHealth {
                 disabled_until = %backoff.disabled_until,
                 escalation_level = backoff.escalation_level,
                 "indexer backoff escalated"
+            );
+        } else if self.any_error && self.had_solver_failure && !self.had_rate_limit {
+            // The challenge solver failed, not the indexer: keep the indexer
+            // out of operational backoff and let proxy health carry the blame.
+            warn!(
+                indexer = indexer_name,
+                "indexer proxy solver failure recorded without operational backoff"
             );
         } else if self.any_error {
             warn!(
@@ -1318,6 +1330,20 @@ impl MultiIndexerSearchClient {
             grab_current: None,
             grab_max: None,
         };
+        // Solver-service failures never reached the indexer: report transport
+        // trouble to the scheduler instead of blaming the provider.
+        if scryer_application::challenge_solver::is_solver_service_error_message(&error.to_string())
+        {
+            self.record_indexer_scheduler_feedback(
+                lease,
+                &response,
+                SchedulerFeedbackOutcome::TransportFailure,
+                None,
+                RateLimitCooldownAction::None,
+            )
+            .await;
+            return;
+        }
         let rate_limit_signal = rate_limit_signal_from_error(error);
         let retry_after = rate_limit_signal
             .as_ref()
@@ -1388,17 +1414,18 @@ impl MultiIndexerSearchClient {
         }
     }
 
-    async fn client_from_config(
+    fn client_from_config(
         config: &IndexerConfig,
         plugin_provider: &Arc<dyn IndexerPluginProvider>,
-        indexer_proxy_configs: &Arc<dyn IndexerProxyConfigRepository>,
+        proxy_configs_by_id: &HashMap<String, Option<scryer_domain::IndexerProxyConfig>>,
     ) -> AppResult<(Arc<dyn IndexerClient>, Option<String>, std::time::Duration)> {
         let provider = config.provider_type.trim().to_ascii_lowercase();
         let (proxy_config, proxy_cache_key) =
             if let Some(proxy_config_id) = config.indexer_proxy_config_id.as_deref() {
-                let proxy_config = indexer_proxy_configs
-                    .get_by_id(proxy_config_id)
-                    .await?
+                let proxy_config = proxy_configs_by_id
+                    .get(proxy_config_id)
+                    .cloned()
+                    .flatten()
                     .ok_or_else(|| {
                         AppError::Validation("Indexer proxy configuration was not found.".into())
                     })?;
@@ -2037,6 +2064,24 @@ impl IndexerClient for MultiIndexerSearchClient {
         } else {
             None
         };
+        // Resolve each distinct proxy config once per search pass; both the
+        // scheduler deadline calculation and client construction read from
+        // this map. A missing entry value means the config row is gone.
+        let mut proxy_configs_by_id: HashMap<String, Option<scryer_domain::IndexerProxyConfig>> =
+            HashMap::new();
+        for (config, _) in &enabled {
+            let Some(proxy_config_id) = config.indexer_proxy_config_id.as_deref() else {
+                continue;
+            };
+            if proxy_configs_by_id.contains_key(proxy_config_id) {
+                continue;
+            }
+            let fetched = self
+                .indexer_proxy_configs
+                .get_by_id(proxy_config_id)
+                .await?;
+            proxy_configs_by_id.insert(proxy_config_id.to_string(), fetched);
+        }
         let mut scheduler_candidates = Vec::new();
         let mut scheduler_eligible = Vec::new();
         for (config, had_persisted_system_backoff) in &enabled {
@@ -2169,19 +2214,16 @@ impl IndexerClient for MultiIndexerSearchClient {
             } else {
                 vec![per_indexer_categories]
             };
+            let scheduler_search_timeout = Self::effective_indexer_search_timeout(
+                config
+                    .indexer_proxy_config_id
+                    .as_deref()
+                    .and_then(|proxy_config_id| proxy_configs_by_id.get(proxy_config_id))
+                    .and_then(|proxy_config| proxy_config.as_ref())
+                    .filter(|proxy_config| proxy_config.is_enabled),
+            );
             for category_request in category_requests {
                 let scheduler_candidate_id = SchedulerCandidateId::new();
-                let scheduler_search_timeout =
-                    if let Some(proxy_config_id) = config.indexer_proxy_config_id.as_deref() {
-                        let proxy_config = self
-                            .indexer_proxy_configs
-                            .get_by_id(proxy_config_id)
-                            .await?
-                            .filter(|config| config.is_enabled);
-                        Self::effective_indexer_search_timeout(proxy_config.as_ref())
-                    } else {
-                        Self::effective_indexer_search_timeout(None)
-                    };
                 let rss_request_key =
                     is_rss_request.then(|| Self::rss_request_key(category_request.as_deref()));
                 let rss_activity = if is_rss_request {
@@ -2396,23 +2438,19 @@ impl IndexerClient for MultiIndexerSearchClient {
                 }
             }
 
-            let (client, proxy_cache_key, search_timeout) = match Self::client_from_config(
-                config,
-                &self.plugin_provider,
-                &self.indexer_proxy_configs,
-            )
-            .await
-            {
-                Ok(c) => c,
-                Err(err) => {
-                    warn!(
-                        indexer = config.name.as_str(),
-                        error = %err,
-                        "skipping indexer: client setup failed"
-                    );
-                    continue;
-                }
-            };
+            let (client, proxy_cache_key, search_timeout) =
+                match Self::client_from_config(config, &self.plugin_provider, &proxy_configs_by_id)
+                {
+                    Ok(c) => c,
+                    Err(err) => {
+                        warn!(
+                            indexer = config.name.as_str(),
+                            error = %err,
+                            "skipping indexer: client setup failed"
+                        );
+                        continue;
+                    }
+                };
 
             // RSS-only indexers: fetch the feed once, cache it, return cached
             // results for all concurrent callers. The feed content is the same
@@ -2550,7 +2588,11 @@ impl IndexerClient for MultiIndexerSearchClient {
                                         }
                                         warn!(indexer = indexer_name.as_str(), error = %err, "RSS feed fetch failed");
                                         stats_tracker.record_query(&indexer_id, &indexer_name, false);
-                                        if rate_limit_signal_from_error(&err).is_none() {
+                                        if rate_limit_signal_from_error(&err).is_none()
+                                            && !scryer_application::challenge_solver::is_solver_service_error_message(
+                                                &err.to_string(),
+                                            )
+                                        {
                                             let backoff = backoff_tracker
                                                 .record_failure(&indexer_id, None)
                                                 .await;
@@ -2867,6 +2909,11 @@ impl IndexerClient for MultiIndexerSearchClient {
                             }
                             primary_had_error = true;
                             batch_health.mark_error(outcome.retry_after, outcome.rate_limited);
+                            if scryer_application::challenge_solver::is_solver_service_error_message(
+                                &err.to_string(),
+                            ) {
+                                batch_health.mark_solver_failure();
+                            }
                             debug!(
                                 indexer = indexer_name.as_str(),
                                 strategy = outcome.label.as_str(),
@@ -2991,6 +3038,11 @@ impl IndexerClient for MultiIndexerSearchClient {
                                     );
                                 }
                                 batch_health.mark_error(outcome.retry_after, outcome.rate_limited);
+                            if scryer_application::challenge_solver::is_solver_service_error_message(
+                                &err.to_string(),
+                            ) {
+                                batch_health.mark_solver_failure();
+                            }
                                 debug!(
                                     indexer = indexer_name.as_str(),
                                     strategy = outcome.label.as_str(),
@@ -3020,6 +3072,7 @@ impl IndexerClient for MultiIndexerSearchClient {
                 let batch_had_success = batch_health.any_success;
                 let batch_had_error = batch_health.any_error;
                 let batch_had_rate_limit = batch_health.had_rate_limit;
+                let batch_had_solver_failure = batch_health.had_solver_failure;
                 let batch_retry_after = batch_health.retry_after;
                 batch_health
                     .apply(
@@ -3051,6 +3104,14 @@ impl IndexerClient for MultiIndexerSearchClient {
                                 retry_after: batch_retry_after,
                                 rate_limit_cooldown: RateLimitCooldownAction::AlreadyRecorded,
                             }
+                        } else if batch_had_solver_failure {
+                            // Keep the solver-side marker so scheduler feedback
+                            // classifies this as transport trouble, not a
+                            // provider failure.
+                            AppError::Repository(format!(
+                                "all attempted indexer strategies failed: {}",
+                                scryer_application::challenge_solver::BYPARR_UNAVAILABLE_MESSAGE
+                            ))
                         } else {
                             AppError::Repository(
                                 "all attempted indexer strategies failed".to_string(),
@@ -3148,6 +3209,13 @@ impl IndexerClient for MultiIndexerSearchClient {
         // Clear the RSS feed cache after all tasks complete so the next
         // search session gets fresh feeds.
         self.rss_feed_cache.lock().await.clear();
+
+        // Persist any solver-health observations the plugin HTTP host queued
+        // while this pass ran.
+        scryer_application::challenge_solver::flush_solver_health(
+            self.indexer_proxy_configs.as_ref(),
+        )
+        .await;
 
         // Dedup by download_url (exact duplicates from parallel strategies).
         // Cross-indexer release-identity dedup happens in the discovery layer
@@ -6520,6 +6588,75 @@ mod tests {
         assert_eq!(stats.len(), 3);
         assert_eq!(stats.iter().filter(|success| **success).count(), 1);
         assert_eq!(stats.iter().filter(|success| !**success).count(), 2);
+    }
+
+    #[tokio::test]
+    async fn solver_service_failure_does_not_create_operational_backoff() {
+        let stats = Arc::new(RecordingIndexerStatsTracker::default());
+        let (client, _calls) =
+            scripted_search_client_with_stats(anime_caps(), stats.clone(), |_| {
+                Err(AppError::Repository(format!(
+                    "indexer request failed: {}",
+                    scryer_application::challenge_solver::BYPARR_UNREACHABLE_MESSAGE
+                )))
+            });
+
+        let _ = client
+            .search(
+                "Blade Summit S02E03".into(),
+                HashMap::from([("anidb_id".to_string(), "1535".to_string())]),
+                Some("anime".into()),
+                Some("anime".into()),
+                None,
+                None,
+                None,
+                SearchMode::Interactive,
+                Some(2),
+                Some(3),
+                Some(21),
+                vec![],
+            )
+            .await;
+
+        assert!(
+            client.backoff_tracker.is_disabled("idx-1").await.is_none(),
+            "solver-service failures must not disable the indexer"
+        );
+        assert!(
+            backoff_state(&client, "idx-1").await.is_none(),
+            "solver-service failures must not escalate indexer operational backoff"
+        );
+    }
+
+    #[tokio::test]
+    async fn non_solver_failures_still_create_operational_backoff() {
+        let stats = Arc::new(RecordingIndexerStatsTracker::default());
+        let (client, _calls) =
+            scripted_search_client_with_stats(anime_caps(), stats.clone(), |_| {
+                Err(AppError::Repository("origin exploded".into()))
+            });
+
+        let _ = client
+            .search(
+                "Blade Summit S02E03".into(),
+                HashMap::from([("anidb_id".to_string(), "1535".to_string())]),
+                Some("anime".into()),
+                Some("anime".into()),
+                None,
+                None,
+                None,
+                SearchMode::Interactive,
+                Some(2),
+                Some(3),
+                Some(21),
+                vec![],
+            )
+            .await;
+
+        assert!(
+            backoff_state(&client, "idx-1").await.is_some(),
+            "plain provider failures must still escalate operational backoff"
+        );
     }
 
     #[tokio::test]

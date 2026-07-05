@@ -143,7 +143,7 @@ impl AppUseCase {
         if id.is_empty() {
             return Err(AppError::Validation("indexer proxy config id is required".into()));
         }
-        let mut config = self
+        let config = self
             .services
             .integrations
             .indexer_proxy_configs
@@ -164,25 +164,32 @@ impl AppUseCase {
             Err(error) => IndexerProxyTestResult {
                 ok: false,
                 status: scryer_domain::IndexerProxyHealthStatus::Unhealthy,
-                message: Some(sanitize_indexer_proxy_error(&error.to_string())),
+                message: Some(crate::challenge_solver::sanitize_indexer_proxy_error(
+                    &error.to_string(),
+                )),
                 duration_ms: Some(duration_ms),
             },
         };
 
-        config.last_health_status = Some(test_result.status);
-        config.last_error_message = if test_result.ok {
-            None
-        } else {
-            test_result.message.clone()
-        };
-        config.last_error_at = (!test_result.ok).then(Utc::now);
-        config.updated_at = Utc::now();
-        let _ = self
+        // Health-only write: `record_health` leaves `updated_at` (the plugin
+        // client cache revision) untouched.
+        let error_message = (!test_result.ok)
+            .then(|| test_result.message.clone())
+            .flatten();
+        let error_at = (!test_result.ok).then(Utc::now);
+        if let Err(error) = self
             .services
             .integrations
             .indexer_proxy_configs
-            .update(config)
-            .await;
+            .record_health(&config.id, test_result.status, error_message, error_at)
+            .await
+        {
+            tracing::warn!(
+                proxy_config_id = config.id.as_str(),
+                error = %error,
+                "failed to persist indexer proxy test result"
+            );
+        }
 
         Ok(test_result)
     }
@@ -225,14 +232,6 @@ fn validate_indexer_proxy_timeout(timeout: u32) -> AppResult<u32> {
     Ok(timeout)
 }
 
-fn byparr_request_get_payload(url: &str, request_timeout_seconds: u32) -> serde_json::Value {
-    serde_json::json!({
-        "cmd": "request.get",
-        "url": url,
-        "maxTimeout": request_timeout_seconds,
-    })
-}
-
 async fn probe_byparr_health(
     config: &scryer_domain::IndexerProxyConfig,
 ) -> AppResult<String> {
@@ -271,10 +270,10 @@ async fn probe_byparr_health(
         }
     }
 
-    let probe_url = format!("{base_url}/v1");
+    let probe_url = crate::challenge_solver::byparr_solve_endpoint(base_url);
     let response = client
         .post(&probe_url)
-        .json(&byparr_request_get_payload(
+        .json(&crate::challenge_solver::byparr_solve_request(
             "https://example.com/",
             config.request_timeout_seconds,
         ))
@@ -289,77 +288,4 @@ async fn probe_byparr_health(
         )));
     }
     Ok(format!("Byparr v1 probe returned HTTP {}", status.as_u16()))
-}
-
-fn sanitize_indexer_proxy_error(message: &str) -> String {
-    let mut sanitized = message.to_string();
-    for marker in ["apikey=", "api_key=", "token=", "passkey=", "auth=", "rsskey=", "jwt="] {
-        let mut search_start = 0;
-        while let Some(relative_start) = sanitized[search_start..].to_ascii_lowercase().find(marker)
-        {
-            let start = search_start + relative_start;
-            let value_start = start + marker.len();
-            let value_end = sanitized[value_start..]
-                .find(['&', ' ', '\'', '"'])
-                .map(|offset| value_start + offset)
-                .unwrap_or_else(|| sanitized.len());
-            if sanitized[value_start..value_end].eq("REDACTED") {
-                search_start = value_end;
-                continue;
-            }
-            sanitized.replace_range(value_start..value_end, "REDACTED");
-            search_start = value_start + "REDACTED".len();
-        }
-    }
-    sanitized
-}
-
-#[cfg(test)]
-mod indexer_proxy_unit_tests {
-    use super::*;
-
-    #[test]
-    fn sanitize_indexer_proxy_error_redacts_sensitive_query_values_once() {
-        let message = "Byparr failed for https://example.invalid/api?t=search&apikey=abc123&token=def456";
-
-        let sanitized = sanitize_indexer_proxy_error(message);
-
-        assert_eq!(
-            sanitized,
-            "Byparr failed for https://example.invalid/api?t=search&apikey=REDACTED&token=REDACTED",
-        );
-    }
-
-    #[test]
-    fn sanitize_indexer_proxy_error_handles_all_sensitive_markers() {
-        let message = "api_key=a passkey=b auth=c rsskey=d jwt=e apikey=f";
-
-        let sanitized = sanitize_indexer_proxy_error(message);
-
-        assert_eq!(
-            sanitized,
-            "api_key=REDACTED passkey=REDACTED auth=REDACTED rsskey=REDACTED jwt=REDACTED apikey=REDACTED",
-        );
-    }
-
-    #[test]
-    fn sanitize_indexer_proxy_error_does_not_loop_on_already_redacted_value() {
-        let message = "request failed: apikey=REDACTED&token=still-secret";
-
-        let sanitized = sanitize_indexer_proxy_error(message);
-
-        assert_eq!(
-            sanitized,
-            "request failed: apikey=REDACTED&token=REDACTED",
-        );
-    }
-
-    #[test]
-    fn byparr_request_get_payload_uses_seconds_for_max_timeout() {
-        let payload = byparr_request_get_payload("https://example.com/", 60);
-
-        assert_eq!(payload["cmd"], "request.get");
-        assert_eq!(payload["url"], "https://example.com/");
-        assert_eq!(payload["maxTimeout"], 60);
-    }
 }

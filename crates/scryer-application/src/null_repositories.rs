@@ -95,6 +95,16 @@ impl IndexerProxyConfigRepository for NullIndexerProxyConfigRepository {
     async fn delete(&self, _id: &str) -> AppResult<()> {
         Ok(())
     }
+
+    async fn record_health(
+        &self,
+        _id: &str,
+        _status: scryer_domain::IndexerProxyHealthStatus,
+        _error_message: Option<String>,
+        _error_at: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> AppResult<()> {
+        Ok(())
+    }
 }
 
 #[derive(Default)]

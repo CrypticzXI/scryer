@@ -181,69 +181,77 @@ export function CompactTitleTable({
   const overviewTargetView: ViewId = resolveOverviewTargetView(view);
   const selectedPaneMode =
     selectedTitleId !== null && onSelectTitle !== undefined;
-  const [tableWidth, setTableWidth] = React.useState<number | null>(null);
-  // Drop lower-priority columns as the table narrows (e.g. when it shares space
-  // with the title panel) so the Name column is never squeezed to nothing.
-  const columnWidthBudget = tableWidth ?? Number.POSITIVE_INFINITY;
   const showActionsColumn = !selectedDrawerMode && visibleColumns.actions;
   const showMonitoredColumn =
-    !selectedDrawerMode && visibleColumns.monitored && columnWidthBudget >= 430;
+    !selectedDrawerMode && visibleColumns.monitored;
   const showQualityColumn =
-    !selectedDrawerMode && visibleColumns.quality && columnWidthBudget >= 540;
+    !selectedDrawerMode && visibleColumns.quality;
   const showEpisodesColumn =
     !selectedDrawerMode &&
     !isMovieView &&
-    visibleColumns.episodes &&
-    columnWidthBudget >= 600;
+    visibleColumns.episodes;
   const showSizeColumn =
-    !selectedDrawerMode && visibleColumns.size && columnWidthBudget >= 650;
+    !selectedDrawerMode && visibleColumns.size;
   const showLibraryColumn =
-    !selectedDrawerMode && visibleColumns.library && columnWidthBudget >= 760;
+    !selectedDrawerMode && visibleColumns.library;
   const showAddedColumn =
-    !selectedDrawerMode && visibleColumns.added && columnWidthBudget >= 870;
+    !selectedDrawerMode && visibleColumns.added;
   const showYearColumn =
     !selectedDrawerMode &&
     isMovieView &&
-    visibleColumns.year &&
-    columnWidthBudget >= 520;
+    visibleColumns.year;
   const showRuntimeColumn =
-    !selectedDrawerMode && visibleColumns.runtime && columnWidthBudget >= 610;
+    !selectedDrawerMode && visibleColumns.runtime;
   const showStatusColumn =
     !selectedDrawerMode &&
     !isMovieView &&
-    visibleColumns.status &&
-    columnWidthBudget >= 660;
+    visibleColumns.status;
   const showRootColumn =
-    !selectedDrawerMode && visibleColumns.root && columnWidthBudget >= 900;
+    !selectedDrawerMode && visibleColumns.root;
   const showPopularityColumn =
     !selectedDrawerMode &&
     isMovieView &&
-    visibleColumns.popularity &&
-    columnWidthBudget >= 720;
+    visibleColumns.popularity;
   const showResolutionColumn =
     !selectedDrawerMode &&
     isMovieView &&
-    visibleColumns.resolution &&
-    columnWidthBudget >= 690;
+    visibleColumns.resolution;
   const showHdrColumn =
     !selectedDrawerMode &&
     isMovieView &&
-    visibleColumns.hdr &&
-    columnWidthBudget >= 780;
+    visibleColumns.hdr;
   const showAudioCodecColumn =
     !selectedDrawerMode &&
     isMovieView &&
-    visibleColumns.audioCodec &&
-    columnWidthBudget >= 850;
+    visibleColumns.audioCodec;
   const supportedRatingColumns = isAnimeView
     ? ANIME_TITLE_TABLE_RATING_COLUMNS
     : SHARED_TITLE_TABLE_RATING_COLUMNS;
   const showRatingColumns = selectedDrawerMode
     ? []
     : supportedRatingColumns.filter(
-        (key, index) =>
-          visibleColumns[key] && columnWidthBudget >= 930 + index * 64,
+        (key) => visibleColumns[key],
       );
+  const titleTableMinWidthRem = selectedDrawerMode
+    ? null
+    : 3 +
+      16 +
+      (showYearColumn ? 4.75 : 0) +
+      (showLibraryColumn ? 7 : 0) +
+      (showMonitoredColumn ? 4 : 0) +
+      (showQualityColumn ? 7 : 0) +
+      (showEpisodesColumn ? 7.5 : 0) +
+      (showRuntimeColumn ? 6 : 0) +
+      (showStatusColumn ? 6.75 : 0) +
+      (showSizeColumn ? 7.5 : 0) +
+      (showResolutionColumn ? 5.75 : 0) +
+      (showHdrColumn ? 7 : 0) +
+      (showAudioCodecColumn ? 7.25 : 0) +
+      (showPopularityColumn ? 6 : 0) +
+      (showRootColumn ? 11 : 0) +
+      showRatingColumns.length * 5.5 +
+      (showAddedColumn ? 6.5 : 0) +
+      (showActionsColumn ? 8.5 : 0);
   const columnCount = selectedDrawerMode
     ? 3
     : 2 +
@@ -338,20 +346,6 @@ export function CompactTitleTable({
   >({});
 
   const titleTableScrollRef = React.useRef<HTMLDivElement>(null);
-  React.useLayoutEffect(() => {
-    const element = titleTableScrollRef.current;
-    if (!element || typeof ResizeObserver === "undefined") {
-      return;
-    }
-    const updateWidth = () => {
-      const next = Math.round(element.getBoundingClientRect().width);
-      setTableWidth((current) => (current === next ? current : next));
-    };
-    updateWidth();
-    const observer = new ResizeObserver(updateWidth);
-    observer.observe(element);
-    return () => observer.disconnect();
-  }, []);
   const sortedTitles = titles;
   const scrollStorageKeySuffix = selectedPaneMode
     ? "compact-selected"
@@ -1361,7 +1355,7 @@ export function CompactTitleTable({
         data-slot="title-list-scroll"
         ref={titleTableScrollRef}
         className={cn(
-          "relative flex-1 overflow-x-hidden overflow-y-auto rounded-[14px] border border-[var(--scry-border)]",
+          "relative flex-1 overflow-x-auto overflow-y-auto rounded-[14px] border border-[var(--scry-border)]",
           selectedPaneMode ? "bg-[var(--scry-card2)]" : "bg-[var(--scry-surfD)]",
           selectedDrawerMode ? "min-h-0" : "min-h-[22rem]",
         )}
@@ -1370,6 +1364,11 @@ export function CompactTitleTable({
           data-ui="compact-title-table"
           data-view={view}
           className="w-full table-fixed caption-bottom text-sm"
+          style={
+            titleTableMinWidthRem === null
+              ? undefined
+              : { minWidth: `${titleTableMinWidthRem}rem` }
+          }
         >
           {titleTableColGroup}
           {titleTableHeader}

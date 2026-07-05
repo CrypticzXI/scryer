@@ -555,9 +555,16 @@ impl AppUseCase {
         let management_capabilities =
             self.indexer_management_capabilities_for_provider_type(&effective_provider);
         let normalized_indexer_proxy_config_id = match update.indexer_proxy_config_id.clone() {
-            Some(Some(id)) => Some(Some(
-                self.validate_enabled_indexer_proxy_config_id(&id).await?,
-            )),
+            Some(Some(id)) => {
+                if existing.managed_parent_config_id.is_some() {
+                    return Err(AppError::Validation(
+                        "managed indexers cannot use an indexer proxy; the managing application owns challenge solving".into(),
+                    ));
+                }
+                Some(Some(
+                    self.validate_enabled_indexer_proxy_config_id(&id).await?,
+                ))
+            }
             Some(None) => Some(None),
             None => None,
         };

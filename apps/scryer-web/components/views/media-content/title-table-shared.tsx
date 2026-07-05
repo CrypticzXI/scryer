@@ -12,11 +12,7 @@ import type { ParsedQualityProfile } from "@/lib/types/quality-profiles";
 import { formatUiDate } from "@/lib/utils/date-format";
 import {
   compactRatingNumber,
-  normalizedRatingSource,
-  ratingSourceInfo,
-  ratingValueLabel,
-  visibleTitleExternalRatings,
-  type TitleExternalRating,
+  externalRatingLabelForAliases,
 } from "@/lib/utils/title-ratings";
 import { cn } from "@/lib/utils";
 import type { BoxedActionButtonTone } from "@/lib/utils/action-button-styles";
@@ -164,7 +160,6 @@ export const SERIES_TITLE_TABLE_ONLY_COLUMNS = new Set<TitleTableColumnKey>([
 ]);
 
 export const ANIME_TITLE_TABLE_RATING_COLUMNS: readonly TitleTableColumnKey[] = [
-  "ratingScryer",
   "ratingImdb",
   "ratingTmdb",
   "ratingTvdb",
@@ -176,7 +171,6 @@ export const ANIME_TITLE_TABLE_RATING_COLUMNS: readonly TitleTableColumnKey[] = 
 ];
 
 export const SHARED_TITLE_TABLE_RATING_COLUMNS: readonly TitleTableColumnKey[] = [
-  "ratingScryer",
   "ratingImdb",
   "ratingRottenTomatoes",
   "ratingPopcornmeter",
@@ -519,23 +513,6 @@ export function titleTableRatingColumnLabel(
   return RATING_COLUMN_DEFINITIONS[key]?.label ?? key;
 }
 
-function normalizeExternalRating(
-  rating: TitleRecord["ratings"] extends infer T
-    ? T extends { externalRatings: (infer U)[] }
-      ? U
-      : never
-    : never,
-): TitleExternalRating {
-  return {
-    source: rating.source,
-    value: rating.value ?? null,
-    score: rating.score ?? null,
-    normalized: rating.normalized,
-    votes: rating.votes ?? null,
-    url: rating.url ?? "",
-  };
-}
-
 export function titleTableRatingColumnValue(
   item: TitleRecord,
   key: TitleTableColumnKey,
@@ -553,11 +530,10 @@ export function titleTableRatingColumnValue(
   if (!definition) {
     return "—";
   }
-  const aliases = new Set(definition.aliases);
-  const match = visibleTitleExternalRatings(
-    ratings.externalRatings.map(normalizeExternalRating),
-  ).find((rating) => aliases.has(normalizedRatingSource(rating.source)));
-  return match ? ratingValueLabel(match, ratingSourceInfo(match.source)) : "—";
+  return (
+    externalRatingLabelForAliases(ratings.externalRatings, definition.aliases) ??
+    "—"
+  );
 }
 
 export function formatEpisodeProgress(

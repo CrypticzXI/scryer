@@ -1,6 +1,7 @@
 mod acquisition;
 mod authorization;
 mod catalog;
+pub mod challenge_solver;
 mod contracts;
 mod discovery;
 mod download_client_config;

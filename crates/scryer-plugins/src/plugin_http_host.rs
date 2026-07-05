@@ -7,13 +7,11 @@ use extism::{CurrentPlugin, Error, Function, Manifest, UserData, Val, ValType};
 use extism_manifest::HttpRequest;
 use glob::Pattern;
 use reqwest::blocking::Client;
-use reqwest::header::{HeaderName, HeaderValue};
 use reqwest::{Method, StatusCode};
-use serde::{Deserialize, Serialize};
+use scryer_application::challenge_solver as solver;
 
 const HTTP_ENV_NAMESPACE: &str = "extism:host/env";
 const DEFAULT_MAX_HTTP_RESPONSE_BYTES: u64 = 50 * 1024 * 1024;
-const CHALLENGE_BODY_PREVIEW_BYTES: usize = 256 * 1024;
 
 static SHARED_PLUGIN_HTTP_RUNTIME: LazyLock<PluginHttpRuntime> =
     LazyLock::new(PluginHttpRuntime::default);
@@ -48,32 +46,6 @@ pub(crate) struct IndexerProxyPolicy {
     pub indexer_id: String,
     pub indexer_name: String,
     pub config: scryer_domain::IndexerProxyConfig,
-}
-
-#[derive(Serialize)]
-struct ByparrRequest<'a> {
-    cmd: &'static str,
-    url: &'a str,
-    #[serde(rename = "maxTimeout")]
-    max_timeout: u32,
-}
-
-#[derive(Deserialize)]
-struct ByparrResponse {
-    status: Option<String>,
-    message: Option<String>,
-    solution: Option<ByparrSolution>,
-}
-
-#[derive(Deserialize)]
-struct ByparrSolution {
-    url: Option<String>,
-    status: Option<u16>,
-    cookies: Option<Vec<serde_json::Value>>,
-    #[serde(default, alias = "userAgent", alias = "user_agent")]
-    user_agent: Option<String>,
-    headers: Option<serde_json::Value>,
-    response: Option<String>,
 }
 
 struct ProxiedHttpResponse {
@@ -219,7 +191,27 @@ fn plugin_http_request(
     let client = runtime.client()?;
     let timeout = current.time_remaining();
     let started_at = Instant::now();
-    let response = execute_request(&client, &request, body.clone(), timeout)?;
+    let request_is_get = request
+        .method
+        .as_deref()
+        .unwrap_or("GET")
+        .eq_ignore_ascii_case("GET");
+    // Reuse a previously solved clearance session for this proxy + origin so
+    // repeat requests skip the solver entirely until the session goes stale.
+    let session_headers = indexer_proxy_policy
+        .as_ref()
+        .filter(|_| request_is_get)
+        .map(|policy| {
+            solver::SolvedSessionCache::shared().session_headers(&policy.config.id, &request.url)
+        })
+        .unwrap_or_default();
+    let response = execute_request_with_extra_headers(
+        &client,
+        &request,
+        body.clone(),
+        timeout,
+        &session_headers,
+    )?;
     let status = response.status();
     let status_code = status.as_u16();
     let headers = response_headers(&response);
@@ -236,8 +228,8 @@ fn plugin_http_request(
         return Ok(());
     }
 
-    let should_read_body =
-        status.is_success() || indexer_proxy_policy.is_some() && challenge_candidate_status(status);
+    let should_read_body = status.is_success()
+        || indexer_proxy_policy.is_some() && solver::challenge_candidate_status(status_code);
     let direct_body = if should_read_body {
         read_response_body(response, max_http_response_bytes)?
     } else {
@@ -245,13 +237,17 @@ fn plugin_http_request(
     };
 
     if let Some(policy) = indexer_proxy_policy.as_ref()
-        && looks_like_challenge_response(status, &headers, &direct_body)
+        && solver::looks_like_challenge_response(status_code, &headers, &direct_body)
     {
         let method = request.method.as_deref().unwrap_or("GET");
         if !method.eq_ignore_ascii_case("GET") {
             return Err(Error::msg(format!(
                 "indexer proxy only supports GET challenge solving for plugin HTTP requests; got {method}"
             )));
+        }
+        if !session_headers.is_empty() {
+            // The cached session no longer clears the challenge.
+            solver::SolvedSessionCache::shared().invalidate(&policy.config.id, &request.url);
         }
 
         tracing::debug!(
@@ -260,18 +256,31 @@ fn plugin_http_request(
             indexer_name = policy.indexer_name.as_str(),
             proxy_config_id = policy.config.id.as_str(),
             status = status_code,
-            request_url = sanitized_url_for_log(&request.url).as_str(),
+            request_url = solver::sanitized_url_for_log(&request.url).as_str(),
             "plugin HTTP request detected browser challenge"
         );
 
-        let solved = execute_byparr_request(
+        let solved = match execute_byparr_request(
             &client,
             policy,
             &request,
             body,
             timeout,
             max_http_response_bytes,
-        )?;
+        ) {
+            Ok(solved) => {
+                solver::SolverHealthLedger::shared().record_success(&policy.config.id);
+                solved
+            }
+            Err(error) => {
+                let message = error.to_string();
+                if solver::is_solver_service_error_message(&message) {
+                    solver::SolverHealthLedger::shared()
+                        .record_failure(&policy.config.id, &message);
+                }
+                return Err(error);
+            }
+        };
         let response_bytes = solved.body.len();
         store_last_response(&host_state, &plugin_id, solved.status_code, solved.headers)?;
         tracing::debug!(
@@ -371,15 +380,6 @@ fn enforce_allowed_hosts(allowed_hosts: Option<&[String]>, request_url: &str) ->
     )))
 }
 
-fn execute_request(
-    client: &Client,
-    request: &HttpRequest,
-    body: Option<Vec<u8>>,
-    timeout: Option<Duration>,
-) -> Result<reqwest::blocking::Response, Error> {
-    execute_request_with_extra_headers(client, request, body, timeout, &[])
-}
-
 fn execute_request_with_extra_headers(
     client: &Client,
     request: &HttpRequest,
@@ -399,6 +399,14 @@ fn execute_request_with_extra_headers(
 
     let mut builder = client.request(method, &request.url);
     for (name, value) in &request.headers {
+        // Solver-session headers must replace plugin-supplied ones: clearance
+        // cookies are only honoured together with the solver's user agent.
+        if extra_headers
+            .iter()
+            .any(|(extra, _)| extra.eq_ignore_ascii_case(name))
+        {
+            continue;
+        }
         builder = builder.header(name, value);
     }
     for (name, value) in extra_headers {
@@ -467,69 +475,6 @@ fn store_last_response(
     Ok(())
 }
 
-fn challenge_candidate_status(status: StatusCode) -> bool {
-    matches!(
-        status,
-        StatusCode::OK | StatusCode::FORBIDDEN | StatusCode::SERVICE_UNAVAILABLE
-    )
-}
-
-fn looks_like_challenge_response(
-    status: StatusCode,
-    headers: &BTreeMap<String, String>,
-    body: &[u8],
-) -> bool {
-    if status == StatusCode::TOO_MANY_REQUESTS || !challenge_candidate_status(status) {
-        return false;
-    }
-    if body.is_empty() || !is_text_like_response(headers, body) {
-        return false;
-    }
-    let has_marker = challenge_marker_present(body);
-    if status == StatusCode::SERVICE_UNAVAILABLE
-        && header_value(headers, "retry-after").is_some()
-        && !has_marker
-    {
-        return false;
-    }
-    has_marker
-}
-
-fn is_text_like_response(headers: &BTreeMap<String, String>, body: &[u8]) -> bool {
-    if let Some(content_type) = header_value(headers, "content-type") {
-        let content_type = content_type.to_ascii_lowercase();
-        return content_type.contains("text/html")
-            || content_type.contains("text/plain")
-            || content_type.contains("application/xhtml+xml");
-    }
-
-    let preview = &body[..body.len().min(CHALLENGE_BODY_PREVIEW_BYTES)];
-    !preview.contains(&0) && std::str::from_utf8(preview).is_ok()
-}
-
-fn challenge_marker_present(body: &[u8]) -> bool {
-    let preview = &body[..body.len().min(CHALLENGE_BODY_PREVIEW_BYTES)];
-    let preview = String::from_utf8_lossy(preview).to_ascii_lowercase();
-    [
-        "cf-chl",
-        "challenge-platform",
-        "just a moment",
-        "checking your browser",
-        "ddos-guard",
-        "captcha",
-        "turnstile",
-    ]
-    .iter()
-    .any(|marker| preview.contains(marker))
-}
-
-fn header_value<'a>(headers: &'a BTreeMap<String, String>, name: &str) -> Option<&'a str> {
-    headers
-        .iter()
-        .find(|(key, _)| key.eq_ignore_ascii_case(name))
-        .map(|(_, value)| value.as_str())
-}
-
 fn execute_byparr_request(
     client: &Client,
     policy: &IndexerProxyPolicy,
@@ -545,31 +490,30 @@ fn execute_byparr_request(
         return Err(Error::msg("Indexer proxy is disabled for this indexer."));
     }
 
-    let endpoint = format!("{}/v1", policy.config.base_url.trim_end_matches('/'));
+    let endpoint = solver::byparr_solve_endpoint(&policy.config.base_url);
     let byparr_timeout = Duration::from_secs(policy.config.request_timeout_seconds as u64 + 5);
     tracing::debug!(
         indexer_id = policy.indexer_id.as_str(),
         indexer_name = policy.indexer_name.as_str(),
         proxy_config_id = policy.config.id.as_str(),
         proxy_provider = policy.config.provider_type.as_str(),
-        request_url = sanitized_url_for_log(&request.url).as_str(),
+        request_url = solver::sanitized_url_for_log(&request.url).as_str(),
         "Byparr request started"
     );
 
     let response = client
         .post(&endpoint)
         .timeout(byparr_timeout)
-        .json(&ByparrRequest {
-            cmd: "request.get",
-            url: &request.url,
-            max_timeout: policy.config.request_timeout_seconds,
-        })
+        .json(&solver::byparr_solve_request(
+            &request.url,
+            policy.config.request_timeout_seconds,
+        ))
         .send()
         .map_err(|error| {
             if error.is_timeout() {
-                Error::msg("Byparr timed out while resolving the indexer request.")
+                Error::msg(solver::BYPARR_TIMEOUT_MESSAGE)
             } else {
-                Error::msg("Byparr service could not be reached.")
+                Error::msg(solver::BYPARR_UNREACHABLE_MESSAGE)
             }
         })?;
 
@@ -581,20 +525,15 @@ fn execute_byparr_request(
             status = byparr_status.as_u16(),
             "Byparr service rate-limited indexer proxy request"
         );
-        return Err(Error::msg("Byparr service is temporarily unavailable."));
+        return Err(Error::msg(solver::BYPARR_UNAVAILABLE_MESSAGE));
     }
 
     let response_body = read_response_body(response, max_http_response_bytes)?;
-    let parsed: ByparrResponse = serde_json::from_slice(&response_body)
-        .map_err(|_| Error::msg("Byparr returned malformed solver output."))?;
-    let Some(solution) = parsed.solution else {
-        let _ = parsed.status;
-        let _ = parsed.message;
-        return Err(Error::msg("Byparr did not return a solved response."));
-    };
+    let solution = solver::parse_byparr_solution(&response_body)
+        .map_err(|error| Error::msg(error.message()))?;
 
     let solution_status = solution.status.unwrap_or_else(|| byparr_status.as_u16());
-    let solved_final_url = solution.url.as_deref().map(sanitized_url_for_log);
+    let solved_final_url = solution.url.as_deref().map(solver::sanitized_url_for_log);
     if solution_status == StatusCode::TOO_MANY_REQUESTS.as_u16() {
         tracing::warn!(
             indexer_id = policy.indexer_id.as_str(),
@@ -602,16 +541,25 @@ fn execute_byparr_request(
             status = solution_status,
             "Byparr reported target indexer rate limit"
         );
-        return Err(Error::msg(target_rate_limit_message(&solution)));
+        return Err(Error::msg(solver::target_rate_limit_message(&solution)));
     }
 
     let solved_body = solution.response.clone().unwrap_or_default().into_bytes();
-    if solved_body_looks_rate_limited(&solved_body) {
-        return Err(Error::msg("HTTP 429: too many requests"));
+    if solver::solved_body_looks_rate_limited(&solved_body) {
+        return Err(Error::msg(solver::target_rate_limit_message(&solution)));
+    }
+    if !(200..300).contains(&solution_status) {
+        return Err(Error::msg(format!(
+            "Byparr target request returned HTTP {solution_status}."
+        )));
     }
 
-    let solved_headers = safe_solution_response_headers(solution.headers.as_ref());
-    if (200..300).contains(&solution_status) && !solved_body.is_empty() {
+    // Cache the clearance session so follow-up requests to this origin skip
+    // the solver until the session expires or stops clearing challenges.
+    solver::SolvedSessionCache::shared().store_solution(&policy.config.id, &request.url, &solution);
+
+    let solved_headers = solver::safe_solution_response_headers(solution.headers.as_ref());
+    if !solved_body.is_empty() {
         tracing::debug!(
             indexer_id = policy.indexer_id.as_str(),
             proxy_config_id = policy.config.id.as_str(),
@@ -626,13 +574,8 @@ fn execute_byparr_request(
             body: solved_body,
         });
     }
-    if !(200..300).contains(&solution_status) {
-        return Err(Error::msg(format!(
-            "Byparr target request returned HTTP {solution_status}."
-        )));
-    }
 
-    let retry_headers = retry_headers_from_solution(&solution);
+    let retry_headers = solver::solution_retry_headers(&solution);
     if !retry_headers.is_empty() {
         tracing::debug!(
             indexer_id = policy.indexer_id.as_str(),
@@ -649,13 +592,15 @@ fn execute_byparr_request(
         let status = retry.status();
         let headers = response_headers(&retry);
         if status == StatusCode::TOO_MANY_REQUESTS {
-            let retry_after = header_value(&headers, "retry-after").and_then(|value| {
+            let retry_after = solver::header_value(&headers, "retry-after").and_then(|value| {
                 scryer_outbound_http::parse_retry_after(value).map(|(delay, _)| delay)
             });
-            return Err(Error::msg(rate_limit_message_with_retry_after(retry_after)));
+            return Err(Error::msg(solver::rate_limit_message_with_retry_after(
+                retry_after,
+            )));
         }
         if !status.is_success() {
-            return Err(Error::msg("Byparr did not return a solved response."));
+            return Err(Error::msg(solver::BYPARR_NO_SOLUTION_MESSAGE));
         }
         let body = read_response_body(retry, max_http_response_bytes)?;
         return Ok(ProxiedHttpResponse {
@@ -665,134 +610,7 @@ fn execute_byparr_request(
         });
     }
 
-    Err(Error::msg("Byparr did not return a solved response."))
-}
-
-fn safe_solution_response_headers(value: Option<&serde_json::Value>) -> BTreeMap<String, String> {
-    let mut headers = BTreeMap::new();
-    let Some(object) = value.and_then(|value| value.as_object()) else {
-        return headers;
-    };
-    for (name, value) in object {
-        let normalized = name.to_ascii_lowercase();
-        if !matches!(
-            normalized.as_str(),
-            "content-type" | "content-disposition" | "cache-control" | "etag" | "last-modified"
-        ) {
-            continue;
-        }
-        let Some(value) = value.as_str() else {
-            continue;
-        };
-        if HeaderName::from_bytes(normalized.as_bytes()).is_err()
-            || HeaderValue::from_str(value).is_err()
-        {
-            continue;
-        }
-        headers.insert(normalized, value.to_string());
-    }
-    headers
-}
-
-fn solution_header_string(value: Option<&serde_json::Value>, name: &str) -> Option<String> {
-    value
-        .and_then(|value| value.as_object())
-        .and_then(|object| {
-            object
-                .iter()
-                .find(|(key, _)| key.eq_ignore_ascii_case(name))
-                .and_then(|(_, value)| value.as_str())
-        })
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
-}
-
-fn retry_after_from_solution(solution: &ByparrSolution) -> Option<Duration> {
-    solution_header_string(solution.headers.as_ref(), "retry-after")
-        .and_then(|value| scryer_outbound_http::parse_retry_after(&value).map(|(delay, _)| delay))
-}
-
-fn rate_limit_message_with_retry_after(retry_after: Option<Duration>) -> String {
-    match retry_after {
-        Some(delay) => format!(
-            "HTTP 429: too many requests; retry_after_seconds={}",
-            delay.as_secs()
-        ),
-        None => "HTTP 429: too many requests".to_string(),
-    }
-}
-
-fn target_rate_limit_message(solution: &ByparrSolution) -> String {
-    rate_limit_message_with_retry_after(retry_after_from_solution(solution))
-}
-
-fn retry_headers_from_solution(solution: &ByparrSolution) -> Vec<(String, String)> {
-    let mut headers = Vec::new();
-    if let Some(user_agent) = solution.user_agent.as_deref()
-        && !user_agent.trim().is_empty()
-        && HeaderValue::from_str(user_agent).is_ok()
-    {
-        headers.push(("user-agent".to_string(), user_agent.to_string()));
-    }
-    if let Some(cookie_header) = cookie_header_from_solution(solution.cookies.as_deref()) {
-        headers.push(("cookie".to_string(), cookie_header));
-    }
-    headers
-}
-
-fn cookie_header_from_solution(cookies: Option<&[serde_json::Value]>) -> Option<String> {
-    let mut pairs = Vec::new();
-    for cookie in cookies.unwrap_or_default() {
-        if let Some(text) = cookie.as_str() {
-            if safe_cookie_pair(text) {
-                pairs.push(text.to_string());
-            }
-            continue;
-        }
-        let Some(object) = cookie.as_object() else {
-            continue;
-        };
-        let name = object
-            .get("name")
-            .and_then(|value| value.as_str())
-            .unwrap_or_default()
-            .trim();
-        let value = object
-            .get("value")
-            .and_then(|value| value.as_str())
-            .unwrap_or_default()
-            .trim();
-        let pair = format!("{name}={value}");
-        if safe_cookie_pair(&pair) {
-            pairs.push(pair);
-        }
-    }
-    (!pairs.is_empty()).then(|| pairs.join("; "))
-}
-
-fn safe_cookie_pair(pair: &str) -> bool {
-    let Some((name, value)) = pair.split_once('=') else {
-        return false;
-    };
-    !name.trim().is_empty() && !name.contains([';', '\r', '\n']) && !value.contains(['\r', '\n'])
-}
-
-fn solved_body_looks_rate_limited(body: &[u8]) -> bool {
-    let preview = &body[..body.len().min(CHALLENGE_BODY_PREVIEW_BYTES)];
-    let preview = String::from_utf8_lossy(preview).to_ascii_lowercase();
-    preview.contains("429") && preview.contains("too many requests")
-}
-
-fn sanitized_url_for_log(raw: &str) -> String {
-    match url::Url::parse(raw) {
-        Ok(mut url) => {
-            url.set_query(None);
-            url.set_fragment(None);
-            url.to_string()
-        }
-        Err(_) => "<invalid-url>".to_string(),
-    }
+    Err(Error::msg(solver::BYPARR_NO_SOLUTION_MESSAGE))
 }
 
 #[cfg(test)]

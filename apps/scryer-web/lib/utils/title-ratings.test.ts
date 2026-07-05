@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  externalRatingLabelForAliases,
   ratingSourceInfo,
   ratingValueLabel,
   visibleTitleExternalRatings,
@@ -14,6 +15,22 @@ function rating(source: string): TitleExternalRating {
     value: 7.5,
     score: null,
     normalized: 7.5,
+    votes: null,
+    url: "",
+  };
+}
+
+function ratingWith(
+  source: string,
+  value: number,
+  score: number,
+  normalized: number,
+): TitleExternalRating {
+  return {
+    source,
+    value,
+    score,
+    normalized,
     votes: null,
     url: "",
   };
@@ -125,6 +142,29 @@ test("visible external ratings drop Roger Ebert sources", () => {
     ]).map((entry) => entry.source),
     ["IMDb"],
   );
+});
+
+test("external-only ratings resolve table column aliases", () => {
+  const ratings: TitleExternalRating[] = [
+    ratingWith("mdblist", 86, 86, 8.6),
+    ratingWith("imdb", 8.1, 81, 8.1),
+    ratingWith("tomatoes", 95, 95, 9.5),
+    ratingWith("popcorn", 90, 90, 9),
+    ratingWith("metacriticuser", 8, 80, 8),
+    ratingWith("tmdb", 79, 79, 7.9),
+    ratingWith("trakt", 80, 80, 8),
+  ];
+
+  assert.equal(externalRatingLabelForAliases(ratings, ["imdb"]), "8.1");
+  assert.equal(externalRatingLabelForAliases(ratings, ["tomatoes"]), "95%");
+  assert.equal(externalRatingLabelForAliases(ratings, ["popcorn"]), "90%");
+  assert.equal(
+    externalRatingLabelForAliases(ratings, ["metacriticuser", "mcuser"]),
+    "80",
+  );
+  assert.equal(externalRatingLabelForAliases(ratings, ["tmdb"]), "79");
+  assert.equal(externalRatingLabelForAliases(ratings, ["trakt"]), "80");
+  assert.equal(externalRatingLabelForAliases(ratings, ["mdblist"]), "86");
 });
 
 test("MAL rating pill reuses the existing media-site logo", () => {

@@ -38,7 +38,7 @@ import {
   TitleMoreLikeThisStrip,
   type TitleMoreLikeThisStripActions,
 } from "@/components/views/title-more-like-this-strip";
-import { TitleRatingsDisplay } from "@/components/common/title-ratings-display";
+import { TitleRatingsStrip } from "@/components/views/title-ratings-strip";
 import {
   localizedTitleStatus,
   localizedWantedPhase,
@@ -799,14 +799,7 @@ export function MovieOverviewView({
                 </div>
               ) : null}
 
-              <TitleRatingsDisplay
-                externalRatings={title.ratings?.externalRatings ?? []}
-                fallbackRating={title.ratings?.rating}
-                fallbackSource={title.ratings?.ratingSources.find(
-                  (source) => source.trim().length > 0,
-                )}
-                className="mt-3"
-              />
+              <TitleRatingsStrip ratings={title.ratings} />
 
               {overview ? (
                 <p className="mt-4 text-sm leading-relaxed text-foreground/70">{overview}</p>

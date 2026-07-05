@@ -73,6 +73,7 @@ import {
 } from "@/components/common/release-search-results";
 import { TitlePosterSlot } from "@/components/title-poster-slot";
 import { TitleCard } from "@/components/title-card";
+import { TitleRatingsStrip } from "@/components/views/title-ratings-strip";
 import type {
   ContentSettingsSection,
   OverviewTitleTarget,
@@ -1256,6 +1257,7 @@ function TitleContextPanel({
                   ))}
                 </div>
               ) : null}
+              <TitleRatingsStrip ratings={title.ratings} variant="hero" />
               <p className="mt-3 line-clamp-5 text-[12.5px] leading-5 text-[#b7c0dd]">
                 {overviewText}
               </p>
