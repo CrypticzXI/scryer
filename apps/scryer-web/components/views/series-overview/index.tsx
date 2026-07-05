@@ -1073,6 +1073,8 @@ export function SeriesOverviewView({
                     downloadQueueItemByEpisodeId={primaryQueueItemByEpisodeId}
                     subtitleDownloads={subtitleDownloads}
                     onRefreshSubtitles={canManageTitle ? onRefreshSubtitles : undefined}
+                    onMakePrimaryFile={canManageTitle ? onMakePrimaryFile : undefined}
+                    primaryMovieFileUpdatingId={primaryMovieFileUpdatingId}
                     releaseBlocklistEntries={releaseBlocklistEntries}
                     clearingReleaseBlocklistEntryId={clearingReleaseBlocklistEntryId}
                     onClearReleaseBlocklistEntry={

@@ -403,6 +403,7 @@ impl TitleRepository for TitleStore {
         limit: usize,
         offset: usize,
         include_external_ids: bool,
+        include_catalog_counts: bool,
     ) -> AppResult<TitleCatalogResult> {
         if library_ids.is_empty() {
             return Ok(TitleCatalogResult {
@@ -416,19 +417,26 @@ impl TitleRepository for TitleStore {
         }
 
         let query = query.as_deref();
-        let filter_counts = fetch_title_catalog_filter_counts(
-            &self.datastore,
-            facet.clone(),
-            library_ids,
-            query,
-            &filter,
-        )
-        .await?;
-        let total_count =
+        let filter_counts = if include_catalog_counts {
+            fetch_title_catalog_filter_counts(
+                &self.datastore,
+                facet.clone(),
+                library_ids,
+                query,
+                &filter,
+            )
+            .await?
+        } else {
+            TitleCatalogFilterCounts::default()
+        };
+        let total_count = if include_catalog_counts {
             fetch_title_catalog_count(&self.datastore, facet.clone(), library_ids, query, &filter)
-                .await?;
+                .await?
+        } else {
+            0
+        };
 
-        if total_count == 0 || limit == 0 {
+        if limit == 0 || (include_catalog_counts && total_count == 0) {
             return Ok(TitleCatalogResult {
                 items: Vec::new(),
                 limit,
@@ -455,7 +463,7 @@ impl TitleRepository for TitleStore {
             PersistedTitleReadMode::Presentation,
             include_external_ids,
         )?;
-        let has_more = offset.saturating_add(items.len()) < total_count;
+        let has_more = include_catalog_counts && offset.saturating_add(items.len()) < total_count;
 
         Ok(TitleCatalogResult {
             items,
@@ -1947,12 +1955,10 @@ fn build_title_catalog_sort_join_sql(
             title_catalog_movie_media_subquery(dialect)
         ),
         TitleCatalogSortKey::RatingScryer => {
-            " LEFT JOIN canonical_media_subjects catalog_rating_subject
-               ON catalog_rating_subject.title_id = titles.id
-              AND catalog_rating_subject.target_kind = titles.facet
-              LEFT JOIN canonical_media_rating_summaries catalog_rating_scryer
-               ON catalog_rating_scryer.subject_id = catalog_rating_subject.id"
-                .to_string()
+            format!(
+                " LEFT JOIN ({}) catalog_rating_scryer ON catalog_rating_scryer.title_id = titles.id",
+                title_catalog_scryer_rating_subquery()
+            )
         }
         key @ (TitleCatalogSortKey::RatingImdb
         | TitleCatalogSortKey::RatingRottenTomatoes
@@ -2245,6 +2251,16 @@ fn title_catalog_rating_sources_for_sort_key(
 
 fn title_catalog_normalized_rating_source_expression(alias: &str) -> String {
     format!("LOWER(REPLACE(REPLACE(REPLACE(TRIM({alias}.source), ' ', ''), '_', ''), '-', ''))")
+}
+
+fn title_catalog_scryer_rating_subquery() -> String {
+    "SELECT cms.title_id,
+            MAX(rating.rating) AS rating
+       FROM canonical_media_subjects cms
+       JOIN canonical_media_rating_summaries rating ON rating.subject_id = cms.id
+      WHERE cms.title_id IS NOT NULL
+      GROUP BY cms.title_id"
+        .to_string()
 }
 
 fn title_catalog_external_rating_subquery(sources: &[&str]) -> String {

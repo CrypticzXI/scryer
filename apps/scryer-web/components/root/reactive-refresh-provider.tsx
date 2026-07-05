@@ -94,6 +94,7 @@ function actionInputFromPendingAction(
         key: action.key,
         kind: action.kind,
         titleId: action.titleId,
+        projection: action.projection,
       };
     case "titleOverviewNative":
       return {

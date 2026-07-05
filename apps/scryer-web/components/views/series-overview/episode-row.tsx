@@ -167,6 +167,7 @@ export type EpisodeRowProps = {
   onAutoSearchEpisode?: (episode: CollectionEpisode) => void;
   onClearReleaseBlocklistEntry?: (entryId: string) => Promise<void> | void;
   onDeleteFile?: (fileId: string) => void;
+  onMakePrimaryFile?: (fileId: string) => Promise<void> | void;
   onOpenHistory?: (episode: CollectionEpisode) => void;
   onQueueFromEpisodeSearch?: (episode: CollectionEpisode, release: Release) => Promise<void> | void;
   onQueueAdditionalFromEpisodeSearch?: (episode: CollectionEpisode, release: Release) => Promise<void> | void;
@@ -178,6 +179,7 @@ export type EpisodeRowProps = {
   searchBlocked: boolean;
   searchLoading: boolean;
   subtitleDownloads: ExternalSubtitleRecord[];
+  primaryMovieFileUpdatingId?: string | null;
 };
 
 export const EpisodeRow = React.memo(function EpisodeRow({
@@ -195,6 +197,7 @@ export const EpisodeRow = React.memo(function EpisodeRow({
   onAutoSearchEpisode,
   onClearReleaseBlocklistEntry,
   onDeleteFile,
+  onMakePrimaryFile,
   onOpenHistory,
   onQueueFromEpisodeSearch,
   onQueueAdditionalFromEpisodeSearch,
@@ -206,6 +209,7 @@ export const EpisodeRow = React.memo(function EpisodeRow({
   searchBlocked,
   searchLoading,
   subtitleDownloads,
+  primaryMovieFileUpdatingId = null,
 }: EpisodeRowProps) {
   const t = useTranslate();
   const [isPanelOpen, setIsPanelOpen] = React.useState(initiallyOpen);
@@ -306,6 +310,7 @@ export const EpisodeRow = React.memo(function EpisodeRow({
       facet={facet}
       onClearReleaseBlocklistEntry={onClearReleaseBlocklistEntry}
       onDeleteFile={onDeleteFile}
+      onMakePrimaryFile={onMakePrimaryFile}
       onQueueFromEpisodeSearch={onQueueFromEpisodeSearch}
       onQueueAdditionalFromEpisodeSearch={onQueueAdditionalFromEpisodeSearch}
       onRefreshSubtitles={onRefreshSubtitles}
@@ -316,6 +321,7 @@ export const EpisodeRow = React.memo(function EpisodeRow({
       releaseBlocklistEntries={releaseBlocklistEntries}
       searchBlocked={searchBlocked}
       subtitleDownloads={subtitleDownloads}
+      primaryMovieFileUpdatingId={primaryMovieFileUpdatingId}
     />
   ) : null;
 

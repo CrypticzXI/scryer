@@ -33,6 +33,7 @@ export type EpisodePanelContentProps = {
   facet: string;
   onClearReleaseBlocklistEntry?: (entryId: string) => Promise<void> | void;
   onDeleteFile?: (fileId: string) => void;
+  onMakePrimaryFile?: (fileId: string) => Promise<void> | void;
   onQueueFromEpisodeSearch?: (episode: CollectionEpisode, release: Release) => Promise<void> | void;
   onQueueAdditionalFromEpisodeSearch?: (episode: CollectionEpisode, release: Release) => Promise<void> | void;
   onRefreshSubtitles?: () => Promise<void> | void;
@@ -43,6 +44,7 @@ export type EpisodePanelContentProps = {
   releaseBlocklistEntries: TitleReleaseBlocklistEntry[];
   searchBlocked: boolean;
   subtitleDownloads: ExternalSubtitleRecord[];
+  primaryMovieFileUpdatingId?: string | null;
 };
 
 export const EpisodePanelContent = React.memo(function EpisodePanelContent({
@@ -57,6 +59,7 @@ export const EpisodePanelContent = React.memo(function EpisodePanelContent({
   facet,
   onClearReleaseBlocklistEntry,
   onDeleteFile,
+  onMakePrimaryFile,
   onQueueFromEpisodeSearch,
   onQueueAdditionalFromEpisodeSearch,
   onRefreshSubtitles,
@@ -67,6 +70,7 @@ export const EpisodePanelContent = React.memo(function EpisodePanelContent({
   releaseBlocklistEntries,
   searchBlocked,
   subtitleDownloads,
+  primaryMovieFileUpdatingId = null,
 }: EpisodePanelContentProps) {
   const t = useTranslate();
   const filteredBlocklistEntries = React.useMemo(() => {
@@ -117,6 +121,8 @@ export const EpisodePanelContent = React.memo(function EpisodePanelContent({
           subtitleDownloads={subtitleDownloads}
           onRefreshSubtitles={onRefreshSubtitles}
           onDeleteFile={onDeleteFile}
+          onMakePrimaryFile={onMakePrimaryFile}
+          primaryMovieFileUpdatingId={primaryMovieFileUpdatingId}
         />
       </TabsContent>
       {showSearchTab ? (

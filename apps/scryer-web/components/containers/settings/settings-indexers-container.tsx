@@ -3,6 +3,7 @@ import {
   type FormEvent,
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -234,10 +235,15 @@ export function SettingsIndexersContainer({
     useState<IndexerProxyRecord | null>(null);
   const [isTestingConnection, setIsTestingConnection] = useState(false);
   const [editingProxyId, setEditingProxyId] = useState<string | null>(null);
+  const [isProxyEditorOpen, setIsProxyEditorOpen] = useState(false);
   const [mutatingProxyId, setMutatingProxyId] = useState<string | null>(null);
   const [testingProxyId, setTestingProxyId] = useState<string | null>(null);
   const [indexerProxyDraft, setIndexerProxyDraft] =
     useState<IndexerProxyDraft>(() => ({ ...INDEXER_PROXY_INITIAL_DRAFT }));
+  const defaultIndexerProxyConfigId = useMemo(
+    () => indexerProxyConfigs.find((proxy) => proxy.isEnabled)?.id ?? null,
+    [indexerProxyConfigs],
+  );
   const [providerTypes, setProviderTypes] = useState<ProviderTypeInfo[]>([]);
   const [pluginsTarget, setPluginsTarget] = useState<HTMLElement | null>(null);
   useEffect(() => {
@@ -259,8 +265,13 @@ export function SettingsIndexersContainer({
 
   const resetIndexerDraft = useCallback(() => {
     setEditingIndexerId(null);
-    setIndexerDraft(() => cloneIndexerDraft(INDEXER_INITIAL_DRAFT));
-  }, []);
+    setIndexerDraft(() =>
+      cloneIndexerDraft({
+        ...INDEXER_INITIAL_DRAFT,
+        indexerProxyConfigId: defaultIndexerProxyConfigId,
+      }),
+    );
+  }, [defaultIndexerProxyConfigId]);
 
   useEffect(() => {
     if (!awaitingBaselineSync) {
@@ -749,11 +760,13 @@ export function SettingsIndexersContainer({
 
   const resetIndexerProxyDraft = useCallback(() => {
     setEditingProxyId(null);
+    setIsProxyEditorOpen(false);
     setIndexerProxyDraft({ ...INDEXER_PROXY_INITIAL_DRAFT });
   }, []);
 
   const editIndexerProxy = useCallback((proxy: IndexerProxyRecord) => {
     setEditingProxyId(proxy.id);
+    setIsProxyEditorOpen(true);
     setIndexerProxyDraft({
       name: proxy.name,
       baseUrl: proxy.baseUrl,
@@ -762,6 +775,12 @@ export function SettingsIndexersContainer({
     });
     setGlobalStatus(`Editing indexer proxy ${proxy.name}`);
   }, [setGlobalStatus]);
+
+  const startCreateIndexerProxy = useCallback(() => {
+    setEditingProxyId(null);
+    setIndexerProxyDraft({ ...INDEXER_PROXY_INITIAL_DRAFT });
+    setIsProxyEditorOpen(true);
+  }, []);
 
   const submitIndexerProxy = useCallback(async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -902,10 +921,12 @@ export function SettingsIndexersContainer({
         indexerProxyDraft={indexerProxyDraft}
         setIndexerProxyDraft={setIndexerProxyDraft}
         editingProxyId={editingProxyId}
+        isProxyEditorOpen={isProxyEditorOpen}
         mutatingProxyId={mutatingProxyId}
         testingProxyId={testingProxyId}
         submitIndexerProxy={submitIndexerProxy}
         resetIndexerProxyDraft={resetIndexerProxyDraft}
+        startCreateIndexerProxy={startCreateIndexerProxy}
         editIndexerProxy={editIndexerProxy}
         testIndexerProxy={testIndexerProxy}
         deleteIndexerProxy={deleteIndexerProxy}

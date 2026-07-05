@@ -434,6 +434,77 @@ async fn title_writes_generate_and_refresh_catalog_sort_key_sqlite() {
 }
 
 #[tokio::test]
+async fn title_catalog_scryer_rating_sort_uses_grouped_rating_summary() {
+    let (services, db) = temp_services("scryer_title_catalog_scryer_rating_sort").await;
+    let catalog = title_store(&services);
+    let library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Movie);
+
+    for title_id in [
+        "title-rating-high",
+        "title-rating-low",
+        "title-rating-missing",
+    ] {
+        let mut title = make_test_title(title_id, None);
+        title.name = title_id.to_string();
+        TitleRepository::create(&catalog, title)
+            .await
+            .expect("title should insert");
+    }
+
+    for (title_id, rating) in [("title-rating-high", 9.2), ("title-rating-low", 6.5)] {
+        TitleRepository::update_title_hydrated_metadata(
+            &catalog,
+            title_id,
+            TitleMetadataUpdate {
+                metadata_language: Some("eng".to_string()),
+                metadata_fetched_at: Some(Utc::now().to_rfc3339()),
+                ratings: Some(TitleRatingSummary {
+                    rating: Some(rating),
+                    ..TitleRatingSummary::default()
+                }),
+                ..TitleMetadataUpdate::default()
+            },
+        )
+        .await
+        .expect("rating should persist");
+    }
+
+    let page = TitleRepository::list_for_libraries_catalog(
+        &catalog,
+        Some(MediaFacet::Movie),
+        &[library_id],
+        None,
+        TitleCatalogFilter::default(),
+        TitleCatalogSort {
+            key: TitleCatalogSortKey::RatingScryer,
+            direction: SortDirection::Desc,
+        },
+        10,
+        0,
+        false,
+        true,
+    )
+    .await
+    .expect("catalog rating sort should succeed");
+
+    let ids = page
+        .items
+        .iter()
+        .map(|title| title.id.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        ids,
+        vec![
+            "title-rating-high",
+            "title-rating-low",
+            "title-rating-missing"
+        ]
+    );
+
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
 async fn hydrated_title_metadata_persists_external_ratings() {
     let db = std::env::temp_dir().join(format!(
         "scryer_title_external_ratings_{}.db",

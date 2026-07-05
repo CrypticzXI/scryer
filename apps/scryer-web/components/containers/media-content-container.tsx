@@ -154,7 +154,7 @@ const TITLE_DELETION_JOB_FALLBACK_DELAYS_MS = [
   10_000, 60_000, 180_000,
 ] as const;
 const TITLE_CATALOG_PAGE_SIZE = 72;
-const LIBRARY_SCAN_TITLE_REFRESH_THROTTLE_MS = 1_000;
+const LIBRARY_SCAN_TITLE_REFRESH_THROTTLE_MS = 5_000;
 const ALL_LIBRARIES_VALUE = "__all__";
 
 type MediaContentContainerProps = {
@@ -1933,7 +1933,9 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     titleCatalogProjection,
   ]);
 
-  const refreshLoadedCatalogTitlesQuietly = React.useCallback(async () => {
+  const refreshLoadedCatalogTitlesQuietly = React.useCallback(async ({
+    firstPageOnly = false,
+  }: { firstPageOnly?: boolean } = {}) => {
     if (
       !shouldLoadCatalogTitles ||
       titleLoading ||
@@ -1957,15 +1959,18 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
       return;
     }
 
-    const limit = Math.max(
-      TITLE_CATALOG_PAGE_SIZE,
-      catalogPaginationState.nextOffset || TITLE_CATALOG_PAGE_SIZE,
-    );
+    const limit = firstPageOnly
+      ? TITLE_CATALOG_PAGE_SIZE
+      : Math.max(
+          TITLE_CATALOG_PAGE_SIZE,
+          catalogPaginationState.nextOffset || TITLE_CATALOG_PAGE_SIZE,
+        );
+    const includePageMetadata = !firstPageOnly;
 
     try {
       const { data, error } = await client
         .query(
-          buildTitlesQuery(titleCatalogProjection),
+          buildTitlesQuery(titleCatalogProjection, { includePageMetadata }),
           buildTitleCatalogQueryVariables({
             facet: activeFacet,
             libraryIds: selectedLibraryIds,
@@ -1990,10 +1995,12 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
 
       const page = data?.titles ?? {};
       const nextTitles = (page.items ?? []) as TitleRecord[];
-      const filterCounts = titleCatalogFilterCountsFromPage(
-        page,
-        catalogPaginationState.filterCounts,
-      );
+      const filterCounts = includePageMetadata
+        ? titleCatalogFilterCountsFromPage(
+            page,
+            catalogPaginationState.filterCounts,
+          )
+        : catalogPaginationState.filterCounts;
       setMonitoredTitles((current) =>
         mergeCatalogTitlesPreservingImages(current, nextTitles),
       );
@@ -2004,13 +2011,14 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
         }
         return {
           ...current,
-          hasMore: Boolean(page.hasMore),
-          nextOffset:
-            typeof page.offset === "number" && typeof page.limit === "number"
+          hasMore: includePageMetadata ? Boolean(page.hasMore) : current.hasMore,
+          nextOffset: includePageMetadata
+            ? typeof page.offset === "number" && typeof page.limit === "number"
               ? page.offset + nextTitles.length
-              : nextTitles.length,
+              : nextTitles.length
+            : current.nextOffset,
           totalCount:
-            typeof page.totalCount === "number"
+            includePageMetadata && typeof page.totalCount === "number"
               ? page.totalCount
               : current.totalCount,
           filterCounts,
@@ -2278,6 +2286,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   useTitleListReactiveRefresh({
     facet: activeFacet,
     pause: !shouldLoadCatalogTitles,
+    projection: titleCatalogProjection,
     onTitleRefreshed: applyRefreshedTitleRecord,
   });
 
@@ -2329,7 +2338,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
       key: progressKey,
       refreshedAt: now,
     };
-    void refreshLoadedCatalogTitlesQuietly();
+    void refreshLoadedCatalogTitlesQuietly({ firstPageOnly: true });
   }, [
     activeLibraryScanSession,
     refreshLoadedCatalogTitlesQuietly,
@@ -2847,6 +2856,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
       pendingHydrationPosterTitleIds.forEach((titleId) => {
         queueCatalogTitleRefresh({
           titleId,
+          projection: titleCatalogProjection,
           apply(title, requestEpoch) {
             applyRefreshedTitleRecord(titleId, title, requestEpoch);
           },
@@ -2875,6 +2885,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     pendingHydrationPosterTitleIdsKey,
     queueCatalogTitleRefresh,
     shouldLoadCatalogTitles,
+    titleCatalogProjection,
   ]);
 
   const onAddSubmit = React.useCallback(

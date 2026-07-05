@@ -1222,6 +1222,10 @@ export type TitleCatalogTitleProjection = {
   popularity?: boolean;
 };
 
+export type TitleCatalogQueryBuildOptions = {
+  includePageMetadata?: boolean;
+};
+
 const TITLE_CATALOG_BASE_FIELDS = `
     id
     name
@@ -1495,7 +1499,23 @@ export const librarySettingsQuery = `query LibrarySettings($libraryId: ID!) {
 
 export function buildTitlesQuery(
   projection: TitleCatalogTitleProjection = {},
+  options: TitleCatalogQueryBuildOptions = {},
 ) {
+  const includePageMetadata = options.includePageMetadata ?? true;
+  const pageMetadataFields = includePageMetadata
+    ? `
+    limit
+    offset
+    hasMore
+    totalCount
+    filterCounts {
+      all
+      monitored
+      unmonitored
+      continuing
+      ended
+    }`
+    : "";
   return `query Titles(
   $facet: MediaFacetValue,
   $libraryIds: [ID!],
@@ -1517,17 +1537,7 @@ export function buildTitlesQuery(
     items {
 ${titleCatalogListFields(projection)}
     }
-    limit
-    offset
-    hasMore
-    totalCount
-    filterCounts {
-      all
-      monitored
-      unmonitored
-      continuing
-      ended
-    }
+${pageMetadataFields}
   }
 }`;
 }
@@ -1593,6 +1603,7 @@ export type ReactiveRefreshQueryActionInput =
       key: string;
       kind: "catalogTitle";
       titleId: string;
+      projection?: TitleCatalogTitleProjection;
     }
   | {
       key: string;
@@ -1669,8 +1680,9 @@ export function buildReactiveRefreshQuery(
         const titleAlias = `catalogTitleAction${index}`;
         const titleIdVariableName = `catalogTitleId${index}`;
         variableDefinitions.push(`$${titleIdVariableName}: ID!`);
+        const titleFields = titleCatalogListFields(action.projection);
         fields.push(
-          `  ${titleAlias}: title(id: $${titleIdVariableName}) {\n${TITLE_PANEL_FIELDS}\n  }`,
+          `  ${titleAlias}: title(id: $${titleIdVariableName}) {\n${titleFields}\n  }`,
         );
         variables[titleIdVariableName] = action.titleId;
         actionPlans.push({ key: action.key, kind: action.kind, titleAlias });

@@ -762,6 +762,7 @@ pub trait TitleRepository: Send + Sync {
         limit: usize,
         offset: usize,
         include_external_ids: bool,
+        include_catalog_counts: bool,
     ) -> AppResult<TitleCatalogResult> {
         if library_ids.is_empty() {
             return Ok(TitleCatalogResult {
@@ -780,17 +781,25 @@ pub trait TitleRepository: Send + Sync {
             self.list_for_libraries_without_external_ids(facet, library_ids, query)
                 .await?
         };
-        let filter_counts = title_catalog_filter_counts(&titles, &filter);
+        let filter_counts = if include_catalog_counts {
+            title_catalog_filter_counts(&titles, &filter)
+        } else {
+            TitleCatalogFilterCounts::default()
+        };
         titles.retain(|title| title_matches_catalog_filter(title, &filter));
         sort_titles_for_catalog(&mut titles, sort);
 
-        let total_count = titles.len();
+        let total_count = if include_catalog_counts {
+            titles.len()
+        } else {
+            0
+        };
         let items = titles
             .into_iter()
             .skip(offset)
             .take(limit)
             .collect::<Vec<_>>();
-        let has_more = offset.saturating_add(items.len()) < total_count;
+        let has_more = include_catalog_counts && offset.saturating_add(items.len()) < total_count;
 
         Ok(TitleCatalogResult {
             items,

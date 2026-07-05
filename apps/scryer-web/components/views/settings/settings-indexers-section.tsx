@@ -1,5 +1,14 @@
 import * as React from "react";
-import { Edit, Lock, Plus, Power, PowerOff, RefreshCw, Trash2 } from "lucide-react";
+import {
+  Edit,
+  Lock,
+  Plus,
+  Power,
+  PowerOff,
+  RefreshCw,
+  Trash2,
+  TriangleAlert,
+} from "lucide-react";
 import { AddNewButton } from "@/components/common/add-new-button";
 import { PluginVisualLabel } from "@/components/common/plugin-visual";
 import { Button } from "@/components/ui/button";
@@ -55,12 +64,14 @@ type SettingsIndexersSectionProps = {
   indexerProxyDraft: IndexerProxyDraft;
   setIndexerProxyDraft: React.Dispatch<React.SetStateAction<IndexerProxyDraft>>;
   editingProxyId: string | null;
+  isProxyEditorOpen: boolean;
   mutatingProxyId: string | null;
   testingProxyId: string | null;
   submitIndexerProxy: (
     event: React.FormEvent<HTMLFormElement>,
   ) => Promise<void> | void;
   resetIndexerProxyDraft: () => void;
+  startCreateIndexerProxy: () => void;
   editIndexerProxy: (proxy: IndexerProxyRecord) => void;
   testIndexerProxy: (proxy: IndexerProxyRecord) => Promise<void> | void;
   deleteIndexerProxy: (proxy: IndexerProxyRecord) => Promise<void> | void;
@@ -151,10 +162,6 @@ function formatRelativeTime(isoDate: string): string {
   }
 
   return relative;
-}
-
-function formatIndexerProxyProvider(providerType: string): string {
-  return providerType.toLowerCase() === "byparr" ? "Byparr" : providerType;
 }
 
 function formatIndexerProxyHealth(status: string | null | undefined): string {
@@ -350,10 +357,12 @@ export function SettingsIndexersSection({
   indexerProxyDraft,
   setIndexerProxyDraft,
   editingProxyId,
+  isProxyEditorOpen,
   mutatingProxyId,
   testingProxyId,
   submitIndexerProxy,
   resetIndexerProxyDraft,
+  startCreateIndexerProxy,
   editIndexerProxy,
   testIndexerProxy,
   deleteIndexerProxy,
@@ -492,18 +501,23 @@ export function SettingsIndexersSection({
   );
 
   return (
-    <div id="settings-indexers-section" className="space-y-4 text-sm">
+    <div id="settings-indexers-section" className="flex flex-col gap-4 text-sm">
+      <div id="settings-indexer-proxies-panel" className="order-last space-y-4">
       <div id="settings-indexer-proxies-card" className="rounded border border-border">
         <div className="flex items-center justify-between border-b border-border px-3 py-2">
-          <CardTitle className="text-base">Indexer proxies</CardTitle>
-          <span className="text-xs text-muted-foreground">Byparr</span>
+          <CardTitle className="flex items-center gap-2 text-base">
+            Indexer proxies
+            <span className="inline-flex items-center gap-1 rounded-full border border-[var(--scry-warning-border)] bg-[var(--scry-warning-bg)] px-2 py-0.5 text-xs font-medium text-[var(--scry-warning-text)]">
+              <TriangleAlert className="h-3.5 w-3.5" />
+              Beta
+            </span>
+          </CardTitle>
         </div>
         <div className="overflow-x-auto">
           <Table id="settings-indexer-proxies-table">
             <TableHeader>
               <TableRow>
                 <TableHead>{t("label.name")}</TableHead>
-                <TableHead>Provider</TableHead>
                 <TableHead>{t("settings.baseUrl")}</TableHead>
                 <TableHead className="text-center">{t("label.enabled")}</TableHead>
                 <TableHead>Health</TableHead>
@@ -515,7 +529,6 @@ export function SettingsIndexersSection({
               {indexerProxyConfigs.map((proxy) => (
                 <TableRow key={proxy.id} id={selectorId("settings-indexer-proxy-row", proxy.name)}>
                   <TableCell className="font-medium">{proxy.name}</TableCell>
-                  <TableCell>{formatIndexerProxyProvider(proxy.providerType)}</TableCell>
                   <TableCell className="max-w-[280px] truncate">{proxy.baseUrl}</TableCell>
                   <TableCell className="text-center">
                     <RenderBooleanIcon
@@ -573,7 +586,7 @@ export function SettingsIndexersSection({
               ))}
               {indexerProxyConfigs.length === 0 ? (
                 <TableRow id="settings-indexer-proxies-empty-row">
-                  <TableCell colSpan={7} className="text-muted-foreground">
+                  <TableCell colSpan={6} className="text-muted-foreground">
                     No indexer proxies configured.
                   </TableCell>
                 </TableRow>
@@ -581,9 +594,18 @@ export function SettingsIndexersSection({
             </TableBody>
           </Table>
         </div>
+      </div>
+      {isProxyEditorOpen ? (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">
+              {editingProxyId ? "Update indexer proxy" : "Connect indexer proxy"}
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
         <form
           id="settings-indexer-proxy-form"
-          className="grid gap-3 border-t border-border p-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)_10rem_auto_auto]"
+          className="grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)_10rem_auto_auto]"
           onSubmit={submitIndexerProxy}
         >
           <label>
@@ -675,6 +697,19 @@ export function SettingsIndexersSection({
             ) : null}
           </div>
         </form>
+          </CardContent>
+        </Card>
+      ) : (
+        <div className="flex justify-center">
+          <AddNewButton
+            id="settings-indexer-proxy-create"
+            icon={Plus}
+            label="Connect indexer proxy"
+            onClick={startCreateIndexerProxy}
+            disabled={mutatingProxyId !== null}
+          />
+        </div>
+      )}
       </div>
 
       <div id="settings-indexers-table-card" className="rounded border border-border">
@@ -776,7 +811,7 @@ export function SettingsIndexersSection({
                         Missing proxy
                       </span>
                     ) : (
-                      <span className="text-muted-foreground">None</span>
+                      <span className="text-muted-foreground">Direct</span>
                     )}
                   </TableCell>
                   <TableCell className="text-center">
@@ -986,10 +1021,10 @@ export function SettingsIndexersSection({
                 }
               >
                 <SelectTrigger id="settings-indexer-proxy-select" className="w-full">
-                  <SelectValue placeholder="None" />
+                  <SelectValue placeholder="Direct (no proxy)" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="none">None</SelectItem>
+                  <SelectItem value="none">Direct (no proxy)</SelectItem>
                   {selectedIndexerProxyMissing ? (
                     <SelectItem value={selectedIndexerProxyId ?? "missing"} disabled>
                       Missing proxy

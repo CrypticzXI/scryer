@@ -29,7 +29,7 @@ const INDEXER_INSERT_SQL: &str = "INSERT INTO indexers (
     last_error_at, config_json, created_at, updated_at
 ) VALUES (
     {}, {}, {}, {}, {}, {}, {}, {}, {}, {},
-    {}, {}, {}, {}, {}, {}, {}, {}, {}, {}
+    {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}
 )";
 
 #[derive(Clone)]

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef } from "react";
 
 import { useReactiveRefresh } from "@/lib/context/reactive-refresh-context";
+import type { TitleCatalogTitleProjection } from "@/lib/graphql/queries";
 import { useActivityEventStream } from "@/lib/hooks/use-activity-event-stream";
 import type { TitleRecord } from "@/lib/types";
 import { TITLE_OVERVIEW_REFRESH_KINDS } from "@/lib/utils/title-overview-refresh-kinds";
@@ -8,6 +9,7 @@ import { TITLE_OVERVIEW_REFRESH_KINDS } from "@/lib/utils/title-overview-refresh
 type UseTitleListReactiveRefreshOptions = {
   facet?: string | null;
   pause?: boolean;
+  projection?: TitleCatalogTitleProjection;
   onTitleRefreshed: (
     titleId: string,
     title: TitleRecord | null,
@@ -27,6 +29,7 @@ const TITLE_ACTIVITY_KINDS = [
 export function useTitleListReactiveRefresh({
   facet,
   pause = false,
+  projection,
   onTitleRefreshed,
 }: UseTitleListReactiveRefreshOptions) {
   const { queueCatalogTitleRefresh } = useReactiveRefresh();
@@ -57,6 +60,7 @@ export function useTitleListReactiveRefresh({
 
       queueCatalogTitleRefresh({
         titleId,
+        projection,
         apply(title, requestEpoch) {
           onTitleRefreshedRef.current(titleId, title, requestEpoch);
         },

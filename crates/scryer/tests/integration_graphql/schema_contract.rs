@@ -109,15 +109,16 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
         .filter_map(|ty| ty["name"].as_str())
         .collect();
 
-    assert_eq!(query_field_count, 116);
-    assert_eq!(mutation_field_count, 162);
+    assert_eq!(query_field_count, 117);
+    assert_eq!(mutation_field_count, 166);
     assert_eq!(subscription_field_count, 13);
-    assert_eq!(public_types.len(), 496);
-    assert_eq!(kind_count("OBJECT"), 260);
-    assert_eq!(kind_count("INPUT_OBJECT"), 149);
+    assert_eq!(public_types.len(), 501);
+    assert_eq!(kind_count("OBJECT"), 263);
+    assert_eq!(kind_count("INPUT_OBJECT"), 151);
     assert_eq!(kind_count("ENUM"), 77);
     assert_eq!(kind_count("SCALAR"), 10);
     assert!(query_field_names.contains(&"backupSettings"));
+    assert!(query_field_names.contains(&"indexerProxyConfigs"));
     assert!(query_field_names.contains(&"externalImportSetupSecretDraft"));
     assert!(query_field_names.contains(&"externalImportSetupSecretDraftStatus"));
     assert!(query_field_names.contains(&"episodeMediaFiles"));
@@ -125,10 +126,19 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
     assert!(query_field_names.contains(&"runtimeInfo"));
     assert!(query_field_names.contains(&"upstreamSchedulerSnapshot"));
     assert!(mutation_field_names.contains(&"clearExternalImportSetupSecretDraft"));
+    assert!(mutation_field_names.contains(&"createIndexerProxyConfig"));
+    assert!(mutation_field_names.contains(&"deleteIndexerProxyConfig"));
     assert!(mutation_field_names.contains(&"saveExternalImportSetupSecretDraft"));
+    assert!(mutation_field_names.contains(&"testIndexerProxyConfig"));
+    assert!(mutation_field_names.contains(&"updateIndexerProxyConfig"));
     assert!(mutation_field_names.contains(&"updateBackupSettings"));
     assert!(public_type_names.contains(&"BackupSettingsPayload"));
+    assert!(public_type_names.contains(&"CreateIndexerProxyConfigInput"));
+    assert!(public_type_names.contains(&"DeleteIndexerProxyConfigPayload"));
+    assert!(public_type_names.contains(&"IndexerProxyConfigPayload"));
+    assert!(public_type_names.contains(&"IndexerProxyTestResultPayload"));
     assert!(public_type_names.contains(&"SaveExternalImportSetupSecretDraftInput"));
+    assert!(public_type_names.contains(&"UpdateIndexerProxyConfigInput"));
     assert!(public_type_names.contains(&"ExternalImportSetupSecretDraftPayload"));
     assert!(public_type_names.contains(&"ExternalImportLibrarySettingApplicationPayload"));
     assert!(public_type_names.contains(&"ExternalImportLibrarySettingKey"));

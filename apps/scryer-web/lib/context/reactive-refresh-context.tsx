@@ -1,6 +1,9 @@
 import { createContext, useContext } from "react";
 
-import type { TitleOverviewNativeProjection } from "@/lib/graphql/queries";
+import type {
+  TitleCatalogTitleProjection,
+  TitleOverviewNativeProjection,
+} from "@/lib/graphql/queries";
 import type { ImportRecord, TitleRecord } from "@/lib/types";
 import type {
   TitleOverviewDownloadFeedbackSnapshot,
@@ -17,6 +20,7 @@ export type QueueCatalogTitlesRefreshOptions = {
 
 export type QueueCatalogTitleRefreshOptions = {
   titleId: string;
+  projection?: TitleCatalogTitleProjection;
   apply: (title: TitleRecord | null, requestEpoch: number) => void;
   onError?: ReactiveRefreshErrorHandler;
 };

@@ -32,12 +32,16 @@ export function EpisodeDetailsPanel({
   subtitleDownloads = [],
   onRefreshSubtitles,
   onDeleteFile,
+  onMakePrimaryFile,
+  primaryMovieFileUpdatingId = null,
 }: {
   episode: CollectionEpisode;
   mediaFiles: EpisodeMediaFile[];
   subtitleDownloads?: ExternalSubtitleRecord[];
   onRefreshSubtitles?: () => Promise<void> | void;
   onDeleteFile?: (fileId: string) => void;
+  onMakePrimaryFile?: (fileId: string) => Promise<void> | void;
+  primaryMovieFileUpdatingId?: string | null;
 }) {
   const t = useTranslate();
   const episodeImageUrl = React.useMemo(() => fullyQualifiedHttpUrl(episode.imageUrl), [episode.imageUrl]);
@@ -64,12 +68,21 @@ export function EpisodeDetailsPanel({
         </div>
       ) : null}
       <MediaFilesOnDiskPanel<EpisodeMediaFile>
-        title={t("episode.fileOnDisk")}
-        emptyMessage={t("episode.noFile")}
+        emptyMessage={t("title.noFilesTracked")}
+        emptyHint={t("title.noFilesTrackedHint")}
         mediaFiles={mediaFiles}
         subtitleDownloads={subtitleDownloads}
         onRefreshSubtitles={onRefreshSubtitles}
         onDeleteFile={onDeleteFile}
+        onMakePrimaryFile={onMakePrimaryFile}
+        primaryFileUpdatingId={primaryMovieFileUpdatingId}
+        showPrimaryRoleBadge
+        fileRowIdPrefix="series-overview-episode-media-file"
+        filePathIdPrefix="series-overview-episode-media-file-path"
+        roleIdPrefix="series-overview-episode-media-file-role"
+        subtitleSearchIdPrefix="series-overview-episode-search-subtitles"
+        deleteFileIdPrefix="series-overview-episode-delete-file"
+        makePrimaryFileIdPrefix="series-overview-episode-make-primary-file"
       />
     </div>
   );

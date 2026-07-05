@@ -686,6 +686,10 @@ impl CatalogQueries {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
         let selection = TitlePayloadSelection::from_ctx(ctx);
+        let lookahead = ctx.look_ahead();
+        let include_catalog_counts = lookahead.field("hasMore").exists()
+            || lookahead.field("totalCount").exists()
+            || lookahead.field("filterCounts").exists();
         let page = app
             .list_titles(
                 &actor,
@@ -697,6 +701,7 @@ impl CatalogQueries {
                 title_catalog_page_limit(limit),
                 title_catalog_page_offset(offset),
                 selection.include_external_ids,
+                include_catalog_counts,
             )
             .await
             .map_err(to_gql_error)?;

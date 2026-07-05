@@ -87,6 +87,8 @@ export function SeasonSection({
   onRunSeasonSearch,
   onQueueFromSeasonSearch,
   onDeleteFile,
+  onMakePrimaryFile,
+  primaryMovieFileUpdatingId = null,
 }: {
   collection: TitleCollection;
   facet: string;
@@ -119,6 +121,8 @@ export function SeasonSection({
   onRunSeasonSearch?: () => void;
   onQueueFromSeasonSearch?: (collection: TitleCollection, release: Release) => Promise<void> | void;
   onDeleteFile?: (fileId: string) => void;
+  onMakePrimaryFile?: (fileId: string) => Promise<void> | void;
+  primaryMovieFileUpdatingId?: string | null;
 }) {
   const t = useTranslate();
   const isMobile = useIsMobile();
@@ -390,6 +394,7 @@ export function SeasonSection({
                       onAutoSearchEpisode={onAutoSearchEpisode}
                       onClearReleaseBlocklistEntry={onClearReleaseBlocklistEntry}
                       onDeleteFile={onDeleteFile}
+                      onMakePrimaryFile={onMakePrimaryFile}
                       onOpenHistory={onOpenEpisodeHistory}
                       onQueueFromEpisodeSearch={onQueueFromEpisodeSearch}
                       onQueueAdditionalFromEpisodeSearch={onQueueAdditionalFromEpisodeSearch}
@@ -401,6 +406,7 @@ export function SeasonSection({
                       searchBlocked={searchBlockedByEpisode[episode.id] === true}
                       searchLoading={searchLoadingByEpisode[episode.id] === true}
                       subtitleDownloads={stableSubtitleDownloads}
+                      primaryMovieFileUpdatingId={primaryMovieFileUpdatingId}
                     />
                   ))}
                 </div>
@@ -436,6 +442,7 @@ export function SeasonSection({
                         onAutoSearchEpisode={onAutoSearchEpisode}
                         onClearReleaseBlocklistEntry={onClearReleaseBlocklistEntry}
                         onDeleteFile={onDeleteFile}
+                        onMakePrimaryFile={onMakePrimaryFile}
                         onOpenHistory={onOpenEpisodeHistory}
                         onQueueFromEpisodeSearch={onQueueFromEpisodeSearch}
                         onQueueAdditionalFromEpisodeSearch={onQueueAdditionalFromEpisodeSearch}
@@ -447,6 +454,7 @@ export function SeasonSection({
                         searchBlocked={searchBlockedByEpisode[episode.id] === true}
                         searchLoading={searchLoadingByEpisode[episode.id] === true}
                         subtitleDownloads={stableSubtitleDownloads}
+                        primaryMovieFileUpdatingId={primaryMovieFileUpdatingId}
                       />
                     ))}
                   </TableBody>

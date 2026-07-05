@@ -9,12 +9,13 @@ use scryer_application::{
     MediaFileRole, NotificationChannelRepository, NotificationSubscriptionRepository,
     OAuthRepository, PendingImportStatus, PendingReleaseRepository, PluginInstallationRepository,
     ReleaseAttemptRepository, ReleaseDecision, ReleaseDownloadAttemptOutcome, ScopedExternalId,
-    SettingsRepository, ShowRepository, SubmissionScope, SubtitleDownloadRepository,
+    SettingsRepository, ShowRepository, SortDirection, SubmissionScope, SubtitleDownloadRepository,
     SubtitleProviderConfigRepository, SubtitleProviderConfigUpdate, TitleArtworkUrlUpdate,
-    TitleExternalIdLookup, TitleExternalRating, TitleImageBlob, TitleImageKind,
-    TitleImageRepository, TitleImageSourceResult, TitleImageVariantRecord, TitleMetadataUpdate,
-    TitleRatingSummary, TitleRepository, UserRepository, WantedItem, WantedItemRepository,
-    WantedItemsQuery, WantedStatus,
+    TitleCatalogFilter, TitleCatalogSort, TitleCatalogSortKey, TitleExternalIdLookup,
+    TitleExternalRating, TitleImageBlob, TitleImageKind, TitleImageRepository,
+    TitleImageSourceResult, TitleImageVariantRecord, TitleMetadataUpdate, TitleRatingSummary,
+    TitleRepository, UserRepository, WantedItem, WantedItemRepository, WantedItemsQuery,
+    WantedStatus,
     subtitles::{ExternalSubtitleDetectionSource, ExternalSubtitleProbeCacheEntry},
 };
 use scryer_domain::{

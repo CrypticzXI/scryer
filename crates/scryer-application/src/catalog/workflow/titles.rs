@@ -118,6 +118,7 @@ impl AppUseCase {
         limit: usize,
         offset: usize,
         include_external_ids: bool,
+        include_catalog_counts: bool,
     ) -> AppResult<crate::TitleCatalogResult> {
         let mut library_ids = self
             .authorized_library_ids(actor, facet.clone(), scryer_domain::LibraryPermission::View)
@@ -148,6 +149,7 @@ impl AppUseCase {
                 limit,
                 offset,
                 include_external_ids,
+                include_catalog_counts,
             )
             .await
     }
