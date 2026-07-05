@@ -383,6 +383,7 @@ fn request_with_staged_nzb(
         download_directory: None,
         release_title: None,
         indexer_name: None,
+        indexer_id: None,
         info_hash_hint: None,
         seed_goal_ratio: None,
         seed_goal_seconds: None,

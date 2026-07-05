@@ -1994,6 +1994,7 @@ export const indexersQuery = `query Indexers($providerType: String) {
     name
     providerType
     baseUrl
+    indexerProxyConfigId
     hasApiKey
     storedSecretKeys
     rateLimitSeconds
@@ -2017,6 +2018,25 @@ export const indexersQuery = `query Indexers($providerType: String) {
 
 export const indexerProviderTypesQuery = `query IndexerProviderTypes {
   indexerProviderTypes {${PROVIDER_TYPE_FIELDS}
+  }
+}`;
+
+const indexerProxyConfigFieldSelection = `
+    id
+    name
+    providerType
+    protocol
+    baseUrl
+    requestTimeoutSeconds
+    isEnabled
+    lastHealthStatus
+    lastErrorMessage
+    lastErrorAt
+    createdAt
+    updatedAt`;
+
+export const indexerProxyConfigsQuery = `query IndexerProxyConfigs {
+  indexerProxyConfigs {${indexerProxyConfigFieldSelection}
   }
 }`;
 
@@ -2134,6 +2154,7 @@ const indexerFieldSelection = `
     name
     providerType
     baseUrl
+    indexerProxyConfigId
     hasApiKey
     storedSecretKeys
     rateLimitSeconds
@@ -2313,6 +2334,8 @@ export const libraryDownloadClientsQuery = `query LibraryDownloadClients {
 
 export const indexersInitQuery = `query IndexersInit($providerType: String) {
   indexers(providerType: $providerType) {${indexerFieldSelection}
+  }
+  indexerProxyConfigs {${indexerProxyConfigFieldSelection}
   }
   indexerProviderTypes {${PROVIDER_TYPE_FIELDS}
   }

@@ -372,6 +372,7 @@ impl AppUseCase {
     ) -> AppResult<QueueDownloadOutcome> {
         validate_manual_queue_purpose(purpose, title, &scope)?;
         let QueuedReleaseSelection {
+            indexer_id,
             source_hint,
             source_kind,
             source_title,
@@ -410,6 +411,7 @@ impl AppUseCase {
                 return Ok(QueueDownloadOutcome::Queued(QueuedDownloadResult {
                     job_id: existing.download_client_item_id,
                     queued_release: QueuedReleaseSelection {
+                        indexer_id,
                         source_hint,
                         source_kind,
                         source_title,
@@ -495,7 +497,7 @@ impl AppUseCase {
                 download_directory: None,
                 release_title: None,
                 indexer_name: None,
-                indexer_id: None,
+                indexer_id: indexer_id.clone(),
                 info_hash_hint: None,
                 seed_goal_ratio: None,
                 seed_goal_seconds: None,
@@ -710,6 +712,7 @@ impl AppUseCase {
         Ok(QueueDownloadOutcome::Queued(QueuedDownloadResult {
             job_id: grab.job_id,
             queued_release: QueuedReleaseSelection {
+                indexer_id,
                 source_hint: source_hint_for_attempt,
                 source_kind,
                 source_title: source_title_for_attempt,
@@ -1166,6 +1169,7 @@ impl AppUseCase {
             actor,
             title_id,
             QueuedReleaseSelection {
+                indexer_id: best.indexer_id.clone(),
                 source_hint: best.download_url.clone().or(best.link.clone()),
                 source_kind: best.source_kind,
                 source_title: Some(best.title.clone()),

@@ -3215,6 +3215,20 @@ mod tests {
         }
     }
 
+    fn indexer_cache_key(
+        provider_type: &str,
+        config_id: &str,
+        revision: &str,
+    ) -> IndexerClientCacheKey {
+        (
+            provider_type.to_string(),
+            config_id.to_string(),
+            revision.to_string(),
+            String::new(),
+            String::new(),
+        )
+    }
+
     struct DummyDownloadClient;
 
     #[async_trait::async_trait]
@@ -3751,11 +3765,7 @@ mod tests {
     #[test]
     fn dynamic_client_cache_insert_returns_existing_for_duplicate_key() {
         let mut cache = HashMap::new();
-        let cache_key = (
-            "newznab".to_string(),
-            "idx-1".to_string(),
-            "revision-1".to_string(),
-        );
+        let cache_key = indexer_cache_key("newznab", "idx-1", "revision-1");
 
         let first = insert_indexer_client_cache(
             &mut cache,
@@ -3774,29 +3784,17 @@ mod tests {
         let mut indexer_cache = HashMap::new();
         let first_indexer = insert_indexer_client_cache(
             &mut indexer_cache,
-            (
-                "newznab".to_string(),
-                "idx-1".to_string(),
-                "revision-1".to_string(),
-            ),
+            indexer_cache_key("newznab", "idx-1", "revision-1"),
             Arc::new(DummyIndexerClient),
         );
         let second_indexer = insert_indexer_client_cache(
             &mut indexer_cache,
-            (
-                "newznab".to_string(),
-                "idx-1".to_string(),
-                "revision-2".to_string(),
-            ),
+            indexer_cache_key("newznab", "idx-1", "revision-2"),
             Arc::new(DummyIndexerClient),
         );
         assert!(!Arc::ptr_eq(&first_indexer, &second_indexer));
         assert_eq!(indexer_cache.len(), 1);
-        assert!(indexer_cache.contains_key(&(
-            "newznab".to_string(),
-            "idx-1".to_string(),
-            "revision-2".to_string()
-        )));
+        assert!(indexer_cache.contains_key(&indexer_cache_key("newznab", "idx-1", "revision-2")));
 
         let mut download_cache = HashMap::new();
         let first_download = insert_download_client_cache(
@@ -3903,23 +3901,15 @@ mod tests {
         {
             let mut cache = provider.client_cache.lock().expect("indexer cache lock");
             cache.insert(
-                (
-                    "example_indexer".to_string(),
-                    "cfg-a".to_string(),
-                    "1".to_string(),
-                ),
+                indexer_cache_key("example_indexer", "cfg-a", "1"),
                 Arc::new(DummyIndexerClient),
             );
             cache.insert(
-                (
-                    "example-indexer-alias".to_string(),
-                    "cfg-b".to_string(),
-                    "1".to_string(),
-                ),
+                indexer_cache_key("example-indexer-alias", "cfg-b", "1"),
                 Arc::new(DummyIndexerClient),
             );
             cache.insert(
-                ("newznab".to_string(), "cfg-c".to_string(), "1".to_string()),
+                indexer_cache_key("newznab", "cfg-c", "1"),
                 Arc::new(DummyIndexerClient),
             );
         }
@@ -3933,7 +3923,7 @@ mod tests {
         assert!(
             cache
                 .keys()
-                .all(|(provider_type, _, _)| provider_type == "newznab")
+                .all(|(provider_type, _, _, _, _)| provider_type == "newznab")
         );
         let providers = provider.available_provider_types();
         assert!(

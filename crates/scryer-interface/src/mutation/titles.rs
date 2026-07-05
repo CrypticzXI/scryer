@@ -225,6 +225,7 @@ impl TitleMutations {
             resolve_add_title_options(&app, &actor, facet, library_id, options).await?;
         let request = map_add_input(input, resolved_options)?;
         let queued_release = QueuedReleaseSelection {
+            indexer_id: None,
             source_hint,
             source_kind,
             source_title: source_title.clone(),

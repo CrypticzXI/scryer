@@ -30,6 +30,8 @@ import { visibleIndexerConfigFields } from "@/lib/types";
 import type {
   IndexerRecord,
   IndexerDraft,
+  IndexerProxyDraft,
+  IndexerProxyRecord,
   ProviderTypeInfo,
   ConfigFieldDef,
 } from "@/lib/types";
@@ -49,6 +51,19 @@ type SettingsIndexersSectionProps = {
   settingsIndexerFilter: string;
   setSettingsIndexerFilter: (value: string) => void;
   settingsIndexers: IndexerRecord[];
+  indexerProxyConfigs: IndexerProxyRecord[];
+  indexerProxyDraft: IndexerProxyDraft;
+  setIndexerProxyDraft: React.Dispatch<React.SetStateAction<IndexerProxyDraft>>;
+  editingProxyId: string | null;
+  mutatingProxyId: string | null;
+  testingProxyId: string | null;
+  submitIndexerProxy: (
+    event: React.FormEvent<HTMLFormElement>,
+  ) => Promise<void> | void;
+  resetIndexerProxyDraft: () => void;
+  editIndexerProxy: (proxy: IndexerProxyRecord) => void;
+  testIndexerProxy: (proxy: IndexerProxyRecord) => Promise<void> | void;
+  deleteIndexerProxy: (proxy: IndexerProxyRecord) => Promise<void> | void;
   editIndexer: (indexer: IndexerRecord) => void;
   toggleIndexerEnabled: (indexer: IndexerRecord) => Promise<void> | void;
   deleteIndexer: (indexer: IndexerRecord) => Promise<void> | void;
@@ -136,6 +151,18 @@ function formatRelativeTime(isoDate: string): string {
   }
 
   return relative;
+}
+
+function formatIndexerProxyProvider(providerType: string): string {
+  return providerType.toLowerCase() === "byparr" ? "Byparr" : providerType;
+}
+
+function formatIndexerProxyHealth(status: string | null | undefined): string {
+  if (!status) return "Unknown";
+  const normalized = status.toLowerCase();
+  if (normalized === "healthy") return "Healthy";
+  if (normalized === "unhealthy") return "Unhealthy";
+  return "Unknown";
 }
 
 function IndexerStatusCell({ indexer }: { indexer: IndexerRecord }) {
@@ -319,6 +346,17 @@ export function SettingsIndexersSection({
   settingsIndexerFilter,
   setSettingsIndexerFilter,
   settingsIndexers,
+  indexerProxyConfigs,
+  indexerProxyDraft,
+  setIndexerProxyDraft,
+  editingProxyId,
+  mutatingProxyId,
+  testingProxyId,
+  submitIndexerProxy,
+  resetIndexerProxyDraft,
+  editIndexerProxy,
+  testIndexerProxy,
+  deleteIndexerProxy,
   editIndexer,
   toggleIndexerEnabled,
   deleteIndexer,
@@ -349,6 +387,23 @@ export function SettingsIndexersSection({
     }
     return counts;
   }, [settingsIndexers]);
+  const proxiesById = React.useMemo(() => {
+    return new Map(indexerProxyConfigs.map((proxy) => [proxy.id, proxy]));
+  }, [indexerProxyConfigs]);
+  const selectedIndexerProxyId = indexerDraft.indexerProxyConfigId;
+  const selectedIndexerProxy = selectedIndexerProxyId
+    ? proxiesById.get(selectedIndexerProxyId) ?? null
+    : null;
+  const selectedIndexerProxyMissing =
+    Boolean(selectedIndexerProxyId) && !selectedIndexerProxy;
+  const selectableIndexerProxies = React.useMemo(() => {
+    if (!selectedIndexerProxyId) {
+      return indexerProxyConfigs.filter((proxy) => proxy.isEnabled);
+    }
+    return indexerProxyConfigs.filter(
+      (proxy) => proxy.isEnabled || proxy.id === selectedIndexerProxyId,
+    );
+  }, [indexerProxyConfigs, selectedIndexerProxyId]);
 
   // Build provider type options from loaded plugins, falling back to hardcoded list
   const providerTypeOptions = React.useMemo(() => {
@@ -438,6 +493,190 @@ export function SettingsIndexersSection({
 
   return (
     <div id="settings-indexers-section" className="space-y-4 text-sm">
+      <div id="settings-indexer-proxies-card" className="rounded border border-border">
+        <div className="flex items-center justify-between border-b border-border px-3 py-2">
+          <CardTitle className="text-base">Indexer proxies</CardTitle>
+          <span className="text-xs text-muted-foreground">Byparr</span>
+        </div>
+        <div className="overflow-x-auto">
+          <Table id="settings-indexer-proxies-table">
+            <TableHeader>
+              <TableRow>
+                <TableHead>{t("label.name")}</TableHead>
+                <TableHead>Provider</TableHead>
+                <TableHead>{t("settings.baseUrl")}</TableHead>
+                <TableHead className="text-center">{t("label.enabled")}</TableHead>
+                <TableHead>Health</TableHead>
+                <TableHead>Last error</TableHead>
+                <TableHead className="text-right">{t("label.actions")}</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {indexerProxyConfigs.map((proxy) => (
+                <TableRow key={proxy.id} id={selectorId("settings-indexer-proxy-row", proxy.name)}>
+                  <TableCell className="font-medium">{proxy.name}</TableCell>
+                  <TableCell>{formatIndexerProxyProvider(proxy.providerType)}</TableCell>
+                  <TableCell className="max-w-[280px] truncate">{proxy.baseUrl}</TableCell>
+                  <TableCell className="text-center">
+                    <RenderBooleanIcon
+                      value={proxy.isEnabled}
+                      label={`${t("label.enabled")}: ${proxy.name}`}
+                    />
+                  </TableCell>
+                  <TableCell>{formatIndexerProxyHealth(proxy.lastHealthStatus)}</TableCell>
+                  <TableCell>
+                    {proxy.lastErrorAt ? (
+                      <span title={proxy.lastErrorAt}>
+                        {formatRelativeTime(proxy.lastErrorAt)}
+                      </span>
+                    ) : (
+                      <span className="text-muted-foreground">—</span>
+                    )}
+                  </TableCell>
+                  <TableCell className="text-right">
+                    <div className="flex justify-end gap-2">
+                      <IndexerActionButton
+                        id={selectorId("settings-indexer-proxy-test", proxy.name)}
+                        tone="search"
+                        onClick={() => void testIndexerProxy(proxy)}
+                        disabled={testingProxyId === proxy.id || mutatingProxyId === proxy.id}
+                        label="Test"
+                      >
+                        <RefreshCw
+                          className={cn(
+                            "h-4 w-4",
+                            testingProxyId === proxy.id && "animate-spin",
+                          )}
+                        />
+                      </IndexerActionButton>
+                      <IndexerActionButton
+                        id={selectorId("settings-indexer-proxy-edit", proxy.name)}
+                        tone="edit"
+                        onClick={() => editIndexerProxy(proxy)}
+                        disabled={mutatingProxyId !== null}
+                        label={t("label.edit")}
+                      >
+                        <Edit className="h-4 w-4" />
+                      </IndexerActionButton>
+                      <IndexerActionButton
+                        id={selectorId("settings-indexer-proxy-delete", proxy.name)}
+                        tone="delete"
+                        onClick={() => void deleteIndexerProxy(proxy)}
+                        disabled={mutatingProxyId === proxy.id}
+                        label={t("label.delete")}
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </IndexerActionButton>
+                    </div>
+                  </TableCell>
+                </TableRow>
+              ))}
+              {indexerProxyConfigs.length === 0 ? (
+                <TableRow id="settings-indexer-proxies-empty-row">
+                  <TableCell colSpan={7} className="text-muted-foreground">
+                    No indexer proxies configured.
+                  </TableCell>
+                </TableRow>
+              ) : null}
+            </TableBody>
+          </Table>
+        </div>
+        <form
+          id="settings-indexer-proxy-form"
+          className="grid gap-3 border-t border-border p-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)_10rem_auto_auto]"
+          onSubmit={submitIndexerProxy}
+        >
+          <label>
+            <Label className="mb-2 block" htmlFor="settings-indexer-proxy-name">
+              {t("label.name")}
+            </Label>
+            <Input
+              id="settings-indexer-proxy-name"
+              value={indexerProxyDraft.name}
+              onChange={(event) =>
+                setIndexerProxyDraft((prev) => ({
+                  ...prev,
+                  name: event.target.value,
+                }))
+              }
+              required
+            />
+          </label>
+          <label>
+            <Label className="mb-2 block" htmlFor="settings-indexer-proxy-base-url">
+              {t("settings.baseUrl")}
+            </Label>
+            <Input
+              id="settings-indexer-proxy-base-url"
+              value={indexerProxyDraft.baseUrl}
+              onChange={(event) =>
+                setIndexerProxyDraft((prev) => ({
+                  ...prev,
+                  baseUrl: event.target.value,
+                }))
+              }
+              required
+            />
+          </label>
+          <label>
+            <Label className="mb-2 block" htmlFor="settings-indexer-proxy-timeout">
+              Timeout
+            </Label>
+            <Input
+              id="settings-indexer-proxy-timeout"
+              min={1}
+              max={180}
+              {...signedIntegerInputProps}
+              value={indexerProxyDraft.requestTimeoutSeconds}
+              onChange={(event) =>
+                setIndexerProxyDraft((prev) => ({
+                  ...prev,
+                  requestTimeoutSeconds:
+                    Number.parseInt(event.target.value, 10) || 1,
+                }))
+              }
+            />
+          </label>
+          <label className="flex items-center gap-2 self-end pb-2">
+            <Checkbox
+              id="settings-indexer-proxy-enabled"
+              checked={indexerProxyDraft.isEnabled}
+              onCheckedChange={(value) =>
+                setIndexerProxyDraft((prev) => ({
+                  ...prev,
+                  isEnabled: value === true,
+                }))
+              }
+            />
+            <span>{t("label.enabled")}</span>
+          </label>
+          <div className="flex items-end gap-2">
+            <Button
+              id="settings-indexer-proxy-save"
+              type="submit"
+              disabled={mutatingProxyId !== null}
+            >
+              {mutatingProxyId
+                ? t("label.saving")
+                : editingProxyId
+                  ? "Update proxy"
+                  : "Create proxy"}
+            </Button>
+            {editingProxyId ? (
+              <Button
+                id="settings-indexer-proxy-cancel"
+                type="button"
+                variant="outline"
+                onClick={resetIndexerProxyDraft}
+                disabled={mutatingProxyId !== null}
+              >
+                {t("label.cancel")}
+              </Button>
+            ) : null}
+          </div>
+        </form>
+      </div>
+
       <div id="settings-indexers-table-card" className="rounded border border-border">
         <div className="flex items-center justify-between border-b border-border px-3 py-2">
           <CardTitle className="text-base">
@@ -458,6 +697,7 @@ export function SettingsIndexersSection({
                 <TableHead>{t("label.name")}</TableHead>
                 <TableHead>{t("settings.indexerProvider")}</TableHead>
                 <TableHead>{t("settings.baseUrl")}</TableHead>
+                <TableHead>Proxy</TableHead>
                 <TableHead className="text-center">
                   {t("label.enabled")}
                 </TableHead>
@@ -479,6 +719,9 @@ export function SettingsIndexersSection({
                   ? indexersById.get(indexer.managedParentConfigId)?.name
                   : null;
                 const managedChildCount = managedChildCounts.get(indexer.id) ?? 0;
+                const assignedProxy = indexer.indexerProxyConfigId
+                  ? proxiesById.get(indexer.indexerProxyConfigId) ?? null
+                  : null;
                 return (
                 <TableRow
                   key={indexer.id}
@@ -516,6 +759,25 @@ export function SettingsIndexersSection({
                   </TableCell>
                   <TableCell className="max-w-[260px] truncate">
                     {indexer.baseUrl}
+                  </TableCell>
+                  <TableCell>
+                    {assignedProxy ? (
+                      <span
+                        className={cn(
+                          "font-medium",
+                          !assignedProxy.isEnabled &&
+                            "text-[var(--scry-warning-text)]",
+                        )}
+                      >
+                        {assignedProxy.name}
+                      </span>
+                    ) : indexer.indexerProxyConfigId ? (
+                      <span className="text-[var(--scry-warning-text)]">
+                        Missing proxy
+                      </span>
+                    ) : (
+                      <span className="text-muted-foreground">None</span>
+                    )}
                   </TableCell>
                   <TableCell className="text-center">
                     <RenderBooleanIcon
@@ -632,7 +894,7 @@ export function SettingsIndexersSection({
               })}
               {settingsIndexers.length === 0 ? (
                 <TableRow id="settings-indexers-empty-row">
-                  <TableCell colSpan={8} className="text-muted-foreground">
+                  <TableCell colSpan={9} className="text-muted-foreground">
                     {t("settings.noIndexersFound")}
                   </TableCell>
                 </TableRow>
@@ -708,6 +970,48 @@ export function SettingsIndexersSection({
                   placeholder={t("form.indexerNamePlaceholder")}
                 />
               </label>
+            </div>
+
+            <div className="space-y-2">
+              <Label className="block" htmlFor="settings-indexer-proxy-select">
+                Indexer proxy
+              </Label>
+              <Select
+                value={selectedIndexerProxyId ?? "none"}
+                onValueChange={(value) =>
+                  setIndexerDraft((prev: IndexerDraft) => ({
+                    ...prev,
+                    indexerProxyConfigId: value === "none" ? null : value,
+                  }))
+                }
+              >
+                <SelectTrigger id="settings-indexer-proxy-select" className="w-full">
+                  <SelectValue placeholder="None" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">None</SelectItem>
+                  {selectedIndexerProxyMissing ? (
+                    <SelectItem value={selectedIndexerProxyId ?? "missing"} disabled>
+                      Missing proxy
+                    </SelectItem>
+                  ) : null}
+                  {selectableIndexerProxies.map((proxy) => (
+                    <SelectItem key={proxy.id} value={proxy.id}>
+                      {proxy.name}
+                      {proxy.isEnabled ? "" : " (disabled)"}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {selectedIndexerProxyMissing ? (
+                <p className="text-xs text-[var(--scry-warning-text)]">
+                  Assigned proxy was not found.
+                </p>
+              ) : selectedIndexerProxy && !selectedIndexerProxy.isEnabled ? (
+                <p className="text-xs text-[var(--scry-warning-text)]">
+                  Assigned proxy is disabled.
+                </p>
+              ) : null}
             </div>
 
             {selectedProviderFields.length > 0 ? (

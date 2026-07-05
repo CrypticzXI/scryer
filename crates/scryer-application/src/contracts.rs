@@ -470,6 +470,7 @@ pub struct SubtitleGenerationInput {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct QueuedReleaseSelection {
+    pub indexer_id: Option<String>,
     pub source_hint: Option<String>,
     pub source_kind: Option<DownloadSourceKind>,
     pub source_title: Option<String>,

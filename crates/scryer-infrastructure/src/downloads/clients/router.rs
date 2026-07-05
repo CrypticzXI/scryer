@@ -8,12 +8,14 @@ use scryer_application::{
     AppError, AppResult, DOWNLOAD_FEEDBACK_TIMEOUT_MESSAGE, DownloadClient,
     DownloadClientAddRequest, DownloadClientConfigRepository, DownloadClientPluginProvider,
     DownloadClientRemotePathMapping, DownloadClientStatus, DownloadGrabResult, DownloadSourceKind,
-    SettingsRepository, StagedNzbRef, StagedNzbStore, accepted_inputs_for_client,
-    apply_remote_path_mappings_to_completed_download, apply_remote_path_mappings_to_status,
-    parse_download_client_remote_path_mappings,
+    IndexerConfigRepository, IndexerProxyConfigRepository, RateLimitCooldownAction,
+    ResolvedDownloadArtifact, SettingsRepository, StagedNzbRef, StagedNzbStore,
+    accepted_inputs_for_client, apply_remote_path_mappings_to_completed_download,
+    apply_remote_path_mappings_to_status, parse_download_client_remote_path_mappings,
 };
-use scryer_domain::{DownloadClientConfig, DownloadQueueItem, MediaFacet};
+use scryer_domain::{DownloadClientConfig, DownloadQueueItem, IndexerProxyConfig, MediaFacet};
 use scryer_outbound_http::{OutboundHttpClient, RateLimitRegistry, generic_reqwest_client};
+use serde::{Deserialize, Serialize};
 use tokio::sync::Semaphore;
 use tokio::time::timeout;
 use tracing::{debug, warn};
@@ -23,12 +25,255 @@ use super::sabnzbd::SabnzbdDownloadClient;
 use super::weaver::WeaverDownloadClient;
 use super::{
     parse_download_client_config_json, read_config_string, request_source_hint_for_nzb,
-    resolve_download_client_base_url, stage_nzb_from_url,
+    resolve_download_client_base_url, stage_nzb_from_bytes, stage_nzb_from_url,
 };
 
 const DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY: &str = "download_client.routing";
 const LEGACY_NZBGET_CLIENT_ROUTING_SETTINGS_KEY: &str = "nzbget.client_routing";
 const DOWNLOAD_CLIENT_FEEDBACK_TIMEOUT_SECS: u64 = 10;
+const PROXIED_TORRENT_FILE_MAX_BYTES: usize = 32 * 1024 * 1024;
+
+#[derive(Serialize)]
+struct ByparrDownloadRequest<'a> {
+    cmd: &'static str,
+    url: &'a str,
+    #[serde(rename = "maxTimeout")]
+    max_timeout: u32,
+}
+
+#[derive(Deserialize)]
+struct ByparrDownloadResponse {
+    solution: Option<ByparrDownloadSolution>,
+}
+
+#[derive(Deserialize)]
+struct ByparrDownloadSolution {
+    url: Option<String>,
+    status: Option<u16>,
+    cookies: Option<Vec<serde_json::Value>>,
+    #[serde(default, alias = "userAgent", alias = "user_agent")]
+    user_agent: Option<String>,
+    headers: Option<serde_json::Value>,
+    response: Option<String>,
+}
+
+fn header_string(headers: Option<&serde_json::Value>, name: &str) -> Option<String> {
+    headers
+        .and_then(|value| value.as_object())
+        .and_then(|object| {
+            object
+                .iter()
+                .find(|(key, _)| key.eq_ignore_ascii_case(name))
+                .and_then(|(_, value)| value.as_str())
+        })
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn content_disposition_filename(headers: Option<&serde_json::Value>) -> Option<String> {
+    let value = header_string(headers, "content-disposition")?;
+    value.split(';').find_map(|part| {
+        let part = part.trim();
+        let filename = part.strip_prefix("filename=")?;
+        let filename = filename.trim_matches('"').trim();
+        let safe = filename
+            .chars()
+            .filter(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_' | ' '))
+            .collect::<String>();
+        (!safe.trim().is_empty()).then_some(safe)
+    })
+}
+
+fn looks_like_torrent_metainfo(bytes: &[u8]) -> bool {
+    if bytes.is_empty() || bytes.len() > PROXIED_TORRENT_FILE_MAX_BYTES {
+        return false;
+    }
+    matches!(
+        parse_bencode_dict(bytes, 0, 0),
+        Ok((consumed, true)) if consumed == bytes.len()
+    )
+}
+
+fn parse_bencode_value(bytes: &[u8], offset: usize, depth: usize) -> Result<usize, ()> {
+    if depth > 64 || offset >= bytes.len() {
+        return Err(());
+    }
+    match bytes[offset] {
+        b'i' => {
+            let end = bytes[offset + 1..]
+                .iter()
+                .position(|byte| *byte == b'e')
+                .map(|position| offset + 1 + position)
+                .ok_or(())?;
+            if end == offset + 1 {
+                return Err(());
+            }
+            Ok(end + 1)
+        }
+        b'l' => {
+            let mut cursor = offset + 1;
+            while cursor < bytes.len() && bytes[cursor] != b'e' {
+                cursor = parse_bencode_value(bytes, cursor, depth + 1)?;
+            }
+            if cursor >= bytes.len() {
+                return Err(());
+            }
+            Ok(cursor + 1)
+        }
+        b'd' => parse_bencode_dict(bytes, offset, depth + 1).map(|(cursor, _)| cursor),
+        b'0'..=b'9' => parse_bencode_string(bytes, offset).map(|(cursor, _, _)| cursor),
+        _ => Err(()),
+    }
+}
+
+fn parse_bencode_dict(bytes: &[u8], offset: usize, depth: usize) -> Result<(usize, bool), ()> {
+    if depth > 64 || bytes.get(offset) != Some(&b'd') {
+        return Err(());
+    }
+    let mut cursor = offset + 1;
+    let mut has_info_dict = false;
+    while cursor < bytes.len() && bytes[cursor] != b'e' {
+        let (after_key, key_start, key_end) = parse_bencode_string(bytes, cursor)?;
+        let is_top_level_info = depth == 0 && &bytes[key_start..key_end] == b"info";
+        if is_top_level_info && bytes.get(after_key) != Some(&b'd') {
+            return Err(());
+        }
+        cursor = parse_bencode_value(bytes, after_key, depth + 1)?;
+        has_info_dict |= is_top_level_info;
+    }
+    if cursor >= bytes.len() {
+        return Err(());
+    }
+    Ok((cursor + 1, has_info_dict))
+}
+
+fn parse_bencode_string(bytes: &[u8], offset: usize) -> Result<(usize, usize, usize), ()> {
+    let colon = bytes[offset..]
+        .iter()
+        .position(|byte| *byte == b':')
+        .map(|position| offset + position)
+        .ok_or(())?;
+    if colon == offset {
+        return Err(());
+    }
+    let length = std::str::from_utf8(&bytes[offset..colon])
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .ok_or(())?;
+    let start = colon + 1;
+    let end = start.checked_add(length).ok_or(())?;
+    if end > bytes.len() {
+        return Err(());
+    }
+    Ok((end, start, end))
+}
+
+fn looks_like_nzb(bytes: &[u8]) -> bool {
+    let preview = &bytes[..bytes.len().min(4096)];
+    let Ok(text) = std::str::from_utf8(preview) else {
+        return false;
+    };
+    let text = text.trim_start().to_ascii_lowercase();
+    text.starts_with("<?xml") && text.contains("<nzb")
+        || text.starts_with("<nzb")
+        || text.contains("<!doctype nzb")
+}
+
+fn looks_like_rejected_download_document(bytes: &[u8]) -> bool {
+    let preview = &bytes[..bytes.len().min(256 * 1024)];
+    let Ok(text) = std::str::from_utf8(preview) else {
+        return false;
+    };
+    let lower = text.trim_start().to_ascii_lowercase();
+    lower.starts_with("<!doctype html")
+        || lower.starts_with("<html")
+        || lower.contains("cf-chl")
+        || lower.contains("checking your browser")
+        || lower.contains("just a moment")
+        || lower.contains("captcha")
+        || lower.contains("<form") && lower.contains("login")
+        || lower.starts_with("<error")
+        || lower.contains("<error ")
+}
+
+fn magnet_info_hash_hint(uri: &str) -> Option<String> {
+    uri.split(['?', '&'])
+        .find_map(|part| part.strip_prefix("xt=urn:btih:"))
+        .map(str::to_string)
+        .and_then(|value| scryer_application::normalize_torrent_info_hash(Some(&value)))
+}
+
+fn retry_after_from_solution_headers(headers: Option<&serde_json::Value>) -> Option<Duration> {
+    header_string(headers, "retry-after")
+        .and_then(|value| scryer_outbound_http::parse_retry_after(&value).map(|(delay, _)| delay))
+}
+
+fn target_rate_limit_error(headers: Option<&serde_json::Value>) -> AppError {
+    AppError::TemporaryUnavailable {
+        message: "HTTP 429: too many requests".into(),
+        retry_after: retry_after_from_solution_headers(headers),
+        rate_limit_cooldown: RateLimitCooldownAction::RecordFallback,
+    }
+}
+
+fn solved_download_body_looks_rate_limited(body: &[u8]) -> bool {
+    let preview = &body[..body.len().min(256 * 1024)];
+    let preview = String::from_utf8_lossy(preview).to_ascii_lowercase();
+    preview.contains("429") && preview.contains("too many requests")
+}
+
+fn retry_headers_from_download_solution(
+    solution: &ByparrDownloadSolution,
+) -> Vec<(String, String)> {
+    let mut headers = Vec::new();
+    if let Some(user_agent) = solution.user_agent.as_deref()
+        && !user_agent.trim().is_empty()
+    {
+        headers.push(("user-agent".to_string(), user_agent.to_string()));
+    }
+    if let Some(cookie_header) = cookie_header_from_download_solution(solution.cookies.as_deref()) {
+        headers.push(("cookie".to_string(), cookie_header));
+    }
+    headers
+}
+
+fn cookie_header_from_download_solution(cookies: Option<&[serde_json::Value]>) -> Option<String> {
+    let mut pairs = Vec::new();
+    for cookie in cookies.unwrap_or_default() {
+        if let Some(text) = cookie.as_str() {
+            if safe_download_cookie_pair(text) {
+                pairs.push(text.to_string());
+            }
+            continue;
+        }
+        let Some(object) = cookie.as_object() else {
+            continue;
+        };
+        let name = object
+            .get("name")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default()
+            .trim();
+        let value = object
+            .get("value")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default()
+            .trim();
+        let pair = format!("{name}={value}");
+        if safe_download_cookie_pair(&pair) {
+            pairs.push(pair);
+        }
+    }
+    (!pairs.is_empty()).then(|| pairs.join("; "))
+}
+
+fn safe_download_cookie_pair(pair: &str) -> bool {
+    let Some((name, value)) = pair.split_once('=') else {
+        return false;
+    };
+    !name.trim().is_empty() && !name.contains([';', '\r', '\n']) && !value.contains(['\r', '\n'])
+}
 const DOWNLOAD_CLIENT_FEEDBACK_BACKOFF_INITIAL_SECS: u64 = 15;
 const DOWNLOAD_CLIENT_FEEDBACK_BACKOFF_MAX_SECS: u64 = 120;
 
@@ -68,6 +313,8 @@ fn download_client_remote_path_mappings(
 #[derive(Clone)]
 pub struct PrioritizedDownloadClientRouter {
     download_client_configs: Arc<dyn DownloadClientConfigRepository>,
+    indexer_configs: Option<Arc<dyn IndexerConfigRepository>>,
+    indexer_proxy_configs: Option<Arc<dyn IndexerProxyConfigRepository>>,
     settings: Arc<dyn SettingsRepository>,
     fallback_client: Arc<dyn DownloadClient>,
     staged_nzb_store: Arc<dyn StagedNzbStore>,
@@ -325,6 +572,13 @@ impl FeedbackReadSummary {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DownloadArtifactKind {
+    NzbBytes,
+    MagnetUri,
+    TorrentBytes,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum DownloadClientRoutingScope {
     Library,
     Facet,
@@ -382,6 +636,8 @@ impl PrioritizedDownloadClientRouter {
         let http_client = generic_reqwest_client();
         Self {
             download_client_configs,
+            indexer_configs: None,
+            indexer_proxy_configs: None,
             settings,
             fallback_client: Self::wrap_feedback_client(fallback_client, feedback_read_timeout),
             staged_nzb_store,
@@ -391,6 +647,16 @@ impl PrioritizedDownloadClientRouter {
             feedback_read_timeout,
             feedback_read_backoff: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    pub fn with_indexer_config_repositories(
+        mut self,
+        indexer_configs: Arc<dyn IndexerConfigRepository>,
+        indexer_proxy_configs: Arc<dyn IndexerProxyConfigRepository>,
+    ) -> Self {
+        self.indexer_configs = Some(indexer_configs);
+        self.indexer_proxy_configs = Some(indexer_proxy_configs);
+        self
     }
 
     fn wrap_feedback_client(
@@ -550,6 +816,410 @@ impl PrioritizedDownloadClientRouter {
                 _ => accepted_kind == source_kind,
             }
         })
+    }
+
+    fn request_artifact_kind(request: &DownloadClientAddRequest) -> Option<DownloadArtifactKind> {
+        match request.resolved_download_artifact.as_ref()? {
+            ResolvedDownloadArtifact::Nzb { .. } => Some(DownloadArtifactKind::NzbBytes),
+            ResolvedDownloadArtifact::Magnet { .. } => Some(DownloadArtifactKind::MagnetUri),
+            ResolvedDownloadArtifact::TorrentFile { .. } => {
+                Some(DownloadArtifactKind::TorrentBytes)
+            }
+        }
+    }
+
+    fn artifact_kind_label(kind: DownloadArtifactKind) -> &'static str {
+        match kind {
+            DownloadArtifactKind::NzbBytes => "NZB payload",
+            DownloadArtifactKind::MagnetUri => "magnet URI",
+            DownloadArtifactKind::TorrentBytes => "torrent file",
+        }
+    }
+
+    fn config_accepts_artifact_kind(
+        config: &DownloadClientConfig,
+        artifact_kind: DownloadArtifactKind,
+        plugin_provider: Option<&Arc<dyn DownloadClientPluginProvider>>,
+    ) -> bool {
+        if Self::is_native_nzb_client_type(&config.client_type) {
+            return artifact_kind == DownloadArtifactKind::NzbBytes;
+        }
+        let Some(provider) = plugin_provider else {
+            return false;
+        };
+        let accepted_inputs = provider.accepted_inputs_for_provider(&config.client_type);
+        accepted_inputs.iter().any(|input| {
+            let input = input.trim().to_ascii_lowercase();
+            match artifact_kind {
+                DownloadArtifactKind::NzbBytes => matches!(input.as_str(), "nzb" | "nzb_file"),
+                DownloadArtifactKind::MagnetUri => {
+                    matches!(input.as_str(), "magnet" | "magnet_uri")
+                }
+                DownloadArtifactKind::TorrentBytes => {
+                    matches!(input.as_str(), "torrent_bytes" | "torrent_file")
+                }
+            }
+        })
+    }
+
+    fn download_url_matches_indexer_origin(
+        indexer: &scryer_domain::IndexerConfig,
+        raw: &str,
+    ) -> bool {
+        let Ok(download_url) = url::Url::parse(raw) else {
+            return false;
+        };
+        if !matches!(download_url.scheme(), "http" | "https") {
+            return false;
+        }
+        let Ok(base_url) = url::Url::parse(&indexer.base_url) else {
+            return false;
+        };
+        download_url.host_str().is_some_and(|host| {
+            base_url
+                .host_str()
+                .is_some_and(|base_host| host.eq_ignore_ascii_case(base_host))
+        })
+    }
+
+    async fn prepare_proxied_download_request(
+        &self,
+        request: &DownloadClientAddRequest,
+    ) -> AppResult<DownloadClientAddRequest> {
+        let Some(indexer_id) = request.indexer_id.as_deref() else {
+            return Ok(request.clone());
+        };
+        let (Some(indexer_configs), Some(indexer_proxy_configs)) =
+            (&self.indexer_configs, &self.indexer_proxy_configs)
+        else {
+            return Ok(request.clone());
+        };
+        let indexer = indexer_configs
+            .get_by_id(indexer_id)
+            .await?
+            .ok_or_else(|| AppError::Validation("Indexer configuration was not found.".into()))?;
+        let Some(proxy_config_id) = indexer.indexer_proxy_config_id.as_deref() else {
+            return Ok(request.clone());
+        };
+        let proxy_config = indexer_proxy_configs
+            .get_by_id(proxy_config_id)
+            .await?
+            .ok_or_else(|| {
+                AppError::Validation("Indexer proxy configuration was not found.".into())
+            })?;
+        if !proxy_config.is_enabled {
+            return Err(AppError::Validation(
+                "Indexer proxy is disabled for this indexer.".into(),
+            ));
+        }
+        let download_url = request
+            .source_hint
+            .as_deref()
+            .ok_or_else(|| AppError::Validation("Proxied download is missing a URL.".into()))?;
+        if download_url.trim_start().starts_with("magnet:?") {
+            let uri = download_url.trim().to_string();
+            let mut prepared = request.clone();
+            prepared.resolved_download_artifact = Some(ResolvedDownloadArtifact::Magnet {
+                info_hash_hint: request
+                    .info_hash_hint
+                    .clone()
+                    .or_else(|| magnet_info_hash_hint(&uri)),
+                uri: uri.clone(),
+            });
+            prepared.source_kind = Some(DownloadSourceKind::MagnetUri);
+            prepared.source_hint = Some(uri);
+            return Ok(prepared);
+        }
+        if !Self::download_url_matches_indexer_origin(&indexer, download_url) {
+            return Err(AppError::Validation(
+                "Proxied download URL does not match the assigned indexer origin.".into(),
+            ));
+        }
+        let artifact = self
+            .resolve_download_artifact_via_byparr(
+                &proxy_config,
+                download_url,
+                request.info_hash_hint.clone(),
+            )
+            .await?;
+
+        let mut prepared = request.clone();
+        prepared.resolved_download_artifact = Some(artifact.clone());
+        match artifact {
+            ResolvedDownloadArtifact::Nzb { .. } => {
+                prepared.source_kind = Some(DownloadSourceKind::NzbFile);
+                prepared.source_hint = None;
+            }
+            ResolvedDownloadArtifact::Magnet {
+                uri,
+                info_hash_hint,
+            } => {
+                prepared.source_kind = Some(DownloadSourceKind::MagnetUri);
+                prepared.source_hint = Some(uri);
+                prepared.info_hash_hint = info_hash_hint.or(prepared.info_hash_hint);
+            }
+            ResolvedDownloadArtifact::TorrentFile { info_hash_hint, .. } => {
+                prepared.source_kind = Some(DownloadSourceKind::TorrentFile);
+                prepared.source_hint = None;
+                prepared.info_hash_hint = info_hash_hint.or(prepared.info_hash_hint);
+            }
+        }
+        Ok(prepared)
+    }
+
+    async fn resolve_download_artifact_via_byparr(
+        &self,
+        proxy_config: &IndexerProxyConfig,
+        download_url: &str,
+        info_hash_hint: Option<String>,
+    ) -> AppResult<ResolvedDownloadArtifact> {
+        if proxy_config.provider_type != scryer_domain::IndexerProxyProviderType::Byparr {
+            return Err(AppError::Validation(
+                "Unsupported indexer proxy provider for download resolution.".into(),
+            ));
+        }
+        let endpoint = format!("{}/v1", proxy_config.base_url.trim_end_matches('/'));
+        let response = generic_reqwest_client()
+            .post(endpoint)
+            .timeout(Duration::from_secs(
+                proxy_config.request_timeout_seconds as u64 + 5,
+            ))
+            .json(&ByparrDownloadRequest {
+                cmd: "request.get",
+                url: download_url,
+                max_timeout: proxy_config.request_timeout_seconds,
+            })
+            .send()
+            .await
+            .map_err(|error| {
+                if error.is_timeout() {
+                    AppError::DownloadSubmitUnavailable(
+                        "Byparr timed out while resolving the indexer request.".into(),
+                    )
+                } else {
+                    AppError::DownloadSubmitUnavailable(
+                        "Byparr service could not be reached.".into(),
+                    )
+                }
+            })?;
+        let byparr_status = response.status();
+        if byparr_status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            return Err(AppError::DownloadSubmitUnavailable(
+                "Byparr service is temporarily unavailable.".into(),
+            ));
+        }
+        let body = response.bytes().await.map_err(|_| {
+            AppError::DownloadSubmitUnavailable("Byparr returned an unreadable response.".into())
+        })?;
+        let parsed: ByparrDownloadResponse = serde_json::from_slice(&body).map_err(|_| {
+            AppError::DownloadSubmitUnavailable("Byparr returned malformed solver output.".into())
+        })?;
+        let solution = parsed.solution.ok_or_else(|| {
+            AppError::DownloadSubmitUnavailable("Byparr did not return a solved response.".into())
+        })?;
+        let solution_status = solution.status.unwrap_or_else(|| byparr_status.as_u16());
+        if solution_status == reqwest::StatusCode::TOO_MANY_REQUESTS.as_u16() {
+            return Err(target_rate_limit_error(solution.headers.as_ref()));
+        }
+        if !(200..300).contains(&solution_status) {
+            return Err(AppError::DownloadSubmitUnavailable(format!(
+                "Byparr target request returned HTTP {solution_status}."
+            )));
+        }
+        let mut bytes = solution.response.clone().unwrap_or_default().into_bytes();
+        if solved_download_body_looks_rate_limited(&bytes) {
+            return Err(target_rate_limit_error(solution.headers.as_ref()));
+        }
+        if Self::should_refetch_binary_download_artifact(
+            download_url,
+            solution.url.as_deref(),
+            solution.headers.as_ref(),
+        ) {
+            let retry_headers = retry_headers_from_download_solution(&solution);
+            if !retry_headers.is_empty() {
+                bytes = self
+                    .fetch_download_artifact_with_solution_headers(
+                        download_url,
+                        &retry_headers,
+                        proxy_config.request_timeout_seconds,
+                    )
+                    .await?;
+            }
+        }
+        Self::classify_resolved_download_artifact(
+            solution.url.as_deref(),
+            solution.headers.as_ref(),
+            bytes,
+            info_hash_hint,
+        )
+    }
+
+    fn should_refetch_binary_download_artifact(
+        original_url: &str,
+        final_url: Option<&str>,
+        headers: Option<&serde_json::Value>,
+    ) -> bool {
+        let content_type = header_string(headers, "content-type")
+            .map(|value| value.to_ascii_lowercase())
+            .unwrap_or_default();
+        if content_type.contains("application/x-bittorrent")
+            || content_type.contains("application/octet-stream")
+        {
+            return true;
+        }
+        [Some(original_url), final_url]
+            .into_iter()
+            .flatten()
+            .any(|raw| {
+                url::Url::parse(raw)
+                    .ok()
+                    .is_some_and(|url| url.path().to_ascii_lowercase().ends_with(".torrent"))
+            })
+    }
+
+    async fn fetch_download_artifact_with_solution_headers(
+        &self,
+        download_url: &str,
+        retry_headers: &[(String, String)],
+        request_timeout_seconds: u32,
+    ) -> AppResult<Vec<u8>> {
+        let mut builder = generic_reqwest_client()
+            .get(download_url)
+            .timeout(Duration::from_secs(u64::from(
+                request_timeout_seconds.saturating_add(5),
+            )));
+        for (name, value) in retry_headers {
+            builder = builder.header(name, value);
+        }
+        let response = builder.send().await.map_err(|error| {
+            if error.is_timeout() {
+                AppError::DownloadSubmitUnavailable(
+                    "Byparr timed out while resolving the indexer request.".into(),
+                )
+            } else {
+                AppError::DownloadSubmitUnavailable(
+                    "Byparr resolved the challenge, but Scryer could not fetch the download artifact."
+                        .into(),
+                )
+            }
+        })?;
+        if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            let retry_after = response
+                .headers()
+                .get(reqwest::header::RETRY_AFTER)
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| {
+                    scryer_outbound_http::parse_retry_after(value).map(|(delay, _)| delay)
+                });
+            return Err(AppError::TemporaryUnavailable {
+                message: "HTTP 429: too many requests".into(),
+                retry_after,
+                rate_limit_cooldown: RateLimitCooldownAction::RecordFallback,
+            });
+        }
+        if !response.status().is_success() {
+            return Err(AppError::DownloadSubmitUnavailable(format!(
+                "Byparr resolved the challenge, but the artifact fetch returned HTTP {}.",
+                response.status().as_u16()
+            )));
+        }
+        let bytes = response.bytes().await.map_err(|_| {
+            AppError::DownloadSubmitUnavailable(
+                "Byparr resolved the challenge, but Scryer could not read the download artifact."
+                    .into(),
+            )
+        })?;
+        Ok(bytes.to_vec())
+    }
+
+    fn classify_resolved_download_artifact(
+        final_url: Option<&str>,
+        headers: Option<&serde_json::Value>,
+        bytes: Vec<u8>,
+        info_hash_hint: Option<String>,
+    ) -> AppResult<ResolvedDownloadArtifact> {
+        if final_url.is_some_and(|url| url.starts_with("magnet:")) {
+            let uri = final_url.unwrap().trim().to_string();
+            return Ok(ResolvedDownloadArtifact::Magnet {
+                info_hash_hint: info_hash_hint.or_else(|| magnet_info_hash_hint(&uri)),
+                uri,
+            });
+        }
+        if let Ok(text) = std::str::from_utf8(&bytes) {
+            let trimmed = text.trim();
+            if trimmed.starts_with("magnet:?") {
+                let uri = trimmed.to_string();
+                return Ok(ResolvedDownloadArtifact::Magnet {
+                    info_hash_hint: info_hash_hint.or_else(|| magnet_info_hash_hint(&uri)),
+                    uri,
+                });
+            }
+        }
+
+        let content_type = header_string(headers, "content-type");
+        let file_name = content_disposition_filename(headers);
+        let final_path = final_url
+            .and_then(|value| url::Url::parse(value).ok())
+            .map(|url| url.path().to_ascii_lowercase());
+        let file_name_lower = file_name.as_ref().map(|value| value.to_ascii_lowercase());
+        if looks_like_rejected_download_document(&bytes) {
+            return Err(AppError::Validation(
+                "Indexer proxy did not resolve download artifact.".into(),
+            ));
+        }
+
+        if content_type.as_deref().is_some_and(|value| {
+            let value = value.to_ascii_lowercase();
+            value.contains("application/x-bittorrent")
+                || value.contains("application/octet-stream") && looks_like_torrent_metainfo(&bytes)
+        }) || final_path
+            .as_deref()
+            .is_some_and(|path| path.ends_with(".torrent"))
+            || file_name_lower
+                .as_deref()
+                .is_some_and(|name| name.ends_with(".torrent"))
+        {
+            if !looks_like_torrent_metainfo(&bytes) {
+                return Err(AppError::Validation(
+                    "Byparr resolved invalid torrent file bytes.".into(),
+                ));
+            }
+            if bytes.len() > PROXIED_TORRENT_FILE_MAX_BYTES {
+                return Err(AppError::Validation(
+                    "Byparr resolved torrent file is too large.".into(),
+                ));
+            }
+            return Ok(ResolvedDownloadArtifact::TorrentFile {
+                bytes,
+                file_name,
+                content_type,
+                info_hash_hint,
+            });
+        }
+
+        if content_type.as_deref().is_some_and(|value| {
+            matches!(
+                value.to_ascii_lowercase().split(';').next().unwrap_or(""),
+                "application/x-nzb"
+            )
+        }) || looks_like_nzb(&bytes)
+        {
+            if !looks_like_nzb(&bytes) {
+                return Err(AppError::Validation(
+                    "Byparr resolved invalid NZB bytes.".into(),
+                ));
+            }
+            return Ok(ResolvedDownloadArtifact::Nzb {
+                bytes,
+                file_name,
+                content_type,
+            });
+        }
+
+        Err(AppError::Validation(
+            "Byparr resolved the download URL, but the result was not an NZB, magnet URI, or torrent file."
+                .into(),
+        ))
     }
 
     fn read_trimmed_string(raw_value: Option<&serde_json::Value>) -> Option<String> {
@@ -1068,6 +1738,9 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
         &self,
         request: &DownloadClientAddRequest,
     ) -> AppResult<DownloadGrabResult> {
+        let request = self.prepare_proxied_download_request(request).await?;
+        let request = &request;
+        let resolved_artifact_kind = Self::request_artifact_kind(request);
         let selection = match self.list_clients_for_title(&request.title).await {
             Ok(configs) => configs,
             Err(error) => {
@@ -1077,6 +1750,9 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                     facet = ?request.title.facet,
                     "failed to load prioritized download clients; falling back to default client"
                 );
+                if resolved_artifact_kind.is_some() {
+                    return Err(error.into_download_submit_unavailable());
+                }
                 return self.fallback_client.submit_download(request).await;
             }
         };
@@ -1097,10 +1773,40 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
         let mut clients = selection.clients;
 
         if clients.is_empty() {
+            if resolved_artifact_kind.is_some() {
+                return Err(AppError::Validation(
+                    "no enabled download client can accept the resolved download artifact".into(),
+                ));
+            }
             return self.fallback_client.submit_download(request).await;
         }
 
-        if let Some(source_kind) = Self::request_source_kind(request) {
+        if let Some(artifact_kind) = resolved_artifact_kind {
+            clients.retain(|config| {
+                let compatible = Self::config_accepts_artifact_kind(
+                    config,
+                    artifact_kind,
+                    self.plugin_provider.as_ref(),
+                );
+                if !compatible {
+                    warn!(
+                        client_id = config.id.as_str(),
+                        client_name = config.name.as_str(),
+                        client_type = config.client_type.as_str(),
+                        artifact_kind = Self::artifact_kind_label(artifact_kind),
+                        "download client skipped because it cannot accept the resolved artifact"
+                    );
+                }
+                compatible
+            });
+
+            if clients.is_empty() {
+                return Err(AppError::Validation(format!(
+                    "no enabled download client can accept the resolved {}",
+                    Self::artifact_kind_label(artifact_kind)
+                )));
+            }
+        } else if let Some(source_kind) = Self::request_source_kind(request) {
             clients.retain(|config| {
                 let compatible = Self::config_accepts_source_kind(
                     config,
@@ -1171,17 +1877,37 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                         && Self::request_uses_nzb_payload(&effective_request)
                     {
                         if staged_nzb.is_none() {
-                            let source_hint = request_source_hint_for_nzb(&effective_request)?;
-                            staged_nzb = Some(
-                                stage_nzb_from_url(
-                                    &self.outbound_http,
-                                    &self.staged_nzb_store,
-                                    &self.staged_nzb_pipeline_limit,
-                                    &source_hint,
-                                    Some(&request.title.id),
-                                )
-                                .await?,
-                            );
+                            if let Some(ResolvedDownloadArtifact::Nzb { bytes, .. }) =
+                                effective_request.resolved_download_artifact.clone()
+                            {
+                                let source_label = effective_request
+                                    .download_id
+                                    .as_deref()
+                                    .or(effective_request.source_title.as_deref())
+                                    .unwrap_or("proxied-nzb");
+                                staged_nzb = Some(
+                                    stage_nzb_from_bytes(
+                                        &self.staged_nzb_store,
+                                        &self.staged_nzb_pipeline_limit,
+                                        source_label,
+                                        Some(&request.title.id),
+                                        bytes,
+                                    )
+                                    .await?,
+                                );
+                            } else {
+                                let source_hint = request_source_hint_for_nzb(&effective_request)?;
+                                staged_nzb = Some(
+                                    stage_nzb_from_url(
+                                        &self.outbound_http,
+                                        &self.staged_nzb_store,
+                                        &self.staged_nzb_pipeline_limit,
+                                        &source_hint,
+                                        Some(&request.title.id),
+                                    )
+                                    .await?,
+                                );
+                            }
                         }
                         effective_request.staged_nzb =
                             staged_nzb.as_ref().map(|lease| lease.staged_nzb.clone());
@@ -2020,6 +2746,33 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 
+    #[test]
+    fn torrent_metainfo_detection_requires_valid_bencoded_info_dict() {
+        assert!(looks_like_torrent_metainfo(b"d4:infod4:name4:testee"));
+        assert!(!looks_like_torrent_metainfo(b"not a torrent"));
+        assert!(!looks_like_torrent_metainfo(b"d4:name4:testee"));
+    }
+
+    #[test]
+    fn classifier_rejects_invalid_torrent_bytes_before_submission() {
+        let headers = serde_json::json!({
+            "content-type": "application/x-bittorrent",
+        });
+
+        let error = PrioritizedDownloadClientRouter::classify_resolved_download_artifact(
+            Some("https://indexer.example/download/thing.torrent"),
+            Some(&headers),
+            b"not a torrent".to_vec(),
+            None,
+        )
+        .expect_err("invalid torrent bytes must fail");
+
+        assert_eq!(
+            error.to_string(),
+            "validation: Byparr resolved invalid torrent file bytes.",
+        );
+    }
+
     struct MockDownloadClientConfigRepository {
         configs: Vec<DownloadClientConfig>,
     }
@@ -2532,6 +3285,7 @@ mod tests {
                 download_directory: None,
                 release_title: None,
                 indexer_name: None,
+                indexer_id: None,
                 info_hash_hint: None,
                 seed_goal_ratio: None,
                 seed_goal_seconds: None,
@@ -2588,6 +3342,7 @@ mod tests {
                 download_directory: None,
                 release_title: None,
                 indexer_name: None,
+                indexer_id: None,
                 info_hash_hint: None,
                 seed_goal_ratio: None,
                 seed_goal_seconds: None,
@@ -2646,6 +3401,7 @@ mod tests {
                 download_directory: None,
                 release_title: None,
                 indexer_name: None,
+                indexer_id: None,
                 info_hash_hint: None,
                 seed_goal_ratio: None,
                 seed_goal_seconds: None,
@@ -2689,6 +3445,7 @@ mod tests {
                 download_directory: None,
                 release_title: None,
                 indexer_name: None,
+                indexer_id: None,
                 info_hash_hint: None,
                 seed_goal_ratio: None,
                 seed_goal_seconds: None,
@@ -2757,6 +3514,7 @@ mod tests {
                 download_directory: None,
                 release_title: None,
                 indexer_name: None,
+                indexer_id: None,
                 info_hash_hint: None,
                 seed_goal_ratio: None,
                 seed_goal_seconds: None,
@@ -2832,6 +3590,7 @@ mod tests {
                 download_directory: None,
                 release_title: None,
                 indexer_name: None,
+                indexer_id: None,
                 info_hash_hint: None,
                 seed_goal_ratio: None,
                 seed_goal_seconds: None,
@@ -2857,6 +3616,7 @@ mod tests {
                 download_directory: None,
                 release_title: None,
                 indexer_name: None,
+                indexer_id: None,
                 info_hash_hint: None,
                 seed_goal_ratio: None,
                 seed_goal_seconds: None,
@@ -2917,6 +3677,7 @@ mod tests {
                 download_directory: None,
                 release_title: None,
                 indexer_name: None,
+                indexer_id: None,
                 info_hash_hint: None,
                 seed_goal_ratio: None,
                 seed_goal_seconds: None,
@@ -2977,6 +3738,7 @@ mod tests {
                 download_directory: None,
                 release_title: None,
                 indexer_name: None,
+                indexer_id: None,
                 info_hash_hint: None,
                 seed_goal_ratio: None,
                 seed_goal_seconds: None,
@@ -3038,6 +3800,7 @@ mod tests {
                 download_directory: None,
                 release_title: None,
                 indexer_name: None,
+                indexer_id: None,
                 info_hash_hint: None,
                 seed_goal_ratio: None,
                 seed_goal_seconds: None,
@@ -3096,6 +3859,7 @@ mod tests {
                 download_directory: None,
                 release_title: None,
                 indexer_name: None,
+                indexer_id: None,
                 info_hash_hint: None,
                 seed_goal_ratio: None,
                 seed_goal_seconds: None,
@@ -3176,6 +3940,7 @@ mod tests {
                 download_directory: None,
                 release_title: None,
                 indexer_name: None,
+                indexer_id: None,
                 info_hash_hint: None,
                 seed_goal_ratio: None,
                 seed_goal_seconds: None,
@@ -3250,6 +4015,7 @@ mod tests {
                 download_directory: None,
                 release_title: None,
                 indexer_name: None,
+                indexer_id: None,
                 info_hash_hint: None,
                 seed_goal_ratio: None,
                 seed_goal_seconds: None,
@@ -3312,6 +4078,7 @@ mod tests {
                 download_directory: None,
                 release_title: None,
                 indexer_name: None,
+                indexer_id: None,
                 info_hash_hint: None,
                 seed_goal_ratio: None,
                 seed_goal_seconds: None,
@@ -3371,6 +4138,7 @@ mod tests {
                 download_directory: None,
                 release_title: None,
                 indexer_name: None,
+                indexer_id: None,
                 info_hash_hint: None,
                 seed_goal_ratio: None,
                 seed_goal_seconds: None,

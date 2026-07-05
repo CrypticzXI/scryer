@@ -103,6 +103,7 @@ struct StrategyTierContext {
     search_limit: Arc<Semaphore>,
     rate_limiter: IndexerRateLimiter,
     indexer_id: String,
+    search_timeout: std::time::Duration,
     rate_limit_seconds: Option<i64>,
     category: Option<String>,
     per_indexer_categories: Option<Vec<String>>,
@@ -1049,6 +1050,15 @@ pub struct MultiIndexerSearchClient {
 }
 
 impl MultiIndexerSearchClient {
+    fn effective_indexer_search_timeout(
+        proxy_config: Option<&scryer_domain::IndexerProxyConfig>,
+    ) -> std::time::Duration {
+        let extra_seconds = proxy_config
+            .map(|config| u64::from(config.request_timeout_seconds).saturating_add(5))
+            .unwrap_or(0);
+        std::time::Duration::from_secs(INDEXER_SEARCH_TIMEOUT_SECS.saturating_add(extra_seconds))
+    }
+
     pub fn new(
         indexer_configs: Arc<dyn IndexerConfigRepository>,
         stats_tracker: Arc<dyn IndexerStatsTracker>,
@@ -1382,7 +1392,7 @@ impl MultiIndexerSearchClient {
         config: &IndexerConfig,
         plugin_provider: &Arc<dyn IndexerPluginProvider>,
         indexer_proxy_configs: &Arc<dyn IndexerProxyConfigRepository>,
-    ) -> AppResult<(Arc<dyn IndexerClient>, Option<String>)> {
+    ) -> AppResult<(Arc<dyn IndexerClient>, Option<String>, std::time::Duration)> {
         let provider = config.provider_type.trim().to_ascii_lowercase();
         let (proxy_config, proxy_cache_key) =
             if let Some(proxy_config_id) = config.indexer_proxy_config_id.as_deref() {
@@ -1406,7 +1416,8 @@ impl MultiIndexerSearchClient {
         if let Some(client) =
             plugin_provider.client_for_provider_with_proxy(config, proxy_config.as_ref())
         {
-            return Ok((client, proxy_cache_key));
+            let search_timeout = Self::effective_indexer_search_timeout(proxy_config.as_ref());
+            return Ok((client, proxy_cache_key, search_timeout));
         }
 
         Err(AppError::Validation(format!(
@@ -1691,6 +1702,7 @@ impl MultiIndexerSearchClient {
                     search_limit,
                     rate_limiter,
                     indexer_id,
+                    search_timeout,
                     rate_limit_seconds,
                     category,
                     per_indexer_categories,
@@ -1731,7 +1743,7 @@ impl MultiIndexerSearchClient {
                         let response = tokio::select! {
                             _ = cancel_token.cancelled() => Err(AppError::canceled("indexer strategy canceled")),
                             response = tokio::time::timeout(
-                                std::time::Duration::from_secs(INDEXER_SEARCH_TIMEOUT_SECS),
+                                search_timeout,
                                 client.search(
                                     strategy.request_query,
                                     strategy.ids,
@@ -2159,6 +2171,17 @@ impl IndexerClient for MultiIndexerSearchClient {
             };
             for category_request in category_requests {
                 let scheduler_candidate_id = SchedulerCandidateId::new();
+                let scheduler_search_timeout =
+                    if let Some(proxy_config_id) = config.indexer_proxy_config_id.as_deref() {
+                        let proxy_config = self
+                            .indexer_proxy_configs
+                            .get_by_id(proxy_config_id)
+                            .await?
+                            .filter(|config| config.is_enabled);
+                        Self::effective_indexer_search_timeout(proxy_config.as_ref())
+                    } else {
+                        Self::effective_indexer_search_timeout(None)
+                    };
                 let rss_request_key =
                     is_rss_request.then(|| Self::rss_request_key(category_request.as_deref()));
                 let rss_activity = if is_rss_request {
@@ -2192,7 +2215,9 @@ impl IndexerClient for MultiIndexerSearchClient {
                     deadline_at: if matches!(mode, SearchMode::Interactive) {
                         Some(
                             scheduler_now
-                                + chrono::Duration::seconds(INDEXER_SEARCH_TIMEOUT_SECS as i64),
+                                + chrono::Duration::seconds(
+                                    scheduler_search_timeout.as_secs() as i64
+                                ),
                         )
                     } else {
                         None
@@ -2371,7 +2396,7 @@ impl IndexerClient for MultiIndexerSearchClient {
                 }
             }
 
-            let (client, proxy_cache_key) = match Self::client_from_config(
+            let (client, proxy_cache_key, search_timeout) = match Self::client_from_config(
                 config,
                 &self.plugin_provider,
                 &self.indexer_proxy_configs,
@@ -2383,7 +2408,7 @@ impl IndexerClient for MultiIndexerSearchClient {
                     warn!(
                         indexer = config.name.as_str(),
                         error = %err,
-                        "skipping indexer: unsupported provider"
+                        "skipping indexer: client setup failed"
                     );
                     continue;
                 }
@@ -2465,9 +2490,7 @@ impl IndexerClient for MultiIndexerSearchClient {
                                                 return Err("RSS indexer search canceled".to_string());
                                             }
                                             response = tokio::time::timeout(
-                                                std::time::Duration::from_secs(
-                                                    INDEXER_SEARCH_TIMEOUT_SECS,
-                                                ),
+                                                search_timeout,
                                                 client.search(
                                                     query,
                                                     HashMap::new(),
@@ -2496,7 +2519,7 @@ impl IndexerClient for MultiIndexerSearchClient {
                                 let (search_response, elapsed) = search_result;
 
                                 match search_response {
-                                    Ok(Ok(response)) => {
+                                    Ok(Ok(mut response)) => {
                                         info!(indexer = indexer_name.as_str(), count = response.results.len(), "RSS feed cached");
                                         stats_tracker.record_query(&indexer_id, &indexer_name, true);
                                         let had_in_memory_backoff = backoff_tracker.record_success(&indexer_id).await;
@@ -2516,6 +2539,9 @@ impl IndexerClient for MultiIndexerSearchClient {
                                         .await;
                                         metrics::counter!("scryer_indexer_queries_total", "indexer" => indexer_name.clone(), "status" => "success", "mode" => "rss_cached").increment(1);
                                         metrics::histogram!("scryer_indexer_query_duration_seconds", "indexer" => indexer_name.clone(), "mode" => "rss_cached").record(elapsed.as_secs_f64());
+                                        for result in &mut response.results {
+                                            result.indexer_id = Some(indexer_id.clone());
+                                        }
                                         Ok(response.results)
                                     }
                                     Ok(Err(err)) => {
@@ -2578,7 +2604,12 @@ impl IndexerClient for MultiIndexerSearchClient {
                         }
                         let should_record_feedback = cache_entry.claim_feedback();
                         let results = match cached_results {
-                            Ok(results) => results,
+                            Ok(mut results) => {
+                                for result in &mut results {
+                                    result.indexer_id.get_or_insert_with(|| indexer_id.clone());
+                                }
+                                results
+                            }
                             Err(error) => {
                                 return (
                                     indexer_id,
@@ -2756,6 +2787,7 @@ impl IndexerClient for MultiIndexerSearchClient {
                         search_limit: search_limit.clone(),
                         rate_limiter: rate_limiter.clone(),
                         indexer_id: indexer_id.clone(),
+                        search_timeout,
                         rate_limit_seconds,
                         category: category_for_indexer.clone(),
                         per_indexer_categories: rss_category_request.clone(),
@@ -2881,6 +2913,7 @@ impl IndexerClient for MultiIndexerSearchClient {
                             search_limit,
                             rate_limiter,
                             indexer_id: indexer_id.clone(),
+                            search_timeout,
                             rate_limit_seconds,
                             category: category_for_indexer,
                             per_indexer_categories: rss_category_request,

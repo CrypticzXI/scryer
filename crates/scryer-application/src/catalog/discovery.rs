@@ -1237,6 +1237,7 @@ impl AppUseCase {
             };
             result.queue_scope = Some(scope.clone());
             let selection = QueuedReleaseSelection {
+                indexer_id: result.indexer_id.clone(),
                 source_hint: result.download_url.clone().or(result.link.clone()),
                 source_kind: result.source_kind,
                 source_title: Some(result.title.clone()),

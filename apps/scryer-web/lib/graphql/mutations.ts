@@ -262,6 +262,7 @@ export const createIndexerMutation = `mutation CreateIndexer($input: CreateIndex
     name
     providerType
     baseUrl
+    indexerProxyConfigId
     hasApiKey
     storedSecretKeys
     rateLimitSeconds
@@ -288,6 +289,7 @@ export const updateIndexerMutation = `mutation UpdateIndexer($input: UpdateIndex
     name
     providerType
     baseUrl
+    indexerProxyConfigId
     hasApiKey
     storedSecretKeys
     rateLimitSeconds
@@ -305,6 +307,45 @@ export const updateIndexerMutation = `mutation UpdateIndexer($input: UpdateIndex
     }
     createdAt
     updatedAt
+  }
+}`;
+
+const INDEXER_PROXY_CONFIG_FIELDS = `
+    id
+    name
+    providerType
+    protocol
+    baseUrl
+    requestTimeoutSeconds
+    isEnabled
+    lastHealthStatus
+    lastErrorMessage
+    lastErrorAt
+    createdAt
+    updatedAt`;
+
+export const createIndexerProxyConfigMutation = `mutation CreateIndexerProxyConfig($input: CreateIndexerProxyConfigInput!) {
+  createIndexerProxyConfig(input: $input) {${INDEXER_PROXY_CONFIG_FIELDS}
+  }
+}`;
+
+export const updateIndexerProxyConfigMutation = `mutation UpdateIndexerProxyConfig($input: UpdateIndexerProxyConfigInput!) {
+  updateIndexerProxyConfig(input: $input) {${INDEXER_PROXY_CONFIG_FIELDS}
+  }
+}`;
+
+export const deleteIndexerProxyConfigMutation = `mutation DeleteIndexerProxyConfig($id: ID!) {
+  deleteIndexerProxyConfig(id: $id) {
+    ok
+  }
+}`;
+
+export const testIndexerProxyConfigMutation = `mutation TestIndexerProxyConfig($id: ID!) {
+  testIndexerProxyConfig(id: $id) {
+    ok
+    status
+    message
+    durationMs
   }
 }`;
 

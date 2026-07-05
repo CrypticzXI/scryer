@@ -736,6 +736,23 @@ hook_id = "migrate_title_catalog_sort_keys"
 engine = "all"
 scope = "all"
 
+[[migration]]
+version = 155
+description = "indexer proxy configs"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0155_indexer_proxy_configs.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0155_indexer_proxy_configs.sql"
+engine = "postgres"
+scope = "all"
+
 [[baseline]]
 through_version = 122
 file = "baselines/0122_baseline.sql"

@@ -954,6 +954,7 @@ async fn release_candidate_token_resolves_password_without_exposing_it() {
     )
     .await;
     let selection = QueuedReleaseSelection {
+        indexer_id: Some("indexer-1".to_string()),
         source_hint: Some("https://example.invalid/download.nzb".to_string()),
         source_kind: Some(DownloadSourceKind::NzbUrl),
         source_title: Some("Example.Release.1080p.WEB-DL".to_string()),
@@ -983,6 +984,7 @@ async fn release_candidate_token_resolves_password_without_exposing_it() {
     let claims = jsonwebtoken::dangerous::insecure_decode::<ReleaseCandidateTokenClaims>(&token)
         .expect("candidate token should decode")
         .claims;
+    assert_eq!(claims.indexer_id.as_deref(), Some("indexer-1"));
     assert!(claims.password_ref.is_some());
     let decoded = app
         .verify_release_candidate_token(
@@ -994,6 +996,7 @@ async fn release_candidate_token_resolves_password_without_exposing_it() {
         .await
         .expect("candidate token should verify");
 
+    assert_eq!(decoded.indexer_id, selection.indexer_id);
     assert_eq!(decoded.source_hint, selection.source_hint);
     assert_eq!(decoded.source_kind, selection.source_kind);
     assert_eq!(decoded.source_title, selection.source_title);
@@ -1015,6 +1018,7 @@ async fn release_candidate_token_rejects_missing_password_ticket() {
     )
     .await;
     let selection = QueuedReleaseSelection {
+        indexer_id: None,
         source_hint: Some("https://example.invalid/download.nzb".to_string()),
         source_kind: Some(DownloadSourceKind::NzbUrl),
         source_title: Some("Example.Release.1080p.WEB-DL".to_string()),
@@ -1069,6 +1073,7 @@ async fn release_candidate_token_drops_placeholder_password_flags() {
     )
     .await;
     let selection = QueuedReleaseSelection {
+        indexer_id: None,
         source_hint: Some("https://example.invalid/download.nzb".to_string()),
         source_kind: Some(DownloadSourceKind::NzbUrl),
         source_title: Some("Example.Release.1080p.WEB-DL".to_string()),
@@ -1115,6 +1120,7 @@ async fn release_candidate_token_round_trips_episode_set_scope() {
     )
     .await;
     let selection = QueuedReleaseSelection {
+        indexer_id: None,
         source_hint: Some("https://example.invalid/range-pack.nzb".to_string()),
         source_kind: Some(DownloadSourceKind::NzbUrl),
         source_title: Some("Example.S01E01-E03.1080p.WEB-DL".to_string()),
@@ -1153,6 +1159,7 @@ async fn release_candidate_token_rejects_tampering() {
     )
     .await;
     let selection = QueuedReleaseSelection {
+        indexer_id: None,
         source_hint: Some("https://example.invalid/download.nzb".to_string()),
         source_kind: Some(DownloadSourceKind::NzbUrl),
         source_title: Some("Example.Release.1080p.WEB-DL".to_string()),
@@ -1203,6 +1210,7 @@ async fn release_candidate_token_rejects_actor_title_and_scope_mismatch() {
     )
     .await;
     let selection = QueuedReleaseSelection {
+        indexer_id: None,
         source_hint: Some("https://example.invalid/download.nzb".to_string()),
         source_kind: Some(DownloadSourceKind::NzbUrl),
         source_title: Some("Example.Release.1080p.WEB-DL".to_string()),
@@ -1268,6 +1276,7 @@ async fn release_candidate_token_is_invalidated_by_password_rotation() {
     )
     .await;
     let selection = QueuedReleaseSelection {
+        indexer_id: None,
         source_hint: Some("https://example.invalid/download.nzb".to_string()),
         source_kind: Some(DownloadSourceKind::NzbUrl),
         source_title: Some("Example.Release.1080p.WEB-DL".to_string()),
@@ -1313,6 +1322,7 @@ async fn release_candidate_token_is_invalidated_by_permission_change() {
     )
     .await;
     let selection = QueuedReleaseSelection {
+        indexer_id: None,
         source_hint: Some("https://example.invalid/download.nzb".to_string()),
         source_kind: Some(DownloadSourceKind::NzbUrl),
         source_title: Some("Example.Release.1080p.WEB-DL".to_string()),

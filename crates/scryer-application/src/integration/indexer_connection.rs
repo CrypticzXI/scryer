@@ -10,6 +10,7 @@ impl AppUseCase {
         provider_type: &str,
         config_json: Option<&str>,
         indexer_id: Option<&str>,
+        indexer_proxy_config_id_override: Option<Option<&str>>,
     ) -> AppResult<()> {
         self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
             .await?;
@@ -79,9 +80,13 @@ impl AppUseCase {
             }
         }
 
-        let indexer_proxy_config_id = persisted_config
-            .as_ref()
-            .and_then(|config| config.indexer_proxy_config_id.clone());
+        let indexer_proxy_config_id = match indexer_proxy_config_id_override {
+            Some(Some(id)) => Some(id.to_string()),
+            Some(None) => None,
+            None => persisted_config
+                .as_ref()
+                .and_then(|config| config.indexer_proxy_config_id.clone()),
+        };
         let indexer_proxy_config = if let Some(indexer_proxy_config_id) =
             indexer_proxy_config_id.as_deref()
         {
@@ -1755,7 +1760,7 @@ mod tests {
         );
         let mut receiver = app.runtime.events.indexers_changed_broadcast.subscribe();
 
-        app.test_indexer_connection(&test_admin(), "nzbgeek", None, Some("cfg-1"))
+        app.test_indexer_connection(&test_admin(), "nzbgeek", None, Some("cfg-1"), None)
             .await
             .expect("persisted config should be reused");
 
@@ -1823,6 +1828,7 @@ mod tests {
                 "nzbgeek",
                 Some(r#"{"base_url":"https://mirror.nzbgeek.info","api_key":""}"#),
                 Some("cfg-1"),
+                None,
             )
             .await
             .expect_err("changed origin should require an explicit API key");
@@ -1973,6 +1979,7 @@ mod tests {
             "torrent_rss",
             Some(r#"{"feed_url":"https://ipt.beelyrics.net/t.rss?u=2203846"}"#),
             None,
+            None,
         )
         .await
         .unwrap();
@@ -2012,6 +2019,7 @@ mod tests {
             "newznab",
             Some(r#"{"base_url":"http://192.168.1.10:9696"}"#),
             None,
+            None,
         )
         .await
         .expect("operator LAN indexer URL should test successfully");
@@ -2045,6 +2053,7 @@ mod tests {
             "newznab",
             Some(r#"{"base_url":"  https://api.nzbgeek.info/  \n"}"#),
             None,
+            None,
         )
         .await
         .unwrap();
@@ -2077,6 +2086,7 @@ mod tests {
             &test_admin(),
             "newznab",
             Some(r#"{"base_url":"https://api.nzbgeek.info/"}"#),
+            None,
             None,
         )
         .await
@@ -2119,6 +2129,7 @@ mod tests {
             "id_only",
             Some(r#"{"base_url":"https://example.invalid"}"#),
             None,
+            None,
         )
         .await
         .unwrap();
@@ -2158,6 +2169,7 @@ mod tests {
                 "newznab",
                 Some(r#"{"base_url":"https://api.nzbgeek.info/"}"#),
                 None,
+                None,
             )
             .await
             .unwrap_err();
@@ -2196,6 +2208,7 @@ mod tests {
                 "newznab",
                 Some(r#"{"base_url":"https://api.nzbgeek.info/"}"#),
                 None,
+                None,
             )
             .await
             .unwrap_err();
@@ -2216,6 +2229,7 @@ mod tests {
             &test_admin(),
             "torrent_rss",
             Some(r#"{"feed_url":"https://ipt.beelyrics.net/t.rss?u=2203846"}"#),
+            None,
             None,
         )
         .await

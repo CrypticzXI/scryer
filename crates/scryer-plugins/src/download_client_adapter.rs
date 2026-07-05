@@ -1146,6 +1146,7 @@ mod tests {
             download_directory: Some("/downloads/series".to_string()),
             release_title: Some("Example.Release".to_string()),
             indexer_name: Some("Torrent Indexer".to_string()),
+            indexer_id: None,
             info_hash_hint: Some("abcdef0123456789abcdef0123456789abcdef01".to_string()),
             seed_goal_ratio: Some(1.5),
             seed_goal_seconds: Some(3661),

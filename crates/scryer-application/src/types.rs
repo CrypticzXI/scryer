@@ -1704,6 +1704,8 @@ pub(crate) struct ReleaseCandidateTokenClaims {
     pub title_id: String,
     pub scope_kind: String,
     pub scope_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub indexer_id: Option<String>,
     pub source_hint: String,
     pub source_kind: Option<DownloadSourceKind>,
     pub source_title: String,

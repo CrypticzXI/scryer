@@ -64,6 +64,8 @@ export function FilteredPluginList({
 }: FilteredPluginListProps) {
   const client = useClient();
   const t = useTranslate();
+  const [upgradingVisiblePlugins, setUpgradingVisiblePlugins] =
+    React.useState(false);
   const {
     plugins,
     pluginsLoading,
@@ -91,6 +93,36 @@ export function FilteredPluginList({
         ),
     [plugins, allowedTypes],
   );
+  const visibleUpgradablePlugins = React.useMemo(
+    () =>
+      familyPlugins.filter(
+        (plugin) =>
+          plugin.isInstalled &&
+          plugin.updateAvailable &&
+          !mutatingPluginIds.includes(plugin.id) &&
+          !isRunningPluginProgress(pluginProgress[plugin.id]),
+      ),
+    [familyPlugins, mutatingPluginIds, pluginProgress],
+  );
+  const visibleUpgradeCount = visibleUpgradablePlugins.length;
+  const updateAllLabel = t("settings.pluginsUpdateAll");
+  const updateAllTooltip =
+    visibleUpgradeCount > 0
+      ? `${updateAllLabel} (${visibleUpgradeCount})`
+      : updateAllLabel;
+  const updateVisiblePlugins = React.useCallback(async () => {
+    if (visibleUpgradablePlugins.length === 0) {
+      return;
+    }
+    setUpgradingVisiblePlugins(true);
+    try {
+      await Promise.allSettled(
+        visibleUpgradablePlugins.map((plugin) => upgradePlugin(plugin)),
+      );
+    } finally {
+      setUpgradingVisiblePlugins(false);
+    }
+  }, [upgradePlugin, visibleUpgradablePlugins]);
 
   return (
     <section className={cn(FILTERED_PLUGIN_PANEL_CLASS, className)}>
@@ -98,16 +130,34 @@ export function FilteredPluginList({
         <h2 className={FILTERED_PLUGIN_TITLE_CLASS}>
           {title ?? t("settings.plugins")}
         </h2>
-        <IconButton
-          label={t("settings.pluginsRefresh")}
-          tone="neutral"
-          onClick={() => void refreshPluginsRegistry()}
-          disabled={pluginsRefreshing}
-        >
-          <RefreshCw
-            className={cn("h-4 w-4", pluginsRefreshing && "animate-spin")}
-          />
-        </IconButton>
+        <div className="flex shrink-0 items-center gap-1.5">
+          {visibleUpgradeCount > 0 ? (
+            <IconButton
+              label={updateAllLabel}
+              tooltip={updateAllTooltip}
+              tone="upgrade"
+              onClick={() => void updateVisiblePlugins()}
+              disabled={upgradingVisiblePlugins}
+            >
+              <ArrowUpCircle
+                className={cn(
+                  "h-4 w-4",
+                  upgradingVisiblePlugins && "animate-spin",
+                )}
+              />
+            </IconButton>
+          ) : null}
+          <IconButton
+            label={t("settings.pluginsRefresh")}
+            tone="neutral"
+            onClick={() => void refreshPluginsRegistry()}
+            disabled={pluginsRefreshing}
+          >
+            <RefreshCw
+              className={cn("h-4 w-4", pluginsRefreshing && "animate-spin")}
+            />
+          </IconButton>
+        </div>
       </div>
       <div className={FILTERED_PLUGIN_BODY_CLASS}>
         {pluginsError ? (

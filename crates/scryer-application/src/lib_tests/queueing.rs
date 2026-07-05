@@ -91,6 +91,7 @@ async fn add_title_and_queue_download_with_outcome_reuses_matching_queue_submiss
         ..Default::default()
     };
     let queued_release = QueuedReleaseSelection {
+        indexer_id: None,
         source_hint: Some("https://example.invalid/releases/queued-once.nzb".to_string()),
         source_kind: Some(DownloadSourceKind::NzbUrl),
         source_title: Some("Queued.Once.2026.1080p.WEB-DL".to_string()),
@@ -156,6 +157,7 @@ async fn add_title_and_queue_download_records_accepted_torrent_hash_fingerprint(
         ..Default::default()
     };
     let queued_release = QueuedReleaseSelection {
+        indexer_id: None,
         source_hint: Some("https://example.invalid/releases/queued-torrent.torrent".to_string()),
         source_kind: Some(DownloadSourceKind::TorrentFile),
         source_title: Some("Queued.Torrent.2026.1080p.WEB-DL".to_string()),
@@ -203,6 +205,7 @@ async fn queue_existing_title_download_reuses_matching_queue_submission() {
         .expect("create title");
 
     let queued_release = QueuedReleaseSelection {
+        indexer_id: None,
         source_hint: Some("https://example.invalid/releases/existing-queue.nzb".to_string()),
         source_kind: Some(DownloadSourceKind::NzbUrl),
         source_title: Some("Existing.Queue.2026.1080p.WEB-DL".to_string()),
@@ -295,6 +298,7 @@ async fn queue_existing_title_download_submits_source_password_hint() {
             &user,
             &title.id,
             QueuedReleaseSelection {
+                indexer_id: None,
                 source_hint: Some("https://example.invalid/releases/protected.nzb".to_string()),
                 source_kind: Some(DownloadSourceKind::NzbUrl),
                 source_title: Some("Protected.Queue.2026.1080p.WEB-DL".to_string()),
@@ -359,6 +363,7 @@ async fn queue_existing_title_download_drops_source_password_flags() {
                 &user,
                 &title.id,
                 QueuedReleaseSelection {
+                    indexer_id: None,
                     source_hint: Some(format!("https://example.invalid/releases/flag-{index}.nzb")),
                     source_kind: Some(DownloadSourceKind::NzbUrl),
                     source_title: Some(format!("Flag.Queue.{index}.2026.1080p-WEB")),
@@ -449,6 +454,7 @@ async fn queue_existing_title_download_episode_scope_records_grabbed_history_con
             &user,
             &title.id,
             QueuedReleaseSelection {
+                indexer_id: None,
                 source_hint: Some(source_hint.to_string()),
                 source_kind: Some(DownloadSourceKind::NzbUrl),
                 source_title: Some(source_title.to_string()),
@@ -533,6 +539,7 @@ async fn queue_existing_title_download_submit_unavailable_records_pending_withou
             &user,
             &title.id,
             QueuedReleaseSelection {
+                indexer_id: None,
                 source_hint: Some(
                     "https://example.invalid/releases/manual-deferred.nzb".to_string(),
                 ),
@@ -612,6 +619,7 @@ async fn queue_existing_title_download_ignores_stale_matching_submission() {
         .expect("create title");
 
     let queued_release = QueuedReleaseSelection {
+        indexer_id: None,
         source_hint: Some("https://example.invalid/releases/stale-queue.nzb".to_string()),
         source_kind: Some(DownloadSourceKind::NzbUrl),
         source_title: Some("Stale.Queue.2026.1080p.WEB-DL".to_string()),
@@ -707,6 +715,7 @@ async fn queue_existing_title_download_reports_scope_conflict() {
             &user,
             &title.id,
             QueuedReleaseSelection {
+                indexer_id: None,
                 source_hint: Some("https://example.invalid/replacement.nzb".to_string()),
                 source_kind: Some(DownloadSourceKind::NzbUrl),
                 source_title: Some("Blocked.Queue.Replacement.2026.1080p.WEB-DL".to_string()),
@@ -785,6 +794,7 @@ async fn queue_existing_title_download_additional_file_ignores_standard_blocker(
             &user,
             &title.id,
             QueuedReleaseSelection {
+                indexer_id: None,
                 source_hint: Some("https://example.invalid/directors-cut.nzb".to_string()),
                 source_kind: Some(DownloadSourceKind::NzbUrl),
                 source_title: Some("Additional.Queue.Directors.Cut.2026.1080p.WEB-DL".to_string()),
@@ -891,6 +901,7 @@ async fn queue_existing_title_download_additional_file_supports_series_movie_sco
             &user,
             &title.id,
             QueuedReleaseSelection {
+                indexer_id: None,
                 source_hint: Some("https://example.invalid/series-movie-extra.nzb".to_string()),
                 source_kind: Some(DownloadSourceKind::NzbUrl),
                 source_title: Some(
@@ -945,6 +956,7 @@ async fn queue_existing_title_download_additional_file_dedupes_by_scope() {
         .await
         .expect("create title");
     let queued_release = QueuedReleaseSelection {
+        indexer_id: None,
         source_hint: Some("https://example.invalid/same-release.nzb".to_string()),
         source_kind: Some(DownloadSourceKind::NzbUrl),
         source_title: Some("Additional.Episode.Dedupe.S01E01.1080p.WEB-DL".to_string()),
@@ -1037,6 +1049,7 @@ async fn queue_existing_title_download_additional_file_rejects_collection_scope(
             &user,
             &title.id,
             QueuedReleaseSelection {
+                indexer_id: None,
                 source_hint: Some("https://example.invalid/season-pack.nzb".to_string()),
                 source_kind: Some(DownloadSourceKind::NzbUrl),
                 source_title: Some("Additional.Collection.Reject.S01.1080p.WEB-DL".to_string()),
@@ -1102,6 +1115,7 @@ async fn queue_existing_title_download_additional_file_rejects_non_movie_title_s
                 &user,
                 &title.id,
                 QueuedReleaseSelection {
+                    indexer_id: None,
                     source_hint: Some("https://example.invalid/title-scope.nzb".to_string()),
                     source_kind: Some(DownloadSourceKind::NzbUrl),
                     source_title: Some(format!("{}.2026.1080p.WEB-DL", name.replace(' ', "."))),
@@ -1175,6 +1189,7 @@ async fn queue_existing_title_download_additional_file_rejects_non_single_episod
                 &user,
                 &title.id,
                 QueuedReleaseSelection {
+                    indexer_id: None,
                     source_hint: Some("https://example.invalid/episode-pack.nzb".to_string()),
                     source_kind: Some(DownloadSourceKind::NzbUrl),
                     source_title: Some(
@@ -1255,6 +1270,7 @@ async fn queue_existing_title_download_replace_early_deletes_old_submission() {
             &user,
             &title.id,
             QueuedReleaseSelection {
+                indexer_id: None,
                 source_hint: Some("https://example.invalid/new.nzb".to_string()),
                 source_kind: Some(DownloadSourceKind::NzbUrl),
                 source_title: Some("Replace.Queue.New.2026.1080p.WEB-DL".to_string()),
@@ -1333,6 +1349,7 @@ async fn queue_existing_title_download_replace_early_deletes_all_blockers() {
             &user,
             &title.id,
             QueuedReleaseSelection {
+                indexer_id: None,
                 source_hint: Some("https://example.invalid/new-all.nzb".to_string()),
                 source_kind: Some(DownloadSourceKind::NzbUrl),
                 source_title: Some("Replace.All.Queue.New.2026.1080p.WEB-DL".to_string()),
@@ -1776,6 +1793,7 @@ async fn queue_existing_title_download_from_candidate_token_accepts_authenticate
     .await;
 
     let selection = QueuedReleaseSelection {
+        indexer_id: None,
         source_hint: Some("https://example.invalid/token-queue.nzb".to_string()),
         source_kind: Some(DownloadSourceKind::NzbUrl),
         source_title: Some("Token.Queue.2026.1080p.WEB-DL".to_string()),
@@ -1868,6 +1886,7 @@ async fn queue_existing_title_download_additional_file_uses_signed_candidate_sco
     )
     .await;
     let selection = QueuedReleaseSelection {
+        indexer_id: None,
         source_hint: Some("https://example.invalid/signed-episode.nzb".to_string()),
         source_kind: Some(DownloadSourceKind::NzbUrl),
         source_title: Some("Signed.Episode.Queue.S01E01.1080p.WEB-DL".to_string()),
@@ -1955,6 +1974,7 @@ async fn queue_existing_title_download_additional_file_rejects_signed_episode_se
     )
     .await;
     let selection = QueuedReleaseSelection {
+        indexer_id: None,
         source_hint: Some("https://example.invalid/signed-episode-set.nzb".to_string()),
         source_kind: Some(DownloadSourceKind::NzbUrl),
         source_title: Some("Signed.Episode.Set.Reject.S01.1080p.WEB-DL".to_string()),

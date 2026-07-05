@@ -598,6 +598,11 @@ impl ConfigMutations {
             &input.provider_type,
             config_json.as_deref(),
             input.indexer_id.as_ref().map(|id| id.as_ref()),
+            match &input.indexer_proxy_config_id {
+                async_graphql::MaybeUndefined::Undefined => None,
+                async_graphql::MaybeUndefined::Null => Some(None),
+                async_graphql::MaybeUndefined::Value(id) => Some(Some(id.as_ref())),
+            },
         )
         .await
         .map_err(to_gql_error)?;

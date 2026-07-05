@@ -986,14 +986,20 @@ async fn bootstrap_application(
         staged_nzb_store.clone(),
         staged_nzb_pipeline_limit.clone(),
     ));
-    let download_client = Arc::new(PrioritizedDownloadClientRouter::new(
-        download_client_configs.clone(),
-        settings_for_router.clone(),
-        fallback_download_client,
-        staged_nzb_store.clone(),
-        staged_nzb_pipeline_limit.clone(),
-        Some(download_client_plugin_provider.clone()),
-    ));
+    let download_client = Arc::new(
+        PrioritizedDownloadClientRouter::new(
+            download_client_configs.clone(),
+            settings_for_router.clone(),
+            fallback_download_client,
+            staged_nzb_store.clone(),
+            staged_nzb_pipeline_limit.clone(),
+            Some(download_client_plugin_provider.clone()),
+        )
+        .with_indexer_config_repositories(
+            indexer_configs.clone(),
+            datastore.indexer_proxy_configs(),
+        ),
+    );
     let indexer_stats = datastore.indexer_stats_tracker();
     let indexer_learning = datastore.indexer_search_learning_repository();
     let upstream_scheduler = datastore

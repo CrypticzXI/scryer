@@ -657,6 +657,77 @@ pub(crate) async fn stage_nzb_from_url(
     })
 }
 
+pub(crate) async fn stage_nzb_from_bytes(
+    store: &Arc<dyn StagedNzbStore>,
+    pipeline_limit: &Arc<Semaphore>,
+    source_label: &str,
+    title_id: Option<&str>,
+    bytes: Vec<u8>,
+) -> AppResult<StagedNzbLease> {
+    if bytes.is_empty() {
+        return Err(AppError::Repository(
+            "resolved NZB download artifact was empty".into(),
+        ));
+    }
+    if bytes.len() as u64 > MAX_NZB_BYTES {
+        return Err(AppError::Repository(format!(
+            "resolved NZB download artifact exceeded {} bytes",
+            MAX_NZB_BYTES
+        )));
+    }
+
+    let permit = pipeline_limit
+        .clone()
+        .acquire_owned()
+        .await
+        .map_err(|error| {
+            AppError::Repository(format!("failed to acquire nzb pipeline permit: {error}"))
+        })?;
+    let pending = store
+        .create_pending_staged_nzb(source_label, title_id)
+        .await?;
+    let partial_path = pending.partial_path.clone();
+    let raw_size_bytes = bytes.len() as u64;
+    let stage_result = async {
+        let (validator_tx, validator_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(1);
+        let validator_path = partial_path.clone();
+        let validator_task = tokio::task::spawn_blocking(move || {
+            stream_validate_and_compress_nzb(validator_rx, &validator_path)
+        });
+        validator_tx.send(bytes).await.map_err(|_| {
+            AppError::Repository("nzb validation task stopped before artifact was staged".into())
+        })?;
+        drop(validator_tx);
+        validator_task.await.map_err(|error| {
+            AppError::Repository(format!("nzb validation task failed to join: {error}"))
+        })??;
+        store
+            .finalize_pending_staged_nzb(pending, raw_size_bytes)
+            .await
+    }
+    .await;
+
+    if let Err(error) = tokio::fs::remove_file(&partial_path).await
+        && error.kind() != std::io::ErrorKind::NotFound
+        && stage_result.is_err()
+    {
+        tracing::warn!(
+            path = %partial_path.display(),
+            error = %error,
+            "failed to remove partial staged nzb artifact"
+        );
+    }
+
+    let staged_nzb = stage_result?;
+    store.mark_artifact_active(&staged_nzb.compressed_path)?;
+    Ok(StagedNzbLease {
+        staged_nzb,
+        self_staged: false,
+        store: Arc::clone(store),
+        _permit: Some(permit),
+    })
+}
+
 pub(crate) async fn resolve_staged_nzb_for_request(
     client: &OutboundHttpClient,
     store: &Arc<dyn StagedNzbStore>,

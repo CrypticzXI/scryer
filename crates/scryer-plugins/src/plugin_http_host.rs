@@ -581,7 +581,7 @@ fn execute_byparr_request(
             status = byparr_status.as_u16(),
             "Byparr service rate-limited indexer proxy request"
         );
-        return Err(Error::msg("Byparr service is rate-limited; retry later."));
+        return Err(Error::msg("Byparr service is temporarily unavailable."));
     }
 
     let response_body = read_response_body(response, max_http_response_bytes)?;
@@ -602,12 +602,12 @@ fn execute_byparr_request(
             status = solution_status,
             "Byparr reported target indexer rate limit"
         );
-        return Err(Error::msg("Indexer is rate-limited; retry later."));
+        return Err(Error::msg(target_rate_limit_message(&solution)));
     }
 
     let solved_body = solution.response.clone().unwrap_or_default().into_bytes();
     if solved_body_looks_rate_limited(&solved_body) {
-        return Err(Error::msg("Indexer is rate-limited; retry later."));
+        return Err(Error::msg("HTTP 429: too many requests"));
     }
 
     let solved_headers = safe_solution_response_headers(solution.headers.as_ref());
@@ -625,6 +625,11 @@ fn execute_byparr_request(
             headers: solved_headers,
             body: solved_body,
         });
+    }
+    if !(200..300).contains(&solution_status) {
+        return Err(Error::msg(format!(
+            "Byparr target request returned HTTP {solution_status}."
+        )));
     }
 
     let retry_headers = retry_headers_from_solution(&solution);
@@ -644,7 +649,10 @@ fn execute_byparr_request(
         let status = retry.status();
         let headers = response_headers(&retry);
         if status == StatusCode::TOO_MANY_REQUESTS {
-            return Err(Error::msg("Indexer is rate-limited; retry later."));
+            let retry_after = header_value(&headers, "retry-after").and_then(|value| {
+                scryer_outbound_http::parse_retry_after(value).map(|(delay, _)| delay)
+            });
+            return Err(Error::msg(rate_limit_message_with_retry_after(retry_after)));
         }
         if !status.is_success() {
             return Err(Error::msg("Byparr did not return a solved response."));
@@ -684,6 +692,39 @@ fn safe_solution_response_headers(value: Option<&serde_json::Value>) -> BTreeMap
         headers.insert(normalized, value.to_string());
     }
     headers
+}
+
+fn solution_header_string(value: Option<&serde_json::Value>, name: &str) -> Option<String> {
+    value
+        .and_then(|value| value.as_object())
+        .and_then(|object| {
+            object
+                .iter()
+                .find(|(key, _)| key.eq_ignore_ascii_case(name))
+                .and_then(|(_, value)| value.as_str())
+        })
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn retry_after_from_solution(solution: &ByparrSolution) -> Option<Duration> {
+    solution_header_string(solution.headers.as_ref(), "retry-after")
+        .and_then(|value| scryer_outbound_http::parse_retry_after(&value).map(|(delay, _)| delay))
+}
+
+fn rate_limit_message_with_retry_after(retry_after: Option<Duration>) -> String {
+    match retry_after {
+        Some(delay) => format!(
+            "HTTP 429: too many requests; retry_after_seconds={}",
+            delay.as_secs()
+        ),
+        None => "HTTP 429: too many requests".to_string(),
+    }
+}
+
+fn target_rate_limit_message(solution: &ByparrSolution) -> String {
+    rate_limit_message_with_retry_after(retry_after_from_solution(solution))
 }
 
 fn retry_headers_from_solution(solution: &ByparrSolution) -> Vec<(String, String)> {

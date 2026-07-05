@@ -3511,6 +3511,7 @@ pub struct TestIndexerConnectionInput {
     pub provider_type: String,
     pub config: Option<Vec<ProviderConfigValueInput>>,
     pub indexer_id: Option<ID>,
+    pub indexer_proxy_config_id: MaybeUndefined<ID>,
 }
 
 #[derive(InputObject)]
