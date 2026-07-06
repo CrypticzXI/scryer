@@ -1163,9 +1163,16 @@ impl AppUseCase {
             })
             .await?;
 
-        Ok(self
+        let evaluated = self
             .evaluate_search_results_for_subject(title, subject, results)
-            .await)
+            .await;
+        // RFC 119: record per-indexer convergence coverage for background
+        // acquisition searches only (interactive/manual searches bypass
+        // convergence). Best-effort and gated off by default.
+        if caller_label == "background_acquisition" {
+            self.record_background_search_coverage(title, subject).await;
+        }
+        Ok(evaluated)
     }
 
     /// Interactive search for a title (movie or standalone). Resolves all

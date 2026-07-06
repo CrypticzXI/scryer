@@ -2522,3 +2522,209 @@ async fn search_indexers_for_series_movie_merges_categories_and_accepts_short_ti
             .any(|call| call.query.to_ascii_lowercase().contains("mugen train 2020"))
     );
 }
+
+// ── RFC 119 convergence coverage write-hook ────────────────────────────────
+
+/// Capturing `ScopeIndexerCoverageRepository` recording every `record_coverage`
+/// call as `(scope_key, facet, indexer_id, fingerprint)`.
+struct RecordingScopeIndexerCoverageRepo {
+    rows: Mutex<Vec<(String, String, String, String)>>,
+}
+
+impl RecordingScopeIndexerCoverageRepo {
+    fn new() -> Self {
+        Self {
+            rows: Mutex::new(Vec::new()),
+        }
+    }
+
+    async fn recorded(&self) -> Vec<(String, String, String, String)> {
+        self.rows.lock().await.clone()
+    }
+}
+
+#[async_trait]
+impl ScopeIndexerCoverageRepository for RecordingScopeIndexerCoverageRepo {
+    async fn record_coverage(
+        &self,
+        scope_key: &str,
+        facet: &str,
+        indexer_id: &str,
+        fingerprint: &str,
+    ) -> AppResult<()> {
+        self.rows.lock().await.push((
+            scope_key.to_string(),
+            facet.to_string(),
+            indexer_id.to_string(),
+            fingerprint.to_string(),
+        ));
+        Ok(())
+    }
+
+    async fn covered_indexers(
+        &self,
+        _scope_key: &str,
+        _facet: &str,
+        _fingerprint: &str,
+        _stale_before: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> AppResult<Vec<String>> {
+        Ok(Vec::new())
+    }
+
+    async fn prune_scope(&self, _scope_key: &str, _facet: &str) -> AppResult<()> {
+        Ok(())
+    }
+}
+
+/// Build a series-movie wanted item and resolve its search subject (a
+/// `SeriesMovie` convergence scope) for the coverage write-hook tests.
+async fn convergence_test_title_and_subject(
+    app: &AppUseCase,
+    user: &User,
+) -> (Title, crate::acquisition_release_search::ResolvedReleaseSearchSubject) {
+    let title = app
+        .add_title(
+            user,
+            NewTitle {
+                name: "Demon Slayer".into(),
+                facet: MediaFacet::Anime,
+                monitored: true,
+                tags: vec!["anime-hd".to_string()],
+                external_ids: vec![],
+                min_availability: None,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create anime title");
+    let link = app
+        .services
+        .catalog
+        .shows
+        .upsert_series_movie_link(test_series_movie_link(
+            &title.id,
+            "Demon Slayer -Kimetsu no Yaiba- The Movie: Mugen Train",
+            Some(2020),
+            Some("tt11032374"),
+            Some("12345"),
+        ))
+        .await
+        .expect("create series movie link");
+    let now = Utc::now().to_rfc3339();
+    let wanted = WantedItem {
+        id: Id::new().0,
+        title_id: title.id.clone(),
+        title_name: Some(title.name.clone()),
+        title_slug: title.slug.clone(),
+        title_facet: None,
+        library_id: Some(title.library_id.clone()),
+        library_name: None,
+        library_slug: None,
+        episode_id: None,
+        collection_id: None,
+        series_movie_link_id: Some(link.id.clone()),
+        season_number: Some("0".to_string()),
+        episode_number: None,
+        media_type: "series_movie".to_string(),
+        search_phase: "primary".to_string(),
+        next_search_at: Some(now.clone()),
+        last_search_at: None,
+        search_count: 0,
+        baseline_date: None,
+        status: WantedStatus::Wanted,
+        grabbed_release: None,
+        current_score: None,
+        latest_release_decision: None,
+        mismatch_recovery_eligible: false,
+        created_at: now.clone(),
+        updated_at: now,
+    };
+    let search_title = app
+        .release_search_title_for_wanted_item(&title, &wanted, None)
+        .await;
+    let subject = app
+        .resolve_release_search_subject_for_wanted_item(&title, &search_title, &wanted, None)
+        .await;
+    (title, subject)
+}
+
+#[tokio::test]
+async fn background_search_records_scope_indexer_coverage_when_enabled() {
+    let settings = Arc::new(StoredSettingsRepo::default());
+    settings
+        .set_value(
+            SETTINGS_SCOPE_SYSTEM,
+            crate::acquisition::convergence::ACQUISITION_RSS_FIRST_ENABLED_KEY,
+            "true",
+        )
+        .await;
+    let configs = vec![
+        synthetic_direct_nab_indexer_config("indexer-a", "newznab"),
+        synthetic_direct_nab_indexer_config("indexer-b", "newznab"),
+    ];
+    let (app, user) = bootstrap_with_search_settings_indexer_and_configs(
+        settings,
+        Arc::new(MockIndexerClient),
+        configs,
+    );
+    let coverage = Arc::new(RecordingScopeIndexerCoverageRepo::new());
+    let app = app.with_test_overrides(|builder| {
+        builder.with_scope_indexer_coverage_store(coverage.clone())
+    });
+
+    let (title, subject) = convergence_test_title_and_subject(&app, &user).await;
+    let expected_scope_key = crate::acquisition::convergence::convergence_scope_key(
+        &subject.submission_scope,
+        &subject.title_id,
+    )
+    .expect("series-movie scope has a convergence key");
+
+    app.record_background_search_coverage(&title, &subject).await;
+
+    let rows = coverage.recorded().await;
+    let mut indexers: Vec<String> = rows.iter().map(|row| row.2.clone()).collect();
+    indexers.sort();
+    assert_eq!(
+        indexers,
+        vec!["indexer-a".to_string(), "indexer-b".to_string()],
+        "coverage is recorded once per routed indexer"
+    );
+    assert!(
+        rows.iter().all(|row| row.0 == expected_scope_key),
+        "every row is keyed by the scope's convergence key"
+    );
+    let fingerprints: HashSet<String> = rows.iter().map(|row| row.3.clone()).collect();
+    assert_eq!(
+        fingerprints.len(),
+        1,
+        "a single search resolves to exactly one fingerprint"
+    );
+    assert!(
+        !fingerprints.into_iter().next().unwrap().is_empty(),
+        "the recorded fingerprint is non-empty"
+    );
+}
+
+#[tokio::test]
+async fn background_search_records_no_coverage_when_disabled() {
+    // acquisition.rss_first_enabled is unset → convergence off by default.
+    let settings = Arc::new(StoredSettingsRepo::default());
+    let configs = vec![synthetic_direct_nab_indexer_config("indexer-a", "newznab")];
+    let (app, user) = bootstrap_with_search_settings_indexer_and_configs(
+        settings,
+        Arc::new(MockIndexerClient),
+        configs,
+    );
+    let coverage = Arc::new(RecordingScopeIndexerCoverageRepo::new());
+    let app = app.with_test_overrides(|builder| {
+        builder.with_scope_indexer_coverage_store(coverage.clone())
+    });
+
+    let (title, subject) = convergence_test_title_and_subject(&app, &user).await;
+    app.record_background_search_coverage(&title, &subject).await;
+
+    assert!(
+        coverage.recorded().await.is_empty(),
+        "no coverage is recorded while convergence is disabled"
+    );
+}

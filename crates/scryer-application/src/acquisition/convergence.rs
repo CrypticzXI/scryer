@@ -11,11 +11,17 @@
 //! fingerprint change never resurrects a requirements-met scope.
 
 use super::*;
+use crate::acquisition_release_search::ResolvedReleaseSearchSubject;
+use crate::app_usecase_discovery::QualityProfileLookup;
+use crate::quality_profile::QualityProfileCriteria;
+use scryer_domain::Title;
 
-/// Master switch: when true (default) background acquisition prefers RSS and
-/// converges targets once per indexer; when false long-tail scopes go straight
-/// to RSS-only.
-#[allow(dead_code)] // wired by the convergence cursor (RFC 119 Phase 1d)
+/// Master switch for RFC 119 convergence. When enabled, background acquisition
+/// records per-indexer coverage after each search and — once the read-gate lands
+/// (Phase 1d) — prefers RSS for scopes that have converged. Defaults **off**
+/// during rollout: the write-hook is inert until this is set. Flipping the
+/// default on is gated on the read-gate plus per-indexer query-outcome plumbing,
+/// so a transiently failed/backed-off indexer is never recorded as covered.
 pub(crate) const ACQUISITION_RSS_FIRST_ENABLED_KEY: &str = "acquisition.rss_first_enabled";
 
 /// How many uncovered `(scope, indexer)` pairs the cold (long-tail) lane may
@@ -45,12 +51,11 @@ pub(crate) struct ConvergenceSettings {
 }
 
 impl AppUseCase {
-    #[allow(dead_code)] // wired by the convergence cursor (RFC 119 Phase 1d)
     pub(crate) async fn convergence_settings(&self) -> AppResult<ConvergenceSettings> {
         let rss_first_enabled = self
             .read_setting_bool_value(ACQUISITION_RSS_FIRST_ENABLED_KEY, None)
             .await?
-            .unwrap_or(true);
+            .unwrap_or(false);
         let long_tail_backfill_batch_per_cycle = self
             .read_setting_i64_value(ACQUISITION_LONG_TAIL_BACKFILL_BATCH_PER_CYCLE_KEY, None)
             .await?
@@ -151,9 +156,214 @@ impl AppUseCase {
     }
 }
 
+/// A scope's convergence coordinates: its stable coverage key, media facet,
+/// current search-criteria fingerprint, and the indexer ids routed to it. The
+/// coverage write-hook (after a background search) and the convergence read-gate
+/// (the RSS-only decision, Phase 1d) both derive this from the same resolution,
+/// so writer and reader agree on the fingerprint by construction.
+#[derive(Debug, Clone)]
+pub(crate) struct ScopeConvergence {
+    pub scope_key: String,
+    pub facet: String,
+    pub fingerprint: String,
+    pub routed_indexer_ids: Vec<String>,
+}
+
+/// Stable coverage key for a submission scope, or `None` for scopes that are not
+/// a single convergence unit (episode sets, orphans) and so are never recorded
+/// as converged.
+pub(crate) fn convergence_scope_key(scope: &SubmissionScope, title_id: &str) -> Option<String> {
+    match scope {
+        SubmissionScope::Episode { episode_id } => Some(format!("episode:{episode_id}")),
+        SubmissionScope::SeriesMovie {
+            series_movie_link_id,
+        } => Some(format!("series_movie:{series_movie_link_id}")),
+        SubmissionScope::Collection { collection_id } => Some(format!("collection:{collection_id}")),
+        SubmissionScope::Title => {
+            let title_id = title_id.trim();
+            (!title_id.is_empty()).then(|| format!("title:{title_id}"))
+        }
+        SubmissionScope::EpisodeSet { .. } | SubmissionScope::Orphan => None,
+    }
+}
+
+/// Deterministic version string for a quality profile's acceptance criteria. Any
+/// edit that changes acceptance (cutoff, tiers, codecs, required audio, scoring)
+/// changes this, so the fingerprint changes and still-unsatisfied scopes re-open
+/// for convergence. Canonical (recursively sorted-key) JSON keeps the hash stable
+/// regardless of map iteration order.
+pub(crate) fn profile_criteria_version(criteria: &QualityProfileCriteria) -> String {
+    let value = serde_json::to_value(criteria).unwrap_or(serde_json::Value::Null);
+    crate::sha256_hex(canonical_json_string(&value))
+}
+
+fn canonical_json_string(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::Object(map) => {
+            let mut keys: Vec<&String> = map.keys().collect();
+            keys.sort();
+            let mut out = String::from("{");
+            for (index, key) in keys.into_iter().enumerate() {
+                if index > 0 {
+                    out.push(',');
+                }
+                out.push_str(&serde_json::to_string(key).unwrap_or_default());
+                out.push(':');
+                out.push_str(&canonical_json_string(&map[key]));
+            }
+            out.push('}');
+            out
+        }
+        serde_json::Value::Array(items) => {
+            let mut out = String::from("[");
+            for (index, item) in items.iter().enumerate() {
+                if index > 0 {
+                    out.push(',');
+                }
+                out.push_str(&canonical_json_string(item));
+            }
+            out.push(']');
+            out
+        }
+        other => other.to_string(),
+    }
+}
+
+impl AppUseCase {
+    /// Convergence coordinates for an active background search of `subject` under
+    /// `title`, or `None` when the scope is not a single convergence unit or no
+    /// indexers are routed to it.
+    pub(crate) async fn resolve_scope_convergence(
+        &self,
+        title: &Title,
+        subject: &ResolvedReleaseSearchSubject,
+    ) -> Option<ScopeConvergence> {
+        let scope_key = convergence_scope_key(&subject.submission_scope, &subject.title_id)?;
+        let facet = subject.owner_facet.as_str().to_string();
+
+        let context = self
+            .resolve_upgrade_context_for_title_with_category_and_quality(
+                title,
+                subject.grabbed_release.as_deref(),
+                Some(subject.category.as_str()),
+                None,
+            )
+            .await;
+        let fingerprint = compute_search_fingerprint(
+            &context.profile.id,
+            &profile_criteria_version(&context.profile.criteria),
+            &context.profile.criteria.required_audio_languages,
+        );
+
+        let routed_indexer_ids = self.routed_indexer_ids_for_search(title, subject).await;
+        if routed_indexer_ids.is_empty() {
+            return None;
+        }
+
+        Some(ScopeConvergence {
+            scope_key,
+            facet,
+            fingerprint,
+            routed_indexer_ids,
+        })
+    }
+
+    /// The indexer ids an active search of `subject` targets — the enabled routing
+    /// entries for the scope, or every configured indexer when no routing is set.
+    /// Mirrors the indexer selection in `search_and_score_releases` so coverage is
+    /// recorded for exactly the indexers a search would query.
+    async fn routed_indexer_ids_for_search(
+        &self,
+        title: &Title,
+        subject: &ResolvedReleaseSearchSubject,
+    ) -> Vec<String> {
+        let lookup = QualityProfileLookup {
+            title_tags: &subject.title_tags,
+            library_id: Some(title.library_id.as_str()),
+            imdb_id: subject.imdb_id.as_deref(),
+            tvdb_id: subject.tvdb_id.as_deref(),
+            category_hint: Some(subject.owner_facet.as_str()),
+        };
+        let scope_id = self.quality_profile_scope_id(lookup);
+        match self
+            .resolve_indexer_routing(Some(title.library_id.as_str()), scope_id.as_deref())
+            .await
+        {
+            Some(plan) => plan
+                .entries
+                .into_iter()
+                .filter(|(_, entry)| entry.enabled)
+                .map(|(indexer_id, _)| indexer_id)
+                .collect(),
+            None => self
+                .services
+                .integrations
+                .indexer_configs
+                .list(None)
+                .await
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|config| config.is_enabled)
+                .map(|config| config.id)
+                .collect(),
+        }
+    }
+
+    /// Record convergence coverage for a background acquisition search that just
+    /// queried this scope's routed indexers. Gated behind
+    /// `acquisition.rss_first_enabled` (default off during rollout); a no-op when
+    /// disabled, when the scope is not a convergence unit, or when nothing is
+    /// routed. Best-effort: a failed write is logged, never propagated, so it can
+    /// never break the acquisition path.
+    pub(crate) async fn record_background_search_coverage(
+        &self,
+        title: &Title,
+        subject: &ResolvedReleaseSearchSubject,
+    ) {
+        let enabled = self
+            .convergence_settings()
+            .await
+            .map(|settings| settings.rss_first_enabled)
+            .unwrap_or(false);
+        if !enabled {
+            return;
+        }
+        let Some(convergence) = self.resolve_scope_convergence(title, subject).await else {
+            return;
+        };
+        for indexer_id in &convergence.routed_indexer_ids {
+            if let Err(error) = self
+                .services
+                .integrations
+                .scope_indexer_coverage
+                .record_coverage(
+                    &convergence.scope_key,
+                    &convergence.facet,
+                    indexer_id,
+                    &convergence.fingerprint,
+                )
+                .await
+            {
+                tracing::warn!(
+                    scope_key = convergence.scope_key.as_str(),
+                    facet = convergence.facet.as_str(),
+                    indexer_id = indexer_id.as_str(),
+                    error = %error,
+                    "failed to record convergence coverage"
+                );
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::compute_search_fingerprint;
+    use super::{
+        canonical_json_string, compute_search_fingerprint, convergence_scope_key,
+        profile_criteria_version,
+    };
+    use crate::contracts::SubmissionScope;
+    use crate::quality_profile::QualityProfileCriteria;
 
     #[test]
     fn fingerprint_is_stable_and_order_independent_for_audio() {
@@ -181,5 +391,90 @@ mod tests {
             compute_search_fingerprint("p1", "v1", &["en".into(), "ja".into()])
         );
         assert_ne!(base, compute_search_fingerprint("p1", "v1", &[]));
+    }
+
+    fn test_criteria() -> QualityProfileCriteria {
+        crate::quality_profile::default_quality_profile_for_search().criteria
+    }
+
+    #[test]
+    fn convergence_scope_key_maps_each_scope_kind() {
+        assert_eq!(
+            convergence_scope_key(
+                &SubmissionScope::Episode {
+                    episode_id: "e1".into()
+                },
+                "t1"
+            ),
+            Some("episode:e1".to_string())
+        );
+        assert_eq!(
+            convergence_scope_key(
+                &SubmissionScope::SeriesMovie {
+                    series_movie_link_id: "l1".into()
+                },
+                "t1"
+            ),
+            Some("series_movie:l1".to_string())
+        );
+        assert_eq!(
+            convergence_scope_key(
+                &SubmissionScope::Collection {
+                    collection_id: "c1".into()
+                },
+                "t1"
+            ),
+            Some("collection:c1".to_string())
+        );
+        assert_eq!(
+            convergence_scope_key(&SubmissionScope::Title, "t1"),
+            Some("title:t1".to_string())
+        );
+        // Scopes that are not a single convergence unit are never recorded.
+        assert_eq!(convergence_scope_key(&SubmissionScope::Title, "   "), None);
+        assert_eq!(
+            convergence_scope_key(
+                &SubmissionScope::EpisodeSet {
+                    episode_ids: vec!["e1".into()]
+                },
+                "t1"
+            ),
+            None
+        );
+        assert_eq!(convergence_scope_key(&SubmissionScope::Orphan, "t1"), None);
+    }
+
+    #[test]
+    fn canonical_json_string_is_key_order_independent() {
+        let a = serde_json::json!({ "b": 1, "a": [ { "y": 1, "x": 2 } ] });
+        let b = serde_json::json!({ "a": [ { "x": 2, "y": 1 } ], "b": 1 });
+        assert_eq!(canonical_json_string(&a), canonical_json_string(&b));
+        assert!(canonical_json_string(&a).starts_with("{\"a\":"));
+    }
+
+    #[test]
+    fn profile_criteria_version_is_stable_and_edit_sensitive() {
+        let base = test_criteria();
+        assert_eq!(
+            profile_criteria_version(&base),
+            profile_criteria_version(&base.clone()),
+            "the same criteria must hash to the same version"
+        );
+
+        let mut edited = base.clone();
+        edited.allow_upgrades = !base.allow_upgrades;
+        assert_ne!(
+            profile_criteria_version(&base),
+            profile_criteria_version(&edited),
+            "an acceptance-criteria edit must change the version"
+        );
+
+        let mut audio_edited = base.clone();
+        audio_edited.required_audio_languages.push("ja".to_string());
+        assert_ne!(
+            profile_criteria_version(&base),
+            profile_criteria_version(&audio_edited),
+            "a required-audio change must change the version"
+        );
     }
 }
