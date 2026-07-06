@@ -684,6 +684,7 @@ export function useGlobalSearch({
               ? previous
               : nextRequestableLibrariesByFacet;
           });
+          catalogConfigLoadedRef.current = true;
         } catch {
           // ignore requestable library fallback failures here; search remains functional
         }
@@ -715,6 +716,22 @@ export function useGlobalSearch({
     [isCatalogConfigReady, refreshCatalogQualityProfileState],
   );
 
+  const primeCatalogConfigForMetadataActions = useCallback(async () => {
+    if (catalogConfigLoadedRef.current) {
+      return;
+    }
+
+    try {
+      await refreshCatalogQualityProfileState();
+    } catch {
+      // Search should still render results if config priming unexpectedly fails.
+    }
+  }, [refreshCatalogQualityProfileState]);
+
+  useEffect(() => {
+    void refreshCatalogQualityProfileState();
+  }, [refreshCatalogQualityProfileState]);
+
   // Re-fetch search config when settings change (cross-client via WebSocket).
   const searchSettingsKeys = useMemo(
     () =>
@@ -733,10 +750,7 @@ export function useGlobalSearch({
   useSettingsSubscription(
     useCallback(
       (keys: string[]) => {
-        if (
-          catalogConfigLoadedRef.current &&
-          keys.some((k) => searchSettingsKeys.has(k))
-        ) {
+        if (keys.some((k) => searchSettingsKeys.has(k))) {
           void refreshCatalogQualityProfileState();
         }
       },
@@ -1022,6 +1036,8 @@ export function useGlobalSearch({
             series: seriesResults,
             anime: animeResults,
           };
+          await primeCatalogConfigForMetadataActions();
+          if (requestId !== autocompleteRequestId.current) return;
           setMetadataSearchResults((previous) => {
             const unchanged = Object.keys(nextMetadata).every((key) => {
               const prev = previous[key] ?? [];
@@ -1080,6 +1096,7 @@ export function useGlobalSearch({
       emptyCatalogTitlesByTvdbId,
       emptyMetadataSearchResults,
       lookupCatalogTitlesByTvdbIds,
+      primeCatalogConfigForMetadataActions,
       resolveCatalogPosterUrl,
       setGlobalStatus,
       sortByRelevance,
