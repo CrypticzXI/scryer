@@ -3792,6 +3792,14 @@ pub struct CutoffUnmetItemPayload {
     pub target_tier: String,
 }
 
+/// RFC 119 bounded view: one page of cutoff-unmet targets + the full unmet
+/// count, so the UI paginates instead of loading the whole set.
+#[derive(SimpleObject, Clone)]
+pub struct CutoffUnmetTitlesPagePayload {
+    pub items: Vec<CutoffUnmetItemPayload>,
+    pub total: i64,
+}
+
 #[derive(SimpleObject, Clone)]
 pub struct PauseWantedItemPayload {
     pub id: async_graphql::ID,

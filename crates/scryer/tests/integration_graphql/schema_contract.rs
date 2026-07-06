@@ -109,11 +109,11 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
         .filter_map(|ty| ty["name"].as_str())
         .collect();
 
-    assert_eq!(query_field_count, 117);
+    assert_eq!(query_field_count, 118);
     assert_eq!(mutation_field_count, 166);
     assert_eq!(subscription_field_count, 13);
-    assert_eq!(public_types.len(), 501);
-    assert_eq!(kind_count("OBJECT"), 263);
+    assert_eq!(public_types.len(), 502);
+    assert_eq!(kind_count("OBJECT"), 264);
     assert_eq!(kind_count("INPUT_OBJECT"), 151);
     assert_eq!(kind_count("ENUM"), 77);
     assert_eq!(kind_count("SCALAR"), 10);
@@ -125,6 +125,7 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
     assert!(query_field_names.contains(&"outboundRateLimitSnapshot"));
     assert!(query_field_names.contains(&"runtimeInfo"));
     assert!(query_field_names.contains(&"upstreamSchedulerSnapshot"));
+    assert!(query_field_names.contains(&"cutoffUnmetTitlesPage"));
     assert!(mutation_field_names.contains(&"clearExternalImportSetupSecretDraft"));
     assert!(mutation_field_names.contains(&"createIndexerProxyConfig"));
     assert!(mutation_field_names.contains(&"deleteIndexerProxyConfig"));
@@ -151,6 +152,7 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
     assert!(public_type_names.contains(&"UpdateBackupSettingsInput"));
     assert!(public_type_names.contains(&"UpstreamSchedulerSnapshotEntryPayload"));
     assert!(public_type_names.contains(&"UpstreamSchedulerSnapshotPayload"));
+    assert!(public_type_names.contains(&"CutoffUnmetTitlesPagePayload"));
 }
 
 #[tokio::test]

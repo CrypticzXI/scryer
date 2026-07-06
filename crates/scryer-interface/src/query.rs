@@ -2112,6 +2112,34 @@ impl AcquisitionQueries {
         Ok(items.into_iter().map(from_cutoff_unmet_item).collect())
     }
 
+    /// RFC 119 bounded view: a single page of cutoff-unmet targets plus the full
+    /// unmet count, so the UI paginates instead of loading the whole set.
+    async fn cutoff_unmet_titles_page(
+        &self,
+        ctx: &Context<'_>,
+        facet: Option<MediaFacetValue>,
+        library_ids: Option<Vec<ID>>,
+        limit: i32,
+        offset: i32,
+    ) -> GqlResult<CutoffUnmetTitlesPagePayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let page = app
+            .list_cutoff_unmet_titles_page(
+                &actor,
+                facet.map(MediaFacetValue::into_domain),
+                optional_ids_to_strings(library_ids),
+                limit.max(0) as usize,
+                offset.max(0) as usize,
+            )
+            .await
+            .map_err(to_gql_error)?;
+        Ok(CutoffUnmetTitlesPagePayload {
+            items: page.items.into_iter().map(from_cutoff_unmet_item).collect(),
+            total: page.total as i64,
+        })
+    }
+
     async fn title_acquisition_diagnostics(
         &self,
         ctx: &Context<'_>,
