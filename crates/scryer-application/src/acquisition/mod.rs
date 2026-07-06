@@ -1,5 +1,6 @@
 pub(crate) use crate::*;
 
+pub(crate) mod convergence;
 pub(crate) mod coverage;
 pub(crate) mod decision_helpers;
 pub(crate) mod delay_profile;
