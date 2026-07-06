@@ -132,6 +132,83 @@ fn wanted_due_text_order(value: Option<&str>) -> (u8, String) {
     (0, value.to_lowercase())
 }
 
+/// Recency window that marks a convergence target as **hot** (searched fast). A target
+/// whose air/release/add baseline is within this many days is high-value.
+const CONVERGENCE_RECENT_TARGET_WINDOW_DAYS: i64 = 30;
+
+/// Map a wanted item (a materialized convergence target) to a `ConvergenceTarget` for
+/// the cursor. Returns `None` for a scope that is not a convergence unit (a true
+/// orphan). `routed_hosts` is left empty for now — 112 admission inside the search
+/// already protects hosts; the 112-snapshot host pre-skip is a follow-up refinement
+/// (RFC 119 §12.1).
+#[allow(dead_code)] // wired by the convergence cursor cycle (RFC 119 §12.1, cutover)
+fn wanted_item_convergence_target(
+    item: &WantedItem,
+) -> Option<crate::acquisition::convergence::ConvergenceTarget> {
+    let scope = crate::contracts::SubmissionScope::from_persisted(
+        &item.title_id,
+        item.episode_id.clone(),
+        item.collection_id.clone(),
+        item.series_movie_link_id.clone(),
+        None,
+    );
+    let scope_key =
+        crate::acquisition::convergence::convergence_scope_key(&scope, &item.title_id)?;
+    let is_hot = item
+        .baseline_date
+        .as_deref()
+        .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
+        .is_some_and(|date| {
+            Utc::now().signed_duration_since(date.with_timezone(&Utc))
+                < chrono::Duration::days(CONVERGENCE_RECENT_TARGET_WINDOW_DAYS)
+        });
+    Some(crate::acquisition::convergence::ConvergenceTarget {
+        scope_key,
+        routed_hosts: Vec::new(),
+        is_hot,
+    })
+}
+
+/// Select which of `items` to search this cycle via the convergence cursor (§D3):
+/// rotate over the target set after `resume_after`, hot-first, capped at `max_scopes`.
+/// Returns the selected items (original order preserved) and the new cursor resume
+/// position to carry into the next cycle. Pure — the loop supplies/persists the
+/// resume position and the cap.
+#[allow(dead_code)] // wired by the convergence cursor cycle (RFC 119 §12.1, cutover)
+fn convergence_cursor_select(
+    items: Vec<WantedItem>,
+    resume_after: Option<&str>,
+    max_scopes: usize,
+) -> (Vec<WantedItem>, Option<String>) {
+    let targets: Vec<crate::acquisition::convergence::ConvergenceTarget> = items
+        .iter()
+        .filter_map(wanted_item_convergence_target)
+        .collect();
+    let selection = crate::acquisition::convergence::select_convergence_batch(
+        &targets,
+        |_| true,
+        resume_after,
+        max_scopes,
+    );
+    let selected_keys: std::collections::HashSet<String> =
+        selection.scope_keys.into_iter().collect();
+    let selected = items
+        .into_iter()
+        .filter(|item| {
+            wanted_item_convergence_target(item)
+                .is_some_and(|target| selected_keys.contains(&target.scope_key))
+        })
+        .collect();
+    (selected, selection.resume_after)
+}
+
+/// In-memory rotating-cursor position for RFC 119 convergence selection (§D3),
+/// carried across acquisition cycles within a running process. Resets on restart —
+/// the cursor simply re-rotates from the start, still covering every scope over
+/// cycles. Only consulted when `rss_first_enabled`.
+static CONVERGENCE_CURSOR_POSITION: std::sync::Mutex<Option<String>> =
+    std::sync::Mutex::new(None);
+
 pub(crate) async fn process_due_wanted_items_with_blocked_facets(
     app: &AppUseCase,
     blocked_facets: &[MediaFacet],
@@ -184,8 +261,31 @@ pub(crate) async fn process_due_wanted_items_with_blocked_facets(
     }
 
     let fetched_due_count = due_items.len();
-    let (due_items, deferred_per_title, deferred_by_global_limit) =
-        select_due_items_for_cooperative_slice(due_items);
+    // RFC 119: when convergence is enabled, the rotating cursor (§D3) drives which
+    // targets are searched this cycle — hot-first, capped, fair — instead of the
+    // next_search_at cadence ordering. Gated; off by default until the cutover.
+    let convergence_settings = app.convergence_settings().await.ok();
+    let rss_first = convergence_settings
+        .as_ref()
+        .is_some_and(|settings| settings.rss_first_enabled);
+    let (due_items, deferred_per_title, deferred_by_global_limit) = if rss_first {
+        let cap = convergence_settings
+            .as_ref()
+            .map(|settings| settings.long_tail_backfill_batch_per_cycle.max(1) as usize)
+            .unwrap_or(25);
+        let resume = CONVERGENCE_CURSOR_POSITION
+            .lock()
+            .map(|guard| guard.clone())
+            .unwrap_or(None);
+        let (selected, next_resume) =
+            convergence_cursor_select(due_items, resume.as_deref(), cap);
+        if let Ok(mut guard) = CONVERGENCE_CURSOR_POSITION.lock() {
+            *guard = next_resume;
+        }
+        (selected, std::collections::HashMap::new(), 0usize)
+    } else {
+        select_due_items_for_cooperative_slice(due_items)
+    };
     if deferred_by_global_limit > 0 || !deferred_per_title.is_empty() {
         info!(
             fetched_due_count,
@@ -287,6 +387,13 @@ pub(crate) async fn process_due_wanted_items_with_blocked_facets(
         let Some(scheduling_item) = wanted_item_for_search_reschedule(current.as_ref()) else {
             continue;
         };
+
+        // RFC 119: under convergence the cursor paces re-search — the next_search_at
+        // cadence is not applied (F). Converged scopes are skipped by the read-gate;
+        // uncovered ones remain due and the cursor rotates to them.
+        if rss_first {
+            continue;
+        }
 
         // Item is still "wanted" (no grab succeeded, or all candidates were
         // exhausted).  Update the search schedule with backoff.
