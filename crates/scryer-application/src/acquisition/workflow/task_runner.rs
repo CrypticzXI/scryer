@@ -906,6 +906,25 @@ async fn process_single_wanted_item(
         return Ok(());
     }
 
+    // RFC 119: once a scope has been actively searched against every routed
+    // indexer under the current search-criteria fingerprint, it has converged —
+    // ride RSS instead of re-searching it. Returning here lets the centralized
+    // reschedule below advance its cadence like any other no-grab cycle, so a
+    // profile change (new fingerprint) re-opens it. Gated off by default;
+    // interactive/manual searches never reach this background path.
+    if app
+        .scope_converged_for_rss_first(&search_title, &subject)
+        .await
+    {
+        info!(
+            title_id = title.id.as_str(),
+            title_name = title.name.as_str(),
+            media_type = item.media_type.as_str(),
+            "background acquisition: scope converged across routed indexers, riding RSS (skipping active search)"
+        );
+        return Ok(());
+    }
+
     debug!(
         title_id = title.id.as_str(),
         title_name = title.name.as_str(),

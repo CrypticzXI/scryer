@@ -108,7 +108,6 @@ impl AppUseCase {
     /// for `scope_key`/`facet` under `fingerprint` — routed minus current-
     /// fingerprint coverage. The optional slow re-converge backstop treats
     /// coverage older than the configured window as uncovered.
-    #[allow(dead_code)] // wired by the convergence cursor (RFC 119 Phase 1d)
     pub(crate) async fn uncovered_indexers_for_scope(
         &self,
         scope_key: &str,
@@ -141,7 +140,6 @@ impl AppUseCase {
 
     /// A scope has converged (→ RSS-only, no active search) once every routed
     /// indexer has current-fingerprint coverage.
-    #[allow(dead_code)] // wired by the convergence cursor (RFC 119 Phase 1d)
     pub(crate) async fn scope_is_converged(
         &self,
         scope_key: &str,
@@ -353,6 +351,38 @@ impl AppUseCase {
                 );
             }
         }
+    }
+
+    /// Whether an active background search of this scope should be skipped in
+    /// favour of RSS: convergence is enabled and every routed indexer already has
+    /// current-fingerprint coverage. Uses the same resolution as the coverage
+    /// write-hook, so a scope recorded by one search is recognised as converged
+    /// by the next cycle. A no-op (returns `false`) when disabled — the caller
+    /// then searches as usual.
+    pub(crate) async fn scope_converged_for_rss_first(
+        &self,
+        title: &Title,
+        subject: &ResolvedReleaseSearchSubject,
+    ) -> bool {
+        let enabled = self
+            .convergence_settings()
+            .await
+            .map(|settings| settings.rss_first_enabled)
+            .unwrap_or(false);
+        if !enabled {
+            return false;
+        }
+        let Some(convergence) = self.resolve_scope_convergence(title, subject).await else {
+            return false;
+        };
+        self.scope_is_converged(
+            &convergence.scope_key,
+            &convergence.facet,
+            &convergence.fingerprint,
+            &convergence.routed_indexer_ids,
+        )
+        .await
+        .unwrap_or(false)
     }
 }
 

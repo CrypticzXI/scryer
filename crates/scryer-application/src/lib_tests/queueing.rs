@@ -2552,7 +2552,11 @@ impl ScopeIndexerCoverageRepository for RecordingScopeIndexerCoverageRepo {
         indexer_id: &str,
         fingerprint: &str,
     ) -> AppResult<()> {
-        self.rows.lock().await.push((
+        // Upsert: a re-search under a new fingerprint replaces the old row,
+        // matching the real store's ON CONFLICT semantics.
+        let mut rows = self.rows.lock().await;
+        rows.retain(|(sk, f, id, _)| !(sk == scope_key && f == facet && id == indexer_id));
+        rows.push((
             scope_key.to_string(),
             facet.to_string(),
             indexer_id.to_string(),
@@ -2563,12 +2567,21 @@ impl ScopeIndexerCoverageRepository for RecordingScopeIndexerCoverageRepo {
 
     async fn covered_indexers(
         &self,
-        _scope_key: &str,
-        _facet: &str,
-        _fingerprint: &str,
+        scope_key: &str,
+        facet: &str,
+        fingerprint: &str,
         _stale_before: Option<chrono::DateTime<chrono::Utc>>,
     ) -> AppResult<Vec<String>> {
-        Ok(Vec::new())
+        // The reconverge backstop (stale_before) is exercised by the store-level
+        // test; it is off by default here.
+        Ok(self
+            .rows
+            .lock()
+            .await
+            .iter()
+            .filter(|(sk, f, _, fp)| sk == scope_key && f == facet && fp == fingerprint)
+            .map(|(_, _, indexer_id, _)| indexer_id.clone())
+            .collect())
     }
 
     async fn prune_scope(&self, _scope_key: &str, _facet: &str) -> AppResult<()> {
@@ -2726,5 +2739,65 @@ async fn background_search_records_no_coverage_when_disabled() {
     assert!(
         coverage.recorded().await.is_empty(),
         "no coverage is recorded while convergence is disabled"
+    );
+}
+
+#[tokio::test]
+async fn scope_converges_only_after_every_routed_indexer_is_covered() {
+    let settings = Arc::new(StoredSettingsRepo::default());
+    settings
+        .set_value(
+            SETTINGS_SCOPE_SYSTEM,
+            crate::acquisition::convergence::ACQUISITION_RSS_FIRST_ENABLED_KEY,
+            "true",
+        )
+        .await;
+    let configs = vec![
+        synthetic_direct_nab_indexer_config("indexer-a", "newznab"),
+        synthetic_direct_nab_indexer_config("indexer-b", "newznab"),
+    ];
+    let (app, user) = bootstrap_with_search_settings_indexer_and_configs(
+        settings,
+        Arc::new(MockIndexerClient),
+        configs,
+    );
+    let coverage = Arc::new(RecordingScopeIndexerCoverageRepo::new());
+    let app = app.with_test_overrides(|builder| {
+        builder.with_scope_indexer_coverage_store(coverage.clone())
+    });
+
+    let (title, subject) = convergence_test_title_and_subject(&app, &user).await;
+    let convergence = app
+        .resolve_scope_convergence(&title, &subject)
+        .await
+        .expect("routed convergence coordinates");
+
+    // A fresh scope is not converged, so the background path would search.
+    assert!(
+        !app.scope_converged_for_rss_first(&title, &subject).await,
+        "a fresh scope with no coverage is not converged"
+    );
+
+    // Coverage on only one of the two routed indexers is still not enough.
+    coverage
+        .record_coverage(
+            &convergence.scope_key,
+            &convergence.facet,
+            "indexer-a",
+            &convergence.fingerprint,
+        )
+        .await
+        .unwrap();
+    assert!(
+        !app.scope_converged_for_rss_first(&title, &subject).await,
+        "partial coverage does not converge the scope"
+    );
+
+    // The write-hook records coverage for every routed indexer; the read-gate
+    // (using the same resolution) then recognises the scope as converged.
+    app.record_background_search_coverage(&title, &subject).await;
+    assert!(
+        app.scope_converged_for_rss_first(&title, &subject).await,
+        "scope converges once every routed indexer is covered under the current fingerprint"
     );
 }
