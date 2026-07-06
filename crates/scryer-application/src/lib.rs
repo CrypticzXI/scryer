@@ -366,9 +366,10 @@ pub use null_repositories::{
     NullNotificationChannelRepository, NullNotificationSubscriptionRepository, NullOAuthRepository,
     NullPendingReleaseRepository, NullPluginDescriptorLoader, NullPluginHttpTrustConfigRuntime,
     NullPluginInstallationRepository, NullPostProcessingScriptRepository, NullRuleSetRepository,
-    NullSettingsRepository, NullStagedNzbStore, NullSubtitleDownloadRepository,
-    NullSystemInfoProvider, NullTitleImageProcessor, NullTitleImageRepository,
-    NullUpstreamScheduler, NullWantedItemRepository, NullWorkflowOperationRepository,
+    NullScopeIndexerCoverageRepository, NullSettingsRepository, NullStagedNzbStore,
+    NullSubtitleDownloadRepository, NullSystemInfoProvider, NullTitleImageProcessor,
+    NullTitleImageRepository, NullUpstreamScheduler, NullWantedItemRepository,
+    NullWorkflowOperationRepository,
 };
 pub use ports::{
     AcquisitionStateRepository, BlocklistRepository, BuiltinDownloadClientConnectionTester,
@@ -400,10 +401,10 @@ pub use ports::{
     NotificationTitlePayload, OAuthRepository, PendingReleaseRepository, PlexServerDiscovery,
     PlexServerUser, PluginDescriptorLoader, PluginHttpTrustConfigRuntime,
     PluginInstallationRepository, PostProcessingScriptRepository, QualityProfileRepository,
-    ReleaseAttemptRepository, RuleSetRepository, RuntimePluginLoad, SettingsRepository,
-    ShowRepository, StagedNzbStore, SubtitleDownloadRepository, SubtitlePluginProvider,
-    SubtitleProviderClient, SubtitleProviderConfigRepository, SystemInfoProvider,
-    TitleImageProcessor, TitleImageRepository, TitleRepository, TotpRepository,
+    ReleaseAttemptRepository, RuleSetRepository, RuntimePluginLoad, ScopeIndexerCoverageRepository,
+    SettingsRepository, ShowRepository, StagedNzbStore, SubtitleDownloadRepository,
+    SubtitlePluginProvider, SubtitleProviderClient, SubtitleProviderConfigRepository,
+    SystemInfoProvider, TitleImageProcessor, TitleImageRepository, TitleRepository, TotpRepository,
     UserExternalAccountRepository, UserRepository, VerifiedExternalIdentity, WantedItemRepository,
     WebauthnRepository, WorkflowOperationInfo, WorkflowOperationRepository,
 };

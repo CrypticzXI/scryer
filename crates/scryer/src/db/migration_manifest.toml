@@ -753,6 +753,23 @@ file = "postgres/migrations/0155_indexer_proxy_configs.sql"
 engine = "postgres"
 scope = "all"
 
+[[migration]]
+version = 156
+description = "scope indexer coverage convergence ledger"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0156_scope_indexer_coverage.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0156_scope_indexer_coverage.sql"
+engine = "postgres"
+scope = "all"
+
 [[baseline]]
 through_version = 122
 file = "baselines/0122_baseline.sql"

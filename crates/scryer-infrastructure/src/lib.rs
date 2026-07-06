@@ -246,6 +246,7 @@ pub mod sqlite {
     pub use crate::downloads::config_store::DownloadClientConfigStore;
     pub use crate::indexers::config_store::IndexerConfigStore;
     pub use crate::indexers::proxy_config_store::IndexerProxyConfigStore;
+    pub use crate::indexers::scope_indexer_coverage_store::ScopeIndexerCoverageStore;
     #[cfg(feature = "image-processing")]
     pub use crate::media::images::processor::HttpTitleImageProcessor;
     pub use crate::media::images::title_image_store::TitleImageStore;
@@ -289,6 +290,7 @@ pub use downloads::staged_nzb_store::FileSystemStagedNzbStore;
 pub use indexers::config_store::IndexerConfigStore;
 pub use indexers::providers::prowlarr::{NativeProwlarrIndexerProvider, PROWLARR_PROVIDER_TYPE};
 pub use indexers::proxy_config_store::IndexerProxyConfigStore;
+pub use indexers::scope_indexer_coverage_store::ScopeIndexerCoverageStore;
 pub use indexers::search_client::MultiIndexerSearchClient;
 pub use indexers::search_learning::IndexerSearchLearningStore;
 pub use indexers::stats::InMemoryIndexerStatsTracker;

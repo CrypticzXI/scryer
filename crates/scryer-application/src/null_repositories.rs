@@ -49,17 +49,17 @@ use crate::{
     PluginInstallationRepository, PostProcessingScriptRepository, ReleaseDecision,
     RuleSetRepository, SchedulerAdmission, SchedulerBatchDecision, SchedulerBatchRequest,
     SchedulerFeedback, SchedulerLease, SchedulerSnapshot, SchedulerSnapshotFilter,
-    SettingsRepository, StagedNzbRef, StagedNzbStore, SystemInfoProvider,
-    TitleEpisodeProgressSummary, TitleImageBlob, TitleImageKind, TitleImageProcessor,
-    TitleImageRepository, TitleImageSourceResult, TitleImageSyncTask, TitleImageVariantSpec,
-    TitleMediaFile, TitleMediaSizeSummary, TitleMovieMediaSummary, TitleQualitySummary, UiSettings,
-    UiSettingsUpdate, UpstreamScheduler, UserExternalAccountRepository, UserUiSettingsRepository,
-    VerifiedExternalIdentity, WantedItem, WantedItemRepository, WebauthnChallengeRecord,
-    WebauthnCredentialRecord, WebauthnRepository, WorkflowOperationInfo,
-    WorkflowOperationRepository, ports::CatalogDiscoveryCandidatesRecord, ports::DatastoreInfo,
-    ports::LogicalBackupExporter, ports::TotpRepository, types::TotpCredentialRecord,
-    types::TotpEnrollmentChallengeRecord, types::TotpFailedAttemptRecord,
-    types::TotpRecoveryCodeRecord,
+    ScopeIndexerCoverageRepository, SettingsRepository, StagedNzbRef, StagedNzbStore,
+    SystemInfoProvider, TitleEpisodeProgressSummary, TitleImageBlob, TitleImageKind,
+    TitleImageProcessor, TitleImageRepository, TitleImageSourceResult, TitleImageSyncTask,
+    TitleImageVariantSpec, TitleMediaFile, TitleMediaSizeSummary, TitleMovieMediaSummary,
+    TitleQualitySummary, UiSettings, UiSettingsUpdate, UpstreamScheduler,
+    UserExternalAccountRepository, UserUiSettingsRepository, VerifiedExternalIdentity, WantedItem,
+    WantedItemRepository, WebauthnChallengeRecord, WebauthnCredentialRecord, WebauthnRepository,
+    WorkflowOperationInfo, WorkflowOperationRepository, ports::CatalogDiscoveryCandidatesRecord,
+    ports::DatastoreInfo, ports::LogicalBackupExporter, ports::TotpRepository,
+    types::TotpCredentialRecord, types::TotpEnrollmentChallengeRecord,
+    types::TotpFailedAttemptRecord, types::TotpRecoveryCodeRecord,
 };
 
 #[derive(Default)]
@@ -103,6 +103,36 @@ impl IndexerProxyConfigRepository for NullIndexerProxyConfigRepository {
         _error_message: Option<String>,
         _error_at: Option<chrono::DateTime<chrono::Utc>>,
     ) -> AppResult<()> {
+        Ok(())
+    }
+}
+
+#[derive(Default)]
+pub struct NullScopeIndexerCoverageRepository;
+
+#[async_trait]
+impl ScopeIndexerCoverageRepository for NullScopeIndexerCoverageRepository {
+    async fn record_coverage(
+        &self,
+        _scope_key: &str,
+        _facet: &str,
+        _indexer_id: &str,
+        _fingerprint: &str,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn covered_indexers(
+        &self,
+        _scope_key: &str,
+        _facet: &str,
+        _fingerprint: &str,
+        _stale_before: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> AppResult<Vec<String>> {
+        Ok(Vec::new())
+    }
+
+    async fn prune_scope(&self, _scope_key: &str, _facet: &str) -> AppResult<()> {
         Ok(())
     }
 }

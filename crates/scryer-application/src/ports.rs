@@ -1906,6 +1906,41 @@ pub trait IndexerCapsSnapshotRefresher: Send + Sync {
     ) -> AppResult<Option<IndexerCapsSnapshot>>;
 }
 
+/// RFC 119 convergence ledger: which indexers an acquisition scope's catalog has
+/// been actively searched against, under which search-criteria fingerprint. A
+/// scope is "converged" (RSS-only) once every routed indexer has a
+/// current-fingerprint coverage row; a fingerprint change or a new indexer
+/// re-opens convergence. Coverage is recorded only for a search that actually
+/// queried the indexer (results incl. empty) — never a deferral/error.
+#[async_trait]
+pub trait ScopeIndexerCoverageRepository: Send + Sync {
+    /// Upsert coverage for `(scope_key, facet, indexer_id)`, overwriting any
+    /// prior fingerprint/timestamp (a re-search under a new fingerprint replaces
+    /// the old row).
+    async fn record_coverage(
+        &self,
+        scope_key: &str,
+        facet: &str,
+        indexer_id: &str,
+        fingerprint: &str,
+    ) -> AppResult<()>;
+
+    /// Indexer ids that currently have coverage for the scope matching
+    /// `fingerprint` (rows with a stale fingerprint are excluded, i.e. treated as
+    /// uncovered). `stale_before`, when set, additionally excludes rows searched
+    /// before it (the optional slow re-converge backstop).
+    async fn covered_indexers(
+        &self,
+        scope_key: &str,
+        facet: &str,
+        fingerprint: &str,
+        stale_before: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> AppResult<Vec<String>>;
+
+    /// Drop all coverage rows for a scope (e.g. it is no longer a target).
+    async fn prune_scope(&self, scope_key: &str, facet: &str) -> AppResult<()>;
+}
+
 #[async_trait]
 pub trait DownloadClientConfigRepository: Send + Sync {
     async fn list(&self, client_type: Option<String>) -> AppResult<Vec<DownloadClientConfig>>;

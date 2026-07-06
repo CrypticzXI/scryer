@@ -37,6 +37,7 @@ mod migrations;
 mod oauth;
 mod permissions_users_shows;
 mod plugins;
+mod scope_indexer_coverage;
 mod settings_and_writer;
 mod stores_migrations_regressions;
 mod title_images;
