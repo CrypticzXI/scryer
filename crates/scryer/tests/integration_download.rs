@@ -2361,6 +2361,71 @@ async fn sabnzbd_submit_download_reconciles_ambiguous_addfile_from_queue() {
 }
 
 #[tokio::test]
+async fn sabnzbd_submit_download_reconciles_title_with_sab_illegal_characters() {
+    // A release title with SAB-illegal characters (`:`) is stored by SAB under
+    // a sanitized final_name ("Mission_ Impossible"). Reconciliation must match
+    // it client-side and must NOT rely on the server-side `search` param (which
+    // matches the sanitized name, not the raw title) — otherwise the landed job
+    // would be missed and the next cycle would re-submit into a duplicate.
+    let server = MockServer::start().await;
+    let staged_nzb_store = new_staged_nzb_store().await;
+
+    Mock::given(method("GET"))
+        .and(path("/getnzb"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_bytes(load_fixture("nzbgeek/nzb_content.xml").into_bytes()),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api"))
+        .and(query_param("mode", "queue"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(
+            r#"{"queue":{"slots":[{"status":"Downloading","filename":"Mission_ Impossible","nzo_id":"SABnzbd_nzo_mi","cat":"movies"}]}}"#,
+        ))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .respond_with(ResponseTemplate::new(502).set_body_string("bad gateway"))
+        .mount(&server)
+        .await;
+
+    let client = SabnzbdDownloadClient::with_staged_nzb_store(
+        server.uri(),
+        "test-api-key".to_string(),
+        staged_nzb_store,
+        Arc::new(Semaphore::new(4)),
+    );
+
+    let result = client
+        .submit_to_download_queue(
+            &test_title("Mission: Impossible"),
+            Some(format!("{}/getnzb?id=mi", server.uri())),
+            Some(DownloadSourceKind::NzbUrl),
+            Some("Mission: Impossible".to_string()),
+            None,
+            Some("movies".to_string()),
+        )
+        .await
+        .expect("illegal-char title should still reconcile from the queue");
+
+    assert_eq!(result.job_id, "SABnzbd_nzo_mi");
+
+    // The reconciliation must fetch the queue unfiltered — no `search` param —
+    // so a sanitized final_name is still discoverable.
+    let requests = server.received_requests().await.unwrap();
+    assert!(
+        requests
+            .iter()
+            .filter(|request| request.method.as_str() == "GET" && request.url.path() == "/api")
+            .all(|request| request.url.query_pairs().all(|(key, _)| key != "search")),
+        "reconciliation must not depend on SAB's server-side search of the sanitized name"
+    );
+}
+
+#[tokio::test]
 async fn sabnzbd_submit_download_resolves_sabnzbd_compat_path() {
     // altmount-style backend: `/api` is a different application; the SAB-compat
     // API is served only under `/sabnzbd/api`. The idempotent probe must

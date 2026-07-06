@@ -1207,10 +1207,15 @@ impl SabnzbdDownloadClient {
             // Check the queue first — an active copy is the most relevant
             // landing spot and minimizes adopting a stale same-name history
             // entry.
-            match self
-                .api_get(&[("mode", "queue"), ("search", nzb_name), ("limit", "0")])
-                .await
-            {
+            //
+            // We do NOT pass SAB's `search` param: it substring-matches the
+            // sanitized `final_name`, whereas `nzb_name` is the raw release
+            // title. A title with SAB-illegal characters (`/ : " * ? < > |`)
+            // would never match server-side, the job would be missed, and the
+            // next cycle would re-submit into a duplicate — exactly what this
+            // reconciliation exists to prevent. Fetch the (small) queue
+            // unfiltered and match client-side via `normalize_sab_job_name`.
+            match self.api_get(&[("mode", "queue"), ("limit", "0")]).await {
                 Ok(json) => {
                     let matched = json
                         .get("queue")
@@ -1240,14 +1245,12 @@ impl SabnzbdDownloadClient {
 
             // History is a legitimate landing spot too (reject-to-history and
             // fast-failing jobs, per SAB's process_single_nzb); the existing
-            // failure-detection flow handles a failed state normally.
+            // failure-detection flow handles a failed state normally. Same
+            // reason as the queue probe above: no server-side `search`, match
+            // client-side. `limit=50` bounds the recent window (the just-added
+            // job is always recent).
             match self
-                .api_get(&[
-                    ("mode", "history"),
-                    ("search", nzb_name),
-                    ("start", "0"),
-                    ("limit", "50"),
-                ])
+                .api_get(&[("mode", "history"), ("start", "0"), ("limit", "50")])
                 .await
             {
                 Ok(json) => {
@@ -1729,9 +1732,17 @@ fn sab_addfile_nzo_id(json: &Value) -> Option<&str> {
 fn normalize_sab_job_name(value: &str) -> String {
     use unicode_normalization::UnicodeNormalization;
 
-    // Strip one trailing .nzb / .par2 / .par extension (case-insensitive),
-    // then NFC-normalize and fold illegal / control characters to '_'.
-    let folded: String = strip_sab_nzb_extension(value.trim())
+    // Mirror SAB's create_work_name = sanitize(strip_extensions(sanitize(name)))
+    // in order. The FIRST sanitize strips trailing dots/spaces *before* the
+    // extension is removed, so e.g. "Show.nzb." → "Show" (not "Show.nzb"):
+    // strip the trailing junk first, then the extension.
+    let pre_sanitized = value.trim().trim_end_matches(['.', ' ']);
+    let without_ext = strip_sab_nzb_extension(pre_sanitized);
+
+    // Second sanitize: NFC-normalize and fold illegal / control characters to
+    // '_' (folding legal `.nzb` chars is a no-op, so it cannot resurrect an
+    // extension).
+    let folded: String = without_ext
         .nfc()
         .map(|ch| {
             if ch.is_control() || matches!(ch, '/' | '\\' | ':' | '"' | '*' | '?' | '<' | '>' | '|')
@@ -2322,6 +2333,20 @@ mod tests {
         assert_eq!(normalize_sab_job_name("A:B/C\"D"), "a_b_c_d");
         assert_eq!(normalize_sab_job_name("A*B?C<D>E|F\\G"), "a_b_c_d_e_f_g");
         assert_eq!(normalize_sab_job_name("tab\there"), "tab_here");
+    }
+
+    // SAB's first sanitize pass strips trailing dots/spaces BEFORE the
+    // extension is removed, so trailing junk after the extension must not keep
+    // the extension in our normalized form (else reconciliation misses the
+    // job SAB actually named).
+    #[test]
+    fn normalize_sab_job_name_strips_trailing_junk_before_extension() {
+        assert_eq!(normalize_sab_job_name("Show.nzb."), "show");
+        assert_eq!(normalize_sab_job_name("Show.nzb "), "show");
+        assert_eq!(
+            normalize_sab_job_name("Show.nzb."),
+            normalize_sab_job_name("Show")
+        );
     }
 
     #[test]
