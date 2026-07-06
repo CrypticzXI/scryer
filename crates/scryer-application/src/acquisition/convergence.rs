@@ -79,13 +79,17 @@ impl AppUseCase {
 
 /// Canonical fingerprint for a scope's effective search criteria. Stable across
 /// audio-language ordering. `profile_version` must change whenever the profile's
-/// acceptance criteria (cutoff, allowed qualities, scoring) change, so an edit
-/// re-opens convergence for still-unsatisfied scopes.
+/// acceptance criteria (cutoff, allowed qualities, scoring) change, and
+/// `match_identity` (the scope's SMG match — its resolved external ids) must change
+/// on a rematch; either re-opens convergence for still-unsatisfied scopes
+/// (RFC 119 §D2). The profile inputs are the *effective* profile (resolved with
+/// library/tag/category scoping), so overrides fold in.
 #[allow(dead_code)] // wired by the convergence cursor / coverage hook (Phase 1c/1d)
 pub(crate) fn compute_search_fingerprint(
     profile_id: &str,
     profile_version: &str,
     required_audio_languages: &[String],
+    match_identity: &str,
 ) -> String {
     let mut langs: Vec<String> = required_audio_languages
         .iter()
@@ -95,12 +99,34 @@ pub(crate) fn compute_search_fingerprint(
     langs.sort();
     langs.dedup();
     let canonical = format!(
-        "v1;profile={};version={};audio={}",
+        "v2;profile={};version={};audio={};match={}",
         profile_id.trim(),
         profile_version.trim(),
-        langs.join(",")
+        langs.join(","),
+        match_identity.trim(),
     );
     crate::sha256_hex(canonical)
+}
+
+/// Canonical identity of a scope's SMG match — its resolved external ids. A rematch
+/// re-maps the title to a different canonical subject, changing these ids, so folding
+/// them into the fingerprint re-opens convergence (RFC 119 §D2). Plain metadata edits
+/// that leave the match unchanged do not.
+fn scope_match_identity(subject: &ResolvedReleaseSearchSubject) -> String {
+    fn part(label: &str, value: &Option<String>) -> String {
+        format!(
+            "{label}={}",
+            value.as_deref().map(str::trim).unwrap_or_default()
+        )
+    }
+    [
+        part("imdb", &subject.imdb_id),
+        part("tmdb", &subject.tmdb_id),
+        part("tvdb", &subject.tvdb_id),
+        part("anidb", &subject.anidb_id),
+        part("mal", &subject.mal_id),
+    ]
+    .join(";")
 }
 
 impl AppUseCase {
@@ -167,9 +193,10 @@ pub(crate) struct ScopeConvergence {
     pub routed_indexer_ids: Vec<String>,
 }
 
-/// Stable coverage key for a submission scope, or `None` for scopes that are not
-/// a single convergence unit (episode sets, orphans) and so are never recorded
-/// as converged.
+/// Stable coverage key for a submission scope, or `None` for a true `Orphan` (no
+/// derivable target identity), which is never a convergence unit. Episode sets /
+/// season packs converge as first-class units keyed on their canonical member set
+/// (RFC 119 §D2 #1); a member-set change yields a new key (re-converges).
 pub(crate) fn convergence_scope_key(scope: &SubmissionScope, title_id: &str) -> Option<String> {
     match scope {
         SubmissionScope::Episode { episode_id } => Some(format!("episode:{episode_id}")),
@@ -181,7 +208,18 @@ pub(crate) fn convergence_scope_key(scope: &SubmissionScope, title_id: &str) -> 
             let title_id = title_id.trim();
             (!title_id.is_empty()).then(|| format!("title:{title_id}"))
         }
-        SubmissionScope::EpisodeSet { .. } | SubmissionScope::Orphan => None,
+        SubmissionScope::EpisodeSet { episode_ids } => {
+            let mut ids: Vec<&str> = episode_ids
+                .iter()
+                .map(|id| id.trim())
+                .filter(|id| !id.is_empty())
+                .collect();
+            ids.sort_unstable();
+            ids.dedup();
+            (!ids.is_empty())
+                .then(|| format!("episode_set:{}", crate::sha256_hex(ids.join(","))))
+        }
+        SubmissionScope::Orphan => None,
     }
 }
 
@@ -251,6 +289,7 @@ impl AppUseCase {
             &context.profile.id,
             &profile_criteria_version(&context.profile.criteria),
             &context.profile.criteria.required_audio_languages,
+            &scope_match_identity(subject),
         );
 
         let routed_indexer_ids = self.routed_indexer_ids_for_search(title, subject).await;
@@ -307,16 +346,20 @@ impl AppUseCase {
         }
     }
 
-    /// Record convergence coverage for a background acquisition search that just
-    /// queried this scope's routed indexers. Gated behind
+    /// Record convergence coverage for a background acquisition search. Records
+    /// **only the indexers that actually fired a query and returned a response**
+    /// (`fired_indexer_ids`, from the augmented search return) intersected with the
+    /// scope's routed set — never a routed indexer the scheduler deferred/skipped or
+    /// whose query errored (RFC 119 §D2). Gated behind
     /// `acquisition.rss_first_enabled` (default off during rollout); a no-op when
-    /// disabled, when the scope is not a convergence unit, or when nothing is
-    /// routed. Best-effort: a failed write is logged, never propagated, so it can
-    /// never break the acquisition path.
+    /// disabled, when the scope is not a convergence unit, or when nothing fired.
+    /// Best-effort: a failed write is logged, never propagated, so it can never break
+    /// the acquisition path.
     pub(crate) async fn record_background_search_coverage(
         &self,
         title: &Title,
         subject: &ResolvedReleaseSearchSubject,
+        fired_indexer_ids: &[String],
     ) {
         let enabled = self
             .convergence_settings()
@@ -329,7 +372,15 @@ impl AppUseCase {
         let Some(convergence) = self.resolve_scope_convergence(title, subject).await else {
             return;
         };
+        // Only routed indexers that actually fired are recorded as covered; a
+        // deferred/skipped/errored routed indexer stays uncovered so the cursor
+        // retries it (RFC 119 §D2).
+        let fired: std::collections::HashSet<&str> =
+            fired_indexer_ids.iter().map(String::as_str).collect();
         for indexer_id in &convergence.routed_indexer_ids {
+            if !fired.contains(indexer_id.as_str()) {
+                continue;
+            }
             if let Err(error) = self
                 .services
                 .integrations
@@ -397,15 +448,15 @@ mod tests {
 
     #[test]
     fn fingerprint_is_stable_and_order_independent_for_audio() {
-        let a = compute_search_fingerprint("p1", "v1", &["en".into(), "ja".into()]);
-        let b = compute_search_fingerprint("p1", "v1", &["JA".into(), " en ".into()]);
+        let a = compute_search_fingerprint("p1", "v1", &["en".into(), "ja".into()], "m1");
+        let b = compute_search_fingerprint("p1", "v1", &["JA".into(), " en ".into()], "m1");
         assert_eq!(a, b, "audio-language order/case/whitespace must not matter");
     }
 
     #[test]
     fn fingerprint_changes_on_profile_version() {
-        let a = compute_search_fingerprint("p1", "v1", &["en".into()]);
-        let b = compute_search_fingerprint("p1", "v2", &["en".into()]);
+        let a = compute_search_fingerprint("p1", "v1", &["en".into()], "m1");
+        let b = compute_search_fingerprint("p1", "v2", &["en".into()], "m1");
         assert_ne!(
             a, b,
             "a profile edit (version bump) must change the fingerprint"
@@ -414,13 +465,25 @@ mod tests {
 
     #[test]
     fn fingerprint_changes_on_profile_id_and_audio() {
-        let base = compute_search_fingerprint("p1", "v1", &["en".into()]);
-        assert_ne!(base, compute_search_fingerprint("p2", "v1", &["en".into()]));
+        let base = compute_search_fingerprint("p1", "v1", &["en".into()], "m1");
+        assert_ne!(base, compute_search_fingerprint("p2", "v1", &["en".into()], "m1"));
         assert_ne!(
             base,
-            compute_search_fingerprint("p1", "v1", &["en".into(), "ja".into()])
+            compute_search_fingerprint("p1", "v1", &["en".into(), "ja".into()], "m1")
         );
-        assert_ne!(base, compute_search_fingerprint("p1", "v1", &[]));
+        assert_ne!(base, compute_search_fingerprint("p1", "v1", &[], "m1"));
+    }
+
+    #[test]
+    fn fingerprint_changes_on_rematch() {
+        // A rematch changes the scope's external-id identity → new fingerprint →
+        // convergence re-opens (RFC 119 §D2 #2).
+        let a = compute_search_fingerprint("p1", "v1", &["en".into()], "imdb=tt1");
+        let b = compute_search_fingerprint("p1", "v1", &["en".into()], "imdb=tt2");
+        assert_ne!(
+            a, b,
+            "a rematch (changed SMG match id) must change the fingerprint"
+        );
     }
 
     fn test_criteria() -> QualityProfileCriteria {
@@ -460,18 +523,52 @@ mod tests {
             convergence_scope_key(&SubmissionScope::Title, "t1"),
             Some("title:t1".to_string())
         );
-        // Scopes that are not a single convergence unit are never recorded.
+        // A true orphan (and an empty title) is never a convergence unit.
         assert_eq!(convergence_scope_key(&SubmissionScope::Title, "   "), None);
+        assert_eq!(convergence_scope_key(&SubmissionScope::Orphan, "t1"), None);
+
+        // Episode sets / season packs DO converge, keyed on their canonical member
+        // set — order/whitespace/duplicate independent, empty-set excluded.
+        let pack_ab = convergence_scope_key(
+            &SubmissionScope::EpisodeSet {
+                episode_ids: vec!["e1".into(), "e2".into()],
+            },
+            "t1",
+        );
+        assert!(
+            pack_ab
+                .as_deref()
+                .is_some_and(|key| key.starts_with("episode_set:"))
+        );
+        assert_eq!(
+            pack_ab,
+            convergence_scope_key(
+                &SubmissionScope::EpisodeSet {
+                    episode_ids: vec![" e2 ".into(), "e1".into(), "e1".into()],
+                },
+                "t1",
+            ),
+            "canonical member set is order/whitespace/duplicate independent"
+        );
+        assert_ne!(
+            pack_ab,
+            convergence_scope_key(
+                &SubmissionScope::EpisodeSet {
+                    episode_ids: vec!["e1".into(), "e3".into()],
+                },
+                "t1",
+            ),
+            "a different member set is a different pack scope"
+        );
         assert_eq!(
             convergence_scope_key(
                 &SubmissionScope::EpisodeSet {
-                    episode_ids: vec!["e1".into()]
+                    episode_ids: vec![]
                 },
                 "t1"
             ),
             None
         );
-        assert_eq!(convergence_scope_key(&SubmissionScope::Orphan, "t1"), None);
     }
 
     #[test]

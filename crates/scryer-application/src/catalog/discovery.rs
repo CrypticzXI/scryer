@@ -863,10 +863,15 @@ impl AppUseCase {
     }
 
     /// Internal search+score pipeline shared by both user-facing search and background acquisition.
+    /// Returns the scored releases plus the set of indexer ids that actually
+    /// **fired** a query and returned a response (empty included), aggregated across
+    /// all queries (RFC 119 §D2: fired iff ≥1 query returned a response). The fired
+    /// set — never the routed set — is what background acquisition records as
+    /// convergence coverage.
     pub(crate) async fn search_and_score_releases(
         &self,
         request: ReleaseSearchRequest<'_>,
-    ) -> AppResult<Vec<IndexerSearchResult>> {
+    ) -> AppResult<(Vec<IndexerSearchResult>, Vec<String>)> {
         let ReleaseSearchRequest {
             queries,
             imdb_id,
@@ -930,7 +935,7 @@ impl AppUseCase {
                     scope_id = scope_id.as_deref().unwrap_or("none"),
                     "all indexers disabled for scope, skipping search"
                 );
-                return Ok(Vec::new());
+                return Ok((Vec::new(), Vec::new()));
             }
         }
 
@@ -1045,6 +1050,11 @@ impl AppUseCase {
         let mut successful_searches = 0usize;
         let mut first_failure: Option<String> = None;
         let mut raw_results: Vec<IndexerSearchResult> = Vec::new();
+        // RFC 119: indexers that fired a query and returned a response (empty
+        // included) across any query. Aggregated here so the coverage write-hook
+        // records exactly the fired subset, never the routed set.
+        let mut fired_indexers: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
 
         loop {
             let result = tokio::select! {
@@ -1063,6 +1073,11 @@ impl AppUseCase {
             match result {
                 Ok(Ok(mut response)) => {
                     successful_searches += 1;
+                    for outcome in &response.indexer_outcomes {
+                        if outcome.outcome.fired() {
+                            fired_indexers.insert(outcome.indexer_id.clone());
+                        }
+                    }
                     for result in &mut response.results {
                         let provenance =
                             result.provenance.get_or_insert(ReleaseCandidateProvenance {
@@ -1106,7 +1121,7 @@ impl AppUseCase {
             return Err(AppError::Repository(details));
         }
 
-        Ok(self
+        let scored = self
             .score_release_results(
                 raw_results,
                 &quality_profile,
@@ -1122,7 +1137,8 @@ impl AppUseCase {
                 episode,
                 absolute_episode,
             )
-            .await)
+            .await;
+        Ok((scored, fired_indexers.into_iter().collect()))
     }
 
     pub(crate) async fn search_and_evaluate_subject(
@@ -1134,7 +1150,7 @@ impl AppUseCase {
         cancel_token: CancellationToken,
     ) -> AppResult<Vec<IndexerSearchResult>> {
         let tagged_aliases = release_search_tagged_aliases(title);
-        let results = self
+        let (results, fired_indexer_ids) = self
             .search_and_score_releases(ReleaseSearchRequest {
                 queries: subject.queries.clone(),
                 imdb_id: subject.imdb_id.clone(),
@@ -1170,7 +1186,8 @@ impl AppUseCase {
         // acquisition searches only (interactive/manual searches bypass
         // convergence). Best-effort and gated off by default.
         if caller_label == "background_acquisition" {
-            self.record_background_search_coverage(title, subject).await;
+            self.record_background_search_coverage(title, subject, &fired_indexer_ids)
+                .await;
         }
         Ok(evaluated)
     }

@@ -2548,6 +2548,7 @@ async fn acquisition_cycle_falls_back_to_episode_grabs_when_season_pack_is_not_s
             let release_slug = release_title.replace([' ', '/'], ".");
 
             Ok(IndexerSearchResponse {
+                indexer_outcomes: Vec::new(),
                 results: vec![IndexerSearchResult {
                     indexer_id: None,
                     source: "nzbgeek".into(),
@@ -3712,6 +3713,7 @@ impl IndexerClient for PendingStatusAssertingIndexerClient {
         self.searches.lock().await.push(query.clone());
 
         Ok(IndexerSearchResponse {
+            indexer_outcomes: Vec::new(),
             results: vec![IndexerSearchResult {
                 indexer_id: None,
                 source: "nzbgeek".into(),

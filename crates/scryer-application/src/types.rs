@@ -1391,6 +1391,37 @@ pub struct IndexerSearchResult {
     pub auto_decision_summary: Option<String>,
 }
 
+/// Per-indexer outcome of a single search query (RFC 119 convergence). Determines
+/// which routed indexers may be recorded as coverage: only an indexer that actually
+/// fired a query and returned a response (empty included) counts — never one the
+/// scheduler deferred/skipped, and never one whose query errored.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IndexerSearchOutcome {
+    /// The query executed and returned a response — `empty` distinguishes a
+    /// zero-result response (still coverage) from a populated one.
+    Fired { empty: bool },
+    /// The scheduler declined to query this indexer this cycle (deferred/skipped:
+    /// destination cooldown, host-RPS, account quota, disabled) — not queried.
+    Skipped,
+    /// The query was attempted but failed (rate-limited / transport / provider).
+    Errored,
+}
+
+impl IndexerSearchOutcome {
+    /// Whether this indexer actually executed a query and returned a response.
+    /// Only a fired indexer may be recorded as convergence coverage (RFC 119 §D2).
+    pub fn fired(&self) -> bool {
+        matches!(self, Self::Fired { .. })
+    }
+}
+
+/// A single indexer's outcome within an [`IndexerSearchResponse`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IndexerQueryOutcome {
+    pub indexer_id: String,
+    pub outcome: IndexerSearchOutcome,
+}
+
 /// Wrapper around search results that also carries API limit metadata
 /// from the indexer response.
 #[derive(Clone, Debug)]
@@ -1400,6 +1431,10 @@ pub struct IndexerSearchResponse {
     pub api_max: Option<u32>,
     pub grab_current: Option<u32>,
     pub grab_max: Option<u32>,
+    /// Per-indexer outcomes for this query (RFC 119): which routed indexers fired
+    /// (empty or not), were skipped/deferred, or errored. Empty for synthetic or
+    /// no-eligible-indexer responses.
+    pub indexer_outcomes: Vec<IndexerQueryOutcome>,
 }
 
 #[derive(Clone, Debug)]

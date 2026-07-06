@@ -7,8 +7,9 @@ use chrono::{DateTime, Duration, Utc};
 use scryer_application::{
     AppError, AppResult, EstimatedCost, ExpectedValueHint, IndexerClient, IndexerConfigRepository,
     IndexerPluginProvider, IndexerProxyConfigRepository, IndexerRoutingPlan,
-    IndexerSearchLearningContext, IndexerSearchLearningKey, IndexerSearchLearningRecord,
-    IndexerSearchLearningRepository, IndexerSearchResponse, IndexerSearchResult,
+    IndexerQueryOutcome, IndexerSearchLearningContext, IndexerSearchLearningKey,
+    IndexerSearchLearningRecord, IndexerSearchLearningRepository, IndexerSearchOutcome,
+    IndexerSearchResponse, IndexerSearchResult,
     IndexerStatsTracker, IndexerSystemBackoff, NullIndexerProxyConfigRepository,
     NullIndexerSearchLearningRepository, NullUpstreamScheduler, RateLimitCooldownAction,
     RateLimitSignal, ReleaseCandidateProvenance, ReleaseSearchSubjectKind, RssFreshnessContext,
@@ -1329,6 +1330,7 @@ impl MultiIndexerSearchClient {
             api_max: None,
             grab_current: None,
             grab_max: None,
+            indexer_outcomes: Vec::new(),
         };
         // Solver-service failures never reached the indexer: report transport
         // trouble to the scheduler instead of blaming the provider.
@@ -1997,6 +1999,7 @@ impl IndexerClient for MultiIndexerSearchClient {
             info!(mode = ?mode, "no enabled indexer configs found");
             return Ok(IndexerSearchResponse {
                 results: vec![],
+                indexer_outcomes: Vec::new(),
                 api_current: None,
                 api_max: None,
                 grab_current: None,
@@ -2283,6 +2286,7 @@ impl IndexerClient for MultiIndexerSearchClient {
             info!(mode = ?mode, "no scheduler-eligible indexer configs found");
             return Ok(IndexerSearchResponse {
                 results: vec![],
+                indexer_outcomes: Vec::new(),
                 api_current: None,
                 api_max: None,
                 grab_current: None,
@@ -2315,6 +2319,11 @@ impl IndexerClient for MultiIndexerSearchClient {
         // Each indexer may still execute multiple strategies internally, but for
         // TV/series searches we run ID searches first and only fall back to a
         // broad freetext query if that indexer returned no releases.
+        //
+        // RFC 119: per-indexer outcome for convergence coverage. Deferred/skipped
+        // indexers (never queried) are recorded below; fired/errored are recorded as
+        // their tasks complete in the join loop.
+        let mut indexer_outcomes: Vec<IndexerQueryOutcome> = Vec::new();
         let mut set = tokio::task::JoinSet::<(
             String,
             String,
@@ -2348,6 +2357,10 @@ impl IndexerClient for MultiIndexerSearchClient {
                         retry_after_secs = retry_after.map(|delay| delay.as_secs()),
                         "scheduler deferred indexer search candidate"
                     );
+                    indexer_outcomes.push(IndexerQueryOutcome {
+                        indexer_id: config.id.clone(),
+                        outcome: IndexerSearchOutcome::Skipped,
+                    });
                     continue;
                 }
                 Some(SchedulerAdmission::Skip { reason, .. }) => {
@@ -2356,6 +2369,10 @@ impl IndexerClient for MultiIndexerSearchClient {
                         scheduler_reason = ?reason,
                         "scheduler skipped indexer search candidate"
                     );
+                    indexer_outcomes.push(IndexerQueryOutcome {
+                        indexer_id: config.id.clone(),
+                        outcome: IndexerSearchOutcome::Skipped,
+                    });
                     continue;
                 }
                 None => {
@@ -2665,6 +2682,7 @@ impl IndexerClient for MultiIndexerSearchClient {
 
                         let response = IndexerSearchResponse {
                             results,
+                            indexer_outcomes: Vec::new(),
                             api_current: None,
                             api_max: None,
                             grab_current: None,
@@ -3127,6 +3145,7 @@ impl IndexerClient for MultiIndexerSearchClient {
                     scheduler_lease_for_task.clone(),
                     Ok(IndexerSearchResponse {
                         results: collected_results,
+                        indexer_outcomes: Vec::new(),
                         api_current: quota_observation.api_current,
                         api_max: quota_observation.api_max,
                         grab_current: quota_observation.grab_current,
@@ -3159,7 +3178,7 @@ impl IndexerClient for MultiIndexerSearchClient {
             };
 
             match join_result {
-                Ok((_id, name, scheduler_lease, Ok(mut response), should_record_feedback)) => {
+                Ok((id, name, scheduler_lease, Ok(mut response), should_record_feedback)) => {
                     if should_record_feedback {
                         self.record_indexer_scheduler_feedback(
                             scheduler_lease,
@@ -3171,12 +3190,17 @@ impl IndexerClient for MultiIndexerSearchClient {
                         .await;
                     }
                     successful_searches += 1;
+                    let empty = response.results.is_empty();
                     debug!(
                         indexer = name.as_str(),
                         count = response.results.len(),
                         "indexer returned aggregated results"
                     );
                     all_results.append(&mut response.results);
+                    indexer_outcomes.push(IndexerQueryOutcome {
+                        indexer_id: id,
+                        outcome: IndexerSearchOutcome::Fired { empty },
+                    });
                 }
                 Ok((id, name, scheduler_lease, Err(err), should_record_feedback)) => {
                     if err.is_canceled() {
@@ -3196,7 +3220,10 @@ impl IndexerClient for MultiIndexerSearchClient {
                             .await;
                     }
                     warn!(indexer = name.as_str(), error = %err, "indexer search failed");
-                    let _ = id;
+                    indexer_outcomes.push(IndexerQueryOutcome {
+                        indexer_id: id,
+                        outcome: IndexerSearchOutcome::Errored,
+                    });
                 }
                 Err(err) => {
                     failed_searches += 1;
@@ -3271,6 +3298,7 @@ impl IndexerClient for MultiIndexerSearchClient {
             api_max: None,
             grab_current: None,
             grab_max: None,
+            indexer_outcomes,
         })
     }
 }
@@ -4031,6 +4059,7 @@ mod tests {
         ) -> AppResult<IndexerSearchResponse> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             Ok(IndexerSearchResponse {
+                indexer_outcomes: Vec::new(),
                 results: vec![],
                 api_current: None,
                 api_max: None,
@@ -4342,6 +4371,7 @@ mod tests {
             }
             self.probe.mark_finished();
             Ok(IndexerSearchResponse {
+                indexer_outcomes: Vec::new(),
                 results: vec![],
                 api_current: None,
                 api_max: None,
@@ -4549,6 +4579,7 @@ mod tests {
 
     fn response_with_titles(titles: &[&str]) -> AppResult<IndexerSearchResponse> {
         Ok(IndexerSearchResponse {
+            indexer_outcomes: Vec::new(),
             results: titles.iter().map(|title| search_result(title)).collect(),
             api_current: None,
             api_max: None,
@@ -4716,6 +4747,7 @@ mod tests {
             calls: StdArc::new(StdMutex::new(Vec::new())),
             responder: StdArc::new(|_| {
                 Ok(IndexerSearchResponse {
+                    indexer_outcomes: Vec::new(),
                     results: vec![search_result("Recovered.Show.S01E01")],
                     api_current: None,
                     api_max: None,
@@ -5624,6 +5656,7 @@ mod tests {
                     response_with_titles(&["Storm.Signal.S01E02.2026"])
                 } else {
                     Ok(IndexerSearchResponse {
+                        indexer_outcomes: Vec::new(),
                         results: vec![],
                         api_current: None,
                         api_max: None,

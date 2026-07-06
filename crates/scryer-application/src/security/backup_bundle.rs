@@ -459,6 +459,15 @@ pub const BACKUP_TABLE_CATALOG: &[BackupTableCatalogEntry] = &[
         table: "upstream_scheduler_rss_cadence",
         classification: BackupTableClassification::Ignore,
     },
+    // RFC 119 convergence coverage ledger: operational state, sibling to the
+    // upstream_scheduler_* tables above. Ignored (not exported): carrying coverage
+    // across a restore into a possibly-different indexer environment could wrongly
+    // mark scopes converged and under-search; a restored DB re-converges from empty,
+    // bounded by the 112 scheduler + the cursor work-cap.
+    BackupTableCatalogEntry {
+        table: "scope_indexer_coverage",
+        classification: BackupTableClassification::Ignore,
+    },
     BackupTableCatalogEntry {
         table: "settings_definitions",
         classification: BackupTableClassification::Export,

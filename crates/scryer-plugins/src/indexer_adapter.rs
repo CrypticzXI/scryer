@@ -952,6 +952,7 @@ impl IndexerClient for WasmIndexerClient {
 
         Ok(IndexerSearchResponse {
             results,
+            indexer_outcomes: Vec::new(),
             api_current: response.api_current,
             api_max: response.api_max,
             grab_current: response.grab_current,

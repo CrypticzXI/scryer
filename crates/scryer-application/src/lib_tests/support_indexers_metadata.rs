@@ -29,6 +29,7 @@ impl IndexerClient for MockIndexerClient {
             tracing::info!(imdb_id = %imdb, category = ?category, "mock nzbgeek search");
         }
         Ok(IndexerSearchResponse {
+            indexer_outcomes: Vec::new(),
             results: vec![IndexerSearchResult {
                 indexer_id: None,
                 source: "nzbgeek".into(),
@@ -166,6 +167,7 @@ impl IndexerClient for TrackingIndexerClient {
         let release_slug = release_title.replace([' ', '/'], ".");
 
         Ok(IndexerSearchResponse {
+            indexer_outcomes: Vec::new(),
             results: vec![IndexerSearchResult {
                 indexer_id: None,
                 source: "nzbgeek".into(),
@@ -207,6 +209,10 @@ impl IndexerClient for TrackingIndexerClient {
 pub(super) struct FixedReleaseIndexerClient {
     pub(super) release_title: String,
     pub(super) indexer_languages: Option<Vec<String>>,
+    /// Indexer ids this stand-in reports as having fired (RFC 119 per-indexer
+    /// outcomes). Empty by default — set via [`with_fired_indexers`] when a test
+    /// drives the real coverage chokepoint and needs specific indexers recorded.
+    pub(super) fired_indexer_ids: Vec<String>,
 }
 
 impl FixedReleaseIndexerClient {
@@ -214,7 +220,16 @@ impl FixedReleaseIndexerClient {
         Self {
             release_title: release_title.into(),
             indexer_languages: None,
+            fired_indexer_ids: Vec::new(),
         }
+    }
+
+    pub(super) fn with_fired_indexers(
+        mut self,
+        indexer_ids: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Self {
+        self.fired_indexer_ids = indexer_ids.into_iter().map(Into::into).collect();
+        self
     }
 }
 
@@ -238,6 +253,14 @@ impl IndexerClient for FixedReleaseIndexerClient {
         _cancel_token: tokio_util::sync::CancellationToken,
     ) -> AppResult<IndexerSearchResponse> {
         Ok(IndexerSearchResponse {
+            indexer_outcomes: self
+                .fired_indexer_ids
+                .iter()
+                .map(|id| crate::IndexerQueryOutcome {
+                    indexer_id: id.clone(),
+                    outcome: crate::IndexerSearchOutcome::Fired { empty: false },
+                })
+                .collect(),
             results: vec![IndexerSearchResult {
                 indexer_id: None,
                 source: "nzbgeek".into(),
@@ -320,6 +343,7 @@ impl IndexerClient for SharedUrlMovieIndexerClient {
         };
 
         Ok(IndexerSearchResponse {
+            indexer_outcomes: Vec::new(),
             results: vec![IndexerSearchResult {
                 indexer_id: None,
                 source: "nzbgeek".into(),
@@ -422,6 +446,7 @@ impl IndexerClient for RecordingCategoriesIndexerClient {
         });
 
         Ok(IndexerSearchResponse {
+            indexer_outcomes: Vec::new(),
             results: vec![IndexerSearchResult {
                 indexer_id: None,
                 source: "nzbgeek".into(),
@@ -484,6 +509,7 @@ impl IndexerClient for RecordingStructuredQueryIndexerClient {
         });
 
         Ok(IndexerSearchResponse {
+            indexer_outcomes: Vec::new(),
             results: vec![],
             api_current: None,
             api_max: None,
@@ -526,6 +552,7 @@ impl IndexerClient for MultiReleaseIndexerClient {
         _cancel_token: tokio_util::sync::CancellationToken,
     ) -> AppResult<IndexerSearchResponse> {
         Ok(IndexerSearchResponse {
+            indexer_outcomes: Vec::new(),
             results: self
                 .release_titles
                 .iter()

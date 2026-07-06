@@ -2972,6 +2972,7 @@ pub mod test_nulls {
             _: tokio_util::sync::CancellationToken,
         ) -> AppResult<IndexerSearchResponse> {
             Ok(IndexerSearchResponse {
+                indexer_outcomes: Vec::new(),
                 results: vec![],
                 api_current: None,
                 api_max: None,

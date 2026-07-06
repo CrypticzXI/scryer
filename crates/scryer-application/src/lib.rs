@@ -521,8 +521,8 @@ pub use types::{
     library_scan_folder_leaf_key,
 };
 pub use types::{
-    IndexerSearchResponse, IndexerSearchResult, ReleaseCandidateProvenance,
-    ReleaseSearchSubjectKind, ReleaseStrategyKind,
+    IndexerQueryOutcome, IndexerSearchOutcome, IndexerSearchResponse, IndexerSearchResult,
+    ReleaseCandidateProvenance, ReleaseSearchSubjectKind, ReleaseStrategyKind,
 };
 pub use types::{SmgScryerUpdateNotice, SmgVersionCompatibilityNotice};
 

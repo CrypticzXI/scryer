@@ -734,6 +734,7 @@ mod tests {
             }
 
             Ok(IndexerSearchResponse {
+                indexer_outcomes: Vec::new(),
                 results: vec![],
                 api_current: None,
                 api_max: None,
