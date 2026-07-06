@@ -98,6 +98,59 @@ pub(crate) fn compute_search_fingerprint(
     crate::sha256_hex(canonical)
 }
 
+impl AppUseCase {
+    /// Indexers among `routed_indexer_ids` that still need a convergence search
+    /// for `scope_key`/`facet` under `fingerprint` — routed minus current-
+    /// fingerprint coverage. The optional slow re-converge backstop treats
+    /// coverage older than the configured window as uncovered.
+    #[allow(dead_code)] // wired by the convergence cursor (RFC 119 Phase 1d)
+    pub(crate) async fn uncovered_indexers_for_scope(
+        &self,
+        scope_key: &str,
+        facet: &str,
+        fingerprint: &str,
+        routed_indexer_ids: &[String],
+    ) -> AppResult<Vec<String>> {
+        if routed_indexer_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let stale_before = self
+            .convergence_settings()
+            .await?
+            .long_tail_reconverge
+            .map(|window| chrono::Utc::now() - window);
+        let covered: std::collections::HashSet<String> = self
+            .services
+            .integrations
+            .scope_indexer_coverage
+            .covered_indexers(scope_key, facet, fingerprint, stale_before)
+            .await?
+            .into_iter()
+            .collect();
+        Ok(routed_indexer_ids
+            .iter()
+            .filter(|id| !covered.contains(id.as_str()))
+            .cloned()
+            .collect())
+    }
+
+    /// A scope has converged (→ RSS-only, no active search) once every routed
+    /// indexer has current-fingerprint coverage.
+    #[allow(dead_code)] // wired by the convergence cursor (RFC 119 Phase 1d)
+    pub(crate) async fn scope_is_converged(
+        &self,
+        scope_key: &str,
+        facet: &str,
+        fingerprint: &str,
+        routed_indexer_ids: &[String],
+    ) -> AppResult<bool> {
+        Ok(self
+            .uncovered_indexers_for_scope(scope_key, facet, fingerprint, routed_indexer_ids)
+            .await?
+            .is_empty())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::compute_search_fingerprint;

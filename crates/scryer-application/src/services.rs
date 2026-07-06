@@ -1284,6 +1284,7 @@ pub struct AppLibraryServices {
 pub struct AppIntegrationServices {
     pub(crate) indexer_configs: Arc<dyn IndexerConfigRepository>,
     pub(crate) indexer_proxy_configs: Arc<dyn IndexerProxyConfigRepository>,
+    pub(crate) scope_indexer_coverage: Arc<dyn ScopeIndexerCoverageRepository>,
     pub(crate) indexer_caps_refresher: RuntimeFeature<Arc<dyn IndexerCapsSnapshotRefresher>>,
     pub(crate) indexer_client: Arc<dyn IndexerClient>,
     pub(crate) download_client: Arc<dyn DownloadClient>,
@@ -1510,6 +1511,9 @@ impl AppServices {
                 indexer_configs,
                 indexer_proxy_configs: Arc::new(
                     null_repositories::NullIndexerProxyConfigRepository,
+                ),
+                scope_indexer_coverage: Arc::new(
+                    null_repositories::NullScopeIndexerCoverageRepository,
                 ),
                 indexer_caps_refresher: RuntimeFeature::Disabled,
                 indexer_client,
@@ -1871,6 +1875,11 @@ impl AppServicesBuilder {
         with_indexer_proxy_config_store,
         integrations.indexer_proxy_configs,
         Arc<dyn IndexerProxyConfigRepository>
+    );
+    app_services_builder_setter!(
+        with_scope_indexer_coverage_store,
+        integrations.scope_indexer_coverage,
+        Arc<dyn ScopeIndexerCoverageRepository>
     );
     app_services_builder_setter!(
         with_external_identity_verifier,
