@@ -87,4 +87,35 @@ impl ScopeIndexerCoverageRepository for ScopeIndexerCoverageStore {
         .await?;
         Ok(())
     }
+
+    async fn prune_orphaned_coverage(&self) -> AppResult<()> {
+        // Delete coverage whose id-based scope no longer exists (episode / series_movie
+        // / collection / title) and coverage whose indexer no longer exists. Compare
+        // the full `scope_key` to a reconstructed `'<prefix>:' || id` (portable, no
+        // brittle offsets). `episode_set:` keys are content hashes with no single
+        // entity, so they are left alone (harmless — UUID member ids never
+        // re-associate). Every arm is guarded by `EXISTS (...)` so a transiently-empty
+        // entity/indexer table can never wipe live coverage. All literals, no binds.
+        SqlRuntime::execute(
+            self.datastore.read_exec(),
+            "DELETE FROM scope_indexer_coverage
+             WHERE (scope_key LIKE 'episode:%'
+                    AND EXISTS (SELECT 1 FROM episodes)
+                    AND scope_key NOT IN (SELECT 'episode:' || id FROM episodes))
+                OR (scope_key LIKE 'series_movie:%'
+                    AND EXISTS (SELECT 1 FROM series_movie_links)
+                    AND scope_key NOT IN (SELECT 'series_movie:' || id FROM series_movie_links))
+                OR (scope_key LIKE 'collection:%'
+                    AND EXISTS (SELECT 1 FROM collections)
+                    AND scope_key NOT IN (SELECT 'collection:' || id FROM collections))
+                OR (scope_key LIKE 'title:%'
+                    AND EXISTS (SELECT 1 FROM titles)
+                    AND scope_key NOT IN (SELECT 'title:' || id FROM titles))
+                OR (EXISTS (SELECT 1 FROM indexers)
+                    AND indexer_id NOT IN (SELECT id FROM indexers))",
+            &[],
+        )
+        .await?;
+        Ok(())
+    }
 }

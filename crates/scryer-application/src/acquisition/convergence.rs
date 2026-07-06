@@ -129,6 +129,98 @@ fn scope_match_identity(subject: &ResolvedReleaseSearchSubject) -> String {
     .join(";")
 }
 
+/// A convergence target the cursor may search this cycle: its coverage scope key, the
+/// host keys its routed indexers dispatch through, and whether it is a **hot**
+/// (recent) target. Host keys are strings here so the selection algorithm stays pure
+/// and decoupled from the scheduler types; the caller maps real `HostKey`s to strings.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[allow(dead_code)] // wired by the convergence cursor (RFC 119 §D3, cutover / §E)
+pub(crate) struct ConvergenceTarget {
+    pub scope_key: String,
+    pub routed_hosts: Vec<String>,
+    pub is_hot: bool,
+}
+
+/// The batch to search this cycle plus the new cold-lane resume position.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(crate) struct CursorSelection {
+    /// scope_keys to search this cycle, in evaluation order (hot first, then cold).
+    pub scope_keys: Vec<String>,
+    /// The cold scope_key to resume *after* next cycle (rotating cursor), carried
+    /// forward unchanged when the cold lane did not advance this cycle.
+    pub resume_after: Option<String>,
+}
+
+/// Select the convergence batch for one cycle (RFC 119 §D3). 112 backpressure is the
+/// pace; this only decides *which* scopes to offer, bounded by a work ceiling:
+/// - **hot targets first** (recent/high-value), then **cold targets in rotating
+///   order** starting after `resume_after` (wrapping once) so every cold scope gets a
+///   turn and a stuck head never starves the tail;
+/// - **pre-skip** any target all of whose routed hosts are currently unavailable
+///   (`host_available` false for every host) — don't spend the budget on requests 112
+///   would only `Skip`;
+/// - stop once `max_scopes` have been selected (the per-tick evaluation cost ceiling).
+///
+/// Returns the selected scope_keys and the new cold resume position (the last cold
+/// scope_key *considered*, skipped or not, so the cursor always advances past it).
+#[allow(dead_code)] // wired by the convergence cursor (RFC 119 §D3, cutover / §E)
+pub(crate) fn select_convergence_batch(
+    targets: &[ConvergenceTarget],
+    host_available: impl Fn(&str) -> bool,
+    resume_after: Option<&str>,
+    max_scopes: usize,
+) -> CursorSelection {
+    // A target is reachable if any routed host is available (or it has no routed
+    // hosts — a degenerate case the downstream search treats as a no-op).
+    let reachable = |target: &ConvergenceTarget| {
+        target.routed_hosts.is_empty()
+            || target.routed_hosts.iter().any(|host| host_available(host))
+    };
+
+    let mut selection = CursorSelection {
+        scope_keys: Vec::new(),
+        resume_after: resume_after.map(str::to_string),
+    };
+    if max_scopes == 0 {
+        return selection;
+    }
+
+    // Hot targets: always considered first, in stable order. They do not move the
+    // cold rotation cursor.
+    for target in targets.iter().filter(|target| target.is_hot) {
+        if selection.scope_keys.len() >= max_scopes {
+            return selection;
+        }
+        if reachable(target) {
+            selection.scope_keys.push(target.scope_key.clone());
+        }
+    }
+
+    // Cold targets: rotate starting after `resume_after`, wrapping once.
+    let cold: Vec<&ConvergenceTarget> =
+        targets.iter().filter(|target| !target.is_hot).collect();
+    if cold.is_empty() {
+        return selection;
+    }
+    let start = resume_after
+        .and_then(|after| cold.iter().position(|target| target.scope_key == after))
+        .map(|index| index + 1)
+        .unwrap_or(0);
+    for offset in 0..cold.len() {
+        if selection.scope_keys.len() >= max_scopes {
+            break;
+        }
+        let target = cold[(start + offset) % cold.len()];
+        // Advance the cursor past every cold scope we *consider*, skipped or not.
+        selection.resume_after = Some(target.scope_key.clone());
+        if reachable(target) {
+            selection.scope_keys.push(target.scope_key.clone());
+        }
+    }
+    selection
+}
+
 impl AppUseCase {
     /// Indexers among `routed_indexer_ids` that still need a convergence search
     /// for `scope_key`/`facet` under `fingerprint` — routed minus current-
@@ -440,8 +532,8 @@ impl AppUseCase {
 #[cfg(test)]
 mod tests {
     use super::{
-        canonical_json_string, compute_search_fingerprint, convergence_scope_key,
-        profile_criteria_version,
+        ConvergenceTarget, canonical_json_string, compute_search_fingerprint,
+        convergence_scope_key, profile_criteria_version, select_convergence_batch,
     };
     use crate::contracts::SubmissionScope;
     use crate::quality_profile::QualityProfileCriteria;
@@ -484,6 +576,95 @@ mod tests {
             a, b,
             "a rematch (changed SMG match id) must change the fingerprint"
         );
+    }
+
+    fn cursor_target(scope_key: &str, hosts: &[&str], is_hot: bool) -> ConvergenceTarget {
+        ConvergenceTarget {
+            scope_key: scope_key.to_string(),
+            routed_hosts: hosts.iter().map(|host| host.to_string()).collect(),
+            is_hot,
+        }
+    }
+
+    #[test]
+    fn cursor_takes_hot_targets_first_then_cold() {
+        let targets = vec![
+            cursor_target("cold-1", &["h1"], false),
+            cursor_target("hot-1", &["h1"], true),
+            cursor_target("cold-2", &["h1"], false),
+            cursor_target("hot-2", &["h1"], true),
+        ];
+        let selection = select_convergence_batch(&targets, |_| true, None, 10);
+        assert_eq!(
+            selection.scope_keys,
+            vec!["hot-1", "hot-2", "cold-1", "cold-2"],
+            "hot targets are searched first, then cold in order"
+        );
+    }
+
+    #[test]
+    fn cursor_work_cap_bounds_the_batch_and_advances() {
+        let targets = vec![
+            cursor_target("a", &["h1"], false),
+            cursor_target("b", &["h1"], false),
+            cursor_target("c", &["h1"], false),
+        ];
+        let selection = select_convergence_batch(&targets, |_| true, None, 2);
+        assert_eq!(selection.scope_keys, vec!["a", "b"]);
+        assert_eq!(
+            selection.resume_after.as_deref(),
+            Some("b"),
+            "the cursor advances to the last cold scope it considered"
+        );
+    }
+
+    #[test]
+    fn cursor_rotates_and_wraps_across_cycles() {
+        let targets = vec![
+            cursor_target("a", &["h1"], false),
+            cursor_target("b", &["h1"], false),
+            cursor_target("c", &["h1"], false),
+        ];
+        let first = select_convergence_batch(&targets, |_| true, None, 2);
+        assert_eq!(first.scope_keys, vec!["a", "b"]);
+        // Next cycle resumes after "b" → c, then wraps to a.
+        let second =
+            select_convergence_batch(&targets, |_| true, first.resume_after.as_deref(), 2);
+        assert_eq!(second.scope_keys, vec!["c", "a"]);
+    }
+
+    #[test]
+    fn cursor_pre_skips_unreachable_targets_but_advances_past_them() {
+        let targets = vec![
+            cursor_target("down", &["cold-host"], false),
+            cursor_target("up", &["live-host"], false),
+        ];
+        let selection =
+            select_convergence_batch(&targets, |host| host == "live-host", None, 10);
+        assert_eq!(
+            selection.scope_keys,
+            vec!["up"],
+            "a target whose every routed host is unavailable is pre-skipped"
+        );
+        assert_eq!(
+            selection.resume_after.as_deref(),
+            Some("up"),
+            "the cursor still advances past a skipped scope"
+        );
+    }
+
+    #[test]
+    fn cursor_hot_targets_respect_the_cap_and_leave_the_cold_cursor() {
+        let targets = vec![
+            cursor_target("hot-1", &["h1"], true),
+            cursor_target("hot-2", &["h1"], true),
+            cursor_target("cold-1", &["h1"], false),
+        ];
+        // The cap is filled by hot targets, so the cold lane is not reached and its
+        // rotation cursor is carried forward unchanged.
+        let selection = select_convergence_batch(&targets, |_| true, Some("cold-1"), 2);
+        assert_eq!(selection.scope_keys, vec!["hot-1", "hot-2"]);
+        assert_eq!(selection.resume_after.as_deref(), Some("cold-1"));
     }
 
     fn test_criteria() -> QualityProfileCriteria {

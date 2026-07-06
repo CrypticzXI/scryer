@@ -135,6 +135,10 @@ impl ScopeIndexerCoverageRepository for NullScopeIndexerCoverageRepository {
     async fn prune_scope(&self, _scope_key: &str, _facet: &str) -> AppResult<()> {
         Ok(())
     }
+
+    async fn prune_orphaned_coverage(&self) -> AppResult<()> {
+        Ok(())
+    }
 }
 
 #[derive(Default)]

@@ -1939,6 +1939,14 @@ pub trait ScopeIndexerCoverageRepository: Send + Sync {
 
     /// Drop all coverage rows for a scope (e.g. it is no longer a target).
     async fn prune_scope(&self, scope_key: &str, facet: &str) -> AppResult<()>;
+
+    /// Best-effort background GC (RFC 119): drop coverage rows whose id-based scope
+    /// (`episode:`/`series_movie:`/`collection:`/`title:`) or whose `indexer_id` no
+    /// longer exists. `episode_set:` packs are content-hash keys with no single entity
+    /// and are left alone (harmless — UUID member ids never re-associate). Guarded so a
+    /// transiently-empty entity/indexer table can never wipe live coverage. Runs from
+    /// the housekeeping job; coverage loss only triggers a safe re-converge.
+    async fn prune_orphaned_coverage(&self) -> AppResult<()>;
 }
 
 #[async_trait]

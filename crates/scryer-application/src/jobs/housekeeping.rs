@@ -425,6 +425,18 @@ impl AppUseCase {
 
     pub(crate) async fn run_scheduled_housekeeping(&self) -> AppResult<HousekeepingReport> {
         info!("starting housekeeping");
+        // RFC 119: best-effort GC of convergence-coverage rows orphaned by deleted
+        // scopes/indexers. Non-blocking — coverage loss only triggers a safe
+        // re-converge, so a failure here must never fail housekeeping.
+        if let Err(error) = self
+            .services
+            .integrations
+            .scope_indexer_coverage
+            .prune_orphaned_coverage()
+            .await
+        {
+            warn!(error = %error, "failed to prune orphaned convergence coverage");
+        }
         let orphaned_media_files = {
             let _same_path_upgrade_guard = self
                 .runtime
