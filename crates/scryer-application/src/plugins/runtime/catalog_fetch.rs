@@ -173,65 +173,6 @@ fn catalog_release_scryer_constraint(release: &CatalogV3PluginRelease) -> Option
         .filter(|version| !version.is_empty())
         .map(|version| format!(">={version}"))
 }
-fn latest_catalog_release(plugin: &CatalogV3PluginEntry) -> Option<CatalogV3PluginRelease> {
-    plugin
-        .releases
-        .iter()
-        .filter_map(|release| {
-            parse_catalog_release_version(&plugin.id, release).map(|version| (version, release))
-        })
-        .max_by(|(left, _), (right, _)| left.cmp(right))
-        .map(|(_, release)| release.clone())
-}
-fn latest_compatible_catalog_release(
-    plugin: &CatalogV3PluginEntry,
-    supported_features: &HashSet<String>,
-) -> Option<CatalogV3PluginRelease> {
-    plugin
-        .releases
-        .iter()
-        .filter(|release| catalog_release_is_host_compatible(&plugin.id, release))
-        .filter(|release| {
-            select_catalog_release_artifact(
-                release,
-                supported_features,
-                crate::services::RuntimePerformanceClass::Slow,
-            )
-            .is_some()
-        })
-        .filter_map(|release| {
-            parse_catalog_release_version(&plugin.id, release).map(|version| (version, release))
-        })
-        .max_by(|(left, _), (right, _)| left.cmp(right))
-        .map(|(_, release)| release.clone())
-}
-fn latest_host_blocked_catalog_release(
-    plugin: &CatalogV3PluginEntry,
-    supported_features: &HashSet<String>,
-) -> Option<CatalogV3PluginRelease> {
-    let latest = latest_catalog_release(plugin)?;
-    let latest_version = parse_catalog_release_version(&plugin.id, &latest)?;
-    let selected = latest_compatible_catalog_release(plugin, supported_features);
-    match selected {
-        Some(selected) => {
-            let selected_version = parse_catalog_release_version(&plugin.id, &selected)?;
-            if latest_version > selected_version
-                && catalog_release_is_sdk_compatible(&plugin.id, &latest)
-                && !catalog_release_is_scryer_compatible(&plugin.id, &latest)
-            {
-                Some(latest)
-            } else {
-                None
-            }
-        }
-        None if catalog_release_is_sdk_compatible(&plugin.id, &latest)
-            && !catalog_release_is_scryer_compatible(&plugin.id, &latest) =>
-        {
-            Some(latest)
-        }
-        None => None,
-    }
-}
 #[cfg(test)]
 fn latest_compatible_child_release(child: &ChildCatalog) -> Option<ChildCatalogRelease> {
     child

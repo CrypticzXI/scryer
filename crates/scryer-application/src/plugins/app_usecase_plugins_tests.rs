@@ -1154,6 +1154,49 @@ fn catalog_v3_artifact(
     })
 }
 
+fn catalog_v3_release(
+    version: &str,
+    url: &str,
+    min_scryer_version: Option<&str>,
+) -> serde_json::Value {
+    let mut release = serde_json::json!({
+        "version": version,
+        "sdk_constraint": scryer_plugin_sdk::current_sdk_constraint(),
+        "artifacts": [catalog_v3_artifact(
+            url,
+            &[],
+            fixture_artifact_digest(),
+            fixture_wasm_digest(),
+        )],
+    });
+    if let Some(min_scryer_version) = min_scryer_version {
+        release["min_scryer_version"] = serde_json::json!(min_scryer_version);
+    }
+    release
+}
+
+fn catalog_entry_with_releases(
+    id: &str,
+    releases: Vec<serde_json::Value>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "id": id,
+        "name": format!("{id} Plugin"),
+        "description": format!("Description for {id}"),
+        "plugin_type": "indexer",
+        "provider_type": id,
+        "publisher": "scryer",
+        "support_tier": "official",
+        "status": "active",
+        "docs_url": format!("https://example.com/{id}/docs"),
+        "source_repo": fixture_source_repo(id),
+        "required_signer": {
+            "github_repository": format!("scryer-media/test-plugin-{}", id.replace('_', "-"))
+        },
+        "releases": releases,
+    })
+}
+
 fn catalog_entry_with_artifacts(
     id: &str,
     version: &str,
@@ -2360,7 +2403,7 @@ async fn list_available_plugins_marks_install_in_progress_for_initiating_actor_o
 }
 
 #[tokio::test]
-async fn list_keeps_incompatible_catalog_entries_visible_as_blocked() {
+async fn list_hides_incompatible_catalog_entries() {
     let h = bootstrap_plugins(Some(MockPluginProvider::new()));
     let json = make_catalog_fixture_json(&[
         catalog_entry("alpha", "1.0.0", false, Some("https://example.com/a.wasm")),
@@ -2378,16 +2421,38 @@ async fn list_keeps_incompatible_catalog_entries_visible_as_blocked() {
         .unwrap();
 
     let result = h.app.list_available_plugins(&admin()).await.unwrap();
-    assert_eq!(result.len(), 2);
-    let torrent_rss = result
-        .iter()
-        .find(|plugin| plugin.id == "torrent-rss")
-        .unwrap();
-    assert!(!torrent_rss.is_installed);
-    assert_eq!(
-        torrent_rss.blocked_reason.as_deref(),
-        Some("no_compatible_release")
-    );
+    assert_eq!(result.len(), 1);
+    assert_eq!(result[0].id, "alpha");
+    assert!(result[0].blocked_reason.is_none());
+    assert!(result.iter().all(|plugin| plugin.id != "torrent-rss"));
+}
+
+#[tokio::test]
+async fn list_uses_compatible_release_when_newer_release_requires_newer_host() {
+    let h = bootstrap_plugins(Some(MockPluginProvider::new()));
+    let json = make_raw_catalog_v3_json(&[catalog_entry_with_releases(
+        "alpha",
+        vec![
+            catalog_v3_release(
+                "2.0.0",
+                "https://example.com/alpha-v2.wasm.zst",
+                Some("999.0.0"),
+            ),
+            catalog_v3_release("1.5.0", "https://example.com/alpha-v1_5.wasm.zst", None),
+        ],
+    )]);
+    h.plugin_repo
+        .store_raw_catalog_source(CENTRAL_CATALOG_SOURCE_KEY, "central", Some(json))
+        .await;
+
+    let result = h.app.list_available_plugins(&admin()).await.unwrap();
+    assert_eq!(result.len(), 1);
+    let plugin = &result[0];
+    assert_eq!(plugin.id, "alpha");
+    assert_eq!(plugin.version, "1.5.0");
+    assert!(plugin.latest_version.is_none());
+    assert!(plugin.blocked_reason.is_none());
+    assert!(!plugin.update_available);
 }
 
 #[tokio::test]
@@ -2414,6 +2479,7 @@ async fn list_keeps_installed_incompatible_catalog_entries_visible() {
     assert_eq!(result.len(), 1);
     assert_eq!(result[0].id, "torrent-rss");
     assert!(result[0].is_installed);
+    assert!(result[0].blocked_reason.is_none());
     assert!(!result[0].update_available);
 }
 
