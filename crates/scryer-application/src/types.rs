@@ -119,6 +119,15 @@ pub struct CutoffUnmetItem {
     pub target_tier: String,
 }
 
+/// One bounded page of cutoff-unmet targets (RFC 119: bounded views). `total` is
+/// the full unmet count for the query so the UI can paginate without loading the
+/// whole set into the browser.
+#[derive(Clone, Debug)]
+pub struct CutoffUnmetPage {
+    pub items: Vec<CutoffUnmetItem>,
+    pub total: usize,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RecycleBinSettings {
     pub enabled: bool,

@@ -488,6 +488,27 @@ impl AppUseCase {
     }
 }
 impl AppUseCase {
+    /// RFC 119 bounded view: one page of cutoff-unmet targets plus the full
+    /// count. Computes the unmet set then slices — this bounds what reaches the
+    /// browser (the immediate large-library pain); paging the server-side
+    /// compute is a follow-up. `limit == 0` returns just the total with no items.
+    pub async fn list_cutoff_unmet_titles_page(
+        &self,
+        actor: &User,
+        facet: Option<MediaFacet>,
+        requested_library_ids: Option<Vec<String>>,
+        limit: usize,
+        offset: usize,
+    ) -> AppResult<CutoffUnmetPage> {
+        let all = self
+            .list_cutoff_unmet_titles(actor, facet, requested_library_ids)
+            .await?;
+        let total = all.len();
+        let items = all.into_iter().skip(offset).take(limit).collect();
+        Ok(CutoffUnmetPage { items, total })
+    }
+}
+impl AppUseCase {
     pub(crate) async fn default_media_root_for_title(
         &self,
         title: &scryer_domain::Title,

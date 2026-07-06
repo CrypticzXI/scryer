@@ -747,3 +747,74 @@ async fn search_indexers_for_title_returns_results_when_candidate_token_attachme
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].candidate_token, None);
 }
+
+#[tokio::test]
+async fn list_cutoff_unmet_titles_page_bounds_and_total() {
+    let settings = Arc::new(StoredSettingsRepo::default());
+    settings
+        .set_value(SETTINGS_SCOPE_SYSTEM, QUALITY_PROFILE_ID_KEY, r#""p720""#)
+        .await;
+    let quality_profiles = Arc::new(StoredQualityProfileRepo::default());
+    quality_profiles
+        .set_profiles(vec![cutoff_projection_test_profile("p720", "720p")])
+        .await;
+    let media_files = Arc::new(MockMediaFileRepo::default());
+    let (app, user, _) =
+        bootstrap_with_cutoff_projection_state(settings, quality_profiles, media_files.clone());
+
+    // Three monitored movies, each with a below-cutoff (480p vs 720p) file.
+    for name in ["Alpha", "Bravo", "Charlie"] {
+        let title = app
+            .add_title(
+                &user,
+                NewTitle {
+                    name: name.into(),
+                    facet: MediaFacet::Movie,
+                    monitored: true,
+                    tags: vec![],
+                    external_ids: vec![],
+                    min_availability: None,
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("create title");
+        media_files
+            .insert_media_file(&InsertMediaFileInput {
+                title_id: title.id.clone(),
+                file_path: format!("/library/{name}.mkv"),
+                size_bytes: 1_000,
+                quality_label: Some("480p".to_string()),
+                ..Default::default()
+            })
+            .await
+            .expect("insert media file");
+    }
+
+    // First page of 2 of 3, with the full total reported.
+    let page = app
+        .list_cutoff_unmet_titles_page(&user, Some(MediaFacet::Movie), None, 2, 0)
+        .await
+        .expect("paged cutoff query should succeed");
+    assert_eq!(page.total, 3);
+    assert_eq!(page.items.len(), 2);
+    assert_eq!(page.items[0].title_name, "Alpha");
+    assert_eq!(page.items[1].title_name, "Bravo");
+
+    // Second page: remainder.
+    let page = app
+        .list_cutoff_unmet_titles_page(&user, Some(MediaFacet::Movie), None, 2, 2)
+        .await
+        .expect("paged cutoff query should succeed");
+    assert_eq!(page.total, 3);
+    assert_eq!(page.items.len(), 1);
+    assert_eq!(page.items[0].title_name, "Charlie");
+
+    // limit == 0 returns just the total.
+    let page = app
+        .list_cutoff_unmet_titles_page(&user, Some(MediaFacet::Movie), None, 0, 0)
+        .await
+        .expect("paged cutoff query should succeed");
+    assert_eq!(page.total, 3);
+    assert!(page.items.is_empty());
+}
