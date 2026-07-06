@@ -2801,3 +2801,72 @@ async fn scope_converges_only_after_every_routed_indexer_is_covered() {
         "scope converges once every routed indexer is covered under the current fingerprint"
     );
 }
+
+#[tokio::test]
+async fn only_background_searches_record_coverage_interactive_bypasses() {
+    // RFC §D5: interactive/manual search bypasses convergence — it must never
+    // record coverage. The write-hook lives in search_and_evaluate_subject and
+    // is gated on caller_label; this drives that real chokepoint both ways.
+    let settings = Arc::new(StoredSettingsRepo::default());
+    settings
+        .set_value(
+            SETTINGS_SCOPE_SYSTEM,
+            crate::acquisition::convergence::ACQUISITION_RSS_FIRST_ENABLED_KEY,
+            "true",
+        )
+        .await;
+    let configs = vec![
+        synthetic_direct_nab_indexer_config("indexer-a", "newznab"),
+        synthetic_direct_nab_indexer_config("indexer-b", "newznab"),
+    ];
+    let indexer_client = Arc::new(FixedReleaseIndexerClient::new(
+        "Demon.Slayer.Mugen.Train.2020.1080p.WEB-DL",
+    ));
+    let (app, user) =
+        bootstrap_with_search_settings_indexer_and_configs(settings, indexer_client, configs);
+    let coverage = Arc::new(RecordingScopeIndexerCoverageRepo::new());
+    let app = app.with_test_overrides(|builder| {
+        builder.with_scope_indexer_coverage_store(coverage.clone())
+    });
+
+    let (title, subject) = convergence_test_title_and_subject(&app, &user).await;
+
+    // An interactive-labelled search must not touch the coverage ledger.
+    let _ = app
+        .search_and_evaluate_subject(
+            &title,
+            &subject,
+            "interactive_search",
+            SearchMode::Interactive,
+            tokio_util::sync::CancellationToken::new(),
+        )
+        .await;
+    assert!(
+        coverage.recorded().await.is_empty(),
+        "interactive search must not record convergence coverage"
+    );
+
+    // The background acquisition caller does record coverage for every routed indexer.
+    let _ = app
+        .search_and_evaluate_subject(
+            &title,
+            &subject,
+            "background_acquisition",
+            SearchMode::Auto,
+            tokio_util::sync::CancellationToken::new(),
+        )
+        .await;
+    let mut indexers: Vec<String> = coverage
+        .recorded()
+        .await
+        .iter()
+        .map(|row| row.2.clone())
+        .collect();
+    indexers.sort();
+    indexers.dedup();
+    assert_eq!(
+        indexers,
+        vec!["indexer-a".to_string(), "indexer-b".to_string()],
+        "background search records coverage for each routed indexer"
+    );
+}
