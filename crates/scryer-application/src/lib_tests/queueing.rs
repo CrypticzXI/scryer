@@ -2870,3 +2870,110 @@ async fn only_background_searches_record_coverage_interactive_bypasses() {
         "background search records coverage for each routed indexer"
     );
 }
+
+#[tokio::test]
+async fn stale_fingerprint_coverage_reopens_convergence() {
+    // RFC §D4: a profile/criteria edit changes the fingerprint, so prior coverage
+    // (recorded under the old fingerprint) no longer counts and the scope re-opens.
+    let settings = Arc::new(StoredSettingsRepo::default());
+    settings
+        .set_value(
+            SETTINGS_SCOPE_SYSTEM,
+            crate::acquisition::convergence::ACQUISITION_RSS_FIRST_ENABLED_KEY,
+            "true",
+        )
+        .await;
+    let configs = vec![
+        synthetic_direct_nab_indexer_config("indexer-a", "newznab"),
+        synthetic_direct_nab_indexer_config("indexer-b", "newznab"),
+    ];
+    let (app, user) = bootstrap_with_search_settings_indexer_and_configs(
+        settings,
+        Arc::new(MockIndexerClient),
+        configs,
+    );
+    let coverage = Arc::new(RecordingScopeIndexerCoverageRepo::new());
+    let app = app.with_test_overrides(|builder| {
+        builder.with_scope_indexer_coverage_store(coverage.clone())
+    });
+
+    let (title, subject) = convergence_test_title_and_subject(&app, &user).await;
+    let convergence = app
+        .resolve_scope_convergence(&title, &subject)
+        .await
+        .expect("routed convergence coordinates");
+
+    // Full coverage, but recorded under a since-superseded fingerprint.
+    for indexer_id in ["indexer-a", "indexer-b"] {
+        coverage
+            .record_coverage(
+                &convergence.scope_key,
+                &convergence.facet,
+                indexer_id,
+                "superseded-fingerprint",
+            )
+            .await
+            .unwrap();
+    }
+    assert!(
+        !app.scope_converged_for_rss_first(&title, &subject).await,
+        "coverage under a stale fingerprint does not count; the scope re-opens"
+    );
+
+    // Re-searching under the current fingerprint converges it again.
+    app.record_background_search_coverage(&title, &subject).await;
+    assert!(
+        app.scope_converged_for_rss_first(&title, &subject).await,
+        "coverage under the current fingerprint converges the scope"
+    );
+}
+
+#[tokio::test]
+async fn coverage_excludes_disabled_indexers() {
+    // A disabled indexer is never queried, so it must not be recorded as covered
+    // (otherwise enabling it later would wrongly present as already-searched).
+    let settings = Arc::new(StoredSettingsRepo::default());
+    settings
+        .set_value(
+            SETTINGS_SCOPE_SYSTEM,
+            crate::acquisition::convergence::ACQUISITION_RSS_FIRST_ENABLED_KEY,
+            "true",
+        )
+        .await;
+    let mut disabled_b = synthetic_direct_nab_indexer_config("indexer-b", "newznab");
+    disabled_b.is_enabled = false;
+    let configs = vec![
+        synthetic_direct_nab_indexer_config("indexer-a", "newznab"),
+        disabled_b,
+    ];
+    let (app, user) = bootstrap_with_search_settings_indexer_and_configs(
+        settings,
+        Arc::new(MockIndexerClient),
+        configs,
+    );
+    let coverage = Arc::new(RecordingScopeIndexerCoverageRepo::new());
+    let app = app.with_test_overrides(|builder| {
+        builder.with_scope_indexer_coverage_store(coverage.clone())
+    });
+
+    let (title, subject) = convergence_test_title_and_subject(&app, &user).await;
+    app.record_background_search_coverage(&title, &subject).await;
+
+    let indexers: Vec<String> = coverage
+        .recorded()
+        .await
+        .iter()
+        .map(|row| row.2.clone())
+        .collect();
+    assert_eq!(
+        indexers,
+        vec!["indexer-a".to_string()],
+        "only enabled routed indexers are recorded as covered"
+    );
+    // With the disabled indexer excluded from the routed set, the one enabled
+    // indexer's coverage converges the scope.
+    assert!(
+        app.scope_converged_for_rss_first(&title, &subject).await,
+        "scope converges over the enabled routed indexers only"
+    );
+}
