@@ -4,7 +4,10 @@ use crate::scoring_weights::ScoringPersona;
 use crate::types::{IndexerSearchResult, TitleMediaFile};
 
 /// Flat polling interval for movies without a baseline date.
-const MOVIE_FALLBACK_INTERVAL_HOURS: i64 = 6;
+const MOVIE_FALLBACK_INTERVAL_HOURS: i64 = 72;
+
+/// Polling interval for long-tail wanted items after the active search window.
+const LONG_TAIL_INTERVAL_HOURS: i64 = 72;
 
 /// Episodes become searchable six hours before air time.
 pub(crate) const EPISODE_PRE_AIR_WINDOW_HOURS: i64 = 6;
@@ -232,7 +235,7 @@ fn compute_movie_schedule(
     // pre_release: baseline -24h to baseline, every 60m
     // primary: baseline to +7d, every 15m
     // secondary: +7d to +30d, every 2h
-    // long_tail: >30d, every 6h (runs forever, no paused phase)
+    // long_tail: >30d, every 72h (runs forever, no paused phase)
 
     let pre_release_start = baseline - Duration::hours(24);
     let primary_end = baseline + Duration::days(7);
@@ -252,7 +255,10 @@ fn compute_movie_schedule(
     } else if *now < secondary_end {
         (SearchPhase::Secondary, Duration::hours(2))
     } else {
-        (SearchPhase::LongTail, Duration::hours(6))
+        (
+            SearchPhase::LongTail,
+            Duration::hours(LONG_TAIL_INTERVAL_HOURS),
+        )
     };
 
     SearchSchedule {
@@ -277,7 +283,7 @@ fn compute_episode_schedule(
     // pre_air: air -6h to air, every 30m
     // primary: air to +48h, every 15m
     // secondary: +48h to +14d, every 1h
-    // long_tail: >14d, every 6h (runs forever, no paused phase)
+    // long_tail: >14d, every 72h (runs forever, no paused phase)
 
     let pre_air_start = baseline - Duration::hours(EPISODE_PRE_AIR_WINDOW_HOURS);
     let primary_end = baseline + Duration::hours(48);
@@ -297,7 +303,10 @@ fn compute_episode_schedule(
     } else if *now < secondary_end {
         (SearchPhase::Secondary, Duration::hours(1))
     } else {
-        (SearchPhase::LongTail, Duration::hours(6))
+        (
+            SearchPhase::LongTail,
+            Duration::hours(LONG_TAIL_INTERVAL_HOURS),
+        )
     };
 
     SearchSchedule {

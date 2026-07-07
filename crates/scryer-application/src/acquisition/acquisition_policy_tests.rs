@@ -221,6 +221,10 @@ fn movie_schedule_no_baseline() {
     let now = Utc::now();
     let schedule = compute_search_schedule("movie", None, "primary", &now);
     assert_eq!(schedule.search_phase, SearchPhase::Primary);
+    assert_eq!(
+        schedule.next_search_at,
+        (now + Duration::hours(72)).to_rfc3339()
+    );
 }
 
 #[test]
@@ -261,6 +265,10 @@ fn movie_schedule_long_tail_phase() {
     let baseline = (now - Duration::days(60)).to_rfc3339();
     let schedule = compute_search_schedule("movie", Some(&baseline), "primary", &now);
     assert_eq!(schedule.search_phase, SearchPhase::LongTail);
+    assert_eq!(
+        schedule.next_search_at,
+        (now + Duration::hours(72)).to_rfc3339()
+    );
 }
 
 #[test]
@@ -318,6 +326,10 @@ fn episode_schedule_long_tail_phase() {
     let baseline = (now - Duration::days(30)).to_rfc3339();
     let schedule = compute_search_schedule("episode", Some(&baseline), "primary", &now);
     assert_eq!(schedule.search_phase, SearchPhase::LongTail);
+    assert_eq!(
+        schedule.next_search_at,
+        (now + Duration::hours(72)).to_rfc3339()
+    );
 }
 
 #[test]
