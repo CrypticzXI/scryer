@@ -1,8 +1,8 @@
 TRaSH Guides sync summary
-Synced at: 2026-06-25
+Synced at: 2026-07-07
 
-Active release-group rules: 821
-  by facet: movies=270, series=174, anime=377
+Active release-group rules: 825
+  by facet: movies=274, series=174, anime=377
 Active service aliases: 118
 Active parser token signals: 35
 Active blocked title rules: 52

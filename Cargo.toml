@@ -53,7 +53,7 @@ argon2 = "0.5"
 aws-lc-rs = { version = "1.16", default-features = false, features = ["non-fips"] }
 tokio-util = { version = "0.7", features = ["rt", "io"] }
 toml = "1"
-quick-xml = "0.40.1"
+quick-xml = "0.41.0"
 extism = { version = "1.21", default-features = false, features = ["register-filesystem", "wasmtime-default-features"] }
 semver = "1"
 metrics = "0.24"

@@ -1,6 +1,6 @@
 [package]
 name = "scryer-webauthn"
-version = "0.16.6"
+version = "0.16.8"
 edition.workspace = true
 
 [dependencies]

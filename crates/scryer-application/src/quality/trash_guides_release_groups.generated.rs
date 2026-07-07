@@ -2,7 +2,7 @@
 // Do not edit by hand.
 
 #[allow(dead_code)]
-pub const TRASH_GUIDES_SYNCED_AT: &str = "2026-06-25";
+pub const TRASH_GUIDES_SYNCED_AT: &str = "2026-07-07";
 
 pub static GROUP_RULES: &[GroupRule] = &[
     GroupRule {
@@ -1192,6 +1192,16 @@ pub static GROUP_RULES: &[GroupRule] = &[
             name: "CHX",
             tier: GroupTier::Banned,
             facet: RuleFacet::Series,
+            source_context: SourceContext::Any,
+        },
+    },
+    GroupRule {
+        matcher: "CLEANUP",
+        match_kind: GroupMatchKind::Exact,
+        entry: GroupEntry {
+            name: "CLEANUP",
+            tier: GroupTier::Banned,
+            facet: RuleFacet::Movie,
             source_context: SourceContext::Any,
         },
     },
@@ -2446,6 +2456,16 @@ pub static GROUP_RULES: &[GroupRule] = &[
         },
     },
     GroupRule {
+        matcher: "FS",
+        match_kind: GroupMatchKind::Exact,
+        entry: GroupEntry {
+            name: "FS",
+            tier: GroupTier::Banned,
+            facet: RuleFacet::Movie,
+            source_context: SourceContext::Any,
+        },
+    },
+    GroupRule {
         matcher: "FZHD",
         match_kind: GroupMatchKind::Exact,
         entry: GroupEntry {
@@ -3023,6 +3043,16 @@ pub static GROUP_RULES: &[GroupRule] = &[
             tier: GroupTier::Silver,
             facet: RuleFacet::Movie,
             source_context: SourceContext::BluRay,
+        },
+    },
+    GroupRule {
+        matcher: "HiDt",
+        match_kind: GroupMatchKind::Exact,
+        entry: GroupEntry {
+            name: "HiDt",
+            tier: GroupTier::Silver,
+            facet: RuleFacet::Movie,
+            source_context: SourceContext::UhdBluRay,
         },
     },
     GroupRule {
@@ -6103,6 +6133,16 @@ pub static GROUP_RULES: &[GroupRule] = &[
             tier: GroupTier::Bronze,
             facet: RuleFacet::Anime,
             source_context: SourceContext::Anime,
+        },
+    },
+    GroupRule {
+        matcher: "SyncUP",
+        match_kind: GroupMatchKind::Exact,
+        entry: GroupEntry {
+            name: "SyncUP",
+            tier: GroupTier::Banned,
+            facet: RuleFacet::Movie,
+            source_context: SourceContext::Any,
         },
     },
     GroupRule {
@@ -10534,6 +10574,19 @@ pub static ACTIVE_GROUP_RULE_METADATA: &[TrashGuideRuleMetadata] = &[
         source_path: "docs/json/sonarr/cf/lq.json",
     },
     TrashGuideRuleMetadata {
+        matcher: "CLEANUP",
+        match_kind: GroupMatchKind::Exact,
+        tier: GroupTier::Banned,
+        facet: RuleFacet::Movie,
+        source_context: SourceContext::Any,
+        app: "radarr",
+        stem: "lq",
+        trash_id: "90a6f9a284dff5103f6346090e6280c8",
+        cf_name: "LQ",
+        spec_name: "CLEANUP",
+        source_path: "docs/json/radarr/cf/lq.json",
+    },
+    TrashGuideRuleMetadata {
         matcher: "CMRG",
         match_kind: GroupMatchKind::Exact,
         tier: GroupTier::Gold,
@@ -12874,6 +12927,19 @@ pub static ACTIVE_GROUP_RULE_METADATA: &[TrashGuideRuleMetadata] = &[
         source_path: "docs/json/radarr/cf/lq.json",
     },
     TrashGuideRuleMetadata {
+        matcher: "FS",
+        match_kind: GroupMatchKind::Exact,
+        tier: GroupTier::Banned,
+        facet: RuleFacet::Movie,
+        source_context: SourceContext::Any,
+        app: "radarr",
+        stem: "lq",
+        trash_id: "90a6f9a284dff5103f6346090e6280c8",
+        cf_name: "LQ",
+        spec_name: "FS",
+        source_path: "docs/json/radarr/cf/lq.json",
+    },
+    TrashGuideRuleMetadata {
         matcher: "FZHD",
         match_kind: GroupMatchKind::Exact,
         tier: GroupTier::Banned,
@@ -13964,6 +14030,19 @@ pub static ACTIVE_GROUP_RULE_METADATA: &[TrashGuideRuleMetadata] = &[
         cf_name: "HD Bluray Tier 02",
         spec_name: "HiDt",
         source_path: "docs/json/radarr/cf/hd-bluray-tier-02.json",
+    },
+    TrashGuideRuleMetadata {
+        matcher: "HiDt",
+        match_kind: GroupMatchKind::Exact,
+        tier: GroupTier::Silver,
+        facet: RuleFacet::Movie,
+        source_context: SourceContext::UhdBluRay,
+        app: "radarr",
+        stem: "uhd-bluray-tier-02",
+        trash_id: "a58f517a70193f8e578056642178419d",
+        cf_name: "UHD Bluray Tier 02",
+        spec_name: "HiDt",
+        source_path: "docs/json/radarr/cf/uhd-bluray-tier-02.json",
     },
     TrashGuideRuleMetadata {
         matcher: "HiFi",
@@ -19840,6 +19919,19 @@ pub static ACTIVE_GROUP_RULE_METADATA: &[TrashGuideRuleMetadata] = &[
         cf_name: "Anime BD Tier 03",
         spec_name: "Sylvar",
         source_path: "docs/json/sonarr/cf/anime-bd-tier-03.json",
+    },
+    TrashGuideRuleMetadata {
+        matcher: "SyncUP",
+        match_kind: GroupMatchKind::Exact,
+        tier: GroupTier::Banned,
+        facet: RuleFacet::Movie,
+        source_context: SourceContext::Any,
+        app: "radarr",
+        stem: "lq",
+        trash_id: "90a6f9a284dff5103f6346090e6280c8",
+        cf_name: "LQ",
+        spec_name: "SyncUP",
+        source_path: "docs/json/radarr/cf/lq.json",
     },
     TrashGuideRuleMetadata {
         matcher: "T4H",
