@@ -209,6 +209,12 @@ fn convergence_cursor_select(
 static CONVERGENCE_CURSOR_POSITION: std::sync::Mutex<Option<String>> =
     std::sync::Mutex::new(None);
 
+/// Cap on wanted items loaded as convergence targets per cycle — effectively "all"
+/// for typical libraries (the cursor's work-cap bounds actual searches). A paged
+/// query keyed on the cursor position is the follow-up optimization for very large
+/// target sets.
+const CONVERGENCE_TARGET_LIST_LIMIT: i64 = 100_000;
+
 pub(crate) async fn process_due_wanted_items_with_blocked_facets(
     app: &AppUseCase,
     blocked_facets: &[MediaFacet],
@@ -233,25 +239,44 @@ pub(crate) async fn process_due_wanted_items_with_blocked_facets(
         }
     };
 
+    // RFC 119: under convergence the rotating cursor (§D3) rotates over the WHOLE
+    // derived target set — all monitored-unsatisfied scopes (D1), not just the
+    // next_search_at-due subset — so coverage (not a cadence) decides what is searched
+    // and a fingerprint change can re-open a converged scope. A far-future `now` makes
+    // next_search_at never gate eligibility. Gated; off by default until the cutover.
+    let convergence_settings = app.convergence_settings().await.ok();
+    let rss_first = convergence_settings
+        .as_ref()
+        .is_some_and(|settings| settings.rss_first_enabled);
+    let list_now = if rss_first {
+        "9999-12-31T23:59:59Z".to_string()
+    } else {
+        now_str.clone()
+    };
+    let list_limit = if rss_first {
+        CONVERGENCE_TARGET_LIST_LIMIT
+    } else {
+        batch_size
+    };
+
     let due_items = match app
         .services
         .workflow
         .wanted_items
-        .list_due_wanted_items(&now_str, batch_size, blocked_facets)
+        .list_due_wanted_items(&list_now, list_limit, blocked_facets)
         .await
     {
         Ok(items) => {
             if !items.is_empty() {
                 info!(
                     count = items.len(),
-                    now = now_str.as_str(),
-                    "background acquisition: found due wanted items"
+                    "background acquisition: found target wanted items"
                 );
             }
             items
         }
         Err(err) => {
-            warn!(error = %err, "failed to list due wanted items");
+            warn!(error = %err, "failed to list wanted items");
             return;
         }
     };
@@ -261,13 +286,6 @@ pub(crate) async fn process_due_wanted_items_with_blocked_facets(
     }
 
     let fetched_due_count = due_items.len();
-    // RFC 119: when convergence is enabled, the rotating cursor (§D3) drives which
-    // targets are searched this cycle — hot-first, capped, fair — instead of the
-    // next_search_at cadence ordering. Gated; off by default until the cutover.
-    let convergence_settings = app.convergence_settings().await.ok();
-    let rss_first = convergence_settings
-        .as_ref()
-        .is_some_and(|settings| settings.rss_first_enabled);
     let (due_items, deferred_per_title, deferred_by_global_limit) = if rss_first {
         let cap = convergence_settings
             .as_ref()

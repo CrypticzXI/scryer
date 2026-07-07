@@ -527,6 +527,47 @@ impl AppUseCase {
         .await
         .unwrap_or(false)
     }
+
+    /// Convergence progress for a scope, for the UI (RFC 119 §6/§7): how many of the
+    /// routed indexers are covered under the current fingerprint, and whether the
+    /// scope has converged. `None` when the scope is not a convergence unit or nothing
+    /// is routed. Per-subject; the paged UI uses a batched coverage-count query (#12).
+    #[allow(dead_code)] // wired by the GraphQL wanted/target payload (RFC 119 §6, cutover)
+    pub(crate) async fn convergence_state_for_subject(
+        &self,
+        title: &Title,
+        subject: &ResolvedReleaseSearchSubject,
+    ) -> Option<ConvergenceStateSummary> {
+        let convergence = self.resolve_scope_convergence(title, subject).await?;
+        let uncovered = self
+            .uncovered_indexers_for_scope(
+                &convergence.scope_key,
+                &convergence.facet,
+                &convergence.fingerprint,
+                &convergence.routed_indexer_ids,
+            )
+            .await
+            .ok()?;
+        let routed = convergence.routed_indexer_ids.len();
+        Some(ConvergenceStateSummary {
+            converged: uncovered.is_empty(),
+            indexers_covered: routed.saturating_sub(uncovered.len()),
+            indexers_routed: routed,
+        })
+    }
+}
+
+/// Convergence progress for a scope, surfaced to the UI (RFC 119 §6 payload fields:
+/// `convergenceState`, `indexersCovered`/`indexersRouted`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)] // wired by the GraphQL wanted/target payload (RFC 119 §6, cutover)
+pub(crate) struct ConvergenceStateSummary {
+    /// Every routed indexer has current-fingerprint coverage → watching RSS.
+    pub converged: bool,
+    /// Routed indexers with current-fingerprint coverage.
+    pub indexers_covered: usize,
+    /// Routed-enabled indexers for this scope.
+    pub indexers_routed: usize,
 }
 
 #[cfg(test)]
