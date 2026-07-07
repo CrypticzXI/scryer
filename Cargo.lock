@@ -181,7 +181,7 @@ version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "40c48f72fd53cd289104fc64099abca73db4166ad86ea0b4341abe65af83dadc"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -192,7 +192,7 @@ checksum = "291e6a250ff86cd4a820112fb8898808a366d8f9f58ce16d1f538353ad55747d"
 dependencies = [
  "anstyle",
  "once_cell_polyfill",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -647,7 +647,7 @@ dependencies = [
  "bitflags",
  "cexpr",
  "clang-sys",
- "itertools 0.13.0",
+ "itertools 0.10.5",
  "log",
  "prettyplease",
  "proc-macro2",
@@ -1875,7 +1875,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users 0.5.2",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -2063,7 +2063,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3981,7 +3981,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -4129,6 +4129,17 @@ checksum = "e3e0adef53c21f888deb4fa59fc59f7eb17404926ee8a6f59f5df0fd7f9f3272"
 dependencies = [
  "bitflags",
  "objc2",
+]
+
+[[package]]
+name = "objc2-metal"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a0125f776a10d00af4152d74616409f0d4a2053a6f57fa5b7d6aa2854ac04794"
+dependencies = [
+ "bitflags",
+ "objc2",
+ "objc2-foundation",
 ]
 
 [[package]]
@@ -5460,7 +5471,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -5537,7 +5548,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -5759,7 +5770,7 @@ dependencies = [
  "unicode-normalization",
  "url",
  "uuid",
- "weaver-rar",
+ "weaver-unrar",
  "whatlang",
  "wiremock",
  "x509-cert",
@@ -6663,7 +6674,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "52d1cfed4120b4d927bf7c0f86d2087a4a7d6027c906d9f9d525a80573b9be51"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -7049,7 +7060,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix 1.1.4",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -8212,35 +8223,42 @@ dependencies = [
 ]
 
 [[package]]
-name = "weaver-rar"
-version = "0.5.3"
-source = "git+https://github.com/scryer-media/weaver.git?tag=weaver-v0.5.3#05bb35661b3bd7ede60dc379001a7ea7a1be60bb"
+name = "weaver-reed-solomon"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "acb05ce94d32da3445f4fef559190a9b90289176e8cc1f2e74e87c3c8621a90e"
 dependencies = [
- "aes 0.9.1",
- "blake2s_simd",
- "cbc 0.2.1",
- "crc32fast",
- "hmac 0.13.0",
- "memchr",
- "memmap2",
- "pbkdf2 0.13.0",
+ "objc2",
+ "objc2-foundation",
+ "objc2-metal",
  "rayon",
- "rmp-serde",
- "serde",
- "sha1 0.11.0",
- "sha2 0.11.0",
- "tempfile",
- "thiserror 2.0.18",
- "tracing",
- "weaver-reed-solomon",
 ]
 
 [[package]]
-name = "weaver-reed-solomon"
-version = "0.5.3"
-source = "git+https://github.com/scryer-media/weaver.git?tag=weaver-v0.5.3#05bb35661b3bd7ede60dc379001a7ea7a1be60bb"
+name = "weaver-unrar"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6867c5e858b85bbe5722ef7d13ad4747f8f28cea1dbb2b4e988e19721fe6336b"
 dependencies = [
+ "aws-lc-rs",
+ "aws-lc-sys",
+ "blake2s_simd",
+ "crc32fast",
+ "filetime",
+ "libc",
+ "memchr",
+ "memmap2",
  "rayon",
+ "rmp-serde",
+ "serde",
+ "subtle",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tracing",
+ "unicode-normalization",
+ "weaver-reed-solomon",
+ "windows-sys 0.61.2",
+ "zeroize",
 ]
 
 [[package]]
@@ -8393,7 +8411,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]

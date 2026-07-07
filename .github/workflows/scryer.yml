@@ -23,8 +23,6 @@ jobs:
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
 
       - name: Setup Node
         uses: actions/setup-node@v6
@@ -68,8 +66,6 @@ jobs:
     if: ${{ github.ref_type == 'tag' && startsWith(github.ref_name, 'scryer-v') }}
     steps:
       - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
 
       - uses: dtolnay/rust-toolchain@v1
         with:
@@ -106,8 +102,6 @@ jobs:
       SCCACHE_IDLE_TIMEOUT: "0"
     steps:
       - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
 
       - uses: dtolnay/rust-toolchain@v1
         with:
@@ -255,8 +249,6 @@ jobs:
       SCCACHE_IDLE_TIMEOUT: "0"
     steps:
       - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
 
       - uses: dtolnay/rust-toolchain@v1
         with:
@@ -408,8 +400,6 @@ jobs:
       SCCACHE_IDLE_TIMEOUT: "0"
     steps:
       - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
 
       - uses: dtolnay/rust-toolchain@v1
         with:
@@ -551,8 +541,6 @@ jobs:
       SCRYER_SCCACHE_BUILD_FLAVOR: ${{ github.event_name == 'pull_request' && 'rc' || 'release' }}
     steps:
       - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
 
       - uses: dtolnay/rust-toolchain@v1
         with:
@@ -686,8 +674,6 @@ jobs:
       SCRYER_SCCACHE_BUILD_FLAVOR: ${{ github.event_name == 'pull_request' && 'rc' || 'release' }}
     steps:
       - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
 
       - uses: dtolnay/rust-toolchain@v1
         with:
@@ -851,8 +837,6 @@ jobs:
       SCRYER_SCCACHE_BUILD_FLAVOR: ${{ github.event_name == 'pull_request' && 'rc' || 'release' }}
     steps:
       - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
 
       - uses: dtolnay/rust-toolchain@v1
         with:
@@ -1486,8 +1470,6 @@ jobs:
     if: ${{ github.ref_type == 'tag' && startsWith(github.ref_name, 'scryer-v') }}
     steps:
       - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
 
       - name: Download WinGet xtask binary
         uses: actions/download-artifact@v8

@@ -1,7 +1,7 @@
 //! Archive extraction for the import pipeline.
 //!
 //! Detects RAR, 7z, and zip archives in download directories and extracts
-//! them before the video file scanner runs. Uses `weaver-rar` for RAR5
+//! them before the video file scanner runs. Uses `weaver-unrar` for RAR
 //! archives and `sevenz-rust2` for 7z/zip.
 
 use std::fs::File;
@@ -163,7 +163,7 @@ fn extract_rar(
     let file = File::open(rar_path)
         .map_err(|e| AppError::Repository(format!("failed to open RAR archive: {e}")))?;
 
-    let mut archive = weaver_rar::RarArchive::open(file)
+    let mut archive = weaver_unrar::RarArchive::open(file)
         .map_err(|e| AppError::Repository(format!("failed to parse RAR archive: {e}")))?;
 
     // Add continuation volumes (.r00, .r01, ... or .part2.rar, .part3.rar, etc.)
@@ -197,7 +197,7 @@ fn extract_rar(
     }
 
     let metadata = archive.metadata();
-    let options = weaver_rar::ExtractOptions {
+    let options = weaver_unrar::ExtractOptions {
         password: password.map(|s| s.to_string()),
         ..Default::default()
     };

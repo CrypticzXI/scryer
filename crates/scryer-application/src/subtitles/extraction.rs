@@ -340,7 +340,7 @@ fn extract_rar_candidates(content: Vec<u8>) -> AppResult<Vec<ArchiveCandidate>> 
 
     let file = File::open(&archive_path)
         .map_err(|error| AppError::Repository(format!("failed to open RAR archive: {error}")))?;
-    let mut archive = weaver_rar::RarArchive::open(file)
+    let mut archive = weaver_unrar::RarArchive::open(file)
         .map_err(|error| AppError::Repository(format!("failed to parse RAR archive: {error}")))?;
     let metadata = archive.metadata();
     if metadata.members.len() > MAX_ARCHIVE_FILES {
@@ -348,14 +348,14 @@ fn extract_rar_candidates(content: Vec<u8>) -> AppResult<Vec<ArchiveCandidate>> 
             "subtitle archive contains too many files".to_string(),
         ));
     }
-    let options = weaver_rar::ExtractOptions::default();
+    let options = weaver_unrar::ExtractOptions::default();
     let mut expanded_bytes = 0usize;
 
     for (idx, member) in metadata.members.iter().enumerate() {
         if member.is_directory {
             continue;
         }
-        let safe_name = weaver_rar::sanitize_path(&member.name);
+        let safe_name = weaver_unrar::sanitize_path(&member.name);
         if !is_safe_relative_path(&safe_name) || !is_extractable_subtitle_artifact(&safe_name) {
             continue;
         }

@@ -178,7 +178,7 @@ opt-level = 3
 [profile.release-lean.package.sha2]
 opt-level = 3
 
-[profile.release-lean.package.weaver-rar]
+[profile.release-lean.package.weaver-unrar]
 opt-level = 3
 
 [profile.release-lean.package.zip]
@@ -281,7 +281,7 @@ opt-level = 3
 [profile.rc.package.sha2]
 opt-level = 3
 
-[profile.rc.package.weaver-rar]
+[profile.rc.package.weaver-unrar]
 opt-level = 3
 
 [profile.rc.package.zip]
