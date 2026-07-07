@@ -46,7 +46,6 @@ import {
   titleOverviewSearchButtonId,
 } from "@/lib/utils/dom-ids";
 import {
-  ANIME_TITLE_TABLE_RATING_COLUMNS,
   bytesToReadable,
   formatAudioCodecLabel,
   formatCatalogPopularity,
@@ -56,7 +55,6 @@ import {
   formatTitleDate,
   resolveDisplayedQualityLabel,
   resolveOverviewTargetView,
-  SHARED_TITLE_TABLE_RATING_COLUMNS,
   StatusBadge,
   TitleEpisodeProgressBar,
   TitleCollectionEmptyState,
@@ -72,6 +70,8 @@ import {
   TITLE_TABLE_ROW_CLASS,
   titleTableRatingColumnLabel,
   titleTableRatingColumnValue,
+  titleTableRatingColumnWidthRem,
+  titleTableSupportedRatingColumnsForView,
   type TitleTableSortDirection,
   type TitleTableSortKey,
   type TitleTableVisibleColumns,
@@ -177,7 +177,6 @@ export function CompactTitleTable({
   const t = useTranslate();
   const dateTimeFormat = useUiDateTimeFormat();
   const isMovieView = view === "movies";
-  const isAnimeView = view === "anime";
   const overviewTargetView: ViewId = resolveOverviewTargetView(view);
   const selectedPaneMode =
     selectedTitleId !== null && onSelectTitle !== undefined;
@@ -224,9 +223,8 @@ export function CompactTitleTable({
     !selectedDrawerMode &&
     isMovieView &&
     visibleColumns.audioCodec;
-  const supportedRatingColumns = isAnimeView
-    ? ANIME_TITLE_TABLE_RATING_COLUMNS
-    : SHARED_TITLE_TABLE_RATING_COLUMNS;
+  const supportedRatingColumns =
+    titleTableSupportedRatingColumnsForView(overviewTargetView);
   const showRatingColumns = selectedDrawerMode
     ? []
     : supportedRatingColumns.filter(
@@ -249,7 +247,10 @@ export function CompactTitleTable({
       (showAudioCodecColumn ? 7.25 : 0) +
       (showPopularityColumn ? 6 : 0) +
       (showRootColumn ? 11 : 0) +
-      showRatingColumns.length * 5.5 +
+      showRatingColumns.reduce(
+        (total, key) => total + titleTableRatingColumnWidthRem(key),
+        0,
+      ) +
       (showAddedColumn ? 6.5 : 0) +
       (showActionsColumn ? 8.5 : 0);
   const columnCount = selectedDrawerMode
@@ -292,6 +293,12 @@ export function CompactTitleTable({
       <col style={{ width: "3rem" }} />
       <col />
       {showYearColumn ? <col style={{ width: "4.75rem" }} /> : null}
+      {showRatingColumns.map((key) => (
+        <col
+          key={key}
+          style={{ width: `${titleTableRatingColumnWidthRem(key)}rem` }}
+        />
+      ))}
       {showLibraryColumn ? <col style={{ width: "7rem" }} /> : null}
       {showMonitoredColumn ? <col style={{ width: "4rem" }} /> : null}
       {showQualityColumn ? <col style={{ width: "7rem" }} /> : null}
@@ -304,9 +311,6 @@ export function CompactTitleTable({
       {showAudioCodecColumn ? <col style={{ width: "7.25rem" }} /> : null}
       {showPopularityColumn ? <col style={{ width: "6rem" }} /> : null}
       {showRootColumn ? <col style={{ width: "11rem" }} /> : null}
-      {showRatingColumns.map((key) => (
-        <col key={key} style={{ width: "5.5rem" }} />
-      ))}
       {showAddedColumn ? <col style={{ width: "6.5rem" }} /> : null}
       {showActionsColumn ? <col style={{ width: "8.5rem" }} /> : null}
     </colgroup>
@@ -315,6 +319,7 @@ export function CompactTitleTable({
     ? "drawer"
     : [
         showYearColumn && "year",
+        ...showRatingColumns,
         showLibraryColumn && "library",
         showMonitoredColumn && "monitored",
         showQualityColumn && "quality",
@@ -327,7 +332,6 @@ export function CompactTitleTable({
         showAudioCodecColumn && "audioCodec",
         showPopularityColumn && "popularity",
         showRootColumn && "root",
-        ...showRatingColumns,
         showAddedColumn && "added",
         showActionsColumn && "actions",
       ]
@@ -883,6 +887,14 @@ export function CompactTitleTable({
               {item.year ?? "—"}
             </TableCell>
           ) : null}
+          {showRatingColumns.map((columnKey) => (
+            <TableCell
+              key={columnKey}
+              className="whitespace-nowrap py-1.5 text-center align-middle font-[var(--font-code)] text-[12.5px] tabular-nums text-[var(--scry-text4)]"
+            >
+              {titleTableRatingColumnValue(item, columnKey)}
+            </TableCell>
+          ))}
           {showLibraryColumn ? (
             <TableCell className="overflow-hidden py-1.5 text-center align-middle text-[12px] text-[var(--scry-muted)]">
               <span className="block truncate">
@@ -969,14 +981,6 @@ export function CompactTitleTable({
               </span>
             </TableCell>
           ) : null}
-          {showRatingColumns.map((columnKey) => (
-            <TableCell
-              key={columnKey}
-              className="whitespace-nowrap py-1.5 text-center align-middle font-[var(--font-code)] text-[12.5px] tabular-nums text-[var(--scry-text4)]"
-            >
-              {titleTableRatingColumnValue(item, columnKey)}
-            </TableCell>
-          ))}
           {showAddedColumn ? (
             <TableCell className="whitespace-nowrap py-1.5 text-center align-middle text-[12px] text-[var(--scry-muted)]">
               {addedLabel}
@@ -1186,6 +1190,14 @@ export function CompactTitleTable({
               "justify-center text-center uppercase tracking-[0.05em] text-[var(--scry-faint2)]",
             )
           : null}
+        {showRatingColumns.map((columnKey) =>
+          renderSortableHeader(
+            columnKey as TitleTableSortKey,
+            titleTableRatingColumnLabel(columnKey),
+            cn("whitespace-nowrap text-center", TITLE_TABLE_HEADER_CELL_CLASS),
+            "justify-center text-center uppercase tracking-[0.05em] text-[var(--scry-faint2)]",
+          ),
+        )}
         {showLibraryColumn
           ? renderSortableHeader(
               "library",
@@ -1284,14 +1296,6 @@ export function CompactTitleTable({
               "justify-center text-center uppercase tracking-[0.05em] text-[var(--scry-faint2)]",
             )
           : null}
-        {showRatingColumns.map((columnKey) =>
-          renderSortableHeader(
-            columnKey as TitleTableSortKey,
-            titleTableRatingColumnLabel(columnKey),
-            cn("whitespace-nowrap text-center", TITLE_TABLE_HEADER_CELL_CLASS),
-            "justify-center text-center uppercase tracking-[0.05em] text-[var(--scry-faint2)]",
-          ),
-        )}
         {showAddedColumn
           ? renderSortableHeader(
               "added",

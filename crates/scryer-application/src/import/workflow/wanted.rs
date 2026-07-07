@@ -640,9 +640,65 @@ pub(crate) async fn mark_wanted_completed(
         .await
     {
         Ok(true) => {}
-        Ok(false) => {}
+        Ok(false) => {
+            if let Err(err) =
+                materialize_completed_wanted_state_row(app, title_id, episode_id, &now, imported_score)
+                    .await
+            {
+                tracing::warn!(error = %err, title_id = %title_id, "failed to materialize completed wanted item");
+            }
+        }
         Err(err) => {
             tracing::warn!(error = %err, title_id = %title_id, "failed to mark wanted item completed");
         }
     }
+}
+
+async fn materialize_completed_wanted_state_row(
+    app: &AppUseCase,
+    title_id: &str,
+    episode_id: Option<&str>,
+    completed_at: &str,
+    imported_score: Option<i32>,
+) -> AppResult<()> {
+    let Some(title) = app.services.catalog.titles.get_by_id(title_id).await? else {
+        return Ok(());
+    };
+
+    let (media_type, episode, season_number) = if let Some(episode_id) = episode_id {
+        let episode = app
+            .services
+            .catalog
+            .shows
+            .get_episode_by_id(episode_id)
+            .await?;
+        let season_number = episode
+            .as_ref()
+            .and_then(|episode| episode.season_number.clone());
+        ("episode", episode, season_number)
+    } else {
+        ("movie", None, None)
+    };
+
+    let mut item = app.new_wanted_state_view(
+        &title,
+        media_type,
+        episode_id.map(str::to_string),
+        None,
+        None,
+        season_number,
+    );
+    item.episode_number = episode
+        .as_ref()
+        .and_then(|episode| episode.episode_number.clone());
+    item.last_search_at = Some(completed_at.to_string());
+    item.status = WantedStatus::Completed;
+    item.current_score = imported_score;
+
+    app.services
+        .workflow
+        .wanted_items
+        .upsert_wanted_item(&item)
+        .await?;
+    Ok(())
 }

@@ -6,8 +6,8 @@ use scryer_application::{
     AUTO_BACKUP_POST_UPGRADE_PENDING_VERSION_KEY, BACKUP_PATH_KEY, CHOWN_GROUP_KEY,
     DOWNLOAD_CLIENT_DEFAULT_CATEGORY_SETTING_KEY, DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY,
     FILE_CHMOD_KEY, FOLDER_CHMOD_KEY, FOLDER_TEMPLATE_KEY, FORM_LOGIN_ENABLED_KEY,
-    HISTORY_KEEP_FOREVER_KEY, HISTORY_RETENTION_DAYS_KEY,
-    IMPORT_MODE_KEY, INDEXER_ROUTING_SETTINGS_KEY, LEGACY_NZBGET_CATEGORY_SETTING_KEY,
+    HISTORY_KEEP_FOREVER_KEY, HISTORY_RETENTION_DAYS_KEY, IMPORT_MODE_KEY,
+    INDEXER_ROUTING_SETTINGS_KEY, LEGACY_NZBGET_CATEGORY_SETTING_KEY,
     LEGACY_NZBGET_CLIENT_ROUTING_SETTINGS_KEY, METADATA_LANGUAGE_KEY,
     MFA_REQUIRE_CONFIG_STEP_UP_KEY, MFA_REQUIRE_PASSWORD_LOGIN_KEY, MOVIES_ROOT_FOLDERS_KEY,
     NZBGET_OLDER_PRIORITY_SETTING_KEY, NZBGET_RECENT_PRIORITY_SETTING_KEY, PASSWORD_MIN_LENGTH_KEY,
@@ -752,6 +752,22 @@ pub(crate) fn service_setting_seeds() -> &'static [ServiceSettingSeed] {
         ServiceSettingSeed {
             category: SETTINGS_CATEGORY_ACQUISITION,
             scope: SETTINGS_SCOPE_SYSTEM,
+            key_name: "acquisition.convergence_seeded_at",
+            data_type: "json",
+            default_value_json: "null",
+            is_sensitive: false,
+        },
+        ServiceSettingSeed {
+            category: SETTINGS_CATEGORY_ACQUISITION,
+            scope: SETTINGS_SCOPE_SYSTEM,
+            key_name: "acquisition.convergence_resume_after",
+            data_type: "json",
+            default_value_json: "null",
+            is_sensitive: false,
+        },
+        ServiceSettingSeed {
+            category: SETTINGS_CATEGORY_ACQUISITION,
+            scope: SETTINGS_SCOPE_SYSTEM,
             key_name: "acquisition.delay_profiles",
             data_type: "json",
             default_value_json: "[]",
@@ -1133,6 +1149,24 @@ mod tests {
                 && seed.default_value_json == "null"
                 && !seed.is_sensitive
         }));
+    }
+
+    #[test]
+    fn service_setting_seeds_register_acquisition_convergence_keys() {
+        let seeds = service_setting_seeds();
+        for key in [
+            "acquisition.convergence_seeded_at",
+            "acquisition.convergence_resume_after",
+        ] {
+            let seed = seeds
+                .iter()
+                .find(|seed| seed.scope == SETTINGS_SCOPE_SYSTEM && seed.key_name == key)
+                .unwrap_or_else(|| panic!("missing convergence setting seed {key}"));
+            assert_eq!(seed.category, SETTINGS_CATEGORY_ACQUISITION);
+            assert_eq!(seed.data_type, "json");
+            assert_eq!(seed.default_value_json, "null");
+            assert!(!seed.is_sensitive);
+        }
     }
 
     #[tokio::test]

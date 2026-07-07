@@ -103,10 +103,16 @@ impl AppUseCase {
         offset: i64,
     ) -> AppResult<(Vec<WantedScopeView>, i64)> {
         let authorized = self
-            .list_libraries_for_permission(actor, facet.clone(), scryer_domain::LibraryPermission::View)
+            .list_libraries_for_permission(
+                actor,
+                facet.clone(),
+                scryer_domain::LibraryPermission::View,
+            )
             .await?;
-        let mut authorized_ids: HashSet<String> =
-            authorized.iter().map(|library| library.id.clone()).collect();
+        let mut authorized_ids: HashSet<String> = authorized
+            .iter()
+            .map(|library| library.id.clone())
+            .collect();
         let requested: HashSet<String> = library_ids
             .iter()
             .map(|id| id.trim())
@@ -190,8 +196,7 @@ impl AppUseCase {
         let total = rows.len() as i64;
         let offset = offset.max(0) as usize;
         let limit = limit.max(0) as usize;
-        let mut page: Vec<WantedScopeView> =
-            rows.into_iter().skip(offset).take(limit).collect();
+        let mut page: Vec<WantedScopeView> = rows.into_iter().skip(offset).take(limit).collect();
 
         // Join the state row + derive convergence for the sliced page only.
         self.attach_state_rows(&mut page).await?;
@@ -401,8 +406,17 @@ impl AppUseCase {
         &self,
         title_id: &str,
     ) -> Option<TitleConvergenceContext> {
-        let title = self.services.catalog.titles.get_by_id(title_id).await.ok()??;
-        let subject = self.resolve_release_search_subject_for_title(&title).await.ok()?;
+        let title = self
+            .services
+            .catalog
+            .titles
+            .get_by_id(title_id)
+            .await
+            .ok()??;
+        let subject = self
+            .resolve_release_search_subject_for_title(&title)
+            .await
+            .ok()?;
         let convergence = self.resolve_scope_convergence(&title, &subject).await?;
         Some(TitleConvergenceContext {
             fingerprint: convergence.fingerprint,
@@ -438,13 +452,8 @@ fn missing_target_to_view(target: AcquisitionTarget) -> WantedScopeView {
 /// A cutoff-unmet item as a view row. Upgrades are always cold. `None` when the
 /// item's scope has no derivable convergence key.
 fn cutoff_item_to_view(item: CutoffUnmetItem) -> Option<WantedScopeView> {
-    let scope = SubmissionScope::from_persisted(
-        &item.title_id,
-        item.episode_id.clone(),
-        None,
-        None,
-        None,
-    );
+    let scope =
+        SubmissionScope::from_persisted(&item.title_id, item.episode_id.clone(), None, None, None);
     let scope_key = convergence_scope_key(&scope, &item.title_id)?;
     let media_type = if item.episode_id.is_some() {
         "episode"
@@ -489,7 +498,9 @@ fn parse_sort_number(value: Option<&str>) -> i64 {
         .filter(|value| !value.is_empty())
         .and_then(|value| {
             let digits: String = value.chars().filter(char::is_ascii_digit).collect();
-            (!digits.is_empty()).then(|| digits.parse::<i64>().ok()).flatten()
+            (!digits.is_empty())
+                .then(|| digits.parse::<i64>().ok())
+                .flatten()
         })
         .unwrap_or(i64::MAX)
 }
@@ -608,7 +619,9 @@ impl AppUseCase {
         }
 
         self.authorize_acquisition_search(actor, &request).await?;
-        let scopes = self.resolve_acquisition_search_scopes(actor, &request).await?;
+        let scopes = self
+            .resolve_acquisition_search_scopes(actor, &request)
+            .await?;
 
         let now = chrono::Utc::now();
         let mut run = JobRunRecord {
@@ -926,7 +939,9 @@ impl AppUseCase {
         // Already a row for this scope? (e.g. an episode key whose row exists.)
         let (episode_id, collection_id, series_movie_link_id) = match &scope {
             SubmissionScope::Episode { episode_id } => (Some(episode_id.clone()), None, None),
-            SubmissionScope::Collection { collection_id } => (None, Some(collection_id.clone()), None),
+            SubmissionScope::Collection { collection_id } => {
+                (None, Some(collection_id.clone()), None)
+            }
             SubmissionScope::SeriesMovie {
                 series_movie_link_id,
             } => (None, None, Some(series_movie_link_id.clone())),
@@ -1195,16 +1210,20 @@ impl AppUseCase {
         let state = progress
             .as_ref()
             .map(|progress| progress.state.clone())
-            .unwrap_or_else(|| {
-                acquisition_search_state_for_status(run.status, false).to_string()
-            });
+            .unwrap_or_else(|| acquisition_search_state_for_status(run.status, false).to_string());
         AcquisitionSearchJobView {
             id: run.id.clone(),
             state,
             total: progress.as_ref().map(|p| p.total as i32).unwrap_or(0),
             processed: progress.as_ref().map(|p| p.processed as i32).unwrap_or(0),
-            grabbed_count: progress.as_ref().map(|p| p.grabbed_count as i32).unwrap_or(0),
-            failed_count: progress.as_ref().map(|p| p.failed_count as i32).unwrap_or(0),
+            grabbed_count: progress
+                .as_ref()
+                .map(|p| p.grabbed_count as i32)
+                .unwrap_or(0),
+            failed_count: progress
+                .as_ref()
+                .map(|p| p.failed_count as i32)
+                .unwrap_or(0),
             current_title: progress.and_then(|p| p.current_title),
             started_at: run.started_at.to_rfc3339(),
             finished_at: run.completed_at.map(|at| at.to_rfc3339()),
@@ -1241,9 +1260,10 @@ impl AppUseCase {
 /// skipped.
 fn submission_scope_for_view(view: &WantedScopeView) -> Option<SubmissionScope> {
     match view.media_type.as_str() {
-        "episode" => view.episode_id.clone().map(|episode_id| SubmissionScope::Episode {
-            episode_id,
-        }),
+        "episode" => view
+            .episode_id
+            .clone()
+            .map(|episode_id| SubmissionScope::Episode { episode_id }),
         "series_movie" => view
             .series_movie_link_id
             .clone()
@@ -1263,7 +1283,13 @@ fn sort_wanted_views(rows: &mut [WantedScopeView]) {
             .as_deref()
             .unwrap_or_default()
             .to_ascii_lowercase()
-            .cmp(&right.title_name.as_deref().unwrap_or_default().to_ascii_lowercase())
+            .cmp(
+                &right
+                    .title_name
+                    .as_deref()
+                    .unwrap_or_default()
+                    .to_ascii_lowercase(),
+            )
             .then_with(|| {
                 parse_sort_number(left.season_number.as_deref())
                     .cmp(&parse_sort_number(right.season_number.as_deref()))

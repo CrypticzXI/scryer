@@ -593,7 +593,8 @@ async fn fetch_seed_target_tx(
     tx: &mut crate::queries::sql_runtime::SqlTx<'_>,
     item: &WantedItem,
 ) -> AppResult<Option<WantedItem>> {
-    let columns = "SELECT id, title_id, episode_id, collection_id, series_movie_link_id, media_type,
+    let columns =
+        "SELECT id, title_id, episode_id, collection_id, series_movie_link_id, media_type,
                           last_search_at, status,
                           grabbed_release, current_score, created_at, updated_at
                      FROM wanted_items";
@@ -699,11 +700,7 @@ impl WantedItemRepository for WantedStore {
         Ok(())
     }
 
-    async fn record_wanted_search_attempt(
-        &self,
-        id: &str,
-        last_search_at: &str,
-    ) -> AppResult<()> {
+    async fn record_wanted_search_attempt(&self, id: &str, last_search_at: &str) -> AppResult<()> {
         let now = Utc::now().to_rfc3339();
         execute_datastore_write(
             &self.datastore,

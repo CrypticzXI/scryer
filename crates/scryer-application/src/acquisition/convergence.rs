@@ -43,7 +43,10 @@ pub(crate) struct ConvergenceSettings {
 impl AppUseCase {
     pub(crate) async fn convergence_settings(&self) -> AppResult<ConvergenceSettings> {
         let long_tail_backfill_max_scopes_per_cycle = self
-            .read_setting_i64_value(ACQUISITION_LONG_TAIL_BACKFILL_MAX_SCOPES_PER_CYCLE_KEY, None)
+            .read_setting_i64_value(
+                ACQUISITION_LONG_TAIL_BACKFILL_MAX_SCOPES_PER_CYCLE_KEY,
+                None,
+            )
             .await?
             .filter(|value| *value > 0)
             .unwrap_or(DEFAULT_LONG_TAIL_BACKFILL_MAX_SCOPES_PER_CYCLE);
@@ -69,8 +72,7 @@ pub(crate) const ACQUISITION_CONVERGENCE_RESUME_AFTER_KEY: &str =
     "acquisition.convergence_resume_after";
 
 /// Marker set once the run-once cutover seed has completed (RFC 119 §12.3).
-pub(crate) const ACQUISITION_CONVERGENCE_SEEDED_AT_KEY: &str =
-    "acquisition.convergence_seeded_at";
+pub(crate) const ACQUISITION_CONVERGENCE_SEEDED_AT_KEY: &str = "acquisition.convergence_seeded_at";
 
 /// Scopes the legacy scheduler searched within this window start converged at
 /// cutover instead of being re-swept on first boot.
@@ -417,7 +419,6 @@ impl AppUseCase {
             .cloned()
             .collect())
     }
-
 }
 
 /// A scope's convergence coordinates: its stable coverage key, media facet,
@@ -443,7 +444,9 @@ pub(crate) fn convergence_scope_key(scope: &SubmissionScope, title_id: &str) -> 
         SubmissionScope::SeriesMovie {
             series_movie_link_id,
         } => Some(format!("series_movie:{series_movie_link_id}")),
-        SubmissionScope::Collection { collection_id } => Some(format!("collection:{collection_id}")),
+        SubmissionScope::Collection { collection_id } => {
+            Some(format!("collection:{collection_id}"))
+        }
         SubmissionScope::Title => {
             let title_id = title_id.trim();
             (!title_id.is_empty()).then(|| format!("title:{title_id}"))
@@ -456,8 +459,7 @@ pub(crate) fn convergence_scope_key(scope: &SubmissionScope, title_id: &str) -> 
                 .collect();
             ids.sort_unstable();
             ids.dedup();
-            (!ids.is_empty())
-                .then(|| format!("episode_set:{}", crate::sha256_hex(ids.join(","))))
+            (!ids.is_empty()).then(|| format!("episode_set:{}", crate::sha256_hex(ids.join(","))))
         }
         SubmissionScope::Orphan => None,
     }
@@ -638,7 +640,6 @@ impl AppUseCase {
         }
     }
 
-
     /// Re-open a scope's convergence after an event that invalidates its
     /// acquired state — a failed grab, a rejected import, or an operator
     /// replacing the download: reset the state row to `wanted` (clearing the
@@ -715,7 +716,10 @@ mod tests {
     #[test]
     fn fingerprint_changes_on_profile_id_and_audio() {
         let base = compute_search_fingerprint("p1", "v1", &["en".into()], "m1");
-        assert_ne!(base, compute_search_fingerprint("p2", "v1", &["en".into()], "m1"));
+        assert_ne!(
+            base,
+            compute_search_fingerprint("p2", "v1", &["en".into()], "m1")
+        );
         assert_ne!(
             base,
             compute_search_fingerprint("p1", "v1", &["en".into(), "ja".into()], "m1")

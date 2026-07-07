@@ -293,17 +293,15 @@ impl JobKey {
             | Self::DiscoverySync
             | Self::TitleImageCacheRefresh
             | Self::TitleDeletion => JobCategory::System,
-            Self::Housekeeping
-            | Self::PendingReleaseProcessing
-            | Self::StagedNzbPrune => JobCategory::Maintenance,
+            Self::Housekeeping | Self::PendingReleaseProcessing | Self::StagedNzbPrune => {
+                JobCategory::Maintenance
+            }
         }
     }
 
     pub fn section(self) -> JobSection {
         match self {
-            Self::PendingReleaseProcessing | Self::StagedNzbPrune => {
-                JobSection::Maintenance
-            }
+            Self::PendingReleaseProcessing | Self::StagedNzbPrune => JobSection::Maintenance,
             _ => JobSection::Primary,
         }
     }

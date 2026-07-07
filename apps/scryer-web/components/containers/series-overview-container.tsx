@@ -68,6 +68,14 @@ import {
   hasLibraryPermission,
 } from "@/lib/utils/permissions";
 import { useTitleMoreLikeThisActions } from "@/lib/hooks/use-title-more-like-this-actions";
+import { useTitleOverviewReactiveRefresh } from "@/lib/hooks/use-title-overview-reactive-refresh";
+
+const SERIES_OVERVIEW_IMPORT_REFRESH_KINDS = new Set([
+  "movie_downloaded",
+  "series_episode_imported",
+  "file_upgraded",
+  "import_rejected",
+]);
 
 export type TitleDetail = {
   id: string;
@@ -488,6 +496,23 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
     },
     [applyDownloadFeedbackSnapshot, onTitleResolved],
   );
+
+  useTitleOverviewReactiveRefresh<
+    SeriesOverviewSnapshotTitle,
+    unknown,
+    TitleHistoryEvent,
+    TitleReleaseBlocklistEntry,
+    ExternalSubtitleRecord
+  >({
+    titleId,
+    blocklistLimit: 300,
+    projection: "series",
+    applyNativeSnapshot: applyNativeTitleDetailSnapshot,
+    applyDownloadFeedbackSnapshot,
+    importKinds: SERIES_OVERVIEW_IMPORT_REFRESH_KINDS,
+    pause: !titleId,
+    downloadFeedbackEnabled: hasDownloadClients,
+  });
 
   React.useEffect(() => {
     if (hasDownloadClients) {

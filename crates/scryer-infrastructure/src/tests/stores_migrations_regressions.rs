@@ -210,9 +210,12 @@ async fn scoped_anibridge_external_ids_round_trip_for_collections_and_episodes()
         .await
         .expect("hydrated title should load")
         .expect("hydrated title should exist");
-    assert!(hydrated_title.external_ids.iter().any(|external_id| {
-        external_id.source == "anidb" && external_id.value == "18562"
-    }));
+    assert!(
+        hydrated_title
+            .external_ids
+            .iter()
+            .any(|external_id| { external_id.source == "anidb" && external_id.value == "18562" })
+    );
 
     let _ = std::fs::remove_file(db);
 }

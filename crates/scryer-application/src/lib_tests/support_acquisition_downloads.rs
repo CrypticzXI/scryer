@@ -322,11 +322,7 @@ impl WantedItemRepository for TrackingWantedItemRepo {
         Ok(())
     }
 
-    async fn record_wanted_search_attempt(
-        &self,
-        id: &str,
-        last_search_at: &str,
-    ) -> AppResult<()> {
+    async fn record_wanted_search_attempt(&self, id: &str, last_search_at: &str) -> AppResult<()> {
         let mut store = self.store.lock().await;
         let item = store
             .iter_mut()

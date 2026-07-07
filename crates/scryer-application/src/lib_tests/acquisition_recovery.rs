@@ -5543,7 +5543,10 @@ async fn rss_grabs_missing_movie_with_no_wanted_row_and_creates_state_row() {
 
     let report = app.run_scheduled_rss_sync().await.expect("run RSS sync");
 
-    assert_eq!(report.releases_grabbed, 1, "missing monitored movie is grabbed");
+    assert_eq!(
+        report.releases_grabbed, 1,
+        "missing monitored movie is grabbed"
+    );
     // The grab materialized the state row and transitioned it to grabbed.
     let seeded = wanted_items
         .get_wanted_item_for_title(&title.id, None)
@@ -5694,7 +5697,10 @@ async fn rss_grabs_season_pack_once_at_pack_granularity() {
     // library state (both members monitored + missing).
     let report = app.run_scheduled_rss_sync().await.expect("run RSS sync");
 
-    assert_eq!(report.releases_grabbed, 1, "the pack is grabbed exactly once");
+    assert_eq!(
+        report.releases_grabbed, 1,
+        "the pack is grabbed exactly once"
+    );
     let submissions = download_submissions.store.lock().await.clone();
     assert_eq!(
         submissions.len(),

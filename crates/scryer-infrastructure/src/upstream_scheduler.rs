@@ -2688,7 +2688,10 @@ mod tests {
         let host = HostKey::from(format!("pressure-{}.example.test", Uuid::new_v4()));
         cold.host_key = host.clone();
         cold.destination_key = DestinationKey::from(host.to_string());
-        cold.account_quota_key = Some(AccountQuotaKey::from(format!("pressure-{}", Uuid::new_v4())));
+        cold.account_quota_key = Some(AccountQuotaKey::from(format!(
+            "pressure-{}",
+            Uuid::new_v4()
+        )));
         record_quota_pressure(&scheduler, &cold).await;
 
         // Same account/host, but hot value — must survive the pressure gate.
@@ -2718,8 +2721,16 @@ mod tests {
             .decisions
             .iter()
             .any(|d| matches!(d, SchedulerAdmission::Admit { .. }));
-        assert!(cold_deferred, "cold candidate should defer under pressure: {:?}", decision.decisions);
-        assert!(hot_admitted, "hot candidate should admit under pressure: {:?}", decision.decisions);
+        assert!(
+            cold_deferred,
+            "cold candidate should defer under pressure: {:?}",
+            decision.decisions
+        );
+        assert!(
+            hot_admitted,
+            "hot candidate should admit under pressure: {:?}",
+            decision.decisions
+        );
     }
 
     #[tokio::test]
@@ -2843,7 +2854,10 @@ mod tests {
         let host = HostKey::from(format!("empty-success-{}.example.test", Uuid::new_v4()));
         c.host_key = host.clone();
         c.destination_key = DestinationKey::from(host.to_string());
-        c.account_quota_key = Some(AccountQuotaKey::from(format!("empty-success-{}", Uuid::new_v4())));
+        c.account_quota_key = Some(AccountQuotaKey::from(format!(
+            "empty-success-{}",
+            Uuid::new_v4()
+        )));
         let observed_at = Utc::now();
 
         let mut feedback = quota_feedback(&c, Some(5), Some(100), observed_at);
@@ -2859,7 +2873,10 @@ mod tests {
             .expect("snapshot should succeed");
         let entry = snapshot.entries.first().expect("entry should exist");
         assert_eq!(entry.last_successful_at, Some(observed_at));
-        assert_eq!(entry.last_decision.as_deref(), Some("feedback:empty_success"));
+        assert_eq!(
+            entry.last_decision.as_deref(),
+            Some("feedback:empty_success")
+        );
         // Quota observation is recorded just like Success: 5/100 used → 0.95 free.
         assert_eq!(entry.api_remaining_fraction, Some(0.95));
     }

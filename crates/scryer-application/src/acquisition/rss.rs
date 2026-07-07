@@ -676,8 +676,10 @@ impl AppUseCase {
         // Route single-episode postings per episode; keep pack items (absolute
         // ranges and season packs) whole so each pack is evaluated once.
         let mut by_episode: HashMap<String, Vec<IndexerSearchResult>> = HashMap::new();
-        let mut pack_items: Vec<(crate::acquisition_coverage::ReleaseCoverage, IndexerSearchResult)> =
-            Vec::new();
+        let mut pack_items: Vec<(
+            crate::acquisition_coverage::ReleaseCoverage,
+            IndexerSearchResult,
+        )> = Vec::new();
         let mut seen_pack_keys: HashSet<String> = HashSet::new();
         for release in releases {
             let parsed = parse_release_metadata_for_target(&release.title, &title_parse_context);
@@ -2052,4 +2054,3 @@ mod tests {
         );
     }
 }
-

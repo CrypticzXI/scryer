@@ -2907,8 +2907,7 @@ pub trait WantedItemRepository: Send + Sync {
 
     /// Stamp the scope's last active-search time — cooldown state read by the
     /// upgrade policy and failed-grab staleness checks.
-    async fn record_wanted_search_attempt(&self, id: &str, last_search_at: &str)
-    -> AppResult<()>;
+    async fn record_wanted_search_attempt(&self, id: &str, last_search_at: &str) -> AppResult<()>;
 
     async fn transition_wanted_to_grabbed(
         &self,

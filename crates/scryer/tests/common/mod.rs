@@ -102,11 +102,7 @@ impl WantedItemRepository for TestLibraryStateStore {
             .await
     }
 
-    async fn record_wanted_search_attempt(
-        &self,
-        id: &str,
-        last_search_at: &str,
-    ) -> AppResult<()> {
+    async fn record_wanted_search_attempt(&self, id: &str, last_search_at: &str) -> AppResult<()> {
         self.wanted
             .record_wanted_search_attempt(id, last_search_at)
             .await

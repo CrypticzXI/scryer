@@ -251,12 +251,15 @@ impl AppUseCase {
             let Some(scope_key) = convergence_scope_key(&scope, &episode.title_id) else {
                 continue;
             };
-            let is_hot = date_is_recent(episode.air_date.as_deref(), now, HOT_EPISODE_AIR_WINDOW_DAYS)
-                || date_is_recent(
-                    Some(episode.title_created_at.as_str()),
-                    now,
-                    HOT_RECENTLY_ADDED_WINDOW_DAYS,
-                );
+            let is_hot = date_is_recent(
+                episode.air_date.as_deref(),
+                now,
+                HOT_EPISODE_AIR_WINDOW_DAYS,
+            ) || date_is_recent(
+                Some(episode.title_created_at.as_str()),
+                now,
+                HOT_RECENTLY_ADDED_WINDOW_DAYS,
+            );
             targets.push(AcquisitionTarget {
                 scope_key,
                 title_id: episode.title_id,
@@ -574,14 +577,44 @@ mod tests {
         let future = (now + Duration::days(10)).date_naive().to_string();
 
         // announced: always available
-        assert!(movie_is_available_for_acquisition(None, None, "announced", &now));
+        assert!(movie_is_available_for_acquisition(
+            None,
+            None,
+            "announced",
+            &now
+        ));
         // in_cinemas: needs a past theatrical date
-        assert!(movie_is_available_for_acquisition(Some(&past), None, "in_cinemas", &now));
-        assert!(!movie_is_available_for_acquisition(Some(&future), None, "in_cinemas", &now));
-        assert!(!movie_is_available_for_acquisition(None, None, "in_cinemas", &now));
+        assert!(movie_is_available_for_acquisition(
+            Some(&past),
+            None,
+            "in_cinemas",
+            &now
+        ));
+        assert!(!movie_is_available_for_acquisition(
+            Some(&future),
+            None,
+            "in_cinemas",
+            &now
+        ));
+        assert!(!movie_is_available_for_acquisition(
+            None,
+            None,
+            "in_cinemas",
+            &now
+        ));
         // released: digital date, else theatrical + 90d
-        assert!(movie_is_available_for_acquisition(None, Some(&past), "released", &now));
-        assert!(!movie_is_available_for_acquisition(None, Some(&future), "released", &now));
+        assert!(movie_is_available_for_acquisition(
+            None,
+            Some(&past),
+            "released",
+            &now
+        ));
+        assert!(!movie_is_available_for_acquisition(
+            None,
+            Some(&future),
+            "released",
+            &now
+        ));
         let old_theatrical = (now - Duration::days(120)).date_naive().to_string();
         assert!(movie_is_available_for_acquisition(
             Some(&old_theatrical),
@@ -589,6 +622,11 @@ mod tests {
             "released",
             &now
         ));
-        assert!(!movie_is_available_for_acquisition(Some(&past), None, "released", &now));
+        assert!(!movie_is_available_for_acquisition(
+            Some(&past),
+            None,
+            "released",
+            &now
+        ));
     }
 }

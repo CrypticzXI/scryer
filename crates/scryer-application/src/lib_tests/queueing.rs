@@ -2587,12 +2587,14 @@ impl ScopeIndexerCoverageRepository for RecordingScopeIndexerCoverageRepo {
             .await
             .iter()
             .filter(|(sk, _, _, _)| wanted.contains(sk.as_str()))
-            .map(|(scope_key, _, indexer_id, fingerprint)| crate::ScopeCoverageRow {
-                scope_key: scope_key.clone(),
-                indexer_id: indexer_id.clone(),
-                fingerprint: fingerprint.clone(),
-                searched_at: String::new(),
-            })
+            .map(
+                |(scope_key, _, indexer_id, fingerprint)| crate::ScopeCoverageRow {
+                    scope_key: scope_key.clone(),
+                    indexer_id: indexer_id.clone(),
+                    fingerprint: fingerprint.clone(),
+                    searched_at: String::new(),
+                },
+            )
             .collect())
     }
 
@@ -2610,7 +2612,10 @@ impl ScopeIndexerCoverageRepository for RecordingScopeIndexerCoverageRepo {
 async fn convergence_test_title_and_subject(
     app: &AppUseCase,
     user: &User,
-) -> (Title, crate::acquisition_release_search::ResolvedReleaseSearchSubject) {
+) -> (
+    Title,
+    crate::acquisition_release_search::ResolvedReleaseSearchSubject,
+) {
     let title = app
         .add_title(
             user,
@@ -2684,10 +2689,15 @@ async fn scope_is_converged(
     let Some(c) = app.resolve_scope_convergence(title, subject).await else {
         return false;
     };
-    app.uncovered_indexers_for_scope(&c.scope_key, &c.facet, &c.fingerprint, &c.routed_indexer_ids)
-        .await
-        .map(|u| u.is_empty())
-        .unwrap_or(false)
+    app.uncovered_indexers_for_scope(
+        &c.scope_key,
+        &c.facet,
+        &c.fingerprint,
+        &c.routed_indexer_ids,
+    )
+    .await
+    .map(|u| u.is_empty())
+    .unwrap_or(false)
 }
 
 #[tokio::test]
@@ -2703,9 +2713,8 @@ async fn background_search_records_scope_indexer_coverage() {
         configs,
     );
     let coverage = Arc::new(RecordingScopeIndexerCoverageRepo::new());
-    let app = app.with_test_overrides(|builder| {
-        builder.with_scope_indexer_coverage_store(coverage.clone())
-    });
+    let app = app
+        .with_test_overrides(|builder| builder.with_scope_indexer_coverage_store(coverage.clone()));
 
     let (title, subject) = convergence_test_title_and_subject(&app, &user).await;
     let expected_scope_key = crate::acquisition::convergence::convergence_scope_key(
@@ -2758,9 +2767,8 @@ async fn scope_converges_only_after_every_routed_indexer_is_covered() {
         configs,
     );
     let coverage = Arc::new(RecordingScopeIndexerCoverageRepo::new());
-    let app = app.with_test_overrides(|builder| {
-        builder.with_scope_indexer_coverage_store(coverage.clone())
-    });
+    let app = app
+        .with_test_overrides(|builder| builder.with_scope_indexer_coverage_store(coverage.clone()));
 
     let (title, subject) = convergence_test_title_and_subject(&app, &user).await;
     let convergence = app
@@ -2816,9 +2824,8 @@ async fn every_scoped_search_records_coverage_including_interactive() {
     let (app, user) =
         bootstrap_with_search_settings_indexer_and_configs(settings, indexer_client, configs);
     let coverage = Arc::new(RecordingScopeIndexerCoverageRepo::new());
-    let app = app.with_test_overrides(|builder| {
-        builder.with_scope_indexer_coverage_store(coverage.clone())
-    });
+    let app = app
+        .with_test_overrides(|builder| builder.with_scope_indexer_coverage_store(coverage.clone()));
 
     let (title, subject) = convergence_test_title_and_subject(&app, &user).await;
 
@@ -2868,9 +2875,8 @@ async fn empty_response_from_fired_indexer_counts_as_coverage() {
     let (app, user) =
         bootstrap_with_search_settings_indexer_and_configs(settings, indexer_client, configs);
     let coverage = Arc::new(RecordingScopeIndexerCoverageRepo::new());
-    let app = app.with_test_overrides(|builder| {
-        builder.with_scope_indexer_coverage_store(coverage.clone())
-    });
+    let app = app
+        .with_test_overrides(|builder| builder.with_scope_indexer_coverage_store(coverage.clone()));
 
     let (title, subject) = convergence_test_title_and_subject(&app, &user).await;
 
@@ -2920,9 +2926,8 @@ async fn stale_fingerprint_coverage_reopens_convergence() {
         configs,
     );
     let coverage = Arc::new(RecordingScopeIndexerCoverageRepo::new());
-    let app = app.with_test_overrides(|builder| {
-        builder.with_scope_indexer_coverage_store(coverage.clone())
-    });
+    let app = app
+        .with_test_overrides(|builder| builder.with_scope_indexer_coverage_store(coverage.clone()));
 
     let (title, subject) = convergence_test_title_and_subject(&app, &user).await;
     let convergence = app
@@ -2973,9 +2978,8 @@ async fn coverage_excludes_disabled_indexers() {
         configs,
     );
     let coverage = Arc::new(RecordingScopeIndexerCoverageRepo::new());
-    let app = app.with_test_overrides(|builder| {
-        builder.with_scope_indexer_coverage_store(coverage.clone())
-    });
+    let app = app
+        .with_test_overrides(|builder| builder.with_scope_indexer_coverage_store(coverage.clone()));
 
     let (title, subject) = convergence_test_title_and_subject(&app, &user).await;
     // Both indexers "fired", but the disabled one is not in the routed set, so the
@@ -3021,9 +3025,8 @@ async fn coverage_records_only_indexers_that_fired() {
         configs,
     );
     let coverage = Arc::new(RecordingScopeIndexerCoverageRepo::new());
-    let app = app.with_test_overrides(|builder| {
-        builder.with_scope_indexer_coverage_store(coverage.clone())
-    });
+    let app = app
+        .with_test_overrides(|builder| builder.with_scope_indexer_coverage_store(coverage.clone()));
 
     let (title, subject) = convergence_test_title_and_subject(&app, &user).await;
 

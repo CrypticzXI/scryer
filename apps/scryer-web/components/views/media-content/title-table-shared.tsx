@@ -170,7 +170,7 @@ export const ANIME_TITLE_TABLE_RATING_COLUMNS: readonly TitleTableColumnKey[] = 
   "ratingMdblist",
 ];
 
-export const SHARED_TITLE_TABLE_RATING_COLUMNS: readonly TitleTableColumnKey[] = [
+export const MOVIE_TITLE_TABLE_RATING_COLUMNS: readonly TitleTableColumnKey[] = [
   "ratingImdb",
   "ratingRottenTomatoes",
   "ratingPopcornmeter",
@@ -183,11 +183,19 @@ export const SHARED_TITLE_TABLE_RATING_COLUMNS: readonly TitleTableColumnKey[] =
   "ratingMdblist",
 ];
 
+export const SHARED_TITLE_TABLE_RATING_COLUMNS: readonly TitleTableColumnKey[] =
+  MOVIE_TITLE_TABLE_RATING_COLUMNS.filter(
+    (key) => key !== "ratingLetterboxd",
+  );
+
 export function titleTableSupportedRatingColumnsForView(
   view: ViewId,
 ): readonly TitleTableColumnKey[] {
-  return view === "anime"
-    ? ANIME_TITLE_TABLE_RATING_COLUMNS
+  if (view === "anime") {
+    return ANIME_TITLE_TABLE_RATING_COLUMNS;
+  }
+  return view === "movies"
+    ? MOVIE_TITLE_TABLE_RATING_COLUMNS
     : SHARED_TITLE_TABLE_RATING_COLUMNS;
 }
 
@@ -502,6 +510,36 @@ const RATING_COLUMN_DEFINITIONS: Partial<
 
 export function isTitleTableRatingColumn(key: TitleTableColumnKey): boolean {
   return key.startsWith("rating");
+}
+
+export function titleTableRatingColumnWidthRem(
+  key: TitleTableColumnKey,
+): number {
+  switch (key) {
+    case "ratingRottenTomatoes":
+      return 11.5;
+    case "ratingPopcornmeter":
+      return 10.75;
+    case "ratingMetacritic":
+      return 9.25;
+    case "ratingMetacriticUser":
+      return 12.25;
+    case "ratingLetterboxd":
+      return 9.25;
+    case "ratingMyanimelist":
+      return 10;
+    case "ratingAnilist":
+    case "ratingMdblist":
+      return 7.25;
+    case "ratingImdb":
+    case "ratingTmdb":
+    case "ratingTvdb":
+    case "ratingTrakt":
+    case "ratingAnidb":
+    case "ratingScryer":
+    default:
+      return 6.25;
+  }
 }
 
 export function titleTableRatingColumnLabel(

@@ -301,15 +301,17 @@ impl MediaFileRepository for MockMediaFileRepo {
             });
             let library_id = item.library_id.clone().unwrap_or_default();
             if let Some(link_id) = item.series_movie_link_id.clone() {
-                candidates.series_movie_links.push(MissingSeriesMovieLinkCandidate {
-                    series_movie_link_id: link_id,
-                    title_id: item.title_id.clone(),
-                    library_id,
-                    title_facet: facet,
-                    continuity_status: None,
-                    movie_digital_release_date: None,
-                    link_created_at: created.clone(),
-                });
+                candidates
+                    .series_movie_links
+                    .push(MissingSeriesMovieLinkCandidate {
+                        series_movie_link_id: link_id,
+                        title_id: item.title_id.clone(),
+                        library_id,
+                        title_facet: facet,
+                        continuity_status: None,
+                        movie_digital_release_date: None,
+                        link_created_at: created.clone(),
+                    });
             } else if let Some(episode_id) = item.episode_id.clone() {
                 candidates.episodes.push(MissingEpisodeCandidate {
                     episode_id,

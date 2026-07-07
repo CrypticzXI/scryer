@@ -627,9 +627,7 @@ pub(crate) async fn recover_stale_processing_imports(
 /// acquisition-search view both surface these), so at boot we fail them and
 /// clear `progress_json` so any state derived from it (e.g. the
 /// acquisition-search view) falls back to the now-terminal `failed` status.
-pub(crate) async fn reconcile_interrupted_job_runs(
-    datastore: &StoreDatastore,
-) -> AppResult<u64> {
+pub(crate) async fn reconcile_interrupted_job_runs(datastore: &StoreDatastore) -> AppResult<u64> {
     let now = Utc::now();
     let rows = execute_write(
         datastore,

@@ -494,7 +494,7 @@ impl MediaFileRepository for MediaFileStore {
                     season_number: row.opt_text("season_number")?,
                     episode_number: row.opt_text("episode_number")?,
                     air_date: row.opt_text("air_date")?,
-                    title_created_at: row.text("title_created_at")?,
+                    title_created_at: timestamp_text(row, "title_created_at")?,
                 })
             })
             .collect::<AppResult<Vec<_>>>()?;
@@ -527,7 +527,7 @@ impl MediaFileRepository for MediaFileStore {
                     min_availability: row.opt_text("min_availability")?,
                     first_aired: row.opt_text("first_aired")?,
                     digital_release_date: row.opt_text("digital_release_date")?,
-                    created_at: row.text("created_at")?,
+                    created_at: timestamp_text(row, "created_at")?,
                 })
             })
             .collect::<AppResult<Vec<_>>>()?;
@@ -565,7 +565,7 @@ impl MediaFileRepository for MediaFileStore {
                     title_facet: row.text("facet")?,
                     continuity_status: row.opt_text("continuity_status")?,
                     movie_digital_release_date: row.opt_text("movie_digital_release_date")?,
-                    link_created_at: row.text("link_created_at")?,
+                    link_created_at: timestamp_text(row, "link_created_at")?,
                 })
             })
             .collect::<AppResult<Vec<_>>>()?;
@@ -1320,7 +1320,9 @@ mod tests {
     use scryer_application::{
         AudioStreamDetail, MediaFileAnalysis, MediaFileRepository, ShowRepository, TitleRepository,
     };
-    use scryer_domain::{Collection, CollectionType, Episode, MediaFacet, Title};
+    use scryer_domain::{
+        Collection, CollectionType, Episode, MediaFacet, MovieEntity, SeriesMovieLink, Title,
+    };
 
     #[cfg(windows)]
     #[test]
@@ -1542,6 +1544,160 @@ mod tests {
         assert_eq!(collection_progress[0].total_episodes, 2);
         assert_eq!(collection_progress[0].monitored_episodes, 2);
         assert_eq!(collection_progress[0].owned_episodes, 1);
+
+        let _ = std::fs::remove_file(db);
+    }
+
+    #[tokio::test]
+    async fn missing_scope_candidates_include_monitored_titles_episodes_and_series_movies() {
+        let db = std::env::temp_dir().join(format!(
+            "scryer_missing_scope_candidates_{}.db",
+            chrono::Utc::now().timestamp_micros()
+        ));
+        let services = SqliteServices::new(db.to_string_lossy())
+            .await
+            .expect("db should initialize");
+        let titles = title_store(&services);
+        let shows = show_store(&services);
+        let media_files = media_file_store(&services);
+
+        let title = make_test_series_title("title-missing-scope");
+        titles
+            .create(title.clone())
+            .await
+            .expect("title should insert");
+
+        let collection = Collection {
+            id: "collection-missing-scope".to_string(),
+            title_id: title.id.clone(),
+            collection_type: CollectionType::Season,
+            collection_index: "1".to_string(),
+            label: Some("Season 1".to_string()),
+            ordered_path: None,
+            narrative_order: None,
+            first_episode_number: Some("1".to_string()),
+            last_episode_number: Some("1".to_string()),
+            monitored: true,
+            created_at: Utc::now(),
+        };
+        ShowRepository::create_collection(&shows, collection.clone())
+            .await
+            .expect("collection should insert");
+
+        let episode = Episode {
+            id: "episode-missing-scope".to_string(),
+            title_id: title.id.clone(),
+            collection_id: Some(collection.id.clone()),
+            episode_type: scryer_domain::EpisodeType::Standard,
+            episode_number: Some("1".to_string()),
+            season_number: Some("1".to_string()),
+            episode_label: Some("S01E01".to_string()),
+            title: Some("Episode 1".to_string()),
+            air_date: Some("2026-04-01".to_string()),
+            duration_seconds: None,
+            has_multi_audio: false,
+            has_subtitle: false,
+            is_filler: false,
+            is_recap: false,
+            absolute_number: None,
+            overview: None,
+            tvdb_id: None,
+            image_url: None,
+            monitored: true,
+            created_at: Utc::now(),
+        };
+        ShowRepository::create_episode(&shows, episode.clone())
+            .await
+            .expect("episode should insert");
+
+        let now = Utc::now();
+        let link = SeriesMovieLink {
+            id: "series-movie-link-missing-scope".to_string(),
+            series_title_id: title.id.clone(),
+            movie: MovieEntity {
+                id: "movie-entity-missing-scope".to_string(),
+                title: "Live Query Movie".to_string(),
+                sort_title: None,
+                slug: None,
+                year: Some(2026),
+                overview: None,
+                poster_url: None,
+                background_url: None,
+                language: None,
+                runtime_minutes: Some(90),
+                content_status: None,
+                studio: None,
+                digital_release_date: Some("2026-05-01".to_string()),
+                imdb_id: None,
+                tvdb_id: Some("999001".to_string()),
+                tmdb_id: None,
+                mal_id: None,
+                anidb_id: None,
+                created_at: now,
+                updated_at: now,
+            },
+            placement: Some("ordered".to_string()),
+            narrative_order: Some("1.5".to_string()),
+            after_season: Some(1),
+            before_season: None,
+            linked_episode_id: None,
+            association_confidence: Some("high".to_string()),
+            continuity_status: Some("canon".to_string()),
+            movie_form: Some("movie".to_string()),
+            confidence: Some("high".to_string()),
+            signal_summary: None,
+            source: Some("test".to_string()),
+            monitored: true,
+            legacy_collection_id: None,
+            created_at: now,
+            updated_at: now,
+        };
+        ShowRepository::upsert_series_movie_link(&shows, link.clone())
+            .await
+            .expect("series movie link should insert");
+
+        let missing = media_files
+            .list_missing_scope_candidates()
+            .await
+            .expect("missing scope candidates should load");
+
+        let episode_candidate = missing
+            .episodes
+            .iter()
+            .find(|candidate| candidate.episode_id == episode.id)
+            .expect("missing episode candidate should be present");
+        assert_eq!(episode_candidate.title_id, title.id);
+        assert_eq!(
+            episode_candidate.collection_id.as_deref(),
+            Some(collection.id.as_str())
+        );
+        assert!(
+            !episode_candidate.title_created_at.is_empty(),
+            "episode title timestamp should be serialized"
+        );
+
+        let title_candidate = missing
+            .titles
+            .iter()
+            .find(|candidate| candidate.title_id == title.id)
+            .expect("missing title candidate should be present");
+        assert_eq!(title_candidate.library_id, title.library_id);
+        assert!(
+            !title_candidate.created_at.is_empty(),
+            "title timestamp should be serialized"
+        );
+
+        let link_candidate = missing
+            .series_movie_links
+            .iter()
+            .find(|candidate| candidate.series_movie_link_id == link.id)
+            .expect("missing series movie candidate should be present");
+        assert_eq!(link_candidate.title_id, title.id);
+        assert_eq!(link_candidate.continuity_status.as_deref(), Some("canon"));
+        assert!(
+            !link_candidate.link_created_at.is_empty(),
+            "series movie link timestamp should be serialized"
+        );
 
         let _ = std::fs::remove_file(db);
     }
