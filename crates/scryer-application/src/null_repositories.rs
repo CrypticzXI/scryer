@@ -1952,6 +1952,10 @@ impl JobRunRepository for NullJobRunRepository {
     async fn list_active_job_runs(&self) -> AppResult<Vec<JobRunRecord>> {
         Ok(Vec::new())
     }
+
+    async fn reconcile_interrupted_job_runs(&self) -> AppResult<u64> {
+        Ok(0)
+    }
 }
 
 #[derive(Default)]

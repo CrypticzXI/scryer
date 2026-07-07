@@ -442,6 +442,46 @@ impl JobExecutionOutcome {
 }
 
 impl AppUseCase {
+    /// Boot-time reconciliation of persisted job runs orphaned by a restart.
+    ///
+    /// Invariant: a persisted running run is only advanced by its in-memory
+    /// worker; once the process restarts that worker is gone and the run is
+    /// unfinishable. Fail those rows in the store so pollers (the jobs UI, the
+    /// GraphQL `acquisitionSearchJob` view, the e2e suite) stop waiting on a
+    /// run that can never complete. The in-memory tracker starts empty on a
+    /// fresh boot, so there is normally nothing to clear there — but any active
+    /// run the tracker still holds that the store just failed is a ghost, so we
+    /// push it through `upsert_active_run` (which drops terminal runs from the
+    /// active registry) to evict it. Returns the number of runs reconciled.
+    pub async fn reconcile_interrupted_job_runs(&self) -> AppResult<u64> {
+        let reconciled = self
+            .services
+            .events
+            .job_runs
+            .reconcile_interrupted_job_runs()
+            .await?;
+        if reconciled == 0 {
+            return Ok(0);
+        }
+        warn!(
+            reconciled,
+            "failed interrupted job runs left running by a previous process"
+        );
+        // Evict any tracker entry the store no longer considers active.
+        for mut run in self.runtime.jobs.job_run_tracker.list_active().await {
+            if !run.status.is_terminal() {
+                run.status = JobRunStatus::Failed;
+                run.completed_at = Some(Utc::now());
+                self.runtime
+                    .jobs
+                    .job_run_tracker
+                    .upsert_active_run(run)
+                    .await;
+            }
+        }
+        Ok(reconciled)
+    }
+
     async fn load_active_job_runs_for_listing(&self) -> AppResult<Vec<JobRun>> {
         let tracker_runs = self.runtime.jobs.job_run_tracker.list_active().await;
         if !tracker_runs.is_empty() {

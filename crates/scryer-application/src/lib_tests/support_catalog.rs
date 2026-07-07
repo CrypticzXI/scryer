@@ -110,6 +110,21 @@ impl JobRunRepository for RecordingJobRunRepo {
             .cloned()
             .collect())
     }
+
+    async fn reconcile_interrupted_job_runs(&self) -> AppResult<u64> {
+        let now = chrono::Utc::now();
+        let mut runs = self.runs.lock().await;
+        let mut reconciled = 0u64;
+        for run in runs.iter_mut().filter(|run| !run.status.is_terminal()) {
+            run.status = JobRunStatus::Failed;
+            run.progress_json = None;
+            run.error_text = Some("interrupted by restart".to_string());
+            run.completed_at = Some(now);
+            run.updated_at = now;
+            reconciled += 1;
+        }
+        Ok(reconciled)
+    }
 }
 
 pub(super) fn sorted_limited_job_runs(

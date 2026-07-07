@@ -199,6 +199,95 @@ async fn active_job_runs_order_by_started_at_ascending() {
 }
 
 #[tokio::test]
+async fn reconcile_interrupted_job_runs_fails_running_rows_and_leaves_terminal_untouched() {
+    let (services, _db) = temp_services("workflow_operation_reconcile_interrupted").await;
+    let store = workflow_operation_store(&services);
+    let now = Utc::now();
+
+    // A persisted running run whose worker died is unfinishable after a restart.
+    let mut interrupted = test_job_run_record(
+        "interrupted-acquisition",
+        JobKey::AcquisitionSearch,
+        JobRunStatus::Running,
+        now,
+        now,
+        None,
+    );
+    interrupted.progress_json = Some("{\"state\":\"running\",\"total\":3}".to_string());
+    // The store mints its own id, so track the persisted ids for lookup.
+    let interrupted_id = store
+        .create_job_run(&interrupted)
+        .await
+        .expect("create interrupted run")
+        .id;
+    store
+        .create_job_run(&test_job_run_record(
+            "queued-title-deletion",
+            JobKey::TitleDeletion,
+            JobRunStatus::Queued,
+            now,
+            now,
+            None,
+        ))
+        .await
+        .expect("create queued run");
+    // A run that already reached a terminal state must be left alone.
+    let completed_id = store
+        .create_job_run(&test_job_run_record(
+            "already-completed",
+            JobKey::Housekeeping,
+            JobRunStatus::Completed,
+            now,
+            now,
+            None,
+        ))
+        .await
+        .expect("create completed run")
+        .id;
+
+    let reconciled = store
+        .reconcile_interrupted_job_runs()
+        .await
+        .expect("reconcile interrupted job runs");
+    assert_eq!(reconciled, 2);
+
+    let interrupted = store
+        .get_job_run(&interrupted_id)
+        .await
+        .expect("load interrupted run")
+        .expect("interrupted run present");
+    assert_eq!(interrupted.status, JobRunStatus::Failed);
+    assert_eq!(
+        interrupted.error_text.as_deref(),
+        Some("interrupted by restart")
+    );
+    assert!(interrupted.progress_json.is_none());
+    assert!(interrupted.completed_at.is_some());
+
+    let completed = store
+        .get_job_run(&completed_id)
+        .await
+        .expect("load completed run")
+        .expect("completed run present");
+    assert_eq!(completed.status, JobRunStatus::Completed);
+    assert!(completed.error_text.is_none());
+
+    // No non-terminal rows should remain, so nothing polls as "running" forever.
+    let active = store
+        .list_active_job_runs()
+        .await
+        .expect("list active job runs");
+    assert!(active.is_empty());
+
+    // Reconciliation is idempotent once everything is terminal.
+    let second_pass = store
+        .reconcile_interrupted_job_runs()
+        .await
+        .expect("reconcile again");
+    assert_eq!(second_pass, 0);
+}
+
+#[tokio::test]
 async fn migration_registers_job_run_listing_indexes() {
     let (services, _db) = temp_services("workflow_operation_indexes").await;
     let rows = sqlx::query("PRAGMA index_list('workflow_operations')")

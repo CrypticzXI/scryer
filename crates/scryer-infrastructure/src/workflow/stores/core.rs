@@ -617,6 +617,43 @@ pub(crate) async fn recover_stale_processing_imports(
     Ok(rows)
 }
 
+/// Boot-time reconciliation for persisted job runs whose worker died mid-flight.
+///
+/// Invariant: a `workflow_operations` row in a non-terminal state (`queued`,
+/// `running`, `discovering`) is only advanced by the in-process worker that owns
+/// it. That worker lives in memory, so once the process restarts it is gone and
+/// the run can never reach a terminal state on its own — it is unfinishable.
+/// Left alone it would poll as "running" forever (the jobs UI and the
+/// acquisition-search view both surface these), so at boot we fail them and
+/// clear `progress_json` so any state derived from it (e.g. the
+/// acquisition-search view) falls back to the now-terminal `failed` status.
+pub(crate) async fn reconcile_interrupted_job_runs(
+    datastore: &StoreDatastore,
+) -> AppResult<u64> {
+    let now = Utc::now();
+    let rows = execute_write(
+        datastore,
+        "reconcile_interrupted_job_runs",
+        format!(
+            "UPDATE workflow_operations
+             SET status = '{}',
+                 progress_json = NULL,
+                 error_text = 'interrupted by restart',
+                 completed_at = {{}},
+                 updated_at = {{}}
+             WHERE job_key IS NOT NULL
+               AND status IN ('{}', '{}', '{}')",
+            JobRunStatus::Failed.as_str(),
+            JobRunStatus::Queued.as_str(),
+            JobRunStatus::Running.as_str(),
+            JobRunStatus::Discovering.as_str(),
+        ),
+        vec![SqlArg::Timestamp(now), SqlArg::Timestamp(now)],
+    )
+    .await?;
+    Ok(rows)
+}
+
 pub(crate) async fn create_workflow_operation(
     datastore: &StoreDatastore,
     operation: NewWorkflowOperation,

@@ -208,4 +208,8 @@ impl JobRunRepository for WorkflowOperationStore {
         .map(|row| workflow_operation_from_row(&row).and_then(job_run_record_from_workflow))
         .collect()
     }
+
+    async fn reconcile_interrupted_job_runs(&self) -> AppResult<u64> {
+        reconcile_interrupted_job_runs(&self.datastore).await
+    }
 }

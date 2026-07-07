@@ -1252,6 +1252,12 @@ async fn bootstrap_application(
     spawn_sigstore_trust_root_prime_task(app_use_case.clone());
     spawn_plugin_catalog_refresh_task(app_use_case.clone());
 
+    // A persisted running job run whose worker died in a previous process is
+    // unfinishable; fail those rows before any poller can wait on them forever.
+    if let Err(e) = app_use_case.reconcile_interrupted_job_runs().await {
+        tracing::warn!(error = %e, "failed to reconcile interrupted job runs on startup");
+    }
+
     if let Err(e) = app_use_case.reconcile_default_library_roots().await {
         tracing::warn!(error = %e, "failed to reconcile default library roots on startup");
     }
