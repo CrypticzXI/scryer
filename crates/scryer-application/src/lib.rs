@@ -212,6 +212,7 @@ pub use catalog::facets::handler::{
 pub use catalog::facets::movie::MovieFacetHandler;
 pub use catalog::facets::registry::FacetRegistry;
 pub use catalog::facets::series::SeriesFacetHandler;
+pub use catalog::title_hydration::start_background_title_hydration_loop;
 pub use catalog::title_images::start_background_title_image_loop;
 pub use catalog::workflow::{DeleteTitlesJobAccepted, DeleteTitlesJobItem, DeleteTitlesJobRequest};
 pub use contracts::{

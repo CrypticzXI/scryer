@@ -907,16 +907,6 @@ pub trait TitleRepository: Send + Sync {
     ) -> AppResult<Vec<String>> {
         Ok(Vec::new())
     }
-    async fn list_anime_title_ids_missing_anibridge_scoped_external_ids(
-        &self,
-        limit: usize,
-    ) -> AppResult<Vec<String>>;
-    async fn list_anime_title_ids_missing_title_anidb_external_ids(
-        &self,
-        _limit: usize,
-    ) -> AppResult<Vec<String>> {
-        Ok(Vec::new())
-    }
     async fn mark_title_metadata_hydration_due_now(&self, id: &str) -> AppResult<()>;
     async fn schedule_title_metadata_hydration_retry(
         &self,

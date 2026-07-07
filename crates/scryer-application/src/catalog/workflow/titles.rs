@@ -666,6 +666,7 @@ impl AppUseCase {
                     .mark_title_metadata_hydration_due_now(&created.title.id)
                     .await?;
             }
+            self.runtime.catalog.title_hydration_wake.notify_one();
             AddTitleHydrationState::Pending
         } else {
             self.services

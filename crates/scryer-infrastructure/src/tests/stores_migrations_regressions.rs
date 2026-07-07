@@ -190,18 +190,6 @@ async fn scoped_anibridge_external_ids_round_trip_for_collections_and_episodes()
     assert_eq!(episode_ids[0].external_id, "18562");
     assert_eq!(episode_ids[0].source_scope.as_deref(), Some("R"));
 
-    let missing =
-        TitleRepository::list_anime_title_ids_missing_anibridge_scoped_external_ids(&catalog, 10)
-            .await
-            .expect("missing scoped-id backfill query should run");
-    assert!(!missing.contains(&title.id));
-
-    let missing_title_anidb =
-        TitleRepository::list_anime_title_ids_missing_title_anidb_external_ids(&catalog, 10)
-            .await
-            .expect("missing title AniDB backfill query should run");
-    assert!(missing_title_anidb.contains(&title.id));
-
     TitleRepository::update_title_hydrated_metadata(
         &catalog,
         &title.id,
@@ -218,11 +206,13 @@ async fn scoped_anibridge_external_ids_round_trip_for_collections_and_episodes()
     .await
     .expect("hydrated title metadata should persist title-level AniDB");
 
-    let missing_title_anidb =
-        TitleRepository::list_anime_title_ids_missing_title_anidb_external_ids(&catalog, 10)
-            .await
-            .expect("missing title AniDB backfill query should rerun");
-    assert!(!missing_title_anidb.contains(&title.id));
+    let hydrated_title = TitleRepository::get_by_id(&catalog, &title.id)
+        .await
+        .expect("hydrated title should load")
+        .expect("hydrated title should exist");
+    assert!(hydrated_title.external_ids.iter().any(|external_id| {
+        external_id.source == "anidb" && external_id.value == "18562"
+    }));
 
     let _ = std::fs::remove_file(db);
 }

@@ -1897,13 +1897,6 @@ mod tests {
             Ok(vec![])
         }
 
-        async fn list_anime_title_ids_missing_anibridge_scoped_external_ids(
-            &self,
-            _: usize,
-        ) -> AppResult<Vec<String>> {
-            Ok(vec![])
-        }
-
         async fn mark_title_metadata_hydration_due_now(&self, _: &str) -> AppResult<()> {
             Ok(())
         }
@@ -2078,13 +2071,6 @@ mod tests {
             _: usize,
             _: &[MediaFacet],
         ) -> AppResult<Vec<PendingTitleHydration>> {
-            Ok(vec![])
-        }
-
-        async fn list_anime_title_ids_missing_anibridge_scoped_external_ids(
-            &self,
-            _: usize,
-        ) -> AppResult<Vec<String>> {
             Ok(vec![])
         }
 

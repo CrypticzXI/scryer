@@ -389,13 +389,6 @@ impl TitleRepository for MockTitleRepo {
             .collect())
     }
 
-    async fn list_anime_title_ids_missing_anibridge_scoped_external_ids(
-        &self,
-        _limit: usize,
-    ) -> AppResult<Vec<String>> {
-        Ok(vec![])
-    }
-
     async fn mark_title_metadata_hydration_due_now(&self, _: &str) -> AppResult<()> {
         Ok(())
     }

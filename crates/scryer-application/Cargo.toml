@@ -15,8 +15,10 @@ runtime-archives = [
     "dep:flate2",
     "dep:lzma-rs",
     "dep:sevenz-rust2",
+    "dep:tar",
     "dep:weaver-unrar",
     "dep:zip",
+    "dep:zstd",
 ]
 runtime-backups = ["dep:tar", "dep:zstd"]
 runtime-media-analysis = [

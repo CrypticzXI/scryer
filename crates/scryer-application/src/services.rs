@@ -921,6 +921,7 @@ pub struct AppRuntimeCatalogState {
         Arc<RwLock<crate::import_title_resolution::MonitoredTitleMatcherCache>>,
     pub poster_wake: Arc<tokio::sync::Notify>,
     pub fanart_wake: Arc<tokio::sync::Notify>,
+    pub(crate) title_hydration_wake: Arc<tokio::sync::Notify>,
     pub(crate) title_recommendation_refresh_queue:
         Arc<tokio::sync::Mutex<crate::catalog_workflow::TitleRecommendationRefreshQueue>>,
     pub(crate) title_recommendation_refresh_wake: Arc<tokio::sync::Notify>,
@@ -1158,6 +1159,7 @@ impl AppRuntimeState {
                 )),
                 poster_wake: Arc::new(tokio::sync::Notify::new()),
                 fanart_wake: Arc::new(tokio::sync::Notify::new()),
+                title_hydration_wake: Arc::new(tokio::sync::Notify::new()),
                 title_recommendation_refresh_queue: Arc::new(tokio::sync::Mutex::new(
                     crate::catalog_workflow::TitleRecommendationRefreshQueue::default(),
                 )),

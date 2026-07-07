@@ -24,6 +24,7 @@ mod routing_settings;
 mod search_cutoff;
 mod security_auth;
 mod series_metadata;
+mod title_hydration;
 mod title_image_cache;
 mod title_updates;
 mod user_permissions;

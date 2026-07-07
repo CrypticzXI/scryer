@@ -118,7 +118,7 @@ mod tests {
         UserRepository, default_quality_profile_for_search,
     };
     use scryer_domain::{
-        Collection, CollectionType, ExternalId, Id, Library, LibraryGrant, LibraryPermission,
+        Collection, CollectionType, Id, Library, LibraryGrant, LibraryPermission,
         LibraryPermissionMask, MediaFacet, Title, User,
     };
     use sqlx::Row;
@@ -891,109 +891,6 @@ mod tests {
             .await?;
             assert_eq!(listed.len(), 1, "expected one unmatched scan item");
             assert_eq!(listed[0].title_id, item.title_id);
-
-            services.pool().close().await;
-            Ok::<_, AppError>(())
-        }
-        .await;
-
-        let cleanup = sqlx::query(sqlx::AssertSqlSafe(format!("DROP SCHEMA {schema} CASCADE")))
-            .execute(&admin_pool)
-            .await;
-        admin_pool.close().await;
-        if let Err(error) = cleanup {
-            return Err(AppError::Repository(format!(
-                "failed to drop test schema {schema}: {error}"
-            )));
-        }
-        result
-    }
-
-    #[tokio::test]
-    async fn postgres_anime_backfill_queries_match_sqlite_title_external_id_semantics()
-    -> AppResult<()> {
-        let Some(raw_url) = std::env::var("SCRYER_TEST_POSTGRES_URL")
-            .ok()
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty())
-        else {
-            eprintln!(
-                "skipping PostgreSQL anime backfill parity test; SCRYER_TEST_POSTGRES_URL is not set"
-            );
-            return Ok(());
-        };
-
-        let admin_pool = sqlx::PgPool::connect(&raw_url).await.map_err(|error| {
-            AppError::Repository(format!("failed to connect to postgres: {error}"))
-        })?;
-        let schema = next_test_schema_name();
-
-        sqlx::query(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")))
-            .execute(&admin_pool)
-            .await
-            .map_err(|error| {
-                AppError::Repository(format!("failed to create test schema: {error}"))
-            })?;
-
-        let result = async {
-            let schema_url = postgres_url_with_search_path(&raw_url, &schema)?;
-            let services =
-                PostgresServices::new_with_mode(schema_url, MigrationMode::Apply).await?;
-            let catalog = title_store(&services);
-
-            let mut missing_anidb = sample_title("pg-anime-missing-anidb");
-            missing_anidb.facet = MediaFacet::Anime;
-            missing_anidb.library_id = "anime_default_library".to_string();
-            missing_anidb.slug = Some("pg-anime-missing-anidb".to_string());
-            missing_anidb.external_ids = vec![ExternalId {
-                source: "tvdb".to_string(),
-                value: "1000".to_string(),
-            }];
-            TitleRepository::create(&catalog, missing_anidb.clone()).await?;
-
-            let mut has_anidb = sample_title("pg-anime-has-anidb");
-            has_anidb.facet = MediaFacet::Anime;
-            has_anidb.library_id = "anime_default_library".to_string();
-            has_anidb.slug = Some("pg-anime-has-anidb".to_string());
-            has_anidb.external_ids = vec![
-                ExternalId {
-                    source: "tvdb".to_string(),
-                    value: "2000".to_string(),
-                },
-                ExternalId {
-                    source: "anidb".to_string(),
-                    value: "3000".to_string(),
-                },
-            ];
-            TitleRepository::create(&catalog, has_anidb.clone()).await?;
-
-            let scoped_missing =
-                TitleRepository::list_anime_title_ids_missing_anibridge_scoped_external_ids(
-                    &catalog, 10,
-                )
-                .await?;
-            assert!(
-                scoped_missing.contains(&missing_anidb.id),
-                "anime title with TVDB and no AniBridge scoped IDs should be queued"
-            );
-            assert!(
-                scoped_missing.contains(&has_anidb.id),
-                "title-level AniDB should not suppress AniBridge scoped-ID backfill"
-            );
-
-            let title_anidb_missing =
-                TitleRepository::list_anime_title_ids_missing_title_anidb_external_ids(
-                    &catalog, 10,
-                )
-                .await?;
-            assert!(
-                title_anidb_missing.contains(&missing_anidb.id),
-                "anime title with TVDB and no title-level AniDB should be queued"
-            );
-            assert!(
-                !title_anidb_missing.contains(&has_anidb.id),
-                "anime title with title-level AniDB should not be queued"
-            );
 
             services.pool().close().await;
             Ok::<_, AppError>(())
