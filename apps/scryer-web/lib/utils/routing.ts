@@ -33,6 +33,7 @@ export const SETTINGS_SECTION_PATH: Record<SettingsSection, string> = {
   downloadClients: "download-clients",
   qualityProfiles: "quality-profiles",
   delayProfiles: "delay-profiles",
+  acquisition: "acquisition",
   rules: "rules",
   plugins: "plugins",
   notifications: "notifications",

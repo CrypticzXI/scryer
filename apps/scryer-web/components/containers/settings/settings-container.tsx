@@ -10,6 +10,7 @@ import {
   Download,
   FolderCog,
   Puzzle,
+  Rss,
   Server,
   Settings2,
   ShieldCheck,
@@ -49,6 +50,9 @@ const SettingsMediaServersContainer = lazy(async () => ({
 }));
 const SettingsDownloadClientsContainer = lazy(async () => ({
   default: (await import("@/components/containers/settings/settings-download-clients-container")).SettingsDownloadClientsContainer,
+}));
+const SettingsAcquisitionContainer = lazy(async () => ({
+  default: (await import("@/components/containers/settings/settings-acquisition-container")).SettingsAcquisitionContainer,
 }));
 const SettingsDelayProfilesContainer = lazy(async () => ({
   default: (await import("@/components/containers/settings/settings-delay-profiles-container")).SettingsDelayProfilesContainer,
@@ -257,7 +261,9 @@ export const SettingsContainer = memo(function SettingsContainer({
                                 ? t("settings.recycleBin")
                                 : settingsSection === "delayProfiles"
                                   ? t("settings.delayProfiles")
-                                  : t("settings.qualityProfiles");
+                                  : settingsSection === "acquisition"
+                                    ? t("settings.acquisition")
+                                    : t("settings.qualityProfiles");
   const primarySettingsNav = [
     {
       section: "profile" as const,
@@ -296,7 +302,8 @@ export const SettingsContainer = memo(function SettingsContainer({
   const usesAutomationHeader =
     settingsSection === "rules" ||
     settingsSection === "subtitles" ||
-    settingsSection === "post-processing";
+    settingsSection === "post-processing" ||
+    settingsSection === "acquisition";
   const usesIntegrationsHeader =
     settingsSection === "downloadClients" ||
     settingsSection === "indexers" ||
@@ -312,6 +319,8 @@ export const SettingsContainer = memo(function SettingsContainer({
         return FolderCog;
       case "subtitles":
         return Captions;
+      case "acquisition":
+        return Rss;
       case "indexers":
         return Database;
       case "downloadClients":
@@ -534,6 +543,8 @@ export const SettingsContainer = memo(function SettingsContainer({
             <SettingsRecycleBinContainer />
           ) : settingsSection === "delayProfiles" ? (
             <SettingsDelayProfilesContainer />
+          ) : settingsSection === "acquisition" ? (
+            <SettingsAcquisitionContainer />
           ) : (
             <SettingsQualityProfilesContainer />
           )}

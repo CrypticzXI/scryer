@@ -492,14 +492,15 @@ const WANTED_ITEM_FIELDS = `
       episodeId
       collectionId
       mediaType
-      searchPhase
-      nextSearchAt
       lastSearchAt
-      searchCount
-      baselineDate
       status
       grabbedRelease
       currentScore
+      convergenceState
+      indexersCovered
+      indexersRouted
+      recencyLane
+      mismatchRecoveryEligible
       createdAt
       updatedAt`;
 
@@ -1984,6 +1985,20 @@ ${JOB_RUN_FIELDS}
   }
 }`;
 
+export const acquisitionSearchJobQuery = `query AcquisitionSearchJob($id: ID!) {
+  acquisitionSearchJob(id: $id) {
+    id
+    state
+    total
+    processed
+    grabbedCount
+    failedCount
+    currentTitle
+    startedAt
+    finishedAt
+  }
+}`;
+
 export const usersQuery = `query Users {
   users {
     id
@@ -2312,20 +2327,26 @@ export const seriesOverviewSettingsInitQuery = `query SeriesOverviewSettingsInit
   }
 }`;
 
-export const cutoffUnmetTitlesQuery = `query CutoffUnmetTitles($facet: MediaFacetValue, $libraryIds: [ID!]) {
-  cutoffUnmetTitles(facet: $facet, libraryIds: $libraryIds) {
-    titleId
-    titleName
-    titleSlug
-    titleFacet
-    libraryId
-    libraryName
-    librarySlug
-    episodeId
-    seasonNumber
-    episodeNumber
-    currentTier
-    targetTier
+export const cutoffUnmetTitlesPageQuery = `query CutoffUnmetTitlesPage($facet: MediaFacetValue, $libraryIds: [ID!], $limit: Int!, $offset: Int!) {
+  cutoffUnmetTitlesPage(facet: $facet, libraryIds: $libraryIds, limit: $limit, offset: $offset) {
+    items {
+      titleId
+      titleName
+      titleSlug
+      titleFacet
+      libraryId
+      libraryName
+      librarySlug
+      episodeId
+      seasonNumber
+      episodeNumber
+      currentTier
+      targetTier
+      convergenceState
+      indexersCovered
+      indexersRouted
+    }
+    total
   }
 }`;
 
@@ -2477,8 +2498,8 @@ export const acquisitionSettingsQuery = `query AcquisitionSettings {
     crossTierMinDelta
     forcedUpgradeDeltaBypass
     pollIntervalSeconds
-    syncIntervalSeconds
-    batchSize
+    longTailBackfillMaxScopesPerCycle
+    longTailReconvergeDays
   }
 }`;
 
@@ -2977,8 +2998,8 @@ export const previewManualImportPathQuery = `query PreviewManualImportPath($inpu
   }
 }`;
 
-export const wantedItemsQuery = `query WantedItems($statuses: [WantedStatusValue!], $mediaTypes: [WantedMediaTypeValue!], $titleId: ID, $libraryIds: [ID!], $titleSearch: String, $latestDecisionCodes: [String!], $limit: Int, $offset: Int) {
-  wantedItems(statuses: $statuses, mediaTypes: $mediaTypes, titleId: $titleId, libraryIds: $libraryIds, titleSearch: $titleSearch, latestDecisionCodes: $latestDecisionCodes, limit: $limit, offset: $offset) {
+export const wantedItemsQuery = `query WantedItems($wantedKind: WantedKindValue!, $facet: MediaFacetValue, $libraryIds: [ID!], $titleSearch: String, $limit: Int, $offset: Int) {
+  wantedItems(wantedKind: $wantedKind, facet: $facet, libraryIds: $libraryIds, titleSearch: $titleSearch, limit: $limit, offset: $offset) {
     items {
       id
       titleId
@@ -2993,11 +3014,7 @@ export const wantedItemsQuery = `query WantedItems($statuses: [WantedStatusValue
       seasonNumber
       episodeNumber
       mediaType
-      searchPhase
-      nextSearchAt
       lastSearchAt
-      searchCount
-      baselineDate
       status
       grabbedRelease
       currentScore
@@ -3006,6 +3023,10 @@ export const wantedItemsQuery = `query WantedItems($statuses: [WantedStatusValue
         createdAt
       }
       mismatchRecoveryEligible
+      convergenceState
+      indexersCovered
+      indexersRouted
+      recencyLane
       createdAt
       updatedAt
     }

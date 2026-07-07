@@ -20,8 +20,7 @@ import {
   setPrimaryMovieFileMutation,
   setSeriesMovieMonitoredMutation,
   setTitleMonitoredMutation,
-  triggerTitleWantedSearchMutation,
-  triggerSeasonWantedSearchMutation,
+  triggerAcquisitionSearchMutation,
   updateTitleMutation,
 } from "@/lib/graphql/mutations";
 import type { DownloadQueueItem } from "@/lib/types/download-queue";
@@ -884,34 +883,15 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
 
     setSearchMonitoredLoading(true);
     try {
-      const payload = await retryWithReplaceOnConflict(
-        { titleId: title.id },
-        async (input) => {
-          const { data, error } = await client.mutation(triggerTitleWantedSearchMutation, {
-            input,
-          }).toPromise();
-          if (error) throw error;
-          return data?.triggerTitleWantedSearch;
-        },
-        "A monitored title search is already in progress for this title.",
-        confirmReplaceConflict,
-      );
-      assertNoReplaceConflict(
-        payload,
-        "A monitored title search is already in progress for this title.",
-      );
-
-      const queued = payload?.queuedCount ?? 0;
-      const skipped = payload?.skippedInProgressCount ?? 0;
-      const baseStatus =
-        queued > 0
-          ? t("status.searchMonitoredQueued", { count: queued })
-          : t("status.searchMonitoredEmpty");
-      setGlobalStatus(
-        skipped > 0
-          ? `${baseStatus} ${t("status.searchSkippedInProgress", { count: skipped })}`
-          : baseStatus,
-      );
+      // RFC 119 §7.3: one interactive acquisition-search job for this title
+      // replaces the retired per-title trigger mutation.
+      const { error } = await client
+        .mutation(triggerAcquisitionSearchMutation, {
+          input: { titleId: title.id },
+        })
+        .toPromise();
+      if (error) throw error;
+      setGlobalStatus(t("wanted.searchJobStarted"));
     } catch (error: unknown) {
       setGlobalStatus(error instanceof Error ? error.message : t("status.apiError"));
     } finally {
@@ -919,7 +899,6 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
     }
   }, [
     client,
-    confirmReplaceConflict,
     hasDownloadClients,
     setGlobalStatus,
     t,
@@ -1208,23 +1187,14 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
 
       setSeasonSearchLoadingByCollection((prev) => ({ ...prev, [collection.id]: true }));
       try {
-        const { data, error } = await client
-          .mutation(triggerSeasonWantedSearchMutation, {
+        // RFC 119 §7.3: a season search is the interactive job scoped to one season.
+        const { error } = await client
+          .mutation(triggerAcquisitionSearchMutation, {
             input: { titleId: title.id, seasonNumber: seasonNum },
           })
           .toPromise();
         if (error) throw error;
-        const queued = data?.triggerSeasonWantedSearch?.queuedCount ?? 0;
-        const skipped = data?.triggerSeasonWantedSearch?.skippedInProgressCount ?? 0;
-        const baseStatus =
-          queued > 0
-            ? t("status.searchMonitoredQueued", { count: queued })
-            : t("status.searchMonitoredEmpty");
-        setGlobalStatus(
-          skipped > 0
-            ? `${baseStatus} ${t("status.searchSkippedInProgress", { count: skipped })}`
-            : baseStatus,
-        );
+        setGlobalStatus(t("wanted.searchJobStarted"));
       } catch (error: unknown) {
         setGlobalStatus(error instanceof Error ? error.message : t("status.apiError"));
       } finally {

@@ -59,23 +59,3 @@ export function localizedWantedStatus(
   }
 }
 
-export function localizedWantedPhase(
-  t: Translate,
-  phase: string | null | undefined,
-): string | null {
-  const trimmed = phase?.trim();
-  if (!trimmed) return null;
-
-  switch (trimmed.toLowerCase()) {
-    case "primary":
-      return t("wanted.phase.primary");
-    case "pre_release":
-      return t("wanted.phase.preRelease");
-    case "pre_air":
-      return t("wanted.phase.preAir");
-    case "secondary":
-      return t("wanted.phase.secondary");
-    default:
-      return trimmed.charAt(0).toUpperCase() + trimmed.slice(1);
-  }
-}

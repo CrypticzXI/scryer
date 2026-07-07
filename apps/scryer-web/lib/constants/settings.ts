@@ -114,6 +114,7 @@ export const SETTINGS_SECTION_PATH_TO_ID: Record<string, SettingsSection> = {
   qualityProfiles: "qualityProfiles",
   "delay-profiles": "delayProfiles",
   delayProfiles: "delayProfiles",
+  acquisition: "acquisition",
   rules: "rules",
   plugins: "plugins",
   notifications: "notifications",

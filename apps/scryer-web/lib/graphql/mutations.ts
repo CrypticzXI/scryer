@@ -707,8 +707,8 @@ export const updateAcquisitionSettingsMutation = `mutation UpdateAcquisitionSett
     crossTierMinDelta
     forcedUpgradeDeltaBypass
     pollIntervalSeconds
-    syncIntervalSeconds
-    batchSize
+    longTailBackfillMaxScopesPerCycle
+    longTailReconvergeDays
   }
 }`;
 
@@ -1370,40 +1370,24 @@ export const setPrimaryMovieFileMutation = `mutation SetPrimaryMovieFile($input:
   }
 }`;
 
-const wantedSearchPayloadSelection = `
-    queuedCount
-    skippedInProgressCount
-    conflict {
-      titleId
-      titleName
-      downloadClientId
-      downloadClientType
-      downloadClientItemId
-      sourceTitle
-      sourceKind
-      state
-      replaceable
-      scope {
-        kind
-        episodeId
-        episodeIds
-        collectionId
-      }
-    }`;
-
-export const triggerWantedSearchMutation = `mutation TriggerWantedSearch($input: TriggerWantedSearchInput!) {
-  triggerWantedSearch(input: $input) {${wantedSearchPayloadSelection}
+// RFC 119 §7.3: one server-side interactive search job replaces the retired
+// per-item trigger mutations; progress is polled via acquisitionSearchJobQuery.
+export const triggerAcquisitionSearchMutation = `mutation TriggerAcquisitionSearch($input: TriggerAcquisitionSearchInput!) {
+  triggerAcquisitionSearch(input: $input) {
+    id
+    state
+    total
+    processed
+    grabbedCount
+    failedCount
+    currentTitle
+    startedAt
+    finishedAt
   }
 }`;
 
-export const triggerTitleWantedSearchMutation = `mutation TriggerTitleWantedSearch($input: TriggerTitleWantedSearchInput!) {
-  triggerTitleWantedSearch(input: $input) {${wantedSearchPayloadSelection}
-  }
-}`;
-
-export const triggerSeasonWantedSearchMutation = `mutation TriggerSeasonWantedSearch($input: TriggerSeasonWantedSearchInput!) {
-  triggerSeasonWantedSearch(input: $input) {${wantedSearchPayloadSelection}
-  }
+export const cancelAcquisitionSearchMutation = `mutation CancelAcquisitionSearch($id: ID!) {
+  cancelAcquisitionSearch(id: $id)
 }`;
 
 export const pauseWantedItemMutation = `mutation PauseWantedItem($id: ID!) {
@@ -1417,13 +1401,6 @@ export const resumeWantedItemMutation = `mutation ResumeWantedItem($id: ID!) {
   resumeWantedItem(id: $id) {
     id
     resumed
-  }
-}`;
-
-export const resetWantedItemMutation = `mutation ResetWantedItem($id: ID!) {
-  resetWantedItem(id: $id) {
-    id
-    reset
   }
 }`;
 

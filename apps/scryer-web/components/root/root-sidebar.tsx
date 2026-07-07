@@ -45,6 +45,7 @@ import {
   Monitor,
   Moon,
   Puzzle,
+  Rss,
   Server,
   Settings2,
   ShieldCheck,
@@ -167,6 +168,7 @@ const TOP_NAV_GROUPS: TopNavGroupDefinition[] = [
       { kind: "view", id: "wanted" },
       { kind: "view", id: "calendar" },
       { kind: "view", id: "activity" },
+      { kind: "settings", id: "acquisition", icon: Rss },
       { kind: "settings", id: "subtitles", icon: Captions },
       { kind: "settings", id: "rules", icon: SlidersHorizontal },
       { kind: "settings", id: "post-processing", icon: FolderCog },
@@ -313,6 +315,12 @@ const settingsEntries: Array<{
   {
     id: "downloadClients",
     label: (t) => t("settings.downloadClients"),
+    requiredAnyAppPermission: [APP_PERMISSIONS.manageSystemSettings],
+  },
+  {
+    id: "acquisition",
+    label: (t) => t("settings.acquisition"),
+    icon: Rss,
     requiredAnyAppPermission: [APP_PERMISSIONS.manageSystemSettings],
   },
   {

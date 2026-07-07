@@ -17,11 +17,10 @@ import {
   scanTitleLibraryMutation,
   setPrimaryMovieFileMutation,
   setTitleMonitoredMutation,
-  triggerTitleWantedSearchMutation,
+  triggerAcquisitionSearchMutation,
   triggerTitleMismatchRecoverySearchMutation,
   pauseWantedItemMutation,
   resumeWantedItemMutation,
-  resetWantedItemMutation,
   updateTitleMutation,
 } from "@/lib/graphql/mutations";
 import { DEFAULT_MOVIE_LIBRARY_PATH } from "@/lib/constants/settings";
@@ -328,7 +327,7 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
   }, []);
   const lastShownDownloadFeedbackWarningRef = React.useRef<string | null>(null);
   const [wantedActionLoading, setWantedActionLoading] = React.useState<
-    "pause" | "resume" | "reset" | null
+    "pause" | "resume" | null
   >(null);
   const titleDeletePreviewVariables = React.useMemo(
     () =>
@@ -677,7 +676,7 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
 
   const runWantedAction = React.useCallback(
     async (
-      action: "pause" | "resume" | "reset",
+      action: "pause" | "resume",
       mutation: string,
       successMessage?: string,
     ) => {
@@ -710,26 +709,15 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
       }
       setSearchMonitoredLoading(true);
       try {
-        const payload = await retryWithReplaceOnConflict(
-          { titleId: title.id },
-          async (input) => {
-            const { data, error } = await client.mutation(triggerTitleWantedSearchMutation, {
-              input,
-            }).toPromise();
-            if (error) throw error;
-            return data?.triggerTitleWantedSearch;
-          },
-          "A download is already in progress for this title.",
-          confirmReplaceConflict,
-        );
-        assertNoReplaceConflict(payload, "A download is already in progress for this title.");
-
-        const queued = payload?.queuedCount ?? 0;
-        setGlobalStatus(
-          queued > 0
-            ? t("status.searchMonitoredQueued", { count: queued })
-            : t("status.searchMonitoredEmpty"),
-        );
+        // RFC 119 §7.3: one interactive acquisition-search job for this title
+        // replaces the retired per-title trigger mutation.
+        const { error } = await client
+          .mutation(triggerAcquisitionSearchMutation, {
+            input: { titleId: title.id },
+          })
+          .toPromise();
+        if (error) throw error;
+        setGlobalStatus(t("wanted.searchJobStarted"));
         await refreshTitleDetail();
       } catch (err) {
         setGlobalStatus(err instanceof Error ? err.message : t("status.apiError"));
@@ -741,7 +729,6 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
       title,
       hasDownloadClients,
       client,
-      confirmReplaceConflict,
       refreshTitleDetail,
       setGlobalStatus,
       t,
@@ -758,13 +745,6 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
   const handleResumeWanted = React.useCallback(
     async () => {
       await runWantedAction("resume", resumeWantedItemMutation);
-    },
-    [runWantedAction],
-  );
-
-  const handleResetWanted = React.useCallback(
-    async () => {
-      await runWantedAction("reset", resetWantedItemMutation);
     },
     [runWantedAction],
   );
@@ -1176,7 +1156,6 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
         wantedActionLoading={wantedActionLoading}
         onPauseWanted={handlePauseWanted}
         onResumeWanted={handleResumeWanted}
-        onResetWanted={handleResetWanted}
         onTriggerMismatchRecovery={triggerMismatchRecovery}
         onRequestDeleteTitle={handleRequestDeleteTitle}
         blocklistEntries={blocklistEntries}

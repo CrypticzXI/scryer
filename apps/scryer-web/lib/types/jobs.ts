@@ -42,11 +42,11 @@ export type JobKey =
   | "plugin_registry_refresh"
   | "housekeeping"
   | "health_checks"
-  | "wanted_sync"
   | "pending_release_processing"
   | "staged_nzb_prune"
   | "title_image_cache_refresh"
   | "title_deletion"
+  | "acquisition_search"
   | "auto_backup";
 
 export type JobScheduleInfo = {

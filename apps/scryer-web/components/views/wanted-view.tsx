@@ -1,6 +1,5 @@
 import { Fragment, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { FilterChipButton } from "@/components/common/filter-chip-button";
 import { LibraryMultiSelect } from "@/components/common/library-multi-select";
 import { TitleAutocompletePicker } from "@/components/common/title-autocomplete-picker";
 import type { OverviewTitleTarget, ViewId, WantedSection } from "@/components/root/types";
@@ -14,8 +13,6 @@ import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { IconButton } from "@/components/ui/icon-button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
-import { MultiSelectOptionList } from "@/components/ui/multi-select-dropdown";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
   Table,
   TableActionsCell,
@@ -32,7 +29,6 @@ import {
   ChevronRight,
   Clock,
   Download,
-  Filter,
   Gauge,
   History,
   ListChecks,
@@ -43,9 +39,11 @@ import {
   Search,
   X,
 } from "lucide-react";
+import { ConvergenceBadge } from "@/components/views/convergence-badge";
 import { CutoffUnmetView } from "@/components/views/cutoff-unmet-view";
 import type { CutoffUnmetItem } from "@/components/views/cutoff-unmet-view";
 import type {
+  AcquisitionSearchJob,
   PendingReleaseItem,
   PendingReleaseStatus,
   LibraryRecord,
@@ -54,7 +52,6 @@ import type {
   TitleRecord,
   WantedItem,
   WantedMediaType,
-  WantedSearchPhase,
   WantedStatus,
 } from "@/lib/types";
 import type { UiDateTimeFormat } from "@/lib/types/settings";
@@ -62,6 +59,10 @@ import { useIsMobile } from "@/lib/hooks/use-mobile";
 
 type CutoffUnmetViewState = {
   items: CutoffUnmetItem[];
+  total: number;
+  offset: number;
+  setOffset: (v: number) => void;
+  limit: number;
   loading: boolean;
   facetFilter: string | undefined;
   setFacetFilter: (v: string | undefined) => void;
@@ -73,25 +74,19 @@ type CutoffUnmetViewState = {
   interactiveSearchingId: string | null;
   activeInteractiveItemId: string | null;
   searchResultsByItemId: Record<string, Release[]>;
-  bulkSearching: boolean;
-  bulkProgress: { current: number; total: number } | null;
+  searchJob: AcquisitionSearchJob | null;
+  searchJobStarting: boolean;
   triggerAutoSearch: (item: CutoffUnmetItem) => Promise<void>;
   triggerInteractiveSearch: (item: CutoffUnmetItem) => Promise<void>;
   queueRelease: (item: CutoffUnmetItem, release: Release) => Promise<void>;
   triggerBulkSearch: () => void;
-  cancelBulkSearch: () => void;
+  cancelBulkSearch: () => Promise<void>;
 };
 
 type WantedViewState = {
   items: WantedItem[];
   total: number;
   loading: boolean;
-  statusFilters: WantedStatus[];
-  setStatusFilters: (v: WantedStatus[]) => void;
-  mediaTypeFilters: WantedMediaType[];
-  setMediaTypeFilters: (v: WantedMediaType[]) => void;
-  latestDecisionCodeFilters: string[];
-  setLatestDecisionCodeFilters: (v: string[]) => void;
   selectedTitle: TitleRecord | null;
   setSelectedTitle: (title: TitleRecord | null) => void;
   libraries: LibraryRecord[];
@@ -109,157 +104,8 @@ type WantedViewState = {
   triggerSearch: (id: string) => Promise<void>;
   pauseItem: (id: string) => Promise<void>;
   resumeItem: (id: string) => Promise<void>;
-  resetItem: (id: string) => Promise<void>;
   triggerMismatchRecovery: (titleId: string) => Promise<void>;
 };
-
-const STATUS_OPTIONS: WantedStatus[] = ["wanted", "grabbed", "completed", "paused"];
-const MEDIA_TYPE_OPTIONS: WantedMediaType[] = ["movie", "episode", "series_movie"];
-const LATEST_DECISION_OPTIONS = [
-  "title_mismatch",
-  "quality_blocked",
-  "upgrade_rejected",
-  "pending_delay",
-  "already_active",
- ] as const;
-
-type WantedFilterOption<T extends string> = {
-  value: T;
-  label: string;
-};
-
-function WantedFilterSection<T extends string>({
-  title,
-  allLabel,
-  options,
-  selectedValues,
-  onSelectedValuesChange,
-}: {
-  title: string;
-  allLabel: string;
-  options: WantedFilterOption<T>[];
-  selectedValues: T[];
-  onSelectedValuesChange: (values: T[]) => void;
-}) {
-  const implicitAllSelected = selectedValues.length === 0;
-  const allValues = options.map((option) => option.value);
-  const effectiveSelectedValues = implicitAllSelected ? allValues : selectedValues;
-  const handleSelectedValuesChange = (nextValues: string[]) => {
-    const normalized = allValues.filter((value) => nextValues.includes(value));
-    onSelectedValuesChange(
-      normalized.length === 0 || normalized.length === allValues.length
-        ? []
-        : (normalized as T[]),
-    );
-  };
-
-  return (
-    <div className="flex flex-col gap-2">
-      <p className="text-xs font-medium text-muted-foreground">{title}</p>
-      <MultiSelectOptionList
-        groups={[{ options }]}
-        selectedValues={effectiveSelectedValues}
-        onSelectedValuesChange={handleSelectedValuesChange}
-        allOption={{
-          label: allLabel,
-          selected: implicitAllSelected,
-          onSelect: () => onSelectedValuesChange([]),
-        }}
-        maxHeightClassName=""
-        className="overflow-visible"
-      />
-    </div>
-  );
-}
-
-function WantedFiltersPopover({
-  statusFilters,
-  setStatusFilters,
-  mediaTypeFilters,
-  setMediaTypeFilters,
-  latestDecisionCodeFilters,
-  setLatestDecisionCodeFilters,
-  onFilterChange,
-}: {
-  statusFilters: WantedStatus[];
-  setStatusFilters: (values: WantedStatus[]) => void;
-  mediaTypeFilters: WantedMediaType[];
-  setMediaTypeFilters: (values: WantedMediaType[]) => void;
-  latestDecisionCodeFilters: string[];
-  setLatestDecisionCodeFilters: (values: string[]) => void;
-  onFilterChange: () => void;
-}) {
-  const t = useTranslate();
-
-  const activeFilterCount =
-    statusFilters.length + mediaTypeFilters.length + latestDecisionCodeFilters.length;
-  const statusOptions = STATUS_OPTIONS.map((value) => ({
-    value,
-    label: formatWantedStatus(value, t),
-  }));
-  const mediaTypeOptions = MEDIA_TYPE_OPTIONS.map((value) => ({
-    value,
-    label: formatWantedMediaType(value, t),
-  }));
-  const latestDecisionOptions = LATEST_DECISION_OPTIONS.map((value) => ({
-    value,
-    label: formatWantedDecisionCode(value, t),
-  }));
-
-  return (
-    <Popover>
-      <PopoverTrigger asChild>
-        <FilterChipButton
-          selected={activeFilterCount > 0}
-          onClick={() => undefined}
-          icon={<Filter className="h-3.5 w-3.5" />}
-          className="w-full justify-between sm:w-auto"
-        >
-          <span>{t("label.filters")}</span>
-          {activeFilterCount > 0 ? (
-            <span className="rounded-full bg-background/20 px-1.5 py-0.5 text-[11px] leading-none">
-              {activeFilterCount}
-            </span>
-          ) : null}
-        </FilterChipButton>
-      </PopoverTrigger>
-      <PopoverContent align="start" className="w-72 p-3">
-        <div className="flex flex-col gap-4">
-          <WantedFilterSection
-            title={t("wanted.filterStatus")}
-            allLabel={t("wanted.allStatuses")}
-            options={statusOptions}
-            selectedValues={statusFilters}
-            onSelectedValuesChange={(values) => {
-              setStatusFilters(values);
-              onFilterChange();
-            }}
-          />
-          <WantedFilterSection
-            title={t("wanted.filterMediaType")}
-            allLabel={t("wanted.allTypes")}
-            options={mediaTypeOptions}
-            selectedValues={mediaTypeFilters}
-            onSelectedValuesChange={(values) => {
-              setMediaTypeFilters(values);
-              onFilterChange();
-            }}
-          />
-          <WantedFilterSection
-            title={t("wanted.filterLatestDecision")}
-            allLabel={t("wanted.allDecisions")}
-            options={latestDecisionOptions}
-            selectedValues={latestDecisionCodeFilters}
-            onSelectedValuesChange={(values) => {
-              setLatestDecisionCodeFilters(values);
-              onFilterChange();
-            }}
-          />
-        </div>
-      </PopoverContent>
-    </Popover>
-  );
-}
 
 type ReleaseDecisionExplanationEntry = {
   code: string;
@@ -283,17 +129,6 @@ function formatWantedStatus(status: WantedStatus, t: Translate) {
     paused: "wanted.status.paused",
   };
   return t(key[status]);
-}
-
-function formatWantedPhase(phase: WantedSearchPhase, t: Translate) {
-  const key: Record<WantedSearchPhase, string> = {
-    primary: "wanted.phase.primary",
-    pre_release: "wanted.phase.preRelease",
-    pre_air: "wanted.phase.preAir",
-    secondary: "wanted.phase.secondary",
-    long_tail: "wanted.phase.longTail",
-  };
-  return t(key[phase]);
 }
 
 function formatWantedDecisionCode(code: string, t: Translate) {
@@ -386,23 +221,6 @@ function statusBadge(status: WantedStatus, t: Translate) {
       className={`inline-block rounded px-2 py-0.5 text-xs font-medium ${colors[status] ?? "bg-muted text-muted-foreground"}`}
     >
       {formatWantedStatus(status, t)}
-    </span>
-  );
-}
-
-function phaseBadge(phase: WantedSearchPhase, t: Translate) {
-  const colors: Record<WantedSearchPhase, string> = {
-    primary: "bg-[var(--scry-success-bg-strong)] text-[var(--scry-success-text)]",
-    pre_release: "bg-[rgba(var(--scry-accent-rgb),0.2)] text-[var(--scry-accent-text)]",
-    pre_air: "bg-[rgba(var(--scry-accent-rgb),0.2)] text-[var(--scry-accent-text)]",
-    secondary: "bg-[var(--scry-warning-bg-strong)] text-[var(--scry-warning-text)]",
-    long_tail: "bg-muted text-muted-foreground",
-  };
-  return (
-    <span
-      className={`inline-block rounded px-2 py-0.5 text-xs font-medium ${colors[phase] ?? "bg-muted text-muted-foreground"}`}
-    >
-      {formatWantedPhase(phase, t)}
     </span>
   );
 }
@@ -520,7 +338,7 @@ export function WantedView({
     {
       section: "cutoff" as const,
       label: t("cutoff.title"),
-      count: cutoffState.items.length,
+      count: cutoffState.total,
       icon: Gauge,
     },
     {
@@ -640,12 +458,6 @@ function WantedItemsCard({
     items,
     total,
     loading,
-    statusFilters,
-    setStatusFilters,
-    mediaTypeFilters,
-    setMediaTypeFilters,
-    latestDecisionCodeFilters,
-    setLatestDecisionCodeFilters,
     selectedTitle,
     setSelectedTitle,
     libraries,
@@ -663,7 +475,6 @@ function WantedItemsCard({
     triggerSearch,
     pauseItem,
     resumeItem,
-    resetItem,
     triggerMismatchRecovery,
   } = state;
   const [expandedDecisionIds, setExpandedDecisionIds] = useState<Set<string>>(new Set());
@@ -752,16 +563,6 @@ function WantedItemsCard({
             triggerClassName="h-10 w-full rounded-[10px] border-[var(--scry-border2)] bg-[var(--scry-inset)] text-[13px] text-[var(--scry-body)] shadow-none sm:w-[180px]"
           />
 
-          <WantedFiltersPopover
-            statusFilters={statusFilters}
-            setStatusFilters={setStatusFilters}
-            mediaTypeFilters={mediaTypeFilters}
-            setMediaTypeFilters={setMediaTypeFilters}
-            latestDecisionCodeFilters={latestDecisionCodeFilters}
-            setLatestDecisionCodeFilters={setLatestDecisionCodeFilters}
-            onFilterChange={() => setOffset(0)}
-          />
-
           <span className="self-center text-sm font-medium text-[var(--scry-muted3)] sm:ml-auto">
             {t("wanted.totalCount", { count: total })}
           </span>
@@ -793,7 +594,12 @@ function WantedItemsCard({
                       </button>
                       <div className="mt-2 flex flex-wrap gap-2">
                         {statusBadge(item.status, t)}
-                        {phaseBadge(item.searchPhase, t)}
+                        <ConvergenceBadge
+                          state={item.convergenceState}
+                          indexersCovered={item.indexersCovered}
+                          indexersRouted={item.indexersRouted}
+                          recencyLane={item.recencyLane}
+                        />
                         <span className="rounded bg-muted px-2 py-0.5 text-xs text-muted-foreground">
                           {formatWantedMediaType(item.mediaType, t)}
                         </span>
@@ -813,9 +619,9 @@ function WantedItemsCard({
                   </div>
                   <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-muted-foreground">
                     <div>
-                      <span className="block">{t("wanted.colNextSearch")}</span>
+                      <span className="block">{t("wanted.colLastSearch")}</span>
                       <span className="text-foreground">
-                        {formatDate(item.nextSearchAt, dateTimeFormat)}
+                        {formatDate(item.lastSearchAt, dateTimeFormat)}
                       </span>
                     </div>
                     <div>
@@ -834,8 +640,10 @@ function WantedItemsCard({
                       <span className="text-foreground">{item.currentScore ?? "—"}</span>
                     </div>
                     <div>
-                      <span className="block">{t("wanted.colSearches")}</span>
-                      <span className="text-foreground">{item.searchCount}</span>
+                      <span className="block">{t("wanted.colIndexers")}</span>
+                      <span className="text-foreground">
+                        {item.indexersCovered}/{item.indexersRouted}
+                      </span>
                     </div>
                   </div>
                   <div className="mt-3 flex flex-wrap gap-2">
@@ -854,10 +662,6 @@ function WantedItemsCard({
                         <span>{t("wanted.pause")}</span>
                       </Button>
                     )}
-                    <Button size="sm" variant="outline" className="w-full" onClick={() => void resetItem(item.id)}>
-                      <RotateCcw className="h-4 w-4" />
-                      <span>{t("wanted.reset")}</span>
-                    </Button>
                     {item.mismatchRecoveryEligible ? (
                       <Button
                         size="sm"
@@ -947,11 +751,11 @@ function WantedItemsCard({
                   <TableHead className="w-32 text-center">Library</TableHead>
                   <TableHead className="w-24 text-center">{t("wanted.colType")}</TableHead>
                   <TableHead className="w-28 text-center">{t("wanted.colStatus")}</TableHead>
-                  <TableHead className="w-28 text-center">{t("wanted.colPhase")}</TableHead>
+                  <TableHead className="w-36 text-center">{t("wanted.colConvergence")}</TableHead>
                   <TableHead className="w-36 text-center">{t("wanted.colLatestDecision")}</TableHead>
-                  <TableHead className="w-32 text-center">{t("wanted.colNextSearch")}</TableHead>
+                  <TableHead className="w-32 text-center">{t("wanted.colLastSearch")}</TableHead>
                   <TableHead className="w-20 text-center">{t("wanted.colScore")}</TableHead>
-                  <TableHead className="w-24 text-center">{t("wanted.colSearches")}</TableHead>
+                  <TableHead className="w-24 text-center">{t("wanted.colIndexers")}</TableHead>
                   <TableActionsHead className="w-36">{t("label.actions")}</TableActionsHead>
                 </TableRow>
               </TableHeader>
@@ -1006,7 +810,12 @@ function WantedItemsCard({
                         {statusBadge(item.status, t)}
                       </TableCell>
                       <TableCell className="text-center">
-                        {phaseBadge(item.searchPhase, t)}
+                        <ConvergenceBadge
+                          state={item.convergenceState}
+                          indexersCovered={item.indexersCovered}
+                          indexersRouted={item.indexersRouted}
+                          recencyLane={item.recencyLane}
+                        />
                       </TableCell>
                       <TableCell className="text-center text-xs">
                         {item.latestReleaseDecision ? (
@@ -1024,13 +833,13 @@ function WantedItemsCard({
                         )}
                       </TableCell>
                       <TableCell className="text-center text-xs">
-                        {formatDate(item.nextSearchAt, dateTimeFormat)}
+                        {formatDate(item.lastSearchAt, dateTimeFormat)}
                       </TableCell>
                       <TableCodeCell className="text-center">
                         {item.currentScore ?? "—"}
                       </TableCodeCell>
                       <TableCodeCell className="text-center">
-                        {item.searchCount}
+                        {item.indexersCovered}/{item.indexersRouted}
                       </TableCodeCell>
                       <TableActionsCell className="w-36">
                         <div className="flex flex-wrap justify-center gap-1">
@@ -1064,14 +873,6 @@ function WantedItemsCard({
                               <Pause className="h-3.5 w-3.5" />
                             </IconButton>
                           )}
-                          <IconButton
-                            label={t("wanted.reset")}
-                            appearance="ghost"
-                            className="h-7 w-7"
-                            onClick={() => void resetItem(item.id)}
-                          >
-                            <RotateCcw className="h-3.5 w-3.5" />
-                          </IconButton>
                           {item.mismatchRecoveryEligible ? (
                             <IconButton
                               label={t("wanted.actionRecoverMismatch")}

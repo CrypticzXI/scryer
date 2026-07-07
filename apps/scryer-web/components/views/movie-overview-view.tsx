@@ -41,14 +41,13 @@ import {
 import { TitleRatingsStrip } from "@/components/views/title-ratings-strip";
 import {
   localizedTitleStatus,
-  localizedWantedPhase,
   localizedWantedStatus,
 } from "@/components/views/overview-localization";
 import { titleGenreLabels } from "@/lib/utils/title-genres";
 import { TitlePosterSlot } from "@/components/title-poster-slot";
 import type { TitleOptionUpdates } from "@/lib/types/title-options";
 import type { LibraryRootRecord } from "@/lib/types/titles";
-import type { WantedSearchPhase, WantedStatus } from "@/lib/types";
+import type { WantedStatus } from "@/lib/types";
 import { SubtitleLanguagePicker } from "@/components/common/subtitle-language-picker";
 import { setTitleRequiredAudioMutation } from "@/lib/graphql/mutations";
 import type { DownloadQueueItem } from "@/lib/types/download-queue";
@@ -163,20 +162,6 @@ function wantedStatusClass(status: WantedStatus) {
       return "bg-[var(--scry-success-bg-strong)] text-[var(--scry-success-text)]";
     case "paused":
       return "bg-muted text-muted-foreground";
-    default:
-      return "bg-muted text-muted-foreground";
-  }
-}
-
-function wantedPhaseClass(phase: WantedSearchPhase) {
-  switch (phase) {
-    case "primary":
-      return "bg-[var(--scry-success-bg)] text-[var(--scry-success-text)]";
-    case "pre_release":
-    case "pre_air":
-      return "bg-[rgba(var(--scry-accent-rgb),0.16)] text-[var(--scry-accent-text)]";
-    case "secondary":
-      return "bg-[var(--scry-warning-bg)] text-[var(--scry-warning-text)]";
     default:
       return "bg-muted text-muted-foreground";
   }
@@ -438,10 +423,9 @@ type Props = {
   onSetTitleMonitored: (monitored: boolean) => Promise<void>;
   monitoredUpdating: boolean;
   wantedItem: WantedItem | null;
-  wantedActionLoading: "pause" | "resume" | "reset" | null;
+  wantedActionLoading: "pause" | "resume" | null;
   onPauseWanted: () => Promise<void>;
   onResumeWanted: () => Promise<void>;
-  onResetWanted: () => Promise<void>;
   onTriggerMismatchRecovery: () => Promise<void>;
   onRequestDeleteTitle?: () => void;
   blocklistEntries: TitleReleaseBlocklistEntry[];
@@ -495,7 +479,6 @@ export function MovieOverviewView({
   wantedActionLoading,
   onPauseWanted,
   onResumeWanted,
-  onResetWanted,
   onTriggerMismatchRecovery,
   onRequestDeleteTitle,
   blocklistEntries = [],
@@ -567,9 +550,6 @@ export function MovieOverviewView({
   );
   const wantedStatusLabel = wantedItem?.status
     ? localizedWantedStatus(t, wantedItem.status)
-    : null;
-  const wantedPhaseLabel = wantedItem?.searchPhase
-    ? localizedWantedPhase(t, wantedItem.searchPhase)
     : null;
   const searchPrerequisiteNotice = canManageTitle && !hasDownloadClients && showSearchPrerequisiteNotice
     ? <TitleSearchDownloadClientNotice />
@@ -716,14 +696,9 @@ export function MovieOverviewView({
                     >
                       {wantedStatusLabel}
                     </span>
-                    <span
-                      className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium capitalize ${wantedPhaseClass(wantedItem.searchPhase)}`}
-                    >
-                      {wantedPhaseLabel}
-                    </span>
                     <span className="text-xs text-muted-foreground">
-                      {t("wanted.colNextSearch")}:{" "}
-                      {formatDateTime(wantedItem.nextSearchAt, dateTimeFormat)}
+                      {t("wanted.colLastSearch")}:{" "}
+                      {formatDateTime(wantedItem.lastSearchAt, dateTimeFormat)}
                     </span>
                     {canManageTitle ? (
                       <>
@@ -756,19 +731,6 @@ export function MovieOverviewView({
                             {t("wanted.pause")}
                           </Button>
                         )}
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          onClick={() => void onResetWanted()}
-                          disabled={wantedActionLoading !== null}
-                        >
-                          {wantedActionLoading === "reset" ? (
-                            <Loader2 className="h-4 w-4 animate-spin" />
-                          ) : (
-                            <RotateCcw className="h-4 w-4" />
-                          )}
-                          {t("wanted.reset")}
-                        </Button>
                         {wantedItem.mismatchRecoveryEligible ? (
                           <Button
                             size="sm"

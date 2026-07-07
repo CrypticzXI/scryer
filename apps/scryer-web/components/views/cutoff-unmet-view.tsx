@@ -1,6 +1,8 @@
 import { Fragment } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import { ActivityProgressBar } from "@/components/views/activity-progress-bar";
+import { ConvergenceBadge } from "@/components/views/convergence-badge";
 import { LibraryMultiSelect } from "@/components/common/library-multi-select";
 import { SearchResultBuckets } from "@/components/common/release-search-results";
 import {
@@ -25,7 +27,13 @@ import { Link } from "react-router-dom";
 import { useTranslate } from "@/lib/context/translate-context";
 import { useIsMobile } from "@/lib/hooks/use-mobile";
 import { buildOverviewDetailPath } from "@/lib/utils/routing";
-import type { Facet, LibraryRecord, Release } from "@/lib/types";
+import type {
+  AcquisitionSearchJob,
+  ConvergenceState,
+  Facet,
+  LibraryRecord,
+  Release,
+} from "@/lib/types";
 import type { ViewId } from "@/components/root/types";
 
 export type CutoffUnmetItem = {
@@ -41,10 +49,17 @@ export type CutoffUnmetItem = {
   episodeNumber?: string | null;
   currentTier: string;
   targetTier: string;
+  convergenceState: ConvergenceState;
+  indexersCovered: number;
+  indexersRouted: number;
 };
 
 type CutoffUnmetViewState = {
   items: CutoffUnmetItem[];
+  total: number;
+  offset: number;
+  setOffset: (v: number) => void;
+  limit: number;
   loading: boolean;
   facetFilter: string | undefined;
   setFacetFilter: (v: string | undefined) => void;
@@ -56,13 +71,13 @@ type CutoffUnmetViewState = {
   interactiveSearchingId: string | null;
   activeInteractiveItemId: string | null;
   searchResultsByItemId: Record<string, Release[]>;
-  bulkSearching: boolean;
-  bulkProgress: { current: number; total: number } | null;
+  searchJob: AcquisitionSearchJob | null;
+  searchJobStarting: boolean;
   triggerAutoSearch: (item: CutoffUnmetItem) => Promise<void>;
   triggerInteractiveSearch: (item: CutoffUnmetItem) => Promise<void>;
   queueRelease: (item: CutoffUnmetItem, release: Release) => Promise<void>;
   triggerBulkSearch: () => void;
-  cancelBulkSearch: () => void;
+  cancelBulkSearch: () => Promise<void>;
 };
 
 function cutoffItemKey(item: CutoffUnmetItem) {
@@ -218,6 +233,10 @@ export function CutoffUnmetView({ state }: { state: CutoffUnmetViewState }) {
   const isMobile = useIsMobile();
   const {
     items,
+    total,
+    offset,
+    setOffset,
+    limit,
     loading,
     facetFilter,
     setFacetFilter,
@@ -229,8 +248,8 @@ export function CutoffUnmetView({ state }: { state: CutoffUnmetViewState }) {
     interactiveSearchingId,
     activeInteractiveItemId,
     searchResultsByItemId,
-    bulkSearching,
-    bulkProgress,
+    searchJob,
+    searchJobStarting,
     triggerAutoSearch,
     triggerInteractiveSearch,
     queueRelease,
@@ -238,28 +257,41 @@ export function CutoffUnmetView({ state }: { state: CutoffUnmetViewState }) {
     cancelBulkSearch,
   } = state;
 
-  const filtered = facetFilter
-    ? items.filter((item) => item.titleFacet === facetFilter)
-    : items;
+  const jobRunning = searchJob?.state === "running";
+  const bulkSearching = jobRunning || searchJobStarting;
+  const hasPrev = offset > 0;
+  const hasNext = offset + limit < total;
 
   return (
     <Card className="overflow-hidden rounded-none border-0 bg-transparent shadow-none">
       <CardHeader className="border-b border-[var(--scry-border3)] bg-[linear-gradient(180deg,var(--scry-surfD),transparent)] px-4 py-4 sm:px-5">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-end">
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-            {bulkSearching && bulkProgress ? (
+            {jobRunning && searchJob ? (
               <>
-                <span className="text-sm font-medium text-[var(--scry-muted3)]">
-                  {t("cutoff.searchProgress", {
-                    current: bulkProgress.current,
-                    total: bulkProgress.total,
-                  })}
-                </span>
+                <div className="w-full min-w-[220px] sm:w-64">
+                  <ActivityProgressBar
+                    percent={
+                      searchJob.total > 0
+                        ? Math.round((searchJob.processed / searchJob.total) * 100)
+                        : 0
+                    }
+                    remainingLabel={
+                      searchJob.currentTitle ??
+                      t("cutoff.searchProgress", {
+                        current: searchJob.processed,
+                        total: searchJob.total,
+                      })
+                    }
+                    colorClass="bg-[var(--scry-accent)]"
+                    indeterminate={searchJob.total === 0}
+                  />
+                </div>
                 <Button
                   size="sm"
                   variant="destructive"
                   className="w-full sm:w-auto"
-                  onClick={cancelBulkSearch}
+                  onClick={() => void cancelBulkSearch()}
                 >
                   {t("label.cancel")}
                 </Button>
@@ -269,7 +301,7 @@ export function CutoffUnmetView({ state }: { state: CutoffUnmetViewState }) {
                 size="sm"
                 className="w-full sm:w-auto"
                 onClick={triggerBulkSearch}
-                disabled={filtered.length === 0 || loading}
+                disabled={items.length === 0 || loading || searchJobStarting}
               >
                 <Search className="mr-1 h-3 w-3" />
                 {t("cutoff.searchAll")}
@@ -306,16 +338,16 @@ export function CutoffUnmetView({ state }: { state: CutoffUnmetViewState }) {
           </Select>
 
           <span className="self-center text-sm font-medium text-[var(--scry-muted3)] sm:ml-auto">
-            {t("cutoff.totalCount", { count: filtered.length })}
+            {t("cutoff.totalCount", { count: total })}
           </span>
         </div>
 
         {isMobile ? (
-          filtered.length === 0 && !loading ? (
+          items.length === 0 && !loading ? (
             <p className="text-center text-[var(--scry-muted3)]">{t("cutoff.noItems")}</p>
           ) : (
             <div className="space-y-3">
-              {filtered.map((item) => {
+              {items.map((item) => {
                 const itemKey = cutoffItemKey(item);
                 const searchResults = searchResultsByItemId[itemKey] ?? [];
                 const showResults = activeInteractiveItemId === itemKey;
@@ -333,6 +365,11 @@ export function CutoffUnmetView({ state }: { state: CutoffUnmetViewState }) {
                       <div className="flex flex-wrap gap-2">
                         {qualityBadge(item.currentTier, "current")}
                         {qualityBadge(item.targetTier, "target")}
+                        <ConvergenceBadge
+                          state={item.convergenceState}
+                          indexersCovered={item.indexersCovered}
+                          indexersRouted={item.indexersRouted}
+                        />
                       </div>
                       <ActionButtons
                         item={item}
@@ -364,11 +401,12 @@ export function CutoffUnmetView({ state }: { state: CutoffUnmetViewState }) {
                   <TableHead className="w-36 text-center">Library</TableHead>
                   <TableHead className="w-36 text-center">{t("cutoff.colCurrentQuality")}</TableHead>
                   <TableHead className="w-36 text-center">{t("cutoff.colTargetQuality")}</TableHead>
+                  <TableHead className="w-40 text-center">{t("wanted.colConvergence")}</TableHead>
                   <TableActionsHead className="w-64">{t("label.actions")}</TableActionsHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {filtered.map((item) => {
+                {items.map((item) => {
                   const itemKey = cutoffItemKey(item);
                   const searchResults = searchResultsByItemId[itemKey] ?? [];
                   const showResults = activeInteractiveItemId === itemKey;
@@ -388,6 +426,13 @@ export function CutoffUnmetView({ state }: { state: CutoffUnmetViewState }) {
                         <TableCell className="align-top text-center">
                           {qualityBadge(item.targetTier, "target")}
                         </TableCell>
+                        <TableCell className="align-top text-center">
+                          <ConvergenceBadge
+                            state={item.convergenceState}
+                            indexersCovered={item.indexersCovered}
+                            indexersRouted={item.indexersRouted}
+                          />
+                        </TableCell>
                         <TableActionsCell className="w-64 align-top">
                           <ActionButtons
                             item={item}
@@ -401,7 +446,7 @@ export function CutoffUnmetView({ state }: { state: CutoffUnmetViewState }) {
                       </TableRow>
                       {showResults ? (
                         <TableRow>
-                          <TableCell colSpan={5} className="bg-background/20">
+                          <TableCell colSpan={6} className="bg-background/20">
                             <SearchResultBuckets
                               results={searchResults}
                               onQueue={(release) => queueRelease(item, release)}
@@ -413,15 +458,41 @@ export function CutoffUnmetView({ state }: { state: CutoffUnmetViewState }) {
                     </Fragment>
                   );
                 })}
-                {filtered.length === 0 && !loading ? (
+                {items.length === 0 && !loading ? (
                   <TableRow>
-                    <TableCell colSpan={5} className="text-center text-muted-foreground">
+                    <TableCell colSpan={6} className="text-center text-muted-foreground">
                       {t("cutoff.noItems")}
                     </TableCell>
                   </TableRow>
                 ) : null}
               </TableBody>
             </Table>
+          </div>
+        )}
+
+        {total > limit && (
+          <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <Button
+              className="w-full sm:w-auto"
+              size="sm"
+              variant="outline"
+              disabled={!hasPrev}
+              onClick={() => setOffset(Math.max(0, offset - limit))}
+            >
+              {t("wanted.prev")}
+            </Button>
+            <span className="text-sm text-muted-foreground">
+              {offset + 1}–{Math.min(offset + limit, total)} / {total}
+            </span>
+            <Button
+              className="w-full sm:w-auto"
+              size="sm"
+              variant="outline"
+              disabled={!hasNext}
+              onClick={() => setOffset(offset + limit)}
+            >
+              {t("wanted.next")}
+            </Button>
           </div>
         )}
       </CardContent>
