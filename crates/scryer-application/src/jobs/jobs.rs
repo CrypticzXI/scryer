@@ -1274,6 +1274,10 @@ impl AppUseCase {
             JobKey::TitleDeletion => Err(AppError::Validation(
                 "title deletion jobs must be started from the title deletion mutation".into(),
             )),
+            JobKey::AcquisitionSearch => Err(AppError::Validation(
+                "acquisition search jobs must be started from the acquisition search mutation"
+                    .into(),
+            )),
         }
     }
 

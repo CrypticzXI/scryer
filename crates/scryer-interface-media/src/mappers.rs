@@ -2436,11 +2436,100 @@ pub fn from_wanted_item(
             .map(from_release_decision)
             .transpose()?,
         mismatch_recovery_eligible: item.mismatch_recovery_eligible,
+        // Relation-field state rows (`title.wantedItems`, `episode.wantedItem`) are
+        // not the convergence display surface (RFC 119 §6): the derived Missing /
+        // Upgrades views carry live convergence; here we present a neutral default
+        // so the shared payload stays well-typed off a bare state row.
+        convergence_state: ConvergenceStateValue::Queued,
+        indexers_covered: 0,
+        indexers_routed: 0,
+        recency_lane: RecencyLaneValue::Cold,
         created_at: parse_datetime(&item.created_at, "wanted item created_at")
             .map_err(scryer_application::AppError::Validation)?,
         updated_at: parse_datetime(&item.updated_at, "wanted item updated_at")
             .map_err(scryer_application::AppError::Validation)?,
     })
+}
+
+/// Map a derived Missing/Upgrades view row onto the shared `WantedItemPayload`
+/// (RFC 119 §6). The payload `id` is the scope identity: the state-row id when a
+/// state row exists, else the convergence scope key — so a derived target with no
+/// state row is still addressable (pause/resume and the interactive search job both
+/// accept a scope key). Convergence progress and the recency lane come from the
+/// batched per-page derivation.
+pub fn from_wanted_scope_view(
+    view: scryer_application::WantedScopeView,
+) -> scryer_application::AppResult<WantedItemPayload> {
+    let id = view
+        .state
+        .as_ref()
+        .map(|state| state.id.clone())
+        .unwrap_or_else(|| view.scope_key.clone());
+    let state = view.state;
+    Ok(WantedItemPayload {
+        id: id.into(),
+        title_id: view.title_id.into(),
+        title_name: view.title_name,
+        title_slug: view.title_slug,
+        title_facet: Some(view.facet.as_str().to_string()),
+        library_id: Some(view.library_id.into()),
+        library_name: view.library_name,
+        library_slug: view.library_slug,
+        episode_id: view.episode_id.map(Into::into),
+        collection_id: view.collection_id.map(Into::into),
+        season_number: view.season_number,
+        episode_number: view.episode_number,
+        media_type: WantedMediaTypeValue::parse(&view.media_type).ok_or_else(|| {
+            scryer_application::AppError::Validation(format!(
+                "invalid wanted view media_type '{}'",
+                view.media_type
+            ))
+        })?,
+        last_search_at: state
+            .as_ref()
+            .and_then(|state| parse_optional_datetime(state.last_search_at.clone(), "wanted view last_search_at")),
+        status: state
+            .as_ref()
+            .map(|state| WantedStatusValue::from_application(state.status))
+            .unwrap_or(WantedStatusValue::Wanted),
+        grabbed_release: state.as_ref().and_then(|state| state.grabbed_release.clone()),
+        current_score: state.as_ref().and_then(|state| state.current_score),
+        latest_release_decision: state
+            .as_ref()
+            .and_then(|state| state.latest_release_decision.clone())
+            .map(from_release_decision)
+            .transpose()?,
+        mismatch_recovery_eligible: state
+            .as_ref()
+            .is_some_and(|state| state.mismatch_recovery_eligible),
+        convergence_state: convergence_state_value(view.convergence.state),
+        indexers_covered: view.convergence.indexers_covered,
+        indexers_routed: view.convergence.indexers_routed,
+        recency_lane: if view.is_hot {
+            RecencyLaneValue::Hot
+        } else {
+            RecencyLaneValue::Cold
+        },
+        created_at: state
+            .as_ref()
+            .and_then(|state| parse_datetime(&state.created_at, "wanted view created_at").ok())
+            .unwrap_or_else(chrono::Utc::now),
+        updated_at: state
+            .as_ref()
+            .and_then(|state| parse_datetime(&state.updated_at, "wanted view updated_at").ok())
+            .unwrap_or_else(chrono::Utc::now),
+    })
+}
+
+fn convergence_state_value(
+    state: scryer_application::WantedConvergenceState,
+) -> ConvergenceStateValue {
+    match state {
+        scryer_application::WantedConvergenceState::Queued => ConvergenceStateValue::Queued,
+        scryer_application::WantedConvergenceState::Searching => ConvergenceStateValue::Searching,
+        scryer_application::WantedConvergenceState::Converged => ConvergenceStateValue::Converged,
+        scryer_application::WantedConvergenceState::Deferred => ConvergenceStateValue::Deferred,
+    }
 }
 
 pub fn from_release_decision(

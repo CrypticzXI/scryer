@@ -9,7 +9,7 @@ use scryer_application::{
     ExternalImportSetupSecretOverrideDraft, JwtSessionScope, MediaRequestCounts,
     OAuthAuthorizationSource, PendingImportCounts, RuntimePathStyle, SCRYER_VERSION,
     SchedulerSnapshotFilter, SortDirection, TitleCatalogContentStatus, TitleCatalogFilter,
-    TitleCatalogSort, TitleCatalogSortKey, TitleHistoryFilter, WantedItemsQuery,
+    TitleCatalogSort, TitleCatalogSortKey, TitleHistoryFilter,
     is_supported_title_history_event_type, supported_title_history_event_types,
 };
 use scryer_domain::{AppPermission, LibraryPermission, TitleHistoryEventType};
@@ -37,6 +37,7 @@ use crate::mappers::{
     from_title, from_title_acquisition_diagnostics, from_title_history_page, from_title_media_file,
     from_title_rating_summary, from_title_release_blocklist_entry,
     from_upstream_scheduler_snapshot, from_user_with_auth_factor_status, from_wanted_item,
+    from_wanted_scope_view,
 };
 use crate::types::*;
 
@@ -236,7 +237,51 @@ fn from_download_import_page(
     }
 }
 
-fn from_cutoff_unmet_item(item: scryer_application::CutoffUnmetItem) -> CutoffUnmetItemPayload {
+fn wanted_kind_to_application(value: WantedKindValue) -> scryer_application::WantedKind {
+    match value {
+        WantedKindValue::Missing => scryer_application::WantedKind::Missing,
+        WantedKindValue::CutoffUpgrade => scryer_application::WantedKind::CutoffUpgrade,
+    }
+}
+
+fn from_acquisition_search_job_view(
+    view: scryer_application::AcquisitionSearchJobView,
+) -> scryer_application::AppResult<AcquisitionSearchJobPayload> {
+    let state = match view.state.as_str() {
+        "completed" => AcquisitionSearchJobStateValue::Completed,
+        "cancelled" => AcquisitionSearchJobStateValue::Cancelled,
+        "failed" => AcquisitionSearchJobStateValue::Failed,
+        _ => AcquisitionSearchJobStateValue::Running,
+    };
+    let started_at = chrono::DateTime::parse_from_rfc3339(&view.started_at)
+        .map(|dt| dt.with_timezone(&chrono::Utc))
+        .map_err(|error| {
+            scryer_application::AppError::Validation(format!(
+                "invalid acquisition search job started_at: {error}"
+            ))
+        })?;
+    let finished_at = view
+        .finished_at
+        .as_deref()
+        .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
+        .map(|dt| dt.with_timezone(&chrono::Utc));
+    Ok(AcquisitionSearchJobPayload {
+        id: view.id.into(),
+        state,
+        total: view.total,
+        processed: view.processed,
+        grabbed_count: view.grabbed_count,
+        failed_count: view.failed_count,
+        current_title: view.current_title,
+        started_at,
+        finished_at,
+    })
+}
+
+fn from_cutoff_unmet_item(
+    item: scryer_application::CutoffUnmetItem,
+    convergence: scryer_application::WantedViewConvergence,
+) -> CutoffUnmetItemPayload {
     CutoffUnmetItemPayload {
         title_id: item.title_id.into(),
         title_name: item.title_name,
@@ -250,6 +295,20 @@ fn from_cutoff_unmet_item(item: scryer_application::CutoffUnmetItem) -> CutoffUn
         episode_number: item.episode_number,
         current_tier: item.current_tier,
         target_tier: item.target_tier,
+        convergence_state: convergence_state_to_value(convergence.state),
+        indexers_covered: convergence.indexers_covered,
+        indexers_routed: convergence.indexers_routed,
+    }
+}
+
+fn convergence_state_to_value(
+    state: scryer_application::WantedConvergenceState,
+) -> ConvergenceStateValue {
+    match state {
+        scryer_application::WantedConvergenceState::Queued => ConvergenceStateValue::Queued,
+        scryer_application::WantedConvergenceState::Searching => ConvergenceStateValue::Searching,
+        scryer_application::WantedConvergenceState::Converged => ConvergenceStateValue::Converged,
+        scryer_application::WantedConvergenceState::Deferred => ConvergenceStateValue::Deferred,
     }
 }
 
@@ -2045,75 +2104,50 @@ impl SystemQueries {
 #[allow(clippy::too_many_arguments)]
 #[Object]
 impl AcquisitionQueries {
+    /// RFC 119 §6/§7: the derived Missing / Upgrades view. `wantedKind` selects the
+    /// target set (`MISSING` derived from fileless monitored scopes, `CUTOFF_UPGRADE`
+    /// from below-cutoff files). Results are the derived targets joined to the
+    /// activity-state row (when one exists) and enriched with per-scope convergence
+    /// progress. The retired state-row status / decision-code filters are dropped —
+    /// they only distinguished state rows, which are no longer the target source.
     async fn wanted_items(
         &self,
         ctx: &Context<'_>,
-        statuses: Option<Vec<WantedStatusValue>>,
-        media_types: Option<Vec<WantedMediaTypeValue>>,
-        title_id: Option<ID>,
+        #[graphql(default)] wanted_kind: WantedKindValue,
+        facet: Option<MediaFacetValue>,
         library_ids: Option<Vec<ID>>,
         title_search: Option<String>,
-        latest_decision_codes: Option<Vec<String>>,
         #[graphql(default = 50)] limit: i64,
         #[graphql(default = 0)] offset: i64,
     ) -> GqlResult<WantedItemsListPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        let (items, total) = app
-            .list_wanted_items(
+        let (views, total) = app
+            .list_wanted_scope_views(
                 &actor,
-                WantedItemsQuery {
-                    statuses: statuses
-                        .unwrap_or_default()
-                        .into_iter()
-                        .map(|value| value.as_str().to_string())
-                        .collect(),
-                    media_types: media_types
-                        .unwrap_or_default()
-                        .into_iter()
-                        .map(|value| value.as_str().to_string())
-                        .collect(),
-                    title_id: title_id.map(String::from),
-                    library_ids: optional_ids_to_strings(library_ids).unwrap_or_default(),
-                    title_search,
-                    latest_decision_codes: latest_decision_codes.unwrap_or_default(),
-                    limit,
-                    offset,
-                },
+                wanted_kind_to_application(wanted_kind),
+                facet.map(MediaFacetValue::into_domain),
+                optional_ids_to_strings(library_ids).unwrap_or_default(),
+                title_search,
+                limit,
+                offset,
             )
             .await
             .map_err(to_gql_error)?;
         Ok(WantedItemsListPayload {
-            items: items
+            items: views
                 .into_iter()
-                .map(from_wanted_item)
+                .map(from_wanted_scope_view)
                 .collect::<scryer_application::AppResult<Vec<_>>>()
                 .map_err(to_gql_error)?,
             total,
         })
     }
 
-    async fn cutoff_unmet_titles(
-        &self,
-        ctx: &Context<'_>,
-        facet: Option<MediaFacetValue>,
-        library_ids: Option<Vec<ID>>,
-    ) -> GqlResult<Vec<CutoffUnmetItemPayload>> {
-        let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
-        let items = app
-            .list_cutoff_unmet_titles(
-                &actor,
-                facet.map(MediaFacetValue::into_domain),
-                optional_ids_to_strings(library_ids),
-            )
-            .await
-            .map_err(to_gql_error)?;
-        Ok(items.into_iter().map(from_cutoff_unmet_item).collect())
-    }
-
-    /// RFC 119 bounded view: a single page of cutoff-unmet targets plus the full
-    /// unmet count, so the UI paginates instead of loading the whole set.
+    /// RFC 119 bounded view: a single page of cutoff-unmet (Upgrades) targets plus
+    /// the full unmet count and per-item convergence progress, so the UI paginates
+    /// instead of loading the whole set. The unpaged `cutoffUnmetTitles` query was
+    /// removed in this release (RFC 119 §6): the full-array browser load is retired.
     async fn cutoff_unmet_titles_page(
         &self,
         ctx: &Context<'_>,
@@ -2124,8 +2158,8 @@ impl AcquisitionQueries {
     ) -> GqlResult<CutoffUnmetTitlesPagePayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        let page = app
-            .list_cutoff_unmet_titles_page(
+        let (items, total) = app
+            .list_cutoff_unmet_titles_page_with_convergence(
                 &actor,
                 facet.map(MediaFacetValue::into_domain),
                 optional_ids_to_strings(library_ids),
@@ -2135,8 +2169,11 @@ impl AcquisitionQueries {
             .await
             .map_err(to_gql_error)?;
         Ok(CutoffUnmetTitlesPagePayload {
-            items: page.items.into_iter().map(from_cutoff_unmet_item).collect(),
-            total: page.total as i64,
+            items: items
+                .into_iter()
+                .map(|(item, convergence)| from_cutoff_unmet_item(item, convergence))
+                .collect(),
+            total: total as i64,
         })
     }
 
@@ -2152,6 +2189,24 @@ impl AcquisitionQueries {
             .await
             .map_err(to_gql_error)?;
         Ok(from_title_acquisition_diagnostics(diagnostics).map_err(to_gql_error)?)
+    }
+
+    /// Progress of an interactive acquisition-search job (RFC 119 §7.3), polled by
+    /// the UI alongside the `jobRunEvents` push. `None` when no such job exists.
+    async fn acquisition_search_job(
+        &self,
+        ctx: &Context<'_>,
+        id: ID,
+    ) -> GqlResult<Option<AcquisitionSearchJobPayload>> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let view = app
+            .acquisition_search_job(&actor, id.as_ref())
+            .await
+            .map_err(to_gql_error)?;
+        view.map(from_acquisition_search_job_view)
+            .transpose()
+            .map_err(to_gql_error)
     }
 
     // ── Rule Sets ──────────────────────────────────────────────────────

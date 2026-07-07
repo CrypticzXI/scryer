@@ -113,13 +113,12 @@ impl AppUseCase {
 }
 impl AppUseCase {
     /// Pause acquisition for a scope: user intent persisted on the state row.
-    /// A paused scope is excluded from the derived target set until resumed.
+    /// A paused scope is excluded from the derived target set until resumed. The
+    /// identifier is a state-row id or a convergence scope key (RFC 119 §7.4); a
+    /// scope key with no row yet materializes one so the pause has somewhere to live.
     pub async fn pause_wanted_item(&self, actor: &User, wanted_item_id: &str) -> AppResult<()> {
         let item = self
-            .services
-            .workflow
-            .wanted_items
-            .get_wanted_item_by_id(wanted_item_id)
+            .resolve_or_create_wanted_state_row(wanted_item_id)
             .await?
             .ok_or_else(|| AppError::NotFound("wanted item not found".to_string()))?;
         let title = self
@@ -151,13 +150,11 @@ impl AppUseCase {
 impl AppUseCase {
     /// Resume acquisition for a paused scope: it re-enters the derived target
     /// set. Existing coverage stays valid — the cursor only searches indexers
-    /// it has not already searched under the current fingerprint.
+    /// it has not already searched under the current fingerprint. Accepts a
+    /// state-row id or a convergence scope key (RFC 119 §7.4).
     pub async fn resume_wanted_item(&self, actor: &User, wanted_item_id: &str) -> AppResult<()> {
         let item = self
-            .services
-            .workflow
-            .wanted_items
-            .get_wanted_item_by_id(wanted_item_id)
+            .resolve_or_create_wanted_state_row(wanted_item_id)
             .await?
             .ok_or_else(|| AppError::NotFound("wanted item not found".to_string()))?;
         let title = self
@@ -186,41 +183,6 @@ impl AppUseCase {
             )
             .await?;
         self.runtime.acquisition.acquisition_wake.notify_one();
-        Ok(())
-    }
-}
-impl AppUseCase {
-    /// Reset a scope's acquisition state entirely: forget the score baseline
-    /// and any in-flight grab, prune its convergence coverage, and wake the
-    /// loop — the scope converges again from scratch.
-    pub async fn reset_wanted_item(&self, actor: &User, wanted_item_id: &str) -> AppResult<()> {
-        let item = self
-            .services
-            .workflow
-            .wanted_items
-            .get_wanted_item_by_id(wanted_item_id)
-            .await?
-            .ok_or_else(|| AppError::NotFound("wanted item not found".to_string()))?;
-        let title = self
-            .services
-            .catalog
-            .titles
-            .get_by_id(&item.title_id)
-            .await?
-            .ok_or_else(|| AppError::NotFound(format!("title {}", item.title_id)))?;
-        self.require_library_permission(
-            actor,
-            &title.library_id,
-            scryer_domain::LibraryPermission::ManageTitles,
-        )
-        .await?;
-
-        self.services
-            .workflow
-            .wanted_items
-            .update_wanted_item_status(&item.id, WantedStatus::Wanted.as_str(), None, None, None)
-            .await?;
-        self.reopen_wanted_scope_for_acquisition(&item).await;
         Ok(())
     }
 }

@@ -199,15 +199,17 @@ async fn graphql_runtime_browse_and_download_client_permissions() {
 #[tokio::test]
 async fn graphql_wanted_items_empty() {
     let ctx = TestContext::new().await;
+    // RFC 119: `wantedItems` is the derived Missing/Upgrades view selected by
+    // `wantedKind`; the state-row status/media-type filters were removed.
     let body = gql(
         &ctx,
-        r#"query($statuses: [WantedStatusValue!], $mediaTypes: [WantedMediaTypeValue!]) {
-            wantedItems(statuses: $statuses, mediaTypes: $mediaTypes) {
-                items { id }
+        r#"query($wantedKind: WantedKindValue!) {
+            wantedItems(wantedKind: $wantedKind) {
+                items { id convergenceState indexersCovered indexersRouted recencyLane }
                 total
             }
         }"#,
-        json!({ "statuses": ["wanted"], "mediaTypes": ["movie"] }),
+        json!({ "wantedKind": "missing" }),
     )
     .await;
     assert_no_errors(&body);

@@ -89,37 +89,26 @@ impl WantedItemRepository for TestLibraryStateStore {
         self.wanted.upsert_wanted_item(item).await
     }
 
-    async fn list_due_wanted_items(
-        &self,
-        now: &str,
-        batch_limit: i64,
-        excluded_facets: &[scryer_domain::MediaFacet],
-    ) -> AppResult<Vec<scryer_application::WantedItem>> {
-        self.wanted
-            .list_due_wanted_items(now, batch_limit, excluded_facets)
-            .await
-    }
-
     async fn update_wanted_item_status(
         &self,
         id: &str,
         status: &str,
-        next_search_at: Option<&str>,
         last_search_at: Option<&str>,
-        search_count: i64,
         current_score: Option<i32>,
         grabbed_release: Option<&str>,
     ) -> AppResult<()> {
         self.wanted
-            .update_wanted_item_status(
-                id,
-                status,
-                next_search_at,
-                last_search_at,
-                search_count,
-                current_score,
-                grabbed_release,
-            )
+            .update_wanted_item_status(id, status, last_search_at, current_score, grabbed_release)
+            .await
+    }
+
+    async fn record_wanted_search_attempt(
+        &self,
+        id: &str,
+        last_search_at: &str,
+    ) -> AppResult<()> {
+        self.wanted
+            .record_wanted_search_attempt(id, last_search_at)
             .await
     }
 
@@ -156,10 +145,6 @@ impl WantedItemRepository for TestLibraryStateStore {
         self.wanted
             .delete_wanted_items_for_episode(episode_id)
             .await
-    }
-
-    async fn reset_fruitless_wanted_items(&self, now: &str) -> AppResult<u64> {
-        self.wanted.reset_fruitless_wanted_items(now).await
     }
 
     async fn insert_release_decision(

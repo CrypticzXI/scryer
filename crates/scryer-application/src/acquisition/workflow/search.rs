@@ -267,34 +267,6 @@ impl AppUseCase {
     }
 }
 impl AppUseCase {
-    pub async fn trigger_season_wanted_search(
-        &self,
-        actor: &User,
-        title_id: &str,
-        season_number: u32,
-    ) -> AppResult<WantedSearchOutcome> {
-        let title = self
-            .services
-            .catalog
-            .titles
-            .get_by_id(title_id)
-            .await?
-            .ok_or_else(|| AppError::NotFound("title not found".to_string()))?;
-        self.require_library_permission(
-            actor,
-            &title.library_id,
-            scryer_domain::LibraryPermission::ManageTitles,
-        )
-        .await?;
-        let season_str = season_number.to_string();
-        let outcome = self
-            .reopen_series_scopes_for_search(&title, Some(season_str.as_str()))
-            .await?;
-
-        Ok(outcome)
-    }
-}
-impl AppUseCase {
     async fn queue_monitored_series_items_for_search(
         &self,
         title: &Title,

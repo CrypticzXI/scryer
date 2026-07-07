@@ -588,11 +588,21 @@ async fn graphql_introspection_lists_title_fields() {
         assert_eq!(arg["type"]["name"], expected_name);
     }
 
-    for (field_name, arg_name) in [("downloadQueue", "titleId"), ("wantedItems", "titleId")] {
+    // RFC 119: `wantedItems` is the derived view now — the state-row `titleId`
+    // filter was dropped (use `titleSearch` or the interactive job's `titleId`).
+    for (field_name, arg_name) in [("downloadQueue", "titleId")] {
         let arg = query_arg(field_name, arg_name);
         assert_eq!(arg["type"]["kind"], "SCALAR");
         assert_eq!(arg["type"]["name"], "ID");
     }
+    assert!(
+        query_field("wantedItems")["args"]
+            .as_array()
+            .expect("wantedItems args")
+            .iter()
+            .all(|arg| arg["name"] != "titleId"),
+        "wantedItems.titleId was removed in the RFC 119 derived view"
+    );
     let subscription_title_id = subscription_arg("downloadQueue", "titleId");
     assert_eq!(subscription_title_id["type"]["kind"], "SCALAR");
     assert_eq!(subscription_title_id["type"]["name"], "ID");
@@ -602,7 +612,7 @@ async fn graphql_introspection_lists_title_fields() {
         "myMediaRequests",
         "pendingImports",
         "wantedItems",
-        "cutoffUnmetTitles",
+        "cutoffUnmetTitlesPage",
         "calendarEpisodes",
     ] {
         let arg = query_arg(field_name, "libraryIds");
@@ -860,7 +870,6 @@ async fn graphql_introspection_exposes_typed_timestamps_as_datetime() {
         ("queueItem", "lastUpdatedAt"),
         ("queueItem", "importedAt"),
         ("mediaFile", "grabbedAt"),
-        ("wantedItem", "nextSearchAt"),
         ("wantedItem", "lastSearchAt"),
         ("titleAcquisitionDiagnostics", "latestDecisionAt"),
         ("titleAcquisitionDiagnostics", "latestWantedSearchAt"),
@@ -1069,7 +1078,6 @@ async fn graphql_introspection_exposes_calendar_dates_as_date_scalar() {
         ("movieEntity", "digitalReleaseDate"),
         ("episode", "airDate"),
         ("calendarEpisode", "airDate"),
-        ("wantedItem", "baselineDate"),
         ("metadataMovie", "tmdbReleaseDate"),
     ] {
         assert_optional_date_field(type_alias, name);
@@ -1516,11 +1524,7 @@ async fn graphql_traverses_core_graph_relationships() {
         season_number: Some("1".to_string()),
         episode_number: episode.episode_number.clone(),
         media_type: "episode".to_string(),
-        search_phase: "primary".to_string(),
-        next_search_at: None,
         last_search_at: None,
-        search_count: 1,
-        baseline_date: None,
         status: scryer_application::WantedStatus::Wanted,
         grabbed_release: None,
         current_score: Some(120),
@@ -2394,9 +2398,16 @@ async fn graphql_introspection_exposes_wanted_enums() {
           wantedMediaType: __type(name: "WantedMediaTypeValue") {
             enumValues { name }
           }
-          wantedSearchPhase: __type(name: "WantedSearchPhaseValue") {
+          convergenceState: __type(name: "ConvergenceStateValue") {
             enumValues { name }
           }
+          recencyLane: __type(name: "RecencyLaneValue") {
+            enumValues { name }
+          }
+          wantedKind: __type(name: "WantedKindValue") {
+            enumValues { name }
+          }
+          wantedSearchPhase: __type(name: "WantedSearchPhaseValue") { name }
         }
         "#,
         json!({}),
@@ -2419,11 +2430,21 @@ async fn graphql_introspection_exposes_wanted_enums() {
         field("mediaType")["type"]["ofType"]["name"],
         "WantedMediaTypeValue"
     );
-    assert_eq!(field("searchPhase")["type"]["kind"], "NON_NULL");
+    // RFC 119: cadence display (searchPhase) is replaced by convergence + recency.
+    assert!(fields.iter().all(|field| field["name"] != "searchPhase"));
+    assert!(body["data"]["wantedSearchPhase"].is_null());
+    assert_eq!(field("convergenceState")["type"]["kind"], "NON_NULL");
     assert_eq!(
-        field("searchPhase")["type"]["ofType"]["name"],
-        "WantedSearchPhaseValue"
+        field("convergenceState")["type"]["ofType"]["name"],
+        "ConvergenceStateValue"
     );
+    assert_eq!(field("recencyLane")["type"]["kind"], "NON_NULL");
+    assert_eq!(
+        field("recencyLane")["type"]["ofType"]["name"],
+        "RecencyLaneValue"
+    );
+    assert_eq!(field("indexersCovered")["type"]["ofType"]["name"], "Int");
+    assert_eq!(field("indexersRouted")["type"]["ofType"]["name"], "Int");
     assert_eq!(field("status")["type"]["kind"], "NON_NULL");
     assert_eq!(
         field("status")["type"]["ofType"]["name"],
@@ -2449,22 +2470,32 @@ async fn graphql_introspection_exposes_wanted_enums() {
         .collect();
     assert_eq!(media_type_names, vec!["movie", "episode", "series_movie"]);
 
-    let search_phase_names: Vec<&str> = body["data"]["wantedSearchPhase"]["enumValues"]
+    let convergence_names: Vec<&str> = body["data"]["convergenceState"]["enumValues"]
         .as_array()
-        .expect("WantedSearchPhaseValue should expose enum values")
+        .expect("ConvergenceStateValue should expose enum values")
         .iter()
         .filter_map(|value| value["name"].as_str())
         .collect();
     assert_eq!(
-        search_phase_names,
-        vec![
-            "pre_air",
-            "pre_release",
-            "primary",
-            "secondary",
-            "long_tail"
-        ]
+        convergence_names,
+        vec!["queued", "searching", "converged", "deferred"]
     );
+
+    let recency_names: Vec<&str> = body["data"]["recencyLane"]["enumValues"]
+        .as_array()
+        .expect("RecencyLaneValue should expose enum values")
+        .iter()
+        .filter_map(|value| value["name"].as_str())
+        .collect();
+    assert_eq!(recency_names, vec!["hot", "cold"]);
+
+    let wanted_kind_names: Vec<&str> = body["data"]["wantedKind"]["enumValues"]
+        .as_array()
+        .expect("WantedKindValue should expose enum values")
+        .iter()
+        .filter_map(|value| value["name"].as_str())
+        .collect();
+    assert_eq!(wanted_kind_names, vec!["missing", "cutoff_upgrade"]);
 }
 
 #[tokio::test]

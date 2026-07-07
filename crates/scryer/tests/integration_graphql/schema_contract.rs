@@ -109,13 +109,19 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
         .filter_map(|ty| ty["name"].as_str())
         .collect();
 
+    // RFC 119 cutover: the wanted/cutoff/search surface changed — the top-level
+    // `wantedItems` became the derived Missing/Upgrades view, the unpaged
+    // `cutoffUnmetTitles` query was dropped, the four per-item trigger mutations +
+    // `resetWantedItem` were replaced by `triggerAcquisitionSearch` /
+    // `cancelAcquisitionSearch` / `acquisitionSearchJob`, and the payloads gained
+    // convergence/recency fields (with new enums + the job payload).
     assert_eq!(query_field_count, 118);
-    assert_eq!(mutation_field_count, 166);
+    assert_eq!(mutation_field_count, 164);
     assert_eq!(subscription_field_count, 13);
-    assert_eq!(public_types.len(), 502);
+    assert_eq!(public_types.len(), 503);
     assert_eq!(kind_count("OBJECT"), 264);
-    assert_eq!(kind_count("INPUT_OBJECT"), 151);
-    assert_eq!(kind_count("ENUM"), 77);
+    assert_eq!(kind_count("INPUT_OBJECT"), 149);
+    assert_eq!(kind_count("ENUM"), 80);
     assert_eq!(kind_count("SCALAR"), 10);
     assert!(query_field_names.contains(&"backupSettings"));
     assert!(query_field_names.contains(&"indexerProxyConfigs"));
@@ -153,6 +159,28 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
     assert!(public_type_names.contains(&"UpstreamSchedulerSnapshotEntryPayload"));
     assert!(public_type_names.contains(&"UpstreamSchedulerSnapshotPayload"));
     assert!(public_type_names.contains(&"CutoffUnmetTitlesPagePayload"));
+    // RFC 119 interactive-search job + convergence surface is present…
+    assert!(query_field_names.contains(&"acquisitionSearchJob"));
+    assert!(mutation_field_names.contains(&"triggerAcquisitionSearch"));
+    assert!(mutation_field_names.contains(&"cancelAcquisitionSearch"));
+    assert!(public_type_names.contains(&"AcquisitionSearchJobPayload"));
+    assert!(public_type_names.contains(&"AcquisitionSearchJobStateValue"));
+    assert!(public_type_names.contains(&"TriggerAcquisitionSearchInput"));
+    assert!(public_type_names.contains(&"ConvergenceStateValue"));
+    assert!(public_type_names.contains(&"RecencyLaneValue"));
+    assert!(public_type_names.contains(&"WantedKindValue"));
+    // …and the retired per-item trigger mutations / unpaged cutoff query / phase
+    // enum are gone.
+    assert!(!query_field_names.contains(&"cutoffUnmetTitles"));
+    assert!(!mutation_field_names.contains(&"triggerTitleWantedSearch"));
+    assert!(!mutation_field_names.contains(&"triggerSeasonWantedSearch"));
+    assert!(!mutation_field_names.contains(&"triggerWantedSearch"));
+    assert!(!mutation_field_names.contains(&"resetWantedItem"));
+    assert!(!public_type_names.contains(&"WantedSearchPhaseValue"));
+    assert!(!public_type_names.contains(&"TriggerTitleWantedSearchInput"));
+    assert!(!public_type_names.contains(&"TriggerSeasonWantedSearchInput"));
+    assert!(!public_type_names.contains(&"TriggerWantedSearchInput"));
+    assert!(!public_type_names.contains(&"ResetWantedItemPayload"));
 }
 
 #[tokio::test]
@@ -2604,7 +2632,7 @@ async fn graphql_introspection_wanted_and_pending_actions_use_id_and_payload_res
           pendingInput: __type(name: "PendingReleaseActionInput") { name }
           pausePayload: __type(name: "PauseWantedItemPayload") { fields { name } }
           resumePayload: __type(name: "ResumeWantedItemPayload") { fields { name } }
-          resetPayload: __type(name: "ResetWantedItemPayload") { fields { name } }
+          resetPayload: __type(name: "ResetWantedItemPayload") { name }
           forceGrabPayload: __type(name: "ForceGrabPendingReleasePayload") { fields { name } }
           dismissPayload: __type(name: "DismissPendingReleasePayload") { fields { name } }
         }
@@ -2638,7 +2666,6 @@ async fn graphql_introspection_wanted_and_pending_actions_use_id_and_payload_res
     for (name, payload_name) in [
         ("pauseWantedItem", "PauseWantedItemPayload"),
         ("resumeWantedItem", "ResumeWantedItemPayload"),
-        ("resetWantedItem", "ResetWantedItemPayload"),
         ("forceGrabPendingRelease", "ForceGrabPendingReleasePayload"),
         ("dismissPendingRelease", "DismissPendingReleasePayload"),
     ] {
@@ -2648,10 +2675,18 @@ async fn graphql_introspection_wanted_and_pending_actions_use_id_and_payload_res
         assert_eq!(id_arg(field)["type"]["ofType"]["name"], "ID");
     }
 
+    // RFC 119 cutover: `resetWantedItem` and its payload were removed — the
+    // interactive search job (`triggerAcquisitionSearch`) owns re-search now.
+    assert!(body["data"]["resetPayload"].is_null());
+    assert!(
+        !mutation_fields
+            .iter()
+            .any(|field| field["name"] == "resetWantedItem")
+    );
+
     for (payload, flag) in [
         ("pausePayload", "paused"),
         ("resumePayload", "resumed"),
-        ("resetPayload", "reset"),
         ("forceGrabPayload", "grabbed"),
         ("dismissPayload", "dismissed"),
     ] {
@@ -3169,9 +3204,10 @@ async fn graphql_introspection_title_acquisition_inputs_use_id_fields() {
           assignTrackedDownloadTitle: __type(name: "AssignTrackedDownloadTitleInput") { inputFields { name type { ...TypeRef } } }
           resolvePendingImport: __type(name: "ResolvePendingImportInput") { inputFields { name type { ...TypeRef } } }
           bindPendingImport: __type(name: "BindPendingImportInput") { inputFields { name type { ...TypeRef } } }
-          triggerWantedSearch: __type(name: "TriggerWantedSearchInput") { inputFields { name type { ...TypeRef } } }
-          triggerTitleWantedSearch: __type(name: "TriggerTitleWantedSearchInput") { inputFields { name type { ...TypeRef } } }
-          triggerSeasonWantedSearch: __type(name: "TriggerSeasonWantedSearchInput") { inputFields { name type { ...TypeRef } } }
+          triggerAcquisitionSearch: __type(name: "TriggerAcquisitionSearchInput") { inputFields { name type { ...TypeRef } } }
+          triggerWantedSearch: __type(name: "TriggerWantedSearchInput") { name }
+          triggerTitleWantedSearch: __type(name: "TriggerTitleWantedSearchInput") { name }
+          triggerSeasonWantedSearch: __type(name: "TriggerSeasonWantedSearchInput") { name }
           deleteTitle: __type(name: "DeleteTitleInput") { inputFields { name type { ...TypeRef } } }
           deleteTitlesItem: __type(name: "DeleteTitlesItemInput") { inputFields { name type { ...TypeRef } } }
           deleteTitlesPreview: __type(name: "DeleteTitlesPreviewInput") { inputFields { name type { ...TypeRef } } }
@@ -3284,9 +3320,6 @@ async fn graphql_introspection_title_acquisition_inputs_use_id_fields() {
         ("assignTrackedDownloadTitle", "titleId"),
         ("resolvePendingImport", "pendingImportId"),
         ("bindPendingImport", "pendingImportId"),
-        ("triggerWantedSearch", "wantedItemId"),
-        ("triggerTitleWantedSearch", "titleId"),
-        ("triggerSeasonWantedSearch", "titleId"),
         ("deleteTitle", "titleId"),
         ("deleteTitlesItem", "titleId"),
         ("setTitleMonitored", "titleId"),
@@ -3329,6 +3362,15 @@ async fn graphql_introspection_title_acquisition_inputs_use_id_fields() {
     assert_non_null_id_list("deleteTitlesPreview", "titleIds");
     assert_non_null_id_list("bindPendingImport", "episodeIds");
     assert_nullable_id_list("queueDownloadScope", "episodeSet");
+
+    // RFC 119: the interactive search job input replaces the per-item trigger
+    // inputs; its scoping ids are all optional.
+    assert_nullable_id("triggerAcquisitionSearch", "titleId");
+    assert_nullable_id("triggerAcquisitionSearch", "wantedItemId");
+    assert_nullable_id_list("triggerAcquisitionSearch", "libraryIds");
+    assert!(body["data"]["triggerWantedSearch"].is_null());
+    assert!(body["data"]["triggerTitleWantedSearch"].is_null());
+    assert!(body["data"]["triggerSeasonWantedSearch"].is_null());
 }
 
 #[tokio::test]
@@ -4710,7 +4752,12 @@ async fn graphql_introspection_exposes_typed_settings_fields() {
         .filter_map(|field| field["name"].as_str())
         .collect();
     assert!(acquisition_names.contains(&"pollIntervalSeconds"));
-    assert!(acquisition_names.contains(&"batchSize"));
+    // RFC 119: the wanted-scheduler cadence knobs (syncIntervalSeconds/batchSize)
+    // were replaced by the convergence-cursor knobs.
+    assert!(acquisition_names.contains(&"longTailBackfillMaxScopesPerCycle"));
+    assert!(acquisition_names.contains(&"longTailReconvergeDays"));
+    assert!(!acquisition_names.contains(&"batchSize"));
+    assert!(!acquisition_names.contains(&"syncIntervalSeconds"));
 
     let general_fields = body["data"]["generalSettings"]["fields"]
         .as_array()

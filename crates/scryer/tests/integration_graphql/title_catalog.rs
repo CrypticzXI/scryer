@@ -2425,97 +2425,61 @@ async fn graphql_add_title_default_root_id_stores_library_default() {
     );
 }
 
+/// RFC 119: the per-item `triggerTitleWantedSearch`/`triggerSeasonWantedSearch`
+/// mutations were removed. A fileless monitored movie is a *derived* Missing
+/// target (no seeding, no state row required): it appears directly in
+/// `wantedItems(wantedKind: MISSING)` with convergence progress, and the
+/// interactive `triggerAcquisitionSearch` job is what searches it now.
 #[tokio::test]
-async fn graphql_trigger_title_wanted_search() {
+async fn graphql_wanted_items_missing_view_exposes_fileless_monitored_movie() {
     let ctx = TestContext::new().await;
     let id = add_test_title(&ctx, "Search Monitored Test", "movie").await;
 
     let body = gql(
         &ctx,
-        r#"mutation($input: TriggerTitleWantedSearchInput!) {
-            triggerTitleWantedSearch(input: $input) {
-                queuedCount
-                skippedInProgressCount
-            }
-        }"#,
-        json!({ "input": { "titleId": id } }),
-    )
-    .await;
-    assert_no_errors(&body);
-    assert_eq!(body["data"]["triggerTitleWantedSearch"]["queuedCount"], 1);
-    assert_eq!(
-        body["data"]["triggerTitleWantedSearch"]["skippedInProgressCount"],
-        0
-    );
-
-    let body = gql(
-        &ctx,
-        r#"query($titleId: ID) {
-            wantedItems(titleId: $titleId) {
+        r#"query($wantedKind: WantedKindValue!, $titleSearch: String) {
+            wantedItems(wantedKind: $wantedKind, titleSearch: $titleSearch) {
                 total
-                items { titleId mediaType status }
+                items { id titleId mediaType status convergenceState recencyLane }
             }
         }"#,
-        json!({ "titleId": id }),
+        json!({ "wantedKind": "missing", "titleSearch": "Search Monitored Test" }),
     )
     .await;
     assert_no_errors(&body);
     assert_eq!(body["data"]["wantedItems"]["total"], 1);
-    assert_eq!(body["data"]["wantedItems"]["items"][0]["titleId"], id);
-    assert_eq!(
-        body["data"]["wantedItems"]["items"][0]["mediaType"],
-        "movie"
-    );
-    assert_eq!(body["data"]["wantedItems"]["items"][0]["status"], "wanted");
-}
+    let item = &body["data"]["wantedItems"]["items"][0];
+    assert_eq!(item["titleId"], id);
+    assert_eq!(item["mediaType"], "movie");
+    assert_eq!(item["status"], "wanted");
+    // With no state row and no indexers routed the scope reads as converged (0/0).
+    assert!(item["convergenceState"].is_string());
+    assert!(item["recencyLane"].is_string());
+    // The derived-target id is the scope key when no state row exists.
+    assert_eq!(item["id"], format!("title:{id}"));
 
-#[tokio::test]
-async fn graphql_trigger_title_wanted_search_series_queues_all_monitored_episodes() {
-    let ctx = TestContext::new().await;
-    let media_root = tempfile::tempdir().expect("media root tempdir");
-    let (title, collection) =
-        create_series_scan_title(&ctx, media_root.path(), "Search Monitored Series", vec![]).await;
-    create_series_scan_episode(&ctx, &title, &collection, "1", "1", "S01E01").await;
-    create_series_scan_episode(&ctx, &title, &collection, "1", "2", "S01E02").await;
-
+    // The interactive search job accepts that scope id and starts (no indexers →
+    // nothing grabbed, but the job is created and its payload is well-formed).
     let body = gql(
         &ctx,
-        r#"mutation($input: TriggerTitleWantedSearchInput!) {
-            triggerTitleWantedSearch(input: $input) {
-                queuedCount
-                skippedInProgressCount
-            }
-        }"#,
-        json!({ "input": { "titleId": title.id.clone() } }),
-    )
-    .await;
-    assert_no_errors(&body);
-    assert_eq!(body["data"]["triggerTitleWantedSearch"]["queuedCount"], 2);
-    assert_eq!(
-        body["data"]["triggerTitleWantedSearch"]["skippedInProgressCount"],
-        0
-    );
-
-    let body = gql(
-        &ctx,
-        r#"query($titleId: ID) {
-            wantedItems(titleId: $titleId) {
+        r#"mutation($input: TriggerAcquisitionSearchInput!) {
+            triggerAcquisitionSearch(input: $input) {
+                id
+                state
                 total
-                items { titleId mediaType status }
+                grabbedCount
+                failedCount
             }
         }"#,
-        json!({ "titleId": title.id.clone() }),
+        json!({ "input": { "wantedItemId": format!("title:{id}") } }),
     )
     .await;
     assert_no_errors(&body);
-    assert_eq!(body["data"]["wantedItems"]["total"], 2);
-    let items = body["data"]["wantedItems"]["items"]
-        .as_array()
-        .expect("wanted items array");
-    assert_eq!(items.len(), 2);
-    assert!(items.iter().all(|item| item["titleId"] == title.id));
-    assert!(items.iter().all(|item| item["mediaType"] == "episode"));
-    assert!(items.iter().all(|item| item["status"] == "wanted"));
+    assert!(
+        body["data"]["triggerAcquisitionSearch"]["id"]
+            .as_str()
+            .is_some_and(|id| !id.is_empty())
+    );
 }
 
 #[tokio::test]
@@ -2564,11 +2528,7 @@ async fn graphql_delete_title_cleans_title_workflow_state() {
             season_number: None,
             episode_number: None,
             media_type: "movie".to_string(),
-            search_phase: "auto".to_string(),
-            next_search_at: None,
             last_search_at: None,
-            search_count: 0,
-            baseline_date: None,
             status: scryer_application::WantedStatus::Wanted,
             grabbed_release: None,
             current_score: None,

@@ -183,6 +183,10 @@ pub use acquisition::delay_profile::{
     validate_delay_profile_catalog,
 };
 pub use acquisition::policy::AcquisitionThresholds;
+pub use acquisition::wanted_views::{
+    AcquisitionSearchJobView, AcquisitionSearchProgress, AcquisitionSearchRequest,
+    WantedConvergenceState, WantedScopeView, WantedViewConvergence,
+};
 pub use acquisition_workflow::start_background_acquisition_poller;
 pub use app_usecase_integration::derive_download_queue_display_state;
 pub use app_usecase_integration::enrich_download_queue_items_from_submissions;

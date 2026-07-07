@@ -11,12 +11,15 @@
 use std::collections::{HashMap, HashSet};
 
 use chrono::Utc;
-use scryer_domain::MediaFacet;
+use scryer_domain::{
+    DomainEventPayload, Id, JobRunCompletedEventData, JobRunFailedEventData,
+    JobRunStartedEventData, MediaFacet,
+};
 
 use super::*;
 use crate::acquisition::convergence::convergence_scope_key;
 use crate::acquisition::targets::AcquisitionTarget;
-use crate::contracts::SubmissionScope;
+use crate::contracts::{QueueDownloadOutcome, SubmissionConflictPolicy, SubmissionScope};
 
 /// Convergence state of a scope for the UI (RFC 119 §6). Mirrors the GraphQL
 /// `ConvergenceStateValue`; the interface maps this 1:1.
@@ -264,28 +267,52 @@ impl AppUseCase {
     }
 
     /// Derive per-scope convergence progress for a page in ONE coverage round-trip
-    /// (RFC 119 §6 #12). Resolves `(fingerprint, routed indexers)` once per title,
-    /// fetches all coverage rows for the page's scope keys together, computes
-    /// covered/routed counts in memory, and folds in the scheduler availability
-    /// snapshot to distinguish `Deferred` from `Queued`.
+    /// (RFC 119 §6 #12) and attach it to each view.
     async fn attach_page_convergence(&self, page: &mut [WantedScopeView]) -> AppResult<()> {
         if page.is_empty() {
             return Ok(());
+        }
+        let scopes: Vec<(String, String)> = page
+            .iter()
+            .map(|view| (view.title_id.clone(), view.scope_key.clone()))
+            .collect();
+        let by_scope = self.page_convergence_by_scope_key(&scopes).await;
+        for view in page.iter_mut() {
+            if let Some(convergence) = by_scope.get(&view.scope_key) {
+                view.convergence = *convergence;
+            }
+        }
+        Ok(())
+    }
+
+    /// Batched per-scope convergence progress for a page (RFC 119 §6 #12), keyed by
+    /// scope key. Resolves `(fingerprint, routed indexers)` once per title, fetches
+    /// all coverage rows for the page's scope keys in one round-trip, computes
+    /// covered/routed counts in memory, and folds in the scheduler availability
+    /// snapshot to distinguish `Deferred` from `Queued`. Shared by the Missing /
+    /// Upgrades views and the cutoff-unmet page so both show identical convergence.
+    pub async fn page_convergence_by_scope_key(
+        &self,
+        scopes: &[(String, String)],
+    ) -> HashMap<String, WantedViewConvergence> {
+        let mut result = HashMap::new();
+        if scopes.is_empty() {
+            return result;
         }
 
         // One (fingerprint, routed) resolution per unique title — identical across a
         // title's scopes.
         let mut title_context: HashMap<String, Option<TitleConvergenceContext>> = HashMap::new();
-        for view in page.iter() {
-            if title_context.contains_key(&view.title_id) {
+        for (title_id, _) in scopes {
+            if title_context.contains_key(title_id) {
                 continue;
             }
-            let context = self.resolve_title_convergence_context(&view.title_id).await;
-            title_context.insert(view.title_id.clone(), context);
+            let context = self.resolve_title_convergence_context(title_id).await;
+            title_context.insert(title_id.clone(), context);
         }
 
         // One coverage fetch for the whole page.
-        let scope_keys: Vec<String> = page.iter().map(|view| view.scope_key.clone()).collect();
+        let scope_keys: Vec<String> = scopes.iter().map(|(_, key)| key.clone()).collect();
         let coverage_rows = self
             .services
             .integrations
@@ -304,20 +331,23 @@ impl AppUseCase {
         let availability = self.scheduler_availability().await;
         let host_keys = self.indexer_scheduler_host_keys().await;
 
-        for view in page.iter_mut() {
-            let Some(Some(context)) = title_context.get(&view.title_id) else {
+        for (title_id, scope_key) in scopes {
+            let Some(Some(context)) = title_context.get(title_id) else {
                 // No routing/profile resolvable — nothing to converge; present as
                 // converged (0/0) so the UI does not show a perpetual sweep.
-                view.convergence = WantedViewConvergence {
-                    state: WantedConvergenceState::Converged,
-                    indexers_covered: 0,
-                    indexers_routed: 0,
-                };
+                result.insert(
+                    scope_key.clone(),
+                    WantedViewConvergence {
+                        state: WantedConvergenceState::Converged,
+                        indexers_covered: 0,
+                        indexers_routed: 0,
+                    },
+                );
                 continue;
             };
             let routed = &context.routed_indexer_ids;
             let covered: HashSet<&str> = coverage_by_scope
-                .get(&view.scope_key)
+                .get(scope_key)
                 .map(|rows| {
                     rows.iter()
                         .filter(|row| row.fingerprint == context.fingerprint)
@@ -347,14 +377,17 @@ impl AppUseCase {
                 WantedConvergenceState::Searching
             };
 
-            view.convergence = WantedViewConvergence {
-                state,
-                indexers_covered: covered_count as i32,
-                indexers_routed: routed_count as i32,
-            };
+            result.insert(
+                scope_key.clone(),
+                WantedViewConvergence {
+                    state,
+                    indexers_covered: covered_count as i32,
+                    indexers_routed: routed_count as i32,
+                },
+            );
         }
 
-        Ok(())
+        result
     }
 
     /// Resolve `(fingerprint, routed indexers)` for a title via its title-level
@@ -455,6 +488,767 @@ fn parse_sort_number(value: Option<&str>) -> i64 {
             (!digits.is_empty()).then(|| digits.parse::<i64>().ok()).flatten()
         })
         .unwrap_or(i64::MAX)
+}
+
+// ── Interactive acquisition-search job (RFC 119 §7.3 / Phase 2) ─────────────
+
+/// One scope to search in an interactive acquisition-search job.
+#[derive(Clone, Debug)]
+struct AcquisitionSearchScope {
+    title_id: String,
+    scope: SubmissionScope,
+    /// Human label for the progress `currentTitle` field.
+    label: String,
+}
+
+/// Request for the interactive acquisition-search job (RFC 119 §7.3). A bare
+/// request searches every derived target of `wanted_kind`; the narrowing fields
+/// filter that set, and `wanted_item_id` (a state-row id or a scope key) selects a
+/// single scope.
+#[derive(Clone, Debug, Default)]
+pub struct AcquisitionSearchRequest {
+    pub wanted_kind: WantedKind,
+    pub facet: Option<MediaFacet>,
+    pub library_ids: Vec<String>,
+    pub title_id: Option<String>,
+    pub season_number: Option<i32>,
+    pub wanted_item_id: Option<String>,
+}
+
+/// `Missing` is the default target set for the interactive search request (RFC 119
+/// §7.3) — matching the `wantedItems` query default. Defined here because that's
+/// the only consumer of a defaulted `WantedKind`.
+impl Default for WantedKind {
+    fn default() -> Self {
+        Self::Missing
+    }
+}
+
+/// Progress snapshot persisted in the job run's `progress_json` (RFC 119 §7.3),
+/// read back by the `acquisitionSearchJob` query and pushed via `jobRunEvents`.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcquisitionSearchProgress {
+    /// One of the `AcquisitionSearchJobStateValue` snake_case names.
+    pub state: String,
+    pub total: usize,
+    pub processed: usize,
+    pub grabbed_count: usize,
+    pub failed_count: usize,
+    pub current_title: Option<String>,
+}
+
+/// App-side view of the interactive acquisition-search job for the GraphQL query
+/// (RFC 119 §7.3). Built from the persisted run record + its progress json.
+#[derive(Clone, Debug)]
+pub struct AcquisitionSearchJobView {
+    pub id: String,
+    /// Snake_case `AcquisitionSearchJobStateValue` name.
+    pub state: String,
+    pub total: i32,
+    pub processed: i32,
+    pub grabbed_count: i32,
+    pub failed_count: i32,
+    pub current_title: Option<String>,
+    pub started_at: String,
+    pub finished_at: Option<String>,
+}
+
+/// Map a terminal/running job-run status onto the acquisition-search job state
+/// vocabulary (RFC 119 §7.3): a cancellation lands as `Warning`, which the UI
+/// shows as `Cancelled`.
+fn acquisition_search_state_for_status(status: JobRunStatus, cancelled: bool) -> &'static str {
+    if cancelled {
+        return "cancelled";
+    }
+    match status {
+        JobRunStatus::Completed => "completed",
+        JobRunStatus::Failed => "failed",
+        JobRunStatus::Warning => "cancelled",
+        _ => "running",
+    }
+}
+
+impl AppUseCase {
+    /// Start the interactive acquisition-search job (RFC 119 §7.3 / Phase 2):
+    /// single-flight guarded, permission-checked (ManageTitles for a title-scoped
+    /// request, ManageCatalogSettings for a facet/library-wide one — mirroring
+    /// `scanLibrary`), then runs the per-scope best-release search+grab off a
+    /// spawned task under a cancellation token. Returns the started run for the
+    /// payload; progress is polled via `acquisition_search_job` and pushed via
+    /// `jobRunEvents`.
+    pub async fn start_acquisition_search_job(
+        &self,
+        actor: &User,
+        request: AcquisitionSearchRequest,
+    ) -> AppResult<JobRun> {
+        let search_guard = self
+            .runtime
+            .jobs
+            .acquisition_search_lock
+            .clone()
+            .try_lock_owned()
+            .map_err(|_| {
+                AppError::Validation("an acquisition search job is already running".into())
+            })?;
+        if self
+            .runtime
+            .jobs
+            .job_run_tracker
+            .has_active_job(JobKey::AcquisitionSearch)
+            .await
+        {
+            return Err(AppError::Validation(
+                "an acquisition search job is already running".into(),
+            ));
+        }
+
+        self.authorize_acquisition_search(actor, &request).await?;
+        let scopes = self.resolve_acquisition_search_scopes(actor, &request).await?;
+
+        let now = chrono::Utc::now();
+        let mut run = JobRunRecord {
+            id: Id::new().0,
+            job_key: JobKey::AcquisitionSearch,
+            operation_type: format!(
+                "acquisition_search:{}:{}",
+                request.wanted_kind.as_str(),
+                scopes.len()
+            ),
+            status: JobRunStatus::Running,
+            trigger_source: JobTriggerSource::Manual,
+            actor_user_id: Some(actor.id.clone()),
+            progress_json: serde_json::to_string(&AcquisitionSearchProgress {
+                state: "running".to_string(),
+                total: scopes.len(),
+                processed: 0,
+                grabbed_count: 0,
+                failed_count: 0,
+                current_title: None,
+            })
+            .ok(),
+            summary_json: None,
+            summary_text: None,
+            error_text: None,
+            started_at: now,
+            completed_at: None,
+            created_at: now,
+            updated_at: now,
+        };
+        run = self.services.events.job_runs.create_job_run(&run).await?;
+        let run_payload = JobRun::from_record(&run, None);
+        self.runtime
+            .jobs
+            .job_run_tracker
+            .upsert_active_run(run_payload.clone())
+            .await;
+
+        let cancellation = tokio_util::sync::CancellationToken::new();
+        self.runtime
+            .acquisition
+            .acquisition_search_cancellation_tokens
+            .lock()
+            .await
+            .insert(run.id.clone(), cancellation.clone());
+
+        let actor_event = DomainEventActor::from(actor);
+        let _ = self
+            .append_domain_event(crate::domain_events::new_job_run_domain_event(
+                actor_event.clone(),
+                run.id.clone(),
+                DomainEventPayload::JobRunStarted(JobRunStartedEventData {
+                    run_id: run.id.clone(),
+                    job_key: run.job_key.as_str().to_string(),
+                    operation_type: run.operation_type.clone(),
+                    trigger_source: run.trigger_source.as_str().to_string(),
+                }),
+            ))
+            .await;
+
+        let app = self.clone();
+        let actor = actor.clone();
+        tokio::spawn(async move {
+            app.run_acquisition_search_job(
+                run,
+                actor,
+                actor_event,
+                scopes,
+                cancellation,
+                search_guard,
+            )
+            .await;
+        });
+
+        Ok(run_payload)
+    }
+
+    /// Permission split (RFC 119 §7.3, mirroring `scanLibrary`): a title-scoped
+    /// request (an explicit `title_id`, or a `wanted_item_id` resolving to one
+    /// title) requires `ManageTitles` on that title's library; a facet- or
+    /// library-wide request requires `ManageCatalogSettings`.
+    async fn authorize_acquisition_search(
+        &self,
+        actor: &User,
+        request: &AcquisitionSearchRequest,
+    ) -> AppResult<()> {
+        if let Some(title_id) = self.acquisition_search_scoped_title(request).await? {
+            let title = self
+                .services
+                .catalog
+                .titles
+                .get_by_id(&title_id)
+                .await?
+                .ok_or_else(|| AppError::NotFound(format!("title {title_id}")))?;
+            return self
+                .require_library_permission(
+                    actor,
+                    &title.library_id,
+                    scryer_domain::LibraryPermission::ManageTitles,
+                )
+                .await;
+        }
+        self.require_app_permission(actor, AppPermission::ManageCatalogSettings)
+            .await
+    }
+
+    /// The single title a request is scoped to, if any — the explicit `title_id` or
+    /// the title behind a `wanted_item_id`. `None` for a facet/library-wide request.
+    async fn acquisition_search_scoped_title(
+        &self,
+        request: &AcquisitionSearchRequest,
+    ) -> AppResult<Option<String>> {
+        if let Some(title_id) = request
+            .title_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            return Ok(Some(title_id.to_string()));
+        }
+        if let Some(identifier) = request
+            .wanted_item_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            return Ok(self
+                .resolve_scope_identifier(identifier)
+                .await?
+                .map(|(title_id, _)| title_id));
+        }
+        Ok(None)
+    }
+
+    /// The set of scopes an acquisition-search request targets. `wanted_item_id`
+    /// yields exactly one scope; otherwise the derived target set of the requested
+    /// kind is filtered by facet/library/title/season.
+    async fn resolve_acquisition_search_scopes(
+        &self,
+        actor: &User,
+        request: &AcquisitionSearchRequest,
+    ) -> AppResult<Vec<AcquisitionSearchScope>> {
+        if let Some(identifier) = request
+            .wanted_item_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            let (title_id, scope) = self
+                .resolve_scope_identifier(identifier)
+                .await?
+                .ok_or_else(|| {
+                    AppError::NotFound(format!("no acquisition scope for '{identifier}'"))
+                })?;
+            let label = self.acquisition_scope_label(&title_id, &scope).await;
+            return Ok(vec![AcquisitionSearchScope {
+                title_id,
+                scope,
+                label,
+            }]);
+        }
+
+        // Derive the full target set (unpaged) via the same view derivation, then
+        // map each row to a searchable scope.
+        let (views, _total) = self
+            .list_wanted_scope_views(
+                actor,
+                request.wanted_kind,
+                request.facet.clone(),
+                request.library_ids.clone(),
+                None,
+                i64::MAX,
+                0,
+            )
+            .await?;
+        let season_filter = request.season_number.map(|value| value.to_string());
+        let scopes = views
+            .into_iter()
+            .filter(|view| {
+                request
+                    .title_id
+                    .as_deref()
+                    .is_none_or(|title_id| view.title_id == title_id)
+            })
+            .filter(|view| {
+                season_filter
+                    .as_deref()
+                    .is_none_or(|season| view.season_number.as_deref() == Some(season))
+            })
+            .filter_map(|view| {
+                let scope = submission_scope_for_view(&view)?;
+                Some(AcquisitionSearchScope {
+                    label: view
+                        .title_name
+                        .clone()
+                        .unwrap_or_else(|| view.title_id.clone()),
+                    title_id: view.title_id,
+                    scope,
+                })
+            })
+            .collect();
+        Ok(scopes)
+    }
+
+    /// Resolve a wanted identifier — a state-row id, else a convergence scope key —
+    /// into `(title_id, SubmissionScope)`. Scope-key prefixes are parsed directly;
+    /// an `episode:` key loads the episode to recover its title.
+    pub(crate) async fn resolve_scope_identifier(
+        &self,
+        identifier: &str,
+    ) -> AppResult<Option<(String, SubmissionScope)>> {
+        let identifier = identifier.trim();
+        if identifier.is_empty() {
+            return Ok(None);
+        }
+
+        // State-row id first.
+        if let Some(item) = self
+            .services
+            .workflow
+            .wanted_items
+            .get_wanted_item_by_id(identifier)
+            .await?
+        {
+            let scope = SubmissionScope::from_persisted(
+                &item.title_id,
+                item.episode_id.clone(),
+                item.collection_id.clone(),
+                item.series_movie_link_id.clone(),
+                None,
+            );
+            return Ok(Some((item.title_id, scope)));
+        }
+
+        // Otherwise a convergence scope key.
+        if let Some(episode_id) = identifier.strip_prefix("episode:") {
+            let Some(episode) = self
+                .services
+                .catalog
+                .shows
+                .get_episode_by_id(episode_id)
+                .await?
+            else {
+                return Ok(None);
+            };
+            return Ok(Some((
+                episode.title_id,
+                SubmissionScope::Episode {
+                    episode_id: episode_id.to_string(),
+                },
+            )));
+        }
+        if let Some(title_id) = identifier.strip_prefix("title:") {
+            return Ok(Some((title_id.to_string(), SubmissionScope::Title)));
+        }
+        if let Some(link_id) = identifier.strip_prefix("series_movie:") {
+            let Some(link) = self
+                .services
+                .catalog
+                .shows
+                .get_series_movie_link_by_id(link_id)
+                .await?
+            else {
+                return Ok(None);
+            };
+            return Ok(Some((
+                link.series_title_id,
+                SubmissionScope::SeriesMovie {
+                    series_movie_link_id: link_id.to_string(),
+                },
+            )));
+        }
+        if let Some(collection_id) = identifier.strip_prefix("collection:") {
+            let Some(collection) = self
+                .services
+                .catalog
+                .shows
+                .get_collection_by_id(collection_id)
+                .await?
+            else {
+                return Ok(None);
+            };
+            return Ok(Some((
+                collection.title_id,
+                SubmissionScope::Collection {
+                    collection_id: collection_id.to_string(),
+                },
+            )));
+        }
+        Ok(None)
+    }
+
+    /// Resolve a wanted identifier (state-row id, else convergence scope key) to a
+    /// persisted acquisition-state row, creating one if the scope has none yet
+    /// (RFC 119 §7.4 — pause/resume must work off a scope key, not only a row id).
+    /// Returns the loaded row so callers see its real id/status.
+    pub(crate) async fn resolve_or_create_wanted_state_row(
+        &self,
+        identifier: &str,
+    ) -> AppResult<Option<WantedItem>> {
+        // An existing state-row id resolves directly.
+        if let Some(item) = self
+            .services
+            .workflow
+            .wanted_items
+            .get_wanted_item_by_id(identifier.trim())
+            .await?
+        {
+            return Ok(Some(item));
+        }
+
+        let Some((title_id, scope)) = self.resolve_scope_identifier(identifier).await? else {
+            return Ok(None);
+        };
+        // Already a row for this scope? (e.g. an episode key whose row exists.)
+        let (episode_id, collection_id, series_movie_link_id) = match &scope {
+            SubmissionScope::Episode { episode_id } => (Some(episode_id.clone()), None, None),
+            SubmissionScope::Collection { collection_id } => (None, Some(collection_id.clone()), None),
+            SubmissionScope::SeriesMovie {
+                series_movie_link_id,
+            } => (None, None, Some(series_movie_link_id.clone())),
+            _ => (None, None, None),
+        };
+        if let Some(existing) = self
+            .find_wanted_state_for_scope(
+                &title_id,
+                episode_id.as_deref(),
+                collection_id.as_deref(),
+                series_movie_link_id.as_deref(),
+            )
+            .await?
+        {
+            return Ok(Some(existing));
+        }
+
+        let Some(title) = self.services.catalog.titles.get_by_id(&title_id).await? else {
+            return Ok(None);
+        };
+        let (media_type, season_number) = match &scope {
+            SubmissionScope::Episode { episode_id } => {
+                let episode = self
+                    .services
+                    .catalog
+                    .shows
+                    .get_episode_by_id(episode_id)
+                    .await?;
+                ("episode", episode.and_then(|episode| episode.season_number))
+            }
+            SubmissionScope::SeriesMovie { .. } => ("series_movie", Some("0".to_string())),
+            SubmissionScope::Collection { .. } => ("episode", None),
+            _ => ("movie", None),
+        };
+        let view = self.new_wanted_state_view(
+            &title,
+            media_type,
+            episode_id,
+            collection_id,
+            series_movie_link_id,
+            season_number,
+        );
+        let row_id = self
+            .services
+            .workflow
+            .wanted_items
+            .ensure_wanted_state_row(&view)
+            .await?;
+        self.services
+            .workflow
+            .wanted_items
+            .get_wanted_item_by_id(&row_id)
+            .await
+    }
+
+    async fn acquisition_scope_label(&self, title_id: &str, _scope: &SubmissionScope) -> String {
+        self.services
+            .catalog
+            .titles
+            .get_by_id(title_id)
+            .await
+            .ok()
+            .flatten()
+            .map(|title| title.name)
+            .unwrap_or_else(|| title_id.to_string())
+    }
+
+    async fn run_acquisition_search_job(
+        &self,
+        mut run: JobRunRecord,
+        actor: User,
+        actor_event: DomainEventActor,
+        scopes: Vec<AcquisitionSearchScope>,
+        cancellation: tokio_util::sync::CancellationToken,
+        _search_guard: tokio::sync::OwnedMutexGuard<()>,
+    ) {
+        let total = scopes.len();
+        let mut processed = 0usize;
+        let mut grabbed = 0usize;
+        let mut failed = 0usize;
+        let mut cancelled = false;
+
+        for scope in scopes {
+            if cancellation.is_cancelled() {
+                cancelled = true;
+                break;
+            }
+            let _ = self
+                .update_acquisition_search_progress(
+                    &mut run,
+                    AcquisitionSearchProgress {
+                        state: "running".to_string(),
+                        total,
+                        processed,
+                        grabbed_count: grabbed,
+                        failed_count: failed,
+                        current_title: Some(scope.label.clone()),
+                    },
+                )
+                .await;
+
+            // Interactive intent: `queue_best_release` runs the Auto search+grab
+            // path (bypasses the background convergence read-gate) and records
+            // coverage via the search hook. A search that finds nothing grabbable is
+            // a completed search, not a failure.
+            match self
+                .queue_best_release(
+                    &actor,
+                    &scope.title_id,
+                    scope.scope.clone(),
+                    SubmissionConflictPolicy::Skip,
+                )
+                .await
+            {
+                Ok(QueueDownloadOutcome::Queued(_)) => grabbed += 1,
+                Ok(QueueDownloadOutcome::Conflict(_)) => {}
+                Err(AppError::Validation(_)) => {}
+                Err(error) => {
+                    failed += 1;
+                    tracing::warn!(
+                        title_id = scope.title_id.as_str(),
+                        error = %error,
+                        "acquisition search job: scope search failed"
+                    );
+                }
+            }
+            processed += 1;
+        }
+
+        self.finish_acquisition_search_job(
+            run,
+            actor_event,
+            total,
+            processed,
+            grabbed,
+            failed,
+            cancelled,
+        )
+        .await;
+    }
+
+    async fn update_acquisition_search_progress(
+        &self,
+        run: &mut JobRunRecord,
+        progress: AcquisitionSearchProgress,
+    ) -> AppResult<()> {
+        run.progress_json = serde_json::to_string(&progress).ok();
+        run.updated_at = chrono::Utc::now();
+        let updated = self.services.events.job_runs.update_job_run(run).await?;
+        *run = updated.clone();
+        self.runtime
+            .jobs
+            .job_run_tracker
+            .upsert_active_run(JobRun::from_record(&updated, None))
+            .await;
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn finish_acquisition_search_job(
+        &self,
+        mut run: JobRunRecord,
+        actor: DomainEventActor,
+        total: usize,
+        processed: usize,
+        grabbed: usize,
+        failed: usize,
+        cancelled: bool,
+    ) {
+        let status = if cancelled {
+            JobRunStatus::Warning
+        } else if failed == 0 {
+            JobRunStatus::Completed
+        } else if grabbed == 0 && processed == failed {
+            JobRunStatus::Failed
+        } else {
+            JobRunStatus::Warning
+        };
+        let state = acquisition_search_state_for_status(status, cancelled);
+        let completed_at = chrono::Utc::now();
+        run.status = status;
+        run.progress_json = serde_json::to_string(&AcquisitionSearchProgress {
+            state: state.to_string(),
+            total,
+            processed,
+            grabbed_count: grabbed,
+            failed_count: failed,
+            current_title: None,
+        })
+        .ok();
+        run.summary_text = Some(if cancelled {
+            format!("Acquisition search cancelled after {processed} scope(s); grabbed {grabbed}")
+        } else {
+            format!("Searched {processed} scope(s); grabbed {grabbed}, failed {failed}")
+        });
+        run.error_text =
+            (status == JobRunStatus::Failed).then(|| "all acquisition searches failed".to_string());
+        run.completed_at = Some(completed_at);
+        run.updated_at = completed_at;
+
+        match self.services.events.job_runs.update_job_run(&run).await {
+            Ok(updated) => {
+                self.runtime
+                    .jobs
+                    .job_run_tracker
+                    .upsert_active_run(JobRun::from_record(&updated, None))
+                    .await;
+                let payload = if status == JobRunStatus::Failed {
+                    DomainEventPayload::JobRunFailed(JobRunFailedEventData {
+                        run_id: updated.id.clone(),
+                        job_key: updated.job_key.as_str().to_string(),
+                        error_text: updated.error_text.clone(),
+                    })
+                } else {
+                    DomainEventPayload::JobRunCompleted(JobRunCompletedEventData {
+                        run_id: updated.id.clone(),
+                        job_key: updated.job_key.as_str().to_string(),
+                        summary_text: updated.summary_text.clone(),
+                    })
+                };
+                let _ = self
+                    .append_domain_event(crate::domain_events::new_job_run_domain_event(
+                        actor,
+                        updated.id.clone(),
+                        payload,
+                    ))
+                    .await;
+            }
+            Err(error) => {
+                tracing::warn!(error = %error, "failed to finish acquisition search job");
+            }
+        }
+
+        self.runtime
+            .acquisition
+            .acquisition_search_cancellation_tokens
+            .lock()
+            .await
+            .remove(&run.id);
+    }
+
+    /// The current state of an interactive acquisition-search job (RFC 119 §7.3),
+    /// for the `acquisitionSearchJob` query. Visible to any actor who may read job
+    /// runs (`ManageSystemSettings`, matching the jobs surface).
+    pub async fn acquisition_search_job(
+        &self,
+        actor: &User,
+        run_id: &str,
+    ) -> AppResult<Option<AcquisitionSearchJobView>> {
+        self.require_app_permission(actor, AppPermission::ManageSystemSettings)
+            .await?;
+        let Some(run) = self.services.events.job_runs.get_job_run(run_id).await? else {
+            return Ok(None);
+        };
+        if run.job_key != JobKey::AcquisitionSearch {
+            return Ok(None);
+        }
+        Ok(Some(self.acquisition_search_job_view(&run)))
+    }
+
+    fn acquisition_search_job_view(&self, run: &JobRunRecord) -> AcquisitionSearchJobView {
+        let progress = run
+            .progress_json
+            .as_deref()
+            .and_then(|json| serde_json::from_str::<AcquisitionSearchProgress>(json).ok());
+        let state = progress
+            .as_ref()
+            .map(|progress| progress.state.clone())
+            .unwrap_or_else(|| {
+                acquisition_search_state_for_status(run.status, false).to_string()
+            });
+        AcquisitionSearchJobView {
+            id: run.id.clone(),
+            state,
+            total: progress.as_ref().map(|p| p.total as i32).unwrap_or(0),
+            processed: progress.as_ref().map(|p| p.processed as i32).unwrap_or(0),
+            grabbed_count: progress.as_ref().map(|p| p.grabbed_count as i32).unwrap_or(0),
+            failed_count: progress.as_ref().map(|p| p.failed_count as i32).unwrap_or(0),
+            current_title: progress.and_then(|p| p.current_title),
+            started_at: run.started_at.to_rfc3339(),
+            finished_at: run.completed_at.map(|at| at.to_rfc3339()),
+        }
+    }
+
+    /// Cancel a running interactive acquisition-search job (RFC 119 §7.3). Requires
+    /// `ManageSystemSettings` (the jobs surface); signals the job's cancellation
+    /// token so it stops between scopes. Returns whether a running job was signalled.
+    pub async fn cancel_acquisition_search(&self, actor: &User, run_id: &str) -> AppResult<bool> {
+        self.require_app_permission(actor, AppPermission::ManageSystemSettings)
+            .await?;
+        let token = self
+            .runtime
+            .acquisition
+            .acquisition_search_cancellation_tokens
+            .lock()
+            .await
+            .get(run_id)
+            .cloned();
+        match token {
+            Some(token) => {
+                token.cancel();
+                Ok(true)
+            }
+            None => Ok(false),
+        }
+    }
+}
+
+/// The best-release search scope for a derived view row. Episodes/movies/series
+/// movies map to their single-scope submission target; collection/pack rows are
+/// not individually searchable by this job (handled by the cursor), so they are
+/// skipped.
+fn submission_scope_for_view(view: &WantedScopeView) -> Option<SubmissionScope> {
+    match view.media_type.as_str() {
+        "episode" => view.episode_id.clone().map(|episode_id| SubmissionScope::Episode {
+            episode_id,
+        }),
+        "series_movie" => view
+            .series_movie_link_id
+            .clone()
+            .map(|series_movie_link_id| SubmissionScope::SeriesMovie {
+                series_movie_link_id,
+            }),
+        "movie" => Some(SubmissionScope::Title),
+        _ => None,
+    }
 }
 
 /// Deterministic order: title name, then numeric season, then numeric episode —

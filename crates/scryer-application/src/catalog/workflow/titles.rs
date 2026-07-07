@@ -530,6 +530,70 @@ impl AppUseCase {
         let items = all.into_iter().skip(offset).take(limit).collect();
         Ok(CutoffUnmetPage { items, total })
     }
+
+    /// One page of cutoff-unmet targets plus per-item convergence progress (RFC 119
+    /// §6/§7). The page's convergence is derived in one batched coverage round-trip,
+    /// so the Upgrades table shows the same convergence state as the derived
+    /// Missing/Upgrades views.
+    pub async fn list_cutoff_unmet_titles_page_with_convergence(
+        &self,
+        actor: &User,
+        facet: Option<MediaFacet>,
+        requested_library_ids: Option<Vec<String>>,
+        limit: usize,
+        offset: usize,
+    ) -> AppResult<(
+        Vec<(CutoffUnmetItem, crate::WantedViewConvergence)>,
+        usize,
+    )> {
+        let page = self
+            .list_cutoff_unmet_titles_page(actor, facet, requested_library_ids, limit, offset)
+            .await?;
+        let total = page.total;
+
+        let scopes: Vec<(String, String)> = page
+            .items
+            .iter()
+            .filter_map(|item| {
+                let scope = crate::contracts::SubmissionScope::from_persisted(
+                    &item.title_id,
+                    item.episode_id.clone(),
+                    None,
+                    None,
+                    None,
+                );
+                crate::acquisition::convergence::convergence_scope_key(&scope, &item.title_id)
+                    .map(|key| (item.title_id.clone(), key))
+            })
+            .collect();
+        let convergence = self.page_convergence_by_scope_key(&scopes).await;
+
+        let items = page
+            .items
+            .into_iter()
+            .map(|item| {
+                let scope = crate::contracts::SubmissionScope::from_persisted(
+                    &item.title_id,
+                    item.episode_id.clone(),
+                    None,
+                    None,
+                    None,
+                );
+                let convergence = crate::acquisition::convergence::convergence_scope_key(
+                    &scope,
+                    &item.title_id,
+                )
+                .and_then(|key| convergence.get(&key).copied())
+                .unwrap_or(crate::WantedViewConvergence {
+                    state: crate::WantedConvergenceState::Converged,
+                    indexers_covered: 0,
+                    indexers_routed: 0,
+                });
+                (item, convergence)
+            })
+            .collect();
+        Ok((items, total))
+    }
 }
 impl AppUseCase {
     pub(crate) async fn default_media_root_for_title(

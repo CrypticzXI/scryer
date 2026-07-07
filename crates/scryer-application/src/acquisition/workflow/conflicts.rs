@@ -42,38 +42,6 @@ impl AppUseCase {
     }
 }
 impl AppUseCase {
-    pub async fn trigger_wanted_item_search(
-        &self,
-        actor: &User,
-        wanted_item_id: &str,
-        conflict_policy: SubmissionConflictPolicy,
-    ) -> AppResult<WantedSearchOutcome> {
-        let item = self
-            .services
-            .workflow
-            .wanted_items
-            .get_wanted_item_by_id(wanted_item_id)
-            .await?
-            .ok_or_else(|| AppError::NotFound("wanted item not found".to_string()))?;
-        let title = self
-            .services
-            .catalog
-            .titles
-            .get_by_id(&item.title_id)
-            .await?
-            .ok_or_else(|| AppError::NotFound("title not found".to_string()))?;
-        self.require_library_permission(
-            actor,
-            &title.library_id,
-            scryer_domain::LibraryPermission::ManageTitles,
-        )
-        .await?;
-
-        self.reopen_wanted_scope_with_policy(&title, &item, conflict_policy)
-            .await
-    }
-}
-impl AppUseCase {
     async fn wanted_item_blocking_submissions(
         &self,
         title: &Title,

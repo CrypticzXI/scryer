@@ -424,8 +424,8 @@ async fn graphql_typed_acquisition_settings_round_trip() {
             crossTierMinDelta
             forcedUpgradeDeltaBypass
             pollIntervalSeconds
-            syncIntervalSeconds
-            batchSize
+            longTailBackfillMaxScopesPerCycle
+            longTailReconvergeDays
           }
         }
         "#,
@@ -437,8 +437,8 @@ async fn graphql_typed_acquisition_settings_round_trip() {
             "crossTierMinDelta": 35,
             "forcedUpgradeDeltaBypass": 420,
             "pollIntervalSeconds": 45,
-            "syncIntervalSeconds": 1800,
-            "batchSize": 25
+            "longTailBackfillMaxScopesPerCycle": 750,
+            "longTailReconvergeDays": 30
           }
         }),
     )
@@ -456,8 +456,8 @@ async fn graphql_typed_acquisition_settings_round_trip() {
             crossTierMinDelta
             forcedUpgradeDeltaBypass
             pollIntervalSeconds
-            syncIntervalSeconds
-            batchSize
+            longTailBackfillMaxScopesPerCycle
+            longTailReconvergeDays
           }
         }
         "#,
@@ -473,8 +473,8 @@ async fn graphql_typed_acquisition_settings_round_trip() {
     assert_eq!(settings["crossTierMinDelta"], 35);
     assert_eq!(settings["forcedUpgradeDeltaBypass"], 420);
     assert_eq!(settings["pollIntervalSeconds"], 45);
-    assert_eq!(settings["syncIntervalSeconds"], 1800);
-    assert_eq!(settings["batchSize"], 25);
+    assert_eq!(settings["longTailBackfillMaxScopesPerCycle"], 750);
+    assert_eq!(settings["longTailReconvergeDays"], 30);
 }
 
 #[tokio::test]

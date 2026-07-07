@@ -1,3 +1,30 @@
+"""
+Progress snapshot for the interactive acquisition-search job (RFC 119 §7.3).
+Survives navigation/refresh — the job runs server-side and its state is queried
+by `id` and pushed via `jobRunEvents`.
+"""
+type AcquisitionSearchJobPayload {
+	id: ID!
+	state: AcquisitionSearchJobStateValue!
+	total: Int!
+	processed: Int!
+	grabbedCount: Int!
+	failedCount: Int!
+	currentTitle: String
+	startedAt: DateTime!
+	finishedAt: DateTime
+}
+
+"""
+Lifecycle of the interactive acquisition-search job (RFC 119 §7.3/Phase 2).
+"""
+enum AcquisitionSearchJobStateValue {
+	running
+	completed
+	cancelled
+	failed
+}
+
 type AcquisitionSettingsPayload {
 	enabled: Boolean!
 	upgradeCooldownHours: Int!
@@ -5,8 +32,8 @@ type AcquisitionSettingsPayload {
 	crossTierMinDelta: Int!
 	forcedUpgradeDeltaBypass: Int!
 	pollIntervalSeconds: Int!
-	syncIntervalSeconds: Int!
-	batchSize: Int!
+	longTailBackfillMaxScopesPerCycle: Int!
+	longTailReconvergeDays: Int!
 }
 
 enum ActivityChannelValue {
@@ -127,6 +154,7 @@ type AudioStreamDetailPayload {
 	profile: String
 	channels: Int
 	language: String
+	name: String
 	bitrateKbps: Int
 }
 
@@ -223,6 +251,54 @@ type CancelLibraryScanPayload {
 	accepted: Boolean!
 }
 
+type CanonicalMediaTagPayload {
+	key: String!
+	category: String!
+	name: String!
+	confidence: Float
+	sources: [String!]!
+	sourceTagKeys: [String!]!
+	isAdult: Boolean!
+	isSpoiler: Boolean!
+}
+
+enum CatalogDiscoveryGroupKindValue {
+	PUBLIC_TOP
+	PUBLIC_SECTION
+	GENRE_AFFINITY
+	THEME_AFFINITY
+	ACCLAIMED
+	COMPLETE_COLLECTION
+	FALLBACK
+}
+
+type CatalogDiscoveryGroupPayload {
+	id: String!
+	kind: CatalogDiscoveryGroupKindValue!
+	surface: CatalogDiscoverySurfaceValue!
+	labelValue: String
+	totalCount: Long!
+	items: [DiscoveryItemPayload!]!
+}
+
+input CatalogDiscoveryInput {
+	facet: MediaFacetValue!
+	libraryIds: [ID!]
+	includeUnresolved: Boolean
+	limitPerGroup: Int
+	maxGroups: Int
+}
+
+type CatalogDiscoveryPayload {
+	canViewPersonalized: Boolean!
+	groups: [CatalogDiscoveryGroupPayload!]!
+}
+
+enum CatalogDiscoverySurfaceValue {
+	PUBLIC
+	PERSONALIZED
+}
+
 type ClearExternalImportSetupSecretDraftPayload {
 	cleared: Boolean!
 }
@@ -248,6 +324,18 @@ type CollectionPayload {
 	firstEpisodeNumber: String
 	lastEpisodeNumber: String
 	monitored: Boolean!
+	"""
+	Owned-vs-total episode progress for this collection, populated when requested.
+	"""
+	episodesOwned: Int
+	"""
+	Monitored episode count for this collection, populated when requested.
+	"""
+	episodesMonitored: Int
+	"""
+	Total countable episode count for this collection, populated when requested.
+	"""
+	episodesTotal: Int
 	createdAt: DateTime!
 	title: TitlePayload
 	episodes: [EpisodePayload!]!
@@ -261,6 +349,35 @@ enum ContentScopeValue {
 	movie
 	series
 	anime
+}
+
+"""
+Convergence state of an acquisition scope (RFC 119 §6/§7). Replaces the retired
+cadence display (`searchPhase`/`nextSearchAt`): the operator sees whether a scope
+is still sweeping indexers, has converged onto RSS, is queued for the cursor, or
+is deferred because every uncovered indexer is currently unavailable.
+"""
+enum ConvergenceStateValue {
+	"""
+	No indexer has been searched under the current fingerprint yet — waiting on
+	the cursor to begin the sweep.
+	"""
+	queued
+	"""
+	Some but not all routed indexers are covered — the convergence sweep is in
+	progress.
+	"""
+	searching
+	"""
+	Every routed indexer is covered under the current fingerprint — the scope is
+	watched via RSS and only re-checked on demand.
+	"""
+	converged
+	"""
+	Not converged, and every still-uncovered indexer is currently unavailable
+	(per the scheduler snapshot — cooling down or out of quota).
+	"""
+	deferred
 }
 
 input CreateBackupInput {
@@ -285,12 +402,21 @@ input CreateExternalAccountInviteInput {
 input CreateIndexerConfigInput {
 	name: String!
 	providerType: String!
+	indexerProxyConfigId: ID
 	rateLimitSeconds: Int
 	rateLimitBurst: Int
 	isEnabled: Boolean
 	enableInteractiveSearch: Boolean
 	enableAutoSearch: Boolean
 	config: [ProviderConfigValueInput!]
+}
+
+input CreateIndexerProxyConfigInput {
+	name: String!
+	providerType: String!
+	baseUrl: String!
+	requestTimeoutSeconds: Int
+	isEnabled: Boolean
 }
 
 input CreateLibraryInput {
@@ -391,6 +517,22 @@ type CutoffUnmetItemPayload {
 	episodeNumber: String
 	currentTier: String!
 	targetTier: String!
+	"""
+	Convergence progress for this upgrade scope (RFC 119 §6/§7) — the same
+	state the Missing/Upgrades views show.
+	"""
+	convergenceState: ConvergenceStateValue!
+	indexersCovered: Int!
+	indexersRouted: Int!
+}
+
+"""
+RFC 119 bounded view: one page of cutoff-unmet targets + the full unmet
+count, so the UI paginates instead of loading the whole set.
+"""
+type CutoffUnmetTitlesPagePayload {
+	items: [CutoffUnmetItemPayload!]!
+	total: Int!
 }
 
 scalar Date
@@ -479,6 +621,10 @@ type DeleteExternalSubtitlePayload {
 type DeleteIndexerConfigPayload {
 	id: ID!
 	deleted: Boolean!
+}
+
+type DeleteIndexerProxyConfigPayload {
+	ok: Boolean!
 }
 
 type DeleteLibraryPayload {
@@ -606,6 +752,22 @@ type DirectoryEntryPayload {
 	path: String!
 }
 
+type DiscoveryExternalIdPayload {
+	source: String!
+	kind: String!
+	id: String!
+	key: String!
+}
+
+type DiscoveryExternalRatingPayload {
+	source: String!
+	value: Float
+	score: Float
+	normalized: Float!
+	votes: Int
+	url: String!
+}
+
 type DiscoveryFacetPayload {
 	name: String!
 	value: String!
@@ -622,11 +784,17 @@ input DiscoveryHomeInput {
 
 type DiscoveryHomePayload {
 	status: DiscoverySyncStatusPayload!
+	heroItem: DiscoveryItemPayload
 	publicSections: [DiscoverySectionPayload!]!
 	personalizedSections: [DiscoverySectionPayload!]!
 	completeCollection: DiscoverySectionPayload
 	facets: [DiscoveryFacetPayload!]!
 	canViewPersonalized: Boolean!
+}
+
+input DiscoveryItemDetailInput {
+	targetKey: String!
+	includeUnresolved: Boolean
 }
 
 type DiscoveryItemPayload {
@@ -643,8 +811,11 @@ type DiscoveryItemPayload {
 	backgroundUrl: String
 	overview: String
 	contentType: String
-	genres: [String!]!
+	canonicalTags: [CanonicalMediaTagPayload!]!
 	rating: Float
+	ratingSources: [String!]!
+	externalRatings: [DiscoveryExternalRatingPayload!]!
+	externalIds: [DiscoveryExternalIdPayload!]!
 	statusTags: [String!]!
 	sourceTags: [String!]!
 	sources: [String!]!
@@ -1410,6 +1581,7 @@ type ExternalSubtitlePayload {
 	providerFileId: String
 	filePath: String!
 	score: Int
+	scorePercent: Int
 	hearingImpaired: Boolean!
 	forced: Boolean!
 	aiTranslated: Boolean!
@@ -1581,6 +1753,7 @@ type IndexerConfigPayload {
 	name: String!
 	providerType: String!
 	baseUrl: String!
+	indexerProxyConfigId: ID
 	hasApiKey: Boolean!
 	isManaged: Boolean!
 	managedParentConfigId: ID
@@ -1605,6 +1778,28 @@ type IndexerConfigSyncPayload {
 	createdIds: [ID!]!
 	updatedIds: [ID!]!
 	deletedIds: [ID!]!
+}
+
+type IndexerProxyConfigPayload {
+	id: ID!
+	name: String!
+	providerType: String!
+	protocol: String!
+	baseUrl: String!
+	requestTimeoutSeconds: Int!
+	isEnabled: Boolean!
+	lastHealthStatus: String
+	lastErrorMessage: String
+	lastErrorAt: DateTime
+	createdAt: DateTime!
+	updatedAt: DateTime!
+}
+
+type IndexerProxyTestResultPayload {
+	ok: Boolean!
+	status: String!
+	message: String
+	durationMs: Int
 }
 
 type IndexerQueryStatsPayload {
@@ -1635,6 +1830,7 @@ type IndexerRoutingEntryPayload {
 }
 
 type IndexerSearchResultPayload {
+	indexerId: ID
 	source: String!
 	title: String!
 	link: String
@@ -1703,12 +1899,12 @@ enum JobKeyValue {
 	health_checks
 	auto_backup
 	prowlarr_sync
-	wanted_sync
 	pending_release_processing
 	staged_nzb_prune
 	discovery_sync
 	title_image_cache_refresh
 	title_deletion
+	acquisition_search
 }
 
 type JobRunPayload {
@@ -2294,7 +2490,6 @@ type MetadataMoviePayload {
 	runtimeMinutes: Int!
 	sortTitle: String!
 	imdbId: String!
-	genres: [String!]!
 	studio: String!
 	tmdbReleaseDate: Date
 }
@@ -2347,7 +2542,6 @@ type MetadataSeriesPayload {
 	runtimeMinutes: Int!
 	posterUrl: String!
 	country: String!
-	genres: [String!]!
 	aliases: [String!]!
 	seasons: [MetadataSeasonPayload!]!
 	episodes: [MetadataEpisodePayload!]!
@@ -2374,7 +2568,6 @@ type MovieEntityPayload {
 	language: String
 	runtimeMinutes: Int
 	contentStatus: String
-	genres: [String!]!
 	studio: String
 	digitalReleaseDate: Date
 	imdbId: String
@@ -2400,6 +2593,14 @@ type MutationRoot {
 	setEpisodeMonitored(input: SetEpisodeMonitoredInput!): EpisodePayload!
 	setSeriesMovieMonitored(input: SetSeriesMovieMonitoredInput!): SeriesMovieLinkPayload!
 	queueExistingTitleDownload(input: QueueDownloadInput!): QueueDownloadPayload!
+	"""
+	Queue an operator-chosen release to REPLACE the existing primary file. The
+	replacement always lands (bypasses scoring deltas + required-language gates
+	on import, recycling the old primary with a score boost), and the release
+	that produced the replaced file is blocklisted. `purpose`/`scope` are ignored
+	(scope comes from the signed candidate token; purpose is always replacement).
+	"""
+	queueReplacementRelease(input: QueueDownloadInput!): QueueDownloadPayload!
 	queueBestRelease(input: QueueBestReleaseInput!): QueueDownloadPayload!
 	queueManualImport(input: QueueManualImportInput!): DownloadQueueActionPayload!
 	queuePathManualImport(input: QueuePathManualImportInput!): DownloadQueueActionPayload!
@@ -2416,6 +2617,10 @@ type MutationRoot {
 	triggerJob(jobKey: JobKeyValue!): JobRunPayload!
 	createIndexerConfig(input: CreateIndexerConfigInput!): IndexerConfigPayload!
 	updateIndexerConfig(input: UpdateIndexerConfigInput!): IndexerConfigPayload!
+	createIndexerProxyConfig(input: CreateIndexerProxyConfigInput!): IndexerProxyConfigPayload!
+	updateIndexerProxyConfig(input: UpdateIndexerProxyConfigInput!): IndexerProxyConfigPayload!
+	deleteIndexerProxyConfig(id: ID!): DeleteIndexerProxyConfigPayload!
+	testIndexerProxyConfig(id: ID!): IndexerProxyTestResultPayload!
 	deleteIndexerConfig(id: ID!): DeleteIndexerConfigPayload!
 	createDownloadClientConfig(input: CreateDownloadClientConfigInput!): DownloadClientConfigPayload!
 	updateDownloadClientConfig(input: UpdateDownloadClientConfigInput!): DownloadClientConfigPayload!
@@ -2500,15 +2705,35 @@ type MutationRoot {
 	dismissMediaRequest(requestId: ID!): MediaRequestActionPayload!
 	updateMyMediaRequest(input: UpdateMediaRequestInput!): MediaRequestPayload!
 	cancelMyMediaRequest(requestId: ID!): MediaRequestActionPayload!
-	triggerTitleWantedSearch(input: TriggerTitleWantedSearchInput!): WantedSearchPayload!
+	"""
+	Re-open the title's title-mismatch scopes for search after a rematch
+	(RFC 119 §D2). Retained: a rematch changes the scope fingerprint, so the
+	re-open prunes coverage and the cursor re-converges.
+	"""
 	triggerTitleMismatchRecoverySearch(titleId: ID!): TriggerTitleMismatchRecoverySearchPayload!
-	triggerSeasonWantedSearch(input: TriggerSeasonWantedSearchInput!): WantedSearchPayload!
-	triggerWantedSearch(input: TriggerWantedSearchInput!): WantedSearchPayload!
+	"""
+	Pause acquisition for a scope. `id` is a state-row id or a convergence scope
+	key (RFC 119 §7.4) — a scope key with no row yet materializes one.
+	"""
 	pauseWantedItem(id: ID!): PauseWantedItemPayload!
+	"""
+	Resume acquisition for a paused scope. `id` is a state-row id or a
+	convergence scope key (RFC 119 §7.4).
+	"""
 	resumeWantedItem(id: ID!): ResumeWantedItemPayload!
-	resetWantedItem(id: ID!): ResetWantedItemPayload!
 	forceGrabPendingRelease(id: ID!): ForceGrabPendingReleasePayload!
 	dismissPendingRelease(id: ID!): DismissPendingReleasePayload!
+	"""
+	Start an interactive acquisition-search job over the selected wanted/upgrade
+	scopes (RFC 119 §7.3 / Phase 2). Replaces the retired per-item trigger
+	mutations: one server job (progress/cancel survive refresh) runs the
+	interactive best-release search+grab for every requested scope.
+	"""
+	triggerAcquisitionSearch(input: TriggerAcquisitionSearchInput!): AcquisitionSearchJobPayload!
+	"""
+	Cancel a running interactive acquisition-search job (RFC 119 §7.3).
+	"""
+	cancelAcquisitionSearch(id: ID!): Boolean!
 	createRuleSet(input: CreateRuleSetInput!): RuleSetPayload!
 	updateRuleSet(input: UpdateRuleSetInput!): RuleSetPayload!
 	deleteRuleSet(id: ID!): DeleteRuleSetPayload!
@@ -2646,6 +2871,24 @@ type OauthConnectedAppPayload {
 	clientName: String!
 	authorizedAt: DateTime!
 	lastUsedAt: DateTime
+}
+
+type OutboundDestinationCooldownSnapshotEntryPayload {
+	destinationKey: String!
+	availableInSeconds: Long!
+}
+
+type OutboundHostRpsSnapshotEntryPayload {
+	hostKey: String!
+	availableInSeconds: Long!
+	requestsPerSecond: Float!
+	burst: Int!
+	profileSource: String!
+}
+
+type OutboundRateLimitSnapshotPayload {
+	hostRps: [OutboundHostRpsSnapshotEntryPayload!]!
+	destinationCooldowns: [OutboundDestinationCooldownSnapshotEntryPayload!]!
 }
 
 type ParsedEpisodePayload {
@@ -3101,11 +3344,13 @@ type QualityProfileSettingsPayload {
 type QueryRoot {
 	titles(facet: MediaFacetValue, libraryIds: [ID!], query: String, filter: TitleCatalogFilterInput, sort: TitleCatalogSortInput, limit: Int, offset: Int): TitleCatalogPayload!
 	libraries(facet: MediaFacetValue, permission: LibraryPermissionValue): [LibraryPayload!]!
+	catalogHasValidRoot(facet: MediaFacetValue!): Boolean!
 	mediaRequests(facet: MediaFacetValue, libraryIds: [ID!], status: MediaRequestStatusValue): [MediaRequestPayload!]!
 	myMediaRequests(facet: MediaFacetValue, libraryIds: [ID!], status: MediaRequestStatusValue): [MediaRequestPayload!]!
 	librarySettings(libraryId: ID!): LibrarySettingsPayload!
 	titlesByExternalIds(source: String!, values: [String!]!): [TitlePayload!]!
 	title(id: ID!): TitlePayload
+	episodeMediaFiles(titleId: ID!, episodeId: ID!): [TitleMediaFilePayload!]!
 	titleBySlug(facet: MediaFacetValue!, libraryId: ID, librarySlug: String, slug: String!): TitlePayload
 	mediaRenamePreview(input: MediaRenamePreviewInput!): MediaRenamePlanPayload!
 	deleteTitlePreview(titleId: ID!): DeletePreviewPayload!
@@ -3132,6 +3377,8 @@ type QueryRoot {
 	recentJobRuns(limit: Int): [JobRunPayload!]!
 	discoveryHome(input: DiscoveryHomeInput): DiscoveryHomePayload!
 	discoveryItems(input: DiscoveryItemsInput): DiscoveryItemsPayload!
+	discoveryItemDetail(input: DiscoveryItemDetailInput!): DiscoveryItemPayload
+	catalogDiscovery(input: CatalogDiscoveryInput!): CatalogDiscoveryPayload!
 	discoverySyncStatus: DiscoverySyncStatusPayload!
 	downloadQueue(includeAllActivity: Boolean, includeHistoryOnly: Boolean, includeImportActivity: Boolean, titleId: ID, activityFilter: DownloadActivityFilterValue): [DownloadQueueItemPayload!]!
 	downloadImport(limit: Int, offset: Int, filter: DownloadImportFilterValue): DownloadImportPagePayload!
@@ -3161,12 +3408,15 @@ type QueryRoot {
 	downloadClientRouting(scope: ContentScopeValue!): [DownloadClientRoutingEntryPayload!]!
 	indexerRouting(scope: ContentScopeValue!): [IndexerRoutingEntryPayload!]!
 	indexers(providerType: String): [IndexerConfigPayload!]!
+	indexerProxyConfigs: [IndexerProxyConfigPayload!]!
 	rootFolders(facet: MediaFacetValue!): [RootFolderPayload!]!
 	downloadClientConfigs(clientType: String): [DownloadClientConfigPayload!]!
 	subtitleProviderConfigs(providerType: String): [SubtitleProviderConfigPayload!]!
 	users: [UserPayload!]!
 	runtimeInfo: RuntimeInfoPayload!
 	systemHealth: SystemHealthPayload!
+	upstreamSchedulerSnapshot(hostKey: String, destinationKey: String, accountQuotaKey: String): UpstreamSchedulerSnapshotPayload!
+	outboundRateLimitSnapshot: OutboundRateLimitSnapshotPayload!
 	scryerVersion: String!
 	smgVersionCompatibilityNotice: SmgVersionCompatibilityNoticePayload
 	smgScryerUpdateNotice: SmgScryerUpdateNoticePayload
@@ -3177,9 +3427,28 @@ type QueryRoot {
 	previewManualImport(input: PreviewManualImportInput!): ManualImportPreviewPayload!
 	previewManualImportPath(input: PreviewManualImportPathInput!): ManualImportPreviewPayload!
 	me: UserPayload
-	wantedItems(statuses: [WantedStatusValue!], mediaTypes: [WantedMediaTypeValue!], titleId: ID, libraryIds: [ID!], titleSearch: String, latestDecisionCodes: [String!], limit: Int! = 50, offset: Int! = 0): WantedItemsListPayload!
-	cutoffUnmetTitles(facet: MediaFacetValue, libraryIds: [ID!]): [CutoffUnmetItemPayload!]!
+	"""
+	RFC 119 §6/§7: the derived Missing / Upgrades view. `wantedKind` selects the
+	target set (`MISSING` derived from fileless monitored scopes, `CUTOFF_UPGRADE`
+	from below-cutoff files). Results are the derived targets joined to the
+	activity-state row (when one exists) and enriched with per-scope convergence
+	progress. The retired state-row status / decision-code filters are dropped —
+	they only distinguished state rows, which are no longer the target source.
+	"""
+	wantedItems(wantedKind: WantedKindValue! = missing, facet: MediaFacetValue, libraryIds: [ID!], titleSearch: String, limit: Int! = 50, offset: Int! = 0): WantedItemsListPayload!
+	"""
+	RFC 119 bounded view: a single page of cutoff-unmet (Upgrades) targets plus
+	the full unmet count and per-item convergence progress, so the UI paginates
+	instead of loading the whole set. The unpaged `cutoffUnmetTitles` query was
+	removed in this release (RFC 119 §6): the full-array browser load is retired.
+	"""
+	cutoffUnmetTitlesPage(facet: MediaFacetValue, libraryIds: [ID!], limit: Int!, offset: Int!): CutoffUnmetTitlesPagePayload!
 	titleAcquisitionDiagnostics(titleId: ID!): TitleAcquisitionDiagnosticsPayload!
+	"""
+	Progress of an interactive acquisition-search job (RFC 119 §7.3), polled by
+	the UI alongside the `jobRunEvents` push. `None` when no such job exists.
+	"""
+	acquisitionSearchJob(id: ID!): AcquisitionSearchJobPayload
 	ruleSets: [RuleSetPayload!]!
 	postProcessingScripts: [PostProcessingScriptPayload!]!
 	postProcessingScriptRuns(scriptId: ID!, limit: Int): [PostProcessingScriptRunPayload!]!
@@ -3304,6 +3573,16 @@ input QueuePathManualImportInput {
 	files: [ManualImportFileMappingInput!]!
 }
 
+"""
+Recency lane of an acquisition scope (RFC 119 §D3): `Hot` scopes converge
+promptly (high candidate value to the scheduler); `Cold` scopes drain under
+backpressure.
+"""
+enum RecencyLaneValue {
+	hot
+	cold
+}
+
 type RecycleBinSettingsPayload {
 	enabled: Boolean!
 }
@@ -3395,11 +3674,6 @@ input ReorderDownloadClientConfigsInput {
 type ReorderDownloadClientConfigsPayload {
 	ids: [ID!]!
 	reordered: Boolean!
-}
-
-type ResetWantedItemPayload {
-	id: ID!
-	reset: Boolean!
 }
 
 input ResolvePendingImportInput {
@@ -3656,6 +3930,7 @@ input SetMyUiSettingsInput {
 	secondaryColor: String
 	highContrastMode: Boolean!
 	reduceMotion: Boolean!
+	hideSponsorButton: Boolean!
 	density: UiDensityValue!
 	sidebarMode: UiSidebarModeValue!
 	defaultLandingView: UiDefaultLandingViewValue!
@@ -3817,6 +4092,7 @@ type SubtitleSearchResult {
 	language: String!
 	releaseInfo: String
 	score: Int!
+	scorePercent: Int!
 	hearingImpaired: Boolean!
 	forced: Boolean!
 	aiTranslated: Boolean!
@@ -3877,6 +4153,7 @@ input TestIndexerConnectionInput {
 	providerType: String!
 	config: [ProviderConfigValueInput!]
 	indexerId: ID
+	indexerProxyConfigId: ID
 }
 
 input TestMediaServerConnectionInput {
@@ -3905,6 +4182,14 @@ enum TitleCatalogContentStatusValue {
 	ended
 }
 
+type TitleCatalogFilterCountsPayload {
+	all: Int!
+	monitored: Int!
+	unmonitored: Int!
+	continuing: Int!
+	ended: Int!
+}
+
 input TitleCatalogFilterInput {
 	monitored: Boolean
 	contentStatuses: [TitleCatalogContentStatusValue!]
@@ -3916,6 +4201,7 @@ type TitleCatalogPayload {
 	offset: Int!
 	hasMore: Boolean!
 	totalCount: Int!
+	filterCounts: TitleCatalogFilterCountsPayload!
 }
 
 input TitleCatalogSortInput {
@@ -3932,6 +4218,36 @@ enum TitleCatalogSortKeyValue {
 	status
 	size
 	added
+	year
+	runtime
+	root
+	popularity
+	media_resolution
+	media_hdr
+	media_audio_codec
+	rating_scryer
+	rating_imdb
+	rating_rotten_tomatoes
+	rating_popcornmeter
+	rating_metacritic
+	rating_metacritic_user
+	rating_letterboxd
+	rating_tmdb
+	rating_tvdb
+	rating_trakt
+	rating_myanimelist
+	rating_anilist
+	rating_anidb
+	rating_mdblist
+}
+
+type TitleExternalRatingPayload {
+	source: String!
+	value: Float
+	score: Float
+	normalized: Float!
+	votes: Int
+	url: String!
 }
 
 type TitleHistoryEventPayload {
@@ -4093,7 +4409,8 @@ type TitlePayload {
 	slug: String
 	imdbId: String
 	runtimeMinutes: Int
-	genres: [String!]!
+	popularity: Float
+	canonicalTags: [CanonicalMediaTagPayload!]!
 	contentStatus: String
 	language: String
 	firstAired: Date
@@ -4137,6 +4454,20 @@ type TitlePayload {
 	Total episode count, excluding specials, populated in list queries.
 	"""
 	episodesTotal: Int
+	"""
+	Primary movie media resolution, populated in list queries when projected.
+	"""
+	mediaResolution: String
+	"""
+	Primary movie media HDR format, populated in list queries when projected.
+	"""
+	mediaHdr: String
+	"""
+	Primary movie media audio codec, populated in list queries when projected.
+	"""
+	mediaAudioCodec: String
+	ratings: TitleRatingPayload!
+	moreLikeThis(limit: Int! = 12): [DiscoveryItemPayload!]!
 	rootFolderPath: String!
 	requiredAudioLanguagesOverride: [String!]
 	effectiveRequiredAudioLanguages: [String!]!
@@ -4147,6 +4478,12 @@ type TitlePayload {
 	wantedItems(status: WantedStatusValue, limit: Int! = 50, offset: Int! = 0): WantedItemsPagePayload!
 	releaseDecisions(limit: Int! = 50, offset: Int! = 0): ReleaseDecisionsPagePayload!
 	downloadQueueItems(includeAllActivity: Boolean, includeHistoryOnly: Boolean, includeImportActivity: Boolean, activityFilter: DownloadActivityFilterValue): [DownloadQueueItemPayload!]!
+}
+
+type TitleRatingPayload {
+	rating: Float
+	ratingSources: [String!]!
+	externalRatings: [TitleExternalRatingPayload!]!
 }
 
 type TitleReleaseBlocklistEntryPayload {
@@ -4213,24 +4550,43 @@ enum TrackedDownloadStatusValue {
 	error
 }
 
-input TriggerSeasonWantedSearchInput {
-	titleId: ID!
-	seasonNumber: Int!
+"""
+Scope selector for the interactive acquisition-search job (RFC 119 §7.3/Phase 2).
+A bare input searches every derived target of `wanted_kind`; narrowing fields
+filter that set. `wanted_item_id` (a state-row id or a convergence scope key)
+resolves a single scope.
+"""
+input TriggerAcquisitionSearchInput {
+	"""
+	Which derived target set to search. Defaults to `Missing`.
+	"""
+	wantedKind: WantedKindValue
+	"""
+	Restrict to one facet.
+	"""
+	facet: MediaFacetValue
+	"""
+	Restrict to these libraries.
+	"""
+	libraryIds: [ID!]
+	"""
+	Restrict to one title.
+	"""
+	titleId: ID
+	"""
+	Restrict to one season of `title_id` (episodic facets).
+	"""
+	seasonNumber: Int
+	"""
+	Search exactly one scope: a state-row id or a convergence scope key
+	(`episode:<uuid>`, `title:<uuid>`, `series_movie:<uuid>`, …).
+	"""
+	wantedItemId: ID
 }
 
 type TriggerTitleMismatchRecoverySearchPayload {
 	titleId: ID!
 	queuedCount: Int!
-}
-
-input TriggerTitleWantedSearchInput {
-	titleId: ID!
-	replaceInProgress: Boolean
-}
-
-input TriggerWantedSearchInput {
-	wantedItemId: ID!
-	replaceInProgress: Boolean
 }
 
 enum UiDateTimeFormatValue {
@@ -4269,6 +4625,7 @@ type UiSettingsPayload {
 	secondaryColor: String
 	highContrastMode: Boolean!
 	reduceMotion: Boolean!
+	hideSponsorButton: Boolean!
 	density: UiDensityValue!
 	sidebarMode: UiSidebarModeValue!
 	defaultLandingView: UiDefaultLandingViewValue!
@@ -4327,8 +4684,8 @@ input UpdateAcquisitionSettingsInput {
 	crossTierMinDelta: Int!
 	forcedUpgradeDeltaBypass: Int!
 	pollIntervalSeconds: Int!
-	syncIntervalSeconds: Int!
-	batchSize: Int!
+	longTailBackfillMaxScopesPerCycle: Int!
+	longTailReconvergeDays: Int!
 }
 
 input UpdateAutoBackupSettingsInput {
@@ -4365,12 +4722,21 @@ input UpdateIndexerConfigInput {
 	id: ID!
 	name: String
 	providerType: String
+	indexerProxyConfigId: ID
 	rateLimitSeconds: Int
 	rateLimitBurst: Int
 	isEnabled: Boolean
 	enableInteractiveSearch: Boolean
 	enableAutoSearch: Boolean
 	config: [ProviderConfigValueInput!]
+}
+
+input UpdateIndexerProxyConfigInput {
+	id: ID!
+	name: String
+	baseUrl: String
+	requestTimeoutSeconds: Int
+	isEnabled: Boolean
 }
 
 input UpdateIndexerRoutingInput {
@@ -4546,6 +4912,42 @@ A multipart file upload
 """
 scalar Upload
 
+type UpstreamSchedulerSnapshotEntryPayload {
+	hostKey: String!
+	destinationKey: String!
+	accountQuotaKey: String
+	rssRequestKey: String
+	lastDecision: String
+	lastFeedbackAt: DateTime
+	lastSuccessfulAt: DateTime
+	lastAttemptAt: DateTime
+	cooldownUntil: DateTime
+	apiRemainingFraction: Float
+	quotaObservedAt: DateTime
+	quotaProbeAfter: DateTime
+	quotaResetAt: DateTime
+	quotaSource: String
+	quotaStale: Boolean!
+	rssLastSuccessfulPollAt: DateTime
+	rssLastAttemptAt: DateTime
+	rssTargetIntervalSeconds: Long
+	rssLatestSafePollAt: DateTime
+	rssEstimatedFeedDepth: Int
+	rssFreshnessRisk: Float
+	rssDestinationRecentActivityAt: DateTime
+	rssLastSeenReleaseIdentity: String
+	rssLastSeenReleasePublishedAt: DateTime
+	rssLastFeedGapStartAt: DateTime
+	rssLastFeedGapEndAt: DateTime
+	admittedCount: Long!
+	deferredCount: Long!
+	skippedCount: Long!
+}
+
+type UpstreamSchedulerSnapshotPayload {
+	entries: [UpstreamSchedulerSnapshotEntryPayload!]!
+}
+
 enum UserAccountKindValue {
 	local
 	external_auto_provisioned
@@ -4578,6 +4980,13 @@ input ValidateRuleSetInput {
 }
 
 type WantedItemPayload {
+	"""
+	Scope identity (RFC 119 §6): the acquisition-state row id when a state row
+	exists for this scope, otherwise the convergence scope key itself
+	(`episode:<uuid>`, `title:<uuid>`, `series_movie:<uuid>`, …). A derived
+	target with no state row is still addressable by this id (pause/resume and
+	the interactive search job both accept a scope key here).
+	"""
 	id: ID!
 	titleId: ID!
 	titleName: String
@@ -4591,16 +5000,31 @@ type WantedItemPayload {
 	seasonNumber: String
 	episodeNumber: String
 	mediaType: WantedMediaTypeValue!
-	searchPhase: WantedSearchPhaseValue!
-	nextSearchAt: DateTime
 	lastSearchAt: DateTime
-	searchCount: Int!
-	baselineDate: Date
 	status: WantedStatusValue!
 	grabbedRelease: String
 	currentScore: Int
 	latestReleaseDecision: ReleaseDecisionPayload
 	mismatchRecoveryEligible: Boolean!
+	"""
+	Convergence progress for this scope (RFC 119 §6/§7): whether the scope is
+	still sweeping indexers, has converged (watching RSS), is queued, or is
+	deferred because every uncovered indexer is currently unavailable.
+	"""
+	convergenceState: ConvergenceStateValue!
+	"""
+	Routed indexers already searched under the current fingerprint.
+	"""
+	indexersCovered: Int!
+	"""
+	Routed-enabled indexers for this scope.
+	"""
+	indexersRouted: Int!
+	"""
+	Recency lane (RFC 119 §D3): `Hot` converges promptly, `Cold` drains under
+	scheduler backpressure.
+	"""
+	recencyLane: RecencyLaneValue!
 	createdAt: DateTime!
 	updatedAt: DateTime!
 	title: TitlePayload
@@ -4623,6 +5047,16 @@ type WantedItemsPagePayload {
 	totalCount: Int!
 }
 
+"""
+Which derived acquisition-target set a wanted view lists (RFC 119 §6/§7):
+`Missing` scopes have no primary file; `CutoffUpgrade` scopes have a file below
+the effective profile cutoff.
+"""
+enum WantedKindValue {
+	missing
+	cutoff_upgrade
+}
+
 enum WantedMediaTypeValue {
 	movie
 	episode
@@ -4633,14 +5067,6 @@ type WantedSearchPayload {
 	queuedCount: Int!
 	skippedInProgressCount: Int!
 	conflict: QueueDownloadConflictPayload
-}
-
-enum WantedSearchPhaseValue {
-	pre_air
-	pre_release
-	primary
-	secondary
-	long_tail
 }
 
 type WantedStatusCountPayload {

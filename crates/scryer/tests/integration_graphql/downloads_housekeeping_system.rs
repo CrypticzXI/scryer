@@ -374,8 +374,8 @@ async fn housekeeping_respects_configured_history_retention() {
 
     sqlx::query(
         "INSERT INTO wanted_items
-         (id, title_id, episode_id, media_type, search_phase, status, created_at, updated_at)
-         VALUES (?, ?, NULL, 'series', 'primary', 'wanted', ?, ?)",
+         (id, title_id, episode_id, media_type, status, created_at, updated_at)
+         VALUES (?, ?, NULL, 'series', 'wanted', ?, ?)",
     )
     .bind(&wanted_item_id)
     .bind(&title.id)
@@ -633,8 +633,8 @@ async fn housekeeping_skips_history_retention_when_keep_forever_is_enabled() {
 
     sqlx::query(
         "INSERT INTO wanted_items
-         (id, title_id, episode_id, media_type, search_phase, status, created_at, updated_at)
-         VALUES (?, ?, NULL, 'series', 'primary', 'wanted', ?, ?)",
+         (id, title_id, episode_id, media_type, status, created_at, updated_at)
+         VALUES (?, ?, NULL, 'series', 'wanted', ?, ?)",
     )
     .bind(&wanted_item_id)
     .bind(&title.id)

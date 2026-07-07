@@ -5837,3 +5837,503 @@ async fn monitored_series_movie_link_reconciles_stale_episode_wanted_items() {
     assert!(wanted[0].collection_id.is_none());
     assert!(wanted.iter().all(|item| item.episode_id.is_none()));
 }
+
+// ── RFC 119 §D5: RSS match-time targets + pack-granularity grabs ────────────
+//
+// Target-ness is derived from library state at match time (monitored scope,
+// missing or below cutoff); a pre-existing wanted row no longer gates the grab.
+// The activity ledger row is materialized on the first anchored write, packs
+// converge once at pack granularity, and paused scopes are never grabbed.
+
+/// RSS acquisition bootstrap that exposes the media-file store and quality
+/// profiles, so cutoff/upgrade target-ness can be driven from library state.
+/// Mirrors `bootstrap_with_acquisition_tracking_and_indexer` otherwise.
+fn bootstrap_rss_with_media_files_and_profiles(
+    download_client: Arc<StubDownloadClient>,
+    download_submissions: Arc<TrackingDownloadSubmissionRepo>,
+    pending_releases: Arc<TrackingPendingReleaseRepo>,
+    wanted_items: Arc<TrackingWantedItemRepo>,
+    media_files: Arc<MockMediaFileRepo>,
+    quality_profiles: Arc<StoredQualityProfileRepo>,
+    indexer_client: Arc<dyn IndexerClient>,
+) -> (AppUseCase, User) {
+    let titles = Arc::new(MockTitleRepo::default());
+    let shows = Arc::new(MockShowRepo::default());
+    let users = Arc::new(MockUserRepo::default());
+    let indexer_configs = Arc::new(MockIndexerConfigRepo::default());
+    let download_client_configs = Arc::new(MockDownloadClientConfigRepo::default());
+    download_client_configs
+        .store
+        .try_lock()
+        .expect("download client config store should not be contended during bootstrap")
+        .push(DownloadClientConfig {
+            id: "background-search-default-client".to_string(),
+            name: "Background Search Default Client".to_string(),
+            client_type: "nzbget".to_string(),
+            config_json: "{}".to_string(),
+            client_priority: 10_000,
+            is_enabled: true,
+            status: scryer_domain::DownloadClientStatus::Healthy,
+            last_error: None,
+            last_seen_at: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        });
+    let release_attempts = Arc::new(MockReleaseAttemptRepo::default());
+    let settings = Arc::new(StoredSettingsRepo::default());
+
+    let services = AppServices::builder(
+        titles,
+        shows,
+        users,
+        indexer_configs,
+        indexer_client,
+        download_client,
+        download_client_configs,
+        release_attempts,
+        settings,
+        quality_profiles,
+        String::new(),
+    )
+    .with_domain_events(Arc::new(MockDomainEventRepo::default()))
+    .with_download_submissions(download_submissions.clone())
+    .with_pending_releases(pending_releases.clone())
+    .with_blocklist_repo(Arc::new(MockBlocklistRepo::default()))
+    .with_libraries(Arc::new(MockLibraryRepo::default()))
+    .with_media_files(media_files)
+    .build_partial_for_tests();
+
+    let mut registry = FacetRegistry::new();
+    registry.register(Arc::new(MovieFacetHandler));
+    registry.register(Arc::new(SeriesFacetHandler::new(
+        scryer_domain::MediaFacet::Series,
+    )));
+    registry.register(Arc::new(SeriesFacetHandler::new(
+        scryer_domain::MediaFacet::Anime,
+    )));
+    let app = AppUseCase::new(
+        services,
+        JwtAuthConfig {
+            issuer: "scryer-test".to_string(),
+            access_ttl_seconds: 3600,
+            jwt_signing_salt: "test-salt".to_string(),
+        },
+        Arc::new(registry),
+    );
+    let app = app.with_test_overrides(|services| {
+        services
+            .with_acquisition_state(Arc::new(TrackingAcquisitionStateRepo {
+                download_submissions,
+                pending_releases,
+                wanted_items: wanted_items.clone(),
+            }))
+            .with_wanted_items(wanted_items)
+    });
+    (app, test_admin_user())
+}
+
+/// A thinned acquisition-state row (post-RFC-119 shape) for seeding tests.
+fn rfc119_wanted_state(
+    title: &Title,
+    media_type: &str,
+    episode_id: Option<String>,
+    status: WantedStatus,
+) -> WantedItem {
+    let now = Utc::now().to_rfc3339();
+    WantedItem {
+        id: Id::new().0,
+        title_id: title.id.clone(),
+        title_name: Some(title.name.clone()),
+        title_slug: title.slug.clone(),
+        title_facet: Some(title.facet.as_str().to_string()),
+        library_id: Some(title.library_id.clone()),
+        library_name: None,
+        library_slug: None,
+        episode_id,
+        collection_id: None,
+        series_movie_link_id: None,
+        season_number: None,
+        episode_number: None,
+        media_type: media_type.to_string(),
+        last_search_at: None,
+        status,
+        grabbed_release: None,
+        current_score: None,
+        latest_release_decision: None,
+        mismatch_recovery_eligible: false,
+        created_at: now.clone(),
+        updated_at: now,
+    }
+}
+
+/// A missing, monitored movie with NO acquisition-state row is upgraded from a
+/// matching RSS release: the wanted-row gate is gone (§D5), and the grab
+/// materializes the state row and transitions it to grabbed.
+#[tokio::test]
+async fn rss_grabs_missing_movie_with_no_wanted_row_and_creates_state_row() {
+    let release_title = "Convergent.Skyline.2024.1080p.WEB-DL-GRP";
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let wanted_items = Arc::new(TrackingWantedItemRepo::default());
+    let indexer_client = Arc::new(FixedReleaseIndexerClient::new(release_title));
+    let (app, user) = bootstrap_with_acquisition_tracking_and_indexer(
+        download_client.clone(),
+        download_submissions.clone(),
+        pending_releases,
+        wanted_items.clone(),
+        indexer_client,
+    );
+
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Convergent Skyline".into(),
+                sort_title: Some("Convergent Skyline".into()),
+                slug: Some("convergent-skyline".into()),
+                facet: MediaFacet::Movie,
+                monitored: true,
+                year: Some(2024),
+                content_status: Some("Released".into()),
+                min_availability: Some("released".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create monitored movie");
+    wanted_items
+        .remember_title_facet(&title.id, MediaFacet::Movie)
+        .await;
+
+    // No wanted row exists for this scope before the sync.
+    assert!(
+        wanted_items
+            .get_wanted_item_for_title(&title.id, None)
+            .await
+            .expect("query wanted")
+            .is_none()
+    );
+
+    let report = app.run_scheduled_rss_sync().await.expect("run RSS sync");
+
+    assert_eq!(report.releases_grabbed, 1, "missing monitored movie is grabbed");
+    // The grab materialized the state row and transitioned it to grabbed.
+    let seeded = wanted_items
+        .get_wanted_item_for_title(&title.id, None)
+        .await
+        .expect("query wanted")
+        .expect("state row materialized on grab");
+    assert_eq!(seeded.status, WantedStatus::Grabbed);
+    assert!(
+        download_submissions
+            .store
+            .lock()
+            .await
+            .iter()
+            .any(|submission| submission.title_id == title.id
+                && submission.scope == SubmissionScope::Title),
+        "movie grab records a title-scope submission"
+    );
+}
+
+/// A paused scope is never grabbed even when it is a monitored, missing target
+/// with a matching release (§D5 — user intent wins).
+#[tokio::test]
+async fn rss_does_not_grab_paused_scope() {
+    let release_title = "Paused.Harbor.2024.1080p.WEB-DL-GRP";
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let wanted_items = Arc::new(TrackingWantedItemRepo::default());
+    let indexer_client = Arc::new(FixedReleaseIndexerClient::new(release_title));
+    let (app, user) = bootstrap_with_acquisition_tracking_and_indexer(
+        download_client,
+        download_submissions.clone(),
+        pending_releases,
+        wanted_items.clone(),
+        indexer_client,
+    );
+
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Paused Harbor".into(),
+                sort_title: Some("Paused Harbor".into()),
+                slug: Some("paused-harbor".into()),
+                facet: MediaFacet::Movie,
+                monitored: true,
+                year: Some(2024),
+                content_status: Some("Released".into()),
+                min_availability: Some("released".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create monitored movie");
+    wanted_items
+        .remember_title_facet(&title.id, MediaFacet::Movie)
+        .await;
+    wanted_items
+        .upsert_wanted_item(&rfc119_wanted_state(
+            &title,
+            "movie",
+            None,
+            WantedStatus::Paused,
+        ))
+        .await
+        .expect("seed paused state row");
+
+    let report = app.run_scheduled_rss_sync().await.expect("run RSS sync");
+
+    assert_eq!(report.releases_grabbed, 0, "paused scope is never grabbed");
+    assert!(download_submissions.store.lock().await.is_empty());
+}
+
+/// A season pack matching two monitored, missing episodes is grabbed once at
+/// pack granularity (§D5 #3): a single submission carrying the pack submission
+/// scope, not one grab per member episode.
+#[tokio::test]
+async fn rss_grabs_season_pack_once_at_pack_granularity() {
+    let release_title = "Cascade.Falls.S01.1080p.WEB-DL-GRP";
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let wanted_items = Arc::new(TrackingWantedItemRepo::default());
+    let indexer_client = Arc::new(FixedReleaseIndexerClient::new(release_title));
+    let (app, user) = bootstrap_with_acquisition_tracking_and_indexer(
+        download_client.clone(),
+        download_submissions.clone(),
+        pending_releases,
+        wanted_items.clone(),
+        indexer_client,
+    );
+
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Cascade Falls".into(),
+                sort_title: Some("Cascade Falls".into()),
+                slug: Some("cascade-falls".into()),
+                facet: MediaFacet::Series,
+                monitored: true,
+                content_status: Some("Continuing".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create monitored series");
+    wanted_items
+        .remember_title_facet(&title.id, MediaFacet::Series)
+        .await;
+
+    let season = app
+        .create_collection(
+            &user,
+            title.id.clone(),
+            "season".into(),
+            "1".into(),
+            Some("Season 1".into()),
+            None,
+            Some("1".into()),
+            Some("2".into()),
+        )
+        .await
+        .expect("create season");
+    let mut episode_ids = Vec::new();
+    for episode_number in 1..=2 {
+        let episode = app
+            .create_episode(
+                &user,
+                title.id.clone(),
+                Some(season.id.clone()),
+                "standard".into(),
+                Some("1".into()),
+                Some(episode_number.to_string()),
+                Some(format!("S01E{episode_number:02}")),
+                Some(format!("S01E{episode_number:02}")),
+                Some("2024-01-01".into()),
+                Some(1_440),
+                false,
+                false,
+            )
+            .await
+            .expect("create episode");
+        episode_ids.push(episode.id);
+    }
+
+    // No per-episode wanted rows exist — the pack is a target purely from
+    // library state (both members monitored + missing).
+    let report = app.run_scheduled_rss_sync().await.expect("run RSS sync");
+
+    assert_eq!(report.releases_grabbed, 1, "the pack is grabbed exactly once");
+    let submissions = download_submissions.store.lock().await.clone();
+    assert_eq!(
+        submissions.len(),
+        1,
+        "the pack is submitted once, not once per member episode"
+    );
+    // The pack submission carries the pack scope (season collection or the
+    // covered episode set), never a single-episode scope.
+    let scope = &submissions[0].scope;
+    assert!(
+        matches!(
+            scope,
+            SubmissionScope::Collection { .. } | SubmissionScope::EpisodeSet { .. }
+        ),
+        "pack submission uses a pack scope, got {scope:?}"
+    );
+}
+
+/// A scope whose current file already meets the profile cutoff is not grabbed:
+/// the cutoff early-return stays authoritative for "satisfied → skip" (§D5).
+#[tokio::test]
+async fn rss_does_not_grab_cutoff_met_movie() {
+    let release_title = "Settled.Bay.2024.1080p.WEB-DL-GRP";
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let wanted_items = Arc::new(TrackingWantedItemRepo::default());
+    let media_files = Arc::new(MockMediaFileRepo::default());
+    let quality_profiles = Arc::new(StoredQualityProfileRepo::default());
+    // A profile whose cutoff is 1080p: an existing 2160p file is at/above cutoff.
+    let mut cutoff_profile = crate::default_quality_profile_for_search();
+    cutoff_profile.criteria.cutoff_tier = Some("1080P".to_string());
+    quality_profiles.set_profiles(vec![cutoff_profile]).await;
+    let indexer_client = Arc::new(FixedReleaseIndexerClient::new(release_title));
+    let (app, user) = bootstrap_rss_with_media_files_and_profiles(
+        download_client,
+        download_submissions.clone(),
+        pending_releases,
+        wanted_items.clone(),
+        media_files.clone(),
+        quality_profiles,
+        indexer_client,
+    );
+
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Settled Bay".into(),
+                sort_title: Some("Settled Bay".into()),
+                slug: Some("settled-bay".into()),
+                facet: MediaFacet::Movie,
+                monitored: true,
+                year: Some(2024),
+                content_status: Some("Released".into()),
+                min_availability: Some("released".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create monitored movie");
+    wanted_items
+        .remember_title_facet(&title.id, MediaFacet::Movie)
+        .await;
+    // Existing primary title-level file at 2160p — at/above the 1080p cutoff.
+    media_files
+        .insert_media_file(&InsertMediaFileInput {
+            title_id: title.id.clone(),
+            role: MediaFileRole::Primary,
+            file_path: "/data/movies/settled-bay-2160p.mkv".to_string(),
+            quality_label: Some("2160P".to_string()),
+            acquisition_score: Some(10_000),
+            ..Default::default()
+        })
+        .await
+        .expect("insert cutoff-met file");
+
+    let report = app.run_scheduled_rss_sync().await.expect("run RSS sync");
+
+    assert_eq!(
+        report.releases_grabbed, 0,
+        "a cutoff-met scope is not grabbed"
+    );
+    assert!(download_submissions.store.lock().await.is_empty());
+}
+
+/// A below-cutoff scope with NO wanted row is upgraded from a matching release:
+/// the derived target is missing-or-below-cutoff, and the absence of a state row
+/// evaluates as `AcceptInitial` (no `current_score` baseline) so the release is
+/// grabbed and the row is materialized.
+#[tokio::test]
+async fn rss_upgrades_below_cutoff_movie_with_no_wanted_row() {
+    let release_title = "Rising.Tide.2024.2160p.WEB-DL-GRP";
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let wanted_items = Arc::new(TrackingWantedItemRepo::default());
+    let media_files = Arc::new(MockMediaFileRepo::default());
+    let quality_profiles = Arc::new(StoredQualityProfileRepo::default());
+    // Cutoff at 2160p: a 720p file is below cutoff, so the scope is a target.
+    let mut profile = crate::default_quality_profile_for_search();
+    profile.criteria.cutoff_tier = Some("2160P".to_string());
+    quality_profiles.set_profiles(vec![profile]).await;
+    let indexer_client = Arc::new(FixedReleaseIndexerClient::new(release_title));
+    let (app, user) = bootstrap_rss_with_media_files_and_profiles(
+        download_client,
+        download_submissions.clone(),
+        pending_releases,
+        wanted_items.clone(),
+        media_files.clone(),
+        quality_profiles,
+        indexer_client,
+    );
+
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Rising Tide".into(),
+                sort_title: Some("Rising Tide".into()),
+                slug: Some("rising-tide".into()),
+                facet: MediaFacet::Movie,
+                monitored: true,
+                year: Some(2024),
+                content_status: Some("Released".into()),
+                min_availability: Some("released".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create monitored movie");
+    wanted_items
+        .remember_title_facet(&title.id, MediaFacet::Movie)
+        .await;
+    // Existing 720p primary file — below the 2160p cutoff.
+    media_files
+        .insert_media_file(&InsertMediaFileInput {
+            title_id: title.id.clone(),
+            role: MediaFileRole::Primary,
+            file_path: "/data/movies/rising-tide-720p.mkv".to_string(),
+            quality_label: Some("720P".to_string()),
+            acquisition_score: Some(100),
+            ..Default::default()
+        })
+        .await
+        .expect("insert below-cutoff file");
+
+    assert!(
+        wanted_items
+            .get_wanted_item_for_title(&title.id, None)
+            .await
+            .expect("query wanted")
+            .is_none()
+    );
+
+    let report = app.run_scheduled_rss_sync().await.expect("run RSS sync");
+
+    assert_eq!(
+        report.releases_grabbed, 1,
+        "a below-cutoff scope with no row is upgraded"
+    );
+    let seeded = wanted_items
+        .get_wanted_item_for_title(&title.id, None)
+        .await
+        .expect("query wanted")
+        .expect("state row materialized on grab");
+    assert_eq!(seeded.status, WantedStatus::Grabbed);
+}

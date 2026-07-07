@@ -227,31 +227,6 @@ pub(crate) fn parsed_release_matches_title(parsed: &ParsedReleaseMetadata, title
     parsed_release_matches_title_evidence(parsed, &canonical_title_evidence(title))
 }
 
-/// Whether a scope already has a live primary file (RFC 119 §D5 target check):
-/// the same scope match the cutoff evaluation uses. Episode scope wants the
-/// episode's file; series-movie scope wants a link-tagged file; the bare title
-/// scope wants a file with no episode/link tag.
-fn rss_scope_has_primary_file(
-    existing_files: &[TitleMediaFile],
-    episode_id: Option<&str>,
-    series_movie_link_id: Option<&str>,
-) -> bool {
-    existing_files
-        .iter()
-        .filter(|file| file.role.is_primary())
-        .any(|file| {
-            if let Some(episode_id) = episode_id {
-                file.episode_id.as_deref() == Some(episode_id)
-            } else if let Some(series_movie_link_id) = series_movie_link_id {
-                file.series_movie_link_ids
-                    .iter()
-                    .any(|link_id| link_id == series_movie_link_id)
-            } else {
-                file.episode_id.is_none() && file.series_movie_link_ids.is_empty()
-            }
-        })
-}
-
 impl AppUseCase {
     /// Run a single RSS sync cycle: fetch latest releases from all enabled indexers,
     /// match against monitored titles, score, and grab approved releases.
@@ -741,12 +716,10 @@ impl AppUseCase {
                 continue;
             };
             // Target-ness (§D5): the episode and its owning collection must be
-            // monitored, and the scope missing or below cutoff. The state row is
+            // monitored. Missing vs below-cutoff vs satisfied is decided by the
+            // cutoff/upgrade gate in `try_grab_rss_release`. The state row is
             // optional and, when present, only supplies upgrade/pause state.
-            if !self
-                .rss_episode_scope_is_target(title, &episode_record, &monitored_collection_ids)
-                .await
-            {
+            if !self.rss_episode_scope_is_target(&episode_record, &monitored_collection_ids) {
                 continue;
             }
             let wanted = match self
@@ -827,7 +800,6 @@ impl AppUseCase {
                 &category,
                 tvdb_id.as_deref(),
                 &catalog_episodes,
-                &episodes_by_id,
                 &monitored_collection_ids,
                 dl_snapshot,
                 delay_profiles,
@@ -840,33 +812,23 @@ impl AppUseCase {
     }
 
     /// Whether a monitored episode scope is a live RSS target: the episode and
-    /// its owning collection are monitored and the scope has no live primary
-    /// file. Below-cutoff scopes with a file pass through here too — the cutoff
-    /// early-return inside `try_grab_rss_release` stays authoritative for the
-    /// "satisfied → skip" decision (§D5).
-    async fn rss_episode_scope_is_target(
+    /// Whether an episode scope is a monitorable RSS target (§D5): the episode
+    /// and its owning collection are monitored. Missing vs below-cutoff vs
+    /// satisfied is decided downstream — the cutoff early-return inside
+    /// `try_grab_rss_release` is authoritative for "satisfied → skip", so a
+    /// below-cutoff episode with a file still flows through for upgrade.
+    fn rss_episode_scope_is_target(
         &self,
-        title: &Title,
         episode: &Episode,
         monitored_collection_ids: &HashSet<String>,
     ) -> bool {
         if !episode.monitored {
             return false;
         }
-        if let Some(collection_id) = episode.collection_id.as_deref()
-            && !monitored_collection_ids.contains(collection_id)
-        {
-            return false;
-        }
-        let existing_files = self
-            .services
-            .library
-            .media_files
-            .list_media_files_for_title(&title.id)
-            .await
-            .unwrap_or_default();
-        // Missing → target. A present file is left to the cutoff/upgrade gate.
-        !rss_scope_has_primary_file(&existing_files, Some(&episode.id), None)
+        episode
+            .collection_id
+            .as_deref()
+            .is_none_or(|collection_id| monitored_collection_ids.contains(collection_id))
     }
 
     /// Evaluate one multi-episode/season pack once at pack granularity (§D5 #3).
@@ -886,7 +848,6 @@ impl AppUseCase {
         category: &str,
         tvdb_id: Option<&str>,
         catalog_episodes: &[Episode],
-        episodes_by_id: &HashMap<String, Episode>,
         monitored_collection_ids: &HashSet<String>,
         dl_snapshot: &super::acquisition_workflow::DownloadClientSnapshot,
         delay_profiles: &[DelayProfile],
@@ -894,78 +855,26 @@ impl AppUseCase {
         report: &mut RssSyncReport,
         now: &DateTime<Utc>,
     ) {
-        // Member episodes covered by this pack.
-        let member_episodes = catalog_episodes
+        // Monitored member episodes covered by this pack. A pack with no
+        // monitored member is not a target for this title.
+        let monitored_members = catalog_episodes
             .iter()
             .filter(|episode| coverage.covers_episode(episode))
+            .filter(|episode| episode.monitored)
+            .filter(|episode| {
+                episode
+                    .collection_id
+                    .as_deref()
+                    .is_none_or(|collection_id| monitored_collection_ids.contains(collection_id))
+            })
             .cloned()
             .collect::<Vec<_>>();
-        if member_episodes.is_empty() {
+        let Some(anchor) = monitored_members.first().cloned() else {
             return;
-        }
-
-        let existing_files = self
-            .services
-            .library
-            .media_files
-            .list_media_files_for_title(&title.id)
-            .await
-            .unwrap_or_default();
-
-        // At least one monitored member must be missing or below cutoff, and the
-        // pack must not be dominated — every monitored member already carrying a
-        // file scoring >= the pack means the pack is pure waste.
-        let pack_score = release
-            .quality_profile_decision
-            .as_ref()
-            .map(|decision| decision.preference_score)
-            .unwrap_or(0);
-        let episode_file_scores: HashMap<String, i32> = existing_files
-            .iter()
-            .filter(|file| file.role.is_primary())
-            .filter_map(|file| {
-                file.episode_id
-                    .as_ref()
-                    .zip(file.acquisition_score)
-                    .map(|(episode_id, score)| (episode_id.clone(), score))
-            })
-            .collect();
-        let mut anchor: Option<Episode> = None;
-        let mut benefits = false;
-        for episode in &member_episodes {
-            if !episode.monitored {
-                continue;
-            }
-            if let Some(collection_id) = episode.collection_id.as_deref()
-                && !monitored_collection_ids.contains(collection_id)
-            {
-                continue;
-            }
-            if anchor.is_none() {
-                anchor = Some(episode.clone());
-            }
-            let member_benefits = episode_file_scores
-                .get(&episode.id)
-                .map(|existing| pack_score > *existing)
-                .unwrap_or(true); // no file → member benefits
-            if member_benefits {
-                benefits = true;
-            }
-        }
-        let Some(anchor) = anchor else {
-            return; // no monitored member — not a target
         };
-        if !benefits {
-            info!(
-                title = title.name.as_str(),
-                release = release.title.as_str(),
-                "RSS sync: pack skipped, every monitored member already has an equal or better file"
-            );
-            return;
-        }
 
-        // Anchor the grab to the anchor member's state row (optional; created on
-        // the first anchored write). A paused anchor blocks the whole pack.
+        // Anchor the grab to the first monitored member's state row (optional;
+        // created on the first anchored write). A paused anchor blocks the pack.
         let wanted = match self
             .find_wanted_state_for_scope(&title.id, Some(&anchor.id), None, None)
             .await
@@ -1009,10 +918,53 @@ impl AppUseCase {
             Err(_) => return,
         };
 
+        // Pack upgrade guard (mirrors the task-runner pack-dominated check): the
+        // pack is dominated — pure waste — when every monitored member already
+        // has a primary file scoring at least the pack's score. Only skip when we
+        // can see the pack's score; an unscored pack falls through to the grab
+        // path, which applies the per-scope cutoff/upgrade gates.
+        let existing_files = self
+            .services
+            .library
+            .media_files
+            .list_media_files_for_title(&title.id)
+            .await
+            .unwrap_or_default();
+        let episode_file_scores: HashMap<String, i32> = existing_files
+            .iter()
+            .filter(|file| file.role.is_primary())
+            .filter_map(|file| {
+                file.episode_id
+                    .as_ref()
+                    .zip(file.acquisition_score)
+                    .map(|(episode_id, score)| (episode_id.clone(), score))
+            })
+            .collect();
+        if let Some(pack_score) = scored.first().and_then(|candidate| {
+            candidate
+                .quality_profile_decision
+                .as_ref()
+                .map(|decision| decision.preference_score)
+        }) {
+            let benefits = monitored_members.iter().any(|episode| {
+                episode_file_scores
+                    .get(&episode.id)
+                    .map(|existing| pack_score > *existing)
+                    .unwrap_or(true) // no file → member benefits
+            });
+            if !benefits {
+                info!(
+                    title = title.name.as_str(),
+                    release = release.title.as_str(),
+                    "RSS sync: pack skipped, every monitored member already has an equal or better file"
+                );
+                return;
+            }
+        }
+
         // The submission scope + season_pack flag are derived from the winning
         // release's coverage inside the grab path, so no per-episode fan-out and
         // no duplicate submission of the same pack.
-        let _ = episodes_by_id;
         self.try_grab_rss_release(
             title,
             &wanted,
@@ -1062,20 +1014,10 @@ impl AppUseCase {
             }
         };
 
-        let existing_files = self
-            .services
-            .library
-            .media_files
-            .list_media_files_for_title(&title.id)
-            .await
-            .unwrap_or_default();
-
         for link in links {
+            // Target-ness (§D5): a monitored link. Missing vs below-cutoff vs
+            // satisfied is decided by the cutoff/upgrade gate downstream.
             if !link.monitored {
-                continue;
-            }
-            // Missing → target. A present file is left to the cutoff/upgrade gate.
-            if rss_scope_has_primary_file(&existing_files, None, Some(&link.id)) {
                 continue;
             }
             let wanted = match self

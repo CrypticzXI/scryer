@@ -940,6 +940,10 @@ pub struct AppRuntimeAcquisitionState {
     pub tracked_download_handle: Option<tracked_downloads::TrackedDownloadHandle>,
     pub tracked_download_snapshot:
         Arc<tokio::sync::RwLock<HashMap<String, tracked_downloads::TrackedDownloadQueueMetadata>>>,
+    /// Cancellation tokens for in-flight interactive acquisition-search jobs
+    /// (RFC 119 §7.3), keyed by job-run id — mirrors the library-scan cancel map.
+    pub acquisition_search_cancellation_tokens:
+        Arc<Mutex<HashMap<String, tokio_util::sync::CancellationToken>>>,
 }
 
 pub(crate) struct ReleaseCandidatePasswordTicket {
@@ -975,6 +979,9 @@ pub struct AppRuntimeJobState {
     pub job_run_tracker: JobRunTracker,
     pub backup_execution_guards: BackupExecutionGuardTable,
     pub title_deletion_lock: Arc<tokio::sync::Mutex<()>>,
+    /// Single-flight guard for the interactive acquisition-search job (RFC 119
+    /// §7.3) — mirrors `title_deletion_lock`.
+    pub acquisition_search_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 #[derive(Clone)]
@@ -1169,6 +1176,7 @@ impl AppRuntimeState {
                 rss_seen_guids: Arc::new(tokio::sync::RwLock::new(HashSet::new())),
                 tracked_download_handle: None,
                 tracked_download_snapshot: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
+                acquisition_search_cancellation_tokens: Arc::new(Mutex::new(HashMap::new())),
             },
             imports: AppRuntimeImportState {
                 external_import_warmup_orchestrator:
@@ -1191,6 +1199,7 @@ impl AppRuntimeState {
                 job_run_tracker: JobRunTracker::new(),
                 backup_execution_guards: BackupExecutionGuardTable::default(),
                 title_deletion_lock: Arc::new(tokio::sync::Mutex::new(())),
+                acquisition_search_lock: Arc::new(tokio::sync::Mutex::new(())),
             },
             health: AppRuntimeHealthState {
                 results: Arc::new(tokio::sync::RwLock::new(Vec::new())),

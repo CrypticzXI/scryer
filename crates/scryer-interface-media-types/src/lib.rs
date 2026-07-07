@@ -961,9 +961,10 @@ pub enum RecencyLaneValue {
 /// Which derived acquisition-target set a wanted view lists (RFC 119 §6/§7):
 /// `Missing` scopes have no primary file; `CutoffUpgrade` scopes have a file below
 /// the effective profile cutoff.
-#[derive(Enum, Copy, Clone, Eq, PartialEq)]
+#[derive(Enum, Copy, Clone, Eq, PartialEq, Default)]
 #[graphql(rename_items = "snake_case")]
 pub enum WantedKindValue {
+    #[default]
     Missing,
     CutoffUpgrade,
 }
@@ -3820,6 +3821,11 @@ pub struct CutoffUnmetItemPayload {
     pub episode_number: Option<String>,
     pub current_tier: String,
     pub target_tier: String,
+    /// Convergence progress for this upgrade scope (RFC 119 §6/§7) — the same
+    /// state the Missing/Upgrades views show.
+    pub convergence_state: ConvergenceStateValue,
+    pub indexers_covered: i32,
+    pub indexers_routed: i32,
 }
 
 /// RFC 119 bounded view: one page of cutoff-unmet targets + the full unmet
