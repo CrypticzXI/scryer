@@ -422,9 +422,9 @@ impl AppUseCase {
 
 /// A scope's convergence coordinates: its stable coverage key, media facet,
 /// current search-criteria fingerprint, and the indexer ids routed to it. The
-/// coverage write-hook (after a background search) and the convergence read-gate
-/// (the RSS-only decision, Phase 1d) both derive this from the same resolution,
-/// so writer and reader agree on the fingerprint by construction.
+/// coverage write-hook (after a search) and the convergence read-gate (the
+/// RSS-only decision) both derive this from the same resolution, so writer and
+/// reader agree on the fingerprint by construction.
 #[derive(Debug, Clone)]
 pub(crate) struct ScopeConvergence {
     pub scope_key: String,
@@ -639,34 +639,6 @@ impl AppUseCase {
     }
 
 
-    /// Convergence progress for a scope, for the UI (RFC 119 §6/§7): how many of the
-    /// routed indexers are covered under the current fingerprint, and whether the
-    /// scope has converged. `None` when the scope is not a convergence unit or nothing
-    /// is routed. Per-subject; the paged UI uses a batched coverage-count query (#12).
-    #[allow(dead_code)] // wired by the GraphQL wanted/target payload (RFC 119 §6, cutover)
-    pub(crate) async fn convergence_state_for_subject(
-        &self,
-        title: &Title,
-        subject: &ResolvedReleaseSearchSubject,
-    ) -> Option<ConvergenceStateSummary> {
-        let convergence = self.resolve_scope_convergence(title, subject).await?;
-        let uncovered = self
-            .uncovered_indexers_for_scope(
-                &convergence.scope_key,
-                &convergence.facet,
-                &convergence.fingerprint,
-                &convergence.routed_indexer_ids,
-            )
-            .await
-            .ok()?;
-        let routed = convergence.routed_indexer_ids.len();
-        Some(ConvergenceStateSummary {
-            converged: uncovered.is_empty(),
-            indexers_covered: routed.saturating_sub(uncovered.len()),
-            indexers_routed: routed,
-        })
-    }
-
     /// Re-open a scope's convergence after an event that invalidates its
     /// acquired state — a failed grab, a rejected import, or an operator
     /// replacing the download: reset the state row to `wanted` (clearing the
@@ -712,19 +684,6 @@ impl AppUseCase {
         }
         self.runtime.acquisition.acquisition_wake.notify_one();
     }
-}
-
-/// Convergence progress for a scope, surfaced to the UI (RFC 119 §6 payload fields:
-/// `convergenceState`, `indexersCovered`/`indexersRouted`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[allow(dead_code)] // wired by the GraphQL wanted/target payload (RFC 119 §6, cutover)
-pub(crate) struct ConvergenceStateSummary {
-    /// Every routed indexer has current-fingerprint coverage → watching RSS.
-    pub converged: bool,
-    /// Routed indexers with current-fingerprint coverage.
-    pub indexers_covered: usize,
-    /// Routed-enabled indexers for this scope.
-    pub indexers_routed: usize,
 }
 
 #[cfg(test)]
