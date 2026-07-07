@@ -1405,11 +1405,7 @@ async fn commit_successful_grab_marks_covered_wanted_set_and_supersedes_pending_
         season_number: Some("1".to_string()),
         episode_number: None,
         media_type: "series".to_string(),
-        search_phase: "initial".to_string(),
-        next_search_at: None,
         last_search_at: None,
-        search_count: 1,
-        baseline_date: None,
         status: WantedStatus::Wanted,
         grabbed_release: None,
         current_score: None,
@@ -1486,7 +1482,6 @@ async fn commit_successful_grab_marks_covered_wanted_set_and_supersedes_pending_
     repo.commit_successful_grab(&SuccessfulGrabCommit {
         wanted_item_id: wanted_a.id.clone(),
         covered_wanted_item_ids: vec![wanted_b.id.clone()],
-        search_count: 2,
         current_score: Some(100),
         grabbed_release: "{\"title\":\"Covered.Release.1080p.WEB-DL\"}".to_string(),
         last_search_at: Some(now.clone()),
@@ -2343,11 +2338,7 @@ async fn series_movie_wanted_subject_uses_parent_owner_when_title_facet_is_missi
         season_number: Some("0".to_string()),
         episode_number: None,
         media_type: "series_movie".to_string(),
-        search_phase: "primary".to_string(),
-        next_search_at: Some(now.clone()),
         last_search_at: None,
-        search_count: 0,
-        baseline_date: None,
         status: WantedStatus::Wanted,
         grabbed_release: None,
         current_score: None,
@@ -2664,11 +2655,7 @@ async fn convergence_test_title_and_subject(
         season_number: Some("0".to_string()),
         episode_number: None,
         media_type: "series_movie".to_string(),
-        search_phase: "primary".to_string(),
-        next_search_at: Some(now.clone()),
         last_search_at: None,
-        search_count: 0,
-        baseline_date: None,
         status: WantedStatus::Wanted,
         grabbed_release: None,
         current_score: None,
@@ -2686,16 +2673,26 @@ async fn convergence_test_title_and_subject(
     (title, subject)
 }
 
+/// Convergence is always on now (RFC 119 cutover): a scope is converged when
+/// every routed indexer is covered under the current fingerprint. Resolves the
+/// scope's coordinates and asks whether any routed indexer remains uncovered.
+async fn scope_is_converged(
+    app: &AppUseCase,
+    title: &Title,
+    subject: &crate::acquisition_release_search::ResolvedReleaseSearchSubject,
+) -> bool {
+    let Some(c) = app.resolve_scope_convergence(title, subject).await else {
+        return false;
+    };
+    app.uncovered_indexers_for_scope(&c.scope_key, &c.facet, &c.fingerprint, &c.routed_indexer_ids)
+        .await
+        .map(|u| u.is_empty())
+        .unwrap_or(false)
+}
+
 #[tokio::test]
-async fn background_search_records_scope_indexer_coverage_when_enabled() {
+async fn background_search_records_scope_indexer_coverage() {
     let settings = Arc::new(StoredSettingsRepo::default());
-    settings
-        .set_value(
-            SETTINGS_SCOPE_SYSTEM,
-            crate::acquisition::convergence::ACQUISITION_RSS_FIRST_ENABLED_KEY,
-            "true",
-        )
-        .await;
     let configs = vec![
         synthetic_direct_nab_indexer_config("indexer-a", "newznab"),
         synthetic_direct_nab_indexer_config("indexer-b", "newznab"),
@@ -2717,7 +2714,7 @@ async fn background_search_records_scope_indexer_coverage_when_enabled() {
     )
     .expect("series-movie scope has a convergence key");
 
-    app.record_background_search_coverage(
+    app.record_search_coverage(
         &title,
         &subject,
         &["indexer-a".to_string(), "indexer-b".to_string()],
@@ -2749,40 +2746,8 @@ async fn background_search_records_scope_indexer_coverage_when_enabled() {
 }
 
 #[tokio::test]
-async fn background_search_records_no_coverage_when_disabled() {
-    // acquisition.rss_first_enabled is unset → convergence off by default.
-    let settings = Arc::new(StoredSettingsRepo::default());
-    let configs = vec![synthetic_direct_nab_indexer_config("indexer-a", "newznab")];
-    let (app, user) = bootstrap_with_search_settings_indexer_and_configs(
-        settings,
-        Arc::new(MockIndexerClient),
-        configs,
-    );
-    let coverage = Arc::new(RecordingScopeIndexerCoverageRepo::new());
-    let app = app.with_test_overrides(|builder| {
-        builder.with_scope_indexer_coverage_store(coverage.clone())
-    });
-
-    let (title, subject) = convergence_test_title_and_subject(&app, &user).await;
-    app.record_background_search_coverage(&title, &subject, &["indexer-a".to_string()])
-        .await;
-
-    assert!(
-        coverage.recorded().await.is_empty(),
-        "no coverage is recorded while convergence is disabled"
-    );
-}
-
-#[tokio::test]
 async fn scope_converges_only_after_every_routed_indexer_is_covered() {
     let settings = Arc::new(StoredSettingsRepo::default());
-    settings
-        .set_value(
-            SETTINGS_SCOPE_SYSTEM,
-            crate::acquisition::convergence::ACQUISITION_RSS_FIRST_ENABLED_KEY,
-            "true",
-        )
-        .await;
     let configs = vec![
         synthetic_direct_nab_indexer_config("indexer-a", "newznab"),
         synthetic_direct_nab_indexer_config("indexer-b", "newznab"),
@@ -2805,7 +2770,7 @@ async fn scope_converges_only_after_every_routed_indexer_is_covered() {
 
     // A fresh scope is not converged, so the background path would search.
     assert!(
-        !app.scope_converged_for_rss_first(&title, &subject).await,
+        !scope_is_converged(&app, &title, &subject).await,
         "a fresh scope with no coverage is not converged"
     );
 
@@ -2820,33 +2785,26 @@ async fn scope_converges_only_after_every_routed_indexer_is_covered() {
         .await
         .unwrap();
     assert!(
-        !app.scope_converged_for_rss_first(&title, &subject).await,
+        !scope_is_converged(&app, &title, &subject).await,
         "partial coverage does not converge the scope"
     );
 
     // The write-hook records coverage for every routed indexer that fired; the
     // read-gate (using the same resolution) then recognises the scope as converged.
-    app.record_background_search_coverage(&title, &subject, &convergence.routed_indexer_ids)
+    app.record_search_coverage(&title, &subject, &convergence.routed_indexer_ids)
         .await;
     assert!(
-        app.scope_converged_for_rss_first(&title, &subject).await,
+        scope_is_converged(&app, &title, &subject).await,
         "scope converges once every routed indexer is covered under the current fingerprint"
     );
 }
 
 #[tokio::test]
-async fn only_background_searches_record_coverage_interactive_bypasses() {
-    // RFC §D5: interactive/manual search bypasses convergence — it must never
-    // record coverage. The write-hook lives in search_and_evaluate_subject and
-    // is gated on caller_label; this drives that real chokepoint both ways.
+async fn every_scoped_search_records_coverage_including_interactive() {
+    // RFC §D5 "a search is a search": search_and_evaluate_subject records coverage
+    // for every caller, interactive included. This drives the real chokepoint and
+    // asserts the fired indexers land in the coverage ledger regardless of mode.
     let settings = Arc::new(StoredSettingsRepo::default());
-    settings
-        .set_value(
-            SETTINGS_SCOPE_SYSTEM,
-            crate::acquisition::convergence::ACQUISITION_RSS_FIRST_ENABLED_KEY,
-            "true",
-        )
-        .await;
     let configs = vec![
         synthetic_direct_nab_indexer_config("indexer-a", "newznab"),
         synthetic_direct_nab_indexer_config("indexer-b", "newznab"),
@@ -2864,28 +2822,13 @@ async fn only_background_searches_record_coverage_interactive_bypasses() {
 
     let (title, subject) = convergence_test_title_and_subject(&app, &user).await;
 
-    // An interactive-labelled search must not touch the coverage ledger.
+    // An interactive-labelled search now records coverage for each indexer that fired.
     let _ = app
         .search_and_evaluate_subject(
             &title,
             &subject,
             "interactive_search",
             SearchMode::Interactive,
-            tokio_util::sync::CancellationToken::new(),
-        )
-        .await;
-    assert!(
-        coverage.recorded().await.is_empty(),
-        "interactive search must not record convergence coverage"
-    );
-
-    // The background acquisition caller records coverage for each indexer that fired.
-    let _ = app
-        .search_and_evaluate_subject(
-            &title,
-            &subject,
-            "background_acquisition",
-            SearchMode::Auto,
             tokio_util::sync::CancellationToken::new(),
         )
         .await;
@@ -2900,7 +2843,7 @@ async fn only_background_searches_record_coverage_interactive_bypasses() {
     assert_eq!(
         indexers,
         vec!["indexer-a".to_string(), "indexer-b".to_string()],
-        "background search records coverage for each indexer that fired"
+        "interactive search records coverage for each indexer that fired"
     );
 }
 
@@ -2909,13 +2852,6 @@ async fn stale_fingerprint_coverage_reopens_convergence() {
     // RFC §D4: a profile/criteria edit changes the fingerprint, so prior coverage
     // (recorded under the old fingerprint) no longer counts and the scope re-opens.
     let settings = Arc::new(StoredSettingsRepo::default());
-    settings
-        .set_value(
-            SETTINGS_SCOPE_SYSTEM,
-            crate::acquisition::convergence::ACQUISITION_RSS_FIRST_ENABLED_KEY,
-            "true",
-        )
-        .await;
     let configs = vec![
         synthetic_direct_nab_indexer_config("indexer-a", "newznab"),
         synthetic_direct_nab_indexer_config("indexer-b", "newznab"),
@@ -2949,15 +2885,15 @@ async fn stale_fingerprint_coverage_reopens_convergence() {
             .unwrap();
     }
     assert!(
-        !app.scope_converged_for_rss_first(&title, &subject).await,
+        !scope_is_converged(&app, &title, &subject).await,
         "coverage under a stale fingerprint does not count; the scope re-opens"
     );
 
     // Re-searching under the current fingerprint converges it again.
-    app.record_background_search_coverage(&title, &subject, &convergence.routed_indexer_ids)
+    app.record_search_coverage(&title, &subject, &convergence.routed_indexer_ids)
         .await;
     assert!(
-        app.scope_converged_for_rss_first(&title, &subject).await,
+        scope_is_converged(&app, &title, &subject).await,
         "coverage under the current fingerprint converges the scope"
     );
 }
@@ -2967,13 +2903,6 @@ async fn coverage_excludes_disabled_indexers() {
     // A disabled indexer is never queried, so it must not be recorded as covered
     // (otherwise enabling it later would wrongly present as already-searched).
     let settings = Arc::new(StoredSettingsRepo::default());
-    settings
-        .set_value(
-            SETTINGS_SCOPE_SYSTEM,
-            crate::acquisition::convergence::ACQUISITION_RSS_FIRST_ENABLED_KEY,
-            "true",
-        )
-        .await;
     let mut disabled_b = synthetic_direct_nab_indexer_config("indexer-b", "newznab");
     disabled_b.is_enabled = false;
     let configs = vec![
@@ -2993,7 +2922,7 @@ async fn coverage_excludes_disabled_indexers() {
     let (title, subject) = convergence_test_title_and_subject(&app, &user).await;
     // Both indexers "fired", but the disabled one is not in the routed set, so the
     // routed∩fired intersection drops it — only the enabled indexer is recorded.
-    app.record_background_search_coverage(
+    app.record_search_coverage(
         &title,
         &subject,
         &["indexer-a".to_string(), "indexer-b".to_string()],
@@ -3014,7 +2943,7 @@ async fn coverage_excludes_disabled_indexers() {
     // With the disabled indexer excluded from the routed set, the one enabled
     // indexer's coverage converges the scope.
     assert!(
-        app.scope_converged_for_rss_first(&title, &subject).await,
+        scope_is_converged(&app, &title, &subject).await,
         "scope converges over the enabled routed indexers only"
     );
 }
@@ -3024,13 +2953,6 @@ async fn coverage_records_only_indexers_that_fired() {
     // RFC 119 §D2: a routed indexer that did NOT fire (deferred/skipped/errored) is
     // not recorded as covered, so the scope stays a target for the cursor to retry.
     let settings = Arc::new(StoredSettingsRepo::default());
-    settings
-        .set_value(
-            SETTINGS_SCOPE_SYSTEM,
-            crate::acquisition::convergence::ACQUISITION_RSS_FIRST_ENABLED_KEY,
-            "true",
-        )
-        .await;
     let configs = vec![
         synthetic_direct_nab_indexer_config("indexer-a", "newznab"),
         synthetic_direct_nab_indexer_config("indexer-b", "newznab"),
@@ -3048,7 +2970,7 @@ async fn coverage_records_only_indexers_that_fired() {
     let (title, subject) = convergence_test_title_and_subject(&app, &user).await;
 
     // Only indexer-a fired; indexer-b was routed but deferred/skipped/errored.
-    app.record_background_search_coverage(&title, &subject, &["indexer-a".to_string()])
+    app.record_search_coverage(&title, &subject, &["indexer-a".to_string()])
         .await;
 
     let indexers: Vec<String> = coverage
@@ -3065,7 +2987,7 @@ async fn coverage_records_only_indexers_that_fired() {
     // indexer-b was routed but did not fire, so it stays uncovered and the scope
     // has not converged.
     assert!(
-        !app.scope_converged_for_rss_first(&title, &subject).await,
+        !scope_is_converged(&app, &title, &subject).await,
         "a routed indexer that did not fire leaves the scope unconverged"
     );
 }

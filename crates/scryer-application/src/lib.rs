@@ -200,7 +200,7 @@ pub use app_usecase_post_processing::{PostProcessingContext, run_post_processing
 pub use app_usecase_rss::RssSyncReport;
 #[cfg(test)]
 pub(crate) use audio_requirements::missing_required_audio_languages;
-#[cfg(any(test, feature = "runtime-media-analysis"))]
+#[cfg(feature = "runtime-media-analysis")]
 pub(crate) use audio_requirements::{RequiredAudioVerdict, classify_required_audio};
 pub(crate) use audio_requirements::{
     normalize_required_audio_languages, release_audio_language_hints_for_title,

@@ -35,7 +35,6 @@ const HOT_RECENTLY_ADDED_WINDOW_DAYS: i64 = 3;
 /// search pipeline need to act on it.
 #[derive(Clone, Debug)]
 pub struct AcquisitionTarget {
-    pub kind: WantedKind,
     /// Stable coverage key (`convergence_scope_key`) — the cursor's rotation and
     /// the coverage ledger both key on this.
     pub scope_key: String,
@@ -52,20 +51,6 @@ pub struct AcquisitionTarget {
     /// Recent air/release/add → hot lane (high candidate value); long-tail and
     /// upgrades → cold lane (low value, drained under scheduler backpressure).
     pub is_hot: bool,
-}
-
-impl AcquisitionTarget {
-    /// The submission scope this target grabs into — the same identity used for
-    /// download-submission blocking and coverage bookkeeping.
-    pub fn submission_scope(&self) -> SubmissionScope {
-        SubmissionScope::from_persisted(
-            &self.title_id,
-            self.episode_id.clone(),
-            self.collection_id.clone(),
-            self.series_movie_link_id.clone(),
-            None,
-        )
-    }
 }
 
 /// Whether `date` (RFC3339 or `YYYY-MM-DD`) falls within the trailing
@@ -273,7 +258,6 @@ impl AppUseCase {
                     HOT_RECENTLY_ADDED_WINDOW_DAYS,
                 );
             targets.push(AcquisitionTarget {
-                kind: WantedKind::Missing,
                 scope_key,
                 title_id: episode.title_id,
                 library_id: episode.library_id,
@@ -325,7 +309,6 @@ impl AppUseCase {
                     HOT_RECENTLY_ADDED_WINDOW_DAYS,
                 );
             targets.push(AcquisitionTarget {
-                kind: WantedKind::Missing,
                 scope_key,
                 title_id: title.title_id,
                 library_id: title.library_id,
@@ -384,7 +367,6 @@ impl AppUseCase {
                 HOT_RECENTLY_ADDED_WINDOW_DAYS,
             );
             targets.push(AcquisitionTarget {
-                kind: WantedKind::Missing,
                 scope_key,
                 title_id: link.title_id,
                 library_id: link.library_id,
@@ -424,7 +406,6 @@ impl AppUseCase {
                     "movie"
                 };
                 Some(AcquisitionTarget {
-                    kind: WantedKind::CutoffUpgrade,
                     scope_key,
                     title_id: item.title_id,
                     library_id: item.library_id,
@@ -489,7 +470,6 @@ mod tests {
 
     fn cursor_target(scope_key: &str, is_hot: bool) -> AcquisitionTarget {
         AcquisitionTarget {
-            kind: WantedKind::Missing,
             scope_key: scope_key.to_string(),
             title_id: "t1".to_string(),
             library_id: "lib".to_string(),

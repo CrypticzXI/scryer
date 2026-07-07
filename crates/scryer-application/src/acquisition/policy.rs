@@ -234,29 +234,6 @@ mod tests {
     }
 
     #[test]
-    fn test_movie_schedule_before_baseline() {
-        let now = Utc::now();
-        let baseline = (now + Duration::days(7)).to_rfc3339();
-        let schedule = compute_search_schedule("movie", Some(&baseline), "primary", &now);
-        assert_eq!(schedule.search_phase, SearchPhase::PreRelease);
-    }
-
-    #[test]
-    fn test_episode_schedule_after_air() {
-        let now = Utc::now();
-        let baseline = (now - Duration::hours(1)).to_rfc3339();
-        let schedule = compute_search_schedule("episode", Some(&baseline), "primary", &now);
-        assert_eq!(schedule.search_phase, SearchPhase::Primary);
-    }
-
-    #[test]
-    fn test_episode_schedule_no_baseline() {
-        let now = Utc::now();
-        let schedule = compute_search_schedule("episode", None, "primary", &now);
-        assert_eq!(schedule.search_phase, SearchPhase::Primary);
-    }
-
-    #[test]
     fn test_audiophile_thresholds_are_aggressive() {
         let t = AcquisitionThresholds::for_persona(&ScoringPersona::Audiophile);
         assert_eq!(t.same_tier_min_delta, 50);

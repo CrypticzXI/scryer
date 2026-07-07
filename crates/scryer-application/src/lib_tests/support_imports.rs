@@ -145,6 +145,31 @@ impl FileImporter for CopyingFileImporter {
 #[derive(Default, Clone)]
 pub(super) struct MockMediaFileRepo {
     pub(super) store: Arc<Mutex<Vec<TitleMediaFile>>>,
+    /// Optional bridge for the convergence cursor (RFC 119 §D1): when set, the
+    /// derived missing-target sweep reads the seeded acquisition-state rows so a
+    /// mock-backed store still yields targets for `run_convergence_cycle_once`.
+    /// Left `None` for stores that manage their own media files directly.
+    pub(super) missing_scope_source: Option<Arc<super::TrackingWantedItemRepo>>,
+    /// The catalog the seeded scopes belong to — used to resolve each scope's
+    /// real facet (movie/series/anime) for the derived target, since the thinned
+    /// state row does not carry it.
+    pub(super) missing_scope_titles: Option<Arc<super::MockTitleRepo>>,
+}
+
+impl MockMediaFileRepo {
+    /// Wire the seeded wanted-state store (and its catalog) as the missing-target
+    /// source so the convergence cursor sees each monitored, fileless scope as a
+    /// target with its correct facet.
+    pub(super) fn with_missing_scope_source(
+        source: Arc<super::TrackingWantedItemRepo>,
+        titles: Arc<super::MockTitleRepo>,
+    ) -> Self {
+        Self {
+            store: Arc::new(Mutex::new(Vec::new())),
+            missing_scope_source: Some(source),
+            missing_scope_titles: Some(titles),
+        }
+    }
 }
 
 #[async_trait]
@@ -234,6 +259,102 @@ impl MediaFileRepository for MockMediaFileRepo {
                 .push(series_movie_link_id.to_string());
         }
         Ok(())
+    }
+
+    async fn list_missing_scope_candidates(&self) -> AppResult<MissingScopeCandidates> {
+        // RFC 119 §D1: without a real library store, derive the missing-scope
+        // sweep from the seeded acquisition-state rows so the convergence cursor
+        // sees each monitored, fileless `wanted` scope as a target. Synthetic
+        // recency inputs (past air date, current add date) keep the scope inside
+        // its availability window and in the hot lane, matching a freshly wanted
+        // scope.
+        let Some(source) = self.missing_scope_source.as_ref() else {
+            return Ok(MissingScopeCandidates::default());
+        };
+        let now = Utc::now();
+        let past_air = (now - chrono::Duration::days(1)).to_rfc3339();
+        let created = now.to_rfc3339();
+        let mut candidates = MissingScopeCandidates::default();
+        for item in source.store.lock().await.iter() {
+            if item.status != WantedStatus::Wanted {
+                continue;
+            }
+            // Resolve the scope's real facet from the catalog (the thinned state
+            // row does not carry it); fall back to the row's facet, then to the
+            // media-type shape.
+            let facet = match self.missing_scope_titles.as_ref() {
+                Some(titles) => titles
+                    .get_by_id(&item.title_id)
+                    .await
+                    .ok()
+                    .flatten()
+                    .map(|title| title.facet.as_str().to_string()),
+                None => None,
+            }
+            .or_else(|| item.title_facet.clone())
+            .unwrap_or_else(|| {
+                if item.episode_id.is_some() {
+                    scryer_domain::MediaFacet::Series.as_str().to_string()
+                } else {
+                    scryer_domain::MediaFacet::Movie.as_str().to_string()
+                }
+            });
+            let library_id = item.library_id.clone().unwrap_or_default();
+            if let Some(link_id) = item.series_movie_link_id.clone() {
+                candidates.series_movie_links.push(MissingSeriesMovieLinkCandidate {
+                    series_movie_link_id: link_id,
+                    title_id: item.title_id.clone(),
+                    library_id,
+                    title_facet: facet,
+                    continuity_status: None,
+                    movie_digital_release_date: None,
+                    link_created_at: created.clone(),
+                });
+            } else if let Some(episode_id) = item.episode_id.clone() {
+                candidates.episodes.push(MissingEpisodeCandidate {
+                    episode_id,
+                    title_id: item.title_id.clone(),
+                    library_id,
+                    title_facet: facet,
+                    collection_id: item.collection_id.clone(),
+                    season_number: item.season_number.clone(),
+                    episode_number: item.episode_number.clone(),
+                    air_date: Some(past_air.clone()),
+                    title_created_at: created.clone(),
+                });
+            } else {
+                candidates.titles.push(MissingTitleCandidate {
+                    title_id: item.title_id.clone(),
+                    library_id,
+                    title_facet: facet,
+                    min_availability: None,
+                    first_aired: None,
+                    digital_release_date: None,
+                    created_at: created.clone(),
+                });
+            }
+        }
+        // Deterministic season/episode order for the derived episode set, so
+        // per-cycle season-pack grouping and grab ordering are stable in tests.
+        candidates.episodes.sort_by(|left, right| {
+            let key = |candidate: &MissingEpisodeCandidate| {
+                (
+                    candidate
+                        .season_number
+                        .as_deref()
+                        .and_then(|value| value.parse::<i64>().ok())
+                        .unwrap_or(i64::MAX),
+                    candidate
+                        .episode_number
+                        .as_deref()
+                        .and_then(|value| value.parse::<i64>().ok())
+                        .unwrap_or(i64::MAX),
+                    candidate.episode_id.clone(),
+                )
+            };
+            key(left).cmp(&key(right))
+        });
+        Ok(candidates)
     }
 
     async fn list_media_files_for_title(&self, title_id: &str) -> AppResult<Vec<TitleMediaFile>> {

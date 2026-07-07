@@ -1964,11 +1964,7 @@ mod task_runner_tests {
             season_number: Some("1".to_string()),
             episode_number: Some(episode_number.to_string()),
             media_type: "episode".to_string(),
-            search_phase: "initial".to_string(),
-            next_search_at: Some("2024-01-01T00:00:00Z".to_string()),
             last_search_at: None,
-            search_count: 0,
-            baseline_date: Some("2024-01-01".to_string()),
             status: WantedStatus::Wanted,
             grabbed_release: None,
             current_score: None,
@@ -2065,95 +2061,4 @@ mod task_runner_tests {
         ));
     }
 
-    #[test]
-    fn completed_item_with_negative_score_uses_fresh_state_for_reschedule_after_processing() {
-        let mut item = wanted_episode_item("title-bluey", "Bluey", 1);
-        item.status = WantedStatus::Completed;
-        item.current_score = Some(-15);
-        item.grabbed_release = None;
-
-        let scheduling_item = wanted_item_for_search_reschedule(Some(&item))
-            .expect("scored completed item should re-enter upgrade search");
-
-        assert_eq!(scheduling_item.current_score, Some(-15));
-        assert_eq!(scheduling_item.grabbed_release, None);
-    }
-
-    #[test]
-    fn completed_item_without_score_is_not_rescheduled_after_processing() {
-        let mut item = wanted_episode_item("title-bluey", "Bluey", 1);
-        item.status = WantedStatus::Completed;
-        item.current_score = None;
-        item.grabbed_release = Some("Bluey.S01E01.720p.WEB-DL.AV1.AAC2.0-NTb".to_string());
-
-        assert!(wanted_item_for_search_reschedule(Some(&item)).is_none());
-    }
-
-    #[test]
-    fn wanted_item_uses_fresh_state_for_reschedule_after_processing() {
-        let mut item = wanted_episode_item("title-bluey", "Bluey", 1);
-        item.current_score = Some(-15);
-        item.grabbed_release = Some("Bluey.S01E01.720p.WEB-DL.AV1.AAC2.0-NTb".to_string());
-
-        let scheduling_item =
-            wanted_item_for_search_reschedule(Some(&item)).expect("wanted item should reschedule");
-
-        assert_eq!(scheduling_item.current_score, Some(-15));
-        assert_eq!(
-            scheduling_item.grabbed_release.as_deref(),
-            Some("Bluey.S01E01.720p.WEB-DL.AV1.AAC2.0-NTb")
-        );
-    }
-
-    #[test]
-    fn cooperative_slice_selects_first_ten_episodes_for_large_title() {
-        let due_items = (1..=154)
-            .rev()
-            .map(|episode| wanted_episode_item("title-bluey", "Bluey", episode))
-            .collect::<Vec<_>>();
-
-        let (selected, deferred, deferred_by_global_limit) =
-            select_due_items_for_cooperative_slice(due_items);
-        let selected_ids = selected
-            .iter()
-            .map(|item| item.id.clone())
-            .collect::<Vec<_>>();
-        let expected_ids = (1..=10)
-            .map(|episode| format!("title-bluey-e{episode}"))
-            .collect::<Vec<_>>();
-
-        assert_eq!(selected_ids, expected_ids);
-        assert_eq!(deferred.get("title-bluey"), Some(&144));
-        assert_eq!(deferred_by_global_limit, 0);
-    }
-
-    #[test]
-    fn cooperative_slice_keeps_per_title_limit_after_ordering() {
-        let due_items = (1..=12)
-            .rev()
-            .flat_map(|episode| {
-                [
-                    wanted_episode_item("title-alpha", "Alpha", episode),
-                    wanted_episode_item("title-beta", "Beta", episode),
-                ]
-            })
-            .collect::<Vec<_>>();
-
-        let (selected, deferred, deferred_by_global_limit) =
-            select_due_items_for_cooperative_slice(due_items);
-        let alpha = selected
-            .iter()
-            .filter(|item| item.title_id == "title-alpha")
-            .count();
-        let beta = selected
-            .iter()
-            .filter(|item| item.title_id == "title-beta")
-            .count();
-
-        assert_eq!(alpha, 10);
-        assert_eq!(beta, 2);
-        assert_eq!(deferred.get("title-alpha"), Some(&2));
-        assert_eq!(deferred.get("title-beta"), None);
-        assert_eq!(deferred_by_global_limit, 10);
-    }
 }

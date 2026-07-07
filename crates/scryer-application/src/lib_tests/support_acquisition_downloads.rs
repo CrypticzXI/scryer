@@ -259,7 +259,6 @@ pub(super) struct TrackingWantedItemRepo {
     pub(super) release_decisions: Arc<Mutex<Vec<ReleaseDecision>>>,
     pub(super) title_facets: Arc<Mutex<HashMap<String, MediaFacet>>>,
     pub(super) status_update_calls: Arc<Mutex<Vec<String>>>,
-    pub(super) upsert_calls: Arc<AtomicUsize>,
 }
 
 impl TrackingWantedItemRepo {
@@ -268,10 +267,6 @@ impl TrackingWantedItemRepo {
             .lock()
             .await
             .insert(title_id.to_string(), facet);
-    }
-
-    pub(super) fn upsert_call_count(&self) -> usize {
-        self.upsert_calls.load(Ordering::SeqCst)
     }
 
     pub(super) async fn status_update_call_count_for(&self, id: &str) -> usize {
@@ -294,7 +289,6 @@ pub(super) struct TrackingAcquisitionStateRepo {
 #[async_trait]
 impl WantedItemRepository for TrackingWantedItemRepo {
     async fn upsert_wanted_item(&self, item: &WantedItem) -> AppResult<String> {
-        self.upsert_calls.fetch_add(1, Ordering::SeqCst);
         let mut store = self.store.lock().await;
         if let Some(existing) = store.iter_mut().find(|existing| existing.id == item.id) {
             *existing = item.clone();
@@ -304,47 +298,11 @@ impl WantedItemRepository for TrackingWantedItemRepo {
         Ok(item.id.clone())
     }
 
-    async fn list_due_wanted_items(
-        &self,
-        now: &str,
-        batch_limit: i64,
-        excluded_facets: &[MediaFacet],
-    ) -> AppResult<Vec<WantedItem>> {
-        let now = chrono::DateTime::parse_from_rfc3339(now)
-            .map(|value| value.with_timezone(&Utc))
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-        let title_facets = self.title_facets.lock().await.clone();
-        let mut items: Vec<WantedItem> = self
-            .store
-            .lock()
-            .await
-            .iter()
-            .filter(|item| {
-                item.status == WantedStatus::Wanted
-                    && title_facets
-                        .get(&item.title_id)
-                        .is_none_or(|facet| !excluded_facets.contains(facet))
-                    && item
-                        .next_search_at
-                        .as_deref()
-                        .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
-                        .map(|value| value.with_timezone(&Utc) <= now)
-                        .unwrap_or(false)
-            })
-            .cloned()
-            .collect();
-        items.sort_by(|left, right| left.created_at.cmp(&right.created_at));
-        items.truncate(batch_limit.max(0) as usize);
-        Ok(items)
-    }
-
     async fn update_wanted_item_status(
         &self,
         id: &str,
         status: &str,
-        next_search_at: Option<&str>,
         last_search_at: Option<&str>,
-        search_count: i64,
         current_score: Option<i32>,
         grabbed_release: Option<&str>,
     ) -> AppResult<()> {
@@ -355,14 +313,27 @@ impl WantedItemRepository for TrackingWantedItemRepo {
             .ok_or_else(|| AppError::NotFound(format!("wanted item {id}")))?;
         item.status = WantedStatus::parse(status)
             .ok_or_else(|| AppError::Repository(format!("invalid wanted status {status}")))?;
-        item.next_search_at = next_search_at.map(str::to_string);
         item.last_search_at = last_search_at.map(str::to_string);
-        item.search_count = search_count;
         item.current_score = current_score;
         item.grabbed_release = grabbed_release.map(str::to_string);
         item.updated_at = Utc::now().to_rfc3339();
         drop(store);
         self.status_update_calls.lock().await.push(id.to_string());
+        Ok(())
+    }
+
+    async fn record_wanted_search_attempt(
+        &self,
+        id: &str,
+        last_search_at: &str,
+    ) -> AppResult<()> {
+        let mut store = self.store.lock().await;
+        let item = store
+            .iter_mut()
+            .find(|item| item.id == id)
+            .ok_or_else(|| AppError::NotFound(format!("wanted item {id}")))?;
+        item.last_search_at = Some(last_search_at.to_string());
+        item.updated_at = Utc::now().to_rfc3339();
         Ok(())
     }
 
@@ -413,10 +384,6 @@ impl WantedItemRepository for TrackingWantedItemRepo {
             .await
             .retain(|item| item.episode_id.as_deref() != Some(episode_id));
         Ok(())
-    }
-
-    async fn reset_fruitless_wanted_items(&self, _now: &str) -> AppResult<u64> {
-        Ok(0)
     }
 
     async fn insert_release_decision(&self, decision: &ReleaseDecision) -> AppResult<String> {
@@ -584,9 +551,7 @@ impl AcquisitionStateRepository for TrackingAcquisitionStateRepo {
                 .update_wanted_item_status(
                     wanted_item_id,
                     WantedStatus::Grabbed.as_str(),
-                    None,
                     commit.last_search_at.as_deref(),
-                    commit.search_count,
                     commit.current_score,
                     Some(&commit.grabbed_release),
                 )

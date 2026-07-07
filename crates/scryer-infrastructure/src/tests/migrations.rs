@@ -386,13 +386,12 @@ async fn specials_convergence_migration_repoints_legacy_season_zero_references()
 
     sqlx::query(
         "INSERT INTO wanted_items
-         (id, title_id, media_type, search_phase, status, created_at, updated_at, collection_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+         (id, title_id, media_type, status, created_at, updated_at, collection_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?)",
     )
     .bind("wanted-legacy")
     .bind("title-series")
     .bind("episode")
-    .bind("primary")
     .bind("wanted")
     .bind(&now)
     .bind(&now)
@@ -403,13 +402,12 @@ async fn specials_convergence_migration_repoints_legacy_season_zero_references()
 
     sqlx::query(
         "INSERT INTO wanted_items
-         (id, title_id, media_type, search_phase, status, created_at, updated_at, collection_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+         (id, title_id, media_type, status, created_at, updated_at, collection_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?)",
     )
     .bind("wanted-canonical")
     .bind("title-series")
     .bind("episode")
-    .bind("primary")
     .bind("wanted")
     .bind(&now)
     .bind(&now)

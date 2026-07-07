@@ -88,6 +88,10 @@ impl AppUseCase {
     /// row (excluding paused/grabbed-active scopes), enrich title/library names,
     /// sort deterministically, then slice — the convergence progress for the sliced
     /// page is derived in one batched coverage round-trip.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the derived wanted view is parameterized by kind, facet, library scope, search, and paging"
+    )]
     pub async fn list_wanted_scope_views(
         &self,
         actor: &User,

@@ -176,15 +176,7 @@ async fn acquisition_cycle_retries_standby_candidate_after_failed_grab() {
         season_number: None,
         episode_number: None,
         media_type: "movie".to_string(),
-        search_phase: "initial".to_string(),
-        next_search_at: None,
         last_search_at: Some((Utc::now() - chrono::Duration::minutes(5)).to_rfc3339()),
-        search_count: 1,
-        baseline_date: Some(
-            (Utc::now() - chrono::Duration::days(30))
-                .format("%Y-%m-%d")
-                .to_string(),
-        ),
         status: WantedStatus::Grabbed,
         grabbed_release: Some(
             serde_json::json!({
@@ -251,7 +243,7 @@ async fn acquisition_cycle_retries_standby_candidate_after_failed_grab() {
         "Failed.Release.1080p.WEB-DL",
     )];
 
-    app.run_acquisition_cycle_once().await;
+    app.run_convergence_cycle_once().await;
 
     let updated = wanted_items
         .get_wanted_item_by_id(&wanted.id)
@@ -366,15 +358,7 @@ async fn tracked_download_failure_reuses_standby_recovery_policy() {
         season_number: None,
         episode_number: None,
         media_type: "movie".to_string(),
-        search_phase: "initial".to_string(),
-        next_search_at: None,
         last_search_at: Some((Utc::now() - chrono::Duration::minutes(5)).to_rfc3339()),
-        search_count: 1,
-        baseline_date: Some(
-            (Utc::now() - chrono::Duration::days(30))
-                .format("%Y-%m-%d")
-                .to_string(),
-        ),
         status: WantedStatus::Grabbed,
         grabbed_release: Some(
             serde_json::json!({
@@ -575,15 +559,7 @@ async fn tracked_download_failure_keeps_standby_when_submit_unavailable() {
         season_number: None,
         episode_number: None,
         media_type: "movie".to_string(),
-        search_phase: "initial".to_string(),
-        next_search_at: None,
         last_search_at: Some((Utc::now() - chrono::Duration::minutes(5)).to_rfc3339()),
-        search_count: 1,
-        baseline_date: Some(
-            (Utc::now() - chrono::Duration::days(30))
-                .format("%Y-%m-%d")
-                .to_string(),
-        ),
         status: WantedStatus::Grabbed,
         grabbed_release: Some(
             serde_json::json!({
@@ -669,7 +645,10 @@ async fn tracked_download_failure_keeps_standby_when_submit_unavailable() {
         .await
         .expect("load wanted")
         .expect("wanted exists");
-    assert_eq!(updated_wanted.next_search_at, None);
+    // RFC 119: a submit-unavailable failure defers to the standby recovery
+    // rather than re-opening — the grabbed state row is untouched (no reopen,
+    // no reschedule) while the standby is preserved for the retry.
+    assert_eq!(updated_wanted.status, WantedStatus::Grabbed);
     assert!(
         !download_submissions
             .store
@@ -725,15 +704,7 @@ async fn process_download_failure_returns_already_handled_for_duplicate_failed_d
         season_number: None,
         episode_number: None,
         media_type: "movie".to_string(),
-        search_phase: "initial".to_string(),
-        next_search_at: Some((Utc::now() + chrono::Duration::hours(6)).to_rfc3339()),
         last_search_at: Some((Utc::now() - chrono::Duration::minutes(10)).to_rfc3339()),
-        search_count: 1,
-        baseline_date: Some(
-            (Utc::now() - chrono::Duration::days(14))
-                .format("%Y-%m-%d")
-                .to_string(),
-        ),
         status: WantedStatus::Grabbed,
         grabbed_release: Some(
             serde_json::json!({
@@ -911,15 +882,7 @@ async fn process_download_failure_skip_reacquire_records_failure_without_due_sea
         season_number: None,
         episode_number: None,
         media_type: "movie".to_string(),
-        search_phase: "initial".to_string(),
-        next_search_at: Some(Utc::now().to_rfc3339()),
         last_search_at: Some((Utc::now() - chrono::Duration::minutes(10)).to_rfc3339()),
-        search_count: 1,
-        baseline_date: Some(
-            (Utc::now() - chrono::Duration::days(14))
-                .format("%Y-%m-%d")
-                .to_string(),
-        ),
         status: WantedStatus::Grabbed,
         grabbed_release: Some(
             serde_json::json!({
@@ -986,14 +949,7 @@ async fn process_download_failure_skip_reacquire_records_failure_without_due_sea
         .expect("get wanted")
         .expect("wanted item");
     assert_eq!(updated_wanted.status, WantedStatus::Wanted);
-    assert!(updated_wanted.next_search_at.is_none());
     assert!(updated_wanted.grabbed_release.is_none());
-
-    let due = wanted_items
-        .list_due_wanted_items(&Utc::now().to_rfc3339(), 10, &[])
-        .await
-        .expect("list due wanted");
-    assert!(due.is_empty());
 
     let blocklist = app
         .services
@@ -1279,15 +1235,7 @@ async fn parse_matched_foreign_failed_download_does_not_blocklist_or_requeue() {
         season_number: None,
         episode_number: None,
         media_type: "movie".to_string(),
-        search_phase: "initial".to_string(),
-        next_search_at: Some((Utc::now() + chrono::Duration::hours(6)).to_rfc3339()),
         last_search_at: Some((Utc::now() - chrono::Duration::minutes(10)).to_rfc3339()),
-        search_count: 1,
-        baseline_date: Some(
-            (Utc::now() - chrono::Duration::days(14))
-                .format("%Y-%m-%d")
-                .to_string(),
-        ),
         status: WantedStatus::Grabbed,
         grabbed_release: Some(
             serde_json::json!({
@@ -1428,7 +1376,6 @@ async fn season_pack_failure_processed_twice_only_requeues_once_and_blocklists_o
         .await
         .expect("create season");
 
-    let original_next_search_at = (Utc::now() + chrono::Duration::hours(12)).to_rfc3339();
     let mut expected_wanted_ids = Vec::new();
     for (episode_number, label) in [("23", "S07E23"), ("24", "S07E24")] {
         let episode = app
@@ -1475,11 +1422,7 @@ async fn season_pack_failure_processed_twice_only_requeues_once_and_blocklists_o
             season_number: Some("7".to_string()),
             episode_number: None,
             media_type: "episode".to_string(),
-            search_phase: "initial".to_string(),
-            next_search_at: Some(original_next_search_at.clone()),
             last_search_at: Some((Utc::now() - chrono::Duration::minutes(30)).to_rfc3339()),
-            search_count: 1,
-            baseline_date: Some("2024-01-01".to_string()),
             status: WantedStatus::Wanted,
             grabbed_release: None,
             current_score: None,
@@ -1585,18 +1528,11 @@ async fn season_pack_failure_processed_twice_only_requeues_once_and_blocklists_o
             .await
             .expect("get wanted item")
             .expect("wanted item exists");
+        // RFC 119: the failed pack reopens each covered episode scope for
+        // convergence (status back to `wanted`, grab cleared) instead of
+        // rescheduling a cadence.
         assert_eq!(wanted.status, WantedStatus::Wanted);
         assert!(wanted.grabbed_release.is_none());
-        let next_search_at = wanted
-            .next_search_at
-            .as_deref()
-            .and_then(crate::quality_profile::parse_published_at)
-            .expect("next search should parse");
-        let original_next_search_at =
-            crate::quality_profile::parse_published_at(&original_next_search_at)
-                .expect("original next search should parse");
-        assert!(next_search_at < original_next_search_at);
-        assert!(next_search_at <= Utc::now());
         assert_eq!(
             wanted_items.status_update_call_count_for(wanted_id).await,
             1,
@@ -1657,7 +1593,7 @@ async fn season_pack_failure_processed_twice_only_requeues_once_and_blocklists_o
             && record
                 .failure_reason
                 .as_deref()
-                .is_some_and(|reason| reason.contains("re-queuing season episodes"))
+                .is_some_and(|reason| reason.contains("re-opened season episodes"))
     }));
     assert!(history.records.iter().any(|record| {
         record.event_type == TitleHistoryEventType::Blocklisted
@@ -1744,15 +1680,7 @@ async fn acquisition_cycle_looks_up_submissions_once_per_title_for_grabbed_items
                 season_number: Some("1".to_string()),
                 episode_number: None,
                 media_type: "episode".to_string(),
-                search_phase: "initial".to_string(),
-                next_search_at: None,
                 last_search_at: Some((Utc::now() - chrono::Duration::minutes(5)).to_rfc3339()),
-                search_count: 1,
-                baseline_date: Some(
-                    (Utc::now() - chrono::Duration::days(7))
-                        .format("%Y-%m-%d")
-                        .to_string(),
-                ),
                 status: WantedStatus::Grabbed,
                 grabbed_release: Some(
                     serde_json::json!({
@@ -1789,7 +1717,7 @@ async fn acquisition_cycle_looks_up_submissions_once_per_title_for_grabbed_items
         .await
         .expect("record shared submission");
 
-    app.run_acquisition_cycle_once().await;
+    app.run_convergence_cycle_once().await;
 
     let calls = download_submissions
         .list_for_title_calls
@@ -1934,11 +1862,7 @@ async fn acquisition_cycle_records_failed_collection_submission_once() {
                 season_number: Some("1".to_string()),
                 episode_number: Some(episode_number.to_string()),
                 media_type: "episode".to_string(),
-                search_phase: "initial".to_string(),
-                next_search_at: None,
                 last_search_at: Some((Utc::now() - chrono::Duration::minutes(5)).to_rfc3339()),
-                search_count: 1,
-                baseline_date: Some("2024-01-01".to_string()),
                 status: WantedStatus::Grabbed,
                 grabbed_release: Some(grabbed_release.clone()),
                 current_score: None,
@@ -1976,11 +1900,7 @@ async fn acquisition_cycle_records_failed_collection_submission_once() {
         ..failed_history_item("shared-failed-season-pack", pack_title)
     }];
 
-    crate::acquisition_workflow::process_due_wanted_items_with_blocked_facets(
-        &app,
-        &[MediaFacet::Anime],
-    )
-    .await;
+    app.run_convergence_cycle_once().await;
 
     let searches = indexer_client.searches.lock().await.clone();
     assert!(!searches.is_empty());
@@ -2202,11 +2122,7 @@ async fn acquisition_cycle_episode_submission_blocks_only_matching_episode() {
                 season_number: episode.season_number.clone(),
                 episode_number: None,
                 media_type: "episode".to_string(),
-                search_phase: "initial".to_string(),
-                next_search_at: Some(Utc::now().to_rfc3339()),
                 last_search_at: None,
-                search_count: 0,
-                baseline_date: Some("2024-01-01".to_string()),
                 status: WantedStatus::Wanted,
                 grabbed_release: None,
                 current_score: None,
@@ -2276,7 +2192,7 @@ async fn acquisition_cycle_episode_submission_blocks_only_matching_episode() {
         tracked_match_type: None,
     }];
 
-    app.run_acquisition_cycle_once().await;
+    app.run_convergence_cycle_once().await;
 
     let searches = indexer_client.searches.lock().await.clone();
     assert!(!searches.is_empty());
@@ -2408,11 +2324,7 @@ async fn acquisition_cycle_collection_submission_blocks_same_season_only() {
                 season_number: Some(season_number.to_string()),
                 episode_number: None,
                 media_type: "episode".to_string(),
-                search_phase: "initial".to_string(),
-                next_search_at: Some(Utc::now().to_rfc3339()),
                 last_search_at: None,
-                search_count: 0,
-                baseline_date: Some("2024-01-01".to_string()),
                 status: WantedStatus::Wanted,
                 grabbed_release: None,
                 current_score: None,
@@ -2482,7 +2394,7 @@ async fn acquisition_cycle_collection_submission_blocks_same_season_only() {
         tracked_match_type: None,
     }];
 
-    app.run_acquisition_cycle_once().await;
+    app.run_convergence_cycle_once().await;
 
     let searches = indexer_client.searches.lock().await.clone();
     assert!(!searches.is_empty());
@@ -2708,11 +2620,7 @@ async fn acquisition_cycle_falls_back_to_episode_grabs_when_season_pack_is_not_s
                 season_number: Some("1".to_string()),
                 episode_number: Some(episode_number.to_string()),
                 media_type: "episode".to_string(),
-                search_phase: "initial".to_string(),
-                next_search_at: Some(Utc::now().to_rfc3339()),
                 last_search_at: None,
-                search_count: 0,
-                baseline_date: Some("2024-01-01".to_string()),
                 status: WantedStatus::Wanted,
                 grabbed_release: None,
                 current_score: None,
@@ -2725,7 +2633,7 @@ async fn acquisition_cycle_falls_back_to_episode_grabs_when_season_pack_is_not_s
             .expect("seed due wanted item");
     }
 
-    app.run_acquisition_cycle_once().await;
+    app.run_convergence_cycle_once().await;
 
     let searches = recorded_searches.lock().await.clone();
     assert!(
@@ -2869,11 +2777,7 @@ async fn acquisition_cycle_skips_recently_failed_season_pack_and_searches_episod
                 season_number: Some("7".to_string()),
                 episode_number: None,
                 media_type: "episode".to_string(),
-                search_phase: "initial".to_string(),
-                next_search_at: Some(Utc::now().to_rfc3339()),
                 last_search_at: None,
-                search_count: 0,
-                baseline_date: Some("2024-01-01".to_string()),
                 status: WantedStatus::Wanted,
                 grabbed_release: None,
                 current_score: None,
@@ -2900,7 +2804,7 @@ async fn acquisition_cycle_skips_recently_failed_season_pack_and_searches_episod
         .await
         .expect("record failed season pack attempt");
 
-    app.run_acquisition_cycle_once().await;
+    app.run_convergence_cycle_once().await;
 
     let searches = indexer_client.searches.lock().await.clone();
     assert!(!searches.is_empty());
@@ -3010,11 +2914,7 @@ async fn acquisition_cycle_skips_recently_failed_season_pack_from_submission_rel
             season_number: Some("5".to_string()),
             episode_number: None,
             media_type: "episode".to_string(),
-            search_phase: "initial".to_string(),
-            next_search_at: Some(Utc::now().to_rfc3339()),
             last_search_at: Some((Utc::now() - chrono::Duration::minutes(10)).to_rfc3339()),
-            search_count: 1,
-            baseline_date: Some("1998-01-01".to_string()),
             status: WantedStatus::Grabbed,
             grabbed_release: Some(
                 serde_json::json!({
@@ -3106,7 +3006,7 @@ async fn acquisition_cycle_skips_recently_failed_season_pack_from_submission_rel
         Some("friends.s05.720p.bluray.dd5.1.x264-ntb")
     );
 
-    app.run_acquisition_cycle_once().await;
+    app.run_convergence_cycle_once().await;
 
     let searches = indexer_client.searches.lock().await.clone();
     assert!(!searches.is_empty());
@@ -3144,7 +3044,7 @@ async fn acquisition_cycle_submit_unavailable_records_pending_without_failed_sig
     let (title, _) =
         seed_movie_wanted_for_acquisition(&app, &user, &wanted_items, "Deferred Movie", 2024).await;
 
-    crate::acquisition_workflow::process_due_wanted_items_with_blocked_facets(&app, &[]).await;
+    app.run_convergence_cycle_once().await;
 
     assert_eq!(
         download_client
@@ -3212,7 +3112,7 @@ async fn season_pack_submit_unavailable_records_pending_without_failed_signature
     )
     .await;
 
-    crate::acquisition_workflow::process_due_wanted_items_with_blocked_facets(&app, &[]).await;
+    app.run_convergence_cycle_once().await;
 
     assert!(
         download_client
@@ -3277,7 +3177,7 @@ async fn acquisition_cycle_non_unavailable_submit_error_still_records_failed_sig
     let (title, _) =
         seed_movie_wanted_for_acquisition(&app, &user, &wanted_items, "Rejected Movie", 2024).await;
 
-    crate::acquisition_workflow::process_due_wanted_items_with_blocked_facets(&app, &[]).await;
+    app.run_convergence_cycle_once().await;
 
     let failed = release_attempts
         .list_failed_release_signatures_for_title(&title.id, 10)
@@ -3318,7 +3218,7 @@ async fn acquisition_cycle_rejected_submit_error_records_failed_signature_not_de
     let (title, _) =
         seed_movie_wanted_for_acquisition(&app, &user, &wanted_items, "Rejected Movie", 2024).await;
 
-    crate::acquisition_workflow::process_due_wanted_items_with_blocked_facets(&app, &[]).await;
+    app.run_convergence_cycle_once().await;
 
     let failed = release_attempts
         .list_failed_release_signatures_for_title(&title.id, 10)
@@ -3361,7 +3261,7 @@ async fn acquisition_cycle_duplicate_url_does_not_mark_second_wanted_grabbed_wit
     let (_, second_wanted_id) =
         seed_movie_wanted_for_acquisition(&app, &user, &wanted_items, "Rejected Movie", 2024).await;
 
-    crate::acquisition_workflow::process_due_wanted_items_with_blocked_facets(&app, &[]).await;
+    app.run_convergence_cycle_once().await;
 
     assert_eq!(
         download_client
@@ -4180,11 +4080,7 @@ async fn acquisition_cycle_submits_paperman_media_request_candidate() {
             season_number: None,
             episode_number: None,
             media_type: "movie".to_string(),
-            search_phase: "initial".to_string(),
-            next_search_at: Some(Utc::now().to_rfc3339()),
             last_search_at: None,
-            search_count: 0,
-            baseline_date: Some("2012-11-02".to_string()),
             status: WantedStatus::Wanted,
             grabbed_release: None,
             current_score: None,
@@ -4196,7 +4092,7 @@ async fn acquisition_cycle_submits_paperman_media_request_candidate() {
         .await
         .expect("seed Paperman wanted item");
 
-    crate::acquisition_workflow::process_due_wanted_items_with_blocked_facets(&app, &[]).await;
+    app.run_convergence_cycle_once().await;
 
     assert_eq!(
         download_client
@@ -4325,11 +4221,7 @@ async fn acquisition_cycle_submits_bluey_episode_media_request_candidate() {
             season_number: Some("1".to_string()),
             episode_number: None,
             media_type: "episode".to_string(),
-            search_phase: "long_tail".to_string(),
-            next_search_at: Some(Utc::now().to_rfc3339()),
             last_search_at: None,
-            search_count: 0,
-            baseline_date: Some("2018-10-01".to_string()),
             status: WantedStatus::Wanted,
             grabbed_release: None,
             current_score: None,
@@ -4341,7 +4233,7 @@ async fn acquisition_cycle_submits_bluey_episode_media_request_candidate() {
         .await
         .expect("seed Bluey wanted item");
 
-    crate::acquisition_workflow::process_due_wanted_items_with_blocked_facets(&app, &[]).await;
+    app.run_convergence_cycle_once().await;
 
     assert_eq!(
         download_client
@@ -4416,11 +4308,7 @@ async fn acquisition_cycle_title_submission_still_blocks_movie_search() {
             season_number: None,
             episode_number: None,
             media_type: "movie".to_string(),
-            search_phase: "initial".to_string(),
-            next_search_at: Some(Utc::now().to_rfc3339()),
             last_search_at: None,
-            search_count: 0,
-            baseline_date: Some("2024-01-01".to_string()),
             status: WantedStatus::Wanted,
             grabbed_release: None,
             current_score: None,
@@ -4487,7 +4375,7 @@ async fn acquisition_cycle_title_submission_still_blocks_movie_search() {
         tracked_match_type: None,
     }];
 
-    app.run_acquisition_cycle_once().await;
+    app.run_convergence_cycle_once().await;
 
     assert!(indexer_client.searches.lock().await.is_empty());
 }
@@ -4560,11 +4448,7 @@ async fn acquisition_cycle_skips_due_search_when_no_download_clients_are_enabled
             season_number: None,
             episode_number: None,
             media_type: "movie".to_string(),
-            search_phase: "initial".to_string(),
-            next_search_at: Some(Utc::now().to_rfc3339()),
             last_search_at: None,
-            search_count: 0,
-            baseline_date: Some("2024-01-01".to_string()),
             status: WantedStatus::Wanted,
             grabbed_release: None,
             current_score: None,
@@ -4576,7 +4460,7 @@ async fn acquisition_cycle_skips_due_search_when_no_download_clients_are_enabled
         .await
         .expect("seed due movie wanted item");
 
-    crate::acquisition_workflow::process_due_wanted_items_with_blocked_facets(&app, &[]).await;
+    app.run_convergence_cycle_once().await;
 
     assert!(indexer_client.searches.lock().await.is_empty());
 }
@@ -4631,11 +4515,7 @@ async fn acquisition_cycle_active_anime_scan_does_not_block_due_movie_search() {
             season_number: None,
             episode_number: None,
             media_type: "movie".to_string(),
-            search_phase: "initial".to_string(),
-            next_search_at: Some(Utc::now().to_rfc3339()),
             last_search_at: None,
-            search_count: 0,
-            baseline_date: Some("2024-01-01".to_string()),
             status: WantedStatus::Wanted,
             grabbed_release: None,
             current_score: None,
@@ -4647,7 +4527,7 @@ async fn acquisition_cycle_active_anime_scan_does_not_block_due_movie_search() {
         .await
         .expect("seed due movie wanted item");
 
-    crate::acquisition_workflow::process_due_wanted_items_with_blocked_facets(
+    crate::acquisition_workflow::run_convergence_cycle_with_blocked_facets(
         &app,
         &[MediaFacet::Anime],
     )
@@ -4715,142 +4595,6 @@ async fn rss_sync_skips_indexer_search_when_no_download_clients_are_enabled() {
     assert_eq!(report.releases_matched, 0);
     assert_eq!(report.releases_grabbed, 0);
     assert_eq!(report.releases_held, 0);
-}
-
-#[tokio::test]
-async fn acquisition_cycle_limits_due_work_per_title_slice() {
-    let download_client = Arc::new(StubDownloadClient::default());
-    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
-    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
-    let wanted_items = Arc::new(TrackingWantedItemRepo::default());
-    let indexer_client = Arc::new(TrackingIndexerClient::default());
-    let (app, user) = bootstrap_with_acquisition_tracking_and_indexer(
-        download_client,
-        download_submissions,
-        pending_releases,
-        wanted_items.clone(),
-        indexer_client.clone(),
-    );
-
-    let title = app
-        .add_title(
-            &user,
-            NewTitle {
-                name: "Large Series Backlog".into(),
-                facet: MediaFacet::Series,
-                monitored: false,
-                tags: vec![],
-                external_ids: vec![],
-                min_availability: None,
-                ..Default::default()
-            },
-        )
-        .await
-        .expect("create series");
-    wanted_items
-        .remember_title_facet(&title.id, MediaFacet::Series)
-        .await;
-
-    let now = Utc::now();
-    for season_number in 1..=12 {
-        let season = app
-            .services
-            .catalog
-            .shows
-            .create_collection(Collection {
-                id: Id::new().0,
-                title_id: title.id.clone(),
-                collection_type: CollectionType::Season,
-                collection_index: season_number.to_string(),
-                label: Some(format!("Season {season_number}")),
-                ordered_path: None,
-                narrative_order: Some(season_number.to_string()),
-                first_episode_number: Some("1".to_string()),
-                last_episode_number: Some("1".to_string()),
-                monitored: true,
-                created_at: Utc::now(),
-            })
-            .await
-            .expect("create season");
-
-        let episode = app
-            .services
-            .catalog
-            .shows
-            .create_episode(Episode {
-                id: Id::new().0,
-                title_id: title.id.clone(),
-                collection_id: Some(season.id.clone()),
-                episode_type: scryer_domain::EpisodeType::Standard,
-                episode_number: Some("1".to_string()),
-                season_number: Some(season_number.to_string()),
-                episode_label: Some(format!("S{season_number:02}E01")),
-                title: Some(format!("Episode {season_number}")),
-                air_date: Some("2024-01-01".to_string()),
-                duration_seconds: Some(1_440),
-                has_multi_audio: false,
-                has_subtitle: false,
-                is_filler: false,
-                is_recap: false,
-                absolute_number: None,
-                overview: None,
-                tvdb_id: None,
-                image_url: None,
-                monitored: true,
-                created_at: Utc::now(),
-            })
-            .await
-            .expect("create episode");
-
-        let created_at = (now + chrono::Duration::seconds(i64::from(season_number))).to_rfc3339();
-        wanted_items
-            .upsert_wanted_item(&WantedItem {
-                id: Id::new().0,
-                title_id: title.id.clone(),
-                title_name: Some(title.name.clone()),
-                title_slug: None,
-                title_facet: None,
-                library_id: None,
-                library_name: None,
-                library_slug: None,
-                episode_id: Some(episode.id.clone()),
-                collection_id: Some(season.id.clone()),
-                series_movie_link_id: None,
-                season_number: Some(season_number.to_string()),
-                episode_number: Some("1".to_string()),
-                media_type: "episode".to_string(),
-                search_phase: "initial".to_string(),
-                next_search_at: Some(now.to_rfc3339()),
-                last_search_at: None,
-                search_count: 0,
-                baseline_date: Some("2024-01-01".to_string()),
-                status: WantedStatus::Wanted,
-                grabbed_release: None,
-                current_score: None,
-                latest_release_decision: None,
-                mismatch_recovery_eligible: false,
-                created_at: created_at.clone(),
-                updated_at: created_at,
-            })
-            .await
-            .expect("seed due episode wanted item");
-    }
-
-    crate::acquisition_workflow::process_due_wanted_items_with_blocked_facets(&app, &[]).await;
-
-    let store = wanted_items.store.lock().await.clone();
-    let processed = store
-        .iter()
-        .filter(|item| item.search_count > 0 && item.last_search_at.is_some())
-        .count();
-    let deferred = store
-        .iter()
-        .filter(|item| item.search_count == 0 && item.last_search_at.is_none())
-        .count();
-
-    assert_eq!(processed, 10);
-    assert_eq!(deferred, 2);
-    assert!(indexer_client.searches.lock().await.len() >= 10);
 }
 
 #[tokio::test]
@@ -4952,11 +4696,7 @@ async fn acquisition_cycle_active_movie_scan_does_not_block_due_series_search() 
             season_number: Some("1".to_string()),
             episode_number: None,
             media_type: "episode".to_string(),
-            search_phase: "initial".to_string(),
-            next_search_at: Some(Utc::now().to_rfc3339()),
             last_search_at: None,
-            search_count: 0,
-            baseline_date: Some("2024-01-01".to_string()),
             status: WantedStatus::Wanted,
             grabbed_release: None,
             current_score: None,
@@ -4968,7 +4708,7 @@ async fn acquisition_cycle_active_movie_scan_does_not_block_due_series_search() 
         .await
         .expect("seed due series wanted item");
 
-    crate::acquisition_workflow::process_due_wanted_items_with_blocked_facets(
+    crate::acquisition_workflow::run_convergence_cycle_with_blocked_facets(
         &app,
         &[MediaFacet::Movie],
     )
@@ -5084,11 +4824,7 @@ async fn acquisition_cycle_active_series_scan_defers_due_series_search() {
             season_number: Some("1".to_string()),
             episode_number: None,
             media_type: "episode".to_string(),
-            search_phase: "initial".to_string(),
-            next_search_at: Some(Utc::now().to_rfc3339()),
             last_search_at: None,
-            search_count: 0,
-            baseline_date: Some("2024-01-01".to_string()),
             status: WantedStatus::Wanted,
             grabbed_release: None,
             current_score: None,
@@ -5100,7 +4836,7 @@ async fn acquisition_cycle_active_series_scan_defers_due_series_search() {
         .await
         .expect("seed due series wanted item");
 
-    crate::acquisition_workflow::process_due_wanted_items_with_blocked_facets(
+    crate::acquisition_workflow::run_convergence_cycle_with_blocked_facets(
         &app,
         &[MediaFacet::Series],
     )
@@ -5156,15 +4892,7 @@ async fn acquisition_cycle_retries_standby_candidate_during_unrelated_active_sca
         season_number: None,
         episode_number: None,
         media_type: "movie".to_string(),
-        search_phase: "initial".to_string(),
-        next_search_at: None,
         last_search_at: Some((Utc::now() - chrono::Duration::minutes(5)).to_rfc3339()),
-        search_count: 1,
-        baseline_date: Some(
-            (Utc::now() - chrono::Duration::days(30))
-                .format("%Y-%m-%d")
-                .to_string(),
-        ),
         status: WantedStatus::Grabbed,
         grabbed_release: Some(
             serde_json::json!({
@@ -5231,7 +4959,7 @@ async fn acquisition_cycle_retries_standby_candidate_during_unrelated_active_sca
         "Failed.Release.1080p.WEB-DL",
     )];
 
-    crate::acquisition_workflow::process_due_wanted_items_with_blocked_facets(
+    crate::acquisition_workflow::run_convergence_cycle_with_blocked_facets(
         &app,
         &[MediaFacet::Anime],
     )
@@ -5291,11 +5019,7 @@ async fn acquisition_cycle_prunes_stale_standby_rows_during_unrelated_active_sca
         season_number: None,
         episode_number: None,
         media_type: "movie".to_string(),
-        search_phase: "initial".to_string(),
-        next_search_at: None,
         last_search_at: None,
-        search_count: 0,
-        baseline_date: None,
         status: WantedStatus::Wanted,
         grabbed_release: None,
         current_score: None,
@@ -5344,7 +5068,7 @@ async fn acquisition_cycle_prunes_stale_standby_rows_during_unrelated_active_sca
         .await
         .expect("start anime scan");
 
-    crate::acquisition_workflow::process_due_wanted_items_with_blocked_facets(
+    crate::acquisition_workflow::run_convergence_cycle_with_blocked_facets(
         &app,
         &[MediaFacet::Anime],
     )
@@ -5388,7 +5112,6 @@ async fn trigger_title_mismatch_recovery_search_requeues_only_mismatch_only_item
         .await
         .expect("create title");
 
-    let original_due_at = "2099-01-01T00:00:00Z".to_string();
     let recovery_item = WantedItem {
         id: Id::new().0,
         title_id: title.id.clone(),
@@ -5404,11 +5127,7 @@ async fn trigger_title_mismatch_recovery_search_requeues_only_mismatch_only_item
         season_number: None,
         episode_number: None,
         media_type: "movie".to_string(),
-        search_phase: "primary".to_string(),
-        next_search_at: Some(original_due_at.clone()),
         last_search_at: Some("2026-04-21T00:00:00Z".to_string()),
-        search_count: 2,
-        baseline_date: None,
         status: WantedStatus::Wanted,
         grabbed_release: None,
         current_score: None,
@@ -5432,11 +5151,7 @@ async fn trigger_title_mismatch_recovery_search_requeues_only_mismatch_only_item
         season_number: Some("1".to_string()),
         episode_number: None,
         media_type: "episode".to_string(),
-        search_phase: "primary".to_string(),
-        next_search_at: Some(original_due_at.clone()),
         last_search_at: Some("2026-04-21T00:00:00Z".to_string()),
-        search_count: 2,
-        baseline_date: None,
         status: WantedStatus::Wanted,
         grabbed_release: None,
         current_score: None,
@@ -5515,24 +5230,28 @@ async fn trigger_title_mismatch_recovery_search_requeues_only_mismatch_only_item
 
     assert_eq!(queued, 1);
 
+    // RFC 119 §D5: mismatch recovery re-opens only the mismatch-only scope for
+    // convergence (state row reset + coverage pruned); the eligible scope is
+    // left untouched. The re-open is the sole state write on the recovery item.
     let updated_recovery = wanted_items
         .get_wanted_item_by_id(&recovery_item.id)
         .await
         .expect("load recovery item")
         .expect("recovery item exists");
-    let updated_untouched = wanted_items
-        .get_wanted_item_by_id(&untouched_item.id)
-        .await
-        .expect("load untouched item")
-        .expect("untouched item exists");
-
-    assert_ne!(
-        updated_recovery.next_search_at.as_deref(),
-        Some(original_due_at.as_str())
+    assert_eq!(updated_recovery.status, WantedStatus::Wanted);
+    assert_eq!(
+        wanted_items
+            .status_update_call_count_for(&recovery_item.id)
+            .await,
+        1,
+        "the mismatch-only scope is re-opened exactly once"
     );
     assert_eq!(
-        updated_untouched.next_search_at.as_deref(),
-        Some(original_due_at.as_str())
+        wanted_items
+            .status_update_call_count_for(&untouched_item.id)
+            .await,
+        0,
+        "the eligible scope is never touched by mismatch recovery"
     );
 }
 
@@ -5580,11 +5299,7 @@ async fn acquisition_cycle_prunes_stale_standby_rows_for_non_grabbed_items() {
         season_number: None,
         episode_number: None,
         media_type: "movie".to_string(),
-        search_phase: "initial".to_string(),
-        next_search_at: None,
         last_search_at: None,
-        search_count: 0,
-        baseline_date: None,
         status: WantedStatus::Wanted,
         grabbed_release: None,
         current_score: None,
@@ -5622,7 +5337,7 @@ async fn acquisition_cycle_prunes_stale_standby_rows_for_non_grabbed_items() {
         .await
         .expect("seed stale standby");
 
-    app.run_acquisition_cycle_once().await;
+    app.run_convergence_cycle_once().await;
 
     assert!(
         pending_releases
@@ -5631,211 +5346,6 @@ async fn acquisition_cycle_prunes_stale_standby_rows_for_non_grabbed_items() {
             .expect("list standby")
             .is_empty()
     );
-}
-
-#[tokio::test]
-async fn monitored_series_movie_link_reconciles_stale_episode_wanted_items() {
-    let download_client = Arc::new(StubDownloadClient::default());
-    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
-    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
-    let wanted_items = Arc::new(TrackingWantedItemRepo::default());
-    let (app, user) = bootstrap_with_acquisition_tracking(
-        download_client,
-        download_submissions,
-        pending_releases,
-        wanted_items.clone(),
-    );
-
-    let title = app
-        .services
-        .catalog
-        .titles
-        .create(Title {
-            id: Id::new().0,
-            name: "Series Movie Only".into(),
-            facet: MediaFacet::Anime,
-            library_id: scryer_domain::default_library_id_for_facet(&MediaFacet::Anime),
-            root_folder_id: scryer_domain::root_folder_id_for_path("/data/test"),
-            monitored: false,
-            tags: vec!["scryer:monitor-type:none".into()],
-            canonical_tags: vec![],
-            external_ids: vec![],
-            created_by: Some(user.id.clone()),
-            created_at: Utc::now(),
-            year: None,
-            overview: None,
-            poster_url: None,
-            poster_source_url: None,
-            background_url: None,
-            background_source_url: None,
-            sort_title: None,
-            catalog_sort_key: String::new(),
-            slug: None,
-            imdb_id: None,
-            runtime_minutes: None,
-            popularity: None,
-            content_status: None,
-            language: None,
-            first_aired: None,
-            network: None,
-            studio: None,
-            country: None,
-            aliases: vec![],
-            tagged_aliases: vec![],
-            metadata_language: None,
-            metadata_fetched_at: None,
-            min_availability: None,
-            digital_release_date: None,
-            folder_path: None,
-        })
-        .await
-        .expect("create title");
-
-    let season_one = app
-        .services
-        .catalog
-        .shows
-        .create_collection(Collection {
-            id: Id::new().0,
-            title_id: title.id.clone(),
-            collection_type: CollectionType::Season,
-            collection_index: "1".to_string(),
-            label: Some("Season 1".to_string()),
-            ordered_path: None,
-            narrative_order: Some("1".to_string()),
-            first_episode_number: Some("1".to_string()),
-            last_episode_number: Some("2".to_string()),
-            monitored: false,
-            created_at: Utc::now(),
-        })
-        .await
-        .expect("create season one");
-
-    let episode_one = app
-        .services
-        .catalog
-        .shows
-        .create_episode(Episode {
-            id: Id::new().0,
-            title_id: title.id.clone(),
-            collection_id: Some(season_one.id.clone()),
-            episode_type: scryer_domain::EpisodeType::Standard,
-            episode_number: Some("1".to_string()),
-            season_number: Some("1".to_string()),
-            episode_label: Some("S01E01".to_string()),
-            title: Some("Episode 1".to_string()),
-            air_date: Some("2024-01-01".to_string()),
-            duration_seconds: Some(1_440),
-            has_multi_audio: false,
-            has_subtitle: false,
-            is_filler: false,
-            is_recap: false,
-            absolute_number: None,
-            overview: None,
-            tvdb_id: None,
-            image_url: None,
-            monitored: false,
-            created_at: Utc::now(),
-        })
-        .await
-        .expect("create episode one");
-
-    let episode_two = app
-        .services
-        .catalog
-        .shows
-        .create_episode(Episode {
-            id: Id::new().0,
-            title_id: title.id.clone(),
-            collection_id: Some(season_one.id.clone()),
-            episode_type: scryer_domain::EpisodeType::Standard,
-            episode_number: Some("2".to_string()),
-            season_number: Some("1".to_string()),
-            episode_label: Some("S01E02".to_string()),
-            title: Some("Episode 2".to_string()),
-            air_date: Some("2024-01-08".to_string()),
-            duration_seconds: Some(1_440),
-            has_multi_audio: false,
-            has_subtitle: false,
-            is_filler: false,
-            is_recap: false,
-            absolute_number: None,
-            overview: None,
-            tvdb_id: None,
-            image_url: None,
-            monitored: false,
-            created_at: Utc::now(),
-        })
-        .await
-        .expect("create episode two");
-
-    let link = app
-        .services
-        .catalog
-        .shows
-        .upsert_series_movie_link(test_series_movie_link(
-            &title.id,
-            "Movie 1",
-            Some(2024),
-            None,
-            Some("movie-1"),
-        ))
-        .await
-        .expect("create series movie link");
-
-    for episode_id in [&episode_one.id, &episode_two.id] {
-        wanted_items
-            .upsert_wanted_item(&WantedItem {
-                id: Id::new().0,
-                title_id: title.id.clone(),
-                title_name: None,
-                title_slug: None,
-                title_facet: None,
-                library_id: None,
-                library_name: None,
-                library_slug: None,
-                episode_id: Some(episode_id.clone()),
-                collection_id: None,
-                series_movie_link_id: None,
-                season_number: Some("1".to_string()),
-                episode_number: None,
-                media_type: "episode".to_string(),
-                search_phase: "primary".to_string(),
-                next_search_at: Some(Utc::now().to_rfc3339()),
-                last_search_at: None,
-                search_count: 0,
-                baseline_date: None,
-                status: WantedStatus::Wanted,
-                grabbed_release: None,
-                current_score: None,
-                latest_release_decision: None,
-                mismatch_recovery_eligible: false,
-                created_at: Utc::now().to_rfc3339(),
-                updated_at: Utc::now().to_rfc3339(),
-            })
-            .await
-            .expect("seed stale episode wanted item");
-    }
-
-    app.sync_wanted_series_inner(&title, &Utc::now(), true)
-        .await;
-
-    let wanted = wanted_items
-        .list_wanted_items(WantedItemsQuery {
-            title_id: Some(title.id.clone()),
-            limit: 50,
-            ..WantedItemsQuery::default()
-        })
-        .await
-        .expect("list wanted items");
-    assert_eq!(wanted.len(), 1);
-    assert_eq!(wanted[0].media_type, "series_movie");
-    assert_eq!(
-        wanted[0].series_movie_link_id.as_deref(),
-        Some(link.id.as_str())
-    );
-    assert!(wanted[0].collection_id.is_none());
-    assert!(wanted.iter().all(|item| item.episode_id.is_none()));
 }
 
 // ── RFC 119 §D5: RSS match-time targets + pack-granularity grabs ────────────
@@ -5848,7 +5358,7 @@ async fn monitored_series_movie_link_reconciles_stale_episode_wanted_items() {
 /// RSS acquisition bootstrap that exposes the media-file store and quality
 /// profiles, so cutoff/upgrade target-ness can be driven from library state.
 /// Mirrors `bootstrap_with_acquisition_tracking_and_indexer` otherwise.
-fn bootstrap_rss_with_media_files_and_profiles(
+async fn bootstrap_rss_with_media_files_and_profiles(
     download_client: Arc<StubDownloadClient>,
     download_submissions: Arc<TrackingDownloadSubmissionRepo>,
     pending_releases: Arc<TrackingPendingReleaseRepo>,
@@ -5860,7 +5370,14 @@ fn bootstrap_rss_with_media_files_and_profiles(
     let titles = Arc::new(MockTitleRepo::default());
     let shows = Arc::new(MockShowRepo::default());
     let users = Arc::new(MockUserRepo::default());
-    let indexer_configs = Arc::new(MockIndexerConfigRepo::default());
+    // RFC 119 §D2/§D5: RSS grabs and coverage need a routed indexer for the
+    // scope; seed a synthetic direct-Newznab indexer the fake client answers for.
+    let indexer_configs = Arc::new(MockIndexerConfigRepo {
+        store: Arc::new(Mutex::new(vec![synthetic_direct_nab_indexer_config(
+            "acquisition-indexer",
+            "newznab",
+        )])),
+    });
     let download_client_configs = Arc::new(MockDownloadClientConfigRepo::default());
     download_client_configs
         .store
@@ -5881,6 +5398,15 @@ fn bootstrap_rss_with_media_files_and_profiles(
         });
     let release_attempts = Arc::new(MockReleaseAttemptRepo::default());
     let settings = Arc::new(StoredSettingsRepo::default());
+    // Point profile resolution at the stored test profile (which shares the
+    // default profile id) so its cutoff/upgrade criteria drive RSS target-ness.
+    settings
+        .set_value(
+            SETTINGS_SCOPE_SYSTEM,
+            QUALITY_PROFILE_ID_KEY,
+            &format!("\"{}\"", crate::default_quality_profile_for_search().id),
+        )
+        .await;
 
     let services = AppServices::builder(
         titles,
@@ -5996,7 +5522,7 @@ async fn rss_grabs_missing_movie_with_no_wanted_row_and_creates_state_row() {
                 monitored: true,
                 year: Some(2024),
                 content_status: Some("Released".into()),
-                min_availability: Some("released".into()),
+                min_availability: Some("announced".into()),
                 ..Default::default()
             },
         )
@@ -6066,7 +5592,7 @@ async fn rss_does_not_grab_paused_scope() {
                 monitored: true,
                 year: Some(2024),
                 content_status: Some("Released".into()),
-                min_availability: Some("released".into()),
+                min_availability: Some("announced".into()),
                 ..Default::default()
             },
         )
@@ -6096,7 +5622,7 @@ async fn rss_does_not_grab_paused_scope() {
 /// scope, not one grab per member episode.
 #[tokio::test]
 async fn rss_grabs_season_pack_once_at_pack_granularity() {
-    let release_title = "Cascade.Falls.S01.1080p.WEB-DL-GRP";
+    let release_title = "Cascade.Falls.S01.COMPLETE.1080p.WEB-DL-GRP";
     let download_client = Arc::new(StubDownloadClient::default());
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
     let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
@@ -6211,7 +5737,8 @@ async fn rss_does_not_grab_cutoff_met_movie() {
         media_files.clone(),
         quality_profiles,
         indexer_client,
-    );
+    )
+    .await;
 
     let title = app
         .add_title(
@@ -6224,7 +5751,7 @@ async fn rss_does_not_grab_cutoff_met_movie() {
                 monitored: true,
                 year: Some(2024),
                 content_status: Some("Released".into()),
-                min_availability: Some("released".into()),
+                min_availability: Some("announced".into()),
                 ..Default::default()
             },
         )
@@ -6281,7 +5808,8 @@ async fn rss_upgrades_below_cutoff_movie_with_no_wanted_row() {
         media_files.clone(),
         quality_profiles,
         indexer_client,
-    );
+    )
+    .await;
 
     let title = app
         .add_title(
@@ -6294,7 +5822,7 @@ async fn rss_upgrades_below_cutoff_movie_with_no_wanted_row() {
                 monitored: true,
                 year: Some(2024),
                 content_status: Some("Released".into()),
-                min_availability: Some("released".into()),
+                min_availability: Some("announced".into()),
                 ..Default::default()
             },
         )

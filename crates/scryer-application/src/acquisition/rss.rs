@@ -892,8 +892,10 @@ impl AppUseCase {
             Err(_) => return,
         };
 
-        let pack_parse_context =
-            build_release_parse_context(title, Some(&anchor), None, Some(category));
+        // Parse the pack at title level (no episode anchor): anchoring to a
+        // single member would re-classify a season pack as that one episode and
+        // collapse the pack scope to a single-episode submission (§D5 #3).
+        let pack_parse_context = build_release_parse_context(title, None, None, Some(category));
         let season = anchor
             .season_number
             .as_deref()

@@ -590,11 +590,9 @@ async fn graphql_introspection_lists_title_fields() {
 
     // RFC 119: `wantedItems` is the derived view now — the state-row `titleId`
     // filter was dropped (use `titleSearch` or the interactive job's `titleId`).
-    for (field_name, arg_name) in [("downloadQueue", "titleId")] {
-        let arg = query_arg(field_name, arg_name);
-        assert_eq!(arg["type"]["kind"], "SCALAR");
-        assert_eq!(arg["type"]["name"], "ID");
-    }
+    let download_queue_title_id = query_arg("downloadQueue", "titleId");
+    assert_eq!(download_queue_title_id["type"]["kind"], "SCALAR");
+    assert_eq!(download_queue_title_id["type"]["name"], "ID");
     assert!(
         query_field("wantedItems")["args"]
             .as_array()

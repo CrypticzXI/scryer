@@ -948,7 +948,16 @@ pub(super) fn bootstrap_with_acquisition_tracking_and_indexer_and_release_attemp
     let titles = Arc::new(MockTitleRepo::default());
     let shows = Arc::new(MockShowRepo::default());
     let users = Arc::new(MockUserRepo::default());
-    let indexer_configs = Arc::new(MockIndexerConfigRepo::default());
+    // RFC 119 §D2: the convergence cursor only searches a scope's routed
+    // indexers, so a background cycle needs at least one enabled indexer routed
+    // to it. Seed a synthetic direct-Newznab indexer the core `indexer_client`
+    // fake answers for.
+    let indexer_configs = Arc::new(MockIndexerConfigRepo {
+        store: Arc::new(Mutex::new(vec![synthetic_direct_nab_indexer_config(
+            "acquisition-indexer",
+            "newznab",
+        )])),
+    });
     let download_client_configs = Arc::new(MockDownloadClientConfigRepo::default());
     download_client_configs
         .store
@@ -972,7 +981,7 @@ pub(super) fn bootstrap_with_acquisition_tracking_and_indexer_and_release_attemp
     let quality_profiles = Arc::new(MockQualityProfileRepo);
 
     let services = AppServices::builder(
-        titles,
+        titles.clone(),
         shows,
         users,
         indexer_configs,
@@ -989,6 +998,13 @@ pub(super) fn bootstrap_with_acquisition_tracking_and_indexer_and_release_attemp
     .with_pending_releases(pending_releases.clone())
     .with_blocklist_repo(Arc::new(MockBlocklistRepo::default()))
     .with_libraries(Arc::new(MockLibraryRepo::default()))
+    // RFC 119 §D1: the convergence cursor derives targets from library state.
+    // With mock catalog stores, bridge the derivation to the seeded wanted
+    // rows so `run_convergence_cycle_once` reaches each seeded monitored scope.
+    .with_media_files(Arc::new(MockMediaFileRepo::with_missing_scope_source(
+        wanted_items.clone(),
+        titles,
+    )))
     .build_partial_for_tests();
 
     let mut registry = FacetRegistry::new();
@@ -1871,11 +1887,7 @@ pub(super) async fn seed_movie_wanted_for_acquisition(
             season_number: None,
             episode_number: None,
             media_type: "movie".to_string(),
-            search_phase: "initial".to_string(),
-            next_search_at: Some(Utc::now().to_rfc3339()),
             last_search_at: None,
-            search_count: 0,
-            baseline_date: Some(format!("{year}-01-01")),
             status: WantedStatus::Wanted,
             grabbed_release: None,
             current_score: None,
@@ -1985,11 +1997,7 @@ pub(super) async fn seed_anime_season_wanted_for_acquisition(
                 season_number: Some(season_number.to_string()),
                 episode_number: Some(episode_number.to_string()),
                 media_type: "episode".to_string(),
-                search_phase: "initial".to_string(),
-                next_search_at: Some(Utc::now().to_rfc3339()),
                 last_search_at: None,
-                search_count: 0,
-                baseline_date: Some("2024-01-01".to_string()),
                 status: WantedStatus::Wanted,
                 grabbed_release: None,
                 current_score: None,

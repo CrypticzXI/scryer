@@ -9,7 +9,7 @@ use scryer_application::{
     DownloadSubmission, DownloadSubmissionPurpose, DownloadSubmissionRepository, LibraryRepository,
     LibraryRootDraft, PendingReleaseRepository, PendingReleaseStatus, SubmissionScope,
     SuccessfulGrabCommit, TitleRepository, UserRepository, WantedCompleteTransition,
-    WantedItemRepository, WantedSearchTransition, WantedStatus,
+    WantedItemRepository, WantedStatus,
 };
 use scryer_domain::{
     Id, Library, LibraryGrant, LibraryPermission, LibraryPermissionMask, MediaFacet, Title, User,
@@ -96,11 +96,7 @@ async fn seed_wanted_item(
         season_number: None,
         episode_number: None,
         media_type: "movie".to_string(),
-        search_phase: "initial".to_string(),
-        next_search_at: None,
         last_search_at: None,
-        search_count: 0,
-        baseline_date: None,
         status,
         grabbed_release: None,
         current_score: None,
@@ -460,7 +456,6 @@ async fn commit_successful_grab_supersedes_all_pending_siblings_for_normal_grab(
         .commit_successful_grab(&SuccessfulGrabCommit {
             wanted_item_id: wi.id.clone(),
             covered_wanted_item_ids: Vec::new(),
-            search_count: 1,
             current_score: None,
             grabbed_release: grabbed_release.clone(),
             last_search_at: Some(grabbed_at.clone()),
@@ -491,8 +486,6 @@ async fn commit_successful_grab_supersedes_all_pending_siblings_for_normal_grab(
         .expect("get wanted")
         .expect("wanted item exists");
     assert_eq!(wanted.status, scryer_application::WantedStatus::Grabbed);
-    assert_eq!(wanted.search_count, 1);
-    assert_eq!(wanted.next_search_at, None);
     assert_eq!(wanted.last_search_at.as_deref(), Some(grabbed_at.as_str()));
     assert_eq!(
         wanted.grabbed_release.as_deref(),
@@ -561,7 +554,6 @@ async fn commit_successful_grab_marks_selected_pending_release_grabbed() {
         .commit_successful_grab(&SuccessfulGrabCommit {
             wanted_item_id: wi.id.clone(),
             covered_wanted_item_ids: Vec::new(),
-            search_count: 0,
             current_score: None,
             grabbed_release: serde_json::json!({
                 "title": claimed.release_title,
@@ -722,190 +714,7 @@ async fn download_submission_legacy_rows_without_episode_id_still_load() {
 }
 
 #[tokio::test]
-async fn list_wanted_items_does_not_duplicate_movies_across_syncs() {
-    let ctx = TestContext::new().await;
-    let app = ctx.app.clone();
-
-    seed_title(&ctx, "title-1").await;
-    seed_wanted_item(&ctx, "title-1", scryer_application::WantedStatus::Wanted).await;
-
-    let (first_items, first_total) = app
-        .list_wanted_items(
-            &admin(),
-            scryer_application::WantedItemsQuery {
-                limit: 50,
-                offset: 0,
-                ..scryer_application::WantedItemsQuery::default()
-            },
-        )
-        .await
-        .expect("first wanted list");
-    assert_eq!(first_total, 1);
-    assert_eq!(first_items.len(), 1);
-    assert_eq!(first_items[0].title_id, "title-1");
-
-    let (second_items, second_total) = app
-        .list_wanted_items(
-            &admin(),
-            scryer_application::WantedItemsQuery {
-                limit: 50,
-                offset: 0,
-                ..scryer_application::WantedItemsQuery::default()
-            },
-        )
-        .await
-        .expect("second wanted list");
-    assert_eq!(second_total, 1);
-    assert_eq!(second_items.len(), 1);
-    assert_eq!(second_items[0].title_id, "title-1");
-}
-
-#[tokio::test]
-async fn ensure_wanted_item_seeded_preserves_paused_status_and_existing_schedule() {
-    let ctx = TestContext::new().await;
-    let app = ctx.app.clone();
-
-    seed_title(&ctx, "title-1").await;
-    let wanted = seed_wanted_item(&ctx, "title-1", WantedStatus::Wanted).await;
-    let preserved_next_search_at = (Utc::now() + Duration::hours(3)).to_rfc3339();
-    let preserved_last_search_at = (Utc::now() - Duration::minutes(30)).to_rfc3339();
-
-    ctx.library_state
-        .schedule_wanted_item_search(&WantedSearchTransition {
-            id: wanted.id.clone(),
-            next_search_at: Some(preserved_next_search_at.clone()),
-            last_search_at: Some(preserved_last_search_at.clone()),
-            search_count: 2,
-            current_score: Some(90),
-            grabbed_release: None,
-        })
-        .await
-        .expect("schedule wanted item");
-
-    app.pause_wanted_item(&admin(), &wanted.id)
-        .await
-        .expect("pause wanted item");
-
-    let reseed = scryer_application::WantedItem {
-        id: scryer_domain::Id::new().0,
-        title_id: "title-1".to_string(),
-        title_name: Some("Test Title".to_string()),
-        title_slug: None,
-        title_facet: Some("movie".to_string()),
-        library_id: None,
-        library_name: None,
-        library_slug: None,
-        episode_id: None,
-        collection_id: None,
-        series_movie_link_id: None,
-        season_number: None,
-        episode_number: None,
-        media_type: "movie".to_string(),
-        search_phase: "secondary".to_string(),
-        next_search_at: Some(Utc::now().to_rfc3339()),
-        last_search_at: None,
-        search_count: 0,
-        baseline_date: Some("2024-01-02".to_string()),
-        status: WantedStatus::Wanted,
-        grabbed_release: None,
-        current_score: None,
-        latest_release_decision: None,
-        mismatch_recovery_eligible: false,
-        created_at: Utc::now().to_rfc3339(),
-        updated_at: Utc::now().to_rfc3339(),
-    };
-
-    let seeded_id = ctx
-        .library_state
-        .ensure_wanted_item_seeded(&reseed)
-        .await
-        .expect("reseed paused wanted item");
-    assert_eq!(seeded_id, wanted.id);
-
-    let fetched = ctx
-        .library_state
-        .get_wanted_item_by_id(&wanted.id)
-        .await
-        .expect("fetch wanted")
-        .expect("wanted item exists");
-    assert_eq!(fetched.status, WantedStatus::Paused);
-    assert_eq!(fetched.next_search_at, None);
-    assert_eq!(fetched.search_phase, "secondary");
-    assert_eq!(fetched.baseline_date.as_deref(), Some("2024-01-02"));
-}
-
-#[tokio::test]
-async fn ensure_wanted_item_seeded_preserves_existing_schedule_after_search_activity() {
-    let ctx = TestContext::new().await;
-
-    seed_title(&ctx, "title-1").await;
-    let wanted = seed_wanted_item(&ctx, "title-1", WantedStatus::Wanted).await;
-    let preserved_next_search_at = (Utc::now() + Duration::hours(3)).to_rfc3339();
-    let preserved_last_search_at = (Utc::now() - Duration::minutes(30)).to_rfc3339();
-
-    ctx.library_state
-        .schedule_wanted_item_search(&WantedSearchTransition {
-            id: wanted.id.clone(),
-            next_search_at: Some(preserved_next_search_at.clone()),
-            last_search_at: Some(preserved_last_search_at),
-            search_count: 2,
-            current_score: Some(90),
-            grabbed_release: None,
-        })
-        .await
-        .expect("schedule wanted item");
-
-    let reseed = scryer_application::WantedItem {
-        id: scryer_domain::Id::new().0,
-        title_id: "title-1".to_string(),
-        title_name: Some("Test Title".to_string()),
-        title_slug: None,
-        title_facet: Some("movie".to_string()),
-        library_id: None,
-        library_name: None,
-        library_slug: None,
-        episode_id: None,
-        collection_id: None,
-        series_movie_link_id: None,
-        season_number: None,
-        episode_number: None,
-        media_type: "movie".to_string(),
-        search_phase: "secondary".to_string(),
-        next_search_at: Some(Utc::now().to_rfc3339()),
-        last_search_at: None,
-        search_count: 0,
-        baseline_date: Some("2024-01-03".to_string()),
-        status: WantedStatus::Wanted,
-        grabbed_release: None,
-        current_score: None,
-        latest_release_decision: None,
-        mismatch_recovery_eligible: false,
-        created_at: Utc::now().to_rfc3339(),
-        updated_at: Utc::now().to_rfc3339(),
-    };
-
-    ctx.library_state
-        .ensure_wanted_item_seeded(&reseed)
-        .await
-        .expect("reseed searched wanted item");
-
-    let fetched = ctx
-        .library_state
-        .get_wanted_item_by_id(&wanted.id)
-        .await
-        .expect("fetch wanted")
-        .expect("wanted item exists");
-    assert_eq!(fetched.status, WantedStatus::Wanted);
-    assert_eq!(
-        fetched.next_search_at.as_deref(),
-        Some(preserved_next_search_at.as_str())
-    );
-    assert_eq!(fetched.search_phase, "secondary");
-    assert_eq!(fetched.baseline_date.as_deref(), Some("2024-01-03"));
-}
-
-#[tokio::test]
-async fn ensure_wanted_item_seeded_preserves_completed_status() {
+async fn ensure_wanted_state_row_preserves_completed_status() {
     let ctx = TestContext::new().await;
 
     seed_title(&ctx, "title-1").await;
@@ -915,7 +724,6 @@ async fn ensure_wanted_item_seeded_preserves_completed_status() {
         .transition_wanted_to_completed(&WantedCompleteTransition {
             id: wanted.id.clone(),
             last_search_at: Some(Utc::now().to_rfc3339()),
-            search_count: 1,
             current_score: Some(120),
             grabbed_release: Some(
                 serde_json::json!({
@@ -928,6 +736,8 @@ async fn ensure_wanted_item_seeded_preserves_completed_status() {
         .await
         .expect("complete wanted item");
 
+    // RFC 119 §D3: `ensure_wanted_state_row` is a pure get-or-create — a scope
+    // that already owns a row gets that row back untouched, never re-seeded.
     let reseed = scryer_application::WantedItem {
         id: scryer_domain::Id::new().0,
         title_id: "title-1".to_string(),
@@ -943,11 +753,7 @@ async fn ensure_wanted_item_seeded_preserves_completed_status() {
         season_number: None,
         episode_number: None,
         media_type: "movie".to_string(),
-        search_phase: "primary".to_string(),
-        next_search_at: Some(Utc::now().to_rfc3339()),
         last_search_at: None,
-        search_count: 0,
-        baseline_date: Some("2024-03-10".to_string()),
         status: WantedStatus::Wanted,
         grabbed_release: None,
         current_score: None,
@@ -957,10 +763,12 @@ async fn ensure_wanted_item_seeded_preserves_completed_status() {
         updated_at: Utc::now().to_rfc3339(),
     };
 
-    ctx.library_state
-        .ensure_wanted_item_seeded(&reseed)
+    let seeded_id = ctx
+        .library_state
+        .ensure_wanted_state_row(&reseed)
         .await
-        .expect("reseed completed wanted item");
+        .expect("get-or-create completed wanted item");
+    assert_eq!(seeded_id, wanted.id);
 
     let fetched = ctx
         .library_state
@@ -969,8 +777,6 @@ async fn ensure_wanted_item_seeded_preserves_completed_status() {
         .expect("fetch wanted")
         .expect("wanted item exists");
     assert_eq!(fetched.status, WantedStatus::Completed);
-    assert_eq!(fetched.search_phase, "primary");
-    assert_eq!(fetched.baseline_date.as_deref(), Some("2024-03-10"));
 }
 
 #[tokio::test]
@@ -979,19 +785,6 @@ async fn direct_upsert_wanted_item_still_preserves_guarded_state() {
 
     seed_title(&ctx, "title-1").await;
     let wanted = seed_wanted_item(&ctx, "title-1", WantedStatus::Wanted).await;
-    let preserved_next_search_at = (Utc::now() + Duration::hours(2)).to_rfc3339();
-
-    ctx.library_state
-        .schedule_wanted_item_search(&WantedSearchTransition {
-            id: wanted.id.clone(),
-            next_search_at: Some(preserved_next_search_at.clone()),
-            last_search_at: Some(Utc::now().to_rfc3339()),
-            search_count: 3,
-            current_score: Some(100),
-            grabbed_release: None,
-        })
-        .await
-        .expect("schedule wanted item");
 
     ctx.app
         .clone()
@@ -999,6 +792,8 @@ async fn direct_upsert_wanted_item_still_preserves_guarded_state() {
         .await
         .expect("pause wanted item");
 
+    // RFC 119 §D3: a raw upsert must not clobber the guarded status of an
+    // existing scope — a re-seed carrying `Wanted` leaves a paused row paused.
     ctx.library_state
         .upsert_wanted_item(&scryer_application::WantedItem {
             id: scryer_domain::Id::new().0,
@@ -1015,11 +810,7 @@ async fn direct_upsert_wanted_item_still_preserves_guarded_state() {
             season_number: None,
             episode_number: None,
             media_type: "movie".to_string(),
-            search_phase: "secondary".to_string(),
-            next_search_at: Some(Utc::now().to_rfc3339()),
             last_search_at: None,
-            search_count: 0,
-            baseline_date: Some("2024-04-01".to_string()),
             status: WantedStatus::Wanted,
             grabbed_release: None,
             current_score: None,
@@ -1038,76 +829,6 @@ async fn direct_upsert_wanted_item_still_preserves_guarded_state() {
         .expect("fetch wanted")
         .expect("wanted item exists");
     assert_eq!(fetched.status, WantedStatus::Paused);
-    assert_eq!(fetched.next_search_at, None);
-    assert_eq!(fetched.search_phase, "secondary");
-    assert_eq!(fetched.baseline_date.as_deref(), Some("2024-04-01"));
-}
-
-#[tokio::test]
-async fn direct_upsert_wanted_item_preserves_existing_schedule_after_search_activity() {
-    let ctx = TestContext::new().await;
-
-    seed_title(&ctx, "title-1").await;
-    let wanted = seed_wanted_item(&ctx, "title-1", WantedStatus::Wanted).await;
-    let preserved_next_search_at = (Utc::now() + Duration::hours(2)).to_rfc3339();
-
-    ctx.library_state
-        .schedule_wanted_item_search(&WantedSearchTransition {
-            id: wanted.id.clone(),
-            next_search_at: Some(preserved_next_search_at.clone()),
-            last_search_at: Some(Utc::now().to_rfc3339()),
-            search_count: 3,
-            current_score: Some(100),
-            grabbed_release: None,
-        })
-        .await
-        .expect("schedule wanted item");
-
-    ctx.library_state
-        .upsert_wanted_item(&scryer_application::WantedItem {
-            id: scryer_domain::Id::new().0,
-            title_id: "title-1".to_string(),
-            title_name: Some("Test Title".to_string()),
-            title_slug: None,
-            title_facet: Some("movie".to_string()),
-            library_id: None,
-            library_name: None,
-            library_slug: None,
-            episode_id: None,
-            collection_id: None,
-            series_movie_link_id: None,
-            season_number: None,
-            episode_number: None,
-            media_type: "movie".to_string(),
-            search_phase: "secondary".to_string(),
-            next_search_at: Some(Utc::now().to_rfc3339()),
-            last_search_at: None,
-            search_count: 0,
-            baseline_date: Some("2024-04-02".to_string()),
-            status: WantedStatus::Wanted,
-            grabbed_release: None,
-            current_score: None,
-            latest_release_decision: None,
-            mismatch_recovery_eligible: false,
-            created_at: Utc::now().to_rfc3339(),
-            updated_at: Utc::now().to_rfc3339(),
-        })
-        .await
-        .expect("direct upsert wanted item");
-
-    let fetched = ctx
-        .library_state
-        .get_wanted_item_by_id(&wanted.id)
-        .await
-        .expect("fetch wanted")
-        .expect("wanted item exists");
-    assert_eq!(fetched.status, WantedStatus::Wanted);
-    assert_eq!(
-        fetched.next_search_at.as_deref(),
-        Some(preserved_next_search_at.as_str())
-    );
-    assert_eq!(fetched.search_phase, "secondary");
-    assert_eq!(fetched.baseline_date.as_deref(), Some("2024-04-02"));
 }
 
 // ---------------------------------------------------------------------------

@@ -532,113 +532,6 @@ async fn external_import_monitor_snapshot_applies_series_child_monitoring() {
 }
 
 #[tokio::test]
-async fn external_import_monitor_snapshot_syncs_wanted_state_once_per_title() {
-    let download_client = Arc::new(StubDownloadClient::default());
-    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
-    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
-    let wanted_items = Arc::new(TrackingWantedItemRepo::default());
-    let (app, user) = bootstrap_with_acquisition_tracking(
-        download_client,
-        download_submissions,
-        pending_releases,
-        wanted_items.clone(),
-    );
-    let snapshots = Arc::new(MockExternalImportMonitorSnapshotRepo::default());
-    let app = app.with_test_overrides(|services| {
-        services.with_external_import_monitor_snapshots(snapshots.clone())
-    });
-
-    let title = app
-        .add_title(
-            &user,
-            NewTitle {
-                name: "Snapshot Sync Fixture".into(),
-                facet: MediaFacet::Series,
-                monitored: true,
-                tags: vec![],
-                external_ids: vec![ExternalId {
-                    source: "tvdb".to_string(),
-                    value: "5150".to_string(),
-                }],
-                min_availability: None,
-                ..Default::default()
-            },
-        )
-        .await
-        .expect("create title");
-
-    wanted_items
-        .remember_title_facet(&title.id, MediaFacet::Series)
-        .await;
-
-    let collection = app
-        .create_collection(
-            &user,
-            title.id.clone(),
-            "season".into(),
-            "1".into(),
-            Some("Season One".into()),
-            None,
-            Some("1".into()),
-            Some("12".into()),
-        )
-        .await
-        .expect("create collection");
-    let episode = app
-        .create_episode(
-            &user,
-            title.id.clone(),
-            Some(collection.id),
-            "standard".into(),
-            Some("1".into()),
-            Some("1".into()),
-            Some("Pilot".into()),
-            Some("Pilot".into()),
-            None,
-            Some(1_200),
-            false,
-            false,
-        )
-        .await
-        .expect("create episode");
-    app.set_episode_monitored(&user, &episode.id, false)
-        .await
-        .expect("disable episode");
-
-    append_series_monitor_snapshot_chunk(
-        &app,
-        &user,
-        MediaFacet::Series,
-        vec![ExternalImportMonitorSeriesEntry {
-            tvdb_id: Some("5150".to_string()),
-            path: None,
-            monitored: true,
-            seasons: vec![ExternalImportMonitorSeasonEntry {
-                season_number: 1,
-                monitored: true,
-            }],
-            episodes: vec![ExternalImportMonitorEpisodeEntry {
-                tvdb_id: None,
-                season_number: 1,
-                episode_number: 1,
-                monitored: true,
-            }],
-        }],
-    )
-    .await;
-
-    let upserts_before_apply = wanted_items.upsert_call_count();
-    let applied = app
-        .apply_pending_external_import_monitor_snapshot_for_facet(&MediaFacet::Series)
-        .await
-        .expect("apply monitor snapshot");
-
-    assert!(applied);
-    let upserts_after_apply = wanted_items.upsert_call_count();
-    assert_eq!(upserts_after_apply - upserts_before_apply, 1);
-}
-
-#[tokio::test]
 async fn external_import_monitor_snapshot_emits_title_updated_for_child_only_changes() {
     let (app, user) = bootstrap();
     let snapshots = Arc::new(MockExternalImportMonitorSnapshotRepo::default());
@@ -838,13 +731,14 @@ async fn external_import_monitor_snapshot_enables_collection_for_monitored_episo
     )
     .await;
 
-    let upserts_before_apply = wanted_items.upsert_call_count();
     let applied = app
         .apply_pending_external_import_monitor_snapshot_for_facet(&MediaFacet::Series)
         .await
         .expect("apply monitor snapshot");
 
     assert!(applied);
+    // RFC 119: the snapshot reconciles monitoring state; acquisition targets are
+    // derived from that state, no wanted rows are materialized on apply.
     let updated_collection = app
         .get_collection(&user, &collection.id)
         .await
@@ -857,7 +751,4 @@ async fn external_import_monitor_snapshot_enables_collection_for_monitored_episo
         .expect("episode exists");
     assert!(updated_collection.monitored);
     assert!(updated_episode.monitored);
-
-    let upserts_after_apply = wanted_items.upsert_call_count();
-    assert_eq!(upserts_after_apply - upserts_before_apply, 1);
 }

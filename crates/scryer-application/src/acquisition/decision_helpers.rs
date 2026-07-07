@@ -140,6 +140,7 @@ impl AppUseCase {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Utc;
     use scryer_domain::{MediaFacet, Title};
 
     fn make_title(facet: MediaFacet) -> Title {

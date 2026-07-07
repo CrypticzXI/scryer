@@ -64,7 +64,7 @@ async fn coverage_records_and_reads_by_fingerprint() {
     );
 
     // Prune drops the scope entirely.
-    store.prune_scope("ep-1", "series").await.unwrap();
+    store.prune_scope("ep-1").await.unwrap();
     assert!(
         store
             .covered_indexers("ep-1", "series", "fp-b", None)

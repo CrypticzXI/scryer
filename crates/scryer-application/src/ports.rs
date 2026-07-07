@@ -3060,6 +3060,16 @@ pub(crate) async fn find_existing_wanted_state_row<R: WantedItemRepository + ?Si
             }));
     }
 
+    // Episode scope before collection scope: an episode state row carries both
+    // its `episode_id` and its owning `collection_id`, so it must be matched on
+    // the more specific episode identity first — otherwise every episode of a
+    // season would resolve to the same collection-matched sibling row.
+    if let Some(episode_id) = item.episode_id.as_deref() {
+        return repo
+            .get_wanted_item_for_title(&item.title_id, Some(episode_id))
+            .await;
+    }
+
     if let Some(collection_id) = item.collection_id.as_deref() {
         return Ok(repo
             .list_wanted_items(WantedItemsQuery {
@@ -3069,13 +3079,10 @@ pub(crate) async fn find_existing_wanted_state_row<R: WantedItemRepository + ?Si
             })
             .await?
             .into_iter()
-            .find(|existing| existing.collection_id.as_deref() == Some(collection_id)));
-    }
-
-    if let Some(episode_id) = item.episode_id.as_deref() {
-        return repo
-            .get_wanted_item_for_title(&item.title_id, Some(episode_id))
-            .await;
+            .find(|existing| {
+                existing.episode_id.is_none()
+                    && existing.collection_id.as_deref() == Some(collection_id)
+            }));
     }
 
     Ok(repo

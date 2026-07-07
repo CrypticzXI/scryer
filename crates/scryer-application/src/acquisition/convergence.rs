@@ -17,8 +17,8 @@ use crate::quality_profile::QualityProfileCriteria;
 use scryer_domain::Title;
 
 /// Per-tick evaluation cost ceiling for the convergence cursor (§D3): how many
-/// scopes the cursor may *evaluate* per cycle (coverage lookup + routing resolve
-/// + fingerprint compute). Sized above the scheduler's realistic per-tick
+/// scopes the cursor may *evaluate* per cycle (coverage lookup, routing resolve,
+/// fingerprint compute). Sized above the scheduler's realistic per-tick
 /// admission capacity so plan-112 backpressure — never this count — is what
 /// paces actual requests.
 pub(crate) const ACQUISITION_LONG_TAIL_BACKFILL_MAX_SCOPES_PER_CYCLE_KEY: &str =
