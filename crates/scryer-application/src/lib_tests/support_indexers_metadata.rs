@@ -213,6 +213,10 @@ pub(super) struct FixedReleaseIndexerClient {
     /// outcomes). Empty by default — set via [`with_fired_indexers`] when a test
     /// drives the real coverage chokepoint and needs specific indexers recorded.
     pub(super) fired_indexer_ids: Vec<String>,
+    /// When set, every fired indexer reports `Fired { empty: true }` and the
+    /// response carries no results — a genuine zero-hit response (RFC 119 §D2:
+    /// "no results" is still coverage).
+    pub(super) empty_response: bool,
 }
 
 impl FixedReleaseIndexerClient {
@@ -221,6 +225,7 @@ impl FixedReleaseIndexerClient {
             release_title: release_title.into(),
             indexer_languages: None,
             fired_indexer_ids: Vec::new(),
+            empty_response: false,
         }
     }
 
@@ -229,6 +234,11 @@ impl FixedReleaseIndexerClient {
         indexer_ids: impl IntoIterator<Item = impl Into<String>>,
     ) -> Self {
         self.fired_indexer_ids = indexer_ids.into_iter().map(Into::into).collect();
+        self
+    }
+
+    pub(super) fn with_empty_response(mut self) -> Self {
+        self.empty_response = true;
         self
     }
 }
@@ -252,15 +262,28 @@ impl IndexerClient for FixedReleaseIndexerClient {
         _learning_context: Option<crate::IndexerSearchLearningContext>,
         _cancel_token: tokio_util::sync::CancellationToken,
     ) -> AppResult<IndexerSearchResponse> {
+        let indexer_outcomes = self
+            .fired_indexer_ids
+            .iter()
+            .map(|id| crate::IndexerQueryOutcome {
+                indexer_id: id.clone(),
+                outcome: crate::IndexerSearchOutcome::Fired {
+                    empty: self.empty_response,
+                },
+            })
+            .collect();
+        if self.empty_response {
+            return Ok(IndexerSearchResponse {
+                indexer_outcomes,
+                results: Vec::new(),
+                api_current: None,
+                api_max: None,
+                grab_current: None,
+                grab_max: None,
+            });
+        }
         Ok(IndexerSearchResponse {
-            indexer_outcomes: self
-                .fired_indexer_ids
-                .iter()
-                .map(|id| crate::IndexerQueryOutcome {
-                    indexer_id: id.clone(),
-                    outcome: crate::IndexerSearchOutcome::Fired { empty: false },
-                })
-                .collect(),
+            indexer_outcomes,
             results: vec![IndexerSearchResult {
                 indexer_id: None,
                 source: "nzbgeek".into(),

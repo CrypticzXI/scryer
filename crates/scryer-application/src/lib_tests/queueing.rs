@@ -2848,6 +2848,64 @@ async fn every_scoped_search_records_coverage_including_interactive() {
 }
 
 #[tokio::test]
+async fn empty_response_from_fired_indexer_counts_as_coverage() {
+    // RFC 119 §D2 (#10): an indexer whose query executed and returned an EMPTY
+    // response is still covered — a long-tail release genuinely absent from an
+    // indexer must converge, or the cursor re-searches that empty indexer every
+    // cycle forever. The determination comes from the multi-indexer fanout's
+    // per-indexer outcomes (`Fired { empty: true }`), never from the merged
+    // result list being empty.
+    let settings = Arc::new(StoredSettingsRepo::default());
+    let configs = vec![
+        synthetic_direct_nab_indexer_config("indexer-a", "newznab"),
+        synthetic_direct_nab_indexer_config("indexer-b", "newznab"),
+    ];
+    let indexer_client = Arc::new(
+        FixedReleaseIndexerClient::new("Demon.Slayer.Mugen.Train.2020.1080p.WEB-DL")
+            .with_fired_indexers(["indexer-a", "indexer-b"])
+            .with_empty_response(),
+    );
+    let (app, user) =
+        bootstrap_with_search_settings_indexer_and_configs(settings, indexer_client, configs);
+    let coverage = Arc::new(RecordingScopeIndexerCoverageRepo::new());
+    let app = app.with_test_overrides(|builder| {
+        builder.with_scope_indexer_coverage_store(coverage.clone())
+    });
+
+    let (title, subject) = convergence_test_title_and_subject(&app, &user).await;
+
+    let results = app
+        .search_and_evaluate_subject(
+            &title,
+            &subject,
+            "background_acquisition",
+            SearchMode::Auto,
+            tokio_util::sync::CancellationToken::new(),
+        )
+        .await
+        .expect("empty search succeeds");
+    assert!(results.is_empty(), "the response genuinely had no results");
+
+    let mut indexers: Vec<String> = coverage
+        .recorded()
+        .await
+        .iter()
+        .map(|row| row.2.clone())
+        .collect();
+    indexers.sort();
+    indexers.dedup();
+    assert_eq!(
+        indexers,
+        vec!["indexer-a".to_string(), "indexer-b".to_string()],
+        "a zero-result response from a fired indexer records coverage"
+    );
+    assert!(
+        scope_is_converged(&app, &title, &subject).await,
+        "empty responses across every routed indexer converge the scope"
+    );
+}
+
+#[tokio::test]
 async fn stale_fingerprint_coverage_reopens_convergence() {
     // RFC §D4: a profile/criteria edit changes the fingerprint, so prior coverage
     // (recorded under the old fingerprint) no longer counts and the scope re-opens.
