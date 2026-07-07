@@ -1,5 +1,5 @@
 TRaSH Guides sync summary
-Synced at: 2026-07-06
+Synced at: 2026-07-07
 
 Active release-group rules: 825
   by facet: movies=274, series=174, anime=377
