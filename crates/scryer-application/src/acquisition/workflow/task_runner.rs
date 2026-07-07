@@ -1572,6 +1572,17 @@ pub async fn start_background_acquisition_poller(
 
     info!("background acquisition poller started");
 
+    // Run-once cutover seed (RFC 119 §12.3): recently-searched legacy scopes
+    // start converged so first boot does not re-sweep the back-catalog.
+    // Spawned so startup stays non-blocking; the cycle racing the seed is
+    // harmless (either path only causes a safe converge).
+    {
+        let app = app.clone();
+        tokio::spawn(async move {
+            app.seed_convergence_from_legacy_history().await;
+        });
+    }
+
     // Run initial health checks after a short delay to let services initialize
     {
         let app = app.clone();

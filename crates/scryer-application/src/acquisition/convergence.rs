@@ -68,6 +68,124 @@ impl AppUseCase {
 pub(crate) const ACQUISITION_CONVERGENCE_RESUME_AFTER_KEY: &str =
     "acquisition.convergence_resume_after";
 
+/// Marker set once the run-once cutover seed has completed (RFC 119 §12.3).
+pub(crate) const ACQUISITION_CONVERGENCE_SEEDED_AT_KEY: &str =
+    "acquisition.convergence_seeded_at";
+
+/// Scopes the legacy scheduler searched within this window start converged at
+/// cutover instead of being re-swept on first boot.
+const CUTOVER_SEED_RECENT_SEARCH_DAYS: i64 = 14;
+
+impl AppUseCase {
+    /// Run-once cutover reconciliation (RFC 119 §12.3): scopes with a recent
+    /// legacy search start *converged* — coverage recorded for every routed
+    /// indexer under the current fingerprint — so the first convergence sweep
+    /// only covers what the old scheduler had genuinely not searched.
+    /// Best-effort and idempotent: imperfect seeding only causes a safe
+    /// re-converge, so any failure is logged and skipped.
+    pub(crate) async fn seed_convergence_from_legacy_history(&self) {
+        let already_seeded = self
+            .services
+            .config
+            .settings
+            .get_setting_json_explicit(
+                SETTINGS_SCOPE_SYSTEM,
+                ACQUISITION_CONVERGENCE_SEEDED_AT_KEY,
+                None,
+            )
+            .await
+            .ok()
+            .flatten()
+            .and_then(|value| serde_json::from_str::<String>(&value).ok())
+            .is_some_and(|value| !value.trim().is_empty());
+        if already_seeded {
+            return;
+        }
+
+        let cutoff = chrono::Utc::now() - chrono::Duration::days(CUTOVER_SEED_RECENT_SEARCH_DAYS);
+        let items = match self
+            .services
+            .workflow
+            .wanted_items
+            .list_wanted_items(crate::contracts::WantedItemsQuery {
+                limit: i64::MAX,
+                ..crate::contracts::WantedItemsQuery::default()
+            })
+            .await
+        {
+            Ok(items) => items,
+            Err(error) => {
+                tracing::warn!(error = %error, "convergence seed: failed to list legacy state rows");
+                return;
+            }
+        };
+
+        let mut seeded_scopes = 0usize;
+        for item in items {
+            let recently_searched = item
+                .last_search_at
+                .as_deref()
+                .and_then(crate::quality_profile::parse_published_at)
+                .is_some_and(|searched_at| searched_at >= cutoff);
+            if !recently_searched || item.status != WantedStatus::Wanted {
+                continue;
+            }
+            let Ok(Some(title)) = self.services.catalog.titles.get_by_id(&item.title_id).await
+            else {
+                continue;
+            };
+            let episode = match item.episode_id.as_deref() {
+                Some(episode_id) => self
+                    .services
+                    .catalog
+                    .shows
+                    .get_episode_by_id(episode_id)
+                    .await
+                    .ok()
+                    .flatten(),
+                None => None,
+            };
+            let subject = self
+                .resolve_release_search_subject_for_wanted_item(
+                    &title,
+                    &title,
+                    &item,
+                    episode.as_ref(),
+                )
+                .await;
+            let Some(convergence) = self.resolve_scope_convergence(&title, &subject).await else {
+                continue;
+            };
+            self.record_search_coverage(&title, &subject, &convergence.routed_indexer_ids)
+                .await;
+            seeded_scopes += 1;
+        }
+
+        let now = chrono::Utc::now().to_rfc3339();
+        if let Ok(value_json) = serde_json::to_string(&now)
+            && let Err(error) = self
+                .services
+                .config
+                .settings
+                .upsert_setting_json(
+                    SETTINGS_SCOPE_SYSTEM,
+                    ACQUISITION_CONVERGENCE_SEEDED_AT_KEY,
+                    None,
+                    value_json,
+                    "system",
+                    None,
+                )
+                .await
+        {
+            tracing::warn!(error = %error, "convergence seed: failed to persist completion marker");
+        }
+        tracing::info!(
+            seeded_scopes,
+            "convergence cutover seed complete: recently-searched scopes start converged"
+        );
+    }
+}
+
 /// Account quota at or below this remaining fraction counts as exhausted for
 /// the cursor's pre-skip (mirrors the scheduler's own quota gate — the cursor
 /// only avoids spending evaluation budget on requests the scheduler would

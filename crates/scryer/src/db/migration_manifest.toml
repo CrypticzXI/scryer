@@ -770,6 +770,23 @@ file = "postgres/migrations/0156_scope_indexer_coverage.sql"
 engine = "postgres"
 scope = "all"
 
+[[migration]]
+version = 157
+description = "wanted_items: drop retired search-scheduler columns"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0157_wanted_items_drop_scheduler_columns.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0157_wanted_items_drop_scheduler_columns.sql"
+engine = "postgres"
+scope = "all"
+
 [[baseline]]
 through_version = 122
 file = "baselines/0122_baseline.sql"

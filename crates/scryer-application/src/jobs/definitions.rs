@@ -328,7 +328,7 @@ impl JobKey {
             | Self::BackgroundLibraryRefreshSeries
             | Self::BackgroundLibraryRefreshAnime => "Every 2 hours",
             Self::ProwlarrSync => "Every 5 minutes",
-            Self::RssSync => "Every 15 minutes",
+            Self::RssSync => "Scheduler-paced per indexer (15-minute target)",
             Self::SubtitleSearch => "Based on subtitle settings interval",
             Self::PluginRegistryRefresh => "Every 24 hours",
             Self::Housekeeping => "Every 24 hours",
