@@ -1,3 +1,16 @@
+/// Scheduler value hint for a hot convergence target (recent air/release/add,
+/// RFC 119 §D3): high value so the scope converges promptly and keeps admitting
+/// even while the account's API quota is under pressure. Equals the neutral
+/// baseline, so hot work is never shed by plan 112's low-value pressure gate.
+const BACKGROUND_HOT_TARGET_VALUE: f64 = 1.0;
+
+/// Scheduler value hint for a cold convergence target (long-tail / upgrades,
+/// RFC 119 §D3): low value so plan 112 drains it first under quota pressure,
+/// yielding shared account quota to RSS polls and hot acquisition. Above the
+/// absolute `LOW_VALUE_BACKGROUND_THRESHOLD` floor, so a cold scope still
+/// admits when quota is healthy — it only defers once quota tightens.
+const BACKGROUND_COLD_TARGET_VALUE: f64 = 0.25;
+
 async fn blocked_acquisition_facets_after_quiet_wait(app: &AppUseCase) -> Vec<MediaFacet> {
     let blocked_facets = app
         .runtime
@@ -521,6 +534,12 @@ async fn process_single_target(
                             tokio_util::sync::CancellationToken::new(),
                             pack_uncovered
                                 .map(|uncovered| uncovered.into_iter().collect()),
+                            // The pack shares the target's recency lane (§D3).
+                            Some(if target.is_hot {
+                                BACKGROUND_HOT_TARGET_VALUE
+                            } else {
+                                BACKGROUND_COLD_TARGET_VALUE
+                            }),
                         )
                         .await
                     {
@@ -909,6 +928,11 @@ async fn process_single_target(
             SearchMode::Auto,
             tokio_util::sync::CancellationToken::new(),
             Some(uncovered),
+            Some(if target.is_hot {
+                BACKGROUND_HOT_TARGET_VALUE
+            } else {
+                BACKGROUND_COLD_TARGET_VALUE
+            }),
         )
         .await
     {

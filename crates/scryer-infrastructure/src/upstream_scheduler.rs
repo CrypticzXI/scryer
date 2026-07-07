@@ -22,6 +22,18 @@ const LOW_VALUE_BACKGROUND_THRESHOLD: f64 = 0.25;
 const LOW_VALUE_SUBTITLE_THRESHOLD: f64 = 0.15;
 const RSS_FRESHNESS_ESCALATION_THRESHOLD: f64 = 0.85;
 const LOW_ACCOUNT_QUOTA_REMAINING_FRACTION: f64 = 0.20;
+/// RFC 119 §D3/#4: below this remaining-account-quota fraction, background
+/// acquisition is "under pressure" and yields shared quota. It is set above
+/// `LOW_ACCOUNT_QUOTA_REMAINING_FRACTION` (0.20 — where RSS *begins* stretching
+/// its own cadence) so background acquisition starts shedding low-value work at
+/// a higher remaining fraction than RSS reacts at: a saturating convergence
+/// backlog can never starve RSS polls of the shared account quota.
+const BACKGROUND_QUOTA_PRESSURE_REMAINING_FRACTION: f64 = 0.35;
+/// RFC 119 §D3/#4: under quota pressure, background candidates whose value is
+/// below this bar defer (`Defer{LowValueBackground}`) while higher-value work
+/// still admits. The convergence lane values (hot 1.0 / cold 0.25) straddle it,
+/// so pressure sheds cold work first and keeps hot work converging.
+const BACKGROUND_QUOTA_PRESSURE_VALUE_THRESHOLD: f64 = 0.5;
 const DEFAULT_RSS_TARGET_INTERVAL: Duration = Duration::from_secs(15 * 60);
 const LOW_QUOTA_RSS_TARGET_INTERVAL: Duration = Duration::from_secs(60 * 60);
 const QUOTA_OBSERVATION_STALE_AFTER: Duration = Duration::from_secs(24 * 60 * 60);
@@ -1048,9 +1060,9 @@ fn decide_candidate(
         };
     }
 
-    if let Some(retry_after) =
-        account_quota_retry_after(&candidate, quota_entry.or(state_entry), now)
-    {
+    let effective_quota_entry = quota_entry.or(state_entry);
+
+    if let Some(retry_after) = account_quota_retry_after(&candidate, effective_quota_entry, now) {
         return SchedulerAdmission::Defer {
             candidate_id: candidate.candidate_id,
             retry_after,
@@ -1080,7 +1092,7 @@ fn decide_candidate(
         };
     }
 
-    if should_defer(&candidate, now) {
+    if should_defer(&candidate, effective_quota_entry, now) {
         let reason = deferral_reason(&candidate);
         let retry_after = retry_after_for_deferral(&candidate);
         return SchedulerAdmission::Defer {
@@ -1181,6 +1193,25 @@ fn quota_probe_is_due(entry: &SchedulerStateEntry, now: DateTime<Utc>) -> bool {
         .is_some_and(|probe_after| probe_after <= now)
 }
 
+/// RFC 119 §D3/#4: the account's shared API quota is "under pressure" when a
+/// fresh observation shows the remaining fraction below
+/// `BACKGROUND_QUOTA_PRESSURE_REMAINING_FRACTION`. A stale/absent observation
+/// (nothing to trust) is treated as not-under-pressure so background work still
+/// probes; the hard capacity gate handles a genuinely exhausted account.
+fn account_quota_under_pressure(
+    quota_entry: Option<&SchedulerStateEntry>,
+    now: DateTime<Utc>,
+) -> bool {
+    let Some(entry) = quota_entry else {
+        return false;
+    };
+    if quota_is_stale(entry, now) {
+        return false;
+    }
+    api_remaining_fraction(entry)
+        .is_some_and(|remaining| remaining < BACKGROUND_QUOTA_PRESSURE_REMAINING_FRACTION)
+}
+
 fn rss_target_interval_for_quota(api_remaining: Option<f64>, quota_exhausted: bool) -> Duration {
     if quota_exhausted {
         return EXHAUSTED_QUOTA_PROBE_AFTER;
@@ -1203,15 +1234,33 @@ fn destination_cooldown_until(
         .map(|duration| now + duration)
 }
 
-fn should_defer(candidate: &SchedulerCandidate, now: DateTime<Utc>) -> bool {
+fn should_defer(
+    candidate: &SchedulerCandidate,
+    quota_entry: Option<&SchedulerStateEntry>,
+    now: DateTime<Utc>,
+) -> bool {
     match candidate.intent {
         SchedulerIntent::InteractiveSearch => false,
+        // RFC 119 §D3/#4: this soft gate runs *after* the hard
+        // `account_quota_retry_after` capacity gate, so it never blocks RSS
+        // (BackgroundRss defers here only by cadence). A background candidate
+        // defers when it is either below the absolute low-value floor, or below
+        // the pressure bar while the account's observed quota is running low —
+        // draining cold work first and yielding shared quota to RSS and hot
+        // acquisition. `historically_useful` scopes are immune.
         SchedulerIntent::BackgroundAcquisition => {
-            candidate.expected_value.score < LOW_VALUE_BACKGROUND_THRESHOLD
-                && !candidate
-                    .learning_context
-                    .as_ref()
-                    .is_some_and(|context| context.historically_useful)
+            if candidate
+                .learning_context
+                .as_ref()
+                .is_some_and(|context| context.historically_useful)
+            {
+                return false;
+            }
+            if candidate.expected_value.score < LOW_VALUE_BACKGROUND_THRESHOLD {
+                return true;
+            }
+            candidate.expected_value.score < BACKGROUND_QUOTA_PRESSURE_VALUE_THRESHOLD
+                && account_quota_under_pressure(quota_entry, now)
         }
         SchedulerIntent::BackgroundRss => candidate.freshness.as_ref().is_some_and(|freshness| {
             now < freshness.latest_safe_poll_at
@@ -2614,5 +2663,204 @@ mod tests {
                 .and_then(|entry| entry.rss_target_interval),
             Some(DEFAULT_RSS_TARGET_INTERVAL)
         );
+    }
+
+    // Records a fresh, near-exhausted-but-not-zero API observation for
+    // `candidate`'s account: remaining fraction 0.10 (< the 0.35 pressure bar)
+    // while remaining calls (10) still exceed the 1-call estimated cost, so the
+    // hard capacity gate passes and the soft pressure gate is what decides.
+    async fn record_quota_pressure(scheduler: &InMemoryUpstreamScheduler, c: &SchedulerCandidate) {
+        scheduler
+            .record_feedback(quota_feedback(c, Some(90), Some(100), Utc::now()))
+            .await
+            .expect("pressure feedback should record");
+    }
+
+    #[tokio::test]
+    async fn low_value_background_defers_under_quota_pressure_while_high_value_admits() {
+        // RFC 119 §D3/#4: under account-quota pressure, a cold (low-value)
+        // convergence candidate defers so shared quota is spent on high-value
+        // work; a hot (high-value) candidate on the same account still admits.
+        let scheduler = InMemoryUpstreamScheduler::new();
+        let now = Utc::now();
+
+        let mut cold = candidate(SchedulerIntent::BackgroundAcquisition, 0.25);
+        let host = HostKey::from(format!("pressure-{}.example.test", Uuid::new_v4()));
+        cold.host_key = host.clone();
+        cold.destination_key = DestinationKey::from(host.to_string());
+        cold.account_quota_key = Some(AccountQuotaKey::from(format!("pressure-{}", Uuid::new_v4())));
+        record_quota_pressure(&scheduler, &cold).await;
+
+        // Same account/host, but hot value — must survive the pressure gate.
+        let mut hot = cold.clone();
+        hot.candidate_id = SchedulerCandidateId::new();
+        hot.expected_value = ExpectedValueHint { score: 1.0 };
+
+        let decision = scheduler
+            .admit_batch(SchedulerBatchRequest {
+                batch_id: "pressure".to_string(),
+                now,
+                candidates: vec![cold, hot],
+            })
+            .await
+            .expect("admission should succeed");
+
+        let cold_deferred = decision.decisions.iter().any(|d| {
+            matches!(
+                d,
+                SchedulerAdmission::Defer {
+                    reason: DeferralReason::LowValueBackground,
+                    ..
+                }
+            )
+        });
+        let hot_admitted = decision
+            .decisions
+            .iter()
+            .any(|d| matches!(d, SchedulerAdmission::Admit { .. }));
+        assert!(cold_deferred, "cold candidate should defer under pressure: {:?}", decision.decisions);
+        assert!(hot_admitted, "hot candidate should admit under pressure: {:?}", decision.decisions);
+    }
+
+    #[tokio::test]
+    async fn low_value_background_admits_when_quota_is_healthy() {
+        // Without quota pressure the cold lane still admits — pressure, not raw
+        // value, is what sheds it (RFC 119 §D3: 0.25 sits above the absolute
+        // LOW_VALUE_BACKGROUND_THRESHOLD floor).
+        let scheduler = InMemoryUpstreamScheduler::new();
+        let mut cold = candidate(SchedulerIntent::BackgroundAcquisition, 0.25);
+        let host = HostKey::from(format!("healthy-{}.example.test", Uuid::new_v4()));
+        cold.host_key = host.clone();
+        cold.destination_key = DestinationKey::from(host.to_string());
+        cold.account_quota_key = Some(AccountQuotaKey::from(format!("healthy-{}", Uuid::new_v4())));
+        // Plenty of remaining quota (90/100 free → fraction 0.90).
+        scheduler
+            .record_feedback(quota_feedback(&cold, Some(10), Some(100), Utc::now()))
+            .await
+            .expect("healthy feedback should record");
+
+        let decision = scheduler
+            .admit_batch(SchedulerBatchRequest {
+                batch_id: "healthy".to_string(),
+                now: Utc::now(),
+                candidates: vec![cold],
+            })
+            .await
+            .expect("admission should succeed");
+
+        assert!(
+            matches!(
+                decision.decisions.as_slice(),
+                [SchedulerAdmission::Admit { .. }]
+            ),
+            "cold candidate should admit when quota is healthy: {:?}",
+            decision.decisions
+        );
+    }
+
+    #[tokio::test]
+    async fn rss_wins_shared_quota_over_background_acquisition() {
+        // RFC 119 §D3/#4 (cutover-blocking): with the account's quota under
+        // pressure, a saturating convergence backlog must never starve RSS.
+        // The cold BackgroundAcquisition candidate defers on the pressure gate
+        // while the overdue BackgroundRss candidate on the same account still
+        // admits — proving RSS wins the shared quota.
+        let scheduler = InMemoryUpstreamScheduler::new();
+        let now = Utc::now();
+        let host = HostKey::from(format!("rss-wins-{}.example.test", Uuid::new_v4()));
+        let destination = DestinationKey::from(host.to_string());
+        let account = AccountQuotaKey::from(format!("rss-wins-{}", Uuid::new_v4()));
+
+        let mut background = candidate(SchedulerIntent::BackgroundAcquisition, 0.25);
+        background.host_key = host.clone();
+        background.destination_key = destination.clone();
+        background.account_quota_key = Some(account.clone());
+        record_quota_pressure(&scheduler, &background).await;
+
+        let mut rss = candidate(SchedulerIntent::BackgroundRss, 1.0);
+        rss.host_key = host.clone();
+        rss.destination_key = destination.clone();
+        rss.account_quota_key = Some(account.clone());
+        rss.rss_request_key = Some("rss:5070".to_string());
+        // Overdue poll → RSS escalates and admits on freshness rather than
+        // deferring by cadence.
+        rss.freshness = Some(RssFreshnessContext {
+            last_successful_poll_at: None,
+            last_attempt_at: None,
+            target_interval: DEFAULT_RSS_TARGET_INTERVAL,
+            latest_safe_poll_at: now - chrono::Duration::minutes(1),
+            estimated_feed_depth: None,
+            freshness_risk: 1.0,
+            destination_recent_activity_at: None,
+            account_quota_budget: None,
+        });
+
+        let decision = scheduler
+            .admit_batch(SchedulerBatchRequest {
+                batch_id: "rss-wins".to_string(),
+                now,
+                candidates: vec![background.clone(), rss.clone()],
+            })
+            .await
+            .expect("admission should succeed");
+
+        let mut background_deferred = false;
+        let mut rss_admitted = false;
+        for d in &decision.decisions {
+            match d {
+                SchedulerAdmission::Defer {
+                    candidate_id,
+                    reason: DeferralReason::LowValueBackground,
+                    ..
+                } if *candidate_id == background.candidate_id => background_deferred = true,
+                SchedulerAdmission::Admit {
+                    candidate_id,
+                    reason: AdmissionReason::RssFreshness,
+                    ..
+                } if *candidate_id == rss.candidate_id => rss_admitted = true,
+                _ => {}
+            }
+        }
+        assert!(
+            background_deferred,
+            "background acquisition should defer under quota pressure: {:?}",
+            decision.decisions
+        );
+        assert!(
+            rss_admitted,
+            "RSS must still admit against the shared account quota: {:?}",
+            decision.decisions
+        );
+    }
+
+    #[tokio::test]
+    async fn empty_success_feedback_updates_observations_like_success() {
+        // RFC 119 §D5: an EmptySuccess (fired query, zero results) is a
+        // successful observation for the scheduler — same quota/cooldown effect
+        // as Success. It marks last_successful_at and records the quota reading.
+        let scheduler = InMemoryUpstreamScheduler::new();
+        let mut c = candidate(SchedulerIntent::BackgroundAcquisition, 1.0);
+        let host = HostKey::from(format!("empty-success-{}.example.test", Uuid::new_v4()));
+        c.host_key = host.clone();
+        c.destination_key = DestinationKey::from(host.to_string());
+        c.account_quota_key = Some(AccountQuotaKey::from(format!("empty-success-{}", Uuid::new_v4())));
+        let observed_at = Utc::now();
+
+        let mut feedback = quota_feedback(&c, Some(5), Some(100), observed_at);
+        feedback.outcome = SchedulerFeedbackOutcome::EmptySuccess;
+        scheduler
+            .record_feedback(feedback)
+            .await
+            .expect("empty-success feedback should record");
+
+        let snapshot = scheduler
+            .snapshot(SchedulerSnapshotFilter::default())
+            .await
+            .expect("snapshot should succeed");
+        let entry = snapshot.entries.first().expect("entry should exist");
+        assert_eq!(entry.last_successful_at, Some(observed_at));
+        assert_eq!(entry.last_decision.as_deref(), Some("feedback:empty_success"));
+        // Quota observation is recorded just like Success: 5/100 used → 0.95 free.
+        assert_eq!(entry.api_remaining_fraction, Some(0.95));
     }
 }

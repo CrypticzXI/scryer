@@ -437,6 +437,11 @@ pub struct ManualImportPreviewPayload {
 #[derive(SimpleObject, Clone)]
 #[graphql(complex)]
 pub struct WantedItemPayload {
+    /// Scope identity (RFC 119 §6): the acquisition-state row id when a state row
+    /// exists for this scope, otherwise the convergence scope key itself
+    /// (`episode:<uuid>`, `title:<uuid>`, `series_movie:<uuid>`, …). A derived
+    /// target with no state row is still addressable by this id (pause/resume and
+    /// the interactive search job both accept a scope key here).
     pub id: ID,
     pub title_id: ID,
     pub title_name: Option<String>,
@@ -456,6 +461,17 @@ pub struct WantedItemPayload {
     pub current_score: Option<i32>,
     pub latest_release_decision: Option<ReleaseDecisionPayload>,
     pub mismatch_recovery_eligible: bool,
+    /// Convergence progress for this scope (RFC 119 §6/§7): whether the scope is
+    /// still sweeping indexers, has converged (watching RSS), is queued, or is
+    /// deferred because every uncovered indexer is currently unavailable.
+    pub convergence_state: ConvergenceStateValue,
+    /// Routed indexers already searched under the current fingerprint.
+    pub indexers_covered: i32,
+    /// Routed-enabled indexers for this scope.
+    pub indexers_routed: i32,
+    /// Recency lane (RFC 119 §D3): `Hot` converges promptly, `Cold` drains under
+    /// scheduler backpressure.
+    pub recency_lane: RecencyLaneValue,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }

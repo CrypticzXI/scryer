@@ -927,6 +927,56 @@ impl WantedMediaTypeValue {
     }
 }
 
+/// Convergence state of an acquisition scope (RFC 119 §6/§7). Replaces the retired
+/// cadence display (`searchPhase`/`nextSearchAt`): the operator sees whether a scope
+/// is still sweeping indexers, has converged onto RSS, is queued for the cursor, or
+/// is deferred because every uncovered indexer is currently unavailable.
+#[derive(Enum, Copy, Clone, Eq, PartialEq)]
+#[graphql(rename_items = "snake_case")]
+pub enum ConvergenceStateValue {
+    /// No indexer has been searched under the current fingerprint yet — waiting on
+    /// the cursor to begin the sweep.
+    Queued,
+    /// Some but not all routed indexers are covered — the convergence sweep is in
+    /// progress.
+    Searching,
+    /// Every routed indexer is covered under the current fingerprint — the scope is
+    /// watched via RSS and only re-checked on demand.
+    Converged,
+    /// Not converged, and every still-uncovered indexer is currently unavailable
+    /// (per the scheduler snapshot — cooling down or out of quota).
+    Deferred,
+}
+
+/// Recency lane of an acquisition scope (RFC 119 §D3): `Hot` scopes converge
+/// promptly (high candidate value to the scheduler); `Cold` scopes drain under
+/// backpressure.
+#[derive(Enum, Copy, Clone, Eq, PartialEq)]
+#[graphql(rename_items = "snake_case")]
+pub enum RecencyLaneValue {
+    Hot,
+    Cold,
+}
+
+/// Which derived acquisition-target set a wanted view lists (RFC 119 §6/§7):
+/// `Missing` scopes have no primary file; `CutoffUpgrade` scopes have a file below
+/// the effective profile cutoff.
+#[derive(Enum, Copy, Clone, Eq, PartialEq)]
+#[graphql(rename_items = "snake_case")]
+pub enum WantedKindValue {
+    Missing,
+    CutoffUpgrade,
+}
+
+impl WantedKindValue {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Missing => "missing",
+            Self::CutoffUpgrade => "cutoff_upgrade",
+        }
+    }
+}
+
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
 #[graphql(rename_items = "snake_case")]
 pub enum PendingReleaseStatusValue {
@@ -1439,6 +1489,7 @@ pub enum JobKeyValue {
     DiscoverySync,
     TitleImageCacheRefresh,
     TitleDeletion,
+    AcquisitionSearch,
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
@@ -2829,22 +2880,25 @@ pub struct QueueBestReleaseInput {
     pub replace_in_progress: Option<bool>,
 }
 
+/// Scope selector for the interactive acquisition-search job (RFC 119 §7.3/Phase 2).
+/// A bare input searches every derived target of `wanted_kind`; narrowing fields
+/// filter that set. `wanted_item_id` (a state-row id or a convergence scope key)
+/// resolves a single scope.
 #[derive(InputObject)]
-pub struct TriggerWantedSearchInput {
-    pub wanted_item_id: ID,
-    pub replace_in_progress: Option<bool>,
-}
-
-#[derive(InputObject)]
-pub struct TriggerTitleWantedSearchInput {
-    pub title_id: ID,
-    pub replace_in_progress: Option<bool>,
-}
-
-#[derive(InputObject)]
-pub struct TriggerSeasonWantedSearchInput {
-    pub title_id: ID,
-    pub season_number: i32,
+pub struct TriggerAcquisitionSearchInput {
+    /// Which derived target set to search. Defaults to `Missing`.
+    pub wanted_kind: Option<WantedKindValue>,
+    /// Restrict to one facet.
+    pub facet: Option<MediaFacetValue>,
+    /// Restrict to these libraries.
+    pub library_ids: Option<Vec<ID>>,
+    /// Restrict to one title.
+    pub title_id: Option<ID>,
+    /// Restrict to one season of `title_id` (episodic facets).
+    pub season_number: Option<i32>,
+    /// Search exactly one scope: a state-row id or a convergence scope key
+    /// (`episode:<uuid>`, `title:<uuid>`, `series_movie:<uuid>`, …).
+    pub wanted_item_id: Option<ID>,
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
@@ -3789,15 +3843,35 @@ pub struct ResumeWantedItemPayload {
 }
 
 #[derive(SimpleObject, Clone)]
-pub struct ResetWantedItemPayload {
-    pub id: async_graphql::ID,
-    pub reset: bool,
-}
-
-#[derive(SimpleObject, Clone)]
 pub struct TriggerTitleMismatchRecoverySearchPayload {
     pub title_id: ID,
     pub queued_count: i32,
+}
+
+/// Lifecycle of the interactive acquisition-search job (RFC 119 §7.3/Phase 2).
+#[derive(Enum, Copy, Clone, Eq, PartialEq)]
+#[graphql(rename_items = "snake_case")]
+pub enum AcquisitionSearchJobStateValue {
+    Running,
+    Completed,
+    Cancelled,
+    Failed,
+}
+
+/// Progress snapshot for the interactive acquisition-search job (RFC 119 §7.3).
+/// Survives navigation/refresh — the job runs server-side and its state is queried
+/// by `id` and pushed via `jobRunEvents`.
+#[derive(SimpleObject, Clone)]
+pub struct AcquisitionSearchJobPayload {
+    pub id: ID,
+    pub state: AcquisitionSearchJobStateValue,
+    pub total: i32,
+    pub processed: i32,
+    pub grabbed_count: i32,
+    pub failed_count: i32,
+    pub current_title: Option<String>,
+    pub started_at: DateTime<Utc>,
+    pub finished_at: Option<DateTime<Utc>>,
 }
 
 // ── Rule Sets ──────────────────────────────────────────────────────────────

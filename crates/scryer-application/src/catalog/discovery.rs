@@ -898,6 +898,7 @@ impl AppUseCase {
             search_subject_kind,
             cancel_token,
             restrict_to_indexer_ids,
+            background_value,
         } = request;
         if cancel_token.is_cancelled() {
             return Err(AppError::canceled("indexer search canceled"));
@@ -1042,6 +1043,9 @@ impl AppUseCase {
                 title_id: title_id.to_string(),
                 facet: search_facet.as_str().to_string(),
                 subject_kind: search_subject_kind,
+                // The convergence value hint rides the Auto background context so
+                // the scheduler can lane-rank this scope (RFC 119 §D3).
+                background_value,
             })
         } else {
             None
@@ -1194,6 +1198,7 @@ impl AppUseCase {
             mode,
             cancel_token,
             None,
+            None,
         )
         .await
     }
@@ -1202,6 +1207,10 @@ impl AppUseCase {
     /// indexers. The convergence cursor passes the scope's uncovered subset
     /// (RFC 119 §D3) — a covered indexer's catalog holds no new information
     /// for this scope, so re-querying it is pure spend.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "background search threads the convergence subset and value hint alongside the subject"
+    )]
     pub(crate) async fn search_and_evaluate_subject_restricted(
         &self,
         title: &Title,
@@ -1210,6 +1219,7 @@ impl AppUseCase {
         mode: SearchMode,
         cancel_token: CancellationToken,
         restrict_to_indexer_ids: Option<std::collections::HashSet<String>>,
+        background_value: Option<f64>,
     ) -> AppResult<Vec<IndexerSearchResult>> {
         let tagged_aliases = release_search_tagged_aliases(title);
         let (results, fired_indexer_ids) = self
@@ -1239,6 +1249,7 @@ impl AppUseCase {
                 parse_context: &subject.title_evidence.parse_context,
                 cancel_token,
                 restrict_to_indexer_ids,
+                background_value,
             })
             .await?;
 
@@ -1601,6 +1612,11 @@ pub(crate) struct ReleaseSearchRequest<'a> {
     /// When set, only these indexer ids are queried (the convergence cursor's
     /// uncovered subset, RFC 119 §D3). `None` = every routed indexer.
     pub(crate) restrict_to_indexer_ids: Option<std::collections::HashSet<String>>,
+    /// Background convergence value hint (RFC 119 §D3): the target's recency
+    /// lane maps to a scheduler candidate value (hot → high, cold → low) so
+    /// plan 112 can drain cold work first under quota pressure. Only the Auto
+    /// background path carries it; interactive/RSS leave it `None` (neutral).
+    pub(crate) background_value: Option<f64>,
 }
 
 impl AppUseCase {

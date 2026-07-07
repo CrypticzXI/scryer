@@ -227,6 +227,31 @@ pub(crate) fn parsed_release_matches_title(parsed: &ParsedReleaseMetadata, title
     parsed_release_matches_title_evidence(parsed, &canonical_title_evidence(title))
 }
 
+/// Whether a scope already has a live primary file (RFC 119 §D5 target check):
+/// the same scope match the cutoff evaluation uses. Episode scope wants the
+/// episode's file; series-movie scope wants a link-tagged file; the bare title
+/// scope wants a file with no episode/link tag.
+fn rss_scope_has_primary_file(
+    existing_files: &[TitleMediaFile],
+    episode_id: Option<&str>,
+    series_movie_link_id: Option<&str>,
+) -> bool {
+    existing_files
+        .iter()
+        .filter(|file| file.role.is_primary())
+        .any(|file| {
+            if let Some(episode_id) = episode_id {
+                file.episode_id.as_deref() == Some(episode_id)
+            } else if let Some(series_movie_link_id) = series_movie_link_id {
+                file.series_movie_link_ids
+                    .iter()
+                    .any(|link_id| link_id == series_movie_link_id)
+            } else {
+                file.episode_id.is_none() && file.series_movie_link_ids.is_empty()
+            }
+        })
+}
+
 impl AppUseCase {
     /// Run a single RSS sync cycle: fetch latest releases from all enabled indexers,
     /// match against monitored titles, score, and grab approved releases.
@@ -434,22 +459,19 @@ impl AppUseCase {
             ..Default::default()
         };
 
-        // For each matched title, score and potentially grab
+        // For each matched title, score and potentially grab. RFC 119 §D5:
+        // target-ness is derived from library state at match time — a monitored
+        // scope that is missing or below cutoff — never gated on a pre-existing
+        // wanted row. The activity ledger row, when present, still supplies
+        // upgrade state and is created on the first anchored write.
         for (title_id, releases) in &matched_by_title {
             let title = match self.services.catalog.titles.get_by_id(title_id).await {
                 Ok(Some(t)) => t,
                 _ => continue,
             };
-
-            // Check if there's a wanted item for this title
-            let wanted = self
-                .services
-                .workflow
-                .wanted_items
-                .get_wanted_item_for_title(title_id, None)
-                .await
-                .ok()
-                .flatten();
+            if !title.monitored {
+                continue;
+            }
 
             // For series, we need to match individual episodes
             let has_episodes = self
@@ -459,7 +481,8 @@ impl AppUseCase {
                 .unwrap_or(false);
 
             if has_episodes {
-                // For series: match each release to a specific episode's wanted item
+                // For series: route each release to its covered episode(s) or
+                // pack, gated on per-scope monitoring + missing/below-cutoff.
                 self.process_rss_series_releases(
                     &title,
                     releases,
@@ -481,16 +504,19 @@ impl AppUseCase {
                 )
                 .await;
             } else {
-                // For movies: use the title-level wanted item
-                let Some(wanted) = wanted else {
+                // For movies: the monitored title is a target while it has no
+                // primary file or sits below cutoff. Availability gates active
+                // grabs the same way the derived movie target set does (§D1).
+                if !super::targets::movie_is_available_for_acquisition(
+                    title.first_aired.as_deref(),
+                    title.digital_release_date.as_deref(),
+                    title.min_availability.as_deref().unwrap_or("announced"),
+                    &now,
+                ) {
                     continue;
-                };
-                if wanted.status == WantedStatus::Grabbed && wanted.current_score.is_some() {
-                    // Already grabbed — only proceed if upgrade is possible
                 }
                 self.process_rss_title_releases(
                     &title,
-                    &wanted,
                     releases,
                     &dl_snapshot,
                     &delay_profiles,
@@ -523,7 +549,9 @@ impl AppUseCase {
         Ok(report)
     }
 
-    /// Process RSS releases matched to a movie title.
+    /// Process RSS releases matched to a movie title. Target-ness (§D5) is the
+    /// monitored title being missing or below cutoff; the state row, if any,
+    /// only supplies upgrade/pause state.
     #[expect(
         clippy::too_many_arguments,
         reason = "RSS movie processing threads grab state, timing, and scoring context together"
@@ -531,7 +559,6 @@ impl AppUseCase {
     async fn process_rss_title_releases(
         &self,
         title: &Title,
-        wanted: &WantedItem,
         releases: &[IndexerSearchResult],
         dl_snapshot: &super::acquisition_workflow::DownloadClientSnapshot,
         delay_profiles: &[DelayProfile],
@@ -539,6 +566,27 @@ impl AppUseCase {
         report: &mut RssSyncReport,
         now: &DateTime<Utc>,
     ) {
+        // The activity ledger row is optional: when absent, an unpersisted view
+        // stands in and is materialized on the first anchored write.
+        let wanted = match self
+            .find_wanted_state_for_scope(&title.id, None, None, None)
+            .await
+        {
+            Ok(Some(existing)) => existing,
+            Ok(None) => self.new_wanted_state_view(title, "movie", None, None, None, None),
+            Err(err) => {
+                warn!(
+                    title_id = title.id.as_str(),
+                    error = %err,
+                    "RSS sync: failed to load movie acquisition state"
+                );
+                return;
+            }
+        };
+        // A user pause is honored even against a monitored missing scope (§D5).
+        if wanted.status == WantedStatus::Paused {
+            return;
+        }
         let category = self
             .facet_registry
             .get(&title.facet)
@@ -583,7 +631,7 @@ impl AppUseCase {
         // Try to grab the best candidate using the same logic as acquisition
         self.try_grab_rss_release(
             title,
-            wanted,
+            &wanted,
             &scored,
             &category,
             dl_snapshot,
@@ -595,7 +643,9 @@ impl AppUseCase {
         .await;
     }
 
-    /// Process RSS releases matched to a series title — match episodes individually.
+    /// Process RSS releases matched to a series title. Single-episode postings
+    /// converge per episode; multi-episode/season packs converge once at pack
+    /// granularity (RFC 119 §D5 #3), never fanned out to per-episode rows.
     #[expect(
         clippy::too_many_arguments,
         reason = "RSS series processing carries per-episode routing state through one workflow step"
@@ -642,11 +692,18 @@ impl AppUseCase {
             .iter()
             .map(|episode| (episode.id.clone(), episode.clone()))
             .collect::<HashMap<_, _>>();
+        let monitored_collection_ids = catalog_collections
+            .iter()
+            .filter(|collection| collection.monitored)
+            .map(|collection| collection.id.clone())
+            .collect::<HashSet<_>>();
 
-        // Route exact episodes, absolute ranges, and season packs to every
-        // covered catalog episode. Monitored status is intentionally ignored
-        // here; wanted-item lookup below is the only pre-download gate.
+        // Route single-episode postings per episode; keep pack items (absolute
+        // ranges and season packs) whole so each pack is evaluated once.
         let mut by_episode: HashMap<String, Vec<IndexerSearchResult>> = HashMap::new();
+        let mut pack_items: Vec<(crate::acquisition_coverage::ReleaseCoverage, IndexerSearchResult)> =
+            Vec::new();
+        let mut seen_pack_keys: HashSet<String> = HashSet::new();
         for release in releases {
             let parsed = parse_release_metadata_for_target(&release.title, &title_parse_context);
             let coverage = crate::acquisition_coverage::resolve_release_coverage(
@@ -655,30 +712,23 @@ impl AppUseCase {
                 &catalog_collections,
                 None,
             );
-            match coverage {
+            match &coverage {
                 crate::acquisition_coverage::ReleaseCoverage::SingleEpisode(episode_id) => {
                     by_episode
-                        .entry(episode_id)
+                        .entry(episode_id.clone())
                         .or_default()
                         .push(release.clone());
                 }
                 crate::acquisition_coverage::ReleaseCoverage::EpisodeSet(episode_ids) => {
-                    for episode_id in episode_ids {
-                        by_episode
-                            .entry(episode_id)
-                            .or_default()
-                            .push(release.clone());
+                    let pack_key = format!("set:{}", episode_ids.join(","));
+                    if seen_pack_keys.insert(pack_key) {
+                        pack_items.push((coverage, release.clone()));
                     }
                 }
                 crate::acquisition_coverage::ReleaseCoverage::Collection(collection_id) => {
-                    for episode in catalog_episodes
-                        .iter()
-                        .filter(|episode| episode.collection_id.as_deref() == Some(&collection_id))
-                    {
-                        by_episode
-                            .entry(episode.id.clone())
-                            .or_default()
-                            .push(release.clone());
+                    let pack_key = format!("collection:{collection_id}");
+                    if seen_pack_keys.insert(pack_key) {
+                        pack_items.push((coverage, release.clone()));
                     }
                 }
                 crate::acquisition_coverage::ReleaseCoverage::Title
@@ -687,31 +737,44 @@ impl AppUseCase {
         }
 
         for (episode_id, episode_releases) in &by_episode {
-            let wanted = match self
-                .services
-                .workflow
-                .wanted_items
-                .get_wanted_item_for_title(&title.id, Some(episode_id))
+            let Some(episode_record) = episodes_by_id.get(episode_id).cloned() else {
+                continue;
+            };
+            // Target-ness (§D5): the episode and its owning collection must be
+            // monitored, and the scope missing or below cutoff. The state row is
+            // optional and, when present, only supplies upgrade/pause state.
+            if !self
+                .rss_episode_scope_is_target(title, &episode_record, &monitored_collection_ids)
                 .await
             {
-                Ok(Some(w)) => w,
-                _ => continue, // Not wanted
-            };
-
-            if wanted.status != WantedStatus::Wanted && wanted.status != WantedStatus::Grabbed {
                 continue;
             }
+            let wanted = match self
+                .find_wanted_state_for_scope(&title.id, Some(episode_id), None, None)
+                .await
+            {
+                Ok(Some(existing)) if existing.status == WantedStatus::Paused => continue,
+                Ok(Some(existing)) => existing,
+                Ok(None) => self.new_wanted_state_view(
+                    title,
+                    "episode",
+                    Some(episode_id.clone()),
+                    episode_record.collection_id.clone(),
+                    None,
+                    episode_record.season_number.clone(),
+                ),
+                Err(_) => continue,
+            };
 
-            let episode_record = episodes_by_id.get(episode_id).cloned();
             let episode_parse_context = build_release_parse_context(
                 title,
-                episode_record.as_ref(),
+                Some(&episode_record),
                 None,
                 Some(category.as_str()),
             );
             let absolute_episode = episode_record
-                .as_ref()
-                .and_then(|episode| episode.absolute_number.as_deref())
+                .absolute_number
+                .as_deref()
                 .and_then(|value| value.trim().parse::<u32>().ok());
 
             // Score these releases
@@ -727,12 +790,12 @@ impl AppUseCase {
                     title.runtime_minutes,
                     &episode_parse_context,
                     episode_record
-                        .as_ref()
-                        .and_then(|episode| episode.season_number.as_deref())
+                        .season_number
+                        .as_deref()
                         .and_then(|value| value.parse::<u32>().ok()),
                     episode_record
-                        .as_ref()
-                        .and_then(|episode| episode.episode_number.as_deref())
+                        .episode_number
+                        .as_deref()
                         .and_then(|value| value.parse::<u32>().ok()),
                     absolute_episode,
                 )
@@ -755,9 +818,218 @@ impl AppUseCase {
             )
             .await;
         }
+
+        for (coverage, release) in pack_items {
+            self.process_rss_pack_release(
+                title,
+                &coverage,
+                &release,
+                &category,
+                tvdb_id.as_deref(),
+                &catalog_episodes,
+                &episodes_by_id,
+                &monitored_collection_ids,
+                dl_snapshot,
+                delay_profiles,
+                grabbed_urls,
+                report,
+                now,
+            )
+            .await;
+        }
     }
 
-    /// Process RSS releases matched to series-owned movies.
+    /// Whether a monitored episode scope is a live RSS target: the episode and
+    /// its owning collection are monitored and the scope has no live primary
+    /// file. Below-cutoff scopes with a file pass through here too — the cutoff
+    /// early-return inside `try_grab_rss_release` stays authoritative for the
+    /// "satisfied → skip" decision (§D5).
+    async fn rss_episode_scope_is_target(
+        &self,
+        title: &Title,
+        episode: &Episode,
+        monitored_collection_ids: &HashSet<String>,
+    ) -> bool {
+        if !episode.monitored {
+            return false;
+        }
+        if let Some(collection_id) = episode.collection_id.as_deref()
+            && !monitored_collection_ids.contains(collection_id)
+        {
+            return false;
+        }
+        let existing_files = self
+            .services
+            .library
+            .media_files
+            .list_media_files_for_title(&title.id)
+            .await
+            .unwrap_or_default();
+        // Missing → target. A present file is left to the cutoff/upgrade gate.
+        !rss_scope_has_primary_file(&existing_files, Some(&episode.id), None)
+    }
+
+    /// Evaluate one multi-episode/season pack once at pack granularity (§D5 #3).
+    /// A pack is a target when ≥1 monitored member episode is missing or below
+    /// cutoff and it is not dominated (every member already has a file scoring at
+    /// least the pack). The grab anchors to one monitored member's state row and
+    /// submits with the pack submission scope and `season_pack: true`.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "RSS pack evaluation threads catalog, coverage, and grab state through one step"
+    )]
+    async fn process_rss_pack_release(
+        &self,
+        title: &Title,
+        coverage: &crate::acquisition_coverage::ReleaseCoverage,
+        release: &IndexerSearchResult,
+        category: &str,
+        tvdb_id: Option<&str>,
+        catalog_episodes: &[Episode],
+        episodes_by_id: &HashMap<String, Episode>,
+        monitored_collection_ids: &HashSet<String>,
+        dl_snapshot: &super::acquisition_workflow::DownloadClientSnapshot,
+        delay_profiles: &[DelayProfile],
+        grabbed_urls: &mut HashSet<String>,
+        report: &mut RssSyncReport,
+        now: &DateTime<Utc>,
+    ) {
+        // Member episodes covered by this pack.
+        let member_episodes = catalog_episodes
+            .iter()
+            .filter(|episode| coverage.covers_episode(episode))
+            .cloned()
+            .collect::<Vec<_>>();
+        if member_episodes.is_empty() {
+            return;
+        }
+
+        let existing_files = self
+            .services
+            .library
+            .media_files
+            .list_media_files_for_title(&title.id)
+            .await
+            .unwrap_or_default();
+
+        // At least one monitored member must be missing or below cutoff, and the
+        // pack must not be dominated — every monitored member already carrying a
+        // file scoring >= the pack means the pack is pure waste.
+        let pack_score = release
+            .quality_profile_decision
+            .as_ref()
+            .map(|decision| decision.preference_score)
+            .unwrap_or(0);
+        let episode_file_scores: HashMap<String, i32> = existing_files
+            .iter()
+            .filter(|file| file.role.is_primary())
+            .filter_map(|file| {
+                file.episode_id
+                    .as_ref()
+                    .zip(file.acquisition_score)
+                    .map(|(episode_id, score)| (episode_id.clone(), score))
+            })
+            .collect();
+        let mut anchor: Option<Episode> = None;
+        let mut benefits = false;
+        for episode in &member_episodes {
+            if !episode.monitored {
+                continue;
+            }
+            if let Some(collection_id) = episode.collection_id.as_deref()
+                && !monitored_collection_ids.contains(collection_id)
+            {
+                continue;
+            }
+            if anchor.is_none() {
+                anchor = Some(episode.clone());
+            }
+            let member_benefits = episode_file_scores
+                .get(&episode.id)
+                .map(|existing| pack_score > *existing)
+                .unwrap_or(true); // no file → member benefits
+            if member_benefits {
+                benefits = true;
+            }
+        }
+        let Some(anchor) = anchor else {
+            return; // no monitored member — not a target
+        };
+        if !benefits {
+            info!(
+                title = title.name.as_str(),
+                release = release.title.as_str(),
+                "RSS sync: pack skipped, every monitored member already has an equal or better file"
+            );
+            return;
+        }
+
+        // Anchor the grab to the anchor member's state row (optional; created on
+        // the first anchored write). A paused anchor blocks the whole pack.
+        let wanted = match self
+            .find_wanted_state_for_scope(&title.id, Some(&anchor.id), None, None)
+            .await
+        {
+            Ok(Some(existing)) if existing.status == WantedStatus::Paused => return,
+            Ok(Some(existing)) => existing,
+            Ok(None) => self.new_wanted_state_view(
+                title,
+                "episode",
+                Some(anchor.id.clone()),
+                anchor.collection_id.clone(),
+                None,
+                anchor.season_number.clone(),
+            ),
+            Err(_) => return,
+        };
+
+        let pack_parse_context =
+            build_release_parse_context(title, Some(&anchor), None, Some(category));
+        let season = anchor
+            .season_number
+            .as_deref()
+            .and_then(|value| value.parse::<u32>().ok());
+        let scored = match self
+            .score_rss_releases(
+                std::slice::from_ref(release),
+                &title.id,
+                title.imdb_id.clone(),
+                tvdb_id.map(str::to_string),
+                Some(category.to_string()),
+                &title.tags,
+                title.runtime_minutes,
+                &pack_parse_context,
+                season,
+                None,
+                None,
+            )
+            .await
+        {
+            Ok(scored) => scored,
+            Err(_) => return,
+        };
+
+        // The submission scope + season_pack flag are derived from the winning
+        // release's coverage inside the grab path, so no per-episode fan-out and
+        // no duplicate submission of the same pack.
+        let _ = episodes_by_id;
+        self.try_grab_rss_release(
+            title,
+            &wanted,
+            &scored,
+            category,
+            dl_snapshot,
+            delay_profiles,
+            grabbed_urls,
+            report,
+            now,
+        )
+        .await;
+    }
+
+    /// Process RSS releases matched to series-owned movies. Target-ness (§D5) is
+    /// a monitored link that is missing or below cutoff; the state row, if any,
+    /// only supplies upgrade/pause state.
     #[expect(
         clippy::too_many_arguments,
         reason = "RSS series-movie processing carries wanted, scoring, and queue state together"
@@ -772,52 +1044,55 @@ impl AppUseCase {
         report: &mut RssSyncReport,
         now: &DateTime<Utc>,
     ) {
-        let wanted_items = match self
+        let links = match self
             .services
-            .workflow
-            .wanted_items
-            .list_wanted_items(WantedItemsQuery {
-                statuses: vec!["wanted".into(), "grabbed".into()],
-                media_types: vec!["series_movie".into()],
-                title_id: Some(title.id.clone()),
-                limit: 500,
-                ..WantedItemsQuery::default()
-            })
+            .catalog
+            .shows
+            .list_series_movie_links_for_title(&title.id)
             .await
         {
-            Ok(items) => items,
+            Ok(links) => links,
             Err(err) => {
                 warn!(
                     title_id = title.id.as_str(),
                     error = %err,
-                    "RSS sync: failed to load series-movie wanted items"
+                    "RSS sync: failed to load series-movie links"
                 );
                 return;
             }
         };
 
-        for wanted in wanted_items {
-            let Some(link_id) = wanted.series_movie_link_id.as_deref() else {
+        let existing_files = self
+            .services
+            .library
+            .media_files
+            .list_media_files_for_title(&title.id)
+            .await
+            .unwrap_or_default();
+
+        for link in links {
+            if !link.monitored {
                 continue;
-            };
-            let link = match self
-                .services
-                .catalog
-                .shows
-                .get_series_movie_link_by_id(link_id)
+            }
+            // Missing → target. A present file is left to the cutoff/upgrade gate.
+            if rss_scope_has_primary_file(&existing_files, None, Some(&link.id)) {
+                continue;
+            }
+            let wanted = match self
+                .find_wanted_state_for_scope(&title.id, None, None, Some(&link.id))
                 .await
             {
-                Ok(Some(link)) if link.series_title_id == title.id => link,
-                Ok(_) => continue,
-                Err(err) => {
-                    warn!(
-                        title_id = title.id.as_str(),
-                        series_movie_link_id = link_id,
-                        error = %err,
-                        "RSS sync: failed to load series-movie link"
-                    );
-                    continue;
-                }
+                Ok(Some(existing)) if existing.status == WantedStatus::Paused => continue,
+                Ok(Some(existing)) => existing,
+                Ok(None) => self.new_wanted_state_view(
+                    title,
+                    "series_movie",
+                    None,
+                    None,
+                    Some(link.id.clone()),
+                    Some("0".to_string()),
+                ),
+                Err(_) => continue,
             };
 
             let search_title = series_movie_search_title(title, &link);
@@ -963,6 +1238,11 @@ impl AppUseCase {
 
     /// Try to grab the best candidate from scored RSS releases.
     /// Reuses the same logic as process_single_wanted_item for consistency.
+    ///
+    /// `wanted` may be an unpersisted state view (RFC 119 §D5): the scope's
+    /// ledger row is materialized via `ensure_wanted_state_row` before the first
+    /// anchored write (release decision, pending release, grab), and every FK
+    /// write uses the persisted id returned by it.
     #[expect(
         clippy::too_many_arguments,
         reason = "RSS grab attempts coordinate release state, client state, and reporting in one place"
@@ -979,6 +1259,7 @@ impl AppUseCase {
         report: &mut RssSyncReport,
         now: &DateTime<Utc>,
     ) {
+        let mut wanted = wanted.clone();
         let db_blocklist: HashSet<String> = self
             .services
             .workflow
@@ -1002,13 +1283,13 @@ impl AppUseCase {
             None => None,
         };
         let search_title = self
-            .release_search_title_for_wanted_item(title, wanted, episode.as_ref())
+            .release_search_title_for_wanted_item(title, &wanted, episode.as_ref())
             .await;
         let subject = self
             .resolve_release_search_subject_for_wanted_item(
                 title,
                 &search_title,
-                wanted,
+                &wanted,
                 episode.as_ref(),
             )
             .await;
@@ -1038,6 +1319,27 @@ impl AppUseCase {
             .await;
         if upgrade_context.cutoff_reached {
             return;
+        }
+
+        // The scope is a genuine target from here on, so its ledger row exists
+        // before the first anchored write (§D5). An existing row's id is reused;
+        // an unpersisted view is materialized.
+        match self
+            .services
+            .workflow
+            .wanted_items
+            .ensure_wanted_state_row(&wanted)
+            .await
+        {
+            Ok(id) => wanted.id = id,
+            Err(err) => {
+                warn!(
+                    title_id = title.id.as_str(),
+                    error = %err,
+                    "RSS sync: failed to materialize acquisition state row"
+                );
+                return;
+            }
         }
 
         let mut selected: Option<&IndexerSearchResult> = None;
@@ -1124,7 +1426,7 @@ impl AppUseCase {
                 .map(|delay| delay.effective_delay_minutes)
                 .unwrap_or_default();
                 self.insert_pending_release(
-                    wanted,
+                    &wanted,
                     title,
                     &candidate.title,
                     candidate
@@ -1219,6 +1521,43 @@ impl AppUseCase {
             download_id: Some(download_id.clone()),
         };
 
+        // Resolve the submission scope from the winning release's coverage before
+        // submitting: a multi-episode/season pack grabs once with the pack scope
+        // and `season_pack: true` (§D5 #3), never per member episode.
+        let submission_scope = if let Some(parsed) = best.parsed_release_metadata.as_ref() {
+            let catalog_episodes = self
+                .services
+                .catalog
+                .shows
+                .list_episodes_for_title(&title.id)
+                .await
+                .unwrap_or_default();
+            let catalog_collections = self
+                .services
+                .catalog
+                .shows
+                .list_collections_for_title(&title.id)
+                .await
+                .unwrap_or_default();
+            crate::acquisition_coverage::resolve_release_coverage(
+                parsed,
+                &catalog_episodes,
+                &catalog_collections,
+                episode.as_ref(),
+            )
+            .submission_scope_or(&subject.submission_scope)
+        } else {
+            super::acquisition::download_submission_scope_for_release_title(
+                &wanted,
+                episode.as_ref(),
+                &best.title,
+            )
+        };
+        let is_season_pack = matches!(
+            submission_scope,
+            SubmissionScope::EpisodeSet { .. } | SubmissionScope::Collection { .. }
+        );
+
         let grab_result = self
             .services
             .integrations
@@ -1243,7 +1582,7 @@ impl AppUseCase {
                 seed_goal_ratio: None,
                 seed_goal_seconds: None,
                 is_recent,
-                season_pack: None,
+                season_pack: is_season_pack.then_some(true),
             })
             .await;
 
@@ -1271,35 +1610,6 @@ impl AppUseCase {
                             accepted_info_hash: grab.info_hash.as_deref(),
                         },
                     );
-                let submission_scope = if let Some(parsed) = best.parsed_release_metadata.as_ref() {
-                    let catalog_episodes = self
-                        .services
-                        .catalog
-                        .shows
-                        .list_episodes_for_title(&title.id)
-                        .await
-                        .unwrap_or_default();
-                    let catalog_collections = self
-                        .services
-                        .catalog
-                        .shows
-                        .list_collections_for_title(&title.id)
-                        .await
-                        .unwrap_or_default();
-                    crate::acquisition_coverage::resolve_release_coverage(
-                        parsed,
-                        &catalog_episodes,
-                        &catalog_collections,
-                        episode.as_ref(),
-                    )
-                    .submission_scope_or(&subject.submission_scope)
-                } else {
-                    super::acquisition::download_submission_scope_for_release_title(
-                        wanted,
-                        episode.as_ref(),
-                        &best.title,
-                    )
-                };
                 let log_download_id = accepted_identity.download_id.clone();
                 if let Err(error) = self
                     .services
@@ -1798,3 +2108,4 @@ mod tests {
         );
     }
 }
+

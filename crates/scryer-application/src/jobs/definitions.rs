@@ -156,6 +156,7 @@ pub enum JobKey {
     DiscoverySync,
     TitleImageCacheRefresh,
     TitleDeletion,
+    AcquisitionSearch,
 }
 
 impl JobKey {
@@ -179,6 +180,7 @@ impl JobKey {
             Self::DiscoverySync => "discovery_sync",
             Self::TitleImageCacheRefresh => "title_image_cache_refresh",
             Self::TitleDeletion => "title_deletion",
+            Self::AcquisitionSearch => "acquisition_search",
         }
     }
 
@@ -202,6 +204,7 @@ impl JobKey {
             "discovery_sync" => Some(Self::DiscoverySync),
             "title_image_cache_refresh" => Some(Self::TitleImageCacheRefresh),
             "title_deletion" => Some(Self::TitleDeletion),
+            "acquisition_search" => Some(Self::AcquisitionSearch),
             _ => None,
         }
     }
@@ -226,6 +229,7 @@ impl JobKey {
             Self::DiscoverySync => "Discovery Sync",
             Self::TitleImageCacheRefresh => "Title Image Cache Refresh",
             Self::TitleDeletion => "Title Deletion",
+            Self::AcquisitionSearch => "Acquisition Search",
         }
     }
 
@@ -265,6 +269,9 @@ impl JobKey {
                 "Refresh remote artwork URLs from SMG and rebuild locally processed title images."
             }
             Self::TitleDeletion => "Delete selected titles from the catalog.",
+            Self::AcquisitionSearch => {
+                "Interactive acquisition search over the selected wanted/upgrade scopes."
+            }
         }
     }
 
@@ -276,7 +283,9 @@ impl JobKey {
             | Self::BackgroundLibraryRefreshMovies
             | Self::BackgroundLibraryRefreshSeries
             | Self::BackgroundLibraryRefreshAnime => JobCategory::Library,
-            Self::ProwlarrSync | Self::RssSync => JobCategory::Acquisition,
+            Self::ProwlarrSync | Self::RssSync | Self::AcquisitionSearch => {
+                JobCategory::Acquisition
+            }
             Self::SubtitleSearch => JobCategory::Subtitles,
             Self::PluginRegistryRefresh
             | Self::HealthChecks
@@ -318,7 +327,8 @@ impl JobKey {
             | Self::LibraryScanSeries
             | Self::LibraryScanAnime
             | Self::TitleImageCacheRefresh
-            | Self::TitleDeletion => JobScheduleKind::Manual,
+            | Self::TitleDeletion
+            | Self::AcquisitionSearch => JobScheduleKind::Manual,
         }
     }
 
@@ -341,7 +351,8 @@ impl JobKey {
             | Self::LibraryScanSeries
             | Self::LibraryScanAnime
             | Self::TitleImageCacheRefresh
-            | Self::TitleDeletion => "Manual only",
+            | Self::TitleDeletion
+            | Self::AcquisitionSearch => "Manual only",
         }
     }
 
@@ -375,7 +386,10 @@ impl JobKey {
     }
 
     pub fn manual_trigger_allowed(self) -> bool {
-        !matches!(self, Self::AutoBackup | Self::TitleDeletion)
+        !matches!(
+            self,
+            Self::AutoBackup | Self::TitleDeletion | Self::AcquisitionSearch
+        )
     }
 
     pub fn uses_library_scan_progress(self) -> bool {

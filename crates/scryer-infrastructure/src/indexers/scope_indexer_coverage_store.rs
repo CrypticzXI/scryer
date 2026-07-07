@@ -1,8 +1,12 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use scryer_application::{AppResult, ScopeIndexerCoverageRepository};
+use scryer_application::{AppResult, ScopeCoverageRow, ScopeIndexerCoverageRepository};
 
 use crate::queries::sql_runtime::{SqlArg, SqlRuntime, StoreDatastore};
+
+fn placeholders(count: usize) -> String {
+    (0..count).map(|_| "{}").collect::<Vec<_>>().join(", ")
+}
 
 /// RFC 119 convergence ledger store (SQLite + Postgres via the shared runtime).
 ///
@@ -72,6 +76,41 @@ impl ScopeIndexerCoverageRepository for ScopeIndexerCoverageStore {
             .await?
             .into_iter()
             .map(|row| row.text("indexer_id"))
+            .collect()
+    }
+
+    async fn list_coverage_for_scope_keys(
+        &self,
+        scope_keys: &[String],
+    ) -> AppResult<Vec<ScopeCoverageRow>> {
+        if scope_keys.is_empty() {
+            return Ok(Vec::new());
+        }
+        // One round-trip for a whole page (RFC 119 §6 #12): fingerprint staleness
+        // is decided in memory against the live per-scope fingerprint, so the query
+        // returns every row and does no fingerprint filtering itself.
+        let sql = format!(
+            "SELECT scope_key, indexer_id, fingerprint, searched_at
+             FROM scope_indexer_coverage
+             WHERE scope_key IN ({})",
+            placeholders(scope_keys.len())
+        );
+        let args = scope_keys
+            .iter()
+            .cloned()
+            .map(SqlArg::Text)
+            .collect::<Vec<_>>();
+        SqlRuntime::fetch_all(self.datastore.read_exec(), &sql, &args)
+            .await?
+            .into_iter()
+            .map(|row| {
+                Ok(ScopeCoverageRow {
+                    scope_key: row.text("scope_key")?,
+                    indexer_id: row.text("indexer_id")?,
+                    fingerprint: row.text("fingerprint")?,
+                    searched_at: row.text("searched_at")?,
+                })
+            })
             .collect()
     }
 

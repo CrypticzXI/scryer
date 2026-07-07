@@ -2584,7 +2584,28 @@ impl ScopeIndexerCoverageRepository for RecordingScopeIndexerCoverageRepo {
             .collect())
     }
 
-    async fn prune_scope(&self, _scope_key: &str, _facet: &str) -> AppResult<()> {
+    async fn list_coverage_for_scope_keys(
+        &self,
+        scope_keys: &[String],
+    ) -> AppResult<Vec<crate::ScopeCoverageRow>> {
+        let wanted: std::collections::HashSet<&str> =
+            scope_keys.iter().map(String::as_str).collect();
+        Ok(self
+            .rows
+            .lock()
+            .await
+            .iter()
+            .filter(|(sk, _, _, _)| wanted.contains(sk.as_str()))
+            .map(|(scope_key, _, indexer_id, fingerprint)| crate::ScopeCoverageRow {
+                scope_key: scope_key.clone(),
+                indexer_id: indexer_id.clone(),
+                fingerprint: fingerprint.clone(),
+                searched_at: String::new(),
+            })
+            .collect())
+    }
+
+    async fn prune_scope(&self, _scope_key: &str) -> AppResult<()> {
         Ok(())
     }
 

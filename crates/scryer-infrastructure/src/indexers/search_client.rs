@@ -2178,7 +2178,18 @@ impl IndexerClient for MultiIndexerSearchClient {
             } else {
                 None
             };
-            let expected_value = if scheduler_learning_context
+            // Candidate value (RFC 119 §D3, consumed by plan 112): the
+            // convergence cursor's per-scope lane hint takes precedence — hot
+            // scopes carry the high value that keeps admitting under quota
+            // pressure, cold scopes the low value plan 112 sheds first. When no
+            // hint is supplied (interactive/RSS, or a background scope with no
+            // hint), fall back to the historically-useful boost, then neutral.
+            let expected_value = if let Some(score) = learning_context
+                .as_ref()
+                .and_then(|context| context.background_value)
+            {
+                ExpectedValueHint { score }
+            } else if scheduler_learning_context
                 .as_ref()
                 .is_some_and(|context| context.historically_useful)
             {
@@ -3179,18 +3190,27 @@ impl IndexerClient for MultiIndexerSearchClient {
 
             match join_result {
                 Ok((id, name, scheduler_lease, Ok(mut response), should_record_feedback)) => {
+                    let empty = response.results.is_empty();
                     if should_record_feedback {
+                        // RFC 119 §D5: a fired query that returned nothing is an
+                        // EmptySuccess, distinct from a hitful Success. Plan 112
+                        // treats both as a successful observation for quota and
+                        // cadence; the convergence ledger reads emptiness from
+                        // the Fired{empty} outcome below.
                         self.record_indexer_scheduler_feedback(
                             scheduler_lease,
                             &response,
-                            SchedulerFeedbackOutcome::Success,
+                            if empty {
+                                SchedulerFeedbackOutcome::EmptySuccess
+                            } else {
+                                SchedulerFeedbackOutcome::Success
+                            },
                             None,
                             RateLimitCooldownAction::None,
                         )
                         .await;
                     }
                     successful_searches += 1;
-                    let empty = response.results.is_empty();
                     debug!(
                         indexer = name.as_str(),
                         count = response.results.len(),
@@ -7326,6 +7346,7 @@ mod tests {
             title_id: "title-1".into(),
             facet: "anime".into(),
             subject_kind: ReleaseSearchSubjectKind::Episode,
+            background_value: None,
         };
 
         record_strategy_learning_outcome(
@@ -7376,6 +7397,7 @@ mod tests {
             title_id: "title-1".into(),
             facet: "anime".into(),
             subject_kind: ReleaseSearchSubjectKind::Episode,
+            background_value: None,
         };
 
         for _ in 0..LEARNED_EMPTY_SUPPRESSION_THRESHOLD {
@@ -7435,6 +7457,7 @@ mod tests {
             title_id: "title-1".into(),
             facet: "anime".into(),
             subject_kind: ReleaseSearchSubjectKind::Episode,
+            background_value: None,
         };
 
         record_strategy_learning_outcome(
@@ -7473,6 +7496,7 @@ mod tests {
             title_id: "title-1".into(),
             facet: "movie".into(),
             subject_kind: ReleaseSearchSubjectKind::Title,
+            background_value: None,
         };
 
         let result = <MultiIndexerSearchClient as IndexerClient>::search(

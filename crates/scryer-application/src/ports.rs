@@ -1906,6 +1906,18 @@ pub trait IndexerCapsSnapshotRefresher: Send + Sync {
     ) -> AppResult<Option<IndexerCapsSnapshot>>;
 }
 
+/// One coverage-ledger row (RFC 119 §6 #12): the raw `(scope_key, indexer_id)`
+/// coverage a batched page fetch returns, so the wanted views can compute
+/// covered/routed counts in memory for a whole page in one round-trip instead of
+/// a per-row lookup.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ScopeCoverageRow {
+    pub scope_key: String,
+    pub indexer_id: String,
+    pub fingerprint: String,
+    pub searched_at: String,
+}
+
 /// RFC 119 convergence ledger: which indexers an acquisition scope's catalog has
 /// been actively searched against, under which search-criteria fingerprint. A
 /// scope is "converged" (RSS-only) once every routed indexer has a
@@ -1936,6 +1948,16 @@ pub trait ScopeIndexerCoverageRepository: Send + Sync {
         fingerprint: &str,
         stale_before: Option<chrono::DateTime<chrono::Utc>>,
     ) -> AppResult<Vec<String>>;
+
+    /// All coverage rows for the given scope keys, fetched in one round-trip
+    /// (RFC 119 §6 #12). The wanted views group these by scope key and compare
+    /// each row's `fingerprint` to the live one in memory, so a full page's
+    /// convergence progress costs a single query — never a per-row lookup. Rows
+    /// for scope keys with no coverage are simply absent.
+    async fn list_coverage_for_scope_keys(
+        &self,
+        scope_keys: &[String],
+    ) -> AppResult<Vec<ScopeCoverageRow>>;
 
     /// Drop all coverage rows for a scope — the convergence re-open after a
     /// failed grab, rejected import, or operator replacement. Scope keys are
@@ -2110,11 +2132,18 @@ pub struct IndexerSearchLearningRecord {
     pub updated_at: Option<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct IndexerSearchLearningContext {
     pub title_id: String,
     pub facet: String,
     pub subject_kind: ReleaseSearchSubjectKind,
+    /// Background convergence value hint for this scope (RFC 119 §D3): the
+    /// convergence cursor sets it from the target's recency lane (hot → high,
+    /// cold → low). Rides the Auto-only background search path into the
+    /// scheduler candidate's `ExpectedValueHint`; RSS and interactive searches
+    /// leave it `None`, which resolves to the neutral value. Plan 112 owns how
+    /// the scheduler acts on the resulting value under quota pressure.
+    pub background_value: Option<f64>,
 }
 
 #[async_trait]
