@@ -1,0 +1,614 @@
+//! Derived acquisition targets (RFC 119 §D1). A scope is a target iff it is
+//! monitored and its current primary file does not satisfy the effective
+//! requirements — computed from library state on demand, never materialized.
+//! `missing` targets have no primary file; `cutoff_upgrade` targets have a file
+//! strictly below the profile cutoff. The convergence cursor (§D3) and the
+//! wanted views read this same derivation, so the searcher and the UI agree on
+//! the target set by construction. A scope whose file satisfies requirements is
+//! never in this set and is therefore never actively searched (§D1a).
+
+use std::collections::{HashMap, HashSet};
+
+use chrono::{DateTime, Duration, Utc};
+use scryer_domain::MediaFacet;
+
+use super::*;
+use crate::acquisition::convergence::convergence_scope_key;
+use crate::acquisition_policy::{episode_search_window_is_open, parse_schedule_baseline_date};
+use crate::contracts::SubmissionScope;
+
+/// An aired episode stays **hot** (converges promptly, high candidate value to
+/// the plan-112 scheduler) this long after air; beyond it the scope drains via
+/// the paced cold lane.
+const HOT_EPISODE_AIR_WINDOW_DAYS: i64 = 14;
+
+/// A released movie stays hot this long after its digital/theatrical date.
+const HOT_MOVIE_RELEASE_WINDOW_DAYS: i64 = 30;
+
+/// A freshly added title's scopes are hot this long after the add, regardless
+/// of air/release age — the user just asked for it, so it converges promptly
+/// (still paced per-host by the scheduler).
+const HOT_RECENTLY_ADDED_WINDOW_DAYS: i64 = 3;
+
+/// One derived acquisition target: a monitored scope whose current files do not
+/// satisfy requirements, plus the coordinates the convergence cursor and the
+/// search pipeline need to act on it.
+#[derive(Clone, Debug)]
+pub struct AcquisitionTarget {
+    pub kind: WantedKind,
+    /// Stable coverage key (`convergence_scope_key`) — the cursor's rotation and
+    /// the coverage ledger both key on this.
+    pub scope_key: String,
+    pub title_id: String,
+    pub library_id: String,
+    pub facet: MediaFacet,
+    /// "movie" | "episode" | "series_movie" — drives query building downstream.
+    pub media_type: String,
+    pub episode_id: Option<String>,
+    pub collection_id: Option<String>,
+    pub series_movie_link_id: Option<String>,
+    pub season_number: Option<String>,
+    pub episode_number: Option<String>,
+    /// Recent air/release/add → hot lane (high candidate value); long-tail and
+    /// upgrades → cold lane (low value, drained under scheduler backpressure).
+    pub is_hot: bool,
+}
+
+impl AcquisitionTarget {
+    /// The submission scope this target grabs into — the same identity used for
+    /// download-submission blocking and coverage bookkeeping.
+    pub fn submission_scope(&self) -> SubmissionScope {
+        SubmissionScope::from_persisted(
+            &self.title_id,
+            self.episode_id.clone(),
+            self.collection_id.clone(),
+            self.series_movie_link_id.clone(),
+            None,
+        )
+    }
+}
+
+/// Whether `date` (RFC3339 or `YYYY-MM-DD`) falls within the trailing
+/// `window_days` before `now`. Future dates count as recent: an episode inside
+/// its pre-air window is the hottest target there is.
+fn date_is_recent(date: Option<&str>, now: &DateTime<Utc>, window_days: i64) -> bool {
+    parse_schedule_baseline_date(date)
+        .is_some_and(|baseline| *now - baseline < Duration::days(window_days))
+}
+
+/// Whether a movie has reached its configured availability threshold and may be
+/// acquired. `announced` (the default) is always available; `in_cinemas` and
+/// `released` gate on the corresponding release dates.
+pub(crate) fn movie_is_available_for_acquisition(
+    first_aired: Option<&str>,
+    digital_release_date: Option<&str>,
+    availability: &str,
+    now: &DateTime<Utc>,
+) -> bool {
+    match availability {
+        "in_cinemas" => first_aired
+            .and_then(|d| chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").ok())
+            .map(|date| date <= now.date_naive())
+            .unwrap_or(false),
+        "released" => {
+            if let Some(digital) = digital_release_date {
+                chrono::NaiveDate::parse_from_str(digital, "%Y-%m-%d")
+                    .map(|d| d <= now.date_naive())
+                    .unwrap_or(false)
+            } else if let Some(first_aired) = first_aired {
+                // Fallback: theatrical + 90 days ≈ digital availability.
+                chrono::NaiveDate::parse_from_str(first_aired, "%Y-%m-%d")
+                    .map(|d| d + Duration::days(90) <= now.date_naive())
+                    .unwrap_or(false)
+            } else {
+                false
+            }
+        }
+        // "announced" or anything else: available as soon as it is monitored.
+        _ => true,
+    }
+}
+
+/// The batch to evaluate this cycle plus the new cold-lane resume position.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct CursorSelection {
+    /// Indices into the input targets, in evaluation order (hot first, then
+    /// cold in rotation order).
+    pub indices: Vec<usize>,
+    /// The cold scope_key to resume *after* next cycle (rotating cursor),
+    /// carried forward unchanged when the cold lane did not advance.
+    pub resume_after: Option<String>,
+}
+
+/// Select the convergence batch for one cycle (§D3). Plan-112 backpressure is
+/// the pace; this only bounds how many scopes get *evaluated* (coverage lookup,
+/// routing resolve, fingerprint compute) per tick:
+/// - **hot targets first** (recent = high candidate value), in stable order;
+/// - then **cold targets rotating** after `resume_after` (wrapping once), so
+///   every cold scope gets a turn and a stuck head never starves the tail;
+/// - stop once `max_scopes` are selected — the evaluation cost ceiling, sized
+///   above the scheduler's per-tick admission capacity so it never becomes the
+///   effective rate limiter.
+///
+/// Host availability is checked during evaluation (after routing resolves),
+/// not here — the enumeration stays cheap. Returns the new cold resume
+/// position: the last cold scope_key *considered*, so the cursor always
+/// advances.
+pub(crate) fn select_convergence_batch(
+    targets: &[AcquisitionTarget],
+    resume_after: Option<&str>,
+    max_scopes: usize,
+) -> CursorSelection {
+    let mut selection = CursorSelection {
+        indices: Vec::new(),
+        resume_after: resume_after.map(str::to_string),
+    };
+    if max_scopes == 0 {
+        return selection;
+    }
+
+    // Hot targets: always considered first, in stable order. They do not move
+    // the cold rotation cursor.
+    for (index, target) in targets.iter().enumerate() {
+        if !target.is_hot {
+            continue;
+        }
+        if selection.indices.len() >= max_scopes {
+            return selection;
+        }
+        selection.indices.push(index);
+    }
+
+    // Cold targets: rotate starting after `resume_after`, wrapping once.
+    let cold: Vec<usize> = targets
+        .iter()
+        .enumerate()
+        .filter(|(_, target)| !target.is_hot)
+        .map(|(index, _)| index)
+        .collect();
+    if cold.is_empty() {
+        return selection;
+    }
+    let start = resume_after
+        .and_then(|after| {
+            cold.iter()
+                .position(|index| targets[*index].scope_key == after)
+        })
+        .map(|position| position + 1)
+        .unwrap_or(0);
+    for offset in 0..cold.len() {
+        if selection.indices.len() >= max_scopes {
+            break;
+        }
+        let index = cold[(start + offset) % cold.len()];
+        selection.resume_after = Some(targets[index].scope_key.clone());
+        selection.indices.push(index);
+    }
+    selection
+}
+
+impl AppUseCase {
+    /// The acquisition-state row for a scope, if any. Dispatch mirrors the
+    /// state row's uniqueness shapes: episode first (an episode target may also
+    /// carry its collection id), then series-movie link, then collection, then
+    /// the bare title.
+    pub(crate) async fn find_wanted_state_for_scope(
+        &self,
+        title_id: &str,
+        episode_id: Option<&str>,
+        collection_id: Option<&str>,
+        series_movie_link_id: Option<&str>,
+    ) -> AppResult<Option<WantedItem>> {
+        let repo = &self.services.workflow.wanted_items;
+        if episode_id.is_some() {
+            return repo.get_wanted_item_for_title(title_id, episode_id).await;
+        }
+        if let Some(link_id) = series_movie_link_id {
+            return Ok(repo
+                .list_wanted_items(WantedItemsQuery {
+                    title_id: Some(title_id.to_string()),
+                    limit: 500,
+                    ..WantedItemsQuery::default()
+                })
+                .await?
+                .into_iter()
+                .find(|existing| existing.series_movie_link_id.as_deref() == Some(link_id)));
+        }
+        if let Some(collection_id) = collection_id {
+            return Ok(repo
+                .list_wanted_items(WantedItemsQuery {
+                    title_id: Some(title_id.to_string()),
+                    limit: 500,
+                    ..WantedItemsQuery::default()
+                })
+                .await?
+                .into_iter()
+                .find(|existing| existing.collection_id.as_deref() == Some(collection_id)));
+        }
+        repo.get_wanted_item_for_title(title_id, None).await
+    }
+
+    /// The derived missing-target set (§D1): monitored scopes with no primary
+    /// file that have crossed their availability gate — episodes inside the
+    /// pre-air window, movies past `min_availability`, series-movie links with
+    /// the filler opt-in honored.
+    pub(crate) async fn derive_missing_targets(
+        &self,
+        now: &DateTime<Utc>,
+    ) -> AppResult<Vec<AcquisitionTarget>> {
+        let candidates = self
+            .services
+            .library
+            .media_files
+            .list_missing_scope_candidates()
+            .await?;
+        let mut targets = Vec::new();
+
+        for episode in candidates.episodes {
+            let Some(facet) = MediaFacet::parse(&episode.title_facet) else {
+                continue;
+            };
+            if !self
+                .facet_registry
+                .get(&facet)
+                .is_some_and(|handler| handler.has_episodes())
+            {
+                continue;
+            }
+            // An unaired (or undated) episode is not yet available — RSS still
+            // grabs an early posting; active search waits for the air window.
+            if !episode_search_window_is_open(episode.air_date.as_deref(), now) {
+                continue;
+            }
+            let scope = SubmissionScope::Episode {
+                episode_id: episode.episode_id.clone(),
+            };
+            let Some(scope_key) = convergence_scope_key(&scope, &episode.title_id) else {
+                continue;
+            };
+            let is_hot = date_is_recent(episode.air_date.as_deref(), now, HOT_EPISODE_AIR_WINDOW_DAYS)
+                || date_is_recent(
+                    Some(episode.title_created_at.as_str()),
+                    now,
+                    HOT_RECENTLY_ADDED_WINDOW_DAYS,
+                );
+            targets.push(AcquisitionTarget {
+                kind: WantedKind::Missing,
+                scope_key,
+                title_id: episode.title_id,
+                library_id: episode.library_id,
+                facet,
+                media_type: "episode".to_string(),
+                episode_id: Some(episode.episode_id),
+                collection_id: episode.collection_id,
+                series_movie_link_id: None,
+                season_number: episode.season_number,
+                episode_number: episode.episode_number,
+                is_hot,
+            });
+        }
+
+        for title in candidates.titles {
+            let Some(facet) = MediaFacet::parse(&title.title_facet) else {
+                continue;
+            };
+            // Episodic facets acquire per episode/link; a fileless series title
+            // is not itself a target.
+            if self
+                .facet_registry
+                .get(&facet)
+                .is_some_and(|handler| handler.has_episodes())
+            {
+                continue;
+            }
+            let availability = title.min_availability.as_deref().unwrap_or("announced");
+            if !movie_is_available_for_acquisition(
+                title.first_aired.as_deref(),
+                title.digital_release_date.as_deref(),
+                availability,
+                now,
+            ) {
+                continue;
+            }
+            let Some(scope_key) = convergence_scope_key(&SubmissionScope::Title, &title.title_id)
+            else {
+                continue;
+            };
+            let release_date = title
+                .digital_release_date
+                .as_deref()
+                .or(title.first_aired.as_deref());
+            let is_hot = date_is_recent(release_date, now, HOT_MOVIE_RELEASE_WINDOW_DAYS)
+                || date_is_recent(
+                    Some(title.created_at.as_str()),
+                    now,
+                    HOT_RECENTLY_ADDED_WINDOW_DAYS,
+                );
+            targets.push(AcquisitionTarget {
+                kind: WantedKind::Missing,
+                scope_key,
+                title_id: title.title_id,
+                library_id: title.library_id,
+                facet,
+                media_type: "movie".to_string(),
+                episode_id: None,
+                collection_id: None,
+                series_movie_link_id: None,
+                season_number: None,
+                episode_number: None,
+                is_hot,
+            });
+        }
+
+        // Filler links are opt-in per library; resolve the setting once per
+        // library instead of per link.
+        let mut filler_allowed_by_library: HashMap<String, bool> = HashMap::new();
+        for link in candidates.series_movie_links {
+            if link.continuity_status.as_deref() == Some("filler") {
+                let allowed = match filler_allowed_by_library.get(&link.library_id) {
+                    Some(allowed) => *allowed,
+                    None => {
+                        let allowed = self
+                            .resolve_library_bool_setting(
+                                "anime.monitor_filler_movies",
+                                Some(&link.library_id),
+                                Some(MediaFacet::Anime.as_str()),
+                                false,
+                            )
+                            .await
+                            .unwrap_or(false);
+                        filler_allowed_by_library.insert(link.library_id.clone(), allowed);
+                        allowed
+                    }
+                };
+                if !allowed {
+                    continue;
+                }
+            }
+            let Some(facet) = MediaFacet::parse(&link.title_facet) else {
+                continue;
+            };
+            let scope = SubmissionScope::SeriesMovie {
+                series_movie_link_id: link.series_movie_link_id.clone(),
+            };
+            let Some(scope_key) = convergence_scope_key(&scope, &link.title_id) else {
+                continue;
+            };
+            let is_hot = date_is_recent(
+                link.movie_digital_release_date.as_deref(),
+                now,
+                HOT_MOVIE_RELEASE_WINDOW_DAYS,
+            ) || date_is_recent(
+                Some(link.link_created_at.as_str()),
+                now,
+                HOT_RECENTLY_ADDED_WINDOW_DAYS,
+            );
+            targets.push(AcquisitionTarget {
+                kind: WantedKind::Missing,
+                scope_key,
+                title_id: link.title_id,
+                library_id: link.library_id,
+                facet,
+                media_type: "series_movie".to_string(),
+                episode_id: None,
+                collection_id: None,
+                series_movie_link_id: Some(link.series_movie_link_id),
+                season_number: Some("0".to_string()),
+                episode_number: None,
+                is_hot,
+            });
+        }
+
+        Ok(targets)
+    }
+
+    /// Cutoff-upgrade targets across every library (§D1): scopes whose primary
+    /// file sits strictly below the effective profile cutoff. Always cold — the
+    /// file already plays, so upgrades drain at scheduler leisure.
+    pub(crate) async fn derive_cutoff_targets(&self) -> AppResult<Vec<AcquisitionTarget>> {
+        let items = self.compute_cutoff_unmet_items(None, None).await?;
+        Ok(items
+            .into_iter()
+            .filter_map(|item| {
+                let scope = SubmissionScope::from_persisted(
+                    &item.title_id,
+                    item.episode_id.clone(),
+                    None,
+                    None,
+                    None,
+                );
+                let scope_key = convergence_scope_key(&scope, &item.title_id)?;
+                let media_type = if item.episode_id.is_some() {
+                    "episode"
+                } else {
+                    "movie"
+                };
+                Some(AcquisitionTarget {
+                    kind: WantedKind::CutoffUpgrade,
+                    scope_key,
+                    title_id: item.title_id,
+                    library_id: item.library_id,
+                    facet: item.title_facet,
+                    media_type: media_type.to_string(),
+                    episode_id: item.episode_id,
+                    collection_id: None,
+                    series_movie_link_id: None,
+                    season_number: item.season_number,
+                    episode_number: item.episode_number,
+                    is_hot: false,
+                })
+            })
+            .collect())
+    }
+
+    /// The full derived target set the convergence cursor rotates over:
+    /// missing ∪ cutoff-upgrade, minus scopes the user paused. Grab-blocking
+    /// (active/completed submissions) is checked per selected scope during
+    /// processing, where the download-client snapshot is available.
+    pub(crate) async fn derive_acquisition_targets(
+        &self,
+        now: &DateTime<Utc>,
+    ) -> AppResult<Vec<AcquisitionTarget>> {
+        let mut targets = self.derive_missing_targets(now).await?;
+        targets.extend(self.derive_cutoff_targets().await?);
+
+        let paused = self
+            .services
+            .workflow
+            .wanted_items
+            .list_wanted_items(WantedItemsQuery {
+                statuses: vec![WantedStatus::Paused.as_str().to_string()],
+                limit: i64::MAX,
+                ..WantedItemsQuery::default()
+            })
+            .await?;
+        if !paused.is_empty() {
+            let paused_keys: HashSet<String> = paused
+                .iter()
+                .filter_map(|item| {
+                    let scope = SubmissionScope::from_persisted(
+                        &item.title_id,
+                        item.episode_id.clone(),
+                        item.collection_id.clone(),
+                        item.series_movie_link_id.clone(),
+                        None,
+                    );
+                    convergence_scope_key(&scope, &item.title_id)
+                })
+                .collect();
+            targets.retain(|target| !paused_keys.contains(&target.scope_key));
+        }
+
+        Ok(targets)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cursor_target(scope_key: &str, is_hot: bool) -> AcquisitionTarget {
+        AcquisitionTarget {
+            kind: WantedKind::Missing,
+            scope_key: scope_key.to_string(),
+            title_id: "t1".to_string(),
+            library_id: "lib".to_string(),
+            facet: MediaFacet::Movie,
+            media_type: "movie".to_string(),
+            episode_id: None,
+            collection_id: None,
+            series_movie_link_id: None,
+            season_number: None,
+            episode_number: None,
+            is_hot,
+        }
+    }
+
+    fn selected_keys(targets: &[AcquisitionTarget], selection: &CursorSelection) -> Vec<String> {
+        selection
+            .indices
+            .iter()
+            .map(|index| targets[*index].scope_key.clone())
+            .collect()
+    }
+
+    #[test]
+    fn cursor_takes_hot_targets_first_then_cold() {
+        let targets = vec![
+            cursor_target("cold-1", false),
+            cursor_target("hot-1", true),
+            cursor_target("cold-2", false),
+            cursor_target("hot-2", true),
+        ];
+        let selection = select_convergence_batch(&targets, None, 10);
+        assert_eq!(
+            selected_keys(&targets, &selection),
+            vec!["hot-1", "hot-2", "cold-1", "cold-2"],
+            "hot targets are evaluated first, then cold in order"
+        );
+    }
+
+    #[test]
+    fn cursor_work_cap_bounds_the_batch_and_advances() {
+        let targets = vec![
+            cursor_target("a", false),
+            cursor_target("b", false),
+            cursor_target("c", false),
+        ];
+        let selection = select_convergence_batch(&targets, None, 2);
+        assert_eq!(selected_keys(&targets, &selection), vec!["a", "b"]);
+        assert_eq!(
+            selection.resume_after.as_deref(),
+            Some("b"),
+            "the cursor advances to the last cold scope it considered"
+        );
+    }
+
+    #[test]
+    fn cursor_rotates_and_wraps_across_cycles() {
+        let targets = vec![
+            cursor_target("a", false),
+            cursor_target("b", false),
+            cursor_target("c", false),
+        ];
+        let first = select_convergence_batch(&targets, None, 2);
+        assert_eq!(selected_keys(&targets, &first), vec!["a", "b"]);
+        // Next cycle resumes after "b" → c, then wraps to a.
+        let second = select_convergence_batch(&targets, first.resume_after.as_deref(), 2);
+        assert_eq!(selected_keys(&targets, &second), vec!["c", "a"]);
+    }
+
+    #[test]
+    fn cursor_hot_targets_respect_the_cap_and_leave_the_cold_cursor() {
+        let targets = vec![
+            cursor_target("hot-1", true),
+            cursor_target("hot-2", true),
+            cursor_target("cold-1", false),
+        ];
+        // The cap is filled by hot targets, so the cold lane is not reached and
+        // its rotation cursor is carried forward unchanged.
+        let selection = select_convergence_batch(&targets, Some("cold-1"), 2);
+        assert_eq!(selected_keys(&targets, &selection), vec!["hot-1", "hot-2"]);
+        assert_eq!(selection.resume_after.as_deref(), Some("cold-1"));
+    }
+
+    #[test]
+    fn recent_dates_include_future_and_trailing_window() {
+        let now = Utc::now();
+        let yesterday = (now - Duration::days(1)).to_rfc3339();
+        let last_month = (now - Duration::days(31)).to_rfc3339();
+        let tomorrow = (now + Duration::days(1)).to_rfc3339();
+        assert!(date_is_recent(Some(&yesterday), &now, 14));
+        assert!(!date_is_recent(Some(&last_month), &now, 14));
+        assert!(
+            date_is_recent(Some(&tomorrow), &now, 14),
+            "a pre-air/pre-release date is the hottest target there is"
+        );
+        assert!(!date_is_recent(None, &now, 14));
+    }
+
+    #[test]
+    fn movie_availability_gates_match_thresholds() {
+        let now = Utc::now();
+        let past = (now - Duration::days(10)).date_naive().to_string();
+        let future = (now + Duration::days(10)).date_naive().to_string();
+
+        // announced: always available
+        assert!(movie_is_available_for_acquisition(None, None, "announced", &now));
+        // in_cinemas: needs a past theatrical date
+        assert!(movie_is_available_for_acquisition(Some(&past), None, "in_cinemas", &now));
+        assert!(!movie_is_available_for_acquisition(Some(&future), None, "in_cinemas", &now));
+        assert!(!movie_is_available_for_acquisition(None, None, "in_cinemas", &now));
+        // released: digital date, else theatrical + 90d
+        assert!(movie_is_available_for_acquisition(None, Some(&past), "released", &now));
+        assert!(!movie_is_available_for_acquisition(None, Some(&future), "released", &now));
+        let old_theatrical = (now - Duration::days(120)).date_naive().to_string();
+        assert!(movie_is_available_for_acquisition(
+            Some(&old_theatrical),
+            None,
+            "released",
+            &now
+        ));
+        assert!(!movie_is_available_for_acquisition(Some(&past), None, "released", &now));
+    }
+}

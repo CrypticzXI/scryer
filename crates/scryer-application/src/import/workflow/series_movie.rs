@@ -1923,7 +1923,6 @@ async fn mark_wanted_completed_for_series_movie_link(
                         .transition_wanted_to_completed(&WantedCompleteTransition {
                             id: item.id.clone(),
                             last_search_at: Some(now),
-                            search_count: item.search_count,
                             current_score: imported_score.or(item.current_score),
                             grabbed_release: if imported_score.is_some() {
                                 None

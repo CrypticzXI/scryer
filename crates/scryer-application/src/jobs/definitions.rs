@@ -151,7 +151,6 @@ pub enum JobKey {
     Housekeeping,
     HealthChecks,
     AutoBackup,
-    WantedSync,
     PendingReleaseProcessing,
     StagedNzbPrune,
     DiscoverySync,
@@ -175,7 +174,6 @@ impl JobKey {
             Self::Housekeeping => "housekeeping",
             Self::HealthChecks => "health_checks",
             Self::AutoBackup => "auto_backup",
-            Self::WantedSync => "wanted_sync",
             Self::PendingReleaseProcessing => "pending_release_processing",
             Self::StagedNzbPrune => "staged_nzb_prune",
             Self::DiscoverySync => "discovery_sync",
@@ -199,7 +197,6 @@ impl JobKey {
             "housekeeping" => Some(Self::Housekeeping),
             "health_checks" => Some(Self::HealthChecks),
             "auto_backup" => Some(Self::AutoBackup),
-            "wanted_sync" => Some(Self::WantedSync),
             "pending_release_processing" => Some(Self::PendingReleaseProcessing),
             "staged_nzb_prune" => Some(Self::StagedNzbPrune),
             "discovery_sync" => Some(Self::DiscoverySync),
@@ -224,7 +221,6 @@ impl JobKey {
             Self::Housekeeping => "Housekeeping",
             Self::HealthChecks => "Health Checks",
             Self::AutoBackup => "Automatic Backup",
-            Self::WantedSync => "Wanted Sync",
             Self::PendingReleaseProcessing => "Pending Release Processing",
             Self::StagedNzbPrune => "Staged NZB Prune",
             Self::DiscoverySync => "Discovery Sync",
@@ -258,7 +254,6 @@ impl JobKey {
             Self::AutoBackup => {
                 "Create a daily backup snapshot and keep the newest successful automatic backups."
             }
-            Self::WantedSync => "Resync wanted items from the current monitored state.",
             Self::PendingReleaseProcessing => {
                 "Process delayed pending releases whose hold period has expired."
             }
@@ -290,7 +285,6 @@ impl JobKey {
             | Self::TitleImageCacheRefresh
             | Self::TitleDeletion => JobCategory::System,
             Self::Housekeeping
-            | Self::WantedSync
             | Self::PendingReleaseProcessing
             | Self::StagedNzbPrune => JobCategory::Maintenance,
         }
@@ -298,7 +292,7 @@ impl JobKey {
 
     pub fn section(self) -> JobSection {
         match self {
-            Self::WantedSync | Self::PendingReleaseProcessing | Self::StagedNzbPrune => {
+            Self::PendingReleaseProcessing | Self::StagedNzbPrune => {
                 JobSection::Maintenance
             }
             _ => JobSection::Primary,
@@ -316,7 +310,6 @@ impl JobKey {
             | Self::PluginRegistryRefresh
             | Self::Housekeeping
             | Self::HealthChecks
-            | Self::WantedSync
             | Self::PendingReleaseProcessing
             | Self::StagedNzbPrune => JobScheduleKind::Interval,
             Self::DiscoverySync => JobScheduleKind::StartupAndInterval,
@@ -341,7 +334,6 @@ impl JobKey {
             Self::Housekeeping => "Every 24 hours",
             Self::HealthChecks => "Every 6 hours",
             Self::AutoBackup => "Daily at configured local time",
-            Self::WantedSync => "Based on acquisition sync interval",
             Self::PendingReleaseProcessing => "Every minute",
             Self::StagedNzbPrune => "Every hour",
             Self::DiscoverySync => "Dynamic discovery evaluator with daily backstop",
@@ -399,7 +391,7 @@ impl JobKey {
     }
 }
 
-pub const ALL_JOB_KEYS: [JobKey; 17] = [
+pub const ALL_JOB_KEYS: [JobKey; 16] = [
     JobKey::LibraryScanMovies,
     JobKey::LibraryScanSeries,
     JobKey::LibraryScanAnime,
@@ -412,7 +404,6 @@ pub const ALL_JOB_KEYS: [JobKey; 17] = [
     JobKey::Housekeeping,
     JobKey::HealthChecks,
     JobKey::AutoBackup,
-    JobKey::WantedSync,
     JobKey::PendingReleaseProcessing,
     JobKey::StagedNzbPrune,
     JobKey::DiscoverySync,

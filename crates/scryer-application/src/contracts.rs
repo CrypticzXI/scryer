@@ -235,7 +235,6 @@ impl DownloadSourceIdentity {
 pub struct SuccessfulGrabCommit {
     pub wanted_item_id: String,
     pub covered_wanted_item_ids: Vec<String>,
-    pub search_count: i64,
     pub current_score: Option<i32>,
     pub grabbed_release: String,
     pub last_search_at: Option<String>,

@@ -897,6 +897,7 @@ impl AppUseCase {
             tagged_aliases,
             search_subject_kind,
             cancel_token,
+            restrict_to_indexer_ids,
         } = request;
         if cancel_token.is_cancelled() {
             return Err(AppError::canceled("indexer search canceled"));
@@ -914,6 +915,43 @@ impl AppUseCase {
         let mut indexer_routing = self
             .resolve_indexer_routing(library_id, scope_id.as_deref())
             .await;
+        // Restrict the search to the requested indexer subset (the convergence
+        // cursor's uncovered indexers, RFC 119 §D3). With no routing plan
+        // configured, synthesize one over the enabled indexers so the
+        // restriction still applies.
+        if let Some(allowed) = restrict_to_indexer_ids.as_ref() {
+            let mut plan = match indexer_routing.take() {
+                Some(plan) => plan,
+                None => crate::contracts::IndexerRoutingPlan {
+                    entries: self
+                        .services
+                        .integrations
+                        .indexer_configs
+                        .list(None)
+                        .await
+                        .unwrap_or_default()
+                        .into_iter()
+                        .filter(|config| config.is_enabled)
+                        .map(|config| {
+                            (
+                                config.id,
+                                crate::contracts::IndexerRoutingEntry {
+                                    enabled: true,
+                                    categories: Vec::new(),
+                                    priority: 0,
+                                },
+                            )
+                        })
+                        .collect(),
+                },
+            };
+            for (indexer_id, entry) in plan.entries.iter_mut() {
+                if !allowed.contains(indexer_id) {
+                    entry.enabled = false;
+                }
+            }
+            indexer_routing = Some(plan);
+        }
         let newznab_categories = if newznab_categories.is_empty() {
             None
         } else {
@@ -1149,6 +1187,30 @@ impl AppUseCase {
         mode: SearchMode,
         cancel_token: CancellationToken,
     ) -> AppResult<Vec<IndexerSearchResult>> {
+        self.search_and_evaluate_subject_restricted(
+            title,
+            subject,
+            caller_label,
+            mode,
+            cancel_token,
+            None,
+        )
+        .await
+    }
+
+    /// Search and evaluate `subject`, optionally restricted to a subset of
+    /// indexers. The convergence cursor passes the scope's uncovered subset
+    /// (RFC 119 §D3) — a covered indexer's catalog holds no new information
+    /// for this scope, so re-querying it is pure spend.
+    pub(crate) async fn search_and_evaluate_subject_restricted(
+        &self,
+        title: &Title,
+        subject: &crate::acquisition_release_search::ResolvedReleaseSearchSubject,
+        caller_label: &str,
+        mode: SearchMode,
+        cancel_token: CancellationToken,
+        restrict_to_indexer_ids: Option<std::collections::HashSet<String>>,
+    ) -> AppResult<Vec<IndexerSearchResult>> {
         let tagged_aliases = release_search_tagged_aliases(title);
         let (results, fired_indexer_ids) = self
             .search_and_score_releases(ReleaseSearchRequest {
@@ -1176,19 +1238,18 @@ impl AppUseCase {
                 search_subject_kind: subject.subject_kind,
                 parse_context: &subject.title_evidence.parse_context,
                 cancel_token,
+                restrict_to_indexer_ids,
             })
             .await?;
 
         let evaluated = self
             .evaluate_search_results_for_subject(title, subject, results)
             .await;
-        // RFC 119: record per-indexer convergence coverage for background
-        // acquisition searches only (interactive/manual searches bypass
-        // convergence). Best-effort and gated off by default.
-        if caller_label == "background_acquisition" {
-            self.record_background_search_coverage(title, subject, &fired_indexer_ids)
-                .await;
-        }
+        // A search is a search (RFC 119 §D5): every scoped search — background,
+        // interactive, season-pack — records per-indexer convergence coverage
+        // for the indexers that actually fired. Best-effort.
+        self.record_search_coverage(title, subject, &fired_indexer_ids)
+            .await;
         Ok(evaluated)
     }
 
@@ -1537,6 +1598,9 @@ pub(crate) struct ReleaseSearchRequest<'a> {
     pub(crate) search_subject_kind: ReleaseSearchSubjectKind,
     pub(crate) parse_context: &'a ReleaseParseContext,
     pub(crate) cancel_token: CancellationToken,
+    /// When set, only these indexer ids are queried (the convergence cursor's
+    /// uncovered subset, RFC 119 §D3). `None` = every routed indexer.
+    pub(crate) restrict_to_indexer_ids: Option<std::collections::HashSet<String>>,
 }
 
 impl AppUseCase {

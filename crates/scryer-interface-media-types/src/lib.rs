@@ -929,29 +929,6 @@ impl WantedMediaTypeValue {
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
 #[graphql(rename_items = "snake_case")]
-pub enum WantedSearchPhaseValue {
-    PreAir,
-    PreRelease,
-    Primary,
-    Secondary,
-    LongTail,
-}
-
-impl WantedSearchPhaseValue {
-    pub fn parse(value: &str) -> Option<Self> {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "pre_air" => Some(Self::PreAir),
-            "pre_release" => Some(Self::PreRelease),
-            "primary" => Some(Self::Primary),
-            "secondary" => Some(Self::Secondary),
-            "long_tail" => Some(Self::LongTail),
-            _ => None,
-        }
-    }
-}
-
-#[derive(Enum, Copy, Clone, Eq, PartialEq)]
-#[graphql(rename_items = "snake_case")]
 pub enum PendingReleaseStatusValue {
     Waiting,
     Standby,
@@ -1457,7 +1434,6 @@ pub enum JobKeyValue {
     HealthChecks,
     AutoBackup,
     ProwlarrSync,
-    WantedSync,
     PendingReleaseProcessing,
     StagedNzbPrune,
     DiscoverySync,
@@ -2434,8 +2410,8 @@ pub struct AcquisitionSettingsPayload {
     pub cross_tier_min_delta: i32,
     pub forced_upgrade_delta_bypass: i32,
     pub poll_interval_seconds: i32,
-    pub sync_interval_seconds: i32,
-    pub batch_size: i32,
+    pub long_tail_backfill_max_scopes_per_cycle: i32,
+    pub long_tail_reconverge_days: i32,
 }
 
 #[derive(SimpleObject, Clone)]
@@ -3281,8 +3257,8 @@ pub struct UpdateAcquisitionSettingsInput {
     pub cross_tier_min_delta: i32,
     pub forced_upgrade_delta_bypass: i32,
     pub poll_interval_seconds: i32,
-    pub sync_interval_seconds: i32,
-    pub batch_size: i32,
+    pub long_tail_backfill_max_scopes_per_cycle: i32,
+    pub long_tail_reconverge_days: i32,
 }
 
 #[derive(InputObject, Clone)]

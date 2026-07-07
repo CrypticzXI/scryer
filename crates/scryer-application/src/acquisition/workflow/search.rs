@@ -6,38 +6,6 @@ fn parsed_release_season_pack_season(parsed: &crate::ParsedReleaseMetadata) -> O
             .flatten()
     })
 }
-fn episode_wanted_schedule_fields(
-    baseline_date: Option<&str>,
-    now: &DateTime<Utc>,
-    immediate: bool,
-) -> (Option<String>, String, Option<String>) {
-    let normalized_baseline_date = baseline_date
-        .filter(|value| parse_schedule_baseline_date(Some(value)).is_some())
-        .map(str::to_string);
-
-    let Some(valid_baseline_date) = normalized_baseline_date.clone() else {
-        return (None, SearchPhase::PreAir.to_string(), None);
-    };
-
-    let schedule = compute_search_schedule(
-        "episode",
-        Some(valid_baseline_date.as_str()),
-        "primary",
-        now,
-    );
-    let next_search_at =
-        if immediate && episode_search_window_is_open(Some(valid_baseline_date.as_str()), now) {
-            Some(now.to_rfc3339())
-        } else {
-            Some(schedule.next_search_at)
-        };
-
-    (
-        Some(valid_baseline_date),
-        schedule.search_phase.to_string(),
-        next_search_at,
-    )
-}
 fn candidate_is_season_pack_for_season(candidate: &IndexerSearchResult, season_num: u32) -> bool {
     let Some(parsed) = candidate.parsed_release_metadata.as_ref() else {
         return false;
@@ -164,9 +132,7 @@ async fn mark_wanted_item_failed_without_reacquire(
         .update_wanted_item_status(
             &item.id,
             WantedStatus::Wanted.as_str(),
-            None,
             item.last_search_at.as_deref(),
-            item.search_count,
             item.current_score,
             None,
         )
@@ -281,7 +247,6 @@ impl AppUseCase {
             })
             .await?;
 
-        let now = Utc::now();
         let mut queued = 0usize;
         for item in &items {
             if !self
@@ -291,23 +256,11 @@ impl AppUseCase {
                 continue;
             }
 
-            self.services
-                .workflow
-                .wanted_items
-                .schedule_wanted_item_search(&WantedSearchTransition {
-                    id: item.id.clone(),
-                    next_search_at: Some(now.to_rfc3339()),
-                    last_search_at: item.last_search_at.clone(),
-                    search_count: item.search_count,
-                    current_score: item.current_score,
-                    grabbed_release: item.grabbed_release.clone(),
-                })
-                .await?;
+            // A rematch changes the scope's fingerprint, so stale coverage is
+            // already ignored — the re-open prunes it eagerly and wakes the
+            // cursor so recovery starts on the next cycle.
+            self.reopen_wanted_scope_for_acquisition(item).await;
             queued += 1;
-        }
-
-        if queued > 0 {
-            self.runtime.acquisition.acquisition_wake.notify_one();
         }
 
         Ok(queued)
@@ -334,63 +287,32 @@ impl AppUseCase {
         )
         .await?;
         let season_str = season_number.to_string();
-        let items = self
-            .services
-            .workflow
-            .wanted_items
-            .list_wanted_items(WantedItemsQuery {
-                statuses: vec!["wanted".into()],
-                media_types: vec!["episode".into()],
-                title_id: Some(title_id.to_string()),
-                limit: 500,
-                ..WantedItemsQuery::default()
-            })
+        let outcome = self
+            .reopen_series_scopes_for_search(&title, Some(season_str.as_str()))
             .await?;
 
-        let now = Utc::now();
-        let next_search_at = now.to_rfc3339();
-        let mut outcome = WantedSearchOutcome::default();
-        for item in &items {
-            if item.season_number.as_deref() == Some(season_str.as_str()) {
-                let scheduled = self
-                    .schedule_wanted_item_search_if_unblocked(&title, item, &next_search_at)
-                    .await?;
-                outcome.queued_count += scheduled.queued_count;
-                outcome.skipped_in_progress_count += scheduled.skipped_in_progress_count;
-                if outcome.conflict.is_none() {
-                    outcome.conflict = scheduled.conflict;
-                }
-            }
-        }
-
-        if outcome.queued_count > 0 {
-            self.runtime.acquisition.acquisition_wake.notify_one();
-        }
-
         Ok(outcome)
-    }
-}
-impl AppUseCase {
-    async fn schedule_wanted_item_search_if_unblocked(
-        &self,
-        title: &Title,
-        item: &WantedItem,
-        next_search_at: &str,
-    ) -> AppResult<WantedSearchOutcome> {
-        self.schedule_wanted_item_search_with_policy(
-            title,
-            item,
-            next_search_at,
-            SubmissionConflictPolicy::Skip,
-        )
-        .await
     }
 }
 impl AppUseCase {
     async fn queue_monitored_series_items_for_search(
         &self,
         title: &Title,
-        now: &DateTime<Utc>,
+        _now: &DateTime<Utc>,
+    ) -> AppResult<WantedSearchOutcome> {
+        self.reopen_series_scopes_for_search(title, None).await
+    }
+}
+impl AppUseCase {
+    /// Re-open every fileless monitored episode scope of `title` (optionally
+    /// restricted to one season) for acquisition: the derived target set already
+    /// contains them; the re-open prunes any coverage so even converged scopes
+    /// are searched again on the next cycle (§D5 — a trigger overrides
+    /// convergence). Scopes with an in-flight grab are skipped.
+    async fn reopen_series_scopes_for_search(
+        &self,
+        title: &Title,
+        season_number: Option<&str>,
     ) -> AppResult<WantedSearchOutcome> {
         let collections = self
             .services
@@ -413,7 +335,6 @@ impl AppUseCase {
             .iter()
             .filter_map(|file| file.episode_id.clone())
             .collect();
-        let next_search_at = now.to_rfc3339();
         let mut outcome = WantedSearchOutcome::default();
 
         for collection in &collections {
@@ -432,67 +353,37 @@ impl AppUseCase {
                 if !episode.monitored || episodes_with_files.contains(&episode.id) {
                     continue;
                 }
+                if let Some(season) = season_number
+                    && episode.season_number.as_deref() != Some(season)
+                {
+                    continue;
+                }
 
-                if let Some(item) = self
+                let item = match self
                     .services
                     .workflow
                     .wanted_items
                     .get_wanted_item_for_title(&title.id, Some(&episode.id))
                     .await?
                 {
-                    if item.status == WantedStatus::Grabbed {
-                        continue;
+                    Some(item) => {
+                        if item.status == WantedStatus::Grabbed {
+                            continue;
+                        }
+                        item
                     }
-
-                    let scheduled = self
-                        .schedule_wanted_item_search_if_unblocked(title, &item, &next_search_at)
-                        .await?;
-                    outcome.queued_count += scheduled.queued_count;
-                    outcome.skipped_in_progress_count += scheduled.skipped_in_progress_count;
-                    if outcome.conflict.is_none() {
-                        outcome.conflict = scheduled.conflict;
-                    }
-                    continue;
-                }
-
-                let baseline_date = episode.air_date.clone();
-                let schedule =
-                    compute_search_schedule("episode", baseline_date.as_deref(), "primary", now);
-                let item = WantedItem {
-                    id: Id::new().0,
-                    title_id: title.id.clone(),
-                    title_name: None,
-                    title_slug: None,
-                    title_facet: None,
-                    library_id: Some(title.library_id.clone()),
-                    library_name: None,
-                    library_slug: None,
-                    episode_id: Some(episode.id.clone()),
-                    collection_id: None,
-                    series_movie_link_id: None,
-                    season_number: episode.season_number.clone(),
-                    episode_number: None,
-                    media_type: "episode".to_string(),
-                    search_phase: schedule.search_phase.to_string(),
-                    next_search_at: Some(next_search_at.clone()),
-                    last_search_at: None,
-                    search_count: 0,
-                    baseline_date,
-                    status: WantedStatus::Wanted,
-                    grabbed_release: None,
-                    current_score: None,
-                    latest_release_decision: None,
-                    mismatch_recovery_eligible: false,
-                    created_at: now.to_rfc3339(),
-                    updated_at: now.to_rfc3339(),
+                    None => self.new_wanted_state_view(
+                        title,
+                        "episode",
+                        Some(episode.id.clone()),
+                        None,
+                        None,
+                        episode.season_number.clone(),
+                    ),
                 };
 
                 let scheduled = self
-                    .ensure_wanted_item_seeded_with_policy(
-                        title,
-                        &item,
-                        SubmissionConflictPolicy::Skip,
-                    )
+                    .reopen_wanted_scope_with_policy(title, &item, SubmissionConflictPolicy::Skip)
                     .await?;
                 outcome.queued_count += scheduled.queued_count;
                 outcome.skipped_in_progress_count += scheduled.skipped_in_progress_count;
@@ -503,39 +394,5 @@ impl AppUseCase {
         }
 
         Ok(outcome)
-    }
-}
-/// Determine whether a movie has reached its configured availability threshold.
-///
-/// Returns `true` if the movie should be included in acquisition searches,
-/// `false` if it should be skipped because its release dates haven't passed yet.
-pub(crate) fn is_movie_available_for_acquisition(
-    title: &Title,
-    availability: &str,
-    now: &DateTime<Utc>,
-) -> bool {
-    match availability {
-        "in_cinemas" => title
-            .first_aired
-            .as_deref()
-            .and_then(|d| chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").ok())
-            .map(|date| date <= now.date_naive())
-            .unwrap_or(false),
-        "released" => {
-            if let Some(ref digital) = title.digital_release_date {
-                chrono::NaiveDate::parse_from_str(digital, "%Y-%m-%d")
-                    .map(|d| d <= now.date_naive())
-                    .unwrap_or(false)
-            } else if let Some(ref first_aired) = title.first_aired {
-                // Fallback: first_aired + 90 days
-                chrono::NaiveDate::parse_from_str(first_aired, "%Y-%m-%d")
-                    .map(|d| d + chrono::Duration::days(90) <= now.date_naive())
-                    .unwrap_or(false)
-            } else {
-                false
-            }
-        }
-        // "announced" or anything else: always search
-        _ => true,
     }
 }

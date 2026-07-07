@@ -1,447 +1,3 @@
-impl AppUseCase {
-    /// Sync the wanted_items table with current monitored state.
-    /// Creates entries for monitored media without files, removes stale entries.
-    pub(crate) async fn sync_wanted_state(&self) -> AppResult<()> {
-        let titles = self
-            .services
-            .catalog
-            .titles
-            .list_for_matching(None, None)
-            .await?;
-        let now = Utc::now();
-
-        for title in &titles {
-            if !title.monitored {
-                // Clean up wanted items for unmonitored titles
-                if let Err(err) = self
-                    .services
-                    .workflow
-                    .wanted_items
-                    .delete_wanted_items_for_title(&title.id)
-                    .await
-                {
-                    warn!(title_id = title.id.as_str(), error = %err, "failed to clean wanted items for unmonitored title");
-                }
-                continue;
-            }
-
-            if let Some(handler) = self.facet_registry.get(&title.facet) {
-                if handler.has_episodes() {
-                    self.sync_wanted_series(title, &now).await;
-                } else {
-                    self.sync_wanted_movie(title, &now).await;
-                }
-            }
-        }
-
-        Ok(())
-    }
-}
-impl AppUseCase {
-    async fn sync_wanted_movie(&self, title: &Title, now: &DateTime<Utc>) {
-        self.sync_wanted_movie_inner(title, now, false).await;
-    }
-}
-impl AppUseCase {
-    pub(crate) async fn sync_wanted_movie_inner(
-        &self,
-        title: &Title,
-        now: &DateTime<Utc>,
-        immediate: bool,
-    ) {
-        // Check if movie already has a media file
-        let has_file = match self
-            .services
-            .library
-            .media_files
-            .list_media_files_for_title(&title.id)
-            .await
-        {
-            Ok(files) => files.iter().any(|file| file.role.is_primary()),
-            Err(_) => false,
-        };
-
-        if has_file {
-            return;
-        }
-
-        // Minimum availability gate: skip search if the movie hasn't reached the
-        // configured availability threshold yet.
-        let availability = title.min_availability.as_deref().unwrap_or("announced");
-        if !is_movie_available_for_acquisition(title, availability, now) {
-            info!(
-                title_id = title.id.as_str(),
-                min_availability = availability,
-                "skipping movie: availability threshold not reached"
-            );
-            return;
-        }
-
-        // Determine baseline date for search scheduling
-        let baseline_date = title.first_aired.clone();
-
-        let schedule = compute_search_schedule("movie", baseline_date.as_deref(), "primary", now);
-
-        // When immediate=true (called from add_title), set next_search_at to now
-        // so the background poller picks it up on the next 60-second tick.
-        let next_search_at = if immediate {
-            now.to_rfc3339()
-        } else {
-            schedule.next_search_at
-        };
-
-        let item = WantedItem {
-            id: Id::new().0,
-            title_id: title.id.clone(),
-            title_name: None,
-            title_slug: None,
-            title_facet: None,
-            library_id: Some(title.library_id.clone()),
-            library_name: None,
-            library_slug: None,
-            episode_id: None,
-            collection_id: None,
-            series_movie_link_id: None,
-            season_number: None,
-            episode_number: None,
-            media_type: "movie".to_string(),
-            search_phase: schedule.search_phase.to_string(),
-            next_search_at: Some(next_search_at),
-            last_search_at: None,
-            search_count: 0,
-            baseline_date,
-            status: WantedStatus::Wanted,
-            grabbed_release: None,
-            current_score: None,
-            latest_release_decision: None,
-            mismatch_recovery_eligible: false,
-            created_at: now.to_rfc3339(),
-            updated_at: now.to_rfc3339(),
-        };
-
-        match self
-            .services
-            .workflow
-            .wanted_items
-            .ensure_wanted_item_seeded(&item)
-            .await
-        {
-            Ok(_) => {
-                info!(
-                    title_id = title.id.as_str(),
-                    title_name = title.name.as_str(),
-                    next_search_at = item.next_search_at.as_deref().unwrap_or("none"),
-                    search_phase = item.search_phase.as_str(),
-                    immediate = immediate,
-                    "created wanted item for movie"
-                );
-            }
-            Err(err) => {
-                warn!(title_id = title.id.as_str(), error = %err, "failed to upsert wanted item for movie");
-            }
-        }
-    }
-}
-impl AppUseCase {
-    async fn sync_wanted_series(&self, title: &Title, now: &DateTime<Utc>) {
-        self.sync_wanted_series_inner(title, now, false).await;
-    }
-}
-impl AppUseCase {
-    /// Sync wanted items for a series. When `immediate` is true, episodes that are already
-    /// inside the active search window are queued immediately; episodes without a usable
-    /// air date remain unscheduled until metadata provides one.
-    pub(crate) async fn sync_wanted_series_inner(
-        &self,
-        title: &Title,
-        now: &DateTime<Utc>,
-        immediate: bool,
-    ) {
-        let collections = match self
-            .services
-            .catalog
-            .shows
-            .list_collections_for_title(&title.id)
-            .await
-        {
-            Ok(c) => c,
-            Err(err) => {
-                warn!(title_id = title.id.as_str(), error = %err, "failed to list collections for wanted sync");
-                return;
-            }
-        };
-
-        // Get existing files for the title to know which episodes already have files
-        let existing_files = self
-            .services
-            .library
-            .media_files
-            .list_media_files_for_title(&title.id)
-            .await
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|file| file.role.is_primary())
-            .collect::<Vec<_>>();
-        let episodes_with_files: std::collections::HashSet<String> = existing_files
-            .iter()
-            .filter_map(|f| f.episode_id.clone())
-            .collect();
-        let series_movie_links_with_files: HashSet<String> = self
-            .services
-            .library
-            .media_files
-            .list_series_movie_link_ids_with_files_for_title(&title.id)
-            .await
-            .unwrap_or_default()
-            .into_iter()
-            .collect();
-        let mut eligible_episode_ids = HashSet::new();
-        let mut eligible_series_movie_link_ids = HashSet::new();
-
-        for collection in &collections {
-            if !collection.monitored {
-                continue;
-            }
-
-            let episodes = match self
-                .services
-                .catalog
-                .shows
-                .list_episodes_for_collection(&collection.id)
-                .await
-            {
-                Ok(eps) => eps,
-                Err(_) => continue,
-            };
-
-            for episode in &episodes {
-                if !episode.monitored || episodes_with_files.contains(&episode.id) {
-                    continue;
-                }
-                eligible_episode_ids.insert(episode.id.clone());
-
-                let (baseline_date, search_phase, next_search_at) =
-                    episode_wanted_schedule_fields(episode.air_date.as_deref(), now, immediate);
-
-                let item = WantedItem {
-                    id: Id::new().0,
-                    title_id: title.id.clone(),
-                    title_name: None,
-                    title_slug: None,
-                    title_facet: None,
-                    library_id: Some(title.library_id.clone()),
-                    library_name: None,
-                    library_slug: None,
-                    episode_id: Some(episode.id.clone()),
-                    collection_id: None,
-                    series_movie_link_id: None,
-                    season_number: episode.season_number.clone(),
-                    episode_number: None,
-                    media_type: "episode".to_string(),
-                    search_phase,
-                    next_search_at,
-                    last_search_at: None,
-                    search_count: 0,
-                    baseline_date,
-                    status: WantedStatus::Wanted,
-                    grabbed_release: None,
-                    current_score: None,
-                    latest_release_decision: None,
-                    mismatch_recovery_eligible: false,
-                    created_at: now.to_rfc3339(),
-                    updated_at: now.to_rfc3339(),
-                };
-
-                if let Err(err) = self
-                    .services
-                    .workflow
-                    .wanted_items
-                    .ensure_wanted_item_seeded(&item)
-                    .await
-                {
-                    warn!(
-                        title_id = title.id.as_str(),
-                        episode_id = episode.id.as_str(),
-                        error = %err,
-                        "failed to upsert wanted item for episode"
-                    );
-                }
-            }
-        }
-
-        // Generate wanted items for series-owned movies.
-        if title.facet == scryer_domain::MediaFacet::Anime {
-            let series_movie_links = self
-                .services
-                .catalog
-                .shows
-                .list_series_movie_links_for_title(&title.id)
-                .await
-                .unwrap_or_default();
-            for link in series_movie_links {
-                if !link.monitored || series_movie_links_with_files.contains(&link.id) {
-                    continue;
-                }
-
-                // Skip filler movies unless the user opted in
-                if link.continuity_status.as_deref() == Some("filler") {
-                    let monitor_filler = self
-                        .resolve_library_bool_setting(
-                            "anime.monitor_filler_movies",
-                            Some(&title.library_id),
-                            Some(title.facet.as_str()),
-                            false,
-                        )
-                        .await
-                        .unwrap_or(false);
-                    if !monitor_filler {
-                        continue;
-                    }
-                }
-
-                eligible_series_movie_link_ids.insert(link.id.clone());
-
-                let baseline_date = link.movie.digital_release_date.clone();
-                let schedule =
-                    compute_search_schedule("movie", baseline_date.as_deref(), "primary", now);
-
-                let next_search_at = if immediate {
-                    now.to_rfc3339()
-                } else {
-                    schedule.next_search_at
-                };
-
-                let item = WantedItem {
-                    id: Id::new().0,
-                    title_id: title.id.clone(),
-                    title_name: None,
-                    title_slug: None,
-                    title_facet: None,
-                    library_id: Some(title.library_id.clone()),
-                    library_name: None,
-                    library_slug: None,
-                    episode_id: None,
-                    collection_id: None,
-                    series_movie_link_id: Some(link.id.clone()),
-                    season_number: Some("0".to_string()),
-                    episode_number: None,
-                    media_type: "series_movie".to_string(),
-                    search_phase: schedule.search_phase.to_string(),
-                    next_search_at: Some(next_search_at),
-                    last_search_at: None,
-                    search_count: 0,
-                    baseline_date,
-                    status: WantedStatus::Wanted,
-                    grabbed_release: None,
-                    current_score: None,
-                    latest_release_decision: None,
-                    mismatch_recovery_eligible: false,
-                    created_at: now.to_rfc3339(),
-                    updated_at: now.to_rfc3339(),
-                };
-
-                if let Err(err) = self
-                    .services
-                    .workflow
-                    .wanted_items
-                    .ensure_wanted_item_seeded(&item)
-                    .await
-                {
-                    warn!(
-                        title_id = title.id.as_str(),
-                        series_movie_link_id = link.id.as_str(),
-                        movie_name = link.movie.title.as_str(),
-                        error = %err,
-                        "failed to upsert wanted item for series movie"
-                    );
-                }
-            }
-        }
-
-        self.reconcile_series_wanted_scope(
-            title,
-            &eligible_episode_ids,
-            &eligible_series_movie_link_ids,
-        )
-        .await;
-    }
-}
-impl AppUseCase {
-    async fn reconcile_series_wanted_scope(
-        &self,
-        title: &Title,
-        eligible_episode_ids: &HashSet<String>,
-        eligible_series_movie_link_ids: &HashSet<String>,
-    ) {
-        let existing_items = match self
-            .services
-            .workflow
-            .wanted_items
-            .list_wanted_items(WantedItemsQuery {
-                title_id: Some(title.id.clone()),
-                limit: 5000,
-                ..WantedItemsQuery::default()
-            })
-            .await
-        {
-            Ok(items) => items,
-            Err(err) => {
-                warn!(
-                    title_id = title.id.as_str(),
-                    error = %err,
-                    "failed to list existing wanted items for reconciliation"
-                );
-                return;
-            }
-        };
-
-        let stale_episode_ids: HashSet<String> = existing_items
-            .iter()
-            .filter(|item| item.media_type == "episode")
-            .filter_map(|item| item.episode_id.clone())
-            .filter(|episode_id| !eligible_episode_ids.contains(episode_id))
-            .collect();
-        for episode_id in stale_episode_ids {
-            if let Err(err) = self
-                .services
-                .workflow
-                .wanted_items
-                .delete_wanted_items_for_episode(&episode_id)
-                .await
-            {
-                warn!(
-                    title_id = title.id.as_str(),
-                    episode_id,
-                    error = %err,
-                    "failed to delete stale episode wanted items during reconciliation"
-                );
-            }
-        }
-
-        let stale_series_movie_link_ids: HashSet<String> = existing_items
-            .iter()
-            .filter(|item| item.media_type == "series_movie")
-            .filter_map(|item| item.series_movie_link_id.clone())
-            .filter(|link_id| !eligible_series_movie_link_ids.contains(link_id))
-            .collect();
-        for series_movie_link_id in stale_series_movie_link_ids {
-            if let Err(err) = self
-                .services
-                .workflow
-                .wanted_items
-                .delete_wanted_items_for_series_movie_link(&series_movie_link_id)
-                .await
-            {
-                warn!(
-                    title_id = title.id.as_str(),
-                    series_movie_link_id,
-                    error = %err,
-                    "failed to delete stale series movie wanted items during reconciliation"
-                );
-            }
-        }
-    }
-}
 pub(crate) async fn has_enabled_download_clients(app: &AppUseCase) -> bool {
     app.services
         .integrations
@@ -556,6 +112,8 @@ impl AppUseCase {
     }
 }
 impl AppUseCase {
+    /// Pause acquisition for a scope: user intent persisted on the state row.
+    /// A paused scope is excluded from the derived target set until resumed.
     pub async fn pause_wanted_item(&self, actor: &User, wanted_item_id: &str) -> AppResult<()> {
         let item = self
             .services
@@ -584,7 +142,6 @@ impl AppUseCase {
             .transition_wanted_to_paused(&WantedPauseTransition {
                 id: item.id.clone(),
                 last_search_at: item.last_search_at.clone(),
-                search_count: item.search_count,
                 current_score: item.current_score,
                 grabbed_release: item.grabbed_release.clone(),
             })
@@ -592,6 +149,9 @@ impl AppUseCase {
     }
 }
 impl AppUseCase {
+    /// Resume acquisition for a paused scope: it re-enters the derived target
+    /// set. Existing coverage stays valid — the cursor only searches indexers
+    /// it has not already searched under the current fingerprint.
     pub async fn resume_wanted_item(&self, actor: &User, wanted_item_id: &str) -> AppResult<()> {
         let item = self
             .services
@@ -614,29 +174,25 @@ impl AppUseCase {
         )
         .await?;
 
-        let now = Utc::now();
-        let schedule = compute_search_schedule(
-            &item.media_type,
-            item.baseline_date.as_deref(),
-            &item.search_phase,
-            &now,
-        );
-
         self.services
             .workflow
             .wanted_items
-            .schedule_wanted_item_search(&WantedSearchTransition {
-                id: item.id.clone(),
-                next_search_at: Some(schedule.next_search_at),
-                last_search_at: item.last_search_at.clone(),
-                search_count: item.search_count,
-                current_score: item.current_score,
-                grabbed_release: item.grabbed_release.clone(),
-            })
-            .await
+            .update_wanted_item_status(
+                &item.id,
+                WantedStatus::Wanted.as_str(),
+                item.last_search_at.as_deref(),
+                item.current_score,
+                item.grabbed_release.as_deref(),
+            )
+            .await?;
+        self.runtime.acquisition.acquisition_wake.notify_one();
+        Ok(())
     }
 }
 impl AppUseCase {
+    /// Reset a scope's acquisition state entirely: forget the score baseline
+    /// and any in-flight grab, prune its convergence coverage, and wake the
+    /// loop — the scope converges again from scratch.
     pub async fn reset_wanted_item(&self, actor: &User, wanted_item_id: &str) -> AppResult<()> {
         let item = self
             .services
@@ -659,26 +215,13 @@ impl AppUseCase {
         )
         .await?;
 
-        let now = Utc::now();
-        let schedule = compute_search_schedule(
-            &item.media_type,
-            item.baseline_date.as_deref(),
-            "primary",
-            &now,
-        );
-
         self.services
             .workflow
             .wanted_items
-            .schedule_wanted_item_search(&WantedSearchTransition {
-                id: item.id.clone(),
-                next_search_at: Some(schedule.next_search_at),
-                last_search_at: None,
-                search_count: 0,
-                current_score: None,
-                grabbed_release: None,
-            })
-            .await
+            .update_wanted_item_status(&item.id, WantedStatus::Wanted.as_str(), None, None, None)
+            .await?;
+        self.reopen_wanted_scope_for_acquisition(&item).await;
+        Ok(())
     }
 }
 impl AppUseCase {
@@ -766,6 +309,9 @@ impl AppUseCase {
     }
 }
 impl AppUseCase {
+    /// Operator queue replacement: the blocking download is gone, so every
+    /// scope it covered re-opens from scratch — score baseline cleared (the
+    /// replacement decides on its own merits), coverage pruned, loop woken.
     pub(crate) async fn reset_wanted_items_for_submission_scope(
         &self,
         title_id: &str,
@@ -785,15 +331,15 @@ impl AppUseCase {
                 self.services
                     .workflow
                     .wanted_items
-                    .schedule_wanted_item_search(&WantedSearchTransition {
-                        id: item.id,
-                        next_search_at: Some(Utc::now().to_rfc3339()),
-                        last_search_at: None,
-                        search_count: 0,
-                        current_score: None,
-                        grabbed_release: None,
-                    })
+                    .update_wanted_item_status(
+                        &item.id,
+                        WantedStatus::Wanted.as_str(),
+                        None,
+                        None,
+                        None,
+                    )
                     .await?;
+                self.reopen_wanted_scope_for_acquisition(&item).await;
             }
         }
         Ok(())

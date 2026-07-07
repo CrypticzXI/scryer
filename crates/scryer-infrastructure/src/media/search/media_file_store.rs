@@ -3,8 +3,9 @@ use chrono::Utc;
 use scryer_application::{
     AppError, AppResult, CollectionEpisodeProgressSummary, CutoffUnmetQualitySummary,
     EpisodeScopedMediaFile, InsertMediaFileInput, MediaFileAnalysis, MediaFileRepository,
-    TitleEpisodeProgressSummary, TitleMediaFile, TitleMediaSizeSummary, TitleMovieMediaSummary,
-    TitleQualitySummary,
+    MissingEpisodeCandidate, MissingScopeCandidates, MissingSeriesMovieLinkCandidate,
+    MissingTitleCandidate, TitleEpisodeProgressSummary, TitleMediaFile, TitleMediaSizeSummary,
+    TitleMovieMediaSummary, TitleQualitySummary,
 };
 use scryer_domain::Id;
 use serde::de::DeserializeOwned;
@@ -450,6 +451,130 @@ impl MediaFileRepository for MediaFileStore {
                 })
             })
             .collect()
+    }
+
+    async fn list_missing_scope_candidates(&self) -> AppResult<MissingScopeCandidates> {
+        let dialect = dialect_for_datastore(&self.datastore);
+        let live_file = live_media_file_predicate(dialect, "mf");
+
+        // Monitored episodes (inside monitored collections of monitored titles)
+        // with no live primary file. Episodes outside a collection are not
+        // acquisition units, matching collection-driven monitoring.
+        let episode_sql = format!(
+            "SELECT e.id AS episode_id, e.title_id, t.library_id, t.facet,
+                    e.collection_id, e.season_number, e.episode_number, e.air_date,
+                    t.created_at AS title_created_at
+               FROM episodes e
+              INNER JOIN titles t ON t.id = e.title_id
+              INNER JOIN collections c ON c.id = e.collection_id
+              WHERE {} AND {} AND {}
+                AND t.deleted_at IS NULL
+                AND NOT EXISTS (
+                    SELECT 1 FROM file_episode_map fem
+                     INNER JOIN media_files mf ON mf.id = fem.file_id
+                     WHERE fem.episode_id = e.id
+                       AND mf.role = 'primary'
+                       AND {live_file}
+                )
+              ORDER BY e.id",
+            bool_column_is_true(dialect, "t.monitored"),
+            bool_column_is_true(dialect, "e.monitored"),
+            bool_column_is_true(dialect, "c.monitored"),
+        );
+        let episodes = SqlRuntime::fetch_all(self.datastore.read_exec(), &episode_sql, &[])
+            .await?
+            .iter()
+            .map(|row| {
+                Ok(MissingEpisodeCandidate {
+                    episode_id: row.text("episode_id")?,
+                    title_id: row.text("title_id")?,
+                    library_id: row.text("library_id")?,
+                    title_facet: row.text("facet")?,
+                    collection_id: row.opt_text("collection_id")?,
+                    season_number: row.opt_text("season_number")?,
+                    episode_number: row.opt_text("episode_number")?,
+                    air_date: row.opt_text("air_date")?,
+                    title_created_at: row.text("title_created_at")?,
+                })
+            })
+            .collect::<AppResult<Vec<_>>>()?;
+
+        // Monitored titles with no live primary file at all. Includes episodic
+        // titles — the application layer keeps only movie-shaped facets.
+        let title_sql = format!(
+            "SELECT t.id AS title_id, t.library_id, t.facet, t.min_availability,
+                    t.first_aired, t.digital_release_date, t.created_at
+               FROM titles t
+              WHERE {}
+                AND t.deleted_at IS NULL
+                AND NOT EXISTS (
+                    SELECT 1 FROM media_files mf
+                     WHERE mf.title_id = t.id
+                       AND mf.role = 'primary'
+                       AND {live_file}
+                )
+              ORDER BY t.id",
+            bool_column_is_true(dialect, "t.monitored"),
+        );
+        let titles = SqlRuntime::fetch_all(self.datastore.read_exec(), &title_sql, &[])
+            .await?
+            .iter()
+            .map(|row| {
+                Ok(MissingTitleCandidate {
+                    title_id: row.text("title_id")?,
+                    library_id: row.text("library_id")?,
+                    title_facet: row.text("facet")?,
+                    min_availability: row.opt_text("min_availability")?,
+                    first_aired: row.opt_text("first_aired")?,
+                    digital_release_date: row.opt_text("digital_release_date")?,
+                    created_at: row.text("created_at")?,
+                })
+            })
+            .collect::<AppResult<Vec<_>>>()?;
+
+        // Monitored series-movie links with no linked live file (any role, matching
+        // list_series_movie_link_ids_with_files_for_title).
+        let link_sql = format!(
+            "SELECT sml.id AS series_movie_link_id, sml.series_title_id AS title_id,
+                    t.library_id, t.facet, sml.continuity_status,
+                    me.digital_release_date AS movie_digital_release_date,
+                    sml.created_at AS link_created_at
+               FROM series_movie_links sml
+              INNER JOIN titles t ON t.id = sml.series_title_id
+              INNER JOIN movie_entities me ON me.id = sml.movie_entity_id
+              WHERE {} AND {}
+                AND t.deleted_at IS NULL
+                AND NOT EXISTS (
+                    SELECT 1 FROM file_series_movie_link_map fsmlm
+                     INNER JOIN media_files mf ON mf.id = fsmlm.file_id
+                     WHERE fsmlm.series_movie_link_id = sml.id
+                       AND {live_file}
+                )
+              ORDER BY sml.id",
+            bool_column_is_true(dialect, "sml.monitored"),
+            bool_column_is_true(dialect, "t.monitored"),
+        );
+        let series_movie_links = SqlRuntime::fetch_all(self.datastore.read_exec(), &link_sql, &[])
+            .await?
+            .iter()
+            .map(|row| {
+                Ok(MissingSeriesMovieLinkCandidate {
+                    series_movie_link_id: row.text("series_movie_link_id")?,
+                    title_id: row.text("title_id")?,
+                    library_id: row.text("library_id")?,
+                    title_facet: row.text("facet")?,
+                    continuity_status: row.opt_text("continuity_status")?,
+                    movie_digital_release_date: row.opt_text("movie_digital_release_date")?,
+                    link_created_at: row.text("link_created_at")?,
+                })
+            })
+            .collect::<AppResult<Vec<_>>>()?;
+
+        Ok(MissingScopeCandidates {
+            episodes,
+            titles,
+            series_movie_links,
+        })
     }
 
     async fn list_title_episode_progress_summaries(

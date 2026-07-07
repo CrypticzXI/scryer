@@ -41,296 +41,83 @@ async fn blocked_acquisition_facets_after_quiet_wait(app: &AppUseCase) -> Vec<Me
 
     blocked_facets
 }
-/// Process due wanted items: search indexers and auto-grab best releases.
-async fn process_due_wanted_items(app: &AppUseCase) {
+/// Run one convergence cycle (RFC 119 §D3): recover failed downloads, derive
+/// the target set, rotate the cursor over it, and search each selected scope's
+/// uncovered indexers. Plan-112 admission inside the search is the only rate
+/// authority; the cycle merely bounds evaluation cost and pre-skips scopes the
+/// scheduler could not serve right now.
+async fn run_convergence_cycle(app: &AppUseCase) {
     let blocked_facets = blocked_acquisition_facets_after_quiet_wait(app).await;
-    process_due_wanted_items_with_blocked_facets(app, &blocked_facets).await;
-}
-fn select_due_items_for_cooperative_slice(
-    due_items: Vec<WantedItem>,
-) -> (Vec<WantedItem>, HashMap<String, usize>, usize) {
-    let mut due_items = due_items;
-    due_items.sort_by(compare_due_wanted_items_for_search);
-
-    let mut selected = Vec::with_capacity(due_items.len());
-    let mut selected_per_title: HashMap<String, usize> = HashMap::new();
-    let mut deferred_per_title: HashMap<String, usize> = HashMap::new();
-    let mut deferred_by_global_limit = 0usize;
-
-    for item in due_items {
-        if selected.len() >= ACQUISITION_MAX_WANTED_ITEMS_PER_SLICE {
-            deferred_by_global_limit += 1;
-            continue;
-        }
-
-        let selected_for_title = selected_per_title.entry(item.title_id.clone()).or_insert(0);
-        if *selected_for_title >= ACQUISITION_MAX_WANTED_ITEMS_PER_TITLE_PER_SLICE {
-            *deferred_per_title.entry(item.title_id.clone()).or_insert(0) += 1;
-            continue;
-        }
-
-        *selected_for_title += 1;
-        selected.push(item);
-    }
-
-    (selected, deferred_per_title, deferred_by_global_limit)
-}
-fn compare_due_wanted_items_for_search(
-    left: &WantedItem,
-    right: &WantedItem,
-) -> std::cmp::Ordering {
-    left.next_search_at
-        .cmp(&right.next_search_at)
-        .then_with(|| wanted_due_title_order(left).cmp(&wanted_due_title_order(right)))
-        .then_with(|| left.title_id.cmp(&right.title_id))
-        .then_with(|| wanted_due_media_order(left).cmp(&wanted_due_media_order(right)))
-        .then_with(|| {
-            wanted_due_numeric_text_order(left.season_number.as_deref()).cmp(
-                &wanted_due_numeric_text_order(right.season_number.as_deref()),
-            )
-        })
-        .then_with(|| {
-            wanted_due_text_order(left.season_number.as_deref())
-                .cmp(&wanted_due_text_order(right.season_number.as_deref()))
-        })
-        .then_with(|| {
-            wanted_due_numeric_text_order(left.episode_number.as_deref()).cmp(
-                &wanted_due_numeric_text_order(right.episode_number.as_deref()),
-            )
-        })
-        .then_with(|| {
-            wanted_due_text_order(left.episode_number.as_deref())
-                .cmp(&wanted_due_text_order(right.episode_number.as_deref()))
-        })
-        .then_with(|| left.created_at.cmp(&right.created_at))
-        .then_with(|| left.id.cmp(&right.id))
-}
-fn wanted_due_title_order(item: &WantedItem) -> String {
-    item.title_name
-        .as_deref()
-        .unwrap_or(&item.title_id)
-        .trim()
-        .to_lowercase()
-}
-fn wanted_due_media_order(item: &WantedItem) -> u8 {
-    if item.media_type == "episode" { 0 } else { 1 }
-}
-fn wanted_due_numeric_text_order(value: Option<&str>) -> (u8, u64) {
-    let value = value.unwrap_or("").trim();
-    if value.is_empty() || !value.chars().all(|ch| ch.is_ascii_digit()) {
-        return (1, 0);
-    }
-
-    (0, value.parse::<u64>().unwrap_or(u64::MAX))
-}
-fn wanted_due_text_order(value: Option<&str>) -> (u8, String) {
-    let value = value.unwrap_or("").trim();
-    if value.is_empty() {
-        return (1, String::new());
-    }
-
-    (0, value.to_lowercase())
+    run_convergence_cycle_with_blocked_facets(app, &blocked_facets).await;
 }
 
-/// Recency window that marks a convergence target as **hot** (searched fast). A target
-/// whose air/release/add baseline is within this many days is high-value.
-const CONVERGENCE_RECENT_TARGET_WINDOW_DAYS: i64 = 30;
-
-/// Map a wanted item (a materialized convergence target) to a `ConvergenceTarget` for
-/// the cursor. Returns `None` for a scope that is not a convergence unit (a true
-/// orphan). `routed_hosts` is left empty for now — 112 admission inside the search
-/// already protects hosts; the 112-snapshot host pre-skip is a follow-up refinement
-/// (RFC 119 §12.1).
-#[allow(dead_code)] // wired by the convergence cursor cycle (RFC 119 §12.1, cutover)
-fn wanted_item_convergence_target(
-    item: &WantedItem,
-) -> Option<crate::acquisition::convergence::ConvergenceTarget> {
-    let scope = crate::contracts::SubmissionScope::from_persisted(
-        &item.title_id,
-        item.episode_id.clone(),
-        item.collection_id.clone(),
-        item.series_movie_link_id.clone(),
-        None,
-    );
-    let scope_key =
-        crate::acquisition::convergence::convergence_scope_key(&scope, &item.title_id)?;
-    let is_hot = item
-        .baseline_date
-        .as_deref()
-        .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
-        .is_some_and(|date| {
-            Utc::now().signed_duration_since(date.with_timezone(&Utc))
-                < chrono::Duration::days(CONVERGENCE_RECENT_TARGET_WINDOW_DAYS)
-        });
-    Some(crate::acquisition::convergence::ConvergenceTarget {
-        scope_key,
-        routed_hosts: Vec::new(),
-        is_hot,
-    })
-}
-
-/// Select which of `items` to search this cycle via the convergence cursor (§D3):
-/// rotate over the target set after `resume_after`, hot-first, capped at `max_scopes`.
-/// Returns the selected items (original order preserved) and the new cursor resume
-/// position to carry into the next cycle. Pure — the loop supplies/persists the
-/// resume position and the cap.
-#[allow(dead_code)] // wired by the convergence cursor cycle (RFC 119 §12.1, cutover)
-fn convergence_cursor_select(
-    items: Vec<WantedItem>,
-    resume_after: Option<&str>,
-    max_scopes: usize,
-) -> (Vec<WantedItem>, Option<String>) {
-    let targets: Vec<crate::acquisition::convergence::ConvergenceTarget> = items
-        .iter()
-        .filter_map(wanted_item_convergence_target)
-        .collect();
-    let selection = crate::acquisition::convergence::select_convergence_batch(
-        &targets,
-        |_| true,
-        resume_after,
-        max_scopes,
-    );
-    let selected_keys: std::collections::HashSet<String> =
-        selection.scope_keys.into_iter().collect();
-    let selected = items
-        .into_iter()
-        .filter(|item| {
-            wanted_item_convergence_target(item)
-                .is_some_and(|target| selected_keys.contains(&target.scope_key))
-        })
-        .collect();
-    (selected, selection.resume_after)
-}
-
-/// In-memory rotating-cursor position for RFC 119 convergence selection (§D3),
-/// carried across acquisition cycles within a running process. Resets on restart —
-/// the cursor simply re-rotates from the start, still covering every scope over
-/// cycles. Only consulted when `rss_first_enabled`.
-static CONVERGENCE_CURSOR_POSITION: std::sync::Mutex<Option<String>> =
-    std::sync::Mutex::new(None);
-
-/// Cap on wanted items loaded as convergence targets per cycle — effectively "all"
-/// for typical libraries (the cursor's work-cap bounds actual searches). A paged
-/// query keyed on the cursor position is the follow-up optimization for very large
-/// target sets.
-const CONVERGENCE_TARGET_LIST_LIMIT: i64 = 100_000;
-
-pub(crate) async fn process_due_wanted_items_with_blocked_facets(
+pub(crate) async fn run_convergence_cycle_with_blocked_facets(
     app: &AppUseCase,
     blocked_facets: &[MediaFacet],
 ) {
     prune_standby_candidates(app).await;
 
-    // Check for download failures first — re-queues failed items with
-    // next_search_at=NOW so they appear in the due list below.
+    // Failed downloads first: each failure re-opens its scope (coverage pruned,
+    // state reset), so this cycle's derivation already sees it as searchable.
     let dl_snapshot = DownloadClientSnapshot::fetch(app).await;
     check_grabbed_for_failures(app, &dl_snapshot).await;
 
-    // Capture `now` AFTER failure check so that items just re-queued
-    // are guaranteed to satisfy `next_search_at <= now`.
     let now = Utc::now();
-    let now_str = now.to_rfc3339();
-
-    let batch_size = match app.acquisition_settings().await {
-        Ok(settings) => settings.batch_size.clamp(1, 500) as i64,
+    let settings = match app.convergence_settings().await {
+        Ok(settings) => settings,
         Err(err) => {
-            warn!(error = %err, "failed to load acquisition settings, using default batch size");
-            50
-        }
-    };
-
-    // RFC 119: under convergence the rotating cursor (§D3) rotates over the WHOLE
-    // derived target set — all monitored-unsatisfied scopes (D1), not just the
-    // next_search_at-due subset — so coverage (not a cadence) decides what is searched
-    // and a fingerprint change can re-open a converged scope. A far-future `now` makes
-    // next_search_at never gate eligibility. Gated; off by default until the cutover.
-    let convergence_settings = app.convergence_settings().await.ok();
-    let rss_first = convergence_settings
-        .as_ref()
-        .is_some_and(|settings| settings.rss_first_enabled);
-    let list_now = if rss_first {
-        "9999-12-31T23:59:59Z".to_string()
-    } else {
-        now_str.clone()
-    };
-    let list_limit = if rss_first {
-        CONVERGENCE_TARGET_LIST_LIMIT
-    } else {
-        batch_size
-    };
-
-    let due_items = match app
-        .services
-        .workflow
-        .wanted_items
-        .list_due_wanted_items(&list_now, list_limit, blocked_facets)
-        .await
-    {
-        Ok(items) => {
-            if !items.is_empty() {
-                info!(
-                    count = items.len(),
-                    "background acquisition: found target wanted items"
-                );
-            }
-            items
-        }
-        Err(err) => {
-            warn!(error = %err, "failed to list wanted items");
+            warn!(error = %err, "failed to load convergence settings, skipping cycle");
             return;
         }
     };
 
-    if due_items.is_empty() {
-        return;
-    }
-
-    let fetched_due_count = due_items.len();
-    let (due_items, deferred_per_title, deferred_by_global_limit) = if rss_first {
-        let cap = convergence_settings
-            .as_ref()
-            .map(|settings| settings.long_tail_backfill_batch_per_cycle.max(1) as usize)
-            .unwrap_or(25);
-        let resume = CONVERGENCE_CURSOR_POSITION
-            .lock()
-            .map(|guard| guard.clone())
-            .unwrap_or(None);
-        let (selected, next_resume) =
-            convergence_cursor_select(due_items, resume.as_deref(), cap);
-        if let Ok(mut guard) = CONVERGENCE_CURSOR_POSITION.lock() {
-            *guard = next_resume;
+    let mut targets = match app.derive_acquisition_targets(&now).await {
+        Ok(targets) => targets,
+        Err(err) => {
+            warn!(error = %err, "failed to derive acquisition targets");
+            return;
         }
-        (selected, std::collections::HashMap::new(), 0usize)
-    } else {
-        select_due_items_for_cooperative_slice(due_items)
     };
-    if deferred_by_global_limit > 0 || !deferred_per_title.is_empty() {
-        info!(
-            fetched_due_count,
-            selected_due_count = due_items.len(),
-            deferred_due_count = deferred_by_global_limit
-                + deferred_per_title.values().copied().sum::<usize>(),
-            deferred_by_global_limit,
-            deferred_title_count = deferred_per_title.len(),
-            global_slice_limit = ACQUISITION_MAX_WANTED_ITEMS_PER_SLICE,
-            per_title_slice_limit = ACQUISITION_MAX_WANTED_ITEMS_PER_TITLE_PER_SLICE,
-            deferred_titles = ?deferred_per_title,
-            "background acquisition: deferring excess wanted items for cooperative processing"
-        );
+    if !blocked_facets.is_empty() {
+        targets.retain(|target| !blocked_facets.contains(&target.facet));
+    }
+    if targets.is_empty() {
+        return;
     }
 
     if !has_enabled_download_clients(app).await {
         warn!(
-            count = due_items.len(),
-            "background acquisition: no enabled download clients configured, skipping indexer search"
+            target_count = targets.len(),
+            "background acquisition: no enabled download clients configured, skipping cycle"
         );
         return;
     }
 
-    debug!(count = due_items.len(), "processing due wanted items");
+    let resume = app.convergence_cursor_resume_position().await;
+    let max_scopes = settings.long_tail_backfill_max_scopes_per_cycle.max(1) as usize;
+    let selection = crate::acquisition::targets::select_convergence_batch(
+        &targets,
+        resume.as_deref(),
+        max_scopes,
+    );
+    app.store_convergence_cursor_resume_position(selection.resume_after.as_deref())
+        .await;
+    if selection.indices.is_empty() {
+        return;
+    }
+
+    debug!(
+        target_count = targets.len(),
+        selected_count = selection.indices.len(),
+        "convergence cycle: evaluating scopes"
+    );
+
+    // Scheduler availability, resolved once per cycle for the pre-skip.
+    let availability = app.scheduler_availability().await;
+    let indexer_hosts = app.indexer_scheduler_host_keys().await;
 
     // Track URLs already submitted this cycle to avoid sending the same NZB
-    // multiple times (e.g. a season pack matching several episode wanted items).
+    // multiple times (e.g. a season pack matching several episode scopes).
     let mut grabbed_urls: std::collections::HashSet<String> = std::collections::HashSet::new();
     // Track (title_id, season_num) for which a season pack search was attempted this cycle.
     let mut season_pack_attempted: std::collections::HashSet<(String, u32)> =
@@ -346,29 +133,34 @@ pub(crate) async fn process_due_wanted_items_with_blocked_facets(
     let mut recent_failed_season_packs_by_title: std::collections::HashMap<String, HashSet<u32>> =
         std::collections::HashMap::new();
 
-    // Count due episode items per (title_id, season_num). Season pack search is only
-    // worthwhile when >= 2 episodes from the same season are due this cycle — mirroring
-    // Sonarr's rule of "count > 1 missing" before issuing a SeasonSearchCriteria.
+    // Count selected episode scopes per (title_id, season_num). Season pack
+    // search is only worthwhile when >= 2 episodes from the same season are in
+    // this cycle — mirroring Sonarr's "count > 1 missing" rule before issuing a
+    // SeasonSearchCriteria.
     let mut season_due_counts: std::collections::HashMap<(String, u32), usize> =
         std::collections::HashMap::new();
-    for item in &due_items {
-        if item.media_type == "episode"
-            && let Some(sn) = item.season_number.as_deref()
+    for index in &selection.indices {
+        let target = &targets[*index];
+        if target.media_type == "episode"
+            && let Some(sn) = target.season_number.as_deref()
             && let Ok(n) = sn.parse::<u32>()
             && n > 0
         {
             *season_due_counts
-                .entry((item.title_id.clone(), n))
+                .entry((target.title_id.clone(), n))
                 .or_insert(0) += 1;
         }
     }
 
     let mut processed_in_slice = 0usize;
-    for item in &due_items {
-        if let Err(err) = process_single_wanted_item(
+    for index in selection.indices {
+        let target = &targets[index];
+        if let Err(err) = process_single_target(
             app,
-            item,
+            target,
             &now,
+            &availability,
+            &indexer_hosts,
             &mut grabbed_urls,
             &mut season_pack_attempted,
             &mut season_pack_grabbed,
@@ -380,68 +172,17 @@ pub(crate) async fn process_due_wanted_items_with_blocked_facets(
         .await
         {
             warn!(
-                wanted_item_id = item.id.as_str(),
-                title_id = item.title_id.as_str(),
+                scope_key = target.scope_key.as_str(),
+                title_id = target.title_id.as_str(),
                 error = %err,
-                "failed to process wanted item"
+                "failed to process acquisition target"
             );
         }
         processed_in_slice += 1;
         if processed_in_slice.is_multiple_of(ACQUISITION_SLICE_YIELD_INTERVAL) {
             tokio::task::yield_now().await;
         }
-
-        // Re-read the wanted item after processing. If processing changed the
-        // row to another state, do not overwrite it with a stale search schedule.
-        let current = app
-            .services
-            .workflow
-            .wanted_items
-            .get_wanted_item_by_id(&item.id)
-            .await
-            .ok()
-            .flatten();
-
-        let Some(scheduling_item) = wanted_item_for_search_reschedule(current.as_ref()) else {
-            continue;
-        };
-
-        // RFC 119: under convergence the cursor paces re-search — the next_search_at
-        // cadence is not applied (F). Converged scopes are skipped by the read-gate;
-        // uncovered ones remain due and the cursor rotates to them.
-        if rss_first {
-            continue;
-        }
-
-        // Item is still "wanted" (no grab succeeded, or all candidates were
-        // exhausted).  Update the search schedule with backoff.
-        let schedule = compute_search_schedule(
-            &scheduling_item.media_type,
-            scheduling_item.baseline_date.as_deref(),
-            &scheduling_item.search_phase,
-            &now,
-        );
-
-        let _ = app
-            .services
-            .workflow
-            .wanted_items
-            .schedule_wanted_item_search(&WantedSearchTransition {
-                id: scheduling_item.id.clone(),
-                next_search_at: Some(schedule.next_search_at),
-                last_search_at: Some(now.to_rfc3339()),
-                search_count: scheduling_item.search_count + 1,
-                current_score: scheduling_item.current_score,
-                grabbed_release: scheduling_item.grabbed_release.clone(),
-            })
-            .await;
     }
-}
-fn wanted_item_for_search_reschedule(item: Option<&WantedItem>) -> Option<&WantedItem> {
-    item.filter(|item| {
-        item.status == WantedStatus::Wanted
-            || (item.status == WantedStatus::Completed && item.current_score.is_some())
-    })
 }
 fn submission_blocks_search_for_wanted_item(
     submission: &DownloadSubmission,
@@ -462,18 +203,20 @@ fn submission_blocks_search_for_wanted_item(
 
 impl AppUseCase {
     #[cfg(test)]
-    pub(crate) async fn run_acquisition_cycle_once(&self) {
-        process_due_wanted_items(self).await;
+    pub(crate) async fn run_convergence_cycle_once(&self) {
+        run_convergence_cycle(self).await;
     }
 }
 #[expect(
     clippy::too_many_arguments,
-    reason = "wanted-item processing coordinates shared acquisition state across a single loop iteration"
+    reason = "target processing coordinates shared acquisition state across a single cycle"
 )]
-async fn process_single_wanted_item(
+async fn process_single_target(
     app: &AppUseCase,
-    item: &WantedItem,
+    target: &crate::acquisition::targets::AcquisitionTarget,
     now: &DateTime<Utc>,
+    availability: &crate::acquisition::convergence::SchedulerAvailability,
+    indexer_hosts: &std::collections::HashMap<String, String>,
     grabbed_urls: &mut std::collections::HashSet<String>,
     season_pack_attempted: &mut std::collections::HashSet<(String, u32)>,
     season_pack_grabbed: &mut std::collections::HashSet<(String, u32)>,
@@ -487,48 +230,26 @@ async fn process_single_wanted_item(
         .services
         .catalog
         .titles
-        .get_by_id(&item.title_id)
+        .get_by_id(&target.title_id)
         .await?
     {
         Some(t) => t,
         None => {
             warn!(
-                title_id = item.title_id.as_str(),
-                "wanted item references missing title"
+                title_id = target.title_id.as_str(),
+                "acquisition target references missing title"
             );
             return Ok(());
         }
     };
 
-    if item.search_count == 0 {
-        let queue_delay_ms = item
-            .next_search_at
-            .as_deref()
-            .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
-            .map(|value| {
-                now.signed_duration_since(value.with_timezone(&Utc))
-                    .num_milliseconds()
-            })
-            .unwrap_or_default();
-        info!(
-            wanted_item_id = item.id.as_str(),
-            title_id = item.title_id.as_str(),
-            title = title.name.as_str(),
-            media_type = item.media_type.as_str(),
-            search_phase = item.search_phase.as_str(),
-            search_count = item.search_count,
-            queue_delay_ms,
-            "background acquisition: first pass for wanted item"
-        );
-    }
-
-    // Load episode data for episode-type wanted items
-    let episode = if item.media_type == "episode" {
-        if let Some(ep_id) = item.episode_id.as_deref() {
+    // Load episode data for episode-scoped targets
+    let episode = if target.media_type == "episode" {
+        if let Some(ep_id) = target.episode_id.as_deref() {
             match app.services.catalog.shows.get_episode_by_id(ep_id).await {
                 Ok(ep) => ep,
                 Err(err) => {
-                    warn!(episode_id = ep_id, error = %err, "failed to load episode for wanted item");
+                    warn!(episode_id = ep_id, error = %err, "failed to load episode for acquisition target");
                     None
                 }
             }
@@ -538,6 +259,42 @@ async fn process_single_wanted_item(
     } else {
         None
     };
+    let effective_collection_id = target
+        .collection_id
+        .clone()
+        .or_else(|| episode.as_ref().and_then(|ep| ep.collection_id.clone()));
+
+    // The scope's acquisition-state row, or an unpersisted view when nothing
+    // has happened to the scope yet — persisted the moment it is actually
+    // searched, so decisions and grabs have their anchor.
+    let mut item = match app
+        .find_wanted_state_for_scope(
+            &target.title_id,
+            target.episode_id.as_deref(),
+            target.collection_id.as_deref(),
+            target.series_movie_link_id.as_deref(),
+        )
+        .await
+    {
+        Ok(Some(row)) => row,
+        Ok(None) => app.new_wanted_state_view(
+            &title,
+            &target.media_type,
+            target.episode_id.clone(),
+            effective_collection_id.clone(),
+            target.series_movie_link_id.clone(),
+            target.season_number.clone(),
+        ),
+        Err(err) => {
+            warn!(
+                scope_key = target.scope_key.as_str(),
+                error = %err,
+                "failed to load acquisition state for target"
+            );
+            return Ok(());
+        }
+    };
+    let item = &mut item;
 
     // Item-aware gate: skip only when an active/recent submission blocks this
     // wanted item, not every sibling episode on the same title.
@@ -586,6 +343,76 @@ async fn process_single_wanted_item(
         .await;
     let search_season = subject.season;
 
+    // Convergence gate (RFC 119 §D2/§D3): a converged scope rides RSS; an
+    // unconverged one is searched against exactly its uncovered indexer subset.
+    // Resolved once here and reused for the restricted search below.
+    let Some(convergence) = app
+        .resolve_scope_convergence(&search_title, &subject)
+        .await
+    else {
+        debug!(
+            title_id = title.id.as_str(),
+            scope_key = target.scope_key.as_str(),
+            "background acquisition: scope has no routed indexers, skipping"
+        );
+        return Ok(());
+    };
+    let uncovered = match app
+        .uncovered_indexers_for_scope(
+            &convergence.scope_key,
+            &convergence.facet,
+            &convergence.fingerprint,
+            &convergence.routed_indexer_ids,
+        )
+        .await
+    {
+        Ok(uncovered) => uncovered,
+        Err(err) => {
+            warn!(
+                scope_key = convergence.scope_key.as_str(),
+                error = %err,
+                "failed to read scope coverage; searching all routed indexers"
+            );
+            convergence.routed_indexer_ids.clone()
+        }
+    };
+    if uncovered.is_empty() {
+        debug!(
+            title_id = title.id.as_str(),
+            title_name = title.name.as_str(),
+            media_type = target.media_type.as_str(),
+            "background acquisition: scope converged across routed indexers, riding RSS"
+        );
+        return Ok(());
+    }
+    // Scheduler pre-skip: every uncovered indexer is cooling down or quota
+    // exhausted — spend nothing; the scope stays a target and the cursor
+    // returns to it once the scheduler frees capacity.
+    if !uncovered.iter().any(|indexer_id| {
+        availability.indexer_available(
+            indexer_hosts.get(indexer_id).map(String::as_str),
+            indexer_id,
+        )
+    }) {
+        debug!(
+            title_id = title.id.as_str(),
+            scope_key = target.scope_key.as_str(),
+            uncovered_count = uncovered.len(),
+            "background acquisition: uncovered indexers unavailable this cycle, deferring scope"
+        );
+        return Ok(());
+    }
+    let uncovered: std::collections::HashSet<String> = uncovered.into_iter().collect();
+
+    // The scope is about to be searched — its state row exists from here on,
+    // so release decisions and grabs have their anchor.
+    item.id = app
+        .services
+        .workflow
+        .wanted_items
+        .ensure_wanted_state_row(item)
+        .await?;
+
     // Derive the download client category separately — search_category ("series")
     // is for Newznab query type, download_category ("series") is for NZBGet routing.
     //
@@ -594,7 +421,7 @@ async fn process_single_wanted_item(
     // a first-class release type on Usenet and are more efficient than individual
     // episodes. Individual episode searches only run if no season pack was found
     // this cycle for this (title, season).
-    if item.media_type == "episode"
+    if target.media_type == "episode"
         && let Some(season_num) = search_season
     {
         let season_key = (title.id.clone(), season_num);
@@ -625,7 +452,7 @@ async fn process_single_wanted_item(
                 );
             } else {
                 // Load season episodes for runtime scoring and upgrade checking.
-                let season_episodes = if let Some(ref coll_id) = item.collection_id {
+                let season_episodes = if let Some(ref coll_id) = effective_collection_id {
                     app.services
                         .catalog
                         .shows
@@ -656,25 +483,57 @@ async fn process_single_wanted_item(
                     )
                     .await?;
 
-                let pack_results = match app
-                    .search_and_evaluate_subject(
-                        &search_title,
-                        &pack_subject,
-                        "background_acquisition_season_pack",
-                        SearchMode::Auto,
-                        tokio_util::sync::CancellationToken::new(),
-                    )
+                // The pack is its own convergence unit (RFC 119 §D2 #1): a
+                // converged pack scope rides RSS, an unconverged one is searched
+                // against its uncovered subset.
+                let pack_uncovered = match app
+                    .resolve_scope_convergence(&search_title, &pack_subject)
                     .await
                 {
-                    Ok(results) => results,
-                    Err(err) => {
-                        warn!(
-                            title_id = title.id.as_str(),
-                            season = season_num,
-                            error = %err,
-                            "season pack search failed"
-                        );
-                        Vec::new()
+                    Some(pack_convergence) => app
+                        .uncovered_indexers_for_scope(
+                            &pack_convergence.scope_key,
+                            &pack_convergence.facet,
+                            &pack_convergence.fingerprint,
+                            &pack_convergence.routed_indexer_ids,
+                        )
+                        .await
+                        .ok(),
+                    None => None,
+                };
+                let pack_results = if pack_uncovered
+                    .as_ref()
+                    .is_some_and(|uncovered| uncovered.is_empty())
+                {
+                    debug!(
+                        title_id = title.id.as_str(),
+                        season = season_num,
+                        "season pack scope converged, riding RSS"
+                    );
+                    Vec::new()
+                } else {
+                    match app
+                        .search_and_evaluate_subject_restricted(
+                            &search_title,
+                            &pack_subject,
+                            "background_acquisition_season_pack",
+                            SearchMode::Auto,
+                            tokio_util::sync::CancellationToken::new(),
+                            pack_uncovered
+                                .map(|uncovered| uncovered.into_iter().collect()),
+                        )
+                        .await
+                    {
+                        Ok(results) => results,
+                        Err(err) => {
+                            warn!(
+                                title_id = title.id.as_str(),
+                                season = season_num,
+                                error = %err,
+                                "season pack search failed"
+                            );
+                            Vec::new()
+                        }
                     }
                 };
 
@@ -893,7 +752,6 @@ async fn process_single_wanted_item(
                                         .commit_successful_grab(&SuccessfulGrabCommit {
                                             wanted_item_id: item.id.clone(),
                                             covered_wanted_item_ids,
-                                            search_count: item.search_count + 1,
                                             current_score: item.current_score,
                                             grabbed_release: grabbed_json,
                                             last_search_at: Some(now.to_rfc3339()),
@@ -1031,25 +889,6 @@ async fn process_single_wanted_item(
         return Ok(());
     }
 
-    // RFC 119: once a scope has been actively searched against every routed
-    // indexer under the current search-criteria fingerprint, it has converged —
-    // ride RSS instead of re-searching it. Returning here lets the centralized
-    // reschedule below advance its cadence like any other no-grab cycle, so a
-    // profile change (new fingerprint) re-opens it. Gated off by default;
-    // interactive/manual searches never reach this background path.
-    if app
-        .scope_converged_for_rss_first(&search_title, &subject)
-        .await
-    {
-        info!(
-            title_id = title.id.as_str(),
-            title_name = title.name.as_str(),
-            media_type = item.media_type.as_str(),
-            "background acquisition: scope converged across routed indexers, riding RSS (skipping active search)"
-        );
-        return Ok(());
-    }
-
     debug!(
         title_id = title.id.as_str(),
         title_name = title.name.as_str(),
@@ -1060,14 +899,16 @@ async fn process_single_wanted_item(
         "background acquisition: searching indexers"
     );
 
-    // Search and score releases
+    // Search and score releases against the uncovered indexer subset only —
+    // covered indexers hold no new information for this scope (§D2).
     let results = match app
-        .search_and_evaluate_subject(
+        .search_and_evaluate_subject_restricted(
             &search_title,
             &subject,
             "background_acquisition",
             SearchMode::Auto,
             tokio_util::sync::CancellationToken::new(),
+            Some(uncovered),
         )
         .await
     {
@@ -1081,6 +922,15 @@ async fn process_single_wanted_item(
             return Ok(());
         }
     };
+
+    // Cooldown state, not cadence: the upgrade policy and failed-grab handling
+    // read when this scope last actually searched.
+    let _ = app
+        .services
+        .workflow
+        .wanted_items
+        .record_wanted_search_attempt(&item.id, &now.to_rfc3339())
+        .await;
 
     app.emit_acquisition_search_completed_event(None, &title, results.len() as i64)
         .await;
@@ -1337,7 +1187,6 @@ async fn process_single_wanted_item(
                 .published_at
                 .as_deref()
                 .or(episode.as_ref().and_then(|item| item.air_date.as_deref()))
-                .or(item.baseline_date.as_deref())
                 .or(title.first_aired.as_deref())
                 .or(title.digital_release_date.as_deref()),
         );
@@ -1480,7 +1329,6 @@ async fn process_single_wanted_item(
                     .commit_successful_grab(&SuccessfulGrabCommit {
                         wanted_item_id: item.id.clone(),
                         covered_wanted_item_ids,
-                        search_count: item.search_count + 1,
                         current_score: item.current_score,
                         grabbed_release: grabbed_json,
                         last_search_at: Some(now.to_rfc3339()),
@@ -1538,22 +1386,18 @@ async fn process_single_wanted_item(
                         release = candidate.title.as_str(),
                         attempt = grab_attempts,
                         error = %err,
-                        "download submission result is ambiguous; deferring acquisition retry without blocklisting or failover"
+                        "download submission result is ambiguous; re-opening scope without blocklisting or failover"
                     );
 
-                    let retry_at = (Utc::now() + chrono::Duration::seconds(60)).to_rfc3339();
+                    // The search fired (coverage was recorded), but the grab
+                    // outcome is unknown. Prune the scope's coverage so the
+                    // cursor retries it; if the download did register, the
+                    // submission gate blocks a duplicate next cycle.
                     let _ = app
                         .services
-                        .workflow
-                        .wanted_items
-                        .schedule_wanted_item_search(&WantedSearchTransition {
-                            id: item.id.clone(),
-                            next_search_at: Some(retry_at),
-                            last_search_at: Some(now.to_rfc3339()),
-                            search_count: item.search_count + 1,
-                            current_score: item.current_score,
-                            grabbed_release: item.grabbed_release.clone(),
-                        })
+                        .integrations
+                        .scope_indexer_coverage
+                        .prune_scope(&convergence.scope_key)
                         .await;
 
                     return Ok(());
@@ -1682,125 +1526,10 @@ async fn process_single_wanted_item(
         );
     }
 
-    // Re-queue for next cycle
-    let _ = app
-        .services
-        .workflow
-        .wanted_items
-        .schedule_wanted_item_search(&WantedSearchTransition {
-            id: item.id.clone(),
-            next_search_at: Some(now.to_rfc3339()),
-            last_search_at: Some(now.to_rfc3339()),
-            search_count: item.search_count + 1,
-            current_score: item.current_score,
-            grabbed_release: item.grabbed_release.clone(),
-        })
-        .await;
-
+    // No grab this cycle: the scope's coverage now reflects every indexer that
+    // answered, so the cursor will not re-search them — new postings arrive via
+    // RSS, and any still-uncovered indexers are retried on a later rotation.
     Ok(())
-}
-
-const FRUITLESS_WANTED_RESET_COOLDOWN_HOURS: i64 = 24;
-const INTERNAL_SETTINGS_SOURCE: &str = "system";
-
-fn fruitless_wanted_reset_cooldown_active(now: DateTime<Utc>, last_run_at: DateTime<Utc>) -> bool {
-    last_run_at + Duration::hours(FRUITLESS_WANTED_RESET_COOLDOWN_HOURS) > now
-}
-
-async fn fruitless_wanted_reset_last_run_at(app: &AppUseCase) -> AppResult<Option<DateTime<Utc>>> {
-    let Some(value_json) = app
-        .services
-        .config
-        .settings
-        .get_setting_json_explicit(
-            SETTINGS_SCOPE_SYSTEM,
-            FRUITLESS_WANTED_RESET_LAST_RUN_KEY,
-            None,
-        )
-        .await?
-    else {
-        return Ok(None);
-    };
-
-    let Ok(raw_value) = serde_json::from_str::<String>(&value_json) else {
-        warn!(
-            key = FRUITLESS_WANTED_RESET_LAST_RUN_KEY,
-            value = %value_json,
-            "fruitless wanted reset cooldown setting is not a string"
-        );
-        return Ok(None);
-    };
-
-    match DateTime::parse_from_rfc3339(raw_value.trim()) {
-        Ok(value) => Ok(Some(value.with_timezone(&Utc))),
-        Err(error) => {
-            warn!(
-                key = FRUITLESS_WANTED_RESET_LAST_RUN_KEY,
-                value = %raw_value,
-                error = %error,
-                "fruitless wanted reset cooldown setting is invalid"
-            );
-            Ok(None)
-        }
-    }
-}
-
-async fn record_fruitless_wanted_reset_run(app: &AppUseCase, now_str: &str) -> AppResult<()> {
-    let value_json =
-        serde_json::to_string(now_str).map_err(|error| AppError::Repository(error.to_string()))?;
-    app.services
-        .config
-        .settings
-        .upsert_setting_json(
-            SETTINGS_SCOPE_SYSTEM,
-            FRUITLESS_WANTED_RESET_LAST_RUN_KEY,
-            None,
-            value_json,
-            INTERNAL_SETTINGS_SOURCE,
-            None,
-        )
-        .await
-}
-
-async fn reset_fruitless_wanted_items_after_cooldown(app: &AppUseCase) {
-    let now = Utc::now();
-    match fruitless_wanted_reset_last_run_at(app).await {
-        Ok(Some(last_run_at)) => {
-            if fruitless_wanted_reset_cooldown_active(now, last_run_at) {
-                info!(
-                    last_run_at = %last_run_at.to_rfc3339(),
-                    cooldown_hours = FRUITLESS_WANTED_RESET_COOLDOWN_HOURS,
-                    "skipping fruitless wanted reset during cooldown"
-                );
-                return;
-            }
-        }
-        Ok(None) => {}
-        Err(error) => {
-            warn!(error = %error, "failed to read fruitless wanted reset cooldown");
-        }
-    }
-
-    let now_str = now.to_rfc3339();
-    match app
-        .services
-        .workflow
-        .wanted_items
-        .reset_fruitless_wanted_items(&now_str)
-        .await
-    {
-        Ok(count) => {
-            if let Err(error) = record_fruitless_wanted_reset_run(app, &now_str).await {
-                warn!(error = %error, "failed to record fruitless wanted reset cooldown");
-            }
-            if count > 0 {
-                info!(count, "reset fruitless wanted items to search immediately");
-            }
-        }
-        Err(err) => {
-            warn!(error = %err, "failed to reset fruitless wanted items");
-        }
-    }
 }
 
 pub async fn start_background_acquisition_poller(
@@ -1828,8 +1557,10 @@ pub async fn start_background_acquisition_poller(
                 cross_tier_min_delta: 30,
                 forced_upgrade_delta_bypass: 400,
                 poll_interval_seconds: 60,
-                sync_interval_seconds: 3600,
-                batch_size: 50,
+                long_tail_backfill_max_scopes_per_cycle:
+                    crate::acquisition::convergence::DEFAULT_LONG_TAIL_BACKFILL_MAX_SCOPES_PER_CYCLE
+                        as i32,
+                long_tail_reconverge_days: 0,
             }
         }
     };
@@ -1840,19 +1571,6 @@ pub async fn start_background_acquisition_poller(
     }
 
     info!("background acquisition poller started");
-
-    // Initial wanted state sync
-    if let Err(err) = app
-        .run_scheduled_job_now(JobKey::WantedSync, JobTriggerSource::SystemInternal)
-        .await
-    {
-        warn!(error = %err, "initial wanted state sync failed");
-    }
-
-    // Reset items that were searched but never found anything. This recovers
-    // from scenarios where a bug (e.g. broken capability filter) caused searches
-    // to return 0 results and items got rescheduled far into the future.
-    reset_fruitless_wanted_items_after_cooldown(&app).await;
 
     // Run initial health checks after a short delay to let services initialize
     {
@@ -1893,11 +1611,6 @@ pub async fn start_background_acquisition_poller(
     }
 
     app.set_job_next_run_at(
-        JobKey::WantedSync,
-        Utc::now() + chrono::Duration::seconds(settings.sync_interval_seconds.max(1) as i64),
-    )
-    .await;
-    app.set_job_next_run_at(
         JobKey::PluginRegistryRefresh,
         Utc::now() + chrono::Duration::hours(24),
     )
@@ -1933,9 +1646,6 @@ pub async fn start_background_acquisition_poller(
     let mut poll_interval = new_skip_interval(std::time::Duration::from_secs(
         settings.poll_interval_seconds.max(1) as u64,
     ));
-    let mut sync_interval = tokio::time::interval(std::time::Duration::from_secs(
-        settings.sync_interval_seconds.max(1) as u64,
-    ));
     let mut registry_refresh_interval = tokio::time::interval(std::time::Duration::from_hours(24));
     let mut health_check_interval = tokio::time::interval(std::time::Duration::from_hours(6));
     let mut staged_nzb_prune_interval = tokio::time::interval(std::time::Duration::from_hours(1));
@@ -1948,7 +1658,6 @@ pub async fn start_background_acquisition_poller(
 
     // Consume immediate intervals.
     poll_interval.tick().await;
-    sync_interval.tick().await;
     registry_refresh_interval.tick().await;
     health_check_interval.tick().await;
     staged_nzb_prune_interval.tick().await;
@@ -1999,32 +1708,14 @@ pub async fn start_background_acquisition_poller(
             }
             _ = wake.notified() => {
                 let app = app.clone();
-                run_task("wanted_items", async move {
-                    process_due_wanted_items(&app).await;
+                run_task("convergence_cycle", async move {
+                    run_convergence_cycle(&app).await;
                 }).await;
             }
             _ = poll_interval.tick() => {
                 let app = app.clone();
-                run_task("wanted_items", async move {
-                    process_due_wanted_items(&app).await;
-                }).await;
-            }
-            _ = sync_interval.tick() => {
-                let app = app.clone();
-                run_task("sync_state", async move {
-                    let sync_interval_seconds = app
-                        .acquisition_settings()
-                        .await
-                        .map(|settings| settings.sync_interval_seconds.max(1) as i64)
-                        .unwrap_or(60);
-                    app.set_job_next_run_at(
-                        JobKey::WantedSync,
-                        Utc::now() + chrono::Duration::seconds(sync_interval_seconds),
-                    ).await;
-                    if let Err(err) = app.run_scheduled_job_now(JobKey::WantedSync, JobTriggerSource::ScheduledInterval).await {
-                        warn!(error = %err, "periodic wanted state sync failed");
-                        metrics::counter!("scryer_task_errors_total", "task" => "sync_state").increment(1);
-                    }
+                run_task("convergence_cycle", async move {
+                    run_convergence_cycle(&app).await;
                 }).await;
             }
             _ = registry_refresh_interval.tick() => {

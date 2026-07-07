@@ -1937,8 +1937,10 @@ pub trait ScopeIndexerCoverageRepository: Send + Sync {
         stale_before: Option<chrono::DateTime<chrono::Utc>>,
     ) -> AppResult<Vec<String>>;
 
-    /// Drop all coverage rows for a scope (e.g. it is no longer a target).
-    async fn prune_scope(&self, scope_key: &str, facet: &str) -> AppResult<()>;
+    /// Drop all coverage rows for a scope — the convergence re-open after a
+    /// failed grab, rejected import, or operator replacement. Scope keys are
+    /// globally unique across facets.
+    async fn prune_scope(&self, scope_key: &str) -> AppResult<()>;
 
     /// Best-effort background GC (RFC 119): drop coverage rows whose id-based scope
     /// (`episode:`/`series_movie:`/`collection:`/`title:`) or whose `indexer_id` no
@@ -2794,6 +2796,14 @@ pub trait MediaFileRepository: Send + Sync {
         title_ids: &[String],
     ) -> AppResult<Vec<CutoffUnmetQualitySummary>>;
 
+    /// One sweep over library state returning every monitored, fileless scope —
+    /// the raw candidates the derived missing-target set is computed from
+    /// (RFC 119 §D1). Facet shape, availability windows, and filler opt-ins are
+    /// application-layer policy applied on top of these rows.
+    async fn list_missing_scope_candidates(&self) -> AppResult<MissingScopeCandidates> {
+        Ok(MissingScopeCandidates::default())
+    }
+
     async fn list_title_episode_progress_summaries(
         &self,
         title_ids: &[String],
@@ -2851,61 +2861,30 @@ pub trait MediaFileRepository: Send + Sync {
 pub trait WantedItemRepository: Send + Sync {
     async fn upsert_wanted_item(&self, item: &WantedItem) -> AppResult<String>;
 
-    async fn ensure_wanted_item_seeded(&self, item: &WantedItem) -> AppResult<String> {
-        let existing = find_existing_wanted_item_seed(self, item).await?;
-        let mut seeded = item.clone();
-
-        if let Some(existing) = existing.as_ref() {
-            seeded.id = existing.id.clone();
-            if existing.search_count > 0 {
-                seeded.next_search_at = existing.next_search_at.clone();
-            }
-            if item.status == WantedStatus::Wanted && existing.status != WantedStatus::Wanted {
-                seeded.status = existing.status;
-            }
+    /// Get-or-create the acquisition-state row for `item`'s scope. An existing
+    /// row is returned untouched — state rows are written only by the events
+    /// that change them (grabs, pauses, searches), never re-seeded.
+    async fn ensure_wanted_state_row(&self, item: &WantedItem) -> AppResult<String> {
+        if let Some(existing) = find_existing_wanted_state_row(self, item).await? {
+            return Ok(existing.id);
         }
-
-        self.upsert_wanted_item(&seeded).await?;
-        Ok(existing.map_or(item.id.clone(), |item| item.id))
+        self.upsert_wanted_item(item).await?;
+        Ok(item.id.clone())
     }
 
-    async fn list_due_wanted_items(
-        &self,
-        now: &str,
-        batch_limit: i64,
-        excluded_facets: &[MediaFacet],
-    ) -> AppResult<Vec<WantedItem>>;
-
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the repository update maps directly onto persisted wanted-item state fields"
-    )]
     async fn update_wanted_item_status(
         &self,
         id: &str,
         status: &str,
-        next_search_at: Option<&str>,
         last_search_at: Option<&str>,
-        search_count: i64,
         current_score: Option<i32>,
         grabbed_release: Option<&str>,
     ) -> AppResult<()>;
 
-    async fn schedule_wanted_item_search(
-        &self,
-        transition: &WantedSearchTransition,
-    ) -> AppResult<()> {
-        self.update_wanted_item_status(
-            &transition.id,
-            WantedStatus::Wanted.as_str(),
-            transition.next_search_at.as_deref(),
-            transition.last_search_at.as_deref(),
-            transition.search_count,
-            transition.current_score,
-            transition.grabbed_release.as_deref(),
-        )
-        .await
-    }
+    /// Stamp the scope's last active-search time — cooldown state read by the
+    /// upgrade policy and failed-grab staleness checks.
+    async fn record_wanted_search_attempt(&self, id: &str, last_search_at: &str)
+    -> AppResult<()>;
 
     async fn transition_wanted_to_grabbed(
         &self,
@@ -2914,9 +2893,7 @@ pub trait WantedItemRepository: Send + Sync {
         self.update_wanted_item_status(
             &transition.id,
             WantedStatus::Grabbed.as_str(),
-            None,
             transition.last_search_at.as_deref(),
-            transition.search_count,
             transition.current_score,
             Some(&transition.grabbed_release),
         )
@@ -2930,9 +2907,7 @@ pub trait WantedItemRepository: Send + Sync {
         self.update_wanted_item_status(
             &transition.id,
             WantedStatus::Completed.as_str(),
-            None,
             transition.last_search_at.as_deref(),
-            transition.search_count,
             transition.current_score,
             transition.grabbed_release.as_deref(),
         )
@@ -2953,7 +2928,6 @@ pub trait WantedItemRepository: Send + Sync {
         self.transition_wanted_to_completed(&WantedCompleteTransition {
             id: wanted.id,
             last_search_at: last_search_at.map(str::to_string),
-            search_count: wanted.search_count,
             current_score: current_score.or(wanted.current_score),
             grabbed_release: if current_score.is_some() {
                 None
@@ -2973,11 +2947,28 @@ pub trait WantedItemRepository: Send + Sync {
         self.update_wanted_item_status(
             &transition.id,
             WantedStatus::Paused.as_str(),
-            None,
             transition.last_search_at.as_deref(),
-            transition.search_count,
             transition.current_score,
             transition.grabbed_release.as_deref(),
+        )
+        .await
+    }
+
+    /// Re-open a scope for acquisition after a failed grab, a rejected import,
+    /// or an operator replacement: status back to `wanted`, the in-flight grab
+    /// cleared, the upgrade-baseline score and search cooldown preserved. The
+    /// convergence re-open (coverage prune) is the caller's second half — this
+    /// only resets the state row.
+    async fn transition_wanted_to_reopened(&self, id: &str) -> AppResult<()> {
+        let Some(existing) = self.get_wanted_item_by_id(id).await? else {
+            return Ok(());
+        };
+        self.update_wanted_item_status(
+            id,
+            WantedStatus::Wanted.as_str(),
+            existing.last_search_at.as_deref(),
+            existing.current_score,
+            None,
         )
         .await
     }
@@ -2998,8 +2989,6 @@ pub trait WantedItemRepository: Send + Sync {
     ) -> AppResult<()>;
 
     async fn delete_wanted_items_for_episode(&self, episode_id: &str) -> AppResult<()>;
-
-    async fn reset_fruitless_wanted_items(&self, now: &str) -> AppResult<u64>;
 
     async fn insert_release_decision(&self, decision: &ReleaseDecision) -> AppResult<String>;
 
@@ -3022,7 +3011,9 @@ pub trait WantedItemRepository: Send + Sync {
     ) -> AppResult<Vec<ReleaseDecision>>;
 }
 
-async fn find_existing_wanted_item_seed<R: WantedItemRepository + ?Sized>(
+/// Locate the acquisition-state row matching `item`'s scope (episode /
+/// series-movie link / collection / bare title), if one exists.
+pub(crate) async fn find_existing_wanted_state_row<R: WantedItemRepository + ?Sized>(
     repo: &R,
     item: &WantedItem,
 ) -> AppResult<Option<WantedItem>> {

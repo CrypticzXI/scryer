@@ -99,8 +99,9 @@ fn from_acquisition_settings(
         cross_tier_min_delta: settings.cross_tier_min_delta,
         forced_upgrade_delta_bypass: settings.forced_upgrade_delta_bypass,
         poll_interval_seconds: settings.poll_interval_seconds,
-        sync_interval_seconds: settings.sync_interval_seconds,
-        batch_size: settings.batch_size,
+        long_tail_backfill_max_scopes_per_cycle: settings
+            .long_tail_backfill_max_scopes_per_cycle,
+        long_tail_reconverge_days: settings.long_tail_reconverge_days,
     }
 }
 
@@ -687,8 +688,9 @@ impl SettingsMutations {
                     cross_tier_min_delta: input.cross_tier_min_delta,
                     forced_upgrade_delta_bypass: input.forced_upgrade_delta_bypass,
                     poll_interval_seconds: input.poll_interval_seconds,
-                    sync_interval_seconds: input.sync_interval_seconds,
-                    batch_size: input.batch_size,
+                    long_tail_backfill_max_scopes_per_cycle: input
+                        .long_tail_backfill_max_scopes_per_cycle,
+                    long_tail_reconverge_days: input.long_tail_reconverge_days,
                 },
             )
             .await

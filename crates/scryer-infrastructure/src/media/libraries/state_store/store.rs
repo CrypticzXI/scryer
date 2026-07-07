@@ -58,44 +58,6 @@ pub struct WantedStore {
     datastore: StoreDatastore,
 }
 
-fn wanted_due_numeric_text_order_sql(datastore: &StoreDatastore, column: &str) -> String {
-    let value = format!("trim(coalesce({column}, ''))");
-    let is_numeric = match datastore {
-        StoreDatastore::Sqlite { .. } => {
-            format!("{value} GLOB '[0-9]*' AND {value} NOT GLOB '*[^0-9]*'")
-        }
-        StoreDatastore::Postgres { .. } => format!("{value} ~ '^[0-9]+$'"),
-    };
-    let numeric_value = match datastore {
-        StoreDatastore::Sqlite { .. } => format!("CAST({value} AS INTEGER)"),
-        StoreDatastore::Postgres { .. } => format!("CAST({value} AS NUMERIC)"),
-    };
-
-    format!(
-        "CASE WHEN {is_numeric} THEN 0 ELSE 1 END ASC,
-         CASE WHEN {is_numeric} THEN {numeric_value} ELSE NULL END ASC,
-         CASE WHEN {value} = '' THEN 1 ELSE 0 END ASC,
-         lower({value}) ASC"
-    )
-}
-
-fn wanted_due_order_sql(datastore: &StoreDatastore) -> String {
-    format!(
-        " ORDER BY
-             w.next_search_at ASC,
-             lower(coalesce(t.sort_title, t.name, w.title_id)) ASC,
-             w.title_id ASC,
-             CASE WHEN w.media_type = 'episode' THEN 0 ELSE 1 END ASC,
-             {},
-             {},
-             w.created_at ASC,
-             w.id ASC
-          LIMIT {{}}",
-        wanted_due_numeric_text_order_sql(datastore, "e.season_number"),
-        wanted_due_numeric_text_order_sql(datastore, "e.episode_number")
-    )
-}
-
 #[derive(Clone)]
 pub struct PendingReleaseStore {
     datastore: StoreDatastore,
@@ -345,11 +307,7 @@ fn wanted_seed_row_to_item(row: &SqlRow) -> AppResult<WantedItem> {
         season_number: None,
         episode_number: None,
         media_type: row.text("media_type")?,
-        search_phase: row.text("search_phase")?,
-        next_search_at: opt_timestamp_text(row, "next_search_at")?,
         last_search_at: opt_timestamp_text(row, "last_search_at")?,
-        search_count: row.i64("search_count")?,
-        baseline_date: opt_timestamp_text(row, "baseline_date")?,
         status: WantedStatus::parse(&status).unwrap_or_default(),
         grabbed_release: row.opt_text("grabbed_release")?,
         current_score: row.opt_i32("current_score")?,
@@ -428,11 +386,7 @@ fn wanted_row_to_item(row: &SqlRow) -> AppResult<WantedItem> {
         season_number: row.opt_text("season_number")?,
         episode_number: row.opt_text("episode_number")?,
         media_type: row.text("media_type")?,
-        search_phase: row.text("search_phase")?,
-        next_search_at: opt_timestamp_text(row, "next_search_at")?,
         last_search_at: opt_timestamp_text(row, "last_search_at")?,
-        search_count: row.i64("search_count")?,
-        baseline_date: opt_timestamp_text(row, "baseline_date")?,
         status: WantedStatus::parse(&status).unwrap_or_default(),
         grabbed_release: row.opt_text("grabbed_release")?,
         current_score: row.opt_i32("current_score")?,
@@ -448,8 +402,8 @@ fn wanted_item_select_sql() -> &'static str {
             t.facet AS title_facet, t.library_id AS library_id,
             libraries.name AS library_name, libraries.slug AS library_slug,
             w.episode_id, w.collection_id, w.series_movie_link_id,
-            e.season_number, e.episode_number, w.media_type, w.search_phase, w.next_search_at,
-            w.last_search_at, w.search_count, w.baseline_date, w.status, w.grabbed_release,
+            e.season_number, e.episode_number, w.media_type,
+            w.last_search_at, w.status, w.grabbed_release,
             w.current_score,
             latest_decision.id AS latest_decision_id,
             latest_decision.wanted_item_id AS latest_decision_wanted_item_id,
@@ -577,21 +531,11 @@ fn wanted_upsert_sql(datastore: &StoreDatastore, item: &WantedItem) -> String {
 
     format!(
         "INSERT INTO wanted_items
-         (id, title_id, episode_id, collection_id, series_movie_link_id, media_type, search_phase, next_search_at,
-          last_search_at, search_count, baseline_date, status, grabbed_release, current_score,
+         (id, title_id, episode_id, collection_id, series_movie_link_id, media_type,
+          last_search_at, status, grabbed_release, current_score,
           created_at, updated_at)
-         VALUES ({{}}, {{}}, {{}}, {{}}, {{}}, {{}}, {{}}, {{}}, {{}}, {{}}, {{}}, {{}}, {{}}, {{}}, {{}}, {{}})
+         VALUES ({{}}, {{}}, {{}}, {{}}, {{}}, {{}}, {{}}, {{}}, {{}}, {{}}, {{}}, {{}})
          ON CONFLICT{conflict_target} DO UPDATE SET
-            search_phase = excluded.search_phase,
-            next_search_at = CASE
-                WHEN excluded.next_search_at IS NULL THEN NULL
-                WHEN wanted_items.search_count > 0 AND wanted_items.next_search_at IS NOT NULL
-                THEN wanted_items.next_search_at
-                WHEN wanted_items.status IN ('paused', 'completed')
-                THEN wanted_items.next_search_at
-                ELSE excluded.next_search_at
-            END,
-            baseline_date = excluded.baseline_date,
             status = CASE
                 WHEN wanted_items.status IN ('completed', 'paused') AND excluded.status = 'wanted'
                 THEN wanted_items.status
@@ -610,11 +554,7 @@ fn wanted_upsert_args(datastore: &StoreDatastore, item: &WantedItem) -> AppResul
         SqlArg::OptText(item.collection_id.clone()),
         SqlArg::OptText(item.series_movie_link_id.clone()),
         SqlArg::Text(item.media_type.clone()),
-        SqlArg::Text(item.search_phase.clone()),
-        opt_timestamp_arg_for_datastore(datastore, item.next_search_at.as_deref())?,
         opt_timestamp_arg_for_datastore(datastore, item.last_search_at.as_deref())?,
-        SqlArg::I64(item.search_count),
-        opt_timestamp_arg_for_datastore(datastore, item.baseline_date.as_deref())?,
         SqlArg::Text(item.status.as_str().to_string()),
         SqlArg::OptText(item.grabbed_release.clone()),
         SqlArg::OptI32(item.current_score),
@@ -653,8 +593,8 @@ async fn fetch_seed_target_tx(
     tx: &mut crate::queries::sql_runtime::SqlTx<'_>,
     item: &WantedItem,
 ) -> AppResult<Option<WantedItem>> {
-    let columns = "SELECT id, title_id, episode_id, collection_id, series_movie_link_id, media_type, search_phase,
-                          next_search_at, last_search_at, search_count, baseline_date, status,
+    let columns = "SELECT id, title_id, episode_id, collection_id, series_movie_link_id, media_type,
+                          last_search_at, status,
                           grabbed_release, current_score, created_at, updated_at
                      FROM wanted_items";
     let (sql, args) = if let Some(collection_id) = item.collection_id.as_deref() {
@@ -697,20 +637,6 @@ async fn fetch_seed_target_tx(
         .transpose()
 }
 
-fn merge_seeded_wanted_item(item: &WantedItem, existing: Option<&WantedItem>) -> WantedItem {
-    let mut seeded = item.clone();
-    if let Some(existing) = existing {
-        seeded.id = existing.id.clone();
-        if existing.search_count > 0 {
-            seeded.next_search_at = existing.next_search_at.clone();
-        }
-        if item.status == WantedStatus::Wanted && existing.status != WantedStatus::Wanted {
-            seeded.status = existing.status;
-        }
-    }
-    seeded
-}
-
 #[async_trait]
 impl WantedItemRepository for WantedStore {
     async fn upsert_wanted_item(&self, item: &WantedItem) -> AppResult<String> {
@@ -724,79 +650,28 @@ impl WantedItemRepository for WantedStore {
         .await
     }
 
-    async fn ensure_wanted_item_seeded(&self, item: &WantedItem) -> AppResult<String> {
+    async fn ensure_wanted_state_row(&self, item: &WantedItem) -> AppResult<String> {
         let item = item.clone();
         let datastore = self.datastore.clone();
-        SqlRuntime::run_in_transaction(&self.datastore, "ensure_wanted_item_seeded", move |tx| {
+        SqlRuntime::run_in_transaction(&self.datastore, "ensure_wanted_state_row", move |tx| {
             let datastore = datastore.clone();
             let item = item.clone();
             Box::pin(async move {
-                let existing = fetch_seed_target_tx(tx, &item).await?;
-                let seeded = merge_seeded_wanted_item(&item, existing.as_ref());
-                execute_wanted_upsert_tx(tx, &datastore, &seeded).await?;
-                Ok(existing.map_or(item.id.clone(), |existing| existing.id))
+                if let Some(existing) = fetch_seed_target_tx(tx, &item).await? {
+                    return Ok(existing.id);
+                }
+                execute_wanted_upsert_tx(tx, &datastore, &item).await?;
+                Ok(item.id.clone())
             })
         })
         .await
-    }
-
-    async fn list_due_wanted_items(
-        &self,
-        now: &str,
-        batch_limit: i64,
-        excluded_facets: &[MediaFacet],
-    ) -> AppResult<Vec<WantedItem>> {
-        let mut sql = String::from(
-            "SELECT w.id, w.title_id,
-                    CAST(NULL AS TEXT) AS title_name,
-                    CAST(NULL AS TEXT) AS title_slug,
-                    t.facet AS title_facet,
-                    t.library_id AS library_id,
-                    CAST(NULL AS TEXT) AS library_name,
-                    CAST(NULL AS TEXT) AS library_slug,
-                    w.episode_id, w.collection_id, w.series_movie_link_id,
-                    e.season_number, e.episode_number, w.media_type, w.search_phase,
-                    w.next_search_at, w.last_search_at, w.search_count, w.baseline_date,
-                    w.status, w.grabbed_release, w.current_score,
-                    CAST(NULL AS TEXT) AS latest_decision_id,
-                    FALSE AS mismatch_recovery_eligible,
-                    w.created_at, w.updated_at
-               FROM wanted_items w
-               JOIN titles t ON t.id = w.title_id
-               LEFT JOIN episodes e ON e.id = w.episode_id
-              WHERE w.status = 'wanted'
-                AND w.next_search_at IS NOT NULL
-                AND w.next_search_at <= {}
-                AND (w.media_type != 'episode' OR w.baseline_date IS NOT NULL)",
-        );
-        let mut args = vec![timestamp_arg_for_datastore(&self.datastore, now)?];
-        if !excluded_facets.is_empty() {
-            sql.push_str(" AND t.facet NOT IN (");
-            sql.push_str(&placeholders(excluded_facets.len()));
-            sql.push(')');
-            args.extend(
-                excluded_facets
-                    .iter()
-                    .map(|facet| SqlArg::Text(facet.as_str().to_string())),
-            );
-        }
-        sql.push_str(&wanted_due_order_sql(&self.datastore));
-        args.push(SqlArg::I64(batch_limit));
-
-        SqlRuntime::fetch_all(self.datastore.read_exec(), &sql, &args)
-            .await?
-            .iter()
-            .map(wanted_row_to_item)
-            .collect()
     }
 
     async fn update_wanted_item_status(
         &self,
         id: &str,
         status: &str,
-        next_search_at: Option<&str>,
         last_search_at: Option<&str>,
-        search_count: i64,
         current_score: Option<i32>,
         grabbed_release: Option<&str>,
     ) -> AppResult<()> {
@@ -806,20 +681,39 @@ impl WantedItemRepository for WantedStore {
             "update_wanted_item_status",
             "UPDATE wanted_items
                 SET status = {},
-                    next_search_at = {},
                     last_search_at = {},
-                    search_count = {},
                     current_score = {},
                     grabbed_release = {},
                     updated_at = {}
               WHERE id = {}",
             vec![
                 SqlArg::Text(status.to_string()),
-                opt_timestamp_arg_for_datastore(&self.datastore, next_search_at)?,
                 opt_timestamp_arg_for_datastore(&self.datastore, last_search_at)?,
-                SqlArg::I64(search_count),
                 SqlArg::OptI32(current_score),
                 SqlArg::OptText(grabbed_release.map(str::to_string)),
+                timestamp_arg_for_datastore(&self.datastore, &now)?,
+                SqlArg::Text(id.to_string()),
+            ],
+        )
+        .await?;
+        Ok(())
+    }
+
+    async fn record_wanted_search_attempt(
+        &self,
+        id: &str,
+        last_search_at: &str,
+    ) -> AppResult<()> {
+        let now = Utc::now().to_rfc3339();
+        execute_datastore_write(
+            &self.datastore,
+            "record_wanted_search_attempt",
+            "UPDATE wanted_items
+                SET last_search_at = {},
+                    updated_at = {}
+              WHERE id = {}",
+            vec![
+                timestamp_arg_for_datastore(&self.datastore, last_search_at)?,
                 timestamp_arg_for_datastore(&self.datastore, &now)?,
                 SqlArg::Text(id.to_string()),
             ],
@@ -872,7 +766,6 @@ impl WantedItemRepository for WantedStore {
             (
                 "UPDATE wanted_items
                     SET status = {},
-                        next_search_at = {},
                         last_search_at = {},
                         current_score = COALESCE({}, current_score),
                         grabbed_release = CASE WHEN {} IS NULL THEN grabbed_release ELSE NULL END,
@@ -881,7 +774,6 @@ impl WantedItemRepository for WantedStore {
                     .to_string(),
                 vec![
                     SqlArg::Text(WantedStatus::Completed.as_str().to_string()),
-                    opt_timestamp_arg_for_datastore(&self.datastore, None)?,
                     opt_timestamp_arg_for_datastore(&self.datastore, last_search_at)?,
                     SqlArg::OptI32(current_score),
                     SqlArg::OptI32(current_score),
@@ -894,7 +786,6 @@ impl WantedItemRepository for WantedStore {
             (
                 "UPDATE wanted_items
                     SET status = {},
-                        next_search_at = {},
                         last_search_at = {},
                         current_score = COALESCE({}, current_score),
                         grabbed_release = CASE WHEN {} IS NULL THEN grabbed_release ELSE NULL END,
@@ -906,7 +797,6 @@ impl WantedItemRepository for WantedStore {
                     .to_string(),
                 vec![
                     SqlArg::Text(WantedStatus::Completed.as_str().to_string()),
-                    opt_timestamp_arg_for_datastore(&self.datastore, None)?,
                     opt_timestamp_arg_for_datastore(&self.datastore, last_search_at)?,
                     SqlArg::OptI32(current_score),
                     SqlArg::OptI32(current_score),
@@ -975,24 +865,6 @@ impl WantedItemRepository for WantedStore {
         )
         .await?;
         Ok(())
-    }
-
-    async fn reset_fruitless_wanted_items(&self, now: &str) -> AppResult<u64> {
-        execute_datastore_write(
-            &self.datastore,
-            "reset_fruitless_wanted_items",
-            "UPDATE wanted_items
-                SET next_search_at = {}, updated_at = {}
-              WHERE status = 'wanted'
-                AND search_count > 0
-                AND current_score IS NULL
-                AND (media_type != 'episode' OR baseline_date IS NOT NULL)",
-            vec![
-                timestamp_arg_for_datastore(&self.datastore, now)?,
-                timestamp_arg_for_datastore(&self.datastore, now)?,
-            ],
-        )
-        .await
     }
 
     async fn insert_release_decision(&self, decision: &ReleaseDecision) -> AppResult<String> {

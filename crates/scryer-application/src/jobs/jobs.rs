@@ -1241,13 +1241,6 @@ impl AppUseCase {
                     }
                 }
             }
-            JobKey::WantedSync => {
-                self.sync_wanted_state().await?;
-                Ok(JobExecutionOutcome::new(
-                    Some("Wanted state synchronized".to_string()),
-                    None,
-                ))
-            }
             JobKey::PendingReleaseProcessing => {
                 let count = self.process_expired_pending_releases().await?;
                 Ok(JobExecutionOutcome::new(

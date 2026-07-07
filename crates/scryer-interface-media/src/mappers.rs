@@ -2427,16 +2427,7 @@ pub fn from_wanted_item(
                 item.media_type
             ))
         })?,
-        search_phase: WantedSearchPhaseValue::parse(&item.search_phase).ok_or_else(|| {
-            scryer_application::AppError::Validation(format!(
-                "invalid wanted item search_phase '{}'",
-                item.search_phase
-            ))
-        })?,
-        next_search_at: parse_optional_datetime(item.next_search_at, "wanted item next_search_at"),
         last_search_at: parse_optional_datetime(item.last_search_at, "wanted item last_search_at"),
-        search_count: item.search_count,
-        baseline_date: parse_date(item.baseline_date),
         status: WantedStatusValue::from_application(item.status),
         grabbed_release: item.grabbed_release,
         current_score: item.current_score,

@@ -1,14 +1,13 @@
 use std::collections::HashSet;
 use std::path::Path;
 
-use chrono::Utc;
 
 use crate::domain_events::{DomainEventActor, new_title_domain_event, title_context_snapshot};
 use crate::media::release_labels::resolve_release_labels_from_analysis;
 use crate::release_parser::AudioCodec;
 use crate::{
-    AppUseCase, NewBlocklistEntry, ReleaseDownloadAttemptOutcome, WantedSearchTransition,
-    normalize_release_attempt_hint, normalize_release_attempt_title,
+    AppUseCase, NewBlocklistEntry, ReleaseDownloadAttemptOutcome, normalize_release_attempt_hint,
+    normalize_release_attempt_title,
 };
 use scryer_domain::{
     DomainEventPayload, ImportRejectedEventData, ImportSkipReason, ImportStatus, MediaFacet, Title,
@@ -1267,14 +1266,13 @@ async fn finalize_import_rejection(
         .await;
 }
 
-// Reschedules a wanted item for an immediate fresh search after a rejected
-// import. For a `language_mismatch` rejection this is intentional: the rejected
-// release is blocklisted by title (a provable absence — it genuinely lacks the
-// required audio), so the immediate retry seeks a *different*, correct candidate
+// Re-opens a scope's convergence after a rejected import. For a
+// `language_mismatch` rejection this is intentional: the rejected release is
+// blocklisted by title (a provable absence — it genuinely lacks the required
+// audio), so the re-opened search seeks a *different*, correct candidate
 // rather than re-grabbing the same one. Trustworthy verdicts (see
 // `classify_required_audio`) keep this from churning on falsely-rejected files.
 async fn reset_wanted_items_for_retry(app: &AppUseCase, title_id: &str, episode_ids: &[String]) {
-    let now_str = Utc::now().to_rfc3339();
     let targets: Vec<Option<&str>> = if episode_ids.is_empty() {
         vec![None]
     } else {
@@ -1295,20 +1293,7 @@ async fn reset_wanted_items_for_retry(app: &AppUseCase, title_id: &str, episode_
             .await
         {
             Ok(Some(item)) => {
-                let next_search_at = now_str.clone();
-                let _ = app
-                    .services
-                    .workflow
-                    .wanted_items
-                    .schedule_wanted_item_search(&WantedSearchTransition {
-                        id: item.id.clone(),
-                        next_search_at: Some(next_search_at),
-                        last_search_at: None,
-                        search_count: item.search_count,
-                        current_score: item.current_score,
-                        grabbed_release: None,
-                    })
-                    .await;
+                app.reopen_wanted_scope_for_acquisition(&item).await;
             }
             Ok(None) => {}
             Err(error) => {

@@ -150,7 +150,7 @@ impl AppUseCase {
     }
 }
 impl AppUseCase {
-    async fn apply_movie_monitor_snapshot_chunks(&self, now: &DateTime<Utc>) -> AppResult<()> {
+    async fn apply_movie_monitor_snapshot_chunks(&self, _now: &DateTime<Utc>) -> AppResult<()> {
         let titles = self
             .services
             .catalog
@@ -227,7 +227,9 @@ impl AppUseCase {
             };
 
             if title.monitored {
-                self.sync_wanted_movie_inner(&title, now, true).await;
+                // The derived target set already reflects the new monitored
+                // state; the woken cycle picks the title up immediately.
+                self.runtime.acquisition.acquisition_wake.notify_one();
             } else {
                 self.services
                     .workflow
@@ -383,7 +385,7 @@ impl AppUseCase {
     async fn apply_series_monitor_snapshot_chunks(
         &self,
         facet: &MediaFacet,
-        now: &DateTime<Utc>,
+        _now: &DateTime<Utc>,
     ) -> AppResult<()> {
         let titles = self
             .services
@@ -462,7 +464,9 @@ impl AppUseCase {
             if title_ids_needing_activity.contains(&title_id) {
                 self.emit_title_updated_activity(None, &title).await;
             }
-            self.sync_wanted_series_inner(&title, now, true).await;
+            // Monitored-state changes flow straight into the derived target
+            // set; waking the cycle is all immediate acquisition needs.
+            self.runtime.acquisition.acquisition_wake.notify_one();
         }
 
         Ok(())

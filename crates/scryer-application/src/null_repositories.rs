@@ -132,7 +132,7 @@ impl ScopeIndexerCoverageRepository for NullScopeIndexerCoverageRepository {
         Ok(Vec::new())
     }
 
-    async fn prune_scope(&self, _scope_key: &str, _facet: &str) -> AppResult<()> {
+    async fn prune_scope(&self, _scope_key: &str) -> AppResult<()> {
         Ok(())
     }
 
@@ -922,27 +922,24 @@ impl WantedItemRepository for NullWantedItemRepository {
             "wanted item repository is not configured".to_string(),
         ))
     }
-    async fn list_due_wanted_items(
-        &self,
-        _now: &str,
-        _batch_limit: i64,
-        _excluded_facets: &[MediaFacet],
-    ) -> AppResult<Vec<WantedItem>> {
-        Ok(vec![])
-    }
     async fn update_wanted_item_status(
         &self,
         _id: &str,
         _status: &str,
-        _next_search_at: Option<&str>,
         _last_search_at: Option<&str>,
-        _search_count: i64,
         _current_score: Option<i32>,
         _grabbed_release: Option<&str>,
     ) -> AppResult<()> {
         Err(AppError::Repository(
             "wanted item repository is not configured".to_string(),
         ))
+    }
+    async fn record_wanted_search_attempt(
+        &self,
+        _id: &str,
+        _last_search_at: &str,
+    ) -> AppResult<()> {
+        Ok(())
     }
     async fn get_wanted_item_for_title(
         &self,
@@ -965,9 +962,6 @@ impl WantedItemRepository for NullWantedItemRepository {
     }
     async fn delete_wanted_items_for_episode(&self, _episode_id: &str) -> AppResult<()> {
         Ok(())
-    }
-    async fn reset_fruitless_wanted_items(&self, _now: &str) -> AppResult<u64> {
-        Ok(0)
     }
     async fn insert_release_decision(&self, _decision: &ReleaseDecision) -> AppResult<String> {
         Err(AppError::Repository(

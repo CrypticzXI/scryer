@@ -157,14 +157,12 @@ pub(crate) async fn commit_successful_grab_tx(
         SqlRuntime::execute(
             SqlExec::Tx(tx),
             "UPDATE wanted_items
-             SET status = {}, next_search_at = {}, last_search_at = {},
-                 search_count = {}, current_score = {}, grabbed_release = {}, updated_at = {}
+             SET status = {}, last_search_at = {},
+                 current_score = {}, grabbed_release = {}, updated_at = {}
              WHERE id = {}",
             &[
                 SqlArg::Text(WantedStatus::Grabbed.as_str().to_string()),
-                SqlArg::OptTimestamp(None),
                 opt_timestamp_arg(commit.last_search_at.as_deref()),
-                SqlArg::I64(commit.search_count),
                 SqlArg::OptI32(commit.current_score),
                 SqlArg::Text(commit.grabbed_release.clone()),
                 SqlArg::Timestamp(Utc::now()),

@@ -9,6 +9,7 @@ pub(crate) mod policy;
 pub(crate) mod release_search;
 pub(crate) mod rss;
 pub(crate) mod search_queries;
+pub(crate) mod targets;
 pub(crate) mod workflow;
 
 pub(crate) use workflow as acquisition;

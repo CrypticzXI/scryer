@@ -75,14 +75,11 @@ impl ScopeIndexerCoverageRepository for ScopeIndexerCoverageStore {
             .collect()
     }
 
-    async fn prune_scope(&self, scope_key: &str, facet: &str) -> AppResult<()> {
+    async fn prune_scope(&self, scope_key: &str) -> AppResult<()> {
         SqlRuntime::execute(
             self.datastore.read_exec(),
-            "DELETE FROM scope_indexer_coverage WHERE scope_key = {} AND facet = {}",
-            &[
-                SqlArg::Text(scope_key.to_string()),
-                SqlArg::Text(facet.to_string()),
-            ],
+            "DELETE FROM scope_indexer_coverage WHERE scope_key = {}",
+            &[SqlArg::Text(scope_key.to_string())],
         )
         .await?;
         Ok(())

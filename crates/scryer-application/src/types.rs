@@ -943,26 +943,14 @@ impl WantedStatus {
 pub struct WantedGrabTransition {
     pub id: String,
     pub last_search_at: Option<String>,
-    pub search_count: i64,
     pub current_score: Option<i32>,
     pub grabbed_release: String,
-}
-
-#[derive(Clone, Debug)]
-pub struct WantedSearchTransition {
-    pub id: String,
-    pub next_search_at: Option<String>,
-    pub last_search_at: Option<String>,
-    pub search_count: i64,
-    pub current_score: Option<i32>,
-    pub grabbed_release: Option<String>,
 }
 
 #[derive(Clone, Debug)]
 pub struct WantedCompleteTransition {
     pub id: String,
     pub last_search_at: Option<String>,
-    pub search_count: i64,
     pub current_score: Option<i32>,
     pub grabbed_release: Option<String>,
 }
@@ -971,7 +959,6 @@ pub struct WantedCompleteTransition {
 pub struct WantedPauseTransition {
     pub id: String,
     pub last_search_at: Option<String>,
-    pub search_count: i64,
     pub current_score: Option<i32>,
     pub grabbed_release: Option<String>,
 }
@@ -1003,6 +990,13 @@ pub struct LibraryScanUnmatchedItem {
     pub updated_at: String,
 }
 
+/// Per-scope acquisition state (RFC 119). A row exists because something
+/// *happened* to the scope — a search recorded decisions, a release was
+/// grabbed or went pending, the user paused it — never because a sweep
+/// materialized it. What to search is the derived target set
+/// (`AcquisitionTarget`); this is the ledger of grabs, scores, and user
+/// intent layered on top of it. `last_search_at` is state, not cadence: it
+/// feeds the upgrade cooldown and failed-grab staleness checks.
 #[derive(Clone, Debug)]
 pub struct WantedItem {
     pub id: String,
@@ -1019,11 +1013,7 @@ pub struct WantedItem {
     pub season_number: Option<String>,
     pub episode_number: Option<String>,
     pub media_type: String,
-    pub search_phase: String,
-    pub next_search_at: Option<String>,
     pub last_search_at: Option<String>,
-    pub search_count: i64,
-    pub baseline_date: Option<String>,
     pub status: WantedStatus,
     pub grabbed_release: Option<String>,
     pub current_score: Option<i32>,
@@ -1810,6 +1800,87 @@ pub struct CutoffUnmetQualitySummary {
     pub season_number: Option<String>,
     pub episode_number: Option<String>,
     pub quality_tier: String,
+}
+
+/// The two derived acquisition-target kinds (RFC 119 §D1). `Missing` scopes have
+/// no primary file; `CutoffUpgrade` scopes have a file whose quality is strictly
+/// below the effective profile cutoff. Both converge the same way — they differ
+/// only in which derived query produces them and in recency lane (upgrades are
+/// always cold: the file already plays).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum WantedKind {
+    Missing,
+    CutoffUpgrade,
+}
+
+impl WantedKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Missing => "missing",
+            Self::CutoffUpgrade => "cutoff_upgrade",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "missing" => Some(Self::Missing),
+            "cutoff_upgrade" => Some(Self::CutoffUpgrade),
+            _ => None,
+        }
+    }
+}
+
+/// A monitored episode with no live primary media file — a raw candidate for the
+/// derived missing-target set (RFC 119 §D1: targets are computed from library
+/// state, never materialized). Policy gates (air-date window, recency lane) are
+/// applied by the application layer.
+#[derive(Clone, Debug)]
+pub struct MissingEpisodeCandidate {
+    pub episode_id: String,
+    pub title_id: String,
+    pub library_id: String,
+    pub title_facet: String,
+    pub collection_id: Option<String>,
+    pub season_number: Option<String>,
+    pub episode_number: Option<String>,
+    pub air_date: Option<String>,
+    pub title_created_at: String,
+}
+
+/// A monitored title with no live primary media file at all. The application
+/// layer keeps only movie-shaped facets (episodic facets are covered per
+/// episode) and applies the minimum-availability gate.
+#[derive(Clone, Debug)]
+pub struct MissingTitleCandidate {
+    pub title_id: String,
+    pub library_id: String,
+    pub title_facet: String,
+    pub min_availability: Option<String>,
+    pub first_aired: Option<String>,
+    pub digital_release_date: Option<String>,
+    pub created_at: String,
+}
+
+/// A monitored series-movie link with no linked live media file. The
+/// application layer applies the filler opt-in gate.
+#[derive(Clone, Debug)]
+pub struct MissingSeriesMovieLinkCandidate {
+    pub series_movie_link_id: String,
+    pub title_id: String,
+    pub library_id: String,
+    pub title_facet: String,
+    pub continuity_status: Option<String>,
+    pub movie_digital_release_date: Option<String>,
+    pub link_created_at: String,
+}
+
+/// Raw candidates for the derived missing-target set: monitored, fileless
+/// scopes straight from library state, in one sweep (RFC 119 §D1).
+#[derive(Clone, Debug, Default)]
+pub struct MissingScopeCandidates {
+    pub episodes: Vec<MissingEpisodeCandidate>,
+    pub titles: Vec<MissingTitleCandidate>,
+    pub series_movie_links: Vec<MissingSeriesMovieLinkCandidate>,
 }
 
 /// Aggregated episode progress counts per title, excluding specials.

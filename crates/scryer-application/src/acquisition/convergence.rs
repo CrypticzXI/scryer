@@ -16,51 +16,37 @@ use crate::app_usecase_discovery::QualityProfileLookup;
 use crate::quality_profile::QualityProfileCriteria;
 use scryer_domain::Title;
 
-/// Master switch for RFC 119 convergence. When enabled, background acquisition
-/// records per-indexer coverage after each search and — once the read-gate lands
-/// (Phase 1d) — prefers RSS for scopes that have converged. Defaults **off**
-/// during rollout: the write-hook is inert until this is set. Flipping the
-/// default on is gated on the read-gate plus per-indexer query-outcome plumbing,
-/// so a transiently failed/backed-off indexer is never recorded as covered.
-pub(crate) const ACQUISITION_RSS_FIRST_ENABLED_KEY: &str = "acquisition.rss_first_enabled";
-
-/// How many uncovered `(scope, indexer)` pairs the cold (long-tail) lane may
-/// enqueue per cycle. The pacer that stops a freshly added indexer from
-/// stampeding; the scheduler (plan 112) further caps effective spend by quota.
-#[allow(dead_code)] // wired by the convergence cursor (RFC 119 Phase 1d)
-pub(crate) const ACQUISITION_LONG_TAIL_BACKFILL_BATCH_PER_CYCLE_KEY: &str =
-    "acquisition.long_tail_backfill_batch_per_cycle";
+/// Per-tick evaluation cost ceiling for the convergence cursor (§D3): how many
+/// scopes the cursor may *evaluate* per cycle (coverage lookup + routing resolve
+/// + fingerprint compute). Sized above the scheduler's realistic per-tick
+/// admission capacity so plan-112 backpressure — never this count — is what
+/// paces actual requests.
+pub(crate) const ACQUISITION_LONG_TAIL_BACKFILL_MAX_SCOPES_PER_CYCLE_KEY: &str =
+    "acquisition.long_tail_backfill_max_scopes_per_cycle";
 
 /// Optional slow re-converge backstop: coverage older than this many days is
-/// treated as stale and re-converged (insurance against RSS feed gaps).
-/// `0` = off (the default).
-#[allow(dead_code)] // wired by the convergence cursor (RFC 119 Phase 1d)
+/// treated as stale and re-converged (insurance against a lossy RSS feed).
+/// `0` = off — the default and the intended steady state (§D6): we trust RSS,
+/// and this knob exists only as break-glass for a feed that proves incomplete.
 pub(crate) const ACQUISITION_LONG_TAIL_RECONVERGE_DAYS_KEY: &str =
     "acquisition.long_tail_reconverge_days";
 
-#[allow(dead_code)] // wired by the convergence cursor (RFC 119 Phase 1d)
-pub(crate) const DEFAULT_LONG_TAIL_BACKFILL_BATCH_PER_CYCLE: i64 = 25;
+pub(crate) const DEFAULT_LONG_TAIL_BACKFILL_MAX_SCOPES_PER_CYCLE: i64 = 500;
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // wired by the convergence cursor (RFC 119 Phase 1d)
 pub(crate) struct ConvergenceSettings {
-    pub rss_first_enabled: bool,
-    pub long_tail_backfill_batch_per_cycle: i64,
+    pub long_tail_backfill_max_scopes_per_cycle: i64,
     /// `None` when the backstop is off.
     pub long_tail_reconverge: Option<chrono::Duration>,
 }
 
 impl AppUseCase {
     pub(crate) async fn convergence_settings(&self) -> AppResult<ConvergenceSettings> {
-        let rss_first_enabled = self
-            .read_setting_bool_value(ACQUISITION_RSS_FIRST_ENABLED_KEY, None)
-            .await?
-            .unwrap_or(false);
-        let long_tail_backfill_batch_per_cycle = self
-            .read_setting_i64_value(ACQUISITION_LONG_TAIL_BACKFILL_BATCH_PER_CYCLE_KEY, None)
+        let long_tail_backfill_max_scopes_per_cycle = self
+            .read_setting_i64_value(ACQUISITION_LONG_TAIL_BACKFILL_MAX_SCOPES_PER_CYCLE_KEY, None)
             .await?
             .filter(|value| *value > 0)
-            .unwrap_or(DEFAULT_LONG_TAIL_BACKFILL_BATCH_PER_CYCLE);
+            .unwrap_or(DEFAULT_LONG_TAIL_BACKFILL_MAX_SCOPES_PER_CYCLE);
         let reconverge_days = self
             .read_setting_i64_value(ACQUISITION_LONG_TAIL_RECONVERGE_DAYS_KEY, None)
             .await?
@@ -70,10 +56,161 @@ impl AppUseCase {
             .filter(|d| *d > chrono::Duration::zero());
 
         Ok(ConvergenceSettings {
-            rss_first_enabled,
-            long_tail_backfill_batch_per_cycle,
+            long_tail_backfill_max_scopes_per_cycle,
             long_tail_reconverge,
         })
+    }
+}
+
+/// System-settings key persisting the cold-lane rotation position across
+/// cycles and restarts (§D3: the cursor is keyed on the last-considered
+/// scope_key, not a numeric offset, so it survives target-set changes).
+pub(crate) const ACQUISITION_CONVERGENCE_RESUME_AFTER_KEY: &str =
+    "acquisition.convergence_resume_after";
+
+/// Account quota at or below this remaining fraction counts as exhausted for
+/// the cursor's pre-skip (mirrors the scheduler's own quota gate — the cursor
+/// only avoids spending evaluation budget on requests the scheduler would
+/// refuse anyway).
+const QUOTA_EXHAUSTED_REMAINING_FRACTION: f64 = 0.01;
+
+/// Per-cycle view of which scheduler hosts/accounts can take background work
+/// right now, derived from the plan-112 snapshot. A stale quota observation
+/// counts as available so a wedged probe can never starve the lane. This is a
+/// *pre-skip* only — admission stays entirely the scheduler's inside the
+/// search; the cursor just declines to spend evaluation budget on scopes whose
+/// every routed indexer is currently unreachable.
+pub(crate) struct SchedulerAvailability {
+    cooled_hosts: std::collections::HashSet<String>,
+    exhausted_accounts: std::collections::HashSet<String>,
+}
+
+impl SchedulerAvailability {
+    /// An indexer can be searched when its host is not cooling down and its
+    /// account quota (keyed by indexer config id) is not exhausted.
+    pub fn indexer_available(&self, host_key: Option<&str>, indexer_id: &str) -> bool {
+        if let Some(host) = host_key
+            && self.cooled_hosts.contains(host)
+        {
+            return false;
+        }
+        !self
+            .exhausted_accounts
+            .contains(&indexer_id.trim().to_ascii_lowercase())
+    }
+}
+
+/// The scheduler host key for an indexer base URL — the URL's host, matching
+/// the keys the plan-112 snapshot reports.
+pub(crate) fn indexer_scheduler_host_key(base_url: &str) -> Option<String> {
+    let trimmed = base_url.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    url::Url::parse(trimmed)
+        .ok()
+        .and_then(|parsed| parsed.host_str().map(|host| host.to_ascii_lowercase()))
+        .or_else(|| Some(trimmed.to_ascii_lowercase()))
+}
+
+impl AppUseCase {
+    pub(crate) async fn scheduler_availability(&self) -> SchedulerAvailability {
+        let now = chrono::Utc::now();
+        let mut cooled_hosts = std::collections::HashSet::new();
+        let mut exhausted_accounts = std::collections::HashSet::new();
+        match self
+            .upstream_scheduler_snapshot(
+                crate::upstream_scheduler::SchedulerSnapshotFilter::default(),
+            )
+            .await
+        {
+            Ok(snapshot) => {
+                for entry in snapshot.entries {
+                    if entry.cooldown_until.is_some_and(|until| until > now) {
+                        cooled_hosts.insert(entry.host_key.as_str().to_string());
+                    }
+                    if !entry.quota_stale
+                        && entry
+                            .api_remaining_fraction
+                            .is_some_and(|fraction| fraction <= QUOTA_EXHAUSTED_REMAINING_FRACTION)
+                        && let Some(account) = entry.account_quota_key.as_ref()
+                    {
+                        exhausted_accounts.insert(account.as_str().to_string());
+                    }
+                }
+            }
+            Err(error) => {
+                tracing::debug!(
+                    error = %error,
+                    "scheduler snapshot unavailable; cursor pre-skip disabled this cycle"
+                );
+            }
+        }
+        SchedulerAvailability {
+            cooled_hosts,
+            exhausted_accounts,
+        }
+    }
+
+    /// Indexer config id → scheduler host key, for the cursor's pre-skip.
+    pub(crate) async fn indexer_scheduler_host_keys(
+        &self,
+    ) -> std::collections::HashMap<String, String> {
+        self.services
+            .integrations
+            .indexer_configs
+            .list(None)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|config| {
+                indexer_scheduler_host_key(&config.base_url).map(|host| (config.id, host))
+            })
+            .collect()
+    }
+
+    /// The persisted cold-lane rotation position (§D3), if any.
+    pub(crate) async fn convergence_cursor_resume_position(&self) -> Option<String> {
+        let value_json = self
+            .services
+            .config
+            .settings
+            .get_setting_json_explicit(
+                SETTINGS_SCOPE_SYSTEM,
+                ACQUISITION_CONVERGENCE_RESUME_AFTER_KEY,
+                None,
+            )
+            .await
+            .ok()
+            .flatten()?;
+        serde_json::from_str::<String>(&value_json)
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+    }
+
+    /// Persist the cold-lane rotation position for the next cycle.
+    pub(crate) async fn store_convergence_cursor_resume_position(&self, position: Option<&str>) {
+        let value = position.unwrap_or_default();
+        let Ok(value_json) = serde_json::to_string(value) else {
+            return;
+        };
+        if let Err(error) = self
+            .services
+            .config
+            .settings
+            .upsert_setting_json(
+                SETTINGS_SCOPE_SYSTEM,
+                ACQUISITION_CONVERGENCE_RESUME_AFTER_KEY,
+                None,
+                value_json,
+                "system",
+                None,
+            )
+            .await
+        {
+            tracing::warn!(error = %error, "failed to persist convergence cursor position");
+        }
     }
 }
 
@@ -84,7 +221,6 @@ impl AppUseCase {
 /// on a rematch; either re-opens convergence for still-unsatisfied scopes
 /// (RFC 119 §D2). The profile inputs are the *effective* profile (resolved with
 /// library/tag/category scoping), so overrides fold in.
-#[allow(dead_code)] // wired by the convergence cursor / coverage hook (Phase 1c/1d)
 pub(crate) fn compute_search_fingerprint(
     profile_id: &str,
     profile_version: &str,
@@ -129,98 +265,6 @@ fn scope_match_identity(subject: &ResolvedReleaseSearchSubject) -> String {
     .join(";")
 }
 
-/// A convergence target the cursor may search this cycle: its coverage scope key, the
-/// host keys its routed indexers dispatch through, and whether it is a **hot**
-/// (recent) target. Host keys are strings here so the selection algorithm stays pure
-/// and decoupled from the scheduler types; the caller maps real `HostKey`s to strings.
-#[derive(Clone, Debug, PartialEq, Eq)]
-#[allow(dead_code)] // wired by the convergence cursor (RFC 119 §D3, cutover / §E)
-pub(crate) struct ConvergenceTarget {
-    pub scope_key: String,
-    pub routed_hosts: Vec<String>,
-    pub is_hot: bool,
-}
-
-/// The batch to search this cycle plus the new cold-lane resume position.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-#[allow(dead_code)]
-pub(crate) struct CursorSelection {
-    /// scope_keys to search this cycle, in evaluation order (hot first, then cold).
-    pub scope_keys: Vec<String>,
-    /// The cold scope_key to resume *after* next cycle (rotating cursor), carried
-    /// forward unchanged when the cold lane did not advance this cycle.
-    pub resume_after: Option<String>,
-}
-
-/// Select the convergence batch for one cycle (RFC 119 §D3). 112 backpressure is the
-/// pace; this only decides *which* scopes to offer, bounded by a work ceiling:
-/// - **hot targets first** (recent/high-value), then **cold targets in rotating
-///   order** starting after `resume_after` (wrapping once) so every cold scope gets a
-///   turn and a stuck head never starves the tail;
-/// - **pre-skip** any target all of whose routed hosts are currently unavailable
-///   (`host_available` false for every host) — don't spend the budget on requests 112
-///   would only `Skip`;
-/// - stop once `max_scopes` have been selected (the per-tick evaluation cost ceiling).
-///
-/// Returns the selected scope_keys and the new cold resume position (the last cold
-/// scope_key *considered*, skipped or not, so the cursor always advances past it).
-#[allow(dead_code)] // wired by the convergence cursor (RFC 119 §D3, cutover / §E)
-pub(crate) fn select_convergence_batch(
-    targets: &[ConvergenceTarget],
-    host_available: impl Fn(&str) -> bool,
-    resume_after: Option<&str>,
-    max_scopes: usize,
-) -> CursorSelection {
-    // A target is reachable if any routed host is available (or it has no routed
-    // hosts — a degenerate case the downstream search treats as a no-op).
-    let reachable = |target: &ConvergenceTarget| {
-        target.routed_hosts.is_empty()
-            || target.routed_hosts.iter().any(|host| host_available(host))
-    };
-
-    let mut selection = CursorSelection {
-        scope_keys: Vec::new(),
-        resume_after: resume_after.map(str::to_string),
-    };
-    if max_scopes == 0 {
-        return selection;
-    }
-
-    // Hot targets: always considered first, in stable order. They do not move the
-    // cold rotation cursor.
-    for target in targets.iter().filter(|target| target.is_hot) {
-        if selection.scope_keys.len() >= max_scopes {
-            return selection;
-        }
-        if reachable(target) {
-            selection.scope_keys.push(target.scope_key.clone());
-        }
-    }
-
-    // Cold targets: rotate starting after `resume_after`, wrapping once.
-    let cold: Vec<&ConvergenceTarget> =
-        targets.iter().filter(|target| !target.is_hot).collect();
-    if cold.is_empty() {
-        return selection;
-    }
-    let start = resume_after
-        .and_then(|after| cold.iter().position(|target| target.scope_key == after))
-        .map(|index| index + 1)
-        .unwrap_or(0);
-    for offset in 0..cold.len() {
-        if selection.scope_keys.len() >= max_scopes {
-            break;
-        }
-        let target = cold[(start + offset) % cold.len()];
-        // Advance the cursor past every cold scope we *consider*, skipped or not.
-        selection.resume_after = Some(target.scope_key.clone());
-        if reachable(target) {
-            selection.scope_keys.push(target.scope_key.clone());
-        }
-    }
-    selection
-}
-
 impl AppUseCase {
     /// Indexers among `routed_indexer_ids` that still need a convergence search
     /// for `scope_key`/`facet` under `fingerprint` — routed minus current-
@@ -256,20 +300,6 @@ impl AppUseCase {
             .collect())
     }
 
-    /// A scope has converged (→ RSS-only, no active search) once every routed
-    /// indexer has current-fingerprint coverage.
-    pub(crate) async fn scope_is_converged(
-        &self,
-        scope_key: &str,
-        facet: &str,
-        fingerprint: &str,
-        routed_indexer_ids: &[String],
-    ) -> AppResult<bool> {
-        Ok(self
-            .uncovered_indexers_for_scope(scope_key, facet, fingerprint, routed_indexer_ids)
-            .await?
-            .is_empty())
-    }
 }
 
 /// A scope's convergence coordinates: its stable coverage key, media facet,
@@ -438,29 +468,23 @@ impl AppUseCase {
         }
     }
 
-    /// Record convergence coverage for a background acquisition search. Records
-    /// **only the indexers that actually fired a query and returned a response**
-    /// (`fired_indexer_ids`, from the augmented search return) intersected with the
-    /// scope's routed set — never a routed indexer the scheduler deferred/skipped or
-    /// whose query errored (RFC 119 §D2). Gated behind
-    /// `acquisition.rss_first_enabled` (default off during rollout); a no-op when
-    /// disabled, when the scope is not a convergence unit, or when nothing fired.
-    /// Best-effort: a failed write is logged, never propagated, so it can never break
-    /// the acquisition path.
-    pub(crate) async fn record_background_search_coverage(
+    /// Record convergence coverage for a search of `subject`. A search is a
+    /// search (§D5): background, interactive, and season-pack searches all
+    /// record coverage, since any of them proves what the indexer's catalog
+    /// holds for this scope. Records **only the indexers that actually fired a
+    /// query and returned a response** (`fired_indexer_ids`, from the augmented
+    /// search return) intersected with the scope's routed set — never a routed
+    /// indexer the scheduler deferred/skipped or whose query errored (§D2). An
+    /// empty response still counts: "no results" is coverage. A no-op when the
+    /// scope is not a convergence unit or when nothing fired. Best-effort: a
+    /// failed write is logged, never propagated, so it can never break the
+    /// acquisition path.
+    pub(crate) async fn record_search_coverage(
         &self,
         title: &Title,
         subject: &ResolvedReleaseSearchSubject,
         fired_indexer_ids: &[String],
     ) {
-        let enabled = self
-            .convergence_settings()
-            .await
-            .map(|settings| settings.rss_first_enabled)
-            .unwrap_or(false);
-        if !enabled {
-            return;
-        }
         let Some(convergence) = self.resolve_scope_convergence(title, subject).await else {
             return;
         };
@@ -496,37 +520,6 @@ impl AppUseCase {
         }
     }
 
-    /// Whether an active background search of this scope should be skipped in
-    /// favour of RSS: convergence is enabled and every routed indexer already has
-    /// current-fingerprint coverage. Uses the same resolution as the coverage
-    /// write-hook, so a scope recorded by one search is recognised as converged
-    /// by the next cycle. A no-op (returns `false`) when disabled — the caller
-    /// then searches as usual.
-    pub(crate) async fn scope_converged_for_rss_first(
-        &self,
-        title: &Title,
-        subject: &ResolvedReleaseSearchSubject,
-    ) -> bool {
-        let enabled = self
-            .convergence_settings()
-            .await
-            .map(|settings| settings.rss_first_enabled)
-            .unwrap_or(false);
-        if !enabled {
-            return false;
-        }
-        let Some(convergence) = self.resolve_scope_convergence(title, subject).await else {
-            return false;
-        };
-        self.scope_is_converged(
-            &convergence.scope_key,
-            &convergence.facet,
-            &convergence.fingerprint,
-            &convergence.routed_indexer_ids,
-        )
-        .await
-        .unwrap_or(false)
-    }
 
     /// Convergence progress for a scope, for the UI (RFC 119 §6/§7): how many of the
     /// routed indexers are covered under the current fingerprint, and whether the
@@ -555,6 +548,52 @@ impl AppUseCase {
             indexers_routed: routed,
         })
     }
+
+    /// Re-open a scope's convergence after an event that invalidates its
+    /// acquired state — a failed grab, a rejected import, or an operator
+    /// replacing the download: reset the state row to `wanted` (clearing the
+    /// in-flight grab, keeping the upgrade baseline), prune the scope's
+    /// coverage so the cursor re-searches every routed indexer, and wake the
+    /// acquisition loop. Best-effort — recovery paths must never fail on
+    /// bookkeeping.
+    pub(crate) async fn reopen_wanted_scope_for_acquisition(&self, item: &WantedItem) {
+        if let Err(error) = self
+            .services
+            .workflow
+            .wanted_items
+            .transition_wanted_to_reopened(&item.id)
+            .await
+        {
+            tracing::warn!(
+                wanted_item_id = item.id.as_str(),
+                error = %error,
+                "failed to reset wanted state row while re-opening scope"
+            );
+        }
+        let scope = crate::contracts::SubmissionScope::from_persisted(
+            &item.title_id,
+            item.episode_id.clone(),
+            item.collection_id.clone(),
+            item.series_movie_link_id.clone(),
+            None,
+        );
+        if let Some(scope_key) = convergence_scope_key(&scope, &item.title_id)
+            && let Err(error) = self
+                .services
+                .integrations
+                .scope_indexer_coverage
+                .prune_scope(&scope_key)
+                .await
+        {
+            tracing::warn!(
+                wanted_item_id = item.id.as_str(),
+                scope_key = scope_key.as_str(),
+                error = %error,
+                "failed to prune scope coverage while re-opening scope"
+            );
+        }
+        self.runtime.acquisition.acquisition_wake.notify_one();
+    }
 }
 
 /// Convergence progress for a scope, surfaced to the UI (RFC 119 §6 payload fields:
@@ -573,8 +612,8 @@ pub(crate) struct ConvergenceStateSummary {
 #[cfg(test)]
 mod tests {
     use super::{
-        ConvergenceTarget, canonical_json_string, compute_search_fingerprint,
-        convergence_scope_key, profile_criteria_version, select_convergence_batch,
+        canonical_json_string, compute_search_fingerprint, convergence_scope_key,
+        profile_criteria_version,
     };
     use crate::contracts::SubmissionScope;
     use crate::quality_profile::QualityProfileCriteria;
@@ -617,95 +656,6 @@ mod tests {
             a, b,
             "a rematch (changed SMG match id) must change the fingerprint"
         );
-    }
-
-    fn cursor_target(scope_key: &str, hosts: &[&str], is_hot: bool) -> ConvergenceTarget {
-        ConvergenceTarget {
-            scope_key: scope_key.to_string(),
-            routed_hosts: hosts.iter().map(|host| host.to_string()).collect(),
-            is_hot,
-        }
-    }
-
-    #[test]
-    fn cursor_takes_hot_targets_first_then_cold() {
-        let targets = vec![
-            cursor_target("cold-1", &["h1"], false),
-            cursor_target("hot-1", &["h1"], true),
-            cursor_target("cold-2", &["h1"], false),
-            cursor_target("hot-2", &["h1"], true),
-        ];
-        let selection = select_convergence_batch(&targets, |_| true, None, 10);
-        assert_eq!(
-            selection.scope_keys,
-            vec!["hot-1", "hot-2", "cold-1", "cold-2"],
-            "hot targets are searched first, then cold in order"
-        );
-    }
-
-    #[test]
-    fn cursor_work_cap_bounds_the_batch_and_advances() {
-        let targets = vec![
-            cursor_target("a", &["h1"], false),
-            cursor_target("b", &["h1"], false),
-            cursor_target("c", &["h1"], false),
-        ];
-        let selection = select_convergence_batch(&targets, |_| true, None, 2);
-        assert_eq!(selection.scope_keys, vec!["a", "b"]);
-        assert_eq!(
-            selection.resume_after.as_deref(),
-            Some("b"),
-            "the cursor advances to the last cold scope it considered"
-        );
-    }
-
-    #[test]
-    fn cursor_rotates_and_wraps_across_cycles() {
-        let targets = vec![
-            cursor_target("a", &["h1"], false),
-            cursor_target("b", &["h1"], false),
-            cursor_target("c", &["h1"], false),
-        ];
-        let first = select_convergence_batch(&targets, |_| true, None, 2);
-        assert_eq!(first.scope_keys, vec!["a", "b"]);
-        // Next cycle resumes after "b" → c, then wraps to a.
-        let second =
-            select_convergence_batch(&targets, |_| true, first.resume_after.as_deref(), 2);
-        assert_eq!(second.scope_keys, vec!["c", "a"]);
-    }
-
-    #[test]
-    fn cursor_pre_skips_unreachable_targets_but_advances_past_them() {
-        let targets = vec![
-            cursor_target("down", &["cold-host"], false),
-            cursor_target("up", &["live-host"], false),
-        ];
-        let selection =
-            select_convergence_batch(&targets, |host| host == "live-host", None, 10);
-        assert_eq!(
-            selection.scope_keys,
-            vec!["up"],
-            "a target whose every routed host is unavailable is pre-skipped"
-        );
-        assert_eq!(
-            selection.resume_after.as_deref(),
-            Some("up"),
-            "the cursor still advances past a skipped scope"
-        );
-    }
-
-    #[test]
-    fn cursor_hot_targets_respect_the_cap_and_leave_the_cold_cursor() {
-        let targets = vec![
-            cursor_target("hot-1", &["h1"], true),
-            cursor_target("hot-2", &["h1"], true),
-            cursor_target("cold-1", &["h1"], false),
-        ];
-        // The cap is filled by hot targets, so the cold lane is not reached and its
-        // rotation cursor is carried forward unchanged.
-        let selection = select_convergence_batch(&targets, |_| true, Some("cold-1"), 2);
-        assert_eq!(selection.scope_keys, vec!["hot-1", "hot-2"]);
-        assert_eq!(selection.resume_after.as_deref(), Some("cold-1"));
     }
 
     fn test_criteria() -> QualityProfileCriteria {

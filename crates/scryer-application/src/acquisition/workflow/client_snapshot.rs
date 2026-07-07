@@ -785,27 +785,15 @@ pub(crate) async fn process_download_failure(
             )
         }
     } else if let Some(items) = failed_collection_items.as_ref() {
-        let now = Utc::now();
-        let next_search_at = now.to_rfc3339();
-
+        // A failed season pack re-opens every covered episode scope: coverage
+        // pruned, state reset, acquisition woken. The cursor re-converges them
+        // individually (RFC 119 §11 #8 — never a cadence write).
         for item in items {
-            let _ = app
-                .services
-                .workflow
-                .wanted_items
-                .schedule_wanted_item_search(&WantedSearchTransition {
-                    id: item.id.clone(),
-                    next_search_at: Some(next_search_at.clone()),
-                    last_search_at: item.last_search_at.clone(),
-                    search_count: item.search_count,
-                    current_score: item.current_score,
-                    grabbed_release: None,
-                })
-                .await;
+            app.reopen_wanted_scope_for_acquisition(item).await;
         }
 
         let message = format!(
-            "season pack download failed for '{}': {}; re-queuing season episodes for individual search",
+            "season pack download failed for '{}': {}; re-opened season episodes for individual search",
             release_title_for_matching, context.reason
         );
 
@@ -813,7 +801,7 @@ pub(crate) async fn process_download_failure(
             title_id = resolved_title_id.as_deref().unwrap_or(""),
             affected_wanted_items = items.len(),
             release_title = release_title_for_matching,
-            "re-queued season episodes after failed season-pack download"
+            "re-opened season episode scopes after failed season-pack download"
         );
 
         (FailureHandlingOutcome::RequeuedFreshSearch, message)
@@ -851,44 +839,20 @@ pub(crate) async fn process_download_failure(
                     ),
                 ),
                 StandbyRecoveryOutcome::Exhausted => {
-                let immediate_research = should_research_failed_grab(item, &now);
-                let next_search_at = if immediate_research {
-                    now.to_rfc3339()
-                } else {
-                    (now + Duration::minutes(FAILED_GRAB_RESEARCH_COOLDOWN_MINUTES)).to_rfc3339()
-                };
+                    // No standby candidate left: re-open the scope's convergence
+                    // (coverage pruned, state reset) so the cursor re-searches it.
+                    // The failed release is blocklisted below, and standby-first +
+                    // scheduler pacing keep this from tight-looping — never a
+                    // cadence write (RFC 119 §11 #8).
+                    app.reopen_wanted_scope_for_acquisition(item).await;
 
-                let _ = app
-                    .services
-                    .workflow
-                    .wanted_items
-                    .schedule_wanted_item_search(&WantedSearchTransition {
-                        id: item.id.clone(),
-                        next_search_at: Some(next_search_at),
-                        last_search_at: item.last_search_at.clone(),
-                        search_count: item.search_count,
-                        current_score: item.current_score,
-                        grabbed_release: None,
-                    })
-                    .await;
-
-                let message = if immediate_research {
-                    format!(
-                        "download failed for '{}': {}; standby exhausted, re-queuing for fresh search",
-                        release_title_for_matching, context.reason
+                    (
+                        FailureHandlingOutcome::RequeuedFreshSearch,
+                        format!(
+                            "download failed for '{}': {}; standby exhausted, re-opened scope for fresh search",
+                            release_title_for_matching, context.reason
+                        ),
                     )
-                } else {
-                    format!(
-                        "download failed for '{}': {}; standby exhausted, deferring reacquisition",
-                        release_title_for_matching, context.reason
-                    )
-                };
-
-                if immediate_research {
-                    (FailureHandlingOutcome::RequeuedFreshSearch, message)
-                } else {
-                    (FailureHandlingOutcome::RequeuedDeferred, message)
-                }
                 }
             }
         } else {

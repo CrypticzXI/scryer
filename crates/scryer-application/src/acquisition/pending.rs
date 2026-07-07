@@ -574,7 +574,6 @@ impl AppUseCase {
         let is_recent = self.is_recent_for_queue_priority(
             pr.published_at
                 .as_deref()
-                .or(wanted.baseline_date.as_deref())
                 .or(title.first_aired.as_deref())
                 .or(title.digital_release_date.as_deref()),
         );
@@ -734,7 +733,6 @@ impl AppUseCase {
                     .commit_successful_grab(&SuccessfulGrabCommit {
                         wanted_item_id: wanted.id.clone(),
                         covered_wanted_item_ids,
-                        search_count: wanted.search_count,
                         current_score: wanted.current_score,
                         grabbed_release: grabbed_json,
                         last_search_at: Some(now.to_rfc3339()),

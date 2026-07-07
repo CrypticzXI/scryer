@@ -1,13 +1,7 @@
 use super::*;
-#[cfg(test)]
-use crate::acquisition_decision_helpers::is_old_failed_grab_title;
 use crate::acquisition_decision_helpers::{
     FAILED_GRAB_RESEARCH_COOLDOWN_MINUTES, extract_grabbed_release_title,
-    is_download_submit_unavailable_error, should_research_failed_grab,
-};
-use crate::acquisition_policy::{
-    SearchPhase, compute_search_schedule, episode_search_window_is_open,
-    parse_schedule_baseline_date,
+    is_download_submit_unavailable_error,
 };
 use crate::acquisition_release_search::{
     ReleaseAutoDecisionCode, annotate_auto_decision, serialize_decision_explanation,

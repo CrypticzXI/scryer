@@ -276,14 +276,6 @@ impl AppUseCase {
                 scryer_domain::LibraryPermission::View,
             )
             .await?;
-        let library_name_by_id = authorized_libraries
-            .iter()
-            .map(|library| (library.id.clone(), library.name.clone()))
-            .collect::<HashMap<_, _>>();
-        let library_slug_by_id = authorized_libraries
-            .iter()
-            .map(|library| (library.id.clone(), library.slug.clone()))
-            .collect::<HashMap<_, _>>();
         let mut library_ids = authorized_libraries
             .iter()
             .map(|library| library.id.clone())
@@ -302,6 +294,37 @@ impl AppUseCase {
         if !requested_library_ids.is_empty() {
             library_ids.retain(|library_id| requested_library_ids.contains(library_id));
         }
+        self.compute_cutoff_unmet_items(facet, Some(library_ids))
+            .await
+    }
+
+    /// Actor-less core of the cutoff-unmet derivation (RFC 119 §D1): scopes
+    /// whose primary file sits strictly below the effective profile cutoff.
+    /// The convergence cursor derives upgrade targets from every library
+    /// (`library_filter: None`); the API path passes the actor's authorized
+    /// subset.
+    pub(crate) async fn compute_cutoff_unmet_items(
+        &self,
+        facet: Option<MediaFacet>,
+        library_filter: Option<Vec<String>>,
+    ) -> AppResult<Vec<CutoffUnmetItem>> {
+        let mut libraries = self.services.catalog.libraries.list(facet.clone()).await?;
+        if let Some(filter) = library_filter {
+            let allowed: HashSet<String> = filter.into_iter().collect();
+            libraries.retain(|library| allowed.contains(&library.id));
+        }
+        let library_name_by_id = libraries
+            .iter()
+            .map(|library| (library.id.clone(), library.name.clone()))
+            .collect::<HashMap<_, _>>();
+        let library_slug_by_id = libraries
+            .iter()
+            .map(|library| (library.id.clone(), library.slug.clone()))
+            .collect::<HashMap<_, _>>();
+        let library_ids = libraries
+            .iter()
+            .map(|library| library.id.clone())
+            .collect::<Vec<_>>();
         let titles = self
             .services
             .catalog
@@ -828,22 +851,14 @@ impl AppUseCase {
 }
 impl AppUseCase {
     /// Canonical owner for the "this title should be actionable right now"
-    /// orchestration. Callers must route immediate acquisition seeding through
-    /// this helper instead of open-coding facet splits or wake-ups.
+    /// orchestration. The title's missing scopes are already in the derived
+    /// target set (and hot — it was just added), so acting immediately only
+    /// requires waking the convergence cycle.
     async fn sync_title_for_immediate_acquisition(&self, title: &Title) {
         if !title.monitored {
             return;
         }
-
-        let now = Utc::now();
-        if let Some(handler) = self.facet_registry.get(&title.facet) {
-            if handler.has_episodes() {
-                self.sync_wanted_series_inner(title, &now, true).await;
-            } else {
-                self.sync_wanted_movie_inner(title, &now, true).await;
-            }
-            self.runtime.acquisition.acquisition_wake.notify_one();
-        }
+        self.runtime.acquisition.acquisition_wake.notify_one();
     }
 }
 impl AppUseCase {

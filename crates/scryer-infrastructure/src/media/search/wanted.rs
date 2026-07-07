@@ -29,8 +29,8 @@ pub(crate) async fn list_wanted_items_query(
                 t.facet AS title_facet, t.library_id AS library_id,
                 libraries.name AS library_name, libraries.slug AS library_slug,
                 w.episode_id, w.collection_id, w.series_movie_link_id,
-                e.season_number, e.episode_number, w.media_type, w.search_phase, w.next_search_at,
-                w.last_search_at, w.search_count, w.baseline_date, w.status,
+                e.season_number, e.episode_number, w.media_type,
+                w.last_search_at, w.status,
                 w.grabbed_release, w.current_score,
                 latest_decision.id AS latest_decision_id,
                 latest_decision.wanted_item_id AS latest_decision_wanted_item_id,
@@ -298,15 +298,7 @@ fn row_to_wanted_item(row: &SqliteRow) -> AppResult<WantedItem> {
         media_type: row
             .try_get("media_type")
             .map_err(|e| AppError::Repository(e.to_string()))?,
-        search_phase: row
-            .try_get("search_phase")
-            .map_err(|e| AppError::Repository(e.to_string()))?,
-        next_search_at: row.try_get("next_search_at").unwrap_or(None),
         last_search_at: row.try_get("last_search_at").unwrap_or(None),
-        search_count: row
-            .try_get("search_count")
-            .map_err(|e| AppError::Repository(e.to_string()))?,
-        baseline_date: row.try_get("baseline_date").unwrap_or(None),
         status: {
             let s: String = row
                 .try_get("status")
