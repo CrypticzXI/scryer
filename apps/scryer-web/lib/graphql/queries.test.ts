@@ -6,6 +6,7 @@ import {
   buildReactiveRefreshQuery,
   episodeMediaFilesQuery,
   seriesTitleOverviewNativeQuery,
+  titleMoreLikeThisQuery,
   titlePanelDetailQuery,
   titleOverviewNativeQuery,
 } from "./queries.ts";
@@ -86,6 +87,35 @@ test("reactive title overview native refresh omits acquisition diagnostics", () 
 
 test("full title overview native loader still includes acquisition diagnostics", () => {
   assert.equal(titleOverviewNativeQuery.includes("titleAcquisitionDiagnostics"), true);
+});
+
+test("initial title overview and selected panel queries omit recommendations", () => {
+  assert.equal(titleOverviewNativeQuery.includes("moreLikeThis("), false);
+  assert.equal(seriesTitleOverviewNativeQuery.includes("moreLikeThis("), false);
+  assert.equal(titlePanelDetailQuery.includes("moreLikeThis("), false);
+});
+
+test("title more-like-this query uses lightweight card fields", () => {
+  assert.equal(titleMoreLikeThisQuery.includes("moreLikeThis(limit: $limit)"), true);
+  assert.equal(titleMoreLikeThisQuery.includes("externalRatings"), false);
+  assert.equal(titleMoreLikeThisQuery.includes("externalIds"), false);
+  assert.equal(titleMoreLikeThisQuery.includes("canonicalTags"), false);
+  assert.equal(titleMoreLikeThisQuery.includes("backgroundUrl"), false);
+  assert.equal(titleMoreLikeThisQuery.includes("targetKey"), true);
+  assert.equal(titleMoreLikeThisQuery.includes("ownedInInput"), true);
+});
+
+test("reactive title overview native refresh omits recommendations", () => {
+  const result = buildReactiveRefreshQuery([
+    {
+      key: "titleOverviewNative:title-1:300",
+      kind: "titleOverviewNative",
+      titleId: "title-1",
+      blocklistLimit: 300,
+    },
+  ]);
+
+  assert.equal(result.query.includes("moreLikeThis("), false);
 });
 
 test("series title overview native loader omits title media files", () => {

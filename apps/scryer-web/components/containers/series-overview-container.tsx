@@ -38,6 +38,7 @@ import { handleFixTitleMatchComplete as applyFixTitleMatchCompletion } from "@/l
 import { useTitleDownloadQueue } from "@/lib/hooks/use-title-download-queue";
 import {
   createEmptyTitleOverviewDownloadFeedbackSnapshot,
+  fetchTitleMoreLikeThis,
   fetchTitleOverviewDownloadFeedbackSnapshot,
   fetchTitleOverviewNativeSnapshot,
 } from "@/lib/title-overview-loader";
@@ -452,7 +453,17 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
       const nextTitle = snapshot.title;
       const nextCollections = nextTitle?.collections ?? [];
       const nextSeriesMovieLinks = nextTitle?.seriesMovieLinks ?? [];
-      setTitle(nextTitle);
+      setTitle((current) => {
+        if (!nextTitle) {
+          return null;
+        }
+        return {
+          ...nextTitle,
+          moreLikeThis:
+            nextTitle.moreLikeThis ??
+            (current?.id === nextTitle.id ? current.moreLikeThis : undefined),
+        };
+      });
       if (nextTitle) {
         onTitleResolved?.({
           id: nextTitle.id,
@@ -555,6 +566,30 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
     }
   }, [applyDownloadFeedbackSnapshot, client, setGlobalStatus, t, titleId]);
 
+  const refreshTitleMoreLikeThis = React.useCallback(
+    async (requestedTitleId: string) => {
+      try {
+        const moreLikeThis = await fetchTitleMoreLikeThis(
+          client,
+          requestedTitleId,
+        );
+        if (currentTitleIdRef.current !== requestedTitleId) {
+          return;
+        }
+        setTitle((current) =>
+          current?.id === requestedTitleId
+            ? { ...current, moreLikeThis }
+            : current,
+        );
+      } catch (error) {
+        if (currentTitleIdRef.current === requestedTitleId) {
+          console.error("[series-more-like-this-refresh] refresh failed:", error);
+        }
+      }
+    },
+    [client],
+  );
+
   const refreshTitleDetail = React.useCallback(async () => {
     if (!titleId) {
       return;
@@ -572,11 +607,18 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
       return;
     }
     applyNativeTitleDetailSnapshot(snapshot);
+    void refreshTitleMoreLikeThis(requestedTitleId);
     if (!snapshot.title || !snapshot.hasDownloadClients) {
       return;
     }
     void refreshDownloadFeedback();
-  }, [applyNativeTitleDetailSnapshot, client, refreshDownloadFeedback, titleId]);
+  }, [
+    applyNativeTitleDetailSnapshot,
+    client,
+    refreshDownloadFeedback,
+    refreshTitleMoreLikeThis,
+    titleId,
+  ]);
   const moreLikeThisActions = useTitleMoreLikeThisActions({
     canAddItems: canAddDiscoveryItems,
     canRequestItems: canRequestDiscoveryItems,

@@ -134,8 +134,10 @@ export function useTitleMoreLikeThisActions({
           throw error;
         }
         const detailItem =
-          (data?.discoveryItemDetail as CatalogDiscoveryItem | null | undefined) ??
-          item;
+          data?.discoveryItemDetail as CatalogDiscoveryItem | null | undefined;
+        if (!detailItem) {
+          throw new Error(t("status.apiError"));
+        }
         const target = {
           result: metadataResultForDiscoveryItem(detailItem),
           facet,

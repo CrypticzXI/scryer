@@ -6,9 +6,11 @@ import type { DownloadQueueItem } from "@/lib/types/download-queue";
 
 import {
   titleBySlugQuery,
+  titleMoreLikeThisQuery,
   titleOverviewDownloadFeedbackQuery,
   titleOverviewNativeQuery,
 } from "@/lib/graphql/queries";
+import type { CatalogDiscoveryItem } from "@/lib/types/discovery";
 
 export type TitleOverviewNativeSnapshot<TTitle, TDiagnostics, TEvent, TBlocklist, TSubtitle> = {
   title: TTitle | null;
@@ -34,6 +36,12 @@ export type ResolvedTitleOverviewTarget = {
   slug: string | null;
   libraryId: string | null;
   librarySlug: string | null;
+};
+
+type TitleMoreLikeThisResponse<TItem> = {
+  title?: {
+    moreLikeThis?: TItem[] | null;
+  } | null;
 };
 
 function graphQlErrorAlias(
@@ -97,6 +105,26 @@ export async function fetchTitleOverviewNativeSnapshot<
     externalSubtitles: (data?.externalSubtitles ?? []) as TSubtitle[],
     hasDownloadClients: data?.setupStatus?.hasDownloadClients !== false,
   };
+}
+
+export async function fetchTitleMoreLikeThis<TItem = CatalogDiscoveryItem>(
+  client: Client,
+  titleId: string,
+  limit = 12,
+): Promise<TItem[]> {
+  const { data, error } = await client
+    .query<TitleMoreLikeThisResponse<TItem>>(
+      titleMoreLikeThisQuery,
+      { id: titleId, limit },
+      { requestPolicy: "network-only" },
+    )
+    .toPromise();
+
+  if (error) {
+    throw error;
+  }
+
+  return data?.title?.moreLikeThis ?? [];
 }
 
 export function createEmptyTitleOverviewDownloadFeedbackSnapshot(): TitleOverviewDownloadFeedbackSnapshot {

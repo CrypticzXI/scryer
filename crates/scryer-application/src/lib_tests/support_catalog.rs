@@ -16,6 +16,7 @@ pub(super) struct MockTitleRepo {
     pub(super) store: Arc<Mutex<Vec<Title>>>,
     pub(super) create_or_get_existing_error: Arc<Mutex<Option<String>>>,
     pub(super) delete_operation_log: OptionalDeleteOperationLog,
+    pub(super) pending_import_items: Option<Arc<Mutex<Vec<LibraryScanUnmatchedItem>>>>,
 }
 #[derive(Default)]
 pub(super) struct RecordingJobRunRepo {
@@ -321,7 +322,8 @@ impl TitleRepository for MockTitleRepo {
         let mut matching_ids = list
             .iter()
             .filter(|existing| {
-                existing.facet == title.facet
+                existing.library_id == title.library_id
+                    && existing.facet == title.facet
                     && existing.external_ids.iter().any(|existing_external_id| {
                         title.external_ids.iter().any(|incoming_external_id| {
                             existing_external_id
@@ -350,6 +352,81 @@ impl TitleRepository for MockTitleRepo {
                 reused_existing: true,
             });
         }
+
+        list.push(title.clone());
+        Ok(CreateTitleOutcome {
+            title,
+            reused_existing: false,
+        })
+    }
+
+    async fn create_or_get_existing_and_bind_pending_import(
+        &self,
+        title: Title,
+        pending_import_id: &str,
+    ) -> AppResult<CreateTitleOutcome> {
+        if let Some(message) = self.create_or_get_existing_error.lock().await.clone() {
+            return Err(AppError::Repository(message));
+        }
+
+        let pending_import_items = self.pending_import_items.as_ref().ok_or_else(|| {
+            AppError::Repository(
+                "transactional pending import title creation is not configured".into(),
+            )
+        })?;
+        let mut list = self.store.lock().await;
+        let mut matching_ids = list
+            .iter()
+            .filter(|existing| {
+                existing.library_id == title.library_id
+                    && existing.facet == title.facet
+                    && existing.external_ids.iter().any(|existing_external_id| {
+                        title.external_ids.iter().any(|incoming_external_id| {
+                            existing_external_id
+                                .source
+                                .eq_ignore_ascii_case(&incoming_external_id.source)
+                                && existing_external_id.value == incoming_external_id.value
+                        })
+                    })
+            })
+            .map(|existing| existing.id.clone())
+            .collect::<Vec<_>>();
+        matching_ids.sort();
+        matching_ids.dedup();
+
+        if matching_ids.len() > 1 {
+            return Err(AppError::Validation(
+                "external ids already map to multiple titles".into(),
+            ));
+        }
+
+        if let Some(existing_id) = matching_ids.first()
+            && let Some(existing) = list.iter().find(|entry| entry.id == *existing_id)
+        {
+            return Ok(CreateTitleOutcome {
+                title: existing.clone(),
+                reused_existing: true,
+            });
+        }
+
+        let mut pending_items = pending_import_items.lock().await;
+        let pending_item = pending_items
+            .iter_mut()
+            .find(|item| {
+                item.id == pending_import_id
+                    && item.library_id == title.library_id
+                    && item.facet == title.facet
+                    && item.title_id.is_none()
+            })
+            .ok_or_else(|| {
+                AppError::Validation(format!(
+                    "pending import {pending_import_id} could not be bound to title {}",
+                    title.id
+                ))
+            })?;
+        pending_item.status = PendingImportStatus::Pending;
+        pending_item.title_id = Some(title.id.clone());
+        pending_item.updated_at = Utc::now().to_rfc3339();
 
         list.push(title.clone());
         Ok(CreateTitleOutcome {

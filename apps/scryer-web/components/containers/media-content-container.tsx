@@ -82,6 +82,7 @@ import { useIsMobile } from "@/lib/hooks/use-mobile";
 import { useQueueFormState } from "@/lib/hooks/use-queue-form-state";
 import { useTitleListReactiveRefresh } from "@/lib/hooks/use-title-list-reactive-refresh";
 import { useTitleManagementState } from "@/lib/hooks/use-title-management-state";
+import { fetchTitleMoreLikeThis } from "@/lib/title-overview-loader";
 import type {
   DownloadClientRecord,
   DownloadClientRoutingEntry,
@@ -463,7 +464,7 @@ function isPendingHydrationPosterTitle(
 }
 
 function hasSelectedTitlePanelDetails(title: TitleRecord): boolean {
-  return title.moreLikeThis !== undefined && title.canonicalTags !== undefined;
+  return title.canonicalTags !== undefined;
 }
 
 function hasSelectedTitleMovieMediaDetails(title: TitleRecord): boolean {
@@ -1025,6 +1026,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   }>({ key: "", refreshedAt: 0 });
   const latestCriticalMutationEpochRef = React.useRef(0);
   const selectedPanelHydrationKeyRef = React.useRef<string | null>(null);
+  const selectedPanelMoreLikeThisKeyRef = React.useRef<string | null>(null);
   const skipNextCatalogOverviewReloadRef = React.useRef(false);
   const [catalogPaginationState, setCatalogPaginationState] =
     React.useState<TitleCatalogState>(emptyTitleCatalogState);
@@ -1790,8 +1792,10 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
           throw error;
         }
         const detailItem =
-          (data?.discoveryItemDetail as CatalogDiscoveryItem | null | undefined) ??
-          item;
+          data?.discoveryItemDetail as CatalogDiscoveryItem | null | undefined;
+        if (!detailItem) {
+          throw new Error(t("status.apiError"));
+        }
         const target = {
           result: metadataResultForDiscoveryItem(detailItem),
           facet,
@@ -2285,6 +2289,28 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     [setMonitoredTitles, setTitleStatus, t],
   );
 
+  const applyTitleMoreLikeThis = React.useCallback(
+    (
+      titleId: string,
+      moreLikeThis: CatalogDiscoveryItem[],
+      requestEpoch: number,
+    ) => {
+      if (requestEpoch <= latestCriticalMutationEpochRef.current) {
+        return;
+      }
+
+      const merge = (title: TitleRecord): TitleRecord =>
+        title.id === titleId ? { ...title, moreLikeThis } : title;
+
+      setSelectedOverviewDetailTitle((current) =>
+        current?.id === titleId ? merge(current) : current,
+      );
+      setTitleContextTitles((current) => current.map(merge));
+      setMonitoredTitles((current) => current.map(merge));
+    },
+    [setMonitoredTitles],
+  );
+
   useTitleListReactiveRefresh({
     facet: activeFacet,
     pause: !shouldLoadCatalogTitles,
@@ -2385,9 +2411,9 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     [applyRefreshedTitleRecord, client],
   );
 
-  // When a slug deep link selects a title that isn't part of the currently
-  // loaded catalog page, fetch its detail so the inline overview pane can render
-  // it instead of the list bouncing back. A genuine miss closes to the list.
+  // Movie overviews use the selected-title panel. When a slug deep link selects
+  // a movie that is not part of the current catalog page, fetch its panel detail
+  // so the pane can render it instead of the list bouncing back.
   const titleContextSourceTitlesRef = React.useRef(titleContextSourceTitles);
   titleContextSourceTitlesRef.current = titleContextSourceTitles;
   React.useEffect(() => {
@@ -2571,7 +2597,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     ],
   );
 
-  const selectedOverviewTitleForPanelHydration = React.useMemo(
+  const selectedOverviewTitleRecord = React.useMemo(
     () => {
       if (!selectedOverviewTitleId) {
         return null;
@@ -2592,19 +2618,23 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     ],
   );
   const selectedPanelHydrationTitleId = selectedOverviewPanelDetailEnabled
-    ? selectedOverviewTitleForPanelHydration?.id ?? null
+    ? selectedOverviewTitleRecord?.id ?? null
     : null;
   const selectedPanelHydrationMetadataFetchedAt =
-    selectedOverviewTitleForPanelHydration?.metadataFetchedAt ?? "";
+    selectedOverviewTitleRecord?.metadataFetchedAt ?? "";
   const selectedPanelHydrationCreatedAt =
-    selectedOverviewTitleForPanelHydration?.createdAt ?? "";
+    selectedOverviewTitleRecord?.createdAt ?? "";
   const selectedPanelNeedsPanelDetails =
-    selectedOverviewTitleForPanelHydration !== null
-      ? !hasSelectedTitlePanelDetails(selectedOverviewTitleForPanelHydration)
+    selectedOverviewTitleRecord !== null
+      ? !hasSelectedTitlePanelDetails(selectedOverviewTitleRecord)
       : false;
   const selectedPanelNeedsMovieMediaDetails =
-    selectedOverviewTitleForPanelHydration !== null
-      ? !hasSelectedTitleMovieMediaDetails(selectedOverviewTitleForPanelHydration)
+    selectedOverviewTitleRecord !== null
+      ? !hasSelectedTitleMovieMediaDetails(selectedOverviewTitleRecord)
+      : false;
+  const selectedPanelNeedsMoreLikeThis =
+    selectedOverviewTitleRecord !== null
+      ? selectedOverviewTitleRecord.moreLikeThis === undefined
       : false;
 
   const activeCatalogDiscoveryGroups = catalogDiscoveryGroups;
@@ -2735,6 +2765,61 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     selectedPanelHydrationTitleId,
     selectedPanelNeedsMovieMediaDetails,
     selectedPanelNeedsPanelDetails,
+    shouldLoadCatalogTitles,
+  ]);
+
+  React.useEffect(() => {
+    if (
+      !shouldLoadCatalogTitles ||
+      !selectedPanelHydrationTitleId ||
+      !selectedPanelNeedsMoreLikeThis
+    ) {
+      selectedPanelMoreLikeThisKeyRef.current = null;
+      return;
+    }
+
+    const titleId = selectedPanelHydrationTitleId;
+    const requestKey = [
+      titleId,
+      selectedPanelHydrationMetadataFetchedAt,
+      selectedPanelHydrationCreatedAt,
+      "more-like-this",
+    ].join(":");
+    if (selectedPanelMoreLikeThisKeyRef.current === requestKey) {
+      return;
+    }
+    selectedPanelMoreLikeThisKeyRef.current = requestKey;
+
+    let cancelled = false;
+    const requestEpoch = reactiveRefreshEpoch();
+    void fetchTitleMoreLikeThis(client, titleId)
+      .then((items) => {
+        if (!cancelled) {
+          applyTitleMoreLikeThis(titleId, items, requestEpoch);
+        }
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) {
+          console.error("[selected-title-more-like-this-refresh] refresh failed:", error);
+          if (selectedPanelMoreLikeThisKeyRef.current === requestKey) {
+            selectedPanelMoreLikeThisKeyRef.current = null;
+          }
+        }
+      });
+
+    return () => {
+      cancelled = true;
+      if (selectedPanelMoreLikeThisKeyRef.current === requestKey) {
+        selectedPanelMoreLikeThisKeyRef.current = null;
+      }
+    };
+  }, [
+    applyTitleMoreLikeThis,
+    client,
+    selectedPanelHydrationCreatedAt,
+    selectedPanelHydrationMetadataFetchedAt,
+    selectedPanelHydrationTitleId,
+    selectedPanelNeedsMoreLikeThis,
     shouldLoadCatalogTitles,
   ]);
 
@@ -4574,7 +4659,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
           onOpenOverview,
           onCloseOverview,
           selectedOverviewTitleId,
-          selectedOverviewTitle: selectedOverviewTitleForPanelHydration,
+          selectedOverviewTitle: selectedOverviewTitleRecord,
           selectedOverviewDetailLoading,
           routeOverviewPending,
           routeOverviewEpisodeId,

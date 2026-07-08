@@ -638,6 +638,31 @@ impl AppUseCase {
         self.finish_add_title_with_outcome(created).await
     }
 
+    pub(crate) async fn add_title_and_bind_pending_import_with_outcome_in_library(
+        &self,
+        actor: &User,
+        request: NewTitle,
+        library_id: String,
+        pending_import_id: &str,
+    ) -> AppResult<AddTitleOutcome> {
+        let created = self
+            .create_title_without_hydration_and_bind_pending_import_in_library(
+                actor,
+                request,
+                library_id,
+                pending_import_id,
+            )
+            .await?;
+        if created.reused_existing {
+            return Ok(AddTitleOutcome {
+                title: created.title,
+                metadata_hydration_state: AddTitleHydrationState::NotRequired,
+                reused_existing_title: true,
+            });
+        }
+        self.finish_add_title_with_outcome(created).await
+    }
+
     pub(crate) async fn add_title_with_outcome_after_library_authorization(
         &self,
         actor: &User,

@@ -1,11 +1,11 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use scryer_application::{
-    AppError, AppResult, CreateTitleOutcome, PendingTitleHydration, SortDirection,
-    TitleArtworkUrlUpdate, TitleCatalogContentStatus, TitleCatalogFilter, TitleCatalogFilterCounts,
-    TitleCatalogResult, TitleCatalogSort, TitleCatalogSortKey, TitleDeletePreviewInfo,
-    TitleExternalIdLookup, TitleExternalIdLookupMatch, TitleMetadataUpdate, TitleRatingSummary,
-    TitleRepository,
+    AppError, AppResult, CreateTitleOutcome, PendingImportStatus, PendingTitleHydration,
+    SortDirection, TitleArtworkUrlUpdate, TitleCatalogContentStatus, TitleCatalogFilter,
+    TitleCatalogFilterCounts, TitleCatalogResult, TitleCatalogSort, TitleCatalogSortKey,
+    TitleDeletePreviewInfo, TitleExternalIdLookup, TitleExternalIdLookupMatch, TitleMetadataUpdate,
+    TitleRatingSummary, TitleRepository,
     persisted_records::{
         PersistedTitleDecodeOptions, PersistedTitleReadMode, finalize_persisted_title,
     },
@@ -727,6 +727,41 @@ impl TitleRepository for TitleStore {
         decode_optional_runtime_title_row(row.as_ref(), PersistedTitleReadMode::Presentation, true)
     }
 
+    async fn find_by_external_id_in_library_and_facet(
+        &self,
+        library_id: &str,
+        facet: MediaFacet,
+        source: &str,
+        value: &str,
+    ) -> AppResult<Option<Title>> {
+        let sql = format!(
+            "SELECT {TITLE_COLUMNS}
+               FROM titles
+              WHERE library_id = {{}}
+                AND id IN (
+                    SELECT title_id
+                      FROM title_external_ids
+                     WHERE facet = {{}}
+                       AND LOWER(source) = LOWER({{}})
+                       AND external_id = {{}}
+                )
+              ORDER BY id
+              LIMIT 1"
+        );
+        let row = SqlRuntime::fetch_optional(
+            self.datastore.read_exec(),
+            &sql,
+            &[
+                SqlArg::Text(library_id.to_string()),
+                SqlArg::Text(facet.as_str().to_string()),
+                SqlArg::Text(source.to_string()),
+                SqlArg::Text(value.to_string()),
+            ],
+        )
+        .await?;
+        decode_optional_runtime_title_row(row.as_ref(), PersistedTitleReadMode::Presentation, true)
+    }
+
     async fn create_or_get_existing(&self, title: Title) -> AppResult<CreateTitleOutcome> {
         let external_ids = normalized_external_ids(&title.external_ids);
         let library_id = title.library_id.clone();
@@ -745,6 +780,58 @@ impl TitleRepository for TitleStore {
 
                     create_title_tx(tx, &title).await?;
                     let title = load_title_tx_or_not_found(tx, &title.id, true).await?;
+                    Ok(CreateTitleOutcome {
+                        title,
+                        reused_existing: false,
+                    })
+                })
+            },
+        )
+        .await;
+
+        match result {
+            Ok(outcome) => Ok(outcome),
+            Err(error) if is_title_external_id_conflict_error(&error) => {
+                match self
+                    .find_existing_title_after_unique_conflict(&library_id, external_ids.as_slice())
+                    .await?
+                {
+                    Some(existing) => Ok(CreateTitleOutcome {
+                        title: existing,
+                        reused_existing: true,
+                    }),
+                    None => Err(error),
+                }
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    async fn create_or_get_existing_and_bind_pending_import(
+        &self,
+        title: Title,
+        pending_import_id: &str,
+    ) -> AppResult<CreateTitleOutcome> {
+        let external_ids = normalized_external_ids(&title.external_ids);
+        let library_id = title.library_id.clone();
+        let pending_import_id = pending_import_id.to_string();
+        let result = SqlRuntime::run_in_transaction(
+            &self.datastore,
+            "create_or_get_existing_title_and_bind_pending_import",
+            move |tx| {
+                let title = title.clone();
+                let pending_import_id = pending_import_id.clone();
+                Box::pin(async move {
+                    if let Some(existing) = find_existing_title_for_create_tx(tx, &title).await? {
+                        return Ok(CreateTitleOutcome {
+                            title: existing,
+                            reused_existing: true,
+                        });
+                    }
+
+                    create_title_tx(tx, &title).await?;
+                    let title = load_title_tx_or_not_found(tx, &title.id, true).await?;
+                    bind_pending_import_to_created_title_tx(tx, &pending_import_id, &title).await?;
                     Ok(CreateTitleOutcome {
                         title,
                         reused_existing: false,
@@ -2536,6 +2623,45 @@ async fn create_title_tx(tx: &mut SqlTx<'_>, title: &Title) -> AppResult<()> {
     SqlRuntime::execute(SqlExec::Tx(tx), TITLE_INSERT_SQL, &args).await?;
     replace_title_search_projection_sql_tx(tx, title).await?;
     replace_title_external_ids_projection_sql_tx(tx, title).await?;
+    Ok(())
+}
+
+async fn bind_pending_import_to_created_title_tx(
+    tx: &mut SqlTx<'_>,
+    pending_import_id: &str,
+    title: &Title,
+) -> AppResult<()> {
+    let now = Utc::now();
+    let updated_at = match &*tx {
+        SqlTx::Sqlite(_) => SqlArg::Text(now.to_rfc3339()),
+        SqlTx::Postgres(_) => SqlArg::Timestamp(now),
+    };
+    let rows = SqlRuntime::execute(
+        SqlExec::Tx(tx),
+        "UPDATE library_scan_unmatched_items
+            SET title_id = {},
+                status = {},
+                updated_at = {}
+          WHERE id = {}
+            AND library_id = {}
+            AND facet = {}
+            AND title_id IS NULL",
+        &[
+            SqlArg::Text(title.id.clone()),
+            SqlArg::Text(PendingImportStatus::Pending.as_str().to_string()),
+            updated_at,
+            SqlArg::Text(pending_import_id.to_string()),
+            SqlArg::Text(title.library_id.clone()),
+            SqlArg::Text(title.facet.as_str().to_string()),
+        ],
+    )
+    .await?;
+    if rows != 1 {
+        return Err(AppError::Validation(format!(
+            "pending import {pending_import_id} could not be bound to title {}",
+            title.id
+        )));
+    }
     Ok(())
 }
 

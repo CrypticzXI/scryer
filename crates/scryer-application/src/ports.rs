@@ -885,7 +885,40 @@ pub trait TitleRepository: Send + Sync {
         source: &str,
         value: &str,
     ) -> AppResult<Option<Title>>;
+    async fn find_by_external_id_in_library_and_facet(
+        &self,
+        library_id: &str,
+        facet: MediaFacet,
+        source: &str,
+        value: &str,
+    ) -> AppResult<Option<Title>> {
+        let library_id = library_id.trim();
+        if library_id.is_empty() {
+            return Ok(None);
+        }
+
+        Ok(self
+            .list_for_libraries(Some(facet), &[library_id.to_string()], None)
+            .await?
+            .into_iter()
+            .find(|title| {
+                title.external_ids.iter().any(|external_id| {
+                    external_id.source.eq_ignore_ascii_case(source)
+                        && external_id.value.trim() == value.trim()
+                })
+            }))
+    }
     async fn create_or_get_existing(&self, title: Title) -> AppResult<CreateTitleOutcome>;
+    async fn create_or_get_existing_and_bind_pending_import(
+        &self,
+        title: Title,
+        _pending_import_id: &str,
+    ) -> AppResult<CreateTitleOutcome> {
+        let _ = title;
+        Err(AppError::Repository(
+            "transactional pending import title creation is not supported".into(),
+        ))
+    }
     async fn create(&self, title: Title) -> AppResult<Title>;
     async fn list_titles_due_for_hydration(
         &self,

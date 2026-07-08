@@ -221,15 +221,19 @@ const CATALOG_DISCOVERY_ITEM_FIELDS = `
     rankScore
     ownedInInput`;
 
-const TITLE_MORE_LIKE_THIS_ITEM_FIELDS = `${CATALOG_DISCOVERY_ITEM_FIELDS}
-    externalRatings {
-      source
-      value
-      score
-      normalized
-      votes
-      url
-    }`;
+const TITLE_MORE_LIKE_THIS_CARD_FIELDS = `
+    id
+    targetKey
+    targetKind
+    contentType
+    displayTitle
+    originalTitle
+    sortTitle
+    year
+    posterUrl
+    resolved
+    resolvedTitleId
+    ownedInInput`;
 
 export const catalogDiscoveryQuery = `query CatalogDiscovery($input: CatalogDiscoveryInput!) {
   catalogDiscovery(input: $input) {
@@ -576,9 +580,6 @@ const TITLE_SERIES_OVERVIEW_FIELDS = `${TITLE_CORE_FIELDS}
         votes
         url
       }
-    }
-    moreLikeThis(limit: 12) {
-${TITLE_MORE_LIKE_THIS_ITEM_FIELDS}
     }`;
 
 const TITLE_MOVIE_OVERVIEW_FIELDS = `${TITLE_SERIES_OVERVIEW_FIELDS}
@@ -1348,9 +1349,6 @@ export const TITLE_SELECTED_PANEL_FIELDS = `${TITLE_PANEL_FIELDS}
     collections {${TITLE_COLLECTION_FIELDS}
     }
     mediaFiles {${TITLE_MEDIA_FILE_FIELDS}
-    }
-    moreLikeThis(limit: 12) {
-${TITLE_MORE_LIKE_THIS_ITEM_FIELDS}
     }`;
 
 export const TITLE_COMMAND_PALETTE_FIELDS = `
@@ -1584,6 +1582,15 @@ ${TITLE_PANEL_FIELDS}
 export const titlePanelDetailQuery = `query TitlePanelDetail($id: ID!) {
   title(id: $id) {
 ${TITLE_SELECTED_PANEL_FIELDS}
+  }
+}`;
+
+export const titleMoreLikeThisQuery = `query TitleMoreLikeThis($id: ID!, $limit: Int = 12) {
+  title(id: $id) {
+    id
+    moreLikeThis(limit: $limit) {
+${TITLE_MORE_LIKE_THIS_CARD_FIELDS}
+    }
   }
 }`;
 

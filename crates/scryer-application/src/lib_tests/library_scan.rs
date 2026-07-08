@@ -5661,29 +5661,44 @@ fn pending_import_search_result(tvdb_id: &str, name: &str) -> RichMetadataSearch
 }
 
 #[tokio::test]
-async fn pending_import_title_search_filters_titles_already_in_same_library() {
+async fn pending_import_title_search_filters_same_library_titles_only() {
     let settings = Arc::new(StoredSettingsRepo::default());
     let library_scanner = Arc::new(MutableLibraryScanner::default());
     let unmatched_items = Arc::new(TrackingLibraryScanUnmatchedItemRepo::default());
-    let (app, user) = bootstrap_with_scan_unmatched_and_metadata_tracking(
+    let (app, user, titles) = bootstrap_with_scan_unmatched_and_metadata_tracking_and_titles(
         settings,
         library_scanner,
         unmatched_items.clone(),
         Arc::new(PendingImportSearchMetadataGateway {
             results: vec![
-                pending_import_search_result("123456", "Existing Movie"),
+                pending_import_search_result("123456", "Other Library Movie"),
+                pending_import_search_result("333333", "Existing Movie"),
                 pending_import_search_result("222222", "New Movie"),
             ],
         }),
     );
 
-    let mut existing_request =
-        pending_import_title_request(MediaFacet::Movie, "Existing Movie", Some("123456"), Some(2020));
+    let mut existing_request = pending_import_title_request(
+        MediaFacet::Movie,
+        "Existing Movie",
+        Some("333333"),
+        Some(2020),
+    );
     existing_request.root_folder_id = None;
     existing_request.min_availability = None;
-    app.create_title_without_hydration(&user, existing_request)
+    let existing_title = app
+        .create_title_without_hydration(&user, existing_request)
         .await
         .expect("seed existing title");
+    let mut other_library_title = existing_title.title.clone();
+    other_library_title.id = "other-library-movie-title".to_string();
+    other_library_title.library_id = "other-movie-library".to_string();
+    other_library_title.name = "Other Library Movie".to_string();
+    other_library_title.external_ids = vec![ExternalId {
+        source: "tvdb".to_string(),
+        value: "123456".to_string(),
+    }];
+    titles.store.lock().await.push(other_library_title);
 
     unmatched_items
         .upsert_library_scan_unmatched_item(&build_test_unmatched_item(
@@ -5710,9 +5725,11 @@ async fn pending_import_title_search_filters_titles_already_in_same_library() {
         .await
         .expect("search pending import titles");
 
-    assert_eq!(results.len(), 1);
-    assert_eq!(results[0].tvdb_id, "222222");
-    assert_eq!(results[0].name, "New Movie");
+    let result_ids = results
+        .iter()
+        .map(|result| result.tvdb_id.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(result_ids, vec!["123456", "222222"]);
 }
 
 #[tokio::test]

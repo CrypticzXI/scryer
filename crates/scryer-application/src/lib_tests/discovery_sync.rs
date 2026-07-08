@@ -1309,6 +1309,10 @@ async fn title_more_like_this_refreshes_empty_cache_from_metadata_gateway() {
     assert_eq!(inputs[0].subject.tmdb_id, Some(100));
     assert_eq!(inputs[0].subject.facet.as_deref(), Some("movie"));
     assert!(inputs[0].include_unresolved);
+    assert_eq!(
+        *discovery.title_more_like_this_limits.lock().await,
+        vec![48]
+    );
 }
 
 #[tokio::test]
@@ -3787,6 +3791,7 @@ struct RecordingDiscoveryRepository {
     facets: Mutex<Vec<DiscoveryFacetRecord>>,
     submitted_subjects: Mutex<Vec<DiscoverySubmittedSubjectRecord>>,
     title_more_like_this_items: Mutex<HashMap<String, Vec<DiscoveryItemRecord>>>,
+    title_more_like_this_limits: Mutex<Vec<i64>>,
     generation_list_calls: Mutex<usize>,
 }
 
@@ -4512,6 +4517,7 @@ impl DiscoveryRepository for RecordingDiscoveryRepository {
         title_id: &str,
         limit: i64,
     ) -> AppResult<Vec<DiscoveryItemRecord>> {
+        self.title_more_like_this_limits.lock().await.push(limit);
         let limit = limit.max(0) as usize;
         let mut items = self
             .title_more_like_this_items

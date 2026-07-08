@@ -443,7 +443,7 @@ impl AppUseCase {
         let _pending_import_resolution_guard =
             self.acquire_pending_import_resolution_guard(pending_import_id)?;
 
-        let mut item = self
+        let item = self
             .services
             .library
             .library_scan_unmatched_items
@@ -525,9 +525,14 @@ impl AppUseCase {
             .services
             .catalog
             .titles
-            .find_by_external_id_in_facet(item.facet.clone(), "tvdb", &target_tvdb_id)
+            .find_by_external_id_in_library_and_facet(
+                &item.library_id,
+                item.facet.clone(),
+                "tvdb",
+                &target_tvdb_id,
+            )
             .await?
-            .is_some_and(|title| title.library_id == item.library_id)
+            .is_some()
         {
             return Err(AppError::Validation(
                 "title already exists in this library".into(),
@@ -535,7 +540,12 @@ impl AppUseCase {
         }
 
         let outcome = self
-            .add_title_with_outcome_in_library(actor, request, item.library_id.clone())
+            .add_title_and_bind_pending_import_with_outcome_in_library(
+                actor,
+                request,
+                item.library_id.clone(),
+                pending_import_id,
+            )
             .await?;
 
         if outcome.reused_existing_title {
@@ -543,15 +553,6 @@ impl AppUseCase {
                 "title already exists in this library".into(),
             ));
         }
-
-        item.status = PendingImportStatus::Pending;
-        item.title_id = Some(outcome.title.id.clone());
-        item.updated_at = Utc::now().to_rfc3339();
-        self.services
-            .library
-            .library_scan_unmatched_items
-            .upsert_library_scan_unmatched_item(&item)
-            .await?;
 
         Ok(ResolvePendingImportResult {
             title: outcome.title,
@@ -611,9 +612,14 @@ impl AppUseCase {
                     .services
                     .catalog
                     .titles
-                    .find_by_external_id_in_facet(item.facet.clone(), "tvdb", tvdb_id)
+                    .find_by_external_id_in_library_and_facet(
+                        &item.library_id,
+                        item.facet.clone(),
+                        "tvdb",
+                        tvdb_id,
+                    )
                     .await?
-                    .is_some_and(|title| title.library_id == item.library_id);
+                    .is_some();
             if exists_in_library {
                 continue;
             }

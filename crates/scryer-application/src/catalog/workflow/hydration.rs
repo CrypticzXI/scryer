@@ -309,12 +309,12 @@ impl AppUseCase {
     }
 }
 impl AppUseCase {
-    pub(crate) async fn create_title_without_hydration_after_library_authorization(
+    async fn new_title_for_library(
         &self,
         actor: &User,
         request: NewTitle,
         library_id: String,
-    ) -> AppResult<CreateTitleOutcome> {
+    ) -> AppResult<Title> {
         if request.name.trim().is_empty() {
             return Err(AppError::Validation("title name is required".into()));
         }
@@ -323,7 +323,7 @@ impl AppUseCase {
             .await?;
 
         let name = request.name.trim().to_string();
-        let title = Title {
+        Ok(Title {
             id: Id::new().0,
             library_id: library_id.clone(),
             name,
@@ -363,13 +363,56 @@ impl AppUseCase {
             min_availability: request.min_availability,
             digital_release_date: None,
             folder_path: None,
-        };
+        })
+    }
+
+    pub(crate) async fn create_title_without_hydration_after_library_authorization(
+        &self,
+        actor: &User,
+        request: NewTitle,
+        library_id: String,
+    ) -> AppResult<CreateTitleOutcome> {
+        let title = self.new_title_for_library(actor, request, library_id).await?;
 
         let created = self
             .services
             .catalog
             .titles
             .create_or_get_existing(title)
+            .await?;
+        if !created.reused_existing {
+            self.append_domain_event(new_title_domain_event(
+                actor,
+                &created.title,
+                DomainEventPayload::TitleAdded(TitleAddedEventData {
+                    title: title_context_snapshot(&created.title),
+                }),
+            ))
+            .await?;
+        }
+
+        Ok(created)
+    }
+
+    pub(crate) async fn create_title_without_hydration_and_bind_pending_import_in_library(
+        &self,
+        actor: &User,
+        request: NewTitle,
+        library_id: String,
+        pending_import_id: &str,
+    ) -> AppResult<CreateTitleOutcome> {
+        self.require_library_permission(
+            actor,
+            &library_id,
+            scryer_domain::LibraryPermission::ManageTitles,
+        )
+        .await?;
+        let title = self.new_title_for_library(actor, request, library_id).await?;
+        let created = self
+            .services
+            .catalog
+            .titles
+            .create_or_get_existing_and_bind_pending_import(title, pending_import_id)
             .await?;
         if !created.reused_existing {
             self.append_domain_event(new_title_domain_event(

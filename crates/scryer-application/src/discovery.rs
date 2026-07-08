@@ -160,11 +160,12 @@ impl AppUseCase {
             .await?
             .into_iter()
             .collect::<HashSet<_>>();
+        let candidate_limit = requested_limit.saturating_mul(4).clamp(24, 100) as i64;
         let mut items = self
             .services
             .library
             .discovery
-            .list_title_more_like_this_items(title_id, 100)
+            .list_title_more_like_this_items(title_id, candidate_limit)
             .await?;
         let mut item_lookup_indexes = vec![Vec::<usize>::new(); items.len()];
         let mut lookups = Vec::new();
