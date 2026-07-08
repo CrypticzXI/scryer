@@ -7,12 +7,12 @@ use std::time::Duration;
 use async_trait::async_trait;
 use scryer_application::{AppError, AppResult, ArchiveExtractorClient};
 use scryer_plugin_sdk::{
-    ArchivePluginProcessRequest, ArchivePluginProcessResponse, EXPORT_ARCHIVE_PROCESS,
+    ArchivePluginOperation, ArchivePluginProcessRequest, ArchivePluginProcessResponse,
     PluginDescriptor,
 };
 
-use crate::loader::build_archive_plugin;
-use crate::types::decode_plugin_result;
+use crate::runtime_backing::{PluginInstanceSpec, PluginRuntimeBacking, PreopenSpec};
+use crate::wasmtime_host::{ArchiveInvocation, process_archive};
 
 const GUEST_SOURCE_ROOT: &str = "/scryer/source";
 const GUEST_OUTPUT_ROOT: &str = "/scryer/output";
@@ -20,14 +20,19 @@ const ARCHIVE_PROCESS_TIMEOUT_SECONDS: u64 = 60 * 60;
 
 pub struct WasmArchiveExtractorClient {
     wasm_bytes: Arc<Vec<u8>>,
+    plugin_id: String,
+    plugin_version: String,
+    backing: PluginRuntimeBacking,
 }
 
 impl WasmArchiveExtractorClient {
     pub fn new(wasm_bytes: Vec<u8>, descriptor: PluginDescriptor) -> AppResult<Self> {
-        let _ = descriptor;
-
+        let backing = PluginRuntimeBacking::for_descriptor(&descriptor);
         Ok(Self {
             wasm_bytes: Arc::new(wasm_bytes),
+            plugin_id: descriptor.id,
+            plugin_version: descriptor.version,
+            backing,
         })
     }
 }
@@ -38,29 +43,50 @@ impl ArchiveExtractorClient for WasmArchiveExtractorClient {
         &self,
         request: ArchivePluginProcessRequest,
     ) -> AppResult<ArchivePluginProcessResponse> {
+        // The archive kind runs exclusively on the native wasmtime host (RFC
+        // §7.2.6): the raw crypto ABI belongs to it and to nothing else.
+        match self.backing {
+            PluginRuntimeBacking::WasmtimeArchive => {}
+            PluginRuntimeBacking::Extism => {
+                return Err(AppError::Repository(
+                    "archive extractor plugin requires the wasmtime runtime backing".to_string(),
+                ));
+            }
+        }
+
         let prepared = PreparedArchiveRequest::new(request)?;
         let input = serde_json::to_string(&prepared.request).map_err(|error| {
             AppError::Repository(format!(
                 "failed to serialize archive process request: {error}"
             ))
         })?;
+        let operation = operation_label(&prepared.request.operation);
+        let spec = prepared.instance_spec(Arc::clone(&self.wasm_bytes));
+        let plugin_id = self.plugin_id.clone();
+        let plugin_version = self.plugin_version.clone();
 
-        let wasm_bytes = Arc::clone(&self.wasm_bytes);
-        let output = tokio::task::spawn_blocking(move || {
-            let manifest = prepared.manifest((*wasm_bytes).clone());
-            let mut plugin = build_archive_plugin(manifest).map_err(|error| {
-                AppError::Repository(format!(
-                    "failed to instantiate WASM archive extractor plugin: {error}"
-                ))
-            })?;
-            plugin
-                .call::<&str, String>(EXPORT_ARCHIVE_PROCESS, &input)
-                .map_err(|error| plugin_call_error(&format!("{EXPORT_ARCHIVE_PROCESS}()"), error))
+        tokio::task::spawn_blocking(move || {
+            // Keep `prepared` alive for the invocation so the PAR2 COW staging
+            // TempDir (referenced by the spec's preopens) is not dropped early.
+            let _prepared = prepared;
+            let invocation = ArchiveInvocation {
+                plugin_id: &plugin_id,
+                plugin_version: &plugin_version,
+                operation,
+            };
+            process_archive(&spec, &input, invocation)
         })
         .await
-        .map_err(|error| AppError::Repository(format!("plugin task panicked: {error}")))??;
+        .map_err(|error| AppError::Repository(format!("archive plugin task panicked: {error}")))?
+    }
+}
 
-        decode_plugin_result(&output, EXPORT_ARCHIVE_PROCESS)
+fn operation_label(operation: &ArchivePluginOperation) -> &'static str {
+    match operation {
+        ArchivePluginOperation::Inspect { .. } => "Inspect",
+        ArchivePluginOperation::ExtractArchive { .. } => "ExtractArchive",
+        ArchivePluginOperation::VerifyRepairSet { .. } => "VerifyRepairSet",
+        ArchivePluginOperation::RepairThenExtract { .. } => "RepairThenExtract",
     }
 }
 
@@ -74,8 +100,6 @@ struct PreparedArchiveRequest {
 
 impl PreparedArchiveRequest {
     fn new(request: ArchivePluginProcessRequest) -> AppResult<Self> {
-        use scryer_plugin_sdk::ArchivePluginOperation;
-
         match request.operation {
             ArchivePluginOperation::Inspect {
                 source_dir,
@@ -181,22 +205,33 @@ impl PreparedArchiveRequest {
         }
     }
 
-    fn manifest(&self, wasm_bytes: Vec<u8>) -> extism::Manifest {
-        let mut manifest = extism::Manifest::new([extism::Wasm::data(wasm_bytes)])
-            .with_timeout(Duration::from_secs(ARCHIVE_PROCESS_TIMEOUT_SECONDS));
+    /// Express this request's sandbox + timeout requirements as a runtime spec
+    /// (RFC §7.1). Preopens mirror the previous Extism manifest exactly: source
+    /// at `/scryer/source` (rw only for PAR2 repair staging, which is already a
+    /// COW copy), output at `/scryer/output`. The wasmtime host adds the
+    /// per-invocation rw scratch (`TMPDIR`) itself.
+    fn instance_spec(&self, wasm: Arc<Vec<u8>>) -> PluginInstanceSpec {
+        let mut preopens = Vec::new();
         if let Some(source_root) = &self.source_root {
-            let source_path = if self.source_writable {
-                source_root.display().to_string()
+            preopens.push(if self.source_writable {
+                PreopenSpec::writable(source_root.clone(), GUEST_SOURCE_ROOT)
             } else {
-                format!("ro:{}", source_root.display())
-            };
-            manifest = manifest.with_allowed_path(source_path, GUEST_SOURCE_ROOT);
+                PreopenSpec::read_only(source_root.clone(), GUEST_SOURCE_ROOT)
+            });
         }
         if let Some(output_root) = &self.output_root {
-            manifest =
-                manifest.with_allowed_path(output_root.display().to_string(), GUEST_OUTPUT_ROOT);
+            preopens.push(PreopenSpec::writable(output_root.clone(), GUEST_OUTPUT_ROOT));
         }
-        manifest
+        PluginInstanceSpec {
+            wasm,
+            preopens,
+            timeout: Duration::from_secs(ARCHIVE_PROCESS_TIMEOUT_SECONDS),
+            // None = the host's provisional default cap (RFC §13.1, WP2 bench);
+            // operator-overridable.
+            memory_max_bytes: None,
+            // No network for archive extraction.
+            allowed_hosts: Vec::new(),
+        }
     }
 }
 
@@ -359,17 +394,4 @@ fn is_safe_relative_plugin_path(path: &Path) -> bool {
             std::path::Component::Normal(_) | std::path::Component::CurDir
         )
     })
-}
-
-fn plugin_call_error(operation: &str, error: extism::Error) -> AppError {
-    let root_cause = error.root_cause().to_string();
-    let detail = if root_cause.trim().is_empty() || root_cause == error.to_string() {
-        error.to_string()
-    } else {
-        root_cause
-    };
-
-    AppError::Repository(format!(
-        "archive extractor plugin {operation} failed: {detail}"
-    ))
 }

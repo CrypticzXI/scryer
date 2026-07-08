@@ -29,5 +29,12 @@ url = "2"
 zstd = { version = "0.13", default-features = false }
 tempfile = "3"
 libc = "0.2"
+# RFC 123 WP1: native wasmtime archive host (crypto ABI + command protocol).
+wasmtime = { workspace = true }
+wasmtime-wasi = { workspace = true }
 
 [dev-dependencies]
+# WAT guests are authored inline: `wasmtime::Module::new` compiles text directly
+# (wasmtime's default `wat` feature), and `wat::parse_str` yields raw wasm bytes
+# for tests that feed the descriptor-shape classifier.
+wat = "1"

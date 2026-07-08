@@ -1,0 +1,334 @@
+//! Command-protocol invocation for the archive host (RFC 123 §7.2.5 / §7.2.7).
+//!
+//! Instance-per-request, WASI-command style: the serialized
+//! `ArchivePluginProcessRequest` is fed on stdin, the guest writes exactly one
+//! `ArchivePluginProcessResponse` JSON document to stdout, and a clean `_start`
+//! return (or `proc_exit(0)`) marks protocol success. Operational conditions
+//! (password required, unsupported format, …) stay in-band via the response's
+//! `status`; only genuine faults exit non-zero / trap. Runs synchronously — the
+//! adapter calls this under `tokio::task::spawn_blocking`.
+
+use std::time::{Duration, Instant};
+
+use scryer_application::{AppError, AppResult};
+use scryer_plugin_sdk::ArchivePluginProcessResponse;
+use wasmtime::{Linker, Module, Store};
+use wasmtime_wasi::p2::pipe::MemoryOutputPipe;
+
+use crate::runtime_backing::PluginInstanceSpec;
+use crate::wasmtime_host::sandbox::{self, HostCtx, HostLimits, PreparedSandbox};
+use crate::wasmtime_host::{crypto_host, engine, error};
+
+/// Amount of guest stderr forwarded to tracing / attached to error messages.
+const STDERR_TAIL_BYTES: usize = 8 * 1024;
+
+/// Identifying context for one invocation (tracing span + error messages).
+pub(crate) struct ArchiveInvocation<'a> {
+    pub(crate) plugin_id: &'a str,
+    pub(crate) plugin_version: &'a str,
+    pub(crate) operation: &'a str,
+}
+
+/// Instantiate the archive guest and run one request→response exchange.
+pub(crate) fn process_archive(
+    spec: &PluginInstanceSpec,
+    request_json: &str,
+    invocation: ArchiveInvocation<'_>,
+) -> AppResult<ArchivePluginProcessResponse> {
+    let span = tracing::info_span!(
+        "archive_plugin_invoke",
+        plugin_id = invocation.plugin_id,
+        plugin_version = invocation.plugin_version,
+        operation = invocation.operation,
+    );
+    let _enter = span.enter();
+
+    let started = Instant::now();
+    let request_bytes = request_json.as_bytes().to_vec();
+    let request_len = request_bytes.len();
+
+    let engine = engine::shared_engine();
+
+    // TODO(RFC §9 / WP6): cache the compiled Module keyed by artifact digest;
+    // 0.17.0 compiles per request (one archive extraction runs at a time).
+    let module = Module::from_binary(engine, &spec.wasm).map_err(|error| {
+        AppError::Repository(format!(
+            "archive extractor plugin {}@{} failed to compile: {error:#}",
+            invocation.plugin_id, invocation.plugin_version
+        ))
+    })?;
+
+    let mut linker: Linker<HostCtx> = Linker::new(engine);
+    wasmtime_wasi::p1::add_to_linker_sync(&mut linker, |ctx: &mut HostCtx| &mut ctx.wasi).map_err(
+        |error| {
+            AppError::Repository(format!(
+                "failed to wire WASI preview1 for archive plugin: {error:#}"
+            ))
+        },
+    )?;
+    crypto_host::add_to_linker(&mut linker).map_err(|error| {
+        AppError::Repository(format!(
+            "failed to register archive crypto host functions: {error:#}"
+        ))
+    })?;
+
+    let PreparedSandbox {
+        wasi,
+        stdout,
+        stderr,
+        _scratch,
+    } = sandbox::build_sandbox(&spec.preopens, request_bytes)?;
+
+    let mut store = Store::new(
+        engine,
+        HostCtx {
+            wasi,
+            limits: HostLimits::new(spec.memory_max_bytes),
+        },
+    );
+    store.limiter(|ctx: &mut HostCtx| &mut ctx.limits);
+    store.set_epoch_deadline(engine::deadline_ticks(spec.timeout));
+
+    let instance = match linker.instantiate(&mut store, &module) {
+        Ok(instance) => instance,
+        Err(error) => {
+            let denied = store.data().limits.memory_denied;
+            let failure = error::classify_error(&error, denied);
+            return Err(finish_error(
+                &invocation,
+                spec.timeout,
+                &tail_of(&stderr),
+                &failure,
+                started,
+                request_len,
+            ));
+        }
+    };
+
+    let start = match instance.get_typed_func::<(), ()>(&mut store, "_start") {
+        Ok(start) => start,
+        Err(error) => {
+            let failure = error::protocol_failure(format!(
+                "guest is not a wasip1 command (missing _start): {error:#}"
+            ));
+            return Err(finish_error(
+                &invocation,
+                spec.timeout,
+                &tail_of(&stderr),
+                &failure,
+                started,
+                request_len,
+            ));
+        }
+    };
+
+    let call_result = start.call(&mut store, ());
+    let denied = store.data().limits.memory_denied;
+    let stdout_bytes = stdout.contents();
+    let stderr_tail = tail_of(&stderr);
+
+    if !stderr_tail.is_empty() {
+        tracing::debug!(
+            target: "scryer_plugins::archive",
+            plugin_id = invocation.plugin_id,
+            stderr = stderr_tail.as_str(),
+            "archive plugin stderr",
+        );
+    }
+
+    if let Err(failure) = error::interpret_start_result(call_result, denied) {
+        return Err(finish_error(
+            &invocation,
+            spec.timeout,
+            &stderr_tail,
+            &failure,
+            started,
+            request_len,
+        ));
+    }
+
+    let response: ArchivePluginProcessResponse = match serde_json::from_slice(&stdout_bytes) {
+        Ok(response) => response,
+        Err(error) => {
+            let failure = error::protocol_failure(format!(
+                "stdout was not a valid ArchivePluginProcessResponse JSON: {error}"
+            ));
+            return Err(finish_error(
+                &invocation,
+                spec.timeout,
+                &stderr_tail,
+                &failure,
+                started,
+                request_len,
+            ));
+        }
+    };
+
+    let duration_ms = started.elapsed().as_millis() as u64;
+    let response_bytes = stdout_bytes.len();
+    tracing::debug!(
+        target: "scryer_plugins::archive",
+        plugin_id = invocation.plugin_id,
+        plugin_version = invocation.plugin_version,
+        operation = invocation.operation,
+        duration_ms,
+        request_bytes = request_len,
+        response_bytes,
+        disposition = "ok",
+        "archive plugin invocation complete",
+    );
+
+    Ok(response)
+}
+
+/// Log the failing disposition and build the operator-facing `AppError`.
+fn finish_error(
+    invocation: &ArchiveInvocation<'_>,
+    budget: Duration,
+    stderr_tail: &str,
+    failure: &error::RunFailure,
+    started: Instant,
+    request_len: usize,
+) -> AppError {
+    let duration_ms = started.elapsed().as_millis() as u64;
+    let disposition = format!("{:?}", failure.kind);
+    tracing::debug!(
+        target: "scryer_plugins::archive",
+        plugin_id = invocation.plugin_id,
+        plugin_version = invocation.plugin_version,
+        operation = invocation.operation,
+        duration_ms,
+        request_bytes = request_len,
+        disposition,
+        "archive plugin invocation failed",
+    );
+    let ctx = error::InvocationContext {
+        plugin_id: invocation.plugin_id,
+        plugin_version: invocation.plugin_version,
+        operation: invocation.operation,
+        budget,
+        stderr_tail,
+    };
+    error::to_app_error(failure, &ctx)
+}
+
+/// Size-capped, lossy tail of a captured output pipe.
+fn tail_of(pipe: &MemoryOutputPipe) -> String {
+    let bytes = pipe.contents();
+    let start = bytes.len().saturating_sub(STDERR_TAIL_BYTES);
+    String::from_utf8_lossy(&bytes[start..]).into_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wasmtime::Engine;
+
+    /// A wasip1 command that echoes up to 1 KiB of stdin to stdout.
+    const ECHO_WAT: &str = r#"
+        (module
+          (import "wasi_snapshot_preview1" "fd_read"
+            (func $fd_read (param i32 i32 i32 i32) (result i32)))
+          (import "wasi_snapshot_preview1" "fd_write"
+            (func $fd_write (param i32 i32 i32 i32) (result i32)))
+          (memory (export "memory") 1)
+          (func (export "_start")
+            ;; read iovec @0: base=16, len=1024
+            (i32.store (i32.const 0) (i32.const 16))
+            (i32.store (i32.const 4) (i32.const 1024))
+            (drop (call $fd_read (i32.const 0) (i32.const 0) (i32.const 1) (i32.const 8)))
+            ;; write iovec @0: base=16, len=*nread(@8)
+            (i32.store (i32.const 0) (i32.const 16))
+            (i32.store (i32.const 4) (i32.load (i32.const 8)))
+            (drop (call $fd_write (i32.const 1) (i32.const 0) (i32.const 1) (i32.const 8)))))
+    "#;
+
+    /// A guest whose `_start` spins forever — for the epoch-deadline test.
+    const SPIN_WAT: &str = r#"(module (func (export "_start") (loop br 0)))"#;
+
+    /// A guest demanding 100 pages (6.4 MiB) of initial memory — for the cap.
+    const BIG_MEM_WAT: &str = r#"(module (memory (export "memory") 100))"#;
+
+    /// RFC §13.2 PROTOCOL GATE: request-on-stdin / response-on-stdout capture
+    /// under wasmtime-wasi p1 with a `Store<HostCtx>`. If this fails, the host
+    /// (and the PDK) must fall back to control files (RFC §7.2.5).
+    #[test]
+    fn stdin_stdout_round_trips_under_wasi_p1() {
+        let engine = Engine::default();
+        let module = Module::new(&engine, ECHO_WAT).expect("compile echo guest");
+        let mut linker: Linker<HostCtx> = Linker::new(&engine);
+        wasmtime_wasi::p1::add_to_linker_sync(&mut linker, |ctx: &mut HostCtx| &mut ctx.wasi)
+            .unwrap();
+
+        let request = br#"{"operation":{"Inspect":{"source_dir":"/scryer/source"}}}"#.to_vec();
+        let PreparedSandbox {
+            wasi,
+            stdout,
+            stderr: _,
+            _scratch,
+        } = sandbox::build_sandbox(&[], request.clone()).expect("build sandbox");
+
+        let mut store = Store::new(
+            &engine,
+            HostCtx {
+                wasi,
+                limits: HostLimits::new(None),
+            },
+        );
+        let instance = linker.instantiate(&mut store, &module).unwrap();
+        let start = instance
+            .get_typed_func::<(), ()>(&mut store, "_start")
+            .unwrap();
+        start.call(&mut store, ()).expect("echo guest runs cleanly");
+
+        assert_eq!(
+            stdout.contents().as_ref(),
+            request.as_slice(),
+            "stdin must round-trip to captured stdout under wasmtime-wasi p1"
+        );
+    }
+
+    /// A spinning guest must be cancelled by the epoch deadline (using the real
+    /// process-wide engine + ticker) and map to a timeout failure.
+    #[test]
+    fn spinning_guest_hits_epoch_deadline() {
+        let engine = engine::shared_engine();
+        let module = Module::new(engine, SPIN_WAT).expect("compile spin guest");
+        let linker: Linker<()> = Linker::new(engine);
+        let mut store = Store::new(engine, ());
+        // One tick: the ~100ms background ticker advances the epoch and fires.
+        store.set_epoch_deadline(engine::deadline_ticks(Duration::from_millis(1)));
+        let instance = linker
+            .instantiate(&mut store, &module)
+            .expect("instantiate spin guest");
+        let start = instance
+            .get_typed_func::<(), ()>(&mut store, "_start")
+            .unwrap();
+
+        let result = start.call(&mut store, ());
+        let failure = error::interpret_start_result(result, false)
+            .expect_err("spinning guest must be interrupted");
+        assert_eq!(failure.kind, error::FailureKind::Timeout);
+    }
+
+    /// A guest whose initial memory exceeds the cap must be denied, and the
+    /// denial must classify as a resource limit.
+    #[test]
+    fn oversized_guest_is_denied_by_memory_cap() {
+        let engine = Engine::default();
+        let module = Module::new(&engine, BIG_MEM_WAT).expect("compile big-mem guest");
+        let mut store = Store::new(&engine, HostLimits::new(Some(1024 * 1024)));
+        store.limiter(|limits: &mut HostLimits| limits);
+        let linker: Linker<HostLimits> = Linker::new(&engine);
+
+        let error = linker
+            .instantiate(&mut store, &module)
+            .expect_err("initial memory over cap must be denied");
+        let denied = store.data().memory_denied;
+        assert!(denied, "limiter must record the denial");
+        assert_eq!(
+            error::classify_error(&error, denied).kind,
+            error::FailureKind::ResourceLimit
+        );
+    }
+}

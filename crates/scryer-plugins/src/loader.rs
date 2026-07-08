@@ -2882,16 +2882,6 @@ pub(crate) fn build_plugin(manifest: Manifest) -> Result<extism::Plugin, extism:
     )
 }
 
-pub(crate) fn build_archive_plugin(manifest: Manifest) -> Result<extism::Plugin, extism::Error> {
-    let _build_guard = WASMTIME_PLUGIN_BUILD_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    extism::PluginBuilder::new(manifest)
-        .with_wasi(true)
-        .with_functions(crate::archive_crypto_host::functions())
-        .build()
-}
-
 pub(crate) fn build_plugin_with_indexer_proxy(
     manifest: Manifest,
     indexer_proxy_policy: plugin_http_host::IndexerProxyPolicy,
@@ -2917,9 +2907,10 @@ fn build_plugin_with_hosts(
     let _build_guard = WASMTIME_PLUGIN_BUILD_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    // The raw crypto/CRC ABI is served ONLY by the native wasmtime archive host
+    // (RFC 123 §7.2.6); networked kinds must never see it.
     let mut functions = socket_host.functions();
     functions.extend(process_host.functions());
-    functions.extend(crate::archive_crypto_host::functions());
     functions.extend(plugin_http_host::host_functions_with_indexer_proxy(
         &manifest,
         indexer_proxy_policy,
@@ -2994,12 +2985,30 @@ fn validate_required_exports(
 
 fn load_from_bytes(wasm_bytes: &[u8]) -> Result<(PluginDescriptor, Vec<u8>), String> {
     let bytes = wasm_bytes.to_vec();
-    // No allowed hosts needed — describe() is a pure function that returns JSON.
-    let manifest = Manifest::new([extism::Wasm::data(bytes.clone())])
-        .with_timeout(std::time::Duration::from_secs(10));
 
-    let mut plugin =
-        build_plugin(manifest).map_err(|e| format!("failed to instantiate WASM: {e}"))?;
+    // Command-model archive artifacts (wasip1 command: `_start` + `memory`, no
+    // `scryer_describe` export) self-describe via argv ["describe"] on the
+    // wasmtime backing — RFC §8.2 (WP4 pulled early for the archive kind only).
+    // For these the required-export contract is `_start` + `memory` (checked in
+    // the classifier), not EXPORT_ARCHIVE_PROCESS. The four fleet kinds fall
+    // through to the unchanged Extism describe path below.
+    if let Some(result) = crate::wasmtime_host::command_model_describe(&bytes) {
+        return result.map(|descriptor| (descriptor, bytes));
+    }
+
+    // Descriptor extraction for the fleet kinds expresses its requirements
+    // through the runtime spec and runs on the Extism backing (RFC §7.1). No
+    // preopens or allowed hosts: describe() is a pure function returning JSON.
+    let spec = crate::runtime_backing::PluginInstanceSpec {
+        wasm: std::sync::Arc::new(bytes.clone()),
+        preopens: Vec::new(),
+        timeout: std::time::Duration::from_secs(10),
+        memory_max_bytes: None,
+        allowed_hosts: Vec::new(),
+    };
+
+    let mut plugin = build_plugin(spec.extism_manifest())
+        .map_err(|e| format!("failed to instantiate WASM: {e}"))?;
 
     let output: String = plugin
         .call::<&str, String>(EXPORT_DESCRIBE, "")

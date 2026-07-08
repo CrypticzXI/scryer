@@ -2068,7 +2068,11 @@ export function DiscoveryView({
   }
 
   return (
-    <div className="flex min-h-0 flex-1">
+    <div
+      id="discovery-view"
+      data-ui="discovery-view"
+      className="flex min-h-0 flex-1"
+    >
       <main className="min-w-0 flex-1 overflow-y-auto px-7 py-6 pb-16 max-sm:px-4">
         <div
           className={cn(

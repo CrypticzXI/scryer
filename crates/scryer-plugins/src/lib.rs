@@ -1,5 +1,4 @@
 mod archive_adapter;
-mod archive_crypto_host;
 pub mod builtins;
 mod download_client_adapter;
 mod indexer_adapter;
@@ -7,11 +6,19 @@ mod loader;
 mod notification_adapter;
 mod plugin_http_host;
 mod process_host;
+mod runtime_backing;
 mod runtime_features;
 mod socket_host;
 mod subtitle_adapter;
 mod subtitle_sync_adapter;
 mod types;
+mod wasmtime_host;
+
+// RFC 123 WP2 (archive validation): real-artifact integration suite. Lives
+// in-crate because it drives the private `archive_adapter` +
+// `wasmtime_host` modules against the checked-in plugin fixture.
+#[cfg(test)]
+mod archive_real_artifact_tests;
 
 pub use loader::DynamicArchiveExtractorPluginProvider;
 pub use loader::DynamicDownloadClientPluginProvider;

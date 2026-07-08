@@ -55,6 +55,12 @@ tokio-util = { version = "0.7", features = ["rt", "io"] }
 toml = "1"
 quick-xml = "0.41.0"
 extism = { version = "1.21", default-features = false, features = ["register-filesystem", "wasmtime-default-features"] }
+# RFC 123 WP1: native wasmtime archive host. Track the latest wasmtime release
+# (^46 = latest on crates.io, currently 46.0.1); owner accepts this direct major
+# coexisting with extism's transitive 43.x until Extism removal (WP5) —
+# compile-time-only cost, no shared types cross the boundary.
+wasmtime = "46"
+wasmtime-wasi = "46"
 semver = "1"
 metrics = "0.24"
 security-framework = "3"
