@@ -11,7 +11,7 @@
 
 mod crypto_host;
 mod describe;
-mod engine;
+pub(crate) mod engine;
 mod error;
 mod invoke;
 mod par2_host;

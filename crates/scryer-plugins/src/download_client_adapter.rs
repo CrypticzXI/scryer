@@ -15,6 +15,7 @@ use scryer_domain::{CompletedDownload, DownloadQueueItem, DownloadQueueState};
 use scryer_plugin_sdk::torrent::normalize_info_hash_pair;
 use tracing::debug;
 
+use crate::legacy_runtime::LegacyPlugin;
 use crate::types::{
     DownloadControlAction, DownloadInputKind, DownloadIsolationMode, DownloadItemState,
     EXPORT_DOWNLOAD_ADD, EXPORT_DOWNLOAD_CONTROL, EXPORT_DOWNLOAD_LIST_COMPLETED,
@@ -29,7 +30,7 @@ use crate::types::{
 };
 
 pub struct WasmDownloadClient {
-    plugin: Arc<Mutex<extism::Plugin>>,
+    plugin: Arc<Mutex<LegacyPlugin>>,
     descriptor: PluginDescriptor,
     client_name: String,
     client_id: String,
@@ -39,7 +40,7 @@ pub struct WasmDownloadClient {
 
 impl WasmDownloadClient {
     pub fn new(
-        plugin: extism::Plugin,
+        plugin: LegacyPlugin,
         descriptor: PluginDescriptor,
         client_id: String,
         client_name: String,
@@ -293,15 +294,8 @@ fn map_history_item_from_completed(
     }
 }
 
-fn plugin_call_error(operation: &str, error: extism::Error) -> AppError {
-    let root_cause = error.root_cause().to_string();
-    let detail = if root_cause.trim().is_empty() || root_cause == error.to_string() {
-        error.to_string()
-    } else {
-        root_cause
-    };
-
-    AppError::Repository(format!("plugin {operation} failed: {detail}"))
+fn plugin_call_error(operation: &str, error: AppError) -> AppError {
+    AppError::Repository(format!("plugin {operation} failed: {error}"))
 }
 
 fn build_isolation_entries(value: Option<&str>) -> Vec<PluginDownloadIsolation> {
@@ -732,7 +726,7 @@ impl DownloadClient for WasmDownloadClient {
                 .lock()
                 .map_err(|e| AppError::Repository(format!("plugin mutex poisoned: {e}")))?;
             guard
-                .call::<&str, String>(EXPORT_DOWNLOAD_ADD, &input)
+                .call_string(EXPORT_DOWNLOAD_ADD, &input)
                 .map_err(|e| plugin_call_error(&format!("{EXPORT_DOWNLOAD_ADD}()"), e))
         })
         .await
@@ -756,7 +750,7 @@ impl DownloadClient for WasmDownloadClient {
                 .lock()
                 .map_err(|e| AppError::Repository(format!("plugin mutex poisoned: {e}")))?;
             guard
-                .call::<(), String>(EXPORT_DOWNLOAD_LIST_QUEUE, ())
+                .call_unit(EXPORT_DOWNLOAD_LIST_QUEUE)
                 .map_err(|e| plugin_call_error(&format!("{EXPORT_DOWNLOAD_LIST_QUEUE}()"), e))
         })
         .await
@@ -794,7 +788,7 @@ impl DownloadClient for WasmDownloadClient {
                 .lock()
                 .map_err(|e| AppError::Repository(format!("plugin mutex poisoned: {e}")))?;
             guard
-                .call::<(), String>(EXPORT_DOWNLOAD_LIST_HISTORY, ())
+                .call_unit(EXPORT_DOWNLOAD_LIST_HISTORY)
                 .map_err(|e| plugin_call_error(&format!("{EXPORT_DOWNLOAD_LIST_HISTORY}()"), e))
         })
         .await
@@ -859,7 +853,7 @@ impl DownloadClient for WasmDownloadClient {
                 .lock()
                 .map_err(|e| AppError::Repository(format!("plugin mutex poisoned: {e}")))?;
             guard
-                .call::<(), String>(EXPORT_DOWNLOAD_LIST_COMPLETED, ())
+                .call_unit(EXPORT_DOWNLOAD_LIST_COMPLETED)
                 .map_err(|e| plugin_call_error(&format!("{EXPORT_DOWNLOAD_LIST_COMPLETED}()"), e))
         })
         .await
@@ -895,14 +889,14 @@ impl DownloadClient for WasmDownloadClient {
                 .map_err(|e| AppError::Repository(format!("plugin mutex poisoned: {e}")))?;
             if guard.function_exists(EXPORT_DOWNLOAD_LIST_RECENT_COMPLETED) {
                 let output = guard
-                    .call::<&str, String>(EXPORT_DOWNLOAD_LIST_RECENT_COMPLETED, &input)
+                    .call_string(EXPORT_DOWNLOAD_LIST_RECENT_COMPLETED, &input)
                     .map_err(|e| {
                         plugin_call_error(&format!("{EXPORT_DOWNLOAD_LIST_RECENT_COMPLETED}()"), e)
                     })?;
                 Ok((output, EXPORT_DOWNLOAD_LIST_RECENT_COMPLETED))
             } else {
                 let output = guard
-                    .call::<(), String>(EXPORT_DOWNLOAD_LIST_COMPLETED, ())
+                    .call_unit(EXPORT_DOWNLOAD_LIST_COMPLETED)
                     .map_err(|e| {
                         plugin_call_error(&format!("{EXPORT_DOWNLOAD_LIST_COMPLETED}()"), e)
                     })?;
@@ -953,7 +947,7 @@ impl DownloadClient for WasmDownloadClient {
                 .lock()
                 .map_err(|e| AppError::Repository(format!("plugin mutex poisoned: {e}")))?;
             let output = guard
-                .call::<&str, String>(EXPORT_DOWNLOAD_CONTROL, &input)
+                .call_string(EXPORT_DOWNLOAD_CONTROL, &input)
                 .map_err(|e| plugin_call_error(&format!("{EXPORT_DOWNLOAD_CONTROL}()"), e))?;
             decode_plugin_result::<()>(&output, EXPORT_DOWNLOAD_CONTROL)
         })
@@ -977,7 +971,7 @@ impl DownloadClient for WasmDownloadClient {
                 .lock()
                 .map_err(|e| AppError::Repository(format!("plugin mutex poisoned: {e}")))?;
             let output = guard
-                .call::<&str, String>(EXPORT_DOWNLOAD_CONTROL, &input)
+                .call_string(EXPORT_DOWNLOAD_CONTROL, &input)
                 .map_err(|e| plugin_call_error(&format!("{EXPORT_DOWNLOAD_CONTROL}()"), e))?;
             decode_plugin_result::<()>(&output, EXPORT_DOWNLOAD_CONTROL)
         })
@@ -1001,7 +995,7 @@ impl DownloadClient for WasmDownloadClient {
                 .lock()
                 .map_err(|e| AppError::Repository(format!("plugin mutex poisoned: {e}")))?;
             let output = guard
-                .call::<&str, String>(EXPORT_DOWNLOAD_CONTROL, &input)
+                .call_string(EXPORT_DOWNLOAD_CONTROL, &input)
                 .map_err(|e| plugin_call_error(&format!("{EXPORT_DOWNLOAD_CONTROL}()"), e))?;
             decode_plugin_result::<()>(&output, EXPORT_DOWNLOAD_CONTROL)
         })
@@ -1029,7 +1023,7 @@ impl DownloadClient for WasmDownloadClient {
                 .lock()
                 .map_err(|e| AppError::Repository(format!("plugin mutex poisoned: {e}")))?;
             let output = guard
-                .call::<&str, String>(EXPORT_DOWNLOAD_MARK_IMPORTED, &input)
+                .call_string(EXPORT_DOWNLOAD_MARK_IMPORTED, &input)
                 .map_err(|e| plugin_call_error(&format!("{EXPORT_DOWNLOAD_MARK_IMPORTED}()"), e))?;
             decode_plugin_result::<()>(&output, EXPORT_DOWNLOAD_MARK_IMPORTED)
         })
@@ -1044,7 +1038,7 @@ impl DownloadClient for WasmDownloadClient {
                 .lock()
                 .map_err(|e| AppError::Repository(format!("plugin mutex poisoned: {e}")))?;
             guard
-                .call::<(), String>(EXPORT_DOWNLOAD_STATUS, ())
+                .call_unit(EXPORT_DOWNLOAD_STATUS)
                 .map_err(|e| plugin_call_error(&format!("{EXPORT_DOWNLOAD_STATUS}()"), e))
         })
         .await
@@ -1070,7 +1064,7 @@ impl DownloadClient for WasmDownloadClient {
                 .lock()
                 .map_err(|e| AppError::Repository(format!("plugin mutex poisoned: {e}")))?;
             guard
-                .call::<(), String>(crate::types::EXPORT_DOWNLOAD_TEST_CONNECTION, ())
+                .call_unit(crate::types::EXPORT_DOWNLOAD_TEST_CONNECTION)
                 .map_err(|e| {
                     plugin_call_error(
                         &format!("{}()", crate::types::EXPORT_DOWNLOAD_TEST_CONNECTION),

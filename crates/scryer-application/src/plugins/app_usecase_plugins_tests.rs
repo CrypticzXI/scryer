@@ -5,6 +5,7 @@ use scryer_domain::{
     NotificationChannelConfig, PersistedPluginWasmPayload, PluginHostBindingId, PluginSupportTier,
     PluginWasmEncoding,
 };
+use scryer_plugin_sdk::ArchivePluginFormat;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1037,6 +1038,16 @@ fn make_runtime_plugin_load(
                 capabilities: scryer_plugin_sdk::DownloadClientCapabilities::default(),
             },
         ),
+        "archive_extractor" => scryer_plugin_sdk::ProviderDescriptor::ArchiveExtractor(
+            scryer_plugin_sdk::ArchiveExtractorDescriptor {
+                provider_type: provider_type.to_string(),
+                provider_aliases: vec![format!("{provider_type}-alias")],
+                config_fields: vec![],
+                default_base_url: None,
+                allowed_hosts: vec![],
+                capabilities: scryer_plugin_sdk::ArchiveExtractorCapabilities::default(),
+            },
+        ),
         other => panic!("unsupported plugin type for runtime load helper: {other}"),
     };
 
@@ -1509,6 +1520,22 @@ fn bootstrap_plugins_with_runtime_providers(
     download_client_plugin_provider: Option<Arc<MockDownloadClientPluginProvider>>,
     notification_plugin_provider: Option<Arc<MockNotificationPluginProvider>>,
 ) -> TestHarness {
+    bootstrap_plugins_with_runtime_providers_and_archive(
+        provider,
+        subtitle_provider,
+        download_client_plugin_provider,
+        notification_plugin_provider,
+        None,
+    )
+}
+
+fn bootstrap_plugins_with_runtime_providers_and_archive(
+    provider: Option<MockPluginProvider>,
+    subtitle_provider: Option<Arc<MockSubtitlePluginProvider>>,
+    download_client_plugin_provider: Option<Arc<MockDownloadClientPluginProvider>>,
+    notification_plugin_provider: Option<Arc<MockNotificationPluginProvider>>,
+    archive_plugin_provider: Option<Arc<MockArchiveExtractorPluginProvider>>,
+) -> TestHarness {
     use crate::null_repositories::NullSettingsRepository;
     use crate::null_repositories::test_nulls::*;
     use crate::types::JwtAuthConfig;
@@ -1544,6 +1571,9 @@ fn bootstrap_plugins_with_runtime_providers(
     }
     if let Some(provider) = &notification_plugin_provider {
         services = services.with_notification_provider(provider.clone());
+    }
+    if let Some(provider) = &archive_plugin_provider {
+        services = services.with_archive_extractor_plugin_provider(provider.clone());
     }
 
     let registry = FacetRegistry::new();
@@ -1874,6 +1904,59 @@ impl NotificationPluginProvider for MockNotificationPluginProvider {
     }
 }
 
+struct MockArchiveExtractorPluginProvider {
+    available_types: Vec<String>,
+    upsert_count: AtomicUsize,
+    remove_count: AtomicUsize,
+    reload_count: AtomicUsize,
+}
+
+impl MockArchiveExtractorPluginProvider {
+    fn new(provider_types: &[&str]) -> Self {
+        Self {
+            available_types: provider_types
+                .iter()
+                .map(|value| (*value).to_string())
+                .collect(),
+            upsert_count: AtomicUsize::new(0),
+            remove_count: AtomicUsize::new(0),
+            reload_count: AtomicUsize::new(0),
+        }
+    }
+}
+
+impl ArchiveExtractorPluginProvider for MockArchiveExtractorPluginProvider {
+    fn client_for_format(
+        &self,
+        _format: ArchivePluginFormat,
+    ) -> Option<Arc<dyn ArchiveExtractorClient>> {
+        None
+    }
+
+    fn available_provider_types(&self) -> Vec<String> {
+        self.available_types.clone()
+    }
+
+    fn upsert_runtime_plugin(&self, _plugin: RuntimePluginLoad) -> Result<(), String> {
+        self.upsert_count.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+
+    fn remove_runtime_plugin(&self, _provider_type: &str) -> Result<(), String> {
+        self.remove_count.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+
+    fn reload_runtime_plugins(
+        &self,
+        _runtime_plugins: &[RuntimePluginLoad],
+        _disabled_builtins: &[String],
+    ) -> Result<(), String> {
+        self.reload_count.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+}
+
 // ── Runtime mutation routing ────────────────────────────────────────────────
 
 #[tokio::test]
@@ -2052,6 +2135,52 @@ async fn apply_runtime_plugin_upsert_routes_download_client_family_only() {
 
     let indexer = h.plugin_provider.as_ref().expect("indexer provider");
     assert_eq!(download.upsert_count.load(Ordering::Relaxed), 1);
+    assert_eq!(download.reload_count.load(Ordering::Relaxed), 0);
+    assert_eq!(indexer.upsert_count.load(Ordering::Relaxed), 0);
+    assert_eq!(indexer.reload_count.load(Ordering::Relaxed), 0);
+    assert_eq!(subtitle.upsert_count.load(Ordering::Relaxed), 0);
+    assert_eq!(subtitle.reload_count.load(Ordering::Relaxed), 0);
+    assert_eq!(notification.upsert_count.load(Ordering::Relaxed), 0);
+    assert_eq!(notification.reload_count.load(Ordering::Relaxed), 0);
+}
+
+#[tokio::test]
+async fn apply_runtime_plugin_upsert_routes_archive_extractor_family_only() {
+    let subtitle = Arc::new(MockSubtitlePluginProvider::new(&[]));
+    let download = Arc::new(MockDownloadClientPluginProvider::new(&[]));
+    let notification = Arc::new(MockNotificationPluginProvider::new(&[]));
+    let archive = Arc::new(MockArchiveExtractorPluginProvider::new(&[]));
+    let h = bootstrap_plugins_with_runtime_providers_and_archive(
+        Some(MockPluginProvider::new().with_provider("example_indexer", "Example Indexer", None)),
+        Some(subtitle.clone()),
+        Some(download.clone()),
+        Some(notification.clone()),
+        Some(archive.clone()),
+    );
+
+    h.app
+        .apply_runtime_plugin_upsert(
+            &make_installation_with_type(
+                "archive-extraction",
+                "0.1.1",
+                "archive_extractor",
+                "archive-extraction",
+                false,
+                true,
+            ),
+            make_runtime_plugin_load(
+                "archive-extraction",
+                "archive_extractor",
+                "archive-extraction",
+            ),
+        )
+        .unwrap();
+
+    let indexer = h.plugin_provider.as_ref().expect("indexer provider");
+    assert_eq!(archive.upsert_count.load(Ordering::Relaxed), 1);
+    assert_eq!(archive.reload_count.load(Ordering::Relaxed), 0);
+    assert_eq!(archive.remove_count.load(Ordering::Relaxed), 0);
+    assert_eq!(download.upsert_count.load(Ordering::Relaxed), 0);
     assert_eq!(download.reload_count.load(Ordering::Relaxed), 0);
     assert_eq!(indexer.upsert_count.load(Ordering::Relaxed), 0);
     assert_eq!(indexer.reload_count.load(Ordering::Relaxed), 0);
@@ -3078,6 +3207,10 @@ fn provider_catalog_families_map_known_plugin_types() {
     assert_eq!(
         provider_catalog_families_for_plugin_type("download_client"),
         vec![ProviderCatalogFamily::DownloadClient]
+    );
+    assert_eq!(
+        provider_catalog_families_for_plugin_type("archive_extractor"),
+        vec![ProviderCatalogFamily::ArchiveExtractor]
     );
     assert_eq!(
         provider_catalog_families_for_plugin_type("indexer"),

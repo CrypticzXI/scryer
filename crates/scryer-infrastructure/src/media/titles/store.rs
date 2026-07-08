@@ -1152,7 +1152,7 @@ impl TitleRepository for TitleStore {
                             )
                             .await?;
                         }
-                        if metadata_marks_fetched || !canonical_tags.is_empty() {
+                        if !canonical_tags.is_empty() {
                             replace_canonical_media_tags_tx(tx, &subject_id, &canonical_tags)
                                 .await?;
                         }

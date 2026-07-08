@@ -863,6 +863,11 @@ export const titleReleaseBlocklistQuery = `query TitleReleaseBlocklist($titleId:
   }
 }`;
 
+export const movieSidePanelTitleQuery = `query MovieSidePanelTitle($id: ID!) {
+  title(id: $id) {${MOVIE_SIDE_PANEL_TITLE_FIELDS}
+  }
+}`;
+
 export const movieSidePanelOverviewQuery = `query MovieSidePanelOverview($id: ID!, $blocklistLimit: Int) {
   title(id: $id) {${MOVIE_SIDE_PANEL_TITLE_FIELDS}
   }

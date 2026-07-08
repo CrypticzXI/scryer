@@ -2,16 +2,16 @@ use std::collections::BTreeMap;
 use std::io::{self, Read, Write};
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use extism::{Function, UserData, ValType, host_fn};
 use serde::{Deserialize, Serialize};
 
 use crate::types::{PluginDescriptor, ProviderDescriptor};
 
-const PROCESS_HOST_NAMESPACE: &str = "extism:host/user";
+pub(crate) const PROCESS_HOST_NAMESPACE: &str = "extism:host/user";
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(20);
 const MAX_TIMEOUT: Duration = Duration::from_secs(30);
 const POLL_INTERVAL: Duration = Duration::from_millis(25);
@@ -22,13 +22,13 @@ const MAX_ENV_VARS: usize = 256;
 
 #[derive(Clone)]
 pub(crate) struct ProcessHost {
-    state: UserData<ProcessHostState>,
+    state: Arc<Mutex<ProcessHostState>>,
 }
 
 impl ProcessHost {
     pub(crate) fn disabled() -> Self {
         Self {
-            state: UserData::new(ProcessHostState::new(Vec::new())),
+            state: Arc::new(Mutex::new(ProcessHostState::new(Vec::new()))),
         }
     }
 
@@ -37,24 +37,25 @@ impl ProcessHost {
         config_json: Option<&str>,
     ) -> Self {
         Self {
-            state: UserData::new(ProcessHostState::new(resolve_allowed_commands(
+            state: Arc::new(Mutex::new(ProcessHostState::new(resolve_allowed_commands(
                 descriptor,
                 config_json,
-            ))),
+            )))),
         }
     }
 
-    pub(crate) fn functions(&self) -> Vec<Function> {
-        vec![
-            Function::new(
-                "scryer_process_exec",
-                [ValType::I64],
-                [ValType::I64],
-                self.state.clone(),
-                scryer_process_exec,
-            )
-            .with_namespace(PROCESS_HOST_NAMESPACE),
-        ]
+    pub(crate) fn call(&self, function: &str, input: String) -> Result<String, String> {
+        if function != "scryer_process_exec" {
+            return Err(format!("unsupported process host function: {function}"));
+        }
+        let state = self
+            .state
+            .lock()
+            .map_err(|error| format!("process state lock poisoned: {error}"))?;
+        let request = decode_input(input);
+        Ok(encode_response(
+            request.and_then(|request| state.execute(request)),
+        ))
     }
 }
 
@@ -383,12 +384,3 @@ where
         .unwrap_or_else(|_| "{\"ok\":false}".to_string())
     })
 }
-
-host_fn!(scryer_process_exec(state: ProcessHostState; input: String) -> String {
-    let state = state.get()?;
-    let state = state
-        .lock()
-        .map_err(|error| extism::Error::msg(format!("process state lock poisoned: {error}")))?;
-    let request = decode_input(input);
-    Ok(encode_response(request.and_then(|request| state.execute(request))))
-});

@@ -1,5 +1,6 @@
 import * as React from "react";
 import {
+  Archive,
   Bell,
   Download,
   Plug,
@@ -212,6 +213,9 @@ export function getPluginFallbackIcon(
   const normalizedType = pluginType?.trim().toLowerCase() ?? "";
   if (normalizedType === "download_client") {
     return Download;
+  }
+  if (normalizedType === "archive_extractor") {
+    return Archive;
   }
   if (normalizedType === "indexer" || normalizedType.endsWith("_indexer")) {
     return Search;

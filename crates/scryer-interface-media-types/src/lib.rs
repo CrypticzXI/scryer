@@ -1247,6 +1247,7 @@ pub enum ProviderCatalogFamilyValue {
     Notification,
     Indexer,
     DownloadClient,
+    ArchiveExtractor,
 }
 
 #[derive(SimpleObject, Clone)]

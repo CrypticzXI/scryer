@@ -47,7 +47,7 @@ impl ArchiveExtractorClient for WasmArchiveExtractorClient {
         // §7.2.6): the raw crypto ABI belongs to it and to nothing else.
         match self.backing {
             PluginRuntimeBacking::WasmtimeArchive => {}
-            PluginRuntimeBacking::Extism => {
+            PluginRuntimeBacking::LegacyReactor => {
                 return Err(AppError::Repository(
                     "archive extractor plugin requires the wasmtime runtime backing".to_string(),
                 ));
@@ -232,8 +232,6 @@ impl PreparedArchiveRequest {
             // None = the host's provisional default cap (RFC §13.1, WP2 bench);
             // operator-overridable.
             memory_max_bytes: None,
-            // No network for archive extraction.
-            allowed_hosts: Vec::new(),
         }
     }
 }

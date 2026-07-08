@@ -147,6 +147,7 @@ export const SettingsContainer = memo(function SettingsContainer({
     notification: 0,
     indexer: 0,
     download_client: 0,
+    archive_extractor: 0,
   });
   const showPluginsLink =
     settingsSection === "downloadClients" ||
@@ -523,7 +524,10 @@ export const SettingsContainer = memo(function SettingsContainer({
             />
           ) : settingsSection === "downloadClients" ? (
             <SettingsDownloadClientsContainer
-              providerCatalogVersion={providerCatalogVersions.download_client}
+              providerCatalogVersion={
+                providerCatalogVersions.download_client
+                + providerCatalogVersions.archive_extractor
+              }
             />
           ) : settingsSection === "rules" ? (
             <SettingsRulesContainer />

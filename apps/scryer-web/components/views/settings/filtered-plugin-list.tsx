@@ -32,9 +32,12 @@ const FILTERED_PLUGIN_BODY_CLASS =
 const FILTERED_PLUGIN_MUTED_CLASS = "text-[var(--scry-muted3)]";
 
 /** Plugin `pluginType` values that belong to each provider-catalog family. */
-const FAMILY_PLUGIN_TYPES: Record<ProviderCatalogFamily, string[]> = {
+const EMPTY_PLUGIN_TYPES: readonly string[] = [];
+
+const FAMILY_PLUGIN_TYPES: Record<ProviderCatalogFamily, readonly string[]> = {
   indexer: ["indexer", "usenet_indexer", "torrent_indexer"],
   download_client: ["download_client"],
+  archive_extractor: ["archive_extractor"],
   notification: ["notification"],
   subtitle: ["subtitle_provider"],
 };
@@ -44,6 +47,10 @@ export type FilteredPluginListProps = {
   family: ProviderCatalogFamily;
   /** Refreshes provider options after a plugin change so new providers appear. */
   refreshProviderOptions: () => Promise<void>;
+  /** Bumps when the provider catalog changes for this panel. */
+  catalogVersion?: number;
+  /** Additional plugin types to show on adjacent product surfaces. */
+  extraPluginTypes?: readonly string[];
   /** Panel heading; defaults to "Plugins". */
   title?: string;
   className?: string;
@@ -59,6 +66,8 @@ export type FilteredPluginListProps = {
 export function FilteredPluginList({
   family,
   refreshProviderOptions,
+  catalogVersion,
+  extraPluginTypes = EMPTY_PLUGIN_TYPES,
   title,
   className,
 }: FilteredPluginListProps) {
@@ -79,13 +88,16 @@ export function FilteredPluginList({
     uninstallPlugin,
     togglePlugin,
     upgradePlugin,
-  } = usePluginManagement({ client, t, refreshProviderOptions });
+  } = usePluginManagement({ client, t, refreshProviderOptions, catalogVersion });
 
-  const allowedTypes = FAMILY_PLUGIN_TYPES[family];
+  const allowedTypes = React.useMemo(
+    () => new Set([...FAMILY_PLUGIN_TYPES[family], ...extraPluginTypes]),
+    [extraPluginTypes, family],
+  );
   const familyPlugins = React.useMemo(
     () =>
       plugins
-        .filter((plugin) => allowedTypes.includes(plugin.pluginType))
+        .filter((plugin) => allowedTypes.has(plugin.pluginType))
         .sort(
           (a, b) =>
             Number(b.isInstalled) - Number(a.isInstalled) ||

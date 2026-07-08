@@ -17,7 +17,9 @@ use scryer_application::{
 };
 use scryer_domain::{PluginHostBindingId, SubtitleProviderConfig};
 
-use crate::loader::{apply_allowed_hosts, build_plugin, parse_config_json_entries};
+use crate::legacy_runtime::{LegacyPlugin, LegacyPluginSpec};
+use crate::loader::{allowed_hosts_for_descriptor, parse_config_json_entries};
+use crate::runtime_backing::PreopenSpec;
 use crate::types::{
     EXPORT_SUBTITLE_DOWNLOAD, EXPORT_SUBTITLE_GENERATE, EXPORT_SUBTITLE_SEARCH,
     EXPORT_VALIDATE_CONFIG, PluginDescriptor, SubtitleMatchHint, SubtitleMatchHintKind,
@@ -33,7 +35,7 @@ const GENERATOR_MAX_DURATION_SECONDS: i64 = 4 * 60 * 60;
 const GUEST_INPUT_ROOT: &str = "/input";
 
 pub struct WasmSubtitleClient {
-    plugin: Arc<Mutex<extism::Plugin>>,
+    plugin: Arc<Mutex<LegacyPlugin>>,
     wasm_bytes: Arc<Vec<u8>>,
     descriptor: PluginDescriptor,
     provider_name: String,
@@ -51,14 +53,14 @@ impl WasmSubtitleClient {
         host_bindings: HashMap<PluginHostBindingId, String>,
     ) -> Result<Self, AppError> {
         let missing_host_bindings = missing_host_bindings(&descriptor, &host_bindings);
-        let manifest = build_subtitle_manifest(
+        let spec = build_subtitle_spec(
             &wasm_bytes,
             &descriptor,
             &config.config_json,
             &host_bindings,
             None,
         )?;
-        let plugin = build_plugin(manifest).map_err(|error| {
+        let plugin = LegacyPlugin::instantiate(spec).map_err(|error| {
             AppError::Repository(format!(
                 "failed to compile subtitle provider plugin for {}: {error}",
                 config.name
@@ -144,7 +146,7 @@ impl SubtitleProviderClient for WasmSubtitleClient {
                 .lock()
                 .map_err(|error| AppError::Repository(format!("plugin mutex poisoned: {error}")))?;
             guard
-                .call::<&str, String>(EXPORT_SUBTITLE_SEARCH, &input)
+                .call_string(EXPORT_SUBTITLE_SEARCH, &input)
                 .map_err(|error| plugin_call_error(&format!("{EXPORT_SUBTITLE_SEARCH}()"), error))
         })
         .await
@@ -182,7 +184,7 @@ impl SubtitleProviderClient for WasmSubtitleClient {
                 .lock()
                 .map_err(|error| AppError::Repository(format!("plugin mutex poisoned: {error}")))?;
             guard
-                .call::<&str, String>(EXPORT_SUBTITLE_DOWNLOAD, &input)
+                .call_string(EXPORT_SUBTITLE_DOWNLOAD, &input)
                 .map_err(|error| plugin_call_error(&format!("{EXPORT_SUBTITLE_DOWNLOAD}()"), error))
         })
         .await
@@ -223,7 +225,7 @@ impl SubtitleProviderClient for WasmSubtitleClient {
                 .lock()
                 .map_err(|error| AppError::Repository(format!("plugin mutex poisoned: {error}")))?;
             guard
-                .call::<&str, String>(EXPORT_VALIDATE_CONFIG, &input)
+                .call_string(EXPORT_VALIDATE_CONFIG, &input)
                 .map_err(|error| plugin_call_error(&format!("{EXPORT_VALIDATE_CONFIG}()"), error))
         })
         .await
@@ -270,7 +272,7 @@ impl SubtitleProviderClient for WasmSubtitleClient {
         }
 
         let guest_input_path = guest_input_path(&request.input_path)?;
-        let manifest = build_subtitle_manifest(
+        let spec = build_subtitle_spec(
             self.wasm_bytes.as_slice(),
             &self.descriptor,
             &self.config_json,
@@ -299,13 +301,13 @@ impl SubtitleProviderClient for WasmSubtitleClient {
         })?;
 
         let output = tokio::task::spawn_blocking(move || {
-            let mut plugin = build_plugin(manifest).map_err(|error| {
+            let mut plugin = LegacyPlugin::instantiate(spec).map_err(|error| {
                 AppError::Repository(format!(
                     "failed to compile subtitle generator plugin: {error}"
                 ))
             })?;
             plugin
-                .call::<&str, String>(EXPORT_SUBTITLE_GENERATE, &input)
+                .call_string(EXPORT_SUBTITLE_GENERATE, &input)
                 .map_err(|error| plugin_call_error(&format!("{EXPORT_SUBTITLE_GENERATE}()"), error))
         })
         .await
@@ -331,21 +333,21 @@ impl SubtitleProviderClient for WasmSubtitleClient {
     }
 }
 
-fn build_subtitle_manifest(
+fn build_subtitle_spec(
     wasm_bytes: &[u8],
     descriptor: &PluginDescriptor,
     config_json: &str,
     host_bindings: &HashMap<PluginHostBindingId, String>,
     allowed_path: Option<(&Path, &str)>,
-) -> AppResult<extism::Manifest> {
-    let mut manifest = extism::Manifest::new([extism::Wasm::data(wasm_bytes.to_vec())]);
-    manifest = apply_allowed_hosts(manifest, descriptor, None, Some(config_json));
-    manifest = manifest.with_timeout(std::time::Duration::from_secs(30));
+) -> AppResult<LegacyPluginSpec> {
+    let mut spec = LegacyPluginSpec::new(wasm_bytes.to_vec(), descriptor.id.clone());
+    spec.allowed_hosts = allowed_hosts_for_descriptor(descriptor, None, Some(config_json));
+    spec.timeout = std::time::Duration::from_secs(30);
 
     match parse_config_json_entries(config_json) {
         Ok(entries) => {
             for (key, value) in entries {
-                manifest = manifest.with_config_key(key, value);
+                spec.config.insert(key, value);
             }
         }
         Err(error) => {
@@ -359,15 +361,16 @@ fn build_subtitle_manifest(
         if let Some(binding) = field.host_binding
             && let Some(value) = host_bindings.get(&host_binding_to_domain(binding))
         {
-            manifest = manifest.with_config_key(field.key.clone(), value.clone());
+            spec.config.insert(field.key.clone(), value.clone());
         }
     }
 
     if let Some((host_path, guest_root)) = allowed_path {
-        manifest = manifest.with_allowed_path(format!("ro:{}", host_path.display()), guest_root);
+        spec.preopens
+            .push(PreopenSpec::read_only(host_path.to_path_buf(), guest_root));
     }
 
-    Ok(manifest)
+    Ok(spec)
 }
 
 fn missing_host_bindings(
@@ -402,15 +405,8 @@ fn subtitle_validate_status_string(status: SubtitleValidateConfigStatus) -> Stri
     .to_string()
 }
 
-fn plugin_call_error(operation: &str, error: extism::Error) -> AppError {
-    let root_cause = error.root_cause().to_string();
-    let detail = if root_cause.trim().is_empty() || root_cause == error.to_string() {
-        error.to_string()
-    } else {
-        root_cause
-    };
-
-    AppError::Repository(format!("subtitle plugin {operation} failed: {detail}"))
+fn plugin_call_error(operation: &str, error: AppError) -> AppError {
+    AppError::Repository(format!("subtitle plugin {operation} failed: {error}"))
 }
 
 fn map_media_kind(kind: SubtitleMediaKind) -> SubtitleQueryMediaKind {

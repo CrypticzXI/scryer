@@ -74,6 +74,7 @@ export function canAccessSettingsSection(
     case "mediaServers":
     case "indexers":
     case "downloadClients":
+    case "acquisition":
     case "plugins":
     case "notifications":
       return canManageSystemSettings;

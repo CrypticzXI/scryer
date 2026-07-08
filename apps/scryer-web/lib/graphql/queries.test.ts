@@ -5,6 +5,7 @@ import {
   buildTitlesQuery,
   buildReactiveRefreshQuery,
   episodeSidePanelDetailQuery,
+  movieSidePanelTitleQuery,
   movieSidePanelOverviewQuery,
   seriesSidePanelOverviewQuery,
   titleMoreLikeThisQuery,
@@ -87,6 +88,18 @@ test("reactive movie side panel refresh omits acquisition diagnostics", () => {
 
 test("movie side panel overview includes acquisition diagnostics", () => {
   assert.equal(movieSidePanelOverviewQuery.includes("titleAcquisitionDiagnostics"), true);
+});
+
+test("movie side panel title query includes files without overview extras", () => {
+  assert.equal(movieSidePanelTitleQuery.includes("mediaFiles {"), true);
+  assert.equal(
+    movieSidePanelTitleQuery.includes("titleAcquisitionDiagnostics"),
+    false,
+  );
+  assert.equal(movieSidePanelTitleQuery.includes("titleHistory("), false);
+  assert.equal(movieSidePanelTitleQuery.includes("titleReleaseBlocklist("), false);
+  assert.equal(movieSidePanelTitleQuery.includes("externalSubtitles("), false);
+  assert.equal(movieSidePanelTitleQuery.includes("setupStatus"), false);
 });
 
 test("side panel queries omit recommendations", () => {

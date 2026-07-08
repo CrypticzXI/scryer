@@ -1162,6 +1162,7 @@ const ja: LocaleDictionary = {
   "settings.pluginCategoryUsenetIndexer": "Usenet インデクサー",
   "settings.pluginCategoryTorrentIndexer": "Torrent インデクサー",
   "settings.pluginCategoryDownloadClient": "ダウンロードクライアント",
+  "settings.pluginCategoryArchiveExtractor": "アーカイブ展開",
   "settings.pluginCategoryNotification": "通知",
   "settings.pluginCategorySubtitleProvider": "字幕プロバイダー",
   "settings.pluginOfficialOnly": "公式のみ",

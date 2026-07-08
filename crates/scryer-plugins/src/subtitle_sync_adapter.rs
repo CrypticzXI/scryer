@@ -5,7 +5,8 @@ use async_trait::async_trait;
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use scryer_application::{AppError, AppResult, SubtitleSyncClient, SubtitleSyncJob};
 
-use crate::loader::build_plugin;
+use crate::legacy_runtime::{LegacyPlugin, LegacyPluginSpec};
+use crate::runtime_backing::PreopenSpec;
 use crate::types::{
     AudioStreamSelector, EXPORT_SUBSYNC_ALIGN, PluginDescriptor, SubtitleSyncAlignInputRef,
     SubtitleSyncAlignRequest, SubtitleSyncAlignResponse, SubtitleSyncInputSubtitle,
@@ -70,13 +71,14 @@ impl SubtitleSyncClient for WasmSubtitleSyncClient {
             ))
         })?;
 
-        let manifest = build_subtitle_sync_manifest(
+        let spec = build_subtitle_sync_spec(
             self.wasm_bytes.as_slice(),
+            &self.descriptor,
             &input_path,
             scratch_dir.path(),
         );
         let output = tokio::task::spawn_blocking(move || {
-            let mut plugin = build_plugin(manifest).map_err(|error| {
+            let mut plugin = LegacyPlugin::instantiate(spec).map_err(|error| {
                 AppError::Repository(format!("failed to compile subtitle sync plugin: {error}"))
             })?;
             if !plugin.function_exists(EXPORT_SUBSYNC_ALIGN) {
@@ -85,7 +87,7 @@ impl SubtitleSyncClient for WasmSubtitleSyncClient {
                 )));
             }
             plugin
-                .call::<&str, String>(EXPORT_SUBSYNC_ALIGN, &input)
+                .call_string(EXPORT_SUBSYNC_ALIGN, &input)
                 .map_err(|error| plugin_call_error(EXPORT_SUBSYNC_ALIGN, error))
         })
         .await
@@ -104,19 +106,21 @@ impl std::fmt::Debug for WasmSubtitleSyncClient {
     }
 }
 
-pub(crate) fn build_subtitle_sync_manifest(
+pub(crate) fn build_subtitle_sync_spec(
     wasm_bytes: &[u8],
+    descriptor: &PluginDescriptor,
     input_path: &Path,
     scratch_dir: &Path,
-) -> extism::Manifest {
+) -> LegacyPluginSpec {
     let input_root = input_path.parent().unwrap_or_else(|| Path::new("."));
 
-    extism::Manifest::new([extism::Wasm::data(wasm_bytes.to_vec())])
-        .with_timeout(std::time::Duration::from_secs(
-            SUBTITLE_SYNC_TIMEOUT_SECONDS,
-        ))
-        .with_allowed_path(format!("ro:{}", input_root.display()), GUEST_INPUT_ROOT)
-        .with_allowed_path(scratch_dir.display().to_string(), GUEST_SCRATCH_ROOT)
+    let mut spec = LegacyPluginSpec::new(wasm_bytes.to_vec(), descriptor.id.clone());
+    spec.timeout = std::time::Duration::from_secs(SUBTITLE_SYNC_TIMEOUT_SECONDS);
+    spec.preopens
+        .push(PreopenSpec::read_only(input_root, GUEST_INPUT_ROOT));
+    spec.preopens
+        .push(PreopenSpec::writable(scratch_dir, GUEST_SCRATCH_ROOT));
+    spec
 }
 
 fn guest_file_path(root: &str, host_path: &Path) -> AppResult<PathBuf> {
@@ -129,6 +133,6 @@ fn guest_file_path(root: &str, host_path: &Path) -> AppResult<PathBuf> {
     Ok(Path::new(root).join(file_name))
 }
 
-fn plugin_call_error(export: &str, error: extism::Error) -> AppError {
+fn plugin_call_error(export: &str, error: AppError) -> AppError {
     AppError::Repository(format!("{export}() failed: {error}"))
 }

@@ -254,6 +254,7 @@ function categoryLabel(pluginType: string, t: Translate): string {
     case "usenet_indexer": return t("settings.pluginCategoryUsenetIndexer");
     case "torrent_indexer": return t("settings.pluginCategoryTorrentIndexer");
     case "download_client": return t("settings.pluginCategoryDownloadClient");
+    case "archive_extractor": return t("settings.pluginCategoryArchiveExtractor");
     case "notification": return t("settings.pluginCategoryNotification");
     case "subtitle_provider": return t("settings.pluginCategorySubtitleProvider");
     default: return pluginType;

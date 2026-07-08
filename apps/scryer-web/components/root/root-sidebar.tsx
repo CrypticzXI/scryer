@@ -168,7 +168,6 @@ const TOP_NAV_GROUPS: TopNavGroupDefinition[] = [
       { kind: "view", id: "wanted" },
       { kind: "view", id: "calendar" },
       { kind: "view", id: "activity" },
-      { kind: "settings", id: "acquisition", icon: Rss },
       { kind: "settings", id: "subtitles", icon: Captions },
       { kind: "settings", id: "rules", icon: SlidersHorizontal },
       { kind: "settings", id: "post-processing", icon: FolderCog },

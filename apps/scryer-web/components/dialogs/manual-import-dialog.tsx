@@ -28,10 +28,19 @@ import {
 } from "@/components/ui/table";
 import { useGlobalStatus } from "@/lib/context/global-status-context";
 import { useTranslate } from "@/lib/context/translate-context";
+import { hasGraphQlErrorCode } from "@/lib/graphql/error-message";
 import { previewManualImportQuery } from "@/lib/graphql/queries";
 import { queueManualImportMutation } from "@/lib/graphql/mutations";
 import { selectorId } from "@/lib/utils/dom-ids";
+import { buildViewPath } from "@/lib/utils/routing";
+import { useNavigate } from "react-router-dom";
 import { useClient } from "urql";
+
+const ARCHIVE_EXTRACTION_PLUGIN_REQUIRED_CODE = "ARCHIVE_EXTRACTION_PLUGIN_REQUIRED";
+const ARCHIVE_EXTRACTION_PLUGIN_REQUIRED_MESSAGE = [
+  "This import is blocked because the download contains archive files.",
+  "Install or enable the Archive Extraction plugin, then re-import.",
+].join(" ");
 
 type FilePreview = {
   filePath: string;
@@ -147,15 +156,33 @@ export function ManualImportDialog({
   onImportComplete,
 }: Props) {
   const client = useClient();
+  const navigate = useNavigate();
   const setGlobalStatus = useGlobalStatus();
   const t = useTranslate();
   const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
+  const [archivePluginRequired, setArchivePluginRequired] = React.useState(false);
   const [files, setFiles] = React.useState<FilePreview[]>([]);
   const [episodes, setEpisodes] = React.useState<AvailableEpisode[]>([]);
   const [seriesMovies, setSeriesMovies] = React.useState<AvailableSeriesMovie[]>([]);
   const [mappings, setMappings] = React.useState<Record<string, string>>({});
   const [importing, setImporting] = React.useState(false);
+
+  const setImportError = React.useCallback((err: unknown, fallback: string) => {
+    if (hasGraphQlErrorCode(err, ARCHIVE_EXTRACTION_PLUGIN_REQUIRED_CODE)) {
+      setArchivePluginRequired(true);
+      setError(ARCHIVE_EXTRACTION_PLUGIN_REQUIRED_MESSAGE);
+      return;
+    }
+
+    setArchivePluginRequired(false);
+    setError(err instanceof Error ? err.message : fallback);
+  }, []);
+
+  const openArchivePluginSettings = React.useCallback(() => {
+    onOpenChange(false);
+    navigate(buildViewPath("settings", "downloadClients"));
+  }, [navigate, onOpenChange]);
 
   // Load preview when dialog opens
   React.useEffect(() => {
@@ -165,11 +192,13 @@ export function ManualImportDialog({
       setSeriesMovies([]);
       setMappings({});
       setError(null);
+      setArchivePluginRequired(false);
       return;
     }
 
     setLoading(true);
     setError(null);
+    setArchivePluginRequired(false);
     client.query(previewManualImportQuery, {
       input: {
         clientId,
@@ -193,10 +222,10 @@ export function ManualImportDialog({
         setMappings(initial);
       })
       .catch((err: unknown) => {
-        setError(err instanceof Error ? err.message : "Failed to load preview");
+        setImportError(err, "Failed to load preview");
       })
       .finally(() => setLoading(false));
-  }, [open, clientId, downloadClientItemId, titleId, client]);
+  }, [open, clientId, downloadClientItemId, titleId, client, setImportError]);
 
   const groupedEpisodes = React.useMemo(() => groupEpisodesBySeason(episodes), [episodes]);
 
@@ -227,6 +256,7 @@ export function ManualImportDialog({
     if (fileMappings.length === 0) return;
 
     setImporting(true);
+    setArchivePluginRequired(false);
     try {
       const { error: mutationError } = await client.mutation(queueManualImportMutation, {
         input: {
@@ -242,7 +272,7 @@ export function ManualImportDialog({
       onImportComplete?.();
       onOpenChange(false);
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Import failed");
+      setImportError(err, "Import failed");
     } finally {
       setImporting(false);
     }
@@ -254,6 +284,7 @@ export function ManualImportDialog({
     mappings,
     onImportComplete,
     onOpenChange,
+    setImportError,
     setGlobalStatus,
     t,
     titleId,
@@ -285,7 +316,17 @@ export function ManualImportDialog({
             id="activity-manual-import-error"
             className="py-8 text-center text-sm text-[var(--scry-danger-text-soft)]"
           >
-            {error}
+            <p>{error}</p>
+            {archivePluginRequired && (
+              <Button
+                id="activity-manual-import-open-archive-plugin-settings"
+                variant="outline"
+                className="mt-4"
+                onClick={openArchivePluginSettings}
+              >
+                Open Download Clients settings
+              </Button>
+            )}
           </div>
         ) : (
           <>
@@ -396,9 +437,22 @@ export function ManualImportDialog({
               </Table>
             )}
             {error && (
-              <p id="activity-manual-import-error" className="text-sm text-[var(--scry-danger-text-soft)]">
-                {error}
-              </p>
+              <div
+                id="activity-manual-import-error"
+                className="text-sm text-[var(--scry-danger-text-soft)]"
+              >
+                <p>{error}</p>
+                {archivePluginRequired && (
+                  <Button
+                    id="activity-manual-import-open-archive-plugin-settings"
+                    variant="outline"
+                    className="mt-3"
+                    onClick={openArchivePluginSettings}
+                  >
+                    Open Download Clients settings
+                  </Button>
+                )}
+              </div>
             )}
           </>
         )}

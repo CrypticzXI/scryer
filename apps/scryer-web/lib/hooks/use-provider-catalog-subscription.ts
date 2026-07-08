@@ -8,13 +8,15 @@ const PROVIDER_CATALOG_FAMILIES = new Set([
   "notification",
   "indexer",
   "download_client",
+  "archive_extractor",
 ] as const);
 
 export type ProviderCatalogFamily =
   | "subtitle"
   | "notification"
   | "indexer"
-  | "download_client";
+  | "download_client"
+  | "archive_extractor";
 
 function isProviderCatalogFamily(value: string): value is ProviderCatalogFamily {
   return PROVIDER_CATALOG_FAMILIES.has(value as ProviderCatalogFamily);

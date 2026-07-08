@@ -452,6 +452,7 @@ fn provider_catalog_families_for_plugin_type(plugin_type: &str) -> Vec<ProviderC
         "download_client" => vec![ProviderCatalogFamily::DownloadClient],
         "notification" => vec![ProviderCatalogFamily::Notification],
         "subtitle_provider" => vec![ProviderCatalogFamily::Subtitle],
+        "archive_extractor" => vec![ProviderCatalogFamily::ArchiveExtractor],
         _ => ProviderCatalogFamily::all().into_iter().collect(),
     }
 }

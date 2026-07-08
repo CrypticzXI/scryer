@@ -1188,6 +1188,7 @@ const pt_BR: LocaleDictionary = {
   "settings.pluginCategoryUsenetIndexer": "Indexador Usenet",
   "settings.pluginCategoryTorrentIndexer": "Indexador Torrent",
   "settings.pluginCategoryDownloadClient": "Cliente de download",
+  "settings.pluginCategoryArchiveExtractor": "Extração de arquivos",
   "settings.pluginCategoryNotification": "Notificação",
   "settings.pluginCategorySubtitleProvider": "Provedor de legendas",
   "settings.pluginOfficialOnly": "Apenas oficiais",

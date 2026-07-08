@@ -1099,6 +1099,7 @@ const zh_CN: LocaleDictionary = {
   "settings.pluginCategoryUsenetIndexer": "Usenet 索引器",
   "settings.pluginCategoryTorrentIndexer": "Torrent 索引器",
   "settings.pluginCategoryDownloadClient": "下载客户端",
+  "settings.pluginCategoryArchiveExtractor": "压缩包提取",
   "settings.pluginCategoryNotification": "通知",
   "settings.pluginCategorySubtitleProvider": "字幕提供程序",
   "settings.pluginOfficialOnly": "仅官方",

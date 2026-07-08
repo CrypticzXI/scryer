@@ -204,11 +204,7 @@ pub(crate) async fn attach_canonical_tags_to_titles(
         return Ok(());
     }
 
-    let ids = titles
-        .iter()
-        .map(|title| title.id.clone())
-        .collect::<Vec<_>>();
-    let tags_by_title = load_canonical_tags_for_title_ids(exec, &ids).await?;
+    let tags_by_title = load_canonical_tags_for_titles(exec, titles).await?;
     for title in titles {
         if let Some(tags) = tags_by_title.get(&title.id) {
             title.canonical_tags = tags.clone();
@@ -371,19 +367,83 @@ async fn insert_tag_values_tx(
     Ok(())
 }
 
-async fn load_canonical_tags_for_title_ids(
+async fn load_canonical_tags_for_titles(
     exec: SqlExec<'_, '_>,
-    title_ids: &[String],
+    titles: &[Title],
 ) -> AppResult<BTreeMap<String, Vec<CanonicalMediaTag>>> {
-    let placeholders = bind_placeholders(title_ids.len());
-    let sql = canonical_tag_select_sql(&format!("s.title_id IN ({placeholders})"));
-    let args = title_ids
+    let title_ids = titles
+        .iter()
+        .map(|title| title.id.clone())
+        .collect::<Vec<_>>();
+    let title_id_set = title_ids.iter().cloned().collect::<HashSet<_>>();
+    let title_placeholders = bind_placeholders(title_ids.len());
+    let mut filters = vec![format!("s.title_id IN ({title_placeholders})")];
+    let mut args = title_ids
         .iter()
         .cloned()
         .map(SqlArg::Text)
         .collect::<Vec<_>>();
+    let mut title_ids_by_subject_key = BTreeMap::<String, Vec<String>>::new();
+
+    for title in titles {
+        let subject_keys = title_external_subject_keys(title)
+            .into_iter()
+            .map(|key| normalize_canonical_subject_key(&key))
+            .collect::<Vec<_>>();
+        if subject_keys.is_empty() {
+            continue;
+        }
+
+        let linked_subject_placeholders = bind_placeholders(subject_keys.len());
+        for subject_key in &subject_keys {
+            filters.push(format!(
+                "(s.subject_key_norm = {{}} AND (s.title_id IS NULL OR s.title_id = {{}}) AND NOT EXISTS (
+                    SELECT 1
+                      FROM canonical_media_subjects linked
+                     WHERE linked.title_id = {{}}
+                       AND linked.subject_key_norm NOT IN ({linked_subject_placeholders})
+                ))"
+            ));
+            args.push(SqlArg::Text(subject_key.clone()));
+            args.push(SqlArg::Text(title.id.clone()));
+            args.push(SqlArg::Text(title.id.clone()));
+            args.extend(subject_keys.iter().cloned().map(SqlArg::Text));
+            title_ids_by_subject_key
+                .entry(subject_key.clone())
+                .or_default()
+                .push(title.id.clone());
+        }
+    }
+
+    let sql = canonical_tag_select_sql(&filters.join(" OR "));
     let rows = SqlRuntime::fetch_all(exec, &sql, &args).await?;
-    rows_to_tags_by_title(&rows)
+    let mut tags_by_title = BTreeMap::new();
+    let mut tags_by_subject = rows_to_tags_by_subject(&rows)?;
+    for row in rows {
+        let subject_key_norm = row.text("subject_key_norm")?;
+        let subject_id = row.text("subject_id")?;
+        let Some(tags) = tags_by_subject.remove(&subject_id) else {
+            continue;
+        };
+        if let Some(title_id) = row.opt_text("title_id")? {
+            if title_id_set.contains(&title_id) {
+                tags_by_title
+                    .entry(title_id)
+                    .or_insert_with(|| tags.clone());
+                continue;
+            }
+        }
+        let Some(title_ids) = title_ids_by_subject_key.get(&subject_key_norm) else {
+            continue;
+        };
+        for title_id in title_ids {
+            tags_by_title
+                .entry(title_id.clone())
+                .or_insert_with(|| tags.clone());
+        }
+    }
+
+    Ok(tags_by_title)
 }
 
 pub(crate) async fn load_canonical_tags_for_subject_ids(
@@ -409,6 +469,7 @@ fn canonical_tag_select_sql(filter: &str) -> String {
         "SELECT
             s.id AS subject_id,
             s.title_id AS title_id,
+            s.subject_key_norm AS subject_key_norm,
             t.tag_key AS tag_key,
             t.category AS category,
             t.name AS name,
@@ -598,7 +659,11 @@ fn bind_placeholders(count: usize) -> String {
 }
 
 fn title_external_subject_key(title: &Title) -> Option<String> {
-    let (facet_kind, source_order): (&str, &[&str]) = match title.facet {
+    title_external_subject_keys(title).into_iter().next()
+}
+
+fn title_external_subject_keys(title: &Title) -> Vec<String> {
+    let (facet_kind, source_order): (&'static str, &'static [&'static str]) = match title.facet {
         MediaFacet::Movie => ("movie", &["tmdb", "tvdb", "imdb", "anidb"]),
         MediaFacet::Series => ("series", &["tvdb", "tmdb", "imdb", "anidb"]),
         MediaFacet::Anime => (
@@ -615,21 +680,40 @@ fn title_external_subject_key(title: &Title) -> Option<String> {
             ],
         ),
     };
+    let mut keys = Vec::new();
+    let mut seen = HashSet::new();
     for source in source_order.iter().copied() {
-        if let Some(value) = title
+        let source = source.to_ascii_lowercase();
+        let facet_kinds = title_subject_facet_kinds(&title.facet, &source, facet_kind);
+        for value in title
             .external_ids
             .iter()
-            .find(|id| id.source.eq_ignore_ascii_case(source))
+            .filter(|id| id.source.eq_ignore_ascii_case(&source))
             .map(|id| id.value.trim())
             .filter(|value| !value.is_empty())
         {
-            return Some(format!(
-                "{}:{}:{}",
-                source.to_ascii_lowercase(),
-                facet_kind,
-                value.to_ascii_lowercase()
-            ));
+            for kind in &facet_kinds {
+                let key = format!("{source}:{kind}:{}", value.to_ascii_lowercase());
+                if seen.insert(key.clone()) {
+                    keys.push(key);
+                }
+            }
         }
     }
-    None
+    keys
+}
+
+fn title_subject_facet_kinds(
+    facet: &MediaFacet,
+    source: &str,
+    fallback: &'static str,
+) -> Vec<&'static str> {
+    match facet {
+        MediaFacet::Movie => vec!["movie"],
+        MediaFacet::Series => vec!["series"],
+        MediaFacet::Anime => match source {
+            "tvdb" | "tmdb" | "imdb" | "trakt" => vec!["series", "anime"],
+            _ => vec![fallback],
+        },
+    }
 }

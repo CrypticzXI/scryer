@@ -41,7 +41,7 @@ import {
   ruleSetsQuery,
   routingPageInitQuery,
   searchForTitleQuery,
-  movieSidePanelOverviewQuery,
+  movieSidePanelTitleQuery,
   titleReleaseBlocklistQuery,
   buildTitlesQuery,
 } from "@/lib/graphql/queries";
@@ -2392,8 +2392,8 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
       const requestEpoch = reactiveRefreshEpoch();
       const detailResult = await client
         .query<{ title?: TitleRecord | null }>(
-          movieSidePanelOverviewQuery,
-          { id: titleId, blocklistLimit: 300 },
+          movieSidePanelTitleQuery,
+          { id: titleId },
           { requestPolicy: "network-only" },
         )
         .toPromise();
@@ -2716,8 +2716,8 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     const requestEpoch = reactiveRefreshEpoch();
     void client
       .query<{ title?: TitleRecord | null }>(
-        movieSidePanelOverviewQuery,
-        { id: titleId, blocklistLimit: 300 },
+        movieSidePanelTitleQuery,
+        { id: titleId },
         { requestPolicy: "network-only" },
       )
       .toPromise()

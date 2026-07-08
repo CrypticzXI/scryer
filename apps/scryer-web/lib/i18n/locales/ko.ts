@@ -1146,6 +1146,7 @@ const ko: LocaleDictionary = {
   "settings.pluginCategoryUsenetIndexer": "유즈넷 인덱서",
   "settings.pluginCategoryTorrentIndexer": "토렌트 인덱서",
   "settings.pluginCategoryDownloadClient": "다운로드 클라이언트",
+  "settings.pluginCategoryArchiveExtractor": "아카이브 추출",
   "settings.pluginCategoryNotification": "알림",
   "settings.pluginCategorySubtitleProvider": "자막 제공자",
   "settings.pluginOfficialOnly": "공식만",

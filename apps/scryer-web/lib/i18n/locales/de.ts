@@ -1196,6 +1196,7 @@ const de: LocaleDictionary = {
   "settings.pluginCategoryUsenetIndexer": "Usenet-Indexer",
   "settings.pluginCategoryTorrentIndexer": "Torrent-Indexer",
   "settings.pluginCategoryDownloadClient": "Download-Client",
+  "settings.pluginCategoryArchiveExtractor": "Archivextraktion",
   "settings.pluginCategoryNotification": "Benachrichtigung",
   "settings.pluginCategorySubtitleProvider": "Untertitelanbieter",
   "settings.pluginOfficialOnly": "Nur offizielle",

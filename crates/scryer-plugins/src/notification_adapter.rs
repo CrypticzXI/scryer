@@ -11,6 +11,7 @@ use scryer_application::{
 use scryer_domain::NotificationEventType as DomainNotificationEventType;
 use tracing::warn;
 
+use crate::legacy_runtime::LegacyPlugin;
 use crate::socket_host::SocketHost;
 use crate::types::{
     EXPORT_NOTIFICATION_ACTION, EXPORT_NOTIFICATION_SEND, NotificationEventType, PluginDescriptor,
@@ -23,7 +24,7 @@ use crate::types::{
 };
 
 pub struct WasmNotificationClient {
-    plugin: Arc<Mutex<extism::Plugin>>,
+    plugin: Arc<Mutex<LegacyPlugin>>,
     descriptor: PluginDescriptor,
     channel_name: String,
     socket_host: Option<SocketHost>,
@@ -31,7 +32,7 @@ pub struct WasmNotificationClient {
 
 impl WasmNotificationClient {
     pub fn new(
-        plugin: extism::Plugin,
+        plugin: LegacyPlugin,
         descriptor: PluginDescriptor,
         channel_name: String,
         socket_host: Option<SocketHost>,
@@ -73,7 +74,7 @@ impl WasmNotificationClient {
                 return Ok(None);
             }
 
-            let output = guard.call::<&str, String>(EXPORT_NOTIFICATION_ACTION, &input);
+            let output = guard.call_string(EXPORT_NOTIFICATION_ACTION, &input);
             if let Some(socket_host) = socket_host {
                 socket_host.cleanup();
             }
@@ -287,7 +288,7 @@ impl NotificationClient for WasmNotificationClient {
             let mut guard = plugin
                 .lock()
                 .map_err(|e| AppError::Repository(format!("plugin mutex poisoned: {e}")))?;
-            let output = guard.call::<&str, String>(EXPORT_NOTIFICATION_SEND, &input);
+            let output = guard.call_string(EXPORT_NOTIFICATION_SEND, &input);
             if let Some(socket_host) = socket_host {
                 socket_host.cleanup();
             }

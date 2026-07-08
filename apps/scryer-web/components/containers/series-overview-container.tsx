@@ -31,6 +31,12 @@ import { DEFAULT_SERIES_LIBRARY_PATH } from "@/lib/constants/settings";
 import { userFacingGraphQlErrorMessage } from "@/lib/graphql/error-message";
 import { qualityProfileSettingsToEntries } from "@/lib/utils/quality-profiles";
 import { releaseQueueScopeInput } from "@/lib/utils/release-queue-scope";
+import {
+  episodeIdsForCollections,
+  mergeLoadedEpisodeDetailsForCollections,
+  pruneEpisodeRecord,
+  pruneSeriesMovieLinkMediaFiles,
+} from "@/lib/utils/series-episode-details";
 import { useClient } from "urql";
 import { useTranslate } from "@/lib/context/translate-context";
 import { useGlobalStatus } from "@/lib/context/global-status-context";
@@ -351,6 +357,8 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
   const [episodeDetailsLoaded, setEpisodeDetailsLoaded] = React.useState<
     ReadonlySet<string>
   >(() => new Set());
+  const episodeDetailsLoadedRef = React.useRef(episodeDetailsLoaded);
+  episodeDetailsLoadedRef.current = episodeDetailsLoaded;
   const [episodeDetailsLoading, setEpisodeDetailsLoading] = React.useState<
     Record<string, boolean>
   >({});
@@ -472,13 +480,31 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
       }
       setCollections(nextCollections);
       setSeriesMovieLinks(nextSeriesMovieLinks);
-      setEpisodesByCollection(
-        Object.fromEntries(
-          nextCollections.map((collection: TitleCollection) => [
-            collection.id,
-            collection.episodes ?? [],
-          ]),
+      const nextEpisodeIds = episodeIdsForCollections(nextCollections);
+      setEpisodesByCollection((current) =>
+        mergeLoadedEpisodeDetailsForCollections(
+          nextCollections,
+          current,
+          episodeDetailsLoadedRef.current,
         ),
+      );
+      setEpisodeDetailsLoaded((current) => {
+        const retained = new Set<string>();
+        for (const episodeId of current) {
+          if (nextEpisodeIds.has(episodeId)) {
+            retained.add(episodeId);
+          }
+        }
+        return retained;
+      });
+      setEpisodeDetailsLoading((current) =>
+        pruneEpisodeRecord(current, nextEpisodeIds),
+      );
+      setMediaFilesByEpisode((current) =>
+        pruneEpisodeRecord(current, nextEpisodeIds),
+      );
+      setMediaFilesBySeriesMovieLink((current) =>
+        pruneSeriesMovieLinkMediaFiles(current, nextEpisodeIds),
       );
       if (!nextTitle) {
         setMediaFilesByEpisode({});

@@ -8,9 +8,8 @@ use std::{collections::BTreeMap, sync::mpsc};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
-use crate::loader::{
-    apply_allowed_hosts, build_plugin, build_plugin_with_indexer_proxy, parse_config_json_entries,
-};
+use crate::legacy_runtime::{LegacyPlugin, LegacyPluginSpec};
+use crate::loader::{allowed_hosts_for_descriptor, parse_config_json_entries};
 use crate::plugin_http_host::IndexerProxyPolicy;
 use crate::types::{
     ConfigFieldRole, EXPORT_INDEXER_ACTION, EXPORT_INDEXER_SEARCH, IndexerProtocol,
@@ -39,10 +38,9 @@ struct IndexerPluginCommand {
 
 impl IndexerPluginWorker {
     fn start(
-        manifest: extism::Manifest,
+        spec: LegacyPluginSpec,
         descriptor: &PluginDescriptor,
         indexer_name: &str,
-        indexer_proxy_policy: Option<IndexerProxyPolicy>,
     ) -> AppResult<Self> {
         let (tx, rx) = mpsc::channel::<IndexerPluginCommand>();
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
@@ -53,11 +51,7 @@ impl IndexerPluginWorker {
         std::thread::Builder::new()
             .name(thread_name)
             .spawn(move || {
-                let plugin_result = match indexer_proxy_policy {
-                    Some(policy) => build_plugin_with_indexer_proxy(manifest, policy),
-                    None => build_plugin(manifest),
-                };
-                let mut plugin = match plugin_result {
+                let mut plugin = match LegacyPlugin::instantiate(spec) {
                     Ok(plugin) => {
                         let _ = ready_tx.send(Ok(()));
                         plugin
@@ -73,15 +67,7 @@ impl IndexerPluginWorker {
                     let result = if command.optional && !plugin.function_exists(command.export) {
                         Ok(None)
                     } else {
-                        plugin
-                            .call::<&str, String>(command.export, &command.input)
-                            .map(Some)
-                            .map_err(|e| {
-                                AppError::Repository(format!(
-                                    "plugin {}() failed: {e}",
-                                    command.export
-                                ))
-                            })
+                        plugin.call_string(command.export, &command.input).map(Some)
                     };
                     let elapsed = start.elapsed();
 
@@ -164,20 +150,14 @@ impl WasmIndexerClient {
         config: IndexerConfig,
         indexer_proxy_config: Option<IndexerProxyConfig>,
     ) -> Result<Self, AppError> {
-        let manifest = build_manifest(
+        let spec = build_legacy_spec(
             wasm_bytes,
             &descriptor,
             &indexer_name,
             &config,
-            indexer_proxy_config.as_ref(),
+            indexer_proxy_config,
         );
-        let indexer_proxy_policy = indexer_proxy_config.map(|proxy_config| IndexerProxyPolicy {
-            indexer_id: config.id.clone(),
-            indexer_name: indexer_name.clone(),
-            config: proxy_config,
-        });
-        let worker =
-            IndexerPluginWorker::start(manifest, &descriptor, &indexer_name, indexer_proxy_policy)?;
+        let worker = IndexerPluginWorker::start(spec, &descriptor, &indexer_name)?;
 
         info!(
             indexer = indexer_name.as_str(),
@@ -230,35 +210,39 @@ impl WasmIndexerClient {
     }
 }
 
-fn build_manifest(
+fn build_legacy_spec(
     wasm_bytes: Vec<u8>,
     descriptor: &PluginDescriptor,
     indexer_name: &str,
     config: &IndexerConfig,
-    indexer_proxy_config: Option<&IndexerProxyConfig>,
-) -> extism::Manifest {
-    let mut manifest = extism::Manifest::new([extism::Wasm::data(wasm_bytes)]);
+    indexer_proxy_config: Option<IndexerProxyConfig>,
+) -> LegacyPluginSpec {
     let config_entries = build_config_entries(descriptor, indexer_name, config);
     let connection_url = resolve_connection_url(descriptor, config_entries.as_ref());
-    manifest = apply_allowed_hosts(
-        manifest,
+    let allowed_hosts = allowed_hosts_for_descriptor(
         descriptor,
         connection_url.as_deref(),
         config.config_json.as_deref(),
     );
     let timeout_seconds = 30
         + indexer_proxy_config
+            .as_ref()
             .map(|config| config.request_timeout_seconds as u64 + 5)
             .unwrap_or(0);
-    manifest = manifest.with_timeout(std::time::Duration::from_secs(timeout_seconds));
-
+    let mut spec = LegacyPluginSpec::new(wasm_bytes, descriptor.id.clone());
+    spec.allowed_hosts = allowed_hosts;
+    spec.timeout = std::time::Duration::from_secs(timeout_seconds);
     if let Some(map) = &config_entries {
         for (key, value) in map {
-            manifest = manifest.with_config_key(key, value);
+            spec.config.insert(key.clone(), value.clone());
         }
     }
-
-    manifest
+    spec.indexer_proxy_policy = indexer_proxy_config.map(|proxy_config| IndexerProxyPolicy {
+        indexer_id: config.id.clone(),
+        indexer_name: indexer_name.to_string(),
+        config: proxy_config,
+    });
+    spec
 }
 
 fn build_config_entries(

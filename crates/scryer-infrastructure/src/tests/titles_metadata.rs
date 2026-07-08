@@ -687,9 +687,9 @@ async fn smg_canonical_subject_preference_detaches_external_id_fallback_subjects
 }
 
 #[tokio::test]
-async fn hydrated_metadata_empty_canonical_tags_clear_existing_tags() {
+async fn empty_title_metadata_preserves_existing_canonical_tags() {
     let db = std::env::temp_dir().join(format!(
-        "scryer_title_canonical_tags_clear_{}.db",
+        "scryer_title_empty_canonical_tags_preserve_{}.db",
         chrono::Utc::now().timestamp_micros()
     ));
     let services = SqliteServices::new(db.to_string_lossy())
@@ -697,8 +697,73 @@ async fn hydrated_metadata_empty_canonical_tags_clear_existing_tags() {
         .expect("db should initialize");
     let catalog = title_store(&services);
 
-    let mut title = make_test_title("title-canonical-tags-clear", None);
-    title.facet = MediaFacet::Movie;
+    let mut title = make_test_title("title-canonical-tags-preserve", None);
+    title.facet = MediaFacet::Series;
+    TitleRepository::create(&catalog, title.clone())
+        .await
+        .expect("title should insert");
+
+    let tag = scryer_domain::CanonicalMediaTag {
+        key: "canonical:genre:test-preserve".to_string(),
+        category: "genre".to_string(),
+        name: "Test Preserve".to_string(),
+        confidence: Some(0.9),
+        sources: vec!["test".to_string()],
+        source_tag_keys: vec!["test-preserve".to_string()],
+        is_adult: false,
+        is_spoiler: false,
+    };
+    TitleRepository::update_title_hydrated_metadata(
+        &catalog,
+        &title.id,
+        TitleMetadataUpdate {
+            canonical_subject_key: Some("smg:series:preserve".to_string()),
+            metadata_language: Some("en".to_string()),
+            metadata_fetched_at: Some(Utc::now().to_rfc3339()),
+            canonical_tags: vec![tag.clone()],
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("canonical tags should persist");
+
+    let updated = TitleRepository::update_title_hydrated_metadata(
+        &catalog,
+        &title.id,
+        TitleMetadataUpdate {
+            canonical_subject_key: Some("smg:series:preserve".to_string()),
+            metadata_language: Some("en".to_string()),
+            metadata_fetched_at: Some(Utc::now().to_rfc3339()),
+            canonical_tags: vec![],
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("empty canonical tags should not clear existing tags");
+    assert_eq!(updated.canonical_tags, vec![tag.clone()]);
+
+    let reloaded = TitleRepository::get_by_id(&catalog, &title.id)
+        .await
+        .expect("title lookup should succeed")
+        .expect("title should exist");
+    assert_eq!(reloaded.canonical_tags, vec![tag]);
+
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn title_reads_canonical_tags_from_matching_unlinked_subject() {
+    let db = std::env::temp_dir().join(format!(
+        "scryer_title_canonical_tags_external_subject_{}.db",
+        chrono::Utc::now().timestamp_micros()
+    ));
+    let services = SqliteServices::new(db.to_string_lossy())
+        .await
+        .expect("db should initialize");
+    let catalog = title_store(&services);
+
+    let mut title = make_test_title("title-canonical-tags-external-subject", None);
+    title.facet = MediaFacet::Series;
     title.external_ids = vec![ExternalId {
         source: "tvdb".to_string(),
         value: "123456".to_string(),
@@ -707,48 +772,45 @@ async fn hydrated_metadata_empty_canonical_tags_clear_existing_tags() {
         .await
         .expect("title should insert");
 
-    let tag = scryer_domain::CanonicalMediaTag {
-        key: "canonical:genre:obsolete".to_string(),
-        category: "genre".to_string(),
-        name: "Obsolete".to_string(),
-        confidence: Some(0.5),
-        sources: vec!["test".to_string()],
-        source_tag_keys: vec!["obsolete".to_string()],
-        is_adult: false,
-        is_spoiler: false,
-    };
-    TitleRepository::update_title_hydrated_metadata(
-        &catalog,
-        &title.id,
-        TitleMetadataUpdate {
-            metadata_language: Some("en".to_string()),
-            metadata_fetched_at: Some(Utc::now().to_rfc3339()),
-            canonical_tags: vec![tag],
-            ..Default::default()
-        },
+    sqlx::query(
+        "INSERT INTO canonical_media_subjects (
+            id, subject_key, subject_key_norm, language, target_kind, title_id, display_title, year
+        ) VALUES (?, ?, ?, ?, ?, NULL, ?, ?)",
     )
+    .bind("canonical:eng:tvdb:series:123456")
+    .bind("tvdb:series:123456")
+    .bind("tvdb:series:123456")
+    .bind("eng")
+    .bind("series")
+    .bind("Canonical Tag Subject")
+    .bind(2026_i32)
+    .execute(&services.pool)
     .await
-    .expect("canonical tag should persist");
-
-    let cleared = TitleRepository::update_title_hydrated_metadata(
-        &catalog,
-        &title.id,
-        TitleMetadataUpdate {
-            metadata_language: Some("en".to_string()),
-            metadata_fetched_at: Some(Utc::now().to_rfc3339()),
-            canonical_tags: vec![],
-            ..Default::default()
-        },
+    .expect("canonical subject should insert");
+    sqlx::query(
+        "INSERT INTO canonical_media_tags (
+            subject_id, tag_key, category, name, confidence, is_adult, is_spoiler, sort_index
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
     )
+    .bind("canonical:eng:tvdb:series:123456")
+    .bind("canonical:genre:external-subject")
+    .bind("genre")
+    .bind("External Subject Genre")
+    .bind(0.8_f64)
+    .bind(false)
+    .bind(false)
+    .bind(0_i32)
+    .execute(&services.pool)
     .await
-    .expect("empty canonical tag hydration should clear tags");
+    .expect("canonical tag should insert");
 
-    assert!(cleared.canonical_tags.is_empty());
     let reloaded = TitleRepository::get_by_id(&catalog, &title.id)
         .await
         .expect("title lookup should succeed")
         .expect("title should exist");
-    assert!(reloaded.canonical_tags.is_empty());
+    assert_eq!(reloaded.canonical_tags.len(), 1);
+    assert_eq!(reloaded.canonical_tags[0].category, "genre");
+    assert_eq!(reloaded.canonical_tags[0].name, "External Subject Genre");
 
     let _ = std::fs::remove_file(db);
 }

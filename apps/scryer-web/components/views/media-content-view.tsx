@@ -603,16 +603,16 @@ function TitleContextForYouPanel({
           </div>
         </div>
       ) : (
-        <div className="min-h-[42rem] space-y-4">
+        <div className="mt-5 min-h-[42rem] space-y-5">
           {recommendationGroups.map((group) => (
             <section
               key={group.id}
-              className="rounded-[15px] border border-[var(--scry-border)] bg-[rgba(4,8,17,0.52)] px-3 py-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.025)]"
+              className="rounded-[15px] border border-[var(--scry-border)] bg-[rgba(4,8,17,0.52)] px-4 py-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.025)]"
             >
-              <h3 className="mx-0.5 mb-2.5 text-[11px] font-bold uppercase tracking-[0.06em] text-[var(--scry-muted3)]">
+              <h3 className="mx-0.5 mb-3.5 text-[11px] font-bold uppercase tracking-[0.06em] text-[var(--scry-muted3)]">
                 {group.label}
               </h3>
-              <div className="flex gap-[11px] overflow-x-auto pb-1 pr-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+              <div className="flex gap-3.5 overflow-x-auto pb-1.5 pr-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
                 {group.recommendations.map((recommendation) => (
                   <div
                     key={`${group.id}-${recommendation.item.id}`}

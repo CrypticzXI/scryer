@@ -43,6 +43,7 @@ export const SETTINGS_SECTION_PATH: Record<SettingsSection, string> = {
 };
 
 const AUTOMATION_SETTINGS_SECTION_PATH: Partial<Record<SettingsSection, string>> = {
+  acquisition: "acquisition",
   rules: "rules",
   subtitles: "subtitles",
   "post-processing": "post-processing",

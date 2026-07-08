@@ -3980,6 +3980,16 @@ pub trait ArchiveExtractorPluginProvider: Send + Sync {
 
     fn available_provider_types(&self) -> Vec<String>;
 
+    fn upsert_runtime_plugin(&self, plugin: RuntimePluginLoad) -> Result<(), String> {
+        let _ = plugin;
+        Err("this provider does not support runtime-load upsert".to_string())
+    }
+
+    fn remove_runtime_plugin(&self, provider_type: &str) -> Result<(), String> {
+        let _ = provider_type;
+        Err("this provider does not support runtime-load removal".to_string())
+    }
+
     fn reload_runtime_plugins(
         &self,
         runtime_plugins: &[RuntimePluginLoad],

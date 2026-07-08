@@ -9,22 +9,15 @@ decompresses it with `zstd::decode_all` and drives it through
 
 ## Provenance
 
-- Source repo: `github.com/scryer-media/scryer-plugins` @ commit `5b20a3f` plus
-  the RFC 123 **WP2.5** working tree (host-thread PAR2 reconstruction: the new
-  `src/par2_host_solver.rs` + repair-path wiring in `src/main.rs`, built on
-  `scryer-plugin-sdk` 3.4 / `scryer-plugin-pdk` v0.1). This artifact **replaces**
-  the W2 reconstruction-incapable baseline (which imported only the two §5 crypto
-  fns); it now dispatches the Reed–Solomon solve to the host via
-  `scryer_par2_reconstruct`.
-- Build: `cargo build --profile plugin-release --target wasm32-wasip1`
-  (baseline feature set — no `simd128`/`relaxed-simd`). Built + import-verified by
-  the WP2.5 plugin lane (Agent P).
+- Source repo: `github.com/scryer-media/scryer-plugins`, release tag
+  `plugins-v3/archive-extraction/v0.1.1`.
+- Release asset: `plugin-v3.wasm.zst`.
 - Decompressed artifact:
-  - size `2241308`
-  - blake3 `c6aa722a0c816b0a8cdc4dcabb05d77b462a5488e9767036ecfc2389b1cd9442`
-  - sha256 `914d0d62af06775a6f98ac9870b1532266994177e4ea265789216f767c87ce9a`
-- `plugin.wasm.zst` (zstd -19): size `457912`,
-  sha256 `1677b6e9cab83b4ba9ea4082d9214e32a784edfb7e622c44b5bff2e8e49fe157`.
+  - size `1753286`
+  - blake3 `eed239c261ec45a51d1831bd6303c83819e9223b95d72f6e3216b8c33b2671c2`
+  - sha256 `9d241b543faf5b6920eec3a9efdac86f6ff33f7d7d8ac7c32736d751a901837f`
+- `plugin.wasm.zst`: size `461327`,
+  sha256 `8523f30575ea9be0cce44ca6809e95e31d17b01078e04d255b4ec8ef4885a549`.
 
 ## ABI (frozen, RFC §5 + WP2.5)
 

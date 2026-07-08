@@ -31,7 +31,7 @@ function firstGraphQlErrorMessage(error: CombinedError | unknown): string | null
   return null;
 }
 
-function hasGraphQlErrorCode(error: CombinedError | unknown, code: string): boolean {
+export function hasGraphQlErrorCode(error: CombinedError | unknown, code: string): boolean {
   if (!isRecord(error) || !Array.isArray(error.graphQLErrors)) {
     return false;
   }

@@ -3,15 +3,14 @@ use std::io::Read;
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
-use extism::{CurrentPlugin, Error, Function, Manifest, UserData, Val, ValType};
-use extism_manifest::HttpRequest;
 use glob::Pattern;
 use reqwest::blocking::Client;
 use reqwest::{Method, StatusCode};
 use scryer_application::challenge_solver as solver;
 
-const HTTP_ENV_NAMESPACE: &str = "extism:host/env";
+pub(crate) const HTTP_ENV_NAMESPACE: &str = "extism:host/env";
 const DEFAULT_MAX_HTTP_RESPONSE_BYTES: u64 = 50 * 1024 * 1024;
+type HostResult<T> = Result<T, String>;
 
 static SHARED_PLUGIN_HTTP_RUNTIME: LazyLock<PluginHttpRuntime> =
     LazyLock::new(PluginHttpRuntime::default);
@@ -27,12 +26,25 @@ struct PluginHttpRuntimeState {
     cached_client: Option<Client>,
 }
 
+pub(crate) struct PluginHttpHost {
+    state: Arc<Mutex<PluginHttpHostState>>,
+}
+
 struct PluginHttpHostState {
     runtime: PluginHttpRuntime,
     allowed_hosts: Option<Vec<String>>,
     indexer_proxy_policy: Option<IndexerProxyPolicy>,
     max_http_response_bytes: Option<u64>,
     last_responses: HashMap<String, PluginHttpLastResponse>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+pub(crate) struct PluginHttpRequest {
+    pub(crate) url: String,
+    #[serde(default)]
+    pub(crate) method: Option<String>,
+    #[serde(default)]
+    pub(crate) headers: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Default)]
@@ -79,288 +91,233 @@ impl PluginHttpRuntime {
         Ok(())
     }
 
-    fn client(&self) -> Result<Client, Error> {
+    fn client(&self) -> HostResult<Client> {
         let mut state = self
             .state
             .lock()
-            .map_err(|error| Error::msg(format!("plugin HTTP runtime lock poisoned: {error}")))?;
+            .map_err(|error| format!("plugin HTTP runtime lock poisoned: {error}"))?;
         if let Some(client) = &state.cached_client {
             return Ok(client.clone());
         }
 
         let client = scryer_outbound_http::blocking_plugin_host_client(&state.extra_ca_bundle_pem)
-            .map_err(Error::msg)?;
+            .map_err(|error| error.to_string())?;
         state.cached_client = Some(client.clone());
         Ok(client)
     }
 }
 
-pub(crate) fn host_functions_with_indexer_proxy(
-    manifest: &Manifest,
-    indexer_proxy_policy: Option<IndexerProxyPolicy>,
-) -> Vec<Function> {
-    let state = UserData::new(PluginHttpHostState {
-        runtime: shared_plugin_http_runtime(),
-        allowed_hosts: manifest.allowed_hosts.clone(),
-        indexer_proxy_policy,
-        max_http_response_bytes: manifest.memory.max_http_response_bytes,
-        last_responses: HashMap::new(),
-    });
-
-    vec![
-        Function::new(
-            "http_request",
-            [ValType::I64, ValType::I64],
-            [ValType::I64],
-            state.clone(),
-            plugin_http_request,
-        )
-        .with_namespace(HTTP_ENV_NAMESPACE),
-        Function::new(
-            "http_status_code",
-            [],
-            [ValType::I32],
-            state.clone(),
-            plugin_http_status_code,
-        )
-        .with_namespace(HTTP_ENV_NAMESPACE),
-        Function::new(
-            "http_headers",
-            [],
-            [ValType::I64],
-            state,
-            plugin_http_headers,
-        )
-        .with_namespace(HTTP_ENV_NAMESPACE),
-    ]
-}
-
-fn plugin_http_request(
-    current: &mut CurrentPlugin,
-    input: &[Val],
-    output: &mut [Val],
-    state: UserData<PluginHttpHostState>,
-) -> Result<(), Error> {
-    output[0] = Val::I64(0);
-
-    let plugin_id = current.id().to_string();
-    let request_offset = input.first().and_then(Val::i64).unwrap_or(0) as u64;
-    let body_offset = input.get(1).and_then(Val::i64).unwrap_or(0) as u64;
-
-    let request_handle = current.memory_handle(request_offset).ok_or_else(|| {
-        Error::msg(format!(
-            "invalid handle offset for http request: {request_offset}"
-        ))
-    })?;
-    let request: HttpRequest = serde_json::from_slice(current.memory_bytes(request_handle)?)?;
-    current.memory_free(request_handle)?;
-
-    let body = if body_offset > 0 {
-        let body_handle = current.memory_handle(body_offset).ok_or_else(|| {
-            Error::msg(format!(
-                "invalid handle offset for http request body: {request_offset}"
-            ))
-        })?;
-        let bytes = current.memory_bytes(body_handle)?.to_vec();
-        current.memory_free(body_handle)?;
-        Some(bytes)
-    } else {
-        None
-    };
-
-    let host_state = state
-        .get()
-        .map_err(|error| Error::msg(format!("plugin HTTP host state unavailable: {error}")))?;
-    let (runtime, allowed_hosts, indexer_proxy_policy, max_http_response_bytes) = {
-        let mut host_state = host_state.lock().map_err(|error| {
-            Error::msg(format!("plugin HTTP host state lock poisoned: {error}"))
-        })?;
-        host_state
-            .last_responses
-            .insert(plugin_id.clone(), PluginHttpLastResponse::default());
-        (
-            host_state.runtime.clone(),
-            host_state.allowed_hosts.clone(),
-            host_state.indexer_proxy_policy.clone(),
-            host_state.max_http_response_bytes,
-        )
-    };
-
-    enforce_allowed_hosts(allowed_hosts.as_deref(), &request.url)?;
-
-    let client = runtime.client()?;
-    let timeout = current.time_remaining();
-    let started_at = Instant::now();
-    let request_is_get = request
-        .method
-        .as_deref()
-        .unwrap_or("GET")
-        .eq_ignore_ascii_case("GET");
-    // Reuse a previously solved clearance session for this proxy + origin so
-    // repeat requests skip the solver entirely until the session goes stale.
-    let session_headers = indexer_proxy_policy
-        .as_ref()
-        .filter(|_| request_is_get)
-        .map(|policy| {
-            solver::SolvedSessionCache::shared().session_headers(&policy.config.id, &request.url)
-        })
-        .unwrap_or_default();
-    let response = execute_request_with_extra_headers(
-        &client,
-        &request,
-        body.clone(),
-        timeout,
-        &session_headers,
-    )?;
-    let status = response.status();
-    let status_code = status.as_u16();
-    let headers = response_headers(&response);
-
-    if status == StatusCode::TOO_MANY_REQUESTS {
-        store_last_response(&host_state, &plugin_id, status_code, headers)?;
-        tracing::debug!(
-            plugin_id = plugin_id.as_str(),
-            status = status_code,
-            elapsed_ms = started_at.elapsed().as_millis() as u64,
-            response_bytes = 0_u64,
-            "plugin HTTP request skipped indexer proxy after direct rate limit"
-        );
-        return Ok(());
+impl PluginHttpHost {
+    pub(crate) fn new(
+        allowed_hosts: Vec<String>,
+        indexer_proxy_policy: Option<IndexerProxyPolicy>,
+        max_http_response_bytes: Option<u64>,
+    ) -> Self {
+        Self {
+            state: Arc::new(Mutex::new(PluginHttpHostState {
+                runtime: shared_plugin_http_runtime(),
+                allowed_hosts: Some(allowed_hosts),
+                indexer_proxy_policy,
+                max_http_response_bytes,
+                last_responses: HashMap::new(),
+            })),
+        }
     }
 
-    let should_read_body = status.is_success()
-        || indexer_proxy_policy.is_some() && solver::challenge_candidate_status(status_code);
-    let direct_body = if should_read_body {
-        read_response_body(response, max_http_response_bytes)?
-    } else {
-        Vec::new()
-    };
-
-    if let Some(policy) = indexer_proxy_policy.as_ref()
-        && solver::looks_like_challenge_response(status_code, &headers, &direct_body)
-    {
-        let method = request.method.as_deref().unwrap_or("GET");
-        if !method.eq_ignore_ascii_case("GET") {
-            return Err(Error::msg(format!(
-                "indexer proxy only supports GET challenge solving for plugin HTTP requests; got {method}"
-            )));
-        }
-        if !session_headers.is_empty() {
-            // The cached session no longer clears the challenge.
-            solver::SolvedSessionCache::shared().invalidate(&policy.config.id, &request.url);
-        }
-
-        tracing::debug!(
-            plugin_id = plugin_id.as_str(),
-            indexer_id = policy.indexer_id.as_str(),
-            indexer_name = policy.indexer_name.as_str(),
-            proxy_config_id = policy.config.id.as_str(),
-            status = status_code,
-            request_url = solver::sanitized_url_for_log(&request.url).as_str(),
-            "plugin HTTP request detected browser challenge"
-        );
-
-        let solved = match execute_byparr_request(
-            &client,
-            policy,
-            &request,
-            body,
-            timeout,
-            max_http_response_bytes,
-        ) {
-            Ok(solved) => {
-                solver::SolverHealthLedger::shared().record_success(&policy.config.id);
-                solved
-            }
-            Err(error) => {
-                let message = error.to_string();
-                if solver::is_solver_service_error_message(&message) {
-                    solver::SolverHealthLedger::shared()
-                        .record_failure(&policy.config.id, &message);
-                }
-                return Err(error);
-            }
+    pub(crate) fn request(
+        &self,
+        plugin_id: &str,
+        request: PluginHttpRequest,
+        body: Option<Vec<u8>>,
+        timeout: Option<Duration>,
+    ) -> HostResult<Vec<u8>> {
+        let (runtime, allowed_hosts, indexer_proxy_policy, max_http_response_bytes) = {
+            let mut host_state = self
+                .state
+                .lock()
+                .map_err(|error| format!("plugin HTTP host state lock poisoned: {error}"))?;
+            host_state
+                .last_responses
+                .insert(plugin_id.to_string(), PluginHttpLastResponse::default());
+            (
+                host_state.runtime.clone(),
+                host_state.allowed_hosts.clone(),
+                host_state.indexer_proxy_policy.clone(),
+                host_state.max_http_response_bytes,
+            )
         };
-        let response_bytes = solved.body.len();
-        store_last_response(&host_state, &plugin_id, solved.status_code, solved.headers)?;
+
+        enforce_allowed_hosts(allowed_hosts.as_deref(), &request.url)?;
+
+        let client = runtime.client()?;
+        let started_at = Instant::now();
+        let request_is_get = request
+            .method
+            .as_deref()
+            .unwrap_or("GET")
+            .eq_ignore_ascii_case("GET");
+        // Reuse a previously solved clearance session for this proxy + origin so
+        // repeat requests skip the solver entirely until the session goes stale.
+        let session_headers = indexer_proxy_policy
+            .as_ref()
+            .filter(|_| request_is_get)
+            .map(|policy| {
+                solver::SolvedSessionCache::shared()
+                    .session_headers(&policy.config.id, &request.url)
+            })
+            .unwrap_or_default();
+        let response = execute_request_with_extra_headers(
+            &client,
+            &request,
+            body.clone(),
+            timeout,
+            &session_headers,
+        )?;
+        let status = response.status();
+        let status_code = status.as_u16();
+        let headers = response_headers(&response);
+
+        if status == StatusCode::TOO_MANY_REQUESTS {
+            self.store_last_response(plugin_id, status_code, headers)?;
+            tracing::debug!(
+                plugin_id,
+                status = status_code,
+                elapsed_ms = started_at.elapsed().as_millis() as u64,
+                response_bytes = 0_u64,
+                "plugin HTTP request skipped indexer proxy after direct rate limit"
+            );
+            return Ok(Vec::new());
+        }
+
+        let should_read_body = status.is_success()
+            || indexer_proxy_policy.is_some() && solver::challenge_candidate_status(status_code);
+        let direct_body = if should_read_body {
+            read_response_body(response, max_http_response_bytes)?
+        } else {
+            Vec::new()
+        };
+
+        if let Some(policy) = indexer_proxy_policy.as_ref()
+            && solver::looks_like_challenge_response(status_code, &headers, &direct_body)
+        {
+            let method = request.method.as_deref().unwrap_or("GET");
+            if !method.eq_ignore_ascii_case("GET") {
+                return Err(format!(
+                    "indexer proxy only supports GET challenge solving for plugin HTTP requests; got {method}"
+                ));
+            }
+            if !session_headers.is_empty() {
+                // The cached session no longer clears the challenge.
+                solver::SolvedSessionCache::shared().invalidate(&policy.config.id, &request.url);
+            }
+
+            tracing::debug!(
+                plugin_id,
+                indexer_id = policy.indexer_id.as_str(),
+                indexer_name = policy.indexer_name.as_str(),
+                proxy_config_id = policy.config.id.as_str(),
+                status = status_code,
+                request_url = solver::sanitized_url_for_log(&request.url).as_str(),
+                "plugin HTTP request detected browser challenge"
+            );
+
+            let solved = match execute_byparr_request(
+                &client,
+                policy,
+                &request,
+                body,
+                timeout,
+                max_http_response_bytes,
+            ) {
+                Ok(solved) => {
+                    solver::SolverHealthLedger::shared().record_success(&policy.config.id);
+                    solved
+                }
+                Err(error) => {
+                    if solver::is_solver_service_error_message(&error) {
+                        solver::SolverHealthLedger::shared()
+                            .record_failure(&policy.config.id, &error);
+                    }
+                    return Err(error);
+                }
+            };
+            let response_bytes = solved.body.len();
+            self.store_last_response(plugin_id, solved.status_code, solved.headers)?;
+            tracing::debug!(
+                plugin_id,
+                indexer_id = policy.indexer_id.as_str(),
+                proxy_config_id = policy.config.id.as_str(),
+                status = solved.status_code,
+                elapsed_ms = started_at.elapsed().as_millis() as u64,
+                response_bytes,
+                "plugin HTTP request completed through indexer proxy"
+            );
+            return Ok(solved.body);
+        }
+
+        let response_bytes = direct_body.len();
+        self.store_last_response(plugin_id, status_code, headers)?;
         tracing::debug!(
-            plugin_id = plugin_id.as_str(),
-            indexer_id = policy.indexer_id.as_str(),
-            proxy_config_id = policy.config.id.as_str(),
-            status = solved.status_code,
+            plugin_id,
+            status = status_code,
             elapsed_ms = started_at.elapsed().as_millis() as u64,
             response_bytes,
-            "plugin HTTP request completed through indexer proxy"
+            "plugin HTTP request completed"
         );
-        current.memory_set_val(&mut output[0], solved.body)?;
-        return Ok(());
-    }
-
-    let response_bytes = direct_body.len();
-    store_last_response(&host_state, &plugin_id, status_code, headers)?;
-    tracing::debug!(
-        plugin_id = plugin_id.as_str(),
-        status = status_code,
-        elapsed_ms = started_at.elapsed().as_millis() as u64,
-        response_bytes,
-        "plugin HTTP request completed"
-    );
-    if status.is_success() {
-        current.memory_set_val(&mut output[0], direct_body)?;
-    }
-    Ok(())
-}
-
-fn plugin_http_status_code(
-    current: &mut CurrentPlugin,
-    _input: &[Val],
-    output: &mut [Val],
-    state: UserData<PluginHttpHostState>,
-) -> Result<(), Error> {
-    let host_state = state
-        .get()
-        .map_err(|error| Error::msg(format!("plugin HTTP host state unavailable: {error}")))?;
-    let host_state = host_state
-        .lock()
-        .map_err(|error| Error::msg(format!("plugin HTTP host state lock poisoned: {error}")))?;
-    let status_code = host_state
-        .last_responses
-        .get(&current.id().to_string())
-        .map(|response| response.status_code)
-        .unwrap_or(0);
-    output[0] = Val::I32(status_code as i32);
-    Ok(())
-}
-
-fn plugin_http_headers(
-    current: &mut CurrentPlugin,
-    _input: &[Val],
-    output: &mut [Val],
-    state: UserData<PluginHttpHostState>,
-) -> Result<(), Error> {
-    let host_state = state
-        .get()
-        .map_err(|error| Error::msg(format!("plugin HTTP host state unavailable: {error}")))?;
-    let host_state = host_state
-        .lock()
-        .map_err(|error| Error::msg(format!("plugin HTTP host state lock poisoned: {error}")))?;
-
-    if let Some(headers) = host_state.last_responses.get(&current.id().to_string()) {
-        if headers.headers.is_empty() {
-            output[0] = Val::I64(0);
+        if status.is_success() {
+            Ok(direct_body)
         } else {
-            current.memory_set_val(&mut output[0], serde_json::to_string(&headers.headers)?)?;
+            Ok(Vec::new())
         }
-        return Ok(());
     }
 
-    output[0] = Val::I64(0);
-    Ok(())
+    pub(crate) fn status_code(&self, plugin_id: &str) -> HostResult<u16> {
+        let host_state = self
+            .state
+            .lock()
+            .map_err(|error| format!("plugin HTTP host state lock poisoned: {error}"))?;
+        Ok(host_state
+            .last_responses
+            .get(plugin_id)
+            .map(|response| response.status_code)
+            .unwrap_or(0))
+    }
+
+    pub(crate) fn headers(&self, plugin_id: &str) -> HostResult<Option<BTreeMap<String, String>>> {
+        let host_state = self
+            .state
+            .lock()
+            .map_err(|error| format!("plugin HTTP host state lock poisoned: {error}"))?;
+        Ok(host_state
+            .last_responses
+            .get(plugin_id)
+            .filter(|response| !response.headers.is_empty())
+            .map(|response| response.headers.clone()))
+    }
+
+    fn store_last_response(
+        &self,
+        plugin_id: &str,
+        status_code: u16,
+        headers: BTreeMap<String, String>,
+    ) -> HostResult<()> {
+        let mut host_state = self
+            .state
+            .lock()
+            .map_err(|error| format!("plugin HTTP host state lock poisoned: {error}"))?;
+        host_state.last_responses.insert(
+            plugin_id.to_string(),
+            PluginHttpLastResponse {
+                status_code,
+                headers,
+            },
+        );
+        Ok(())
+    }
 }
 
-fn enforce_allowed_hosts(allowed_hosts: Option<&[String]>, request_url: &str) -> Result<(), Error> {
-    let url = url::Url::parse(request_url)
-        .map_err(|error| Error::msg(format!("Invalid URL: {error:?}")))?;
+fn enforce_allowed_hosts(allowed_hosts: Option<&[String]>, request_url: &str) -> HostResult<()> {
+    let url = url::Url::parse(request_url).map_err(|error| format!("Invalid URL: {error:?}"))?;
     let host = url.host_str().unwrap_or_default();
     let matches = allowed_hosts.is_some_and(|patterns| {
         patterns.iter().any(|pattern| {
@@ -374,19 +331,16 @@ fn enforce_allowed_hosts(allowed_hosts: Option<&[String]>, request_url: &str) ->
         return Ok(());
     }
 
-    Err(Error::msg(format!(
-        "HTTP request to {} is not allowed",
-        request_url
-    )))
+    Err(format!("HTTP request to {} is not allowed", request_url))
 }
 
 fn execute_request_with_extra_headers(
     client: &Client,
-    request: &HttpRequest,
+    request: &PluginHttpRequest,
     body: Option<Vec<u8>>,
     timeout: Option<Duration>,
     extra_headers: &[(String, String)],
-) -> Result<reqwest::blocking::Response, Error> {
+) -> HostResult<reqwest::blocking::Response> {
     let method = Method::from_bytes(
         request
             .method
@@ -395,7 +349,7 @@ fn execute_request_with_extra_headers(
             .to_uppercase()
             .as_bytes(),
     )
-    .map_err(|error| Error::msg(format!("Invalid HTTP method: {error}")))?;
+    .map_err(|error| format!("Invalid HTTP method: {error}"))?;
 
     let mut builder = client.request(method, &request.url);
     for (name, value) in &request.headers {
@@ -421,9 +375,9 @@ fn execute_request_with_extra_headers(
 
     scryer_outbound_http::send_blocking_reqwest_request(builder).map_err(|error| {
         if error.is_timeout() {
-            Error::msg("timeout")
+            "timeout".to_string()
         } else {
-            Error::msg(error.to_string())
+            error.to_string()
         }
     })
 }
@@ -441,53 +395,34 @@ fn response_headers(response: &reqwest::blocking::Response) -> BTreeMap<String, 
 fn read_response_body(
     response: reqwest::blocking::Response,
     max_http_response_bytes: Option<u64>,
-) -> Result<Vec<u8>, Error> {
+) -> HostResult<Vec<u8>> {
     let mut body = Vec::new();
     let max = max_http_response_bytes.unwrap_or(DEFAULT_MAX_HTTP_RESPONSE_BYTES);
     response
         .take(max + 1)
         .read_to_end(&mut body)
-        .map_err(|error| Error::msg(error.to_string()))?;
+        .map_err(|error| error.to_string())?;
     if body.len() > max as usize {
-        return Err(Error::msg(format!(
+        return Err(format!(
             "HTTP response exceeds the configured maximum number of bytes: {max}"
-        )));
+        ));
     }
     Ok(body)
-}
-
-fn store_last_response(
-    host_state: &Arc<Mutex<PluginHttpHostState>>,
-    plugin_id: &str,
-    status_code: u16,
-    headers: BTreeMap<String, String>,
-) -> Result<(), Error> {
-    let mut host_state = host_state
-        .lock()
-        .map_err(|error| Error::msg(format!("plugin HTTP host state lock poisoned: {error}")))?;
-    host_state.last_responses.insert(
-        plugin_id.to_string(),
-        PluginHttpLastResponse {
-            status_code,
-            headers,
-        },
-    );
-    Ok(())
 }
 
 fn execute_byparr_request(
     client: &Client,
     policy: &IndexerProxyPolicy,
-    request: &HttpRequest,
+    request: &PluginHttpRequest,
     original_body: Option<Vec<u8>>,
     original_timeout: Option<Duration>,
     max_http_response_bytes: Option<u64>,
-) -> Result<ProxiedHttpResponse, Error> {
+) -> HostResult<ProxiedHttpResponse> {
     if policy.config.provider_type != scryer_domain::IndexerProxyProviderType::Byparr {
-        return Err(Error::msg("unsupported indexer proxy provider"));
+        return Err("unsupported indexer proxy provider".to_string());
     }
     if !policy.config.is_enabled {
-        return Err(Error::msg("Indexer proxy is disabled for this indexer."));
+        return Err("Indexer proxy is disabled for this indexer.".to_string());
     }
 
     let endpoint = solver::byparr_solve_endpoint(&policy.config.base_url);
@@ -511,9 +446,9 @@ fn execute_byparr_request(
         .send()
         .map_err(|error| {
             if error.is_timeout() {
-                Error::msg(solver::BYPARR_TIMEOUT_MESSAGE)
+                solver::BYPARR_TIMEOUT_MESSAGE.to_string()
             } else {
-                Error::msg(solver::BYPARR_UNREACHABLE_MESSAGE)
+                solver::BYPARR_UNREACHABLE_MESSAGE.to_string()
             }
         })?;
 
@@ -525,12 +460,12 @@ fn execute_byparr_request(
             status = byparr_status.as_u16(),
             "Byparr service rate-limited indexer proxy request"
         );
-        return Err(Error::msg(solver::BYPARR_UNAVAILABLE_MESSAGE));
+        return Err(solver::BYPARR_UNAVAILABLE_MESSAGE.to_string());
     }
 
     let response_body = read_response_body(response, max_http_response_bytes)?;
-    let solution = solver::parse_byparr_solution(&response_body)
-        .map_err(|error| Error::msg(error.message()))?;
+    let solution =
+        solver::parse_byparr_solution(&response_body).map_err(|error| error.message())?;
 
     let solution_status = solution.status.unwrap_or_else(|| byparr_status.as_u16());
     let solved_final_url = solution.url.as_deref().map(solver::sanitized_url_for_log);
@@ -541,17 +476,17 @@ fn execute_byparr_request(
             status = solution_status,
             "Byparr reported target indexer rate limit"
         );
-        return Err(Error::msg(solver::target_rate_limit_message(&solution)));
+        return Err(solver::target_rate_limit_message(&solution));
     }
 
     let solved_body = solution.response.clone().unwrap_or_default().into_bytes();
     if solver::solved_body_looks_rate_limited(&solved_body) {
-        return Err(Error::msg(solver::target_rate_limit_message(&solution)));
+        return Err(solver::target_rate_limit_message(&solution));
     }
     if !(200..300).contains(&solution_status) {
-        return Err(Error::msg(format!(
+        return Err(format!(
             "Byparr target request returned HTTP {solution_status}."
-        )));
+        ));
     }
 
     // Cache the clearance session so follow-up requests to this origin skip
@@ -595,12 +530,10 @@ fn execute_byparr_request(
             let retry_after = solver::header_value(&headers, "retry-after").and_then(|value| {
                 scryer_outbound_http::parse_retry_after(value).map(|(delay, _)| delay)
             });
-            return Err(Error::msg(solver::rate_limit_message_with_retry_after(
-                retry_after,
-            )));
+            return Err(solver::rate_limit_message_with_retry_after(retry_after));
         }
         if !status.is_success() {
-            return Err(Error::msg(solver::BYPARR_NO_SOLUTION_MESSAGE));
+            return Err(solver::BYPARR_NO_SOLUTION_MESSAGE.to_string());
         }
         let body = read_response_body(retry, max_http_response_bytes)?;
         return Ok(ProxiedHttpResponse {
@@ -610,7 +543,7 @@ fn execute_byparr_request(
         });
     }
 
-    Err(Error::msg(solver::BYPARR_NO_SOLUTION_MESSAGE))
+    Err(solver::BYPARR_NO_SOLUTION_MESSAGE.to_string())
 }
 
 #[cfg(test)]

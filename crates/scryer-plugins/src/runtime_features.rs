@@ -40,11 +40,8 @@ fn supports_plugin_module(wat: &str) -> bool {
     compile_plugin_module(wat).is_ok()
 }
 
-fn compile_plugin_module(wat: &str) -> Result<(), extism::Error> {
-    extism::PluginBuilder::new(wat)
-        .with_cache_disabled()
-        .compile()
-        .map(|_| ())
+fn compile_plugin_module(wat: &str) -> wasmtime::Result<()> {
+    wasmtime::Module::new(crate::wasmtime_host::engine::shared_engine(), wat).map(|_| ())
 }
 
 #[cfg(test)]
@@ -93,7 +90,7 @@ mod tests {
     }
 
     #[test]
-    fn extism_runtime_accepts_probe_modules() {
+    fn wasmtime_runtime_accepts_probe_modules() {
         compile_plugin_module(SIMD128_PROBE_WAT).expect("simd128 probe should compile");
         compile_plugin_module(RELAXED_SIMD_PROBE_WAT).expect("relaxed-simd probe should compile");
     }

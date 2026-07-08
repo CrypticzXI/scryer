@@ -3215,6 +3215,7 @@ enum ProviderCatalogFamilyValue {
 	notification
 	indexer
 	download_client
+	archive_extractor
 }
 
 input ProviderConfigValueInput {

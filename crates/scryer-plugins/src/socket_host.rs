@@ -1,11 +1,10 @@
 use std::collections::HashMap;
 use std::io::{self, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use extism::{Function, UserData, ValType, host_fn};
 use rustls::pki_types::ServerName;
 use rustls::{ClientConfig, ClientConnection, RootCertStore, StreamOwned};
 
@@ -17,7 +16,7 @@ use crate::types::{
     socket_host_pattern_config_key,
 };
 
-const SOCKET_HOST_NAMESPACE: &str = "extism:host/user";
+pub(crate) const SOCKET_HOST_NAMESPACE: &str = "extism:host/user";
 const MAX_OPEN_SOCKETS: usize = 4;
 const MAX_READ_BYTES: usize = 64 * 1024;
 const MAX_WRITE_BYTES: usize = 64 * 1024;
@@ -28,13 +27,13 @@ const DEFAULT_WRITE_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Clone)]
 pub(crate) struct SocketHost {
-    state: UserData<SocketHostState>,
+    state: Arc<Mutex<SocketHostState>>,
 }
 
 impl SocketHost {
     pub(crate) fn disabled() -> Self {
         Self {
-            state: UserData::new(SocketHostState::new(Vec::new())),
+            state: Arc::new(Mutex::new(SocketHostState::new(Vec::new()))),
         }
     }
 
@@ -43,65 +42,46 @@ impl SocketHost {
         config_json: Option<&str>,
     ) -> Self {
         Self {
-            state: UserData::new(SocketHostState::new(resolve_permissions(
+            state: Arc::new(Mutex::new(SocketHostState::new(resolve_permissions(
                 &descriptor.socket_permissions,
                 config_json,
-            ))),
+            )))),
         }
     }
 
-    pub(crate) fn functions(&self) -> Vec<Function> {
-        let params = || [ValType::I64];
-        let results = || [ValType::I64];
-
-        vec![
-            Function::new(
-                "scryer_socket_open",
-                params(),
-                results(),
-                self.state.clone(),
-                scryer_socket_open,
-            )
-            .with_namespace(SOCKET_HOST_NAMESPACE),
-            Function::new(
-                "scryer_socket_read",
-                params(),
-                results(),
-                self.state.clone(),
-                scryer_socket_read,
-            )
-            .with_namespace(SOCKET_HOST_NAMESPACE),
-            Function::new(
-                "scryer_socket_write",
-                params(),
-                results(),
-                self.state.clone(),
-                scryer_socket_write,
-            )
-            .with_namespace(SOCKET_HOST_NAMESPACE),
-            Function::new(
-                "scryer_socket_starttls",
-                params(),
-                results(),
-                self.state.clone(),
-                scryer_socket_starttls,
-            )
-            .with_namespace(SOCKET_HOST_NAMESPACE),
-            Function::new(
-                "scryer_socket_close",
-                params(),
-                results(),
-                self.state.clone(),
-                scryer_socket_close,
-            )
-            .with_namespace(SOCKET_HOST_NAMESPACE),
-        ]
+    pub(crate) fn call(&self, function: &str, input: String) -> Result<String, String> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|error| format!("socket state lock poisoned: {error}"))?;
+        let output = match function {
+            "scryer_socket_open" => {
+                let request = decode_input(input);
+                encode_response(request.and_then(|request| state.open(request)))
+            }
+            "scryer_socket_read" => {
+                let request = decode_input(input);
+                encode_response(request.and_then(|request| state.read(request)))
+            }
+            "scryer_socket_write" => {
+                let request = decode_input(input);
+                encode_response(request.and_then(|request| state.write(request)))
+            }
+            "scryer_socket_starttls" => {
+                let request = decode_input(input);
+                encode_response(request.and_then(|request| state.starttls(request)))
+            }
+            "scryer_socket_close" => {
+                let request = decode_input(input);
+                encode_response(request.map(|request| state.close(request)))
+            }
+            other => return Err(format!("unsupported socket host function: {other}")),
+        };
+        Ok(output)
     }
 
     pub(crate) fn cleanup(&self) {
-        if let Ok(state) = self.state.get()
-            && let Ok(mut state) = state.lock()
-        {
+        if let Ok(mut state) = self.state.lock() {
             state.cleanup();
         }
     }
@@ -589,48 +569,3 @@ fn map_io_error(error: io::Error) -> SocketError {
     };
     socket_error(code, error.to_string())
 }
-
-host_fn!(scryer_socket_open(state: SocketHostState; input: String) -> String {
-    let state = state.get()?;
-    let mut state = state
-        .lock()
-        .map_err(|error| extism::Error::msg(format!("socket state lock poisoned: {error}")))?;
-    let request = decode_input(input);
-    Ok(encode_response(request.and_then(|request| state.open(request))))
-});
-
-host_fn!(scryer_socket_read(state: SocketHostState; input: String) -> String {
-    let state = state.get()?;
-    let mut state = state
-        .lock()
-        .map_err(|error| extism::Error::msg(format!("socket state lock poisoned: {error}")))?;
-    let request = decode_input(input);
-    Ok(encode_response(request.and_then(|request| state.read(request))))
-});
-
-host_fn!(scryer_socket_write(state: SocketHostState; input: String) -> String {
-    let state = state.get()?;
-    let mut state = state
-        .lock()
-        .map_err(|error| extism::Error::msg(format!("socket state lock poisoned: {error}")))?;
-    let request = decode_input(input);
-    Ok(encode_response(request.and_then(|request| state.write(request))))
-});
-
-host_fn!(scryer_socket_starttls(state: SocketHostState; input: String) -> String {
-    let state = state.get()?;
-    let mut state = state
-        .lock()
-        .map_err(|error| extism::Error::msg(format!("socket state lock poisoned: {error}")))?;
-    let request = decode_input(input);
-    Ok(encode_response(request.and_then(|request| state.starttls(request))))
-});
-
-host_fn!(scryer_socket_close(state: SocketHostState; input: String) -> String {
-    let state = state.get()?;
-    let mut state = state
-        .lock()
-        .map_err(|error| extism::Error::msg(format!("socket state lock poisoned: {error}")))?;
-    let request = decode_input(input);
-    Ok(encode_response(request.map(|request| state.close(request))))
-});

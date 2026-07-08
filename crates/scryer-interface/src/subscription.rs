@@ -110,6 +110,7 @@ fn provider_catalog_family(value: &str) -> Option<ProviderCatalogFamilyValue> {
         "notification" => Some(ProviderCatalogFamilyValue::Notification),
         "indexer" => Some(ProviderCatalogFamilyValue::Indexer),
         "download_client" => Some(ProviderCatalogFamilyValue::DownloadClient),
+        "archive_extractor" => Some(ProviderCatalogFamilyValue::ArchiveExtractor),
         _ => None,
     }
 }

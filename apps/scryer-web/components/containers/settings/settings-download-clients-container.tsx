@@ -46,6 +46,7 @@ import type {
 } from "@/lib/types";
 
 type SettingsDownloadClientsSectionProps = ComponentProps<typeof SettingsDownloadClientsSection>;
+const DOWNLOAD_CLIENT_ADJACENT_PLUGIN_TYPES = ["archive_extractor"] as const;
 
 type SettingsDownloadClientsContainerProps = {
   providerCatalogVersion?: number;
@@ -581,6 +582,8 @@ export function SettingsDownloadClientsContainer({
         ? createPortal(
             <FilteredPluginList
               family="download_client"
+              catalogVersion={providerCatalogVersion}
+              extraPluginTypes={DOWNLOAD_CLIENT_ADJACENT_PLUGIN_TYPES}
               refreshProviderOptions={refreshProviderTypes}
             />,
             pluginsTarget,

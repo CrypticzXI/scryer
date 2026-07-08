@@ -2,6 +2,7 @@ mod archive_adapter;
 pub mod builtins;
 mod download_client_adapter;
 mod indexer_adapter;
+mod legacy_runtime;
 mod loader;
 mod notification_adapter;
 mod plugin_http_host;

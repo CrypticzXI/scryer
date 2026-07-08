@@ -881,15 +881,17 @@ pub enum ProviderCatalogFamily {
     Notification,
     Indexer,
     DownloadClient,
+    ArchiveExtractor,
 }
 
 impl ProviderCatalogFamily {
-    pub const fn all() -> [Self; 4] {
+    pub const fn all() -> [Self; 5] {
         [
             Self::Subtitle,
             Self::Notification,
             Self::Indexer,
             Self::DownloadClient,
+            Self::ArchiveExtractor,
         ]
     }
 
@@ -899,6 +901,7 @@ impl ProviderCatalogFamily {
             Self::Notification => "notification",
             Self::Indexer => "indexer",
             Self::DownloadClient => "download_client",
+            Self::ArchiveExtractor => "archive_extractor",
         }
     }
 }

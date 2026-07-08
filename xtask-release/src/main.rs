@@ -4,6 +4,8 @@ use chrono::{NaiveDate, Utc};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use const_oid::db::rfc5280::ID_KP_CODE_SIGNING;
 use rustls_pki_types::{CertificateDer, TrustAnchor, UnixTime};
+use scryer_application::PluginDescriptorLoader;
+use scryer_plugins::WasmPluginDescriptorLoader;
 use semver::{Version, VersionReq};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -2255,7 +2257,8 @@ fn existing_builtin_wasm_digest(ctx: &TaskContext, spec: &BuiltinPluginSpec) -> 
             paths.wasm.display()
         )
     })?;
-    let descriptor = scryer_plugin_sdk::load_plugin_descriptor_from_wasm_bytes(&wasm_bytes)
+    let descriptor = WasmPluginDescriptorLoader
+        .load_descriptor_from_wasm_bytes(&wasm_bytes)
         .map_err(|error| {
             anyhow!(
                 "failed to describe existing builtin {}: {error}",
@@ -2336,7 +2339,8 @@ fn sync_builtin_plugin(
     })?;
     let wasm_digest = required_blake3_digest("builtin wasm", &artifact.wasm_digests)?;
     require_blake3_bytes("builtin wasm", wasm_digest, &wasm_bytes)?;
-    let mut descriptor = scryer_plugin_sdk::load_plugin_descriptor_from_wasm_bytes(&wasm_bytes)
+    let mut descriptor = WasmPluginDescriptorLoader
+        .load_descriptor_from_wasm_bytes(&wasm_bytes)
         .map_err(|error| anyhow!("failed to describe builtin {}: {error}", spec.plugin_id))?;
     if descriptor.id != spec.plugin_id {
         bail!(

@@ -872,9 +872,13 @@ function AuthenticatedHomePage({
         parsedView = "settings";
         settingsPathSegment = routeSection;
         if (
-          ["rules", "subtitles", "post-procesing", "post-processing"].includes(
-            routeSection ?? "",
-          )
+          [
+            "acquisition",
+            "rules",
+            "subtitles",
+            "post-procesing",
+            "post-processing",
+          ].includes(routeSection ?? "")
         ) {
           canonicalRoutePath = buildViewPath(
             "settings",
@@ -916,6 +920,7 @@ function AuthenticatedHomePage({
       if (
         [
           "rules",
+          "acquisition",
           "subtitles",
           "post-processing",
           "indexers",

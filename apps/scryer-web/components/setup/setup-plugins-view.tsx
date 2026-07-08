@@ -49,6 +49,9 @@ function categoryLabel(
   if (pluginType === "download_client") {
     return t("settings.pluginCategoryDownloadClient");
   }
+  if (pluginType === "archive_extractor") {
+    return t("settings.pluginCategoryArchiveExtractor");
+  }
   if (pluginType === "notification") {
     return t("settings.pluginCategoryNotification");
   }
@@ -61,6 +64,9 @@ function categoryKey(pluginType: string) {
   }
   if (pluginType === "download_client") {
     return "download_client";
+  }
+  if (pluginType === "archive_extractor") {
+    return "archive_extractor";
   }
   if (pluginType === "notification") {
     return "notification";

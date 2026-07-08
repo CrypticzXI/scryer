@@ -1,8 +1,6 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "host-runtime"))]
-use extism::{Function, Manifest, PluginBuilder, UserData, ValType, Wasm, host_fn};
 use schemars::{JsonSchema, schema_for};
 use semver::{Version, VersionReq};
 use serde::{Deserialize, Serialize, Serializer};
@@ -39,7 +37,7 @@ pub use par2_reconstruct::{
     Par2ReconstructHeaderFields, Par2ReconstructStatus,
 };
 
-pub const SDK_VERSION: &str = "3.4.0";
+pub const SDK_VERSION: &str = "3.5.0";
 
 pub fn current_sdk_constraint() -> String {
     legacy_sdk_constraint(SDK_VERSION)
@@ -501,185 +499,6 @@ impl PluginDescriptor {
             _ => None,
         }
     }
-}
-
-#[cfg(all(not(target_arch = "wasm32"), feature = "host-runtime"))]
-fn required_exports_for_descriptor(descriptor: &PluginDescriptor) -> Vec<&'static str> {
-    let mut exports = vec![EXPORT_DESCRIBE];
-    match &descriptor.provider {
-        ProviderDescriptor::Indexer(_) => {
-            exports.push(EXPORT_INDEXER_SEARCH);
-        }
-        ProviderDescriptor::DownloadClient(_) => exports.extend([
-            EXPORT_DOWNLOAD_ADD,
-            EXPORT_DOWNLOAD_LIST_QUEUE,
-            EXPORT_DOWNLOAD_LIST_HISTORY,
-            EXPORT_DOWNLOAD_LIST_COMPLETED,
-            EXPORT_DOWNLOAD_CONTROL,
-            EXPORT_DOWNLOAD_MARK_IMPORTED,
-            EXPORT_DOWNLOAD_STATUS,
-            EXPORT_DOWNLOAD_TEST_CONNECTION,
-        ]),
-        ProviderDescriptor::Notification(_) => exports.push(EXPORT_NOTIFICATION_SEND),
-        ProviderDescriptor::ArchiveExtractor(_) => exports.push(EXPORT_ARCHIVE_PROCESS),
-        ProviderDescriptor::Subtitle(subtitle) => {
-            exports.push(EXPORT_VALIDATE_CONFIG);
-            match subtitle.capabilities.mode {
-                SubtitleProviderMode::Catalog => {
-                    exports.extend([EXPORT_SUBTITLE_SEARCH, EXPORT_SUBTITLE_DOWNLOAD]);
-                }
-                SubtitleProviderMode::Generator => exports.push(EXPORT_SUBTITLE_GENERATE),
-            }
-        }
-    }
-    exports
-}
-
-#[cfg(all(not(target_arch = "wasm32"), feature = "host-runtime"))]
-const SOCKET_HOST_NAMESPACE: &str = "extism:host/user";
-
-#[cfg(all(not(target_arch = "wasm32"), feature = "host-runtime"))]
-#[derive(Clone)]
-struct DisabledDescriptorSocketHost {
-    state: UserData<()>,
-}
-
-#[cfg(all(not(target_arch = "wasm32"), feature = "host-runtime"))]
-impl DisabledDescriptorSocketHost {
-    fn new() -> Self {
-        Self {
-            state: UserData::new(()),
-        }
-    }
-
-    fn functions(&self) -> Vec<Function> {
-        let params = || [ValType::I64];
-        let results = || [ValType::I64];
-
-        vec![
-            Function::new(
-                "scryer_socket_open",
-                params(),
-                results(),
-                self.state.clone(),
-                descriptor_socket_open,
-            )
-            .with_namespace(SOCKET_HOST_NAMESPACE),
-            Function::new(
-                "scryer_socket_read",
-                params(),
-                results(),
-                self.state.clone(),
-                descriptor_socket_read,
-            )
-            .with_namespace(SOCKET_HOST_NAMESPACE),
-            Function::new(
-                "scryer_socket_write",
-                params(),
-                results(),
-                self.state.clone(),
-                descriptor_socket_write,
-            )
-            .with_namespace(SOCKET_HOST_NAMESPACE),
-            Function::new(
-                "scryer_socket_starttls",
-                params(),
-                results(),
-                self.state.clone(),
-                descriptor_socket_starttls,
-            )
-            .with_namespace(SOCKET_HOST_NAMESPACE),
-            Function::new(
-                "scryer_socket_close",
-                params(),
-                results(),
-                self.state.clone(),
-                descriptor_socket_close,
-            )
-            .with_namespace(SOCKET_HOST_NAMESPACE),
-        ]
-    }
-}
-
-#[cfg(all(not(target_arch = "wasm32"), feature = "host-runtime"))]
-fn disabled_descriptor_socket_response() -> String {
-    serde_json::to_string(&SocketResponse::<()>::error(
-        SocketErrorCode::Unsupported,
-        "socket host functions are unavailable while loading plugin descriptors",
-    ))
-    .unwrap_or_else(|_| "{\"ok\":false}".to_string())
-}
-
-#[cfg(all(not(target_arch = "wasm32"), feature = "host-runtime"))]
-host_fn!(descriptor_socket_open(state: (); _input: String) -> String {
-    let _ = state.get()?;
-    Ok(disabled_descriptor_socket_response())
-});
-
-#[cfg(all(not(target_arch = "wasm32"), feature = "host-runtime"))]
-host_fn!(descriptor_socket_read(state: (); _input: String) -> String {
-    let _ = state.get()?;
-    Ok(disabled_descriptor_socket_response())
-});
-
-#[cfg(all(not(target_arch = "wasm32"), feature = "host-runtime"))]
-host_fn!(descriptor_socket_write(state: (); _input: String) -> String {
-    let _ = state.get()?;
-    Ok(disabled_descriptor_socket_response())
-});
-
-#[cfg(all(not(target_arch = "wasm32"), feature = "host-runtime"))]
-host_fn!(descriptor_socket_starttls(state: (); _input: String) -> String {
-    let _ = state.get()?;
-    Ok(disabled_descriptor_socket_response())
-});
-
-#[cfg(all(not(target_arch = "wasm32"), feature = "host-runtime"))]
-host_fn!(descriptor_socket_close(state: (); _input: String) -> String {
-    let _ = state.get()?;
-    Ok(disabled_descriptor_socket_response())
-});
-
-#[cfg(all(not(target_arch = "wasm32"), feature = "host-runtime"))]
-pub fn load_plugin_descriptor_from_wasm_bytes(
-    wasm_bytes: &[u8],
-) -> Result<PluginDescriptor, String> {
-    let manifest = Manifest::new([Wasm::data(wasm_bytes.to_vec())])
-        .with_timeout(std::time::Duration::from_secs(10));
-    let socket_host = DisabledDescriptorSocketHost::new();
-    let mut plugin = PluginBuilder::new(manifest)
-        .with_wasi(true)
-        .with_http_response_headers(true)
-        .with_functions(socket_host.functions())
-        .build()
-        .map_err(|error| format!("failed to instantiate WASM: {error}"))?;
-
-    if !plugin.function_exists(EXPORT_DESCRIBE) {
-        return Err(format!(
-            "plugin is missing required export {EXPORT_DESCRIBE}"
-        ));
-    }
-
-    let output: String = plugin
-        .call::<&str, String>(EXPORT_DESCRIBE, "")
-        .map_err(|error| format!("{EXPORT_DESCRIBE}() failed: {error}"))?;
-    let descriptor: PluginDescriptor = serde_json::from_str(&output)
-        .map_err(|error| format!("describe() returned invalid JSON: {error}"))?;
-
-    let missing = required_exports_for_descriptor(&descriptor)
-        .into_iter()
-        .filter(|export| !plugin.function_exists(export))
-        .collect::<Vec<_>>();
-    if !missing.is_empty() {
-        return Err(format!(
-            "{} ({}) is missing required export(s): {}",
-            descriptor.id,
-            descriptor.plugin_type(),
-            missing.join(", ")
-        ));
-    }
-
-    Ok(descriptor)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -2537,7 +2356,7 @@ mod tests {
 
     #[test]
     fn current_sdk_constraint_uses_current_v3_minor_floor() {
-        assert_eq!(current_sdk_constraint(), ">=3.4.0, <4.0.0");
+        assert_eq!(current_sdk_constraint(), ">=3.5.0, <4.0.0");
     }
 
     #[test]

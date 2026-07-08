@@ -9,8 +9,6 @@ scryer-domain = { path = "../scryer-domain" }
 scryer-outbound-http = { path = "../scryer-outbound-http" }
 scryer-plugin-sdk = { path = "../scryer-plugin-sdk" }
 scryer-rules = { path = "../scryer-rules" }
-extism = { workspace = true }
-extism-manifest = { version = "1.21", default-features = false }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }

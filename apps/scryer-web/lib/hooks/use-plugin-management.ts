@@ -116,12 +116,14 @@ interface UsePluginManagementArgs {
   client: Client;
   t: TranslateFn;
   refreshProviderOptions: () => Promise<void>;
+  catalogVersion?: number;
 }
 
 export function usePluginManagement({
   client,
   t,
   refreshProviderOptions,
+  catalogVersion = 0,
 }: UsePluginManagementArgs) {
   // ── Step 3 (fresh): Plugins ────────────────────────────────────────
   const [plugins, setPlugins] = useState<RegistryPluginRecord[]>([]);
@@ -205,7 +207,7 @@ export function usePluginManagement({
         setPluginsLoading(false);
       }
     })();
-  }, [loadPlugins, refreshProviderOptions, t]);
+  }, [catalogVersion, loadPlugins, refreshProviderOptions, t]);
 
   useEffect(() => {
     const subscriptions = installProgressSubscriptionsRef.current;
