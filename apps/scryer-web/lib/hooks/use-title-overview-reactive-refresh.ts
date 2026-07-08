@@ -4,9 +4,9 @@ import { useReactiveRefresh } from "@/lib/context/reactive-refresh-context";
 import { useActivityEventStream } from "@/lib/hooks/use-activity-event-stream";
 import type {
   TitleOverviewDownloadFeedbackSnapshot,
-  TitleOverviewNativeSnapshot,
+  TitleSidePanelOverviewSnapshot,
 } from "@/lib/title-overview-loader";
-import type { TitleOverviewNativeProjection } from "@/lib/graphql/queries";
+import type { TitleSidePanelOverviewProjection } from "@/lib/graphql/queries";
 import {
   shouldHandleTitleOverviewActivity,
   TITLE_OVERVIEW_BULK_REFRESH_DEBOUNCE_MS,
@@ -24,9 +24,9 @@ type UseTitleOverviewReactiveRefreshOptions<
 > = {
   titleId?: string | null;
   blocklistLimit: number;
-  projection?: TitleOverviewNativeProjection;
-  applyNativeSnapshot: (
-    snapshot: TitleOverviewNativeSnapshot<
+  projection: TitleSidePanelOverviewProjection;
+  applyOverviewSnapshot: (
+    snapshot: TitleSidePanelOverviewSnapshot<
       TTitle,
       TDiagnostics,
       TEvent,
@@ -55,7 +55,7 @@ export function useTitleOverviewReactiveRefresh<
   titleId,
   blocklistLimit,
   projection,
-  applyNativeSnapshot,
+  applyOverviewSnapshot,
   applyDownloadFeedbackSnapshot,
   importKinds,
   pause = false,
@@ -72,38 +72,38 @@ export function useTitleOverviewReactiveRefresh<
 >) {
   const {
     queueTitleOverviewDownloadFeedbackRefresh,
-    queueTitleOverviewNativeRefresh,
+    queueTitleSidePanelOverviewRefresh,
   } = useReactiveRefresh();
   const titleIdRef = useRef(titleId ?? null);
-  const applyNativeSnapshotRef = useRef(applyNativeSnapshot);
+  const applyOverviewSnapshotRef = useRef(applyOverviewSnapshot);
   const applyDownloadFeedbackSnapshotRef = useRef(applyDownloadFeedbackSnapshot);
   const onHydrationStartedRef = useRef(onHydrationStarted);
   const onHydrationCompletedRef = useRef(onHydrationCompleted);
   const onHydrationFailedRef = useRef(onHydrationFailed);
-  const bulkNativeRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+  const bulkOverviewRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
     null,
   );
-  const bulkNativeRefreshStartedAtRef = useRef<number | null>(null);
+  const bulkOverviewRefreshStartedAtRef = useRef<number | null>(null);
 
   useLayoutEffect(() => {
     titleIdRef.current = titleId ?? null;
   }, [titleId]);
 
   useEffect(() => {
-    applyNativeSnapshotRef.current = applyNativeSnapshot;
+    applyOverviewSnapshotRef.current = applyOverviewSnapshot;
     applyDownloadFeedbackSnapshotRef.current = applyDownloadFeedbackSnapshot;
     onHydrationStartedRef.current = onHydrationStarted;
     onHydrationCompletedRef.current = onHydrationCompleted;
     onHydrationFailedRef.current = onHydrationFailed;
   });
 
-  const queueNativeRefresh = () => {
+  const queueOverviewRefresh = () => {
     const requestedTitleId = titleId;
     if (!requestedTitleId) {
       return;
     }
 
-    queueTitleOverviewNativeRefresh({
+    queueTitleSidePanelOverviewRefresh({
       titleId: requestedTitleId,
       blocklistLimit,
       projection,
@@ -111,8 +111,8 @@ export function useTitleOverviewReactiveRefresh<
         if (titleIdRef.current !== requestedTitleId) {
           return;
         }
-        applyNativeSnapshotRef.current(
-          snapshot as TitleOverviewNativeSnapshot<
+        applyOverviewSnapshotRef.current(
+          snapshot as TitleSidePanelOverviewSnapshot<
             TTitle,
             TDiagnostics,
             TEvent,
@@ -148,26 +148,26 @@ export function useTitleOverviewReactiveRefresh<
   };
 
   const queueRefresh = () => {
-    queueNativeRefresh();
+    queueOverviewRefresh();
     queueDownloadFeedbackRefresh();
   };
 
-  const clearBulkNativeRefresh = () => {
-    if (bulkNativeRefreshTimerRef.current) {
-      clearTimeout(bulkNativeRefreshTimerRef.current);
-      bulkNativeRefreshTimerRef.current = null;
+  const clearBulkOverviewRefresh = () => {
+    if (bulkOverviewRefreshTimerRef.current) {
+      clearTimeout(bulkOverviewRefreshTimerRef.current);
+      bulkOverviewRefreshTimerRef.current = null;
     }
-    bulkNativeRefreshStartedAtRef.current = null;
+    bulkOverviewRefreshStartedAtRef.current = null;
   };
 
-  const queueBulkNativeRefresh = () => {
+  const queueBulkOverviewRefresh = () => {
     if (!titleId) {
       return;
     }
 
     const now = Date.now();
-    const startedAt = bulkNativeRefreshStartedAtRef.current ?? now;
-    bulkNativeRefreshStartedAtRef.current = startedAt;
+    const startedAt = bulkOverviewRefreshStartedAtRef.current ?? now;
+    bulkOverviewRefreshStartedAtRef.current = startedAt;
     const elapsedMs = now - startedAt;
     const delayMs =
       elapsedMs >= TITLE_OVERVIEW_BULK_REFRESH_MAX_WAIT_MS
@@ -177,23 +177,23 @@ export function useTitleOverviewReactiveRefresh<
             TITLE_OVERVIEW_BULK_REFRESH_MAX_WAIT_MS - elapsedMs,
           );
 
-    if (bulkNativeRefreshTimerRef.current) {
-      clearTimeout(bulkNativeRefreshTimerRef.current);
+    if (bulkOverviewRefreshTimerRef.current) {
+      clearTimeout(bulkOverviewRefreshTimerRef.current);
     }
-    bulkNativeRefreshTimerRef.current = setTimeout(() => {
-      bulkNativeRefreshTimerRef.current = null;
-      bulkNativeRefreshStartedAtRef.current = null;
-      queueNativeRefresh();
+    bulkOverviewRefreshTimerRef.current = setTimeout(() => {
+      bulkOverviewRefreshTimerRef.current = null;
+      bulkOverviewRefreshStartedAtRef.current = null;
+      queueOverviewRefresh();
     }, delayMs);
   };
 
   useEffect(
     () => () => {
-      if (bulkNativeRefreshTimerRef.current) {
-        clearTimeout(bulkNativeRefreshTimerRef.current);
-        bulkNativeRefreshTimerRef.current = null;
+      if (bulkOverviewRefreshTimerRef.current) {
+        clearTimeout(bulkOverviewRefreshTimerRef.current);
+        bulkOverviewRefreshTimerRef.current = null;
       }
-      bulkNativeRefreshStartedAtRef.current = null;
+      bulkOverviewRefreshStartedAtRef.current = null;
     },
     [pause, titleId],
   );
@@ -222,24 +222,24 @@ export function useTitleOverviewReactiveRefresh<
           return;
         case "hydrationCompleted":
           onHydrationCompletedRef.current?.();
-          clearBulkNativeRefresh();
-          queueNativeRefresh();
+          clearBulkOverviewRefresh();
+          queueOverviewRefresh();
           return;
         case "hydrationFailed":
           onHydrationFailedRef.current?.();
           return;
         case "refresh":
           if (refreshPlan.mode === "bulk") {
-            queueBulkNativeRefresh();
+            queueBulkOverviewRefresh();
             return;
           }
 
-          clearBulkNativeRefresh();
+          clearBulkOverviewRefresh();
           if (refreshPlan.downloadFeedback) {
             queueRefresh();
             return;
           }
-          queueNativeRefresh();
+          queueOverviewRefresh();
           return;
         case "none":
           return;

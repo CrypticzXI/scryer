@@ -41,11 +41,11 @@ import {
   ruleSetsQuery,
   routingPageInitQuery,
   searchForTitleQuery,
-  titlePanelDetailQuery,
+  movieSidePanelOverviewQuery,
   titleReleaseBlocklistQuery,
   buildTitlesQuery,
 } from "@/lib/graphql/queries";
-import { selectedOverviewUsesPanelDetail } from "@/lib/utils/selected-overview-policy";
+import { selectedOverviewUsesMovieRecord } from "@/lib/utils/selected-overview-policy";
 import {
   CATEGORY_SCOPE_MAP,
   QUALITY_PROFILE_INHERIT_VALUE,
@@ -2384,16 +2384,16 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     () => pendingHydrationPosterTitleIds.join("|"),
     [pendingHydrationPosterTitleIds],
   );
-  const selectedOverviewPanelDetailEnabled =
-    selectedOverviewUsesPanelDetail(view);
+  const selectedOverviewUsesMovieSidePanelRecord =
+    selectedOverviewUsesMovieRecord(view);
 
-  const refreshTitlePanelDetail = React.useCallback(
+  const refreshMovieSidePanelOverview = React.useCallback(
     async (titleId: string) => {
       const requestEpoch = reactiveRefreshEpoch();
       const detailResult = await client
         .query<{ title?: TitleRecord | null }>(
-          titlePanelDetailQuery,
-          { id: titleId },
+          movieSidePanelOverviewQuery,
+          { id: titleId, blocklistLimit: 300 },
           { requestPolicy: "network-only" },
         )
         .toPromise();
@@ -2422,7 +2422,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
       setSelectedOverviewDetailLoading(false);
       return;
     }
-    if (!selectedOverviewPanelDetailEnabled) {
+    if (!selectedOverviewUsesMovieSidePanelRecord) {
       setSelectedOverviewDetailLoading(false);
       return;
     }
@@ -2434,7 +2434,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     }
     let cancelled = false;
     setSelectedOverviewDetailLoading(true);
-    void refreshTitlePanelDetail(titleId)
+    void refreshMovieSidePanelOverview(titleId)
       .catch(() => {
         if (!cancelled) {
           onCloseOverview();
@@ -2450,9 +2450,9 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     };
   }, [
     routeOverviewTitleId,
-    refreshTitlePanelDetail,
+    refreshMovieSidePanelOverview,
     onCloseOverview,
-    selectedOverviewPanelDetailEnabled,
+    selectedOverviewUsesMovieSidePanelRecord,
   ]);
 
   const previewTitleRename = React.useCallback(
@@ -2525,7 +2525,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
             failed: result?.failed ?? 0,
           }),
         );
-        await refreshTitlePanelDetail(title.id);
+        await refreshMovieSidePanelOverview(title.id);
         return true;
       } catch (error) {
         setGlobalStatus(
@@ -2537,7 +2537,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     [
       client,
       recordCriticalCatalogMutation,
-      refreshTitlePanelDetail,
+      refreshMovieSidePanelOverview,
       setGlobalStatus,
       t,
     ],
@@ -2579,7 +2579,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
           throw error;
         }
         setGlobalStatus(t("status.primaryMovieFileUpdated"));
-        await refreshTitlePanelDetail(title.id);
+        await refreshMovieSidePanelOverview(title.id);
       } catch (error) {
         setGlobalStatus(
           userFacingGraphQlErrorMessage(error, t("status.apiError")),
@@ -2591,7 +2591,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     [
       client,
       recordCriticalCatalogMutation,
-      refreshTitlePanelDetail,
+      refreshMovieSidePanelOverview,
       setGlobalStatus,
       t,
     ],
@@ -2617,7 +2617,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
       titleContextSourceTitles,
     ],
   );
-  const selectedPanelHydrationTitleId = selectedOverviewPanelDetailEnabled
+  const selectedPanelHydrationTitleId = selectedOverviewUsesMovieSidePanelRecord
     ? selectedOverviewTitleRecord?.id ?? null
     : null;
   const selectedPanelHydrationMetadataFetchedAt =
@@ -2716,8 +2716,8 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     const requestEpoch = reactiveRefreshEpoch();
     void client
       .query<{ title?: TitleRecord | null }>(
-        titlePanelDetailQuery,
-        { id: titleId },
+        movieSidePanelOverviewQuery,
+        { id: titleId, blocklistLimit: 300 },
         { requestPolicy: "network-only" },
       )
       .toPromise()
@@ -3820,7 +3820,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
       if (error) {
         throw error;
       }
-      await refreshTitlePanelDetail(selectedOverviewMediaFileToDelete.titleId);
+      await refreshMovieSidePanelOverview(selectedOverviewMediaFileToDelete.titleId);
       setSelectedOverviewMediaFileToDelete(null);
       setSelectedOverviewMediaFileDeleteTypedConfirmation("");
     } catch (error) {
@@ -3833,7 +3833,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   }, [
     client,
     recordCriticalCatalogMutation,
-    refreshTitlePanelDetail,
+    refreshMovieSidePanelOverview,
     selectedOverviewMediaFileDeletePreview,
     selectedOverviewMediaFileDeleteTypedConfirmation,
     selectedOverviewMediaFileToDelete,

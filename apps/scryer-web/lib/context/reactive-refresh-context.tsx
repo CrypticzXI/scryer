@@ -2,12 +2,12 @@ import { createContext, useContext } from "react";
 
 import type {
   TitleCatalogTitleProjection,
-  TitleOverviewNativeProjection,
+  TitleSidePanelOverviewProjection,
 } from "@/lib/graphql/queries";
 import type { ImportRecord, TitleRecord } from "@/lib/types";
 import type {
   TitleOverviewDownloadFeedbackSnapshot,
-  TitleOverviewNativeSnapshot,
+  TitleSidePanelOverviewSnapshot,
 } from "@/lib/title-overview-loader";
 
 type ReactiveRefreshErrorHandler = (error: unknown) => void;
@@ -25,7 +25,7 @@ export type QueueCatalogTitleRefreshOptions = {
   onError?: ReactiveRefreshErrorHandler;
 };
 
-export type QueueTitleOverviewNativeRefreshOptions<
+export type QueueTitleSidePanelOverviewRefreshOptions<
   TTitle = unknown,
   TDiagnostics = unknown,
   TEvent = unknown,
@@ -34,9 +34,9 @@ export type QueueTitleOverviewNativeRefreshOptions<
 > = {
   titleId: string;
   blocklistLimit: number;
-  projection?: TitleOverviewNativeProjection;
+  projection: TitleSidePanelOverviewProjection;
   apply: (
-    snapshot: TitleOverviewNativeSnapshot<
+    snapshot: TitleSidePanelOverviewSnapshot<
       TTitle,
       TDiagnostics,
       TEvent,
@@ -66,14 +66,14 @@ export type ReactiveRefreshContextValue = {
   queueCatalogTitleRefresh: (
     options: QueueCatalogTitleRefreshOptions,
   ) => void;
-  queueTitleOverviewNativeRefresh: <
+  queueTitleSidePanelOverviewRefresh: <
     TTitle = unknown,
     TDiagnostics = unknown,
     TEvent = unknown,
     TBlocklist = unknown,
     TSubtitle = unknown,
   >(
-    options: QueueTitleOverviewNativeRefreshOptions<
+    options: QueueTitleSidePanelOverviewRefreshOptions<
       TTitle,
       TDiagnostics,
       TEvent,

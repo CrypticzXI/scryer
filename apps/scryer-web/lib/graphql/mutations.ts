@@ -5,7 +5,7 @@ import {
   PROVIDER_CONFIG_VALUE_FIELDS,
   SUBTITLE_PROVIDER_CONFIG_FIELDS,
   SUBTITLE_SETTINGS_FIELDS,
-  TITLE_CORE_FIELDS,
+  TITLE_MUTATION_RESULT_FIELDS,
 } from "./queries";
 
 const AUTH_USER_FIELDS = `
@@ -433,7 +433,7 @@ export const reorderDownloadClientsMutation = `mutation ReorderDownloadClients($
 
 export const addTitleMutation = `mutation AddTitle($input: AddTitleInput!) {
   addTitle(input: $input) {
-    title {${TITLE_CORE_FIELDS}
+      title {${TITLE_MUTATION_RESULT_FIELDS}
     }
     metadataHydrationState
     reusedExistingTitle
@@ -451,7 +451,7 @@ export const addTitleMutation = `mutation AddTitle($input: AddTitleInput!) {
 
 export const addTitleAndQueueMutation = `mutation AddTitleAndQueue($input: AddTitleInput!) {
   addTitleAndQueueDownload(input: $input) {
-    title {${TITLE_CORE_FIELDS}
+    title {${TITLE_MUTATION_RESULT_FIELDS}
     }
     metadataHydrationState
     reusedExistingTitle

@@ -747,6 +747,78 @@ async fn full_scan_does_not_infer_episode_from_parent_when_release_folder_has_mu
 }
 
 #[tokio::test]
+async fn resolve_pending_import_creates_title_and_clears_movie_row_without_scanning() {
+    let ctx = TestContext::new().await;
+    seed_media_path_settings(&ctx).await;
+
+    let media_root = tempfile::tempdir().expect("movie root");
+    set_media_path(
+        &ctx,
+        "movies.path",
+        media_root.path().to_string_lossy().as_ref(),
+    )
+    .await;
+    set_default_library_root(&ctx, MediaFacet::Movie, media_root.path()).await;
+
+    let missing_movie_file = media_root.path().join("Fresh.Match.2026.mkv");
+    let now = chrono::Utc::now().to_rfc3339();
+    let pending_item = LibraryScanUnmatchedItem {
+        id: Id::new().0,
+        library_id: scryer_domain::default_library_id_for_facet(&MediaFacet::Movie),
+        facet: MediaFacet::Movie,
+        status: PendingImportStatus::Ignored,
+        title_id: None,
+        scan_session_id: "test-session".to_string(),
+        scan_root: media_root.path().to_string_lossy().to_string(),
+        item_path: missing_movie_file.to_string_lossy().to_string(),
+        display_name: "Fresh.Match.2026".to_string(),
+        query: "Fresh Match".to_string(),
+        year_hint: Some(2026),
+        reason_code: "test_match_without_scan".to_string(),
+        error_message: None,
+        search_attempts: Vec::new(),
+        created_at: now.clone(),
+        updated_at: now,
+    };
+    let pending_id = ctx
+        .library_scan_unmatched
+        .upsert_library_scan_unmatched_item(&pending_item)
+        .await
+        .expect("insert pending import");
+
+    let actor = admin();
+    let result = ctx
+        .app
+        .resolve_pending_import(
+            &actor,
+            &pending_id,
+            pending_import_title_request(MediaFacet::Movie, "Fresh Match", "987654"),
+        )
+        .await
+        .expect("resolve pending import");
+
+    assert!(result.created);
+    assert!(result.library_scan.is_none());
+
+    let unmatched = ctx
+        .library_scan_unmatched
+        .get_library_scan_unmatched_item(&pending_id)
+        .await
+        .expect("load pending import after resolve");
+    assert!(
+        unmatched.is_none(),
+        "movie pending import row should be cleared after match"
+    );
+
+    let media_files = ctx
+        .media_files
+        .list_media_files_for_title(&result.title.id)
+        .await
+        .expect("list title media files");
+    assert!(media_files.is_empty());
+}
+
+#[tokio::test]
 async fn resolve_pending_import_rejects_stale_movie_row_already_bound_to_title() {
     let ctx = TestContext::new().await;
     seed_media_path_settings(&ctx).await;

@@ -13,14 +13,14 @@ import {
   type QueueCatalogTitlesRefreshOptions,
   type QueueImportHistoryRefreshOptions,
   type QueueTitleOverviewDownloadFeedbackRefreshOptions,
-  type QueueTitleOverviewNativeRefreshOptions,
+  type QueueTitleSidePanelOverviewRefreshOptions,
   reactiveRefreshEpoch,
   type ReactiveRefreshContextValue,
 } from "@/lib/context/reactive-refresh-context";
 import type { ImportRecord, TitleRecord } from "@/lib/types";
 import type {
   TitleOverviewDownloadFeedbackSnapshot,
-  TitleOverviewNativeSnapshot,
+  TitleSidePanelOverviewSnapshot,
 } from "@/lib/title-overview-loader";
 
 type CatalogTitlesAction = {
@@ -33,14 +33,14 @@ type CatalogTitleAction = {
   kind: "catalogTitle";
 } & QueueCatalogTitleRefreshOptions;
 
-type TitleOverviewNativeAction = {
+type TitleSidePanelOverviewAction = {
   key: string;
-  kind: "titleOverviewNative";
+  kind: "titleSidePanelOverview";
   titleId: string;
   blocklistLimit: number;
-  projection?: QueueTitleOverviewNativeRefreshOptions["projection"];
+  projection: QueueTitleSidePanelOverviewRefreshOptions["projection"];
   apply: (
-    snapshot: TitleOverviewNativeSnapshot<
+    snapshot: TitleSidePanelOverviewSnapshot<
       unknown,
       unknown,
       unknown,
@@ -48,7 +48,7 @@ type TitleOverviewNativeAction = {
       unknown
     >,
   ) => void;
-  onError?: QueueTitleOverviewNativeRefreshOptions["onError"];
+  onError?: QueueTitleSidePanelOverviewRefreshOptions["onError"];
 };
 
 type TitleOverviewDownloadFeedbackAction = {
@@ -67,7 +67,7 @@ type ImportHistoryAction = {
 type ReactiveRefreshAction =
   | CatalogTitlesAction
   | CatalogTitleAction
-  | TitleOverviewNativeAction
+  | TitleSidePanelOverviewAction
   | TitleOverviewDownloadFeedbackAction
   | ImportHistoryAction;
 
@@ -96,7 +96,7 @@ function actionInputFromPendingAction(
         titleId: action.titleId,
         projection: action.projection,
       };
-    case "titleOverviewNative":
+    case "titleSidePanelOverview":
       return {
         key: action.key,
         kind: action.kind,
@@ -154,33 +154,35 @@ function applyReactiveRefreshActionResult(
       );
       return;
     }
-    case "titleOverviewNative": {
+    case "titleSidePanelOverview": {
       const typedActionPlan = actionPlan as Extract<
         ReactiveRefreshQueryActionPlan,
-        { kind: "titleOverviewNative" }
+        { kind: "titleSidePanelOverview" }
       >;
-      const titleHistoryPage = payload[typedActionPlan.titleHistoryAlias] as
+      const titleHistoryPage = typedActionPlan.titleHistoryAlias
+        ? payload[typedActionPlan.titleHistoryAlias] as
         | { records?: unknown[] }
         | null
-        | undefined;
+        | undefined
+        : null;
       action.apply({
         title: payload[typedActionPlan.titleAlias] ?? null,
         acquisitionDiagnostics: null,
-        titleHistory: (titleHistoryPage?.records ?? []) as TitleOverviewNativeSnapshot<
+        titleHistory: (titleHistoryPage?.records ?? []) as TitleSidePanelOverviewSnapshot<
           unknown,
           unknown,
           unknown,
           unknown,
           unknown
         >["titleHistory"],
-        titleReleaseBlocklist: (payload[typedActionPlan.titleReleaseBlocklistAlias] ?? []) as TitleOverviewNativeSnapshot<
+        titleReleaseBlocklist: (payload[typedActionPlan.titleReleaseBlocklistAlias] ?? []) as TitleSidePanelOverviewSnapshot<
           unknown,
           unknown,
           unknown,
           unknown,
           unknown
         >["titleReleaseBlocklist"],
-        externalSubtitles: (payload[typedActionPlan.externalSubtitlesAlias] ?? []) as TitleOverviewNativeSnapshot<
+        externalSubtitles: (payload[typedActionPlan.externalSubtitlesAlias] ?? []) as TitleSidePanelOverviewSnapshot<
           unknown,
           unknown,
           unknown,
@@ -230,10 +232,10 @@ function reactiveRefreshActionAliases(
       return [actionPlan.titlesAlias];
     case "catalogTitle":
       return [actionPlan.titleAlias];
-    case "titleOverviewNative":
+    case "titleSidePanelOverview":
       return [
         actionPlan.titleAlias,
-        actionPlan.titleHistoryAlias,
+        ...(actionPlan.titleHistoryAlias ? [actionPlan.titleHistoryAlias] : []),
         actionPlan.titleReleaseBlocklistAlias,
         actionPlan.externalSubtitlesAlias,
         actionPlan.setupStatusAlias,
@@ -260,11 +262,12 @@ function graphQlErrorAlias(value: unknown): string | null {
   return typeof value.path[0] === "string" ? value.path[0] : null;
 }
 
-function isTitleOverviewNativePartialHistoryError(
+function isTitleSidePanelPartialHistoryError(
   actionPlan: ReactiveRefreshQueryActionPlan,
   graphQlErrors: CombinedError["graphQLErrors"],
-): actionPlan is Extract<ReactiveRefreshQueryActionPlan, { kind: "titleOverviewNative" }> {
-  return actionPlan.kind === "titleOverviewNative"
+): actionPlan is Extract<ReactiveRefreshQueryActionPlan, { kind: "titleSidePanelOverview" }> {
+  return actionPlan.kind === "titleSidePanelOverview"
+    && Boolean(actionPlan.titleHistoryAlias)
     && graphQlErrors.length > 0
     && graphQlErrors.every(
       (graphQlError) => graphQlErrorAlias(graphQlError) === actionPlan.titleHistoryAlias,
@@ -395,7 +398,7 @@ export function ReactiveRefreshProvider({
           }
           if (
             actionPlan
-            && isTitleOverviewNativePartialHistoryError(actionPlan, actionError.graphQLErrors)
+            && isTitleSidePanelPartialHistoryError(actionPlan, actionError.graphQLErrors)
           ) {
             return;
           }
@@ -521,14 +524,14 @@ export function ReactiveRefreshProvider({
           kind: "catalogTitle",
         });
       },
-        queueTitleOverviewNativeRefresh<
+      queueTitleSidePanelOverviewRefresh<
         TTitle = unknown,
         TDiagnostics = unknown,
         TEvent = unknown,
         TBlocklist = unknown,
         TSubtitle = unknown,
       >(
-          options: QueueTitleOverviewNativeRefreshOptions<
+        options: QueueTitleSidePanelOverviewRefreshOptions<
           TTitle,
           TDiagnostics,
           TEvent,
@@ -538,18 +541,18 @@ export function ReactiveRefreshProvider({
       ) {
         queuePendingAction({
           ...options,
-            key: `titleOverviewNative:${options.titleId}:${options.blocklistLimit}:${options.projection ?? "default"}`,
-            kind: "titleOverviewNative",
-          } as TitleOverviewNativeAction);
-        },
-        queueTitleOverviewDownloadFeedbackRefresh(
-          options: QueueTitleOverviewDownloadFeedbackRefreshOptions,
-        ) {
-          queuePendingAction({
-            ...options,
-            key: `titleOverviewDownloadFeedback:${options.titleId}`,
-            kind: "titleOverviewDownloadFeedback",
-          } as TitleOverviewDownloadFeedbackAction);
+          key: `titleSidePanelOverview:${options.titleId}:${options.blocklistLimit}:${options.projection}`,
+          kind: "titleSidePanelOverview",
+        } as TitleSidePanelOverviewAction);
+      },
+      queueTitleOverviewDownloadFeedbackRefresh(
+        options: QueueTitleOverviewDownloadFeedbackRefreshOptions,
+      ) {
+        queuePendingAction({
+          ...options,
+          key: `titleOverviewDownloadFeedback:${options.titleId}`,
+          kind: "titleOverviewDownloadFeedback",
+        } as TitleOverviewDownloadFeedbackAction);
       },
       queueImportHistoryRefresh(options: QueueImportHistoryRefreshOptions) {
         queuePendingAction({

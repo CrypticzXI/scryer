@@ -30,7 +30,7 @@ import {
   notificationProviderTypesQuery,
   notificationSubscriptionsQuery,
   notificationsInitQuery,
-  titleListEntryQuery,
+  titleAutocompleteSelectionQuery,
 } from "@/lib/graphql/queries";
 import {
   localPathStyleFromRuntimeValue,
@@ -433,7 +433,7 @@ export function SettingsNotificationsContainer({
     void Promise.all(
       unresolvedIds.map(async (titleId) => {
         const { data, error } = await client
-          .query<{ title?: TitleRecord | null }>(titleListEntryQuery, { id: titleId })
+      .query<{ title?: TitleRecord | null }>(titleAutocompleteSelectionQuery, { id: titleId })
           .toPromise();
         if (error) {
           return [titleId, null] as const;

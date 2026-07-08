@@ -336,10 +336,7 @@ pub(super) fn bootstrap_with_metadata_gateway_settings_and_titles(
     metadata_gateway: Arc<dyn MetadataGateway>,
     settings: Arc<dyn SettingsRepository>,
 ) -> (AppUseCase, User, Arc<MockTitleRepo>) {
-    let titles = Arc::new(MockTitleRepo {
-        pending_import_items: Some(unmatched_items.items.clone()),
-        ..Default::default()
-    });
+    let titles = Arc::new(MockTitleRepo::default());
     let shows = Arc::new(MockShowRepo::default());
     let users = Arc::new(MockUserRepo::default());
     let indexer_configs = Arc::new(MockIndexerConfigRepo::default());
@@ -1154,7 +1151,10 @@ pub(super) fn bootstrap_with_scan_unmatched_and_metadata_tracking_and_titles(
     unmatched_items: Arc<TrackingLibraryScanUnmatchedItemRepo>,
     metadata_gateway: Arc<dyn MetadataGateway>,
 ) -> (AppUseCase, User, Arc<MockTitleRepo>) {
-    let titles = Arc::new(MockTitleRepo::default());
+    let titles = Arc::new(MockTitleRepo {
+        pending_import_items: Some(unmatched_items.items.clone()),
+        ..Default::default()
+    });
     let shows = Arc::new(MockShowRepo::default());
     let users = Arc::new(MockUserRepo::default());
     let indexer_configs = Arc::new(MockIndexerConfigRepo::default());

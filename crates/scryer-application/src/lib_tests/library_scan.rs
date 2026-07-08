@@ -4293,6 +4293,18 @@ async fn pending_import_counts_and_items_are_facet_scoped() {
     let unmatched_items = Arc::new(TrackingLibraryScanUnmatchedItemRepo::default());
     let (app, user) =
         bootstrap_with_scan_unmatched_tracking(settings, library_scanner, unmatched_items.clone());
+    let known_movie_title = app
+        .create_title_without_hydration(
+            &user,
+            NewTitle {
+                name: "Known Movie".to_string(),
+                facet: MediaFacet::Movie,
+                monitored: true,
+                ..NewTitle::default()
+            },
+        )
+        .await
+        .expect("seed known movie title");
     let known_series_title = app
         .create_title_without_hydration(
             &user,
@@ -4318,6 +4330,20 @@ async fn pending_import_counts_and_items_are_facet_scoped() {
         ))
         .await
         .expect("seed movie item");
+    let mut matched_movie = build_test_unmatched_item(
+        "movie-matched-1",
+        MediaFacet::Movie,
+        "/movies",
+        "/movies/Known.Movie.2020.mkv",
+        "Known Movie",
+        "Known Movie",
+        Some(2020),
+    );
+    matched_movie.title_id = Some(known_movie_title.title.id.clone());
+    unmatched_items
+        .upsert_library_scan_unmatched_item(&matched_movie)
+        .await
+        .expect("seed matched movie item");
     let mut series_item = build_test_unmatched_item(
         "series-1",
         MediaFacet::Series,
@@ -5827,14 +5853,11 @@ async fn resolve_pending_import_creates_unmonitored_movie_title_and_keeps_item_b
         result.metadata_hydration_state,
         AddTitleHydrationState::Pending
     ));
-    let items = unmatched_items.items().await;
-    assert_eq!(items.len(), 1);
-    assert_eq!(items[0].status, PendingImportStatus::Pending);
-    assert_eq!(items[0].title_id.as_deref(), Some(result.title.id.as_str()));
+    assert!(unmatched_items.items().await.is_empty());
 }
 
 #[tokio::test]
-async fn resolve_ignored_pending_import_creates_unmonitored_movie_title_and_moves_item_pending() {
+async fn resolve_ignored_pending_import_creates_unmonitored_movie_title_and_clears_item() {
     let tempdir = tempfile::tempdir().expect("tempdir");
     let movie_path = tempdir.path().join("Ignored.Movie.2020.mkv");
     std::fs::write(&movie_path, b"fake-video").expect("seed movie file");
@@ -5922,10 +5945,7 @@ async fn resolve_ignored_pending_import_creates_unmonitored_movie_title_and_move
 
     assert!(result.created);
     assert_eq!(result.title.name, "Matched Movie");
-    let items = unmatched_items.items().await;
-    assert_eq!(items.len(), 1);
-    assert_eq!(items[0].status, PendingImportStatus::Pending);
-    assert_eq!(items[0].title_id.as_deref(), Some(result.title.id.as_str()));
+    assert!(unmatched_items.items().await.is_empty());
 }
 
 #[tokio::test]

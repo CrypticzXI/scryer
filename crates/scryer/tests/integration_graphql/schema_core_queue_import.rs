@@ -1586,7 +1586,7 @@ async fn graphql_traverses_core_graph_relationships() {
     let body = gql(
         &ctx,
         r#"
-        query CoreGraph($titleId: ID!, $wantedItemId: ID!) {
+        query CoreGraph($titleId: ID!, $wantedItemId: ID!, $episodeId: ID!, $mismatchTitleId: ID!) {
           title(id: $titleId) {
             id
             downloadQueueItems {
@@ -1663,11 +1663,24 @@ async fn graphql_traverses_core_graph_relationships() {
               items { id }
             }
           }
+          episode(titleId: $titleId, episodeId: $episodeId) {
+            id
+            parentTitle { id }
+            mediaFiles {
+              id
+              episode { id }
+            }
+          }
+          mismatchedEpisode: episode(titleId: $mismatchTitleId, episodeId: $episodeId) {
+            id
+          }
         }
         "#,
         json!({
             "titleId": title.id,
             "wantedItemId": wanted_item.id,
+            "episodeId": episode.id,
+            "mismatchTitleId": Id::new().0,
         }),
     )
     .await;
@@ -1729,6 +1742,14 @@ async fn graphql_traverses_core_graph_relationships() {
         body["data"]["wantedItem"]["releaseDecisions"]["items"][0]["id"],
         decision.id
     );
+    assert_eq!(body["data"]["episode"]["id"], episode.id);
+    assert_eq!(body["data"]["episode"]["parentTitle"]["id"], title.id);
+    assert_eq!(body["data"]["episode"]["mediaFiles"][0]["id"], file_id);
+    assert_eq!(
+        body["data"]["episode"]["mediaFiles"][0]["episode"]["id"],
+        episode.id
+    );
+    assert!(body["data"]["mismatchedEpisode"].is_null());
 }
 
 #[tokio::test]

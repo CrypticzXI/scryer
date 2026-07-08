@@ -251,30 +251,7 @@ ${CATALOG_DISCOVERY_ITEM_FIELDS}
   }
 }`;
 
-export const TITLE_CORE_FIELDS = `
-    id
-    name
-    facet
-    libraryId
-    libraryName
-    librarySlug
-    monitored
-    tags
-    externalIds {
-      source
-      value
-    }
-    year
-    overview
-    posterUrl
-    posterSourceUrl
-    backgroundUrl
-    backgroundSourceUrl
-    sortTitle
-    slug
-    imdbId
-    runtimeMinutes
-    canonicalTags {
+const TITLE_CANONICAL_TAG_FIELDS = `
       key
       category
       name
@@ -282,30 +259,19 @@ export const TITLE_CORE_FIELDS = `
       sources
       sourceTagKeys
       isAdult
-      isSpoiler
-    }
-    contentStatus
-    language
-    firstAired
-    network
-    studio
-    country
-    aliases
-    metadataLanguage
-    metadataFetchedAt
-    qualityProfileId
-    requiredAudioLanguagesOverride
-    effectiveRequiredAudioLanguages
-    inheritsRequiredAudioLanguages
-    rootFolderId
-    rootFolderPath
-    monitorType
-    useSeasonFolders
-    monitorSpecials
-    interSeasonMovies
-    fillerPolicy
-    recapPolicy
-    createdAt`;
+      isSpoiler`;
+
+const TITLE_RATING_SUMMARY_FIELDS = `
+      rating
+      ratingSources
+      externalRatings {
+        source
+        value
+        score
+        normalized
+        votes
+        url
+      }`;
 
 export const PROVIDER_CONFIG_VALUE_FIELDS = `
     key
@@ -324,68 +290,33 @@ export const PROVIDER_CONFIG_VALUE_FIELDS = `
     floatValue
     secretStored`;
 
-const SERIES_MOVIE_LINK_FIELDS = `
+const SERIES_SIDE_PANEL_MOVIE_LINK_FIELDS = `
       id
-      seriesTitleId
-      placement
       narrativeOrder
       afterSeason
       beforeSeason
       linkedEpisodeId
-      associationConfidence
       continuityStatus
       movieForm
-      confidence
       signalSummary
-      source
       monitored
-      createdAt
-      updatedAt
       movie {
         id
         title
-        sortTitle
-      slug
-      year
+        slug
+        year
         overview
         posterUrl
-        backgroundUrl
-        language
         runtimeMinutes
-      contentStatus
-      imdbId
+        contentStatus
+        imdbId
         tvdbId
         tmdbId
         malId
         anidbId
-      studio
-      digitalReleaseDate
-        createdAt
-        updatedAt
       }`;
 
-const COLLECTION_EPISODE_FIELDS = `
-      id
-      titleId
-      collectionId
-      episodeType
-      episodeNumber
-      seasonNumber
-      episodeLabel
-      title
-      overview
-      airDate
-      durationSeconds
-      hasMultiAudio
-      hasSubtitle
-      isFiller
-      isRecap
-      absoluteNumber
-      imageUrl
-      monitored
-      createdAt`;
-
-const COLLECTION_EPISODE_BASIC_FIELDS = `
+const SERIES_SIDE_PANEL_EPISODE_ROW_FIELDS = `
       id
       titleId
       collectionId
@@ -402,23 +333,16 @@ const COLLECTION_EPISODE_BASIC_FIELDS = `
       monitored
       createdAt`;
 
-const TITLE_COLLECTION_FIELDS = `
+const MOVIE_SIDE_PANEL_COLLECTION_FIELDS = `
       id
       titleId
       collectionType
       collectionIndex
       label
       orderedPath
-      narrativeOrder
-      fileSizeBytes
-      firstEpisodeNumber
-      lastEpisodeNumber
-      monitored
-      createdAt
-      episodes {${COLLECTION_EPISODE_FIELDS}
-      }`;
+      createdAt`;
 
-const TITLE_COLLECTION_BASIC_FIELDS = `
+const SERIES_SIDE_PANEL_COLLECTION_FIELDS = `
       id
       titleId
       collectionType
@@ -434,7 +358,7 @@ const TITLE_COLLECTION_BASIC_FIELDS = `
       episodesMonitored
       episodesTotal
       createdAt
-      episodes {${COLLECTION_EPISODE_BASIC_FIELDS}
+      episodes {${SERIES_SIDE_PANEL_EPISODE_ROW_FIELDS}
       }`;
 
 const TITLE_MEDIA_FILE_FIELDS = `
@@ -560,31 +484,148 @@ const DOWNLOAD_QUEUE_ITEM_FIELDS = `
       seriesMovieLinkId
     }`;
 
-const TITLE_SERIES_OVERVIEW_FIELDS = `${TITLE_CORE_FIELDS}
-    collections {${TITLE_COLLECTION_BASIC_FIELDS}
+const MOVIE_SIDE_PANEL_TITLE_FIELDS = `
+    id
+    name
+    facet
+    libraryId
+    libraryName
+    librarySlug
+    monitored
+    tags
+    externalIds {
+      source
+      value
     }
-    seriesMovieLinks {${SERIES_MOVIE_LINK_FIELDS}
+    year
+    overview
+    posterUrl
+    posterSourceUrl
+    backgroundUrl
+    backgroundSourceUrl
+    sortTitle
+    slug
+    imdbId
+    runtimeMinutes
+    canonicalTags {${TITLE_CANONICAL_TAG_FIELDS}
+    }
+    contentStatus
+    language
+    firstAired
+    network
+    studio
+    country
+    aliases
+    metadataLanguage
+    metadataFetchedAt
+    qualityProfileId
+    requiredAudioLanguagesOverride
+    effectiveRequiredAudioLanguages
+    inheritsRequiredAudioLanguages
+    rootFolderId
+    rootFolderPath
+    monitorType
+    useSeasonFolders
+    monitorSpecials
+    interSeasonMovies
+    fillerPolicy
+    recapPolicy
+    createdAt
+    collections {${MOVIE_SIDE_PANEL_COLLECTION_FIELDS}
     }
     wantedItems {
       items {${WANTED_ITEM_FIELDS}
       }
     }
-    ratings {
-      rating
-      ratingSources
-      externalRatings {
-        source
-        value
-        score
-        normalized
-        votes
-        url
-      }
-    }`;
-
-const TITLE_MOVIE_OVERVIEW_FIELDS = `${TITLE_SERIES_OVERVIEW_FIELDS}
+    ratings {${TITLE_RATING_SUMMARY_FIELDS}
+    }
     mediaFiles {${TITLE_MEDIA_FILE_FIELDS}
     }`;
+
+const SERIES_SIDE_PANEL_TITLE_FIELDS = `
+    id
+    name
+    facet
+    libraryId
+    librarySlug
+    monitored
+    externalIds {
+      source
+      value
+    }
+    year
+    overview
+    posterUrl
+    posterSourceUrl
+    backgroundUrl
+    slug
+    canonicalTags {${TITLE_CANONICAL_TAG_FIELDS}
+    }
+    contentStatus
+    network
+    metadataFetchedAt
+    qualityProfileId
+    effectiveRequiredAudioLanguages
+    inheritsRequiredAudioLanguages
+    rootFolderId
+    useSeasonFolders
+    fillerPolicy
+    recapPolicy
+    createdAt
+    collections {${SERIES_SIDE_PANEL_COLLECTION_FIELDS}
+    }
+    seriesMovieLinks {${SERIES_SIDE_PANEL_MOVIE_LINK_FIELDS}
+    }
+    ratings {${TITLE_RATING_SUMMARY_FIELDS}
+    }`;
+
+export const TITLE_MUTATION_RESULT_FIELDS = `
+    id
+    name
+    facet
+    libraryId
+    libraryName
+    librarySlug
+    monitored
+    tags
+    externalIds {
+      source
+      value
+    }
+    year
+    overview
+    posterUrl
+    posterSourceUrl
+    backgroundUrl
+    backgroundSourceUrl
+    sortTitle
+    slug
+    imdbId
+    runtimeMinutes
+    canonicalTags {${TITLE_CANONICAL_TAG_FIELDS}
+    }
+    contentStatus
+    language
+    firstAired
+    network
+    studio
+    country
+    aliases
+    metadataLanguage
+    metadataFetchedAt
+    qualityProfileId
+    requiredAudioLanguagesOverride
+    effectiveRequiredAudioLanguages
+    inheritsRequiredAudioLanguages
+    rootFolderId
+    rootFolderPath
+    monitorType
+    useSeasonFolders
+    monitorSpecials
+    interSeasonMovies
+    fillerPolicy
+    recapPolicy
+    createdAt`;
 
 const TITLE_EVENT_FIELDS = `
     id
@@ -798,19 +839,6 @@ const DELETE_PREVIEW_FIELDS = `
     targetLabel
     samplePaths`;
 
-export const titleDetailQuery = `query TitleDetail($id: ID!) {
-  title(id: $id) {${TITLE_CORE_FIELDS}
-    collections {${TITLE_COLLECTION_FIELDS}
-    }
-    seriesMovieLinks {${SERIES_MOVIE_LINK_FIELDS}
-    }
-  }
-  titleHistory: titleHistory(filter: { titleIds: [$id], limit: 50, offset: 0 }) {
-    records {${TITLE_EVENT_FIELDS}
-    }
-  }
-}`;
-
 export const titleBySlugQuery = `query TitleBySlug($facet: MediaFacetValue!, $librarySlug: String, $slug: String!) {
   titleBySlug(facet: $facet, librarySlug: $librarySlug, slug: $slug) {
     id
@@ -835,8 +863,8 @@ export const titleReleaseBlocklistQuery = `query TitleReleaseBlocklist($titleId:
   }
 }`;
 
-export const titleOverviewNativeQuery = `query TitleOverviewNative($id: ID!, $blocklistLimit: Int) {
-  title(id: $id) {${TITLE_MOVIE_OVERVIEW_FIELDS}
+export const movieSidePanelOverviewQuery = `query MovieSidePanelOverview($id: ID!, $blocklistLimit: Int) {
+  title(id: $id) {${MOVIE_SIDE_PANEL_TITLE_FIELDS}
   }
   titleAcquisitionDiagnostics(titleId: $id) {
     recentDecisions {
@@ -882,43 +910,8 @@ export const titleOverviewNativeQuery = `query TitleOverviewNative($id: ID!, $bl
   }
 }`;
 
-export const seriesTitleOverviewNativeQuery = `query SeriesTitleOverviewNative($id: ID!, $blocklistLimit: Int) {
-  title(id: $id) {${TITLE_SERIES_OVERVIEW_FIELDS}
-  }
-  titleAcquisitionDiagnostics(titleId: $id) {
-    recentDecisions {
-      id
-      wantedItemId
-      titleId
-      releaseTitle
-      releaseUrl
-      releaseSizeBytes
-      decisionCode
-      candidateScore
-      currentScore
-      scoreDelta
-      explanationJson
-      createdAt
-    }
-    decisionCounts {
-      code
-      count
-    }
-    wantedStatusCounts {
-      status
-      count
-    }
-    pendingReleaseCounts {
-      status
-      count
-    }
-    mismatchRecoveryEligibleCount
-    latestDecisionAt
-    latestWantedSearchAt
-  }
-  titleHistory: titleHistory(filter: { titleIds: [$id], limit: 50, offset: 0 }) {
-    records {${TITLE_EVENT_FIELDS}
-    }
+export const seriesSidePanelOverviewQuery = `query SeriesSidePanelOverview($id: ID!, $blocklistLimit: Int) {
+  title(id: $id) {${SERIES_SIDE_PANEL_TITLE_FIELDS}
   }
   titleReleaseBlocklist(titleId: $id, limit: $blocklistLimit) {${TITLE_RELEASE_BLOCKLIST_FIELDS}
   }
@@ -952,8 +945,13 @@ export const titleMediaFilesQuery = `query TitleMediaFiles($id: ID!) {
   }
 }`;
 
-export const episodeMediaFilesQuery = `query EpisodeMediaFiles($titleId: ID!, $episodeId: ID!) {
-  episodeMediaFiles(titleId: $titleId, episodeId: $episodeId) {${TITLE_MEDIA_FILE_FIELDS}
+export const episodeSidePanelDetailQuery = `query EpisodeSidePanelDetail($titleId: ID!, $episodeId: ID!) {
+  episode(titleId: $titleId, episodeId: $episodeId) {
+    id
+    overview
+    imageUrl
+    mediaFiles {${TITLE_MEDIA_FILE_FIELDS}
+    }
   }
 }`;
 
@@ -1312,45 +1310,6 @@ function titleCatalogListFields(
   return fields.join("");
 }
 
-export const TITLE_PANEL_FIELDS = `${TITLE_LIST_FIELDS}
-    externalIds {
-      source
-      value
-    }
-    imdbId
-    overview
-    backgroundUrl
-    backgroundSourceUrl
-    runtimeMinutes
-    canonicalTags {
-      key
-      category
-      name
-      confidence
-      sources
-      sourceTagKeys
-      isAdult
-      isSpoiler
-    }
-    language
-    firstAired
-    network
-    studio
-    country
-    metadataLanguage
-    monitorType
-    useSeasonFolders
-    monitorSpecials
-    interSeasonMovies
-    fillerPolicy
-    recapPolicy`;
-
-export const TITLE_SELECTED_PANEL_FIELDS = `${TITLE_PANEL_FIELDS}
-    collections {${TITLE_COLLECTION_FIELDS}
-    }
-    mediaFiles {${TITLE_MEDIA_FILE_FIELDS}
-    }`;
-
 export const TITLE_COMMAND_PALETTE_FIELDS = `
     id
     name
@@ -1573,15 +1532,9 @@ ${TITLE_LIST_FIELDS_WITH_EXTERNAL_IDS}
   }
 }`;
 
-export const titleListEntryQuery = `query TitleListEntry($id: ID!) {
+export const titleAutocompleteSelectionQuery = `query TitleAutocompleteSelection($id: ID!) {
   title(id: $id) {
-${TITLE_PANEL_FIELDS}
-  }
-}`;
-
-export const titlePanelDetailQuery = `query TitlePanelDetail($id: ID!) {
-  title(id: $id) {
-${TITLE_SELECTED_PANEL_FIELDS}
+${TITLE_LIST_FIELDS}
   }
 }`;
 
@@ -1596,7 +1549,7 @@ ${TITLE_MORE_LIKE_THIS_CARD_FIELDS}
 
 type ReactiveRefreshVariableValue = string | number | null;
 
-export type TitleOverviewNativeProjection = "default" | "series";
+export type TitleSidePanelOverviewProjection = "movie" | "series";
 
 export type ReactiveRefreshQueryActionInput =
   | {
@@ -1612,10 +1565,10 @@ export type ReactiveRefreshQueryActionInput =
     }
   | {
       key: string;
-      kind: "titleOverviewNative";
+      kind: "titleSidePanelOverview";
       titleId: string;
       blocklistLimit: number;
-      projection?: TitleOverviewNativeProjection;
+      projection: TitleSidePanelOverviewProjection;
     }
   | {
       key: string;
@@ -1641,9 +1594,9 @@ export type ReactiveRefreshQueryActionPlan =
     }
   | {
       key: string;
-      kind: "titleOverviewNative";
+      kind: "titleSidePanelOverview";
       titleAlias: string;
-      titleHistoryAlias: string;
+      titleHistoryAlias?: string;
       titleReleaseBlocklistAlias: string;
       externalSubtitlesAlias: string;
       setupStatusAlias: string;
@@ -1693,27 +1646,32 @@ export function buildReactiveRefreshQuery(
         actionPlans.push({ key: action.key, kind: action.kind, titleAlias });
         break;
       }
-      case "titleOverviewNative": {
-        const titleIdVariableName = `titleOverviewId${index}`;
-        const blocklistLimitVariableName = `titleOverviewBlocklistLimit${index}`;
-        const titleAlias = `titleOverviewTitleAction${index}`;
-        const titleHistoryAlias = `titleOverviewHistoryAction${index}`;
-        const titleReleaseBlocklistAlias = `titleOverviewBlocklistAction${index}`;
-        const externalSubtitlesAlias = `titleOverviewExternalSubtitlesAction${index}`;
-        const setupStatusAlias = `titleOverviewSetupStatusAction${index}`;
+      case "titleSidePanelOverview": {
+        const titleIdVariableName = `titleSidePanelOverviewId${index}`;
+        const blocklistLimitVariableName = `titleSidePanelOverviewBlocklistLimit${index}`;
+        const titleAlias = `titleSidePanelOverviewTitleAction${index}`;
+        const titleHistoryAlias =
+          action.projection === "movie"
+            ? `titleSidePanelOverviewHistoryAction${index}`
+            : undefined;
+        const titleReleaseBlocklistAlias = `titleSidePanelOverviewBlocklistAction${index}`;
+        const externalSubtitlesAlias = `titleSidePanelOverviewExternalSubtitlesAction${index}`;
+        const setupStatusAlias = `titleSidePanelOverviewSetupStatusAction${index}`;
 
         variableDefinitions.push(`$${titleIdVariableName}: ID!`);
         variableDefinitions.push(`$${blocklistLimitVariableName}: Int`);
         const titleFields =
           action.projection === "series"
-            ? TITLE_SERIES_OVERVIEW_FIELDS
-            : TITLE_MOVIE_OVERVIEW_FIELDS;
+            ? SERIES_SIDE_PANEL_TITLE_FIELDS
+            : MOVIE_SIDE_PANEL_TITLE_FIELDS;
         fields.push(
           `  ${titleAlias}: title(id: $${titleIdVariableName}) {\n${titleFields}\n  }`,
         );
-        fields.push(
-          `  ${titleHistoryAlias}: titleHistory(filter: { titleIds: [$${titleIdVariableName}], limit: 50, offset: 0 }) {\n    records {\n${TITLE_EVENT_FIELDS}\n    }\n  }`,
-        );
+        if (titleHistoryAlias) {
+          fields.push(
+            `  ${titleHistoryAlias}: titleHistory(filter: { titleIds: [$${titleIdVariableName}], limit: 50, offset: 0 }) {\n    records {\n${TITLE_EVENT_FIELDS}\n    }\n  }`,
+          );
+        }
         fields.push(
           `  ${titleReleaseBlocklistAlias}: titleReleaseBlocklist(titleId: $${titleIdVariableName}, limit: $${blocklistLimitVariableName}) {\n${TITLE_RELEASE_BLOCKLIST_FIELDS}\n  }`,
         );

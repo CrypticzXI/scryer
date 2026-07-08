@@ -3,9 +3,9 @@ import * as React from "react";
 import {
   deleteMediaFilePreviewQuery,
   deleteTitlePreviewQuery,
-  episodeMediaFilesQuery,
+  episodeSidePanelDetailQuery,
   librariesQuery,
-  seriesTitleOverviewNativeQuery,
+  seriesSidePanelOverviewQuery,
   seriesOverviewSettingsInitQuery,
 } from "@/lib/graphql/queries";
 import {
@@ -40,7 +40,7 @@ import {
   createEmptyTitleOverviewDownloadFeedbackSnapshot,
   fetchTitleMoreLikeThis,
   fetchTitleOverviewDownloadFeedbackSnapshot,
-  fetchTitleOverviewNativeSnapshot,
+  fetchTitleSidePanelOverviewSnapshot,
 } from "@/lib/title-overview-loader";
 import { SeriesOverviewView } from "@/components/views/series-overview-view";
 import { ManualImportDialog } from "@/components/dialogs/manual-import-dialog";
@@ -59,7 +59,7 @@ import {
 } from "@/lib/utils/download-conflicts";
 import type {
   TitleOverviewDownloadFeedbackSnapshot,
-  TitleOverviewNativeSnapshot,
+  TitleSidePanelOverviewSnapshot,
 } from "@/lib/title-overview-loader";
 import type { ExternalSubtitleRecord } from "@/lib/types/subtitles";
 import { useAuth } from "@/lib/hooks/use-auth";
@@ -211,8 +211,6 @@ export type CollectionEpisode = {
   overview?: string | null;
   airDate: string | null;
   durationSeconds: number | null;
-  hasMultiAudio?: boolean;
-  hasSubtitle?: boolean;
   isFiller: boolean;
   isRecap: boolean;
   absoluteNumber: string | null;
@@ -350,10 +348,10 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
   const [mediaFilesBySeriesMovieLink, setMediaFilesBySeriesMovieLink] = React.useState<
     Record<string, EpisodeMediaFile[]>
   >({});
-  const [episodeMediaFilesLoaded, setEpisodeMediaFilesLoaded] = React.useState<
+  const [episodeDetailsLoaded, setEpisodeDetailsLoaded] = React.useState<
     ReadonlySet<string>
   >(() => new Set());
-  const [episodeMediaFilesLoading, setEpisodeMediaFilesLoading] = React.useState<
+  const [episodeDetailsLoading, setEpisodeDetailsLoading] = React.useState<
     Record<string, boolean>
   >({});
   const [downloadQueueSeed, setDownloadQueueSeed] = React.useState<DownloadQueueItem[]>([]);
@@ -440,9 +438,9 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
     [],
   );
 
-  const applyNativeTitleDetailSnapshot = React.useCallback(
+  const applySidePanelOverviewSnapshot = React.useCallback(
     (
-      snapshot: TitleOverviewNativeSnapshot<
+      snapshot: TitleSidePanelOverviewSnapshot<
         SeriesOverviewSnapshotTitle,
         unknown,
         TitleHistoryEvent,
@@ -485,8 +483,8 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
       if (!nextTitle) {
         setMediaFilesByEpisode({});
         setMediaFilesBySeriesMovieLink({});
-        setEpisodeMediaFilesLoaded(new Set());
-        setEpisodeMediaFilesLoading({});
+        setEpisodeDetailsLoaded(new Set());
+        setEpisodeDetailsLoading({});
       }
       setEvents(snapshot.titleHistory);
       setReleaseBlocklistEntries(snapshot.titleReleaseBlocklist);
@@ -510,7 +508,7 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
     titleId,
     blocklistLimit: 300,
     projection: "series",
-    applyNativeSnapshot: applyNativeTitleDetailSnapshot,
+    applyOverviewSnapshot: applySidePanelOverviewSnapshot,
     applyDownloadFeedbackSnapshot,
     importKinds: SERIES_OVERVIEW_IMPORT_REFRESH_KINDS,
     pause: !titleId,
@@ -596,24 +594,27 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
     }
 
     const requestedTitleId = titleId;
-    const snapshot = await fetchTitleOverviewNativeSnapshot<
+    const snapshot = await fetchTitleSidePanelOverviewSnapshot<
       SeriesOverviewSnapshotTitle,
       unknown,
       TitleHistoryEvent,
       TitleReleaseBlocklistEntry,
       ExternalSubtitleRecord
-    >(client, requestedTitleId, 300, seriesTitleOverviewNativeQuery);
+    >(client, requestedTitleId, 300, seriesSidePanelOverviewQuery);
     if (currentTitleIdRef.current !== requestedTitleId) {
       return;
     }
-    applyNativeTitleDetailSnapshot(snapshot);
+    applySidePanelOverviewSnapshot(snapshot);
+    if (!snapshot.title) {
+      return;
+    }
     void refreshTitleMoreLikeThis(requestedTitleId);
-    if (!snapshot.title || !snapshot.hasDownloadClients) {
+    if (!snapshot.hasDownloadClients) {
       return;
     }
     void refreshDownloadFeedback();
   }, [
-    applyNativeTitleDetailSnapshot,
+    applySidePanelOverviewSnapshot,
     client,
     refreshDownloadFeedback,
     refreshTitleMoreLikeThis,
@@ -629,24 +630,24 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
     refreshTitleDetailRef.current = refreshTitleDetail;
   }, [refreshTitleDetail]);
 
-  const loadEpisodeMediaFiles = React.useCallback(
+  const loadEpisodeDetail = React.useCallback(
     async (episodeId: string) => {
-      if (!titleId || episodeMediaFilesLoaded.has(episodeId)) {
+      if (!titleId || episodeDetailsLoaded.has(episodeId)) {
         return;
       }
-      if (episodeMediaFilesLoading[episodeId]) {
+      if (episodeDetailsLoading[episodeId]) {
         return;
       }
 
       const requestedTitleId = titleId;
-      setEpisodeMediaFilesLoading((current) => ({
+      setEpisodeDetailsLoading((current) => ({
         ...current,
         [episodeId]: true,
       }));
       try {
         const { data, error } = await client
           .query(
-            episodeMediaFilesQuery,
+            episodeSidePanelDetailQuery,
             { titleId: requestedTitleId, episodeId },
             { requestPolicy: "network-only" },
           )
@@ -658,9 +659,29 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
           return;
         }
 
-        const mediaFiles = (data?.episodeMediaFiles ?? []) as EpisodeMediaFile[];
+        const episodeDetail = data?.episode as
+          | (Partial<CollectionEpisode> & { mediaFiles?: EpisodeMediaFile[] | null })
+          | null
+          | undefined;
+        const mediaFiles = (episodeDetail?.mediaFiles ?? []) as EpisodeMediaFile[];
         const mediaFilesByEpisode = groupMediaFilesByEpisode(mediaFiles);
         const mediaFilesForEpisode = mediaFilesByEpisode[episodeId] ?? [];
+        setEpisodesByCollection((current) =>
+          Object.fromEntries(
+            Object.entries(current).map(([collectionId, episodes]) => [
+              collectionId,
+              episodes.map((episode) =>
+                episode.id === episodeId
+                  ? {
+                      ...episode,
+                      overview: episodeDetail?.overview ?? episode.overview ?? null,
+                      imageUrl: episodeDetail?.imageUrl ?? episode.imageUrl ?? null,
+                    }
+                  : episode,
+              ),
+            ]),
+          ),
+        );
         setMediaFilesByEpisode((current) => ({
           ...current,
           [episodeId]: mediaFilesForEpisode,
@@ -669,7 +690,7 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
           ...current,
           ...groupMediaFilesBySeriesMovieLink(mediaFiles),
         }));
-        setEpisodeMediaFilesLoaded((current) => {
+        setEpisodeDetailsLoaded((current) => {
           const loaded = new Set(current);
           loaded.add(episodeId);
           return loaded;
@@ -681,7 +702,7 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
           );
         }
       } finally {
-        setEpisodeMediaFilesLoading((current) => {
+        setEpisodeDetailsLoading((current) => {
           const next = { ...current };
           delete next[episodeId];
           return next;
@@ -690,8 +711,8 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
     },
     [
       client,
-      episodeMediaFilesLoaded,
-      episodeMediaFilesLoading,
+      episodeDetailsLoaded,
+      episodeDetailsLoading,
       setGlobalStatus,
       t,
       titleId,
@@ -750,8 +771,8 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
     setTitleLookupFailed(false);
     setMediaFilesByEpisode({});
     setMediaFilesBySeriesMovieLink({});
-    setEpisodeMediaFilesLoaded(new Set());
-    setEpisodeMediaFilesLoading({});
+    setEpisodeDetailsLoaded(new Set());
+    setEpisodeDetailsLoading({});
     setDownloadQueueSeed([]);
     setCompletedDownloads([]);
     setDownloadFeedbackWarning(null);
@@ -1322,7 +1343,7 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
         episodesByCollection={episodesByCollection}
         mediaFilesByEpisode={mediaFilesByEpisode}
         mediaFilesBySeriesMovieLink={mediaFilesBySeriesMovieLink}
-        onLoadEpisodeMediaFiles={loadEpisodeMediaFiles}
+        onLoadEpisodeDetail={loadEpisodeDetail}
         subtitleDownloads={subtitleDownloads}
         onRefreshSubtitles={refreshTitleDetail}
         releaseBlocklistEntries={releaseBlocklistEntries}

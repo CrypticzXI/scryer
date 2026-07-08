@@ -1,18 +1,16 @@
-export type SelectedOverviewDetailOwner = "panel" | "native-series-overview";
+export type SelectedSidePanelOwner = "movie-record" | "series-container";
 
-export function selectedOverviewDetailOwner(
-  view: string,
-): SelectedOverviewDetailOwner {
-  return view === "movies" ? "panel" : "native-series-overview";
+export function selectedSidePanelOwner(view: string): SelectedSidePanelOwner {
+  return view === "movies" ? "movie-record" : "series-container";
 }
 
-export function selectedOverviewUsesPanelDetail(view: string): boolean {
-  return selectedOverviewDetailOwner(view) === "panel";
+export function selectedOverviewUsesMovieRecord(view: string): boolean {
+  return selectedSidePanelOwner(view) === "movie-record";
 }
 
-export function selectedOverviewNativeTitleId(
+export function selectedSeriesSidePanelTitleId(
   view: string,
   selectedOverviewTitleId: string | null,
 ): string | null {
-  return selectedOverviewUsesPanelDetail(view) ? null : selectedOverviewTitleId;
+  return selectedOverviewUsesMovieRecord(view) ? null : selectedOverviewTitleId;
 }

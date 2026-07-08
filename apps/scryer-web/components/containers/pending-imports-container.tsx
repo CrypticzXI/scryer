@@ -702,6 +702,21 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
     item: PendingImportItem,
     title: ResolvePendingImportResult["title"],
   ) => {
+    if (item.facet === "movie") {
+      const removeMatchedItem = (current: PendingImportConnection): PendingImportConnection => {
+        if (!current.items.some((candidate) => candidate.id === item.id)) {
+          return current;
+        }
+        return {
+          total: Math.max(0, current.total - 1),
+          items: current.items.filter((candidate) => candidate.id !== item.id),
+        };
+      };
+      setPendingConnection(removeMatchedItem);
+      setIgnoredConnection(removeMatchedItem);
+      return;
+    }
+
     const resolvedItem: PendingImportItem = {
       ...item,
       status: "pending",

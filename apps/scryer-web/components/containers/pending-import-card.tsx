@@ -104,16 +104,18 @@ export const PendingImportCard = React.memo(function PendingImportCard({
             <p className="text-xs text-muted-foreground">{t("pendingImports.library")} {libraryLabel}</p>
           </div>
           <div className="flex flex-col gap-2 sm:flex-row">
-            <Button
-              type="button"
-              size="sm"
-              variant={isActive ? "secondary" : "default"}
-              onClick={() => onOpenSearch(item)}
-              disabled={isBusy}
-            >
-              {item.titleId ? null : <Search className="mr-2 h-4 w-4" />}
-              {item.titleId ? t("pendingImports.bindEpisodes") : t("pendingImports.searchAction")}
-            </Button>
+            {item.titleId && item.facet === "movie" ? null : (
+              <Button
+                type="button"
+                size="sm"
+                variant={isActive ? "secondary" : "default"}
+                onClick={() => onOpenSearch(item)}
+                disabled={isBusy}
+              >
+                {item.titleId ? null : <Search className="mr-2 h-4 w-4" />}
+                {item.titleId ? t("pendingImports.bindEpisodes") : t("pendingImports.searchAction")}
+              </Button>
+            )}
             {item.status === "pending" ? (
               <Button
                 type="button"

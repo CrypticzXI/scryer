@@ -34,7 +34,7 @@ use crate::mappers::{
     from_media_request_counts, from_outbound_rate_limit_snapshot, from_pending_import_connection,
     from_pending_import_counts, from_pending_release, from_provider_type, from_runtime_path_style,
     from_smg_scryer_update_notice, from_smg_version_compatibility_notice, from_system_health,
-    from_title, from_title_acquisition_diagnostics, from_title_history_page, from_title_media_file,
+    from_title, from_title_acquisition_diagnostics, from_title_history_page,
     from_title_rating_summary, from_title_release_blocklist_entry,
     from_upstream_scheduler_snapshot, from_user_with_auth_factor_status, from_wanted_item,
     from_wanted_scope_view,
@@ -958,19 +958,21 @@ impl CatalogQueries {
         Ok(payloads.pop())
     }
 
-    async fn episode_media_files(
+    async fn episode(
         &self,
         ctx: &Context<'_>,
         title_id: ID,
         episode_id: ID,
-    ) -> GqlResult<Vec<TitleMediaFilePayload>> {
+    ) -> GqlResult<Option<EpisodePayload>> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        let files = app
-            .list_episode_media_files(&actor, title_id.as_ref(), episode_id.as_ref())
+        let episode = app
+            .get_episode(&actor, episode_id.as_ref())
             .await
             .map_err(to_gql_error)?;
-        Ok(files.into_iter().map(from_title_media_file).collect())
+        Ok(episode
+            .filter(|episode| episode.title_id == title_id.as_ref())
+            .map(from_episode))
     }
 
     async fn title_by_slug(

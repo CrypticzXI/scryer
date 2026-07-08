@@ -8,11 +8,10 @@ import {
   titleBySlugQuery,
   titleMoreLikeThisQuery,
   titleOverviewDownloadFeedbackQuery,
-  titleOverviewNativeQuery,
 } from "@/lib/graphql/queries";
 import type { CatalogDiscoveryItem } from "@/lib/types/discovery";
 
-export type TitleOverviewNativeSnapshot<TTitle, TDiagnostics, TEvent, TBlocklist, TSubtitle> = {
+export type TitleSidePanelOverviewSnapshot<TTitle, TDiagnostics, TEvent, TBlocklist, TSubtitle> = {
   title: TTitle | null;
   acquisitionDiagnostics: TDiagnostics | null;
   titleHistory: TEvent[];
@@ -28,7 +27,7 @@ export type TitleOverviewDownloadFeedbackSnapshot = {
 };
 
 export type TitleOverviewSnapshot<TTitle, TDiagnostics, TEvent, TBlocklist, TSubtitle> =
-  TitleOverviewNativeSnapshot<TTitle, TDiagnostics, TEvent, TBlocklist, TSubtitle>
+  TitleSidePanelOverviewSnapshot<TTitle, TDiagnostics, TEvent, TBlocklist, TSubtitle>
   & TitleOverviewDownloadFeedbackSnapshot;
 
 export type ResolvedTitleOverviewTarget = {
@@ -70,10 +69,7 @@ function isTitleOverviewPartialOverviewError(
   );
 }
 
-// Canonical base loader for title overview pages. Overview containers may
-// derive view-specific state locally, but should not duplicate the underlying
-// network-only title detail fetch and normalization.
-export async function fetchTitleOverviewNativeSnapshot<
+export async function fetchTitleSidePanelOverviewSnapshot<
   TTitle,
   TDiagnostics = unknown,
   TEvent = unknown,
@@ -83,8 +79,8 @@ export async function fetchTitleOverviewNativeSnapshot<
   client: Client,
   titleId: string,
   blocklistLimit: number,
-  queryDocument: string = titleOverviewNativeQuery,
-) : Promise<TitleOverviewNativeSnapshot<TTitle, TDiagnostics, TEvent, TBlocklist, TSubtitle>> {
+  queryDocument: string,
+) : Promise<TitleSidePanelOverviewSnapshot<TTitle, TDiagnostics, TEvent, TBlocklist, TSubtitle>> {
   const { data, error } = await client
     .query(
       queryDocument,

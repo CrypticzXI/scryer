@@ -831,7 +831,8 @@ impl TitleRepository for TitleStore {
 
                     create_title_tx(tx, &title).await?;
                     let title = load_title_tx_or_not_found(tx, &title.id, true).await?;
-                    bind_pending_import_to_created_title_tx(tx, &pending_import_id, &title).await?;
+                    resolve_pending_import_for_created_title_tx(tx, &pending_import_id, &title)
+                        .await?;
                     Ok(CreateTitleOutcome {
                         title,
                         reused_existing: false,
@@ -2626,11 +2627,35 @@ async fn create_title_tx(tx: &mut SqlTx<'_>, title: &Title) -> AppResult<()> {
     Ok(())
 }
 
-async fn bind_pending_import_to_created_title_tx(
+async fn resolve_pending_import_for_created_title_tx(
     tx: &mut SqlTx<'_>,
     pending_import_id: &str,
     title: &Title,
 ) -> AppResult<()> {
+    if title.facet == MediaFacet::Movie {
+        let rows = SqlRuntime::execute(
+            SqlExec::Tx(tx),
+            "DELETE FROM library_scan_unmatched_items
+              WHERE id = {}
+                AND library_id = {}
+                AND facet = {}
+                AND title_id IS NULL",
+            &[
+                SqlArg::Text(pending_import_id.to_string()),
+                SqlArg::Text(title.library_id.clone()),
+                SqlArg::Text(title.facet.as_str().to_string()),
+            ],
+        )
+        .await?;
+        if rows != 1 {
+            return Err(AppError::Validation(format!(
+                "pending import {pending_import_id} could not be resolved for title {}",
+                title.id
+            )));
+        }
+        return Ok(());
+    }
+
     let now = Utc::now();
     let updated_at = match &*tx {
         SqlTx::Sqlite(_) => SqlArg::Text(now.to_rfc3339()),
@@ -2658,7 +2683,7 @@ async fn bind_pending_import_to_created_title_tx(
     .await?;
     if rows != 1 {
         return Err(AppError::Validation(format!(
-            "pending import {pending_import_id} could not be bound to title {}",
+            "pending import {pending_import_id} could not be resolved for title {}",
             title.id
         )));
     }

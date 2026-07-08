@@ -4,11 +4,10 @@ import test from "node:test";
 import {
   buildTitlesQuery,
   buildReactiveRefreshQuery,
-  episodeMediaFilesQuery,
-  seriesTitleOverviewNativeQuery,
+  episodeSidePanelDetailQuery,
+  movieSidePanelOverviewQuery,
+  seriesSidePanelOverviewQuery,
   titleMoreLikeThisQuery,
-  titlePanelDetailQuery,
-  titleOverviewNativeQuery,
 } from "./queries.ts";
 
 test("reactive catalog title refresh uses catalog list projection", () => {
@@ -63,13 +62,14 @@ test("title catalog query can omit page metadata for quiet refreshes", () => {
   assert.equal(query.includes("filterCounts"), false);
 });
 
-test("reactive title overview native refresh omits acquisition diagnostics", () => {
+test("reactive movie side panel refresh omits acquisition diagnostics", () => {
   const result = buildReactiveRefreshQuery([
     {
-      key: "titleOverviewNative:title-1:300",
-      kind: "titleOverviewNative",
+      key: "titleSidePanelOverview:title-1:300:movie",
+      kind: "titleSidePanelOverview",
       titleId: "title-1",
       blocklistLimit: 300,
+      projection: "movie",
     },
   ]);
 
@@ -85,14 +85,13 @@ test("reactive title overview native refresh omits acquisition diagnostics", () 
   );
 });
 
-test("full title overview native loader still includes acquisition diagnostics", () => {
-  assert.equal(titleOverviewNativeQuery.includes("titleAcquisitionDiagnostics"), true);
+test("movie side panel overview includes acquisition diagnostics", () => {
+  assert.equal(movieSidePanelOverviewQuery.includes("titleAcquisitionDiagnostics"), true);
 });
 
-test("initial title overview and selected panel queries omit recommendations", () => {
-  assert.equal(titleOverviewNativeQuery.includes("moreLikeThis("), false);
-  assert.equal(seriesTitleOverviewNativeQuery.includes("moreLikeThis("), false);
-  assert.equal(titlePanelDetailQuery.includes("moreLikeThis("), false);
+test("side panel queries omit recommendations", () => {
+  assert.equal(movieSidePanelOverviewQuery.includes("moreLikeThis("), false);
+  assert.equal(seriesSidePanelOverviewQuery.includes("moreLikeThis("), false);
 });
 
 test("title more-like-this query uses lightweight card fields", () => {
@@ -105,28 +104,38 @@ test("title more-like-this query uses lightweight card fields", () => {
   assert.equal(titleMoreLikeThisQuery.includes("ownedInInput"), true);
 });
 
-test("reactive title overview native refresh omits recommendations", () => {
+test("reactive side panel refresh omits recommendations", () => {
   const result = buildReactiveRefreshQuery([
     {
-      key: "titleOverviewNative:title-1:300",
-      kind: "titleOverviewNative",
+      key: "titleSidePanelOverview:title-1:300:movie",
+      kind: "titleSidePanelOverview",
       titleId: "title-1",
       blocklistLimit: 300,
+      projection: "movie",
     },
   ]);
 
   assert.equal(result.query.includes("moreLikeThis("), false);
 });
 
-test("series title overview native loader omits title media files", () => {
-  assert.equal(seriesTitleOverviewNativeQuery.includes("mediaFiles {"), false);
+test("series side panel overview is a lean collapsed-row query", () => {
+  assert.equal(seriesSidePanelOverviewQuery.includes("aliases"), false);
+  assert.equal(seriesSidePanelOverviewQuery.includes("mediaFiles {"), false);
+  assert.equal(seriesSidePanelOverviewQuery.includes("wantedItems"), false);
+  assert.equal(seriesSidePanelOverviewQuery.includes("titleHistory("), false);
+  assert.equal(seriesSidePanelOverviewQuery.includes("titleAcquisitionDiagnostics"), false);
+  assert.equal(seriesSidePanelOverviewQuery.includes("overview"), true);
+  assert.equal(/episodes\s*\{[^}]*\boverview\b/s.test(seriesSidePanelOverviewQuery), false);
+  assert.equal(/episodes\s*\{[^}]*\bimageUrl\b/s.test(seriesSidePanelOverviewQuery), false);
+  assert.equal(seriesSidePanelOverviewQuery.includes("hasMultiAudio"), false);
+  assert.equal(seriesSidePanelOverviewQuery.includes("hasSubtitle"), false);
 });
 
-test("series reactive title overview native refresh omits title media files", () => {
+test("series reactive side panel refresh stays lean", () => {
   const result = buildReactiveRefreshQuery([
     {
-      key: "titleOverviewNative:title-1:300",
-      kind: "titleOverviewNative",
+      key: "titleSidePanelOverview:title-1:300:series",
+      kind: "titleSidePanelOverview",
       titleId: "title-1",
       blocklistLimit: 300,
       projection: "series",
@@ -135,21 +144,29 @@ test("series reactive title overview native refresh omits title media files", ()
 
   assert.equal(result.query.includes("mediaFiles {"), false);
   assert.equal(result.query.includes("episodeMediaFiles("), false);
+  assert.equal(result.query.includes("titleHistory("), false);
+  assert.equal(result.query.includes("titleAcquisitionDiagnostics"), false);
 });
 
-test("movie title overview native loader still includes title media files", () => {
-  assert.equal(titleOverviewNativeQuery.includes("mediaFiles {"), true);
+test("movie side panel overview still includes title media files", () => {
+  assert.equal(movieSidePanelOverviewQuery.includes("mediaFiles {"), true);
 });
 
-test("episode media files query remains the series file detail path", () => {
-  assert.equal(episodeMediaFilesQuery.includes("episodeMediaFiles("), true);
-  assert.equal(episodeMediaFilesQuery.includes("filePath"), true);
+test("episode side panel detail query loads nested media files", () => {
+  assert.equal(episodeSidePanelDetailQuery.includes("episode("), true);
+  assert.equal(episodeSidePanelDetailQuery.includes("episodeMediaFiles("), false);
+  assert.equal(episodeSidePanelDetailQuery.includes("overview"), true);
+  assert.equal(episodeSidePanelDetailQuery.includes("imageUrl"), true);
+  assert.equal(episodeSidePanelDetailQuery.includes("mediaFiles {"), true);
+  assert.equal(episodeSidePanelDetailQuery.includes("filePath"), true);
 });
 
-test("series overview does not expose a selected panel detail document", async () => {
+test("overview queries do not export old native or panel-detail documents", async () => {
   const queries = await import("./queries.ts");
 
   assert.equal(Object.hasOwn(queries, "seriesTitlePanelDetailQuery"), false);
-  assert.equal(seriesTitleOverviewNativeQuery.includes("SeriesTitleOverviewNative"), true);
-  assert.equal(titlePanelDetailQuery.includes("TitlePanelDetail"), true);
+  assert.equal(Object.hasOwn(queries, "titleOverviewNativeQuery"), false);
+  assert.equal(Object.hasOwn(queries, "seriesTitleOverviewNativeQuery"), false);
+  assert.equal(Object.hasOwn(queries, "titlePanelDetailQuery"), false);
+  assert.equal(Object.hasOwn(queries, "episodeMediaFilesQuery"), false);
 });

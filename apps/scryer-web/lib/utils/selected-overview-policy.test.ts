@@ -2,28 +2,28 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  selectedOverviewDetailOwner,
-  selectedOverviewNativeTitleId,
-  selectedOverviewUsesPanelDetail,
+  selectedOverviewUsesMovieRecord,
+  selectedSeriesSidePanelTitleId,
+  selectedSidePanelOwner,
 } from "./selected-overview-policy.ts";
 
-test("movie selected overview uses panel detail hydration", () => {
-  assert.equal(selectedOverviewDetailOwner("movies"), "panel");
-  assert.equal(selectedOverviewUsesPanelDetail("movies"), true);
+test("movie selected overview uses the movie record side panel", () => {
+  assert.equal(selectedSidePanelOwner("movies"), "movie-record");
+  assert.equal(selectedOverviewUsesMovieRecord("movies"), true);
 });
 
-test("series selected overview uses native overview hydration", () => {
-  assert.equal(selectedOverviewDetailOwner("series"), "native-series-overview");
-  assert.equal(selectedOverviewUsesPanelDetail("series"), false);
+test("series selected overview uses the series side panel container", () => {
+  assert.equal(selectedSidePanelOwner("series"), "series-container");
+  assert.equal(selectedOverviewUsesMovieRecord("series"), false);
 });
 
-test("anime selected overview uses native overview hydration", () => {
-  assert.equal(selectedOverviewDetailOwner("anime"), "native-series-overview");
-  assert.equal(selectedOverviewUsesPanelDetail("anime"), false);
+test("anime selected overview uses the series side panel container", () => {
+  assert.equal(selectedSidePanelOwner("anime"), "series-container");
+  assert.equal(selectedOverviewUsesMovieRecord("anime"), false);
 });
 
-test("series and anime can render native overview from selected title id", () => {
-  assert.equal(selectedOverviewNativeTitleId("series", "title-1"), "title-1");
-  assert.equal(selectedOverviewNativeTitleId("anime", "title-2"), "title-2");
-  assert.equal(selectedOverviewNativeTitleId("movies", "title-3"), null);
+test("series and anime can render the side panel from selected title id", () => {
+  assert.equal(selectedSeriesSidePanelTitleId("series", "title-1"), "title-1");
+  assert.equal(selectedSeriesSidePanelTitleId("anime", "title-2"), "title-2");
+  assert.equal(selectedSeriesSidePanelTitleId("movies", "title-3"), null);
 });

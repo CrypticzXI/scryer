@@ -410,9 +410,9 @@ impl TitleRepository for MockTitleRepo {
         }
 
         let mut pending_items = pending_import_items.lock().await;
-        let pending_item = pending_items
-            .iter_mut()
-            .find(|item| {
+        let pending_index = pending_items
+            .iter()
+            .position(|item| {
                 item.id == pending_import_id
                     && item.library_id == title.library_id
                     && item.facet == title.facet
@@ -420,13 +420,17 @@ impl TitleRepository for MockTitleRepo {
             })
             .ok_or_else(|| {
                 AppError::Validation(format!(
-                    "pending import {pending_import_id} could not be bound to title {}",
+                    "pending import {pending_import_id} could not be resolved for title {}",
                     title.id
                 ))
             })?;
-        pending_item.status = PendingImportStatus::Pending;
-        pending_item.title_id = Some(title.id.clone());
-        pending_item.updated_at = Utc::now().to_rfc3339();
+        if title.facet == MediaFacet::Movie {
+            pending_items.remove(pending_index);
+        } else if let Some(pending_item) = pending_items.get_mut(pending_index) {
+            pending_item.status = PendingImportStatus::Pending;
+            pending_item.title_id = Some(title.id.clone());
+            pending_item.updated_at = Utc::now().to_rfc3339();
+        }
 
         list.push(title.clone());
         Ok(CreateTitleOutcome {

@@ -3352,7 +3352,7 @@ type QueryRoot {
 	librarySettings(libraryId: ID!): LibrarySettingsPayload!
 	titlesByExternalIds(source: String!, values: [String!]!): [TitlePayload!]!
 	title(id: ID!): TitlePayload
-	episodeMediaFiles(titleId: ID!, episodeId: ID!): [TitleMediaFilePayload!]!
+	episode(titleId: ID!, episodeId: ID!): EpisodePayload
 	titleBySlug(facet: MediaFacetValue!, libraryId: ID, librarySlug: String, slug: String!): TitlePayload
 	mediaRenamePreview(input: MediaRenamePreviewInput!): MediaRenamePlanPayload!
 	deleteTitlePreview(titleId: ID!): DeletePreviewPayload!

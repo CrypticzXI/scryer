@@ -5,6 +5,7 @@ import {
   deleteTitlePreviewQuery,
   librariesQuery,
   mediaRenamePreviewQuery,
+  movieSidePanelOverviewQuery,
   movieOverviewSettingsInitQuery,
   searchForTitleQuery,
 } from "@/lib/graphql/queries";
@@ -41,7 +42,7 @@ import {
   createEmptyTitleOverviewDownloadFeedbackSnapshot,
   fetchTitleMoreLikeThis,
   fetchTitleOverviewDownloadFeedbackSnapshot,
-  fetchTitleOverviewNativeSnapshot,
+  fetchTitleSidePanelOverviewSnapshot,
 } from "@/lib/title-overview-loader";
 import { MovieOverviewView } from "@/components/views/movie-overview-view";
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
@@ -59,7 +60,7 @@ import {
 import { isAbortError, makeAbortableFetch } from "@/lib/graphql/urql-client";
 import type {
   TitleOverviewDownloadFeedbackSnapshot,
-  TitleOverviewNativeSnapshot,
+  TitleSidePanelOverviewSnapshot,
 } from "@/lib/title-overview-loader";
 import type { ExternalSubtitleRecord } from "@/lib/types/subtitles";
 import { useAuth } from "@/lib/hooks/use-auth";
@@ -370,9 +371,9 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
     [],
   );
 
-  const applyNativeTitleDetailSnapshot = React.useCallback(
+  const applySidePanelOverviewSnapshot = React.useCallback(
     (
-      snapshot: TitleOverviewNativeSnapshot<
+      snapshot: TitleSidePanelOverviewSnapshot<
         MovieOverviewSnapshotTitle,
         TitleAcquisitionDiagnostics,
         TitleHistoryEvent,
@@ -501,24 +502,27 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
     }
 
     const requestedTitleId = titleId;
-    const snapshot = await fetchTitleOverviewNativeSnapshot<
+    const snapshot = await fetchTitleSidePanelOverviewSnapshot<
       MovieOverviewSnapshotTitle,
       TitleAcquisitionDiagnostics,
       TitleHistoryEvent,
       TitleReleaseBlocklistEntry,
       ExternalSubtitleRecord
-    >(client, requestedTitleId, 200);
+    >(client, requestedTitleId, 200, movieSidePanelOverviewQuery);
     if (currentTitleIdRef.current !== requestedTitleId) {
       return;
     }
-    applyNativeTitleDetailSnapshot(snapshot);
+    applySidePanelOverviewSnapshot(snapshot);
+    if (!snapshot.title) {
+      return;
+    }
     void refreshTitleMoreLikeThis(requestedTitleId);
-    if (!snapshot.title || !snapshot.hasDownloadClients) {
+    if (!snapshot.hasDownloadClients) {
       return;
     }
     void refreshDownloadFeedback();
   }, [
-    applyNativeTitleDetailSnapshot,
+    applySidePanelOverviewSnapshot,
     client,
     refreshDownloadFeedback,
     refreshTitleMoreLikeThis,

@@ -150,7 +150,7 @@ import type {
   ScoringPersonaId,
 } from "@/lib/types/quality-profiles";
 import { buildViewPath } from "@/lib/utils/routing";
-import { selectedOverviewNativeTitleId } from "@/lib/utils/selected-overview-policy";
+import { selectedSeriesSidePanelTitleId } from "@/lib/utils/selected-overview-policy";
 import { selectPosterVariantUrl } from "@/lib/utils/poster-images";
 import { discoveryItemDisplayTitle } from "@/lib/utils/discovery-display";
 import { titleGenreLabels } from "@/lib/utils/title-genres";
@@ -2189,16 +2189,16 @@ export function MediaContentView({
     ],
   );
   const activeOverviewTitle = selectedOverviewTitle;
-  const nativeOverviewTitleId = selectedOverviewNativeTitleId(
+  const seriesSidePanelTitleId = selectedSeriesSidePanelTitleId(
     view,
     selectedOverviewTitleId,
   );
-  const activeOverviewTitleId = activeOverviewTitle?.id ?? nativeOverviewTitleId;
+  const activeOverviewTitleId = activeOverviewTitle?.id ?? seriesSidePanelTitleId;
   React.useEffect(() => {
     if (
       !selectedOverviewTitleId ||
       selectedOverviewTitle ||
-      nativeOverviewTitleId
+      seriesSidePanelTitleId
     ) {
       return;
     }
@@ -2215,7 +2215,7 @@ export function MediaContentView({
     catalogBootstrapLoading,
     catalogInitialLoadComplete,
     onCloseOverview,
-    nativeOverviewTitleId,
+    seriesSidePanelTitleId,
     selectedOverviewDetailLoading,
     selectedOverviewTitle,
     selectedOverviewTitleId,
@@ -2271,7 +2271,7 @@ export function MediaContentView({
     titleLayoutWidth >= catalogDiscoveryInlineMinimumWidth;
   const selectedOverviewTitleAvailable =
     selectedOverviewTitleId !== null &&
-    (selectedOverviewTitle !== null || nativeOverviewTitleId !== null);
+    (selectedOverviewTitle !== null || seriesSidePanelTitleId !== null);
   const titleContextPanelAvailable =
     contextPanelWidthMatches || selectedOverviewTitleAvailable;
   const selectedTitleLayoutActive =
@@ -3635,7 +3635,7 @@ export function MediaContentView({
                       </Button>
                     </div>
                   </section>
-                ) : nativeOverviewTitleId !== null ? (
+                ) : seriesSidePanelTitleId !== null ? (
                     <section
                       id={selectedTitleContextPanelId}
                       aria-label={t("title.contextPanelTitle")}
@@ -3654,12 +3654,12 @@ export function MediaContentView({
                           </div>
                         ) : null}
                         <SeriesOverviewContainer
-                          titleId={nativeOverviewTitleId}
+                          titleId={seriesSidePanelTitleId}
                           initialEpisodeId={routeOverviewEpisodeId}
                           onTitleNotFound={handleSelectedOverviewBackToList}
                           onBackToList={handleSelectedOverviewBackToList}
                           onTitleResolved={(resolvedTitle) => {
-                            if (resolvedTitle.id !== nativeOverviewTitleId) {
+                            if (resolvedTitle.id !== seriesSidePanelTitleId) {
                               onOpenOverview(view, resolvedTitle);
                             }
                           }}

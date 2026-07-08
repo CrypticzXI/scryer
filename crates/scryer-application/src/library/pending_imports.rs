@@ -264,6 +264,10 @@ fn library_scan_summary_has_pending_import_success(summary: &LibraryScanSummary)
     summary.imported > 0 || summary.matched > 0
 }
 
+fn pending_import_item_requires_action(item: &LibraryScanUnmatchedItem) -> bool {
+    !(item.facet == MediaFacet::Movie && item.title_id.is_some())
+}
+
 struct PendingImportResolutionGuard {
     pending_import_id: String,
     locks: Arc<std::sync::Mutex<HashSet<String>>>,
@@ -324,7 +328,10 @@ impl AppUseCase {
                 .await?;
             let count = items
                 .into_iter()
-                .filter(|item| manageable.contains(&item.library_id))
+                .filter(|item| {
+                    manageable.contains(&item.library_id)
+                        && pending_import_item_requires_action(item)
+                })
                 .count() as i64;
             match facet {
                 MediaFacet::Movie => movie = count,
@@ -377,6 +384,7 @@ impl AppUseCase {
                 manageable.contains(&item.library_id)
                     && (requested_library_ids.is_empty()
                         || requested_library_ids.contains(&item.library_id))
+                    && pending_import_item_requires_action(item)
             })
             .collect::<Vec<_>>();
         let total = filtered.len() as i64;
@@ -443,7 +451,7 @@ impl AppUseCase {
         let _pending_import_resolution_guard =
             self.acquire_pending_import_resolution_guard(pending_import_id)?;
 
-        let item = self
+        let mut item = self
             .services
             .library
             .library_scan_unmatched_items
@@ -486,7 +494,7 @@ impl AppUseCase {
         let _pending_import_resolution_guard =
             self.acquire_pending_import_resolution_guard(pending_import_id)?;
 
-        let mut item = self
+        let item = self
             .services
             .library
             .library_scan_unmatched_items

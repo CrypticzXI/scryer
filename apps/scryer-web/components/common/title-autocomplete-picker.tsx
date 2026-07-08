@@ -7,7 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Popover, PopoverAnchor, PopoverContent } from "@/components/ui/popover";
 import { ActionTooltip } from "@/components/ui/tooltip";
 import { sectionLabelForFacet } from "@/lib/facets/helpers";
-import { titleListEntryQuery, titlesQuery } from "@/lib/graphql/queries";
+import { titleAutocompleteSelectionQuery, titlesQuery } from "@/lib/graphql/queries";
 import { useTranslate } from "@/lib/context/translate-context";
 import type { TitleRecord } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -107,7 +107,7 @@ export function TitleAutocompletePicker({
     setHydrationResolved(false);
 
     void client
-      .query<{ title?: TitleRecord | null }>(titleListEntryQuery, {
+      .query<{ title?: TitleRecord | null }>(titleAutocompleteSelectionQuery, {
         id: normalizedSelectedTitleId,
       })
       .toPromise()
