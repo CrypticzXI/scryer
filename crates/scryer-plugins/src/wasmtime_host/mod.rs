@@ -14,6 +14,7 @@ mod describe;
 mod engine;
 mod error;
 mod invoke;
+mod par2_host;
 mod sandbox;
 
 pub(crate) use describe::command_model_describe;

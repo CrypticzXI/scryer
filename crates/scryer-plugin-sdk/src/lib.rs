@@ -11,6 +11,7 @@ pub mod http;
 pub mod indexer;
 pub mod net;
 pub mod notification;
+pub mod par2_reconstruct;
 pub mod torrent;
 pub use indexer::{
     IndexerCategoryDescriptor, IndexerCategoryModel, IndexerCategoryValueKind, IndexerFeedMode,
@@ -33,8 +34,12 @@ pub use notification::{
     PluginNotificationTargetResult, coalesce_media_updates, rich_embed_from_request,
     to_script_environment, to_webhook_json,
 };
+pub use par2_reconstruct::{
+    Par2ReconstructHeader, Par2ReconstructHeaderFields, Par2ReconstructStatus,
+    PAR2_RECONSTRUCT_IMPORT, PAR2_RECONSTRUCT_NAMESPACE,
+};
 
-pub const SDK_VERSION: &str = "3.3.0";
+pub const SDK_VERSION: &str = "3.4.0";
 
 pub fn current_sdk_constraint() -> String {
     legacy_sdk_constraint(SDK_VERSION)
@@ -2532,7 +2537,7 @@ mod tests {
 
     #[test]
     fn current_sdk_constraint_uses_current_v3_minor_floor() {
-        assert_eq!(current_sdk_constraint(), ">=3.3.0, <4.0.0");
+        assert_eq!(current_sdk_constraint(), ">=3.4.0, <4.0.0");
     }
 
     #[test]

@@ -8,12 +8,15 @@
 //! the command shape and runs describe through the wasmtime backing instead; the
 //! four fleet kinds keep the Extism describe path untouched.
 
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+
 use scryer_application::{AppError, AppResult};
 use scryer_plugin_sdk::{EXPORT_DESCRIBE, PluginDescriptor};
 use wasmtime::{ExternType, Linker, Module, Store};
 
 use crate::wasmtime_host::sandbox::{self, BareSandbox, HostCtx, HostLimits};
-use crate::wasmtime_host::{crypto_host, engine, error};
+use crate::wasmtime_host::{crypto_host, engine, error, par2_host};
 
 /// Describe runs reuse the 10s describe budget of the Extism path.
 const DESCRIBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
@@ -78,6 +81,22 @@ fn run_describe(module: &Module) -> AppResult<PluginDescriptor> {
     crypto_host::add_to_linker(&mut linker).map_err(|error| {
         AppError::Repository(format!(
             "failed to register crypto host for archive describe: {error:#}"
+        ))
+    })?;
+    // A repair-capable archive command also imports the PAR2 reconstruct host fn
+    // (RFC §13.6). Describe never calls it, but the import must resolve for the
+    // eager `linker.instantiate` below to succeed. A far-future deadline and a
+    // throwaway overrun flag are sufficient here.
+    par2_host::add_to_linker(
+        &mut linker,
+        par2_host::Par2HostConfig::for_invocation(
+            std::time::Instant::now() + DESCRIBE_TIMEOUT,
+            Arc::new(AtomicBool::new(false)),
+        ),
+    )
+    .map_err(|error| {
+        AppError::Repository(format!(
+            "failed to register PAR2 reconstruct host for archive describe: {error:#}"
         ))
     })?;
 
@@ -188,5 +207,38 @@ mod tests {
         assert!(!contains_bytes(b"abc", b"xyz"));
         assert!(contains_bytes(b"anything", b""));
         assert!(!contains_bytes(b"ab", b"abc"));
+    }
+
+    /// A repair-capable command guest imports `scryer_par2_reconstruct`. Describe
+    /// must still instantiate + run it (the import has to resolve even though
+    /// describe never calls it) and read back the descriptor. This guards the
+    /// describe-path registration that Agent P's plugin depends on.
+    #[test]
+    fn describes_command_guest_that_imports_par2_reconstruct() {
+        let json = r#"{"id":"par2-repair","name":"PAR2 Repair","version":"1.0.0","sdk_version":"3.4.0","provider":{"kind":"archive_extractor","provider_type":"par2"}}"#;
+        let escaped = json.replace('"', "\\\"");
+        let wat = format!(
+            r#"(module
+                 (import "wasi_snapshot_preview1" "fd_write"
+                   (func $fd_write (param i32 i32 i32 i32) (result i32)))
+                 (import "extism:host/user" "scryer_par2_reconstruct"
+                   (func $par2 (param i64 i64) (result i64)))
+                 (memory (export "memory") 1)
+                 (data (i32.const 256) "{escaped}")
+                 (func (export "_start")
+                   (i32.store (i32.const 0) (i32.const 256))
+                   (i32.store (i32.const 4) (i32.const {len}))
+                   (drop (call $fd_write (i32.const 1) (i32.const 0) (i32.const 1) (i32.const 8)))))"#,
+            escaped = escaped,
+            len = json.len(),
+        );
+        let wasm = wat::parse_str(&wat).unwrap();
+        match command_model_describe(&wasm) {
+            Some(Ok(descriptor)) => {
+                assert_eq!(descriptor.id, "par2-repair");
+                assert!(descriptor.archive_extractor().is_some());
+            }
+            other => panic!("expected a successful describe, got {other:?}"),
+        }
     }
 }

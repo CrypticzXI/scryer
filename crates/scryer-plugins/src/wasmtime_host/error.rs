@@ -117,6 +117,14 @@ pub(crate) fn protocol_failure(detail: impl Into<String>) -> RunFailure {
     RunFailure::new(FailureKind::Protocol, detail)
 }
 
+/// A host-side wall-clock overrun (e.g. the PAR2 reconstruct deadline) that the
+/// engine epoch could not catch because the work ran synchronously on the host
+/// thread. Classified as a timeout so it maps to the same operator-facing
+/// "timed out" message as an epoch interrupt.
+pub(crate) fn timeout_failure(detail: impl Into<String>) -> RunFailure {
+    RunFailure::new(FailureKind::Timeout, detail)
+}
+
 /// Flatten a classified failure into the operator-facing `AppError`.
 pub(crate) fn to_app_error(failure: &RunFailure, ctx: &InvocationContext<'_>) -> AppError {
     let plugin = format!("{}@{}", ctx.plugin_id, ctx.plugin_version);

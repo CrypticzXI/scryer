@@ -924,7 +924,7 @@ impl DiscoveryRepository for DiscoveryStore {
                           COALESCE(rank_score, 0) DESC,
                           discovery_title_id ASC
                  LIMIT {{}}",
-                title_more_like_this_projection(),
+                title_more_like_this_projection(&self.datastore),
                 displayable_discovery_title_clause(&self.datastore, "t")
             ),
             &[
@@ -961,7 +961,7 @@ impl DiscoveryRepository for DiscoveryStore {
                  ORDER BY COALESCE(i.section_id, '') ASC,
                           i.sort_index ASC,
                           i.id ASC",
-                discovery_item_projection("i", "t")
+                discovery_item_projection(&self.datastore, "i", "t")
             ),
             &[SqlArg::Text(base_generation_id.to_string())],
         )
@@ -1213,7 +1213,18 @@ fn displayable_discovery_title_clause(datastore: &StoreDatastore, title_alias: &
     )
 }
 
-fn discovery_item_projection(item_alias: &str, title_alias: &str) -> String {
+fn typed_null_rating_expression(datastore: &StoreDatastore) -> &'static str {
+    match datastore {
+        StoreDatastore::Sqlite { .. } => "CAST(NULL AS REAL) AS rating",
+        StoreDatastore::Postgres { .. } => "CAST(NULL AS DOUBLE PRECISION) AS rating",
+    }
+}
+
+fn discovery_item_projection(
+    datastore: &StoreDatastore,
+    item_alias: &str,
+    title_alias: &str,
+) -> String {
     [
         format!("{item_alias}.id AS id"),
         format!("{item_alias}.run_id AS run_id"),
@@ -1234,7 +1245,7 @@ fn discovery_item_projection(item_alias: &str, title_alias: &str) -> String {
         format!("{title_alias}.background_url AS background_url"),
         format!("{title_alias}.overview AS overview"),
         format!("{title_alias}.content_type AS content_type"),
-        "NULL AS rating".to_string(),
+        typed_null_rating_expression(datastore).to_string(),
         format!("{item_alias}.best_source AS best_source"),
         format!("{item_alias}.source_count AS source_count"),
         format!("{item_alias}.edge_count AS edge_count"),
@@ -1258,7 +1269,7 @@ fn discovery_item_row_columns() -> String {
     format!("{}, discovery_title_id", ITEM_COLUMNS.join(", "))
 }
 
-fn title_more_like_this_projection() -> String {
+fn title_more_like_this_projection(datastore: &StoreDatastore) -> String {
     [
         "source_title_id || ':more-like-this:' || discovery_title_id AS id".to_string(),
         "source_title_id AS run_id".to_string(),
@@ -1279,7 +1290,7 @@ fn title_more_like_this_projection() -> String {
         "t.background_url AS background_url".to_string(),
         "t.overview AS overview".to_string(),
         "t.content_type AS content_type".to_string(),
-        "NULL AS rating".to_string(),
+        typed_null_rating_expression(datastore).to_string(),
         "title_more_like_this_items.best_source AS best_source".to_string(),
         "title_more_like_this_items.source_count AS source_count".to_string(),
         "title_more_like_this_items.edge_count AS edge_count".to_string(),
@@ -1440,7 +1451,7 @@ async fn fetch_public_section_item_rows(
              FROM ranked
              WHERE section_rank <= {{}}
             ORDER BY result_section_id ASC, section_rank ASC",
-            discovery_item_projection("i", "t"),
+            discovery_item_projection(datastore, "i", "t"),
             displayable_discovery_title_clause(datastore, "t"),
             discovery_item_row_columns()
         ),
@@ -1544,7 +1555,7 @@ async fn fetch_personalized_items(
                   COALESCE(t.sort_title, t.display_title) ASC,
                   t.target_key ASC
          LIMIT {{}}",
-        discovery_item_projection("i", "t"),
+        discovery_item_projection(datastore, "i", "t"),
         clauses.join(" AND ")
     );
     fetch_items_with_sql(datastore, &sql, &args).await
@@ -1624,7 +1635,7 @@ async fn fetch_discovery_home_top_rated_items(
              JOIN discovery_titles t
                ON t.id = i.discovery_title_id
              WHERE {}",
-            discovery_item_projection("i", "t"),
+            discovery_item_projection(datastore, "i", "t"),
             clauses.join(" AND ")
         ));
     }
@@ -1685,7 +1696,7 @@ async fn fetch_discovery_home_top_rated_items(
              JOIN discovery_titles t
                ON t.id = i.discovery_title_id
              WHERE {}",
-            discovery_item_projection("i", "t"),
+            discovery_item_projection(datastore, "i", "t"),
             clauses.join(" AND ")
         ));
     }
@@ -1826,7 +1837,7 @@ async fn fetch_catalog_public_items(
          FROM ranked
         ORDER BY section_sort_index ASC, section_item_sort_index ASC, id ASC
         LIMIT {{}}",
-        discovery_item_projection("i", "t"),
+        discovery_item_projection(datastore, "i", "t"),
         authoritative_media_kind_clause("t", media_kind),
         displayable_discovery_title_clause(datastore, "t"),
         discovery_item_row_columns()
@@ -1924,7 +1935,7 @@ async fn fetch_catalog_public_sections(
          FROM ranked
          WHERE section_rank <= {{}}
         ORDER BY section_sort_index ASC, section_rank ASC, id ASC",
-        discovery_item_projection("i", "t"),
+        discovery_item_projection(datastore, "i", "t"),
         authoritative_media_kind_clause("t", media_kind),
         displayable_discovery_title_clause(datastore, "t"),
         discovery_item_row_columns()
@@ -2028,7 +2039,7 @@ async fn fetch_catalog_personalized_items(
                   COALESCE(sort_title, display_title) ASC,
                   target_key ASC
         LIMIT {{}}",
-        discovery_item_projection("i", "t"),
+        discovery_item_projection(datastore, "i", "t"),
         clauses.join(" AND "),
         discovery_item_row_columns()
     );
@@ -2112,7 +2123,7 @@ async fn query_discovery_items_page(
     datastore: &StoreDatastore,
     query: &DiscoveryItemsStorageQuery,
 ) -> AppResult<DiscoveryItemsPageRecord> {
-    let Some(sql) = build_discovery_items_sql(query) else {
+    let Some(sql) = build_discovery_items_sql(datastore, query) else {
         return Ok(DiscoveryItemsPageRecord {
             items: Vec::new(),
             total_count: 0,
@@ -2158,7 +2169,10 @@ async fn query_discovery_items_page(
     Ok(DiscoveryItemsPageRecord { items, total_count })
 }
 
-fn build_discovery_items_sql(query: &DiscoveryItemsStorageQuery) -> Option<DiscoveryItemsSql> {
+fn build_discovery_items_sql(
+    datastore: &StoreDatastore,
+    query: &DiscoveryItemsStorageQuery,
+) -> Option<DiscoveryItemsSql> {
     let mut args = Vec::new();
     let mut sources = Vec::new();
     if let Some(context_run_id) = query.context_run_id.as_deref()
@@ -2176,7 +2190,7 @@ fn build_discovery_items_sql(query: &DiscoveryItemsStorageQuery) -> Option<Disco
              WHERE i.base_generation_id = {{}}
                AND i.tombstoned_at IS NULL
                AND {provenance_clause}",
-            discovery_item_projection("i", "t")
+            discovery_item_projection(datastore, "i", "t")
         ));
     }
     if let Some(public_run_id) = query.public_run_id.as_deref() {
@@ -2188,7 +2202,7 @@ fn build_discovery_items_sql(query: &DiscoveryItemsStorageQuery) -> Option<Disco
                ON t.id = i.discovery_title_id
              WHERE i.base_generation_id = {{}}
                AND i.tombstoned_at IS NULL",
-            discovery_item_projection("i", "t")
+            discovery_item_projection(datastore, "i", "t")
         ));
     }
     if sources.is_empty() {
@@ -4053,9 +4067,9 @@ mod tests {
     use super::*;
     use chrono::Utc;
     use scryer_application::{
-        DISCOVERY_DEFAULT_SCOPE_KEY, DiscoveryItemsQuery, DiscoveryItemsStorageQuery,
+        AppError, DISCOVERY_DEFAULT_SCOPE_KEY, DiscoveryItemsQuery, DiscoveryItemsStorageQuery,
     };
-    use scryer_domain::CanonicalMediaTag;
+    use scryer_domain::{CanonicalMediaTag, Id};
     use serde_json::json;
 
     use crate::storage::sqlite::services::SqliteServices;
@@ -4134,11 +4148,32 @@ mod tests {
         assert!(values.contains(&"canonical:genre:drama".to_string()));
     }
 
-    #[test]
-    fn title_more_like_this_projection_does_not_read_legacy_discovery_rating() {
-        let projection = title_more_like_this_projection();
-        assert!(projection.contains("NULL AS rating"));
-        assert!(!projection.contains("t.rating AS rating"));
+    fn sqlite_projection_datastore() -> StoreDatastore {
+        StoreDatastore::Sqlite {
+            pool: sqlx::SqlitePool::connect_lazy("sqlite::memory:")
+                .expect("lazy sqlite pool should build"),
+            writer_gate: std::sync::Arc::new(tokio::sync::Mutex::new(())),
+        }
+    }
+
+    fn postgres_projection_datastore() -> StoreDatastore {
+        StoreDatastore::Postgres {
+            pool: sqlx::PgPool::connect_lazy("postgres://localhost/scryer")
+                .expect("lazy postgres pool should build"),
+        }
+    }
+
+    #[tokio::test]
+    async fn title_more_like_this_projection_does_not_read_legacy_discovery_rating() {
+        let sqlite = sqlite_projection_datastore();
+        let postgres = postgres_projection_datastore();
+        let sqlite_projection = title_more_like_this_projection(&sqlite);
+        let postgres_projection = title_more_like_this_projection(&postgres);
+
+        assert!(sqlite_projection.contains("CAST(NULL AS REAL) AS rating"));
+        assert!(postgres_projection.contains("CAST(NULL AS DOUBLE PRECISION) AS rating"));
+        assert!(!sqlite_projection.contains("t.rating AS rating"));
+        assert!(!postgres_projection.contains("t.rating AS rating"));
     }
 
     #[tokio::test]
@@ -4442,6 +4477,108 @@ mod tests {
         assert_eq!(catalog_target_keys, vec!["tmdb:movie:1", "tvdb:movie:5"]);
 
         let _ = std::fs::remove_file(db);
+    }
+
+    #[tokio::test]
+    async fn postgres_discovery_home_top_rated_accepts_typed_null_rating() -> AppResult<()> {
+        let Some(raw_url) = std::env::var("SCRYER_TEST_POSTGRES_URL")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+        else {
+            eprintln!(
+                "skipping PostgreSQL discovery top-rated typed null test; SCRYER_TEST_POSTGRES_URL is not set"
+            );
+            return Ok(());
+        };
+
+        let admin_pool = sqlx::PgPool::connect(&raw_url).await.map_err(|error| {
+            AppError::Repository(format!("failed to connect to postgres: {error}"))
+        })?;
+        let schema = format!(
+            "scryer_test_{}_{}",
+            std::process::id(),
+            Id::new().0.replace('-', "_")
+        );
+
+        sqlx::query(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")))
+            .execute(&admin_pool)
+            .await
+            .map_err(|error| {
+                AppError::Repository(format!("failed to create test schema: {error}"))
+            })?;
+
+        let result = async {
+            let mut url = url::Url::parse(&raw_url).map_err(|error| {
+                AppError::Validation(format!("invalid postgres test URL: {error}"))
+            })?;
+            url.query_pairs_mut()
+                .append_pair("options", &format!("-csearch_path={schema}"));
+            let services = crate::PostgresServices::new_with_mode(
+                url.to_string(),
+                crate::MigrationMode::Apply,
+            )
+            .await?;
+            let store = DiscoveryStore::new(services.datastore());
+            let now = Utc::now();
+            let run_id = "run-top-rated-typed-null";
+
+            store
+                .upsert_discovery_sync_run(&discovery_prune_run(
+                    run_id,
+                    "public_feed",
+                    "complete",
+                    now,
+                ))
+                .await?;
+            store
+                .replace_discovery_sections(
+                    run_id,
+                    &[DiscoverySectionRecord {
+                        id: "section-row-top-rated".to_string(),
+                        run_id: run_id.to_string(),
+                        section_id: "popular".to_string(),
+                        section_type: "POPULAR_RIGHT_NOW".to_string(),
+                        surface: "public".to_string(),
+                        title: "Popular Right Now".to_string(),
+                        sort_index: 0,
+                        created_at: now,
+                        updated_at: now,
+                    }],
+                )
+                .await?;
+
+            let mut item = discovery_prune_item(run_id, now);
+            item.id = "item-top-rated-typed-null".to_string();
+            item.source_run_kind = "public_feed".to_string();
+            item.section_id = Some("popular".to_string());
+            item.target_key = "tmdb:movie:1000".to_string();
+            item.resolved = true;
+            item.display_title = "Typed Null Movie".to_string();
+            item.sort_title = Some("Typed Null Movie".to_string());
+            item.rating = None;
+            item.external_ratings.clear();
+            store.replace_discovery_items(run_id, &[item]).await?;
+
+            let items = store
+                .list_discovery_home_top_rated_items(Some(run_id), None, &[], &[], &[], true, 10)
+                .await?;
+            services.pool().close().await;
+
+            assert_eq!(items.len(), 1);
+            assert_eq!(items[0].target_key, "tmdb:movie:1000");
+            Ok(())
+        }
+        .await;
+
+        let cleanup = sqlx::query(sqlx::AssertSqlSafe(format!("DROP SCHEMA {schema} CASCADE")))
+            .execute(&admin_pool)
+            .await;
+        admin_pool.close().await;
+        cleanup.map_err(|error| {
+            AppError::Repository(format!("failed to drop test schema: {error}"))
+        })?;
+        result
     }
 
     #[tokio::test]

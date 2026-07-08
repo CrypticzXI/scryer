@@ -8,6 +8,8 @@
 //! `status`; only genuine faults exit non-zero / trap. Runs synchronously — the
 //! adapter calls this under `tokio::task::spawn_blocking`.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use scryer_application::{AppError, AppResult};
@@ -17,7 +19,7 @@ use wasmtime_wasi::p2::pipe::MemoryOutputPipe;
 
 use crate::runtime_backing::PluginInstanceSpec;
 use crate::wasmtime_host::sandbox::{self, HostCtx, HostLimits, PreparedSandbox};
-use crate::wasmtime_host::{crypto_host, engine, error};
+use crate::wasmtime_host::{crypto_host, engine, error, par2_host};
 
 /// Amount of guest stderr forwarded to tracing / attached to error messages.
 const STDERR_TAIL_BYTES: usize = 8 * 1024;
@@ -69,6 +71,24 @@ pub(crate) fn process_archive(
     crypto_host::add_to_linker(&mut linker).map_err(|error| {
         AppError::Repository(format!(
             "failed to register archive crypto host functions: {error:#}"
+        ))
+    })?;
+    // RFC 123 WP2.5: the host-thread PAR2 reconstruct import. Registered ONLY on
+    // this archive linker path (never a networked/fleet backing). Its wall-clock
+    // deadline is the invocation budget from `started`; a host-side overrun is
+    // recorded in `par2_deadline_exceeded` so it maps to a timeout below (the
+    // engine epoch cannot interrupt a synchronous host solve).
+    let par2_deadline_exceeded = Arc::new(AtomicBool::new(false));
+    par2_host::add_to_linker(
+        &mut linker,
+        par2_host::Par2HostConfig::for_invocation(
+            started + spec.timeout,
+            par2_deadline_exceeded.clone(),
+        ),
+    )
+    .map_err(|error| {
+        AppError::Repository(format!(
+            "failed to register archive PAR2 reconstruct host function: {error:#}"
         ))
     })?;
 
@@ -134,6 +154,24 @@ pub(crate) fn process_archive(
             stderr = stderr_tail.as_str(),
             "archive plugin stderr",
         );
+    }
+
+    // A host-side PAR2 reconstruct deadline overrun is the actionable cause even
+    // when the guest exits cleanly with an in-band repair failure (the engine
+    // epoch never fired because the solve ran on the blocking host thread). Give
+    // it precedence and surface it as a timeout, mirroring `memory_denied`.
+    if par2_deadline_exceeded.load(Ordering::Relaxed) {
+        let failure = error::timeout_failure(
+            "host-side PAR2 reconstruct exceeded the invocation deadline",
+        );
+        return Err(finish_error(
+            &invocation,
+            spec.timeout,
+            &stderr_tail,
+            &failure,
+            started,
+            request_len,
+        ));
     }
 
     if let Err(failure) = error::interpret_start_result(call_result, denied) {

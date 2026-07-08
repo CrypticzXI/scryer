@@ -1638,7 +1638,37 @@ fn bounded_exponential_backoff(base: Duration, max: Duration, retry_index: u32) 
 }
 
 fn is_retryable_transport_error(error: &reqwest::Error) -> bool {
-    error.is_timeout() || error.is_connect()
+    error.is_timeout()
+        || error.is_connect()
+        || retryable_transport_error_text(&transport_error_chain_text(error))
+}
+
+fn transport_error_chain_text(error: &reqwest::Error) -> String {
+    let mut messages = vec![error.to_string()];
+    let mut source = std::error::Error::source(error);
+    while let Some(error) = source {
+        messages.push(error.to_string());
+        source = std::error::Error::source(error);
+    }
+    messages.join(": ")
+}
+
+fn retryable_transport_error_text(message: &str) -> bool {
+    let normalized = message.to_ascii_lowercase();
+    if normalized.contains("certificate") || normalized.contains("invalid url") {
+        return false;
+    }
+
+    [
+        "peer closed connection without sending tls close_notify",
+        "connection closed before message completed",
+        "connection reset",
+        "unexpected eof",
+        "end of file",
+        "broken pipe",
+    ]
+    .iter()
+    .any(|needle| normalized.contains(needle))
 }
 
 fn retry_after_source_label(source: RetryAfterSource) -> &'static str {
@@ -1898,6 +1928,57 @@ mod tests {
             .send(policy, || client.client().get(&url))
             .await
             .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(hits.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn retryable_transport_error_text_matches_transient_disconnects() {
+        assert!(retryable_transport_error_text(
+            "error sending request for url: client error (SendRequest): connection error: peer closed connection without sending TLS close_notify"
+        ));
+        assert!(retryable_transport_error_text(
+            "connection closed before message completed"
+        ));
+        assert!(retryable_transport_error_text(
+            "io error: unexpected EOF while reading response"
+        ));
+        assert!(retryable_transport_error_text("os error: broken pipe"));
+    }
+
+    #[test]
+    fn retryable_transport_error_text_rejects_non_transient_failures() {
+        assert!(!retryable_transport_error_text(
+            "certificate verify failed: self signed certificate"
+        ));
+        assert!(!retryable_transport_error_text(
+            "invalid url: relative URL without a base"
+        ));
+        assert!(!retryable_transport_error_text(
+            "metadata gateway returned GraphQL validation error"
+        ));
+    }
+
+    #[tokio::test]
+    async fn safe_read_retries_dropped_transport_response() {
+        let (url, hits) = spawn_http_server_with_dropped_first_response(http_response(
+            200,
+            &[("Content-Type", "application/json")],
+            "{\"ok\":true}",
+        ))
+        .await;
+
+        let client =
+            OutboundHttpClient::new(generic_reqwest_client(), RateLimitRegistry::isolated());
+        let policy = RequestPolicy::safe_read("test-server", "transport-retry-test")
+            .with_max_retries(1)
+            .with_backoff(Duration::from_millis(5), Duration::from_millis(5));
+
+        let response = client
+            .send(policy, || client.client().get(&url))
+            .await
+            .expect("dropped first response should be retried");
 
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(hits.load(Ordering::SeqCst), 2);
@@ -2238,6 +2319,38 @@ mod tests {
                 }
                 let _ = stream.shutdown().await;
             }
+        });
+
+        (format!("http://{address}/test"), hits)
+    }
+
+    async fn spawn_http_server_with_dropped_first_response(
+        success_response: String,
+    ) -> (String, Arc<AtomicUsize>) {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener should bind");
+        let address = listener.local_addr().expect("listener should have addr");
+        let hits = Arc::new(AtomicUsize::new(0));
+        let hits_for_task = hits.clone();
+
+        tokio::spawn(async move {
+            let Ok((mut stream, _)) = listener.accept().await else {
+                return;
+            };
+            hits_for_task.fetch_add(1, Ordering::SeqCst);
+            let _ = read_request(&mut stream).await;
+            let _ = stream.shutdown().await;
+
+            let Ok((mut stream, _)) = listener.accept().await else {
+                return;
+            };
+            hits_for_task.fetch_add(1, Ordering::SeqCst);
+            if read_request(&mut stream).await.is_err() {
+                return;
+            }
+            let _ = stream.write_all(success_response.as_bytes()).await;
+            let _ = stream.shutdown().await;
         });
 
         (format!("http://{address}/test"), hits)
