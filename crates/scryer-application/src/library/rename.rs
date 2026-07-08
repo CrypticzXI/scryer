@@ -1066,34 +1066,6 @@ struct MovieRenamePlanOptions<'a> {
     planned_targets: &'a mut HashSet<String>,
 }
 
-fn render_template_tokens(template: &str, tokens: &BTreeMap<String, String>) -> String {
-    let mut out = String::new();
-    let chars: Vec<char> = template.chars().collect();
-    let mut cursor = 0usize;
-
-    while cursor < chars.len() {
-        let ch = chars[cursor];
-        if ch != '{' {
-            out.push(ch);
-            cursor += 1;
-            continue;
-        }
-
-        if let Some(end) = chars[cursor + 1..].iter().position(|c| *c == '}') {
-            let end_index = cursor + 1 + end;
-            let token_spec: String = chars[cursor + 1..end_index].iter().collect();
-            out.push_str(&resolve_template_token(tokens, token_spec.trim()));
-            cursor = end_index + 1;
-            continue;
-        }
-
-        out.push(ch);
-        cursor += 1;
-    }
-
-    out
-}
-
 const RENAME_LITERAL_PIPE_SENTINEL: char = '\u{E000}';
 const RENAME_LITERAL_COLON_SENTINEL: char = '\u{E001}';
 
@@ -1177,7 +1149,7 @@ fn finalize_generated_filename_component(value: &str) -> String {
 }
 
 pub fn render_title_folder_template(template: &str, tokens: &BTreeMap<String, String>) -> String {
-    let raw = render_template_tokens(template, tokens);
+    let raw = restore_rename_literal_sentinels(&render_rename_template_tokens(template, tokens));
     let cleaned = strip_empty_folder_template_groups(&raw);
     truncate_generated_folder_component(&sanitize_filesystem_component(cleaned.trim()))
 }

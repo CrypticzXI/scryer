@@ -7,6 +7,7 @@ import {
   librariesQuery,
   seriesSidePanelOverviewQuery,
   seriesOverviewSettingsInitQuery,
+  titleMediaFilesQuery,
 } from "@/lib/graphql/queries";
 import {
   clearTitleReleaseBlocklistEntryMutation,
@@ -397,6 +398,7 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
   React.useEffect(() => {
     currentTitleIdRef.current = titleId ?? null;
   }, [titleId]);
+  const seriesMovieDetailLoadingRef = React.useRef<Set<string>>(new Set());
   const lastShownDownloadFeedbackWarningRef = React.useRef<string | null>(null);
   const downloadQueueItems = useTitleDownloadQueue({
     enabled: Boolean(titleId) && hasDownloadClients && downloadFeedbackSettled,
@@ -743,6 +745,74 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
       t,
       titleId,
     ],
+  );
+
+  const loadSeriesMovieDetail = React.useCallback(
+    async (link: SeriesMovieLink) => {
+      if (!titleId) {
+        return;
+      }
+      if (link.linkedEpisodeId) {
+        await loadEpisodeDetail(link.linkedEpisodeId);
+      }
+
+      const requestedTitleId = titleId;
+      const requestKey = `${requestedTitleId}:${link.id}`;
+      if (seriesMovieDetailLoadingRef.current.has(requestKey)) {
+        return;
+      }
+      seriesMovieDetailLoadingRef.current.add(requestKey);
+
+      try {
+        const { data, error } = await client
+          .query(
+            titleMediaFilesQuery,
+            { id: requestedTitleId },
+            { requestPolicy: "network-only" },
+          )
+          .toPromise();
+        if (error) {
+          throw error;
+        }
+        if (currentTitleIdRef.current !== requestedTitleId) {
+          return;
+        }
+
+        const titleDetail = data?.title as
+          | { mediaFiles?: EpisodeMediaFile[] | null }
+          | null
+          | undefined;
+        const mediaFiles = (titleDetail?.mediaFiles ?? []) as EpisodeMediaFile[];
+        const linkFiles = mediaFiles.filter((file) =>
+          (file.seriesMovieLinkIds ?? []).includes(link.id),
+        );
+        const knownEpisodeIds = episodeIdsForCollections(collections);
+        const mediaFilesByEpisode = groupMediaFilesByEpisode(mediaFiles);
+
+        setMediaFilesBySeriesMovieLink((current) => ({
+          ...current,
+          [link.id]: linkFiles,
+        }));
+        setMediaFilesByEpisode((current) => {
+          const next = { ...current };
+          for (const [episodeId, files] of Object.entries(mediaFilesByEpisode)) {
+            if (episodeId !== "__unlinked__" && knownEpisodeIds.has(episodeId)) {
+              next[episodeId] = files;
+            }
+          }
+          return next;
+        });
+      } catch (error: unknown) {
+        if (currentTitleIdRef.current === requestedTitleId) {
+          setGlobalStatus(
+            error instanceof Error ? error.message : t("status.apiError"),
+          );
+        }
+      } finally {
+        seriesMovieDetailLoadingRef.current.delete(requestKey);
+      }
+    },
+    [client, collections, loadEpisodeDetail, setGlobalStatus, t, titleId],
   );
 
   const handleClearReleaseBlocklistEntry = React.useCallback(async (entryId: string) => {
@@ -1370,6 +1440,7 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
         mediaFilesByEpisode={mediaFilesByEpisode}
         mediaFilesBySeriesMovieLink={mediaFilesBySeriesMovieLink}
         onLoadEpisodeDetail={loadEpisodeDetail}
+        onLoadSeriesMovieDetail={loadSeriesMovieDetail}
         subtitleDownloads={subtitleDownloads}
         onRefreshSubtitles={refreshTitleDetail}
         releaseBlocklistEntries={releaseBlocklistEntries}

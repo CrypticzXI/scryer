@@ -7,9 +7,10 @@ import {
   validateRenameTemplateSyntax,
 } from "./rename-template.ts";
 
-const VALID_TOKENS = new Set(["title", "season_order", "ext"]);
+const VALID_TOKENS = new Set(["title", "season_order", "edition", "ext"]);
 const SAMPLE_VALUES = {
   title: "The Dark Knight",
+  edition: "IMAX",
   ext: "mkv",
 };
 
@@ -31,6 +32,22 @@ test("validateRenameTemplateSyntax rejects invalid truncate filters", () => {
   });
 });
 
+test("validateRenameTemplateSyntax accepts literal brace escapes", () => {
+  assert.equal(
+    validateRenameTemplateSyntax("{{edition-{edition}}}", VALID_TOKENS),
+    null,
+  );
+});
+
+test("validateRenameTemplateSyntax rejects unmatched single braces", () => {
+  assert.deepEqual(validateRenameTemplateSyntax("prefix {", VALID_TOKENS), {
+    kind: "unmatchedOpen",
+  });
+  assert.deepEqual(validateRenameTemplateSyntax("prefix }", VALID_TOKENS), {
+    kind: "unmatchedClose",
+  });
+});
+
 test("applyRenameTemplatePreview applies truncate before later filters", () => {
   assert.equal(
     applyRenameTemplatePreview(
@@ -39,6 +56,17 @@ test("applyRenameTemplatePreview applies truncate before later filters", () => {
       SAMPLE_VALUES,
     ),
     "The_Dark.mkv",
+  );
+});
+
+test("applyRenameTemplatePreview renders literal brace escapes", () => {
+  assert.equal(
+    applyRenameTemplatePreview(
+      "{{edition-{edition}}}",
+      VALID_TOKENS,
+      SAMPLE_VALUES,
+    ),
+    "{edition-IMAX}",
   );
 });
 

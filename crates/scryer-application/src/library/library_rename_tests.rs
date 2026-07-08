@@ -194,6 +194,27 @@ fn render_title_folder_template_trims_empty_year_group() {
 }
 
 #[test]
+fn render_title_folder_template_literal_braces_around_resolved_token() {
+    let t = tokens(&[("edition", "IMAX")]);
+    let result = render_title_folder_template("{{edition-{edition}}}", &t);
+    assert_eq!(result, "{edition-IMAX}");
+}
+
+#[test]
+fn render_title_folder_template_literal_braces_around_external_id() {
+    let t = tokens(&[("tmdb_id", "123")]);
+    let result = render_title_folder_template("{{tmdb-{tmdb_id}}}", &t);
+    assert_eq!(result, "{tmdb-123}");
+}
+
+#[test]
+fn render_title_folder_template_trims_empty_literal_brace_group() {
+    let t = tokens(&[]);
+    let result = render_title_folder_template("{{{edition}}}", &t);
+    assert_eq!(result, "");
+}
+
+#[test]
 fn render_title_folder_template_replaces_token_spaces() {
     let t = tokens(&[("title", "12 Years a Slave"), ("year", "2013")]);
     let result = render_title_folder_template("{title|space:_} ({year})", &t);

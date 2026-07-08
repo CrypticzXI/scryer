@@ -41,6 +41,7 @@ export type SeriesMovieTimelineContentProps = {
   mediaFilesBySeriesMovieLink: Record<string, EpisodeMediaFile[]>;
   subtitleDownloads?: ExternalSubtitleRecord[];
   onRefreshSubtitles?: () => Promise<void> | void;
+  onLoadSeriesMovieDetail?: (link: SeriesMovieLink) => Promise<void> | void;
   seriesMovieSearchResultsByLink: Record<string, Release[]>;
   seriesMovieSearchLoadingByLink: Record<string, boolean>;
   seriesMovieSearchAttemptedByLink: Record<string, boolean>;
@@ -190,6 +191,7 @@ export function SeriesMovieTimelineSection(props: SeriesMovieTimelineContentProp
     mediaFilesByEpisode,
     mediaFilesBySeriesMovieLink,
     onToggle,
+    onLoadSeriesMovieDetail,
     onAutoSearchSeriesMovie,
     onRunSeriesMovieSearch,
     onSetSeriesMovieMonitored,
@@ -205,6 +207,16 @@ export function SeriesMovieTimelineSection(props: SeriesMovieTimelineContentProp
   const sizeLabel = getMediaFilesSizeLabel(mediaFiles);
   const autoSearchLoading = props.autoSearchSeriesMovieLoadingByLink[link.id] === true;
   const searchLoading = props.seriesMovieSearchLoadingByLink[link.id] === true;
+
+  const loadSeriesMovieDetail = React.useCallback(() => {
+    void onLoadSeriesMovieDetail?.(link);
+  }, [link, onLoadSeriesMovieDetail]);
+
+  React.useEffect(() => {
+    if (expanded) {
+      loadSeriesMovieDetail();
+    }
+  }, [expanded, loadSeriesMovieDetail]);
 
   const handleToggleSeriesMovieMonitored = React.useCallback(
     (event: React.MouseEvent<HTMLButtonElement>) => {

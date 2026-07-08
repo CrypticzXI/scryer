@@ -588,6 +588,7 @@ export const SettingsContainer = memo(function SettingsContainer({
                         <span className="truncate">{t("settings.plugins")}</span>
                       </div>
                       <IconButton
+                        id="settings-plugins-panel-close"
                         label={t("label.close")}
                         tone="neutral"
                         onClick={() => setReferenceRailOpen(false)}

@@ -36,7 +36,7 @@ wasmtime-wasi = { workspace = true }
 # `default-features = false` keeps the optional Metal/objc2 GPU backend
 # (weaver-reed-solomon's non-default `metal` feature) out of scryer's graph:
 # the host reconstruct uses only the CPU/SIMD kernels, never the Metal session.
-weaver-reed-solomon = { version = "0.2.0", default-features = false }
+weaver-reed-solomon = { version = "0.2.1", default-features = false }
 
 [dev-dependencies]
 # WAT guests are authored inline: `wasmtime::Module::new` compiles text directly
