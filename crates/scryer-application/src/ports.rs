@@ -8,10 +8,10 @@ use scryer_domain::{
 use scryer_plugin_sdk::{
     ArchivePluginFormat, ArchivePluginProcessRequest, ArchivePluginProcessResponse,
     ArchivePluginRepairFormat, SubtitleSyncAlignResponse, SubtitleSyncAudioCodec,
-    SubtitleSyncOptions,
+    SubtitleSyncMediaMetadataSnapshot, SubtitleSyncOptions,
 };
 use std::cmp::Ordering;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 pub const NOTIFICATION_REQUEST_SCHEMA_VERSION: u32 = 1;
@@ -820,6 +820,43 @@ pub trait TitleRepository: Send + Sync {
             }
         }
         Ok(matches)
+    }
+
+    async fn list_existing_external_ids_in_library_and_facet(
+        &self,
+        library_id: &str,
+        facet: MediaFacet,
+        source: &str,
+        values: &[String],
+    ) -> AppResult<BTreeSet<String>> {
+        let library_id = library_id.trim();
+        let source = source.trim();
+        if library_id.is_empty() || source.is_empty() || values.is_empty() {
+            return Ok(BTreeSet::new());
+        }
+
+        let requested = values
+            .iter()
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty())
+            .collect::<BTreeSet<_>>();
+        if requested.is_empty() {
+            return Ok(BTreeSet::new());
+        }
+
+        let mut existing = BTreeSet::new();
+        for title in self
+            .list_for_libraries(Some(facet), &[library_id.to_string()], None)
+            .await?
+        {
+            for external_id in title.external_ids {
+                let value = external_id.value.trim();
+                if external_id.source.eq_ignore_ascii_case(source) && requested.contains(value) {
+                    existing.insert(value.to_string());
+                }
+            }
+        }
+        Ok(existing)
     }
     async fn list_for_matching(
         &self,
@@ -3825,6 +3862,7 @@ pub struct SubtitleSyncJob {
     pub max_offset_seconds: i64,
     pub sync_options: SubtitleSyncOptions,
     pub expected_codec: Option<SubtitleSyncAudioCodec>,
+    pub media_metadata: Option<SubtitleSyncMediaMetadataSnapshot>,
 }
 
 #[async_trait]

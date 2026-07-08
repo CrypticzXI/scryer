@@ -47,7 +47,7 @@ impl ArchiveExtractorClient for WasmArchiveExtractorClient {
         // §7.2.6): the raw crypto ABI belongs to it and to nothing else.
         match self.backing {
             PluginRuntimeBacking::WasmtimeArchive => {}
-            PluginRuntimeBacking::LegacyReactor => {
+            PluginRuntimeBacking::LegacyReactor | PluginRuntimeBacking::WasmtimeSubtitleSync => {
                 return Err(AppError::Repository(
                     "archive extractor plugin requires the wasmtime runtime backing".to_string(),
                 ));

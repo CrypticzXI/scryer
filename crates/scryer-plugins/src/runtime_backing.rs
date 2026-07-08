@@ -13,7 +13,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use scryer_plugin_sdk::{PluginDescriptor, PluginKind};
+use scryer_plugin_sdk::{PluginDescriptor, PluginKind, SubtitleProviderMode};
 
 /// One preopened directory mapping for a plugin instance.
 #[derive(Debug, Clone)]
@@ -60,6 +60,8 @@ pub(crate) enum PluginRuntimeBacking {
     LegacyReactor,
     /// The native wasmtime archive host (RFC §7.2).
     WasmtimeArchive,
+    /// Native wasmtime command host for SDK 3.5 subtitle-sync plugins.
+    WasmtimeSubtitleSync,
 }
 
 impl PluginRuntimeBacking {
@@ -67,6 +69,21 @@ impl PluginRuntimeBacking {
     pub(crate) fn for_descriptor(descriptor: &PluginDescriptor) -> Self {
         match descriptor.kind() {
             PluginKind::ArchiveExtractor => Self::WasmtimeArchive,
+            PluginKind::SubtitleProvider => {
+                let command_sync = descriptor.subtitle().is_some_and(|subtitle| {
+                    subtitle.capabilities.mode == SubtitleProviderMode::Sync
+                        && subtitle
+                            .capabilities
+                            .sync
+                            .as_ref()
+                            .is_some_and(|sync| sync.command_model)
+                });
+                if command_sync {
+                    Self::WasmtimeSubtitleSync
+                } else {
+                    Self::LegacyReactor
+                }
+            }
             _ => Self::LegacyReactor,
         }
     }
@@ -114,6 +131,28 @@ mod tests {
         assert_eq!(
             PluginRuntimeBacking::for_descriptor(&descriptor),
             PluginRuntimeBacking::LegacyReactor
+        );
+
+        descriptor.provider = scryer_plugin_sdk::ProviderDescriptor::Subtitle(
+            scryer_plugin_sdk::SubtitleDescriptor {
+                provider_type: "enhanced-subtitle-sync".to_string(),
+                provider_aliases: Vec::new(),
+                config_fields: Vec::new(),
+                default_base_url: None,
+                allowed_hosts: Vec::new(),
+                capabilities: scryer_plugin_sdk::SubtitleCapabilities {
+                    mode: scryer_plugin_sdk::SubtitleProviderMode::Sync,
+                    sync: Some(scryer_plugin_sdk::SubtitleSyncCapabilities {
+                        command_model: true,
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+            },
+        );
+        assert_eq!(
+            PluginRuntimeBacking::for_descriptor(&descriptor),
+            PluginRuntimeBacking::WasmtimeSubtitleSync
         );
     }
 }

@@ -22,6 +22,7 @@ use crate::indexer_adapter::WasmIndexerClient;
 use crate::legacy_runtime::{LegacyPlugin, LegacyPluginSpec};
 use crate::notification_adapter::WasmNotificationClient;
 use crate::process_host::ProcessHost;
+use crate::runtime_backing::PluginRuntimeBacking;
 use crate::socket_host::SocketHost;
 use crate::subtitle_adapter::WasmSubtitleClient;
 use crate::subtitle_sync_adapter::WasmSubtitleSyncClient;
@@ -1920,6 +1921,13 @@ impl WasmSubtitlePluginProvider {
         loaded: &LoadedPlugin,
     ) -> Option<Arc<dyn SubtitleSyncClient>> {
         let wasm_bytes = loaded.materialize_wasm().ok()?;
+        if PluginRuntimeBacking::for_descriptor(&loaded.descriptor)
+            == PluginRuntimeBacking::WasmtimeSubtitleSync
+        {
+            let client = WasmSubtitleSyncClient::new(wasm_bytes, loaded.descriptor.clone());
+            return Some(Arc::new(client));
+        }
+
         let mut spec = LegacyPluginSpec::new(wasm_bytes.clone(), loaded.descriptor.id.clone());
         spec.timeout = std::time::Duration::from_secs(10);
         let mut plugin = LegacyPlugin::instantiate(spec).ok()?;
@@ -2921,6 +2929,7 @@ fn required_exports_for_descriptor(descriptor: &PluginDescriptor) -> Vec<&'stati
                 SubtitleProviderMode::Generator => {
                     exports.push(EXPORT_SUBTITLE_GENERATE);
                 }
+                SubtitleProviderMode::Sync => {}
             }
         }
     }
@@ -2951,12 +2960,12 @@ fn validate_required_exports(
 fn load_from_bytes(wasm_bytes: &[u8]) -> Result<(PluginDescriptor, Vec<u8>), String> {
     let bytes = wasm_bytes.to_vec();
 
-    // Command-model archive artifacts (wasip1 command: `_start` + `memory`, no
+    // Command-model artifacts (wasip1 command: `_start` + `memory`, no
     // `scryer_describe` export) self-describe via argv ["describe"] on the
-    // wasmtime backing — RFC §8.2 (WP4 pulled early for the archive kind only).
+    // wasmtime backing.
     // For these the required-export contract is `_start` + `memory` (checked in
-    // the classifier), not EXPORT_ARCHIVE_PROCESS. The four fleet kinds fall
-    // through to the unchanged Extism describe path below.
+    // the classifier), not legacy reactor exports. Legacy fleet plugins fall
+    // through to the unchanged describe path below.
     if let Some(result) = crate::wasmtime_host::command_model_describe(&bytes) {
         return result.map(|descriptor| (descriptor, bytes));
     }

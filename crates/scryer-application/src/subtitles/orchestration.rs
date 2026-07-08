@@ -24,13 +24,17 @@ use crate::{
     SchedulerBatchRequest, SchedulerCandidate, SchedulerCandidateId, SchedulerFeedback,
     SchedulerFeedbackOutcome, SchedulerIntent, SchedulerLease, SchedulerOperation,
     SchedulerPluginKind, ScopedExternalId, SubtitleProviderClient, SubtitleProviderConfigUpdate,
-    SubtitleSettings as AppSubtitleSettings, parse_release_metadata,
+    SubtitleSettings as AppSubtitleSettings, TitleMediaFile, parse_release_metadata,
 };
 use scryer_domain::{
     ExternalSubtitleSourceKind, SubtitleBlocklistEntry, SubtitleDownload, SubtitleProviderConfig,
     Title, User,
 };
 use scryer_outbound_http::{DestinationKey, HostKey};
+use scryer_plugin_sdk::{
+    SubtitleSyncAudioStreamMetadata, SubtitleSyncMediaMetadataSnapshot,
+    SubtitleSyncSubtitleStreamMetadata,
+};
 
 const ON_IMPORT_SUBTITLE_SEARCH_CONCURRENCY_LIMIT: usize = 2;
 static ON_IMPORT_SUBTITLE_SEARCH_LIMIT: LazyLock<Arc<tokio::sync::Semaphore>> =
@@ -1254,6 +1258,7 @@ async fn maybe_sync_downloaded_subtitle(
     });
     let reference_subtitle_path =
         reference_subtitle_path_for_sync(app, media_file_id, subtitle_path, download_id).await;
+    let media_metadata = subtitle_sync_media_metadata(app, media_file_id).await;
 
     match sync::sync_subtitle_with_policy_and_plugin_sync(
         video_path,
@@ -1262,6 +1267,7 @@ async fn maybe_sync_downloaded_subtitle(
         subtitle_sync_client,
         plugin_installed,
         reference_subtitle_path.as_deref(),
+        media_metadata,
     )
     .await
     {
@@ -1302,6 +1308,90 @@ async fn maybe_sync_downloaded_subtitle(
             warn!(error = %err, path = %subtitle_path.display(), "subtitle sync failed (non-fatal)");
             None
         }
+    }
+}
+
+async fn subtitle_sync_media_metadata(
+    app: &AppUseCase,
+    media_file_id: &str,
+) -> Option<SubtitleSyncMediaMetadataSnapshot> {
+    match app
+        .services
+        .library
+        .media_files
+        .get_media_file_by_id(media_file_id)
+        .await
+    {
+        Ok(Some(media_file)) => Some(media_file_to_subtitle_sync_metadata(&media_file)),
+        Ok(None) => {
+            debug!(
+                media_file_id,
+                "subtitle sync metadata unavailable: media file row not found"
+            );
+            None
+        }
+        Err(error) => {
+            debug!(
+                media_file_id,
+                error = %error,
+                "subtitle sync metadata unavailable: failed to load media file row"
+            );
+            None
+        }
+    }
+}
+
+fn media_file_to_subtitle_sync_metadata(
+    media_file: &TitleMediaFile,
+) -> SubtitleSyncMediaMetadataSnapshot {
+    SubtitleSyncMediaMetadataSnapshot {
+        analysis_source: "scryer_import".to_string(),
+        container_format: media_file.container_format.clone(),
+        duration_seconds: media_file.duration_seconds,
+        video_codec: media_file.video_codec.as_ref().map(ToString::to_string),
+        video_width: media_file.video_width,
+        video_height: media_file.video_height,
+        video_bitrate_kbps: media_file.video_bitrate_kbps,
+        video_bit_depth: media_file.video_bit_depth,
+        video_hdr_format: media_file.video_hdr_format.clone(),
+        video_frame_rate: media_file.video_frame_rate.clone(),
+        video_profile: media_file.video_profile.clone(),
+        audio_codec: media_file.audio_codec.clone(),
+        audio_profile: media_file.audio_profile.clone(),
+        audio_channels: media_file.audio_channels,
+        audio_bitrate_kbps: media_file.audio_bitrate_kbps,
+        audio_languages: media_file.audio_languages.clone(),
+        audio_streams: media_file
+            .audio_streams
+            .iter()
+            .enumerate()
+            .map(|(index, stream)| SubtitleSyncAudioStreamMetadata {
+                index: index as u32,
+                codec: stream.codec.clone(),
+                profile: stream.profile.clone(),
+                channels: stream.channels,
+                language: stream.language.clone(),
+                name: stream.name.clone(),
+                bitrate_kbps: stream.bitrate_kbps,
+            })
+            .collect(),
+        subtitle_languages: media_file.subtitle_languages.clone(),
+        subtitle_codecs: media_file.subtitle_codecs.clone(),
+        subtitle_streams: media_file
+            .subtitle_streams
+            .iter()
+            .enumerate()
+            .map(|(index, stream)| SubtitleSyncSubtitleStreamMetadata {
+                index: index as u32,
+                codec: stream.codec.clone(),
+                language: stream.language.clone(),
+                name: stream.name.clone(),
+                forced: stream.forced,
+                default: stream.default,
+            })
+            .collect(),
+        has_multiaudio: media_file.has_multiaudio,
+        num_chapters: media_file.num_chapters,
     }
 }
 

@@ -1,19 +1,18 @@
-//! Command-protocol invocation for the archive host (RFC 123 §7.2.5 / §7.2.7).
+//! Command-protocol invocation for Wasmtime command-model plugins.
 //!
 //! Instance-per-request, WASI-command style: the serialized
-//! `ArchivePluginProcessRequest` is fed on stdin, the guest writes exactly one
-//! `ArchivePluginProcessResponse` JSON document to stdout, and a clean `_start`
-//! return (or `proc_exit(0)`) marks protocol success. Operational conditions
-//! (password required, unsupported format, …) stay in-band via the response's
-//! `status`; only genuine faults exit non-zero / trap. Runs synchronously — the
-//! adapter calls this under `tokio::task::spawn_blocking`.
+//! request is fed on stdin, the guest writes exactly one typed response JSON
+//! document to stdout, and a clean `_start` return (or `proc_exit(0)`) marks
+//! protocol success. Operational conditions stay in-band via the response; only
+//! genuine faults exit non-zero / trap. Runs synchronously — adapters call this
+//! under `tokio::task::spawn_blocking`.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use scryer_application::{AppError, AppResult};
-use scryer_plugin_sdk::ArchivePluginProcessResponse;
+use scryer_plugin_sdk::{ArchivePluginProcessResponse, SubtitleSyncPluginProcessResponse};
 use wasmtime::{Linker, Module, Store};
 use wasmtime_wasi::p2::pipe::MemoryOutputPipe;
 
@@ -26,6 +25,13 @@ const STDERR_TAIL_BYTES: usize = 8 * 1024;
 
 /// Identifying context for one invocation (tracing span + error messages).
 pub(crate) struct ArchiveInvocation<'a> {
+    pub(crate) plugin_id: &'a str,
+    pub(crate) plugin_version: &'a str,
+    pub(crate) operation: &'a str,
+}
+
+/// Identifying context for one subtitle-sync command invocation.
+pub(crate) struct SubtitleSyncInvocation<'a> {
     pub(crate) plugin_id: &'a str,
     pub(crate) plugin_version: &'a str,
     pub(crate) operation: &'a str,
@@ -218,6 +224,150 @@ pub(crate) fn process_archive(
     Ok(response)
 }
 
+/// Instantiate the subtitle-sync guest and run one request→response exchange.
+pub(crate) fn process_subtitle_sync(
+    spec: &PluginInstanceSpec,
+    request_json: &str,
+    invocation: SubtitleSyncInvocation<'_>,
+) -> AppResult<SubtitleSyncPluginProcessResponse> {
+    let span = tracing::info_span!(
+        "subtitle_sync_plugin_invoke",
+        plugin_id = invocation.plugin_id,
+        plugin_version = invocation.plugin_version,
+        operation = invocation.operation,
+    );
+    let _enter = span.enter();
+
+    let started = Instant::now();
+    let request_bytes = request_json.as_bytes().to_vec();
+    let request_len = request_bytes.len();
+
+    let engine = engine::shared_engine();
+    let module = Module::from_binary(engine, &spec.wasm).map_err(|error| {
+        AppError::Repository(format!(
+            "subtitle sync plugin {}@{} failed to compile: {error:#}",
+            invocation.plugin_id, invocation.plugin_version
+        ))
+    })?;
+
+    let mut linker: Linker<HostCtx> = Linker::new(engine);
+    wasmtime_wasi::p1::add_to_linker_sync(&mut linker, |ctx: &mut HostCtx| &mut ctx.wasi).map_err(
+        |error| {
+            AppError::Repository(format!(
+                "failed to wire WASI preview1 for subtitle sync plugin: {error:#}"
+            ))
+        },
+    )?;
+
+    let PreparedSandbox {
+        wasi,
+        stdout,
+        stderr,
+        _scratch,
+    } = sandbox::build_sandbox(&spec.preopens, request_bytes)?;
+
+    let mut store = Store::new(
+        engine,
+        HostCtx {
+            wasi,
+            limits: HostLimits::new(spec.memory_max_bytes),
+        },
+    );
+    store.limiter(|ctx: &mut HostCtx| &mut ctx.limits);
+    store.set_epoch_deadline(engine::deadline_ticks(spec.timeout));
+
+    let instance = match linker.instantiate(&mut store, &module) {
+        Ok(instance) => instance,
+        Err(error) => {
+            let denied = store.data().limits.memory_denied;
+            let failure = error::classify_error(&error, denied);
+            return Err(finish_subtitle_sync_error(
+                &invocation,
+                spec.timeout,
+                &tail_of(&stderr),
+                &failure,
+                started,
+                request_len,
+            ));
+        }
+    };
+
+    let start = match instance.get_typed_func::<(), ()>(&mut store, "_start") {
+        Ok(start) => start,
+        Err(error) => {
+            let failure = error::protocol_failure(format!(
+                "guest is not a wasip1 command (missing _start): {error:#}"
+            ));
+            return Err(finish_subtitle_sync_error(
+                &invocation,
+                spec.timeout,
+                &tail_of(&stderr),
+                &failure,
+                started,
+                request_len,
+            ));
+        }
+    };
+
+    let call_result = start.call(&mut store, ());
+    let denied = store.data().limits.memory_denied;
+    let stdout_bytes = stdout.contents();
+    let stderr_tail = tail_of(&stderr);
+
+    if !stderr_tail.is_empty() {
+        tracing::debug!(
+            target: "scryer_plugins::subtitle_sync",
+            plugin_id = invocation.plugin_id,
+            stderr = stderr_tail.as_str(),
+            "subtitle sync plugin stderr",
+        );
+    }
+
+    if let Err(failure) = error::interpret_start_result(call_result, denied) {
+        return Err(finish_subtitle_sync_error(
+            &invocation,
+            spec.timeout,
+            &stderr_tail,
+            &failure,
+            started,
+            request_len,
+        ));
+    }
+
+    let response: SubtitleSyncPluginProcessResponse = match serde_json::from_slice(&stdout_bytes) {
+        Ok(response) => response,
+        Err(error) => {
+            let failure = error::protocol_failure(format!(
+                "stdout was not a valid SubtitleSyncPluginProcessResponse JSON: {error}"
+            ));
+            return Err(finish_subtitle_sync_error(
+                &invocation,
+                spec.timeout,
+                &stderr_tail,
+                &failure,
+                started,
+                request_len,
+            ));
+        }
+    };
+
+    let duration_ms = started.elapsed().as_millis() as u64;
+    let response_bytes = stdout_bytes.len();
+    tracing::debug!(
+        target: "scryer_plugins::subtitle_sync",
+        plugin_id = invocation.plugin_id,
+        plugin_version = invocation.plugin_version,
+        operation = invocation.operation,
+        duration_ms,
+        request_bytes = request_len,
+        response_bytes,
+        disposition = "ok",
+        "subtitle sync plugin invocation complete",
+    );
+
+    Ok(response)
+}
+
 /// Log the failing disposition and build the operator-facing `AppError`.
 fn finish_error(
     invocation: &ArchiveInvocation<'_>,
@@ -238,6 +388,37 @@ fn finish_error(
         request_bytes = request_len,
         disposition,
         "archive plugin invocation failed",
+    );
+    let ctx = error::InvocationContext {
+        plugin_id: invocation.plugin_id,
+        plugin_version: invocation.plugin_version,
+        operation: invocation.operation,
+        budget,
+        stderr_tail,
+    };
+    error::to_app_error(failure, &ctx)
+}
+
+/// Log the failing subtitle-sync disposition and build the operator-facing `AppError`.
+fn finish_subtitle_sync_error(
+    invocation: &SubtitleSyncInvocation<'_>,
+    budget: Duration,
+    stderr_tail: &str,
+    failure: &error::RunFailure,
+    started: Instant,
+    request_len: usize,
+) -> AppError {
+    let duration_ms = started.elapsed().as_millis() as u64;
+    let disposition = format!("{:?}", failure.kind);
+    tracing::debug!(
+        target: "scryer_plugins::subtitle_sync",
+        plugin_id = invocation.plugin_id,
+        plugin_version = invocation.plugin_version,
+        operation = invocation.operation,
+        duration_ms,
+        request_bytes = request_len,
+        disposition,
+        "subtitle sync plugin invocation failed",
     );
     let ctx = error::InvocationContext {
         plugin_id: invocation.plugin_id,

@@ -1,12 +1,11 @@
-//! Descriptor extraction for command-model archive artifacts (RFC 123 §8.2,
-//! WP4 pulled early for the archive kind only).
+//! Descriptor extraction for command-model artifacts.
 //!
-//! The new archive plugin is a wasip1 command binary: it exports `_start` and
-//! `memory` but NOT `scryer_describe` / `scryer_archive_process`. Scryer's
+//! Command plugins are wasip1 command binaries: they export `_start` and
+//! `memory` but NOT `scryer_describe`. Scryer's
 //! Extism describe path (`plugin.call("scryer_describe")`) and its
 //! export-existence validation would therefore reject it. This module detects
-//! the command shape and runs describe through the wasmtime backing instead; the
-//! four fleet kinds keep the Extism describe path untouched.
+//! the command shape and runs describe through the wasmtime backing instead;
+//! legacy reactor plugins keep the compatibility describe path untouched.
 
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -21,7 +20,7 @@ use crate::wasmtime_host::{crypto_host, engine, error, par2_host};
 /// Describe runs reuse the 10s describe budget of the Extism path.
 const DESCRIBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
-/// Attempt to extract a descriptor from a command-model archive artifact.
+/// Attempt to extract a descriptor from a command-model artifact.
 ///
 /// Returns `None` when the artifact is NOT the command model, so the caller
 /// falls back to the Extism describe path. Classification (RFC §8.2): the module
@@ -61,7 +60,7 @@ pub(crate) fn command_model_describe(wasm: &[u8]) -> Option<Result<PluginDescrip
     }
     if !has_memory {
         return Some(Err(
-            "archive command plugin must export a linear memory named 'memory'".to_string(),
+            "command plugin must export a linear memory named 'memory'".to_string(),
         ));
     }
 
@@ -75,7 +74,7 @@ fn run_describe(module: &Module) -> AppResult<PluginDescriptor> {
     wasmtime_wasi::p1::add_to_linker_sync(&mut linker, |ctx: &mut HostCtx| &mut ctx.wasi).map_err(
         |error| {
             AppError::Repository(format!(
-                "failed to wire WASI for archive describe: {error:#}"
+                "failed to wire WASI for command plugin describe: {error:#}"
             ))
         },
     )?;
@@ -121,13 +120,13 @@ fn run_describe(module: &Module) -> AppResult<PluginDescriptor> {
 
     let instance = linker.instantiate(&mut store, module).map_err(|error| {
         AppError::Repository(format!(
-            "failed to instantiate archive plugin for describe: {error:#}"
+            "failed to instantiate command plugin for describe: {error:#}"
         ))
     })?;
     let start = instance
         .get_typed_func::<(), ()>(&mut store, "_start")
         .map_err(|error| {
-            AppError::Repository(format!("archive plugin is not a wasip1 command: {error:#}"))
+            AppError::Repository(format!("command plugin is not a wasip1 command: {error:#}"))
         })?;
 
     let result = start.call(&mut store, ());
@@ -141,7 +140,7 @@ fn run_describe(module: &Module) -> AppResult<PluginDescriptor> {
 
     error::interpret_start_result(result, denied).map_err(|failure| {
         let ctx = error::InvocationContext {
-            plugin_id: "<archive-describe>",
+            plugin_id: "<command-describe>",
             plugin_version: "",
             operation: "describe",
             budget: DESCRIBE_TIMEOUT,
@@ -152,7 +151,7 @@ fn run_describe(module: &Module) -> AppResult<PluginDescriptor> {
 
     serde_json::from_slice::<PluginDescriptor>(&stdout_bytes).map_err(|error| {
         AppError::Repository(format!(
-            "archive plugin describe returned invalid PluginDescriptor JSON: {error}"
+            "command plugin describe returned invalid PluginDescriptor JSON: {error}"
         ))
     })
 }

@@ -17,6 +17,7 @@ pub(super) struct MockTitleRepo {
     pub(super) create_or_get_existing_error: Arc<Mutex<Option<String>>>,
     pub(super) delete_operation_log: OptionalDeleteOperationLog,
     pub(super) pending_import_items: Option<Arc<Mutex<Vec<LibraryScanUnmatchedItem>>>>,
+    pub(super) external_id_batch_lookup_calls: AtomicUsize,
 }
 #[derive(Default)]
 pub(super) struct RecordingJobRunRepo {
@@ -236,6 +237,41 @@ impl TitleRepository for MockTitleRepo {
             }
         }
         Ok(matches)
+    }
+
+    async fn list_existing_external_ids_in_library_and_facet(
+        &self,
+        library_id: &str,
+        facet: MediaFacet,
+        source: &str,
+        values: &[String],
+    ) -> AppResult<std::collections::BTreeSet<String>> {
+        self.external_id_batch_lookup_calls
+            .fetch_add(1, Ordering::SeqCst);
+
+        let requested = values
+            .iter()
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty())
+            .collect::<HashSet<_>>();
+        if requested.is_empty() {
+            return Ok(std::collections::BTreeSet::new());
+        }
+
+        let list = self.store.lock().await;
+        let mut existing = std::collections::BTreeSet::new();
+        for title in list
+            .iter()
+            .filter(|title| title.library_id == library_id.trim() && title.facet == facet)
+        {
+            for external_id in &title.external_ids {
+                let value = external_id.value.trim();
+                if external_id.source.eq_ignore_ascii_case(source) && requested.contains(value) {
+                    existing.insert(value.to_string());
+                }
+            }
+        }
+        Ok(existing)
     }
 
     async fn list_for_matching(

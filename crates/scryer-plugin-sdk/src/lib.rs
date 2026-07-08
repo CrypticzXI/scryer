@@ -827,6 +827,7 @@ pub enum SubtitleProviderMode {
     #[default]
     Catalog,
     Generator,
+    Sync,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
@@ -848,6 +849,48 @@ pub struct SubtitleCapabilities {
     pub supports_machine_translated: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub supported_languages: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sync: Option<SubtitleSyncCapabilities>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct SubtitleSyncCapabilities {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backend: Option<String>,
+    #[serde(default)]
+    pub decode_status: SubtitleSyncDecodeStatus,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub supported_codecs: Vec<SubtitleSyncAudioCodec>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub decoded_codecs: Vec<SubtitleSyncAudioCodec>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pending_codecs: Vec<SubtitleSyncAudioCodec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_sample_format: Option<String>,
+    #[serde(default)]
+    pub supports_mono_mixdown: bool,
+    #[serde(default)]
+    pub command_model: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub operations: Vec<SubtitleSyncOperation>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SubtitleSyncDecodeStatus {
+    #[default]
+    Unknown,
+    Complete,
+    Partial,
+    Unavailable,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SubtitleSyncOperation {
+    Align,
+    Probe,
+    DecodeWindow,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -1505,6 +1548,260 @@ pub struct SubtitleSyncAlignResponse {
     pub warnings: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SubtitleSyncPluginProcessRequest {
+    pub operation: SubtitleSyncPluginOperation,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SubtitleSyncPluginProcessResponse {
+    pub response: SubtitleSyncPluginResponse,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SubtitleSyncPluginOperation {
+    Align {
+        request: Box<SubtitleSyncCommandAlignRequest>,
+    },
+    Probe {
+        request: SubtitleSyncProbeRequest,
+    },
+    DecodeWindow {
+        request: SubtitleSyncDecodeWindowRequest,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SubtitleSyncPluginResponse {
+    Align {
+        response: Box<SubtitleSyncCommandAlignResponse>,
+    },
+    Probe {
+        response: SubtitleSyncProbeResponse,
+    },
+    DecodeWindow {
+        response: SubtitleSyncDecodeWindowResponse,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SubtitleSyncCommandAlignRequest {
+    pub input: SubtitleSyncCommandInputFile,
+    pub subtitle: SubtitleSyncCommandSubtitleFile,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reference_subtitle: Option<SubtitleSyncCommandSubtitleFile>,
+    pub output: SubtitleSyncCommandOutputTarget,
+    pub scratch_dir: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub media_metadata: Option<SubtitleSyncMediaMetadataSnapshot>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub subtitle_spans: Vec<SubtitleTimingSpan>,
+    pub max_offset_seconds: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sync_options: Option<SubtitleSyncOptions>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selector: Option<AudioStreamSelector>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_codec: Option<SubtitleSyncAudioCodec>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SubtitleSyncCommandInputFile {
+    pub path: PathBuf,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SubtitleSyncCommandSubtitleFile {
+    pub path: PathBuf,
+    pub format: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub encoding_hint: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SubtitleSyncCommandOutputTarget {
+    pub path: PathBuf,
+    pub format: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SubtitleSyncCommandAlignResponse {
+    pub applied: bool,
+    pub offset_ms: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rewritten_subtitle: Option<SubtitleSyncCommandOutputSubtitle>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub score: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selected_framerate_ratio: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub consistency_ratio: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nosplit_score: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub split_score: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skipped_reason: Option<SubtitleSyncAlignSkipReason>,
+    pub backend: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SubtitleSyncCommandOutputSubtitle {
+    pub path: PathBuf,
+    pub format: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SubtitleSyncProbeRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codec: Option<SubtitleSyncAudioCodec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codec_label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub packet_base64: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SubtitleSyncProbeResponse {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codec: Option<SubtitleSyncAudioCodec>,
+    pub supported: bool,
+    pub backend: String,
+    pub confidence: f32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sample_rate_hz: Option<u32>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SubtitleSyncDecodeWindowRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codec: Option<SubtitleSyncAudioCodec>,
+    pub packets: Vec<SubtitleSyncAudioPacket>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_sample_rate_hz: Option<u32>,
+    #[serde(default)]
+    pub mixdown_mono: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SubtitleSyncAudioPacket {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pts_ms: Option<i64>,
+    pub data_base64: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SubtitleSyncDecodeWindowResponse {
+    pub status: SubtitleSyncDecodeWindowStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codec: Option<SubtitleSyncAudioCodec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sample_rate_hz: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channels: Option<u16>,
+    pub samples_decoded: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pcm_f32le_base64: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SubtitleSyncDecodeWindowStatus {
+    Decoded,
+    Unsupported,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SubtitleSyncMediaMetadataSnapshot {
+    pub analysis_source: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub container_format: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_seconds: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub video_codec: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub video_width: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub video_height: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub video_bitrate_kbps: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub video_bit_depth: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub video_hdr_format: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub video_frame_rate: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub video_profile: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio_codec: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio_profile: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio_channels: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio_bitrate_kbps: Option<i32>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub audio_languages: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub audio_streams: Vec<SubtitleSyncAudioStreamMetadata>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub subtitle_languages: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub subtitle_codecs: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub subtitle_streams: Vec<SubtitleSyncSubtitleStreamMetadata>,
+    #[serde(default)]
+    pub has_multiaudio: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub num_chapters: Option<i32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SubtitleSyncAudioStreamMetadata {
+    pub index: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codec: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channels: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bitrate_kbps: Option<i32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SubtitleSyncSubtitleStreamMetadata {
+    pub index: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codec: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub forced: bool,
+    #[serde(default)]
+    pub default: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -2323,6 +2620,8 @@ struct PluginSdkSchemaDocument {
     subtitle_generate_result: PluginResult<SubtitlePluginGenerateResponse>,
     subtitle_sync_align_request: SubtitleSyncAlignRequest,
     subtitle_sync_align_result: PluginResult<SubtitleSyncAlignResponse>,
+    subtitle_sync_process_request: SubtitleSyncPluginProcessRequest,
+    subtitle_sync_process_response: SubtitleSyncPluginProcessResponse,
     download_add_request: PluginDownloadClientAddRequest,
     download_add_result: PluginResult<PluginDownloadClientAddResponse>,
     download_queue_result: PluginResult<Vec<PluginDownloadItem>>,
@@ -2419,6 +2718,132 @@ mod tests {
         assert_eq!(parsed.id, "newznab");
         assert_eq!(parsed.provider_type(), "newznab");
         assert_eq!(parsed.plugin_type(), "usenet_indexer");
+    }
+
+    #[test]
+    fn subtitle_sync_mode_and_capabilities_round_trip() {
+        let descriptor = PluginDescriptor {
+            id: "enhanced-subtitle-sync".into(),
+            name: "Enhanced Subtitle Sync".into(),
+            version: "1.0.0".into(),
+            sdk_version: SDK_VERSION.into(),
+            sdk_constraint: current_sdk_constraint(),
+            socket_permissions: vec![],
+            provider: ProviderDescriptor::Subtitle(SubtitleDescriptor {
+                provider_type: "enhanced-subtitle-sync".into(),
+                provider_aliases: vec![],
+                config_fields: vec![],
+                default_base_url: None,
+                allowed_hosts: vec![],
+                capabilities: SubtitleCapabilities {
+                    mode: SubtitleProviderMode::Sync,
+                    sync: Some(SubtitleSyncCapabilities {
+                        backend: Some("vendored-ffmpeg-wasm".into()),
+                        decode_status: SubtitleSyncDecodeStatus::Complete,
+                        supported_codecs: vec![
+                            SubtitleSyncAudioCodec::Ac3,
+                            SubtitleSyncAudioCodec::Eac3,
+                        ],
+                        decoded_codecs: vec![SubtitleSyncAudioCodec::Ac3],
+                        pending_codecs: vec![SubtitleSyncAudioCodec::Eac3],
+                        output_sample_format: Some("f32le".into()),
+                        supports_mono_mixdown: true,
+                        command_model: true,
+                        operations: vec![
+                            SubtitleSyncOperation::Align,
+                            SubtitleSyncOperation::Probe,
+                            SubtitleSyncOperation::DecodeWindow,
+                        ],
+                    }),
+                    ..Default::default()
+                },
+            }),
+        };
+
+        let json = serde_json::to_string(&descriptor).unwrap();
+        assert!(json.contains(r#""mode":"sync""#));
+        assert!(json.contains(r#""command_model":true"#));
+        let parsed: PluginDescriptor = serde_json::from_str(&json).unwrap();
+        let subtitle = parsed.subtitle().unwrap();
+        assert_eq!(subtitle.capabilities.mode, SubtitleProviderMode::Sync);
+        assert_eq!(
+            subtitle.capabilities.sync.as_ref().unwrap().operations,
+            vec![
+                SubtitleSyncOperation::Align,
+                SubtitleSyncOperation::Probe,
+                SubtitleSyncOperation::DecodeWindow,
+            ]
+        );
+    }
+
+    #[test]
+    fn subtitle_sync_command_operation_round_trips() {
+        let request = SubtitleSyncPluginProcessRequest {
+            operation: SubtitleSyncPluginOperation::Align {
+                request: Box::new(SubtitleSyncCommandAlignRequest {
+                    input: SubtitleSyncCommandInputFile {
+                        path: "/input/video.mkv".into(),
+                    },
+                    subtitle: SubtitleSyncCommandSubtitleFile {
+                        path: "/subtitle/subtitle.srt".into(),
+                        format: "srt".into(),
+                        file_name: Some("subtitle.srt".into()),
+                        encoding_hint: Some("utf-8".into()),
+                    },
+                    reference_subtitle: None,
+                    output: SubtitleSyncCommandOutputTarget {
+                        path: "/output/rewritten.srt".into(),
+                        format: "srt".into(),
+                    },
+                    scratch_dir: "/scratch".into(),
+                    media_metadata: Some(SubtitleSyncMediaMetadataSnapshot {
+                        analysis_source: "scryer_import".into(),
+                        container_format: Some("matroska".into()),
+                        duration_seconds: Some(120),
+                        video_codec: Some("h264".into()),
+                        video_width: Some(1920),
+                        video_height: Some(1080),
+                        video_bitrate_kbps: None,
+                        video_bit_depth: None,
+                        video_hdr_format: None,
+                        video_frame_rate: Some("23.976".into()),
+                        video_profile: None,
+                        audio_codec: Some("eac3".into()),
+                        audio_profile: None,
+                        audio_channels: Some(6),
+                        audio_bitrate_kbps: None,
+                        audio_languages: vec!["eng".into()],
+                        audio_streams: vec![SubtitleSyncAudioStreamMetadata {
+                            index: 0,
+                            codec: Some("eac3".into()),
+                            profile: None,
+                            channels: Some(6),
+                            language: Some("eng".into()),
+                            name: Some("English".into()),
+                            bitrate_kbps: None,
+                        }],
+                        subtitle_languages: vec![],
+                        subtitle_codecs: vec![],
+                        subtitle_streams: vec![],
+                        has_multiaudio: false,
+                        num_chapters: None,
+                    }),
+                    subtitle_spans: vec![],
+                    max_offset_seconds: 60,
+                    sync_options: Some(SubtitleSyncOptions::default()),
+                    selector: Some(AudioStreamSelector::Default),
+                    expected_codec: Some(SubtitleSyncAudioCodec::Eac3),
+                }),
+            },
+        };
+
+        let json = serde_json::to_string(&request).unwrap();
+        assert!(json.contains(r#""kind":"align""#));
+        let parsed: SubtitleSyncPluginProcessRequest = serde_json::from_str(&json).unwrap();
+        assert!(matches!(
+            parsed.operation,
+            SubtitleSyncPluginOperation::Align { .. }
+        ));
     }
 
     #[test]

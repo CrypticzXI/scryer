@@ -18,4 +18,6 @@ mod par2_host;
 mod sandbox;
 
 pub(crate) use describe::command_model_describe;
-pub(crate) use invoke::{ArchiveInvocation, process_archive};
+pub(crate) use invoke::{
+    ArchiveInvocation, SubtitleSyncInvocation, process_archive, process_subtitle_sync,
+};

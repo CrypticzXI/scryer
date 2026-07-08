@@ -5724,7 +5724,20 @@ async fn pending_import_title_search_filters_same_library_titles_only() {
         source: "tvdb".to_string(),
         value: "123456".to_string(),
     }];
-    titles.store.lock().await.push(other_library_title);
+    {
+        let mut store = titles.store.lock().await;
+        store.push(other_library_title);
+        for index in 0..100 {
+            let mut noise_title = existing_title.title.clone();
+            noise_title.id = format!("noise-movie-title-{index}");
+            noise_title.name = format!("Noise Movie {index}");
+            noise_title.external_ids = vec![ExternalId {
+                source: "tvdb".to_string(),
+                value: format!("9{index:05}"),
+            }];
+            store.push(noise_title);
+        }
+    }
 
     unmatched_items
         .upsert_library_scan_unmatched_item(&build_test_unmatched_item(
@@ -5756,6 +5769,11 @@ async fn pending_import_title_search_filters_same_library_titles_only() {
         .map(|result| result.tvdb_id.as_str())
         .collect::<Vec<_>>();
     assert_eq!(result_ids, vec!["123456", "222222"]);
+    assert_eq!(
+        titles.external_id_batch_lookup_calls.load(Ordering::SeqCst),
+        1,
+        "pending-import title search should batch same-library exclusion"
+    );
 }
 
 #[tokio::test]

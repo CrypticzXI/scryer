@@ -922,6 +922,9 @@ fn non_negative_offset(value: i64) -> Result<u64, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::thread;
 
     fn instantiate_wat(wat: &str) -> LegacyPlugin {
         let wasm = wat::parse_str(wat).expect("wat parses");
@@ -934,6 +937,29 @@ mod tests {
         let mut spec = LegacyPluginSpec::new(wasm, "test-plugin");
         spec.exchange_memory_max_bytes = Some(cap);
         LegacyPlugin::instantiate(spec).expect("legacy plugin instantiates")
+    }
+
+    fn instantiate_wat_with_var_cap(wat: &str, cap: usize) -> LegacyPlugin {
+        let wasm = wat::parse_str(wat).expect("wat parses");
+        let mut spec = LegacyPluginSpec::new(wasm, "test-plugin");
+        spec.var_store_max_bytes = Some(cap);
+        LegacyPlugin::instantiate(spec).expect("legacy plugin instantiates")
+    }
+
+    fn store_bytes_wat(pointer: &str, bytes: &[u8]) -> String {
+        bytes
+            .iter()
+            .enumerate()
+            .map(|(index, byte)| {
+                format!(
+                    "local.get ${pointer}\n\
+                     i64.const {index}\n\
+                     i64.add\n\
+                     i32.const {byte}\n\
+                     call $store_u8\n"
+                )
+            })
+            .collect()
     }
 
     #[test]
@@ -1073,6 +1099,116 @@ mod tests {
     }
 
     #[test]
+    fn scryer_http_request_uses_shared_plugin_http_host() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test HTTP server");
+        let addr = listener.local_addr().expect("test HTTP server address");
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept test HTTP request");
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 1024];
+            loop {
+                let read = stream.read(&mut buffer).expect("read test HTTP request");
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buffer[..read]);
+                if request.windows(4).any(|window| window == b"\r\n\r\n")
+                    && request.ends_with(b"hello")
+                {
+                    break;
+                }
+            }
+            let rendered = String::from_utf8_lossy(&request);
+            assert!(rendered.starts_with("POST /probe HTTP/1.1"));
+            assert!(rendered.contains("x-test: one"));
+            assert!(rendered.ends_with("hello"));
+            stream
+                .write_all(
+                    b"HTTP/1.1 201 Created\r\nX-Reply: yes\r\nContent-Length: 7\r\n\r\ncreated",
+                )
+                .expect("write test HTTP response");
+        });
+
+        let request_json = format!(
+            r#"{{"url":"http://{addr}/probe","method":"POST","headers":{{"X-Test":"one"}}}}"#
+        );
+        let request_bytes = request_json.as_bytes();
+        let body_bytes = b"hello";
+        let request_stores = store_bytes_wat("request", request_bytes);
+        let body_stores = store_bytes_wat("body", body_bytes);
+        let wat = format!(
+            r#"
+            (module
+              (import "extism:host/env" "alloc" (func $alloc (param i64) (result i64)))
+              (import "extism:host/env" "store_u8" (func $store_u8 (param i64 i32)))
+              (import "extism:host/env" "length" (func $length (param i64) (result i64)))
+              (import "extism:host/env" "output_set" (func $output_set (param i64 i64)))
+              (import "scryer:host/http" "scryer_http_request" (func $http_request (param i64 i64) (result i64)))
+              (import "scryer:host/http" "scryer_http_status_code" (func $status (result i32)))
+              (import "scryer:host/http" "scryer_http_headers" (func $headers (result i64)))
+              (func (export "run") (result i32)
+                (local $request i64)
+                (local $body i64)
+                (local $response i64)
+                i64.const {request_len}
+                call $alloc
+                local.set $request
+                {request_stores}
+                i64.const {body_len}
+                call $alloc
+                local.set $body
+                {body_stores}
+                local.get $request
+                local.get $body
+                call $http_request
+                local.set $response
+                call $status
+                i32.const 201
+                i32.ne
+                if
+                  i32.const 1
+                  return
+                end
+                call $headers
+                drop
+                local.get $response
+                local.get $response
+                call $length
+                call $output_set
+                i32.const 0))
+            "#,
+            request_len = request_bytes.len(),
+            request_stores = request_stores,
+            body_len = body_bytes.len(),
+            body_stores = body_stores,
+        );
+        let wasm = wat::parse_str(&wat).expect("wat parses");
+        let mut spec = LegacyPluginSpec::new(wasm, "test-plugin");
+        spec.allowed_hosts = vec!["127.0.0.1".to_string()];
+        let mut plugin = LegacyPlugin::instantiate(spec).expect("legacy plugin instantiates");
+
+        let output = plugin.call_unit("run").unwrap();
+        assert_eq!(output, "created");
+        assert_eq!(
+            plugin.store.data().http.status_code("test-plugin").unwrap(),
+            201
+        );
+        assert_eq!(
+            plugin
+                .store
+                .data()
+                .http
+                .headers("test-plugin")
+                .unwrap()
+                .unwrap()
+                .get("x-reply")
+                .map(String::as_str),
+            Some("yes")
+        );
+        server.join().expect("test HTTP server exits");
+    }
+
+    #[test]
     fn huge_alloc_fails_safely_against_exchange_budget() {
         let mut plugin = instantiate_wat_with_exchange_cap(
             r#"
@@ -1170,5 +1306,141 @@ mod tests {
 
         let err = plugin.call_unit("bad_output").unwrap_err().to_string();
         assert!(err.contains("exchange memory range out of bounds"));
+    }
+
+    #[test]
+    fn var_set_cannot_accumulate_past_store_budget() {
+        let mut plugin = instantiate_wat_with_var_cap(
+            r#"
+            (module
+              (import "extism:host/env" "alloc" (func $alloc (param i64) (result i64)))
+              (import "extism:host/env" "store_u8" (func $store_u8 (param i64 i32)))
+              (import "extism:host/env" "var_set" (func $var_set (param i64 i64)))
+              (func $store_key (param $ptr i64) (param $byte i32)
+                local.get $ptr
+                local.get $byte
+                call $store_u8)
+              (func $store_value (param $ptr i64)
+                local.get $ptr
+                i32.const 120
+                call $store_u8
+                local.get $ptr
+                i64.const 1
+                i64.add
+                i32.const 120
+                call $store_u8
+                local.get $ptr
+                i64.const 2
+                i64.add
+                i32.const 120
+                call $store_u8
+                local.get $ptr
+                i64.const 3
+                i64.add
+                i32.const 120
+                call $store_u8)
+              (func (export "fill_vars") (result i32)
+                (local $key_a i64)
+                (local $key_b i64)
+                (local $value_a i64)
+                (local $value_b i64)
+                i64.const 1
+                call $alloc
+                local.set $key_a
+                local.get $key_a
+                i32.const 97
+                call $store_key
+                i64.const 4
+                call $alloc
+                local.set $value_a
+                local.get $value_a
+                call $store_value
+                local.get $key_a
+                local.get $value_a
+                call $var_set
+                i64.const 1
+                call $alloc
+                local.set $key_b
+                local.get $key_b
+                i32.const 98
+                call $store_key
+                i64.const 4
+                call $alloc
+                local.set $value_b
+                local.get $value_b
+                call $store_value
+                local.get $key_b
+                local.get $value_b
+                call $var_set
+                i32.const 0))
+            "#,
+            8,
+        );
+
+        let err = plugin.call_unit("fill_vars").unwrap_err().to_string();
+        assert!(err.contains("legacy var store exceeds budget"));
+    }
+
+    #[test]
+    fn var_set_removal_releases_store_budget() {
+        let mut plugin = instantiate_wat_with_var_cap(
+            r#"
+            (module
+              (import "extism:host/env" "alloc" (func $alloc (param i64) (result i64)))
+              (import "extism:host/env" "store_u8" (func $store_u8 (param i64 i32)))
+              (import "extism:host/env" "var_set" (func $var_set (param i64 i64)))
+              (func $key (param $byte i32) (result i64)
+                (local $ptr i64)
+                i64.const 1
+                call $alloc
+                local.set $ptr
+                local.get $ptr
+                local.get $byte
+                call $store_u8
+                local.get $ptr)
+              (func $value (result i64)
+                (local $ptr i64)
+                i64.const 4
+                call $alloc
+                local.set $ptr
+                local.get $ptr
+                i32.const 120
+                call $store_u8
+                local.get $ptr
+                i64.const 1
+                i64.add
+                i32.const 120
+                call $store_u8
+                local.get $ptr
+                i64.const 2
+                i64.add
+                i32.const 120
+                call $store_u8
+                local.get $ptr
+                i64.const 3
+                i64.add
+                i32.const 120
+                call $store_u8
+                local.get $ptr)
+              (func (export "replace_after_remove") (result i32)
+                i32.const 97
+                call $key
+                call $value
+                call $var_set
+                i32.const 97
+                call $key
+                i64.const 0
+                call $var_set
+                i32.const 98
+                call $key
+                call $value
+                call $var_set
+                i32.const 0))
+            "#,
+            8,
+        );
+
+        let output = plugin.call_unit("replace_after_remove").unwrap();
+        assert_eq!(output, "");
     }
 }

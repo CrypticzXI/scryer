@@ -680,7 +680,8 @@ body {
  * width-budget their columns to fit, so the row never scrolls horizontally.
  */
 [data-ui="title-table-row"]:hover,
-[data-ui="compact-title-table-row"]:hover {
+[data-ui="compact-title-table-row"]:hover,
+[data-ui="settings-plugin-table-row"]:hover {
   background: color-mix(in srgb, var(--accent) 42%, transparent);
 }
 
@@ -703,15 +704,16 @@ body {
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
 }
 
-/* Standard tables keep the original per-cell dark hover gradient. The catalog
- * tables (excluded here) span the same gradient across the whole row below. */
-.dark [data-slot="table-body"] [data-slot="table-row"]:not([data-ui="title-table-row"]):not([data-ui="compact-title-table-row"]):hover > [data-slot="table-cell"] {
+/* Standard tables keep the original per-cell dark hover gradient. Catalog and
+ * plugin rows (excluded here) span the same gradient across the whole row. */
+.dark [data-slot="table-body"] [data-slot="table-row"]:not([data-ui="title-table-row"]):not([data-ui="compact-title-table-row"]):not([data-ui="settings-plugin-table-row"]):hover > [data-slot="table-cell"] {
   background:
     linear-gradient(90deg, rgba(91, 100, 255, 0.02), rgba(56, 189, 248, 0.012) 72%, transparent 100%);
 }
 
 .dark [data-slot="table-body"] [data-ui="title-table-row"]:hover,
-.dark [data-slot="table-body"] [data-ui="compact-title-table-row"]:hover {
+.dark [data-slot="table-body"] [data-ui="compact-title-table-row"]:hover,
+.dark [data-slot="table-body"] [data-ui="settings-plugin-table-row"]:hover {
   background:
     linear-gradient(90deg, rgba(91, 100, 255, 0.02), rgba(56, 189, 248, 0.012) 72%, transparent 100%);
 }

@@ -104,6 +104,7 @@ pub async fn sync_subtitle_with_policy(
         None,
         false,
         None,
+        None,
     )
     .await
 }
@@ -115,6 +116,7 @@ pub async fn sync_subtitle_with_policy_and_plugin_sync(
     _subtitle_sync_client: Option<Arc<dyn SubtitleSyncClient>>,
     _plugin_installed: bool,
     _reference_subtitle_path: Option<&Path>,
+    _media_metadata: Option<scryer_plugin_sdk::SubtitleSyncMediaMetadataSnapshot>,
 ) -> AppResult<SyncResult> {
     Ok(SyncResult {
         offset_ms: 0,
@@ -144,6 +146,7 @@ pub async fn sync_subtitle(
         },
         None,
         false,
+        None,
         None,
     )
     .await

@@ -1138,6 +1138,93 @@ async fn title_queries_find_by_external_id() {
 }
 
 #[tokio::test]
+async fn title_queries_list_existing_external_ids_in_library_and_facet_is_scoped() {
+    let db = std::env::temp_dir().join(format!(
+        "scryer_title_existing_external_ids_{}.db",
+        chrono::Utc::now().timestamp_micros()
+    ));
+    let services = SqliteServices::new(db.to_string_lossy())
+        .await
+        .expect("db should initialize");
+    let catalog = title_store(&services);
+    let movie_library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Movie);
+
+    let mut same_library_movie =
+        make_test_title("same-library-movie", Some("https://tvdb.example/same.jpg"));
+    same_library_movie.external_ids = vec![ExternalId {
+        source: "TVDB".to_string(),
+        value: "333333".to_string(),
+    }];
+    TitleRepository::create(&catalog, same_library_movie)
+        .await
+        .expect("same-library movie should insert");
+
+    let mut same_library_movie_upper = make_test_title(
+        "same-library-movie-upper",
+        Some("https://tvdb.example/upper.jpg"),
+    );
+    same_library_movie_upper.external_ids = vec![ExternalId {
+        source: "TVDB".to_string(),
+        value: "555555".to_string(),
+    }];
+    TitleRepository::create(&catalog, same_library_movie_upper)
+        .await
+        .expect("same-library uppercase-source movie should insert");
+
+    let mut other_library_movie = make_test_title(
+        "other-library-movie",
+        Some("https://tvdb.example/other.jpg"),
+    );
+    other_library_movie.library_id = "other-movie-library".to_string();
+    other_library_movie.external_ids = vec![ExternalId {
+        source: "tvdb".to_string(),
+        value: "123456".to_string(),
+    }];
+    TitleRepository::create(&catalog, other_library_movie)
+        .await
+        .expect("other-library movie should insert");
+
+    let mut different_facet_title = make_test_title(
+        "same-library-series",
+        Some("https://tvdb.example/series.jpg"),
+    );
+    different_facet_title.facet = MediaFacet::Series;
+    different_facet_title.library_id = movie_library_id.clone();
+    different_facet_title.external_ids = vec![ExternalId {
+        source: "tvdb".to_string(),
+        value: "444444".to_string(),
+    }];
+    TitleRepository::create(&catalog, different_facet_title)
+        .await
+        .expect("different-facet title should insert");
+
+    let values = vec![
+        "123456".to_string(),
+        "333333".to_string(),
+        "333333".to_string(),
+        "444444".to_string(),
+        "555555".to_string(),
+        "999999".to_string(),
+    ];
+    let existing = catalog
+        .list_existing_external_ids_in_library_and_facet(
+            &movie_library_id,
+            MediaFacet::Movie,
+            "TVDB",
+            &values,
+        )
+        .await
+        .expect("scoped existing-id lookup should succeed");
+
+    assert_eq!(
+        existing,
+        std::collections::BTreeSet::from(["333333".to_string(), "555555".to_string()])
+    );
+
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
 async fn title_queries_list_by_external_ids_preserve_request_order_for_unique_first_matches() {
     let db = std::env::temp_dir().join(format!(
         "scryer_title_external_id_batch_{}.db",

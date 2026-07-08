@@ -14,6 +14,7 @@ use scryer_domain::{ExternalId, MediaFacet, Title, title_catalog_sort_key};
 use serde::de::DeserializeOwned;
 use serde_json::Value as JsonValue;
 use sqlx::{QueryBuilder, Row, Sqlite, postgres::PgRow};
+use std::collections::BTreeSet;
 use unicode_normalization::UnicodeNormalization;
 
 use crate::media::canonical_tags::{
@@ -734,6 +735,13 @@ impl TitleRepository for TitleStore {
         source: &str,
         value: &str,
     ) -> AppResult<Option<Title>> {
+        let library_id = library_id.trim();
+        let source = source.trim().to_ascii_lowercase();
+        let value = value.trim();
+        if library_id.is_empty() || source.is_empty() || value.is_empty() {
+            return Ok(None);
+        }
+
         let sql = format!(
             "SELECT {TITLE_COLUMNS}
                FROM titles
@@ -741,8 +749,9 @@ impl TitleRepository for TitleStore {
                 AND id IN (
                     SELECT title_id
                       FROM title_external_ids
-                     WHERE facet = {{}}
-                       AND LOWER(source) = LOWER({{}})
+                     WHERE library_id = {{}}
+                       AND facet = {{}}
+                       AND source = {{}}
                        AND external_id = {{}}
                 )
               ORDER BY id
@@ -753,13 +762,71 @@ impl TitleRepository for TitleStore {
             &sql,
             &[
                 SqlArg::Text(library_id.to_string()),
+                SqlArg::Text(library_id.to_string()),
                 SqlArg::Text(facet.as_str().to_string()),
-                SqlArg::Text(source.to_string()),
+                SqlArg::Text(source),
                 SqlArg::Text(value.to_string()),
             ],
         )
         .await?;
         decode_optional_runtime_title_row(row.as_ref(), PersistedTitleReadMode::Presentation, true)
+    }
+
+    async fn list_existing_external_ids_in_library_and_facet(
+        &self,
+        library_id: &str,
+        facet: MediaFacet,
+        source: &str,
+        values: &[String],
+    ) -> AppResult<BTreeSet<String>> {
+        let library_id = library_id.trim();
+        let source = source.trim().to_ascii_lowercase();
+        if library_id.is_empty() || source.is_empty() || values.is_empty() {
+            return Ok(BTreeSet::new());
+        }
+
+        let requested = values
+            .iter()
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        if requested.is_empty() {
+            return Ok(BTreeSet::new());
+        }
+
+        let requested_values = std::iter::repeat_n("({})", requested.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            "WITH requested(external_id) AS (
+                 VALUES {requested_values}
+             )
+             SELECT DISTINCT requested.external_id AS external_id
+               FROM requested
+               JOIN title_external_ids
+                 ON title_external_ids.library_id = {{}}
+                AND title_external_ids.facet = {{}}
+                AND title_external_ids.source = {{}}
+                AND title_external_ids.external_id = requested.external_id
+              ORDER BY requested.external_id"
+        );
+        let mut args = Vec::with_capacity(requested.len() + 3);
+        for value in requested {
+            args.push(SqlArg::Text(value));
+        }
+        args.push(SqlArg::Text(library_id.to_string()));
+        args.push(SqlArg::Text(facet.as_str().to_string()));
+        args.push(SqlArg::Text(source));
+
+        let rows = SqlRuntime::fetch_all(self.datastore.read_exec(), &sql, &args).await?;
+        let mut existing = BTreeSet::new();
+        for row in rows {
+            existing.insert(row.text("external_id")?);
+        }
+        Ok(existing)
     }
 
     async fn create_or_get_existing(&self, title: Title) -> AppResult<CreateTitleOutcome> {

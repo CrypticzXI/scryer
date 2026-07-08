@@ -504,7 +504,7 @@ impl AppUseCase {
         self.require_library_permission(
             actor,
             &item.library_id,
-            scryer_domain::LibraryPermission::ResolveImports,
+            scryer_domain::LibraryPermission::ManageTitles,
         )
         .await?;
         if item.title_id.is_some() {
@@ -599,7 +599,7 @@ impl AppUseCase {
         self.require_library_permission(
             actor,
             &item.library_id,
-            scryer_domain::LibraryPermission::ResolveImports,
+            scryer_domain::LibraryPermission::ManageTitles,
         )
         .await?;
 
@@ -612,23 +612,30 @@ impl AppUseCase {
             .search_tvdb_rich(query, item.facet.as_str(), search_limit, language, year)
             .await?;
 
+        let mut seen_tvdb_ids = HashSet::new();
+        let tvdb_ids = results
+            .iter()
+            .map(|result| result.tvdb_id.trim())
+            .filter(|tvdb_id| !tvdb_id.is_empty())
+            .filter(|tvdb_id| seen_tvdb_ids.insert((*tvdb_id).to_string()))
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        let existing_tvdb_ids = self
+            .services
+            .catalog
+            .titles
+            .list_existing_external_ids_in_library_and_facet(
+                &item.library_id,
+                item.facet.clone(),
+                "tvdb",
+                &tvdb_ids,
+            )
+            .await?;
+
         let mut filtered = Vec::with_capacity(limit as usize);
         for result in results {
             let tvdb_id = result.tvdb_id.trim();
-            let exists_in_library = !tvdb_id.is_empty()
-                && self
-                    .services
-                    .catalog
-                    .titles
-                    .find_by_external_id_in_library_and_facet(
-                        &item.library_id,
-                        item.facet.clone(),
-                        "tvdb",
-                        tvdb_id,
-                    )
-                    .await?
-                    .is_some();
-            if exists_in_library {
+            if !tvdb_id.is_empty() && existing_tvdb_ids.contains(tvdb_id) {
                 continue;
             }
 

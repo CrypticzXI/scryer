@@ -1,7 +1,7 @@
 //! Guest-side HTTP helpers for Scryer plugins.
 //!
-//! This module preserves the existing Extism host HTTP ABI so existing plugins
-//! and newer SDK consumers can share the same runtime behavior.
+//! This module preserves the old source-level request builder API while routing
+//! wasm guests through Scryer's owned HTTP host ABI.
 
 use std::collections::BTreeMap;
 
