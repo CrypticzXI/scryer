@@ -559,7 +559,7 @@ impl AppUseCase {
             }
         };
         // A user pause is honored even against a monitored missing scope (§D5).
-        if wanted.status == WantedStatus::Paused {
+        if wanted.status == AcquisitionScopeStatus::Paused {
             return;
         }
         let category = self
@@ -728,7 +728,7 @@ impl AppUseCase {
                 .find_wanted_state_for_scope(&title.id, Some(episode_id), None, None)
                 .await
             {
-                Ok(Some(existing)) if existing.status == WantedStatus::Paused => continue,
+                Ok(Some(existing)) if existing.status == AcquisitionScopeStatus::Paused => continue,
                 Ok(Some(existing)) => existing,
                 Ok(None) => self.new_wanted_state_view(
                     title,
@@ -881,7 +881,7 @@ impl AppUseCase {
             .find_wanted_state_for_scope(&title.id, Some(&anchor.id), None, None)
             .await
         {
-            Ok(Some(existing)) if existing.status == WantedStatus::Paused => return,
+            Ok(Some(existing)) if existing.status == AcquisitionScopeStatus::Paused => return,
             Ok(Some(existing)) => existing,
             Ok(None) => self.new_wanted_state_view(
                 title,
@@ -1028,7 +1028,7 @@ impl AppUseCase {
                 .find_wanted_state_for_scope(&title.id, None, None, Some(&link.id))
                 .await
             {
-                Ok(Some(existing)) if existing.status == WantedStatus::Paused => continue,
+                Ok(Some(existing)) if existing.status == AcquisitionScopeStatus::Paused => continue,
                 Ok(Some(existing)) => existing,
                 Ok(None) => self.new_wanted_state_view(
                     title,
@@ -1186,7 +1186,7 @@ impl AppUseCase {
     /// Reuses the same logic as process_single_wanted_item for consistency.
     ///
     /// `wanted` may be an unpersisted state view (RFC 119 §D5): the scope's
-    /// ledger row is materialized via `ensure_wanted_state_row` before the first
+    /// ledger row is materialized via `ensure_acquisition_scope_state` before the first
     /// anchored write (release decision, pending release, grab), and every FK
     /// write uses the persisted id returned by it.
     #[expect(
@@ -1196,7 +1196,7 @@ impl AppUseCase {
     async fn try_grab_rss_release(
         &self,
         title: &Title,
-        wanted: &WantedItem,
+        wanted: &AcquisitionScopeState,
         scored: &[IndexerSearchResult],
         _category: &str,
         dl_snapshot: &super::acquisition_workflow::DownloadClientSnapshot,
@@ -1273,8 +1273,8 @@ impl AppUseCase {
         match self
             .services
             .workflow
-            .wanted_items
-            .ensure_wanted_state_row(&wanted)
+            .acquisition_scope_states
+            .ensure_acquisition_scope_state(&wanted)
             .await
         {
             Ok(id) => wanted.id = id,
@@ -1352,7 +1352,7 @@ impl AppUseCase {
             let _ = self
                 .services
                 .workflow
-                .wanted_items
+                .acquisition_scope_states
                 .insert_release_decision(&decision_record)
                 .await;
 
@@ -1628,8 +1628,8 @@ impl AppUseCase {
                 let _ = self
                     .services
                     .workflow
-                    .wanted_items
-                    .transition_wanted_to_grabbed(&WantedGrabTransition {
+                    .acquisition_scope_states
+                    .transition_acquisition_scope_to_grabbed(&AcquisitionScopeGrabTransition {
                         id: wanted.id.clone(),
                         last_search_at: Some(now.to_rfc3339()),
                         current_score: Some(candidate_score),

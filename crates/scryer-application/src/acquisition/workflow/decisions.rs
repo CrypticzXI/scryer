@@ -32,7 +32,7 @@ fn effective_auto_decision_code(
 }
 async fn record_release_decision(
     app: &AppUseCase,
-    item: &WantedItem,
+    item: &AcquisitionScopeState,
     title: &Title,
     candidate: &IndexerSearchResult,
     decision_code: ReleaseAutoDecisionCode,
@@ -68,7 +68,7 @@ async fn record_release_decision(
     let _ = app
         .services
         .workflow
-        .wanted_items
+        .acquisition_scope_states
         .insert_release_decision(&decision_record)
         .await;
 }
@@ -82,8 +82,8 @@ impl AppUseCase {
             let wanted = self
                 .services
                 .workflow
-                .wanted_items
-                .get_wanted_item_by_id(wid)
+                .acquisition_scope_states
+                .get_acquisition_scope_state_by_id(wid)
                 .await?
                 .ok_or_else(|| AppError::NotFound(format!("wanted item {wid}")))?;
             let library_id = if let Some(library_id) = wanted.library_id.as_deref() {
@@ -106,8 +106,8 @@ impl AppUseCase {
             return self
                 .services
                 .workflow
-                .wanted_items
-                .list_release_decisions_for_wanted_item(wid, query.limit)
+                .acquisition_scope_states
+                .list_release_decisions_for_acquisition_scope_state(wid, query.limit)
                 .await;
         }
         if let Some(tid) = query.title_id.as_deref() {
@@ -127,7 +127,7 @@ impl AppUseCase {
             return self
                 .services
                 .workflow
-                .wanted_items
+                .acquisition_scope_states
                 .list_release_decisions_for_title(tid, query.limit)
                 .await;
         }

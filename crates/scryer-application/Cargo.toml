@@ -16,8 +16,6 @@ runtime-archives = [
     "dep:lzma-rs",
     "dep:sevenz-rust2",
     "dep:tar",
-    "dep:weaver-unrar",
-    "dep:zip",
     "dep:zstd",
 ]
 runtime-backups = ["dep:tar", "dep:zstd"]
@@ -64,11 +62,7 @@ semver = { workspace = true }
 metrics = { workspace = true }
 base64 = "0.22"
 brotli = { version = "8", optional = true }
-weaver-unrar = { version = "0.1.0", default-features = false, features = [
-    "native-crypto",
-], optional = true }
 sevenz-rust2 = { version = "0.21", features = ["aes256", "bzip2", "deflate", "zstd"], optional = true }
-zip = { version = "8", default-features = false, features = ["deflate"], optional = true }
 tar = { version = "0.4", optional = true }
 flate2 = { version = "1", optional = true }
 zstd = { version = "0.13", default-features = false, optional = true }

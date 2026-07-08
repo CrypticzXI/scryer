@@ -34,7 +34,7 @@ pub use notification::{
     to_script_environment, to_webhook_json,
 };
 
-pub const SDK_VERSION: &str = "3.2.0";
+pub const SDK_VERSION: &str = "3.3.0";
 
 pub fn current_sdk_constraint() -> String {
     legacy_sdk_constraint(SDK_VERSION)
@@ -303,6 +303,7 @@ pub const EXPORT_SUBTITLE_SEARCH: &str = "scryer_subtitle_search";
 pub const EXPORT_SUBTITLE_DOWNLOAD: &str = "scryer_subtitle_download";
 pub const EXPORT_SUBTITLE_GENERATE: &str = "scryer_subtitle_generate";
 pub const EXPORT_SUBSYNC_ALIGN: &str = "scryer_subsync_align";
+pub const EXPORT_ARCHIVE_PROCESS: &str = "scryer_archive_process";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -311,6 +312,7 @@ pub enum PluginKind {
     DownloadClient,
     Notification,
     SubtitleProvider,
+    ArchiveExtractor,
 }
 
 impl PluginKind {
@@ -320,6 +322,7 @@ impl PluginKind {
             Self::DownloadClient => "download_client",
             Self::Notification => "notification",
             Self::SubtitleProvider => "subtitle_provider",
+            Self::ArchiveExtractor => "archive_extractor",
         }
     }
 }
@@ -363,6 +366,7 @@ impl PluginDescriptor {
             ProviderDescriptor::DownloadClient(_) => PluginKind::DownloadClient,
             ProviderDescriptor::Notification(_) => PluginKind::Notification,
             ProviderDescriptor::Subtitle(_) => PluginKind::SubtitleProvider,
+            ProviderDescriptor::ArchiveExtractor(_) => PluginKind::ArchiveExtractor,
         }
     }
 
@@ -372,6 +376,7 @@ impl PluginDescriptor {
             ProviderDescriptor::DownloadClient(_) => PluginKind::DownloadClient.as_str(),
             ProviderDescriptor::Notification(_) => PluginKind::Notification.as_str(),
             ProviderDescriptor::Subtitle(_) => PluginKind::SubtitleProvider.as_str(),
+            ProviderDescriptor::ArchiveExtractor(_) => PluginKind::ArchiveExtractor.as_str(),
         }
     }
 
@@ -381,6 +386,7 @@ impl PluginDescriptor {
             ProviderDescriptor::DownloadClient(provider) => provider.provider_type.as_str(),
             ProviderDescriptor::Notification(provider) => provider.provider_type.as_str(),
             ProviderDescriptor::Subtitle(provider) => provider.provider_type.as_str(),
+            ProviderDescriptor::ArchiveExtractor(provider) => provider.provider_type.as_str(),
         }
     }
 
@@ -390,6 +396,7 @@ impl PluginDescriptor {
             ProviderDescriptor::DownloadClient(provider) => provider.provider_aliases.as_slice(),
             ProviderDescriptor::Notification(provider) => provider.provider_aliases.as_slice(),
             ProviderDescriptor::Subtitle(provider) => provider.provider_aliases.as_slice(),
+            ProviderDescriptor::ArchiveExtractor(provider) => provider.provider_aliases.as_slice(),
         }
     }
 
@@ -399,6 +406,7 @@ impl PluginDescriptor {
             ProviderDescriptor::DownloadClient(provider) => provider.config_fields.as_slice(),
             ProviderDescriptor::Notification(provider) => provider.config_fields.as_slice(),
             ProviderDescriptor::Subtitle(provider) => provider.config_fields.as_slice(),
+            ProviderDescriptor::ArchiveExtractor(provider) => provider.config_fields.as_slice(),
         }
     }
 
@@ -408,6 +416,7 @@ impl PluginDescriptor {
             ProviderDescriptor::DownloadClient(provider) => &mut provider.config_fields,
             ProviderDescriptor::Notification(provider) => &mut provider.config_fields,
             ProviderDescriptor::Subtitle(provider) => &mut provider.config_fields,
+            ProviderDescriptor::ArchiveExtractor(provider) => &mut provider.config_fields,
         }
     }
 
@@ -417,6 +426,7 @@ impl PluginDescriptor {
             ProviderDescriptor::DownloadClient(provider) => provider.allowed_hosts.as_slice(),
             ProviderDescriptor::Notification(provider) => provider.allowed_hosts.as_slice(),
             ProviderDescriptor::Subtitle(provider) => provider.allowed_hosts.as_slice(),
+            ProviderDescriptor::ArchiveExtractor(provider) => provider.allowed_hosts.as_slice(),
         }
     }
 
@@ -430,6 +440,7 @@ impl PluginDescriptor {
             ProviderDescriptor::DownloadClient(provider) => provider.default_base_url.as_deref(),
             ProviderDescriptor::Notification(provider) => provider.default_base_url.as_deref(),
             ProviderDescriptor::Subtitle(provider) => provider.default_base_url.as_deref(),
+            ProviderDescriptor::ArchiveExtractor(provider) => provider.default_base_url.as_deref(),
         }
     }
 
@@ -447,6 +458,7 @@ impl PluginDescriptor {
             ProviderDescriptor::DownloadClient(provider) => provider.default_base_url = value,
             ProviderDescriptor::Notification(provider) => provider.default_base_url = value,
             ProviderDescriptor::Subtitle(provider) => provider.default_base_url = value,
+            ProviderDescriptor::ArchiveExtractor(provider) => provider.default_base_url = value,
         }
     }
 
@@ -477,6 +489,13 @@ impl PluginDescriptor {
             _ => None,
         }
     }
+
+    pub fn archive_extractor(&self) -> Option<&ArchiveExtractorDescriptor> {
+        match &self.provider {
+            ProviderDescriptor::ArchiveExtractor(provider) => Some(provider),
+            _ => None,
+        }
+    }
 }
 
 #[cfg(all(not(target_arch = "wasm32"), feature = "host-runtime"))]
@@ -497,6 +516,7 @@ fn required_exports_for_descriptor(descriptor: &PluginDescriptor) -> Vec<&'stati
             EXPORT_DOWNLOAD_TEST_CONNECTION,
         ]),
         ProviderDescriptor::Notification(_) => exports.push(EXPORT_NOTIFICATION_SEND),
+        ProviderDescriptor::ArchiveExtractor(_) => exports.push(EXPORT_ARCHIVE_PROCESS),
         ProviderDescriptor::Subtitle(subtitle) => {
             exports.push(EXPORT_VALIDATE_CONFIG);
             match subtitle.capabilities.mode {
@@ -664,6 +684,7 @@ pub enum ProviderDescriptor {
     DownloadClient(DownloadClientDescriptor),
     Notification(NotificationDescriptor),
     Subtitle(SubtitleDescriptor),
+    ArchiveExtractor(ArchiveExtractorDescriptor),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -732,6 +753,42 @@ pub struct SubtitleDescriptor {
     pub allowed_hosts: Vec<String>,
     #[serde(default)]
     pub capabilities: SubtitleCapabilities,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ArchiveExtractorDescriptor {
+    pub provider_type: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub provider_aliases: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub config_fields: Vec<ConfigFieldDef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_base_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_hosts: Vec<String>,
+    #[serde(default)]
+    pub capabilities: ArchiveExtractorCapabilities,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct ArchiveExtractorCapabilities {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub formats: Vec<ArchivePluginFormat>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub repair_formats: Vec<ArchivePluginRepairFormat>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ArchivePluginFormat {
+    Rar,
+    Zip,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ArchivePluginRepairFormat {
+    Par2,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -1066,6 +1123,105 @@ pub struct PluginError {
 pub enum PluginResult<T> {
     Ok(T),
     Err(PluginError),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ArchivePluginProcessRequest {
+    pub operation: ArchivePluginOperation,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ArchivePluginOperation {
+    Inspect {
+        source_dir: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        archive_path: Option<String>,
+    },
+    ExtractArchive {
+        archive_path: String,
+        output_dir: String,
+        format: ArchivePluginFormat,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        password: Option<String>,
+    },
+    VerifyRepairSet {
+        source_dir: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        par2_path: Option<String>,
+    },
+    RepairThenExtract {
+        source_dir: String,
+        output_dir: String,
+        format: ArchivePluginFormat,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        par2_path: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        archive_path: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        password: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ArchivePluginProcessResponse {
+    pub status: ArchivePluginStatus,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub files: Vec<ArchivePluginExtractedFile>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repair: Option<ArchivePluginRepairStatus>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expanded_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub copied_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub staged_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_code: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ArchivePluginStatus {
+    Ok,
+    UnsupportedFormat,
+    PasswordRequired,
+    PasswordInvalid,
+    RepairRequired,
+    RepairFailed,
+    Failed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ArchivePluginExtractedFile {
+    pub relative_path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checksum: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ArchivePluginRepairStatus {
+    pub status: ArchivePluginRepairState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub read_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub written_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ArchivePluginRepairState {
+    NotNeeded,
+    Verified,
+    Repaired,
+    InsufficientRecoveryData,
+    Failed,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
@@ -2354,6 +2510,8 @@ struct PluginSdkSchemaDocument {
     download_mark_imported_request: PluginDownloadClientMarkImportedRequest,
     download_mark_imported_result: PluginResult<()>,
     download_status_result: PluginResult<PluginDownloadClientStatus>,
+    archive_process_request: ArchivePluginProcessRequest,
+    archive_process_result: PluginResult<ArchivePluginProcessResponse>,
     notification_request: PluginNotificationRequest,
     notification_result: PluginResult<PluginNotificationResponse>,
 }
@@ -2374,7 +2532,7 @@ mod tests {
 
     #[test]
     fn current_sdk_constraint_uses_current_v3_minor_floor() {
-        assert_eq!(current_sdk_constraint(), ">=3.2.0, <4.0.0");
+        assert_eq!(current_sdk_constraint(), ">=3.3.0, <4.0.0");
     }
 
     #[test]

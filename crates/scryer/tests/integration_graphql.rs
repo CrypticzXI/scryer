@@ -53,7 +53,7 @@ use scryer_application::{
     MediaServerConnectionRepository, PendingRelease, PendingReleaseRepository, ReleaseDecision,
     ShowRepository, TitleEpisodeProgressSummary, TitleMediaFile, TitleMediaSizeSummary,
     TitleMovieMediaSummary, TitleQualitySummary, TitleRepository, TotpEnrollmentChallengeRecord,
-    TotpFailedAttemptRecord, TotpRepository, UserRepository, WantedItem, WantedItemRepository,
+    TotpFailedAttemptRecord, TotpRepository, UserRepository, AcquisitionScopeState, AcquisitionScopeStateRepository,
     WebauthnCredentialRecord, WebauthnRepository, start_background_download_delete_poller,
 };
 use scryer_domain::{

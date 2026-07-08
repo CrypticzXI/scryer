@@ -644,7 +644,7 @@ async fn external_import_monitor_snapshot_enables_collection_for_monitored_episo
     let download_client = Arc::new(StubDownloadClient::default());
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
     let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
-    let wanted_items = Arc::new(TrackingWantedItemRepo::default());
+    let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
     let (app, user) = bootstrap_with_acquisition_tracking(
         download_client,
         download_submissions,

@@ -194,6 +194,11 @@ impl AppUseCase {
             .filter(|plugin| plugin.descriptor.plugin_type() == "subtitle_provider")
             .cloned()
             .collect::<Vec<_>>();
+        let archive_extractor_plugins = runtime_plugins
+            .iter()
+            .filter(|plugin| plugin.descriptor.plugin_type() == "archive_extractor")
+            .cloned()
+            .collect::<Vec<_>>();
         let notification_plugins = runtime_plugins
             .iter()
             .filter(|plugin| plugin.descriptor.plugin_type() == "notification")
@@ -251,6 +256,21 @@ impl AppUseCase {
                 .reload_runtime_plugins(&subtitle_plugins, &disabled_builtins)
                 .map_err(|e| {
                     AppError::Repository(format!("failed to reload subtitle plugin provider: {e}"))
+                })?;
+        }
+
+        if let Some(provider) = self
+            .services
+            .integrations
+            .archive_extractor_plugin_provider
+            .available()
+        {
+            provider
+                .reload_runtime_plugins(&archive_extractor_plugins, &disabled_builtins)
+                .map_err(|e| {
+                    AppError::Repository(format!(
+                        "failed to reload archive extractor plugin provider: {e}"
+                    ))
                 })?;
         }
 

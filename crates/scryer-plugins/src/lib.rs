@@ -1,3 +1,5 @@
+mod archive_adapter;
+mod archive_crypto_host;
 pub mod builtins;
 mod download_client_adapter;
 mod indexer_adapter;
@@ -11,15 +13,19 @@ mod subtitle_adapter;
 mod subtitle_sync_adapter;
 mod types;
 
+pub use loader::DynamicArchiveExtractorPluginProvider;
 pub use loader::DynamicDownloadClientPluginProvider;
 pub use loader::DynamicNotificationPluginProvider;
 pub use loader::DynamicPluginProvider;
 pub use loader::DynamicSubtitlePluginProvider;
+pub use loader::WasmArchiveExtractorPluginProvider;
 pub use loader::WasmDownloadClientPluginProvider;
 pub use loader::WasmIndexerPluginProvider;
 pub use loader::WasmNotificationPluginProvider;
 pub use loader::WasmPluginDescriptorLoader;
 pub use loader::WasmSubtitlePluginProvider;
+pub use loader::build_archive_extractor_plugin_provider;
+pub use loader::build_archive_extractor_plugin_provider_from_runtime_plugins;
 pub use loader::build_download_client_plugin_provider;
 pub use loader::build_download_client_plugin_provider_from_runtime_plugins;
 pub use loader::build_indexer_plugin_provider;

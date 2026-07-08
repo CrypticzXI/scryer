@@ -67,7 +67,7 @@ pub struct WantedScopeView {
     /// Recency lane (`true` = hot). Upgrades are always cold.
     pub is_hot: bool,
     /// The activity-driven acquisition-state row, when one exists for this scope.
-    pub state: Option<WantedItem>,
+    pub state: Option<AcquisitionScopeState>,
     pub convergence: WantedViewConvergence,
 }
 
@@ -210,15 +210,15 @@ impl AppUseCase {
     /// uses.
     async fn non_wanted_state_scope_keys(&self) -> AppResult<HashSet<String>> {
         let mut excluded = HashSet::new();
-        for status in [WantedStatus::Paused, WantedStatus::Grabbed] {
+        for status in [AcquisitionScopeStatus::Paused, AcquisitionScopeStatus::Grabbed] {
             let items = self
                 .services
                 .workflow
-                .wanted_items
-                .list_wanted_items(WantedItemsQuery {
+                .acquisition_scope_states
+                .list_acquisition_scope_states(AcquisitionScopeStatesQuery {
                     statuses: vec![status.as_str().to_string()],
                     limit: i64::MAX,
-                    ..WantedItemsQuery::default()
+                    ..AcquisitionScopeStatesQuery::default()
                 })
                 .await?;
             for item in items {
@@ -842,8 +842,8 @@ impl AppUseCase {
         if let Some(item) = self
             .services
             .workflow
-            .wanted_items
-            .get_wanted_item_by_id(identifier)
+            .acquisition_scope_states
+            .get_acquisition_scope_state_by_id(identifier)
             .await?
         {
             let scope = SubmissionScope::from_persisted(
@@ -921,13 +921,13 @@ impl AppUseCase {
     pub(crate) async fn resolve_or_create_wanted_state_row(
         &self,
         identifier: &str,
-    ) -> AppResult<Option<WantedItem>> {
+    ) -> AppResult<Option<AcquisitionScopeState>> {
         // An existing state-row id resolves directly.
         if let Some(item) = self
             .services
             .workflow
-            .wanted_items
-            .get_wanted_item_by_id(identifier.trim())
+            .acquisition_scope_states
+            .get_acquisition_scope_state_by_id(identifier.trim())
             .await?
         {
             return Ok(Some(item));
@@ -987,13 +987,13 @@ impl AppUseCase {
         let row_id = self
             .services
             .workflow
-            .wanted_items
-            .ensure_wanted_state_row(&view)
+            .acquisition_scope_states
+            .ensure_acquisition_scope_state(&view)
             .await?;
         self.services
             .workflow
-            .wanted_items
-            .get_wanted_item_by_id(&row_id)
+            .acquisition_scope_states
+            .get_acquisition_scope_state_by_id(&row_id)
             .await
     }
 

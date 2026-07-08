@@ -620,10 +620,9 @@ async fn execute_resolved_episode_import(
         link_type: Some(link_type),
     })
 }
-/// Mark a wanted item as completed for a title (and optionally a specific episode).
-/// If `imported_score` is provided, it becomes the new `current_score`.
-/// If the quality profile allows upgrades, the item re-enters "wanted" status
-/// with a recomputed schedule (the 24h cooldown in `evaluate_upgrade` prevents churn).
+/// Mark an existing acquisition-state row completed for a title scope.
+/// If no row exists, leave it absent: convergence derives target-ness from
+/// library state, so passive scans/imports must not synthesize wanted rows.
 pub(crate) async fn mark_wanted_completed(
     app: &AppUseCase,
     title_id: &str,
@@ -635,70 +634,14 @@ pub(crate) async fn mark_wanted_completed(
     match app
         .services
         .workflow
-        .wanted_items
-        .complete_wanted_item_for_title(title_id, episode_id, Some(&now), imported_score)
+        .acquisition_scope_states
+        .complete_acquisition_scope_for_title(title_id, episode_id, Some(&now), imported_score)
         .await
     {
         Ok(true) => {}
-        Ok(false) => {
-            if let Err(err) =
-                materialize_completed_wanted_state_row(app, title_id, episode_id, &now, imported_score)
-                    .await
-            {
-                tracing::warn!(error = %err, title_id = %title_id, "failed to materialize completed wanted item");
-            }
-        }
+        Ok(false) => {}
         Err(err) => {
             tracing::warn!(error = %err, title_id = %title_id, "failed to mark wanted item completed");
         }
     }
-}
-
-async fn materialize_completed_wanted_state_row(
-    app: &AppUseCase,
-    title_id: &str,
-    episode_id: Option<&str>,
-    completed_at: &str,
-    imported_score: Option<i32>,
-) -> AppResult<()> {
-    let Some(title) = app.services.catalog.titles.get_by_id(title_id).await? else {
-        return Ok(());
-    };
-
-    let (media_type, episode, season_number) = if let Some(episode_id) = episode_id {
-        let episode = app
-            .services
-            .catalog
-            .shows
-            .get_episode_by_id(episode_id)
-            .await?;
-        let season_number = episode
-            .as_ref()
-            .and_then(|episode| episode.season_number.clone());
-        ("episode", episode, season_number)
-    } else {
-        ("movie", None, None)
-    };
-
-    let mut item = app.new_wanted_state_view(
-        &title,
-        media_type,
-        episode_id.map(str::to_string),
-        None,
-        None,
-        season_number,
-    );
-    item.episode_number = episode
-        .as_ref()
-        .and_then(|episode| episode.episode_number.clone());
-    item.last_search_at = Some(completed_at.to_string());
-    item.status = WantedStatus::Completed;
-    item.current_score = imported_score;
-
-    app.services
-        .workflow
-        .wanted_items
-        .upsert_wanted_item(&item)
-        .await?;
-    Ok(())
 }

@@ -20,7 +20,7 @@ use scryer_application::{
     AppResult, AppServices, AppUseCase, AuthenticatedTokenClaims, BlocklistRepository,
     FacetRegistry, HousekeepingRepository, IndexerPluginProvider, JwtAuthConfig, MovieFacetHandler,
     OAuthAuthorizationSource, PendingReleaseRepository, SeriesFacetHandler,
-    SubtitleDownloadRepository, WantedItemRepository,
+    SubtitleDownloadRepository, AcquisitionScopeStateRepository,
 };
 use scryer_infrastructure::sqlite::{
     LibraryStore, PluginStore, PostProcessingScriptStore, QualityProfileStore, RuleSetStore,
@@ -84,12 +84,12 @@ pub struct TestLibraryStateStore {
 }
 
 #[async_trait]
-impl WantedItemRepository for TestLibraryStateStore {
-    async fn upsert_wanted_item(&self, item: &scryer_application::WantedItem) -> AppResult<String> {
-        self.wanted.upsert_wanted_item(item).await
+impl AcquisitionScopeStateRepository for TestLibraryStateStore {
+    async fn upsert_acquisition_scope_state(&self, item: &scryer_application::AcquisitionScopeState) -> AppResult<String> {
+        self.wanted.upsert_acquisition_scope_state(item).await
     }
 
-    async fn update_wanted_item_status(
+    async fn update_acquisition_scope_status(
         &self,
         id: &str,
         status: &str,
@@ -98,48 +98,48 @@ impl WantedItemRepository for TestLibraryStateStore {
         grabbed_release: Option<&str>,
     ) -> AppResult<()> {
         self.wanted
-            .update_wanted_item_status(id, status, last_search_at, current_score, grabbed_release)
+            .update_acquisition_scope_status(id, status, last_search_at, current_score, grabbed_release)
             .await
     }
 
-    async fn record_wanted_search_attempt(&self, id: &str, last_search_at: &str) -> AppResult<()> {
+    async fn record_acquisition_scope_search_attempt(&self, id: &str, last_search_at: &str) -> AppResult<()> {
         self.wanted
-            .record_wanted_search_attempt(id, last_search_at)
+            .record_acquisition_scope_search_attempt(id, last_search_at)
             .await
     }
 
-    async fn get_wanted_item_for_title(
+    async fn get_acquisition_scope_state_for_title(
         &self,
         title_id: &str,
         episode_id: Option<&str>,
-    ) -> AppResult<Option<scryer_application::WantedItem>> {
+    ) -> AppResult<Option<scryer_application::AcquisitionScopeState>> {
         self.wanted
-            .get_wanted_item_for_title(title_id, episode_id)
+            .get_acquisition_scope_state_for_title(title_id, episode_id)
             .await
     }
 
-    async fn delete_wanted_items_for_title(&self, title_id: &str) -> AppResult<()> {
-        self.wanted.delete_wanted_items_for_title(title_id).await
+    async fn delete_acquisition_scope_states_for_title(&self, title_id: &str) -> AppResult<()> {
+        self.wanted.delete_acquisition_scope_states_for_title(title_id).await
     }
 
-    async fn delete_wanted_items_for_collection(&self, collection_id: &str) -> AppResult<()> {
+    async fn delete_acquisition_scope_states_for_collection(&self, collection_id: &str) -> AppResult<()> {
         self.wanted
-            .delete_wanted_items_for_collection(collection_id)
+            .delete_acquisition_scope_states_for_collection(collection_id)
             .await
     }
 
-    async fn delete_wanted_items_for_series_movie_link(
+    async fn delete_acquisition_scope_states_for_series_movie_link(
         &self,
         series_movie_link_id: &str,
     ) -> AppResult<()> {
         self.wanted
-            .delete_wanted_items_for_series_movie_link(series_movie_link_id)
+            .delete_acquisition_scope_states_for_series_movie_link(series_movie_link_id)
             .await
     }
 
-    async fn delete_wanted_items_for_episode(&self, episode_id: &str) -> AppResult<()> {
+    async fn delete_acquisition_scope_states_for_episode(&self, episode_id: &str) -> AppResult<()> {
         self.wanted
-            .delete_wanted_items_for_episode(episode_id)
+            .delete_acquisition_scope_states_for_episode(episode_id)
             .await
     }
 
@@ -150,25 +150,25 @@ impl WantedItemRepository for TestLibraryStateStore {
         self.wanted.insert_release_decision(decision).await
     }
 
-    async fn get_wanted_item_by_id(
+    async fn get_acquisition_scope_state_by_id(
         &self,
         id: &str,
-    ) -> AppResult<Option<scryer_application::WantedItem>> {
-        self.wanted.get_wanted_item_by_id(id).await
+    ) -> AppResult<Option<scryer_application::AcquisitionScopeState>> {
+        self.wanted.get_acquisition_scope_state_by_id(id).await
     }
 
-    async fn list_wanted_items(
+    async fn list_acquisition_scope_states(
         &self,
-        query: scryer_application::WantedItemsQuery,
-    ) -> AppResult<Vec<scryer_application::WantedItem>> {
-        self.wanted.list_wanted_items(query).await
+        query: scryer_application::AcquisitionScopeStatesQuery,
+    ) -> AppResult<Vec<scryer_application::AcquisitionScopeState>> {
+        self.wanted.list_acquisition_scope_states(query).await
     }
 
-    async fn count_wanted_items(
+    async fn count_acquisition_scope_states(
         &self,
-        query: scryer_application::WantedItemsQuery,
+        query: scryer_application::AcquisitionScopeStatesQuery,
     ) -> AppResult<i64> {
-        self.wanted.count_wanted_items(query).await
+        self.wanted.count_acquisition_scope_states(query).await
     }
 
     async fn list_release_decisions_for_title(
@@ -181,13 +181,13 @@ impl WantedItemRepository for TestLibraryStateStore {
             .await
     }
 
-    async fn list_release_decisions_for_wanted_item(
+    async fn list_release_decisions_for_acquisition_scope_state(
         &self,
         wanted_item_id: &str,
         limit: i64,
     ) -> AppResult<Vec<scryer_application::ReleaseDecision>> {
         self.wanted
-            .list_release_decisions_for_wanted_item(wanted_item_id, limit)
+            .list_release_decisions_for_acquisition_scope_state(wanted_item_id, limit)
             .await
     }
 }
@@ -290,13 +290,13 @@ impl PendingReleaseRepository for TestLibraryStateStore {
             .await
     }
 
-    async fn supersede_pending_releases_for_wanted_item(
+    async fn supersede_pending_releases_for_acquisition_scope_state(
         &self,
         wanted_item_id: &str,
         except_id: &str,
     ) -> AppResult<()> {
         self.pending_releases
-            .supersede_pending_releases_for_wanted_item(wanted_item_id, except_id)
+            .supersede_pending_releases_for_acquisition_scope_state(wanted_item_id, except_id)
             .await
     }
 
@@ -721,7 +721,7 @@ impl TestContext {
             app_data_dir.path().display().to_string(),
         )
         .with_media_files(Arc::new(media_file_store.clone()))
-        .with_wanted_items(Arc::new(wanted_store))
+        .with_acquisition_scope_states(Arc::new(wanted_store))
         .with_pending_releases(Arc::new(pending_release_store))
         .with_blocklist_repo(Arc::new(blocklist_store))
         .with_library_probe_signatures(Arc::new(library_probe_store.clone()))

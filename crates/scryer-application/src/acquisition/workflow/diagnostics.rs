@@ -21,17 +21,17 @@ impl AppUseCase {
         let recent_decisions = self
             .services
             .workflow
-            .wanted_items
+            .acquisition_scope_states
             .list_release_decisions_for_title(title_id, 25)
             .await?;
         let wanted_items = self
             .services
             .workflow
-            .wanted_items
-            .list_wanted_items(WantedItemsQuery {
+            .acquisition_scope_states
+            .list_acquisition_scope_states(AcquisitionScopeStatesQuery {
                 title_id: Some(title_id.to_string()),
                 limit: 500,
-                ..WantedItemsQuery::default()
+                ..AcquisitionScopeStatesQuery::default()
             })
             .await?;
         let pending_releases = self
@@ -62,7 +62,7 @@ impl AppUseCase {
 
         let mismatch_recovery_eligible_count = wanted_items
             .iter()
-            .filter(|item| item.status == WantedStatus::Wanted && item.mismatch_recovery_eligible)
+            .filter(|item| item.status == AcquisitionScopeStatus::Wanted && item.mismatch_recovery_eligible)
             .count() as i64;
 
         let mut decision_counts = decision_counts

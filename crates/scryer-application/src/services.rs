@@ -1311,6 +1311,8 @@ pub struct AppIntegrationServices {
     pub(crate) download_client_plugin_provider:
         RuntimeFeature<Arc<dyn DownloadClientPluginProvider>>,
     pub(crate) subtitle_plugin_provider: RuntimeFeature<Arc<dyn SubtitlePluginProvider>>,
+    pub(crate) archive_extractor_plugin_provider:
+        RuntimeFeature<Arc<dyn ArchiveExtractorPluginProvider>>,
 }
 
 #[derive(Clone)]
@@ -1326,7 +1328,7 @@ pub struct AppWorkflowServices {
     pub(crate) release_attempts: Arc<dyn ReleaseAttemptRepository>,
     pub(crate) acquisition_state: Arc<dyn AcquisitionStateRepository>,
     pub(crate) download_submissions: Arc<dyn DownloadSubmissionRepository>,
-    pub(crate) wanted_items: Arc<dyn WantedItemRepository>,
+    pub(crate) acquisition_scope_states: Arc<dyn AcquisitionScopeStateRepository>,
     pub(crate) housekeeping: Arc<dyn HousekeepingRepository>,
     pub(crate) pending_releases: Arc<dyn PendingReleaseRepository>,
     pub(crate) blocklist_repo: Arc<dyn BlocklistRepository>,
@@ -1545,6 +1547,7 @@ impl AppServices {
                 plugin_provider: RuntimeFeature::Disabled,
                 download_client_plugin_provider: RuntimeFeature::Disabled,
                 subtitle_plugin_provider: RuntimeFeature::Disabled,
+                archive_extractor_plugin_provider: RuntimeFeature::Disabled,
             },
             workflow: AppWorkflowServices {
                 imports: Arc::new(NullImportRepository),
@@ -1563,7 +1566,7 @@ impl AppServices {
                 release_attempts,
                 acquisition_state: Arc::new(NullAcquisitionStateRepository),
                 download_submissions: Arc::new(NullDownloadSubmissionRepository),
-                wanted_items: Arc::new(NullWantedItemRepository),
+                acquisition_scope_states: Arc::new(NullAcquisitionScopeStateRepository),
                 housekeeping: Arc::new(NullHousekeepingRepository),
                 pending_releases: Arc::new(NullPendingReleaseRepository),
                 blocklist_repo: Arc::new(NullBlocklistRepository),
@@ -1640,7 +1643,7 @@ struct AppServicesBuildConfiguration {
     media_files: bool,
     acquisition_state: bool,
     download_submissions: bool,
-    wanted_items: bool,
+    acquisition_scope_states: bool,
     rule_sets: bool,
     pp_scripts: bool,
     plugin_installations: bool,
@@ -1686,8 +1689,8 @@ impl AppServicesBuildConfiguration {
         if !self.download_submissions {
             missing.push("download_submissions");
         }
-        if !self.wanted_items {
-            missing.push("wanted_items");
+        if !self.acquisition_scope_states {
+            missing.push("acquisition_scope_states");
         }
         if !self.rule_sets {
             missing.push("rule_sets");
@@ -1992,10 +1995,10 @@ impl AppServicesBuilder {
         Arc<dyn AcquisitionStateRepository>
     );
     app_services_builder_required_setter!(
-        with_wanted_items,
-        workflow.wanted_items,
-        wanted_items,
-        Arc<dyn WantedItemRepository>
+        with_acquisition_scope_states,
+        workflow.acquisition_scope_states,
+        acquisition_scope_states,
+        Arc<dyn AcquisitionScopeStateRepository>
     );
     app_services_builder_required_setter!(
         with_pending_releases,
@@ -2130,6 +2133,11 @@ impl AppServicesBuilder {
         with_subtitle_plugin_provider,
         integrations.subtitle_plugin_provider,
         Arc<dyn SubtitlePluginProvider>
+    );
+    app_services_builder_runtime_feature_setter!(
+        with_archive_extractor_plugin_provider,
+        integrations.archive_extractor_plugin_provider,
+        Arc<dyn ArchiveExtractorPluginProvider>
     );
     pub fn with_notification_provider(
         mut self,
@@ -2642,7 +2650,7 @@ impl AppUseCase {
         }
     }
 
-    async fn derive_wanted_item_library_id(&self, wanted: &WantedItem) -> AppResult<String> {
+    async fn derive_wanted_item_library_id(&self, wanted: &AcquisitionScopeState) -> AppResult<String> {
         if let Some(library_id) = wanted.library_id.as_deref() {
             return Ok(library_id.to_string());
         }
@@ -2872,7 +2880,7 @@ impl AppUseCase {
         actor: &User,
         title_id: &str,
         episode_id: Option<&str>,
-    ) -> AppResult<Option<WantedItem>> {
+    ) -> AppResult<Option<AcquisitionScopeState>> {
         let title = self
             .services
             .catalog
@@ -2888,8 +2896,8 @@ impl AppUseCase {
         .await?;
         self.services
             .workflow
-            .wanted_items
-            .get_wanted_item_for_title(title_id, episode_id)
+            .acquisition_scope_states
+            .get_acquisition_scope_state_for_title(title_id, episode_id)
             .await
     }
 
@@ -2914,12 +2922,12 @@ impl AppUseCase {
         &self,
         actor: &User,
         wanted_item_id: &str,
-    ) -> AppResult<Option<WantedItem>> {
+    ) -> AppResult<Option<AcquisitionScopeState>> {
         let wanted = self
             .services
             .workflow
-            .wanted_items
-            .get_wanted_item_by_id(wanted_item_id)
+            .acquisition_scope_states
+            .get_acquisition_scope_state_by_id(wanted_item_id)
             .await?;
         if let Some(wanted) = wanted.as_ref() {
             let library_id = self.derive_wanted_item_library_id(wanted).await?;

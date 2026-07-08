@@ -48,7 +48,7 @@ fn title_scoped_domain_event(
     new_global_domain_event(None, payload)
 }
 fn episode_collection_id_for_wanted_item(
-    item: &WantedItem,
+    item: &AcquisitionScopeState,
     episode: Option<&Episode>,
 ) -> Option<String> {
     episode
@@ -73,7 +73,7 @@ fn series_movie_submission_scope(series_movie_link_id: Option<String>) -> Submis
         .unwrap_or(SubmissionScope::Title)
 }
 pub(crate) fn direct_download_submission_scope_for_wanted_item(
-    item: &WantedItem,
+    item: &AcquisitionScopeState,
     _episode: Option<&Episode>,
 ) -> SubmissionScope {
     match item.media_type.as_str() {
@@ -85,7 +85,7 @@ pub(crate) fn direct_download_submission_scope_for_wanted_item(
     }
 }
 pub(crate) fn collection_download_submission_scope_for_wanted_item(
-    item: &WantedItem,
+    item: &AcquisitionScopeState,
     episode: Option<&Episode>,
 ) -> SubmissionScope {
     match item.media_type.as_str() {

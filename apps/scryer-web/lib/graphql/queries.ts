@@ -46,7 +46,9 @@ export const DISCOVERY_ITEM_FIELDS = `
     tmdbCollectionName
     ownedInInput
     facetTerms
-    contextTerms`;
+    contextTerms
+    studioSlug
+    personIds`;
 
 const DISCOVERY_ITEM_DETAIL_FIELDS = `${DISCOVERY_ITEM_FIELDS}
     externalRatings {
@@ -87,10 +89,16 @@ const DISCOVERY_HOME_ITEM_FIELDS = `
       key
     }
     statusTags
+    sourceTags
+    relationTypes
+    relationSubtypes
     sourceCount
     rankScore
     ownedInInput
-    facetTerms`;
+    facetTerms
+    contextTerms
+    studioSlug
+    personIds`;
 
 const DISCOVERY_HOME_HERO_ITEM_FIELDS = `${DISCOVERY_HOME_ITEM_FIELDS}
     overview

@@ -396,6 +396,10 @@ pub struct DiscoveryTitle {
     #[serde(default)]
     pub owned_in_input: bool,
     #[serde(default)]
+    pub studio_slug: Option<String>,
+    #[serde(default)]
+    pub person_ids: Vec<i32>,
+    #[serde(default)]
     pub facet_terms: Vec<String>,
     #[serde(default)]
     pub context_terms: Vec<String>,

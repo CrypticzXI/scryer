@@ -1,13 +1,18 @@
 use std::borrow::Cow;
 use std::cmp::Reverse;
-use std::fs::File;
+use std::fs::{self, File};
 use std::io::{self, Cursor, Read, Write};
 use std::path::{Component, Path};
+use std::sync::Arc;
 
 use flate2::read::GzDecoder;
+use scryer_plugin_sdk::{
+    ArchivePluginFormat, ArchivePluginOperation, ArchivePluginProcessRequest,
+    ArchivePluginProcessResponse, ArchivePluginStatus,
+};
 
 use super::provider::SubtitleFile;
-use crate::{AppError, AppResult};
+use crate::{AppError, AppResult, ArchiveExtractorClient, ArchiveExtractorPluginProvider};
 
 const MAX_RECURSION_DEPTH: usize = 3;
 const MAX_ARTIFACT_BYTES: usize = 64 * 1024 * 1024;
@@ -47,11 +52,133 @@ pub async fn normalize_downloaded_subtitle(
     file: SubtitleFile,
     context: SubtitleExtractionContext,
 ) -> AppResult<SubtitleFile> {
+    normalize_downloaded_subtitle_with_archive_provider(file, context, None).await
+}
+
+pub async fn normalize_downloaded_subtitle_with_archive_provider(
+    file: SubtitleFile,
+    context: SubtitleExtractionContext,
+    archive_provider: Option<Arc<dyn ArchiveExtractorPluginProvider>>,
+) -> AppResult<SubtitleFile> {
+    if let Some((archive_type, format)) = plugin_subtitle_archive_format(&file)
+        && let Some(client) =
+            archive_provider.and_then(|provider| provider.client_for_format(format))
+    {
+        return normalize_with_archive_plugin(file, context, archive_type, format, client).await;
+    }
+
     tokio::task::spawn_blocking(move || normalize_sync(file, &context, 0))
         .await
         .map_err(|error| {
             AppError::Repository(format!("subtitle extraction task failed: {error}"))
         })?
+}
+
+async fn normalize_with_archive_plugin(
+    file: SubtitleFile,
+    context: SubtitleExtractionContext,
+    archive_type: ArtifactKind,
+    format: ArchivePluginFormat,
+    client: Arc<dyn ArchiveExtractorClient>,
+) -> AppResult<SubtitleFile> {
+    let temp_dir = tempfile::tempdir().map_err(|error| {
+        AppError::Repository(format!(
+            "failed to create subtitle archive scratch dir: {error}"
+        ))
+    })?;
+    let input_name = safe_archive_filename(&file, archive_type);
+    let input_path = temp_dir.path().join(input_name);
+    fs::write(&input_path, &file.content).map_err(|error| {
+        AppError::Repository(format!(
+            "failed to write subtitle archive scratch file: {error}"
+        ))
+    })?;
+    let output_dir = temp_dir.path().join("output");
+    fs::create_dir_all(&output_dir).map_err(|error| {
+        AppError::Repository(format!(
+            "failed to create subtitle archive output dir: {error}"
+        ))
+    })?;
+
+    let response = client
+        .process(ArchivePluginProcessRequest {
+            operation: ArchivePluginOperation::ExtractArchive {
+                archive_path: input_path.to_string_lossy().into_owned(),
+                output_dir: output_dir.to_string_lossy().into_owned(),
+                format,
+                password: None,
+            },
+        })
+        .await?;
+    handle_subtitle_archive_plugin_response(response)?;
+
+    let candidates = tokio::task::spawn_blocking({
+        let output_dir = output_dir.clone();
+        move || collect_plugin_output_candidates(&output_dir)
+    })
+    .await
+    .map_err(|error| {
+        AppError::Repository(format!("subtitle archive candidate task failed: {error}"))
+    })??;
+
+    select_archive_candidate(candidates, &context, 0)
+}
+
+fn plugin_subtitle_archive_format(
+    file: &SubtitleFile,
+) -> Option<(ArtifactKind, ArchivePluginFormat)> {
+    match detect_artifact_kind(file) {
+        Some(ArtifactKind::Zip) => Some((ArtifactKind::Zip, ArchivePluginFormat::Zip)),
+        Some(ArtifactKind::Rar) => Some((ArtifactKind::Rar, ArchivePluginFormat::Rar)),
+        _ => None,
+    }
+}
+
+fn safe_archive_filename(file: &SubtitleFile, archive_type: ArtifactKind) -> String {
+    let extension = match archive_type {
+        ArtifactKind::Zip => "zip",
+        ArtifactKind::Rar => "rar",
+        _ => "archive",
+    };
+    let filename = file
+        .filename
+        .as_deref()
+        .and_then(|name| Path::new(name).file_name())
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or("subtitle_archive");
+    if Path::new(filename).extension().is_some() {
+        filename.to_string()
+    } else {
+        format!("{filename}.{extension}")
+    }
+}
+
+fn handle_subtitle_archive_plugin_response(
+    response: ArchivePluginProcessResponse,
+) -> AppResult<()> {
+    match response.status {
+        ArchivePluginStatus::Ok => Ok(()),
+        ArchivePluginStatus::UnsupportedFormat => Err(AppError::Validation(
+            "archive plugin does not support this subtitle archive format".to_string(),
+        )),
+        ArchivePluginStatus::PasswordRequired => Err(AppError::Validation(
+            "subtitle archive requires a password".to_string(),
+        )),
+        ArchivePluginStatus::PasswordInvalid => Err(AppError::Validation(
+            "subtitle archive password is invalid".to_string(),
+        )),
+        ArchivePluginStatus::RepairRequired => Err(AppError::Validation(
+            "subtitle archive requires PAR2 repair before extraction".to_string(),
+        )),
+        ArchivePluginStatus::RepairFailed | ArchivePluginStatus::Failed => {
+            let message = response
+                .message
+                .or(response.error_code)
+                .unwrap_or_else(|| "archive plugin subtitle extraction failed".to_string());
+            Err(AppError::Repository(message))
+        }
+    }
 }
 
 fn normalize_sync(
@@ -112,18 +239,14 @@ fn normalize_sync(
                 depth + 1,
             )
         }
-        Some(ArtifactKind::Zip) => {
-            select_archive_candidate(extract_zip_candidates(file)?, context, depth)
-        }
+        Some(ArtifactKind::Zip) => Err(AppError::archive_extraction_plugin_required(None)),
         Some(ArtifactKind::Tar) => {
             select_archive_candidate(extract_tar_candidates(file.content)?, context, depth)
         }
         Some(ArtifactKind::SevenZip) => {
             select_archive_candidate(extract_sevenz_candidates(file.content)?, context, depth)
         }
-        Some(ArtifactKind::Rar) => {
-            select_archive_candidate(extract_rar_candidates(file.content)?, context, depth)
-        }
+        Some(ArtifactKind::Rar) => Err(AppError::archive_extraction_plugin_required(None)),
         None => finalize_subtitle(file),
     }
 }
@@ -212,37 +335,6 @@ fn candidate_rank(
     (episode_score, language_score, format_score, size_score)
 }
 
-fn extract_zip_candidates(file: SubtitleFile) -> AppResult<Vec<ArchiveCandidate>> {
-    let reader = Cursor::new(file.content);
-    let mut archive = zip::ZipArchive::new(reader)
-        .map_err(|error| AppError::Repository(format!("invalid ZIP subtitle archive: {error}")))?;
-    if archive.len() > MAX_ARCHIVE_FILES {
-        return Err(AppError::Validation(
-            "subtitle archive contains too many files".to_string(),
-        ));
-    }
-    let mut candidates = Vec::new();
-    let mut expanded_bytes = 0usize;
-
-    for index in 0..archive.len() {
-        let mut entry = archive.by_index(index).map_err(|error| {
-            AppError::Repository(format!("failed to read ZIP subtitle entry: {error}"))
-        })?;
-        if entry.is_dir() {
-            continue;
-        }
-        let name = entry.name().to_string();
-        if !is_safe_relative_path(&name) || !is_extractable_subtitle_artifact(&name) {
-            continue;
-        }
-        let content = read_limited(&mut entry)?;
-        expanded_bytes = checked_expanded_size(expanded_bytes, content.len())?;
-        candidates.push(candidate(name, content));
-    }
-
-    Ok(candidates)
-}
-
 fn extract_tar_candidates(content: Vec<u8>) -> AppResult<Vec<ArchiveCandidate>> {
     let mut archive = tar::Archive::new(Cursor::new(content));
     let mut candidates = Vec::new();
@@ -272,6 +364,74 @@ fn extract_tar_candidates(content: Vec<u8>) -> AppResult<Vec<ArchiveCandidate>> 
         let content = read_limited(&mut entry)?;
         expanded_bytes = checked_expanded_size(expanded_bytes, content.len())?;
         candidates.push(candidate(name, content));
+    }
+
+    Ok(candidates)
+}
+
+fn collect_plugin_output_candidates(output_dir: &Path) -> AppResult<Vec<ArchiveCandidate>> {
+    let mut candidates = Vec::new();
+    let mut expanded_bytes = 0usize;
+    let mut entry_count = 0usize;
+    let mut stack = vec![output_dir.to_path_buf()];
+
+    while let Some(dir) = stack.pop() {
+        for entry in fs::read_dir(&dir).map_err(|error| {
+            AppError::Repository(format!(
+                "failed to read archive plugin output directory '{}': {error}",
+                dir.display()
+            ))
+        })? {
+            let entry = entry.map_err(|error| {
+                AppError::Repository(format!(
+                    "failed to read archive plugin output entry: {error}"
+                ))
+            })?;
+            let file_type = entry.file_type().map_err(|error| {
+                AppError::Repository(format!(
+                    "failed to read archive plugin output file type: {error}"
+                ))
+            })?;
+            if file_type.is_symlink() {
+                continue;
+            }
+            if file_type.is_dir() {
+                stack.push(entry.path());
+                continue;
+            }
+            if !file_type.is_file() {
+                continue;
+            }
+
+            entry_count += 1;
+            if entry_count > MAX_ARCHIVE_FILES {
+                return Err(AppError::Validation(
+                    "subtitle archive contains too many files".to_string(),
+                ));
+            }
+
+            let path = entry.path();
+            let relative = path.strip_prefix(output_dir).map_err(|_| {
+                AppError::Validation(format!(
+                    "archive plugin output escaped output root: {}",
+                    path.display()
+                ))
+            })?;
+            let name = relative.to_string_lossy().to_string();
+            if !is_safe_relative_path(&name) || !is_extractable_subtitle_artifact(&name) {
+                continue;
+            }
+
+            let mut file = File::open(&path).map_err(|error| {
+                AppError::Repository(format!(
+                    "failed to open archive plugin subtitle output '{}': {error}",
+                    path.display()
+                ))
+            })?;
+            let content = read_limited(&mut file)?;
+            expanded_bytes = checked_expanded_size(expanded_bytes, content.len())?;
+            candidates.push(candidate(name, content));
+        }
     }
 
     Ok(candidates)
@@ -325,124 +485,6 @@ fn extract_sevenz_candidates(content: Vec<u8>) -> AppResult<Vec<ArchiveCandidate
         .map_err(|error| AppError::Repository(format!("7z subtitle extraction failed: {error}")))?;
 
     Ok(candidates)
-}
-
-fn extract_rar_candidates(content: Vec<u8>) -> AppResult<Vec<ArchiveCandidate>> {
-    let temp = tempfile::tempdir()
-        .map_err(|error| AppError::Repository(format!("failed to create temp dir: {error}")))?;
-    let archive_path = temp.path().join("subtitle.rar");
-    std::fs::write(&archive_path, content)
-        .map_err(|error| AppError::Repository(format!("failed to stage RAR archive: {error}")))?;
-    let output_dir = temp.path().join("out");
-    std::fs::create_dir(&output_dir).map_err(|error| {
-        AppError::Repository(format!("failed to create RAR extraction dir: {error}"))
-    })?;
-
-    let file = File::open(&archive_path)
-        .map_err(|error| AppError::Repository(format!("failed to open RAR archive: {error}")))?;
-    let mut archive = weaver_unrar::RarArchive::open(file)
-        .map_err(|error| AppError::Repository(format!("failed to parse RAR archive: {error}")))?;
-    let metadata = archive.metadata();
-    if metadata.members.len() > MAX_ARCHIVE_FILES {
-        return Err(AppError::Validation(
-            "subtitle archive contains too many files".to_string(),
-        ));
-    }
-    let options = weaver_unrar::ExtractOptions::default();
-    let mut expanded_bytes = 0usize;
-
-    for (idx, member) in metadata.members.iter().enumerate() {
-        if member.is_directory {
-            continue;
-        }
-        let safe_name = weaver_unrar::sanitize_path(&member.name);
-        if !is_safe_relative_path(&safe_name) || !is_extractable_subtitle_artifact(&safe_name) {
-            continue;
-        }
-        let unpacked_size = member.unpacked_size.ok_or_else(|| {
-            AppError::Validation("RAR subtitle entry is missing unpacked size".to_string())
-        })?;
-        let unpacked_size = usize::try_from(unpacked_size).map_err(|_| {
-            AppError::Validation("RAR subtitle entry is too large for this platform".to_string())
-        })?;
-        expanded_bytes = checked_expanded_size(expanded_bytes, unpacked_size)?;
-        let dest = output_dir.join(&safe_name);
-        if let Some(parent) = dest.parent() {
-            std::fs::create_dir_all(parent).map_err(|error| {
-                AppError::Repository(format!("failed to create RAR output dir: {error}"))
-            })?;
-        }
-        archive
-            .extract_member_to_file(idx, &options, None, &dest)
-            .map_err(|error| {
-                AppError::Repository(format!("failed to extract RAR subtitle entry: {error}"))
-            })?;
-    }
-
-    collect_extracted_candidates(&output_dir)
-}
-
-fn collect_extracted_candidates(root: &Path) -> AppResult<Vec<ArchiveCandidate>> {
-    let mut candidates = Vec::new();
-    let mut expanded_bytes = 0usize;
-    let mut entry_count = 0usize;
-    collect_extracted_candidates_inner(
-        root,
-        root,
-        &mut candidates,
-        &mut expanded_bytes,
-        &mut entry_count,
-    )?;
-    Ok(candidates)
-}
-
-fn collect_extracted_candidates_inner(
-    root: &Path,
-    dir: &Path,
-    candidates: &mut Vec<ArchiveCandidate>,
-    expanded_bytes: &mut usize,
-    entry_count: &mut usize,
-) -> AppResult<()> {
-    for entry in std::fs::read_dir(dir)
-        .map_err(|error| AppError::Repository(format!("failed to read extraction dir: {error}")))?
-    {
-        *entry_count += 1;
-        if *entry_count > MAX_ARCHIVE_FILES {
-            return Err(AppError::Validation(
-                "subtitle archive contains too many files".to_string(),
-            ));
-        }
-        let entry = entry.map_err(|error| {
-            AppError::Repository(format!("failed to read extracted subtitle entry: {error}"))
-        })?;
-        let path = entry.path();
-        if path.is_dir() {
-            collect_extracted_candidates_inner(
-                root,
-                &path,
-                candidates,
-                expanded_bytes,
-                entry_count,
-            )?;
-            continue;
-        }
-        let relative = path.strip_prefix(root).map_err(|error| {
-            AppError::Repository(format!(
-                "failed to resolve extracted subtitle path: {error}"
-            ))
-        })?;
-        let name = relative.to_string_lossy().to_string();
-        if !is_safe_relative_path(&name) || !is_extractable_subtitle_artifact(&name) {
-            continue;
-        }
-        let file = File::open(&path).map_err(|error| {
-            AppError::Repository(format!("failed to read subtitle entry: {error}"))
-        })?;
-        let content = read_limited(file)?;
-        *expanded_bytes = checked_expanded_size(*expanded_bytes, content.len())?;
-        candidates.push(candidate(name, content));
-    }
-    Ok(())
 }
 
 fn candidate(filename: String, content: Vec<u8>) -> ArchiveCandidate {
@@ -867,22 +909,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn zip_selects_episode_language_subtitle() {
-        let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
-        let options = zip::write::SimpleFileOptions::default();
-        writer.start_file("Show.S01E16.eng.srt", options).unwrap();
-        writer.write_all(SRT_CONTENT).unwrap();
-        writer.start_file("Show.S01E17.eng.ass", options).unwrap();
-        writer.write_all(ASS_CONTENT).unwrap();
-        let zip = writer.finish().unwrap().into_inner();
-
-        let normalized =
-            normalize_downloaded_subtitle(subtitle_file("release.zip", zip), context())
+    async fn zip_subtitle_requires_archive_plugin() {
+        let err =
+            normalize_downloaded_subtitle(subtitle_file("release.zip", b"zip".to_vec()), context())
                 .await
-                .unwrap();
+                .unwrap_err();
 
-        assert_eq!(normalized.format, "ass");
-        assert_eq!(normalized.content, ASS_CONTENT);
+        assert!(matches!(
+            err,
+            AppError::ArchiveExtractionPluginRequired { .. }
+        ));
     }
 
     #[tokio::test]
@@ -926,19 +962,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ambiguous_archive_fails() {
-        let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
-        let options = zip::write::SimpleFileOptions::default();
-        writer.start_file("one.eng.srt", options).unwrap();
-        writer.write_all(SRT_CONTENT).unwrap();
-        writer.start_file("two.eng.srt", options).unwrap();
-        writer.write_all(SRT_CONTENT).unwrap();
-        let zip = writer.finish().unwrap().into_inner();
+    async fn rar_subtitle_requires_archive_plugin() {
+        let err =
+            normalize_downloaded_subtitle(subtitle_file("release.rar", b"rar".to_vec()), context())
+                .await
+                .unwrap_err();
 
-        let err = normalize_downloaded_subtitle(subtitle_file("release.zip", zip), context())
-            .await
-            .unwrap_err();
-
-        assert!(err.to_string().contains("multiple equally ranked"));
+        assert!(matches!(
+            err,
+            AppError::ArchiveExtractionPluginRequired { .. }
+        ));
     }
 }

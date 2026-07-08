@@ -178,12 +178,6 @@ opt-level = 3
 [profile.release-lean.package.sha2]
 opt-level = 3
 
-[profile.release-lean.package.weaver-unrar]
-opt-level = 3
-
-[profile.release-lean.package.zip]
-opt-level = 3
-
 [profile.release-lean.package.zlib-rs]
 opt-level = 3
 
@@ -279,12 +273,6 @@ opt-level = 3
 opt-level = 3
 
 [profile.rc.package.sha2]
-opt-level = 3
-
-[profile.rc.package.weaver-unrar]
-opt-level = 3
-
-[profile.rc.package.zip]
 opt-level = 3
 
 [profile.rc.package.zlib-rs]

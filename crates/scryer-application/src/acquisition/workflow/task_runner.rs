@@ -199,7 +199,7 @@ pub(crate) async fn run_convergence_cycle_with_blocked_facets(
 }
 fn submission_blocks_search_for_wanted_item(
     submission: &DownloadSubmission,
-    item: &WantedItem,
+    item: &AcquisitionScopeState,
     episode_collection_id: Option<&str>,
     dl_snapshot: &DownloadClientSnapshot,
 ) -> bool {
@@ -422,8 +422,8 @@ async fn process_single_target(
     item.id = app
         .services
         .workflow
-        .wanted_items
-        .ensure_wanted_state_row(item)
+        .acquisition_scope_states
+        .ensure_acquisition_scope_state(item)
         .await?;
 
     // Derive the download client category separately — search_category ("series")
@@ -952,8 +952,8 @@ async fn process_single_target(
     let _ = app
         .services
         .workflow
-        .wanted_items
-        .record_wanted_search_attempt(&item.id, &now.to_rfc3339())
+        .acquisition_scope_states
+        .record_acquisition_scope_search_attempt(&item.id, &now.to_rfc3339())
         .await;
 
     app.emit_acquisition_search_completed_event(None, &title, results.len() as i64)
@@ -1948,8 +1948,8 @@ mod task_runner_tests {
         );
     }
 
-    fn wanted_episode_item(title_id: &str, title_name: &str, episode_number: u32) -> WantedItem {
-        WantedItem {
+    fn wanted_episode_item(title_id: &str, title_name: &str, episode_number: u32) -> AcquisitionScopeState {
+        AcquisitionScopeState {
             id: format!("{title_id}-e{episode_number}"),
             title_id: title_id.to_string(),
             title_name: Some(title_name.to_string()),
@@ -1965,7 +1965,7 @@ mod task_runner_tests {
             episode_number: Some(episode_number.to_string()),
             media_type: "episode".to_string(),
             last_search_at: None,
-            status: WantedStatus::Wanted,
+            status: AcquisitionScopeStatus::Wanted,
             grabbed_release: None,
             current_score: None,
             latest_release_decision: None,

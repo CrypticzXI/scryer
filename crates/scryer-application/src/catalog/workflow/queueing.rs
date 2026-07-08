@@ -3,11 +3,11 @@ fn wanted_item_candidates_for_submission_scope(
     title_id: &str,
     scope: &SubmissionScope,
     episodes: &[Episode],
-) -> Vec<(WantedItem, Option<String>)> {
+) -> Vec<(AcquisitionScopeState, Option<String>)> {
     match scope {
         SubmissionScope::Orphan => Vec::new(),
         SubmissionScope::Title => vec![(
-            WantedItem {
+            AcquisitionScopeState {
                 id: String::new(),
                 title_id: title_id.to_string(),
                 title_name: None,
@@ -23,7 +23,7 @@ fn wanted_item_candidates_for_submission_scope(
                 episode_number: None,
                 media_type: "movie".to_string(),
                 last_search_at: None,
-                status: WantedStatus::Wanted,
+                status: AcquisitionScopeStatus::Wanted,
                 grabbed_release: None,
                 current_score: None,
                 latest_release_decision: None,
@@ -84,7 +84,7 @@ fn wanted_item_candidates_for_submission_scope(
         SubmissionScope::SeriesMovie {
             series_movie_link_id,
         } => vec![(
-            WantedItem {
+            AcquisitionScopeState {
                 id: String::new(),
                 title_id: title_id.to_string(),
                 title_name: None,
@@ -100,7 +100,7 @@ fn wanted_item_candidates_for_submission_scope(
                 episode_number: None,
                 media_type: "series_movie".to_string(),
                 last_search_at: None,
-                status: WantedStatus::Wanted,
+                status: AcquisitionScopeStatus::Wanted,
                 grabbed_release: None,
                 current_score: None,
                 latest_release_decision: None,
@@ -112,7 +112,7 @@ fn wanted_item_candidates_for_submission_scope(
         )],
     }
 }
-fn wanted_item_candidate_for_episode(title_id: &str, episode: &Episode) -> WantedItem {
+fn wanted_item_candidate_for_episode(title_id: &str, episode: &Episode) -> AcquisitionScopeState {
     wanted_item_candidate_for_episode_id(
         title_id,
         &episode.id,
@@ -125,8 +125,8 @@ fn wanted_item_candidate_for_episode_id(
     episode_id: &str,
     collection_id: Option<String>,
     season_number: Option<String>,
-) -> WantedItem {
-    WantedItem {
+) -> AcquisitionScopeState {
+    AcquisitionScopeState {
         id: String::new(),
         title_id: title_id.to_string(),
         title_name: None,
@@ -142,7 +142,7 @@ fn wanted_item_candidate_for_episode_id(
         episode_number: None,
         media_type: "episode".to_string(),
         last_search_at: None,
-        status: WantedStatus::Wanted,
+        status: AcquisitionScopeStatus::Wanted,
         grabbed_release: None,
         current_score: None,
         latest_release_decision: None,

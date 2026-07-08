@@ -1,5 +1,5 @@
 import * as React from "react";
-import { Clock, Eye, EyeOff, Plus, Send } from "lucide-react";
+import { Clock, Eye, EyeOff, Plus, Send, X } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import type { Facet } from "@/lib/types/titles";
 import { TitlePosterSlot } from "@/components/title-poster-slot";
@@ -7,6 +7,20 @@ import { ActionTooltip } from "@/components/ui/tooltip";
 import { useTranslate } from "@/lib/context/translate-context";
 import { facetById } from "@/lib/facets/registry";
 import { cn } from "@/lib/utils";
+
+/**
+ * Optional top-right corner badge (e.g. a discovery relation pill or a
+ * release-recency marker). Kept generic so non-discovery callers can reuse it.
+ */
+export type TitleCardCornerBadge = {
+  /** Already-localized short label. */
+  label: string;
+  icon?: LucideIcon | null;
+  /** Visual emphasis. `accent` matches the app accent; `neutral` is a dark chip. */
+  tone?: "accent" | "neutral";
+  /** Optional native title/tooltip text. */
+  title?: string;
+};
 
 const FACET_BADGE_CLASS: Record<Facet, string> = {
   movie:
@@ -62,6 +76,17 @@ export type TitleCardProps = {
   monitored?: boolean | null;
   /** Denser sizing (action button, title, badge) for small grid/rail contexts. */
   compact?: boolean;
+  /** Optional top-right corner badge (discovery relation / recency marker). */
+  cornerBadge?: TitleCardCornerBadge | null;
+  /**
+   * When provided, a small dismiss (×) control shows on hover/focus in the
+   * top-right, letting the user hide the card locally. Used by discovery's
+   * privacy-safe "not interested". Rendered above the corner badge when both
+   * are present.
+   */
+  onDismiss?: () => void;
+  /** Accessible label for the dismiss control (already localized). */
+  dismissLabel?: string;
   /** Click the card body (opens overview/detail). When omitted, the body is inert. */
   onOpen?: () => void;
   onAdd?: () => void;
@@ -109,6 +134,9 @@ function TitleCardImpl({
   requested = false,
   monitored,
   compact = false,
+  cornerBadge,
+  onDismiss,
+  dismissLabel,
   onOpen,
   onAdd,
   onRequest,
@@ -238,6 +266,53 @@ function TitleCardImpl({
           </span>
         ) : null}
       </div>
+
+      {/* Top-right: optional corner badge (always visible) + dismiss control
+          (revealed on hover/focus). Kept clear of the top-left facet badge. */}
+      {cornerBadge || onDismiss ? (
+        <div className="absolute right-2.5 top-2.5 z-30 flex items-center gap-1.5">
+          {cornerBadge ? (
+            <span
+              title={cornerBadge.title}
+              className={cn(
+                "pointer-events-none inline-flex max-w-[110px] items-center gap-1 truncate rounded-[8px] font-semibold uppercase tracking-[0.03em] shadow-[0_6px_14px_rgba(0,0,0,0.28)] backdrop-blur",
+                compact ? "px-1.5 py-0.5 text-[9.5px]" : "px-2 py-0.5 text-[10px]",
+                cornerBadge.tone === "neutral"
+                  ? "border border-white/15 bg-[rgba(4,6,12,0.78)] text-[var(--scry-text2)]"
+                  : "border border-[rgba(var(--scry-accent-rgb),0.42)] bg-[rgba(var(--scry-accent-rgb),0.24)] text-[#dfe3ff]",
+              )}
+            >
+              {cornerBadge.icon ? (
+                <cornerBadge.icon
+                  className={compact ? "h-2.5 w-2.5" : "h-3 w-3"}
+                  aria-hidden="true"
+                />
+              ) : null}
+              <span className="truncate">{cornerBadge.label}</span>
+            </span>
+          ) : null}
+          {onDismiss ? (
+            <ActionTooltip content={dismissLabel ?? t("discovery.notInterested")}>
+              <button
+                type="button"
+                aria-label={dismissLabel ?? t("discovery.notInterested")}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  event.preventDefault();
+                  onDismiss();
+                }}
+                className={cn(
+                  "pointer-events-auto flex items-center justify-center rounded-full border border-white/15 bg-[rgba(4,6,12,0.82)] text-white/80 opacity-0 transition hover:border-[var(--scry-accent)] hover:bg-[var(--scry-accent)] hover:text-white focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/80 group-hover:opacity-100 group-focus-within:opacity-100",
+                  compact ? "h-6 w-6" : "h-7 w-7",
+                  selected && "opacity-100",
+                )}
+              >
+                <X className={compact ? "h-3 w-3" : "h-3.5 w-3.5"} />
+              </button>
+            </ActionTooltip>
+          ) : null}
+        </div>
+      ) : null}
 
       {/* Centered action affordance — revealed on hover/focus/selection */}
       {hasCenter ? (

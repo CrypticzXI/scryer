@@ -46,7 +46,7 @@ pub(crate) struct FailedDownloadSnapshot {
 }
 #[derive(Clone, Debug)]
 pub(crate) struct DownloadFailureContext {
-    pub wanted_item: Option<WantedItem>,
+    pub wanted_item: Option<AcquisitionScopeState>,
     pub title_id: Option<String>,
     pub client_id: String,
     pub client_type: String,
@@ -401,11 +401,11 @@ async fn check_grabbed_for_failures(app: &AppUseCase, dl_snapshot: &DownloadClie
     let grabbed_items = match app
         .services
         .workflow
-        .wanted_items
-        .list_wanted_items(WantedItemsQuery {
+        .acquisition_scope_states
+        .list_acquisition_scope_states(AcquisitionScopeStatesQuery {
             statuses: vec!["grabbed".into()],
             limit: 200,
-            ..WantedItemsQuery::default()
+            ..AcquisitionScopeStatesQuery::default()
         })
         .await
     {
@@ -559,7 +559,7 @@ fn preferred_failed_release_title(
 async fn resolve_failed_collection_episode_wanted_items(
     app: &AppUseCase,
     submission: &DownloadSubmission,
-) -> AppResult<Vec<WantedItem>> {
+) -> AppResult<Vec<AcquisitionScopeState>> {
     let SubmissionScope::Collection { collection_id } = &submission.scope else {
         return Ok(Vec::new());
     };
@@ -581,19 +581,19 @@ async fn resolve_failed_collection_episode_wanted_items(
     let wanted_items = app
         .services
         .workflow
-        .wanted_items
-        .list_wanted_items(WantedItemsQuery {
+        .acquisition_scope_states
+        .list_acquisition_scope_states(AcquisitionScopeStatesQuery {
             media_types: vec!["episode".into()],
             title_id: Some(submission.title_id.clone()),
             limit: 500,
-            ..WantedItemsQuery::default()
+            ..AcquisitionScopeStatesQuery::default()
         })
         .await?;
 
     Ok(wanted_items
         .into_iter()
         .filter(|item| {
-            matches!(item.status, WantedStatus::Wanted | WantedStatus::Grabbed)
+            matches!(item.status, AcquisitionScopeStatus::Wanted | AcquisitionScopeStatus::Grabbed)
                 && item
                     .episode_id
                     .as_ref()
@@ -940,7 +940,7 @@ async fn resolve_failure_wanted_item(
     app: &AppUseCase,
     title_id: Option<&str>,
     release_title: &str,
-) -> Option<WantedItem> {
+) -> Option<AcquisitionScopeState> {
     let title_id = title_id?.trim();
     if title_id.is_empty() {
         return None;
@@ -949,12 +949,12 @@ async fn resolve_failure_wanted_item(
     let grabbed_items = app
         .services
         .workflow
-        .wanted_items
-        .list_wanted_items(WantedItemsQuery {
+        .acquisition_scope_states
+        .list_acquisition_scope_states(AcquisitionScopeStatesQuery {
             statuses: vec!["grabbed".into()],
             title_id: Some(title_id.to_string()),
             limit: 25,
-            ..WantedItemsQuery::default()
+            ..AcquisitionScopeStatesQuery::default()
         })
         .await
         .ok()?;
@@ -996,8 +996,8 @@ async fn prune_standby_candidates(app: &AppUseCase) {
         let wanted = app
             .services
             .workflow
-            .wanted_items
-            .get_wanted_item_by_id(&wanted_item_id)
+            .acquisition_scope_states
+            .get_acquisition_scope_state_by_id(&wanted_item_id)
             .await
             .ok()
             .flatten();
@@ -1012,7 +1012,7 @@ async fn prune_standby_candidates(app: &AppUseCase) {
             continue;
         };
 
-        if wanted.status != WantedStatus::Grabbed {
+        if wanted.status != AcquisitionScopeStatus::Grabbed {
             let _ = app
                 .services
                 .workflow
@@ -1040,7 +1040,7 @@ async fn prune_standby_candidates(app: &AppUseCase) {
 }
 async fn recover_from_standby_candidates(
     app: &AppUseCase,
-    item: &WantedItem,
+    item: &AcquisitionScopeState,
     failed_release_title: &str,
     dl_snapshot: &DownloadClientSnapshot,
     now: &DateTime<Utc>,
@@ -1225,7 +1225,7 @@ async fn recover_from_standby_candidates(
 )]
 async fn persist_standby_candidates(
     app: &AppUseCase,
-    item: &WantedItem,
+    item: &AcquisitionScopeState,
     title: &Title,
     results: &[IndexerSearchResult],
     start_index: usize,

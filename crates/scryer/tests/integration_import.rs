@@ -12,7 +12,7 @@ use scryer_application::testing::AppUseCaseTestExt;
 use scryer_application::{
     BlocklistRepository, DownloadClientConfigRepository, DownloadSourceIdentity, ImportRepository,
     LibraryRepository, LibraryRootDraft, MediaFileRepository, ReleaseAttemptRepository,
-    ShowRepository, TitleRepository, WantedItemRepository, import_completed_download,
+    ShowRepository, TitleRepository, AcquisitionScopeStateRepository, import_completed_download,
 };
 use scryer_domain::{
     Collection, CompletedDownload, DownloadClientConfig, DownloadClientStatus, Episode, Id,
@@ -35,7 +35,7 @@ fn app_with_real_imports(ctx: &TestContext) -> scryer_application::AppUseCase {
             .with_imports(workflow_store)
             .with_file_importer(Arc::new(FsFileImporter))
             .with_media_files(Arc::new(ctx.media_files.clone()))
-            .with_wanted_items(Arc::new(ctx.library_state.clone()))
+            .with_acquisition_scope_states(Arc::new(ctx.library_state.clone()))
     })
 }
 
@@ -267,10 +267,10 @@ fn copy_fixture(dest_dir: &Path, fixture_name: &str, dest_name: &str) -> PathBuf
 async fn seed_movie_wanted_item(
     ctx: &TestContext,
     title_id: &str,
-    status: scryer_application::WantedStatus,
+    status: scryer_application::AcquisitionScopeStatus,
     current_score: Option<i32>,
-) -> scryer_application::WantedItem {
-    let item = scryer_application::WantedItem {
+) -> scryer_application::AcquisitionScopeState {
+    let item = scryer_application::AcquisitionScopeState {
         id: Id::new().0,
         title_id: title_id.to_string(),
         title_name: Some("Test Title".to_string()),
@@ -295,7 +295,7 @@ async fn seed_movie_wanted_item(
         updated_at: chrono::Utc::now().to_rfc3339(),
     };
     ctx.library_state
-        .upsert_wanted_item(&item)
+        .upsert_acquisition_scope_state(&item)
         .await
         .expect("seed movie wanted");
     item
@@ -365,9 +365,9 @@ async fn seed_episode_wanted_item(
     ctx: &TestContext,
     title: &Title,
     episode: &Episode,
-    status: scryer_application::WantedStatus,
-) -> scryer_application::WantedItem {
-    let item = scryer_application::WantedItem {
+    status: scryer_application::AcquisitionScopeStatus,
+) -> scryer_application::AcquisitionScopeState {
+    let item = scryer_application::AcquisitionScopeState {
         id: Id::new().0,
         title_id: title.id.clone(),
         title_name: Some(title.name.clone()),
@@ -392,7 +392,7 @@ async fn seed_episode_wanted_item(
         updated_at: chrono::Utc::now().to_rfc3339(),
     };
     ctx.library_state
-        .upsert_wanted_item(&item)
+        .upsert_acquisition_scope_state(&item)
         .await
         .expect("seed episode wanted");
     item
@@ -1180,7 +1180,7 @@ async fn import_movie_rejected_by_post_download_rule_leaves_no_library_file_and_
     let wanted = seed_movie_wanted_item(
         &ctx,
         &title.id,
-        scryer_application::WantedStatus::Grabbed,
+        scryer_application::AcquisitionScopeStatus::Grabbed,
         None,
     )
     .await;
@@ -1238,14 +1238,14 @@ score_entry["too_few_chapters"] := scryer.block_score() if {
 
     let updated_wanted = ctx
         .library_state
-        .get_wanted_item_for_title(&title.id, None)
+        .get_acquisition_scope_state_for_title(&title.id, None)
         .await
         .expect("get wanted")
         .expect("wanted item");
     assert_eq!(updated_wanted.id, wanted.id);
     assert_eq!(
         updated_wanted.status,
-        scryer_application::WantedStatus::Wanted
+        scryer_application::AcquisitionScopeStatus::Wanted
     );
 
     let failures =
@@ -1300,7 +1300,7 @@ async fn import_series_rejected_by_post_download_rule_resets_episode_wanted_item
         &ctx,
         &title,
         &episode,
-        scryer_application::WantedStatus::Grabbed,
+        scryer_application::AcquisitionScopeStatus::Grabbed,
     )
     .await;
 
@@ -1346,14 +1346,14 @@ score_entry["too_few_chapters"] := scryer.block_score() if {
 
     let updated_wanted = ctx
         .library_state
-        .get_wanted_item_for_title(&title.id, Some(&episode.id))
+        .get_acquisition_scope_state_for_title(&title.id, Some(&episode.id))
         .await
         .expect("get wanted")
         .expect("wanted item");
     assert_eq!(updated_wanted.id, wanted.id);
     assert_eq!(
         updated_wanted.status,
-        scryer_application::WantedStatus::Wanted
+        scryer_application::AcquisitionScopeStatus::Wanted
     );
 }
 
@@ -1654,7 +1654,7 @@ async fn import_upgrade_rejected_by_post_download_rule_restores_prior_file() {
     let _wanted = seed_movie_wanted_item(
         &ctx,
         &title.id,
-        scryer_application::WantedStatus::Grabbed,
+        scryer_application::AcquisitionScopeStatus::Grabbed,
         Some(100),
     )
     .await;

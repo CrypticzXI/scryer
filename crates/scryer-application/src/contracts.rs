@@ -633,7 +633,7 @@ pub struct DeleteExecutionConfirmation {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct WantedItemsQuery {
+pub struct AcquisitionScopeStatesQuery {
     pub statuses: Vec<String>,
     pub media_types: Vec<String>,
     pub title_id: Option<String>,

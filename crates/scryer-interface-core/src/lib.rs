@@ -256,6 +256,15 @@ pub fn to_gql_error(err: AppError) -> Error {
         AppError::DownloadSubmitUnavailable(message) => {
             coded_gql_error(message, "DOWNLOAD_SUBMIT_UNAVAILABLE")
         }
+        AppError::ArchiveExtractionPluginRequired {
+            message,
+            source_path,
+        } => Error::new(message).extend_with(|_, extensions| {
+            extensions.set("code", "ARCHIVE_EXTRACTION_PLUGIN_REQUIRED");
+            if let Some(source_path) = source_path {
+                extensions.set("sourcePath", source_path);
+            }
+        }),
         AppError::TemporaryUnavailable {
             message,
             retry_after,
@@ -335,6 +344,7 @@ fn app_error_kind(err: &AppError) -> &'static str {
         AppError::DownloadSubmitAmbiguous(_) => "DownloadSubmitAmbiguous",
         AppError::DownloadSubmitRejected(_) => "DownloadSubmitRejected",
         AppError::DownloadSubmitUnavailable(_) => "DownloadSubmitUnavailable",
+        AppError::ArchiveExtractionPluginRequired { .. } => "ArchiveExtractionPluginRequired",
         AppError::TemporaryUnavailable { .. } => "TemporaryUnavailable",
         AppError::MfaStepUpRequired(_) => "MfaStepUpRequired",
         AppError::TotpEnrollmentRequired(_) => "TotpEnrollmentRequired",

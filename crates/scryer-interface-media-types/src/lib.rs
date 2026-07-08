@@ -1857,6 +1857,8 @@ pub struct DiscoveryItemPayload {
     pub tmdb_collection_id: Option<String>,
     pub tmdb_collection_name: Option<String>,
     pub owned_in_input: bool,
+    pub studio_slug: Option<String>,
+    pub person_ids: Vec<i32>,
     pub facet_terms: Vec<String>,
     pub context_terms: Vec<String>,
 }

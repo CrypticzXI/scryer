@@ -2513,7 +2513,7 @@ async fn graphql_delete_title_cleans_title_workflow_state() {
     let id = add_test_title(&ctx, "Delete With Cleanup", "movie").await;
 
     ctx.library_state
-        .upsert_wanted_item(&WantedItem {
+        .upsert_acquisition_scope_state(&AcquisitionScopeState {
             id: Id::new().0,
             title_id: id.clone(),
             title_name: Some("Delete With Cleanup".to_string()),
@@ -2529,7 +2529,7 @@ async fn graphql_delete_title_cleans_title_workflow_state() {
             episode_number: None,
             media_type: "movie".to_string(),
             last_search_at: None,
-            status: scryer_application::WantedStatus::Wanted,
+            status: scryer_application::AcquisitionScopeStatus::Wanted,
             grabbed_release: None,
             current_score: None,
             latest_release_decision: None,
@@ -2595,10 +2595,10 @@ async fn graphql_delete_title_cleans_title_workflow_state() {
 
     assert!(
         scryer_infrastructure::WantedStore::new(ctx.db.datastore())
-            .list_wanted_items(scryer_application::WantedItemsQuery {
+            .list_acquisition_scope_states(scryer_application::AcquisitionScopeStatesQuery {
                 title_id: Some(id.clone()),
                 limit: 10,
-                ..scryer_application::WantedItemsQuery::default()
+                ..scryer_application::AcquisitionScopeStatesQuery::default()
             })
             .await
             .expect("wanted items")

@@ -142,7 +142,7 @@ pub(super) fn bootstrap_media_request_app() -> MediaRequestTestHarness {
     let media_requests = Arc::new(MockMediaRequestRepo::with_domain_events(
         domain_events.clone(),
     ));
-    let wanted_items = Arc::new(TrackingWantedItemRepo::default());
+    let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
     let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
     let metadata_gateway = Arc::new(MockMetadataGateway {
@@ -168,14 +168,14 @@ pub(super) fn bootstrap_media_request_app() -> MediaRequestTestHarness {
     .with_libraries(libraries.clone())
     .with_media_requests(media_requests.clone())
     .with_metadata_gateway(metadata_gateway)
-    .with_wanted_items(wanted_items.clone())
+    .with_acquisition_scope_states(wanted_items.clone())
     .with_pending_releases(pending_releases.clone())
     .with_download_submissions(download_submissions.clone())
     .with_blocklist_repo(Arc::new(MockBlocklistRepo::default()))
     .with_acquisition_state(Arc::new(TrackingAcquisitionStateRepo {
         download_submissions,
         pending_releases,
-        wanted_items,
+        acquisition_scope_states: wanted_items,
     }))
     .build_partial_for_tests();
     let mut registry = FacetRegistry::new();
@@ -910,13 +910,13 @@ pub(super) fn bootstrap_with_acquisition_tracking(
     download_client: Arc<StubDownloadClient>,
     download_submissions: Arc<TrackingDownloadSubmissionRepo>,
     pending_releases: Arc<TrackingPendingReleaseRepo>,
-    wanted_items: Arc<TrackingWantedItemRepo>,
+    acquisition_scope_states: Arc<TrackingAcquisitionScopeStateRepo>,
 ) -> (AppUseCase, User) {
     bootstrap_with_acquisition_tracking_and_indexer(
         download_client,
         download_submissions,
         pending_releases,
-        wanted_items,
+        acquisition_scope_states,
         Arc::new(MockIndexerClient),
     )
 }
@@ -925,14 +925,14 @@ pub(super) fn bootstrap_with_acquisition_tracking_and_indexer(
     download_client: Arc<StubDownloadClient>,
     download_submissions: Arc<TrackingDownloadSubmissionRepo>,
     pending_releases: Arc<TrackingPendingReleaseRepo>,
-    wanted_items: Arc<TrackingWantedItemRepo>,
+    acquisition_scope_states: Arc<TrackingAcquisitionScopeStateRepo>,
     indexer_client: Arc<dyn IndexerClient>,
 ) -> (AppUseCase, User) {
     let (app, user, _) = bootstrap_with_acquisition_tracking_and_indexer_and_release_attempts(
         download_client,
         download_submissions,
         pending_releases,
-        wanted_items,
+        acquisition_scope_states,
         indexer_client,
     );
     (app, user)
@@ -942,7 +942,7 @@ pub(super) fn bootstrap_with_acquisition_tracking_and_indexer_and_release_attemp
     download_client: Arc<StubDownloadClient>,
     download_submissions: Arc<TrackingDownloadSubmissionRepo>,
     pending_releases: Arc<TrackingPendingReleaseRepo>,
-    wanted_items: Arc<TrackingWantedItemRepo>,
+    acquisition_scope_states: Arc<TrackingAcquisitionScopeStateRepo>,
     indexer_client: Arc<dyn IndexerClient>,
 ) -> (AppUseCase, User, Arc<MockReleaseAttemptRepo>) {
     let titles = Arc::new(MockTitleRepo::default());
@@ -1002,7 +1002,7 @@ pub(super) fn bootstrap_with_acquisition_tracking_and_indexer_and_release_attemp
     // With mock catalog stores, bridge the derivation to the seeded wanted
     // rows so `run_convergence_cycle_once` reaches each seeded monitored scope.
     .with_media_files(Arc::new(MockMediaFileRepo::with_missing_scope_source(
-        wanted_items.clone(),
+        acquisition_scope_states.clone(),
         titles,
     )))
     .build_partial_for_tests();
@@ -1029,9 +1029,9 @@ pub(super) fn bootstrap_with_acquisition_tracking_and_indexer_and_release_attemp
             .with_acquisition_state(Arc::new(TrackingAcquisitionStateRepo {
                 download_submissions,
                 pending_releases,
-                wanted_items: wanted_items.clone(),
+                acquisition_scope_states: acquisition_scope_states.clone(),
             }))
-            .with_wanted_items(wanted_items)
+            .with_acquisition_scope_states(acquisition_scope_states)
     });
     (app, test_admin_user(), release_attempts)
 }
@@ -1846,7 +1846,7 @@ pub(super) fn pending_movie_release(
 pub(super) async fn seed_movie_wanted_for_acquisition(
     app: &AppUseCase,
     user: &User,
-    wanted_items: &Arc<TrackingWantedItemRepo>,
+    acquisition_scope_states: &Arc<TrackingAcquisitionScopeStateRepo>,
     name: &str,
     year: i32,
 ) -> (scryer_domain::Title, String) {
@@ -1867,12 +1867,12 @@ pub(super) async fn seed_movie_wanted_for_acquisition(
         )
         .await
         .expect("create movie title");
-    wanted_items
+    acquisition_scope_states
         .remember_title_facet(&title.id, MediaFacet::Movie)
         .await;
     let wanted_id = Id::new().0;
-    wanted_items
-        .upsert_wanted_item(&WantedItem {
+    acquisition_scope_states
+        .upsert_acquisition_scope_state(&AcquisitionScopeState {
             id: wanted_id.clone(),
             title_id: title.id.clone(),
             title_name: Some(title.name.clone()),
@@ -1888,7 +1888,7 @@ pub(super) async fn seed_movie_wanted_for_acquisition(
             episode_number: None,
             media_type: "movie".to_string(),
             last_search_at: None,
-            status: WantedStatus::Wanted,
+            status: AcquisitionScopeStatus::Wanted,
             grabbed_release: None,
             current_score: None,
             latest_release_decision: None,
@@ -1905,7 +1905,7 @@ pub(super) async fn seed_movie_wanted_for_acquisition(
 pub(super) async fn seed_anime_season_wanted_for_acquisition(
     app: &AppUseCase,
     user: &User,
-    wanted_items: &Arc<TrackingWantedItemRepo>,
+    acquisition_scope_states: &Arc<TrackingAcquisitionScopeStateRepo>,
     name: &str,
     season_number: u32,
 ) -> (scryer_domain::Title, Vec<String>) {
@@ -1925,7 +1925,7 @@ pub(super) async fn seed_anime_season_wanted_for_acquisition(
         )
         .await
         .expect("create anime title");
-    wanted_items
+    acquisition_scope_states
         .remember_title_facet(&title.id, MediaFacet::Anime)
         .await;
     let season = app
@@ -1981,8 +1981,8 @@ pub(super) async fn seed_anime_season_wanted_for_acquisition(
             .expect("create episode");
         let wanted_id = Id::new().0;
         wanted_ids.push(wanted_id.clone());
-        wanted_items
-            .upsert_wanted_item(&WantedItem {
+        acquisition_scope_states
+            .upsert_acquisition_scope_state(&AcquisitionScopeState {
                 id: wanted_id,
                 title_id: title.id.clone(),
                 title_name: Some(title.name.clone()),
@@ -1998,7 +1998,7 @@ pub(super) async fn seed_anime_season_wanted_for_acquisition(
                 episode_number: Some(episode_number.to_string()),
                 media_type: "episode".to_string(),
                 last_search_at: None,
-                status: WantedStatus::Wanted,
+                status: AcquisitionScopeStatus::Wanted,
                 grabbed_release: None,
                 current_score: None,
                 latest_release_decision: None,

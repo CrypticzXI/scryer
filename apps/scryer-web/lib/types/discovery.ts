@@ -76,6 +76,8 @@ export type DiscoveryItem = {
   ownedInInput: boolean;
   facetTerms: string[];
   contextTerms: string[];
+  studioSlug: string | null;
+  personIds: number[];
 };
 
 export type DiscoverySection = {

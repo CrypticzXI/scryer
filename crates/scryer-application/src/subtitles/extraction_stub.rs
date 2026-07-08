@@ -1,5 +1,7 @@
+use std::sync::Arc;
+
 use super::provider::SubtitleFile;
-use crate::{AppError, AppResult};
+use crate::{AppError, AppResult, ArchiveExtractorPluginProvider};
 
 const SUPPORTED_SUBTITLE_FORMATS: &[&str] = &["srt", "ass", "ssa", "vtt", "sub", "idx"];
 
@@ -15,8 +17,16 @@ pub fn is_supported_subtitle_format(format: &str) -> bool {
 }
 
 pub async fn normalize_downloaded_subtitle(
+    file: SubtitleFile,
+    _context: SubtitleExtractionContext,
+) -> AppResult<SubtitleFile> {
+    normalize_downloaded_subtitle_with_archive_provider(file, _context, None).await
+}
+
+pub async fn normalize_downloaded_subtitle_with_archive_provider(
     mut file: SubtitleFile,
     _context: SubtitleExtractionContext,
+    _archive_provider: Option<Arc<dyn ArchiveExtractorPluginProvider>>,
 ) -> AppResult<SubtitleFile> {
     let format = final_subtitle_format(&file).ok_or_else(|| {
         AppError::Validation(format!(

@@ -75,11 +75,17 @@
     "download_status_result": {
       "$ref": "#/$defs/PluginResult10"
     },
+    "archive_process_request": {
+      "$ref": "#/$defs/ArchivePluginProcessRequest"
+    },
+    "archive_process_result": {
+      "$ref": "#/$defs/PluginResult11"
+    },
     "notification_request": {
       "$ref": "#/$defs/PluginNotificationRequest"
     },
     "notification_result": {
-      "$ref": "#/$defs/PluginResult11"
+      "$ref": "#/$defs/PluginResult12"
     }
   },
   "required": [
@@ -107,6 +113,8 @@
     "download_mark_imported_request",
     "download_mark_imported_result",
     "download_status_result",
+    "archive_process_request",
+    "archive_process_result",
     "notification_request",
     "notification_result"
   ],
@@ -234,6 +242,19 @@
             }
           },
           "$ref": "#/$defs/SubtitleDescriptor",
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "archive_extractor"
+            }
+          },
+          "$ref": "#/$defs/ArchiveExtractorDescriptor",
           "required": [
             "kind"
           ]
@@ -1340,6 +1361,75 @@
             "supports_ai_translated": false,
             "supports_machine_translated": false
           }
+        }
+      },
+      "required": [
+        "provider_type"
+      ]
+    },
+    "ArchiveExtractorCapabilities": {
+      "type": "object",
+      "properties": {
+        "formats": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ArchivePluginFormat"
+          }
+        },
+        "repair_formats": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ArchivePluginRepairFormat"
+          }
+        }
+      }
+    },
+    "ArchivePluginFormat": {
+      "type": "string",
+      "enum": [
+        "rar",
+        "zip"
+      ]
+    },
+    "ArchivePluginRepairFormat": {
+      "type": "string",
+      "enum": [
+        "par2"
+      ]
+    },
+    "ArchiveExtractorDescriptor": {
+      "type": "object",
+      "properties": {
+        "provider_type": {
+          "type": "string"
+        },
+        "provider_aliases": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "config_fields": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ConfigFieldDef"
+          }
+        },
+        "default_base_url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "allowed_hosts": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "capabilities": {
+          "$ref": "#/$defs/ArchiveExtractorCapabilities",
+          "default": {}
         }
       },
       "required": [
@@ -3852,6 +3942,308 @@
         }
       }
     },
+    "ArchivePluginProcessRequest": {
+      "type": "object",
+      "properties": {
+        "operation": {
+          "$ref": "#/$defs/ArchivePluginOperation"
+        }
+      },
+      "required": [
+        "operation"
+      ]
+    },
+    "ArchivePluginOperation": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "source_dir": {
+              "type": "string"
+            },
+            "archive_path": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "kind": {
+              "type": "string",
+              "const": "inspect"
+            }
+          },
+          "required": [
+            "kind",
+            "source_dir"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "archive_path": {
+              "type": "string"
+            },
+            "output_dir": {
+              "type": "string"
+            },
+            "format": {
+              "$ref": "#/$defs/ArchivePluginFormat"
+            },
+            "password": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "kind": {
+              "type": "string",
+              "const": "extract_archive"
+            }
+          },
+          "required": [
+            "kind",
+            "archive_path",
+            "output_dir",
+            "format"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "source_dir": {
+              "type": "string"
+            },
+            "par2_path": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "kind": {
+              "type": "string",
+              "const": "verify_repair_set"
+            }
+          },
+          "required": [
+            "kind",
+            "source_dir"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "source_dir": {
+              "type": "string"
+            },
+            "output_dir": {
+              "type": "string"
+            },
+            "format": {
+              "$ref": "#/$defs/ArchivePluginFormat"
+            },
+            "par2_path": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "archive_path": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "password": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "kind": {
+              "type": "string",
+              "const": "repair_then_extract"
+            }
+          },
+          "required": [
+            "kind",
+            "source_dir",
+            "output_dir",
+            "format"
+          ]
+        }
+      ]
+    },
+    "PluginResult11": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "$ref": "#/$defs/ArchivePluginProcessResponse"
+            }
+          },
+          "required": [
+            "ok"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "err": {
+              "$ref": "#/$defs/PluginError"
+            }
+          },
+          "required": [
+            "err"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "ArchivePluginProcessResponse": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "$ref": "#/$defs/ArchivePluginStatus"
+        },
+        "files": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ArchivePluginExtractedFile"
+          }
+        },
+        "repair": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArchivePluginRepairStatus"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "expanded_bytes": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "copied_bytes": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "staged_bytes": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "error_code": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "message": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "status"
+      ]
+    },
+    "ArchivePluginStatus": {
+      "type": "string",
+      "enum": [
+        "ok",
+        "unsupported_format",
+        "password_required",
+        "password_invalid",
+        "repair_required",
+        "repair_failed",
+        "failed"
+      ]
+    },
+    "ArchivePluginExtractedFile": {
+      "type": "object",
+      "properties": {
+        "relative_path": {
+          "type": "string"
+        },
+        "size": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "checksum": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "relative_path"
+      ]
+    },
+    "ArchivePluginRepairStatus": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "$ref": "#/$defs/ArchivePluginRepairState"
+        },
+        "read_bytes": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "written_bytes": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "message": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "status"
+      ]
+    },
+    "ArchivePluginRepairState": {
+      "type": "string",
+      "enum": [
+        "not_needed",
+        "verified",
+        "repaired",
+        "insufficient_recovery_data",
+        "failed"
+      ]
+    },
     "PluginNotificationRequest": {
       "type": "object",
       "properties": {
@@ -4861,7 +5253,7 @@
         }
       }
     },
-    "PluginResult11": {
+    "PluginResult12": {
       "oneOf": [
         {
           "type": "object",

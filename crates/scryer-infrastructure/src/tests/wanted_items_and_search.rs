@@ -37,7 +37,7 @@ async fn complete_wanted_item_for_title_updates_matching_row_in_one_step() {
     .expect("wanted item should insert");
 
     let completed = workflow
-        .complete_wanted_item_for_title("title-series", None, Some("2026-04-20T00:00:00Z"), None)
+        .complete_acquisition_scope_for_title("title-series", None, Some("2026-04-20T00:00:00Z"), None)
         .await
         .expect("completion should succeed");
 
@@ -73,7 +73,7 @@ async fn complete_wanted_item_for_title_updates_matching_row_in_one_step() {
         .expect("wanted item should reset for scored completion");
 
     workflow
-        .complete_wanted_item_for_title(
+        .complete_acquisition_scope_for_title(
             "title-series",
             None,
             Some("2026-04-20T01:00:00Z"),
@@ -107,7 +107,7 @@ async fn complete_wanted_item_for_title_updates_matching_row_in_one_step() {
     .expect("wanted item should reset for negative scored completion");
 
     workflow
-        .complete_wanted_item_for_title(
+        .complete_acquisition_scope_for_title(
             "title-series",
             None,
             Some("2026-04-20T02:00:00Z"),
@@ -148,7 +148,7 @@ async fn list_wanted_items_filters_on_latest_decision_code() {
         .await
         .expect("other title should insert");
 
-    let wanted_mismatch = WantedItem {
+    let wanted_mismatch = AcquisitionScopeState {
         id: "wanted-mismatch".to_string(),
         title_id: title.id.clone(),
         title_name: Some(title.name.clone()),
@@ -164,7 +164,7 @@ async fn list_wanted_items_filters_on_latest_decision_code() {
         episode_number: None,
         media_type: "movie".to_string(),
         last_search_at: None,
-        status: WantedStatus::Wanted,
+        status: AcquisitionScopeStatus::Wanted,
         grabbed_release: None,
         current_score: None,
         latest_release_decision: None,
@@ -172,7 +172,7 @@ async fn list_wanted_items_filters_on_latest_decision_code() {
         created_at: now.to_rfc3339(),
         updated_at: now.to_rfc3339(),
     };
-    let wanted_quality_blocked = WantedItem {
+    let wanted_quality_blocked = AcquisitionScopeState {
         id: "wanted-quality-blocked".to_string(),
         title_id: other_title.id.clone(),
         title_name: Some(other_title.name.clone()),
@@ -180,11 +180,11 @@ async fn list_wanted_items_filters_on_latest_decision_code() {
     };
 
     workflow
-        .upsert_wanted_item(&wanted_mismatch)
+        .upsert_acquisition_scope_state(&wanted_mismatch)
         .await
         .expect("first wanted item should insert");
     workflow
-        .upsert_wanted_item(&wanted_quality_blocked)
+        .upsert_acquisition_scope_state(&wanted_quality_blocked)
         .await
         .expect("second wanted item should insert");
 
@@ -241,17 +241,17 @@ async fn list_wanted_items_filters_on_latest_decision_code() {
         .expect("latest blocked decision should insert");
 
     let items = workflow
-        .list_wanted_items(WantedItemsQuery {
+        .list_acquisition_scope_states(AcquisitionScopeStatesQuery {
             latest_decision_codes: vec!["title_mismatch".into()],
             limit: 50,
-            ..WantedItemsQuery::default()
+            ..AcquisitionScopeStatesQuery::default()
         })
         .await
         .expect("filtered wanted items should load");
     let count = workflow
-        .count_wanted_items(WantedItemsQuery {
+        .count_acquisition_scope_states(AcquisitionScopeStatesQuery {
             latest_decision_codes: vec!["title_mismatch".into()],
-            ..WantedItemsQuery::default()
+            ..AcquisitionScopeStatesQuery::default()
         })
         .await
         .expect("filtered wanted count should load");
@@ -484,7 +484,7 @@ async fn list_wanted_items_filters_with_fuzzy_title_search() {
         .await
         .expect("other title should insert");
 
-    let wanted_match = WantedItem {
+    let wanted_match = AcquisitionScopeState {
         id: "wanted-search-match".to_string(),
         title_id: title.id.clone(),
         title_name: Some("Schoolhouse Rock! Earth".to_string()),
@@ -500,7 +500,7 @@ async fn list_wanted_items_filters_with_fuzzy_title_search() {
         episode_number: None,
         media_type: "episode".to_string(),
         last_search_at: None,
-        status: WantedStatus::Wanted,
+        status: AcquisitionScopeStatus::Wanted,
         grabbed_release: None,
         current_score: None,
         latest_release_decision: None,
@@ -508,7 +508,7 @@ async fn list_wanted_items_filters_with_fuzzy_title_search() {
         created_at: now.to_rfc3339(),
         updated_at: now.to_rfc3339(),
     };
-    let wanted_other = WantedItem {
+    let wanted_other = AcquisitionScopeState {
         id: "wanted-search-other".to_string(),
         title_id: other_title.id.clone(),
         title_name: Some("Different Show".to_string()),
@@ -516,26 +516,26 @@ async fn list_wanted_items_filters_with_fuzzy_title_search() {
     };
 
     workflow
-        .upsert_wanted_item(&wanted_match)
+        .upsert_acquisition_scope_state(&wanted_match)
         .await
         .expect("matching wanted item should insert");
     workflow
-        .upsert_wanted_item(&wanted_other)
+        .upsert_acquisition_scope_state(&wanted_other)
         .await
         .expect("other wanted item should insert");
 
     let items = workflow
-        .list_wanted_items(WantedItemsQuery {
+        .list_acquisition_scope_states(AcquisitionScopeStatesQuery {
             title_search: Some("scholhouse erth".into()),
             limit: 50,
-            ..WantedItemsQuery::default()
+            ..AcquisitionScopeStatesQuery::default()
         })
         .await
         .expect("filtered wanted items should load");
     let count = workflow
-        .count_wanted_items(WantedItemsQuery {
+        .count_acquisition_scope_states(AcquisitionScopeStatesQuery {
             title_search: Some("scholhouse erth".into()),
-            ..WantedItemsQuery::default()
+            ..AcquisitionScopeStatesQuery::default()
         })
         .await
         .expect("filtered wanted count should load");
@@ -545,17 +545,17 @@ async fn list_wanted_items_filters_with_fuzzy_title_search() {
     assert_eq!(items[0].id, wanted_match.id);
 
     let short_items = workflow
-        .list_wanted_items(WantedItemsQuery {
+        .list_acquisition_scope_states(AcquisitionScopeStatesQuery {
             title_search: Some("roc".into()),
             limit: 50,
-            ..WantedItemsQuery::default()
+            ..AcquisitionScopeStatesQuery::default()
         })
         .await
         .expect("short filtered wanted items should load");
     let short_count = workflow
-        .count_wanted_items(WantedItemsQuery {
+        .count_acquisition_scope_states(AcquisitionScopeStatesQuery {
             title_search: Some("roc".into()),
-            ..WantedItemsQuery::default()
+            ..AcquisitionScopeStatesQuery::default()
         })
         .await
         .expect("short filtered wanted count should load");

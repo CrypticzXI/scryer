@@ -2050,6 +2050,9 @@ pub(crate) fn map_app_error(error: AppError) -> Response {
         AppError::DownloadSubmitUnavailable(message) => {
             (StatusCode::BAD_GATEWAY, Json(ErrorResponse::new(message))).into_response()
         }
+        AppError::ArchiveExtractionPluginRequired { message, .. } => {
+            (StatusCode::CONFLICT, Json(ErrorResponse::new(message))).into_response()
+        }
         AppError::TemporaryUnavailable {
             message,
             retry_after,

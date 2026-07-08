@@ -149,7 +149,7 @@ pub(super) struct MockMediaFileRepo {
     /// derived missing-target sweep reads the seeded acquisition-state rows so a
     /// mock-backed store still yields targets for `run_convergence_cycle_once`.
     /// Left `None` for stores that manage their own media files directly.
-    pub(super) missing_scope_source: Option<Arc<super::TrackingWantedItemRepo>>,
+    pub(super) missing_scope_source: Option<Arc<super::TrackingAcquisitionScopeStateRepo>>,
     /// The catalog the seeded scopes belong to — used to resolve each scope's
     /// real facet (movie/series/anime) for the derived target, since the thinned
     /// state row does not carry it.
@@ -161,7 +161,7 @@ impl MockMediaFileRepo {
     /// source so the convergence cursor sees each monitored, fileless scope as a
     /// target with its correct facet.
     pub(super) fn with_missing_scope_source(
-        source: Arc<super::TrackingWantedItemRepo>,
+        source: Arc<super::TrackingAcquisitionScopeStateRepo>,
         titles: Arc<super::MockTitleRepo>,
     ) -> Self {
         Self {
@@ -276,7 +276,7 @@ impl MediaFileRepository for MockMediaFileRepo {
         let created = now.to_rfc3339();
         let mut candidates = MissingScopeCandidates::default();
         for item in source.store.lock().await.iter() {
-            if item.status != WantedStatus::Wanted {
+            if item.status != AcquisitionScopeStatus::Wanted {
                 continue;
             }
             // Resolve the scope's real facet from the catalog (the thinned state

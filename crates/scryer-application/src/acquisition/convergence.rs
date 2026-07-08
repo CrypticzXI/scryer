@@ -108,10 +108,10 @@ impl AppUseCase {
         let items = match self
             .services
             .workflow
-            .wanted_items
-            .list_wanted_items(crate::contracts::WantedItemsQuery {
+            .acquisition_scope_states
+            .list_acquisition_scope_states(crate::contracts::AcquisitionScopeStatesQuery {
                 limit: i64::MAX,
-                ..crate::contracts::WantedItemsQuery::default()
+                ..crate::contracts::AcquisitionScopeStatesQuery::default()
             })
             .await
         {
@@ -129,7 +129,7 @@ impl AppUseCase {
                 .as_deref()
                 .and_then(crate::quality_profile::parse_published_at)
                 .is_some_and(|searched_at| searched_at >= cutoff);
-            if !recently_searched || item.status != WantedStatus::Wanted {
+            if !recently_searched || item.status != AcquisitionScopeStatus::Wanted {
                 continue;
             }
             let Ok(Some(title)) = self.services.catalog.titles.get_by_id(&item.title_id).await
@@ -647,12 +647,12 @@ impl AppUseCase {
     /// coverage so the cursor re-searches every routed indexer, and wake the
     /// acquisition loop. Best-effort — recovery paths must never fail on
     /// bookkeeping.
-    pub(crate) async fn reopen_wanted_scope_for_acquisition(&self, item: &WantedItem) {
+    pub(crate) async fn reopen_wanted_scope_for_acquisition(&self, item: &AcquisitionScopeState) {
         if let Err(error) = self
             .services
             .workflow
-            .wanted_items
-            .transition_wanted_to_reopened(&item.id)
+            .acquisition_scope_states
+            .transition_acquisition_scope_to_reopened(&item.id)
             .await
         {
             tracing::warn!(

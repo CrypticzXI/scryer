@@ -32,12 +32,12 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use scryer_application::{
-    AUTO_BACKUP_POST_UPGRADE_PENDING_VERSION_KEY, AppUseCase, AutoBackupRunOutcome,
-    DownloadClientPluginProvider, DownloadQueuePollerOptions, FacetRegistry, IndexerPluginProvider,
-    JobTriggerSource, MovieFacetHandler, NotificationPluginProvider, PLUGIN_HTTP_CA_BUNDLE_PEM_KEY,
-    PluginHttpTrustConfigRuntime, PluginInstallationRepository, RUNTIME_PLUGIN_LOAD_CONCURRENCY,
-    RuntimePluginLoad, SETTINGS_SCOPE_SYSTEM, SeriesFacetHandler, SubtitlePluginProvider,
-    SystemInfoProvider, TitleImageKind, TitleImageRepository,
+    AUTO_BACKUP_POST_UPGRADE_PENDING_VERSION_KEY, AppUseCase, ArchiveExtractorPluginProvider,
+    AutoBackupRunOutcome, DownloadClientPluginProvider, DownloadQueuePollerOptions, FacetRegistry,
+    IndexerPluginProvider, JobTriggerSource, MovieFacetHandler, NotificationPluginProvider,
+    PLUGIN_HTTP_CA_BUNDLE_PEM_KEY, PluginHttpTrustConfigRuntime, PluginInstallationRepository,
+    RUNTIME_PLUGIN_LOAD_CONCURRENCY, RuntimePluginLoad, SETTINGS_SCOPE_SYSTEM, SeriesFacetHandler,
+    SubtitlePluginProvider, SystemInfoProvider, TitleImageKind, TitleImageRepository,
     load_runtime_plugin_from_persisted_installation_payload, start_background_acquisition_poller,
     start_background_auto_backup_scheduler, start_background_download_delete_poller,
     start_background_library_refresh_loop, start_background_manual_import_poller,
@@ -967,6 +967,11 @@ async fn bootstrap_application(
         .filter(|plugin| plugin.descriptor.plugin_type() == "subtitle_provider")
         .cloned()
         .collect::<Vec<_>>();
+    let archive_extractor_runtime_plugins = runtime_plugins
+        .iter()
+        .filter(|plugin| plugin.descriptor.plugin_type() == "archive_extractor")
+        .cloned()
+        .collect::<Vec<_>>();
     let notification_runtime_plugins = runtime_plugins
         .iter()
         .filter(|plugin| plugin.descriptor.plugin_type() == "notification")
@@ -1021,6 +1026,13 @@ async fn bootstrap_application(
         Arc::new(scryer_plugins::DynamicSubtitlePluginProvider::new(
             scryer_plugins::build_subtitle_plugin_provider_from_runtime_plugins(
                 &subtitle_runtime_plugins,
+                &disabled_builtin_plugins,
+            ),
+        ));
+    let archive_extractor_plugin_provider: Arc<dyn ArchiveExtractorPluginProvider> =
+        Arc::new(scryer_plugins::DynamicArchiveExtractorPluginProvider::new(
+            scryer_plugins::build_archive_extractor_plugin_provider_from_runtime_plugins(
+                &archive_extractor_runtime_plugins,
                 &disabled_builtin_plugins,
             ),
         ));
@@ -1170,6 +1182,7 @@ async fn bootstrap_application(
         .with_download_client_plugin_provider(download_client_plugin_provider.clone())
         .with_subtitle_provider_configs(subtitle_provider_configs)
         .with_subtitle_plugin_provider(subtitle_plugin_provider)
+        .with_archive_extractor_plugin_provider(archive_extractor_plugin_provider)
         .with_notification_provider(Arc::new(notif_provider))
         .with_plugin_descriptor_loader(Arc::new(scryer_plugins::WasmPluginDescriptorLoader))
         .with_tracked_download_handle(TrackedDownloadHandle::new(tracked_download_tx))

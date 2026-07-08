@@ -108,7 +108,7 @@ pub use ports::{
     DiscoveryItemLibraryProvenanceRecord, DiscoveryItemRecord, DiscoveryItemsPageRecord,
     DiscoveryItemsQuery, DiscoveryItemsResult, DiscoveryItemsStorageQuery,
     DiscoveryPendingContextChangeRecord, DiscoveryPruneReport, DiscoveryPublicFeedCommit,
-    DiscoveryRankComponentRecord, DiscoveryRawPageRecord, DiscoveryRepository,
+    DiscoveryRankComponentRecord, DiscoveryRepository,
     DiscoverySectionItemsRecord, DiscoverySectionRecord, DiscoverySectionResult,
     DiscoverySourceTagRecord, DiscoverySubmittedSubjectRecord, DiscoverySyncRunRecord,
     DiscoverySyncStateRecord, DiscoverySyncStatus, EpisodeImageUrlUpdate, MediaRequestResolution,
@@ -229,7 +229,7 @@ pub use contracts::{
     SearchMode, StagedNzbRef, SubmissionConflictPolicy, SubmissionScope, SubmissionScopeConflict,
     SubtitleGenerationInput, SubtitleProviderConfigUpdate, SubtitleProviderValidationResult,
     SubtitleStreamDetail, SuccessfulGrabCommit, TitleHistoryFilter, TitleHistoryPage,
-    WantedItemsQuery, WantedSearchOutcome,
+    AcquisitionScopeStatesQuery, WantedSearchOutcome,
 };
 pub use domain_events::DomainEventActor;
 pub use download_client_path_mappings::{
@@ -373,12 +373,13 @@ pub use null_repositories::{
     NullPluginInstallationRepository, NullPostProcessingScriptRepository, NullRuleSetRepository,
     NullScopeIndexerCoverageRepository, NullSettingsRepository, NullStagedNzbStore,
     NullSubtitleDownloadRepository, NullSystemInfoProvider, NullTitleImageProcessor,
-    NullTitleImageRepository, NullUpstreamScheduler, NullWantedItemRepository,
+    NullTitleImageRepository, NullUpstreamScheduler, NullAcquisitionScopeStateRepository,
     NullWorkflowOperationRepository,
 };
 pub use ports::{
-    AcquisitionStateRepository, BlocklistRepository, BuiltinDownloadClientConnectionTester,
-    DatastoreInfo, DomainEventRepository, DownloadClient, DownloadClientConfigRepository,
+    AcquisitionStateRepository, ArchiveExtractorClient, ArchiveExtractorPluginProvider,
+    BlocklistRepository, BuiltinDownloadClientConnectionTester, DatastoreInfo,
+    DomainEventRepository, DownloadClient, DownloadClientConfigRepository,
     DownloadClientPluginProvider, DownloadQueueCommandRepository, DownloadSubmissionRepository,
     ExternalIdentityVerifier, ExternalImportMonitorSnapshotRepository,
     ExternalImportSetupInstanceApiKeyDraft, ExternalImportSetupSecretDraft,
@@ -411,7 +412,7 @@ pub use ports::{
     SubtitleDownloadRepository, SubtitlePluginProvider, SubtitleProviderClient,
     SubtitleProviderConfigRepository, SystemInfoProvider, TitleImageProcessor,
     TitleImageRepository, TitleRepository, TotpRepository, UserExternalAccountRepository,
-    UserRepository, VerifiedExternalIdentity, WantedItemRepository, WebauthnRepository,
+    UserRepository, VerifiedExternalIdentity, AcquisitionScopeStateRepository, WebauthnRepository,
     WorkflowOperationInfo, WorkflowOperationRepository,
 };
 pub use quality::release_parser::{
@@ -453,7 +454,8 @@ pub use settings::keys::{
     DEFAULT_MOVIE_LIBRARY_PATH, DEFAULT_RECAP_POLICY, DEFAULT_RENAME_COLLISION_POLICY,
     DEFAULT_RENAME_MISSING_METADATA_POLICY, DEFAULT_RENAME_TEMPLATE_ANIME,
     DEFAULT_RENAME_TEMPLATE_MOVIE, DEFAULT_RENAME_TEMPLATE_SERIES, DEFAULT_SERIES_LIBRARY_PATH,
-    DOWNLOAD_CLIENT_DEFAULT_CATEGORY_SETTING_KEY, DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY,
+    DISCOVERY_REGION_KEY, DOWNLOAD_CLIENT_DEFAULT_CATEGORY_SETTING_KEY,
+    DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY,
     FILE_CHMOD_KEY, FOLDER_CHMOD_KEY, FOLDER_TEMPLATE_KEY, FORM_LOGIN_ENABLED_KEY,
     HISTORY_KEEP_FOREVER_KEY, HISTORY_RETENTION_DAYS_KEY, IMPORT_MODE_KEY,
     INDEXER_ROUTING_SETTINGS_KEY, LEGACY_NZBGET_CATEGORY_SETTING_KEY,
@@ -513,8 +515,8 @@ pub use types::{
     TotpEnrollmentComplete, TotpEnrollmentStart, TotpFailedAttemptRecord, TotpRecoveryCodeRecord,
     TotpStatus, UiDateTimeFormat, UiDefaultLandingView, UiDensity, UiSettings, UiSettingsFacet,
     UiSettingsUpdate, UiSidebarMode, UiTableColumnSetting, UiTableViewMode, UiTheme,
-    UpdateRecycleBinSettings, UserAuthFactorStatus, WantedCompleteTransition, WantedGrabTransition,
-    WantedItem, WantedKind, WantedPauseTransition, WantedStatus, WantedStatusCount,
+    UpdateRecycleBinSettings, UserAuthFactorStatus, AcquisitionScopeCompleteTransition, AcquisitionScopeGrabTransition,
+    AcquisitionScopeState, WantedKind, AcquisitionScopePauseTransition, AcquisitionScopeStatus, WantedStatusCount,
     WebauthnChallengeRecord, WebauthnChallengeStart, WebauthnChallengeType,
     WebauthnCredentialRecord,
 };
@@ -560,6 +562,12 @@ pub enum AppError {
     DownloadSubmitUnavailable(String),
 
     #[error("{message}")]
+    ArchiveExtractionPluginRequired {
+        message: String,
+        source_path: Option<String>,
+    },
+
+    #[error("{message}")]
     TemporaryUnavailable {
         message: String,
         retry_after: Option<std::time::Duration>,
@@ -595,6 +603,13 @@ impl AppError {
 
     pub fn download_submit_unavailable(message: impl Into<String>) -> Self {
         Self::DownloadSubmitUnavailable(message.into())
+    }
+
+    pub fn archive_extraction_plugin_required(source_path: Option<String>) -> Self {
+        Self::ArchiveExtractionPluginRequired {
+            message: "This import is blocked because the download contains archive files. Install or enable the Archive Extraction plugin, then re-import.".to_string(),
+            source_path,
+        }
     }
 
     pub fn temporary_unavailable(

@@ -6,10 +6,10 @@ use std::sync::{Arc, LazyLock, Mutex};
 
 use extism::Manifest;
 use scryer_application::{
-    AppError, AppResult, DownloadClient, DownloadClientPluginProvider, ExternalPluginWasm,
-    IndexerClient, IndexerPluginProvider, NotificationClient, NotificationPluginProvider,
-    PluginDescriptorLoader, RuntimePluginLoad, SubtitlePluginProvider, SubtitleProviderClient,
-    SubtitleSyncClient,
+    AppError, AppResult, ArchiveExtractorClient, ArchiveExtractorPluginProvider, DownloadClient,
+    DownloadClientPluginProvider, ExternalPluginWasm, IndexerClient, IndexerPluginProvider,
+    NotificationClient, NotificationPluginProvider, PluginDescriptorLoader, RuntimePluginLoad,
+    SubtitlePluginProvider, SubtitleProviderClient, SubtitleSyncClient,
 };
 use scryer_domain::{
     DownloadClientConfig, IndexerConfig, IndexerProxyConfig, NotificationChannelConfig,
@@ -17,6 +17,7 @@ use scryer_domain::{
 };
 use tracing::{debug, info, warn};
 
+use crate::archive_adapter::WasmArchiveExtractorClient;
 use crate::download_client_adapter::WasmDownloadClient;
 use crate::indexer_adapter::WasmIndexerClient;
 use crate::notification_adapter::WasmNotificationClient;
@@ -26,15 +27,16 @@ use crate::socket_host::SocketHost;
 use crate::subtitle_adapter::WasmSubtitleClient;
 use crate::subtitle_sync_adapter::WasmSubtitleSyncClient;
 use crate::types::{
-    ConfigFieldRole, ConfigFieldValueSource, EXPORT_DESCRIBE, EXPORT_DOWNLOAD_ADD,
-    EXPORT_DOWNLOAD_CONTROL, EXPORT_DOWNLOAD_LIST_COMPLETED, EXPORT_DOWNLOAD_LIST_HISTORY,
-    EXPORT_DOWNLOAD_LIST_QUEUE, EXPORT_DOWNLOAD_MARK_IMPORTED, EXPORT_DOWNLOAD_STATUS,
-    EXPORT_DOWNLOAD_TEST_CONNECTION, EXPORT_INDEXER_SEARCH, EXPORT_NOTIFICATION_SEND,
-    EXPORT_SUBSYNC_ALIGN, EXPORT_SUBTITLE_DOWNLOAD, EXPORT_SUBTITLE_GENERATE,
-    EXPORT_SUBTITLE_SEARCH, EXPORT_VALIDATE_CONFIG, PluginDescriptor,
-    PluginHostBindingId as SdkHostBinding, PluginKind, ProviderDescriptor, SDK_VERSION,
-    SubtitleProviderMode, config_fields_to_domain, indexer_capabilities_to_domain,
-    plugin_descriptor_sdk_constraint, validate_plugin_descriptor_sdk_contract,
+    ArchivePluginFormat, ArchivePluginRepairFormat, ConfigFieldRole, ConfigFieldValueSource,
+    EXPORT_ARCHIVE_PROCESS, EXPORT_DESCRIBE, EXPORT_DOWNLOAD_ADD, EXPORT_DOWNLOAD_CONTROL,
+    EXPORT_DOWNLOAD_LIST_COMPLETED, EXPORT_DOWNLOAD_LIST_HISTORY, EXPORT_DOWNLOAD_LIST_QUEUE,
+    EXPORT_DOWNLOAD_MARK_IMPORTED, EXPORT_DOWNLOAD_STATUS, EXPORT_DOWNLOAD_TEST_CONNECTION,
+    EXPORT_INDEXER_SEARCH, EXPORT_NOTIFICATION_SEND, EXPORT_SUBSYNC_ALIGN,
+    EXPORT_SUBTITLE_DOWNLOAD, EXPORT_SUBTITLE_GENERATE, EXPORT_SUBTITLE_SEARCH,
+    EXPORT_VALIDATE_CONFIG, PluginDescriptor, PluginHostBindingId as SdkHostBinding, PluginKind,
+    ProviderDescriptor, SDK_VERSION, SubtitleProviderMode, config_fields_to_domain,
+    indexer_capabilities_to_domain, plugin_descriptor_sdk_constraint,
+    validate_plugin_descriptor_sdk_contract,
 };
 
 const INDEXER_PLUGIN_TYPES: &[&str] = &["indexer", "usenet_indexer", "torrent_indexer"];
@@ -50,6 +52,8 @@ type NotificationClientCache =
 type SubtitleClientCacheKey = (String, String, String, String, String);
 type SubtitleClientCache =
     std::sync::Mutex<HashMap<SubtitleClientCacheKey, Arc<dyn SubtitleProviderClient>>>;
+type ArchiveExtractorClientCache =
+    std::sync::Mutex<HashMap<String, Arc<dyn ArchiveExtractorClient>>>;
 
 fn log_stale_plugin_cache_eviction(
     plugin_family: &'static str,
@@ -1496,6 +1500,10 @@ fn validate_descriptor_for_type(
                 PluginKind::SubtitleProvider,
                 ProviderDescriptor::Subtitle(_)
             )
+            | (
+                PluginKind::ArchiveExtractor,
+                ProviderDescriptor::ArchiveExtractor(_)
+            )
     );
     if !provider_matches_kind {
         warn!(
@@ -2280,6 +2288,314 @@ fn host_binding_cache_key(host_bindings: &HashMap<PluginHostBindingId, String>) 
     )
 }
 
+// ── Archive extractor plugin provider ────────────────────────────────
+
+pub struct WasmArchiveExtractorPluginProvider {
+    plugins: HashMap<String, LoadedPlugin>,
+    aliases: HashMap<String, String>,
+}
+
+impl WasmArchiveExtractorPluginProvider {
+    pub fn empty() -> Self {
+        Self {
+            plugins: HashMap::new(),
+            aliases: HashMap::new(),
+        }
+    }
+
+    fn prepare_external_plugin_record(
+        plugin: ExternalPluginWasm<'_>,
+    ) -> Result<LoadedPluginRecord, String> {
+        let (descriptor, wasm_bytes) = load_from_bytes(plugin.bytes)?;
+        if !validate_descriptor_for_type(
+            &descriptor,
+            Some("archive_extractor"),
+            PluginLoadSource::External {
+                first_party: plugin.first_party,
+            },
+        ) {
+            return Err("archive extractor descriptor rejected".to_string());
+        }
+        Ok(LoadedPluginRecord::new(LoadedPlugin::from_owned(
+            descriptor, wasm_bytes,
+        )))
+    }
+
+    fn prepare_runtime_plugin_record(
+        plugin: RuntimePluginLoad,
+    ) -> Result<LoadedPluginRecord, String> {
+        if !validate_descriptor_for_type(
+            &plugin.descriptor,
+            Some("archive_extractor"),
+            PluginLoadSource::External {
+                first_party: plugin.first_party,
+            },
+        ) {
+            return Err("archive extractor descriptor rejected".to_string());
+        }
+        Ok(LoadedPluginRecord::new(LoadedPlugin::from_owned(
+            plugin.descriptor,
+            plugin.wasm_bytes,
+        )))
+    }
+
+    fn with_external_plugin(mut self, plugin: ExternalPluginWasm<'_>) -> Self {
+        match Self::prepare_external_plugin_record(plugin) {
+            Ok(record) => {
+                info!(
+                    plugin = record.loaded.descriptor.name.as_str(),
+                    version = record.loaded.descriptor.version.as_str(),
+                    provider_type = record.primary_key.as_str(),
+                    "registered external archive extractor plugin"
+                );
+                let _ =
+                    insert_loaded_plugin(&mut self.plugins, &mut self.aliases, record, true, true);
+            }
+            Err(error) => {
+                warn!(error = %error, "failed to load external archive extractor plugin");
+            }
+        }
+        self
+    }
+
+    fn with_runtime_plugin(mut self, plugin: RuntimePluginLoad) -> Self {
+        match Self::prepare_runtime_plugin_record(plugin) {
+            Ok(record) => {
+                let _ =
+                    insert_loaded_plugin(&mut self.plugins, &mut self.aliases, record, true, true);
+            }
+            Err(error) => {
+                warn!(error = %error, "failed to load runtime archive extractor plugin");
+            }
+        }
+        self
+    }
+
+    pub fn without_provider_type(mut self, provider_type: &str) -> Self {
+        let _ = remove_loaded_plugin(&mut self.plugins, &mut self.aliases, provider_type);
+        self
+    }
+
+    fn provider_supports_format(loaded: &LoadedPlugin, format: ArchivePluginFormat) -> bool {
+        loaded
+            .descriptor
+            .archive_extractor()
+            .map(|descriptor| descriptor.capabilities.formats.contains(&format))
+            .unwrap_or(false)
+    }
+
+    fn provider_supports_repair_then_extract(
+        loaded: &LoadedPlugin,
+        format: ArchivePluginFormat,
+        repair_format: ArchivePluginRepairFormat,
+    ) -> bool {
+        loaded
+            .descriptor
+            .archive_extractor()
+            .map(|descriptor| {
+                descriptor.capabilities.formats.contains(&format)
+                    && descriptor
+                        .capabilities
+                        .repair_formats
+                        .contains(&repair_format)
+            })
+            .unwrap_or(false)
+    }
+
+    fn provider_for_format(&self, format: ArchivePluginFormat) -> Option<&LoadedPlugin> {
+        self.plugins
+            .values()
+            .find(|loaded| Self::provider_supports_format(loaded, format))
+    }
+
+    fn provider_for_repair_then_extract(
+        &self,
+        format: ArchivePluginFormat,
+        repair_format: ArchivePluginRepairFormat,
+    ) -> Option<&LoadedPlugin> {
+        self.plugins.values().find(|loaded| {
+            Self::provider_supports_repair_then_extract(loaded, format, repair_format)
+        })
+    }
+}
+
+impl ArchiveExtractorPluginProvider for WasmArchiveExtractorPluginProvider {
+    fn client_for_format(
+        &self,
+        format: ArchivePluginFormat,
+    ) -> Option<Arc<dyn ArchiveExtractorClient>> {
+        let loaded = self.provider_for_format(format)?;
+        let wasm_bytes = match loaded.materialize_wasm() {
+            Ok(wasm_bytes) => wasm_bytes,
+            Err(error) => {
+                warn!(
+                    format = ?format,
+                    error = %error,
+                    "failed to materialize WASM archive extractor bytes"
+                );
+                return None;
+            }
+        };
+        match WasmArchiveExtractorClient::new(wasm_bytes, loaded.descriptor.clone()) {
+            Ok(client) => Some(Arc::new(client)),
+            Err(error) => {
+                warn!(
+                    format = ?format,
+                    error = %error,
+                    "failed to instantiate WASM archive extractor plugin"
+                );
+                None
+            }
+        }
+    }
+
+    fn client_for_repair_then_extract(
+        &self,
+        format: ArchivePluginFormat,
+        repair_format: ArchivePluginRepairFormat,
+    ) -> Option<Arc<dyn ArchiveExtractorClient>> {
+        let loaded = self.provider_for_repair_then_extract(format, repair_format)?;
+        let wasm_bytes = match loaded.materialize_wasm() {
+            Ok(wasm_bytes) => wasm_bytes,
+            Err(error) => {
+                warn!(
+                    format = ?format,
+                    repair_format = ?repair_format,
+                    error = %error,
+                    "failed to materialize WASM archive extractor bytes"
+                );
+                return None;
+            }
+        };
+        match WasmArchiveExtractorClient::new(wasm_bytes, loaded.descriptor.clone()) {
+            Ok(client) => Some(Arc::new(client)),
+            Err(error) => {
+                warn!(
+                    format = ?format,
+                    repair_format = ?repair_format,
+                    error = %error,
+                    "failed to instantiate WASM archive extractor plugin"
+                );
+                None
+            }
+        }
+    }
+
+    fn available_provider_types(&self) -> Vec<String> {
+        let mut keys = self.plugins.keys().cloned().collect::<Vec<_>>();
+        keys.sort();
+        keys
+    }
+
+    fn reload_runtime_plugins(
+        &self,
+        _runtime_plugins: &[RuntimePluginLoad],
+        _disabled_builtins: &[String],
+    ) -> Result<(), String> {
+        Err("use DynamicArchiveExtractorPluginProvider for reload".to_string())
+    }
+}
+
+pub struct DynamicArchiveExtractorPluginProvider {
+    inner: std::sync::RwLock<WasmArchiveExtractorPluginProvider>,
+    client_cache: ArchiveExtractorClientCache,
+}
+
+impl DynamicArchiveExtractorPluginProvider {
+    pub fn new(provider: WasmArchiveExtractorPluginProvider) -> Self {
+        Self {
+            inner: std::sync::RwLock::new(provider),
+            client_cache: std::sync::Mutex::new(HashMap::new()),
+        }
+    }
+
+    pub fn reload(&self, new_provider: WasmArchiveExtractorPluginProvider) {
+        let mut guard = self
+            .inner
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *guard = new_provider;
+        if let Ok(mut cache) = self.client_cache.lock() {
+            cache.clear();
+        }
+    }
+}
+
+impl ArchiveExtractorPluginProvider for DynamicArchiveExtractorPluginProvider {
+    fn client_for_format(
+        &self,
+        format: ArchivePluginFormat,
+    ) -> Option<Arc<dyn ArchiveExtractorClient>> {
+        let cache_key = format!("extract:{format:?}");
+        if let Ok(cache) = self.client_cache.lock()
+            && let Some(client) = cache.get(&cache_key)
+        {
+            return Some(Arc::clone(client));
+        }
+
+        let client = {
+            let guard = self
+                .inner
+                .read()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            guard.client_for_format(format)?
+        };
+
+        if let Ok(mut cache) = self.client_cache.lock() {
+            cache.insert(cache_key, Arc::clone(&client));
+        }
+        Some(client)
+    }
+
+    fn client_for_repair_then_extract(
+        &self,
+        format: ArchivePluginFormat,
+        repair_format: ArchivePluginRepairFormat,
+    ) -> Option<Arc<dyn ArchiveExtractorClient>> {
+        let cache_key = format!("repair:{format:?}:{repair_format:?}");
+        if let Ok(cache) = self.client_cache.lock()
+            && let Some(client) = cache.get(&cache_key)
+        {
+            return Some(Arc::clone(client));
+        }
+
+        let client = {
+            let guard = self
+                .inner
+                .read()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            guard.client_for_repair_then_extract(format, repair_format)?
+        };
+
+        if let Ok(mut cache) = self.client_cache.lock() {
+            cache.insert(cache_key, Arc::clone(&client));
+        }
+        Some(client)
+    }
+
+    fn available_provider_types(&self) -> Vec<String> {
+        let guard = self
+            .inner
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        guard.available_provider_types()
+    }
+
+    fn reload_runtime_plugins(
+        &self,
+        runtime_plugins: &[RuntimePluginLoad],
+        disabled_builtins: &[String],
+    ) -> Result<(), String> {
+        self.reload(
+            build_archive_extractor_plugin_provider_from_runtime_plugins(
+                runtime_plugins,
+                disabled_builtins,
+            ),
+        );
+        Ok(())
+    }
+}
+
 fn cache_fingerprint(value: &str) -> String {
     let mut hasher = DefaultHasher::new();
     value.hash(&mut hasher);
@@ -2319,6 +2635,40 @@ pub fn build_subtitle_plugin_provider_from_runtime_plugins(
 
     for asset in crate::builtins::SUBTITLE_BUILTINS {
         provider = provider.with_builtin_asset(*asset);
+    }
+
+    for provider_type in disabled_builtins {
+        provider = provider.without_provider_type(provider_type);
+    }
+
+    provider
+}
+
+pub fn build_archive_extractor_plugin_provider(
+    external_wasm_bytes: &[ExternalPluginWasm<'_>],
+    disabled_builtins: &[String],
+) -> WasmArchiveExtractorPluginProvider {
+    let mut provider = WasmArchiveExtractorPluginProvider::empty();
+
+    for plugin in external_wasm_bytes {
+        provider = provider.with_external_plugin(*plugin);
+    }
+
+    for provider_type in disabled_builtins {
+        provider = provider.without_provider_type(provider_type);
+    }
+
+    provider
+}
+
+pub fn build_archive_extractor_plugin_provider_from_runtime_plugins(
+    runtime_plugins: &[RuntimePluginLoad],
+    disabled_builtins: &[String],
+) -> WasmArchiveExtractorPluginProvider {
+    let mut provider = WasmArchiveExtractorPluginProvider::empty();
+
+    for plugin in runtime_plugins.iter().cloned() {
+        provider = provider.with_runtime_plugin(plugin);
     }
 
     for provider_type in disabled_builtins {
@@ -2532,6 +2882,16 @@ pub(crate) fn build_plugin(manifest: Manifest) -> Result<extism::Plugin, extism:
     )
 }
 
+pub(crate) fn build_archive_plugin(manifest: Manifest) -> Result<extism::Plugin, extism::Error> {
+    let _build_guard = WASMTIME_PLUGIN_BUILD_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    extism::PluginBuilder::new(manifest)
+        .with_wasi(true)
+        .with_functions(crate::archive_crypto_host::functions())
+        .build()
+}
+
 pub(crate) fn build_plugin_with_indexer_proxy(
     manifest: Manifest,
     indexer_proxy_policy: plugin_http_host::IndexerProxyPolicy,
@@ -2559,6 +2919,7 @@ fn build_plugin_with_hosts(
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let mut functions = socket_host.functions();
     functions.extend(process_host.functions());
+    functions.extend(crate::archive_crypto_host::functions());
     functions.extend(plugin_http_host::host_functions_with_indexer_proxy(
         &manifest,
         indexer_proxy_policy,
@@ -2591,6 +2952,9 @@ fn required_exports_for_descriptor(descriptor: &PluginDescriptor) -> Vec<&'stati
         }
         ProviderDescriptor::Notification(_) => {
             exports.push(EXPORT_NOTIFICATION_SEND);
+        }
+        ProviderDescriptor::ArchiveExtractor(_) => {
+            exports.push(EXPORT_ARCHIVE_PROCESS);
         }
         ProviderDescriptor::Subtitle(subtitle) => {
             exports.push(EXPORT_VALIDATE_CONFIG);
@@ -3185,9 +3549,11 @@ mod tests {
     use super::*;
     use crate::builtins::{NEWZNAB, TORZNAB};
     use crate::types::{
-        ConfigFieldDef, ConfigFieldType, ConfigFieldValueSource, DownloadClientCapabilities,
-        DownloadClientDescriptor, IndexerDescriptor, IndexerSourceKind, NotificationCapabilities,
-        NotificationDescriptor, PluginHostBindingId, SubtitleCapabilities, SubtitleDescriptor,
+        ArchiveExtractorCapabilities, ArchiveExtractorDescriptor, ArchivePluginFormat,
+        ArchivePluginRepairFormat, ConfigFieldDef, ConfigFieldType, ConfigFieldValueSource,
+        DownloadClientCapabilities, DownloadClientDescriptor, IndexerDescriptor, IndexerSourceKind,
+        NotificationCapabilities, NotificationDescriptor, PluginHostBindingId,
+        SubtitleCapabilities, SubtitleDescriptor,
     };
 
     struct DummyIndexerClient;
@@ -3357,6 +3723,19 @@ mod tests {
                 allowed_hosts: vec![],
                 capabilities: SubtitleCapabilities::default(),
             }),
+            "archive_extractor" => {
+                ProviderDescriptor::ArchiveExtractor(ArchiveExtractorDescriptor {
+                    provider_type: "test".to_string(),
+                    provider_aliases: vec![],
+                    config_fields: vec![],
+                    default_base_url: None,
+                    allowed_hosts: vec![],
+                    capabilities: ArchiveExtractorCapabilities {
+                        formats: vec![ArchivePluginFormat::Rar, ArchivePluginFormat::Zip],
+                        repair_formats: vec![ArchivePluginRepairFormat::Par2],
+                    },
+                })
+            }
             other => panic!("unsupported test plugin type: {other}"),
         };
 
@@ -3385,6 +3764,9 @@ mod tests {
             ProviderDescriptor::Subtitle(provider) => {
                 provider.provider_type = provider_type.to_string()
             }
+            ProviderDescriptor::ArchiveExtractor(provider) => {
+                provider.provider_type = provider_type.to_string()
+            }
         }
     }
 
@@ -3394,6 +3776,7 @@ mod tests {
             ProviderDescriptor::Notification(provider) => provider.provider_aliases = aliases,
             ProviderDescriptor::DownloadClient(provider) => provider.provider_aliases = aliases,
             ProviderDescriptor::Subtitle(provider) => provider.provider_aliases = aliases,
+            ProviderDescriptor::ArchiveExtractor(provider) => provider.provider_aliases = aliases,
         }
     }
 
@@ -3403,6 +3786,9 @@ mod tests {
             ProviderDescriptor::Notification(provider) => provider.allowed_hosts = allowed_hosts,
             ProviderDescriptor::DownloadClient(provider) => provider.allowed_hosts = allowed_hosts,
             ProviderDescriptor::Subtitle(provider) => provider.allowed_hosts = allowed_hosts,
+            ProviderDescriptor::ArchiveExtractor(provider) => {
+                provider.allowed_hosts = allowed_hosts
+            }
         }
     }
 
@@ -3882,6 +4268,35 @@ mod tests {
             "channel-1".to_string(),
             "revision-2".to_string()
         )));
+    }
+
+    #[test]
+    fn archive_extractor_descriptor_requires_archive_process_export() {
+        let descriptor = descriptor("archive_extractor");
+        let exports = required_exports_for_descriptor(&descriptor);
+
+        assert!(exports.contains(&EXPORT_DESCRIBE));
+        assert!(exports.contains(&EXPORT_ARCHIVE_PROCESS));
+        assert!(!exports.contains(&"scryer_crc32"));
+    }
+
+    #[test]
+    fn archive_extractor_provider_routes_by_declared_format_capability() {
+        let provider = WasmArchiveExtractorPluginProvider::empty().with_runtime_plugin(
+            runtime_plugin_load("archive_extractor", "archive-tools", &[]),
+        );
+
+        assert_eq!(provider.available_provider_types(), vec!["archive-tools"]);
+        assert!(
+            provider
+                .provider_for_format(ArchivePluginFormat::Rar)
+                .is_some()
+        );
+        assert!(
+            provider
+                .provider_for_format(ArchivePluginFormat::Zip)
+                .is_some()
+        );
     }
 
     #[test]

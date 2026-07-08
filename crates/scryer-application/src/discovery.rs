@@ -1,7 +1,7 @@
 use crate::library_scan::{
     DiscoveryContextChangeType, DiscoveryContextChangedSubjectInput, DiscoveryContextChangesInput,
-    DiscoveryContextChangesResult, DiscoveryContextSnapshotPageResult,
-    DiscoveryContextSnapshotSubmitInput, DiscoveryDashboardResult, DiscoveryDashboardSection,
+    DiscoveryContextSnapshotPageResult, DiscoveryContextSnapshotSubmitInput,
+    DiscoveryDashboardResult, DiscoveryDashboardSection,
     DiscoveryExternalIdInput, DiscoveryPublicFeedInput, DiscoverySubjectInput, DiscoveryTitle,
 };
 use crate::ports::{
@@ -11,7 +11,7 @@ use crate::ports::{
     DiscoveryHomeQuery, DiscoveryHomeResult, DiscoveryItemDetailQuery,
     DiscoveryItemLibraryProvenanceRecord, DiscoveryItemRecord, DiscoveryItemsQuery,
     DiscoveryItemsResult, DiscoveryItemsStorageQuery, DiscoveryPendingContextChangeRecord,
-    DiscoveryRankComponentRecord, DiscoveryRawPageRecord, DiscoverySectionItemsRecord,
+    DiscoveryRankComponentRecord, DiscoverySectionItemsRecord,
     DiscoverySectionRecord, DiscoverySectionResult, DiscoverySourceTagRecord,
     DiscoverySubmittedSubjectRecord, DiscoverySyncStatus, TitleExternalIdLookup,
 };
@@ -413,6 +413,7 @@ impl AppUseCase {
         limit: usize,
     ) -> AppResult<Vec<DiscoverySectionResult>> {
         let defaults = DiscoveryContextDefaults {
+            region: self.discovery_region().await,
             language: self.metadata_language().await,
             include_unresolved,
             ..DiscoveryContextDefaults::default()
@@ -2855,51 +2856,6 @@ fn discovery_context_fingerprint(
     format!("blake3:{}", blake3::hash(&bytes).to_hex())
 }
 
-pub(crate) fn snapshot_raw_page_record(
-    run_id: &str,
-    page: &DiscoveryContextSnapshotPageResult,
-    now: DateTime<Utc>,
-) -> AppResult<DiscoveryRawPageRecord> {
-    Ok(DiscoveryRawPageRecord {
-        run_id: run_id.to_string(),
-        payload_kind: "snapshot_page".to_string(),
-        page_number: page.page,
-        compression: "none".to_string(),
-        raw_payload: serde_json::to_string(page).map_err(discovery_json_error)?,
-        created_at: now,
-    })
-}
-
-pub(crate) fn context_changes_raw_page_record(
-    run_id: &str,
-    result: &DiscoveryContextChangesResult,
-    now: DateTime<Utc>,
-) -> AppResult<DiscoveryRawPageRecord> {
-    Ok(DiscoveryRawPageRecord {
-        run_id: run_id.to_string(),
-        payload_kind: "context_changes".to_string(),
-        page_number: 0,
-        compression: "none".to_string(),
-        raw_payload: serde_json::to_string(result).map_err(discovery_json_error)?,
-        created_at: now,
-    })
-}
-
-pub(crate) fn public_feed_raw_page_record(
-    run_id: &str,
-    result: &DiscoveryDashboardResult,
-    now: DateTime<Utc>,
-) -> AppResult<DiscoveryRawPageRecord> {
-    Ok(DiscoveryRawPageRecord {
-        run_id: run_id.to_string(),
-        payload_kind: "public_feed".to_string(),
-        page_number: 0,
-        compression: "none".to_string(),
-        raw_payload: serde_json::to_string(result).map_err(discovery_json_error)?,
-        created_at: now,
-    })
-}
-
 pub(crate) fn snapshot_item_records(
     run_id: &str,
     base_generation_id: &str,
@@ -3107,6 +3063,8 @@ fn discovery_item_record(
         tmdb_collection_id: item.tmdb_collection_id.map(|id| id.to_string()),
         tmdb_collection_name: non_empty_string(&item.tmdb_collection_name),
         owned_in_input: item.owned_in_input,
+        studio_slug: item.studio_slug.clone(),
+        person_ids: item.person_ids.clone(),
         facet_terms: discovery_canonical_facet_terms(item),
         context_terms: item.context_terms.clone(),
         change_subject_keys: item.change_subject_keys.clone(),
@@ -4748,6 +4706,8 @@ mod tests {
             tmdb_collection_id: None,
             tmdb_collection_name: None,
             owned_in_input: false,
+            studio_slug: None,
+            person_ids: Vec::new(),
             facet_terms: Vec::new(),
             context_terms: Vec::new(),
             change_subject_keys: Vec::new(),

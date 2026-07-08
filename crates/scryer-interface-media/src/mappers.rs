@@ -1871,6 +1871,8 @@ pub fn from_discovery_item(item: DiscoveryItemRecord) -> DiscoveryItemPayload {
         tmdb_collection_id: item.tmdb_collection_id,
         tmdb_collection_name: item.tmdb_collection_name,
         owned_in_input: item.owned_in_input,
+        studio_slug: item.studio_slug,
+        person_ids: item.person_ids,
         facet_terms: item.facet_terms,
         context_terms: item.context_terms,
     }
@@ -2406,7 +2408,7 @@ pub fn from_import_record(record: scryer_domain::ImportRecord) -> ImportRecordPa
 }
 
 pub fn from_wanted_item(
-    item: scryer_application::WantedItem,
+    item: scryer_application::AcquisitionScopeState,
 ) -> scryer_application::AppResult<WantedItemPayload> {
     Ok(WantedItemPayload {
         id: item.id.into(),
@@ -2565,7 +2567,7 @@ pub fn from_wanted_status_count(
     item: scryer_application::WantedStatusCount,
 ) -> WantedStatusCountPayload {
     WantedStatusCountPayload {
-        status: scryer_application::WantedStatus::parse(&item.status)
+        status: scryer_application::AcquisitionScopeStatus::parse(&item.status)
             .map(WantedStatusValue::from_application)
             .unwrap_or(WantedStatusValue::Wanted),
         count: item.count,
@@ -3224,7 +3226,7 @@ mod tests {
         provider_config_values_from_json_with_fields, provider_config_values_to_json,
     };
     use crate::types::{MediaFacetValue, PluginConfigFieldTypeValue, ProviderConfigValueInput};
-    use scryer_application::{WantedItem, WantedStatus};
+    use scryer_application::{AcquisitionScopeState, AcquisitionScopeStatus};
     use scryer_domain::{
         CompletedDownload, ConfigFieldDef, ConfigFieldType, ConfigFieldValueSource, ImportRecord,
         ImportStatus, ImportType, TitleHistoryEventType, TitleHistoryRecord,
@@ -3258,8 +3260,8 @@ mod tests {
         }
     }
 
-    fn wanted_item_fixture() -> WantedItem {
-        WantedItem {
+    fn wanted_item_fixture() -> AcquisitionScopeState {
+        AcquisitionScopeState {
             id: "wanted-1".to_string(),
             title_id: "title-1".to_string(),
             title_name: Some("Example".to_string()),
@@ -3275,7 +3277,7 @@ mod tests {
             episode_number: None,
             media_type: "movie".to_string(),
             last_search_at: None,
-            status: WantedStatus::Wanted,
+            status: AcquisitionScopeStatus::Wanted,
             grabbed_release: None,
             current_score: None,
             latest_release_decision: None,

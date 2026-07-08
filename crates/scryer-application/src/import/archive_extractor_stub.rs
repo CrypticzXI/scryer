@@ -1,10 +1,12 @@
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
-use crate::{AppError, AppResult};
+use crate::{AppError, AppResult, ArchiveExtractorPluginProvider};
 
 pub async fn extract_archives_if_needed(
     _dir: &Path,
     _password: Option<&str>,
+    _archive_provider: Option<Arc<dyn ArchiveExtractorPluginProvider>>,
 ) -> AppResult<Option<PathBuf>> {
     Ok(None)
 }

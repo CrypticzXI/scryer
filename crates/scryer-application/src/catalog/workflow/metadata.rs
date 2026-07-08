@@ -99,6 +99,18 @@ impl AppUseCase {
             .unwrap_or_else(|| "eng".to_string())
     }
 
+    /// RFC 121 SW5: discovery region seam. Mirrors `metadata_language` so a
+    /// future preferences UI only has to write `DISCOVERY_REGION_KEY`. Defaults
+    /// to "US" (the previous hardcoded value) so behavior is unchanged until set.
+    pub(crate) async fn discovery_region(&self) -> String {
+        self.read_setting_string_value_for_scope(SETTINGS_SCOPE_SYSTEM, DISCOVERY_REGION_KEY, None)
+            .await
+            .ok()
+            .flatten()
+            .filter(|v| !v.trim().is_empty())
+            .unwrap_or_else(|| "US".to_string())
+    }
+
     pub async fn title_ratings(
         &self,
         actor: &User,
@@ -371,8 +383,8 @@ impl AppUseCase {
                 .await?;
             self.services
                 .workflow
-                .wanted_items
-                .delete_wanted_items_for_title(&existing_title.id)
+                .acquisition_scope_states
+                .delete_acquisition_scope_states_for_title(&existing_title.id)
                 .await?;
 
             self.services

@@ -8,7 +8,7 @@ use scryer_application::{
     DownloadSubmissionActorSnapshot, DownloadSubmissionIdentity, DownloadSubmissionRepository,
     ExternalImportMonitorSnapshotChunk, ExternalImportMonitorSnapshotEntryKind, ImportArtifact,
     ImportArtifactRepository, ImportRepository, JobKey, JobRunRecord, JobRunStatus,
-    JobTriggerSource, PendingReleaseStatus, SubmissionScope, SuccessfulGrabCommit, WantedStatus,
+    JobTriggerSource, PendingReleaseStatus, SubmissionScope, SuccessfulGrabCommit, AcquisitionScopeStatus,
     WorkflowOperationInfo,
 };
 use scryer_domain::{
@@ -161,7 +161,7 @@ pub(crate) async fn commit_successful_grab_tx(
                  current_score = {}, grabbed_release = {}, updated_at = {}
              WHERE id = {}",
             &[
-                SqlArg::Text(WantedStatus::Grabbed.as_str().to_string()),
+                SqlArg::Text(AcquisitionScopeStatus::Grabbed.as_str().to_string()),
                 opt_timestamp_arg(commit.last_search_at.as_deref()),
                 SqlArg::OptI32(commit.current_score),
                 SqlArg::Text(commit.grabbed_release.clone()),

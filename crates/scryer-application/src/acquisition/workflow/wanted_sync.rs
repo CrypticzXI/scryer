@@ -8,12 +8,12 @@ pub(crate) async fn has_enabled_download_clients(app: &AppUseCase) -> bool {
         .unwrap_or(false)
 }
 impl AppUseCase {
-    pub async fn get_wanted_item(&self, actor: &User, id: &str) -> AppResult<Option<WantedItem>> {
+    pub async fn get_wanted_item(&self, actor: &User, id: &str) -> AppResult<Option<AcquisitionScopeState>> {
         let Some(item) = self
             .services
             .workflow
-            .wanted_items
-            .get_wanted_item_by_id(id)
+            .acquisition_scope_states
+            .get_acquisition_scope_state_by_id(id)
             .await?
         else {
             return Ok(None);
@@ -36,11 +36,11 @@ impl AppUseCase {
     }
 }
 impl AppUseCase {
-    pub async fn list_wanted_items(
+    pub async fn list_acquisition_scope_states(
         &self,
         actor: &User,
-        query: WantedItemsQuery,
-    ) -> AppResult<(Vec<WantedItem>, i64)> {
+        query: AcquisitionScopeStatesQuery,
+    ) -> AppResult<(Vec<AcquisitionScopeState>, i64)> {
         let requested_library_ids = query.library_ids.clone();
         let mut library_ids = self
             .authorized_library_ids(actor, None, scryer_domain::LibraryPermission::View)
@@ -59,10 +59,10 @@ impl AppUseCase {
 impl AppUseCase {
     async fn list_wanted_items_for_libraries(
         &self,
-        query: WantedItemsQuery,
+        query: AcquisitionScopeStatesQuery,
         library_ids: Vec<String>,
-    ) -> AppResult<(Vec<WantedItem>, i64)> {
-        let WantedItemsQuery {
+    ) -> AppResult<(Vec<AcquisitionScopeState>, i64)> {
+        let AcquisitionScopeStatesQuery {
             statuses,
             media_types,
             title_id,
@@ -82,8 +82,8 @@ impl AppUseCase {
         let items = self
             .services
             .workflow
-            .wanted_items
-            .list_wanted_items(WantedItemsQuery {
+            .acquisition_scope_states
+            .list_acquisition_scope_states(AcquisitionScopeStatesQuery {
                 statuses: statuses.clone(),
                 media_types: media_types.clone(),
                 title_id: title_id.clone(),
@@ -97,15 +97,15 @@ impl AppUseCase {
         let total = self
             .services
             .workflow
-            .wanted_items
-            .count_wanted_items(WantedItemsQuery {
+            .acquisition_scope_states
+            .count_acquisition_scope_states(AcquisitionScopeStatesQuery {
                 statuses,
                 media_types,
                 title_id,
                 library_ids,
                 title_search,
                 latest_decision_codes,
-                ..WantedItemsQuery::default()
+                ..AcquisitionScopeStatesQuery::default()
             })
             .await?;
         Ok((items, total))
@@ -137,8 +137,8 @@ impl AppUseCase {
 
         self.services
             .workflow
-            .wanted_items
-            .transition_wanted_to_paused(&WantedPauseTransition {
+            .acquisition_scope_states
+            .transition_acquisition_scope_to_paused(&AcquisitionScopePauseTransition {
                 id: item.id.clone(),
                 last_search_at: item.last_search_at.clone(),
                 current_score: item.current_score,
@@ -173,10 +173,10 @@ impl AppUseCase {
 
         self.services
             .workflow
-            .wanted_items
-            .update_wanted_item_status(
+            .acquisition_scope_states
+            .update_acquisition_scope_status(
                 &item.id,
-                WantedStatus::Wanted.as_str(),
+                AcquisitionScopeStatus::Wanted.as_str(),
                 item.last_search_at.as_deref(),
                 item.current_score,
                 item.grabbed_release.as_deref(),
@@ -187,7 +187,7 @@ impl AppUseCase {
     }
 }
 impl AppUseCase {
-    async fn wanted_item_submission_scope(&self, item: &WantedItem) -> AppResult<SubmissionScope> {
+    async fn wanted_item_submission_scope(&self, item: &AcquisitionScopeState) -> AppResult<SubmissionScope> {
         let episode = if let Some(episode_id) = item.episode_id.as_deref() {
             self.services
                 .catalog
@@ -213,11 +213,11 @@ impl AppUseCase {
         let items = self
             .services
             .workflow
-            .wanted_items
-            .list_wanted_items(WantedItemsQuery {
+            .acquisition_scope_states
+            .list_acquisition_scope_states(AcquisitionScopeStatesQuery {
                 title_id: Some(title_id.to_string()),
                 limit: 1000,
-                ..WantedItemsQuery::default()
+                ..AcquisitionScopeStatesQuery::default()
             })
             .await?;
         if items.is_empty() {
@@ -286,16 +286,16 @@ impl AppUseCase {
             if let Some(item) = self
                 .services
                 .workflow
-                .wanted_items
-                .get_wanted_item_by_id(&wanted_item_id)
+                .acquisition_scope_states
+                .get_acquisition_scope_state_by_id(&wanted_item_id)
                 .await?
             {
                 self.services
                     .workflow
-                    .wanted_items
-                    .update_wanted_item_status(
+                    .acquisition_scope_states
+                    .update_acquisition_scope_status(
                         &item.id,
-                        WantedStatus::Wanted.as_str(),
+                        AcquisitionScopeStatus::Wanted.as_str(),
                         None,
                         None,
                         None,

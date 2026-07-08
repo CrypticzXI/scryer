@@ -21,9 +21,9 @@ fn days_from_now(n: i64) -> String {
         .to_string()
 }
 
-fn base_episode_wanted_item() -> WantedItem {
+fn base_episode_wanted_item() -> AcquisitionScopeState {
     let now = now_utc().to_rfc3339();
-    WantedItem {
+    AcquisitionScopeState {
         id: "wanted-episode-1".to_string(),
         title_id: "title-1".to_string(),
         title_name: Some("Test Show".to_string()),
@@ -39,7 +39,7 @@ fn base_episode_wanted_item() -> WantedItem {
         episode_number: Some("1".to_string()),
         media_type: "episode".to_string(),
         last_search_at: None,
-        status: WantedStatus::Wanted,
+        status: AcquisitionScopeStatus::Wanted,
         grabbed_release: None,
         current_score: None,
         latest_release_decision: None,
@@ -49,9 +49,9 @@ fn base_episode_wanted_item() -> WantedItem {
     }
 }
 
-fn base_series_movie_wanted_item() -> WantedItem {
+fn base_series_movie_wanted_item() -> AcquisitionScopeState {
     let now = now_utc().to_rfc3339();
-    WantedItem {
+    AcquisitionScopeState {
         id: "wanted-series-movie-1".to_string(),
         title_id: "title-1".to_string(),
         title_name: Some("Test Show".to_string()),
@@ -67,7 +67,7 @@ fn base_series_movie_wanted_item() -> WantedItem {
         episode_number: None,
         media_type: "series_movie".to_string(),
         last_search_at: None,
-        status: WantedStatus::Wanted,
+        status: AcquisitionScopeStatus::Wanted,
         grabbed_release: None,
         current_score: None,
         latest_release_decision: None,

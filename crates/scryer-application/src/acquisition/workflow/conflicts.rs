@@ -45,7 +45,7 @@ impl AppUseCase {
     async fn wanted_item_blocking_submissions(
         &self,
         title: &Title,
-        item: &WantedItem,
+        item: &AcquisitionScopeState,
     ) -> AppResult<Vec<SubmissionScopeConflict>> {
         let scope = self.wanted_item_submission_scope(item).await?;
         self.find_blocking_download_submissions(title, &scope).await
@@ -55,7 +55,7 @@ impl AppUseCase {
     async fn handle_wanted_item_conflict(
         &self,
         title: &Title,
-        item: &WantedItem,
+        item: &AcquisitionScopeState,
         conflict_policy: SubmissionConflictPolicy,
     ) -> AppResult<Option<WantedSearchOutcome>> {
         let conflicts = self.wanted_item_blocking_submissions(title, item).await?;
@@ -99,7 +99,7 @@ impl AppUseCase {
     pub(crate) async fn reopen_wanted_scope_with_policy(
         &self,
         title: &Title,
-        item: &WantedItem,
+        item: &AcquisitionScopeState,
         conflict_policy: SubmissionConflictPolicy,
     ) -> AppResult<WantedSearchOutcome> {
         if let Some(outcome) = self
@@ -140,11 +140,11 @@ impl AppUseCase {
         if let Some(item) = self
             .services
             .workflow
-            .wanted_items
-            .get_wanted_item_for_title(&title.id, None)
+            .acquisition_scope_states
+            .get_acquisition_scope_state_for_title(&title.id, None)
             .await?
         {
-            if item.status == WantedStatus::Grabbed {
+            if item.status == AcquisitionScopeStatus::Grabbed {
                 return Ok(WantedSearchOutcome::default());
             }
 
@@ -182,9 +182,9 @@ impl AppUseCase {
         collection_id: Option<String>,
         series_movie_link_id: Option<String>,
         season_number: Option<String>,
-    ) -> WantedItem {
+    ) -> AcquisitionScopeState {
         let now = Utc::now().to_rfc3339();
-        WantedItem {
+        AcquisitionScopeState {
             id: Id::new().0,
             title_id: title.id.clone(),
             title_name: None,
@@ -200,7 +200,7 @@ impl AppUseCase {
             episode_number: None,
             media_type: media_type.to_string(),
             last_search_at: None,
-            status: WantedStatus::Wanted,
+            status: AcquisitionScopeStatus::Wanted,
             grabbed_release: None,
             current_score: None,
             latest_release_decision: None,

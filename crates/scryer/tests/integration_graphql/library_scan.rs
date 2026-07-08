@@ -822,9 +822,9 @@ async fn library_series_scan_hydrates_without_creating_wanted_for_unmonitored_ti
 
     let (wanted_items, total) = ctx
         .app
-        .list_wanted_items(
+        .list_acquisition_scope_states(
             &scryer_domain::User::new_admin("admin"),
-            scryer_application::WantedItemsQuery {
+            scryer_application::AcquisitionScopeStatesQuery {
                 statuses: Vec::new(),
                 media_types: Vec::new(),
                 title_id: Some(hydrated_title.id.clone()),
@@ -2047,9 +2047,9 @@ async fn library_movie_scan_creates_unmonitored_title_and_collection() {
 
     let (wanted_items, total) = ctx
         .app
-        .list_wanted_items(
+        .list_acquisition_scope_states(
             &scryer_domain::User::new_admin("admin"),
-            scryer_application::WantedItemsQuery {
+            scryer_application::AcquisitionScopeStatesQuery {
                 statuses: Vec::new(),
                 media_types: Vec::new(),
                 title_id: Some(hydrated_title.id.clone()),

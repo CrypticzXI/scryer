@@ -5,7 +5,11 @@ use scryer_domain::{
     CanonicalMediaTag, ImportTransferPhase, ImportType, IndexerCapsSnapshot,
     PersistedPluginWasmPayload, title_catalog_name_tie_key, title_catalog_sort_key_for_title,
 };
-use scryer_plugin_sdk::{SubtitleSyncAlignResponse, SubtitleSyncAudioCodec, SubtitleSyncOptions};
+use scryer_plugin_sdk::{
+    ArchivePluginFormat, ArchivePluginProcessRequest, ArchivePluginProcessResponse,
+    ArchivePluginRepairFormat, SubtitleSyncAlignResponse, SubtitleSyncAudioCodec,
+    SubtitleSyncOptions,
+};
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -316,7 +320,6 @@ pub struct DiscoverySectionItemsRecord {
 pub struct DiscoveryContextSnapshotCommit {
     pub state: DiscoverySyncStateRecord,
     pub run: DiscoverySyncRunRecord,
-    pub raw_pages: Vec<DiscoveryRawPageRecord>,
     pub submitted_subjects: Vec<DiscoverySubmittedSubjectRecord>,
     pub items: Vec<DiscoveryItemRecord>,
     pub facets: Vec<DiscoveryFacetRecord>,
@@ -327,7 +330,6 @@ pub struct DiscoveryContextSnapshotCommit {
 pub struct DiscoveryContextIncrementalCommit {
     pub state: DiscoverySyncStateRecord,
     pub run: DiscoverySyncRunRecord,
-    pub raw_changes: DiscoveryRawPageRecord,
     pub items: Vec<DiscoveryItemRecord>,
     pub tombstone_target_keys: Vec<String>,
     pub clear_pending_through_sequence: Option<i64>,
@@ -337,19 +339,8 @@ pub struct DiscoveryContextIncrementalCommit {
 pub struct DiscoveryPublicFeedCommit {
     pub state: DiscoverySyncStateRecord,
     pub run: DiscoverySyncRunRecord,
-    pub raw_feed: DiscoveryRawPageRecord,
     pub sections: Vec<DiscoverySectionRecord>,
     pub items: Vec<DiscoveryItemRecord>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct DiscoveryRawPageRecord {
-    pub run_id: String,
-    pub payload_kind: String,
-    pub page_number: i32,
-    pub compression: String,
-    pub raw_payload: String,
-    pub created_at: DateTime<Utc>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -472,6 +463,8 @@ pub struct DiscoveryItemRecord {
     pub tmdb_collection_id: Option<String>,
     pub tmdb_collection_name: Option<String>,
     pub owned_in_input: bool,
+    pub studio_slug: Option<String>,
+    pub person_ids: Vec<i32>,
     pub facet_terms: Vec<String>,
     pub context_terms: Vec<String>,
     pub change_subject_keys: Vec<String>,
@@ -534,7 +527,6 @@ pub trait DiscoveryRepository: Send + Sync {
         limit: i64,
     ) -> AppResult<Vec<DiscoverySyncRunRecord>>;
     async fn upsert_discovery_sync_run(&self, run: &DiscoverySyncRunRecord) -> AppResult<()>;
-    async fn insert_discovery_raw_page(&self, page: &DiscoveryRawPageRecord) -> AppResult<()>;
     async fn commit_discovery_context_snapshot(
         &self,
         commit: &DiscoveryContextSnapshotCommit,
@@ -2882,21 +2874,27 @@ pub trait MediaFileRepository: Send + Sync {
 }
 
 #[async_trait]
-pub trait WantedItemRepository: Send + Sync {
-    async fn upsert_wanted_item(&self, item: &WantedItem) -> AppResult<String>;
+pub trait AcquisitionScopeStateRepository: Send + Sync {
+    async fn upsert_acquisition_scope_state(
+        &self,
+        item: &AcquisitionScopeState,
+    ) -> AppResult<String>;
 
     /// Get-or-create the acquisition-state row for `item`'s scope. An existing
     /// row is returned untouched — state rows are written only by the events
     /// that change them (grabs, pauses, searches), never re-seeded.
-    async fn ensure_wanted_state_row(&self, item: &WantedItem) -> AppResult<String> {
-        if let Some(existing) = find_existing_wanted_state_row(self, item).await? {
+    async fn ensure_acquisition_scope_state(
+        &self,
+        item: &AcquisitionScopeState,
+    ) -> AppResult<String> {
+        if let Some(existing) = find_existing_acquisition_scope_state(self, item).await? {
             return Ok(existing.id);
         }
-        self.upsert_wanted_item(item).await?;
+        self.upsert_acquisition_scope_state(item).await?;
         Ok(item.id.clone())
     }
 
-    async fn update_wanted_item_status(
+    async fn update_acquisition_scope_status(
         &self,
         id: &str,
         status: &str,
@@ -2907,15 +2905,19 @@ pub trait WantedItemRepository: Send + Sync {
 
     /// Stamp the scope's last active-search time — cooldown state read by the
     /// upgrade policy and failed-grab staleness checks.
-    async fn record_wanted_search_attempt(&self, id: &str, last_search_at: &str) -> AppResult<()>;
-
-    async fn transition_wanted_to_grabbed(
+    async fn record_acquisition_scope_search_attempt(
         &self,
-        transition: &WantedGrabTransition,
+        id: &str,
+        last_search_at: &str,
+    ) -> AppResult<()>;
+
+    async fn transition_acquisition_scope_to_grabbed(
+        &self,
+        transition: &AcquisitionScopeGrabTransition,
     ) -> AppResult<()> {
-        self.update_wanted_item_status(
+        self.update_acquisition_scope_status(
             &transition.id,
-            WantedStatus::Grabbed.as_str(),
+            AcquisitionScopeStatus::Grabbed.as_str(),
             transition.last_search_at.as_deref(),
             transition.current_score,
             Some(&transition.grabbed_release),
@@ -2923,13 +2925,13 @@ pub trait WantedItemRepository: Send + Sync {
         .await
     }
 
-    async fn transition_wanted_to_completed(
+    async fn transition_acquisition_scope_to_completed(
         &self,
-        transition: &WantedCompleteTransition,
+        transition: &AcquisitionScopeCompleteTransition,
     ) -> AppResult<()> {
-        self.update_wanted_item_status(
+        self.update_acquisition_scope_status(
             &transition.id,
-            WantedStatus::Completed.as_str(),
+            AcquisitionScopeStatus::Completed.as_str(),
             transition.last_search_at.as_deref(),
             transition.current_score,
             transition.grabbed_release.as_deref(),
@@ -2937,18 +2939,21 @@ pub trait WantedItemRepository: Send + Sync {
         .await
     }
 
-    async fn complete_wanted_item_for_title(
+    async fn complete_acquisition_scope_for_title(
         &self,
         title_id: &str,
         episode_id: Option<&str>,
         last_search_at: Option<&str>,
         current_score: Option<i32>,
     ) -> AppResult<bool> {
-        let Some(wanted) = self.get_wanted_item_for_title(title_id, episode_id).await? else {
+        let Some(wanted) = self
+            .get_acquisition_scope_state_for_title(title_id, episode_id)
+            .await?
+        else {
             return Ok(false);
         };
 
-        self.transition_wanted_to_completed(&WantedCompleteTransition {
+        self.transition_acquisition_scope_to_completed(&AcquisitionScopeCompleteTransition {
             id: wanted.id,
             last_search_at: last_search_at.map(str::to_string),
             current_score: current_score.or(wanted.current_score),
@@ -2963,13 +2968,13 @@ pub trait WantedItemRepository: Send + Sync {
         Ok(true)
     }
 
-    async fn transition_wanted_to_paused(
+    async fn transition_acquisition_scope_to_paused(
         &self,
-        transition: &WantedPauseTransition,
+        transition: &AcquisitionScopePauseTransition,
     ) -> AppResult<()> {
-        self.update_wanted_item_status(
+        self.update_acquisition_scope_status(
             &transition.id,
-            WantedStatus::Paused.as_str(),
+            AcquisitionScopeStatus::Paused.as_str(),
             transition.last_search_at.as_deref(),
             transition.current_score,
             transition.grabbed_release.as_deref(),
@@ -2982,13 +2987,13 @@ pub trait WantedItemRepository: Send + Sync {
     /// cleared, the upgrade-baseline score and search cooldown preserved. The
     /// convergence re-open (coverage prune) is the caller's second half — this
     /// only resets the state row.
-    async fn transition_wanted_to_reopened(&self, id: &str) -> AppResult<()> {
-        let Some(existing) = self.get_wanted_item_by_id(id).await? else {
+    async fn transition_acquisition_scope_to_reopened(&self, id: &str) -> AppResult<()> {
+        let Some(existing) = self.get_acquisition_scope_state_by_id(id).await? else {
             return Ok(());
         };
-        self.update_wanted_item_status(
+        self.update_acquisition_scope_status(
             id,
-            WantedStatus::Wanted.as_str(),
+            AcquisitionScopeStatus::Wanted.as_str(),
             existing.last_search_at.as_deref(),
             existing.current_score,
             None,
@@ -2996,30 +3001,45 @@ pub trait WantedItemRepository: Send + Sync {
         .await
     }
 
-    async fn get_wanted_item_for_title(
+    async fn get_acquisition_scope_state_for_title(
         &self,
         title_id: &str,
         episode_id: Option<&str>,
-    ) -> AppResult<Option<WantedItem>>;
+    ) -> AppResult<Option<AcquisitionScopeState>>;
 
-    async fn delete_wanted_items_for_title(&self, title_id: &str) -> AppResult<()>;
+    async fn delete_acquisition_scope_states_for_title(&self, title_id: &str) -> AppResult<()>;
 
-    async fn delete_wanted_items_for_collection(&self, collection_id: &str) -> AppResult<()>;
+    async fn delete_acquisition_scope_states_for_collection(
+        &self,
+        collection_id: &str,
+    ) -> AppResult<()>;
 
-    async fn delete_wanted_items_for_series_movie_link(
+    async fn delete_acquisition_scope_states_for_series_movie_link(
         &self,
         series_movie_link_id: &str,
     ) -> AppResult<()>;
 
-    async fn delete_wanted_items_for_episode(&self, episode_id: &str) -> AppResult<()>;
+    async fn delete_acquisition_scope_states_for_episode(
+        &self,
+        episode_id: &str,
+    ) -> AppResult<()>;
 
     async fn insert_release_decision(&self, decision: &ReleaseDecision) -> AppResult<String>;
 
-    async fn get_wanted_item_by_id(&self, id: &str) -> AppResult<Option<WantedItem>>;
+    async fn get_acquisition_scope_state_by_id(
+        &self,
+        id: &str,
+    ) -> AppResult<Option<AcquisitionScopeState>>;
 
-    async fn list_wanted_items(&self, query: WantedItemsQuery) -> AppResult<Vec<WantedItem>>;
+    async fn list_acquisition_scope_states(
+        &self,
+        query: AcquisitionScopeStatesQuery,
+    ) -> AppResult<Vec<AcquisitionScopeState>>;
 
-    async fn count_wanted_items(&self, query: WantedItemsQuery) -> AppResult<i64>;
+    async fn count_acquisition_scope_states(
+        &self,
+        query: AcquisitionScopeStatesQuery,
+    ) -> AppResult<i64>;
 
     async fn list_release_decisions_for_title(
         &self,
@@ -3027,7 +3047,7 @@ pub trait WantedItemRepository: Send + Sync {
         limit: i64,
     ) -> AppResult<Vec<ReleaseDecision>>;
 
-    async fn list_release_decisions_for_wanted_item(
+    async fn list_release_decisions_for_acquisition_scope_state(
         &self,
         wanted_item_id: &str,
         limit: i64,
@@ -3036,16 +3056,18 @@ pub trait WantedItemRepository: Send + Sync {
 
 /// Locate the acquisition-state row matching `item`'s scope (episode /
 /// series-movie link / collection / bare title), if one exists.
-pub(crate) async fn find_existing_wanted_state_row<R: WantedItemRepository + ?Sized>(
+pub(crate) async fn find_existing_acquisition_scope_state<
+    R: AcquisitionScopeStateRepository + ?Sized,
+>(
     repo: &R,
-    item: &WantedItem,
-) -> AppResult<Option<WantedItem>> {
+    item: &AcquisitionScopeState,
+) -> AppResult<Option<AcquisitionScopeState>> {
     if let Some(series_movie_link_id) = item.series_movie_link_id.as_deref() {
         return Ok(repo
-            .list_wanted_items(WantedItemsQuery {
+            .list_acquisition_scope_states(AcquisitionScopeStatesQuery {
                 title_id: Some(item.title_id.clone()),
                 limit: 500,
-                ..WantedItemsQuery::default()
+                ..AcquisitionScopeStatesQuery::default()
             })
             .await?
             .into_iter()
@@ -3060,16 +3082,16 @@ pub(crate) async fn find_existing_wanted_state_row<R: WantedItemRepository + ?Si
     // season would resolve to the same collection-matched sibling row.
     if let Some(episode_id) = item.episode_id.as_deref() {
         return repo
-            .get_wanted_item_for_title(&item.title_id, Some(episode_id))
+            .get_acquisition_scope_state_for_title(&item.title_id, Some(episode_id))
             .await;
     }
 
     if let Some(collection_id) = item.collection_id.as_deref() {
         return Ok(repo
-            .list_wanted_items(WantedItemsQuery {
+            .list_acquisition_scope_states(AcquisitionScopeStatesQuery {
                 title_id: Some(item.title_id.clone()),
                 limit: 500,
-                ..WantedItemsQuery::default()
+                ..AcquisitionScopeStatesQuery::default()
             })
             .await?
             .into_iter()
@@ -3080,10 +3102,10 @@ pub(crate) async fn find_existing_wanted_state_row<R: WantedItemRepository + ?Si
     }
 
     Ok(repo
-        .list_wanted_items(WantedItemsQuery {
+        .list_acquisition_scope_states(AcquisitionScopeStatesQuery {
             title_id: Some(item.title_id.clone()),
             limit: 500,
-            ..WantedItemsQuery::default()
+            ..AcquisitionScopeStatesQuery::default()
         })
         .await?
         .into_iter()
@@ -3130,7 +3152,7 @@ pub trait PendingReleaseRepository: Send + Sync {
         next_status: PendingReleaseStatus,
         grabbed_at: Option<&str>,
     ) -> AppResult<bool>;
-    async fn supersede_pending_releases_for_wanted_item(
+    async fn supersede_pending_releases_for_acquisition_scope_state(
         &self,
         wanted_item_id: &str,
         except_id: &str,
@@ -3893,6 +3915,41 @@ pub trait SubtitlePluginProvider: Send + Sync {
         let _ = (external_wasm_bytes, disabled_builtins);
         Err("this provider does not support dynamic reload".to_string())
     }
+    fn reload_runtime_plugins(
+        &self,
+        runtime_plugins: &[RuntimePluginLoad],
+        disabled_builtins: &[String],
+    ) -> Result<(), String> {
+        let _ = (runtime_plugins, disabled_builtins);
+        Err("this provider does not support runtime-load reload".to_string())
+    }
+}
+
+#[async_trait]
+pub trait ArchiveExtractorClient: Send + Sync {
+    async fn process(
+        &self,
+        request: ArchivePluginProcessRequest,
+    ) -> AppResult<ArchivePluginProcessResponse>;
+}
+
+pub trait ArchiveExtractorPluginProvider: Send + Sync {
+    fn client_for_format(
+        &self,
+        format: ArchivePluginFormat,
+    ) -> Option<Arc<dyn ArchiveExtractorClient>>;
+
+    fn client_for_repair_then_extract(
+        &self,
+        format: ArchivePluginFormat,
+        repair_format: ArchivePluginRepairFormat,
+    ) -> Option<Arc<dyn ArchiveExtractorClient>> {
+        let _ = (format, repair_format);
+        None
+    }
+
+    fn available_provider_types(&self) -> Vec<String>;
+
     fn reload_runtime_plugins(
         &self,
         runtime_plugins: &[RuntimePluginLoad],

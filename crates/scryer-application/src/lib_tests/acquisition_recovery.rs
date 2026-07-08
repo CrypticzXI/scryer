@@ -137,7 +137,7 @@ async fn acquisition_cycle_retries_standby_candidate_after_failed_grab() {
     download_client.set_grab_info_hash(Some(info_hash)).await;
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
     let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
-    let wanted_items = Arc::new(TrackingWantedItemRepo::default());
+    let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
     let (app, user) = bootstrap_with_acquisition_tracking(
         download_client.clone(),
         download_submissions.clone(),
@@ -161,7 +161,7 @@ async fn acquisition_cycle_retries_standby_candidate_after_failed_grab() {
         .await
         .expect("create title");
 
-    let wanted = WantedItem {
+    let wanted = AcquisitionScopeState {
         id: Id::new().0,
         title_id: title.id.clone(),
         title_name: Some(title.name.clone()),
@@ -177,7 +177,7 @@ async fn acquisition_cycle_retries_standby_candidate_after_failed_grab() {
         episode_number: None,
         media_type: "movie".to_string(),
         last_search_at: Some((Utc::now() - chrono::Duration::minutes(5)).to_rfc3339()),
-        status: WantedStatus::Grabbed,
+        status: AcquisitionScopeStatus::Grabbed,
         grabbed_release: Some(
             serde_json::json!({
                 "title": "Failed.Release.1080p.WEB-DL",
@@ -193,7 +193,7 @@ async fn acquisition_cycle_retries_standby_candidate_after_failed_grab() {
         updated_at: Utc::now().to_rfc3339(),
     };
     wanted_items
-        .upsert_wanted_item(&wanted)
+        .upsert_acquisition_scope_state(&wanted)
         .await
         .expect("seed wanted item");
 
@@ -246,11 +246,11 @@ async fn acquisition_cycle_retries_standby_candidate_after_failed_grab() {
     app.run_convergence_cycle_once().await;
 
     let updated = wanted_items
-        .get_wanted_item_by_id(&wanted.id)
+        .get_acquisition_scope_state_by_id(&wanted.id)
         .await
         .expect("get wanted")
         .expect("wanted exists");
-    assert_eq!(updated.status, WantedStatus::Grabbed);
+    assert_eq!(updated.status, AcquisitionScopeStatus::Grabbed);
     assert_eq!(updated.current_score, None);
     assert!(
         updated
@@ -319,7 +319,7 @@ async fn tracked_download_failure_reuses_standby_recovery_policy() {
     let download_client = Arc::new(StubDownloadClient::default());
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
     let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
-    let wanted_items = Arc::new(TrackingWantedItemRepo::default());
+    let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
     let (app, user) = bootstrap_with_acquisition_tracking(
         download_client.clone(),
         download_submissions.clone(),
@@ -343,7 +343,7 @@ async fn tracked_download_failure_reuses_standby_recovery_policy() {
         .await
         .expect("create title");
 
-    let wanted = WantedItem {
+    let wanted = AcquisitionScopeState {
         id: Id::new().0,
         title_id: title.id.clone(),
         title_name: Some(title.name.clone()),
@@ -359,7 +359,7 @@ async fn tracked_download_failure_reuses_standby_recovery_policy() {
         episode_number: None,
         media_type: "movie".to_string(),
         last_search_at: Some((Utc::now() - chrono::Duration::minutes(5)).to_rfc3339()),
-        status: WantedStatus::Grabbed,
+        status: AcquisitionScopeStatus::Grabbed,
         grabbed_release: Some(
             serde_json::json!({
                 "title": "Failed.Release.1080p.WEB-DL",
@@ -375,7 +375,7 @@ async fn tracked_download_failure_reuses_standby_recovery_policy() {
         updated_at: Utc::now().to_rfc3339(),
     };
     wanted_items
-        .upsert_wanted_item(&wanted)
+        .upsert_acquisition_scope_state(&wanted)
         .await
         .expect("seed wanted item");
 
@@ -451,11 +451,11 @@ async fn tracked_download_failure_reuses_standby_recovery_policy() {
     );
 
     let updated = wanted_items
-        .get_wanted_item_by_id(&wanted.id)
+        .get_acquisition_scope_state_by_id(&wanted.id)
         .await
         .expect("get wanted")
         .expect("wanted exists");
-    assert_eq!(updated.status, WantedStatus::Grabbed);
+    assert_eq!(updated.status, AcquisitionScopeStatus::Grabbed);
     assert!(
         updated
             .grabbed_release
@@ -520,7 +520,7 @@ async fn tracked_download_failure_keeps_standby_when_submit_unavailable() {
         .await;
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
     let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
-    let wanted_items = Arc::new(TrackingWantedItemRepo::default());
+    let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
     let (app, user) = bootstrap_with_acquisition_tracking(
         download_client,
         download_submissions.clone(),
@@ -544,7 +544,7 @@ async fn tracked_download_failure_keeps_standby_when_submit_unavailable() {
         .await
         .expect("create title");
 
-    let wanted = WantedItem {
+    let wanted = AcquisitionScopeState {
         id: Id::new().0,
         title_id: title.id.clone(),
         title_name: Some(title.name.clone()),
@@ -560,7 +560,7 @@ async fn tracked_download_failure_keeps_standby_when_submit_unavailable() {
         episode_number: None,
         media_type: "movie".to_string(),
         last_search_at: Some((Utc::now() - chrono::Duration::minutes(5)).to_rfc3339()),
-        status: WantedStatus::Grabbed,
+        status: AcquisitionScopeStatus::Grabbed,
         grabbed_release: Some(
             serde_json::json!({
                 "title": "Failed.Release.1080p.WEB-DL",
@@ -576,7 +576,7 @@ async fn tracked_download_failure_keeps_standby_when_submit_unavailable() {
         updated_at: Utc::now().to_rfc3339(),
     };
     wanted_items
-        .upsert_wanted_item(&wanted)
+        .upsert_acquisition_scope_state(&wanted)
         .await
         .expect("seed wanted item");
 
@@ -641,14 +641,14 @@ async fn tracked_download_failure_keeps_standby_when_submit_unavailable() {
         PendingReleaseStatus::Standby
     );
     let updated_wanted = wanted_items
-        .get_wanted_item_by_id(&wanted.id)
+        .get_acquisition_scope_state_by_id(&wanted.id)
         .await
         .expect("load wanted")
         .expect("wanted exists");
     // RFC 119: a submit-unavailable failure defers to the standby recovery
     // rather than re-opening — the grabbed state row is untouched (no reopen,
     // no reschedule) while the standby is preserved for the retry.
-    assert_eq!(updated_wanted.status, WantedStatus::Grabbed);
+    assert_eq!(updated_wanted.status, AcquisitionScopeStatus::Grabbed);
     assert!(
         !download_submissions
             .store
@@ -665,7 +665,7 @@ async fn process_download_failure_returns_already_handled_for_duplicate_failed_d
     let download_client = Arc::new(StubDownloadClient::default());
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
     let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
-    let wanted_items = Arc::new(TrackingWantedItemRepo::default());
+    let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
     let (app, user) = bootstrap_with_acquisition_tracking(
         download_client,
         download_submissions.clone(),
@@ -689,7 +689,7 @@ async fn process_download_failure_returns_already_handled_for_duplicate_failed_d
         .await
         .expect("create title");
 
-    let wanted = WantedItem {
+    let wanted = AcquisitionScopeState {
         id: Id::new().0,
         title_id: title.id.clone(),
         title_name: Some(title.name.clone()),
@@ -705,7 +705,7 @@ async fn process_download_failure_returns_already_handled_for_duplicate_failed_d
         episode_number: None,
         media_type: "movie".to_string(),
         last_search_at: Some((Utc::now() - chrono::Duration::minutes(10)).to_rfc3339()),
-        status: WantedStatus::Grabbed,
+        status: AcquisitionScopeStatus::Grabbed,
         grabbed_release: Some(
             serde_json::json!({
                 "title": "Duplicate.Failed.Release.1080p.WEB-DL",
@@ -721,7 +721,7 @@ async fn process_download_failure_returns_already_handled_for_duplicate_failed_d
         updated_at: Utc::now().to_rfc3339(),
     };
     wanted_items
-        .upsert_wanted_item(&wanted)
+        .upsert_acquisition_scope_state(&wanted)
         .await
         .expect("seed wanted item");
     let wanted_id = wanted.id.clone();
@@ -843,7 +843,7 @@ async fn process_download_failure_skip_reacquire_records_failure_without_due_sea
     let download_client = Arc::new(StubDownloadClient::default());
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
     let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
-    let wanted_items = Arc::new(TrackingWantedItemRepo::default());
+    let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
     let (app, user) = bootstrap_with_acquisition_tracking(
         download_client,
         download_submissions.clone(),
@@ -867,7 +867,7 @@ async fn process_download_failure_skip_reacquire_records_failure_without_due_sea
         .await
         .expect("create title");
 
-    let wanted = WantedItem {
+    let wanted = AcquisitionScopeState {
         id: Id::new().0,
         title_id: title.id.clone(),
         title_name: Some(title.name.clone()),
@@ -883,7 +883,7 @@ async fn process_download_failure_skip_reacquire_records_failure_without_due_sea
         episode_number: None,
         media_type: "movie".to_string(),
         last_search_at: Some((Utc::now() - chrono::Duration::minutes(10)).to_rfc3339()),
-        status: WantedStatus::Grabbed,
+        status: AcquisitionScopeStatus::Grabbed,
         grabbed_release: Some(
             serde_json::json!({
                 "title": "Manual.Failed.Only.1080p.WEB-DL",
@@ -899,7 +899,7 @@ async fn process_download_failure_skip_reacquire_records_failure_without_due_sea
         updated_at: Utc::now().to_rfc3339(),
     };
     wanted_items
-        .upsert_wanted_item(&wanted)
+        .upsert_acquisition_scope_state(&wanted)
         .await
         .expect("seed wanted item");
 
@@ -944,11 +944,11 @@ async fn process_download_failure_skip_reacquire_records_failure_without_due_sea
     );
 
     let updated_wanted = wanted_items
-        .get_wanted_item_by_id(&wanted.id)
+        .get_acquisition_scope_state_by_id(&wanted.id)
         .await
         .expect("get wanted")
         .expect("wanted item");
-    assert_eq!(updated_wanted.status, WantedStatus::Wanted);
+    assert_eq!(updated_wanted.status, AcquisitionScopeStatus::Wanted);
     assert!(updated_wanted.grabbed_release.is_none());
 
     let blocklist = app
@@ -967,7 +967,7 @@ async fn process_download_failure_dedupes_same_release_title_across_client_item_
     let download_client = Arc::new(StubDownloadClient::default());
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
     let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
-    let wanted_items = Arc::new(TrackingWantedItemRepo::default());
+    let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
     let (app, user) = bootstrap_with_acquisition_tracking(
         download_client,
         download_submissions.clone(),
@@ -1093,7 +1093,7 @@ async fn tracked_download_failure_prefers_tracked_source_title_for_blocklist_ide
     let download_client = Arc::new(StubDownloadClient::default());
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
     let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
-    let wanted_items = Arc::new(TrackingWantedItemRepo::default());
+    let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
     let (app, user) = bootstrap_with_acquisition_tracking(
         download_client,
         download_submissions.clone(),
@@ -1196,7 +1196,7 @@ async fn parse_matched_foreign_failed_download_does_not_blocklist_or_requeue() {
     let download_client = Arc::new(StubDownloadClient::default());
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
     let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
-    let wanted_items = Arc::new(TrackingWantedItemRepo::default());
+    let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
     let (app, user) = bootstrap_with_acquisition_tracking(
         download_client,
         download_submissions,
@@ -1220,7 +1220,7 @@ async fn parse_matched_foreign_failed_download_does_not_blocklist_or_requeue() {
         .await
         .expect("create title");
 
-    let wanted = WantedItem {
+    let wanted = AcquisitionScopeState {
         id: Id::new().0,
         title_id: title.id.clone(),
         title_name: Some(title.name.clone()),
@@ -1236,7 +1236,7 @@ async fn parse_matched_foreign_failed_download_does_not_blocklist_or_requeue() {
         episode_number: None,
         media_type: "movie".to_string(),
         last_search_at: Some((Utc::now() - chrono::Duration::minutes(10)).to_rfc3339()),
-        status: WantedStatus::Grabbed,
+        status: AcquisitionScopeStatus::Grabbed,
         grabbed_release: Some(
             serde_json::json!({
                 "title": "Scryer.Grabbed.Release.1080p.WEB-DL",
@@ -1252,7 +1252,7 @@ async fn parse_matched_foreign_failed_download_does_not_blocklist_or_requeue() {
         updated_at: Utc::now().to_rfc3339(),
     };
     wanted_items
-        .upsert_wanted_item(&wanted)
+        .upsert_acquisition_scope_state(&wanted)
         .await
         .expect("seed wanted item");
 
@@ -1303,11 +1303,11 @@ async fn parse_matched_foreign_failed_download_does_not_blocklist_or_requeue() {
     );
 
     let updated = wanted_items
-        .get_wanted_item_by_id(&wanted.id)
+        .get_acquisition_scope_state_by_id(&wanted.id)
         .await
         .expect("get wanted")
         .expect("wanted exists");
-    assert_eq!(updated.status, WantedStatus::Grabbed);
+    assert_eq!(updated.status, AcquisitionScopeStatus::Grabbed);
     assert_eq!(
         updated.grabbed_release.as_deref(),
         wanted.grabbed_release.as_deref()
@@ -1332,7 +1332,7 @@ async fn season_pack_failure_processed_twice_only_requeues_once_and_blocklists_o
     let download_client = Arc::new(StubDownloadClient::default());
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
     let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
-    let wanted_items = Arc::new(TrackingWantedItemRepo::default());
+    let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
     let (app, user) = bootstrap_with_acquisition_tracking(
         download_client,
         download_submissions.clone(),
@@ -1407,7 +1407,7 @@ async fn season_pack_failure_processed_twice_only_requeues_once_and_blocklists_o
             .await
             .expect("create episode");
 
-        let wanted = WantedItem {
+        let wanted = AcquisitionScopeState {
             id: Id::new().0,
             title_id: title.id.clone(),
             title_name: Some(title.name.clone()),
@@ -1423,7 +1423,7 @@ async fn season_pack_failure_processed_twice_only_requeues_once_and_blocklists_o
             episode_number: None,
             media_type: "episode".to_string(),
             last_search_at: Some((Utc::now() - chrono::Duration::minutes(30)).to_rfc3339()),
-            status: WantedStatus::Wanted,
+            status: AcquisitionScopeStatus::Wanted,
             grabbed_release: None,
             current_score: None,
             latest_release_decision: None,
@@ -1433,7 +1433,7 @@ async fn season_pack_failure_processed_twice_only_requeues_once_and_blocklists_o
         };
         expected_wanted_ids.push(wanted.id.clone());
         wanted_items
-            .upsert_wanted_item(&wanted)
+            .upsert_acquisition_scope_state(&wanted)
             .await
             .expect("seed episode wanted item");
     }
@@ -1458,7 +1458,7 @@ async fn season_pack_failure_processed_twice_only_requeues_once_and_blocklists_o
         .expect("record failed season pack submission");
 
     let grabbed_wanted = wanted_items
-        .get_wanted_item_by_id(
+        .get_acquisition_scope_state_by_id(
             expected_wanted_ids
                 .first()
                 .expect("expected wanted ids should contain seeded episodes"),
@@ -1524,14 +1524,14 @@ async fn season_pack_failure_processed_twice_only_requeues_once_and_blocklists_o
 
     for wanted_id in &expected_wanted_ids {
         let wanted = wanted_items
-            .get_wanted_item_by_id(wanted_id)
+            .get_acquisition_scope_state_by_id(wanted_id)
             .await
             .expect("get wanted item")
             .expect("wanted item exists");
         // RFC 119: the failed pack reopens each covered episode scope for
         // convergence (status back to `wanted`, grab cleared) instead of
         // rescheduling a cadence.
-        assert_eq!(wanted.status, WantedStatus::Wanted);
+        assert_eq!(wanted.status, AcquisitionScopeStatus::Wanted);
         assert!(wanted.grabbed_release.is_none());
         assert_eq!(
             wanted_items.status_update_call_count_for(wanted_id).await,
@@ -1636,7 +1636,7 @@ async fn acquisition_cycle_looks_up_submissions_once_per_title_for_grabbed_items
     let download_client = Arc::new(StubDownloadClient::default());
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
     let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
-    let wanted_items = Arc::new(TrackingWantedItemRepo::default());
+    let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
     let (app, user) = bootstrap_with_acquisition_tracking(
         download_client,
         download_submissions.clone(),
@@ -1665,7 +1665,7 @@ async fn acquisition_cycle_looks_up_submissions_once_per_title_for_grabbed_items
         ("wanted-2", "episode-2", "Shared.Release.S01E02"),
     ] {
         wanted_items
-            .upsert_wanted_item(&WantedItem {
+            .upsert_acquisition_scope_state(&AcquisitionScopeState {
                 id: item_id.to_string(),
                 title_id: title.id.clone(),
                 title_name: Some(title.name.clone()),
@@ -1681,7 +1681,7 @@ async fn acquisition_cycle_looks_up_submissions_once_per_title_for_grabbed_items
                 episode_number: None,
                 media_type: "episode".to_string(),
                 last_search_at: Some((Utc::now() - chrono::Duration::minutes(5)).to_rfc3339()),
-                status: WantedStatus::Grabbed,
+                status: AcquisitionScopeStatus::Grabbed,
                 grabbed_release: Some(
                     serde_json::json!({
                         "title": release_title,
@@ -1732,7 +1732,7 @@ async fn acquisition_cycle_records_failed_collection_submission_once() {
     let download_client = Arc::new(StubDownloadClient::default());
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
     let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
-    let wanted_items = Arc::new(TrackingWantedItemRepo::default());
+    let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
     let indexer_client = Arc::new(TrackingIndexerClient::default());
     let (app, user) = bootstrap_with_acquisition_tracking_and_indexer(
         download_client.clone(),
@@ -1847,7 +1847,7 @@ async fn acquisition_cycle_records_failed_collection_submission_once() {
         let wanted_id = Id::new().0;
         wanted_ids.push(wanted_id.clone());
         wanted_items
-            .upsert_wanted_item(&WantedItem {
+            .upsert_acquisition_scope_state(&AcquisitionScopeState {
                 id: wanted_id,
                 title_id: title.id.clone(),
                 title_name: Some(title.name.clone()),
@@ -1863,7 +1863,7 @@ async fn acquisition_cycle_records_failed_collection_submission_once() {
                 episode_number: Some(episode_number.to_string()),
                 media_type: "episode".to_string(),
                 last_search_at: Some((Utc::now() - chrono::Duration::minutes(5)).to_rfc3339()),
-                status: WantedStatus::Grabbed,
+                status: AcquisitionScopeStatus::Grabbed,
                 grabbed_release: Some(grabbed_release.clone()),
                 current_score: None,
                 latest_release_decision: None,
@@ -1916,7 +1916,7 @@ async fn acquisition_cycle_records_failed_collection_submission_once() {
             .iter()
             .find(|wanted| wanted.id == wanted_id)
             .expect("wanted item exists");
-        assert_eq!(wanted.status, WantedStatus::Grabbed);
+        assert_eq!(wanted.status, AcquisitionScopeStatus::Grabbed);
         assert!(wanted.grabbed_release.is_some());
     }
 
@@ -1968,7 +1968,7 @@ async fn acquisition_cycle_episode_submission_blocks_only_matching_episode() {
     let download_client = Arc::new(StubDownloadClient::default());
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
     let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
-    let wanted_items = Arc::new(TrackingWantedItemRepo::default());
+    let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
     let indexer_client = Arc::new(TrackingIndexerClient::default());
     let (app, user) = bootstrap_with_acquisition_tracking_and_indexer(
         download_client.clone(),
@@ -2107,7 +2107,7 @@ async fn acquisition_cycle_episode_submission_blocks_only_matching_episode() {
 
     for episode in [&episode_one, &episode_two] {
         wanted_items
-            .upsert_wanted_item(&WantedItem {
+            .upsert_acquisition_scope_state(&AcquisitionScopeState {
                 id: Id::new().0,
                 title_id: title.id.clone(),
                 title_name: Some(title.name.clone()),
@@ -2123,7 +2123,7 @@ async fn acquisition_cycle_episode_submission_blocks_only_matching_episode() {
                 episode_number: None,
                 media_type: "episode".to_string(),
                 last_search_at: None,
-                status: WantedStatus::Wanted,
+                status: AcquisitionScopeStatus::Wanted,
                 grabbed_release: None,
                 current_score: None,
                 latest_release_decision: None,
@@ -2208,7 +2208,7 @@ async fn acquisition_cycle_collection_submission_blocks_same_season_only() {
     let download_client = Arc::new(StubDownloadClient::default());
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
     let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
-    let wanted_items = Arc::new(TrackingWantedItemRepo::default());
+    let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
     let indexer_client = Arc::new(TrackingIndexerClient::default());
     let (app, user) = bootstrap_with_acquisition_tracking_and_indexer(
         download_client.clone(),
@@ -2309,7 +2309,7 @@ async fn acquisition_cycle_collection_submission_blocks_same_season_only() {
             .expect("create episode");
 
         wanted_items
-            .upsert_wanted_item(&WantedItem {
+            .upsert_acquisition_scope_state(&AcquisitionScopeState {
                 id: Id::new().0,
                 title_id: title.id.clone(),
                 title_name: Some(title.name.clone()),
@@ -2325,7 +2325,7 @@ async fn acquisition_cycle_collection_submission_blocks_same_season_only() {
                 episode_number: None,
                 media_type: "episode".to_string(),
                 last_search_at: None,
-                status: WantedStatus::Wanted,
+                status: AcquisitionScopeStatus::Wanted,
                 grabbed_release: None,
                 current_score: None,
                 latest_release_decision: None,
@@ -2509,7 +2509,7 @@ async fn acquisition_cycle_falls_back_to_episode_grabs_when_season_pack_is_not_s
     let download_client = Arc::new(StubDownloadClient::default());
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
     let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
-    let wanted_items = Arc::new(TrackingWantedItemRepo::default());
+    let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
     let recorded_searches = Arc::new(Mutex::new(Vec::new()));
     let indexer_client: Arc<dyn IndexerClient> = Arc::new(AutoGrabSeasonPackIndexerClient {
         searches: recorded_searches.clone(),
@@ -2605,7 +2605,7 @@ async fn acquisition_cycle_falls_back_to_episode_grabs_when_season_pack_is_not_s
         let wanted_id = Id::new().0;
         wanted_ids.push(wanted_id.clone());
         wanted_items
-            .upsert_wanted_item(&WantedItem {
+            .upsert_acquisition_scope_state(&AcquisitionScopeState {
                 id: wanted_id,
                 title_id: title.id.clone(),
                 title_name: Some(title.name.clone()),
@@ -2621,7 +2621,7 @@ async fn acquisition_cycle_falls_back_to_episode_grabs_when_season_pack_is_not_s
                 episode_number: Some(episode_number.to_string()),
                 media_type: "episode".to_string(),
                 last_search_at: None,
-                status: WantedStatus::Wanted,
+                status: AcquisitionScopeStatus::Wanted,
                 grabbed_release: None,
                 current_score: None,
                 latest_release_decision: None,
@@ -2662,7 +2662,7 @@ async fn acquisition_cycle_falls_back_to_episode_grabs_when_season_pack_is_not_s
             .iter()
             .find(|wanted| wanted.id == wanted_id)
             .expect("wanted item exists");
-        assert_eq!(wanted.status, WantedStatus::Grabbed);
+        assert_eq!(wanted.status, AcquisitionScopeStatus::Grabbed);
         let grabbed_release: serde_json::Value = serde_json::from_str(
             wanted
                 .grabbed_release
@@ -2685,7 +2685,7 @@ async fn acquisition_cycle_skips_recently_failed_season_pack_and_searches_episod
     let download_client = Arc::new(StubDownloadClient::default());
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
     let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
-    let wanted_items = Arc::new(TrackingWantedItemRepo::default());
+    let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
     let indexer_client = Arc::new(TrackingIndexerClient::default());
     let (app, user) = bootstrap_with_acquisition_tracking_and_indexer(
         download_client,
@@ -2762,7 +2762,7 @@ async fn acquisition_cycle_skips_recently_failed_season_pack_and_searches_episod
             .expect("create episode");
 
         wanted_items
-            .upsert_wanted_item(&WantedItem {
+            .upsert_acquisition_scope_state(&AcquisitionScopeState {
                 id: Id::new().0,
                 title_id: title.id.clone(),
                 title_name: Some(title.name.clone()),
@@ -2778,7 +2778,7 @@ async fn acquisition_cycle_skips_recently_failed_season_pack_and_searches_episod
                 episode_number: None,
                 media_type: "episode".to_string(),
                 last_search_at: None,
-                status: WantedStatus::Wanted,
+                status: AcquisitionScopeStatus::Wanted,
                 grabbed_release: None,
                 current_score: None,
                 latest_release_decision: None,
@@ -2822,7 +2822,7 @@ async fn acquisition_cycle_skips_recently_failed_season_pack_from_submission_rel
     let download_client = Arc::new(StubDownloadClient::default());
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
     let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
-    let wanted_items = Arc::new(TrackingWantedItemRepo::default());
+    let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
     let indexer_client = Arc::new(TrackingIndexerClient::default());
     let (app, user) = bootstrap_with_acquisition_tracking_and_indexer(
         download_client,
@@ -2899,7 +2899,7 @@ async fn acquisition_cycle_skips_recently_failed_season_pack_from_submission_rel
             .await
             .expect("create episode");
 
-        let wanted = WantedItem {
+        let wanted = AcquisitionScopeState {
             id: Id::new().0,
             title_id: title.id.clone(),
             title_name: Some(title.name.clone()),
@@ -2915,7 +2915,7 @@ async fn acquisition_cycle_skips_recently_failed_season_pack_from_submission_rel
             episode_number: None,
             media_type: "episode".to_string(),
             last_search_at: Some((Utc::now() - chrono::Duration::minutes(10)).to_rfc3339()),
-            status: WantedStatus::Grabbed,
+            status: AcquisitionScopeStatus::Grabbed,
             grabbed_release: Some(
                 serde_json::json!({
                     "title": "Friends.S05.720p.BluRay.DD5.1.x264-NTb",
@@ -2933,7 +2933,7 @@ async fn acquisition_cycle_skips_recently_failed_season_pack_from_submission_rel
         };
         expected_wanted_ids.push(wanted.id.clone());
         wanted_items
-            .upsert_wanted_item(&wanted)
+            .upsert_acquisition_scope_state(&wanted)
             .await
             .expect("seed episode wanted item");
     }
@@ -2961,7 +2961,7 @@ async fn acquisition_cycle_skips_recently_failed_season_pack_from_submission_rel
         .expect("record failed season pack submission");
 
     let grabbed_wanted = wanted_items
-        .get_wanted_item_by_id(
+        .get_acquisition_scope_state_by_id(
             expected_wanted_ids
                 .first()
                 .expect("expected wanted ids should contain seeded episodes"),
@@ -3030,7 +3030,7 @@ async fn acquisition_cycle_submit_unavailable_records_pending_without_failed_sig
         .await;
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
     let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
-    let wanted_items = Arc::new(TrackingWantedItemRepo::default());
+    let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
     let indexer_client = Arc::new(FixedReleaseIndexerClient::new(release_title));
     let (app, user, release_attempts) =
         bootstrap_with_acquisition_tracking_and_indexer_and_release_attempts(
@@ -3092,7 +3092,7 @@ async fn season_pack_submit_unavailable_records_pending_without_failed_signature
         .await;
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
     let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
-    let wanted_items = Arc::new(TrackingWantedItemRepo::default());
+    let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
     let indexer_client = Arc::new(FixedReleaseIndexerClient::new(release_title));
     let (app, user, release_attempts) =
         bootstrap_with_acquisition_tracking_and_indexer_and_release_attempts(
@@ -3163,7 +3163,7 @@ async fn acquisition_cycle_non_unavailable_submit_error_still_records_failed_sig
         .await;
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
     let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
-    let wanted_items = Arc::new(TrackingWantedItemRepo::default());
+    let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
     let indexer_client = Arc::new(FixedReleaseIndexerClient::new(release_title));
     let (app, user, release_attempts) =
         bootstrap_with_acquisition_tracking_and_indexer_and_release_attempts(
@@ -3204,7 +3204,7 @@ async fn acquisition_cycle_rejected_submit_error_records_failed_signature_not_de
         .await;
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
     let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
-    let wanted_items = Arc::new(TrackingWantedItemRepo::default());
+    let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
     let indexer_client = Arc::new(FixedReleaseIndexerClient::new(release_title));
     let (app, user, release_attempts) =
         bootstrap_with_acquisition_tracking_and_indexer_and_release_attempts(
@@ -3245,7 +3245,7 @@ async fn acquisition_cycle_duplicate_url_does_not_mark_second_wanted_grabbed_wit
     let download_client = Arc::new(StubDownloadClient::default());
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
     let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
-    let wanted_items = Arc::new(TrackingWantedItemRepo::default());
+    let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
     let shared_url = "https://example.invalid/shared-duplicate.nzb";
     let indexer_client = Arc::new(SharedUrlMovieIndexerClient::new(shared_url));
     let (app, user, _) = bootstrap_with_acquisition_tracking_and_indexer_and_release_attempts(
@@ -3288,8 +3288,8 @@ async fn acquisition_cycle_duplicate_url_does_not_mark_second_wanted_grabbed_wit
         .iter()
         .find(|item| item.id == second_wanted_id)
         .expect("second wanted item");
-    assert_eq!(first.status, WantedStatus::Grabbed);
-    assert_eq!(second.status, WantedStatus::Wanted);
+    assert_eq!(first.status, AcquisitionScopeStatus::Grabbed);
+    assert_eq!(second.status, AcquisitionScopeStatus::Wanted);
     assert!(
         store
             .iter()
@@ -3311,7 +3311,7 @@ async fn insert_pending_release_normalizes_source_password_flags() {
     let download_client = Arc::new(StubDownloadClient::default());
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
     let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
-    let wanted_items = Arc::new(TrackingWantedItemRepo::default());
+    let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
     let (app, user, _) = bootstrap_with_acquisition_tracking_and_indexer_and_release_attempts(
         download_client,
         download_submissions,
@@ -3328,7 +3328,7 @@ async fn insert_pending_release_normalizes_source_password_flags() {
     )
     .await;
     let wanted = wanted_items
-        .get_wanted_item_by_id(&wanted_id)
+        .get_acquisition_scope_state_by_id(&wanted_id)
         .await
         .expect("load wanted item")
         .expect("wanted item exists");
@@ -3381,7 +3381,7 @@ async fn legacy_pending_release_placeholder_password_is_normalized_on_grab() {
     let download_client = Arc::new(StubDownloadClient::default());
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
     let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
-    let wanted_items = Arc::new(TrackingWantedItemRepo::default());
+    let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
     let (app, user, release_attempts) =
         bootstrap_with_acquisition_tracking_and_indexer_and_release_attempts(
             download_client.clone(),
@@ -3441,7 +3441,7 @@ async fn legacy_pending_release_real_password_is_preserved_on_grab() {
     let download_client = Arc::new(StubDownloadClient::default());
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
     let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
-    let wanted_items = Arc::new(TrackingWantedItemRepo::default());
+    let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
     let (app, user, release_attempts) =
         bootstrap_with_acquisition_tracking_and_indexer_and_release_attempts(
             download_client.clone(),
@@ -3504,7 +3504,7 @@ async fn pending_release_submit_unavailable_records_pending_without_failed_signa
         .await;
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
     let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
-    let wanted_items = Arc::new(TrackingWantedItemRepo::default());
+    let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
     let (app, user, release_attempts) =
         bootstrap_with_acquisition_tracking_and_indexer_and_release_attempts(
             download_client,
@@ -3655,7 +3655,7 @@ async fn scheduled_rss_processes_due_pending_releases_before_fetching_fresh_rss(
     let download_client = Arc::new(StubDownloadClient::default());
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
     let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
-    let wanted_items = Arc::new(TrackingWantedItemRepo::default());
+    let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
     let indexer_searches = Arc::new(Mutex::new(Vec::new()));
     let indexer_client = Arc::new(PendingStatusAssertingIndexerClient {
         pending_releases: pending_releases.clone(),
@@ -3725,7 +3725,7 @@ async fn expired_pending_release_submit_unavailable_stays_waiting_and_retries() 
         .await;
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
     let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
-    let wanted_items = Arc::new(TrackingWantedItemRepo::default());
+    let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
     let (app, user, release_attempts) =
         bootstrap_with_acquisition_tracking_and_indexer_and_release_attempts(
             download_client.clone(),
@@ -3831,7 +3831,7 @@ async fn expired_pending_release_ambiguous_error_stays_waiting_and_retries() {
         .await;
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
     let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
-    let wanted_items = Arc::new(TrackingWantedItemRepo::default());
+    let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
     let (app, user, release_attempts) =
         bootstrap_with_acquisition_tracking_and_indexer_and_release_attempts(
             download_client.clone(),
@@ -3921,7 +3921,7 @@ async fn expired_pending_release_non_unavailable_error_expires_release() {
         .await;
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
     let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
-    let wanted_items = Arc::new(TrackingWantedItemRepo::default());
+    let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
     let (app, user, release_attempts) =
         bootstrap_with_acquisition_tracking_and_indexer_and_release_attempts(
             download_client,
@@ -3984,7 +3984,7 @@ async fn rss_submit_unavailable_records_pending_without_failed_signature() {
         .await;
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
     let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
-    let wanted_items = Arc::new(TrackingWantedItemRepo::default());
+    let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
     let indexer_client = Arc::new(FixedReleaseIndexerClient::new(release_title));
     let (app, user, release_attempts) =
         bootstrap_with_acquisition_tracking_and_indexer_and_release_attempts(
@@ -4023,7 +4023,7 @@ async fn acquisition_cycle_submits_paperman_media_request_candidate() {
     let download_client = Arc::new(StubDownloadClient::default());
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
     let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
-    let wanted_items = Arc::new(TrackingWantedItemRepo::default());
+    let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
     let indexer_client = Arc::new(FixedReleaseIndexerClient::new(release_title));
     let (app, user) = bootstrap_with_acquisition_tracking_and_indexer(
         download_client.clone(),
@@ -4065,7 +4065,7 @@ async fn acquisition_cycle_submits_paperman_media_request_candidate() {
         .await;
     let wanted_id = Id::new().0;
     wanted_items
-        .upsert_wanted_item(&WantedItem {
+        .upsert_acquisition_scope_state(&AcquisitionScopeState {
             id: wanted_id.clone(),
             title_id: title.id.clone(),
             title_name: Some(title.name.clone()),
@@ -4081,7 +4081,7 @@ async fn acquisition_cycle_submits_paperman_media_request_candidate() {
             episode_number: None,
             media_type: "movie".to_string(),
             last_search_at: None,
-            status: WantedStatus::Wanted,
+            status: AcquisitionScopeStatus::Wanted,
             grabbed_release: None,
             current_score: None,
             latest_release_decision: None,
@@ -4121,7 +4121,7 @@ async fn acquisition_cycle_submits_bluey_episode_media_request_candidate() {
     let download_client = Arc::new(StubDownloadClient::default());
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
     let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
-    let wanted_items = Arc::new(TrackingWantedItemRepo::default());
+    let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
     let indexer_client = Arc::new(FixedReleaseIndexerClient::new(release_title));
     let (app, user) = bootstrap_with_acquisition_tracking_and_indexer(
         download_client.clone(),
@@ -4206,7 +4206,7 @@ async fn acquisition_cycle_submits_bluey_episode_media_request_candidate() {
 
     let wanted_id = Id::new().0;
     wanted_items
-        .upsert_wanted_item(&WantedItem {
+        .upsert_acquisition_scope_state(&AcquisitionScopeState {
             id: wanted_id.clone(),
             title_id: title.id.clone(),
             title_name: Some(title.name.clone()),
@@ -4222,7 +4222,7 @@ async fn acquisition_cycle_submits_bluey_episode_media_request_candidate() {
             episode_number: None,
             media_type: "episode".to_string(),
             last_search_at: None,
-            status: WantedStatus::Wanted,
+            status: AcquisitionScopeStatus::Wanted,
             grabbed_release: None,
             current_score: None,
             latest_release_decision: None,
@@ -4266,7 +4266,7 @@ async fn acquisition_cycle_title_submission_still_blocks_movie_search() {
     let download_client = Arc::new(StubDownloadClient::default());
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
     let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
-    let wanted_items = Arc::new(TrackingWantedItemRepo::default());
+    let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
     let indexer_client = Arc::new(TrackingIndexerClient::default());
     let (app, user) = bootstrap_with_acquisition_tracking_and_indexer(
         download_client.clone(),
@@ -4293,7 +4293,7 @@ async fn acquisition_cycle_title_submission_still_blocks_movie_search() {
         .expect("create movie");
 
     wanted_items
-        .upsert_wanted_item(&WantedItem {
+        .upsert_acquisition_scope_state(&AcquisitionScopeState {
             id: Id::new().0,
             title_id: title.id.clone(),
             title_name: Some(title.name.clone()),
@@ -4309,7 +4309,7 @@ async fn acquisition_cycle_title_submission_still_blocks_movie_search() {
             episode_number: None,
             media_type: "movie".to_string(),
             last_search_at: None,
-            status: WantedStatus::Wanted,
+            status: AcquisitionScopeStatus::Wanted,
             grabbed_release: None,
             current_score: None,
             latest_release_decision: None,
@@ -4385,7 +4385,7 @@ async fn acquisition_cycle_skips_due_search_when_no_download_clients_are_enabled
     let download_client = Arc::new(StubDownloadClient::default());
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
     let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
-    let wanted_items = Arc::new(TrackingWantedItemRepo::default());
+    let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
     let indexer_client = Arc::new(TrackingIndexerClient::default());
     let (app, user) = bootstrap_with_acquisition_tracking_and_indexer(
         download_client,
@@ -4433,7 +4433,7 @@ async fn acquisition_cycle_skips_due_search_when_no_download_clients_are_enabled
         .await;
 
     wanted_items
-        .upsert_wanted_item(&WantedItem {
+        .upsert_acquisition_scope_state(&AcquisitionScopeState {
             id: Id::new().0,
             title_id: title.id.clone(),
             title_name: Some(title.name.clone()),
@@ -4449,7 +4449,7 @@ async fn acquisition_cycle_skips_due_search_when_no_download_clients_are_enabled
             episode_number: None,
             media_type: "movie".to_string(),
             last_search_at: None,
-            status: WantedStatus::Wanted,
+            status: AcquisitionScopeStatus::Wanted,
             grabbed_release: None,
             current_score: None,
             latest_release_decision: None,
@@ -4470,7 +4470,7 @@ async fn acquisition_cycle_active_anime_scan_does_not_block_due_movie_search() {
     let download_client = Arc::new(StubDownloadClient::default());
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
     let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
-    let wanted_items = Arc::new(TrackingWantedItemRepo::default());
+    let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
     let indexer_client = Arc::new(TrackingIndexerClient::default());
     let (app, user) = bootstrap_with_acquisition_tracking_and_indexer(
         download_client,
@@ -4500,7 +4500,7 @@ async fn acquisition_cycle_active_anime_scan_does_not_block_due_movie_search() {
         .await;
 
     wanted_items
-        .upsert_wanted_item(&WantedItem {
+        .upsert_acquisition_scope_state(&AcquisitionScopeState {
             id: Id::new().0,
             title_id: title.id.clone(),
             title_name: Some(title.name.clone()),
@@ -4516,7 +4516,7 @@ async fn acquisition_cycle_active_anime_scan_does_not_block_due_movie_search() {
             episode_number: None,
             media_type: "movie".to_string(),
             last_search_at: None,
-            status: WantedStatus::Wanted,
+            status: AcquisitionScopeStatus::Wanted,
             grabbed_release: None,
             current_score: None,
             latest_release_decision: None,
@@ -4545,7 +4545,7 @@ async fn rss_sync_skips_indexer_search_when_no_download_clients_are_enabled() {
     let download_client = Arc::new(StubDownloadClient::default());
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
     let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
-    let wanted_items = Arc::new(TrackingWantedItemRepo::default());
+    let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
     let indexer_client = Arc::new(TrackingIndexerClient::default());
     let (app, user) = bootstrap_with_acquisition_tracking_and_indexer(
         download_client,
@@ -4602,7 +4602,7 @@ async fn acquisition_cycle_active_movie_scan_does_not_block_due_series_search() 
     let download_client = Arc::new(StubDownloadClient::default());
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
     let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
-    let wanted_items = Arc::new(TrackingWantedItemRepo::default());
+    let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
     let indexer_client = Arc::new(TrackingIndexerClient::default());
     let (app, user) = bootstrap_with_acquisition_tracking_and_indexer(
         download_client,
@@ -4681,7 +4681,7 @@ async fn acquisition_cycle_active_movie_scan_does_not_block_due_series_search() 
         .expect("create episode");
 
     wanted_items
-        .upsert_wanted_item(&WantedItem {
+        .upsert_acquisition_scope_state(&AcquisitionScopeState {
             id: Id::new().0,
             title_id: title.id.clone(),
             title_name: Some(title.name.clone()),
@@ -4697,7 +4697,7 @@ async fn acquisition_cycle_active_movie_scan_does_not_block_due_series_search() 
             episode_number: None,
             media_type: "episode".to_string(),
             last_search_at: None,
-            status: WantedStatus::Wanted,
+            status: AcquisitionScopeStatus::Wanted,
             grabbed_release: None,
             current_score: None,
             latest_release_decision: None,
@@ -4730,7 +4730,7 @@ async fn acquisition_cycle_active_series_scan_defers_due_series_search() {
     let download_client = Arc::new(StubDownloadClient::default());
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
     let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
-    let wanted_items = Arc::new(TrackingWantedItemRepo::default());
+    let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
     let indexer_client = Arc::new(TrackingIndexerClient::default());
     let (app, user) = bootstrap_with_acquisition_tracking_and_indexer(
         download_client,
@@ -4809,7 +4809,7 @@ async fn acquisition_cycle_active_series_scan_defers_due_series_search() {
         .expect("create episode");
 
     wanted_items
-        .upsert_wanted_item(&WantedItem {
+        .upsert_acquisition_scope_state(&AcquisitionScopeState {
             id: Id::new().0,
             title_id: title.id.clone(),
             title_name: Some(title.name.clone()),
@@ -4825,7 +4825,7 @@ async fn acquisition_cycle_active_series_scan_defers_due_series_search() {
             episode_number: None,
             media_type: "episode".to_string(),
             last_search_at: None,
-            status: WantedStatus::Wanted,
+            status: AcquisitionScopeStatus::Wanted,
             grabbed_release: None,
             current_score: None,
             latest_release_decision: None,
@@ -4850,7 +4850,7 @@ async fn acquisition_cycle_retries_standby_candidate_during_unrelated_active_sca
     let download_client = Arc::new(StubDownloadClient::default());
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
     let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
-    let wanted_items = Arc::new(TrackingWantedItemRepo::default());
+    let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
     let (app, user) = bootstrap_with_acquisition_tracking(
         download_client.clone(),
         download_submissions.clone(),
@@ -4877,7 +4877,7 @@ async fn acquisition_cycle_retries_standby_candidate_during_unrelated_active_sca
         .remember_title_facet(&title.id, MediaFacet::Movie)
         .await;
 
-    let wanted = WantedItem {
+    let wanted = AcquisitionScopeState {
         id: Id::new().0,
         title_id: title.id.clone(),
         title_name: Some(title.name.clone()),
@@ -4893,7 +4893,7 @@ async fn acquisition_cycle_retries_standby_candidate_during_unrelated_active_sca
         episode_number: None,
         media_type: "movie".to_string(),
         last_search_at: Some((Utc::now() - chrono::Duration::minutes(5)).to_rfc3339()),
-        status: WantedStatus::Grabbed,
+        status: AcquisitionScopeStatus::Grabbed,
         grabbed_release: Some(
             serde_json::json!({
                 "title": "Failed.Release.1080p.WEB-DL",
@@ -4909,7 +4909,7 @@ async fn acquisition_cycle_retries_standby_candidate_during_unrelated_active_sca
         updated_at: Utc::now().to_rfc3339(),
     };
     wanted_items
-        .upsert_wanted_item(&wanted)
+        .upsert_acquisition_scope_state(&wanted)
         .await
         .expect("seed wanted item");
 
@@ -4980,7 +4980,7 @@ async fn acquisition_cycle_prunes_stale_standby_rows_during_unrelated_active_sca
     let download_client = Arc::new(StubDownloadClient::default());
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
     let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
-    let wanted_items = Arc::new(TrackingWantedItemRepo::default());
+    let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
     let (app, user) = bootstrap_with_acquisition_tracking(
         download_client,
         download_submissions,
@@ -5004,7 +5004,7 @@ async fn acquisition_cycle_prunes_stale_standby_rows_during_unrelated_active_sca
         .await
         .expect("create title");
 
-    let wanted = WantedItem {
+    let wanted = AcquisitionScopeState {
         id: Id::new().0,
         title_id: title.id.clone(),
         title_name: Some(title.name.clone()),
@@ -5020,7 +5020,7 @@ async fn acquisition_cycle_prunes_stale_standby_rows_during_unrelated_active_sca
         episode_number: None,
         media_type: "movie".to_string(),
         last_search_at: None,
-        status: WantedStatus::Wanted,
+        status: AcquisitionScopeStatus::Wanted,
         grabbed_release: None,
         current_score: None,
         latest_release_decision: None,
@@ -5029,7 +5029,7 @@ async fn acquisition_cycle_prunes_stale_standby_rows_during_unrelated_active_sca
         updated_at: Utc::now().to_rfc3339(),
     };
     wanted_items
-        .upsert_wanted_item(&wanted)
+        .upsert_acquisition_scope_state(&wanted)
         .await
         .expect("seed wanted item");
 
@@ -5088,7 +5088,7 @@ async fn trigger_title_mismatch_recovery_search_requeues_only_mismatch_only_item
     let download_client = Arc::new(StubDownloadClient::default());
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
     let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
-    let wanted_items = Arc::new(TrackingWantedItemRepo::default());
+    let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
     let (app, user) = bootstrap_with_acquisition_tracking(
         download_client,
         download_submissions,
@@ -5112,7 +5112,7 @@ async fn trigger_title_mismatch_recovery_search_requeues_only_mismatch_only_item
         .await
         .expect("create title");
 
-    let recovery_item = WantedItem {
+    let recovery_item = AcquisitionScopeState {
         id: Id::new().0,
         title_id: title.id.clone(),
         title_name: Some(title.name.clone()),
@@ -5128,7 +5128,7 @@ async fn trigger_title_mismatch_recovery_search_requeues_only_mismatch_only_item
         episode_number: None,
         media_type: "movie".to_string(),
         last_search_at: Some("2026-04-21T00:00:00Z".to_string()),
-        status: WantedStatus::Wanted,
+        status: AcquisitionScopeStatus::Wanted,
         grabbed_release: None,
         current_score: None,
         latest_release_decision: None,
@@ -5136,7 +5136,7 @@ async fn trigger_title_mismatch_recovery_search_requeues_only_mismatch_only_item
         created_at: Utc::now().to_rfc3339(),
         updated_at: Utc::now().to_rfc3339(),
     };
-    let untouched_item = WantedItem {
+    let untouched_item = AcquisitionScopeState {
         id: Id::new().0,
         title_id: title.id.clone(),
         title_name: Some(title.name.clone()),
@@ -5152,7 +5152,7 @@ async fn trigger_title_mismatch_recovery_search_requeues_only_mismatch_only_item
         episode_number: None,
         media_type: "episode".to_string(),
         last_search_at: Some("2026-04-21T00:00:00Z".to_string()),
-        status: WantedStatus::Wanted,
+        status: AcquisitionScopeStatus::Wanted,
         grabbed_release: None,
         current_score: None,
         latest_release_decision: None,
@@ -5161,11 +5161,11 @@ async fn trigger_title_mismatch_recovery_search_requeues_only_mismatch_only_item
         updated_at: Utc::now().to_rfc3339(),
     };
     wanted_items
-        .upsert_wanted_item(&recovery_item)
+        .upsert_acquisition_scope_state(&recovery_item)
         .await
         .expect("seed recovery item");
     wanted_items
-        .upsert_wanted_item(&untouched_item)
+        .upsert_acquisition_scope_state(&untouched_item)
         .await
         .expect("seed untouched item");
 
@@ -5234,11 +5234,11 @@ async fn trigger_title_mismatch_recovery_search_requeues_only_mismatch_only_item
     // convergence (state row reset + coverage pruned); the eligible scope is
     // left untouched. The re-open is the sole state write on the recovery item.
     let updated_recovery = wanted_items
-        .get_wanted_item_by_id(&recovery_item.id)
+        .get_acquisition_scope_state_by_id(&recovery_item.id)
         .await
         .expect("load recovery item")
         .expect("recovery item exists");
-    assert_eq!(updated_recovery.status, WantedStatus::Wanted);
+    assert_eq!(updated_recovery.status, AcquisitionScopeStatus::Wanted);
     assert_eq!(
         wanted_items
             .status_update_call_count_for(&recovery_item.id)
@@ -5260,7 +5260,7 @@ async fn acquisition_cycle_prunes_stale_standby_rows_for_non_grabbed_items() {
     let download_client = Arc::new(StubDownloadClient::default());
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
     let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
-    let wanted_items = Arc::new(TrackingWantedItemRepo::default());
+    let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
     let (app, user) = bootstrap_with_acquisition_tracking(
         download_client,
         download_submissions,
@@ -5284,7 +5284,7 @@ async fn acquisition_cycle_prunes_stale_standby_rows_for_non_grabbed_items() {
         .await
         .expect("create title");
 
-    let wanted = WantedItem {
+    let wanted = AcquisitionScopeState {
         id: Id::new().0,
         title_id: title.id.clone(),
         title_name: Some(title.name.clone()),
@@ -5300,7 +5300,7 @@ async fn acquisition_cycle_prunes_stale_standby_rows_for_non_grabbed_items() {
         episode_number: None,
         media_type: "movie".to_string(),
         last_search_at: None,
-        status: WantedStatus::Wanted,
+        status: AcquisitionScopeStatus::Wanted,
         grabbed_release: None,
         current_score: None,
         latest_release_decision: None,
@@ -5309,7 +5309,7 @@ async fn acquisition_cycle_prunes_stale_standby_rows_for_non_grabbed_items() {
         updated_at: Utc::now().to_rfc3339(),
     };
     wanted_items
-        .upsert_wanted_item(&wanted)
+        .upsert_acquisition_scope_state(&wanted)
         .await
         .expect("seed wanted item");
 
@@ -5362,7 +5362,7 @@ async fn bootstrap_rss_with_media_files_and_profiles(
     download_client: Arc<StubDownloadClient>,
     download_submissions: Arc<TrackingDownloadSubmissionRepo>,
     pending_releases: Arc<TrackingPendingReleaseRepo>,
-    wanted_items: Arc<TrackingWantedItemRepo>,
+    acquisition_scope_states: Arc<TrackingAcquisitionScopeStateRepo>,
     media_files: Arc<MockMediaFileRepo>,
     quality_profiles: Arc<StoredQualityProfileRepo>,
     indexer_client: Arc<dyn IndexerClient>,
@@ -5451,9 +5451,9 @@ async fn bootstrap_rss_with_media_files_and_profiles(
             .with_acquisition_state(Arc::new(TrackingAcquisitionStateRepo {
                 download_submissions,
                 pending_releases,
-                wanted_items: wanted_items.clone(),
+                acquisition_scope_states: acquisition_scope_states.clone(),
             }))
-            .with_wanted_items(wanted_items)
+            .with_acquisition_scope_states(acquisition_scope_states)
     });
     (app, test_admin_user())
 }
@@ -5463,10 +5463,10 @@ fn rfc119_wanted_state(
     title: &Title,
     media_type: &str,
     episode_id: Option<String>,
-    status: WantedStatus,
-) -> WantedItem {
+    status: AcquisitionScopeStatus,
+) -> AcquisitionScopeState {
     let now = Utc::now().to_rfc3339();
-    WantedItem {
+    AcquisitionScopeState {
         id: Id::new().0,
         title_id: title.id.clone(),
         title_name: Some(title.name.clone()),
@@ -5492,6 +5492,40 @@ fn rfc119_wanted_state(
     }
 }
 
+#[tokio::test]
+async fn completing_absent_acquisition_state_row_does_not_materialize_completed_row() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
+    let (app, user) = bootstrap_with_acquisition_tracking(
+        download_client,
+        download_submissions,
+        pending_releases,
+        wanted_items.clone(),
+    );
+
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Passive Import Fixture".into(),
+                facet: MediaFacet::Movie,
+                monitored: false,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create passive import title");
+
+    crate::import_workflow::mark_wanted_completed(&app, &title.id, None, Some(1234)).await;
+
+    assert!(
+        wanted_items.store.lock().await.is_empty(),
+        "passive completion must not synthesize acquisition-state rows; convergence derives targets from library state"
+    );
+}
+
 /// A missing, monitored movie with NO acquisition-state row is upgraded from a
 /// matching RSS release: the wanted-row gate is gone (§D5), and the grab
 /// materializes the state row and transitions it to grabbed.
@@ -5501,7 +5535,7 @@ async fn rss_grabs_missing_movie_with_no_wanted_row_and_creates_state_row() {
     let download_client = Arc::new(StubDownloadClient::default());
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
     let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
-    let wanted_items = Arc::new(TrackingWantedItemRepo::default());
+    let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
     let indexer_client = Arc::new(FixedReleaseIndexerClient::new(release_title));
     let (app, user) = bootstrap_with_acquisition_tracking_and_indexer(
         download_client.clone(),
@@ -5535,7 +5569,7 @@ async fn rss_grabs_missing_movie_with_no_wanted_row_and_creates_state_row() {
     // No wanted row exists for this scope before the sync.
     assert!(
         wanted_items
-            .get_wanted_item_for_title(&title.id, None)
+            .get_acquisition_scope_state_for_title(&title.id, None)
             .await
             .expect("query wanted")
             .is_none()
@@ -5549,11 +5583,11 @@ async fn rss_grabs_missing_movie_with_no_wanted_row_and_creates_state_row() {
     );
     // The grab materialized the state row and transitioned it to grabbed.
     let seeded = wanted_items
-        .get_wanted_item_for_title(&title.id, None)
+        .get_acquisition_scope_state_for_title(&title.id, None)
         .await
         .expect("query wanted")
         .expect("state row materialized on grab");
-    assert_eq!(seeded.status, WantedStatus::Grabbed);
+    assert_eq!(seeded.status, AcquisitionScopeStatus::Grabbed);
     assert!(
         download_submissions
             .store
@@ -5574,7 +5608,7 @@ async fn rss_does_not_grab_paused_scope() {
     let download_client = Arc::new(StubDownloadClient::default());
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
     let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
-    let wanted_items = Arc::new(TrackingWantedItemRepo::default());
+    let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
     let indexer_client = Arc::new(FixedReleaseIndexerClient::new(release_title));
     let (app, user) = bootstrap_with_acquisition_tracking_and_indexer(
         download_client,
@@ -5605,11 +5639,11 @@ async fn rss_does_not_grab_paused_scope() {
         .remember_title_facet(&title.id, MediaFacet::Movie)
         .await;
     wanted_items
-        .upsert_wanted_item(&rfc119_wanted_state(
+        .upsert_acquisition_scope_state(&rfc119_wanted_state(
             &title,
             "movie",
             None,
-            WantedStatus::Paused,
+            AcquisitionScopeStatus::Paused,
         ))
         .await
         .expect("seed paused state row");
@@ -5629,7 +5663,7 @@ async fn rss_grabs_season_pack_once_at_pack_granularity() {
     let download_client = Arc::new(StubDownloadClient::default());
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
     let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
-    let wanted_items = Arc::new(TrackingWantedItemRepo::default());
+    let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
     let indexer_client = Arc::new(FixedReleaseIndexerClient::new(release_title));
     let (app, user) = bootstrap_with_acquisition_tracking_and_indexer(
         download_client.clone(),
@@ -5727,7 +5761,7 @@ async fn rss_does_not_grab_cutoff_met_movie() {
     let download_client = Arc::new(StubDownloadClient::default());
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
     let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
-    let wanted_items = Arc::new(TrackingWantedItemRepo::default());
+    let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
     let media_files = Arc::new(MockMediaFileRepo::default());
     let quality_profiles = Arc::new(StoredQualityProfileRepo::default());
     // A profile whose cutoff is 1080p: an existing 2160p file is at/above cutoff.
@@ -5798,7 +5832,7 @@ async fn rss_upgrades_below_cutoff_movie_with_no_wanted_row() {
     let download_client = Arc::new(StubDownloadClient::default());
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
     let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
-    let wanted_items = Arc::new(TrackingWantedItemRepo::default());
+    let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
     let media_files = Arc::new(MockMediaFileRepo::default());
     let quality_profiles = Arc::new(StoredQualityProfileRepo::default());
     // Cutoff at 2160p: a 720p file is below cutoff, so the scope is a target.
@@ -5852,7 +5886,7 @@ async fn rss_upgrades_below_cutoff_movie_with_no_wanted_row() {
 
     assert!(
         wanted_items
-            .get_wanted_item_for_title(&title.id, None)
+            .get_acquisition_scope_state_for_title(&title.id, None)
             .await
             .expect("query wanted")
             .is_none()
@@ -5865,9 +5899,9 @@ async fn rss_upgrades_below_cutoff_movie_with_no_wanted_row() {
         "a below-cutoff scope with no row is upgraded"
     );
     let seeded = wanted_items
-        .get_wanted_item_for_title(&title.id, None)
+        .get_acquisition_scope_state_for_title(&title.id, None)
         .await
         .expect("query wanted")
         .expect("state row materialized on grab");
-    assert_eq!(seeded.status, WantedStatus::Grabbed);
+    assert_eq!(seeded.status, AcquisitionScopeStatus::Grabbed);
 }

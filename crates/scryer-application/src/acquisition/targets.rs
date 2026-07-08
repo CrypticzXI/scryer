@@ -183,17 +183,17 @@ impl AppUseCase {
         episode_id: Option<&str>,
         collection_id: Option<&str>,
         series_movie_link_id: Option<&str>,
-    ) -> AppResult<Option<WantedItem>> {
-        let repo = &self.services.workflow.wanted_items;
+    ) -> AppResult<Option<AcquisitionScopeState>> {
+        let repo = &self.services.workflow.acquisition_scope_states;
         if episode_id.is_some() {
-            return repo.get_wanted_item_for_title(title_id, episode_id).await;
+            return repo.get_acquisition_scope_state_for_title(title_id, episode_id).await;
         }
         if let Some(link_id) = series_movie_link_id {
             return Ok(repo
-                .list_wanted_items(WantedItemsQuery {
+                .list_acquisition_scope_states(AcquisitionScopeStatesQuery {
                     title_id: Some(title_id.to_string()),
                     limit: 500,
-                    ..WantedItemsQuery::default()
+                    ..AcquisitionScopeStatesQuery::default()
                 })
                 .await?
                 .into_iter()
@@ -201,16 +201,16 @@ impl AppUseCase {
         }
         if let Some(collection_id) = collection_id {
             return Ok(repo
-                .list_wanted_items(WantedItemsQuery {
+                .list_acquisition_scope_states(AcquisitionScopeStatesQuery {
                     title_id: Some(title_id.to_string()),
                     limit: 500,
-                    ..WantedItemsQuery::default()
+                    ..AcquisitionScopeStatesQuery::default()
                 })
                 .await?
                 .into_iter()
                 .find(|existing| existing.collection_id.as_deref() == Some(collection_id)));
         }
-        repo.get_wanted_item_for_title(title_id, None).await
+        repo.get_acquisition_scope_state_for_title(title_id, None).await
     }
 
     /// The derived missing-target set (§D1): monitored scopes with no primary
@@ -439,11 +439,11 @@ impl AppUseCase {
         let paused = self
             .services
             .workflow
-            .wanted_items
-            .list_wanted_items(WantedItemsQuery {
-                statuses: vec![WantedStatus::Paused.as_str().to_string()],
+            .acquisition_scope_states
+            .list_acquisition_scope_states(AcquisitionScopeStatesQuery {
+                statuses: vec![AcquisitionScopeStatus::Paused.as_str().to_string()],
                 limit: i64::MAX,
-                ..WantedItemsQuery::default()
+                ..AcquisitionScopeStatesQuery::default()
             })
             .await?;
         if !paused.is_empty() {

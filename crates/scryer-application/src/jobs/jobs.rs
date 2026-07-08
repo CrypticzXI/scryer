@@ -1,10 +1,10 @@
 use super::*;
 use crate::discovery::{
     DiscoveryContextDefaults, DiscoveryLibraryContext, build_discovery_library_context,
-    coalesce_pending_context_change, context_changes_raw_page_record, incremental_item_records,
+    coalesce_pending_context_change, incremental_item_records,
     pending_context_change_from_domain_event, pending_context_changes_need_snapshot_reconciliation,
-    public_feed_item_records, public_feed_raw_page_record, public_feed_section_records,
-    snapshot_facet_records, snapshot_item_records, snapshot_raw_page_record,
+    public_feed_item_records, public_feed_section_records, snapshot_facet_records,
+    snapshot_item_records,
 };
 use crate::domain_events::{DomainEventActor, new_job_run_domain_event};
 use crate::event_views::replay_library_scan_state;
@@ -1373,6 +1373,7 @@ impl AppUseCase {
         let scheduler_seed = self.discovery_scheduler_seed().await?;
         let titles = self.services.catalog.titles.list(None, None).await?;
         let defaults = DiscoveryContextDefaults {
+            region: self.discovery_region().await,
             language: self.metadata_language().await,
             ..DiscoveryContextDefaults::default()
         };
@@ -1489,10 +1490,7 @@ impl AppUseCase {
         let scans_active = active_scan_count > 0;
         let scan_blocked_retry_at = scans_active
             .then_some(now + chrono::Duration::seconds(DISCOVERY_SYNC_BOOTSTRAP_QUIET_SECONDS));
-        // TODO: remove before going live; local testing shortcut to retry the discovery
-        // snapshot on startup even if an earlier local SMG attempt left a backoff.
-        let snapshot_backoff_ready = trigger_source == JobTriggerSource::ScheduledStartup
-            || state.backoff_until.is_none_or(|until| now >= until);
+        let snapshot_backoff_ready = state.backoff_until.is_none_or(|until| now >= until);
         let snapshot_resume_due = state.inflight_context_snapshot_run_id.is_some()
             && !scans_active
             && snapshot_backoff_ready;
@@ -1517,13 +1515,35 @@ impl AppUseCase {
         let context_snapshot_due = if snapshot_resume_due {
             true
         } else if snapshot_can_submit && state.last_success_generation_id.is_none() {
-            // TODO: remove before going live; local testing shortcut to run the first discovery snapshot on startup.
+            // First snapshot: let the bootstrap quiet window elapse so library churn
+            // settles before the initial SMG submission. An explicit manual trigger
+            // skips the settle window (backoff still applies via snapshot_can_submit).
             subject_context_changed
+                && (trigger_source == JobTriggerSource::Manual
+                    || state
+                        .bootstrap_quiet_until
+                        .is_none_or(|quiet_until| now >= quiet_until))
         } else {
             snapshot_can_submit
                 && (previous_context_gate.is_some_and(|gate| now >= gate)
                     || full_snapshot_reconciliation_due)
                 && state.last_success_generation_id.is_some()
+        };
+
+        // Public feed is independent of the personalized pipeline: refresh it
+        // immediately on startup (before any snapshot work) so the public rails
+        // populate as soon as the app boots; otherwise hold to the daily gate.
+        let public_feed_due = trigger_source == JobTriggerSource::Manual
+            || trigger_source == JobTriggerSource::ScheduledStartup
+            || state.last_public_feed_generation_id.is_none()
+            || previous_public_gate.is_some_and(|gate| now >= gate);
+        let public_feed = if public_feed_due {
+            Some(
+                self.execute_discovery_public_feed(trigger_source, &defaults, &mut state, now)
+                    .await?,
+            )
+        } else {
+            None
         };
 
         let context_snapshot = if context_snapshot_due {
@@ -1564,18 +1584,6 @@ impl AppUseCase {
                     now,
                 )
                 .await?,
-            )
-        } else {
-            None
-        };
-
-        let public_feed_due = trigger_source == JobTriggerSource::Manual
-            || state.last_public_feed_generation_id.is_none()
-            || previous_public_gate.is_some_and(|gate| now >= gate);
-        let public_feed = if public_feed_due {
-            Some(
-                self.execute_discovery_public_feed(trigger_source, &defaults, &mut state, now)
-                    .await?,
             )
         } else {
             None
@@ -1963,7 +1971,6 @@ impl AppUseCase {
         };
 
         let completed_at = self.runtime.environment.now();
-        let raw_feed = public_feed_raw_page_record(&run_id, &result, completed_at)?;
         let sections = public_feed_section_records(&run_id, &result, completed_at)?;
         let items = public_feed_item_records(&run_id, &result, completed_at)?;
         let facet_count = result
@@ -1998,23 +2005,24 @@ impl AppUseCase {
         );
         state.updated_at = completed_at;
 
+        let section_count = sections.len() as i64;
+        let item_count = items.len() as i64;
         self.services
             .library
             .discovery
             .commit_discovery_public_feed(&DiscoveryPublicFeedCommit {
                 state: state.clone(),
                 run: run.clone(),
-                raw_feed,
-                sections: sections.clone(),
-                items: items.clone(),
+                sections,
+                items,
             })
             .await?;
 
         Ok(DiscoveryPublicFeedRunSummary {
             run_id,
             committed: true,
-            section_count: sections.len() as i64,
-            item_count: items.len() as i64,
+            section_count,
+            item_count,
         })
     }
 
@@ -2360,10 +2368,6 @@ impl AppUseCase {
         }
 
         let completed_at = self.runtime.environment.now();
-        let raw_pages = pages
-            .iter()
-            .map(|page| snapshot_raw_page_record(&run_id, page, completed_at))
-            .collect::<AppResult<Vec<_>>>()?;
         let snapshot_titles = pages
             .iter()
             .flat_map(|page| page.items.iter().cloned())
@@ -2416,16 +2420,17 @@ impl AppUseCase {
         state.inflight_domain_event_sequence = None;
         state.updated_at = completed_at;
 
+        let item_count = items.len() as i64;
+        let facet_count = facets.len() as i64;
         self.services
             .library
             .discovery
             .commit_discovery_context_snapshot(&DiscoveryContextSnapshotCommit {
                 state: state.clone(),
                 run: run.clone(),
-                raw_pages,
                 submitted_subjects,
-                items: items.clone(),
-                facets: facets.clone(),
+                items,
+                facets,
                 clear_pending_through_sequence,
             })
             .await?;
@@ -2469,8 +2474,8 @@ impl AppUseCase {
             smg_request_id: Some(request_id),
             smg_status: run.smg_status.clone(),
             page_count: status_result.page_count,
-            item_count: items.len() as i64,
-            facet_count: facets.len() as i64,
+            item_count,
+            facet_count,
         })
     }
 
@@ -2651,15 +2656,14 @@ impl AppUseCase {
         }
         state.updated_at = completed_at;
 
-        let raw_changes = context_changes_raw_page_record(&run_id, &result, completed_at)?;
+        let item_count = items.len() as i64;
         self.services
             .library
             .discovery
             .commit_discovery_context_incremental(&DiscoveryContextIncrementalCommit {
                 state: state.clone(),
                 run: run.clone(),
-                raw_changes,
-                items: items.clone(),
+                items,
                 tombstone_target_keys,
                 clear_pending_through_sequence: covered_sequence,
             })
@@ -2671,7 +2675,7 @@ impl AppUseCase {
             smg_status: run.smg_status.clone(),
             changed_subject_count: run.changed_subject_count,
             affected_target_count: run.affected_target_count,
-            item_count: items.len() as i64,
+            item_count,
         })
     }
 

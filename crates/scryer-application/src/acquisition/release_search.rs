@@ -347,7 +347,7 @@ fn media_facet_from_str(value: &str) -> Option<MediaFacet> {
     }
 }
 
-fn owner_facet_for_wanted_item(title: &Title, item: &WantedItem) -> MediaFacet {
+fn owner_facet_for_wanted_item(title: &Title, item: &AcquisitionScopeState) -> MediaFacet {
     item.title_facet
         .as_deref()
         .and_then(media_facet_from_str)
@@ -533,8 +533,8 @@ fn candidate_matches_existing_media_file(
     })
 }
 
-fn grabbed_release_for_search_subject(item: &WantedItem) -> Option<String> {
-    if item.status == WantedStatus::Completed && item.current_score.is_some() {
+fn grabbed_release_for_search_subject(item: &AcquisitionScopeState) -> Option<String> {
+    if item.status == AcquisitionScopeStatus::Completed && item.current_score.is_some() {
         None
     } else {
         item.grabbed_release.clone()
@@ -771,7 +771,7 @@ impl AppUseCase {
     pub(crate) async fn release_search_title_for_wanted_item(
         &self,
         title: &Title,
-        item: &WantedItem,
+        item: &AcquisitionScopeState,
         episode: Option<&Episode>,
     ) -> Title {
         let search_title = if item.media_type == "series_movie" {
@@ -903,8 +903,8 @@ impl AppUseCase {
         let wanted = self
             .services
             .workflow
-            .wanted_items
-            .get_wanted_item_for_title(&title.id, None)
+            .acquisition_scope_states
+            .get_acquisition_scope_state_for_title(&title.id, None)
             .await
             .ok()
             .flatten();
@@ -981,8 +981,8 @@ impl AppUseCase {
         let wanted = self
             .services
             .workflow
-            .wanted_items
-            .get_wanted_item_for_title(
+            .acquisition_scope_states
+            .get_acquisition_scope_state_for_title(
                 &title.id,
                 episode_record.as_ref().map(|episode| episode.id.as_str()),
             )
@@ -1064,7 +1064,7 @@ impl AppUseCase {
     pub(crate) async fn resolve_release_search_subject_for_season_pack(
         &self,
         title: &Title,
-        item: &WantedItem,
+        item: &AcquisitionScopeState,
         episode: Option<&Episode>,
         season_num: u32,
         runtime_minutes: Option<i32>,
@@ -1139,12 +1139,12 @@ impl AppUseCase {
         let wanted = self
             .services
             .workflow
-            .wanted_items
-            .list_wanted_items(WantedItemsQuery {
+            .acquisition_scope_states
+            .list_acquisition_scope_states(AcquisitionScopeStatesQuery {
                 media_types: vec!["series_movie".into()],
                 title_id: Some(title.id.clone()),
                 limit: 500,
-                ..WantedItemsQuery::default()
+                ..AcquisitionScopeStatesQuery::default()
             })
             .await?
             .into_iter()
@@ -1207,7 +1207,7 @@ impl AppUseCase {
         &self,
         owner_title: &Title,
         search_title: &Title,
-        item: &WantedItem,
+        item: &AcquisitionScopeState,
         episode: Option<&Episode>,
     ) -> ResolvedReleaseSearchSubject {
         let query_result = build_search_queries(search_title, item, episode, &self.facet_registry);
@@ -1396,11 +1396,11 @@ mod tests {
     }
 
     fn make_wanted_item(
-        status: WantedStatus,
+        status: AcquisitionScopeStatus,
         current_score: Option<i32>,
         grabbed_release: Option<&str>,
-    ) -> WantedItem {
-        WantedItem {
+    ) -> AcquisitionScopeState {
+        AcquisitionScopeState {
             id: "wanted-1".to_string(),
             title_id: "title-1".to_string(),
             title_name: None,
@@ -1552,14 +1552,14 @@ mod tests {
     #[test]
     fn completed_current_score_suppresses_stale_grabbed_release_cutoff() {
         let completed = make_wanted_item(
-            WantedStatus::Completed,
+            AcquisitionScopeStatus::Completed,
             Some(1200),
             Some(r#"{"title":"Nightfall.2022.1080p.WEB-DL"}"#),
         );
         assert_eq!(grabbed_release_for_search_subject(&completed), None);
 
         let grabbed = make_wanted_item(
-            WantedStatus::Grabbed,
+            AcquisitionScopeStatus::Grabbed,
             Some(1200),
             Some(r#"{"title":"Nightfall.2022.1080p.WEB-DL"}"#),
         );

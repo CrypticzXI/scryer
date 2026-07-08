@@ -26,8 +26,8 @@ async fn resolve_failed_release_attribution(
     app: &AppUseCase,
     title_id: Option<&str>,
     failed_submission: Option<&DownloadSubmission>,
-    wanted_item: Option<&WantedItem>,
-    failed_collection_items: Option<&[WantedItem]>,
+    wanted_item: Option<&AcquisitionScopeState>,
+    failed_collection_items: Option<&[AcquisitionScopeState]>,
 ) -> FailedReleaseAttribution {
     let title = match title_id {
         Some(title_id) => app
@@ -74,7 +74,7 @@ async fn resolve_failed_release_attribution(
     attribution
 }
 pub(crate) fn download_submission_scope_for_release_title(
-    item: &WantedItem,
+    item: &AcquisitionScopeState,
     episode: Option<&Episode>,
     release_title: &str,
 ) -> SubmissionScope {
@@ -91,7 +91,7 @@ pub(crate) fn download_submission_scope_for_release_title(
 }
 pub(crate) fn submission_blocks_wanted_item(
     submission: &DownloadSubmission,
-    item: &WantedItem,
+    item: &AcquisitionScopeState,
     episode_collection_id: Option<&str>,
 ) -> bool {
     match &submission.scope {
@@ -124,14 +124,14 @@ fn resolved_failed_release_hint(failed_submission: Option<&DownloadSubmission>) 
 }
 async fn mark_wanted_item_failed_without_reacquire(
     app: &AppUseCase,
-    item: &WantedItem,
+    item: &AcquisitionScopeState,
 ) -> AppResult<()> {
     app.services
         .workflow
-        .wanted_items
-        .update_wanted_item_status(
+        .acquisition_scope_states
+        .update_acquisition_scope_status(
             &item.id,
-            WantedStatus::Wanted.as_str(),
+            AcquisitionScopeStatus::Wanted.as_str(),
             item.last_search_at.as_deref(),
             item.current_score,
             None,
@@ -184,13 +184,13 @@ async fn load_recent_failed_season_pack_seasons_for_title(
 impl AppUseCase {
     async fn wanted_item_is_mismatch_recovery_candidate(
         &self,
-        item: &WantedItem,
+        item: &AcquisitionScopeState,
     ) -> AppResult<bool> {
         let decisions = self
             .services
             .workflow
-            .wanted_items
-            .list_release_decisions_for_wanted_item(&item.id, 10)
+            .acquisition_scope_states
+            .list_release_decisions_for_acquisition_scope_state(&item.id, 10)
             .await?;
         Ok(!decisions.is_empty()
             && decisions
@@ -206,8 +206,8 @@ impl AppUseCase {
         let Some(item) = self
             .services
             .workflow
-            .wanted_items
-            .get_wanted_item_by_id(wanted_item_id)
+            .acquisition_scope_states
+            .get_acquisition_scope_state_by_id(wanted_item_id)
             .await?
         else {
             return Ok(false);
@@ -238,12 +238,12 @@ impl AppUseCase {
         let items = self
             .services
             .workflow
-            .wanted_items
-            .list_wanted_items(WantedItemsQuery {
+            .acquisition_scope_states
+            .list_acquisition_scope_states(AcquisitionScopeStatesQuery {
                 statuses: vec!["wanted".into()],
                 title_id: Some(title_id.to_string()),
                 limit: 500,
-                ..WantedItemsQuery::default()
+                ..AcquisitionScopeStatesQuery::default()
             })
             .await?;
 
@@ -334,12 +334,12 @@ impl AppUseCase {
                 let item = match self
                     .services
                     .workflow
-                    .wanted_items
-                    .get_wanted_item_for_title(&title.id, Some(&episode.id))
+                    .acquisition_scope_states
+                    .get_acquisition_scope_state_for_title(&title.id, Some(&episode.id))
                     .await?
                 {
                     Some(item) => {
-                        if item.status == WantedStatus::Grabbed {
+                        if item.status == AcquisitionScopeStatus::Grabbed {
                             continue;
                         }
                         item

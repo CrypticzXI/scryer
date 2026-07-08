@@ -545,10 +545,6 @@ pub const BACKUP_TABLE_CATALOG: &[BackupTableCatalogEntry] = &[
         classification: BackupTableClassification::Export,
     },
     BackupTableCatalogEntry {
-        table: "discovery_raw_pages",
-        classification: BackupTableClassification::Export,
-    },
-    BackupTableCatalogEntry {
         table: "discovery_section_items",
         classification: BackupTableClassification::Export,
     },

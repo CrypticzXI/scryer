@@ -830,6 +830,12 @@ impl AppUseCase {
             crate::subtitles::download::SubtitleDownloadSelection {
                 episode: episode_context.episode,
                 absolute_episode: episode_context.absolute_episode,
+                archive_provider: self
+                    .services
+                    .integrations
+                    .archive_extractor_plugin_provider
+                    .available()
+                    .cloned(),
             },
         )
         .await;
@@ -1791,6 +1797,12 @@ async fn run_subtitle_search_for_file(
             crate::subtitles::download::SubtitleDownloadSelection {
                 episode: query.episode,
                 absolute_episode: query.absolute_episode,
+                archive_provider: app
+                    .services
+                    .integrations
+                    .archive_extractor_plugin_provider
+                    .available()
+                    .cloned(),
             },
         )
         .await;
@@ -2064,6 +2076,12 @@ async fn run_subtitle_search_cycle(app: &AppUseCase) -> AppResult<()> {
                     crate::subtitles::download::SubtitleDownloadSelection {
                         episode: query.episode,
                         absolute_episode: query.absolute_episode,
+                        archive_provider: app
+                            .services
+                            .integrations
+                            .archive_extractor_plugin_provider
+                            .available()
+                            .cloned(),
                     },
                 )
                 .await;

@@ -35,7 +35,7 @@ impl AppUseCase {
     )]
     pub(crate) async fn insert_pending_release(
         &self,
-        wanted: &WantedItem,
+        wanted: &AcquisitionScopeState,
         title: &scryer_domain::Title,
         release_title: &str,
         release_url: Option<&str>,
@@ -108,7 +108,7 @@ impl AppUseCase {
                     .services
                     .workflow
                     .pending_releases
-                    .supersede_pending_releases_for_wanted_item(&wanted.id, &pending.id)
+                    .supersede_pending_releases_for_acquisition_scope_state(&wanted.id, &pending.id)
                     .await;
 
                 info!(
@@ -166,8 +166,8 @@ impl AppUseCase {
             let Some(wanted) = self
                 .services
                 .workflow
-                .wanted_items
-                .get_wanted_item_by_id(&wanted_item_id)
+                .acquisition_scope_states
+                .get_acquisition_scope_state_by_id(&wanted_item_id)
                 .await?
             else {
                 // Wanted item gone — mark all as expired
@@ -183,7 +183,7 @@ impl AppUseCase {
             };
 
             // Skip if already grabbed or completed
-            if wanted.status == WantedStatus::Grabbed || wanted.status == WantedStatus::Completed {
+            if wanted.status == AcquisitionScopeStatus::Grabbed || wanted.status == AcquisitionScopeStatus::Completed {
                 for pr in &releases {
                     let _ = self
                         .services
@@ -220,7 +220,7 @@ impl AppUseCase {
                             .services
                             .workflow
                             .pending_releases
-                            .supersede_pending_releases_for_wanted_item(&wanted_item_id, &pr.id)
+                            .supersede_pending_releases_for_acquisition_scope_state(&wanted_item_id, &pr.id)
                             .await;
                         grabbed = true;
                         grabbed_count += 1;
@@ -349,8 +349,8 @@ impl AppUseCase {
         let wanted = self
             .services
             .workflow
-            .wanted_items
-            .get_wanted_item_by_id(wanted_item_id)
+            .acquisition_scope_states
+            .get_acquisition_scope_state_by_id(wanted_item_id)
             .await?
             .ok_or_else(|| AppError::NotFound(format!("wanted item {wanted_item_id}")))?;
         let library_id = if let Some(library_id) = wanted.library_id.as_deref() {
@@ -408,8 +408,8 @@ impl AppUseCase {
         let wanted = self
             .services
             .workflow
-            .wanted_items
-            .get_wanted_item_by_id(&pr.wanted_item_id)
+            .acquisition_scope_states
+            .get_acquisition_scope_state_by_id(&pr.wanted_item_id)
             .await?
             .ok_or_else(|| {
                 AppError::Repository(format!("wanted item {} not found", pr.wanted_item_id))
@@ -462,7 +462,7 @@ impl AppUseCase {
     /// Attempt to grab a single pending release.
     pub(crate) async fn try_grab_pending_release(
         &self,
-        wanted: &WantedItem,
+        wanted: &AcquisitionScopeState,
         pr: &PendingRelease,
         now: &chrono::DateTime<Utc>,
     ) -> AppResult<PendingGrabOutcome> {

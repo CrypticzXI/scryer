@@ -9,7 +9,7 @@ use crate::ports::{
     DiscoveryItemLibraryProvenanceRecord, DiscoveryItemsPageRecord, DiscoveryItemsStorageQuery,
     DiscoverySectionItemsRecord, DiscoverySourceTagRecord,
 };
-use crate::settings::keys::{METADATA_LANGUAGE_KEY, SETTINGS_SCOPE_SYSTEM};
+use crate::settings::keys::{DISCOVERY_REGION_KEY, METADATA_LANGUAGE_KEY, SETTINGS_SCOPE_SYSTEM};
 use crate::{
     AppError, AppResult, BulkMetadataResult, CatalogDiscoveryGroupKind, CatalogDiscoveryQuery,
     CatalogDiscoverySurface, DiscoveryContextChangeType, DiscoveryContextChangesInput,
@@ -19,8 +19,8 @@ use crate::{
     DiscoveryContextSnapshotSubmitInput, DiscoveryContextSnapshotSubmitResult,
     DiscoveryDashboardResult, DiscoveryDashboardSection, DiscoveryFacetRecord, DiscoveryHomeQuery,
     DiscoveryItemRecord, DiscoveryItemsQuery, DiscoveryPendingContextChangeRecord,
-    DiscoveryPublicFeedCommit, DiscoveryPublicFeedInput, DiscoveryRawPageRecord,
-    DiscoveryRelatedResult, DiscoveryRepository, DiscoverySectionRecord,
+    DiscoveryPublicFeedCommit, DiscoveryPublicFeedInput, DiscoveryRelatedResult,
+    DiscoveryRepository, DiscoverySectionRecord,
     DiscoverySnapshotFacetGroup, DiscoverySnapshotFacetValue, DiscoverySubmittedSubjectRecord,
     DiscoverySyncRunRecord, DiscoverySyncStateRecord, DiscoveryTitle, DomainEventRepository,
     JobCategory, JobKey, JobRun, JobRunStatus, JobSection, JobTriggerSource, LibraryRootDraft,
@@ -1561,7 +1561,6 @@ async fn discovery_sync_initial_snapshot_submits_smg_and_commits_local_generatio
         commit.state.last_subject_fingerprint,
         commit.run.subject_fingerprint
     );
-    assert_eq!(commit.raw_pages.len(), 1);
     assert_eq!(commit.submitted_subjects.len(), 1);
     assert_eq!(commit.submitted_subjects[0].subject_key, "tmdb:movie:603");
     assert_eq!(commit.items.len(), 1);
@@ -1615,6 +1614,47 @@ async fn discovery_sync_uses_configured_metadata_language() {
     let commits = discovery.commits.lock().await;
     assert_eq!(commits.len(), 1);
     assert_eq!(commits[0].run.language, "jpn");
+}
+
+#[tokio::test]
+async fn discovery_sync_uses_configured_region() {
+    // RFC 121 SW5: region routes through settings (defaults to "US" when unset).
+    let gateway = Arc::new(SnapshotMetadataGateway::default());
+    let settings = Arc::new(StoredSettingsRepo::default());
+    settings
+        .set_value(SETTINGS_SCOPE_SYSTEM, DISCOVERY_REGION_KEY, "CA")
+        .await;
+    let (app, _admin, titles) =
+        bootstrap_with_metadata_gateway_settings_and_titles(gateway.clone(), settings);
+    let discovery = Arc::new(RecordingDiscoveryRepository::default());
+    let app = app.with_test_overrides(|builder| builder.with_discovery_store(discovery.clone()));
+    let due_at = Utc.timestamp_opt(0, 0).unwrap();
+    *discovery.state.lock().await = Some(DiscoverySyncStateRecord {
+        bootstrap_started_at: Some(due_at),
+        bootstrap_quiet_until: Some(due_at),
+        updated_at: due_at,
+        ..DiscoverySyncStateRecord::default()
+    });
+
+    titles.store.lock().await.push(test_title(
+        "title-1",
+        "The Example Movie",
+        MediaFacet::Movie,
+        vec![("tmdb_movie", "603")],
+    ));
+
+    app.run_scheduled_job_now(JobKey::DiscoverySync, JobTriggerSource::ScheduledInterval)
+        .await
+        .expect("discovery sync should run");
+
+    let submitted_inputs = gateway.submitted_inputs.lock().await;
+    assert_eq!(submitted_inputs.len(), 1);
+    assert_eq!(submitted_inputs[0].region, "CA");
+    drop(submitted_inputs);
+
+    let commits = discovery.commits.lock().await;
+    assert_eq!(commits.len(), 1);
+    assert_eq!(commits[0].run.region, "CA");
 }
 
 #[tokio::test]
@@ -1985,7 +2025,7 @@ async fn discovery_sync_ack_failure_after_commit_schedules_retry() {
 }
 
 #[tokio::test]
-async fn discovery_sync_initial_tick_submits_snapshot_for_local_startup_testing() {
+async fn discovery_sync_initial_tick_submits_snapshot_without_bootstrap_window() {
     let gateway = Arc::new(SnapshotMetadataGateway::default());
     let (app, _admin, titles) = bootstrap_with_metadata_gateway_and_titles(gateway.clone());
     let discovery = Arc::new(RecordingDiscoveryRepository::default());
@@ -2046,7 +2086,7 @@ async fn discovery_sync_initial_snapshot_waits_for_backoff_before_resubmitting()
 }
 
 #[tokio::test]
-async fn discovery_sync_startup_snapshot_bypasses_backoff_for_local_testing() {
+async fn discovery_sync_startup_snapshot_respects_backoff() {
     let gateway = Arc::new(SnapshotMetadataGateway::default());
     let (app, _admin, titles) = bootstrap_with_metadata_gateway_and_titles(gateway.clone());
     let discovery = Arc::new(RecordingDiscoveryRepository::default());
@@ -2070,6 +2110,66 @@ async fn discovery_sync_startup_snapshot_bypasses_backoff_for_local_testing() {
     app.run_scheduled_job_now(JobKey::DiscoverySync, JobTriggerSource::ScheduledStartup)
         .await
         .expect("startup discovery sync should run");
+
+    assert!(gateway.submitted_inputs.lock().await.is_empty());
+    assert!(discovery.commits.lock().await.is_empty());
+}
+
+#[tokio::test]
+async fn discovery_sync_initial_snapshot_waits_for_bootstrap_quiet_window() {
+    let gateway = Arc::new(SnapshotMetadataGateway::default());
+    let (app, _admin, titles) = bootstrap_with_metadata_gateway_and_titles(gateway.clone());
+    let discovery = Arc::new(RecordingDiscoveryRepository::default());
+    let app = app.with_test_overrides(|builder| builder.with_discovery_store(discovery.clone()));
+    let now = Utc.timestamp_opt(10_000, 0).unwrap();
+    app.runtime.environment.set_fixed_now_for_tests(Some(now));
+    *discovery.state.lock().await = Some(DiscoverySyncStateRecord {
+        bootstrap_started_at: Some(now - chrono::Duration::minutes(1)),
+        bootstrap_quiet_until: Some(now + chrono::Duration::minutes(5)),
+        updated_at: now,
+        ..DiscoverySyncStateRecord::default()
+    });
+
+    titles.store.lock().await.push(test_title(
+        "title-1",
+        "The Example Movie",
+        MediaFacet::Movie,
+        vec![("tmdb_movie", "603")],
+    ));
+
+    app.run_scheduled_job_now(JobKey::DiscoverySync, JobTriggerSource::ScheduledInterval)
+        .await
+        .expect("discovery sync should run");
+
+    assert!(gateway.submitted_inputs.lock().await.is_empty());
+    assert!(discovery.commits.lock().await.is_empty());
+}
+
+#[tokio::test]
+async fn discovery_sync_manual_trigger_bypasses_bootstrap_quiet_window() {
+    let gateway = Arc::new(SnapshotMetadataGateway::default());
+    let (app, _admin, titles) = bootstrap_with_metadata_gateway_and_titles(gateway.clone());
+    let discovery = Arc::new(RecordingDiscoveryRepository::default());
+    let app = app.with_test_overrides(|builder| builder.with_discovery_store(discovery.clone()));
+    let now = Utc.timestamp_opt(10_000, 0).unwrap();
+    app.runtime.environment.set_fixed_now_for_tests(Some(now));
+    *discovery.state.lock().await = Some(DiscoverySyncStateRecord {
+        bootstrap_started_at: Some(now - chrono::Duration::minutes(1)),
+        bootstrap_quiet_until: Some(now + chrono::Duration::minutes(5)),
+        updated_at: now,
+        ..DiscoverySyncStateRecord::default()
+    });
+
+    titles.store.lock().await.push(test_title(
+        "title-1",
+        "The Example Movie",
+        MediaFacet::Movie,
+        vec![("tmdb_movie", "603")],
+    ));
+
+    app.run_scheduled_job_now(JobKey::DiscoverySync, JobTriggerSource::Manual)
+        .await
+        .expect("manual discovery sync should run");
 
     assert_eq!(gateway.submitted_inputs.lock().await.len(), 1);
     assert_eq!(discovery.commits.lock().await.len(), 1);
@@ -2713,6 +2813,35 @@ async fn discovery_sync_manual_run_forces_public_feed_when_fresh() {
     app.run_scheduled_job_now(JobKey::DiscoverySync, JobTriggerSource::Manual)
         .await
         .expect("manual discovery sync should evaluate");
+
+    assert_eq!(gateway.public_feed_inputs.lock().await.len(), 1);
+    assert!(gateway.submitted_inputs.lock().await.is_empty());
+    assert!(gateway.change_inputs.lock().await.is_empty());
+    assert_eq!(discovery.public_feed_commits.lock().await.len(), 1);
+}
+
+#[tokio::test]
+async fn discovery_sync_startup_refreshes_public_feed_immediately_without_personalized_work() {
+    let gateway = Arc::new(SnapshotMetadataGateway::default());
+    let (app, _admin, _titles) = bootstrap_with_metadata_gateway_and_titles(gateway.clone());
+    let discovery = Arc::new(RecordingDiscoveryRepository::default());
+    let app = app.with_test_overrides(|builder| builder.with_discovery_store(discovery.clone()));
+    let due_at = Utc::now() - chrono::Duration::hours(1);
+    let future_at = Utc::now() + chrono::Duration::days(1);
+    *discovery.state.lock().await = Some(DiscoverySyncStateRecord {
+        last_success_generation_id: Some("generation-1".to_string()),
+        last_context_snapshot_completed_at: Some(due_at),
+        next_context_snapshot_eligible_at: Some(future_at),
+        next_incremental_reload_eligible_at: Some(future_at),
+        last_public_feed_generation_id: Some("public-1".to_string()),
+        next_public_feed_eligible_at: Some(future_at),
+        updated_at: due_at,
+        ..DiscoverySyncStateRecord::default()
+    });
+
+    app.run_scheduled_job_now(JobKey::DiscoverySync, JobTriggerSource::ScheduledStartup)
+        .await
+        .expect("startup discovery sync should evaluate");
 
     assert_eq!(gateway.public_feed_inputs.lock().await.len(), 1);
     assert!(gateway.submitted_inputs.lock().await.is_empty());
@@ -3789,10 +3918,6 @@ impl DiscoveryRepository for RecordingDiscoveryRepository {
             .take(limit.clamp(1, 100) as usize)
             .cloned()
             .collect())
-    }
-
-    async fn insert_discovery_raw_page(&self, _page: &DiscoveryRawPageRecord) -> AppResult<()> {
-        Ok(())
     }
 
     async fn commit_discovery_context_snapshot(
@@ -5049,6 +5174,8 @@ fn discovery_item_record(
             .contains(&"tmdb.collection")
             .then(|| "Example Collection".to_string()),
         owned_in_input,
+        studio_slug: None,
+        person_ids: Vec::new(),
         facet_terms: genre_labels
             .iter()
             .map(|genre| {
@@ -5157,6 +5284,35 @@ fn test_external_id(title: &Title, sources: &[&str]) -> Option<String> {
         .map(|external_id| external_id.value.clone())
 }
 
+#[test]
+fn discovery_title_deserializes_studio_slug_and_person_ids_with_defaults() {
+    // RFC 121 SW3 + SI3: the SMG feed uses snake_case studio_slug / person_ids and
+    // absence must default tolerantly (no deny_unknown_fields, no strict enums).
+    let mut base = serde_json::to_value(test_discovery_title())
+        .expect("fixture discovery title should serialize");
+    let object = base.as_object_mut().expect("discovery title is an object");
+
+    // Absent: drop both keys and inject an unknown future field.
+    object.remove("studio_slug");
+    object.remove("person_ids");
+    object.insert(
+        "unexpected_future_field".to_string(),
+        serde_json::json!({"anything": true}),
+    );
+    let absent: DiscoveryTitle = serde_json::from_value(serde_json::Value::Object(object.clone()))
+        .expect("missing studio_slug/person_ids should default, unknown fields tolerated");
+    assert_eq!(absent.studio_slug, None);
+    assert!(absent.person_ids.is_empty());
+
+    // Present: snake_case keys parse onto the typed fields.
+    object.insert("studio_slug".to_string(), serde_json::json!("a24"));
+    object.insert("person_ids".to_string(), serde_json::json!([101, 202]));
+    let present: DiscoveryTitle = serde_json::from_value(serde_json::Value::Object(object.clone()))
+        .expect("snake_case studio_slug/person_ids should deserialize");
+    assert_eq!(present.studio_slug.as_deref(), Some("a24"));
+    assert_eq!(present.person_ids, vec![101, 202]);
+}
+
 fn test_discovery_title() -> DiscoveryTitle {
     DiscoveryTitle {
         target_key: "tmdb:movie:604".to_string(),
@@ -5197,6 +5353,8 @@ fn test_discovery_title() -> DiscoveryTitle {
         tmdb_collection_id: None,
         tmdb_collection_name: String::new(),
         owned_in_input: false,
+        studio_slug: None,
+        person_ids: Vec::new(),
         facet_terms: vec!["movie".to_string()],
         context_terms: Vec::new(),
         change_subject_keys: Vec::new(),

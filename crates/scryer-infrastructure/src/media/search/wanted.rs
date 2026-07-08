@@ -1,12 +1,12 @@
-use scryer_application::{AppError, AppResult, ReleaseDecision, WantedItem, WantedItemsQuery};
+use scryer_application::{AppError, AppResult, ReleaseDecision, AcquisitionScopeState, AcquisitionScopeStatesQuery};
 use sqlx::sqlite::SqliteRow;
 use sqlx::{QueryBuilder, Row, Sqlite, SqlitePool};
 
 pub(crate) async fn list_wanted_items_query(
     pool: &SqlitePool,
-    query: &WantedItemsQuery,
-) -> AppResult<Vec<WantedItem>> {
-    let WantedItemsQuery {
+    query: &AcquisitionScopeStatesQuery,
+) -> AppResult<Vec<AcquisitionScopeState>> {
+    let AcquisitionScopeStatesQuery {
         statuses,
         media_types,
         title_id,
@@ -146,9 +146,9 @@ pub(crate) async fn list_wanted_items_query(
 
 pub(crate) async fn count_wanted_items_query(
     pool: &SqlitePool,
-    query: &WantedItemsQuery,
+    query: &AcquisitionScopeStatesQuery,
 ) -> AppResult<i64> {
-    let WantedItemsQuery {
+    let AcquisitionScopeStatesQuery {
         statuses,
         media_types,
         title_id,
@@ -242,7 +242,7 @@ pub(crate) async fn count_wanted_items_query(
     Ok(count)
 }
 
-fn row_to_wanted_item(row: &SqliteRow) -> AppResult<WantedItem> {
+fn row_to_wanted_item(row: &SqliteRow) -> AppResult<AcquisitionScopeState> {
     let latest_release_decision = match row.try_get::<Option<String>, _>("latest_decision_id") {
         Ok(Some(id)) => Some(ReleaseDecision {
             id,
@@ -277,7 +277,7 @@ fn row_to_wanted_item(row: &SqliteRow) -> AppResult<WantedItem> {
         _ => None,
     };
 
-    Ok(WantedItem {
+    Ok(AcquisitionScopeState {
         id: row
             .try_get("id")
             .map_err(|e| AppError::Repository(e.to_string()))?,
@@ -303,7 +303,7 @@ fn row_to_wanted_item(row: &SqliteRow) -> AppResult<WantedItem> {
             let s: String = row
                 .try_get("status")
                 .map_err(|e| AppError::Repository(e.to_string()))?;
-            scryer_application::WantedStatus::parse(&s).unwrap_or_default()
+            scryer_application::AcquisitionScopeStatus::parse(&s).unwrap_or_default()
         },
         grabbed_release: row.try_get("grabbed_release").unwrap_or(None),
         current_score: row.try_get("current_score").unwrap_or(None),

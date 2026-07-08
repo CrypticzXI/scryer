@@ -1078,8 +1078,8 @@ impl AppUseCase {
             .await?;
         self.services
             .workflow
-            .wanted_items
-            .delete_wanted_items_for_title(title_id)
+            .acquisition_scope_states
+            .delete_acquisition_scope_states_for_title(title_id)
             .await?;
         self.services
             .workflow

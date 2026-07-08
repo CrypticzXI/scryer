@@ -4,8 +4,12 @@ import type { LucideIcon } from "lucide-react";
 import {
   Check,
   ChevronRight,
+  Clock,
+  Disc3,
+  Eye,
   Heart,
   Loader2,
+  MonitorPlay,
   Plus,
   Send,
   SlidersHorizontal,
@@ -25,6 +29,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { MultiSelectDropdown } from "@/components/ui/multi-select-dropdown";
 import { TitleCard } from "@/components/title-card";
+import type { TitleCardCornerBadge } from "@/components/title-card";
 import { TitleRatingsStrip } from "@/components/views/title-ratings-strip";
 import {
   canonicalDiscoveryFacetLabels,
@@ -42,6 +47,7 @@ import type {
   DiscoveryHomePayload,
   DiscoveryItem,
   DiscoverySection,
+  DiscoverySyncStatus,
 } from "@/lib/types";
 
 type DiscoveryViewProps = {
@@ -149,6 +155,79 @@ function itemCalendarBadgeLabel(item: DiscoveryItem) {
   return dateLikeTag ?? (item.year ? String(item.year) : null);
 }
 
+// Discovery items carry no dedicated release-date column — only `year` plus
+// free-form tags. Mine those tags for a full YYYY-MM-DD token we can turn into a
+// real Date, so the promotion rails can badge genuine recency when the data
+// allows and otherwise fall back to a section-scoped "New" marker.
+function parseDateToken(value: string): Date | null {
+  const match = value.match(DATE_TOKEN_PATTERN);
+  if (!match || !match[3]) {
+    return null;
+  }
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  if (
+    !Number.isInteger(year) ||
+    !Number.isInteger(month) ||
+    !Number.isInteger(day) ||
+    month < 1 ||
+    month > 12 ||
+    day < 1 ||
+    day > 31
+  ) {
+    return null;
+  }
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function itemReleaseDate(item: DiscoveryItem): Date | null {
+  for (const tag of [
+    ...(item.statusTags ?? []),
+    ...(item.contextTerms ?? []),
+    ...(item.sourceTags ?? []),
+    ...(item.relationSubtypes ?? []),
+  ]) {
+    const date = parseDateToken(tag);
+    if (date) {
+      return date;
+    }
+  }
+  return null;
+}
+
+type RecencyBucket = "thisWeek" | "thisMonth" | "new";
+
+// Returns a translation-key suffix for the item's release recency, or null when
+// the item is not recent enough to badge. `sectionScoped` items (the promotion
+// rails) always earn at least the generic "new" marker.
+function itemRecencyBucket(
+  item: DiscoveryItem,
+  sectionScoped: boolean,
+): RecencyBucket | null {
+  const releaseDate = itemReleaseDate(item);
+  if (releaseDate) {
+    const now = Date.now();
+    const ageMs = now - releaseDate.getTime();
+    const dayMs = 24 * 60 * 60 * 1000;
+    // Ignore clearly future or very old dates for the "recency" framing.
+    if (ageMs >= -dayMs && ageMs <= 7 * dayMs) {
+      return "thisWeek";
+    }
+    if (ageMs > 7 * dayMs && ageMs <= 31 * dayMs) {
+      return "thisMonth";
+    }
+  }
+  return sectionScoped ? "new" : null;
+}
+
+const RECENCY_BUCKET_KEYS: Record<RecencyBucket, string> = {
+  thisWeek: "discovery.recency.newThisWeek",
+  thisMonth: "discovery.recency.newThisMonth",
+  new: "discovery.recency.new",
+};
+
 function hashHue(value: string) {
   let hash = 0;
   for (let index = 0; index < value.length; index += 1) {
@@ -218,11 +297,232 @@ function discoverySectionType(section: DiscoverySection) {
   return section.sectionType.trim().toUpperCase();
 }
 
+// Public-promotion rails: SMG's v2 feed surfaces these two "new release window"
+// sections. They arrive at feed-bottom with raw SMG titles; we lift them to just
+// under the hero and give them curated (locale-owned) names + icons.
+const NEW_ON_STREAMING_SECTION_TYPE = "NEW_ON_STREAMING";
+const NEW_ON_PHYSICAL_SECTION_TYPE = "NEW_ON_PHYSICAL";
+const PUBLIC_PROMOTION_SECTION_TYPES = [
+  NEW_ON_STREAMING_SECTION_TYPE,
+  NEW_ON_PHYSICAL_SECTION_TYPE,
+] as const;
+const PUBLIC_PROMOTION_SECTION_TYPE_SET = new Set<string>(
+  PUBLIC_PROMOTION_SECTION_TYPES,
+);
+
+// sectionType -> i18n key. Preferred over SMG's raw section.title so product can
+// re-word a rail purely in locale files. Unmapped types fall back to the raw title.
+const SECTION_DISPLAY_NAME_KEYS: Record<string, string> = {
+  [NEW_ON_STREAMING_SECTION_TYPE]: "discovery.section.newOnStreaming",
+  [NEW_ON_PHYSICAL_SECTION_TYPE]: "discovery.section.newOnPhysical",
+};
+
+const SECTION_ICONS: Record<string, LucideIcon> = {
+  [NEW_ON_STREAMING_SECTION_TYPE]: MonitorPlay,
+  [NEW_ON_PHYSICAL_SECTION_TYPE]: Disc3,
+};
+
+function sectionDisplayTitle(
+  section: DiscoverySection,
+  t: ReturnType<typeof useTranslate>,
+) {
+  const key = SECTION_DISPLAY_NAME_KEYS[discoverySectionType(section)];
+  if (key) {
+    const label = t(key);
+    if (label && label !== key) {
+      return label;
+    }
+  }
+  return section.title;
+}
+
+function sectionIcon(section: DiscoverySection): LucideIcon | null {
+  return SECTION_ICONS[discoverySectionType(section)] ?? null;
+}
+
+function sectionIsPublicPromotion(section: DiscoverySection) {
+  return PUBLIC_PROMOTION_SECTION_TYPE_SET.has(discoverySectionType(section));
+}
+
 function sectionIsCompleteCollection(section: DiscoverySection) {
   return (
     discoverySectionType(section) === "COMPLETE_THE_COLLECTION" ||
     section.sectionId === "complete_the_collection"
   );
+}
+
+// "More like this" recommendation strips — the rails where a franchise relation
+// (sequel/spin-off/…) is the reason an item is being surfaced, so a relation pill
+// adds context. Items without a known relation simply render no pill.
+const MORE_LIKE_THIS_SECTION_TYPES = new Set([
+  "BECAUSE_YOU_HAVE",
+  "BECAUSE_YOU_LIKE_GENRE",
+  "BECAUSE_YOU_LIKE_TAG",
+]);
+
+function sectionIsMoreLikeThis(section: DiscoverySection) {
+  return MORE_LIKE_THIS_SECTION_TYPES.has(discoverySectionType(section));
+}
+
+// The seven SMG v2 relation types. Rendered nowhere before this program even
+// though the values were already fetched/typed. Normalized then mapped to a
+// locale key so wording stays in the locale files.
+const RELATION_TYPE_LABEL_KEYS: Record<string, string> = {
+  sequel: "discovery.relation.sequel",
+  prequel: "discovery.relation.prequel",
+  side_story: "discovery.relation.sideStory",
+  spin_off: "discovery.relation.spinOff",
+  adaptation: "discovery.relation.adaptation",
+  shared_universe: "discovery.relation.sharedUniverse",
+  alternative: "discovery.relation.alternative",
+};
+
+// Preference order when an item carries several relations — show the most
+// "franchise-defining" one first.
+const RELATION_TYPE_PRIORITY = [
+  "sequel",
+  "prequel",
+  "spin_off",
+  "side_story",
+  "shared_universe",
+  "adaptation",
+  "alternative",
+];
+
+function normalizeRelationType(value: string): string | null {
+  const normalized = value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  return normalized in RELATION_TYPE_LABEL_KEYS ? normalized : null;
+}
+
+function normalizedItemRelationTypes(item: DiscoveryItem): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const raw of item.relationTypes ?? []) {
+    const normalized = normalizeRelationType(raw);
+    if (normalized && !seen.has(normalized)) {
+      seen.add(normalized);
+      result.push(normalized);
+    }
+  }
+  return result;
+}
+
+function relationTypeLabel(
+  relationType: string,
+  t: ReturnType<typeof useTranslate>,
+): string | null {
+  const key = RELATION_TYPE_LABEL_KEYS[relationType];
+  return key ? t(key) : null;
+}
+
+function primaryRelationType(item: DiscoveryItem): string | null {
+  const relations = normalizedItemRelationTypes(item);
+  if (relations.length === 0) {
+    return null;
+  }
+  for (const candidate of RELATION_TYPE_PRIORITY) {
+    if (relations.includes(candidate)) {
+      return candidate;
+    }
+  }
+  return relations[0];
+}
+
+function primaryRelationLabel(
+  item: DiscoveryItem,
+  t: ReturnType<typeof useTranslate>,
+): string | null {
+  const relationType = primaryRelationType(item);
+  return relationType ? relationTypeLabel(relationType, t) : null;
+}
+
+// The distinct relation types actually present in the loaded feed, ordered by
+// the display priority — drives the "Relationship" filter chip group so only
+// meaningful chips appear (mirrors how genre/tag options are derived).
+function presentRelationTypes(items: DiscoveryItem[]): string[] {
+  const present = new Set<string>();
+  for (const item of items) {
+    for (const relationType of normalizedItemRelationTypes(item)) {
+      present.add(relationType);
+    }
+  }
+  return RELATION_TYPE_PRIORITY.filter((relationType) =>
+    present.has(relationType),
+  );
+}
+
+// --- Studio surfacing (SW3: studio_slug adoption) ---
+// personIds also arrive on the item payload but are bare ids with no name
+// source, so person filtering/labels are deferred to the P1 detail surface.
+
+// Keep the Studio chip group scannable: the feed can span dozens of studios, so
+// only the most frequent ones become chips (selected slugs always stay visible).
+const STUDIO_FILTER_CHIP_LIMIT = 12;
+
+function itemStudioSlug(item: DiscoveryItem): string | null {
+  const slug = item.studioSlug?.trim().toLowerCase();
+  return slug ? slug : null;
+}
+
+// Humanize a studio slug for display ("warner-bros-pictures" -> "Warner Bros
+// Pictures"). Mirrors canonicalDiscoveryFacetLabel's word casing.
+function studioSlugLabel(slug: string): string {
+  return slug
+    .split(/[-_:\s]+/)
+    .filter(Boolean)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+    .join(" ");
+}
+
+function itemStudioLabel(item: DiscoveryItem): string | null {
+  const slug = itemStudioSlug(item);
+  return slug ? studioSlugLabel(slug) : null;
+}
+
+// The studio slugs present in the loaded feed, most frequent first (then
+// alphabetical), capped so the chip group stays compact. Selected slugs are
+// always included so an active filter can be toggled off even when its studio
+// falls outside the cap.
+function presentStudioSlugs(
+  items: DiscoveryItem[],
+  selectedSlugs: string[],
+): string[] {
+  const counts = new Map<string, number>();
+  for (const item of items) {
+    const slug = itemStudioSlug(item);
+    if (slug) {
+      counts.set(slug, (counts.get(slug) ?? 0) + 1);
+    }
+  }
+  const ranked = [...counts.entries()]
+    .sort(
+      ([leftSlug, leftCount], [rightSlug, rightCount]) =>
+        rightCount - leftCount || leftSlug.localeCompare(rightSlug),
+    )
+    .map(([slug]) => slug)
+    .slice(0, STUDIO_FILTER_CHIP_LIMIT);
+  const result = [...ranked];
+  for (const slug of selectedSlugs) {
+    if (!result.includes(slug)) {
+      result.push(slug);
+    }
+  }
+  return result;
+}
+
+function itemMatchesStudioSlugs(
+  item: DiscoveryItem,
+  selectedStudioSlugs: string[],
+) {
+  if (selectedStudioSlugs.length === 0) {
+    return true;
+  }
+  const slug = itemStudioSlug(item);
+  return slug !== null && selectedStudioSlugs.includes(slug);
 }
 
 function orderedHomeSections(home: DiscoveryHomePayload | null) {
@@ -263,14 +563,30 @@ function orderedHomeSections(home: DiscoveryHomePayload | null) {
     : personalizedSections.filter((section) =>
         GENERIC_FOR_YOU_FALLBACK_SECTION_TYPES.has(discoverySectionType(section)),
       );
+  // Public-promotion tier: the two SMG v2 "new release window" rails, lifted from
+  // feed-bottom to directly under the hero row, in a fixed streaming-then-physical
+  // order regardless of where SMG placed them in the public feed.
+  const publicSections = (home?.publicSections ?? []).filter(
+    (section) => section.items.length > 0,
+  );
+  const publicPromotionSections = PUBLIC_PROMOTION_SECTION_TYPES.flatMap(
+    (sectionType) =>
+      publicSections.filter(
+        (section) => discoverySectionType(section) === sectionType,
+      ),
+  );
   const orderedSections = [
     ...promotedSections,
     ...(completeCollection ? [completeCollection] : []),
     ...unknownPersonalizedSections,
     ...fallbackSections,
   ];
-  const orderedSectionSet = new Set(orderedSections);
+  const orderedSectionSet = new Set([
+    ...orderedSections,
+    ...publicPromotionSections,
+  ]);
   return [
+    ...publicPromotionSections,
     ...orderedSections,
     ...sections.filter(
       (section) =>
@@ -396,10 +712,25 @@ type DiscoveryItemFilters = {
   contentTypes: DiscoveryContentType[];
   genres: string[];
   tags: string[];
+  relationTypes: string[];
+  studioSlugs: string[];
   minimumYear: number;
   maximumYear: number;
   minimumRating: number;
 };
+
+function itemMatchesRelationTypes(
+  item: DiscoveryItem,
+  selectedRelationTypes: string[],
+) {
+  if (selectedRelationTypes.length === 0) {
+    return true;
+  }
+  const relations = new Set(normalizedItemRelationTypes(item));
+  return selectedRelationTypes.some((relationType) =>
+    relations.has(relationType),
+  );
+}
 
 function itemMatchesDiscoveryFacetFilters(
   item: DiscoveryItem,
@@ -416,6 +747,12 @@ function itemMatchesDiscoveryFacetFilters(
   if (
     !matchesAnySelectedValue(canonicalDiscoveryFacetLabels(item, "theme"), filters.tags)
   ) {
+    return false;
+  }
+  if (!itemMatchesRelationTypes(item, filters.relationTypes)) {
+    return false;
+  }
+  if (!itemMatchesStudioSlugs(item, filters.studioSlugs)) {
     return false;
   }
   if (
@@ -461,11 +798,16 @@ function discoveryItemHasUsefulTitle(item: DiscoveryItem) {
 }
 
 function findHeroRailSection(sections: DiscoverySection[]) {
+  // Never fold a public-promotion rail into the hero column — those stay as full
+  // rails directly beneath the hero.
+  const eligible = sections.filter(
+    (section) => !sectionIsPublicPromotion(section),
+  );
   return (
-    sections.find((section) =>
+    eligible.find((section) =>
       normalizedSectionText(section).includes("trend"),
     ) ??
-    sections[0] ??
+    eligible[0] ??
     null
   );
 }
@@ -536,6 +878,9 @@ function DiscoveryRailCard({
   canManageTitle,
   canRequestMedia,
   onAction,
+  cornerBadge,
+  onDismiss,
+  dismissLabel,
 }: {
   item: DiscoveryItem;
   size?: "sm" | "md";
@@ -544,6 +889,9 @@ function DiscoveryRailCard({
   canManageTitle: boolean;
   canRequestMedia: boolean;
   onAction: (item: DiscoveryItem) => void;
+  cornerBadge?: TitleCardCornerBadge | null;
+  onDismiss?: (item: DiscoveryItem) => void;
+  dismissLabel?: string;
 }) {
   const compactSize = size === "sm";
   const upcoming = variant === "upcoming" && !compactSize;
@@ -555,6 +903,10 @@ function DiscoveryRailCard({
   const handleAction = React.useCallback(
     () => onAction(item),
     [onAction, item],
+  );
+  const handleDismiss = React.useMemo(
+    () => (onDismiss ? () => onDismiss(item) : undefined),
+    [onDismiss, item],
   );
   return (
     <div
@@ -576,6 +928,9 @@ function DiscoveryRailCard({
         addable={addable}
         requestable={requestable}
         compact={!fillHeight}
+        cornerBadge={cornerBadge}
+        onDismiss={handleDismiss}
+        dismissLabel={dismissLabel}
         onAdd={addable ? handleAction : undefined}
         onRequest={requestable ? handleAction : undefined}
       />
@@ -588,6 +943,7 @@ function DiscoverySectionRail({
   canManageTitle,
   canRequestMedia,
   onAction,
+  onDismissItem,
   compact = false,
   fillHeight = false,
   variant = "default",
@@ -596,6 +952,7 @@ function DiscoverySectionRail({
   canManageTitle: boolean;
   canRequestMedia: boolean;
   onAction: (item: DiscoveryItem) => void;
+  onDismissItem?: (item: DiscoveryItem) => void;
   compact?: boolean;
   fillHeight?: boolean;
   variant?: "default" | "upcoming";
@@ -605,12 +962,58 @@ function DiscoverySectionRail({
     () => uniqueDiscoveryItems(section.items),
     [section.items],
   );
+  const promotionRail = sectionIsPublicPromotion(section);
+  // Surface the relation pill where the relationship is the point of the rail.
+  const relationRail =
+    sectionIsCompleteCollection(section) || sectionIsMoreLikeThis(section);
+  const HeaderIcon = sectionIcon(section);
+  const heading = sectionDisplayTitle(section, t);
+  const dismissLabel = t("discovery.notInterested");
+
+  const cornerBadgeFor = React.useCallback(
+    (item: DiscoveryItem): TitleCardCornerBadge | null => {
+      if (relationRail) {
+        const relationLabel = primaryRelationLabel(item, t);
+        if (relationLabel) {
+          return { label: relationLabel, tone: "accent" };
+        }
+        // No franchise relation: fall back to studio provenance — the
+        // next-best "why this recommendation" context. Kept to relation rails
+        // so generic rails stay uncluttered (most items carry a studio).
+        const studioLabel = itemStudioLabel(item);
+        if (studioLabel) {
+          return {
+            label: studioLabel,
+            tone: "neutral",
+            title: `${t("discovery.studio")}: ${studioLabel}`,
+          };
+        }
+      }
+      if (promotionRail) {
+        const bucket = itemRecencyBucket(item, true);
+        if (bucket) {
+          return {
+            label: t(RECENCY_BUCKET_KEYS[bucket]),
+            tone: "accent",
+          };
+        }
+      }
+      return null;
+    },
+    [promotionRail, relationRail, t],
+  );
 
   return (
     <section className={cn("mb-7", fillHeight && "flex h-full min-h-0 flex-col")}>
       <div className="mb-3.5 flex items-center justify-between gap-3">
-        <h3 className="m-0 font-[var(--font-space-grotesk)] text-lg font-semibold text-[var(--scry-ink2)]">
-          {section.title}
+        <h3 className="m-0 inline-flex items-center gap-2 font-[var(--font-space-grotesk)] text-lg font-semibold text-[var(--scry-ink2)]">
+          {HeaderIcon ? (
+            <HeaderIcon
+              className="h-4 w-4 text-[var(--scry-accent-text)]"
+              aria-hidden="true"
+            />
+          ) : null}
+          {heading}
         </h3>
         <span className="inline-flex items-center gap-1 text-[12.5px] font-medium text-[var(--scry-muted)]">
           {t("discovery.viewAll")}
@@ -633,6 +1036,9 @@ function DiscoverySectionRail({
             canManageTitle={canManageTitle}
             canRequestMedia={canRequestMedia}
             onAction={onAction}
+            cornerBadge={cornerBadgeFor(item)}
+            onDismiss={onDismissItem}
+            dismissLabel={dismissLabel}
           />
         ))}
       </div>
@@ -885,16 +1291,22 @@ function DiscoveryFilters({
   selectedContentTypes,
   selectedGenres,
   selectedTags,
+  selectedRelationTypes,
+  selectedStudioSlugs,
   minimumYear,
   maximumYear,
   minimumRating,
+  hiddenItemCount,
   onToggleContentType,
   onGenresChange,
   onTagsChange,
+  onToggleRelationType,
+  onToggleStudioSlug,
   onMinimumYearChange,
   onMaximumYearChange,
   onMinimumRatingChange,
   onClear,
+  onShowHidden,
   onRequestClose,
 }: {
   variant?: "desktop" | "mobile";
@@ -902,16 +1314,22 @@ function DiscoveryFilters({
   selectedContentTypes: DiscoveryContentType[];
   selectedGenres: string[];
   selectedTags: string[];
+  selectedRelationTypes: string[];
+  selectedStudioSlugs: string[];
   minimumYear: number;
   maximumYear: number;
   minimumRating: number;
+  hiddenItemCount: number;
   onToggleContentType: (contentType: DiscoveryContentType) => void;
   onGenresChange: (genres: string[]) => void;
   onTagsChange: (tags: string[]) => void;
+  onToggleRelationType: (relationType: string) => void;
+  onToggleStudioSlug: (studioSlug: string) => void;
   onMinimumYearChange: (year: number) => void;
   onMaximumYearChange: (year: number) => void;
   onMinimumRatingChange: (rating: number) => void;
   onClear: () => void;
+  onShowHidden: () => void;
   onRequestClose?: () => void;
 }) {
   const t = useTranslate();
@@ -921,12 +1339,31 @@ function DiscoveryFilters({
         itemMatchesDiscoveryFacetFilters(item, {
           genres: selectedGenres,
           tags: selectedTags,
+          relationTypes: selectedRelationTypes,
+          studioSlugs: selectedStudioSlugs,
           minimumYear,
           maximumYear,
           minimumRating,
         }),
       ),
-    [items, maximumYear, minimumRating, minimumYear, selectedGenres, selectedTags],
+    [
+      items,
+      maximumYear,
+      minimumRating,
+      minimumYear,
+      selectedGenres,
+      selectedRelationTypes,
+      selectedStudioSlugs,
+      selectedTags,
+    ],
+  );
+  const relationTypeOptions = React.useMemo(
+    () => presentRelationTypes(items),
+    [items],
+  );
+  const studioSlugOptions = React.useMemo(
+    () => presentStudioSlugs(items, selectedStudioSlugs),
+    [items, selectedStudioSlugs],
   );
   const contentTypes: Array<{
     key: DiscoveryContentType;
@@ -1060,6 +1497,62 @@ function DiscoveryFilters({
           }
         />
       </div>
+      {relationTypeOptions.length > 0 ? (
+        <>
+          <div className="mb-2.5 text-xs font-bold uppercase tracking-[0.05em] text-[var(--scry-muted2)]">
+            {t("discovery.relationship")}
+          </div>
+          <div className="mb-5 flex flex-wrap gap-2">
+            {relationTypeOptions.map((relationType) => {
+              const active = selectedRelationTypes.includes(relationType);
+              return (
+                <button
+                  key={relationType}
+                  type="button"
+                  aria-pressed={active}
+                  onClick={() => onToggleRelationType(relationType)}
+                  className={cn(
+                    "inline-flex items-center rounded-[8px] border px-3 py-1.5 text-xs font-semibold transition",
+                    active
+                      ? "border-[rgba(var(--scry-accent-rgb),0.48)] bg-[rgba(var(--scry-accent-rgb),0.22)] text-[var(--scry-accent-text)]"
+                      : "border-[var(--scry-border2)] bg-[var(--scry-bg)] text-[var(--scry-text2)] hover:border-[rgba(var(--scry-accent-rgb),0.34)]",
+                  )}
+                >
+                  {relationTypeLabel(relationType, t) ?? relationType}
+                </button>
+              );
+            })}
+          </div>
+        </>
+      ) : null}
+      {studioSlugOptions.length > 0 ? (
+        <>
+          <div className="mb-2.5 text-xs font-bold uppercase tracking-[0.05em] text-[var(--scry-muted2)]">
+            {t("discovery.studio")}
+          </div>
+          <div className="mb-5 flex flex-wrap gap-2">
+            {studioSlugOptions.map((studioSlug) => {
+              const active = selectedStudioSlugs.includes(studioSlug);
+              return (
+                <button
+                  key={studioSlug}
+                  type="button"
+                  aria-pressed={active}
+                  onClick={() => onToggleStudioSlug(studioSlug)}
+                  className={cn(
+                    "inline-flex max-w-full items-center rounded-[8px] border px-3 py-1.5 text-xs font-semibold transition",
+                    active
+                      ? "border-[rgba(var(--scry-accent-rgb),0.48)] bg-[rgba(var(--scry-accent-rgb),0.22)] text-[var(--scry-accent-text)]"
+                      : "border-[var(--scry-border2)] bg-[var(--scry-bg)] text-[var(--scry-text2)] hover:border-[rgba(var(--scry-accent-rgb),0.34)]",
+                  )}
+                >
+                  <span className="truncate">{studioSlugLabel(studioSlug)}</span>
+                </button>
+              );
+            })}
+          </div>
+        </>
+      ) : null}
       <div className="mb-2.5 flex items-center justify-between">
         <span className="text-xs font-bold uppercase tracking-[0.05em] text-[var(--scry-muted2)]">
           {t("discovery.releaseYear")}
@@ -1135,7 +1628,216 @@ function DiscoveryFilters({
           )}
         />
       </div>
+      {hiddenItemCount > 0 ? (
+        <div className="mt-6 border-t border-[var(--scry-border3)] pt-4">
+          <div className="mb-2.5 flex items-center justify-between gap-2">
+            <span className="text-xs font-bold uppercase tracking-[0.05em] text-[var(--scry-muted2)]">
+              {t("discovery.hiddenTitles")}
+            </span>
+            <span className="text-[11px] text-[var(--scry-faint)]">
+              {hiddenItemCount}
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={onShowHidden}
+            className="inline-flex w-full items-center justify-center gap-2 rounded-[9px] border border-[var(--scry-border2)] bg-[var(--scry-bg)] px-3 py-2 text-[12.5px] font-semibold text-[var(--scry-text2)] transition hover:border-[rgba(var(--scry-accent-rgb),0.34)]"
+          >
+            <Eye className="h-3.5 w-3.5 text-[var(--scry-accent-text)]" />
+            {t("discovery.showHidden")}
+          </button>
+        </div>
+      ) : null}
     </aside>
+  );
+}
+
+// --- Local-only "not interested" (SI2: no server state, no telemetry) ---
+
+const HIDDEN_ITEMS_STORAGE_KEY = "scryer.discovery.hiddenItems.v1";
+
+function readHiddenItemKeys(): string[] {
+  if (typeof window === "undefined") {
+    return [];
+  }
+  try {
+    const raw = window.localStorage.getItem(HIDDEN_ITEMS_STORAGE_KEY);
+    if (!raw) {
+      return [];
+    }
+    const parsed = JSON.parse(raw) as unknown;
+    return Array.isArray(parsed)
+      ? parsed.filter((value): value is string => typeof value === "string")
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeHiddenItemKeys(keys: string[]) {
+  if (typeof window === "undefined") {
+    return;
+  }
+  try {
+    window.localStorage.setItem(
+      HIDDEN_ITEMS_STORAGE_KEY,
+      JSON.stringify(keys),
+    );
+  } catch {
+    // Storage may be unavailable (private mode / quota) — hiding stays
+    // in-memory for the session, which is acceptable for a local preference.
+  }
+}
+
+function useHiddenDiscoveryItems() {
+  const [hiddenKeys, setHiddenKeys] = React.useState<Set<string>>(
+    () => new Set(),
+  );
+  // Hydrate from storage on mount only (avoids SSR mismatch).
+  React.useEffect(() => {
+    setHiddenKeys(new Set(readHiddenItemKeys()));
+  }, []);
+  const hideItem = React.useCallback((item: DiscoveryItem) => {
+    setHiddenKeys((current) => {
+      const key = itemStableKey(item);
+      if (current.has(key)) {
+        return current;
+      }
+      const next = new Set(current);
+      next.add(key);
+      writeHiddenItemKeys([...next]);
+      return next;
+    });
+  }, []);
+  const resetHidden = React.useCallback(() => {
+    setHiddenKeys((current) => {
+      if (current.size === 0) {
+        return current;
+      }
+      writeHiddenItemKeys([]);
+      return new Set();
+    });
+  }, []);
+  return { hiddenKeys, hideItem, resetHidden };
+}
+
+function sectionsWithoutHiddenItems(
+  sections: DiscoverySection[],
+  hiddenKeys: Set<string>,
+) {
+  if (hiddenKeys.size === 0) {
+    return sections;
+  }
+  return sections
+    .map((section) => ({
+      ...section,
+      items: section.items.filter(
+        (item) => !hiddenKeys.has(itemStableKey(item)),
+      ),
+    }))
+    .filter((section) => section.items.length > 0);
+}
+
+// --- Freshness indicator (SW5) ---
+
+// Locale-aware "3 hours ago"-style phrasing without per-locale strings for the
+// relative part. Falls back to null when the timestamp is missing/unparseable.
+function formatRelativeTime(
+  value: string | null | undefined,
+): string | null {
+  if (!value) {
+    return null;
+  }
+  const timestamp = new Date(value).getTime();
+  if (Number.isNaN(timestamp)) {
+    return null;
+  }
+  const deltaSeconds = Math.round((timestamp - Date.now()) / 1000);
+  const absSeconds = Math.abs(deltaSeconds);
+  const locale =
+    typeof document !== "undefined"
+      ? document.documentElement.lang || undefined
+      : undefined;
+  const formatter = new Intl.RelativeTimeFormat(locale, { numeric: "auto" });
+  const divisions: Array<{ amount: number; unit: Intl.RelativeTimeFormatUnit }> =
+    [
+      { amount: 60, unit: "second" },
+      { amount: 60, unit: "minute" },
+      { amount: 24, unit: "hour" },
+      { amount: 7, unit: "day" },
+      { amount: 4.34524, unit: "week" },
+      { amount: 12, unit: "month" },
+      { amount: Number.POSITIVE_INFINITY, unit: "year" },
+    ];
+  let unitValue = absSeconds;
+  let chosenUnit: Intl.RelativeTimeFormatUnit = "second";
+  for (const division of divisions) {
+    if (unitValue < division.amount) {
+      chosenUnit = division.unit;
+      break;
+    }
+    unitValue /= division.amount;
+    chosenUnit = division.unit;
+  }
+  const signedValue = Math.round(unitValue) * (deltaSeconds < 0 ? -1 : 1);
+  return formatter.format(signedValue, chosenUnit);
+}
+
+function mostRecentSyncTimestamp(
+  status: DiscoverySyncStatus | null | undefined,
+): string | null {
+  if (!status) {
+    return null;
+  }
+  const candidates = [
+    status.state.lastPublicFeedCompletedAt,
+    status.state.lastIncrementalReloadCompletedAt,
+    status.state.lastContextSnapshotCompletedAt,
+    status.state.updatedAt,
+  ].filter((value): value is string => Boolean(value));
+  let newest: string | null = null;
+  let newestMs = -Infinity;
+  for (const value of candidates) {
+    const ms = new Date(value).getTime();
+    if (!Number.isNaN(ms) && ms > newestMs) {
+      newestMs = ms;
+      newest = value;
+    }
+  }
+  return newest;
+}
+
+function DiscoveryFreshnessChip({
+  status,
+}: {
+  status: DiscoverySyncStatus | null | undefined;
+}) {
+  const t = useTranslate();
+  const timestamp = mostRecentSyncTimestamp(status);
+  const relative = formatRelativeTime(timestamp);
+  if (!relative) {
+    return null;
+  }
+  const pendingChanges = status?.pendingContextChangeCount ?? 0;
+  const stale = pendingChanges > 0;
+  return (
+    <div className="inline-flex items-center gap-2">
+      <span
+        className="inline-flex items-center gap-1.5 rounded-[8px] border border-[var(--scry-border2)] bg-[var(--scry-bg)] px-2.5 py-1 text-[11.5px] font-medium text-[var(--scry-muted)]"
+        title={timestamp ?? undefined}
+      >
+        <Clock className="h-3.5 w-3.5 text-[var(--scry-faint2)]" aria-hidden="true" />
+        {t("discovery.updatedRelative", { relative })}
+      </span>
+      {stale ? (
+        <span
+          className="inline-flex items-center gap-1.5 rounded-[8px] border border-[var(--scry-warning-border)] bg-[var(--scry-warning-bg)] px-2.5 py-1 text-[11.5px] font-medium text-[var(--scry-warning-text)]"
+          title={t("discovery.updatePendingHint")}
+        >
+          {t("discovery.updatePending")}
+        </span>
+      ) : null}
+    </div>
   );
 }
 
@@ -1162,12 +1864,45 @@ export function DiscoveryView({
   const [minimumRating, setMinimumRating] = React.useState(
     DEFAULT_MINIMUM_RATING,
   );
+  const [selectedRelationTypes, setSelectedRelationTypes] = React.useState<
+    string[]
+  >([]);
+  const [selectedStudioSlugs, setSelectedStudioSlugs] = React.useState<
+    string[]
+  >([]);
   const [filtersOpen, setFiltersOpen] = React.useState(false);
-  const rawSections = React.useMemo(() => orderedHomeSections(home), [home]);
+  const { hiddenKeys, hideItem, resetHidden } = useHiddenDiscoveryItems();
+  const orderedSections = React.useMemo(
+    () => orderedHomeSections(home),
+    [home],
+  );
+  // Local-only "not interested": drop hidden items before any filtering so
+  // filter option lists and counts reflect what the user actually sees.
+  const rawSections = React.useMemo(
+    () => sectionsWithoutHiddenItems(orderedSections, hiddenKeys),
+    [orderedSections, hiddenKeys],
+  );
   const rawItems = React.useMemo(
     () => rawSections.flatMap((section) => section.items),
     [rawSections],
   );
+  const hiddenItemCount = React.useMemo(() => {
+    if (hiddenKeys.size === 0) {
+      return 0;
+    }
+    const visibleFeedKeys = new Set(
+      orderedSections
+        .flatMap((section) => section.items)
+        .map((item) => itemStableKey(item)),
+    );
+    let count = 0;
+    for (const key of hiddenKeys) {
+      if (visibleFeedKeys.has(key)) {
+        count += 1;
+      }
+    }
+    return count;
+  }, [hiddenKeys, orderedSections]);
   const yearBounds = React.useMemo(
     () => ({
       minimum: DEFAULT_MINIMUM_YEAR,
@@ -1189,6 +1924,8 @@ export function DiscoveryView({
         contentTypes: selectedContentTypes,
         genres: selectedGenres,
         tags: selectedTags,
+        relationTypes: selectedRelationTypes,
+        studioSlugs: selectedStudioSlugs,
         minimumYear: effectiveMinimumYear,
         maximumYear: effectiveMaximumYear,
         minimumRating,
@@ -1200,6 +1937,8 @@ export function DiscoveryView({
       rawSections,
       selectedContentTypes,
       selectedGenres,
+      selectedRelationTypes,
+      selectedStudioSlugs,
       selectedTags,
     ],
   );
@@ -1242,6 +1981,10 @@ export function DiscoveryView({
     heroItem !== null ||
     primaryRailSections.length > 0 ||
     upcomingRailSections.length > 0;
+  const freshnessTimestamp = React.useMemo(
+    () => mostRecentSyncTimestamp(home?.status),
+    [home?.status],
+  );
   const toggleContentType = React.useCallback(
     (contentType: DiscoveryContentType) => {
       setSelectedContentTypes((current) =>
@@ -1252,10 +1995,26 @@ export function DiscoveryView({
     },
     [],
   );
+  const toggleRelationType = React.useCallback((relationType: string) => {
+    setSelectedRelationTypes((current) =>
+      current.includes(relationType)
+        ? current.filter((value) => value !== relationType)
+        : [...current, relationType],
+    );
+  }, []);
+  const toggleStudioSlug = React.useCallback((studioSlug: string) => {
+    setSelectedStudioSlugs((current) =>
+      current.includes(studioSlug)
+        ? current.filter((value) => value !== studioSlug)
+        : [...current, studioSlug],
+    );
+  }, []);
   const clearFilters = React.useCallback(() => {
     setSelectedContentTypes(DEFAULT_DISCOVERY_CONTENT_TYPES);
     setSelectedGenres([]);
     setSelectedTags([]);
+    setSelectedRelationTypes([]);
+    setSelectedStudioSlugs([]);
     setMinimumYear(Math.max(yearBounds.minimum, DEFAULT_MINIMUM_YEAR));
     setMaximumYear(yearBounds.maximum);
     setMinimumRating(DEFAULT_MINIMUM_RATING);
@@ -1282,16 +2041,22 @@ export function DiscoveryView({
     selectedContentTypes,
     selectedGenres,
     selectedTags,
+    selectedRelationTypes,
+    selectedStudioSlugs,
     minimumYear: effectiveMinimumYear,
     maximumYear: effectiveMaximumYear,
     minimumRating,
+    hiddenItemCount,
     onToggleContentType: toggleContentType,
     onGenresChange: setSelectedGenres,
     onTagsChange: setSelectedTags,
+    onToggleRelationType: toggleRelationType,
+    onToggleStudioSlug: toggleStudioSlug,
     onMinimumYearChange: setMinimumYear,
     onMaximumYearChange: setMaximumYear,
     onMinimumRatingChange: setMinimumRating,
     onClear: clearFilters,
+    onShowHidden: resetHidden,
   };
 
   if (loading && !home) {
@@ -1305,12 +2070,21 @@ export function DiscoveryView({
   return (
     <div className="flex min-h-0 flex-1">
       <main className="min-w-0 flex-1 overflow-y-auto px-7 py-6 pb-16 max-sm:px-4">
-        <div className="mb-5 hidden justify-end max-xl:flex">
+        <div
+          className={cn(
+            "mb-5 items-center justify-between gap-3",
+            // Always present below xl (holds the mobile filters button); on xl
+            // only when there is a freshness chip to show.
+            "flex max-xl:flex",
+            freshnessTimestamp ? "xl:flex" : "xl:hidden",
+          )}
+        >
+          <DiscoveryFreshnessChip status={home?.status} />
           <button
             type="button"
             aria-label={t("discovery.openFilters")}
             onClick={() => setFiltersOpen(true)}
-            className="inline-flex h-9 shrink-0 items-center gap-2 rounded-[9px] border border-[var(--scry-border2)] bg-[var(--scry-bg)] px-3 text-[12.5px] font-semibold text-[var(--scry-ink2)]"
+            className="inline-flex h-9 shrink-0 items-center gap-2 rounded-[9px] border border-[var(--scry-border2)] bg-[var(--scry-bg)] px-3 text-[12.5px] font-semibold text-[var(--scry-ink2)] max-xl:inline-flex xl:hidden"
           >
             <SlidersHorizontal className="h-4 w-4 text-[var(--scry-accent-text)]" />
             {t("discovery.filters")}
@@ -1346,6 +2120,7 @@ export function DiscoveryView({
                 canManageTitle={canManageTitle}
                 canRequestMedia={canRequestMedia}
                 onAction={onAction}
+                onDismissItem={hideItem}
               />
             ) : null}
           </div>
@@ -1359,6 +2134,7 @@ export function DiscoveryView({
               canManageTitle={canManageTitle}
               canRequestMedia={canRequestMedia}
               onAction={onAction}
+              onDismissItem={hideItem}
             />
           ))
         ) : !loading && !hasRenderableContent ? (
@@ -1381,6 +2157,7 @@ export function DiscoveryView({
             canManageTitle={canManageTitle}
             canRequestMedia={canRequestMedia}
             onAction={onAction}
+            onDismissItem={hideItem}
           />
         ))}
       </main>

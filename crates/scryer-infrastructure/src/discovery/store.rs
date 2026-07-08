@@ -6,7 +6,7 @@ use scryer_application::{
     DiscoveryFacetRecord, DiscoveryItemLibraryProvenanceRecord, DiscoveryItemRecord,
     DiscoveryItemsPageRecord, DiscoveryItemsStorageQuery, DiscoveryPendingContextChangeRecord,
     DiscoveryPruneReport, DiscoveryPublicFeedCommit, DiscoveryRankComponentRecord,
-    DiscoveryRawPageRecord, DiscoveryRepository, DiscoverySectionItemsRecord,
+    DiscoveryRepository, DiscoverySectionItemsRecord,
     DiscoverySectionRecord, DiscoverySourceTagRecord, DiscoverySubmittedSubjectRecord,
     DiscoverySyncRunRecord, DiscoverySyncStateRecord, TitleExternalRating, TitleRatingSummary,
 };
@@ -334,53 +334,29 @@ impl DiscoveryRepository for DiscoveryStore {
         Ok(())
     }
 
-    async fn insert_discovery_raw_page(&self, page: &DiscoveryRawPageRecord) -> AppResult<()> {
-        SqlRuntime::execute(
-            self.datastore.read_exec(),
-            "INSERT INTO discovery_raw_pages
-             (run_id, payload_kind, page_number, compression, raw_payload, created_at)
-             VALUES ({}, {}, {}, {}, {}, {})
-             ON CONFLICT(run_id, payload_kind, page_number) DO UPDATE SET
-                compression = excluded.compression,
-                raw_payload = excluded.raw_payload,
-                created_at = excluded.created_at",
-            &[
-                SqlArg::Text(page.run_id.clone()),
-                SqlArg::Text(page.payload_kind.clone()),
-                SqlArg::I32(page.page_number),
-                SqlArg::Text(page.compression.clone()),
-                SqlArg::Text(page.raw_payload.clone()),
-                SqlArg::Timestamp(page.created_at),
-            ],
-        )
-        .await?;
-        Ok(())
-    }
-
     async fn commit_discovery_context_snapshot(
         &self,
         commit: &DiscoveryContextSnapshotCommit,
     ) -> AppResult<()> {
         let datastore = self.datastore.clone();
-        let commit = commit.clone();
+        // Own the payload once; share it across SQLite busy-retries via Arc so the
+        // retryable `Fn` closure does a cheap refcount bump instead of a whole-snapshot
+        // deep clone on every attempt (RFC 121 SW4.2).
+        let commit = std::sync::Arc::new(commit.clone());
         SqlRuntime::run_in_transaction(
             &self.datastore,
             "commit_discovery_context_snapshot",
             move |tx| {
                 let datastore = datastore.clone();
-                let commit = commit.clone();
+                let commit = std::sync::Arc::clone(&commit);
                 Box::pin(async move {
                     upsert_sync_run_tx(tx, &datastore, &commit.run).await?;
                     upsert_sync_state_tx(tx, &commit.state).await?;
-                    delete_for_run_tx(tx, "discovery_raw_pages", &commit.run.id).await?;
                     delete_for_run_tx(tx, "discovery_submitted_subjects", &commit.run.id).await?;
                     delete_item_children_for_run_tx(tx, &commit.run.id).await?;
                     delete_for_run_tx(tx, "discovery_items", &commit.run.id).await?;
                     delete_for_run_tx(tx, "discovery_facets", &commit.run.id).await?;
 
-                    for page in &commit.raw_pages {
-                        insert_raw_page_tx(tx, page).await?;
-                    }
                     for subject in &commit.submitted_subjects {
                         insert_submitted_subject_tx(tx, &datastore, subject).await?;
                     }
@@ -411,20 +387,19 @@ impl DiscoveryRepository for DiscoveryStore {
         commit: &DiscoveryContextIncrementalCommit,
     ) -> AppResult<()> {
         let datastore = self.datastore.clone();
-        let commit = commit.clone();
+        // Arc-share the payload across SQLite busy-retries (RFC 121 SW4.2).
+        let commit = std::sync::Arc::new(commit.clone());
         SqlRuntime::run_in_transaction(
             &self.datastore,
             "commit_discovery_context_incremental",
             move |tx| {
                 let datastore = datastore.clone();
-                let commit = commit.clone();
+                let commit = std::sync::Arc::clone(&commit);
                 Box::pin(async move {
                     upsert_sync_run_tx(tx, &datastore, &commit.run).await?;
                     upsert_sync_state_tx(tx, &commit.state).await?;
-                    delete_for_run_tx(tx, "discovery_raw_pages", &commit.run.id).await?;
                     delete_item_children_for_run_tx(tx, &commit.run.id).await?;
                     delete_for_run_tx(tx, "discovery_items", &commit.run.id).await?;
-                    insert_raw_page_tx(tx, &commit.raw_changes).await?;
                     tombstone_discovery_items_tx(
                         tx,
                         commit.run.base_generation_id.as_deref(),
@@ -456,19 +431,18 @@ impl DiscoveryRepository for DiscoveryStore {
         commit: &DiscoveryPublicFeedCommit,
     ) -> AppResult<()> {
         let datastore = self.datastore.clone();
-        let commit = commit.clone();
+        // Arc-share the payload across SQLite busy-retries (RFC 121 SW4.2).
+        let commit = std::sync::Arc::new(commit.clone());
         SqlRuntime::run_in_transaction(&self.datastore, "commit_discovery_public_feed", move |tx| {
             let datastore = datastore.clone();
-            let commit = commit.clone();
+            let commit = std::sync::Arc::clone(&commit);
             Box::pin(async move {
                 upsert_sync_run_tx(tx, &datastore, &commit.run).await?;
                 upsert_sync_state_tx(tx, &commit.state).await?;
-                delete_for_run_tx(tx, "discovery_raw_pages", &commit.run.id).await?;
                 delete_for_run_tx(tx, "discovery_section_items", &commit.run.id).await?;
                 delete_for_run_tx(tx, "discovery_sections", &commit.run.id).await?;
                 delete_item_children_for_run_tx(tx, &commit.run.id).await?;
                 delete_for_run_tx(tx, "discovery_items", &commit.run.id).await?;
-                insert_raw_page_tx(tx, &commit.raw_feed).await?;
                 for section in &commit.sections {
                     insert_section_tx(tx, &datastore, section).await?;
                 }
@@ -1020,83 +994,122 @@ impl DiscoveryRepository for DiscoveryStore {
         retain_successful_per_kind: usize,
         diagnostic_cutoff: DateTime<Utc>,
     ) -> AppResult<DiscoveryPruneReport> {
-        let state = self.get_discovery_sync_state(scope_key).await?;
-        let rows = SqlRuntime::fetch_all(
-            self.datastore.read_exec(),
-            "SELECT id, kind, status, base_generation_id, updated_at
-             FROM discovery_sync_runs
-             ORDER BY updated_at DESC, id DESC",
-            &[],
+        // RFC 121 SW4.5: prune runs from the housekeeping job, NOT under the
+        // discovery sync lease, so it can race a concurrent commit. The whole
+        // candidate read + keep-set decision + delete loop now runs inside one
+        // transaction. On SQLite `run_in_transaction` holds the app-wide writer
+        // gate, so prune and every commit_discovery_* are strictly mutually
+        // exclusive — the prune<->commit race cannot occur. On Postgres the
+        // generation pointers are read inside the same transaction as the
+        // deletes, and every active/inflight generation id is always added to
+        // keep_ids, so an atomic generation swap is never torn: a run that is (or
+        // becomes) the active generation is retained. Atomicity also means a
+        // failed prune leaves history untouched instead of half-deleted.
+        let scope_key = scope_key.to_string();
+        let runs_deleted = SqlRuntime::run_in_transaction(
+            &self.datastore,
+            "prune_discovery_history",
+            move |tx| {
+                let scope_key = scope_key.clone();
+                Box::pin(async move {
+                    let rows = SqlRuntime::fetch_all(
+                        SqlExec::Tx(tx),
+                        "SELECT id, kind, status, base_generation_id, updated_at
+                         FROM discovery_sync_runs
+                         ORDER BY updated_at DESC, id DESC",
+                        &[],
+                    )
+                    .await?;
+                    let candidates = rows
+                        .iter()
+                        .map(discovery_run_prune_candidate_from_row)
+                        .collect::<AppResult<Vec<_>>>()?;
+
+                    // Read the live generation pointers inside the transaction so
+                    // the keep-set reflects the freshest committed swap.
+                    let state_row = SqlRuntime::fetch_optional(
+                        SqlExec::Tx(tx),
+                        "SELECT last_success_generation_id,
+                                last_public_feed_generation_id,
+                                inflight_context_snapshot_run_id
+                         FROM discovery_sync_state
+                         WHERE scope_key = {}",
+                        &[SqlArg::Text(scope_key.clone())],
+                    )
+                    .await?;
+
+                    let mut keep_ids = HashSet::new();
+                    let mut active_context_generation_id: Option<String> = None;
+                    if let Some(row) = &state_row {
+                        let last_success = row.opt_text("last_success_generation_id")?;
+                        active_context_generation_id = last_success.clone();
+                        keep_optional_id(&mut keep_ids, last_success.as_deref());
+                        keep_optional_id(
+                            &mut keep_ids,
+                            row.opt_text("last_public_feed_generation_id")?.as_deref(),
+                        );
+                        keep_optional_id(
+                            &mut keep_ids,
+                            row.opt_text("inflight_context_snapshot_run_id")?.as_deref(),
+                        );
+                    }
+
+                    if let Some(active_context_generation_id) =
+                        active_context_generation_id.as_deref()
+                    {
+                        for candidate in &candidates {
+                            if candidate.kind == "context_incremental"
+                                && candidate.status == "complete"
+                                && candidate.base_generation_id.as_deref()
+                                    == Some(active_context_generation_id)
+                            {
+                                keep_ids.insert(candidate.id.clone());
+                            }
+                        }
+                    }
+
+                    let mut retained_successful_by_kind = HashMap::<String, usize>::new();
+                    for candidate in &candidates {
+                        if discovery_run_status_is_successful(&candidate.status) {
+                            let retained = retained_successful_by_kind
+                                .entry(candidate.kind.clone())
+                                .or_default();
+                            if *retained < retain_successful_per_kind {
+                                keep_ids.insert(candidate.id.clone());
+                                *retained += 1;
+                            }
+                        }
+
+                        if discovery_run_status_is_diagnostic(&candidate.status)
+                            && candidate.updated_at >= diagnostic_cutoff
+                        {
+                            keep_ids.insert(candidate.id.clone());
+                        }
+
+                        if candidate.status == "running" {
+                            keep_ids.insert(candidate.id.clone());
+                        }
+                    }
+
+                    let mut runs_deleted = 0u64;
+                    for candidate in &candidates {
+                        if keep_ids.contains(&candidate.id) {
+                            continue;
+                        }
+                        runs_deleted += SqlRuntime::execute(
+                            SqlExec::Tx(tx),
+                            "DELETE FROM discovery_sync_runs WHERE id = {}",
+                            &[SqlArg::Text(candidate.id.clone())],
+                        )
+                        .await?;
+                    }
+                    delete_unreferenced_discovery_titles_tx(tx).await?;
+
+                    Ok(runs_deleted)
+                })
+            },
         )
         .await?;
-        let candidates = rows
-            .iter()
-            .map(discovery_run_prune_candidate_from_row)
-            .collect::<AppResult<Vec<_>>>()?;
-
-        let mut keep_ids = HashSet::new();
-        let active_context_generation_id = state
-            .as_ref()
-            .and_then(|state| state.last_success_generation_id.clone());
-        if let Some(state) = &state {
-            keep_optional_id(&mut keep_ids, state.last_success_generation_id.as_deref());
-            keep_optional_id(
-                &mut keep_ids,
-                state.last_public_feed_generation_id.as_deref(),
-            );
-            keep_optional_id(
-                &mut keep_ids,
-                state.inflight_context_snapshot_run_id.as_deref(),
-            );
-        }
-
-        if let Some(active_context_generation_id) = active_context_generation_id.as_deref() {
-            for candidate in &candidates {
-                if candidate.kind == "context_incremental"
-                    && candidate.status == "complete"
-                    && candidate.base_generation_id.as_deref() == Some(active_context_generation_id)
-                {
-                    keep_ids.insert(candidate.id.clone());
-                }
-            }
-        }
-
-        let mut retained_successful_by_kind = HashMap::<String, usize>::new();
-        for candidate in &candidates {
-            if discovery_run_status_is_successful(&candidate.status) {
-                let retained = retained_successful_by_kind
-                    .entry(candidate.kind.clone())
-                    .or_default();
-                if *retained < retain_successful_per_kind {
-                    keep_ids.insert(candidate.id.clone());
-                    *retained += 1;
-                }
-            }
-
-            if discovery_run_status_is_diagnostic(&candidate.status)
-                && candidate.updated_at >= diagnostic_cutoff
-            {
-                keep_ids.insert(candidate.id.clone());
-            }
-
-            if candidate.status == "running" {
-                keep_ids.insert(candidate.id.clone());
-            }
-        }
-
-        let mut runs_deleted = 0u64;
-        for candidate in &candidates {
-            if keep_ids.contains(&candidate.id) {
-                continue;
-            }
-            runs_deleted += SqlRuntime::execute(
-                self.datastore.read_exec(),
-                "DELETE FROM discovery_sync_runs WHERE id = {}",
-                &[SqlArg::Text(candidate.id.clone())],
-            )
-            .await?;
-        }
-        delete_unreferenced_discovery_titles(&self.datastore).await?;
 
         Ok(DiscoveryPruneReport { runs_deleted })
     }
@@ -2591,29 +2604,6 @@ async fn upsert_sync_run_tx(
     Ok(())
 }
 
-async fn insert_raw_page_tx(tx: &mut SqlTx<'_>, page: &DiscoveryRawPageRecord) -> AppResult<()> {
-    SqlRuntime::execute(
-        SqlExec::Tx(tx),
-        "INSERT INTO discovery_raw_pages
-         (run_id, payload_kind, page_number, compression, raw_payload, created_at)
-         VALUES ({}, {}, {}, {}, {}, {})
-         ON CONFLICT(run_id, payload_kind, page_number) DO UPDATE SET
-            compression = excluded.compression,
-            raw_payload = excluded.raw_payload,
-            created_at = excluded.created_at",
-        &[
-            SqlArg::Text(page.run_id.clone()),
-            SqlArg::Text(page.payload_kind.clone()),
-            SqlArg::I32(page.page_number),
-            SqlArg::Text(page.compression.clone()),
-            SqlArg::Text(page.raw_payload.clone()),
-            SqlArg::Timestamp(page.created_at),
-        ],
-    )
-    .await?;
-    Ok(())
-}
-
 async fn tombstone_discovery_items_tx(
     tx: &mut SqlTx<'_>,
     base_generation_id: Option<&str>,
@@ -2906,6 +2896,8 @@ fn item_from_row(row: &SqlRow) -> AppResult<DiscoveryItemRecord> {
         tmdb_collection_id: row.opt_text("tmdb_collection_id")?,
         tmdb_collection_name: row.opt_text("tmdb_collection_name")?,
         owned_in_input: row.bool("owned_in_input")?,
+        studio_slug: None,
+        person_ids: Vec::new(),
         facet_terms: Vec::new(),
         context_terms: Vec::new(),
         change_subject_keys: Vec::new(),
@@ -3127,6 +3119,12 @@ async fn hydrate_title_terms(
                 "provider_signal" => item.provider_signals.push(term_value.clone()),
                 "facet_term" => item.facet_terms.push(term_value.clone()),
                 "context_term" => item.context_terms.push(term_value.clone()),
+                "studio" => item.studio_slug = Some(term_value.clone()),
+                "person" => {
+                    if let Ok(person_id) = term_value.parse::<i32>() {
+                        item.person_ids.push(person_id);
+                    }
+                }
                 _ => {}
             }
         }
@@ -3516,26 +3514,6 @@ async fn delete_unreferenced_discovery_titles_tx(tx: &mut SqlTx<'_>) -> AppResul
     Ok(())
 }
 
-async fn delete_unreferenced_discovery_titles(datastore: &StoreDatastore) -> AppResult<()> {
-    SqlRuntime::execute(
-        datastore.read_exec(),
-        "DELETE FROM discovery_titles
-         WHERE NOT EXISTS (
-            SELECT 1
-            FROM discovery_items i
-            WHERE i.discovery_title_id = discovery_titles.id
-         )
-         AND NOT EXISTS (
-            SELECT 1
-            FROM title_more_like_this_items m
-            WHERE m.discovery_title_id = discovery_titles.id
-         )",
-        &[],
-    )
-    .await?;
-    Ok(())
-}
-
 async fn insert_title_more_like_this_item_tx(
     tx: &mut SqlTx<'_>,
     _datastore: &StoreDatastore,
@@ -3800,6 +3778,27 @@ async fn insert_title_children_tx(
     .await?;
     if let Some(media_kind) = discovery_item_authoritative_media_kind(item) {
         insert_title_terms_tx(tx, discovery_title_id, "media_kind", None, &[media_kind]).await?;
+    }
+    // RFC 121 SW3: project SMG studio_slug / person_ids into the reverse-indexed
+    // terms table so "more from studio / person" lookups reuse the existing
+    // idx_discovery_title_terms_kind_value index (zero schema migration).
+    if let Some(studio_slug) = &item.studio_slug {
+        insert_title_terms_tx(
+            tx,
+            discovery_title_id,
+            "studio",
+            None,
+            std::slice::from_ref(studio_slug),
+        )
+        .await?;
+    }
+    if !item.person_ids.is_empty() {
+        let person_values = item
+            .person_ids
+            .iter()
+            .map(|id| id.to_string())
+            .collect::<Vec<_>>();
+        insert_title_terms_tx(tx, discovery_title_id, "person", None, &person_values).await?;
     }
     for (index, source_tag) in item.source_tags.iter().enumerate() {
         insert_title_source_tag_tx(tx, discovery_title_id, source_tag, index as i32).await?;
@@ -4247,6 +4246,68 @@ mod tests {
         let _ = std::fs::remove_file(db);
     }
 
+    #[tokio::test]
+    async fn discovery_item_projects_studio_slug_and_person_ids_into_terms() {
+        // RFC 121 SW3: studio_slug + person_ids project into discovery_title_terms
+        // (term_kind 'studio' / 'person') on write and hydrate back onto the item.
+        let db = std::env::temp_dir().join(format!(
+            "scryer_discovery_studio_person_terms_{}.db",
+            Utc::now().timestamp_micros()
+        ));
+        let services = SqliteServices::new(db.to_string_lossy())
+            .await
+            .expect("sqlite services should initialize");
+        let store = DiscoveryStore::new(services.datastore());
+        let now = Utc::now();
+        let run_id = "run-studio-person";
+
+        store
+            .upsert_discovery_sync_run(&discovery_prune_run(
+                run_id,
+                "context_snapshot",
+                "complete",
+                now,
+            ))
+            .await
+            .expect("run should upsert");
+
+        let mut item = discovery_prune_item(run_id, now);
+        item.studio_slug = Some("a24".to_string());
+        item.person_ids = vec![101, 202];
+        store
+            .replace_discovery_items(run_id, &[item])
+            .await
+            .expect("item should upsert");
+
+        let studio_terms: Vec<String> = sqlx::query_scalar(
+            "SELECT term_value FROM discovery_title_terms
+              WHERE term_kind = 'studio' ORDER BY sort_index ASC",
+        )
+        .fetch_all(&services.pool)
+        .await
+        .expect("studio terms should load");
+        assert_eq!(studio_terms, vec!["a24".to_string()]);
+
+        let person_terms: Vec<String> = sqlx::query_scalar(
+            "SELECT term_value FROM discovery_title_terms
+              WHERE term_kind = 'person' ORDER BY sort_index ASC",
+        )
+        .fetch_all(&services.pool)
+        .await
+        .expect("person terms should load");
+        assert_eq!(person_terms, vec!["101".to_string(), "202".to_string()]);
+
+        let hydrated = store
+            .list_discovery_items_for_generation(run_id)
+            .await
+            .expect("items should hydrate");
+        assert_eq!(hydrated.len(), 1);
+        assert_eq!(hydrated[0].studio_slug.as_deref(), Some("a24"));
+        assert_eq!(hydrated[0].person_ids, vec![101, 202]);
+
+        let _ = std::fs::remove_file(db);
+    }
+
     #[test]
     fn canonical_facet_display_value_accepts_only_genre_and_theme_terms() {
         assert_eq!(
@@ -4590,17 +4651,6 @@ mod tests {
         assert_eq!(recent_runs[0].id, "run-1");
 
         store
-            .insert_discovery_raw_page(&DiscoveryRawPageRecord {
-                run_id: "run-1".to_string(),
-                payload_kind: "context_changes".to_string(),
-                page_number: 0,
-                compression: "none".to_string(),
-                raw_payload: json!({"items": []}).to_string(),
-                created_at: now,
-            })
-            .await
-            .expect("raw page should insert");
-        store
             .replace_discovery_submitted_subjects(
                 "run-1",
                 &[
@@ -4765,6 +4815,8 @@ mod tests {
                         tmdb_collection_id: None,
                         tmdb_collection_name: None,
                         owned_in_input: false,
+                        studio_slug: None,
+                        person_ids: Vec::new(),
                         facet_terms: vec![
                             "Drama".to_string(),
                             "canonical:genre:drama".to_string(),
@@ -4829,6 +4881,8 @@ mod tests {
                         tmdb_collection_id: None,
                         tmdb_collection_name: None,
                         owned_in_input: false,
+                        studio_slug: None,
+                        person_ids: Vec::new(),
                         facet_terms: vec!["canonical:genre:drama".to_string()],
                         context_terms: Vec::new(),
                         change_subject_keys: Vec::new(),
@@ -5162,14 +5216,6 @@ mod tests {
             .commit_discovery_context_snapshot(&DiscoveryContextSnapshotCommit {
                 state: committed_state,
                 run: committed_run,
-                raw_pages: vec![DiscoveryRawPageRecord {
-                    run_id: "run-2".to_string(),
-                    payload_kind: "snapshot_page".to_string(),
-                    page_number: 1,
-                    compression: "none".to_string(),
-                    raw_payload: json!({"items": []}).to_string(),
-                    created_at: now,
-                }],
                 submitted_subjects: vec![DiscoverySubmittedSubjectRecord {
                     run_id: "run-2".to_string(),
                     subject_key: "tmdb:movie:603".to_string(),
@@ -5267,14 +5313,6 @@ mod tests {
             .commit_discovery_context_incremental(&DiscoveryContextIncrementalCommit {
                 state: incremental_state,
                 run: incremental_run,
-                raw_changes: DiscoveryRawPageRecord {
-                    run_id: "run-3".to_string(),
-                    payload_kind: "context_changes".to_string(),
-                    page_number: 0,
-                    compression: "none".to_string(),
-                    raw_payload: json!({"items": []}).to_string(),
-                    created_at: now,
-                },
                 items: Vec::new(),
                 tombstone_target_keys: vec!["tmdb:movie:10".to_string()],
                 clear_pending_through_sequence: Some(12),
@@ -5337,14 +5375,6 @@ mod tests {
             .commit_discovery_public_feed(&DiscoveryPublicFeedCommit {
                 state: public_state,
                 run: public_run,
-                raw_feed: DiscoveryRawPageRecord {
-                    run_id: "run-4".to_string(),
-                    payload_kind: "public_feed".to_string(),
-                    page_number: 0,
-                    compression: "none".to_string(),
-                    raw_payload: json!({"sections": []}).to_string(),
-                    created_at: now,
-                },
                 sections: Vec::new(),
                 items: Vec::new(),
             })
@@ -5535,17 +5565,6 @@ mod tests {
             .await
             .expect("state should upsert");
         store
-            .insert_discovery_raw_page(&DiscoveryRawPageRecord {
-                run_id: "snapshot-pruned".to_string(),
-                payload_kind: "snapshot_page".to_string(),
-                page_number: 1,
-                compression: "none".to_string(),
-                raw_payload: json!({"items": []}).to_string(),
-                created_at: old_at,
-            })
-            .await
-            .expect("raw page should insert for pruned run");
-        store
             .replace_discovery_items(
                 "snapshot-pruned",
                 &[discovery_prune_item("snapshot-pruned", old_at)],
@@ -5590,17 +5609,6 @@ mod tests {
                 "{id} should be pruned"
             );
         }
-        let raw_page_count = SqlRuntime::fetch_optional(
-            store.datastore.read_exec(),
-            "SELECT COUNT(*) AS count FROM discovery_raw_pages WHERE run_id = {}",
-            &[SqlArg::Text("snapshot-pruned".to_string())],
-        )
-        .await
-        .expect("raw page count should query")
-        .expect("raw page count should return")
-        .i64("count")
-        .expect("raw page count should parse");
-        assert_eq!(raw_page_count, 0);
         let item_count = SqlRuntime::fetch_optional(
             store.datastore.read_exec(),
             "SELECT COUNT(*) AS count FROM discovery_items WHERE run_id = {}",
@@ -5707,6 +5715,8 @@ mod tests {
             tmdb_collection_id: None,
             tmdb_collection_name: None,
             owned_in_input: false,
+            studio_slug: None,
+            person_ids: Vec::new(),
             facet_terms: Vec::new(),
             context_terms: Vec::new(),
             change_subject_keys: Vec::new(),

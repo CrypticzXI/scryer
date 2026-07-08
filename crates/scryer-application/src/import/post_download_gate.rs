@@ -1287,8 +1287,8 @@ async fn reset_wanted_items_for_retry(app: &AppUseCase, title_id: &str, episode_
         match app
             .services
             .workflow
-            .wanted_items
-            .get_wanted_item_for_title(title_id, episode_id)
+            .acquisition_scope_states
+            .get_acquisition_scope_state_for_title(title_id, episode_id)
             .await
         {
             Ok(Some(item)) => {

@@ -509,7 +509,7 @@ async fn queue_existing_title_download_submit_unavailable_records_pending_withou
         .await;
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
     let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
-    let wanted_items = Arc::new(TrackingWantedItemRepo::default());
+    let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
     let (app, user, release_attempts) =
         bootstrap_with_acquisition_tracking_and_indexer_and_release_attempts(
             download_client,
@@ -1382,15 +1382,15 @@ async fn queue_existing_title_download_replace_early_deletes_all_blockers() {
 async fn commit_successful_grab_marks_covered_wanted_set_and_supersedes_pending_releases() {
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
     let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
-    let wanted_items = Arc::new(TrackingWantedItemRepo::default());
+    let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
     let repo = TrackingAcquisitionStateRepo {
         download_submissions,
         pending_releases: pending_releases.clone(),
-        wanted_items: wanted_items.clone(),
+        acquisition_scope_states: wanted_items.clone(),
     };
     let now = Utc::now().to_rfc3339();
     let title_id = "covered-title";
-    let wanted_a = WantedItem {
+    let wanted_a = AcquisitionScopeState {
         id: "wanted-a".to_string(),
         title_id: title_id.to_string(),
         title_name: Some("Covered Title".to_string()),
@@ -1406,7 +1406,7 @@ async fn commit_successful_grab_marks_covered_wanted_set_and_supersedes_pending_
         episode_number: None,
         media_type: "series".to_string(),
         last_search_at: None,
-        status: WantedStatus::Wanted,
+        status: AcquisitionScopeStatus::Wanted,
         grabbed_release: None,
         current_score: None,
         latest_release_decision: None,
@@ -1414,19 +1414,19 @@ async fn commit_successful_grab_marks_covered_wanted_set_and_supersedes_pending_
         created_at: now.clone(),
         updated_at: now.clone(),
     };
-    let wanted_b = WantedItem {
+    let wanted_b = AcquisitionScopeState {
         id: "wanted-b".to_string(),
         episode_id: Some("episode-b".to_string()),
         ..wanted_a.clone()
     };
-    let wanted_c = WantedItem {
+    let wanted_c = AcquisitionScopeState {
         id: "wanted-c".to_string(),
         episode_id: Some("episode-c".to_string()),
         ..wanted_a.clone()
     };
     for wanted in [&wanted_a, &wanted_b, &wanted_c] {
         wanted_items
-            .upsert_wanted_item(wanted)
+            .upsert_acquisition_scope_state(wanted)
             .await
             .expect("seed wanted item");
     }
@@ -1515,9 +1515,9 @@ async fn commit_successful_grab_marks_covered_wanted_set_and_supersedes_pending_
             .map(|wanted| wanted.status)
             .expect("wanted item exists")
     };
-    assert_eq!(status_for("wanted-a"), WantedStatus::Grabbed);
-    assert_eq!(status_for("wanted-b"), WantedStatus::Grabbed);
-    assert_eq!(status_for("wanted-c"), WantedStatus::Wanted);
+    assert_eq!(status_for("wanted-a"), AcquisitionScopeStatus::Grabbed);
+    assert_eq!(status_for("wanted-b"), AcquisitionScopeStatus::Grabbed);
+    assert_eq!(status_for("wanted-c"), AcquisitionScopeStatus::Wanted);
 
     let pending_store = pending_releases.store.lock().await.clone();
     let pending_status_for = |id: &str| {
@@ -1614,11 +1614,11 @@ async fn trigger_title_wanted_search_conflicts_before_seeding_movie_wanted_item(
     assert!(
         app.services
             .workflow
-            .wanted_items
-            .list_wanted_items(WantedItemsQuery {
+            .acquisition_scope_states
+            .list_acquisition_scope_states(AcquisitionScopeStatesQuery {
                 title_id: Some(title.id.clone()),
                 limit: 100,
-                ..WantedItemsQuery::default()
+                ..AcquisitionScopeStatesQuery::default()
             })
             .await
             .expect("list wanted items")
@@ -1724,11 +1724,11 @@ async fn trigger_title_wanted_search_skips_conflicted_first_seed_episode_items()
     let wanted_items = app
         .services
         .workflow
-        .wanted_items
-        .list_wanted_items(WantedItemsQuery {
+        .acquisition_scope_states
+        .list_acquisition_scope_states(AcquisitionScopeStatesQuery {
             title_id: Some(title.id.clone()),
             limit: 100,
-            ..WantedItemsQuery::default()
+            ..AcquisitionScopeStatesQuery::default()
         })
         .await
         .expect("list wanted items");
@@ -2323,7 +2323,7 @@ async fn series_movie_wanted_subject_uses_parent_owner_when_title_facet_is_missi
         .await
         .expect("create series movie link");
     let now = Utc::now().to_rfc3339();
-    let wanted = WantedItem {
+    let wanted = AcquisitionScopeState {
         id: Id::new().0,
         title_id: title.id.clone(),
         title_name: Some(title.name.clone()),
@@ -2339,7 +2339,7 @@ async fn series_movie_wanted_subject_uses_parent_owner_when_title_facet_is_missi
         episode_number: None,
         media_type: "series_movie".to_string(),
         last_search_at: None,
-        status: WantedStatus::Wanted,
+        status: AcquisitionScopeStatus::Wanted,
         grabbed_release: None,
         current_score: None,
         latest_release_decision: None,
@@ -2645,7 +2645,7 @@ async fn convergence_test_title_and_subject(
         .await
         .expect("create series movie link");
     let now = Utc::now().to_rfc3339();
-    let wanted = WantedItem {
+    let wanted = AcquisitionScopeState {
         id: Id::new().0,
         title_id: title.id.clone(),
         title_name: Some(title.name.clone()),
@@ -2661,7 +2661,7 @@ async fn convergence_test_title_and_subject(
         episode_number: None,
         media_type: "series_movie".to_string(),
         last_search_at: None,
-        status: WantedStatus::Wanted,
+        status: AcquisitionScopeStatus::Wanted,
         grabbed_release: None,
         current_score: None,
         latest_release_decision: None,

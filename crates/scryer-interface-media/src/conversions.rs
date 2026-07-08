@@ -10,7 +10,7 @@ use scryer_application::{
     PendingImportStatus as AppPendingImportStatus, PendingReleaseStatus as AppPendingReleaseStatus,
     ScoringOverrides as AppScoringOverrides, ScoringPersona as AppScoringPersona,
     SortDirection as AppSortDirection, SubmissionScope as AppSubmissionScope,
-    WantedStatus as AppWantedStatus,
+    AcquisitionScopeStatus as AppWantedStatus,
 };
 
 pub trait FromApplication<T> {

@@ -260,7 +260,7 @@ where
     )
     .with_media_files(media_file_store)
     .with_libraries(libraries)
-    .with_wanted_items(wanted_store)
+    .with_acquisition_scope_states(wanted_store)
     .with_pending_releases(pending_release_store)
     .with_blocklist_repo(blocklist_store)
     .with_library_probe_signatures(library_probe_store)

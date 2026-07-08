@@ -14,8 +14,8 @@ use scryer_application::{
     TitleCatalogFilter, TitleCatalogSort, TitleCatalogSortKey, TitleExternalIdLookup,
     TitleExternalRating, TitleImageBlob, TitleImageKind, TitleImageRepository,
     TitleImageSourceResult, TitleImageVariantRecord, TitleMetadataUpdate, TitleRatingSummary,
-    TitleRepository, UserRepository, WantedItem, WantedItemRepository, WantedItemsQuery,
-    WantedStatus,
+    TitleRepository, UserRepository, AcquisitionScopeState, AcquisitionScopeStateRepository, AcquisitionScopeStatesQuery,
+    AcquisitionScopeStatus,
     subtitles::{ExternalSubtitleDetectionSource, ExternalSubtitleProbeCacheEntry},
 };
 use scryer_domain::{

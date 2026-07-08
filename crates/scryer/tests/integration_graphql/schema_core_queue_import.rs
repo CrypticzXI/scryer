@@ -1507,7 +1507,7 @@ async fn graphql_traverses_core_graph_relationships() {
         .await
         .expect("link file to episode");
 
-    let wanted_item = WantedItem {
+    let wanted_item = AcquisitionScopeState {
         id: Id::new().0,
         title_id: title.id.clone(),
         title_name: Some(title.name.clone()),
@@ -1523,7 +1523,7 @@ async fn graphql_traverses_core_graph_relationships() {
         episode_number: episode.episode_number.clone(),
         media_type: "episode".to_string(),
         last_search_at: None,
-        status: scryer_application::WantedStatus::Wanted,
+        status: scryer_application::AcquisitionScopeStatus::Wanted,
         grabbed_release: None,
         current_score: Some(120),
         latest_release_decision: None,
@@ -1532,7 +1532,7 @@ async fn graphql_traverses_core_graph_relationships() {
         updated_at: "2026-03-20T00:00:00Z".to_string(),
     };
     ctx.library_state
-        .upsert_wanted_item(&wanted_item)
+        .upsert_acquisition_scope_state(&wanted_item)
         .await
         .expect("seed wanted item");
 

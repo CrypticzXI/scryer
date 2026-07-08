@@ -2,7 +2,7 @@ use crate::stored_paths::{path_to_stored_string, stored_path_to_path_buf};
 use crate::{
     AppError, AppResult, AppUseCase, DownloadSourceIdentity, DownloadSubmission,
     DownloadSubmissionIdentity, ImportArtifact, ParsedEpisodeMetadata, ParsedReleaseMetadata,
-    SubmissionScope, WantedCompleteTransition, WantedItemsQuery, WantedStatus,
+    SubmissionScope, AcquisitionScopeCompleteTransition, AcquisitionScopeStatesQuery,
     activity::NotificationMediaUpdate,
     app_usecase_post_processing::{PostProcessingContext, spawn_post_processing},
     apply_remote_path_mappings_to_completed_download,

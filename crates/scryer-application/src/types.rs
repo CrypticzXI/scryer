@@ -910,7 +910,7 @@ pub struct CancelLibraryScanResult {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum WantedStatus {
+pub enum AcquisitionScopeStatus {
     #[default]
     Wanted,
     Grabbed,
@@ -918,7 +918,7 @@ pub enum WantedStatus {
     Completed,
 }
 
-impl WantedStatus {
+impl AcquisitionScopeStatus {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Wanted => "wanted",
@@ -940,7 +940,7 @@ impl WantedStatus {
 }
 
 #[derive(Clone, Debug)]
-pub struct WantedGrabTransition {
+pub struct AcquisitionScopeGrabTransition {
     pub id: String,
     pub last_search_at: Option<String>,
     pub current_score: Option<i32>,
@@ -948,7 +948,7 @@ pub struct WantedGrabTransition {
 }
 
 #[derive(Clone, Debug)]
-pub struct WantedCompleteTransition {
+pub struct AcquisitionScopeCompleteTransition {
     pub id: String,
     pub last_search_at: Option<String>,
     pub current_score: Option<i32>,
@@ -956,7 +956,7 @@ pub struct WantedCompleteTransition {
 }
 
 #[derive(Clone, Debug)]
-pub struct WantedPauseTransition {
+pub struct AcquisitionScopePauseTransition {
     pub id: String,
     pub last_search_at: Option<String>,
     pub current_score: Option<i32>,
@@ -996,9 +996,11 @@ pub struct LibraryScanUnmatchedItem {
 /// materialized it. What to search is the derived target set
 /// (`AcquisitionTarget`); this is the ledger of grabs, scores, and user
 /// intent layered on top of it. `last_search_at` is state, not cadence: it
-/// feeds the upgrade cooldown and failed-grab staleness checks.
+/// feeds the upgrade cooldown and failed-grab staleness checks. The persisted
+/// table may still be named `wanted_items`; do not treat that legacy storage
+/// name as permission to seed target-truth rows.
 #[derive(Clone, Debug)]
-pub struct WantedItem {
+pub struct AcquisitionScopeState {
     pub id: String,
     pub title_id: String,
     pub title_name: Option<String>,
@@ -1014,7 +1016,7 @@ pub struct WantedItem {
     pub episode_number: Option<String>,
     pub media_type: String,
     pub last_search_at: Option<String>,
-    pub status: WantedStatus,
+    pub status: AcquisitionScopeStatus,
     pub grabbed_release: Option<String>,
     pub current_score: Option<i32>,
     pub latest_release_decision: Option<ReleaseDecision>,

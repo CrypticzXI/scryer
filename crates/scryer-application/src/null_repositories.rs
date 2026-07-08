@@ -16,7 +16,7 @@ use crate::{
     AcquisitionStateRepository, InsertMediaFileInput, JellyfinServerUser,
     MediaRequestResolutionResult, MediaRequestSubmissionResult, MediaRequestUpdateResult,
     MediaServerConnectionRepository, PlexServerDiscovery, PlexServerUser, SuccessfulGrabCommit,
-    WantedItemsQuery,
+    AcquisitionScopeStatesQuery,
 };
 use scryer_domain::{PersistedPluginWasmPayload, PluginInstallation};
 
@@ -27,7 +27,7 @@ use crate::{
     CollectionEpisodeProgressSummary, CutoffUnmetQualitySummary, DiscoveryContextIncrementalCommit,
     DiscoveryContextSnapshotCommit, DiscoveryFacetRecord, DiscoveryItemRecord,
     DiscoveryItemsPageRecord, DiscoveryItemsStorageQuery, DiscoveryPendingContextChangeRecord,
-    DiscoveryPruneReport, DiscoveryPublicFeedCommit, DiscoveryRawPageRecord, DiscoveryRepository,
+    DiscoveryPruneReport, DiscoveryPublicFeedCommit, DiscoveryRepository,
     DiscoverySectionItemsRecord, DiscoverySectionRecord, DiscoverySubmittedSubjectRecord,
     DiscoverySyncRunRecord, DiscoverySyncStateRecord, DomainEventRepository,
     DownloadQueueCommandRecord, DownloadQueueCommandRepository, DownloadSourceIdentity,
@@ -54,8 +54,8 @@ use crate::{
     TitleImageProcessor, TitleImageRepository, TitleImageSourceResult, TitleImageSyncTask,
     TitleImageVariantSpec, TitleMediaFile, TitleMediaSizeSummary, TitleMovieMediaSummary,
     TitleQualitySummary, UiSettings, UiSettingsUpdate, UpstreamScheduler,
-    UserExternalAccountRepository, UserUiSettingsRepository, VerifiedExternalIdentity, WantedItem,
-    WantedItemRepository, WebauthnChallengeRecord, WebauthnCredentialRecord, WebauthnRepository,
+    UserExternalAccountRepository, UserUiSettingsRepository, VerifiedExternalIdentity, AcquisitionScopeState,
+    AcquisitionScopeStateRepository, WebauthnChallengeRecord, WebauthnCredentialRecord, WebauthnRepository,
     WorkflowOperationInfo, WorkflowOperationRepository, ports::CatalogDiscoveryCandidatesRecord,
     ports::DatastoreInfo, ports::LogicalBackupExporter, ports::TotpRepository,
     types::TotpCredentialRecord, types::TotpEnrollmentChallengeRecord,
@@ -215,10 +215,6 @@ impl DiscoveryRepository for NullDiscoveryRepository {
     }
 
     async fn upsert_discovery_sync_run(&self, _run: &DiscoverySyncRunRecord) -> AppResult<()> {
-        Ok(())
-    }
-
-    async fn insert_discovery_raw_page(&self, _page: &DiscoveryRawPageRecord) -> AppResult<()> {
         Ok(())
     }
 
@@ -920,16 +916,16 @@ impl TitleImageProcessor for NullTitleImageProcessor {
 }
 
 #[derive(Default)]
-pub struct NullWantedItemRepository;
+pub struct NullAcquisitionScopeStateRepository;
 
 #[async_trait]
-impl WantedItemRepository for NullWantedItemRepository {
-    async fn upsert_wanted_item(&self, _item: &WantedItem) -> AppResult<String> {
+impl AcquisitionScopeStateRepository for NullAcquisitionScopeStateRepository {
+    async fn upsert_acquisition_scope_state(&self, _item: &AcquisitionScopeState) -> AppResult<String> {
         Err(AppError::Repository(
             "wanted item repository is not configured".to_string(),
         ))
     }
-    async fn update_wanted_item_status(
+    async fn update_acquisition_scope_status(
         &self,
         _id: &str,
         _status: &str,
@@ -941,33 +937,33 @@ impl WantedItemRepository for NullWantedItemRepository {
             "wanted item repository is not configured".to_string(),
         ))
     }
-    async fn record_wanted_search_attempt(
+    async fn record_acquisition_scope_search_attempt(
         &self,
         _id: &str,
         _last_search_at: &str,
     ) -> AppResult<()> {
         Ok(())
     }
-    async fn get_wanted_item_for_title(
+    async fn get_acquisition_scope_state_for_title(
         &self,
         _title_id: &str,
         _episode_id: Option<&str>,
-    ) -> AppResult<Option<WantedItem>> {
+    ) -> AppResult<Option<AcquisitionScopeState>> {
         Ok(None)
     }
-    async fn delete_wanted_items_for_title(&self, _title_id: &str) -> AppResult<()> {
+    async fn delete_acquisition_scope_states_for_title(&self, _title_id: &str) -> AppResult<()> {
         Ok(())
     }
-    async fn delete_wanted_items_for_collection(&self, _collection_id: &str) -> AppResult<()> {
+    async fn delete_acquisition_scope_states_for_collection(&self, _collection_id: &str) -> AppResult<()> {
         Ok(())
     }
-    async fn delete_wanted_items_for_series_movie_link(
+    async fn delete_acquisition_scope_states_for_series_movie_link(
         &self,
         _series_movie_link_id: &str,
     ) -> AppResult<()> {
         Ok(())
     }
-    async fn delete_wanted_items_for_episode(&self, _episode_id: &str) -> AppResult<()> {
+    async fn delete_acquisition_scope_states_for_episode(&self, _episode_id: &str) -> AppResult<()> {
         Ok(())
     }
     async fn insert_release_decision(&self, _decision: &ReleaseDecision) -> AppResult<String> {
@@ -975,13 +971,13 @@ impl WantedItemRepository for NullWantedItemRepository {
             "wanted item repository is not configured".to_string(),
         ))
     }
-    async fn get_wanted_item_by_id(&self, _id: &str) -> AppResult<Option<WantedItem>> {
+    async fn get_acquisition_scope_state_by_id(&self, _id: &str) -> AppResult<Option<AcquisitionScopeState>> {
         Ok(None)
     }
-    async fn list_wanted_items(&self, _query: WantedItemsQuery) -> AppResult<Vec<WantedItem>> {
+    async fn list_acquisition_scope_states(&self, _query: AcquisitionScopeStatesQuery) -> AppResult<Vec<AcquisitionScopeState>> {
         Ok(vec![])
     }
-    async fn count_wanted_items(&self, _query: WantedItemsQuery) -> AppResult<i64> {
+    async fn count_acquisition_scope_states(&self, _query: AcquisitionScopeStatesQuery) -> AppResult<i64> {
         Ok(0)
     }
     async fn list_release_decisions_for_title(
@@ -991,7 +987,7 @@ impl WantedItemRepository for NullWantedItemRepository {
     ) -> AppResult<Vec<ReleaseDecision>> {
         Ok(vec![])
     }
-    async fn list_release_decisions_for_wanted_item(
+    async fn list_release_decisions_for_acquisition_scope_state(
         &self,
         _wanted_item_id: &str,
         _limit: i64,
@@ -1773,7 +1769,7 @@ impl PendingReleaseRepository for NullPendingReleaseRepository {
     ) -> AppResult<bool> {
         Ok(false)
     }
-    async fn supersede_pending_releases_for_wanted_item(&self, _: &str, _: &str) -> AppResult<()> {
+    async fn supersede_pending_releases_for_acquisition_scope_state(&self, _: &str, _: &str) -> AppResult<()> {
         Ok(())
     }
     async fn delete_pending_releases_for_title(&self, _: &str) -> AppResult<()> {
