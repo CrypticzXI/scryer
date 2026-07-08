@@ -10,7 +10,7 @@ use scryer_application::{
     LibraryScanUnmatchedItemRepository, MediaFileRepository, MediaFileRole, PendingImportStatus,
     ShowRepository, TitleRepository,
 };
-use scryer_domain::{Collection, Episode, ExternalId, Id, MediaFacet, Title, User};
+use scryer_domain::{Collection, Episode, ExternalId, Id, MediaFacet, NewTitle, Title, User};
 use scryer_infrastructure::SettingDefinitionSeed;
 
 fn admin() -> User {
@@ -30,6 +30,29 @@ fn admin() -> User {
         ..Default::default()
     };
     user
+}
+
+fn pending_import_title_request(facet: MediaFacet, name: &str, tvdb_id: &str) -> NewTitle {
+    NewTitle {
+        name: name.to_string(),
+        facet,
+        monitored: false,
+        tags: Vec::new(),
+        external_ids: vec![ExternalId {
+            source: "tvdb".to_string(),
+            value: tvdb_id.to_string(),
+        }],
+        root_folder_id: None,
+        min_availability: None,
+        poster_url: None,
+        year: None,
+        overview: None,
+        sort_title: Some(name.to_string()),
+        slug: Some(name.to_ascii_lowercase().replace(' ', "-")),
+        runtime_minutes: None,
+        language: None,
+        content_status: None,
+    }
 }
 
 async fn seed_media_path_settings(ctx: &TestContext) {
@@ -724,7 +747,7 @@ async fn full_scan_does_not_infer_episode_from_parent_when_release_folder_has_mu
 }
 
 #[tokio::test]
-async fn resolve_pending_import_succeeds_for_stale_movie_row_already_bound_to_title() {
+async fn resolve_pending_import_rejects_stale_movie_row_already_bound_to_title() {
     let ctx = TestContext::new().await;
     seed_media_path_settings(&ctx).await;
 
@@ -807,14 +830,20 @@ async fn resolve_pending_import_succeeds_for_stale_movie_row_already_bound_to_ti
         .expect("insert pending import");
 
     let actor = admin();
-    let result = ctx
+    let error = ctx
         .app
-        .resolve_pending_import(&actor, &pending_id, "123456")
+        .resolve_pending_import(
+            &actor,
+            &pending_id,
+            pending_import_title_request(MediaFacet::Movie, "Redline", "123456"),
+        )
         .await
-        .expect("resolve stale pending import");
-
-    assert!(!result.created);
-    assert_eq!(result.title.id, title.id);
+        .expect_err("stale pending import should be rejected when title already exists");
+    assert!(
+        error
+            .to_string()
+            .contains("title already exists in this library")
+    );
 
     let unmatched = ctx
         .library_scan_unmatched
@@ -822,8 +851,8 @@ async fn resolve_pending_import_succeeds_for_stale_movie_row_already_bound_to_ti
         .await
         .expect("load pending import after resolve");
     assert!(
-        unmatched.is_none(),
-        "stale pending import row should be cleared"
+        unmatched.is_some(),
+        "stale pending import row should stay until explicit bind or ignore"
     );
 
     let media_files = ctx
@@ -836,7 +865,7 @@ async fn resolve_pending_import_succeeds_for_stale_movie_row_already_bound_to_ti
 }
 
 #[tokio::test]
-async fn resolving_missing_loose_file_does_not_clear_existing_title_folder_path() {
+async fn resolving_existing_title_pending_import_does_not_clear_existing_title_folder_path() {
     let ctx = TestContext::new().await;
     seed_media_path_settings(&ctx).await;
 
@@ -887,11 +916,20 @@ async fn resolving_missing_loose_file_does_not_clear_existing_title_folder_path(
         .expect("insert unmatched item");
 
     let actor = admin();
-    let result = ctx
+    let error = ctx
         .app
-        .resolve_pending_import(&actor, &pending_id, "123456")
-        .await;
-    assert!(result.is_err(), "missing source file should not resolve");
+        .resolve_pending_import(
+            &actor,
+            &pending_id,
+            pending_import_title_request(MediaFacet::Series, "Existing Folder Show", "123456"),
+        )
+        .await
+        .expect_err("existing title should not resolve through match");
+    assert!(
+        error
+            .to_string()
+            .contains("title already exists in this library")
+    );
 
     let refreshed_title = ctx
         .titles

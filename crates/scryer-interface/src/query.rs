@@ -41,6 +41,26 @@ use crate::mappers::{
 };
 use crate::types::*;
 
+fn from_metadata_search_item(
+    item: scryer_application::RichMetadataSearchItem,
+) -> MetadataSearchItemPayload {
+    MetadataSearchItemPayload {
+        tvdb_id: item.tvdb_id,
+        name: item.name,
+        imdb_id: item.imdb_id,
+        slug: item.slug,
+        type_hint: item.type_hint,
+        year: item.year,
+        status: item.status,
+        overview: item.overview,
+        popularity: item.popularity,
+        poster_url: item.poster_url,
+        language: item.language,
+        runtime_minutes: item.runtime_minutes,
+        sort_title: item.sort_title,
+    }
+}
+
 fn browse_path_read_dir(path: &str) -> Result<fs::ReadDir, AppError> {
     let target = Path::new(path);
     if !target.is_absolute() {
@@ -1488,6 +1508,25 @@ impl ActivityQueries {
             .await
             .map_err(to_gql_error)?;
         Ok(from_pending_import_connection(connection))
+    }
+
+    async fn pending_import_title_search(
+        &self,
+        ctx: &Context<'_>,
+        pending_import_id: ID,
+        query: String,
+        #[graphql(default = 8)] limit: i32,
+        #[graphql(default_with = "\"eng\".to_string()")] language: String,
+        year: Option<i32>,
+    ) -> GqlResult<Vec<MetadataSearchItemPayload>> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let pending_import_id = String::from(pending_import_id);
+        let results = app
+            .pending_import_title_search(&actor, &pending_import_id, &query, limit, &language, year)
+            .await
+            .map_err(to_gql_error)?;
+        Ok(results.into_iter().map(from_metadata_search_item).collect())
     }
 
     async fn pending_import_binding_preview(

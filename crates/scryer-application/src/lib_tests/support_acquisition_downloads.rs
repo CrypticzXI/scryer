@@ -288,7 +288,10 @@ pub(super) struct TrackingAcquisitionStateRepo {
 
 #[async_trait]
 impl AcquisitionScopeStateRepository for TrackingAcquisitionScopeStateRepo {
-    async fn upsert_acquisition_scope_state(&self, item: &AcquisitionScopeState) -> AppResult<String> {
+    async fn upsert_acquisition_scope_state(
+        &self,
+        item: &AcquisitionScopeState,
+    ) -> AppResult<String> {
         let mut store = self.store.lock().await;
         if let Some(existing) = store.iter_mut().find(|existing| existing.id == item.id) {
             *existing = item.clone();
@@ -322,7 +325,11 @@ impl AcquisitionScopeStateRepository for TrackingAcquisitionScopeStateRepo {
         Ok(())
     }
 
-    async fn record_acquisition_scope_search_attempt(&self, id: &str, last_search_at: &str) -> AppResult<()> {
+    async fn record_acquisition_scope_search_attempt(
+        &self,
+        id: &str,
+        last_search_at: &str,
+    ) -> AppResult<()> {
         let mut store = self.store.lock().await;
         let item = store
             .iter_mut()
@@ -355,7 +362,10 @@ impl AcquisitionScopeStateRepository for TrackingAcquisitionScopeStateRepo {
         Ok(())
     }
 
-    async fn delete_acquisition_scope_states_for_collection(&self, collection_id: &str) -> AppResult<()> {
+    async fn delete_acquisition_scope_states_for_collection(
+        &self,
+        collection_id: &str,
+    ) -> AppResult<()> {
         self.store
             .lock()
             .await
@@ -387,7 +397,10 @@ impl AcquisitionScopeStateRepository for TrackingAcquisitionScopeStateRepo {
         Ok(decision.id.clone())
     }
 
-    async fn get_acquisition_scope_state_by_id(&self, id: &str) -> AppResult<Option<AcquisitionScopeState>> {
+    async fn get_acquisition_scope_state_by_id(
+        &self,
+        id: &str,
+    ) -> AppResult<Option<AcquisitionScopeState>> {
         Ok(self
             .store
             .lock()
@@ -397,7 +410,10 @@ impl AcquisitionScopeStateRepository for TrackingAcquisitionScopeStateRepo {
             .cloned())
     }
 
-    async fn list_acquisition_scope_states(&self, query: AcquisitionScopeStatesQuery) -> AppResult<Vec<AcquisitionScopeState>> {
+    async fn list_acquisition_scope_states(
+        &self,
+        query: AcquisitionScopeStatesQuery,
+    ) -> AppResult<Vec<AcquisitionScopeState>> {
         let AcquisitionScopeStatesQuery {
             statuses,
             media_types,
@@ -445,7 +461,10 @@ impl AcquisitionScopeStateRepository for TrackingAcquisitionScopeStateRepo {
         Ok(items)
     }
 
-    async fn count_acquisition_scope_states(&self, query: AcquisitionScopeStatesQuery) -> AppResult<i64> {
+    async fn count_acquisition_scope_states(
+        &self,
+        query: AcquisitionScopeStatesQuery,
+    ) -> AppResult<i64> {
         let AcquisitionScopeStatesQuery {
             statuses,
             media_types,

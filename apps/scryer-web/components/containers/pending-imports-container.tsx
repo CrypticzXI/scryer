@@ -21,7 +21,7 @@ import {
   pendingImportBindingPreviewQuery,
   pendingImportsQuery,
   librariesQuery,
-  searchMetadataQuery,
+  pendingImportTitleSearchQuery,
 } from "@/lib/graphql/queries";
 import { isAbortError, makeAbortableFetch } from "@/lib/graphql/urql-client";
 import type {
@@ -62,6 +62,27 @@ type MetadataSearchResult = {
   language: string | null;
   runtimeMinutes: number | null;
   sortTitle: string | null;
+};
+
+type ExternalIdInput = {
+  source: string;
+  value: string;
+};
+
+type PendingImportResolveTitleInput = {
+  name: string;
+  facet: PendingImportItem["facet"];
+  libraryId: string;
+  monitored: false;
+  tags: string[];
+  externalIds: ExternalIdInput[];
+  year?: number;
+  overview?: string;
+  sortTitle?: string;
+  slug?: string;
+  runtimeMinutes?: number;
+  language?: string;
+  contentStatus?: string;
 };
 
 const GENERIC_PENDING_IMPORT_QUERY_SEEDS = new Set([
@@ -125,6 +146,53 @@ function summarizePendingImport(item: PendingImportItem): string {
   }
 
   return parts.join(" • ");
+}
+
+function metadataResultExternalIds(result: MetadataSearchResult): ExternalIdInput[] {
+  const tvdbId = String(result.tvdbId).trim();
+  const imdbId = result.imdbId?.trim();
+  const seen = new Set<string>();
+  const ids: ExternalIdInput[] = [];
+
+  for (const externalId of [
+    ...(tvdbId ? [{ source: "tvdb", value: tvdbId }] : []),
+    ...(imdbId ? [{ source: "imdb", value: imdbId }] : []),
+  ]) {
+    const source = externalId.source.trim().toLowerCase();
+    const value = externalId.value.trim();
+    const key = `${source}:${value}`;
+    if (!source || !value || seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    ids.push({ source, value });
+  }
+
+  return ids;
+}
+
+function buildPendingImportResolveTitleInput(
+  item: PendingImportItem,
+  result: MetadataSearchResult,
+): PendingImportResolveTitleInput {
+  const title: PendingImportResolveTitleInput = {
+    name: result.name.trim() || item.displayName.trim(),
+    facet: item.facet,
+    libraryId: item.libraryId,
+    monitored: false,
+    tags: [],
+    externalIds: metadataResultExternalIds(result),
+  };
+
+  if (typeof result.year === "number") title.year = result.year;
+  if (result.overview) title.overview = result.overview;
+  if (result.sortTitle) title.sortTitle = result.sortTitle;
+  if (result.slug) title.slug = result.slug;
+  if (typeof result.runtimeMinutes === "number") title.runtimeMinutes = result.runtimeMinutes;
+  if (result.language) title.language = result.language;
+  if (result.status) title.contentStatus = result.status;
+
+  return title;
 }
 
 function viewForPendingImportFacet(
@@ -511,9 +579,9 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
     const timeoutId = window.setTimeout(() => {
       setSearching(true);
       client
-        .query(searchMetadataQuery, {
+        .query(pendingImportTitleSearchQuery, {
+          pendingImportId: activeItemRef.id,
           query: searchQuery.trim(),
-          type: facet?.tvdbSearchType ?? "movie",
           limit: 8,
           year: activeItem?.yearHint ?? null,
         }, { fetch: abortableFetch })
@@ -525,7 +593,7 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
           if (!active) {
             return;
           }
-          const items = (data?.searchMetadata ?? []) as MetadataSearchResult[];
+          const items = (data?.pendingImportTitleSearch ?? []) as MetadataSearchResult[];
           setSearchResults(items);
         })
         .catch((err: unknown) => {
@@ -553,7 +621,6 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
     activeItem?.yearHint,
     activeItemRef,
     client,
-    facet?.tvdbSearchType,
     searchQuery,
     setGlobalStatus,
     t,
@@ -631,7 +698,49 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
     setIgnoreTargetItem(item);
   }, []);
 
-  const handleResolve = React.useCallback(async (tvdbId: string) => {
+  const applyMatchedTitle = React.useCallback((
+    item: PendingImportItem,
+    title: ResolvePendingImportResult["title"],
+  ) => {
+    const resolvedItem: PendingImportItem = {
+      ...item,
+      status: "pending",
+      titleId: title.id,
+      titleName: title.name,
+      titleSlug: title.slug ?? item.titleSlug ?? null,
+      librarySlug: item.librarySlug ?? librarySlugById.get(item.libraryId) ?? null,
+    };
+
+    setPendingConnection((current) => {
+      const existingIndex = current.items.findIndex((candidate) => candidate.id === item.id);
+      if (existingIndex >= 0) {
+        return {
+          ...current,
+          items: current.items.map((candidate, index) =>
+            index === existingIndex ? resolvedItem : candidate,
+          ),
+        };
+      }
+
+      if (item.status !== "ignored") {
+        return current;
+      }
+
+      return {
+        total: current.total + 1,
+        items: [resolvedItem, ...current.items].slice(0, PAGE_SIZE),
+      };
+    });
+
+    if (item.status === "ignored") {
+      setIgnoredConnection((current) => ({
+        total: Math.max(0, current.total - 1),
+        items: current.items.filter((candidate) => candidate.id !== item.id),
+      }));
+    }
+  }, [librarySlugById]);
+
+  const handleResolve = React.useCallback(async (selectedResult: MetadataSearchResult) => {
     if (!activeItem) {
       return;
     }
@@ -648,7 +757,7 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
         .mutation(resolvePendingImportMutation, {
           input: {
             pendingImportId: itemId,
-            tvdbId,
+            title: buildPendingImportResolveTitleInput(activeItem, selectedResult),
           },
         })
         .toPromise();
@@ -656,13 +765,15 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
         throw mutationError;
       }
 
-      const result = data?.resolvePendingImport as ResolvePendingImportResult | undefined;
+      const mutationResult = data?.resolvePendingImport as ResolvePendingImportResult | undefined;
       dispatchNavigationBadgesRefresh();
-      await refreshAll();
+      if (mutationResult?.title) {
+        applyMatchedTitle(activeItem, mutationResult.title);
+      }
 
       setGlobalStatus(
         t("pendingImports.resolveSuccess", {
-          name: result?.title?.name?.trim() || activeItem.displayName,
+          name: mutationResult?.title?.name?.trim() || activeItem.displayName,
         }),
       );
       clearActiveItem();
@@ -672,7 +783,7 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
       inFlightPendingImportActionsRef.current.delete(itemId);
       setResolvingItemId((current) => (current === itemId ? null : current));
     }
-  }, [activeItem, clearActiveItem, client, refreshAll, setGlobalStatus, t]);
+  }, [activeItem, applyMatchedTitle, clearActiveItem, client, setGlobalStatus, t]);
 
   const handleBind = React.useCallback(async () => {
     if (!activeItem) {

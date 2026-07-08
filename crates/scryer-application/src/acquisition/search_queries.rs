@@ -1,4 +1,4 @@
-use crate::{FacetRegistry, AcquisitionScopeState};
+use crate::{AcquisitionScopeState, FacetRegistry};
 use scryer_domain::{Episode, EpisodeType, ExternalId, Title};
 
 pub(crate) struct SearchQueryResult {

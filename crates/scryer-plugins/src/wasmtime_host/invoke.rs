@@ -161,9 +161,8 @@ pub(crate) fn process_archive(
     // epoch never fired because the solve ran on the blocking host thread). Give
     // it precedence and surface it as a timeout, mirroring `memory_denied`.
     if par2_deadline_exceeded.load(Ordering::Relaxed) {
-        let failure = error::timeout_failure(
-            "host-side PAR2 reconstruct exceeded the invocation deadline",
-        );
+        let failure =
+            error::timeout_failure("host-side PAR2 reconstruct exceeded the invocation deadline");
         return Err(finish_error(
             &invocation,
             spec.timeout,

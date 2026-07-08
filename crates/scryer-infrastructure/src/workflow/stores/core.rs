@@ -3,12 +3,12 @@ use std::collections::HashSet;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use scryer_application::{
-    AcquisitionStateRepository, AppError, AppResult, DomainEventRepository,
+    AcquisitionScopeStatus, AcquisitionStateRepository, AppError, AppResult, DomainEventRepository,
     DownloadQueueCommandRecord, DownloadSourceIdentity, DownloadSubmission,
     DownloadSubmissionActorSnapshot, DownloadSubmissionIdentity, DownloadSubmissionRepository,
     ExternalImportMonitorSnapshotChunk, ExternalImportMonitorSnapshotEntryKind, ImportArtifact,
     ImportArtifactRepository, ImportRepository, JobKey, JobRunRecord, JobRunStatus,
-    JobTriggerSource, PendingReleaseStatus, SubmissionScope, SuccessfulGrabCommit, AcquisitionScopeStatus,
+    JobTriggerSource, PendingReleaseStatus, SubmissionScope, SuccessfulGrabCommit,
     WorkflowOperationInfo,
 };
 use scryer_domain::{

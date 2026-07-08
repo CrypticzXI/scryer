@@ -561,8 +561,6 @@ const TITLE_SERIES_OVERVIEW_FIELDS = `${TITLE_CORE_FIELDS}
     }
     seriesMovieLinks {${SERIES_MOVIE_LINK_FIELDS}
     }
-    mediaFiles {${TITLE_MEDIA_FILE_FIELDS}
-    }
     wantedItems {
       items {${WANTED_ITEM_FIELDS}
       }
@@ -583,7 +581,9 @@ const TITLE_SERIES_OVERVIEW_FIELDS = `${TITLE_CORE_FIELDS}
 ${TITLE_MORE_LIKE_THIS_ITEM_FIELDS}
     }`;
 
-const TITLE_OVERVIEW_FIELDS = TITLE_SERIES_OVERVIEW_FIELDS;
+const TITLE_MOVIE_OVERVIEW_FIELDS = `${TITLE_SERIES_OVERVIEW_FIELDS}
+    mediaFiles {${TITLE_MEDIA_FILE_FIELDS}
+    }`;
 
 const TITLE_EVENT_FIELDS = `
     id
@@ -835,7 +835,7 @@ export const titleReleaseBlocklistQuery = `query TitleReleaseBlocklist($titleId:
 }`;
 
 export const titleOverviewNativeQuery = `query TitleOverviewNative($id: ID!, $blocklistLimit: Int) {
-  title(id: $id) {${TITLE_OVERVIEW_FIELDS}
+  title(id: $id) {${TITLE_MOVIE_OVERVIEW_FIELDS}
   }
   titleAcquisitionDiagnostics(titleId: $id) {
     recentDecisions {
@@ -1587,17 +1587,6 @@ ${TITLE_SELECTED_PANEL_FIELDS}
   }
 }`;
 
-export const seriesTitlePanelDetailQuery = `query SeriesTitlePanelDetail($id: ID!) {
-  title(id: $id) {
-${TITLE_PANEL_FIELDS}
-    collections {${TITLE_COLLECTION_BASIC_FIELDS}
-    }
-    moreLikeThis(limit: 12) {
-${TITLE_MORE_LIKE_THIS_ITEM_FIELDS}
-    }
-  }
-}`;
-
 type ReactiveRefreshVariableValue = string | number | null;
 
 export type TitleOverviewNativeProjection = "default" | "series";
@@ -1711,7 +1700,7 @@ export function buildReactiveRefreshQuery(
         const titleFields =
           action.projection === "series"
             ? TITLE_SERIES_OVERVIEW_FIELDS
-            : TITLE_OVERVIEW_FIELDS;
+            : TITLE_MOVIE_OVERVIEW_FIELDS;
         fields.push(
           `  ${titleAlias}: title(id: $${titleIdVariableName}) {\n${titleFields}\n  }`,
         );
@@ -3233,6 +3222,11 @@ const METADATA_SEARCH_FIELDS = `
 
 export const searchMetadataQuery = `query SearchMetadata($query: String!, $type: MediaFacetValue!, $limit: Int, $language: String! = "eng", $year: Int) {
   searchMetadata(query: $query, type: $type, limit: $limit, language: $language, year: $year) {${METADATA_SEARCH_FIELDS}
+  }
+}`;
+
+export const pendingImportTitleSearchQuery = `query PendingImportTitleSearch($pendingImportId: ID!, $query: String!, $limit: Int = 8, $language: String! = "eng", $year: Int) {
+  pendingImportTitleSearch(pendingImportId: $pendingImportId, query: $query, limit: $limit, language: $language, year: $year) {${METADATA_SEARCH_FIELDS}
   }
 }`;
 

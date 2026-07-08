@@ -2650,7 +2650,10 @@ impl AppUseCase {
         }
     }
 
-    async fn derive_wanted_item_library_id(&self, wanted: &AcquisitionScopeState) -> AppResult<String> {
+    async fn derive_wanted_item_library_id(
+        &self,
+        wanted: &AcquisitionScopeState,
+    ) -> AppResult<String> {
         if let Some(library_id) = wanted.library_id.as_deref() {
             return Ok(library_id.to_string());
         }

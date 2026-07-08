@@ -171,8 +171,18 @@ fn describe_reports_expected_descriptor_from_real_artifact() {
     let archive = descriptor
         .archive_extractor()
         .expect("descriptor carries archive-extractor capabilities");
-    assert!(archive.capabilities.formats.contains(&ArchivePluginFormat::Rar));
-    assert!(archive.capabilities.formats.contains(&ArchivePluginFormat::Zip));
+    assert!(
+        archive
+            .capabilities
+            .formats
+            .contains(&ArchivePluginFormat::Rar)
+    );
+    assert!(
+        archive
+            .capabilities
+            .formats
+            .contains(&ArchivePluginFormat::Zip)
+    );
     assert!(!archive.capabilities.repair_formats.is_empty());
 }
 
@@ -195,7 +205,9 @@ fn describe_classifier_routes_fleet_fixture_to_extism() {
 #[test]
 fn extract_plain_rar4_multifile_is_byte_correct() {
     let client = client();
-    let source = stage_files(&[corpus_dir().join("plain-rar4").join("rar4_multifile_lz.rar")]);
+    let source = stage_files(&[corpus_dir()
+        .join("plain-rar4")
+        .join("rar4_multifile_lz.rar")]);
     let output = tempfile::tempdir().unwrap();
     let response = process(
         &client,
@@ -248,7 +260,12 @@ fn extract_encrypted_rar4_password_states_and_bytes() {
     // No password: data is encrypted -> PasswordRequired.
     let none = process(
         &client,
-        extract_request(&archive, tempfile::tempdir().unwrap().path(), ArchivePluginFormat::Rar, None),
+        extract_request(
+            &archive,
+            tempfile::tempdir().unwrap().path(),
+            ArchivePluginFormat::Rar,
+            None,
+        ),
     )
     .expect("no-password run");
     assert_eq!(none.status, ArchivePluginStatus::PasswordRequired);
@@ -271,12 +288,21 @@ fn extract_encrypted_rar4_password_states_and_bytes() {
     let output = tempfile::tempdir().unwrap();
     let ok = process(
         &client,
-        extract_request(&archive, output.path(), ArchivePluginFormat::Rar, Some(RAR_PASSWORD)),
+        extract_request(
+            &archive,
+            output.path(),
+            ArchivePluginFormat::Rar,
+            Some(RAR_PASSWORD),
+        ),
     )
     .expect("correct-password run");
     assert_eq!(ok.status, ArchivePluginStatus::Ok);
     let disk = output.path().join(&ok.files[0].relative_path);
-    assert_eq!(std::fs::read(&disk).unwrap(), expected, "encrypted RAR4 bytes");
+    assert_eq!(
+        std::fs::read(&disk).unwrap(),
+        expected,
+        "encrypted RAR4 bytes"
+    );
     assert_files_crc_correct(&ok, output.path());
 }
 
@@ -290,7 +316,12 @@ fn extract_encrypted_rar5_lz_password_states_and_bytes() {
     // No password -> PasswordRequired.
     let none = process(
         &client,
-        extract_request(&archive, tempfile::tempdir().unwrap().path(), ArchivePluginFormat::Rar, None),
+        extract_request(
+            &archive,
+            tempfile::tempdir().unwrap().path(),
+            ArchivePluginFormat::Rar,
+            None,
+        ),
     )
     .expect("no-password run");
     assert_eq!(none.status, ArchivePluginStatus::PasswordRequired);
@@ -312,12 +343,21 @@ fn extract_encrypted_rar5_lz_password_states_and_bytes() {
     let output = tempfile::tempdir().unwrap();
     let ok = process(
         &client,
-        extract_request(&archive, output.path(), ArchivePluginFormat::Rar, Some(RAR_PASSWORD)),
+        extract_request(
+            &archive,
+            output.path(),
+            ArchivePluginFormat::Rar,
+            Some(RAR_PASSWORD),
+        ),
     )
     .expect("correct-password run");
     assert_eq!(ok.status, ArchivePluginStatus::Ok);
     let disk = output.path().join(&ok.files[0].relative_path);
-    assert_eq!(std::fs::read(&disk).unwrap(), expected, "encrypted RAR5 LZ bytes");
+    assert_eq!(
+        std::fs::read(&disk).unwrap(),
+        expected,
+        "encrypted RAR5 LZ bytes"
+    );
 }
 
 // ── extraction: ZIP ──────────────────────────────────────────────────────────
@@ -522,7 +562,10 @@ fn repair_then_extract_damaged_multivolume_is_byte_identical_to_original() {
 
     // Damage three distinct 64 KiB slices in one volume (3 missing blocks <= 4 cap).
     let damaged_src = stage_files(&par2_rar5_set());
-    corrupt_slices(&damaged_src.path().join("fixture_rar5_lz_plain.part3.rar"), 3);
+    corrupt_slices(
+        &damaged_src.path().join("fixture_rar5_lz_plain.part3.rar"),
+        3,
+    );
     let damaged_out = tempfile::tempdir().unwrap();
     let repaired = process(
         &client,
@@ -720,7 +763,11 @@ fn abi_imports_match_frozen_contract() {
     let names: Vec<&str> = host_user.iter().map(|(name, _)| name.as_str()).collect();
     assert_eq!(
         names,
-        vec!["scryer_aes_cbc_decrypt", "scryer_crc32", "scryer_par2_reconstruct"],
+        vec![
+            "scryer_aes_cbc_decrypt",
+            "scryer_crc32",
+            "scryer_par2_reconstruct"
+        ],
         "frozen host ABI drifted: extism:host/user imports must be exactly the two §5 crypto \
          functions plus the WP2.5 scryer_par2_reconstruct reconstruct dispatch (RFC §13.6 item 6)"
     );
@@ -739,7 +786,10 @@ fn abi_imports_match_frozen_contract() {
         let params: Vec<ValType> = func.params().collect();
         let results: Vec<ValType> = func.results().collect();
         assert_eq!(params.len(), arity, "{name} arity");
-        assert!(params.iter().all(|p| matches!(p, ValType::I64)), "{name} params must be i64");
+        assert!(
+            params.iter().all(|p| matches!(p, ValType::I64)),
+            "{name} params must be i64"
+        );
         assert_eq!(results.len(), 1, "{name} returns one value");
         assert!(matches!(results[0], ValType::I64), "{name} returns i64");
     }
@@ -755,7 +805,10 @@ fn abi_imports_match_frozen_contract() {
         }
     }
     assert!(has_start, "artifact must export _start (wasip1 command)");
-    assert!(has_memory, "artifact must export a linear memory named 'memory'");
+    assert!(
+        has_memory,
+        "artifact must export a linear memory named 'memory'"
+    );
 }
 
 // ── benchmark (HI6, informal) ────────────────────────────────────────────────
@@ -784,7 +837,12 @@ fn benchmark_encrypted_rar_extraction() {
         let started = Instant::now();
         let response = process(
             &client,
-            extract_request(&archive, output.path(), ArchivePluginFormat::Rar, Some(RAR_PASSWORD)),
+            extract_request(
+                &archive,
+                output.path(),
+                ArchivePluginFormat::Rar,
+                Some(RAR_PASSWORD),
+            ),
         )
         .expect("benchmark extraction");
         let elapsed = started.elapsed().as_secs_f64();

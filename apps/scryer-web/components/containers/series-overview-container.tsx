@@ -269,7 +269,6 @@ export type EpisodeMediaFile = {
 
 type SeriesOverviewSnapshotTitle = TitleDetail & {
   collections?: TitleCollection[];
-  mediaFiles?: EpisodeMediaFile[];
 };
 
 type SeriesOverviewContainerProps = {
@@ -453,10 +452,6 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
       const nextTitle = snapshot.title;
       const nextCollections = nextTitle?.collections ?? [];
       const nextSeriesMovieLinks = nextTitle?.seriesMovieLinks ?? [];
-      const hasMediaFiles =
-        nextTitle !== null
-        && Object.prototype.hasOwnProperty.call(nextTitle, "mediaFiles");
-      const nextMediaFiles = hasMediaFiles ? nextTitle?.mediaFiles ?? [] : null;
       setTitle(nextTitle);
       if (nextTitle) {
         onTitleResolved?.({
@@ -481,9 +476,6 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
         setMediaFilesBySeriesMovieLink({});
         setEpisodeMediaFilesLoaded(new Set());
         setEpisodeMediaFilesLoading({});
-      } else if (nextMediaFiles) {
-        setMediaFilesByEpisode(groupMediaFilesByEpisode(nextMediaFiles));
-        setMediaFilesBySeriesMovieLink(groupMediaFilesBySeriesMovieLink(nextMediaFiles));
       }
       setEvents(snapshot.titleHistory);
       setReleaseBlocklistEntries(snapshot.titleReleaseBlocklist);

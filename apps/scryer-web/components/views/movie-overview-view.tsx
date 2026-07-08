@@ -1,6 +1,6 @@
 
 import * as React from "react";
-import { FolderOpen, Loader2, Pause, Play, RotateCcw, Search, X } from "lucide-react";
+import { Eye, FolderOpen, Loader2, Pause, Play, RotateCcw, Search, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { IconButton } from "@/components/ui/icon-button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -630,13 +630,13 @@ export function MovieOverviewView({
                 metadataFetchedAt={title.metadataFetchedAt}
                 createdAt={title.createdAt}
                 alt={title.name}
-                className="block h-48 w-32 rounded-lg object-cover shadow-lg sm:h-[270px] sm:w-[180px]"
-                placeholderClassName="flex h-48 w-32 items-center justify-center rounded-lg bg-muted text-sm text-muted-foreground/60 sm:h-[270px] sm:w-[180px]"
+                className="block h-[250px] w-[166px] rounded-lg object-cover shadow-lg sm:h-[351px] sm:w-[234px]"
+                placeholderClassName="flex h-[250px] w-[166px] items-center justify-center rounded-lg bg-muted text-sm text-muted-foreground/60 sm:h-[351px] sm:w-[234px]"
                 emptyLabel={t("title.noPoster")}
               />
             </div>
 
-            <div className="relative min-w-0 flex-1 flex flex-col pr-12 sm:min-h-[270px]">
+            <div className="relative min-w-0 flex-1 flex flex-col pr-12 sm:min-h-[351px]">
               {onBackToList ? (
                 <IconButton
                   label={t("label.close")}
@@ -848,12 +848,19 @@ export function MovieOverviewView({
             {canManageTitle && renameEnabled ? (
               <Button
                 id="movie-overview-rename-preview"
-                className="w-full sm:w-auto"
+                data-ui="movie-overview-rename-preview"
+                type="button"
+                className="w-full justify-center gap-2 rounded-md border border-transparent !bg-primary px-3 font-semibold !text-primary-foreground shadow-sm hover:!bg-primary/90 focus-visible:ring-[var(--scry-accent-ring)] sm:w-auto"
                 size="sm"
                 variant="primary"
                 onClick={onPreviewRename}
                 disabled={renamePreviewing || collections.length === 0}
               >
+                {renamePreviewing ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Eye className="h-4 w-4" />
+                )}
                 {renamePreviewing ? t("rename.previewing") : t("rename.previewButton")}
               </Button>
             ) : null}

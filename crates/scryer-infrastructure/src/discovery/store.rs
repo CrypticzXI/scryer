@@ -6,9 +6,9 @@ use scryer_application::{
     DiscoveryFacetRecord, DiscoveryItemLibraryProvenanceRecord, DiscoveryItemRecord,
     DiscoveryItemsPageRecord, DiscoveryItemsStorageQuery, DiscoveryPendingContextChangeRecord,
     DiscoveryPruneReport, DiscoveryPublicFeedCommit, DiscoveryRankComponentRecord,
-    DiscoveryRepository, DiscoverySectionItemsRecord,
-    DiscoverySectionRecord, DiscoverySourceTagRecord, DiscoverySubmittedSubjectRecord,
-    DiscoverySyncRunRecord, DiscoverySyncStateRecord, TitleExternalRating, TitleRatingSummary,
+    DiscoveryRepository, DiscoverySectionItemsRecord, DiscoverySectionRecord,
+    DiscoverySourceTagRecord, DiscoverySubmittedSubjectRecord, DiscoverySyncRunRecord,
+    DiscoverySyncStateRecord, TitleExternalRating, TitleRatingSummary,
 };
 use serde_json::Value as JsonValue;
 use std::collections::{HashMap, HashSet};
@@ -1006,10 +1006,8 @@ impl DiscoveryRepository for DiscoveryStore {
         // becomes) the active generation is retained. Atomicity also means a
         // failed prune leaves history untouched instead of half-deleted.
         let scope_key = scope_key.to_string();
-        let runs_deleted = SqlRuntime::run_in_transaction(
-            &self.datastore,
-            "prune_discovery_history",
-            move |tx| {
+        let runs_deleted =
+            SqlRuntime::run_in_transaction(&self.datastore, "prune_discovery_history", move |tx| {
                 let scope_key = scope_key.clone();
                 Box::pin(async move {
                     let rows = SqlRuntime::fetch_all(
@@ -1107,9 +1105,8 @@ impl DiscoveryRepository for DiscoveryStore {
 
                     Ok(runs_deleted)
                 })
-            },
-        )
-        .await?;
+            })
+            .await?;
 
         Ok(DiscoveryPruneReport { runs_deleted })
     }

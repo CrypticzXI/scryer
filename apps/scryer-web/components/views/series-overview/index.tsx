@@ -834,8 +834,8 @@ export function SeriesOverviewView({
                 metadataFetchedAt={title.metadataFetchedAt}
                 createdAt={title.createdAt}
                 alt={title.name}
-                className="block h-auto w-32 rounded-lg object-cover shadow-lg sm:w-[180px]"
-                placeholderClassName="flex h-48 w-32 items-center justify-center rounded-lg bg-muted text-sm text-muted-foreground/60 sm:h-[270px] sm:w-[180px]"
+                className="block h-auto w-[166px] rounded-lg object-cover shadow-lg sm:w-[234px]"
+                placeholderClassName="flex h-[250px] w-[166px] items-center justify-center rounded-lg bg-muted text-sm text-muted-foreground/60 sm:h-[351px] sm:w-[234px]"
                 emptyLabel={t("title.noPoster")}
               />
             </div>

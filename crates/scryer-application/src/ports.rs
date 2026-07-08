@@ -3019,10 +3019,7 @@ pub trait AcquisitionScopeStateRepository: Send + Sync {
         series_movie_link_id: &str,
     ) -> AppResult<()>;
 
-    async fn delete_acquisition_scope_states_for_episode(
-        &self,
-        episode_id: &str,
-    ) -> AppResult<()>;
+    async fn delete_acquisition_scope_states_for_episode(&self, episode_id: &str) -> AppResult<()>;
 
     async fn insert_release_decision(&self, decision: &ReleaseDecision) -> AppResult<String>;
 

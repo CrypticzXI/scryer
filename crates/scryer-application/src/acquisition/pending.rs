@@ -183,7 +183,9 @@ impl AppUseCase {
             };
 
             // Skip if already grabbed or completed
-            if wanted.status == AcquisitionScopeStatus::Grabbed || wanted.status == AcquisitionScopeStatus::Completed {
+            if wanted.status == AcquisitionScopeStatus::Grabbed
+                || wanted.status == AcquisitionScopeStatus::Completed
+            {
                 for pr in &releases {
                     let _ = self
                         .services
@@ -220,7 +222,10 @@ impl AppUseCase {
                             .services
                             .workflow
                             .pending_releases
-                            .supersede_pending_releases_for_acquisition_scope_state(&wanted_item_id, &pr.id)
+                            .supersede_pending_releases_for_acquisition_scope_state(
+                                &wanted_item_id,
+                                &pr.id,
+                            )
                             .await;
                         grabbed = true;
                         grabbed_count += 1;

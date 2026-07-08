@@ -8728,7 +8728,8 @@ dependencies = [
 
 [[package]]
 name = "weaver-reed-solomon"
-version = "0.1.1"
+version = "0.2.0"
+source = "git+https://github.com/scryer-media/rarpar.git?branch=main#dae3c8a4d2f049eee12feee85639e589c62782fd"
 dependencies = [
  "rayon",
 ]

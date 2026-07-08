@@ -274,10 +274,7 @@ fn host_reconstruct<T: 'static>(
         .stack_size(ELIM_STACK_BYTES)
         .spawn(move || {
             let _ = tx.send(matrix::build_repair_matrix(
-                &avail_u,
-                &missing_u,
-                &exponents,
-                &constants,
+                &avail_u, &missing_u, &exponents, &constants,
             ));
         })
         .expect("spawn PAR2 elimination worker");
@@ -406,10 +403,8 @@ fn pairwise_disjoint(ranges: &[(usize, usize)]) -> bool {
 
 /// True iff any range in `a` intersects any range in `b`.
 fn intersects_any(a: &[(usize, usize)], b: &[(usize, usize)]) -> bool {
-    a.iter().any(|&(pa, la)| {
-        b.iter()
-            .any(|&(pb, lb)| pa < pb + lb && pb < pa + la)
-    })
+    a.iter()
+        .any(|&(pa, la)| b.iter().any(|&(pb, lb)| pa < pb + lb && pb < pa + la))
 }
 
 /// Contiguous partition of row indices `0..n_out` across at most `workers`
@@ -470,7 +465,12 @@ mod tests {
 
     /// One PAR2 recovery block for exponent `e` over all original slices, using
     /// weaver's real field + kernel (the encode operation weaver performs).
-    fn encode_recovery(originals: &[Vec<u8>], constants: &[u16], exp: u32, slice_bytes: usize) -> Vec<u8> {
+    fn encode_recovery(
+        originals: &[Vec<u8>],
+        constants: &[u16],
+        exp: u32,
+        slice_bytes: usize,
+    ) -> Vec<u8> {
         let mut block = vec![0u8; slice_bytes];
         for (i, orig) in originals.iter().enumerate() {
             gf_simd::mul_acc_region(gf::pow(constants[i], exp), orig, &mut block);
@@ -610,9 +610,7 @@ mod tests {
 
     /// Instantiate the reconstruct guest with a given config and return the
     /// store, instance, and memory.
-    fn instantiate(
-        config: Par2HostConfig,
-    ) -> (Store<()>, wasmtime::Instance, wasmtime::Memory) {
+    fn instantiate(config: Par2HostConfig) -> (Store<()>, wasmtime::Instance, wasmtime::Memory) {
         let engine = Engine::default();
         let module = Module::new(&engine, RECONSTRUCT_GUEST_WAT).expect("compile guest");
         let mut linker: Linker<()> = Linker::new(&engine);
@@ -651,7 +649,13 @@ mod tests {
         let (config, _flag) = config_with_deadline(far_future());
         let (mut store, instance, memory) = instantiate(config);
 
-        let code = run(&mut store, &instance, &memory, &problem.image, problem.desc_ptr);
+        let code = run(
+            &mut store,
+            &instance,
+            &memory,
+            &problem.image,
+            problem.desc_ptr,
+        );
         assert_eq!(code, OK, "reconstruct should succeed");
 
         for (row, expected) in problem.expected.iter().enumerate() {
@@ -659,7 +663,10 @@ mod tests {
             memory
                 .read(&store, problem.out_offsets[row], &mut got)
                 .unwrap();
-            assert_eq!(&got, expected, "missing row {row} must be recovered exactly");
+            assert_eq!(
+                &got, expected,
+                "missing row {row} must be recovered exactly"
+            );
         }
     }
 
@@ -669,7 +676,13 @@ mod tests {
         let problem = build_problem(4, 32, &[0, 1, 2, 3], false);
         let (config, _flag) = config_with_deadline(far_future());
         let (mut store, instance, memory) = instantiate(config);
-        let code = run(&mut store, &instance, &memory, &problem.image, problem.desc_ptr);
+        let code = run(
+            &mut store,
+            &instance,
+            &memory,
+            &problem.image,
+            problem.desc_ptr,
+        );
         assert_eq!(code, OK);
         for (row, expected) in problem.expected.iter().enumerate() {
             let mut got = vec![0u8; problem.slice_bytes];
@@ -685,8 +698,17 @@ mod tests {
         let problem = build_problem(12, 64, &[2, 5, 7, 10], true);
         let (config, _flag) = config_with_deadline(far_future());
         let (mut store, instance, memory) = instantiate(config);
-        let code = run(&mut store, &instance, &memory, &problem.image, problem.desc_ptr);
-        assert_eq!(code, E_ALIAS, "overlapping outputs must be rejected pre-spawn");
+        let code = run(
+            &mut store,
+            &instance,
+            &memory,
+            &problem.image,
+            problem.desc_ptr,
+        );
+        assert_eq!(
+            code, E_ALIAS,
+            "overlapping outputs must be rejected pre-spawn"
+        );
     }
 
     #[test]
@@ -705,7 +727,13 @@ mod tests {
         .unwrap();
         let (config, _flag) = config_with_deadline(far_future());
         let (mut store, instance, memory) = instantiate(config);
-        let code = run(&mut store, &instance, &memory, &problem.image, problem.desc_ptr);
+        let code = run(
+            &mut store,
+            &instance,
+            &memory,
+            &problem.image,
+            problem.desc_ptr,
+        );
         assert_eq!(code, E_REGION);
     }
 
@@ -724,7 +752,13 @@ mod tests {
         .unwrap();
         let (config, _flag) = config_with_deadline(far_future());
         let (mut store, instance, memory) = instantiate(config);
-        let code = run(&mut store, &instance, &memory, &problem.image, problem.desc_ptr);
+        let code = run(
+            &mut store,
+            &instance,
+            &memory,
+            &problem.image,
+            problem.desc_ptr,
+        );
         assert_eq!(code, E_REGION);
     }
 
@@ -736,7 +770,13 @@ mod tests {
         abi::write_u32_array_entry(&mut problem.image, header.missing_idx_ptr, 0, 99).unwrap();
         let (config, _flag) = config_with_deadline(far_future());
         let (mut store, instance, memory) = instantiate(config);
-        let code = run(&mut store, &instance, &memory, &problem.image, problem.desc_ptr);
+        let code = run(
+            &mut store,
+            &instance,
+            &memory,
+            &problem.image,
+            problem.desc_ptr,
+        );
         assert_eq!(code, E_DIMS);
     }
 
@@ -747,7 +787,13 @@ mod tests {
         problem.image[problem.desc_ptr] ^= 0xFF;
         let (config, _flag) = config_with_deadline(far_future());
         let (mut store, instance, memory) = instantiate(config);
-        let code = run(&mut store, &instance, &memory, &problem.image, problem.desc_ptr);
+        let code = run(
+            &mut store,
+            &instance,
+            &memory,
+            &problem.image,
+            problem.desc_ptr,
+        );
         assert_eq!(code, E_DESC);
     }
 
@@ -784,9 +830,18 @@ mod tests {
         let past = Instant::now() - Duration::from_millis(1);
         let (config, flag) = config_with_deadline(past);
         let (mut store, instance, memory) = instantiate(config);
-        let code = run(&mut store, &instance, &memory, &problem.image, problem.desc_ptr);
+        let code = run(
+            &mut store,
+            &instance,
+            &memory,
+            &problem.image,
+            problem.desc_ptr,
+        );
         assert_eq!(code, E_DEADLINE);
-        assert!(flag.load(Ordering::Relaxed), "deadline flag must be set for the caller");
+        assert!(
+            flag.load(Ordering::Relaxed),
+            "deadline flag must be set for the caller"
+        );
     }
 
     #[test]
@@ -821,8 +876,7 @@ mod tests {
         let exponents: Vec<u32> = (0..missing.len() as u32).collect();
         let avail: Vec<usize> = (0..total).filter(|i| !missing.contains(i)).collect();
 
-        let coeffs =
-            matrix::build_repair_matrix(&avail, &missing, &exponents, &constants).unwrap();
+        let coeffs = matrix::build_repair_matrix(&avail, &missing, &exponents, &constants).unwrap();
         assert_eq!(coeffs.rows, missing.len());
         assert_eq!(coeffs.cols, avail.len() + missing.len());
 
@@ -837,7 +891,10 @@ mod tests {
             for (s, src) in sources.iter().enumerate() {
                 gf_simd::mul_acc_region(coeffs.get(row, s), src, &mut out);
             }
-            assert_eq!(out, originals[m], "row {row} (slice {m}) mismatch vs weaver ground truth");
+            assert_eq!(
+                out, originals[m],
+                "row {row} (slice {m}) mismatch vs weaver ground truth"
+            );
         }
     }
 
@@ -851,7 +908,13 @@ mod tests {
         abi::write_u32_array_entry(&mut problem.image, header.exponent_ptr, 1, 0).unwrap();
         let (config, _flag) = config_with_deadline(far_future());
         let (mut store, instance, memory) = instantiate(config);
-        let code = run(&mut store, &instance, &memory, &problem.image, problem.desc_ptr);
+        let code = run(
+            &mut store,
+            &instance,
+            &memory,
+            &problem.image,
+            problem.desc_ptr,
+        );
         assert_eq!(code, E_SINGULAR);
     }
 }

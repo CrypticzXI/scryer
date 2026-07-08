@@ -163,8 +163,7 @@ fn from_acquisition_settings(
         cross_tier_min_delta: settings.cross_tier_min_delta,
         forced_upgrade_delta_bypass: settings.forced_upgrade_delta_bypass,
         poll_interval_seconds: settings.poll_interval_seconds,
-        long_tail_backfill_max_scopes_per_cycle: settings
-            .long_tail_backfill_max_scopes_per_cycle,
+        long_tail_backfill_max_scopes_per_cycle: settings.long_tail_backfill_max_scopes_per_cycle,
         long_tail_reconverge_days: settings.long_tail_reconverge_days,
     }
 }

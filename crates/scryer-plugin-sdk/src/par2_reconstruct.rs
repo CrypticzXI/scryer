@@ -361,7 +361,10 @@ mod tests {
             Par2ReconstructStatus::DeadlineExceeded,
             Par2ReconstructStatus::DimensionCap,
         ] {
-            assert_eq!(Par2ReconstructStatus::from_code(status.code()), Some(status));
+            assert_eq!(
+                Par2ReconstructStatus::from_code(status.code()),
+                Some(status)
+            );
             assert_eq!(
                 Par2ReconstructStatus::is_error(status.code()),
                 status != Par2ReconstructStatus::Ok

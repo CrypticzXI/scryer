@@ -73,7 +73,9 @@ pub(crate) fn interpret_start_result(
         Ok(()) if !memory_denied => Ok(()),
         Err(ref error)
             if !memory_denied
-                && error.downcast_ref::<I32Exit>().is_some_and(|exit| exit.0 == 0) =>
+                && error
+                    .downcast_ref::<I32Exit>()
+                    .is_some_and(|exit| exit.0 == 0) =>
         {
             Ok(())
         }

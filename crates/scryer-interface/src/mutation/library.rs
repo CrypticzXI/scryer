@@ -11,6 +11,7 @@ use crate::mappers::{
     from_resolve_pending_import_result,
 };
 use crate::types::*;
+use crate::utils::map_add_input;
 
 static RENAME_IDEMPOTENCY_KEYS: LazyLock<Mutex<HashSet<String>>> =
     LazyLock::new(|| Mutex::new(HashSet::new()));
@@ -249,8 +250,18 @@ impl LibraryMutations {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
         let pending_import_id = input.pending_import_id.to_string();
+        let mut title_input = input.title;
+        title_input.library_id = None;
+        title_input.monitored = false;
+        title_input.tags.clear();
+        title_input.options = None;
+        title_input.source_hint = None;
+        title_input.source_kind = None;
+        title_input.source_title = None;
+        title_input.min_availability = None;
+        let request = map_add_input(title_input, None)?;
         let result = app
-            .resolve_pending_import(&actor, &pending_import_id, &input.tvdb_id)
+            .resolve_pending_import(&actor, &pending_import_id, request)
             .await
             .map_err(to_gql_error)?;
         Ok(from_resolve_pending_import_result(result))

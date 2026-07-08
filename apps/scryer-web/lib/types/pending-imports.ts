@@ -71,12 +71,15 @@ export type PendingImportBindingPreview = {
 export type ResolvePendingImportResult = {
   title: {
     id: string;
+    libraryId?: string | null;
     name: string;
     facet: string;
     monitored: boolean;
+    slug?: string | null;
   };
   created: boolean;
-  libraryScan: {
+  metadataHydrationState?: "pending" | "complete" | "not_required";
+  libraryScan?: {
     scanned: number;
     matched: number;
     imported: number;

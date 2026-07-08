@@ -412,7 +412,8 @@ pub struct PendingImportBindingPreviewPayload {
 pub struct ResolvePendingImportPayload {
     pub title: TitlePayload,
     pub created: bool,
-    pub library_scan: LibraryScanSummaryPayload,
+    pub library_scan: Option<LibraryScanSummaryPayload>,
+    pub metadata_hydration_state: AddTitleHydrationStateValue,
 }
 
 #[derive(SimpleObject, Clone)]

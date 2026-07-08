@@ -72,10 +72,13 @@ fn run_describe(module: &Module) -> AppResult<PluginDescriptor> {
     let engine = engine::shared_engine();
 
     let mut linker: Linker<HostCtx> = Linker::new(engine);
-    wasmtime_wasi::p1::add_to_linker_sync(&mut linker, |ctx: &mut HostCtx| &mut ctx.wasi)
-        .map_err(|error| {
-            AppError::Repository(format!("failed to wire WASI for archive describe: {error:#}"))
-        })?;
+    wasmtime_wasi::p1::add_to_linker_sync(&mut linker, |ctx: &mut HostCtx| &mut ctx.wasi).map_err(
+        |error| {
+            AppError::Repository(format!(
+                "failed to wire WASI for archive describe: {error:#}"
+            ))
+        },
+    )?;
     // The command binary imports the §5 crypto ABI even though describe does not
     // call it — the imports must be satisfied to instantiate at all.
     crypto_host::add_to_linker(&mut linker).map_err(|error| {
@@ -162,7 +165,9 @@ fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
     if haystack.len() < needle.len() {
         return false;
     }
-    haystack.windows(needle.len()).any(|window| window == needle)
+    haystack
+        .windows(needle.len())
+        .any(|window| window == needle)
 }
 
 #[cfg(test)]

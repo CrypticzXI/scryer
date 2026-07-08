@@ -5549,8 +5549,174 @@ async fn save_external_import_library_paths_accepts_custom_selected_paths() {
     );
 }
 
+fn pending_import_title_request(
+    facet: MediaFacet,
+    name: &str,
+    tvdb_id: Option<&str>,
+    year: Option<i32>,
+) -> NewTitle {
+    NewTitle {
+        name: name.to_string(),
+        facet,
+        monitored: true,
+        tags: vec!["should-be-cleared".to_string()],
+        external_ids: tvdb_id
+            .map(|value| {
+                vec![ExternalId {
+                    source: "tvdb".to_string(),
+                    value: value.to_string(),
+                }]
+            })
+            .unwrap_or_default(),
+        root_folder_id: Some("should-be-cleared".to_string()),
+        min_availability: Some("should-be-cleared".to_string()),
+        poster_url: None,
+        year,
+        overview: Some("Matched overview".to_string()),
+        sort_title: Some(name.to_string()),
+        slug: Some(name.to_ascii_lowercase().replace(' ', "-")),
+        runtime_minutes: Some(101),
+        language: Some("eng".to_string()),
+        content_status: Some("Released".to_string()),
+    }
+}
+
+struct PendingImportSearchMetadataGateway {
+    results: Vec<RichMetadataSearchItem>,
+}
+
+#[async_trait]
+impl MetadataGateway for PendingImportSearchMetadataGateway {
+    async fn search_tvdb(
+        &self,
+        _query: &str,
+        _type_hint: &str,
+        _year: Option<i32>,
+    ) -> AppResult<Vec<MetadataSearchItem>> {
+        Err(AppError::Repository("not implemented in tests".into()))
+    }
+
+    async fn search_tvdb_batch(
+        &self,
+        _queries: &[MetadataSearchQuery],
+        _language: &str,
+    ) -> AppResult<HashMap<MetadataSearchQuery, Vec<MetadataSearchItem>>> {
+        Err(AppError::Repository("not implemented in tests".into()))
+    }
+
+    async fn search_tvdb_rich(
+        &self,
+        _query: &str,
+        _type_hint: &str,
+        _limit: i32,
+        _language: &str,
+        _year: Option<i32>,
+    ) -> AppResult<Vec<RichMetadataSearchItem>> {
+        Ok(self.results.clone())
+    }
+
+    async fn search_tvdb_multi(
+        &self,
+        _query: &str,
+        _limit: i32,
+        _language: &str,
+    ) -> AppResult<MultiMetadataSearchResult> {
+        Err(AppError::Repository("not implemented in tests".into()))
+    }
+
+    async fn get_movie(&self, _tvdb_id: i64, _language: &str) -> AppResult<MovieMetadata> {
+        Err(AppError::Repository("not implemented in tests".into()))
+    }
+
+    async fn get_series(&self, _tvdb_id: i64, _language: &str) -> AppResult<SeriesMetadata> {
+        Err(AppError::Repository("not implemented in tests".into()))
+    }
+
+    async fn get_metadata_bulk(
+        &self,
+        _movie_tvdb_ids: &[i64],
+        _series_tvdb_ids: &[i64],
+        _language: &str,
+    ) -> AppResult<BulkMetadataResult> {
+        Err(AppError::Repository("not implemented in tests".into()))
+    }
+}
+
+fn pending_import_search_result(tvdb_id: &str, name: &str) -> RichMetadataSearchItem {
+    RichMetadataSearchItem {
+        tvdb_id: tvdb_id.to_string(),
+        name: name.to_string(),
+        imdb_id: None,
+        slug: Some(name.to_ascii_lowercase().replace(' ', "-")),
+        type_hint: Some("movie".to_string()),
+        year: Some(2020),
+        status: Some("Released".to_string()),
+        overview: None,
+        popularity: None,
+        poster_url: None,
+        language: Some("eng".to_string()),
+        runtime_minutes: Some(101),
+        sort_title: Some(name.to_string()),
+    }
+}
+
 #[tokio::test]
-async fn resolve_pending_import_creates_unmonitored_movie_title_and_clears_item() {
+async fn pending_import_title_search_filters_titles_already_in_same_library() {
+    let settings = Arc::new(StoredSettingsRepo::default());
+    let library_scanner = Arc::new(MutableLibraryScanner::default());
+    let unmatched_items = Arc::new(TrackingLibraryScanUnmatchedItemRepo::default());
+    let (app, user) = bootstrap_with_scan_unmatched_and_metadata_tracking(
+        settings,
+        library_scanner,
+        unmatched_items.clone(),
+        Arc::new(PendingImportSearchMetadataGateway {
+            results: vec![
+                pending_import_search_result("123456", "Existing Movie"),
+                pending_import_search_result("222222", "New Movie"),
+            ],
+        }),
+    );
+
+    let mut existing_request =
+        pending_import_title_request(MediaFacet::Movie, "Existing Movie", Some("123456"), Some(2020));
+    existing_request.root_folder_id = None;
+    existing_request.min_availability = None;
+    app.create_title_without_hydration(&user, existing_request)
+        .await
+        .expect("seed existing title");
+
+    unmatched_items
+        .upsert_library_scan_unmatched_item(&build_test_unmatched_item(
+            "movie-search-filter-1",
+            MediaFacet::Movie,
+            "/movies",
+            "/movies/Unknown.Movie.2020.mkv",
+            "Unknown Movie",
+            "Existing Movie",
+            Some(2020),
+        ))
+        .await
+        .expect("seed pending import");
+
+    let results = app
+        .pending_import_title_search(
+            &user,
+            "movie-search-filter-1",
+            "Movie",
+            8,
+            "eng",
+            Some(2020),
+        )
+        .await
+        .expect("search pending import titles");
+
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].tvdb_id, "222222");
+    assert_eq!(results[0].name, "New Movie");
+}
+
+#[tokio::test]
+async fn resolve_pending_import_creates_unmonitored_movie_title_and_keeps_item_bound() {
     let tempdir = tempfile::tempdir().expect("tempdir");
     let movie_path = tempdir.path().join("Unknown.Movie.2020.mkv");
     std::fs::write(&movie_path, b"fake-video").expect("seed movie file");
@@ -5620,26 +5786,38 @@ async fn resolve_pending_import_creates_unmonitored_movie_title_and_clears_item(
         .expect("seed pending import");
 
     let result = app
-        .resolve_pending_import(&user, "movie-resolve-1", "123456")
+        .resolve_pending_import(
+            &user,
+            "movie-resolve-1",
+            pending_import_title_request(
+                MediaFacet::Movie,
+                "Matched Movie",
+                Some("123456"),
+                Some(2020),
+            ),
+        )
         .await
         .expect("resolve pending import");
 
     assert!(result.created);
     assert!(!result.title.monitored);
     assert_eq!(result.title.name, "Matched Movie");
-    assert!(
-        result.library_scan.scanned
-            + result.library_scan.matched
-            + result.library_scan.imported
-            + result.library_scan.skipped
-            + result.library_scan.unmatched
-            > 0
-    );
-    assert!(unmatched_items.items().await.is_empty());
+    assert!(result.title.tags.is_empty());
+    assert_ne!(result.title.root_folder_id, "should-be-cleared");
+    assert!(result.title.min_availability.is_none());
+    assert!(result.library_scan.is_none());
+    assert!(matches!(
+        result.metadata_hydration_state,
+        AddTitleHydrationState::Pending
+    ));
+    let items = unmatched_items.items().await;
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].status, PendingImportStatus::Pending);
+    assert_eq!(items[0].title_id.as_deref(), Some(result.title.id.as_str()));
 }
 
 #[tokio::test]
-async fn resolve_ignored_pending_import_creates_unmonitored_movie_title_and_clears_item() {
+async fn resolve_ignored_pending_import_creates_unmonitored_movie_title_and_moves_item_pending() {
     let tempdir = tempfile::tempdir().expect("tempdir");
     let movie_path = tempdir.path().join("Ignored.Movie.2020.mkv");
     std::fs::write(&movie_path, b"fake-video").expect("seed movie file");
@@ -5712,13 +5890,25 @@ async fn resolve_ignored_pending_import_creates_unmonitored_movie_title_and_clea
         .expect("seed ignored import");
 
     let result = app
-        .resolve_pending_import(&user, "movie-resolve-ignored-1", "123456")
+        .resolve_pending_import(
+            &user,
+            "movie-resolve-ignored-1",
+            pending_import_title_request(
+                MediaFacet::Movie,
+                "Matched Movie",
+                Some("123456"),
+                Some(2020),
+            ),
+        )
         .await
         .expect("resolve ignored pending import");
 
     assert!(result.created);
     assert_eq!(result.title.name, "Matched Movie");
-    assert!(unmatched_items.items().await.is_empty());
+    let items = unmatched_items.items().await;
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].status, PendingImportStatus::Pending);
+    assert_eq!(items[0].title_id.as_deref(), Some(result.title.id.as_str()));
 }
 
 #[tokio::test]
@@ -5762,9 +5952,13 @@ async fn resolve_pending_import_failure_keeps_pending_item() {
         .expect("seed pending import");
 
     let error = app
-        .resolve_pending_import(&user, "movie-resolve-failure-1", "999999")
+        .resolve_pending_import(
+            &user,
+            "movie-resolve-failure-1",
+            pending_import_title_request(MediaFacet::Movie, "Matched Movie", None, Some(2020)),
+        )
         .await
-        .expect_err("resolution should fail without metadata");
+        .expect_err("resolution should fail without tvdb id");
     assert!(!error.to_string().trim().is_empty());
     assert_eq!(unmatched_items.items().await.len(), 1);
     assert!(
@@ -5993,7 +6187,7 @@ async fn interactive_hydration_refreshes_recommendations_inline() {
 }
 
 #[tokio::test]
-async fn resolve_pending_import_failure_restores_existing_title_folder_path() {
+async fn resolve_pending_import_rejects_existing_title_in_same_library() {
     let tempdir = tempfile::tempdir().expect("tempdir");
     let movie_path = tempdir.path().join("Missing.Movie.2020.mkv");
 
@@ -6062,10 +6256,23 @@ async fn resolve_pending_import_failure_restores_existing_title_folder_path() {
         .expect("seed pending import");
 
     let error = app
-        .resolve_pending_import(&user, "movie-resolve-existing-failure-1", "123456")
+        .resolve_pending_import(
+            &user,
+            "movie-resolve-existing-failure-1",
+            pending_import_title_request(
+                MediaFacet::Movie,
+                "Existing Movie",
+                Some("123456"),
+                Some(2020),
+            ),
+        )
         .await
-        .expect_err("resolution should fail when scan finds no files");
-    assert!(!error.to_string().trim().is_empty());
+        .expect_err("resolution should fail when title already exists");
+    assert!(
+        error
+            .to_string()
+            .contains("title already exists in this library")
+    );
     assert_eq!(unmatched_items.items().await.len(), 1);
 
     let refreshed_title = app

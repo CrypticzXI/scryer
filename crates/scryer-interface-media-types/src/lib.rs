@@ -2305,7 +2305,7 @@ pub struct PendingImportConnectionPayload {
 #[derive(InputObject)]
 pub struct ResolvePendingImportInput {
     pub pending_import_id: ID,
-    pub tvdb_id: String,
+    pub title: AddTitleInput,
 }
 
 #[derive(SimpleObject, Clone)]

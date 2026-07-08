@@ -579,18 +579,14 @@ export const scanTitleLibraryMutation = `mutation ScanTitleLibrary($titleId: ID!
 export const resolvePendingImportMutation = `mutation ResolvePendingImport($input: ResolvePendingImportInput!) {
   resolvePendingImport(input: $input) {
     created
-    libraryScan {
-      scanned
-      matched
-      imported
-      skipped
-      unmatched
-    }
+    metadataHydrationState
     title {
       id
+      libraryId
       name
       facet
       monitored
+      slug
     }
   }
 }`;

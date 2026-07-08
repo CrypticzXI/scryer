@@ -5,11 +5,11 @@ mod common;
 use chrono::{Duration, Utc};
 use common::TestContext;
 use scryer_application::{
+    AcquisitionScopeCompleteTransition, AcquisitionScopeStateRepository, AcquisitionScopeStatus,
     AcquisitionStateRepository, AppError, DownloadSourceIdentity, DownloadSourceKind,
     DownloadSubmission, DownloadSubmissionPurpose, DownloadSubmissionRepository, LibraryRepository,
     LibraryRootDraft, PendingReleaseRepository, PendingReleaseStatus, SubmissionScope,
-    SuccessfulGrabCommit, TitleRepository, UserRepository, AcquisitionScopeCompleteTransition,
-    AcquisitionScopeStateRepository, AcquisitionScopeStatus,
+    SuccessfulGrabCommit, TitleRepository, UserRepository,
 };
 use scryer_domain::{
     Id, Library, LibraryGrant, LibraryPermission, LibraryPermissionMask, MediaFacet, Title, User,
@@ -248,7 +248,12 @@ async fn list_pending_releases_returns_only_waiting() {
     let app = ctx.app.clone();
 
     seed_title(&ctx, "title-1").await;
-    let wi = seed_wanted_item(&ctx, "title-1", scryer_application::AcquisitionScopeStatus::Wanted).await;
+    let wi = seed_wanted_item(
+        &ctx,
+        "title-1",
+        scryer_application::AcquisitionScopeStatus::Wanted,
+    )
+    .await;
     seed_pending_release(
         &ctx,
         &wi.id,
@@ -288,7 +293,12 @@ async fn standby_listing_returns_only_standby_rows() {
     let ctx = TestContext::new().await;
 
     seed_title(&ctx, "title-1").await;
-    let wi = seed_wanted_item(&ctx, "title-1", scryer_application::AcquisitionScopeStatus::Wanted).await;
+    let wi = seed_wanted_item(
+        &ctx,
+        "title-1",
+        scryer_application::AcquisitionScopeStatus::Wanted,
+    )
+    .await;
     let standby = seed_pending_release(
         &ctx,
         &wi.id,
@@ -322,7 +332,12 @@ async fn delete_standby_for_wanted_item_leaves_waiting_rows_intact() {
     let ctx = TestContext::new().await;
 
     seed_title(&ctx, "title-1").await;
-    let wi = seed_wanted_item(&ctx, "title-1", scryer_application::AcquisitionScopeStatus::Wanted).await;
+    let wi = seed_wanted_item(
+        &ctx,
+        "title-1",
+        scryer_application::AcquisitionScopeStatus::Wanted,
+    )
+    .await;
     let standby = seed_pending_release(
         &ctx,
         &wi.id,
@@ -373,7 +388,12 @@ async fn compare_and_set_pending_release_status_claims_once() {
     let ctx = TestContext::new().await;
 
     seed_title(&ctx, "title-1").await;
-    let wi = seed_wanted_item(&ctx, "title-1", scryer_application::AcquisitionScopeStatus::Wanted).await;
+    let wi = seed_wanted_item(
+        &ctx,
+        "title-1",
+        scryer_application::AcquisitionScopeStatus::Wanted,
+    )
+    .await;
     let standby = seed_pending_release(
         &ctx,
         &wi.id,
@@ -423,7 +443,12 @@ async fn commit_successful_grab_supersedes_all_pending_siblings_for_normal_grab(
     let ctx = TestContext::new().await;
 
     seed_title(&ctx, "title-1").await;
-    let wi = seed_wanted_item(&ctx, "title-1", scryer_application::AcquisitionScopeStatus::Wanted).await;
+    let wi = seed_wanted_item(
+        &ctx,
+        "title-1",
+        scryer_application::AcquisitionScopeStatus::Wanted,
+    )
+    .await;
     let waiting = seed_pending_release(
         &ctx,
         &wi.id,
@@ -485,7 +510,10 @@ async fn commit_successful_grab_supersedes_all_pending_siblings_for_normal_grab(
         .await
         .expect("get wanted")
         .expect("wanted item exists");
-    assert_eq!(wanted.status, scryer_application::AcquisitionScopeStatus::Grabbed);
+    assert_eq!(
+        wanted.status,
+        scryer_application::AcquisitionScopeStatus::Grabbed
+    );
     assert_eq!(wanted.last_search_at.as_deref(), Some(grabbed_at.as_str()));
     assert_eq!(
         wanted.grabbed_release.as_deref(),
@@ -528,7 +556,12 @@ async fn commit_successful_grab_marks_selected_pending_release_grabbed() {
     let ctx = TestContext::new().await;
 
     seed_title(&ctx, "title-1").await;
-    let wi = seed_wanted_item(&ctx, "title-1", scryer_application::AcquisitionScopeStatus::Wanted).await;
+    let wi = seed_wanted_item(
+        &ctx,
+        "title-1",
+        scryer_application::AcquisitionScopeStatus::Wanted,
+    )
+    .await;
     let claimed = seed_pending_release(
         &ctx,
         &wi.id,
@@ -841,7 +874,12 @@ async fn dismiss_sets_status_to_dismissed() {
     let app = ctx.app.clone();
 
     seed_title(&ctx, "title-1").await;
-    let wi = seed_wanted_item(&ctx, "title-1", scryer_application::AcquisitionScopeStatus::Wanted).await;
+    let wi = seed_wanted_item(
+        &ctx,
+        "title-1",
+        scryer_application::AcquisitionScopeStatus::Wanted,
+    )
+    .await;
     let pr = seed_pending_release(
         &ctx,
         &wi.id,
@@ -891,7 +929,12 @@ async fn dismiss_non_waiting_returns_error() {
     let app = ctx.app.clone();
 
     seed_title(&ctx, "title-1").await;
-    let wi = seed_wanted_item(&ctx, "title-1", scryer_application::AcquisitionScopeStatus::Wanted).await;
+    let wi = seed_wanted_item(
+        &ctx,
+        "title-1",
+        scryer_application::AcquisitionScopeStatus::Wanted,
+    )
+    .await;
     let pr = seed_pending_release(
         &ctx,
         &wi.id,
@@ -931,7 +974,12 @@ async fn force_grab_non_waiting_returns_error() {
     let app = ctx.app.clone();
 
     seed_title(&ctx, "title-1").await;
-    let wi = seed_wanted_item(&ctx, "title-1", scryer_application::AcquisitionScopeStatus::Wanted).await;
+    let wi = seed_wanted_item(
+        &ctx,
+        "title-1",
+        scryer_application::AcquisitionScopeStatus::Wanted,
+    )
+    .await;
     let pr = seed_pending_release(
         &ctx,
         &wi.id,
@@ -959,7 +1007,12 @@ async fn process_expired_skips_when_none_expired() {
     let app = ctx.app.clone();
 
     seed_title(&ctx, "title-1").await;
-    let wi = seed_wanted_item(&ctx, "title-1", scryer_application::AcquisitionScopeStatus::Wanted).await;
+    let wi = seed_wanted_item(
+        &ctx,
+        "title-1",
+        scryer_application::AcquisitionScopeStatus::Wanted,
+    )
+    .await;
     // delay_until is 6 hours from now — not expired
     seed_pending_release(
         &ctx,
@@ -985,7 +1038,12 @@ async fn process_expired_marks_expired_when_wanted_item_gone() {
 
     // Create pending release referencing a wanted item, then delete the wanted item
     seed_title(&ctx, "title-1").await;
-    let wi = seed_wanted_item(&ctx, "title-1", scryer_application::AcquisitionScopeStatus::Wanted).await;
+    let wi = seed_wanted_item(
+        &ctx,
+        "title-1",
+        scryer_application::AcquisitionScopeStatus::Wanted,
+    )
+    .await;
     let pr = seed_pending_release(
         &ctx,
         &wi.id,
@@ -1023,7 +1081,12 @@ async fn process_expired_supersedes_when_already_grabbed() {
     let app = ctx.app.clone();
 
     seed_title(&ctx, "title-1").await;
-    let wi = seed_wanted_item(&ctx, "title-1", scryer_application::AcquisitionScopeStatus::Grabbed).await;
+    let wi = seed_wanted_item(
+        &ctx,
+        "title-1",
+        scryer_application::AcquisitionScopeStatus::Grabbed,
+    )
+    .await;
     let pr = seed_pending_release(
         &ctx,
         &wi.id,

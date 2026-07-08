@@ -4,10 +4,11 @@ use std::sync::{Arc, RwLock};
 use async_trait::async_trait;
 use chrono::{Duration, Utc};
 use scryer_application::{
-    AppResult, BlocklistRepository, DownloadSourceKind, HousekeepingMediaFileRootRow,
-    HousekeepingRepository, LibraryProbeRepository, LibraryProbeSignature, NewBlocklistEntry,
-    PendingRelease, PendingReleaseRepository, PendingReleaseStatus, ReleaseDecision,
-    SubtitleDownloadRepository, AcquisitionScopeState, AcquisitionScopeStateRepository, AcquisitionScopeStatesQuery, AcquisitionScopeStatus,
+    AcquisitionScopeState, AcquisitionScopeStateRepository, AcquisitionScopeStatesQuery,
+    AcquisitionScopeStatus, AppResult, BlocklistRepository, DownloadSourceKind,
+    HousekeepingMediaFileRootRow, HousekeepingRepository, LibraryProbeRepository,
+    LibraryProbeSignature, NewBlocklistEntry, PendingRelease, PendingReleaseRepository,
+    PendingReleaseStatus, ReleaseDecision, SubtitleDownloadRepository,
     subtitles::{ExternalSubtitleDetectionSource, ExternalSubtitleProbeCacheEntry},
 };
 use scryer_domain::{
@@ -554,7 +555,10 @@ fn wanted_upsert_sql(datastore: &StoreDatastore, item: &AcquisitionScopeState) -
     )
 }
 
-fn wanted_upsert_args(datastore: &StoreDatastore, item: &AcquisitionScopeState) -> AppResult<Vec<SqlArg>> {
+fn wanted_upsert_args(
+    datastore: &StoreDatastore,
+    item: &AcquisitionScopeState,
+) -> AppResult<Vec<SqlArg>> {
     let now = Utc::now().to_rfc3339();
     Ok(vec![
         SqlArg::Text(item.id.clone()),
@@ -649,31 +653,45 @@ async fn fetch_seed_target_tx(
 
 #[async_trait]
 impl AcquisitionScopeStateRepository for WantedStore {
-    async fn upsert_acquisition_scope_state(&self, item: &AcquisitionScopeState) -> AppResult<String> {
+    async fn upsert_acquisition_scope_state(
+        &self,
+        item: &AcquisitionScopeState,
+    ) -> AppResult<String> {
         let item = item.clone();
         let datastore = self.datastore.clone();
-        SqlRuntime::run_in_transaction(&self.datastore, "upsert_acquisition_scope_state", move |tx| {
-            let datastore = datastore.clone();
-            let item = item.clone();
-            Box::pin(async move { execute_wanted_upsert_tx(tx, &datastore, &item).await })
-        })
+        SqlRuntime::run_in_transaction(
+            &self.datastore,
+            "upsert_acquisition_scope_state",
+            move |tx| {
+                let datastore = datastore.clone();
+                let item = item.clone();
+                Box::pin(async move { execute_wanted_upsert_tx(tx, &datastore, &item).await })
+            },
+        )
         .await
     }
 
-    async fn ensure_acquisition_scope_state(&self, item: &AcquisitionScopeState) -> AppResult<String> {
+    async fn ensure_acquisition_scope_state(
+        &self,
+        item: &AcquisitionScopeState,
+    ) -> AppResult<String> {
         let item = item.clone();
         let datastore = self.datastore.clone();
-        SqlRuntime::run_in_transaction(&self.datastore, "ensure_acquisition_scope_state", move |tx| {
-            let datastore = datastore.clone();
-            let item = item.clone();
-            Box::pin(async move {
-                if let Some(existing) = fetch_seed_target_tx(tx, &item).await? {
-                    return Ok(existing.id);
-                }
-                execute_wanted_upsert_tx(tx, &datastore, &item).await?;
-                Ok(item.id.clone())
-            })
-        })
+        SqlRuntime::run_in_transaction(
+            &self.datastore,
+            "ensure_acquisition_scope_state",
+            move |tx| {
+                let datastore = datastore.clone();
+                let item = item.clone();
+                Box::pin(async move {
+                    if let Some(existing) = fetch_seed_target_tx(tx, &item).await? {
+                        return Ok(existing.id);
+                    }
+                    execute_wanted_upsert_tx(tx, &datastore, &item).await?;
+                    Ok(item.id.clone())
+                })
+            },
+        )
         .await
     }
 
@@ -709,7 +727,11 @@ impl AcquisitionScopeStateRepository for WantedStore {
         Ok(())
     }
 
-    async fn record_acquisition_scope_search_attempt(&self, id: &str, last_search_at: &str) -> AppResult<()> {
+    async fn record_acquisition_scope_search_attempt(
+        &self,
+        id: &str,
+        last_search_at: &str,
+    ) -> AppResult<()> {
         let now = Utc::now().to_rfc3339();
         execute_datastore_write(
             &self.datastore,
@@ -811,9 +833,13 @@ impl AcquisitionScopeStateRepository for WantedStore {
                 ],
             )
         };
-        let rows =
-            execute_datastore_write(&self.datastore, "complete_acquisition_scope_for_title", sql, args)
-                .await?;
+        let rows = execute_datastore_write(
+            &self.datastore,
+            "complete_acquisition_scope_for_title",
+            sql,
+            args,
+        )
+        .await?;
         Ok(rows > 0)
     }
 
@@ -828,7 +854,10 @@ impl AcquisitionScopeStateRepository for WantedStore {
         Ok(())
     }
 
-    async fn delete_acquisition_scope_states_for_collection(&self, collection_id: &str) -> AppResult<()> {
+    async fn delete_acquisition_scope_states_for_collection(
+        &self,
+        collection_id: &str,
+    ) -> AppResult<()> {
         execute_datastore_write(
             &self.datastore,
             "delete_acquisition_scope_states_for_collection",
@@ -900,7 +929,10 @@ impl AcquisitionScopeStateRepository for WantedStore {
         Ok(decision.id.clone())
     }
 
-    async fn get_acquisition_scope_state_by_id(&self, id: &str) -> AppResult<Option<AcquisitionScopeState>> {
+    async fn get_acquisition_scope_state_by_id(
+        &self,
+        id: &str,
+    ) -> AppResult<Option<AcquisitionScopeState>> {
         let sql = format!("{} WHERE w.id = {{}}", wanted_item_select_sql());
         SqlRuntime::fetch_optional(
             self.datastore.read_exec(),
@@ -913,7 +945,10 @@ impl AcquisitionScopeStateRepository for WantedStore {
         .transpose()
     }
 
-    async fn list_acquisition_scope_states(&self, query: AcquisitionScopeStatesQuery) -> AppResult<Vec<AcquisitionScopeState>> {
+    async fn list_acquisition_scope_states(
+        &self,
+        query: AcquisitionScopeStatesQuery,
+    ) -> AppResult<Vec<AcquisitionScopeState>> {
         if let StoreDatastore::Sqlite { pool, .. } = &self.datastore
             && sqlite_title_search_requires_spellfix(&query)
         {
@@ -935,7 +970,10 @@ impl AcquisitionScopeStateRepository for WantedStore {
             .collect()
     }
 
-    async fn count_acquisition_scope_states(&self, query: AcquisitionScopeStatesQuery) -> AppResult<i64> {
+    async fn count_acquisition_scope_states(
+        &self,
+        query: AcquisitionScopeStatesQuery,
+    ) -> AppResult<i64> {
         if let StoreDatastore::Sqlite { pool, .. } = &self.datastore
             && sqlite_title_search_requires_spellfix(&query)
         {
@@ -1320,11 +1358,10 @@ impl HousekeepingRepository for HousekeepingStore {
                         // Throttled full VACUUM (RFC 121 SW4.3): only reclaim when
                         // the free-page ratio shows meaningful bloat, so the daily
                         // maintenance tick does not pay the VACUUM cost every run.
-                        let freelist_pages: i64 =
-                            sqlx::query_scalar("PRAGMA freelist_count")
-                                .fetch_one(&pool)
-                                .await
-                                .map_err(repo_err)?;
+                        let freelist_pages: i64 = sqlx::query_scalar("PRAGMA freelist_count")
+                            .fetch_one(&pool)
+                            .await
+                            .map_err(repo_err)?;
                         let total_pages: i64 = sqlx::query_scalar("PRAGMA page_count")
                             .fetch_one(&pool)
                             .await

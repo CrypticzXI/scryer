@@ -37,7 +37,12 @@ async fn complete_wanted_item_for_title_updates_matching_row_in_one_step() {
     .expect("wanted item should insert");
 
     let completed = workflow
-        .complete_acquisition_scope_for_title("title-series", None, Some("2026-04-20T00:00:00Z"), None)
+        .complete_acquisition_scope_for_title(
+            "title-series",
+            None,
+            Some("2026-04-20T00:00:00Z"),
+            None,
+        )
         .await
         .expect("completion should succeed");
 

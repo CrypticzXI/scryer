@@ -1,4 +1,6 @@
-use scryer_application::{AppError, AppResult, ReleaseDecision, AcquisitionScopeState, AcquisitionScopeStatesQuery};
+use scryer_application::{
+    AcquisitionScopeState, AcquisitionScopeStatesQuery, AppError, AppResult, ReleaseDecision,
+};
 use sqlx::sqlite::SqliteRow;
 use sqlx::{QueryBuilder, Row, Sqlite, SqlitePool};
 

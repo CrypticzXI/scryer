@@ -1,6 +1,6 @@
 import * as React from "react";
 import { useClient } from "urql";
-import { Search } from "lucide-react";
+import { Eye, Loader2, Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Select,
@@ -432,13 +432,19 @@ export function TitleSettingsPanel({
           <div className="flex justify-end">
             <Button
               id="series-overview-rename-preview"
+              data-ui="series-overview-rename-preview"
               type="button"
               variant="primary"
               size="sm"
-              className="shrink-0"
+              className="w-full shrink-0 justify-center gap-2 rounded-md border border-transparent !bg-primary px-3 font-semibold !text-primary-foreground shadow-sm hover:!bg-primary/90 focus-visible:ring-[var(--scry-accent-ring)] sm:w-auto"
               onClick={() => void handlePreviewRename()}
               disabled={saving || renamePreviewing || renameApplying}
             >
+              {renamePreviewing ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Eye className="h-4 w-4" />
+              )}
               {renamePreviewing ? t("rename.previewing") : t("rename.previewButton")}
             </Button>
           </div>

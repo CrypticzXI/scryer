@@ -1,9 +1,10 @@
 use super::*;
 use chrono::Utc;
 use scryer_application::{
-    AppError, AppResult, CollectionUpdate, DomainEventRepository, DownloadClientConfigRepository,
-    DownloadQueueCommandRepository, DownloadSourceIdentity, DownloadSubmission,
-    DownloadSubmissionIdentity, DownloadSubmissionRepository, EpisodeUpdate,
+    AcquisitionScopeState, AcquisitionScopeStateRepository, AcquisitionScopeStatesQuery,
+    AcquisitionScopeStatus, AppError, AppResult, CollectionUpdate, DomainEventRepository,
+    DownloadClientConfigRepository, DownloadQueueCommandRepository, DownloadSourceIdentity,
+    DownloadSubmission, DownloadSubmissionIdentity, DownloadSubmissionRepository, EpisodeUpdate,
     HousekeepingRepository, ImportRepository, InsertMediaFileInput, LibraryScanUnmatchedItem,
     LibraryScanUnmatchedItemRepository, LibraryScanUnmatchedSearchAttempt, MediaFileRepository,
     MediaFileRole, NotificationChannelRepository, NotificationSubscriptionRepository,
@@ -14,8 +15,7 @@ use scryer_application::{
     TitleCatalogFilter, TitleCatalogSort, TitleCatalogSortKey, TitleExternalIdLookup,
     TitleExternalRating, TitleImageBlob, TitleImageKind, TitleImageRepository,
     TitleImageSourceResult, TitleImageVariantRecord, TitleMetadataUpdate, TitleRatingSummary,
-    TitleRepository, UserRepository, AcquisitionScopeState, AcquisitionScopeStateRepository, AcquisitionScopeStatesQuery,
-    AcquisitionScopeStatus,
+    TitleRepository, UserRepository,
     subtitles::{ExternalSubtitleDetectionSource, ExternalSubtitleProbeCacheEntry},
 };
 use scryer_domain::{

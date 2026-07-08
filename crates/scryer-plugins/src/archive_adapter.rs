@@ -220,7 +220,10 @@ impl PreparedArchiveRequest {
             });
         }
         if let Some(output_root) = &self.output_root {
-            preopens.push(PreopenSpec::writable(output_root.clone(), GUEST_OUTPUT_ROOT));
+            preopens.push(PreopenSpec::writable(
+                output_root.clone(),
+                GUEST_OUTPUT_ROOT,
+            ));
         }
         PluginInstanceSpec {
             wasm,

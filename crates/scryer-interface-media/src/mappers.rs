@@ -1469,7 +1469,10 @@ pub fn from_resolve_pending_import_result(
     ResolvePendingImportPayload {
         title: from_title(result.title),
         created: result.created,
-        library_scan: from_library_scan_summary(result.library_scan),
+        library_scan: result.library_scan.map(from_library_scan_summary),
+        metadata_hydration_state: AddTitleHydrationStateValue::from_application(
+            result.metadata_hydration_state,
+        ),
     }
 }
 
@@ -2487,14 +2490,16 @@ pub fn from_wanted_scope_view(
                 view.media_type
             ))
         })?,
-        last_search_at: state
-            .as_ref()
-            .and_then(|state| parse_optional_datetime(state.last_search_at.clone(), "wanted view last_search_at")),
+        last_search_at: state.as_ref().and_then(|state| {
+            parse_optional_datetime(state.last_search_at.clone(), "wanted view last_search_at")
+        }),
         status: state
             .as_ref()
             .map(|state| WantedStatusValue::from_application(state.status))
             .unwrap_or(WantedStatusValue::Wanted),
-        grabbed_release: state.as_ref().and_then(|state| state.grabbed_release.clone()),
+        grabbed_release: state
+            .as_ref()
+            .and_then(|state| state.grabbed_release.clone()),
         current_score: state.as_ref().and_then(|state| state.current_score),
         latest_release_decision: state
             .as_ref()

@@ -170,7 +170,12 @@ pub(crate) fn build_sandbox(
             (DirPerms::READ, FilePerms::READ)
         };
         builder
-            .preopened_dir(&preopen.host_path, &preopen.guest_path, dir_perms, file_perms)
+            .preopened_dir(
+                &preopen.host_path,
+                &preopen.guest_path,
+                dir_perms,
+                file_perms,
+            )
             .map_err(|error| {
                 AppError::Repository(format!(
                     "failed to preopen '{}' as '{}' for archive plugin: {error}",

@@ -893,7 +893,8 @@ pub struct PendingImportBindingPreview {
 pub struct ResolvePendingImportResult {
     pub title: scryer_domain::Title,
     pub created: bool,
-    pub library_scan: LibraryScanSummary,
+    pub library_scan: Option<LibraryScanSummary>,
+    pub metadata_hydration_state: AddTitleHydrationState,
 }
 
 #[derive(Clone, Debug)]

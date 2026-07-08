@@ -17,10 +17,10 @@ use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
 use scryer_application::{
-    AppResult, AppServices, AppUseCase, AuthenticatedTokenClaims, BlocklistRepository,
-    FacetRegistry, HousekeepingRepository, IndexerPluginProvider, JwtAuthConfig, MovieFacetHandler,
-    OAuthAuthorizationSource, PendingReleaseRepository, SeriesFacetHandler,
-    SubtitleDownloadRepository, AcquisitionScopeStateRepository,
+    AcquisitionScopeStateRepository, AppResult, AppServices, AppUseCase, AuthenticatedTokenClaims,
+    BlocklistRepository, FacetRegistry, HousekeepingRepository, IndexerPluginProvider,
+    JwtAuthConfig, MovieFacetHandler, OAuthAuthorizationSource, PendingReleaseRepository,
+    SeriesFacetHandler, SubtitleDownloadRepository,
 };
 use scryer_infrastructure::sqlite::{
     LibraryStore, PluginStore, PostProcessingScriptStore, QualityProfileStore, RuleSetStore,
@@ -85,7 +85,10 @@ pub struct TestLibraryStateStore {
 
 #[async_trait]
 impl AcquisitionScopeStateRepository for TestLibraryStateStore {
-    async fn upsert_acquisition_scope_state(&self, item: &scryer_application::AcquisitionScopeState) -> AppResult<String> {
+    async fn upsert_acquisition_scope_state(
+        &self,
+        item: &scryer_application::AcquisitionScopeState,
+    ) -> AppResult<String> {
         self.wanted.upsert_acquisition_scope_state(item).await
     }
 
@@ -98,11 +101,21 @@ impl AcquisitionScopeStateRepository for TestLibraryStateStore {
         grabbed_release: Option<&str>,
     ) -> AppResult<()> {
         self.wanted
-            .update_acquisition_scope_status(id, status, last_search_at, current_score, grabbed_release)
+            .update_acquisition_scope_status(
+                id,
+                status,
+                last_search_at,
+                current_score,
+                grabbed_release,
+            )
             .await
     }
 
-    async fn record_acquisition_scope_search_attempt(&self, id: &str, last_search_at: &str) -> AppResult<()> {
+    async fn record_acquisition_scope_search_attempt(
+        &self,
+        id: &str,
+        last_search_at: &str,
+    ) -> AppResult<()> {
         self.wanted
             .record_acquisition_scope_search_attempt(id, last_search_at)
             .await
@@ -119,10 +132,15 @@ impl AcquisitionScopeStateRepository for TestLibraryStateStore {
     }
 
     async fn delete_acquisition_scope_states_for_title(&self, title_id: &str) -> AppResult<()> {
-        self.wanted.delete_acquisition_scope_states_for_title(title_id).await
+        self.wanted
+            .delete_acquisition_scope_states_for_title(title_id)
+            .await
     }
 
-    async fn delete_acquisition_scope_states_for_collection(&self, collection_id: &str) -> AppResult<()> {
+    async fn delete_acquisition_scope_states_for_collection(
+        &self,
+        collection_id: &str,
+    ) -> AppResult<()> {
         self.wanted
             .delete_acquisition_scope_states_for_collection(collection_id)
             .await

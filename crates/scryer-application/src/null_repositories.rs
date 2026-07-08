@@ -13,25 +13,26 @@ use scryer_domain::RuleSet;
 
 use crate::types::{PendingImportStatus, PendingReleaseStatus};
 use crate::{
-    AcquisitionStateRepository, InsertMediaFileInput, JellyfinServerUser,
-    MediaRequestResolutionResult, MediaRequestSubmissionResult, MediaRequestUpdateResult,
-    MediaServerConnectionRepository, PlexServerDiscovery, PlexServerUser, SuccessfulGrabCommit,
-    AcquisitionScopeStatesQuery,
+    AcquisitionScopeStatesQuery, AcquisitionStateRepository, InsertMediaFileInput,
+    JellyfinServerUser, MediaRequestResolutionResult, MediaRequestSubmissionResult,
+    MediaRequestUpdateResult, MediaServerConnectionRepository, PlexServerDiscovery, PlexServerUser,
+    SuccessfulGrabCommit,
 };
 use scryer_domain::{PersistedPluginWasmPayload, PluginInstallation};
 
 use scryer_domain::BlocklistEntry;
 
 use crate::{
-    AppError, AppResult, BlocklistRepository, BuiltinDownloadClientConnectionTester,
-    CollectionEpisodeProgressSummary, CutoffUnmetQualitySummary, DiscoveryContextIncrementalCommit,
-    DiscoveryContextSnapshotCommit, DiscoveryFacetRecord, DiscoveryItemRecord,
-    DiscoveryItemsPageRecord, DiscoveryItemsStorageQuery, DiscoveryPendingContextChangeRecord,
-    DiscoveryPruneReport, DiscoveryPublicFeedCommit, DiscoveryRepository,
-    DiscoverySectionItemsRecord, DiscoverySectionRecord, DiscoverySubmittedSubjectRecord,
-    DiscoverySyncRunRecord, DiscoverySyncStateRecord, DomainEventRepository,
-    DownloadQueueCommandRecord, DownloadQueueCommandRepository, DownloadSourceIdentity,
-    DownloadSubmission, DownloadSubmissionRepository, ExternalIdentityVerifier,
+    AcquisitionScopeState, AcquisitionScopeStateRepository, AppError, AppResult,
+    BlocklistRepository, BuiltinDownloadClientConnectionTester, CollectionEpisodeProgressSummary,
+    CutoffUnmetQualitySummary, DiscoveryContextIncrementalCommit, DiscoveryContextSnapshotCommit,
+    DiscoveryFacetRecord, DiscoveryItemRecord, DiscoveryItemsPageRecord,
+    DiscoveryItemsStorageQuery, DiscoveryPendingContextChangeRecord, DiscoveryPruneReport,
+    DiscoveryPublicFeedCommit, DiscoveryRepository, DiscoverySectionItemsRecord,
+    DiscoverySectionRecord, DiscoverySubmittedSubjectRecord, DiscoverySyncRunRecord,
+    DiscoverySyncStateRecord, DomainEventRepository, DownloadQueueCommandRecord,
+    DownloadQueueCommandRepository, DownloadSourceIdentity, DownloadSubmission,
+    DownloadSubmissionRepository, ExternalIdentityVerifier,
     ExternalImportMonitorSnapshotRepository, ExternalImportSetupSecretDraft,
     ExternalImportSetupSecretDraftInput, ExternalImportSetupSecretDraftRepository,
     ExternalImportSetupSecretDraftSaveResult, ExternalImportSetupSecretDraftStatus, FileImporter,
@@ -54,12 +55,12 @@ use crate::{
     TitleImageProcessor, TitleImageRepository, TitleImageSourceResult, TitleImageSyncTask,
     TitleImageVariantSpec, TitleMediaFile, TitleMediaSizeSummary, TitleMovieMediaSummary,
     TitleQualitySummary, UiSettings, UiSettingsUpdate, UpstreamScheduler,
-    UserExternalAccountRepository, UserUiSettingsRepository, VerifiedExternalIdentity, AcquisitionScopeState,
-    AcquisitionScopeStateRepository, WebauthnChallengeRecord, WebauthnCredentialRecord, WebauthnRepository,
-    WorkflowOperationInfo, WorkflowOperationRepository, ports::CatalogDiscoveryCandidatesRecord,
-    ports::DatastoreInfo, ports::LogicalBackupExporter, ports::TotpRepository,
-    types::TotpCredentialRecord, types::TotpEnrollmentChallengeRecord,
-    types::TotpFailedAttemptRecord, types::TotpRecoveryCodeRecord,
+    UserExternalAccountRepository, UserUiSettingsRepository, VerifiedExternalIdentity,
+    WebauthnChallengeRecord, WebauthnCredentialRecord, WebauthnRepository, WorkflowOperationInfo,
+    WorkflowOperationRepository, ports::CatalogDiscoveryCandidatesRecord, ports::DatastoreInfo,
+    ports::LogicalBackupExporter, ports::TotpRepository, types::TotpCredentialRecord,
+    types::TotpEnrollmentChallengeRecord, types::TotpFailedAttemptRecord,
+    types::TotpRecoveryCodeRecord,
 };
 
 #[derive(Default)]
@@ -920,7 +921,10 @@ pub struct NullAcquisitionScopeStateRepository;
 
 #[async_trait]
 impl AcquisitionScopeStateRepository for NullAcquisitionScopeStateRepository {
-    async fn upsert_acquisition_scope_state(&self, _item: &AcquisitionScopeState) -> AppResult<String> {
+    async fn upsert_acquisition_scope_state(
+        &self,
+        _item: &AcquisitionScopeState,
+    ) -> AppResult<String> {
         Err(AppError::Repository(
             "wanted item repository is not configured".to_string(),
         ))
@@ -954,7 +958,10 @@ impl AcquisitionScopeStateRepository for NullAcquisitionScopeStateRepository {
     async fn delete_acquisition_scope_states_for_title(&self, _title_id: &str) -> AppResult<()> {
         Ok(())
     }
-    async fn delete_acquisition_scope_states_for_collection(&self, _collection_id: &str) -> AppResult<()> {
+    async fn delete_acquisition_scope_states_for_collection(
+        &self,
+        _collection_id: &str,
+    ) -> AppResult<()> {
         Ok(())
     }
     async fn delete_acquisition_scope_states_for_series_movie_link(
@@ -963,7 +970,10 @@ impl AcquisitionScopeStateRepository for NullAcquisitionScopeStateRepository {
     ) -> AppResult<()> {
         Ok(())
     }
-    async fn delete_acquisition_scope_states_for_episode(&self, _episode_id: &str) -> AppResult<()> {
+    async fn delete_acquisition_scope_states_for_episode(
+        &self,
+        _episode_id: &str,
+    ) -> AppResult<()> {
         Ok(())
     }
     async fn insert_release_decision(&self, _decision: &ReleaseDecision) -> AppResult<String> {
@@ -971,13 +981,22 @@ impl AcquisitionScopeStateRepository for NullAcquisitionScopeStateRepository {
             "wanted item repository is not configured".to_string(),
         ))
     }
-    async fn get_acquisition_scope_state_by_id(&self, _id: &str) -> AppResult<Option<AcquisitionScopeState>> {
+    async fn get_acquisition_scope_state_by_id(
+        &self,
+        _id: &str,
+    ) -> AppResult<Option<AcquisitionScopeState>> {
         Ok(None)
     }
-    async fn list_acquisition_scope_states(&self, _query: AcquisitionScopeStatesQuery) -> AppResult<Vec<AcquisitionScopeState>> {
+    async fn list_acquisition_scope_states(
+        &self,
+        _query: AcquisitionScopeStatesQuery,
+    ) -> AppResult<Vec<AcquisitionScopeState>> {
         Ok(vec![])
     }
-    async fn count_acquisition_scope_states(&self, _query: AcquisitionScopeStatesQuery) -> AppResult<i64> {
+    async fn count_acquisition_scope_states(
+        &self,
+        _query: AcquisitionScopeStatesQuery,
+    ) -> AppResult<i64> {
         Ok(0)
     }
     async fn list_release_decisions_for_title(
@@ -1769,7 +1788,11 @@ impl PendingReleaseRepository for NullPendingReleaseRepository {
     ) -> AppResult<bool> {
         Ok(false)
     }
-    async fn supersede_pending_releases_for_acquisition_scope_state(&self, _: &str, _: &str) -> AppResult<()> {
+    async fn supersede_pending_releases_for_acquisition_scope_state(
+        &self,
+        _: &str,
+        _: &str,
+    ) -> AppResult<()> {
         Ok(())
     }
     async fn delete_pending_releases_for_title(&self, _: &str) -> AppResult<()> {

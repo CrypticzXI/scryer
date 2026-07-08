@@ -186,7 +186,9 @@ impl AppUseCase {
     ) -> AppResult<Option<AcquisitionScopeState>> {
         let repo = &self.services.workflow.acquisition_scope_states;
         if episode_id.is_some() {
-            return repo.get_acquisition_scope_state_for_title(title_id, episode_id).await;
+            return repo
+                .get_acquisition_scope_state_for_title(title_id, episode_id)
+                .await;
         }
         if let Some(link_id) = series_movie_link_id {
             return Ok(repo
@@ -210,7 +212,8 @@ impl AppUseCase {
                 .into_iter()
                 .find(|existing| existing.collection_id.as_deref() == Some(collection_id)));
         }
-        repo.get_acquisition_scope_state_for_title(title_id, None).await
+        repo.get_acquisition_scope_state_for_title(title_id, None)
+            .await
     }
 
     /// The derived missing-target set (§D1): monitored scopes with no primary

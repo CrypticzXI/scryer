@@ -55,7 +55,7 @@ export type PendingImportCardProps = {
   onOpenSearch: (item: PendingImportItem) => void;
   onRequestIgnore: (item: PendingImportItem) => void;
   onBind: () => void;
-  onResolve: (tvdbId: string) => void;
+  onResolve: (result: MetadataSearchResult) => void;
   onToggleEpisodeSelection: (episodeId: string, checked: boolean) => void;
   onSetSelectedEpisodeIds: React.Dispatch<React.SetStateAction<string[]>>;
   onSetExpandedBindingSeasonKeys: React.Dispatch<React.SetStateAction<string[]>>;
@@ -395,7 +395,7 @@ export const PendingImportCard = React.memo(function PendingImportCard({
                         <Button
                           type="button"
                           size="sm"
-                          onClick={() => void onResolve(String(result.tvdbId))}
+                          onClick={() => void onResolve(result)}
                           disabled={isBusy}
                         >
                           {t("pendingImports.match")}

@@ -1,5 +1,5 @@
 use async_graphql::{ComplexObject, Context, ID, Result as GqlResult};
-use scryer_application::{ReleaseDecisionsQuery, AcquisitionScopeStatesQuery};
+use scryer_application::{AcquisitionScopeStatesQuery, ReleaseDecisionsQuery};
 use scryer_interface_core::{actor_from_ctx, app_from_ctx, to_gql_error};
 
 use crate::mappers::{

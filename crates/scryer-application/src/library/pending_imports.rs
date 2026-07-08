@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::Duration as StdDuration;
 
-use scryer_domain::{ExternalId, MediaFacet, NewTitle};
+use scryer_domain::{MediaFacet, NewTitle};
 
 use chrono::Utc;
 use tracing::warn;
@@ -264,38 +264,6 @@ fn library_scan_summary_has_pending_import_success(summary: &LibraryScanSummary)
     summary.imported > 0 || summary.matched > 0
 }
 
-async fn pending_import_already_bound_to_title(
-    app: &AppUseCase,
-    title_id: &str,
-    item: &LibraryScanUnmatchedItem,
-    scan_path: &str,
-) -> AppResult<bool> {
-    let normalized_scan_path = scan_path.trim();
-    if normalized_scan_path.is_empty() {
-        return Ok(false);
-    }
-
-    let media_files = app
-        .services
-        .library
-        .media_files
-        .list_media_files_for_title(title_id)
-        .await?;
-
-    Ok(match item.facet {
-        MediaFacet::Movie => {
-            let folder_prefix = format!("{normalized_scan_path}/");
-            media_files.iter().any(|media_file| {
-                media_file.file_path == normalized_scan_path
-                    || media_file.file_path.starts_with(folder_prefix.as_str())
-            })
-        }
-        MediaFacet::Series | MediaFacet::Anime => media_files
-            .iter()
-            .any(|media_file| media_file.file_path == normalized_scan_path),
-    })
-}
-
 struct PendingImportResolutionGuard {
     pending_import_id: String,
     locks: Arc<std::sync::Mutex<HashSet<String>>>,
@@ -328,56 +296,6 @@ impl AppUseCase {
             pending_import_id: pending_import_id.to_string(),
             locks: self.pending_import_resolution_locks.clone(),
         })
-    }
-
-    async fn rollback_pending_import_title_binding(
-        &self,
-        actor: &User,
-        title: &Title,
-        previous_folder_path: Option<&str>,
-        created: bool,
-    ) {
-        if created {
-            let _ = self.delete_title(actor, &title.id, false, None).await;
-            return;
-        }
-
-        let restore_result = match previous_folder_path {
-            Some(folder_path) => {
-                self.services
-                    .catalog
-                    .titles
-                    .set_folder_path(&title.id, folder_path)
-                    .await
-            }
-            None => {
-                self.services
-                    .catalog
-                    .titles
-                    .clear_folder_path(&title.id)
-                    .await
-            }
-        };
-
-        if let Err(error) = restore_result {
-            tracing::warn!(
-                title_id = %title.id,
-                error = %error,
-                "failed to rollback pending import folder path"
-            );
-        }
-    }
-
-    async fn rollback_created_pending_import_title(
-        &self,
-        actor: &User,
-        title: &Title,
-        created: bool,
-    ) {
-        if created {
-            self.rollback_pending_import_title_binding(actor, title, None, true)
-                .await;
-        }
     }
 
     pub async fn pending_import_counts(&self, actor: &User) -> AppResult<PendingImportCounts> {
@@ -559,7 +477,7 @@ impl AppUseCase {
         &self,
         actor: &User,
         pending_import_id: &str,
-        target_tvdb_id: &str,
+        mut request: NewTitle,
     ) -> AppResult<ResolvePendingImportResult> {
         let pending_import_id = pending_import_id.trim();
         if pending_import_id.is_empty() {
@@ -568,15 +486,7 @@ impl AppUseCase {
         let _pending_import_resolution_guard =
             self.acquire_pending_import_resolution_guard(pending_import_id)?;
 
-        let target_tvdb_id = target_tvdb_id.trim();
-        if target_tvdb_id.is_empty() {
-            return Err(AppError::Validation("tvdb id is required".into()));
-        }
-        let target_tvdb_numeric = target_tvdb_id
-            .parse::<i64>()
-            .map_err(|_| AppError::Validation("tvdb id must be numeric".into()))?;
-
-        let item = self
+        let mut item = self
             .services
             .library
             .library_scan_unmatched_items
@@ -595,280 +505,126 @@ impl AppUseCase {
             ));
         }
 
-        let existing_title = self
+        request.facet = item.facet.clone();
+        request.monitored = false;
+        request.tags.clear();
+        request.root_folder_id = None;
+        request.min_availability = None;
+
+        let target_tvdb_id = request
+            .external_ids
+            .iter()
+            .find(|external_id| {
+                external_id.source.eq_ignore_ascii_case("tvdb")
+                    && !external_id.value.trim().is_empty()
+            })
+            .map(|external_id| external_id.value.trim().to_string())
+            .ok_or_else(|| AppError::Validation("tvdb id is required".into()))?;
+
+        if self
             .services
             .catalog
             .titles
-            .find_by_external_id_in_facet(item.facet.clone(), "tvdb", target_tvdb_id)
+            .find_by_external_id_in_facet(item.facet.clone(), "tvdb", &target_tvdb_id)
             .await?
-            .filter(|title| title.library_id == item.library_id);
-
-        let (title, created) = if let Some(existing_title) = existing_title {
-            (existing_title, false)
-        } else {
-            let metadata_language = self.metadata_language().await;
-            let new_title = match item.facet {
-                MediaFacet::Movie => {
-                    let movie = self
-                        .services
-                        .library
-                        .metadata_gateway
-                        .get_movie(target_tvdb_numeric, &metadata_language)
-                        .await?;
-                    NewTitle {
-                        name: movie.name,
-                        facet: item.facet.clone(),
-                        monitored: false,
-                        tags: vec![],
-                        external_ids: vec![ExternalId {
-                            source: "tvdb".to_string(),
-                            value: target_tvdb_id.to_string(),
-                        }],
-                        root_folder_id: None,
-                        min_availability: None,
-                        poster_url: Some(movie.poster_url),
-                        year: movie.year,
-                        overview: Some(movie.overview),
-                        sort_title: Some(movie.sort_title),
-                        slug: Some(movie.slug),
-                        runtime_minutes: Some(movie.runtime_minutes),
-                        language: Some(movie.language),
-                        content_status: Some(movie.content_status),
-                    }
-                }
-                MediaFacet::Series | MediaFacet::Anime => {
-                    let series = self
-                        .services
-                        .library
-                        .metadata_gateway
-                        .get_series(target_tvdb_numeric, &metadata_language)
-                        .await?;
-                    NewTitle {
-                        name: series.name,
-                        facet: item.facet.clone(),
-                        monitored: false,
-                        tags: vec![],
-                        external_ids: vec![ExternalId {
-                            source: "tvdb".to_string(),
-                            value: target_tvdb_id.to_string(),
-                        }],
-                        root_folder_id: None,
-                        min_availability: None,
-                        poster_url: Some(series.poster_url),
-                        year: series.year,
-                        overview: Some(series.overview),
-                        sort_title: Some(series.sort_name),
-                        slug: Some(series.slug),
-                        runtime_minutes: Some(series.runtime_minutes),
-                        language: None,
-                        content_status: Some(series.content_status),
-                    }
-                }
-            };
-            let created = self
-                .create_title_without_hydration_in_library(
-                    actor,
-                    new_title,
-                    item.library_id.clone(),
-                )
-                .await?;
-            (created.title, !created.reused_existing)
-        };
-
-        let scan_path = match item.facet {
-            MediaFacet::Movie => pending_import_movie_entry_path(&item),
-            MediaFacet::Series | MediaFacet::Anime => {
-                stored_path_to_path_buf(item.item_path.trim())
-            }
-        };
-        let scan_path_string = path_to_stored_string(&scan_path).trim().to_string();
-        if scan_path_string.is_empty() {
+            .is_some_and(|title| title.library_id == item.library_id)
+        {
             return Err(AppError::Validation(
-                "pending import path is missing or invalid".into(),
+                "title already exists in this library".into(),
             ));
         }
 
-        let summary = if matches!(item.facet, MediaFacet::Series | MediaFacet::Anime) {
-            let scan_metadata = match tokio::fs::metadata(&scan_path).await {
-                Ok(metadata) => metadata,
-                Err(error) => {
-                    self.rollback_created_pending_import_title(actor, &title, created)
-                        .await;
-                    return Err(AppError::Validation(format!(
-                        "pending import path is unavailable: {error}"
-                    )));
-                }
-            };
+        let outcome = self
+            .add_title_with_outcome_in_library(actor, request, item.library_id.clone())
+            .await?;
 
-            if scan_metadata.is_file() {
-                let library_file = match build_pending_import_library_file(&item).await {
-                    Ok(file) => file,
-                    Err(err) => {
-                        self.rollback_created_pending_import_title(actor, &title, created)
-                            .await;
-                        return Err(err);
-                    }
-                };
-                match self
-                    .scan_title_library_with_discovered_files(
-                        actor,
-                        title.clone(),
-                        vec![library_file],
-                    )
-                    .await
-                {
-                    Ok(summary) if library_scan_summary_has_pending_import_success(&summary) => {
-                        summary
-                    }
-                    Ok(summary)
-                        if pending_import_already_bound_to_title(
-                            self,
-                            &title.id,
-                            &item,
-                            &scan_path_string,
-                        )
-                        .await? =>
-                    {
-                        summary
-                    }
-                    Ok(_) => {
-                        self.rollback_created_pending_import_title(actor, &title, created)
-                            .await;
-                        return Err(AppError::Validation(format!(
-                            "no media files were found at {}",
-                            scan_path_string
-                        )));
-                    }
-                    Err(err) => {
-                        self.rollback_created_pending_import_title(actor, &title, created)
-                            .await;
-                        return Err(err);
-                    }
-                }
-            } else if scan_metadata.is_dir() {
-                let previous_folder_path = title.folder_path.clone();
-                self.services
-                    .catalog
-                    .titles
-                    .set_folder_path(&title.id, &scan_path_string)
-                    .await?;
+        if outcome.reused_existing_title {
+            return Err(AppError::Validation(
+                "title already exists in this library".into(),
+            ));
+        }
 
-                match self.scan_title_library(actor, &title.id).await {
-                    Ok(summary) if library_scan_summary_has_pending_import_success(&summary) => {
-                        summary
-                    }
-                    Ok(summary)
-                        if pending_import_already_bound_to_title(
-                            self,
-                            &title.id,
-                            &item,
-                            &scan_path_string,
-                        )
-                        .await? =>
-                    {
-                        summary
-                    }
-                    Ok(_) => {
-                        self.rollback_pending_import_title_binding(
-                            actor,
-                            &title,
-                            previous_folder_path.as_deref(),
-                            created,
-                        )
-                        .await;
-                        return Err(AppError::Validation(format!(
-                            "no media files were found at {}",
-                            scan_path_string
-                        )));
-                    }
-                    Err(err) => {
-                        self.rollback_pending_import_title_binding(
-                            actor,
-                            &title,
-                            previous_folder_path.as_deref(),
-                            created,
-                        )
-                        .await;
-                        return Err(err);
-                    }
-                }
-            } else {
-                self.rollback_created_pending_import_title(actor, &title, created)
-                    .await;
-                return Err(AppError::Validation(
-                    "pending import path must be a file or directory".into(),
-                ));
-            }
-        } else {
-            let previous_folder_path = title.folder_path.clone();
-            self.services
-                .catalog
-                .titles
-                .set_folder_path(&title.id, &scan_path_string)
-                .await?;
-
-            match self.scan_title_library(actor, &title.id).await {
-                Ok(summary) if library_scan_summary_has_pending_import_success(&summary) => summary,
-                Ok(summary)
-                    if pending_import_already_bound_to_title(
-                        self,
-                        &title.id,
-                        &item,
-                        &scan_path_string,
-                    )
-                    .await? =>
-                {
-                    summary
-                }
-                Ok(_) => {
-                    self.rollback_pending_import_title_binding(
-                        actor,
-                        &title,
-                        previous_folder_path.as_deref(),
-                        created,
-                    )
-                    .await;
-                    return Err(AppError::Validation(format!(
-                        "no media files were found at {}",
-                        scan_path_string
-                    )));
-                }
-                Err(err) => {
-                    self.rollback_pending_import_title_binding(
-                        actor,
-                        &title,
-                        previous_folder_path.as_deref(),
-                        created,
-                    )
-                    .await;
-                    return Err(err);
-                }
-            }
-        };
-
+        item.status = PendingImportStatus::Pending;
+        item.title_id = Some(outcome.title.id.clone());
+        item.updated_at = Utc::now().to_rfc3339();
         self.services
             .library
             .library_scan_unmatched_items
-            .delete_library_scan_unmatched_item(
-                &item.library_id,
-                item.facet.clone(),
-                &item.item_path,
-            )
+            .upsert_library_scan_unmatched_item(&item)
             .await?;
 
-        let refreshed_title = self
-            .services
-            .catalog
-            .titles
-            .get_by_id(&title.id)
-            .await?
-            .unwrap_or(title);
-
         Ok(ResolvePendingImportResult {
-            title: refreshed_title,
-            created,
-            library_scan: summary,
+            title: outcome.title,
+            created: true,
+            library_scan: None,
+            metadata_hydration_state: outcome.metadata_hydration_state,
         })
+    }
+
+    pub async fn pending_import_title_search(
+        &self,
+        actor: &User,
+        pending_import_id: &str,
+        query: &str,
+        limit: i32,
+        language: &str,
+        year: Option<i32>,
+    ) -> AppResult<Vec<RichMetadataSearchItem>> {
+        let pending_import_id = pending_import_id.trim();
+        if pending_import_id.is_empty() {
+            return Err(AppError::Validation("pending import id is required".into()));
+        }
+
+        let query = query.trim();
+        if query.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let item = self
+            .services
+            .library
+            .library_scan_unmatched_items
+            .get_library_scan_unmatched_item(pending_import_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("pending import {pending_import_id}")))?;
+        self.require_library_permission(
+            actor,
+            &item.library_id,
+            scryer_domain::LibraryPermission::ResolveImports,
+        )
+        .await?;
+
+        let limit = limit.clamp(1, 100);
+        let search_limit = limit.saturating_mul(3).clamp(limit, 100);
+        let results = self
+            .services
+            .library
+            .metadata_gateway
+            .search_tvdb_rich(query, item.facet.as_str(), search_limit, language, year)
+            .await?;
+
+        let mut filtered = Vec::with_capacity(limit as usize);
+        for result in results {
+            let tvdb_id = result.tvdb_id.trim();
+            let exists_in_library = !tvdb_id.is_empty()
+                && self
+                    .services
+                    .catalog
+                    .titles
+                    .find_by_external_id_in_facet(item.facet.clone(), "tvdb", tvdb_id)
+                    .await?
+                    .is_some_and(|title| title.library_id == item.library_id);
+            if exists_in_library {
+                continue;
+            }
+
+            filtered.push(result);
+            if filtered.len() >= limit as usize {
+                break;
+            }
+        }
+
+        Ok(filtered)
     }
 
     pub async fn preview_title_bound_pending_import(
@@ -1101,7 +857,8 @@ impl AppUseCase {
         Ok(ResolvePendingImportResult {
             title: refreshed_title,
             created: false,
-            library_scan: summary,
+            library_scan: Some(summary),
+            metadata_hydration_state: AddTitleHydrationState::NotRequired,
         })
     }
 }

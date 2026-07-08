@@ -1,7 +1,8 @@
 use crate::types::*;
 use scryer_application::{
-    ActivityChannel as AppActivityChannel, ActivityKind as AppActivityKind,
-    ActivitySeverity as AppActivitySeverity, DownloadHistorySortKey as AppDownloadHistorySortKey,
+    AcquisitionScopeStatus as AppWantedStatus, ActivityChannel as AppActivityChannel,
+    ActivityKind as AppActivityKind, ActivitySeverity as AppActivitySeverity,
+    DownloadHistorySortKey as AppDownloadHistorySortKey,
     DownloadSourceKind as AppDownloadSourceKind,
     DownloadSubmissionPurpose as AppDownloadSubmissionPurpose, JobCategory as AppJobCategory,
     JobKey as AppJobKey, JobRunStatus as AppJobRunStatus, JobScheduleKind as AppJobScheduleKind,
@@ -10,7 +11,6 @@ use scryer_application::{
     PendingImportStatus as AppPendingImportStatus, PendingReleaseStatus as AppPendingReleaseStatus,
     ScoringOverrides as AppScoringOverrides, ScoringPersona as AppScoringPersona,
     SortDirection as AppSortDirection, SubmissionScope as AppSubmissionScope,
-    AcquisitionScopeStatus as AppWantedStatus,
 };
 
 pub trait FromApplication<T> {

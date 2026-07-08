@@ -35,8 +35,8 @@ pub use notification::{
     to_script_environment, to_webhook_json,
 };
 pub use par2_reconstruct::{
-    Par2ReconstructHeader, Par2ReconstructHeaderFields, Par2ReconstructStatus,
-    PAR2_RECONSTRUCT_IMPORT, PAR2_RECONSTRUCT_NAMESPACE,
+    PAR2_RECONSTRUCT_IMPORT, PAR2_RECONSTRUCT_NAMESPACE, Par2ReconstructHeader,
+    Par2ReconstructHeaderFields, Par2ReconstructStatus,
 };
 
 pub const SDK_VERSION: &str = "3.4.0";

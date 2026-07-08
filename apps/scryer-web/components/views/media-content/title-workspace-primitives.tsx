@@ -52,21 +52,12 @@ export function TitleWorkspaceHero({
 
 export function TitleWorkspacePosterFrame({
   children,
-  label,
 }: {
   children: React.ReactNode;
-  label: string;
 }) {
   return (
-    <div className="relative h-[198px] w-[132px] shrink-0 overflow-hidden rounded-[9px] border border-[#2a3556] bg-[var(--scry-inset)] shadow-[0_8px_22px_rgba(0,0,0,0.5)] max-sm:h-44 max-sm:w-[116px]">
+    <div className="relative h-[258px] w-[172px] shrink-0 overflow-hidden rounded-[9px] border border-[#2a3556] bg-[var(--scry-inset)] shadow-[0_8px_22px_rgba(0,0,0,0.5)] max-sm:h-[229px] max-sm:w-[151px]">
       {children}
-      <div
-        className="pointer-events-none absolute inset-0 bg-[linear-gradient(180deg,transparent_40%,rgba(4,6,12,0.85))]"
-        aria-hidden="true"
-      />
-      <span className="pointer-events-none absolute inset-x-1.5 bottom-2 line-clamp-2 text-[12px] font-bold leading-[1.05] text-white [text-shadow:0_1px_6px_rgba(0,0,0,0.7)]">
-        {label}
-      </span>
     </div>
   );
 }

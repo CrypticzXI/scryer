@@ -1,8 +1,8 @@
 use crate::library_scan::{
     DiscoveryContextChangeType, DiscoveryContextChangedSubjectInput, DiscoveryContextChangesInput,
     DiscoveryContextSnapshotPageResult, DiscoveryContextSnapshotSubmitInput,
-    DiscoveryDashboardResult, DiscoveryDashboardSection,
-    DiscoveryExternalIdInput, DiscoveryPublicFeedInput, DiscoverySubjectInput, DiscoveryTitle,
+    DiscoveryDashboardResult, DiscoveryDashboardSection, DiscoveryExternalIdInput,
+    DiscoveryPublicFeedInput, DiscoverySubjectInput, DiscoveryTitle,
 };
 use crate::ports::{
     CatalogDiscoveryGroup, CatalogDiscoveryGroupKind, CatalogDiscoveryQuery,
@@ -11,9 +11,9 @@ use crate::ports::{
     DiscoveryHomeQuery, DiscoveryHomeResult, DiscoveryItemDetailQuery,
     DiscoveryItemLibraryProvenanceRecord, DiscoveryItemRecord, DiscoveryItemsQuery,
     DiscoveryItemsResult, DiscoveryItemsStorageQuery, DiscoveryPendingContextChangeRecord,
-    DiscoveryRankComponentRecord, DiscoverySectionItemsRecord,
-    DiscoverySectionRecord, DiscoverySectionResult, DiscoverySourceTagRecord,
-    DiscoverySubmittedSubjectRecord, DiscoverySyncStatus, TitleExternalIdLookup,
+    DiscoveryRankComponentRecord, DiscoverySectionItemsRecord, DiscoverySectionRecord,
+    DiscoverySectionResult, DiscoverySourceTagRecord, DiscoverySubmittedSubjectRecord,
+    DiscoverySyncStatus, TitleExternalIdLookup,
 };
 use crate::{AppError, AppResult, AppUseCase};
 use chrono::{DateTime, Utc};

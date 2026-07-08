@@ -150,6 +150,7 @@ import type {
   ScoringPersonaId,
 } from "@/lib/types/quality-profiles";
 import { buildViewPath } from "@/lib/utils/routing";
+import { selectedOverviewNativeTitleId } from "@/lib/utils/selected-overview-policy";
 import { selectPosterVariantUrl } from "@/lib/utils/poster-images";
 import { discoveryItemDisplayTitle } from "@/lib/utils/discovery-display";
 import { titleGenreLabels } from "@/lib/utils/title-genres";
@@ -1186,7 +1187,7 @@ function TitleContextPanel({
           closeLabel={t("label.clear")}
           onClose={onClearSelection}
         >
-          <TitleWorkspacePosterFrame label={title.name}>
+          <TitleWorkspacePosterFrame>
             <TitlePosterSlot
               src={posterUrl}
               sourceSrc={title.posterSourceUrl}
@@ -1257,7 +1258,9 @@ function TitleContextPanel({
                   ))}
                 </div>
               ) : null}
-              <TitleRatingsStrip ratings={title.ratings} variant="hero" />
+              <div className="mt-3">
+                <TitleRatingsStrip ratings={title.ratings} variant="hero" />
+              </div>
               <p className="mt-3 line-clamp-5 text-[12.5px] leading-5 text-[#b7c0dd]">
                 {overviewText}
               </p>
@@ -1368,15 +1371,23 @@ function TitleContextPanel({
               title={t("title.filesOnDisk")}
               action={
                 <Button
+                  id={`title-context-rename-preview-${title.id}`}
+                  data-ui="title-context-rename-preview"
+                  data-title-id={title.id}
                   type="button"
-                  variant="default"
+                  variant="primary"
                   size="sm"
-                  className="h-[30px] shrink-0 rounded-[8px] border-0 bg-[var(--scry-accent-grad)] px-3 text-[11.5px] font-semibold text-white shadow-none hover:bg-[var(--scry-accent-grad)]"
+                  className="h-[34px] shrink-0 justify-center gap-2 rounded-md border border-transparent !bg-primary px-3 text-xs font-semibold !text-primary-foreground shadow-sm hover:!bg-primary/90 focus-visible:ring-[var(--scry-accent-ring)]"
                   onClick={() => {
                     void handlePreviewRename();
                   }}
                   disabled={renamePreviewing || renameApplying}
                 >
+                  {renamePreviewing ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Eye className="h-4 w-4" />
+                  )}
                   <span>
                     {renamePreviewing
                       ? t("rename.previewing")
@@ -2178,9 +2189,17 @@ export function MediaContentView({
     ],
   );
   const activeOverviewTitle = selectedOverviewTitle;
-  const activeOverviewTitleId = activeOverviewTitle?.id ?? null;
+  const nativeOverviewTitleId = selectedOverviewNativeTitleId(
+    view,
+    selectedOverviewTitleId,
+  );
+  const activeOverviewTitleId = activeOverviewTitle?.id ?? nativeOverviewTitleId;
   React.useEffect(() => {
-    if (!selectedOverviewTitleId || selectedOverviewTitle) {
+    if (
+      !selectedOverviewTitleId ||
+      selectedOverviewTitle ||
+      nativeOverviewTitleId
+    ) {
       return;
     }
     if (
@@ -2196,6 +2215,7 @@ export function MediaContentView({
     catalogBootstrapLoading,
     catalogInitialLoadComplete,
     onCloseOverview,
+    nativeOverviewTitleId,
     selectedOverviewDetailLoading,
     selectedOverviewTitle,
     selectedOverviewTitleId,
@@ -2250,15 +2270,16 @@ export function MediaContentView({
     titleLayoutWidth != null &&
     titleLayoutWidth >= catalogDiscoveryInlineMinimumWidth;
   const selectedOverviewTitleAvailable =
-    selectedOverviewTitleId !== null && selectedOverviewTitle !== null;
+    selectedOverviewTitleId !== null &&
+    (selectedOverviewTitle !== null || nativeOverviewTitleId !== null);
   const titleContextPanelAvailable =
     contextPanelWidthMatches || selectedOverviewTitleAvailable;
   const selectedTitleLayoutActive =
-    titleContextPanelAvailable && activeOverviewTitle !== null;
+    titleContextPanelAvailable && activeOverviewTitleId !== null;
   const catalogDiscoveryInlineAvailable =
-    activeOverviewTitle === null && catalogDiscoveryInlineWidthMatches;
+    activeOverviewTitleId === null && catalogDiscoveryInlineWidthMatches;
   const catalogDiscoveryFlyoutAvailable =
-    activeOverviewTitle === null && !catalogDiscoveryInlineAvailable;
+    activeOverviewTitleId === null && !catalogDiscoveryInlineAvailable;
   const contextPanelAvailable =
     selectedTitleLayoutActive || catalogDiscoveryInlineAvailable;
   const selectedTitlePosterInlineActive =
@@ -3614,7 +3635,7 @@ export function MediaContentView({
                       </Button>
                     </div>
                   </section>
-                ) : activeOverviewTitle && view !== "movies" ? (
+                ) : nativeOverviewTitleId !== null ? (
                     <section
                       id={selectedTitleContextPanelId}
                       aria-label={t("title.contextPanelTitle")}
@@ -3633,12 +3654,12 @@ export function MediaContentView({
                           </div>
                         ) : null}
                         <SeriesOverviewContainer
-                          titleId={activeOverviewTitle.id}
+                          titleId={nativeOverviewTitleId}
                           initialEpisodeId={routeOverviewEpisodeId}
                           onTitleNotFound={handleSelectedOverviewBackToList}
                           onBackToList={handleSelectedOverviewBackToList}
                           onTitleResolved={(resolvedTitle) => {
-                            if (resolvedTitle.id !== activeOverviewTitle.id) {
+                            if (resolvedTitle.id !== nativeOverviewTitleId) {
                               onOpenOverview(view, resolvedTitle);
                             }
                           }}

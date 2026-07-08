@@ -210,7 +210,10 @@ impl AppUseCase {
     /// uses.
     async fn non_wanted_state_scope_keys(&self) -> AppResult<HashSet<String>> {
         let mut excluded = HashSet::new();
-        for status in [AcquisitionScopeStatus::Paused, AcquisitionScopeStatus::Grabbed] {
+        for status in [
+            AcquisitionScopeStatus::Paused,
+            AcquisitionScopeStatus::Grabbed,
+        ] {
             let items = self
                 .services
                 .workflow
