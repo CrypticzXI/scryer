@@ -570,7 +570,7 @@ fn clone_file_cow(source: &Path, destination: &Path) -> std::io::Result<()> {
     use std::fs::OpenOptions;
     use std::os::fd::AsRawFd;
 
-    const FICLONE: libc::c_int = 0x4004_9409;
+    const FICLONE: libc::Ioctl = 0x4004_9409;
 
     let source_file = std::fs::File::open(source)?;
     let destination_file = OpenOptions::new()
