@@ -1044,9 +1044,10 @@ const BLOCKED_PLUGIN_EGRESS_HOSTS: &[&str] = &["metadata.google.internal"];
 /// Returns true when `ip` is in the link-local range fronting cloud
 /// instance-metadata endpoints and must never be reachable by plugin egress.
 fn plugin_egress_ip_is_forbidden(ip: IpAddr) -> bool {
-    match ip {
-        // 169.254.0.0/16 — cloud IMDS lives at 169.254.169.254.
-        IpAddr::V4(ip) => ip.is_link_local(),
+    match ip.to_canonical() {
+        // 169.254.0.0/16 covers AWS/Azure/GCP IMDS; 100.100.100.200 is
+        // Alibaba Cloud IMDS.
+        IpAddr::V4(ip) => ip.is_link_local() || ip.octets() == [100, 100, 100, 200],
         // fe80::/10 link-local.
         IpAddr::V6(ip) => ip.is_unicast_link_local(),
     }
@@ -2139,6 +2140,8 @@ mod tests {
     const PLUGIN_EGRESS_BLOCKED_TARGETS: &[&str] = &[
         "http://169.254.169.254/latest/meta-data/",
         "http://169.254.1.1/",
+        "http://100.100.100.200/latest/meta-data/",
+        "http://[::ffff:169.254.169.254]/latest/meta-data/",
         "http://[fe80::1]/",
         "http://metadata.google.internal/computeMetadata/v1/",
     ];

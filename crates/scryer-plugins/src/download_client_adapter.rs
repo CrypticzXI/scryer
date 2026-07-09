@@ -787,16 +787,19 @@ impl DownloadClient for WasmDownloadClient {
 
     async fn list_queue(&self) -> AppResult<Vec<DownloadQueueItem>> {
         let plugin = Arc::clone(&self.plugin);
-        let output = tokio::task::spawn_blocking(move || {
-            let mut guard = plugin
-                .lock()
-                .map_err(|e| AppError::Repository(format!("plugin mutex poisoned: {e}")))?;
-            guard
-                .call_unit(EXPORT_DOWNLOAD_LIST_QUEUE)
-                .map_err(|e| plugin_call_error(&format!("{EXPORT_DOWNLOAD_LIST_QUEUE}()"), e))
-        })
-        .await
-        .map_err(|e| AppError::Repository(format!("plugin task panicked: {e}")))??;
+        let output = run_blocking_plugin_call(
+            DOWNLOAD_CLIENT_PLUGIN_TIMEOUT,
+            "download client plugin",
+            move || {
+                let mut guard = plugin
+                    .lock()
+                    .map_err(|e| AppError::Repository(format!("plugin mutex poisoned: {e}")))?;
+                guard
+                    .call_unit(EXPORT_DOWNLOAD_LIST_QUEUE)
+                    .map_err(|e| plugin_call_error(&format!("{EXPORT_DOWNLOAD_LIST_QUEUE}()"), e))
+            },
+        )
+        .await?;
 
         let items: Vec<PluginDownloadItem> =
             decode_plugin_result(&output, EXPORT_DOWNLOAD_LIST_QUEUE)?;
@@ -825,16 +828,19 @@ impl DownloadClient for WasmDownloadClient {
 
     async fn list_history(&self) -> AppResult<Vec<DownloadQueueItem>> {
         let plugin = Arc::clone(&self.plugin);
-        let output = tokio::task::spawn_blocking(move || {
-            let mut guard = plugin
-                .lock()
-                .map_err(|e| AppError::Repository(format!("plugin mutex poisoned: {e}")))?;
-            guard
-                .call_unit(EXPORT_DOWNLOAD_LIST_HISTORY)
-                .map_err(|e| plugin_call_error(&format!("{EXPORT_DOWNLOAD_LIST_HISTORY}()"), e))
-        })
-        .await
-        .map_err(|e| AppError::Repository(format!("plugin task panicked: {e}")))??;
+        let output = run_blocking_plugin_call(
+            DOWNLOAD_CLIENT_PLUGIN_TIMEOUT,
+            "download client plugin",
+            move || {
+                let mut guard = plugin
+                    .lock()
+                    .map_err(|e| AppError::Repository(format!("plugin mutex poisoned: {e}")))?;
+                guard
+                    .call_unit(EXPORT_DOWNLOAD_LIST_HISTORY)
+                    .map_err(|e| plugin_call_error(&format!("{EXPORT_DOWNLOAD_LIST_HISTORY}()"), e))
+            },
+        )
+        .await?;
 
         match decode_plugin_result::<Vec<PluginDownloadItem>>(&output, EXPORT_DOWNLOAD_LIST_HISTORY)
         {
@@ -890,16 +896,21 @@ impl DownloadClient for WasmDownloadClient {
 
     async fn list_completed_downloads(&self) -> AppResult<Vec<CompletedDownload>> {
         let plugin = Arc::clone(&self.plugin);
-        let output = tokio::task::spawn_blocking(move || {
-            let mut guard = plugin
-                .lock()
-                .map_err(|e| AppError::Repository(format!("plugin mutex poisoned: {e}")))?;
-            guard
-                .call_unit(EXPORT_DOWNLOAD_LIST_COMPLETED)
-                .map_err(|e| plugin_call_error(&format!("{EXPORT_DOWNLOAD_LIST_COMPLETED}()"), e))
-        })
-        .await
-        .map_err(|e| AppError::Repository(format!("plugin task panicked: {e}")))??;
+        let output = run_blocking_plugin_call(
+            DOWNLOAD_CLIENT_PLUGIN_TIMEOUT,
+            "download client plugin",
+            move || {
+                let mut guard = plugin
+                    .lock()
+                    .map_err(|e| AppError::Repository(format!("plugin mutex poisoned: {e}")))?;
+                guard
+                    .call_unit(EXPORT_DOWNLOAD_LIST_COMPLETED)
+                    .map_err(|e| {
+                        plugin_call_error(&format!("{EXPORT_DOWNLOAD_LIST_COMPLETED}()"), e)
+                    })
+            },
+        )
+        .await?;
 
         let items: Vec<PluginCompletedDownload> =
             decode_plugin_result(&output, EXPORT_DOWNLOAD_LIST_COMPLETED)?;
@@ -925,28 +936,34 @@ impl DownloadClient for WasmDownloadClient {
                 AppError::Repository(format!("failed to serialize plugin request: {e}"))
             })?;
         let plugin = Arc::clone(&self.plugin);
-        let (output, export_name) = tokio::task::spawn_blocking(move || {
-            let mut guard = plugin
-                .lock()
-                .map_err(|e| AppError::Repository(format!("plugin mutex poisoned: {e}")))?;
-            if guard.function_exists(EXPORT_DOWNLOAD_LIST_RECENT_COMPLETED) {
-                let output = guard
-                    .call_string(EXPORT_DOWNLOAD_LIST_RECENT_COMPLETED, &input)
-                    .map_err(|e| {
-                        plugin_call_error(&format!("{EXPORT_DOWNLOAD_LIST_RECENT_COMPLETED}()"), e)
-                    })?;
-                Ok((output, EXPORT_DOWNLOAD_LIST_RECENT_COMPLETED))
-            } else {
-                let output = guard
-                    .call_unit(EXPORT_DOWNLOAD_LIST_COMPLETED)
-                    .map_err(|e| {
-                        plugin_call_error(&format!("{EXPORT_DOWNLOAD_LIST_COMPLETED}()"), e)
-                    })?;
-                Ok((output, EXPORT_DOWNLOAD_LIST_COMPLETED))
-            }
-        })
-        .await
-        .map_err(|e| AppError::Repository(format!("plugin task panicked: {e}")))??;
+        let (output, export_name) = run_blocking_plugin_call(
+            DOWNLOAD_CLIENT_PLUGIN_TIMEOUT,
+            "download client plugin",
+            move || {
+                let mut guard = plugin
+                    .lock()
+                    .map_err(|e| AppError::Repository(format!("plugin mutex poisoned: {e}")))?;
+                if guard.function_exists(EXPORT_DOWNLOAD_LIST_RECENT_COMPLETED) {
+                    let output = guard
+                        .call_string(EXPORT_DOWNLOAD_LIST_RECENT_COMPLETED, &input)
+                        .map_err(|e| {
+                            plugin_call_error(
+                                &format!("{EXPORT_DOWNLOAD_LIST_RECENT_COMPLETED}()"),
+                                e,
+                            )
+                        })?;
+                    Ok((output, EXPORT_DOWNLOAD_LIST_RECENT_COMPLETED))
+                } else {
+                    let output = guard
+                        .call_unit(EXPORT_DOWNLOAD_LIST_COMPLETED)
+                        .map_err(|e| {
+                            plugin_call_error(&format!("{EXPORT_DOWNLOAD_LIST_COMPLETED}()"), e)
+                        })?;
+                    Ok((output, EXPORT_DOWNLOAD_LIST_COMPLETED))
+                }
+            },
+        )
+        .await?;
 
         let mut items: Vec<PluginCompletedDownload> = decode_plugin_result(&output, export_name)?;
         if export_name == EXPORT_DOWNLOAD_LIST_COMPLETED {
@@ -984,17 +1001,20 @@ impl DownloadClient for WasmDownloadClient {
             AppError::Repository(format!("failed to serialize control request: {e}"))
         })?;
         let plugin = Arc::clone(&self.plugin);
-        tokio::task::spawn_blocking(move || {
-            let mut guard = plugin
-                .lock()
-                .map_err(|e| AppError::Repository(format!("plugin mutex poisoned: {e}")))?;
-            let output = guard
-                .call_string(EXPORT_DOWNLOAD_CONTROL, &input)
-                .map_err(|e| plugin_call_error(&format!("{EXPORT_DOWNLOAD_CONTROL}()"), e))?;
-            decode_plugin_result::<()>(&output, EXPORT_DOWNLOAD_CONTROL)
-        })
+        run_blocking_plugin_call(
+            DOWNLOAD_CLIENT_PLUGIN_TIMEOUT,
+            "download client plugin",
+            move || {
+                let mut guard = plugin
+                    .lock()
+                    .map_err(|e| AppError::Repository(format!("plugin mutex poisoned: {e}")))?;
+                let output = guard
+                    .call_string(EXPORT_DOWNLOAD_CONTROL, &input)
+                    .map_err(|e| plugin_call_error(&format!("{EXPORT_DOWNLOAD_CONTROL}()"), e))?;
+                decode_plugin_result::<()>(&output, EXPORT_DOWNLOAD_CONTROL)
+            },
+        )
         .await
-        .map_err(|e| AppError::Repository(format!("plugin task panicked: {e}")))?
     }
 
     async fn resume_queue_item(&self, id: &str) -> AppResult<()> {
@@ -1008,17 +1028,20 @@ impl DownloadClient for WasmDownloadClient {
             AppError::Repository(format!("failed to serialize control request: {e}"))
         })?;
         let plugin = Arc::clone(&self.plugin);
-        tokio::task::spawn_blocking(move || {
-            let mut guard = plugin
-                .lock()
-                .map_err(|e| AppError::Repository(format!("plugin mutex poisoned: {e}")))?;
-            let output = guard
-                .call_string(EXPORT_DOWNLOAD_CONTROL, &input)
-                .map_err(|e| plugin_call_error(&format!("{EXPORT_DOWNLOAD_CONTROL}()"), e))?;
-            decode_plugin_result::<()>(&output, EXPORT_DOWNLOAD_CONTROL)
-        })
+        run_blocking_plugin_call(
+            DOWNLOAD_CLIENT_PLUGIN_TIMEOUT,
+            "download client plugin",
+            move || {
+                let mut guard = plugin
+                    .lock()
+                    .map_err(|e| AppError::Repository(format!("plugin mutex poisoned: {e}")))?;
+                let output = guard
+                    .call_string(EXPORT_DOWNLOAD_CONTROL, &input)
+                    .map_err(|e| plugin_call_error(&format!("{EXPORT_DOWNLOAD_CONTROL}()"), e))?;
+                decode_plugin_result::<()>(&output, EXPORT_DOWNLOAD_CONTROL)
+            },
+        )
         .await
-        .map_err(|e| AppError::Repository(format!("plugin task panicked: {e}")))?
     }
 
     async fn delete_queue_item(&self, id: &str, is_history: bool) -> AppResult<()> {
@@ -1032,17 +1055,20 @@ impl DownloadClient for WasmDownloadClient {
             AppError::Repository(format!("failed to serialize control request: {e}"))
         })?;
         let plugin = Arc::clone(&self.plugin);
-        tokio::task::spawn_blocking(move || {
-            let mut guard = plugin
-                .lock()
-                .map_err(|e| AppError::Repository(format!("plugin mutex poisoned: {e}")))?;
-            let output = guard
-                .call_string(EXPORT_DOWNLOAD_CONTROL, &input)
-                .map_err(|e| plugin_call_error(&format!("{EXPORT_DOWNLOAD_CONTROL}()"), e))?;
-            decode_plugin_result::<()>(&output, EXPORT_DOWNLOAD_CONTROL)
-        })
+        run_blocking_plugin_call(
+            DOWNLOAD_CLIENT_PLUGIN_TIMEOUT,
+            "download client plugin",
+            move || {
+                let mut guard = plugin
+                    .lock()
+                    .map_err(|e| AppError::Repository(format!("plugin mutex poisoned: {e}")))?;
+                let output = guard
+                    .call_string(EXPORT_DOWNLOAD_CONTROL, &input)
+                    .map_err(|e| plugin_call_error(&format!("{EXPORT_DOWNLOAD_CONTROL}()"), e))?;
+                decode_plugin_result::<()>(&output, EXPORT_DOWNLOAD_CONTROL)
+            },
+        )
         .await
-        .map_err(|e| AppError::Repository(format!("plugin task panicked: {e}")))?
     }
 
     async fn mark_imported(&self, request: &DownloadClientMarkImportedRequest) -> AppResult<()> {
@@ -1060,31 +1086,39 @@ impl DownloadClient for WasmDownloadClient {
             AppError::Repository(format!("failed to serialize mark_imported request: {e}"))
         })?;
         let plugin = Arc::clone(&self.plugin);
-        tokio::task::spawn_blocking(move || {
-            let mut guard = plugin
-                .lock()
-                .map_err(|e| AppError::Repository(format!("plugin mutex poisoned: {e}")))?;
-            let output = guard
-                .call_string(EXPORT_DOWNLOAD_MARK_IMPORTED, &input)
-                .map_err(|e| plugin_call_error(&format!("{EXPORT_DOWNLOAD_MARK_IMPORTED}()"), e))?;
-            decode_plugin_result::<()>(&output, EXPORT_DOWNLOAD_MARK_IMPORTED)
-        })
+        run_blocking_plugin_call(
+            DOWNLOAD_CLIENT_PLUGIN_TIMEOUT,
+            "download client plugin",
+            move || {
+                let mut guard = plugin
+                    .lock()
+                    .map_err(|e| AppError::Repository(format!("plugin mutex poisoned: {e}")))?;
+                let output = guard
+                    .call_string(EXPORT_DOWNLOAD_MARK_IMPORTED, &input)
+                    .map_err(|e| {
+                        plugin_call_error(&format!("{EXPORT_DOWNLOAD_MARK_IMPORTED}()"), e)
+                    })?;
+                decode_plugin_result::<()>(&output, EXPORT_DOWNLOAD_MARK_IMPORTED)
+            },
+        )
         .await
-        .map_err(|e| AppError::Repository(format!("plugin task panicked: {e}")))?
     }
 
     async fn get_client_status(&self) -> AppResult<DownloadClientStatus> {
         let plugin = Arc::clone(&self.plugin);
-        let output = tokio::task::spawn_blocking(move || {
-            let mut guard = plugin
-                .lock()
-                .map_err(|e| AppError::Repository(format!("plugin mutex poisoned: {e}")))?;
-            guard
-                .call_unit(EXPORT_DOWNLOAD_STATUS)
-                .map_err(|e| plugin_call_error(&format!("{EXPORT_DOWNLOAD_STATUS}()"), e))
-        })
-        .await
-        .map_err(|e| AppError::Repository(format!("plugin task panicked: {e}")))??;
+        let output = run_blocking_plugin_call(
+            DOWNLOAD_CLIENT_PLUGIN_TIMEOUT,
+            "download client plugin",
+            move || {
+                let mut guard = plugin
+                    .lock()
+                    .map_err(|e| AppError::Repository(format!("plugin mutex poisoned: {e}")))?;
+                guard
+                    .call_unit(EXPORT_DOWNLOAD_STATUS)
+                    .map_err(|e| plugin_call_error(&format!("{EXPORT_DOWNLOAD_STATUS}()"), e))
+            },
+        )
+        .await?;
 
         let status: PluginDownloadClientStatus =
             decode_plugin_result(&output, EXPORT_DOWNLOAD_STATUS)?;
@@ -1101,21 +1135,24 @@ impl DownloadClient for WasmDownloadClient {
 
     async fn test_connection(&self) -> AppResult<String> {
         let plugin = Arc::clone(&self.plugin);
-        let output = tokio::task::spawn_blocking(move || {
-            let mut guard = plugin
-                .lock()
-                .map_err(|e| AppError::Repository(format!("plugin mutex poisoned: {e}")))?;
-            guard
-                .call_unit(crate::types::EXPORT_DOWNLOAD_TEST_CONNECTION)
-                .map_err(|e| {
-                    plugin_call_error(
-                        &format!("{}()", crate::types::EXPORT_DOWNLOAD_TEST_CONNECTION),
-                        e,
-                    )
-                })
-        })
-        .await
-        .map_err(|e| AppError::Repository(format!("plugin task panicked: {e}")))??;
+        let output = run_blocking_plugin_call(
+            DOWNLOAD_CLIENT_PLUGIN_TIMEOUT,
+            "download client plugin",
+            move || {
+                let mut guard = plugin
+                    .lock()
+                    .map_err(|e| AppError::Repository(format!("plugin mutex poisoned: {e}")))?;
+                guard
+                    .call_unit(crate::types::EXPORT_DOWNLOAD_TEST_CONNECTION)
+                    .map_err(|e| {
+                        plugin_call_error(
+                            &format!("{}()", crate::types::EXPORT_DOWNLOAD_TEST_CONNECTION),
+                            e,
+                        )
+                    })
+            },
+        )
+        .await?;
 
         decode_plugin_result(&output, crate::types::EXPORT_DOWNLOAD_TEST_CONNECTION)
     }

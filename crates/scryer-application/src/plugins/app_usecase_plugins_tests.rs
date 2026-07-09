@@ -3877,7 +3877,7 @@ fn validate_downloaded_plugin_descriptor_rejects_unverified_host_process_capabil
 }
 
 #[test]
-fn validate_downloaded_plugin_descriptor_allows_verified_host_process_capability() {
+fn validate_downloaded_plugin_descriptor_allows_only_official_host_process_capability() {
     let release =
         downloaded_release_contract("0.2.0", &scryer_plugin_sdk::current_sdk_constraint(), None);
     let descriptor = scryer_plugin_sdk::PluginDescriptor {
@@ -3902,20 +3902,33 @@ fn validate_downloaded_plugin_descriptor_allows_verified_host_process_capability
         ),
     };
 
-    for tier in [
+    validate_downloaded_plugin_descriptor(
+        "customscript",
+        "notification",
+        "customscript",
+        &release,
+        &descriptor,
         PluginSupportTier::Official,
+        false,
+    )
+    .expect("official plugins may request the host-process capability");
+
+    let err = validate_downloaded_plugin_descriptor(
+        "customscript",
+        "notification",
+        "customscript",
+        &release,
+        &descriptor,
         PluginSupportTier::VerifiedCommunity,
-    ] {
-        validate_downloaded_plugin_descriptor(
-            "customscript",
-            "notification",
-            "customscript",
-            &release,
-            &descriptor,
-            tier,
-            false,
-        )
-        .unwrap_or_else(|err| panic!("tier {tier:?} should accept the capability: {err:?}"));
+        false,
+    )
+    .expect_err("verified community plugins must not install host-process plugins");
+    match err {
+        AppError::Validation(msg) => assert!(
+            msg.contains("official plugins"),
+            "unexpected message: {msg}"
+        ),
+        other => panic!("expected Validation, got {other:?}"),
     }
 }
 

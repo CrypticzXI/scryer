@@ -2397,8 +2397,7 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                 }
             };
             let mappings = download_client_remote_path_mappings(&config);
-            let output_roots =
-                mapped_download_client_output_roots(client.as_ref(), mappings.as_deref()).await;
+            let output_roots = trusted_download_client_output_roots(&config, mappings.as_deref());
             match client.list_completed_downloads().await {
                 Ok(mut items) => {
                     tracing::debug!(
@@ -2527,8 +2526,7 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                 }
             };
             let mappings = download_client_remote_path_mappings(&config);
-            let output_roots =
-                mapped_download_client_output_roots(client.as_ref(), mappings.as_deref()).await;
+            let output_roots = trusted_download_client_output_roots(&config, mappings.as_deref());
             match client.list_recent_completed_downloads(limit).await {
                 Ok(mut items) => {
                     self.record_feedback_read_success(
@@ -2688,20 +2686,99 @@ fn recent_completed_strategy_label(client_type: &str) -> &'static str {
     }
 }
 
-async fn mapped_download_client_output_roots(
-    client: &dyn DownloadClient,
+const TRUSTED_DOWNLOAD_ROOT_CONFIG_KEYS: &[&str] = &[
+    "completed_dir",
+    "completedDir",
+    "completed_download_dir",
+    "completedDownloadDir",
+    "completed_download_path",
+    "completedDownloadPath",
+    "destination",
+    "destination_dir",
+    "destinationDir",
+    "destination_path",
+    "destinationPath",
+    "download_dir",
+    "downloadDir",
+    "download_path",
+    "downloadPath",
+    "output_dir",
+    "outputDir",
+    "output_path",
+    "outputPath",
+    "output_root",
+    "outputRoot",
+    "output_roots",
+    "outputRoots",
+    "save_dir",
+    "saveDir",
+    "save_path",
+    "savePath",
+];
+
+fn trusted_download_client_output_roots(
+    config: &DownloadClientConfig,
     mappings: Option<&[DownloadClientRemotePathMapping]>,
 ) -> Vec<PathBuf> {
-    let Ok(mut status) = client.get_client_status().await else {
-        return Vec::new();
-    };
+    let mut roots = Vec::new();
     if let Some(mappings) = mappings {
-        apply_remote_path_mappings_to_status(&mut status, mappings);
+        roots.extend(
+            mappings
+                .iter()
+                .filter_map(|mapping| normalized_output_root(mapping.local_root())),
+        );
     }
-    status
-        .remote_output_roots
-        .iter()
-        .filter_map(|root| normalized_output_root(root))
+    if let Ok(config_json) = parse_download_client_config_json(&config.config_json) {
+        collect_trusted_download_roots_from_config(&config_json, &mut roots);
+    }
+    dedupe_output_roots(roots)
+}
+
+fn collect_trusted_download_roots_from_config(value: &serde_json::Value, roots: &mut Vec<PathBuf>) {
+    match value {
+        serde_json::Value::Object(map) => {
+            for (key, value) in map {
+                if TRUSTED_DOWNLOAD_ROOT_CONFIG_KEYS.contains(&key.as_str()) {
+                    collect_trusted_download_root_value(value, roots);
+                }
+                collect_trusted_download_roots_from_config(value, roots);
+            }
+        }
+        serde_json::Value::Array(values) => {
+            for value in values {
+                collect_trusted_download_roots_from_config(value, roots);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_trusted_download_root_value(value: &serde_json::Value, roots: &mut Vec<PathBuf>) {
+    match value {
+        serde_json::Value::String(path) => {
+            if let Some(root) = normalized_output_root(path) {
+                roots.push(root);
+            }
+        }
+        serde_json::Value::Array(values) => {
+            for value in values {
+                collect_trusted_download_root_value(value, roots);
+            }
+        }
+        serde_json::Value::Object(map) => {
+            for value in map.values() {
+                collect_trusted_download_root_value(value, roots);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn dedupe_output_roots(roots: Vec<PathBuf>) -> Vec<PathBuf> {
+    let mut seen = HashSet::new();
+    roots
+        .into_iter()
+        .filter(|root| seen.insert(root.clone()))
         .collect()
 }
 
@@ -2719,15 +2796,15 @@ fn normalized_output_root(path: &str) -> Option<PathBuf> {
 }
 
 fn completed_download_path_allowed(dest_dir: &str, output_roots: &[PathBuf]) -> bool {
-    if output_roots.is_empty() {
-        return true;
-    }
     let dest_dir = dest_dir.trim();
     if dest_dir.is_empty()
         || dest_dir.contains("://")
         || dest_dir.to_ascii_lowercase().starts_with("webdav:")
     {
         return true;
+    }
+    if output_roots.is_empty() {
+        return false;
     }
 
     let path = Path::new(dest_dir);
@@ -3223,7 +3300,7 @@ mod tests {
             id: id.to_string(),
             name: name.to_string(),
             client_type: client_type.to_string(),
-            config_json: "{}".to_string(),
+            config_json: r#"{"download_dir":"/downloads"}"#.to_string(),
             is_enabled: true,
             status: scryer_domain::DownloadClientStatus::Healthy,
             last_error: None,
@@ -4896,6 +4973,57 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn list_completed_downloads_ignores_plugin_reported_output_roots_for_containment() {
+        let client = Arc::new(MockDownloadClient::default());
+        *client.status.lock().unwrap() = DownloadClientStatus {
+            remote_output_roots: vec!["/etc".to_string()],
+            ..DownloadClientStatus::default()
+        };
+        client
+            .completed_downloads
+            .lock()
+            .unwrap()
+            .push(scryer_domain::CompletedDownload {
+                client_type: "qbittorrent".to_string(),
+                client_id: String::new(),
+                download_client_item_id: "malicious-1".to_string(),
+                download_id: None,
+                name: "Malicious Download".to_string(),
+                dest_dir: "/etc".to_string(),
+                category: None,
+                size_bytes: None,
+                completed_at: Some(Utc::now()),
+                parameters: Vec::new(),
+            });
+
+        let plugin_provider: Arc<dyn DownloadClientPluginProvider> =
+            Arc::new(MockDownloadClientPluginProvider {
+                accepted_inputs: vec!["torrent_file".to_string()],
+                clients: vec![("client-a".to_string(), client.clone())],
+            });
+
+        let router = PrioritizedDownloadClientRouter::new(
+            Arc::new(MockDownloadClientConfigRepository {
+                configs: vec![DownloadClientConfig {
+                    config_json: "{}".to_string(),
+                    ..test_config("client-a", "Client A", "qbittorrent", 0)
+                }],
+            }),
+            Arc::new(MockSettingsRepository::default()),
+            null_staged_nzb_store(),
+            test_pipeline_limit(),
+            Some(plugin_provider),
+        );
+
+        let items = router
+            .list_completed_downloads()
+            .await
+            .expect("completed downloads should succeed");
+
+        assert!(items.is_empty());
+    }
+
+    #[tokio::test]
     async fn get_client_status_for_client_id_applies_remote_path_mappings_to_output_roots() {
         let client = Arc::new(MockDownloadClient::default());
         *client.status.lock().unwrap() = DownloadClientStatus {
@@ -5179,7 +5307,25 @@ mod tests {
     }
 
     #[test]
-    fn completed_download_path_filter_preserves_empty_root_compatibility() {
-        assert!(completed_download_path_allowed("/etc", &[]));
+    fn completed_download_path_filter_rejects_filesystem_paths_without_trusted_roots() {
+        assert!(!completed_download_path_allowed("/etc", &[]));
+    }
+
+    #[test]
+    fn trusted_download_client_output_roots_uses_config_not_reported_status() {
+        let config = DownloadClientConfig {
+            config_json: r#"{"download_dir":"/downloads","output_roots":["/more-downloads"]}"#
+                .to_string(),
+            ..test_config("client-a", "Client A", "qbittorrent", 0)
+        };
+
+        let roots = trusted_download_client_output_roots(&config, None);
+
+        assert!(roots.iter().any(|root| root == Path::new("/downloads")));
+        assert!(
+            roots
+                .iter()
+                .any(|root| root == Path::new("/more-downloads"))
+        );
     }
 }

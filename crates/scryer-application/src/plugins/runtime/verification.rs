@@ -227,20 +227,16 @@ fn installation_sdk_contract_is_host_compatible(installation: &PluginInstallatio
 /// Support tiers permitted to run the host-process capability.
 ///
 /// The host-process host lets a plugin spawn real OS processes on the Scryer
-/// host. It is reserved for Scryer's own first-party plugins (`Official`) and
-/// catalog plugins that have been verified by the catalog maintainers
-/// (`VerifiedCommunity`). Operator-supplied (`Unverified`) plugins must never be
-/// able to enable it, even if their manifest self-declares
-/// `requires_host_process`.
+/// host. It is reserved for Scryer's own first-party plugins (`Official`).
+/// Community plugins, including `VerifiedCommunity`, must not be installable
+/// with this capability because runtime host bindings are only enabled for
+/// first-party artifacts.
 fn support_tier_permits_host_process(tier: PluginSupportTier) -> bool {
-    matches!(
-        tier,
-        PluginSupportTier::Official | PluginSupportTier::VerifiedCommunity
-    )
+    matches!(tier, PluginSupportTier::Official)
 }
 
 /// Hard-fail validation of a plugin that declares the host-process capability
-/// unless its resolved support tier is first-party / verified. Applied on every
+/// unless its resolved support tier is first-party. Applied on every
 /// install path and when loading a persisted installation, so an untrusted
 /// notifier can never turn an allowlisted interpreter into arbitrary host code.
 fn ensure_host_process_capability_allowed(
@@ -254,10 +250,10 @@ fn ensure_host_process_capability_allowed(
             plugin = descriptor.id.as_str(),
             provider_type = descriptor.provider_type(),
             support_tier = ?support_tier,
-            "rejecting plugin: host-process capability is reserved for verified plugins"
+            "rejecting plugin: host-process capability is reserved for official plugins"
         );
         return Err(AppError::Validation(format!(
-            "plugin '{}' requests the host-process capability, which is reserved for verified plugins",
+            "plugin '{}' requests the host-process capability, which is reserved for official plugins",
             descriptor.id
         )));
     }

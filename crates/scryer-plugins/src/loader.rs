@@ -1668,8 +1668,8 @@ fn binding_allowed_for_plugin(
 /// Wire the host-process host for a notification plugin.
 ///
 /// The host-process capability lets a plugin spawn real OS processes on the host
-/// and is therefore reserved for Scryer's own first-party / verified plugins. Any
-/// plugin that is not first-party (operator-supplied `Unverified` notifiers)
+/// and is therefore reserved for Scryer's own first-party plugins. Any plugin
+/// that is not first-party (including community and operator-supplied notifiers)
 /// receives a disabled host with an empty allowlist, so `scryer_process_exec`
 /// always returns PermissionDenied regardless of a self-declared
 /// `requires_host_process`. This reuses the same first-party trust gate as

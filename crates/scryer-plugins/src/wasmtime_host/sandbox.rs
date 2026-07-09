@@ -122,6 +122,7 @@ pub(crate) fn build_describe_sandbox() -> BareSandbox {
     let stderr = MemoryOutputPipe::new(STDERR_CAPACITY_BYTES);
     let mut builder = WasiCtxBuilder::new();
     builder
+        .allow_blocking_current_thread(false)
         .stdin(MemoryInputPipe::new(Vec::<u8>::new()))
         .stdout(stdout.clone())
         .stderr(stderr.clone())
@@ -154,6 +155,7 @@ pub(crate) fn build_sandbox(
 
     let mut builder = WasiCtxBuilder::new();
     builder
+        .allow_blocking_current_thread(false)
         .stdin(stdin)
         .stdout(stdout.clone())
         .stderr(stderr.clone())
