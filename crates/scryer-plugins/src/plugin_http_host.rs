@@ -91,6 +91,9 @@ impl PluginHttpRuntime {
         Ok(())
     }
 
+    /// Operator-trusted client for indexer-proxy endpoints (e.g. Byparr). Those
+    /// targets are operator-configured, so they are not subject to the plugin
+    /// egress guard and may legitimately live on the LAN.
     fn client(&self) -> HostResult<Client> {
         let mut state = self
             .state
@@ -104,6 +107,28 @@ impl PluginHttpRuntime {
             .map_err(|error| error.to_string())?;
         state.cached_client = Some(client.clone());
         Ok(client)
+    }
+
+    /// Builds a DNS-pinned, guarded blocking client for an untrusted
+    /// plugin-controlled request URL under the plugin egress policy. A fresh
+    /// client is built per request because DNS pinning is host-specific; this
+    /// is what stops a plugin from reaching cloud-metadata / link-local space
+    /// (even via DNS rebinding) once its `allowed_hosts` allowlist has passed.
+    fn pinned_request_client(&self, url: &str) -> HostResult<Client> {
+        let extra_ca_bundle_pem = {
+            let state = self
+                .state
+                .lock()
+                .map_err(|error| format!("plugin HTTP runtime lock poisoned: {error}"))?;
+            state.extra_ca_bundle_pem.clone()
+        };
+        scryer_outbound_http::prepare_plugin_blocking_http_target(
+            url,
+            &extra_ca_bundle_pem,
+            "plugin HTTP",
+        )
+        .map(scryer_outbound_http::PinnedPluginBlockingHttpTarget::into_client)
+        .map_err(|error| error.to_string())
     }
 }
 
@@ -149,7 +174,10 @@ impl PluginHttpHost {
 
         enforce_allowed_hosts(allowed_hosts.as_deref(), &request.url)?;
 
-        let client = runtime.client()?;
+        // The allowlist is the primary boundary; the guarded, DNS-pinned client
+        // is the second layer that keeps a declared host from reaching
+        // link-local / cloud-metadata space.
+        let request_client = runtime.pinned_request_client(&request.url)?;
         let started_at = Instant::now();
         let request_is_get = request
             .method
@@ -167,7 +195,7 @@ impl PluginHttpHost {
             })
             .unwrap_or_default();
         let response = execute_request_with_extra_headers(
-            &client,
+            &request_client,
             &request,
             body.clone(),
             timeout,
@@ -221,8 +249,13 @@ impl PluginHttpHost {
                 "plugin HTTP request detected browser challenge"
             );
 
+            // The proxy endpoint itself is operator-configured, so it uses the
+            // trusted client; the plugin URL retry inside stays on the guarded
+            // pinned client.
+            let proxy_client = runtime.client()?;
             let solved = match execute_byparr_request(
-                &client,
+                &proxy_client,
+                &request_client,
                 policy,
                 &request,
                 body,
@@ -331,7 +364,13 @@ fn enforce_allowed_hosts(allowed_hosts: Option<&[String]>, request_url: &str) ->
         return Ok(());
     }
 
-    Err(format!("HTTP request to {} is not allowed", request_url))
+    // Never interpolate the raw request URL here: for indexer requests it
+    // carries `?apikey=`/`passkey=` credentials that would otherwise leak into
+    // WARN logs and the user-facing error. Log the query-stripped URL instead.
+    Err(format!(
+        "HTTP request to {} is not allowed",
+        solver::sanitized_url_for_log(request_url)
+    ))
 }
 
 fn execute_request_with_extra_headers(
@@ -411,7 +450,8 @@ fn read_response_body(
 }
 
 fn execute_byparr_request(
-    client: &Client,
+    proxy_client: &Client,
+    request_client: &Client,
     policy: &IndexerProxyPolicy,
     request: &PluginHttpRequest,
     original_body: Option<Vec<u8>>,
@@ -436,7 +476,7 @@ fn execute_byparr_request(
         "Byparr request started"
     );
 
-    let response = client
+    let response = proxy_client
         .post(&endpoint)
         .timeout(byparr_timeout)
         .json(&solver::byparr_solve_request(
@@ -518,7 +558,7 @@ fn execute_byparr_request(
             "retrying original request with Byparr solver headers"
         );
         let retry = execute_request_with_extra_headers(
-            client,
+            request_client,
             request,
             original_body,
             original_timeout,
@@ -603,5 +643,48 @@ mod tests {
         .expect_err("disallowed host should fail");
 
         assert!(error.to_string().contains("is not allowed"));
+    }
+
+    #[test]
+    fn enforce_allowed_hosts_error_omits_query_credentials() {
+        let error = enforce_allowed_hosts(
+            Some(&["allowed.example".to_string()]),
+            "https://tracker.example.test/download?apikey=SECRETKEY&passkey=TOPSECRET",
+        )
+        .expect_err("disallowed host should fail");
+
+        assert!(error.contains("is not allowed"));
+        assert!(!error.contains('?'), "error must not carry a query string: {error}");
+        assert!(!error.contains("apikey"), "error must not leak apikey: {error}");
+        assert!(!error.contains("passkey"), "error must not leak passkey: {error}");
+        assert!(!error.contains("SECRETKEY"), "error must not leak secrets: {error}");
+        assert!(!error.contains("TOPSECRET"), "error must not leak secrets: {error}");
+    }
+
+    #[test]
+    fn plugin_request_egress_blocks_cloud_metadata() {
+        let result = scryer_outbound_http::prepare_plugin_blocking_http_target(
+            "http://169.254.169.254/latest/meta-data/",
+            "",
+            "plugin HTTP",
+        );
+
+        assert!(
+            matches!(
+                result,
+                Err(scryer_outbound_http::OutboundDestinationError::BlockedLinkLocalOrMetadata { .. })
+            ),
+            "cloud metadata address must be rejected on the plugin HTTP host path"
+        );
+    }
+
+    #[test]
+    fn plugin_request_egress_allows_loopback_companion() {
+        scryer_outbound_http::prepare_plugin_blocking_http_target(
+            "http://127.0.0.1:9117/api",
+            "",
+            "plugin HTTP",
+        )
+        .expect("loopback companion must be allowed for self-hosted plugins");
     }
 }
