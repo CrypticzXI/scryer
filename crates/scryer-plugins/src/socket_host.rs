@@ -9,10 +9,10 @@ use rustls::pki_types::ServerName;
 use rustls::{ClientConfig, ClientConnection, RootCertStore, StreamOwned};
 
 use crate::types::{
-    SocketCloseRequest, SocketCloseResponse, SocketError, SocketErrorCode, SocketOpenRequest,
-    SocketOpenResponse, SocketReadRequest, SocketReadResponse, SocketResponse,
+    PluginDescriptor, SocketCloseRequest, SocketCloseResponse, SocketError, SocketErrorCode,
+    SocketOpenRequest, SocketOpenResponse, SocketReadRequest, SocketReadResponse, SocketResponse,
     SocketStartTlsRequest, SocketStartTlsResponse, SocketTlsMode, SocketWriteRequest,
-    SocketWriteResponse,
+    SocketWriteResponse, allowed_host_pattern_is_valid, socket_host_pattern_config_key,
 };
 
 pub(crate) const SOCKET_HOST_NAMESPACE: &str = "extism:host/user";
@@ -34,6 +34,26 @@ impl SocketHost {
         Self {
             state: Arc::new(Mutex::new(SocketHostState::new(Vec::new()))),
         }
+    }
+
+    pub(crate) fn from_descriptor(
+        descriptor: &PluginDescriptor,
+        config_json: Option<&str>,
+    ) -> Self {
+        Self {
+            state: Arc::new(Mutex::new(SocketHostState::new(
+                resolve_socket_permissions(descriptor, config_json),
+            ))),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn allows_for_test(&self, host: &str, port: u16, tls_mode: SocketTlsMode) -> bool {
+        self.state.lock().expect("socket host state lock").allows(
+            &normalize_host(host),
+            port,
+            tls_mode,
+        )
     }
 
     pub(crate) fn call(&self, function: &str, input: String) -> Result<String, String> {
@@ -358,6 +378,48 @@ fn normalize_host(host: &str) -> String {
     host.trim().trim_end_matches('.').to_ascii_lowercase()
 }
 
+fn resolve_socket_permissions(
+    descriptor: &PluginDescriptor,
+    config_json: Option<&str>,
+) -> Vec<ResolvedSocketPermission> {
+    let config = config_json.and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok());
+    descriptor
+        .socket_permissions
+        .iter()
+        .filter_map(|permission| {
+            let host_pattern =
+                resolve_socket_host_pattern(&permission.host_pattern, config.as_ref())?;
+            if permission.ports.is_empty()
+                || permission.tls_modes.is_empty()
+                || !allowed_host_pattern_is_valid(&host_pattern)
+            {
+                return None;
+            }
+            Some(ResolvedSocketPermission {
+                host_pattern: normalize_host(&host_pattern),
+                ports: permission.ports.clone(),
+                tls_modes: permission.tls_modes.clone(),
+            })
+        })
+        .collect()
+}
+
+fn resolve_socket_host_pattern(
+    pattern: &str,
+    config: Option<&serde_json::Value>,
+) -> Option<String> {
+    let pattern = pattern.trim();
+    let Some(key) = socket_host_pattern_config_key(pattern) else {
+        return Some(pattern.to_string());
+    };
+    config?
+        .get(key)?
+        .as_str()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
 fn timeout_or_default(value_ms: Option<u64>, default: Duration) -> Duration {
     value_ms
         .filter(|value| *value > 0)
@@ -523,6 +585,10 @@ fn map_io_error(error: io::Error) -> SocketError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::{
+        NotificationCapabilities, NotificationDescriptor, PluginDescriptor, ProviderDescriptor,
+        SDK_VERSION, SocketPermission, current_sdk_constraint,
+    };
 
     #[test]
     fn disabled_socket_host_denies_open() {
@@ -545,5 +611,39 @@ mod tests {
 
         assert!(response.contains("\"ok\":false"), "{response}");
         assert!(response.contains("permission_denied"), "{response}");
+    }
+
+    #[test]
+    fn descriptor_socket_permissions_resolve_notification_config_host() {
+        let descriptor = PluginDescriptor {
+            id: "email".to_string(),
+            name: "Email".to_string(),
+            version: "1.0.0".to_string(),
+            sdk_version: SDK_VERSION.to_string(),
+            sdk_constraint: current_sdk_constraint(),
+            socket_permissions: vec![SocketPermission {
+                host_pattern: "${smtp_host}".to_string(),
+                ports: vec![25, 465, 587],
+                tls_modes: vec![
+                    SocketTlsMode::Plain,
+                    SocketTlsMode::Tls,
+                    SocketTlsMode::Starttls,
+                ],
+            }],
+            provider: ProviderDescriptor::Notification(NotificationDescriptor {
+                provider_type: "email".to_string(),
+                provider_aliases: Vec::new(),
+                default_base_url: None,
+                allowed_hosts: Vec::new(),
+                capabilities: NotificationCapabilities::default(),
+                config_fields: Vec::new(),
+            }),
+        };
+
+        let host = SocketHost::from_descriptor(&descriptor, Some(r#"{"smtp_host":"smtp"}"#));
+
+        assert!(host.allows_for_test("smtp", 587, SocketTlsMode::Starttls));
+        assert!(!host.allows_for_test("localhost", 587, SocketTlsMode::Starttls));
+        assert!(!host.allows_for_test("smtp", 2525, SocketTlsMode::Starttls));
     }
 }

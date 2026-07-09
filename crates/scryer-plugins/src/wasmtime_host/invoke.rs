@@ -4,8 +4,9 @@
 //! request is fed on stdin, the guest writes exactly one typed response JSON
 //! document to stdout, and a clean `_start` return (or `proc_exit(0)`) marks
 //! protocol success. Operational conditions stay in-band via the response; only
-//! genuine faults exit non-zero / trap. Runs synchronously — adapters call this
-//! under `tokio::task::spawn_blocking`.
+//! genuine faults exit non-zero / trap. Command-model guests run on Wasmtime's
+//! async path so WASI sleeps and polls can be cancelled by adapter timeouts
+//! without parking Tokio blocking threads.
 
 use std::time::{Duration, Instant};
 
@@ -36,7 +37,7 @@ pub(crate) struct SubtitleSyncInvocation<'a> {
 }
 
 /// Instantiate the archive guest and run one request→response exchange.
-pub(crate) fn process_archive(
+pub(crate) async fn process_archive(
     spec: &PluginInstanceSpec,
     request_json: &str,
     invocation: ArchiveInvocation<'_>,
@@ -53,7 +54,7 @@ pub(crate) fn process_archive(
     let request_bytes = request_json.as_bytes().to_vec();
     let request_len = request_bytes.len();
 
-    let engine = engine::shared_engine();
+    let engine = engine::shared_async_engine();
 
     // TODO(RFC §9 / WP6): cache the compiled Module keyed by artifact digest;
     // 0.17.0 compiles per request (one archive extraction runs at a time).
@@ -65,13 +66,12 @@ pub(crate) fn process_archive(
     })?;
 
     let mut linker: Linker<HostCtx> = Linker::new(engine);
-    wasmtime_wasi::p1::add_to_linker_sync(&mut linker, |ctx: &mut HostCtx| &mut ctx.wasi).map_err(
-        |error| {
+    wasmtime_wasi::p1::add_to_linker_async(&mut linker, |ctx: &mut HostCtx| &mut ctx.wasi)
+        .map_err(|error| {
             AppError::Repository(format!(
                 "failed to wire WASI preview1 for archive plugin: {error:#}"
             ))
-        },
-    )?;
+        })?;
     crypto_host::add_to_linker(&mut linker).map_err(|error| {
         AppError::Repository(format!(
             "failed to register archive crypto host functions: {error:#}"
@@ -94,7 +94,7 @@ pub(crate) fn process_archive(
     store.limiter(|ctx: &mut HostCtx| &mut ctx.limits);
     store.set_epoch_deadline(engine::deadline_ticks(spec.timeout));
 
-    let instance = match linker.instantiate(&mut store, &module) {
+    let instance = match linker.instantiate_async(&mut store, &module).await {
         Ok(instance) => instance,
         Err(error) => {
             let denied = store.data().limits.memory_denied;
@@ -127,7 +127,7 @@ pub(crate) fn process_archive(
         }
     };
 
-    let call_result = start.call(&mut store, ());
+    let call_result = start.call_async(&mut store, ()).await;
     let denied = store.data().limits.memory_denied;
     let stdout_bytes = stdout.contents();
     let stderr_tail = tail_of(&stderr);
@@ -187,7 +187,7 @@ pub(crate) fn process_archive(
 }
 
 /// Instantiate the subtitle-sync guest and run one request→response exchange.
-pub(crate) fn process_subtitle_sync(
+pub(crate) async fn process_subtitle_sync(
     spec: &PluginInstanceSpec,
     request_json: &str,
     invocation: SubtitleSyncInvocation<'_>,
@@ -204,7 +204,7 @@ pub(crate) fn process_subtitle_sync(
     let request_bytes = request_json.as_bytes().to_vec();
     let request_len = request_bytes.len();
 
-    let engine = engine::shared_engine();
+    let engine = engine::shared_async_engine();
     let module = Module::from_binary(engine, &spec.wasm).map_err(|error| {
         AppError::Repository(format!(
             "subtitle sync plugin {}@{} failed to compile: {error:#}",
@@ -213,13 +213,12 @@ pub(crate) fn process_subtitle_sync(
     })?;
 
     let mut linker: Linker<HostCtx> = Linker::new(engine);
-    wasmtime_wasi::p1::add_to_linker_sync(&mut linker, |ctx: &mut HostCtx| &mut ctx.wasi).map_err(
-        |error| {
+    wasmtime_wasi::p1::add_to_linker_async(&mut linker, |ctx: &mut HostCtx| &mut ctx.wasi)
+        .map_err(|error| {
             AppError::Repository(format!(
                 "failed to wire WASI preview1 for subtitle sync plugin: {error:#}"
             ))
-        },
-    )?;
+        })?;
 
     let PreparedSandbox {
         wasi,
@@ -238,7 +237,7 @@ pub(crate) fn process_subtitle_sync(
     store.limiter(|ctx: &mut HostCtx| &mut ctx.limits);
     store.set_epoch_deadline(engine::deadline_ticks(spec.timeout));
 
-    let instance = match linker.instantiate(&mut store, &module) {
+    let instance = match linker.instantiate_async(&mut store, &module).await {
         Ok(instance) => instance,
         Err(error) => {
             let denied = store.data().limits.memory_denied;
@@ -271,7 +270,7 @@ pub(crate) fn process_subtitle_sync(
         }
     };
 
-    let call_result = start.call(&mut store, ());
+    let call_result = start.call_async(&mut store, ()).await;
     let denied = store.data().limits.memory_denied;
     let stdout_bytes = stdout.contents();
     let stderr_tail = tail_of(&stderr);
@@ -402,6 +401,8 @@ fn tail_of(pipe: &MemoryOutputPipe) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+
     use wasmtime::Engine;
 
     /// A wasip1 command that echoes up to 1 KiB of stdin to stdout.
@@ -425,6 +426,28 @@ mod tests {
 
     /// A guest whose `_start` spins forever — for the epoch-deadline test.
     const SPIN_WAT: &str = r#"(module (func (export "_start") (loop br 0)))"#;
+
+    /// A wasip1 command that parks in `poll_oneoff` for five seconds.
+    const POLL_ONEOFF_SLEEP_WAT: &str = r#"
+        (module
+          (import "wasi_snapshot_preview1" "poll_oneoff"
+            (func $poll_oneoff (param i32 i32 i32 i32) (result i32)))
+          (memory (export "memory") 1)
+          (func (export "_start")
+            ;; __wasi_subscription_t @0: userdata=1, type=clock,
+            ;; clockid=monotonic, timeout=5s, precision=0, flags=0.
+            (i64.store (i32.const 0) (i64.const 1))
+            (i32.store8 (i32.const 8) (i32.const 0))
+            (i32.store (i32.const 16) (i32.const 1))
+            (i64.store (i32.const 24) (i64.const 5000000000))
+            (i64.store (i32.const 32) (i64.const 0))
+            (i32.store16 (i32.const 40) (i32.const 0))
+            (drop (call $poll_oneoff
+              (i32.const 0)
+              (i32.const 64)
+              (i32.const 1)
+              (i32.const 128)))))
+    "#;
 
     /// A guest demanding 100 pages (6.4 MiB) of initial memory — for the cap.
     const BIG_MEM_WAT: &str = r#"(module (memory (export "memory") 100))"#;
@@ -489,6 +512,51 @@ mod tests {
         let failure = error::interpret_start_result(result, false)
             .expect_err("spinning guest must be interrupted");
         assert_eq!(failure.kind, error::FailureKind::Timeout);
+    }
+
+    #[test]
+    fn poll_oneoff_timeout_does_not_hold_blocking_thread() {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .max_blocking_threads(1)
+            .enable_time()
+            .build()
+            .expect("build constrained tokio runtime");
+
+        runtime.block_on(async {
+            let spec = PluginInstanceSpec {
+                wasm: Arc::new(wat::parse_str(POLL_ONEOFF_SLEEP_WAT).expect("compile sleep guest")),
+                preopens: Vec::new(),
+                timeout: Duration::from_secs(30),
+                memory_max_bytes: None,
+            };
+            let invocation = ArchiveInvocation {
+                plugin_id: "sleepy",
+                plugin_version: "1.0.0",
+                operation: "Inspect",
+            };
+
+            let timed = tokio::time::timeout(
+                Duration::from_millis(100),
+                process_archive(&spec, "{}", invocation),
+            )
+            .await;
+
+            assert!(
+                timed.is_err(),
+                "guest poll_oneoff should be cancelled by the adapter timeout"
+            );
+
+            let sentinel = tokio::time::timeout(
+                Duration::from_millis(200),
+                tokio::task::spawn_blocking(|| 7usize),
+            )
+            .await
+            .expect("blocking pool sentinel must run promptly")
+            .expect("blocking sentinel must not panic");
+
+            assert_eq!(sentinel, 7);
+        });
     }
 
     /// A guest whose initial memory exceeds the cap must be denied, and the

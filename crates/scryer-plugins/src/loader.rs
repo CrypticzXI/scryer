@@ -1682,6 +1682,20 @@ fn process_host_for_notification(loaded: &LoadedPlugin, config_json: &str) -> Pr
     }
 }
 
+/// Wire raw socket permissions for first-party notification plugins.
+///
+/// SMTP-style notification providers need local/LAN sockets, but the grant must
+/// come from Scryer's first-party descriptor plus the channel config. Community
+/// and operator-supplied plugins receive a disabled host even if they
+/// self-declare socket permissions.
+fn socket_host_for_notification(loaded: &LoadedPlugin, config_json: &str) -> SocketHost {
+    if loaded.load_source.can_use_first_party_host_bindings() {
+        SocketHost::from_descriptor(&loaded.descriptor, Some(config_json))
+    } else {
+        SocketHost::disabled()
+    }
+}
+
 fn allowed_host_pattern_is_valid(host: &str) -> bool {
     let host = host.trim();
     if host.is_empty()
@@ -3082,9 +3096,7 @@ impl WasmNotificationPluginProvider {
         spec.allowed_hosts =
             allowed_hosts_for_descriptor(&loaded.descriptor, None, Some(&config.config_json));
         spec.timeout = std::time::Duration::from_secs(30);
-        // Raw socket egress is intentionally blocked for all plugins until the
-        // host has a reviewed first-party-only re-enable path.
-        let socket_host = SocketHost::disabled();
+        let socket_host = socket_host_for_notification(loaded, &config.config_json);
         let process_host = process_host_for_notification(loaded, &config.config_json);
         spec.socket_host = socket_host.clone();
         spec.process_host = process_host;

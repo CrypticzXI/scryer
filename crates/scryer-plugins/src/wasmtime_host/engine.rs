@@ -27,10 +27,26 @@ static SHARED_ENGINE: LazyLock<Engine> = LazyLock::new(|| {
     engine
 });
 
+/// Async command-model engine. WASI `poll_oneoff` and friends yield through
+/// Wasmtime async support, so adapter-level timeouts can cancel sleeps without
+/// parking Tokio blocking threads.
+static SHARED_ASYNC_ENGINE: LazyLock<Engine> = LazyLock::new(|| {
+    let engine = Engine::new(&archive_engine_config())
+        .expect("async wasmtime engine config for the command host must be valid");
+    spawn_epoch_ticker(engine.clone());
+    engine
+});
+
 /// Borrow the process-wide archive engine, initialising it (and its epoch
 /// ticker) on first call.
 pub(crate) fn shared_engine() -> &'static Engine {
     &SHARED_ENGINE
+}
+
+/// Borrow the async command-model engine, initialising it (and its epoch ticker)
+/// on first use.
+pub(crate) fn shared_async_engine() -> &'static Engine {
+    &SHARED_ASYNC_ENGINE
 }
 
 /// Build the archive host `Config`.
@@ -113,5 +129,10 @@ mod tests {
         let a = shared_engine();
         let b = shared_engine();
         assert!(std::ptr::eq(a, b));
+
+        let async_a = shared_async_engine();
+        let async_b = shared_async_engine();
+        assert!(std::ptr::eq(async_a, async_b));
+        assert!(!std::ptr::eq(a, async_a));
     }
 }

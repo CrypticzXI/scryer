@@ -145,16 +145,15 @@ impl WasmSubtitleSyncClient {
         let plugin_id = self.plugin_id.clone();
         let plugin_version = self.plugin_version.clone();
 
-        run_blocking_plugin_call(
+        tokio::time::timeout(
             std::time::Duration::from_secs(SUBTITLE_SYNC_TIMEOUT_SECONDS),
-            "subtitle sync command plugin",
-            move || {
+            async move {
                 let invocation = SubtitleSyncInvocation {
                     plugin_id: &plugin_id,
                     plugin_version: &plugin_version,
                     operation: "Align",
                 };
-                let response = process_subtitle_sync(&spec, &input, invocation)?;
+                let response = process_subtitle_sync(&spec, &input, invocation).await?;
                 let align = match response.response {
                     SubtitleSyncPluginResponse::Align { response } => *response,
                     other => {
@@ -167,6 +166,11 @@ impl WasmSubtitleSyncClient {
             },
         )
         .await
+        .map_err(|_| {
+            AppError::Repository(format!(
+                "subtitle sync command plugin timed out after {SUBTITLE_SYNC_TIMEOUT_SECONDS} seconds"
+            ))
+        })?
     }
 }
 

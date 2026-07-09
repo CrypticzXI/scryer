@@ -9,7 +9,6 @@ use scryer_plugin_sdk::{
     PluginDescriptor,
 };
 
-use crate::blocking::run_blocking_plugin_call;
 use crate::runtime_backing::{PluginInstanceSpec, PluginRuntimeBacking, PreopenSpec};
 use crate::wasmtime_host::{ArchiveInvocation, process_archive};
 
@@ -64,10 +63,9 @@ impl ArchiveExtractorClient for WasmArchiveExtractorClient {
         let plugin_id = self.plugin_id.clone();
         let plugin_version = self.plugin_version.clone();
 
-        run_blocking_plugin_call(
+        tokio::time::timeout(
             Duration::from_secs(ARCHIVE_PROCESS_TIMEOUT_SECONDS),
-            "archive plugin",
-            move || {
+            async move {
                 // Keep `prepared` alive for the invocation so the preopened paths
                 // remain owned for the full plugin call.
                 let _prepared = prepared;
@@ -76,10 +74,15 @@ impl ArchiveExtractorClient for WasmArchiveExtractorClient {
                     plugin_version: &plugin_version,
                     operation,
                 };
-                process_archive(&spec, &input, invocation)
+                process_archive(&spec, &input, invocation).await
             },
         )
         .await
+        .map_err(|_| {
+            AppError::Repository(format!(
+                "archive plugin timed out after {ARCHIVE_PROCESS_TIMEOUT_SECONDS} seconds"
+            ))
+        })?
     }
 }
 
