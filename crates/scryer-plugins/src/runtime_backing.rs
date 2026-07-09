@@ -100,7 +100,7 @@ mod tests {
             name: "Archive".to_string(),
             version: "1.0.0".to_string(),
             sdk_version: scryer_plugin_sdk::SDK_VERSION.to_string(),
-            sdk_constraint: ">=3.4.0, <4.0.0".to_string(),
+            sdk_constraint: scryer_plugin_sdk::current_sdk_constraint(),
             socket_permissions: Vec::new(),
             provider: scryer_plugin_sdk::ProviderDescriptor::ArchiveExtractor(
                 scryer_plugin_sdk::ArchiveExtractorDescriptor {

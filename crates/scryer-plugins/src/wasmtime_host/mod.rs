@@ -5,16 +5,14 @@
 //! ([`engine`]), a per-invocation WASI p1 sandbox with a memory cap
 //! ([`sandbox`]), the frozen zero-copy crypto/CRC host ABI ([`crypto_host`]),
 //! the stdin/stdout command protocol ([`invoke`]), and trap→`AppError` mapping
-//! ([`error`]). Everything else in the archive pipeline (path sandboxing, COW
-//! staging, providers, SDK v3.3 shapes) is untouched — this owns only the
-//! instantiate/run layer beneath `WasmArchiveExtractorClient::process`.
+//! ([`error`]). Everything else in the archive pipeline (path sandboxing,
+//! native PAR2, providers, SDK shapes) is owned above this layer.
 
 mod crypto_host;
 mod describe;
 pub(crate) mod engine;
 mod error;
 mod invoke;
-mod par2_host;
 mod sandbox;
 
 pub(crate) use describe::command_model_describe;

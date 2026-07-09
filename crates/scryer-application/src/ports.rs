@@ -7,8 +7,8 @@ use scryer_domain::{
 };
 use scryer_plugin_sdk::{
     ArchivePluginFormat, ArchivePluginProcessRequest, ArchivePluginProcessResponse,
-    ArchivePluginRepairFormat, SubtitleSyncAlignResponse, SubtitleSyncAudioCodec,
-    SubtitleSyncMediaMetadataSnapshot, SubtitleSyncOptions,
+    SubtitleSyncAlignResponse, SubtitleSyncAudioCodec, SubtitleSyncMediaMetadataSnapshot,
+    SubtitleSyncOptions,
 };
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
@@ -4006,15 +4006,6 @@ pub trait ArchiveExtractorPluginProvider: Send + Sync {
         &self,
         format: ArchivePluginFormat,
     ) -> Option<Arc<dyn ArchiveExtractorClient>>;
-
-    fn client_for_repair_then_extract(
-        &self,
-        format: ArchivePluginFormat,
-        repair_format: ArchivePluginRepairFormat,
-    ) -> Option<Arc<dyn ArchiveExtractorClient>> {
-        let _ = (format, repair_format);
-        None
-    }
 
     fn available_provider_types(&self) -> Vec<String>;
 

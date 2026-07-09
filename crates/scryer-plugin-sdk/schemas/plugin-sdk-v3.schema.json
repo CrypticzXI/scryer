@@ -1474,12 +1474,6 @@
           "items": {
             "$ref": "#/$defs/ArchivePluginFormat"
           }
-        },
-        "repair_formats": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/ArchivePluginRepairFormat"
-          }
         }
       }
     },
@@ -1488,12 +1482,6 @@
       "enum": [
         "rar",
         "zip"
-      ]
-    },
-    "ArchivePluginRepairFormat": {
-      "type": "string",
-      "enum": [
-        "par2"
       ]
     },
     "ArchiveExtractorDescriptor": {
@@ -4881,70 +4869,6 @@
             "output_dir",
             "format"
           ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "source_dir": {
-              "type": "string"
-            },
-            "par2_path": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "kind": {
-              "type": "string",
-              "const": "verify_repair_set"
-            }
-          },
-          "required": [
-            "kind",
-            "source_dir"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "source_dir": {
-              "type": "string"
-            },
-            "output_dir": {
-              "type": "string"
-            },
-            "format": {
-              "$ref": "#/$defs/ArchivePluginFormat"
-            },
-            "par2_path": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "archive_path": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "password": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "kind": {
-              "type": "string",
-              "const": "repair_then_extract"
-            }
-          },
-          "required": [
-            "kind",
-            "source_dir",
-            "output_dir",
-            "format"
-          ]
         }
       ]
     },
@@ -4987,16 +4911,6 @@
           "items": {
             "$ref": "#/$defs/ArchivePluginExtractedFile"
           }
-        },
-        "repair": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/ArchivePluginRepairStatus"
-            },
-            {
-              "type": "null"
-            }
-          ]
         },
         "expanded_bytes": {
           "type": [
@@ -5046,8 +4960,6 @@
         "unsupported_format",
         "password_required",
         "password_invalid",
-        "repair_required",
-        "repair_failed",
         "failed"
       ]
     },
@@ -5074,49 +4986,6 @@
       },
       "required": [
         "relative_path"
-      ]
-    },
-    "ArchivePluginRepairStatus": {
-      "type": "object",
-      "properties": {
-        "status": {
-          "$ref": "#/$defs/ArchivePluginRepairState"
-        },
-        "read_bytes": {
-          "type": [
-            "integer",
-            "null"
-          ],
-          "format": "uint64",
-          "minimum": 0
-        },
-        "written_bytes": {
-          "type": [
-            "integer",
-            "null"
-          ],
-          "format": "uint64",
-          "minimum": 0
-        },
-        "message": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
-      },
-      "required": [
-        "status"
-      ]
-    },
-    "ArchivePluginRepairState": {
-      "type": "string",
-      "enum": [
-        "not_needed",
-        "verified",
-        "repaired",
-        "insufficient_recovery_data",
-        "failed"
       ]
     },
     "PluginNotificationRequest": {

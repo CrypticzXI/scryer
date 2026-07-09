@@ -83,15 +83,12 @@ fn operation_label(operation: &ArchivePluginOperation) -> &'static str {
     match operation {
         ArchivePluginOperation::Inspect { .. } => "Inspect",
         ArchivePluginOperation::ExtractArchive { .. } => "ExtractArchive",
-        ArchivePluginOperation::VerifyRepairSet { .. } => "VerifyRepairSet",
-        ArchivePluginOperation::RepairThenExtract { .. } => "RepairThenExtract",
     }
 }
 
 struct PreparedArchiveRequest {
     request: ArchivePluginProcessRequest,
     source_root: Option<PathBuf>,
-    source_writable: bool,
     output_root: Option<PathBuf>,
 }
 
@@ -114,7 +111,6 @@ impl PreparedArchiveRequest {
                         },
                     },
                     source_root: Some(source_root),
-                    source_writable: false,
                     output_root: None,
                 })
             }
@@ -138,58 +134,6 @@ impl PreparedArchiveRequest {
                         },
                     },
                     source_root: Some(source_root),
-                    source_writable: false,
-                    output_root: Some(PathBuf::from(output_dir)),
-                })
-            }
-            ArchivePluginOperation::VerifyRepairSet {
-                source_dir,
-                par2_path,
-            } => {
-                let source_root = PathBuf::from(source_dir);
-                let par2_path = par2_path
-                    .map(|path| map_child_path(Path::new(&source_root), Path::new(&path)))
-                    .transpose()?;
-                Ok(Self {
-                    request: ArchivePluginProcessRequest {
-                        operation: ArchivePluginOperation::VerifyRepairSet {
-                            source_dir: GUEST_SOURCE_ROOT.to_string(),
-                            par2_path,
-                        },
-                    },
-                    source_root: Some(source_root),
-                    source_writable: false,
-                    output_root: None,
-                })
-            }
-            ArchivePluginOperation::RepairThenExtract {
-                source_dir,
-                output_dir,
-                format,
-                par2_path,
-                archive_path,
-                password,
-            } => {
-                let source_root = PathBuf::from(source_dir);
-                let par2_path = par2_path
-                    .map(|path| map_child_path(Path::new(&source_root), Path::new(&path)))
-                    .transpose()?;
-                let archive_path = archive_path
-                    .map(|path| map_child_path(Path::new(&source_root), Path::new(&path)))
-                    .transpose()?;
-                Ok(Self {
-                    request: ArchivePluginProcessRequest {
-                        operation: ArchivePluginOperation::RepairThenExtract {
-                            source_dir: GUEST_SOURCE_ROOT.to_string(),
-                            output_dir: GUEST_OUTPUT_ROOT.to_string(),
-                            format,
-                            par2_path,
-                            archive_path,
-                            password,
-                        },
-                    },
-                    source_root: Some(source_root),
-                    source_writable: true,
                     output_root: Some(PathBuf::from(output_dir)),
                 })
             }
@@ -197,17 +141,15 @@ impl PreparedArchiveRequest {
     }
 
     /// Express this request's sandbox + timeout requirements as a runtime spec
-    /// (RFC §7.1). Repair requests receive the caller-provided archive
-    /// workspace as writable source, so PAR2 mutations stay in Scryer's hidden
-    /// destination-side staging directory instead of the download source.
+    /// (RFC §7.1). Archive plugins only extract from a read-only source into a
+    /// writable output; PAR2 repair/normalization is native Scryer work.
     fn instance_spec(&self, wasm: Arc<Vec<u8>>) -> PluginInstanceSpec {
         let mut preopens = Vec::new();
         if let Some(source_root) = &self.source_root {
-            preopens.push(if self.source_writable {
-                PreopenSpec::writable(source_root.clone(), GUEST_SOURCE_ROOT)
-            } else {
-                PreopenSpec::read_only(source_root.clone(), GUEST_SOURCE_ROOT)
-            });
+            preopens.push(PreopenSpec::read_only(
+                source_root.clone(),
+                GUEST_SOURCE_ROOT,
+            ));
         }
         if let Some(output_root) = &self.output_root {
             preopens.push(PreopenSpec::writable(

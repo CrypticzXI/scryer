@@ -507,9 +507,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4342d8937fc7e5dd9b1c60292261c0670c882a2cd1719cfc11b1af41731e32ad"
 dependencies = [
  "aws-lc-fips-sys",
- "aws-lc-sys",
+ "aws-lc-sys 0.42.0",
  "untrusted 0.7.1",
  "zeroize",
+]
+
+[[package]]
+name = "aws-lc-sys"
+version = "0.41.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1a2f9779ce85b93ab6170dd940ad0169b5766ff848247aff13bb788b832fe3f4"
+dependencies = [
+ "cc",
+ "cmake",
+ "dunce",
+ "fs_extra",
 ]
 
 [[package]]
@@ -3962,6 +3974,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "objc2-metal"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a0125f776a10d00af4152d74616409f0d4a2053a6f57fa5b7d6aa2854ac04794"
+dependencies = [
+ "bitflags",
+ "objc2",
+ "objc2-foundation",
+]
+
+[[package]]
 name = "object"
 version = "0.39.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5550,6 +5573,7 @@ dependencies = [
  "unicode-normalization",
  "url",
  "uuid",
+ "weaver-par2",
  "whatlang",
  "wiremock",
  "x509-cert",
@@ -5756,7 +5780,7 @@ dependencies = [
 
 [[package]]
 name = "scryer-plugin-sdk"
-version = "3.5.0"
+version = "3.6.0"
 dependencies = [
  "base64 0.22.1",
  "extism-pdk",
@@ -5771,7 +5795,7 @@ name = "scryer-plugins"
 version = "0.16.8"
 dependencies = [
  "async-trait",
- "aws-lc-sys",
+ "aws-lc-sys 0.42.0",
  "base64 0.22.1",
  "chrono",
  "crc32fast",
@@ -5795,7 +5819,6 @@ dependencies = [
  "wasmtime",
  "wasmtime-wasi",
  "wat",
- "weaver-reed-solomon",
  "zstd",
 ]
 
@@ -7868,12 +7891,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "weaver-par2"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "597f66a308380480edece973f9d2bf51498229302799cec17ff1d58ae2a7e9f7"
+dependencies = [
+ "aws-lc-sys 0.41.0",
+ "bytes",
+ "crc32fast",
+ "libc",
+ "md-5",
+ "memmap2",
+ "rayon",
+ "thiserror 2.0.18",
+ "tracing",
+ "weaver-reed-solomon",
+]
+
+[[package]]
 name = "weaver-reed-solomon"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "257fca188ba59d9f2c2129685f5a1cba80cc16322488f2b54db0e4c12e9153f9"
 dependencies = [
  "memmap2",
+ "objc2",
+ "objc2-foundation",
+ "objc2-metal",
  "rayon",
 ]
 

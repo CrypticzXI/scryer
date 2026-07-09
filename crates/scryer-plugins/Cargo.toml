@@ -30,13 +30,6 @@ libc = "0.2"
 # RFC 123 WP1: native wasmtime archive host (crypto ABI + command protocol).
 wasmtime = { workspace = true }
 wasmtime-wasi = { workspace = true }
-# RFC 123 WP2.5: host-thread PAR2 damaged-member reconstruct. The Weaver
-# GF(2^16) field + SIMD mul-acc kernel, so the host repair is byte-identical to
-# Weaver's own repair path.
-# `default-features = false` keeps the optional Metal/objc2 GPU backend
-# (weaver-reed-solomon's non-default `metal` feature) out of scryer's graph:
-# the host reconstruct uses only the CPU/SIMD kernels, never the Metal session.
-weaver-reed-solomon = { version = "0.2.1", default-features = false }
 
 [dev-dependencies]
 # WAT guests are authored inline: `wasmtime::Module::new` compiles text directly

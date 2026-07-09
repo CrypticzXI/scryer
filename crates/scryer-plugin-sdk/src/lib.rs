@@ -9,7 +9,6 @@ pub mod http;
 pub mod indexer;
 pub mod net;
 pub mod notification;
-pub mod par2_reconstruct;
 pub mod torrent;
 pub use indexer::{
     IndexerCategoryDescriptor, IndexerCategoryModel, IndexerCategoryValueKind, IndexerFeedMode,
@@ -32,12 +31,7 @@ pub use notification::{
     PluginNotificationTargetResult, coalesce_media_updates, rich_embed_from_request,
     to_script_environment, to_webhook_json,
 };
-pub use par2_reconstruct::{
-    PAR2_RECONSTRUCT_IMPORT, PAR2_RECONSTRUCT_NAMESPACE, Par2ReconstructHeader,
-    Par2ReconstructHeaderFields, Par2ReconstructStatus,
-};
-
-pub const SDK_VERSION: &str = "3.5.0";
+pub const SDK_VERSION: &str = "3.6.0";
 
 pub fn current_sdk_constraint() -> String {
     legacy_sdk_constraint(SDK_VERSION)
@@ -598,8 +592,6 @@ pub struct ArchiveExtractorDescriptor {
 pub struct ArchiveExtractorCapabilities {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub formats: Vec<ArchivePluginFormat>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub repair_formats: Vec<ArchivePluginRepairFormat>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -607,12 +599,6 @@ pub struct ArchiveExtractorCapabilities {
 pub enum ArchivePluginFormat {
     Rar,
     Zip,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum ArchivePluginRepairFormat {
-    Par2,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -1012,22 +998,6 @@ pub enum ArchivePluginOperation {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         password: Option<String>,
     },
-    VerifyRepairSet {
-        source_dir: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        par2_path: Option<String>,
-    },
-    RepairThenExtract {
-        source_dir: String,
-        output_dir: String,
-        format: ArchivePluginFormat,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        par2_path: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        archive_path: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        password: Option<String>,
-    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -1035,8 +1005,6 @@ pub struct ArchivePluginProcessResponse {
     pub status: ArchivePluginStatus,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub files: Vec<ArchivePluginExtractedFile>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub repair: Option<ArchivePluginRepairStatus>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expanded_bytes: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1056,8 +1024,6 @@ pub enum ArchivePluginStatus {
     UnsupportedFormat,
     PasswordRequired,
     PasswordInvalid,
-    RepairRequired,
-    RepairFailed,
     Failed,
 }
 
@@ -1068,27 +1034,6 @@ pub struct ArchivePluginExtractedFile {
     pub size: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checksum: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct ArchivePluginRepairStatus {
-    pub status: ArchivePluginRepairState,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub read_bytes: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub written_bytes: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub message: Option<String>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum ArchivePluginRepairState {
-    NotNeeded,
-    Verified,
-    Repaired,
-    InsufficientRecoveryData,
-    Failed,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
@@ -2655,7 +2600,7 @@ mod tests {
 
     #[test]
     fn current_sdk_constraint_uses_current_v3_minor_floor() {
-        assert_eq!(current_sdk_constraint(), ">=3.5.0, <4.0.0");
+        assert_eq!(current_sdk_constraint(), ">=3.6.0, <4.0.0");
     }
 
     #[test]

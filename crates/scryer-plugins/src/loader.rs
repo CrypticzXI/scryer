@@ -27,8 +27,8 @@ use crate::socket_host::SocketHost;
 use crate::subtitle_adapter::WasmSubtitleClient;
 use crate::subtitle_sync_adapter::WasmSubtitleSyncClient;
 use crate::types::{
-    ArchivePluginFormat, ArchivePluginRepairFormat, ConfigFieldRole, ConfigFieldValueSource,
-    EXPORT_DESCRIBE, EXPORT_DOWNLOAD_ADD, EXPORT_DOWNLOAD_CONTROL, EXPORT_DOWNLOAD_LIST_COMPLETED,
+    ArchivePluginFormat, ConfigFieldRole, ConfigFieldValueSource, EXPORT_DESCRIBE,
+    EXPORT_DOWNLOAD_ADD, EXPORT_DOWNLOAD_CONTROL, EXPORT_DOWNLOAD_LIST_COMPLETED,
     EXPORT_DOWNLOAD_LIST_HISTORY, EXPORT_DOWNLOAD_LIST_QUEUE, EXPORT_DOWNLOAD_MARK_IMPORTED,
     EXPORT_DOWNLOAD_STATUS, EXPORT_DOWNLOAD_TEST_CONNECTION, EXPORT_INDEXER_SEARCH,
     EXPORT_NOTIFICATION_SEND, EXPORT_SUBSYNC_ALIGN, EXPORT_SUBTITLE_DOWNLOAD,
@@ -2387,38 +2387,10 @@ impl WasmArchiveExtractorPluginProvider {
             .unwrap_or(false)
     }
 
-    fn provider_supports_repair_then_extract(
-        loaded: &LoadedPlugin,
-        format: ArchivePluginFormat,
-        repair_format: ArchivePluginRepairFormat,
-    ) -> bool {
-        loaded
-            .descriptor
-            .archive_extractor()
-            .map(|descriptor| {
-                descriptor.capabilities.formats.contains(&format)
-                    && descriptor
-                        .capabilities
-                        .repair_formats
-                        .contains(&repair_format)
-            })
-            .unwrap_or(false)
-    }
-
     fn provider_for_format(&self, format: ArchivePluginFormat) -> Option<&LoadedPlugin> {
         self.plugins
             .values()
             .find(|loaded| Self::provider_supports_format(loaded, format))
-    }
-
-    fn provider_for_repair_then_extract(
-        &self,
-        format: ArchivePluginFormat,
-        repair_format: ArchivePluginRepairFormat,
-    ) -> Option<&LoadedPlugin> {
-        self.plugins.values().find(|loaded| {
-            Self::provider_supports_repair_then_extract(loaded, format, repair_format)
-        })
     }
 }
 
@@ -2444,38 +2416,6 @@ impl ArchiveExtractorPluginProvider for WasmArchiveExtractorPluginProvider {
             Err(error) => {
                 warn!(
                     format = ?format,
-                    error = %error,
-                    "failed to instantiate WASM archive extractor plugin"
-                );
-                None
-            }
-        }
-    }
-
-    fn client_for_repair_then_extract(
-        &self,
-        format: ArchivePluginFormat,
-        repair_format: ArchivePluginRepairFormat,
-    ) -> Option<Arc<dyn ArchiveExtractorClient>> {
-        let loaded = self.provider_for_repair_then_extract(format, repair_format)?;
-        let wasm_bytes = match loaded.materialize_wasm() {
-            Ok(wasm_bytes) => wasm_bytes,
-            Err(error) => {
-                warn!(
-                    format = ?format,
-                    repair_format = ?repair_format,
-                    error = %error,
-                    "failed to materialize WASM archive extractor bytes"
-                );
-                return None;
-            }
-        };
-        match WasmArchiveExtractorClient::new(wasm_bytes, loaded.descriptor.clone()) {
-            Ok(client) => Some(Arc::new(client)),
-            Err(error) => {
-                warn!(
-                    format = ?format,
-                    repair_format = ?repair_format,
                     error = %error,
                     "failed to instantiate WASM archive extractor plugin"
                 );
@@ -2542,32 +2482,6 @@ impl ArchiveExtractorPluginProvider for DynamicArchiveExtractorPluginProvider {
                 .read()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             guard.client_for_format(format)?
-        };
-
-        if let Ok(mut cache) = self.client_cache.lock() {
-            cache.insert(cache_key, Arc::clone(&client));
-        }
-        Some(client)
-    }
-
-    fn client_for_repair_then_extract(
-        &self,
-        format: ArchivePluginFormat,
-        repair_format: ArchivePluginRepairFormat,
-    ) -> Option<Arc<dyn ArchiveExtractorClient>> {
-        let cache_key = format!("repair:{format:?}:{repair_format:?}");
-        if let Ok(cache) = self.client_cache.lock()
-            && let Some(client) = cache.get(&cache_key)
-        {
-            return Some(Arc::clone(client));
-        }
-
-        let client = {
-            let guard = self
-                .inner
-                .read()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            guard.client_for_repair_then_extract(format, repair_format)?
         };
 
         if let Ok(mut cache) = self.client_cache.lock() {
@@ -3532,10 +3446,9 @@ mod tests {
     use crate::builtins::{NEWZNAB, TORZNAB};
     use crate::types::{
         ArchiveExtractorCapabilities, ArchiveExtractorDescriptor, ArchivePluginFormat,
-        ArchivePluginRepairFormat, ConfigFieldDef, ConfigFieldType, ConfigFieldValueSource,
-        DownloadClientCapabilities, DownloadClientDescriptor, IndexerDescriptor, IndexerSourceKind,
-        NotificationCapabilities, NotificationDescriptor, PluginHostBindingId,
-        SubtitleCapabilities, SubtitleDescriptor,
+        ConfigFieldDef, ConfigFieldType, ConfigFieldValueSource, DownloadClientCapabilities,
+        DownloadClientDescriptor, IndexerDescriptor, IndexerSourceKind, NotificationCapabilities,
+        NotificationDescriptor, PluginHostBindingId, SubtitleCapabilities, SubtitleDescriptor,
     };
 
     struct DummyIndexerClient;
@@ -3714,7 +3627,6 @@ mod tests {
                     allowed_hosts: vec![],
                     capabilities: ArchiveExtractorCapabilities {
                         formats: vec![ArchivePluginFormat::Rar, ArchivePluginFormat::Zip],
-                        repair_formats: vec![ArchivePluginRepairFormat::Par2],
                     },
                 })
             }

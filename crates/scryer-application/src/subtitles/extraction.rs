@@ -168,10 +168,7 @@ fn handle_subtitle_archive_plugin_response(
         ArchivePluginStatus::PasswordInvalid => Err(AppError::Validation(
             "subtitle archive password is invalid".to_string(),
         )),
-        ArchivePluginStatus::RepairRequired => Err(AppError::Validation(
-            "subtitle archive requires PAR2 repair before extraction".to_string(),
-        )),
-        ArchivePluginStatus::RepairFailed | ArchivePluginStatus::Failed => {
+        ArchivePluginStatus::Failed => {
             let message = response
                 .message
                 .or(response.error_code)
