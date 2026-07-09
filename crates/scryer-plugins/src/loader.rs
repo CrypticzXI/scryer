@@ -3082,8 +3082,9 @@ impl WasmNotificationPluginProvider {
         spec.allowed_hosts =
             allowed_hosts_for_descriptor(&loaded.descriptor, None, Some(&config.config_json));
         spec.timeout = std::time::Duration::from_secs(30);
-        let socket_host =
-            SocketHost::from_descriptor(&loaded.descriptor, Some(&config.config_json));
+        // Raw socket egress is intentionally blocked for all plugins until the
+        // host has a reviewed first-party-only re-enable path.
+        let socket_host = SocketHost::disabled();
         let process_host = process_host_for_notification(loaded, &config.config_json);
         spec.socket_host = socket_host.clone();
         spec.process_host = process_host;
@@ -3751,7 +3752,9 @@ mod tests {
             .with_load_source(PluginLoadSource::External { first_party: false });
 
         // First-party and builtin notifiers keep a working, non-empty allowlist.
-        assert!(process_host_for_notification(&first_party, config_json).allowed_command_count() > 0);
+        assert!(
+            process_host_for_notification(&first_party, config_json).allowed_command_count() > 0
+        );
         assert!(process_host_for_notification(&builtin, config_json).allowed_command_count() > 0);
         // Operator-supplied (Unverified) notifiers get a disabled host even though
         // the descriptor self-declares `requires_host_process`.

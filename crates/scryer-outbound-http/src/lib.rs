@@ -691,6 +691,7 @@ impl RateLimitRegistry {
         delay: Duration,
         source: RetryAfterSource,
     ) -> (Duration, RetryAfterSource) {
+        let delay = delay.min(default_max_retry_after());
         if delay.is_zero() {
             return (Duration::ZERO, source);
         }
@@ -1138,14 +1139,13 @@ fn resolve_plugin_http_destination_blocking(
         return Ok(vec![SocketAddr::new(ip, port)]);
     }
 
-    let resolved =
-        (host, port)
-            .to_socket_addrs()
-            .map_err(|source| OutboundDestinationError::ResolveFailed {
-                label,
-                host: host.to_string(),
-                source,
-            })?;
+    let resolved = (host, port).to_socket_addrs().map_err(|source| {
+        OutboundDestinationError::ResolveFailed {
+            label,
+            host: host.to_string(),
+            source,
+        }
+    })?;
     let mut resolved_addrs = Vec::new();
     for addr in resolved {
         resolved_addrs.push(addr);
@@ -1431,6 +1431,18 @@ pub async fn send_reqwest_request(request: RequestBuilder) -> Result<Response, r
 pub fn send_blocking_reqwest_request(
     request: reqwest::blocking::RequestBuilder,
 ) -> Result<reqwest::blocking::Response, reqwest::Error> {
+    send_blocking_reqwest_request_with_cooldown_budget(request, None).map_err(|error| match error {
+        BlockingOutboundHttpError::Request(error) => error,
+        BlockingOutboundHttpError::CooldownBudgetExceeded { .. } => {
+            unreachable!("unbounded blocking request cannot exhaust cooldown budget")
+        }
+    })
+}
+
+pub fn send_blocking_reqwest_request_with_cooldown_budget(
+    request: reqwest::blocking::RequestBuilder,
+    max_cooldown_wait: Option<Duration>,
+) -> Result<reqwest::blocking::Response, BlockingOutboundHttpError> {
     let registry = RateLimitRegistry::new();
     let destination = request
         .try_clone()
@@ -1442,6 +1454,17 @@ pub fn send_blocking_reqwest_request(
         .and_then(|request| host_key_from_url(request.url()));
 
     if let Some(destination) = destination.as_ref() {
+        if let (Some(max_wait), Some(remaining)) = (
+            max_cooldown_wait,
+            registry.active_destination_cooldown(destination),
+        ) && remaining > max_wait
+        {
+            return Err(BlockingOutboundHttpError::CooldownBudgetExceeded {
+                destination: destination.clone(),
+                remaining,
+                budget: max_wait,
+            });
+        }
         let _ = registry.wait_for_destination_if_needed_blocking(destination);
     }
     if let Some(host) = host.as_ref() {
@@ -1456,6 +1479,20 @@ pub fn send_blocking_reqwest_request(
         let _ = registry.record_destination_cooldown_blocking(&destination, delay, source);
     }
     Ok(response)
+}
+
+#[derive(Debug, Error)]
+pub enum BlockingOutboundHttpError {
+    #[error(transparent)]
+    Request(#[from] reqwest::Error),
+    #[error(
+        "destination '{destination}' is rate limited for {remaining:?}, exceeding blocking wait budget {budget:?}"
+    )]
+    CooldownBudgetExceeded {
+        destination: DestinationKey,
+        remaining: Duration,
+        budget: Duration,
+    },
 }
 
 fn uploaded_root_certificates(bundle_pem: &str) -> Result<Vec<Certificate>, String> {
@@ -2432,6 +2469,30 @@ mod tests {
         let second = RateLimitRegistry::new();
 
         assert!(Arc::ptr_eq(&first.state, &second.state));
+    }
+
+    #[test]
+    fn blocking_send_refuses_destination_cooldown_beyond_budget() {
+        let url = reqwest::Url::parse("http://bounded-cooldown-budget.invalid/test").unwrap();
+        let destination = destination_key_from_url(&url).unwrap();
+        let registry = RateLimitRegistry::new();
+        let _ = registry.record_destination_cooldown_blocking(
+            &destination,
+            Duration::from_secs(5),
+            RetryAfterSource::Seconds,
+        );
+
+        let client = blocking_reqwest_client_builder().build().unwrap();
+        let error = send_blocking_reqwest_request_with_cooldown_budget(
+            client.get(url),
+            Some(Duration::from_millis(1)),
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            error,
+            BlockingOutboundHttpError::CooldownBudgetExceeded { .. }
+        ));
     }
 
     #[test]

@@ -15,6 +15,7 @@ use scryer_domain::{CompletedDownload, DownloadQueueItem, DownloadQueueState};
 use scryer_plugin_sdk::torrent::normalize_info_hash_pair;
 use tracing::debug;
 
+use crate::blocking::run_blocking_plugin_call;
 use crate::legacy_runtime::LegacyPlugin;
 use crate::types::{
     DownloadControlAction, DownloadInputKind, DownloadIsolationMode, DownloadItemState,
@@ -28,6 +29,8 @@ use crate::types::{
     PluginDownloadRouting, PluginDownloadSource, PluginDownloadTitle, PluginTorrentOptions,
     PluginTorrentQueuePlacement, decode_plugin_result,
 };
+
+const DOWNLOAD_CLIENT_PLUGIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 pub struct WasmDownloadClient {
     plugin: Arc<Mutex<LegacyPlugin>>,
@@ -627,7 +630,8 @@ impl DownloadClient for WasmDownloadClient {
             // plugin egress facility: destination validated + DNS-pinned,
             // link-local/cloud-metadata hard-blocked, and the redirect hop
             // re-validated before it is followed.
-            match scryer_outbound_http::prepare_plugin_http_target(url, "plugin torrent fetch").await
+            match scryer_outbound_http::prepare_plugin_http_target(url, "plugin torrent fetch")
+                .await
             {
                 Ok(target) => match scryer_outbound_http::send_reqwest_request(
                     target.client().get(target.url().clone()),
@@ -657,10 +661,13 @@ impl DownloadClient for WasmDownloadClient {
                                 .await
                                 {
                                     Ok(redirect_target) => {
-                                        if let Ok(resp) = scryer_outbound_http::send_reqwest_request(
-                                            redirect_target.client().get(redirect_target.url().clone()),
-                                        )
-                                        .await
+                                        if let Ok(resp) =
+                                            scryer_outbound_http::send_reqwest_request(
+                                                redirect_target
+                                                    .client()
+                                                    .get(redirect_target.url().clone()),
+                                            )
+                                            .await
                                             && resp.status().is_success()
                                         {
                                             let content_type = resp
@@ -672,7 +679,8 @@ impl DownloadClient for WasmDownloadClient {
                                                 && !bytes.is_empty()
                                             {
                                                 torrent_content_type = content_type;
-                                                torrent_file_name = derive_torrent_file_name(request);
+                                                torrent_file_name =
+                                                    derive_torrent_file_name(request);
                                                 debug!(url = %url, bytes = bytes.len(), "pre-fetched torrent file (via redirect)");
                                                 torrent_bytes_base64 = Some(BASE64.encode(&bytes));
                                             }
@@ -752,16 +760,19 @@ impl DownloadClient for WasmDownloadClient {
         })?;
 
         let plugin = Arc::clone(&self.plugin);
-        let output = tokio::task::spawn_blocking(move || {
-            let mut guard = plugin
-                .lock()
-                .map_err(|e| AppError::Repository(format!("plugin mutex poisoned: {e}")))?;
-            guard
-                .call_string(EXPORT_DOWNLOAD_ADD, &input)
-                .map_err(|e| plugin_call_error(&format!("{EXPORT_DOWNLOAD_ADD}()"), e))
-        })
+        let output = run_blocking_plugin_call(
+            DOWNLOAD_CLIENT_PLUGIN_TIMEOUT,
+            "download client plugin",
+            move || {
+                let mut guard = plugin
+                    .lock()
+                    .map_err(|e| AppError::Repository(format!("plugin mutex poisoned: {e}")))?;
+                guard
+                    .call_string(EXPORT_DOWNLOAD_ADD, &input)
+                    .map_err(|e| plugin_call_error(&format!("{EXPORT_DOWNLOAD_ADD}()"), e))
+            },
+        )
         .await
-        .map_err(|e| AppError::download_submit_unavailable(format!("plugin task panicked: {e}")))?
         .map_err(AppError::into_download_submit_unavailable)?;
 
         let response: PluginDownloadClientAddResponse =
@@ -1191,7 +1202,9 @@ mod tests {
         assert!(
             matches!(
                 result,
-                Err(scryer_outbound_http::OutboundDestinationError::BlockedLinkLocalOrMetadata { .. })
+                Err(
+                    scryer_outbound_http::OutboundDestinationError::BlockedLinkLocalOrMetadata { .. }
+                )
             ),
             "cloud metadata address must be rejected on the download-client path"
         );

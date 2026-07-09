@@ -15,6 +15,7 @@ pub(crate) const PROCESS_HOST_NAMESPACE: &str = "extism:host/user";
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(20);
 const MAX_TIMEOUT: Duration = Duration::from_secs(30);
 const POLL_INTERVAL: Duration = Duration::from_millis(25);
+const OUTPUT_READER_JOIN_TIMEOUT: Duration = Duration::from_secs(1);
 const MAX_STDIN_BYTES: usize = 64 * 1024;
 const MAX_OUTPUT_BYTES: usize = 512 * 1024;
 const MAX_ARGS: usize = 128;
@@ -158,10 +159,11 @@ impl ProcessHostState {
             }
         };
 
+        let reader_deadline = Instant::now() + OUTPUT_READER_JOIN_TIMEOUT;
         Ok(ProcessExecResponse {
             status_code,
-            stdout_base64: join_reader(stdout_handle)?,
-            stderr_base64: join_reader(stderr_handle)?,
+            stdout_base64: join_reader(stdout_handle, reader_deadline)?,
+            stderr_base64: join_reader(stderr_handle, reader_deadline)?,
             timed_out,
         })
     }
@@ -298,10 +300,7 @@ fn apply_sanitized_env(command: &mut Command, guest_env: &BTreeMap<String, Strin
     // Strip dynamic-linker controls inherited from the host process so they can
     // never reach the child even if Scryer itself was launched with them set.
     for (key, _) in std::env::vars_os() {
-        if key
-            .to_str()
-            .is_some_and(is_dynamic_linker_env_key)
-        {
+        if key.to_str().is_some_and(is_dynamic_linker_env_key) {
             command.env_remove(&key);
         }
     }
@@ -392,10 +391,20 @@ fn read_limited(mut reader: impl Read) -> io::Result<Vec<u8>> {
 
 fn join_reader(
     handle: Option<thread::JoinHandle<io::Result<Vec<u8>>>>,
+    deadline: Instant,
 ) -> Result<String, ProcessError> {
     let Some(handle) = handle else {
         return Ok(String::new());
     };
+    while !handle.is_finished() {
+        if Instant::now() >= deadline {
+            return Err(process_error(
+                ProcessErrorCode::IoFailed,
+                "process output reader did not finish before timeout",
+            ));
+        }
+        thread::sleep(POLL_INTERVAL);
+    }
     let bytes = handle
         .join()
         .map_err(|_| process_error(ProcessErrorCode::IoFailed, "process output reader panicked"))?

@@ -412,13 +412,15 @@ fn execute_request_with_extra_headers(
         builder = builder.body(body);
     }
 
-    scryer_outbound_http::send_blocking_reqwest_request(builder).map_err(|error| {
-        if error.is_timeout() {
-            "timeout".to_string()
-        } else {
-            error.to_string()
-        }
-    })
+    scryer_outbound_http::send_blocking_reqwest_request_with_cooldown_budget(builder, timeout)
+        .map_err(|error| match error {
+            scryer_outbound_http::BlockingOutboundHttpError::Request(error)
+                if error.is_timeout() =>
+            {
+                "timeout".to_string()
+            }
+            other => other.to_string(),
+        })
 }
 
 fn response_headers(response: &reqwest::blocking::Response) -> BTreeMap<String, String> {
@@ -654,11 +656,26 @@ mod tests {
         .expect_err("disallowed host should fail");
 
         assert!(error.contains("is not allowed"));
-        assert!(!error.contains('?'), "error must not carry a query string: {error}");
-        assert!(!error.contains("apikey"), "error must not leak apikey: {error}");
-        assert!(!error.contains("passkey"), "error must not leak passkey: {error}");
-        assert!(!error.contains("SECRETKEY"), "error must not leak secrets: {error}");
-        assert!(!error.contains("TOPSECRET"), "error must not leak secrets: {error}");
+        assert!(
+            !error.contains('?'),
+            "error must not carry a query string: {error}"
+        );
+        assert!(
+            !error.contains("apikey"),
+            "error must not leak apikey: {error}"
+        );
+        assert!(
+            !error.contains("passkey"),
+            "error must not leak passkey: {error}"
+        );
+        assert!(
+            !error.contains("SECRETKEY"),
+            "error must not leak secrets: {error}"
+        );
+        assert!(
+            !error.contains("TOPSECRET"),
+            "error must not leak secrets: {error}"
+        );
     }
 
     #[test]
@@ -672,7 +689,9 @@ mod tests {
         assert!(
             matches!(
                 result,
-                Err(scryer_outbound_http::OutboundDestinationError::BlockedLinkLocalOrMetadata { .. })
+                Err(
+                    scryer_outbound_http::OutboundDestinationError::BlockedLinkLocalOrMetadata { .. }
+                )
             ),
             "cloud metadata address must be rejected on the plugin HTTP host path"
         );

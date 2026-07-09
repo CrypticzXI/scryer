@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -2395,6 +2396,9 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                     continue;
                 }
             };
+            let mappings = download_client_remote_path_mappings(&config);
+            let output_roots =
+                mapped_download_client_output_roots(client.as_ref(), mappings.as_deref()).await;
             match client.list_completed_downloads().await {
                 Ok(mut items) => {
                     tracing::debug!(
@@ -2403,14 +2407,24 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                         count = items.len(),
                         "completed downloads from client"
                     );
-                    let mappings = download_client_remote_path_mappings(&config);
+                    let mut accepted_items = Vec::with_capacity(items.len());
                     for item in &mut items {
                         item.client_id = config.id.clone();
                         if let Some(mappings) = mappings.as_deref() {
                             apply_remote_path_mappings_to_completed_download(item, mappings);
                         }
+                        if completed_download_path_allowed(item.dest_dir.as_str(), &output_roots) {
+                            accepted_items.push(item.clone());
+                        } else {
+                            tracing::warn!(
+                                client_id = %config.id,
+                                client = %config.name,
+                                dest_dir = %item.dest_dir,
+                                "download client completed item points outside declared output roots; skipping"
+                            );
+                        }
                     }
-                    all_items.extend(items);
+                    all_items.extend(accepted_items);
                 }
                 Err(error) => {
                     tracing::warn!(client_id = %config.id, client = %config.name, error = %error, "failed to list completed downloads");
@@ -2512,6 +2526,9 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                     continue;
                 }
             };
+            let mappings = download_client_remote_path_mappings(&config);
+            let output_roots =
+                mapped_download_client_output_roots(client.as_ref(), mappings.as_deref()).await;
             match client.list_recent_completed_downloads(limit).await {
                 Ok(mut items) => {
                     self.record_feedback_read_success(
@@ -2525,14 +2542,24 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                         count = items.len(),
                         "recent completed downloads from client"
                     );
-                    let mappings = download_client_remote_path_mappings(&config);
+                    let mut accepted_items = Vec::with_capacity(items.len());
                     for item in &mut items {
                         item.client_id = config.id.clone();
                         if let Some(mappings) = mappings.as_deref() {
                             apply_remote_path_mappings_to_completed_download(item, mappings);
                         }
+                        if completed_download_path_allowed(item.dest_dir.as_str(), &output_roots) {
+                            accepted_items.push(item.clone());
+                        } else {
+                            tracing::warn!(
+                                client_id = %config.id,
+                                client = %config.name,
+                                dest_dir = %item.dest_dir,
+                                "download client recent completed item points outside declared output roots; skipping"
+                            );
+                        }
                     }
-                    all_items.extend(items);
+                    all_items.extend(accepted_items);
                 }
                 Err(error) => {
                     self.record_feedback_read_failure(
@@ -2659,6 +2686,59 @@ fn recent_completed_strategy_label(client_type: &str) -> &'static str {
         "sabnzbd" | "weaver" => "bounded",
         _ => "full_fallback_or_client_default",
     }
+}
+
+async fn mapped_download_client_output_roots(
+    client: &dyn DownloadClient,
+    mappings: Option<&[DownloadClientRemotePathMapping]>,
+) -> Vec<PathBuf> {
+    let Ok(mut status) = client.get_client_status().await else {
+        return Vec::new();
+    };
+    if let Some(mappings) = mappings {
+        apply_remote_path_mappings_to_status(&mut status, mappings);
+    }
+    status
+        .remote_output_roots
+        .iter()
+        .filter_map(|root| normalized_output_root(root))
+        .collect()
+}
+
+fn normalized_output_root(path: &str) -> Option<PathBuf> {
+    let path = path.trim();
+    if path.is_empty() || path.contains("://") || path.to_ascii_lowercase().starts_with("webdav:") {
+        return None;
+    }
+    let path = PathBuf::from(path);
+    if path.exists() {
+        path.canonicalize().ok()
+    } else {
+        Some(path)
+    }
+}
+
+fn completed_download_path_allowed(dest_dir: &str, output_roots: &[PathBuf]) -> bool {
+    if output_roots.is_empty() {
+        return true;
+    }
+    let dest_dir = dest_dir.trim();
+    if dest_dir.is_empty()
+        || dest_dir.contains("://")
+        || dest_dir.to_ascii_lowercase().starts_with("webdav:")
+    {
+        return true;
+    }
+
+    let path = Path::new(dest_dir);
+    let normalized_path = if path.exists() {
+        path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
+    } else {
+        path.to_path_buf()
+    };
+    output_roots
+        .iter()
+        .any(|root| normalized_path.starts_with(root))
 }
 
 fn parse_history_timestamp(value: Option<&str>) -> i64 {
@@ -5071,5 +5151,35 @@ mod tests {
 
         assert_eq!(failing_client.list_queue_call_count(), 1);
         assert_eq!(failing_client.list_queue_for_title_call_count(), 1);
+    }
+
+    #[test]
+    fn completed_download_path_filter_allows_items_under_declared_root() {
+        let root = tempfile::tempdir().unwrap();
+        let release = root.path().join("Release");
+        std::fs::create_dir_all(&release).unwrap();
+
+        assert!(completed_download_path_allowed(
+            release.to_str().unwrap(),
+            &[root.path().canonicalize().unwrap()]
+        ));
+    }
+
+    #[test]
+    fn completed_download_path_filter_rejects_items_outside_declared_root() {
+        let root = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let release = other.path().join("Release");
+        std::fs::create_dir_all(&release).unwrap();
+
+        assert!(!completed_download_path_allowed(
+            release.to_str().unwrap(),
+            &[root.path().canonicalize().unwrap()]
+        ));
+    }
+
+    #[test]
+    fn completed_download_path_filter_preserves_empty_root_compatibility() {
+        assert!(completed_download_path_allowed("/etc", &[]));
     }
 }

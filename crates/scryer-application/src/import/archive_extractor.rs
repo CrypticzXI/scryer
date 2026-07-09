@@ -31,6 +31,8 @@ const ARCHIVE_REPAIR_INPUT_DIR: &str = "repair";
 const ARCHIVE_STAGING_CREATE_ATTEMPTS: usize = 16;
 const STALE_ARCHIVE_STAGING_AFTER: Duration = Duration::from_secs(24 * 60 * 60);
 const MAX_PLUGIN_OUTPUT_FILES: usize = 20_000;
+const MAX_PLUGIN_OUTPUT_DIRECTORIES: usize = 20_000;
+const MAX_PLUGIN_OUTPUT_ENTRIES: usize = MAX_PLUGIN_OUTPUT_FILES + MAX_PLUGIN_OUTPUT_DIRECTORIES;
 const MAX_PLUGIN_OUTPUT_BYTES: u64 = 2 * 1024 * 1024 * 1024 * 1024;
 const MAX_REPAIR_COPY_FALLBACK_BYTES: u64 = 64 * 1024 * 1024;
 
@@ -443,6 +445,7 @@ fn prepare_archive_input_set(
             })
         }
         NativePar2State::Verified => {
+            let archive_hint = verification.canonical_hint_for_actual_path(archive_path);
             let (normalized_dir, cleanup_dirs) =
                 create_par2_staging_dir(source_dir, workspace, ARCHIVE_NORMALIZED_INPUT_DIR)?;
             let result = (|| {
@@ -462,7 +465,7 @@ fn prepare_archive_input_set(
                     ));
                 }
                 let archive_path =
-                    staged_verification.archive_path_for(archive_type, archive_path)?;
+                    staged_verification.archive_path_for(archive_type, &archive_hint)?;
                 Ok(ArchiveInputSet {
                     source_dir: normalized_dir,
                     archive_path,
@@ -475,6 +478,7 @@ fn prepare_archive_input_set(
             result
         }
         NativePar2State::Repairable => {
+            let archive_hint = verification.canonical_hint_for_actual_path(archive_path);
             let (repair_dir, cleanup_dirs) =
                 create_par2_staging_dir(source_dir, workspace, ARCHIVE_REPAIR_INPUT_DIR)?;
             let result = (|| {
@@ -493,7 +497,7 @@ fn prepare_archive_input_set(
                         "PAR2 repair completed but verification still requires repair".to_string(),
                     ));
                 }
-                let archive_path = repaired.archive_path_for(archive_type, archive_path)?;
+                let archive_path = repaired.archive_path_for(archive_type, &archive_hint)?;
                 Ok(ArchiveInputSet {
                     source_dir: repair_dir,
                     archive_path,
@@ -964,10 +968,18 @@ fn validate_archive_plugin_output(
         }
     }
 
+    let mut entry_count = 0usize;
+    let mut directory_count = 0usize;
     let mut file_count = 0usize;
     let mut expanded_bytes = 0u64;
     let mut stack = vec![output_dir.to_path_buf()];
     while let Some(path) = stack.pop() {
+        entry_count += 1;
+        if entry_count > MAX_PLUGIN_OUTPUT_ENTRIES {
+            return Err(AppError::Validation(
+                "archive plugin output contains too many entries".to_string(),
+            ));
+        }
         let metadata = std::fs::symlink_metadata(&path).map_err(|error| {
             AppError::Repository(format!(
                 "failed to inspect archive plugin output {}: {error}",
@@ -982,6 +994,12 @@ fn validate_archive_plugin_output(
         }
         ensure_path_under_output_with_root(&path, &output_root)?;
         if metadata.is_dir() {
+            directory_count += 1;
+            if directory_count > MAX_PLUGIN_OUTPUT_DIRECTORIES {
+                return Err(AppError::Validation(
+                    "archive plugin output contains too many directories".to_string(),
+                ));
+            }
             for entry in std::fs::read_dir(&path).map_err(|error| {
                 AppError::Repository(format!(
                     "failed to read archive plugin output directory {}: {error}",
@@ -993,6 +1011,11 @@ fn validate_archive_plugin_output(
                         "failed to read archive plugin output entry: {error}"
                     ))
                 })?;
+                if entry_count + stack.len() >= MAX_PLUGIN_OUTPUT_ENTRIES {
+                    return Err(AppError::Validation(
+                        "archive plugin output contains too many entries".to_string(),
+                    ));
+                }
                 stack.push(entry.path());
             }
             continue;
@@ -1184,6 +1207,23 @@ fn rar_volume_info_from_name(file_name: &str) -> Option<(String, usize)> {
 }
 
 impl Par2PlacementVerification {
+    fn canonical_hint_for_actual_path(&self, hint: &Path) -> PathBuf {
+        let hint_name = hint.file_name().and_then(|name| name.to_str());
+        for (canonical, actual_path) in &self.actual_by_canonical {
+            let actual_matches = actual_path == hint
+                || hint_name.is_some_and(|hint_name| {
+                    actual_path
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .is_some_and(|actual_name| actual_name.eq_ignore_ascii_case(hint_name))
+                });
+            if actual_matches {
+                return PathBuf::from(canonical);
+            }
+        }
+        hint.to_path_buf()
+    }
+
     fn archive_path_for(&self, archive_type: ArchiveType, hint: &Path) -> AppResult<PathBuf> {
         match archive_type {
             ArchiveType::Rar => self.rar_first_volume_path(hint),
@@ -1538,6 +1578,22 @@ mod tests {
             .unwrap();
 
         assert_eq!(resolved, part1);
+    }
+
+    #[test]
+    fn par2_canonical_hint_maps_obfuscated_actual_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let actual = dir.path().join("obfuscated-e.bin");
+        let verification = Par2PlacementVerification {
+            actual_by_canonical: HashMap::from([("show.part5.rar".to_string(), actual.clone())]),
+            state: NativePar2State::Verified,
+            placement_move_count: 1,
+        };
+
+        assert_eq!(
+            verification.canonical_hint_for_actual_path(&actual),
+            PathBuf::from("show.part5.rar")
+        );
     }
 
     #[test]

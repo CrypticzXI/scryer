@@ -9,6 +9,7 @@ use scryer_plugin_sdk::{
     PluginDescriptor,
 };
 
+use crate::blocking::run_blocking_plugin_call;
 use crate::runtime_backing::{PluginInstanceSpec, PluginRuntimeBacking, PreopenSpec};
 use crate::wasmtime_host::{ArchiveInvocation, process_archive};
 
@@ -63,19 +64,22 @@ impl ArchiveExtractorClient for WasmArchiveExtractorClient {
         let plugin_id = self.plugin_id.clone();
         let plugin_version = self.plugin_version.clone();
 
-        tokio::task::spawn_blocking(move || {
-            // Keep `prepared` alive for the invocation so the preopened paths
-            // remain owned for the full plugin call.
-            let _prepared = prepared;
-            let invocation = ArchiveInvocation {
-                plugin_id: &plugin_id,
-                plugin_version: &plugin_version,
-                operation,
-            };
-            process_archive(&spec, &input, invocation)
-        })
+        run_blocking_plugin_call(
+            Duration::from_secs(ARCHIVE_PROCESS_TIMEOUT_SECONDS),
+            "archive plugin",
+            move || {
+                // Keep `prepared` alive for the invocation so the preopened paths
+                // remain owned for the full plugin call.
+                let _prepared = prepared;
+                let invocation = ArchiveInvocation {
+                    plugin_id: &plugin_id,
+                    plugin_version: &plugin_version,
+                    operation,
+                };
+                process_archive(&spec, &input, invocation)
+            },
+        )
         .await
-        .map_err(|error| AppError::Repository(format!("archive plugin task panicked: {error}")))?
     }
 }
 
