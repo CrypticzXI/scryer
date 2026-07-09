@@ -67,6 +67,17 @@ struct ArchiveInputSet {
     par2_path: Option<PathBuf>,
 }
 
+struct ArchivePluginExtraction {
+    source_dir: PathBuf,
+    archive_path: PathBuf,
+    archive_type: ArchiveType,
+    format: ArchivePluginFormat,
+    par2_path: Option<PathBuf>,
+    password: Option<String>,
+    provider: Arc<dyn ArchiveExtractorPluginProvider>,
+    output_dir: PathBuf,
+}
+
 /// Archive type detected in a download directory.
 #[derive(Debug, Clone, Copy)]
 pub enum ArchiveType {
@@ -156,16 +167,16 @@ pub async fn extract_archives_if_needed(
                         return Err(error);
                     }
                 };
-                extract_with_archive_plugin(
-                    &input_set.source_dir,
-                    input_set.archive_path,
+                extract_with_archive_plugin(ArchivePluginExtraction {
+                    source_dir: input_set.source_dir,
+                    archive_path: input_set.archive_path,
                     archive_type,
                     format,
-                    input_set.par2_path,
+                    par2_path: input_set.par2_path,
                     password,
                     provider,
-                    workspace.output_dir.clone(),
-                )
+                    output_dir: workspace.output_dir.clone(),
+                })
                 .await
             } else {
                 Err(AppError::archive_extraction_plugin_required(Some(
@@ -231,15 +242,18 @@ fn extract_native_archive(
 }
 
 async fn extract_with_archive_plugin(
-    source_dir: &Path,
-    archive_path: PathBuf,
-    archive_type: ArchiveType,
-    format: ArchivePluginFormat,
-    par2_path: Option<PathBuf>,
-    password: Option<String>,
-    provider: Arc<dyn ArchiveExtractorPluginProvider>,
-    output_dir: PathBuf,
+    request: ArchivePluginExtraction,
 ) -> AppResult<Option<PathBuf>> {
+    let ArchivePluginExtraction {
+        source_dir,
+        archive_path,
+        archive_type,
+        format,
+        par2_path,
+        password,
+        provider,
+        output_dir,
+    } = request;
     let (client, operation) = if let Some(par2_path) = par2_path
         && let Some(client) =
             provider.client_for_repair_then_extract(format, ArchivePluginRepairFormat::Par2)
