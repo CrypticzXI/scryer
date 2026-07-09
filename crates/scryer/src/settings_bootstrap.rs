@@ -29,7 +29,7 @@ use scryer_application::{
 pub(crate) use scryer_application::{
     MOVIES_PATH_KEY, SERIES_PATH_KEY, SETTINGS_SCOPE_MEDIA, SETTINGS_SCOPE_SYSTEM,
 };
-use scryer_infrastructure::{QualityProfileStore, SettingsStore, SettingsValueRecord};
+use scryer_infrastructure::{QualityProfileStore, SettingsStore};
 use serde_json::{Value, json};
 
 use crate::{
@@ -1873,130 +1873,6 @@ pub(crate) fn parse_quality_profile_id(raw_value: impl AsRef<str>) -> Option<Str
     }
 }
 
-pub(crate) async fn load_service_runtime_settings(
-    database: Arc<SettingsStore>,
-) -> Result<ServiceRuntimeSettings, String> {
-    let keys = vec![
-        (
-            SETTINGS_SCOPE_SYSTEM.to_string(),
-            "nzbget.url".to_string(),
-            None,
-        ),
-        (
-            SETTINGS_SCOPE_SYSTEM.to_string(),
-            "nzbget.username".to_string(),
-            None,
-        ),
-        (
-            SETTINGS_SCOPE_SYSTEM.to_string(),
-            "nzbget.password".to_string(),
-            None,
-        ),
-        (
-            SETTINGS_SCOPE_SYSTEM.to_string(),
-            "nzbget.dupe_mode".to_string(),
-            None,
-        ),
-        (
-            SETTINGS_SCOPE_SYSTEM.to_string(),
-            TLS_CERT_KEY.to_string(),
-            None,
-        ),
-        (
-            SETTINGS_SCOPE_SYSTEM.to_string(),
-            TLS_KEY_KEY.to_string(),
-            None,
-        ),
-    ];
-
-    let results = database
-        .batch_get_settings_with_defaults(keys)
-        .await
-        .map_err(|error| format!("failed to batch load runtime settings: {error}"))?;
-
-    let nzbget_url_record = results[0]
-        .as_ref()
-        .ok_or_else(|| "missing setting: system.nzbget.url".to_string())?;
-    let nzbget_username_record = results[1]
-        .as_ref()
-        .ok_or_else(|| "missing setting: system.nzbget.username".to_string())?;
-    let nzbget_password_record = results[2]
-        .as_ref()
-        .ok_or_else(|| "missing setting: system.nzbget.password".to_string())?;
-    let nzbget_dupe_mode_record = results[3]
-        .as_ref()
-        .ok_or_else(|| "missing setting: system.nzbget.dupe_mode".to_string())?;
-
-    let nzbget_url = setting_record_to_string(nzbget_url_record, "system.nzbget.url", false)?;
-    let nzbget_username = setting_record_to_optional_string(nzbget_username_record)?;
-    let nzbget_password = setting_record_to_optional_string(nzbget_password_record)?;
-    let nzbget_dupe_mode =
-        setting_record_to_string(nzbget_dupe_mode_record, "system.nzbget.dupe_mode", false)?;
-
-    let tls_cert_path = results[4]
-        .as_ref()
-        .and_then(|record| setting_record_to_optional_string(record).ok().flatten());
-    let tls_key_path = results[5]
-        .as_ref()
-        .and_then(|record| setting_record_to_optional_string(record).ok().flatten());
-
-    Ok(ServiceRuntimeSettings {
-        nzbget_url,
-        nzbget_username,
-        nzbget_password,
-        nzbget_dupe_mode,
-        tls_cert_path,
-        tls_key_path,
-    })
-}
-
-pub(crate) fn parse_json_setting_value(record: &SettingsValueRecord) -> Result<Value, String> {
-    serde_json::from_str(&record.effective_value_json).map_err(|error| {
-        format!(
-            "setting value for {}.{} is invalid JSON: {error}",
-            record.scope, record.key_name
-        )
-    })
-}
-
-pub(crate) fn setting_record_to_string(
-    record: &SettingsValueRecord,
-    path: &str,
-    allow_empty: bool,
-) -> Result<String, String> {
-    let value = parse_json_setting_value(record)?;
-    let value = match value {
-        Value::String(value) => value,
-        Value::Number(number) => number.to_string(),
-        Value::Bool(value) => value.to_string(),
-        Value::Null => return Err(format!("setting {path} must be set and cannot be null")),
-        _ => return Err(format!("setting {path} must be a string")),
-    };
-    if !allow_empty && value.trim().is_empty() {
-        return Err(format!("setting {path} cannot be empty"));
-    }
-    Ok(value)
-}
-
-pub(crate) fn setting_record_to_optional_string(
-    record: &SettingsValueRecord,
-) -> Result<Option<String>, String> {
-    let value = parse_json_setting_value(record)?;
-    match value {
-        Value::Null => Ok(None),
-        Value::String(value) => {
-            if value.trim().is_empty() {
-                Ok(None)
-            } else {
-                Ok(Some(value))
-            }
-        }
-        Value::Bool(value) => Ok(Some(value.to_string())),
-        Value::Number(value) => Ok(Some(value.to_string())),
-        other => Ok(Some(other.to_string())),
-    }
-}
-
 pub(crate) fn parse_migration_mode(raw: Option<String>) -> scryer_infrastructure::MigrationMode {
     match raw.as_deref() {
         Some(value) if value.eq_ignore_ascii_case("validate") => {
@@ -2032,16 +1908,4 @@ pub(crate) fn extract_pending_migration_ids(message: &str) -> Option<Vec<String>
     } else {
         Some(pending)
     }
-}
-
-#[derive(Debug)]
-pub(crate) struct ServiceRuntimeSettings {
-    pub(crate) nzbget_url: String,
-    pub(crate) nzbget_username: Option<String>,
-    pub(crate) nzbget_password: Option<String>,
-    pub(crate) nzbget_dupe_mode: String,
-    #[expect(dead_code)]
-    pub(crate) tls_cert_path: Option<String>,
-    #[expect(dead_code)]
-    pub(crate) tls_key_path: Option<String>,
 }

@@ -777,7 +777,7 @@ export function SettingsRulesSection({
 
   return (
     <div id="settings-rules-section" className="space-y-4 text-sm">
-      <div className="flex flex-col gap-4 xl:flex-row xl:items-start">
+      <div className="mx-auto flex w-full max-w-[2176px] flex-col gap-4 xl:flex-row xl:items-start">
         <div className="min-w-0 flex-1">
           <div className="mx-auto w-full max-w-[1280px] space-y-4">
       <div className="rounded border border-border">

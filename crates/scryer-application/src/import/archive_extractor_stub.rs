@@ -17,6 +17,10 @@ impl ArchiveExtractionDestination {
         }
     }
 
+    pub fn with_stale_cleanup_parent(self, _parent: impl Into<PathBuf>) -> Self {
+        self
+    }
+
     pub fn staging_parent(&self) -> &Path {
         &self._staging_parent
     }

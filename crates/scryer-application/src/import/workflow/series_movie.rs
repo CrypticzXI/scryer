@@ -55,10 +55,10 @@ async fn archive_extraction_destination_for_title(
         ..
     } = resolve_import_paths(app, title).await?;
     let staging_parent = effective_title_folder_path(&media_root, title, &folder_template, None);
-    Ok(crate::archive_extractor::ArchiveExtractionDestination::new(
-        staging_parent,
-        import_id,
-    ))
+    Ok(
+        crate::archive_extractor::ArchiveExtractionDestination::new(staging_parent, import_id)
+            .with_stale_cleanup_parent(media_root),
+    )
 }
 
 struct TitlelessArchiveMatch {
@@ -66,16 +66,21 @@ struct TitlelessArchiveMatch {
     extracted_dir: PathBuf,
 }
 
+enum TitlelessArchiveRelocation {
+    Ready(PathBuf),
+    ReextractUnderMatchedTitle,
+}
+
 async fn relocate_titleless_archive_workspace_for_title(
     app: &AppUseCase,
     import_id: &str,
     title: &scryer_domain::Title,
     extracted_dir: PathBuf,
-) -> AppResult<PathBuf> {
+) -> AppResult<TitlelessArchiveRelocation> {
     let destination = archive_extraction_destination_for_title(app, import_id, title).await?;
     let target_parent = destination.staging_parent().to_path_buf();
     if extracted_dir.parent() == Some(target_parent.as_path()) {
-        return Ok(extracted_dir);
+        return Ok(TitlelessArchiveRelocation::Ready(extracted_dir));
     }
 
     tokio::fs::create_dir_all(&target_parent)
@@ -100,9 +105,12 @@ async fn relocate_titleless_archive_workspace_for_title(
     }
 
     match tokio::fs::rename(&extracted_dir, &target).await {
-        Ok(()) => Ok(target),
+        Ok(()) => Ok(TitlelessArchiveRelocation::Ready(target)),
         Err(error) => {
             crate::archive_extractor::cleanup_extracted_dir(&extracted_dir).await;
+            if is_cross_device_rename_error(&error) {
+                return Ok(TitlelessArchiveRelocation::ReextractUnderMatchedTitle);
+            }
             Err(AppError::Validation(format!(
                 "archive matched title '{}' but extracted workspace {} could not be moved to {} without copying: {error}",
                 title.name,
@@ -111,6 +119,11 @@ async fn relocate_titleless_archive_workspace_for_title(
             )))
         }
     }
+}
+
+fn is_cross_device_rename_error(error: &std::io::Error) -> bool {
+    error.kind() == std::io::ErrorKind::CrossesDevices
+        || cfg!(unix) && error.raw_os_error() == Some(18)
 }
 
 async fn archive_extraction_destination_for_completed_facet(
@@ -191,15 +204,18 @@ async fn try_match_titleless_archive_from_inner_video(
         return Ok(None);
     };
 
+    let archive_provider = app
+        .services
+        .integrations
+        .archive_extractor_plugin_provider
+        .available()
+        .cloned();
+
     let Some(extracted_dir) = crate::archive_extractor::extract_archives_if_needed(
         dest_dir,
         Some(destination),
         archive_password,
-        app.services
-            .integrations
-            .archive_extractor_plugin_provider
-            .available()
-            .cloned(),
+        archive_provider.clone(),
     )
     .await?
     else {
@@ -229,13 +245,31 @@ async fn try_match_titleless_archive_from_inner_video(
         if let Some(title) =
             resolve_title_from_release_candidate(&titles, &candidate, Some(facet.as_str()))
         {
-            let extracted_dir = relocate_titleless_archive_workspace_for_title(
+            let relocation = relocate_titleless_archive_workspace_for_title(
                 app,
                 import_id,
                 &title,
                 extracted_dir,
             )
             .await?;
+            let extracted_dir = match relocation {
+                TitlelessArchiveRelocation::Ready(extracted_dir) => extracted_dir,
+                TitlelessArchiveRelocation::ReextractUnderMatchedTitle => {
+                    crate::archive_extractor::extract_archives_if_needed(
+                        dest_dir,
+                        Some(archive_extraction_destination_for_title(app, import_id, &title).await?),
+                        archive_password,
+                        archive_provider.clone(),
+                    )
+                    .await?
+                    .ok_or_else(|| {
+                        AppError::Validation(format!(
+                            "archive matched title '{}' but could not be re-extracted under the matched title destination",
+                            title.name
+                        ))
+                    })?
+                }
+            };
             return Ok(Some(TitlelessArchiveMatch {
                 title,
                 extracted_dir,
@@ -2164,5 +2198,23 @@ async fn mark_wanted_completed_for_series_movie_link(
                 "failed to look up wanted item for series movie"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod archive_relocation_tests {
+    use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn cross_device_rename_error_is_detected() {
+        let error = std::io::Error::from_raw_os_error(18);
+        assert!(is_cross_device_rename_error(&error));
+    }
+
+    #[test]
+    fn unrelated_rename_error_is_not_cross_device() {
+        let error = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied");
+        assert!(!is_cross_device_rename_error(&error));
     }
 }

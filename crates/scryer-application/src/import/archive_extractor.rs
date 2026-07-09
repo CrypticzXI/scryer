@@ -19,6 +19,7 @@ use tracing::info;
 
 const EXTRACTED_DIR_NAME: &str = "_scryer_extracted";
 const ARCHIVE_STAGING_PREFIX: &str = ".scryer-ax-";
+const ARCHIVE_WRITE_PROBE_PREFIX: &str = ".scryer-write-probe-";
 const LEGACY_ARCHIVE_STAGING_PREFIX: &str = ".scryer-archive-extract-";
 const ARCHIVE_STAGING_OUTPUT_DIR: &str = "out";
 const ARCHIVE_REPAIR_INPUT_DIR: &str = "repair";
@@ -30,6 +31,7 @@ const MAX_PLUGIN_OUTPUT_BYTES: u64 = 2 * 1024 * 1024 * 1024 * 1024;
 #[derive(Debug, Clone)]
 pub struct ArchiveExtractionDestination {
     staging_parent: PathBuf,
+    stale_cleanup_parents: Vec<PathBuf>,
     _import_id: String,
 }
 
@@ -37,8 +39,14 @@ impl ArchiveExtractionDestination {
     pub fn new(staging_parent: impl Into<PathBuf>, import_id: impl Into<String>) -> Self {
         Self {
             staging_parent: staging_parent.into(),
+            stale_cleanup_parents: Vec::new(),
             _import_id: import_id.into(),
         }
+    }
+
+    pub fn with_stale_cleanup_parent(mut self, parent: impl Into<PathBuf>) -> Self {
+        self.stale_cleanup_parents.push(parent.into());
+        self
     }
 
     pub fn staging_parent(&self) -> &Path {
@@ -274,7 +282,12 @@ impl ArchiveExtractionWorkspace {
                     destination.staging_parent.display()
                 ))
             })?;
-        cleanup_stale_archive_staging_dirs(&destination.staging_parent).await;
+        cleanup_stale_archive_artifacts(&destination.staging_parent).await;
+        for parent in &destination.stale_cleanup_parents {
+            if parent != &destination.staging_parent {
+                cleanup_stale_archive_artifacts(parent).await;
+            }
+        }
 
         for _ in 0..ARCHIVE_STAGING_CREATE_ATTEMPTS {
             let root = destination.staging_parent.join(format!(
@@ -313,7 +326,11 @@ fn short_staging_suffix() -> String {
     format!("{:016x}", uuid::Uuid::new_v4().as_u128() as u64)
 }
 
-async fn cleanup_stale_archive_staging_dirs(parent: &Path) {
+async fn cleanup_stale_archive_artifacts(parent: &Path) {
+    cleanup_archive_artifacts_older_than(parent, STALE_ARCHIVE_STAGING_AFTER).await;
+}
+
+async fn cleanup_archive_artifacts_older_than(parent: &Path, min_age: Duration) {
     let mut entries = match tokio::fs::read_dir(parent).await {
         Ok(entries) => entries,
         Err(_) => return,
@@ -321,23 +338,27 @@ async fn cleanup_stale_archive_staging_dirs(parent: &Path) {
     let now = SystemTime::now();
     while let Ok(Some(entry)) = entries.next_entry().await {
         let path = entry.path();
-        if !is_archive_staging_dir(&path) {
+        if !is_archive_staging_dir(&path) && !is_archive_write_probe_file(&path) {
             continue;
         }
         let Ok(metadata) = entry.metadata().await else {
             continue;
         };
-        if !metadata.is_dir() {
+        if is_archive_staging_dir(&path) && !metadata.is_dir() {
+            continue;
+        }
+        if is_archive_write_probe_file(&path) && !metadata.is_file() {
             continue;
         }
         let Ok(modified) = metadata.modified() else {
             continue;
         };
-        if now
-            .duration_since(modified)
-            .is_ok_and(|age| age >= STALE_ARCHIVE_STAGING_AFTER)
-        {
-            let _ = tokio::fs::remove_dir_all(path).await;
+        if now.duration_since(modified).is_ok_and(|age| age >= min_age) {
+            if metadata.is_dir() {
+                let _ = tokio::fs::remove_dir_all(path).await;
+            } else {
+                let _ = tokio::fs::remove_file(path).await;
+            }
         }
     }
 }
@@ -358,7 +379,23 @@ async fn prepare_archive_input_set(
 
     if repair_available && !archive_source_is_writable(source_dir).await {
         let par2_path = par2_path.expect("checked by repair_available");
+        tracing::info!(
+            archive_repair_strategy = "destination_repair_staging",
+            source_dir = %source_dir.display(),
+            repair_dir = %workspace.root.join(ARCHIVE_REPAIR_INPUT_DIR).display(),
+            "archive repair will stage mutable PAR2 inputs under the destination workspace"
+        );
         return stage_repair_input_set(source_dir, archive_path, &par2_path, workspace).await;
+    }
+
+    if repair_available {
+        // Writable-source repair intentionally lets PAR2 mutate completed
+        // archive volumes in place to avoid staging another full archive copy.
+        tracing::info!(
+            archive_repair_strategy = "source_in_place",
+            source_dir = %source_dir.display(),
+            "archive repair will use writable completed-download source in place"
+        );
     }
 
     Ok(ArchiveInputSet {
@@ -369,7 +406,10 @@ async fn prepare_archive_input_set(
 }
 
 async fn archive_source_is_writable(source_dir: &Path) -> bool {
-    let probe_path = source_dir.join(format!(".scryer-write-probe-{}", short_staging_suffix()));
+    let probe_path = source_dir.join(format!(
+        "{ARCHIVE_WRITE_PROBE_PREFIX}{}",
+        short_staging_suffix()
+    ));
     match tokio::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -377,7 +417,13 @@ async fn archive_source_is_writable(source_dir: &Path) -> bool {
         .await
     {
         Ok(_) => {
-            let _ = tokio::fs::remove_file(&probe_path).await;
+            if let Err(error) = tokio::fs::remove_file(&probe_path).await {
+                tracing::warn!(
+                    probe = %probe_path.display(),
+                    error = %error,
+                    "failed to remove archive source write probe"
+                );
+            }
             true
         }
         Err(error) => {
@@ -443,6 +489,9 @@ fn stage_repair_input_set_blocking(
             AppError::Repository(format!("failed to read archive source entry: {error}"))
         })?;
         let source_path = entry.path();
+        if !is_archive_repair_input_path(&source_path, archive_path, par2_path) {
+            continue;
+        }
         let metadata = std::fs::symlink_metadata(&source_path).map_err(|error| {
             AppError::Repository(format!(
                 "failed to inspect archive source {}: {error}",
@@ -456,9 +505,6 @@ fn stage_repair_input_set_blocking(
             )));
         }
         if !metadata.is_file() {
-            continue;
-        }
-        if !is_archive_repair_input_path(&source_path, archive_path, par2_path) {
             continue;
         }
 
@@ -504,10 +550,12 @@ fn is_archive_repair_input_path(path: &Path, archive_path: &Path, par2_path: &Pa
         .and_then(|value| value.to_str())
         .unwrap_or_default()
         .to_ascii_lowercase();
-    matches!(ext.as_str(), "rar" | "zip" | "par2")
-        || (ext.len() == 3
-            && (ext.starts_with('r') || ext.starts_with('z'))
-            && ext[1..].chars().all(|ch| ch.is_ascii_digit()))
+    matches!(ext.as_str(), "rar" | "zip" | "par2") || is_old_rar_volume_extension(&ext)
+}
+
+fn is_old_rar_volume_extension(ext: &str) -> bool {
+    let mut chars = ext.chars();
+    matches!(chars.next(), Some('r'..='z')) && ext.len() >= 3 && chars.all(|ch| ch.is_ascii_digit())
 }
 
 fn stage_repair_file(source: &Path, destination: &Path) -> std::io::Result<()> {
@@ -926,6 +974,12 @@ fn is_archive_staging_dir(dir: &Path) -> bool {
         })
 }
 
+fn is_archive_write_probe_file(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.starts_with(ARCHIVE_WRITE_PROBE_PREFIX))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1282,10 +1336,18 @@ mod tests {
         let destination = tempfile::tempdir().unwrap();
         let archive_path = source.path().join("archive.rar");
         let volume_path = source.path().join("archive.r00");
+        let s_volume_path = source.path().join("archive.s00");
+        let long_volume_path = source.path().join("archive.s101");
         let par2_path = source.path().join("archive.par2");
+        let nfo_path = source.path().join("release.nfo");
         fs::write(&archive_path, b"rar").unwrap();
         fs::write(&volume_path, b"volume").unwrap();
+        fs::write(&s_volume_path, b"s-volume").unwrap();
+        fs::write(&long_volume_path, b"long-volume").unwrap();
         fs::write(&par2_path, b"par2").unwrap();
+        fs::write(&nfo_path, b"nfo").unwrap();
+        std::os::unix::fs::symlink(&nfo_path, source.path().join("Sample")).unwrap();
+        std::os::unix::fs::symlink(&nfo_path, source.path().join("release.nfo.link")).unwrap();
         fs::set_permissions(source.path(), fs::Permissions::from_mode(0o555)).unwrap();
 
         let operation = Arc::new(Mutex::new(None));
@@ -1318,7 +1380,11 @@ mod tests {
         assert!(repair_dir.exists());
         assert!(repair_dir.join("archive.rar").exists());
         assert!(repair_dir.join("archive.r00").exists());
+        assert!(repair_dir.join("archive.s00").exists());
+        assert!(repair_dir.join("archive.s101").exists());
         assert!(repair_dir.join("archive.par2").exists());
+        assert!(!repair_dir.join("Sample").exists());
+        assert!(!repair_dir.join("release.nfo.link").exists());
         assert_ne!(
             fs::metadata(&archive_path).unwrap().ino(),
             fs::metadata(repair_dir.join("archive.rar")).unwrap().ino(),
@@ -1355,6 +1421,28 @@ mod tests {
         assert!(!extracted.exists());
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn repair_input_symlink_is_rejected_when_staged() {
+        let source = tempfile::tempdir().unwrap();
+        let repair = tempfile::tempdir().unwrap();
+        let archive_target = source.path().join("archive-real.rar");
+        let archive_link = source.path().join("archive.rar");
+        let par2_path = source.path().join("archive.par2");
+        fs::write(&archive_target, b"rar").unwrap();
+        fs::write(&par2_path, b"par2").unwrap();
+        std::os::unix::fs::symlink(&archive_target, &archive_link).unwrap();
+
+        let error = stage_repair_input_set_blocking(
+            source.path(),
+            &archive_link,
+            &par2_path,
+            repair.path(),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("refuses symbolic link"));
+    }
+
     #[tokio::test]
     async fn cleanup_only_removes_extracted_dir() {
         let dir = tempfile::tempdir().unwrap();
@@ -1366,6 +1454,33 @@ mod tests {
         assert!(!extracted.exists());
         // Parent still exists
         assert!(dir.path().exists());
+    }
+
+    #[tokio::test]
+    async fn stale_archive_artifact_cleanup_is_prefix_bounded() {
+        let dir = tempfile::tempdir().unwrap();
+        let archive_dir = dir.path().join(format!("{ARCHIVE_STAGING_PREFIX}orphan"));
+        let legacy_dir = dir
+            .path()
+            .join(format!("{LEGACY_ARCHIVE_STAGING_PREFIX}orphan"));
+        let probe_file = dir
+            .path()
+            .join(format!("{ARCHIVE_WRITE_PROBE_PREFIX}leaked"));
+        let keep_dir = dir.path().join("Movie (2026)");
+        let keep_file = dir.path().join("release.nfo");
+        fs::create_dir(&archive_dir).unwrap();
+        fs::create_dir(&legacy_dir).unwrap();
+        fs::create_dir(&keep_dir).unwrap();
+        fs::write(&probe_file, b"probe").unwrap();
+        fs::write(&keep_file, b"nfo").unwrap();
+
+        cleanup_archive_artifacts_older_than(dir.path(), Duration::ZERO).await;
+
+        assert!(!archive_dir.exists());
+        assert!(!legacy_dir.exists());
+        assert!(!probe_file.exists());
+        assert!(keep_dir.exists());
+        assert!(keep_file.exists());
     }
 
     #[tokio::test]
