@@ -57,6 +57,18 @@ impl ProcessHost {
             request.and_then(|request| state.execute(request)),
         ))
     }
+
+    /// Number of commands this host is allowed to spawn. A `disabled()` host (what
+    /// non-first-party/Unverified plugins receive) always reports `0`, so any
+    /// `scryer_process_exec` call resolves to PermissionDenied.
+    #[cfg(test)]
+    pub(crate) fn allowed_command_count(&self) -> usize {
+        self.state
+            .lock()
+            .expect("process host state lock")
+            .allowed_commands
+            .len()
+    }
 }
 
 #[derive(Debug)]
@@ -89,10 +101,10 @@ impl ProcessHostState {
         let mut command = Command::new(&request.command);
         command
             .args(&request.args)
-            .envs(request.env.iter())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        apply_sanitized_env(&mut command, &request.env);
         if let Some(working_directory) = request
             .working_directory
             .as_deref()
@@ -256,6 +268,59 @@ fn resolve_allowed_commands(
     commands
 }
 
+/// Clean, minimal `PATH` handed to every spawned host process. The host-process
+/// capability is reserved for first-party/verified plugins, but we still refuse
+/// to resolve bare command names through a guest- or host-supplied `PATH`.
+const SANITIZED_PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
+
+/// Dynamic-linker control variables (`LD_PRELOAD`, `LD_LIBRARY_PATH`, `LD_AUDIT`,
+/// the macOS `DYLD_*` family, ...) can turn an otherwise-benign, allowlisted
+/// interpreter into an arbitrary-code loader. They must never reach a spawned
+/// child, whether the guest supplied them or the host process inherited them.
+fn is_dynamic_linker_env_key(key: &str) -> bool {
+    let upper = key.trim().to_ascii_uppercase();
+    upper.starts_with("LD_") || upper.starts_with("DYLD_")
+}
+
+/// Sanitize the child environment before spawning a host process.
+///
+/// Defense-in-depth for the host-process capability: even though it is now gated
+/// to first-party/verified plugins, we do not forward a guest-controlled
+/// dynamic-linker environment or an attacker-chosen `PATH` into the child. We
+/// strip any inherited `LD_*`/`DYLD_*`, drop the same keys from the guest-provided
+/// env, and force a clean minimal `PATH`.
+///
+/// NOTE: argv is intentionally left unconstrained here. A first-party
+/// `custom_script` provider legitimately passes arbitrary arguments, so an argv
+/// denylist would break the supported use case. A future hardening option is
+/// per-provider argv templating so the argument vector is also constrained.
+fn apply_sanitized_env(command: &mut Command, guest_env: &BTreeMap<String, String>) {
+    // Strip dynamic-linker controls inherited from the host process so they can
+    // never reach the child even if Scryer itself was launched with them set.
+    for (key, _) in std::env::vars_os() {
+        if key
+            .to_str()
+            .is_some_and(is_dynamic_linker_env_key)
+        {
+            command.env_remove(&key);
+        }
+    }
+
+    for (key, value) in guest_env {
+        // Never let the guest reintroduce a dynamic-linker override...
+        if is_dynamic_linker_env_key(key) {
+            continue;
+        }
+        // ...or pick the PATH used to resolve bare command names.
+        if key.eq_ignore_ascii_case("PATH") {
+            continue;
+        }
+        command.env(key, value);
+    }
+
+    command.env("PATH", SANITIZED_PATH);
+}
+
 fn validate_request(request: &ProcessExecRequest) -> Result<(), ProcessError> {
     if request.command.trim().is_empty() {
         return Err(process_error(
@@ -383,4 +448,112 @@ where
         })
         .unwrap_or_else(|_| "{\"ok\":false}".to_string())
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::{NotificationCapabilities, NotificationDescriptor};
+
+    fn notification_descriptor(requires_host_process: bool) -> PluginDescriptor {
+        PluginDescriptor {
+            id: "custom-script".to_string(),
+            name: "Custom Script".to_string(),
+            version: "0.1.0".to_string(),
+            sdk_version: scryer_plugin_sdk::SDK_VERSION.to_string(),
+            sdk_constraint: scryer_plugin_sdk::current_sdk_constraint(),
+            socket_permissions: vec![],
+            provider: ProviderDescriptor::Notification(NotificationDescriptor {
+                provider_type: "custom_script".to_string(),
+                provider_aliases: vec![],
+                config_fields: vec![],
+                default_base_url: None,
+                allowed_hosts: vec![],
+                capabilities: NotificationCapabilities {
+                    requires_host_process,
+                    ..Default::default()
+                },
+            }),
+        }
+    }
+
+    // (b) A first-party/verified plugin that declares the capability still
+    // resolves a working, non-empty allowlist from its config.
+    #[test]
+    fn resolve_allowed_commands_uses_config_paths_when_capability_declared() {
+        let descriptor = notification_descriptor(true);
+        let commands = resolve_allowed_commands(&descriptor, Some(r#"{"path":"/usr/bin/env"}"#));
+        assert_eq!(commands, vec!["/usr/bin/env".to_string()]);
+    }
+
+    #[test]
+    fn resolve_allowed_commands_empty_without_capability() {
+        let descriptor = notification_descriptor(false);
+        let commands = resolve_allowed_commands(&descriptor, Some(r#"{"path":"/usr/bin/env"}"#));
+        assert!(commands.is_empty());
+    }
+
+    // (c) The disabled host that non-first-party/Unverified plugins receive denies
+    // every exec, regardless of the requested command.
+    #[test]
+    fn disabled_process_host_denies_exec() {
+        let host = ProcessHost::disabled();
+        assert_eq!(host.allowed_command_count(), 0);
+        let request = serde_json::json!({ "command": "/usr/bin/env" }).to_string();
+        let response = host
+            .call("scryer_process_exec", request)
+            .expect("call should encode a response");
+        let value: serde_json::Value = serde_json::from_str(&response).expect("valid json");
+        assert_eq!(value["ok"], serde_json::json!(false));
+        assert_eq!(
+            value["error"]["code"],
+            serde_json::json!("permission_denied")
+        );
+    }
+
+    // (d) The child environment never carries a guest- or host-supplied
+    // dynamic-linker override, and PATH is forced to the sanitized value.
+    #[test]
+    fn execute_strips_dynamic_linker_env_and_forces_clean_path() {
+        let mut env = BTreeMap::new();
+        env.insert("LD_PRELOAD".to_string(), "/tmp/evil.so".to_string());
+        env.insert("LD_LIBRARY_PATH".to_string(), "/tmp/evil".to_string());
+        env.insert(
+            "DYLD_INSERT_LIBRARIES".to_string(),
+            "/tmp/evil.dylib".to_string(),
+        );
+        env.insert("PATH".to_string(), "/tmp/attacker/bin".to_string());
+        env.insert("SCRYER_TEST_MARKER".to_string(), "kept".to_string());
+
+        let request = ProcessExecRequest {
+            command: "/usr/bin/env".to_string(),
+            args: vec![],
+            env,
+            working_directory: None,
+            stdin_base64: None,
+            timeout_ms: Some(5_000),
+        };
+
+        let state = ProcessHostState::new(vec!["/usr/bin/env".to_string()]);
+        let response = state.execute(request).expect("env should execute");
+        let stdout_bytes = STANDARD
+            .decode(response.stdout_base64.as_bytes())
+            .expect("stdout base64");
+        let stdout = String::from_utf8_lossy(&stdout_bytes);
+
+        for line in stdout.lines() {
+            assert!(
+                !line.starts_with("LD_") && !line.starts_with("DYLD_"),
+                "dynamic-linker env leaked into child: {line}"
+            );
+        }
+        assert!(
+            stdout.contains("SCRYER_TEST_MARKER=kept"),
+            "non-sensitive guest env should be preserved: {stdout}"
+        );
+        assert!(
+            stdout.contains(&format!("PATH={SANITIZED_PATH}")),
+            "PATH should be forced to the sanitized value: {stdout}"
+        );
+    }
 }
