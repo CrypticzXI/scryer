@@ -973,8 +973,8 @@ function RootSidebarContent({
         className="overflow-hidden border-r border-[var(--scry-border3)] bg-[var(--scry-bg)] shadow-[12px_0_40px_rgba(2,6,23,0.22)] min-[981px]:sticky min-[981px]:top-[var(--root-shell-top-offset,0px)] min-[981px]:h-[calc(100dvh-var(--root-shell-top-offset,0px))] min-[981px]:max-h-[calc(100dvh-var(--root-shell-top-offset,0px))] min-[981px]:self-start"
       >
         <SidebarHeader className="px-5 pb-3 pt-5">
-          <div className="flex items-center gap-3.5">
-            <ScryerLogo className="h-[44px]! w-[44px]! drop-shadow-[0_12px_22px_rgba(var(--scry-accent-rgb),0.32)]" />
+          <div className="flex -translate-y-2 items-center gap-3.5">
+            <ScryerLogo className="h-[55px]! w-[55px]! drop-shadow-[0_12px_22px_rgba(var(--scry-accent-rgb),0.32)]" />
             <span
               data-slot="brand-wordmark"
               className="text-[24px] font-bold leading-none text-[var(--scry-ink2)]"

@@ -1982,7 +1982,7 @@ const en: LocaleDictionary = {
   "settings.pluginRevertToBundled": "Revert to bundled",
   "settings.pluginRevert": "Revert",
   "settings.pluginUninstallWarning":
-    "Uninstalling '{{name}}' will permanently delete all associated configuration. If you want to keep your settings, disable the plugin instead.",
+    "deleting this plugin will delete all configurations related to it",
   "settings.pluginRevertToBundledWarning":
     "This removes the downloaded override for '{{name}}' and reverts to the bundled built-in plugin.",
   "settings.pluginBuiltin": "Built-in",

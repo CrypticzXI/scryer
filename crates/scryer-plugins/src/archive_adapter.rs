@@ -1,5 +1,3 @@
-use std::fs;
-use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -66,8 +64,8 @@ impl ArchiveExtractorClient for WasmArchiveExtractorClient {
         let plugin_version = self.plugin_version.clone();
 
         tokio::task::spawn_blocking(move || {
-            // Keep `prepared` alive for the invocation so the PAR2 COW staging
-            // TempDir (referenced by the spec's preopens) is not dropped early.
+            // Keep `prepared` alive for the invocation so the preopened paths
+            // remain owned for the full plugin call.
             let _prepared = prepared;
             let invocation = ArchiveInvocation {
                 plugin_id: &plugin_id,
@@ -95,7 +93,6 @@ struct PreparedArchiveRequest {
     source_root: Option<PathBuf>,
     source_writable: bool,
     output_root: Option<PathBuf>,
-    _staging_root: Option<tempfile::TempDir>,
 }
 
 impl PreparedArchiveRequest {
@@ -119,7 +116,6 @@ impl PreparedArchiveRequest {
                     source_root: Some(source_root),
                     source_writable: false,
                     output_root: None,
-                    _staging_root: None,
                 })
             }
             ArchivePluginOperation::ExtractArchive {
@@ -144,7 +140,6 @@ impl PreparedArchiveRequest {
                     source_root: Some(source_root),
                     source_writable: false,
                     output_root: Some(PathBuf::from(output_dir)),
-                    _staging_root: None,
                 })
             }
             ArchivePluginOperation::VerifyRepairSet {
@@ -165,7 +160,6 @@ impl PreparedArchiveRequest {
                     source_root: Some(source_root),
                     source_writable: false,
                     output_root: None,
-                    _staging_root: None,
                 })
             }
             ArchivePluginOperation::RepairThenExtract {
@@ -183,8 +177,6 @@ impl PreparedArchiveRequest {
                 let archive_path = archive_path
                     .map(|path| map_child_path(Path::new(&source_root), Path::new(&path)))
                     .transpose()?;
-                let staging_root = prepare_repair_staging(&source_root)?;
-                let staged_source_root = staging_root.path().to_path_buf();
                 Ok(Self {
                     request: ArchivePluginProcessRequest {
                         operation: ArchivePluginOperation::RepairThenExtract {
@@ -196,20 +188,18 @@ impl PreparedArchiveRequest {
                             password,
                         },
                     },
-                    source_root: Some(staged_source_root),
+                    source_root: Some(source_root),
                     source_writable: true,
                     output_root: Some(PathBuf::from(output_dir)),
-                    _staging_root: Some(staging_root),
                 })
             }
         }
     }
 
     /// Express this request's sandbox + timeout requirements as a runtime spec
-    /// (RFC §7.1). Preopens mirror the previous Extism manifest exactly: source
-    /// at `/scryer/source` (rw only for PAR2 repair staging, which is already a
-    /// COW copy), output at `/scryer/output`. The wasmtime host adds the
-    /// per-invocation rw scratch (`TMPDIR`) itself.
+    /// (RFC §7.1). Repair requests receive the caller-provided archive
+    /// workspace as writable source, so PAR2 mutations stay in Scryer's hidden
+    /// destination-side staging directory instead of the download source.
     fn instance_spec(&self, wasm: Arc<Vec<u8>>) -> PluginInstanceSpec {
         let mut preopens = Vec::new();
         if let Some(source_root) = &self.source_root {
@@ -234,138 +224,6 @@ impl PreparedArchiveRequest {
             memory_max_bytes: None,
         }
     }
-}
-
-fn prepare_repair_staging(source_root: &Path) -> AppResult<tempfile::TempDir> {
-    let parent = source_root.parent().unwrap_or_else(|| Path::new("."));
-    let staging_root = tempfile::Builder::new()
-        .prefix(".scryer-par2-stage-")
-        .tempdir_in(parent)
-        .map_err(|error| {
-            AppError::Repository(format!(
-                "failed to create archive repair staging directory near '{}': {error}",
-                source_root.display()
-            ))
-        })?;
-
-    clone_directory_contents_cow(source_root, staging_root.path())?;
-    Ok(staging_root)
-}
-
-fn clone_directory_contents_cow(source: &Path, destination: &Path) -> AppResult<()> {
-    for entry in fs::read_dir(source).map_err(|error| {
-        AppError::Repository(format!(
-            "failed to read archive repair source '{}': {error}",
-            source.display()
-        ))
-    })? {
-        let entry = entry.map_err(|error| {
-            AppError::Repository(format!(
-                "failed to read archive repair source '{}': {error}",
-                source.display()
-            ))
-        })?;
-        let source_path = entry.path();
-        let destination_path = destination.join(entry.file_name());
-        let metadata = fs::symlink_metadata(&source_path).map_err(|error| {
-            AppError::Repository(format!(
-                "failed to inspect archive repair source '{}': {error}",
-                source_path.display()
-            ))
-        })?;
-        let file_type = metadata.file_type();
-
-        if file_type.is_symlink() {
-            return Err(AppError::Validation(format!(
-                "archive repair staging refuses symbolic link '{}'",
-                source_path.display()
-            )));
-        }
-        if file_type.is_dir() {
-            fs::create_dir_all(&destination_path).map_err(|error| {
-                AppError::Repository(format!(
-                    "failed to create archive repair staging directory '{}': {error}",
-                    destination_path.display()
-                ))
-            })?;
-            clone_directory_contents_cow(&source_path, &destination_path)?;
-            continue;
-        }
-        if file_type.is_file() {
-            clone_file_cow(&source_path, &destination_path).map_err(|error| {
-                AppError::Repository(format!(
-                    "archive PAR2 repair requires copy-on-write staging; failed to reflink '{}' to '{}': {error}",
-                    source_path.display(),
-                    destination_path.display()
-                ))
-            })?;
-            continue;
-        }
-
-        return Err(AppError::Validation(format!(
-            "archive repair staging refuses special file '{}'",
-            source_path.display()
-        )));
-    }
-
-    Ok(())
-}
-
-#[cfg(target_os = "linux")]
-fn clone_file_cow(source: &Path, destination: &Path) -> io::Result<()> {
-    use std::fs::OpenOptions;
-    use std::os::fd::AsRawFd;
-
-    #[cfg(target_os = "linux")]
-    const FICLONE: libc::c_int = 0x4004_9409;
-    #[cfg(not(target_os = "linux"))]
-    const FICLONE: libc::c_ulong = 0x4004_9409;
-
-    let source_file = fs::File::open(source)?;
-    let destination_file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(destination)?;
-    let result = unsafe {
-        libc::ioctl(
-            destination_file.as_raw_fd(),
-            FICLONE,
-            source_file.as_raw_fd(),
-        )
-    };
-    if result == 0 {
-        Ok(())
-    } else {
-        let error = io::Error::last_os_error();
-        let _ = fs::remove_file(destination);
-        Err(error)
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn clone_file_cow(source: &Path, destination: &Path) -> io::Result<()> {
-    use std::ffi::CString;
-    use std::os::unix::ffi::OsStrExt;
-
-    let source = CString::new(source.as_os_str().as_bytes())
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "source path contains NUL"))?;
-    let destination = CString::new(destination.as_os_str().as_bytes()).map_err(|_| {
-        io::Error::new(io::ErrorKind::InvalidInput, "destination path contains NUL")
-    })?;
-    let result = unsafe { libc::clonefile(source.as_ptr(), destination.as_ptr(), 0) };
-    if result == 0 {
-        Ok(())
-    } else {
-        Err(io::Error::last_os_error())
-    }
-}
-
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
-fn clone_file_cow(_source: &Path, _destination: &Path) -> io::Result<()> {
-    Err(io::Error::new(
-        io::ErrorKind::Unsupported,
-        "copy-on-write file cloning is not implemented for this platform",
-    ))
 }
 
 fn map_child_path(root: &Path, path: &Path) -> AppResult<String> {

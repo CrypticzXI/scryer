@@ -2,19 +2,21 @@ import * as React from "react";
 import { useClient } from "urql";
 import {
   ArrowUpCircle,
+  Download,
   Loader2,
-  Plus,
   Power,
   PowerOff,
   RefreshCw,
   Trash2,
 } from "lucide-react";
+import { ConfirmDialog } from "@/components/common/confirm-dialog";
 import { PluginLogo } from "@/components/common/plugin-visual";
 import type { ProviderCatalogFamily } from "@/lib/hooks/use-provider-catalog-subscription";
 import { usePluginManagement } from "@/lib/hooks/use-plugin-management";
 import {
   isRunningPluginProgress,
   PluginInstallProgressBar,
+  type RegistryPluginRecord,
 } from "@/components/views/settings/settings-plugins-section";
 import { useTranslate } from "@/lib/context/translate-context";
 import { Badge } from "@/components/ui/badge";
@@ -75,6 +77,8 @@ export function FilteredPluginList({
   const t = useTranslate();
   const [upgradingVisiblePlugins, setUpgradingVisiblePlugins] =
     React.useState(false);
+  const [pendingUninstall, setPendingUninstall] =
+    React.useState<RegistryPluginRecord | null>(null);
   const {
     plugins,
     pluginsLoading,
@@ -135,137 +139,145 @@ export function FilteredPluginList({
       setUpgradingVisiblePlugins(false);
     }
   }, [upgradePlugin, visibleUpgradablePlugins]);
+  const confirmUninstall = React.useCallback(async () => {
+    if (!pendingUninstall) {
+      return;
+    }
+    await uninstallPlugin(pendingUninstall);
+    setPendingUninstall(null);
+  }, [pendingUninstall, uninstallPlugin]);
 
   return (
-    <section className={cn(FILTERED_PLUGIN_PANEL_CLASS, className)}>
-      <div className={FILTERED_PLUGIN_HEADER_CLASS}>
-        <h2 className={FILTERED_PLUGIN_TITLE_CLASS}>
-          {title ?? t("settings.plugins")}
-        </h2>
-        <div className="flex shrink-0 items-center gap-1.5">
-          {visibleUpgradeCount > 0 ? (
+    <>
+      <section className={cn(FILTERED_PLUGIN_PANEL_CLASS, className)}>
+        <div className={FILTERED_PLUGIN_HEADER_CLASS}>
+          <h2 className={FILTERED_PLUGIN_TITLE_CLASS}>
+            {title ?? t("settings.plugins")}
+          </h2>
+          <div className="flex shrink-0 items-center gap-1.5">
+            {visibleUpgradeCount > 0 ? (
+              <IconButton
+                label={updateAllLabel}
+                tooltip={updateAllTooltip}
+                tone="upgrade"
+                onClick={() => void updateVisiblePlugins()}
+                disabled={upgradingVisiblePlugins}
+              >
+                <ArrowUpCircle
+                  className={cn(
+                    "h-4 w-4",
+                    upgradingVisiblePlugins && "animate-spin",
+                  )}
+                />
+              </IconButton>
+            ) : null}
             <IconButton
-              label={updateAllLabel}
-              tooltip={updateAllTooltip}
-              tone="upgrade"
-              onClick={() => void updateVisiblePlugins()}
-              disabled={upgradingVisiblePlugins}
+              label={t("settings.pluginsRefresh")}
+              tone="neutral"
+              onClick={() => void refreshPluginsRegistry()}
+              disabled={pluginsRefreshing}
             >
-              <ArrowUpCircle
-                className={cn(
-                  "h-4 w-4",
-                  upgradingVisiblePlugins && "animate-spin",
-                )}
+              <RefreshCw
+                className={cn("h-4 w-4", pluginsRefreshing && "animate-spin")}
               />
             </IconButton>
-          ) : null}
-          <IconButton
-            label={t("settings.pluginsRefresh")}
-            tone="neutral"
-            onClick={() => void refreshPluginsRegistry()}
-            disabled={pluginsRefreshing}
-          >
-            <RefreshCw
-              className={cn("h-4 w-4", pluginsRefreshing && "animate-spin")}
-            />
-          </IconButton>
-        </div>
-      </div>
-      <div className={FILTERED_PLUGIN_BODY_CLASS}>
-        {pluginsError ? (
-          <p className="col-span-full text-xs text-[var(--scry-danger-text-soft)]">
-            {pluginsError}
-          </p>
-        ) : null}
-        {pluginsLoading ? (
-          <div className={`col-span-full flex items-center gap-2 py-6 text-sm ${FILTERED_PLUGIN_MUTED_CLASS}`}>
-            <Loader2 className="h-4 w-4 animate-spin" />
-            {t("label.loading")}
           </div>
-        ) : familyPlugins.length === 0 ? (
-          <p className={`col-span-full py-6 text-sm ${FILTERED_PLUGIN_MUTED_CLASS}`}>
-            {t("settings.pluginsNoAvailable")}
-          </p>
-        ) : (
-          familyPlugins.map((plugin) => {
-            const mutating = mutatingPluginIds.includes(plugin.id);
-            const progress = pluginProgress[plugin.id];
-            const running = Boolean(
-              progress && isRunningPluginProgress(progress),
-            );
-            const error = pluginErrors[plugin.id];
-            const canUninstall = plugin.isInstalled && !plugin.builtin;
-            const hasStatusBadges =
-              plugin.builtin ||
-              plugin.official ||
-              plugin.supportTier === "verified_community" ||
-              plugin.supportTier === "unverified" ||
-              plugin.status === "beta";
-            return (
-              <div
-                key={plugin.id}
-                className="min-w-0 rounded-[12px] border border-[var(--scry-line2)] bg-[var(--scry-card2)] p-3"
-              >
-                <div className="flex items-center justify-between gap-2">
-                  <div className="flex min-w-0 items-start gap-2">
-                    <PluginLogo
-                      id={plugin.id}
-                      name={plugin.name}
-                      providerType={plugin.providerType}
-                      pluginType={plugin.pluginType}
-                      className="h-7 w-7 rounded-lg"
-                    />
-                    <div className="min-w-0">
-                      <div className="flex min-w-0 items-center gap-2">
-                        {plugin.isInstalled && plugin.isEnabled ? (
-                          <span
-                            className="h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--scry-success-solid)]"
-                            aria-hidden="true"
-                          />
-                        ) : null}
-                        <span className="truncate text-[13px] font-semibold text-[var(--scry-ink2)]">
-                          {plugin.name}
-                        </span>
-                      </div>
-                      {plugin.description ? (
-                        <p className={`mt-0.5 line-clamp-2 text-[11.5px] leading-snug ${FILTERED_PLUGIN_MUTED_CLASS}`}>
-                          {plugin.description}
-                        </p>
-                      ) : null}
-                      {hasStatusBadges ? (
-                        <div className="mt-1.5 flex flex-wrap items-center gap-1">
-                          {plugin.builtin ? (
-                            <Badge tone="info">{t("settings.pluginBuiltin")}</Badge>
+        </div>
+        <div className={FILTERED_PLUGIN_BODY_CLASS}>
+          {pluginsError ? (
+            <p className="col-span-full text-xs text-[var(--scry-danger-text-soft)]">
+              {pluginsError}
+            </p>
+          ) : null}
+          {pluginsLoading ? (
+            <div className={`col-span-full flex items-center gap-2 py-6 text-sm ${FILTERED_PLUGIN_MUTED_CLASS}`}>
+              <Loader2 className="h-4 w-4 animate-spin" />
+              {t("label.loading")}
+            </div>
+          ) : familyPlugins.length === 0 ? (
+            <p className={`col-span-full py-6 text-sm ${FILTERED_PLUGIN_MUTED_CLASS}`}>
+              {t("settings.pluginsNoAvailable")}
+            </p>
+          ) : (
+            familyPlugins.map((plugin) => {
+              const mutating = mutatingPluginIds.includes(plugin.id);
+              const progress = pluginProgress[plugin.id];
+              const running = Boolean(
+                progress && isRunningPluginProgress(progress),
+              );
+              const error = pluginErrors[plugin.id];
+              const canUninstall = plugin.isInstalled && !plugin.builtin;
+              const hasStatusBadges =
+                plugin.builtin ||
+                plugin.official ||
+                plugin.supportTier === "verified_community" ||
+                plugin.supportTier === "unverified" ||
+                plugin.status === "beta";
+              return (
+                <div
+                  key={plugin.id}
+                  className="min-w-0 rounded-[12px] border border-[var(--scry-line2)] bg-[var(--scry-card2)] p-3"
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex min-w-0 items-start gap-2">
+                      <PluginLogo
+                        id={plugin.id}
+                        name={plugin.name}
+                        providerType={plugin.providerType}
+                        pluginType={plugin.pluginType}
+                        className="h-7 w-7 rounded-lg"
+                      />
+                      <div className="min-w-0">
+                        <div className="flex min-w-0 items-center gap-2">
+                          {plugin.isInstalled && plugin.isEnabled ? (
+                            <span
+                              className="h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--scry-success-solid)]"
+                              aria-hidden="true"
+                            />
                           ) : null}
-                          {plugin.official ? (
-                            <Badge tone="info">{t("settings.pluginOfficial")}</Badge>
-                          ) : null}
-                          {plugin.supportTier === "verified_community" ? (
-                            <Badge tone="positive">
-                              {t("settings.pluginVerifiedCommunity")}
-                            </Badge>
-                          ) : null}
-                          {plugin.supportTier === "unverified" ? (
-                            <Badge tone="warning">
-                              {t("settings.pluginUnverified")}
-                            </Badge>
-                          ) : null}
-                          {plugin.status === "beta" ? (
-                            <Badge tone="warning">{t("settings.pluginBeta")}</Badge>
-                          ) : null}
-                          {plugin.builtin && plugin.sourceKind === "downloaded" ? (
-                            <Badge tone="warning">
-                              {t("settings.pluginOverride")}
-                            </Badge>
-                          ) : null}
+                          <span className="truncate text-[13px] font-semibold text-[var(--scry-ink2)]">
+                            {plugin.name}
+                          </span>
                         </div>
-                      ) : null}
+                        {plugin.description ? (
+                          <p className={`mt-0.5 line-clamp-2 text-[11.5px] leading-snug ${FILTERED_PLUGIN_MUTED_CLASS}`}>
+                            {plugin.description}
+                          </p>
+                        ) : null}
+                        {hasStatusBadges ? (
+                          <div className="mt-1.5 flex flex-wrap items-center gap-1">
+                            {plugin.builtin ? (
+                              <Badge tone="info">{t("settings.pluginBuiltin")}</Badge>
+                            ) : null}
+                            {plugin.official ? (
+                              <Badge tone="info">{t("settings.pluginOfficial")}</Badge>
+                            ) : null}
+                            {plugin.supportTier === "verified_community" ? (
+                              <Badge tone="positive">
+                                {t("settings.pluginVerifiedCommunity")}
+                              </Badge>
+                            ) : null}
+                            {plugin.supportTier === "unverified" ? (
+                              <Badge tone="warning">
+                                {t("settings.pluginUnverified")}
+                              </Badge>
+                            ) : null}
+                            {plugin.status === "beta" ? (
+                              <Badge tone="warning">{t("settings.pluginBeta")}</Badge>
+                            ) : null}
+                            {plugin.builtin && plugin.sourceKind === "downloaded" ? (
+                              <Badge tone="warning">
+                                {t("settings.pluginOverride")}
+                              </Badge>
+                            ) : null}
+                          </div>
+                        ) : null}
                       </div>
-                  </div>
-                  {running ? null : (
-                    <div className="flex shrink-0 items-center self-center gap-1">
-                      {plugin.isInstalled ? (
-                        <>
+                    </div>
+                    {running ? null : (
+                      <div className="flex shrink-0 items-center self-center gap-1">
+                        {plugin.isInstalled ? (
+                          <>
                             <IconButton
                               label={
                                 plugin.isEnabled
@@ -298,16 +310,16 @@ export function FilteredPluginList({
                             <IconButton
                               label={t("settings.pluginUninstall")}
                               tone="delete"
-                              onClick={() => void uninstallPlugin(plugin)}
+                              onClick={() => setPendingUninstall(plugin)}
                               disabled={mutating}
                             >
                               <Trash2 className="h-3.5 w-3.5" />
                             </IconButton>
                           ) : null}
                         </>
-                      ) : (
-                        <IconButton
-                          type="button"
+                        ) : (
+                          <IconButton
+                            type="button"
                           label={t("settings.pluginInstall")}
                           tone="install"
                           onClick={() => void installPlugin(plugin)}
@@ -316,7 +328,7 @@ export function FilteredPluginList({
                           {mutating ? (
                             <Loader2 className="h-3.5 w-3.5 animate-spin" />
                           ) : (
-                            <Plus className="h-3.5 w-3.5" />
+                            <Download className="h-3.5 w-3.5" />
                           )}
                         </IconButton>
                       )}
@@ -332,10 +344,21 @@ export function FilteredPluginList({
                   <p className="mt-1.5 text-[11px] text-[var(--scry-danger-text-soft)]">{error}</p>
                 ) : null}
               </div>
-            );
-          })
-        )}
-      </div>
-    </section>
+              );
+            })
+          )}
+        </div>
+      </section>
+      <ConfirmDialog
+        open={pendingUninstall !== null}
+        title={t("settings.pluginUninstall")}
+        description={t("settings.pluginUninstallWarning")}
+        confirmLabel={t("settings.pluginUninstall")}
+        cancelLabel={t("label.cancel")}
+        isBusy={pendingUninstall ? mutatingPluginIds.includes(pendingUninstall.id) : false}
+        onConfirm={confirmUninstall}
+        onCancel={() => setPendingUninstall(null)}
+      />
+    </>
   );
 }

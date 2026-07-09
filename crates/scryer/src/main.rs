@@ -50,8 +50,8 @@ use scryer_infrastructure::{
     BuiltinDownloadClientConnectionTester, DatastoreAssembly, DatastoreConfig,
     DatastoreCustomizationStore, DatastoreEngine, FileSystemLibraryRenamer,
     FileSystemLibraryScanner, FileSystemStagedNzbStore, MetadataGatewayClient, MigrationMode,
-    MultiIndexerSearchClient, NzbgetDownloadClient, PrioritizedDownloadClientRouter, SettingsStore,
-    SmgEnrollmentConfig, WeaverSubscriptionBridgeClient, resolve_datastore_config_from_env,
+    MultiIndexerSearchClient, PrioritizedDownloadClientRouter, SettingsStore, SmgEnrollmentConfig,
+    WeaverSubscriptionBridgeClient, resolve_datastore_config_from_env,
     restore_backup_bundle_to_datastore_path, start_weaver_subscription_bridge, validate_datastore,
 };
 use scryer_interface::context::{
@@ -81,7 +81,7 @@ use middleware::{
 use oauth_routes::{OAuthRouteState, oauth_router};
 use rate_limit::ScryerRateLimiter;
 use settings_bootstrap::{
-    MOVIES_PATH_KEY, SERIES_PATH_KEY, extract_pending_migration_ids, load_service_runtime_settings,
+    MOVIES_PATH_KEY, SERIES_PATH_KEY, extract_pending_migration_ids,
     migrate_legacy_download_client_default_category_settings,
     migrate_legacy_download_client_routing_settings, normalize_media_path_setting,
     normalize_quality_profile_settings, parse_migration_mode, seed_service_setting_definitions,
@@ -902,12 +902,6 @@ async fn bootstrap_application(
     }
     tracing::info!(elapsed_ms = %t.elapsed().as_millis(), "settings normalized");
 
-    let t = std::time::Instant::now();
-    let runtime_settings = load_service_runtime_settings(bootstrap_settings_store.clone())
-        .await
-        .map_err(|e| format!("failed to load service runtime settings: {e}"))?;
-    tracing::info!(elapsed_ms = %t.elapsed().as_millis(), "runtime settings loaded");
-
     tracing::info!(elapsed_ms = %bootstrap_start.elapsed().as_millis(), "bootstrap complete");
 
     let indexer_configs = datastore.indexer_configs();
@@ -984,19 +978,10 @@ async fn bootstrap_application(
                 &disabled_builtin_plugins,
             ),
         ));
-    let fallback_download_client = Arc::new(NzbgetDownloadClient::with_staged_nzb_store(
-        runtime_settings.nzbget_url,
-        runtime_settings.nzbget_username,
-        runtime_settings.nzbget_password,
-        runtime_settings.nzbget_dupe_mode,
-        staged_nzb_store.clone(),
-        staged_nzb_pipeline_limit.clone(),
-    ));
     let download_client = Arc::new(
         PrioritizedDownloadClientRouter::new(
             download_client_configs.clone(),
             settings_for_router.clone(),
-            fallback_download_client,
             staged_nzb_store.clone(),
             staged_nzb_pipeline_limit.clone(),
             Some(download_client_plugin_provider.clone()),

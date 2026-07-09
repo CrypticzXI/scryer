@@ -1168,21 +1168,18 @@ async fn mount_list_queue_mocks(server: &MockServer) {
         .await;
 }
 
-/// Create a router backed by the test DB, with `fallback_uri` as the fallback client.
-fn build_router(ctx: &TestContext, fallback_uri: String) -> PrioritizedDownloadClientRouter {
-    build_router_with_cache(ctx, fallback_uri, Arc::new(NullStagedNzbStore))
+/// Create a router backed by the test DB.
+fn build_router(ctx: &TestContext) -> PrioritizedDownloadClientRouter {
+    build_router_with_cache(ctx, Arc::new(NullStagedNzbStore))
 }
 
 fn build_router_with_cache(
     ctx: &TestContext,
-    fallback_uri: String,
     staged_nzb_store: Arc<dyn scryer_application::StagedNzbStore>,
 ) -> PrioritizedDownloadClientRouter {
-    let fallback = NzbgetDownloadClient::new(fallback_uri, None, None, "SCORE".to_string());
     PrioritizedDownloadClientRouter::new(
         download_client_config_repo(ctx),
         Arc::new(NullSettingsRepository),
-        Arc::new(fallback),
         staged_nzb_store,
         Arc::new(Semaphore::new(4)),
         None,
@@ -1203,7 +1200,7 @@ async fn router_routes_to_highest_priority_client() {
     insert_download_client_config(&ctx, router_config("c1", &ctx.nzbget_server.uri(), 1, true))
         .await;
 
-    let router = build_router(&ctx, "http://127.0.0.1:1".to_string());
+    let router = build_router(&ctx);
     let items = router
         .list_queue()
         .await
@@ -1231,7 +1228,7 @@ async fn router_falls_back_to_next_client_on_primary_failure() {
         .await;
     insert_download_client_config(&ctx, router_config("c2", &second_server.uri(), 2, true)).await;
 
-    let router = build_router(&ctx, "http://127.0.0.1:1".to_string());
+    let router = build_router(&ctx);
     let items = router
         .list_queue()
         .await
@@ -1249,30 +1246,25 @@ async fn router_falls_back_to_next_client_on_primary_failure() {
 }
 
 #[tokio::test]
-async fn router_uses_fallback_when_no_clients_configured() {
+async fn router_returns_empty_queue_when_no_clients_configured() {
     let ctx = TestContext::new().await;
 
-    // No configs in DB — the fallback client is the only option.
     mount_list_queue_mocks(&ctx.nzbget_server).await;
-
-    // The fallback is pointed at the only mocked server.
-    let fallback =
-        NzbgetDownloadClient::new(ctx.nzbget_server.uri(), None, None, "SCORE".to_string());
-    let router = PrioritizedDownloadClientRouter::new(
-        download_client_config_repo(&ctx),
-        Arc::new(NullSettingsRepository),
-        Arc::new(fallback),
-        Arc::new(NullStagedNzbStore),
-        Arc::new(Semaphore::new(4)),
-        None,
-    );
+    let router = build_router(&ctx);
 
     let items = router
         .list_queue()
         .await
-        .expect("fallback client should be used when no configs exist");
+        .expect("no configured clients should produce an empty queue");
 
-    assert_eq!(items.len(), 2);
+    assert!(items.is_empty());
+    assert!(
+        ctx.nzbget_server
+            .received_requests()
+            .await
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[tokio::test]
@@ -1300,7 +1292,7 @@ async fn router_skips_client_with_invalid_config() {
     mount_list_queue_mocks(&second_server).await;
     insert_download_client_config(&ctx, router_config("good", &second_server.uri(), 2, true)).await;
 
-    let router = build_router(&ctx, "http://127.0.0.1:1".to_string());
+    let router = build_router(&ctx);
     let items = router
         .list_queue()
         .await
@@ -1337,7 +1329,7 @@ async fn router_skips_client_missing_base_url() {
     )
     .await;
 
-    let router = build_router(&ctx, "http://127.0.0.1:1".to_string());
+    let router = build_router(&ctx);
     let items = router
         .list_queue()
         .await
@@ -1357,26 +1349,14 @@ async fn router_disabled_clients_are_not_used() {
     )
     .await;
 
-    // No enabled clients → fallback is used.
-    let fallback_server = MockServer::start().await;
-    mount_list_queue_mocks(&fallback_server).await;
-    let fallback =
-        NzbgetDownloadClient::new(fallback_server.uri(), None, None, "SCORE".to_string());
-    let router = PrioritizedDownloadClientRouter::new(
-        download_client_config_repo(&ctx),
-        Arc::new(NullSettingsRepository),
-        Arc::new(fallback),
-        Arc::new(NullStagedNzbStore),
-        Arc::new(Semaphore::new(4)),
-        None,
-    );
+    let router = build_router(&ctx);
 
     let items = router
         .list_queue()
         .await
-        .expect("fallback should be used when only client is disabled");
+        .expect("only disabled clients should produce an empty queue");
 
-    assert_eq!(items.len(), 2);
+    assert!(items.is_empty());
     // Disabled client's server received no requests.
     assert!(
         ctx.nzbget_server
@@ -1430,11 +1410,7 @@ async fn router_reuses_single_staged_nzb_across_client_failover() {
     )
     .await;
 
-    let router = build_router_with_cache(
-        &ctx,
-        "http://127.0.0.1:1".to_string(),
-        staged_nzb_store.clone(),
-    );
+    let router = build_router_with_cache(&ctx, staged_nzb_store.clone());
     let result = router
         .submit_to_download_queue(
             &test_title("Router Failover"),
@@ -1489,11 +1465,7 @@ async fn router_deletes_staged_nzb_after_final_failure() {
     )
     .await;
 
-    let router = build_router_with_cache(
-        &ctx,
-        "http://127.0.0.1:1".to_string(),
-        staged_nzb_store.clone(),
-    );
+    let router = build_router_with_cache(&ctx, staged_nzb_store.clone());
     let error = router
         .submit_to_download_queue(
             &test_title("Router Failure"),

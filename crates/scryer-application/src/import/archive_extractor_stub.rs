@@ -16,6 +16,10 @@ impl ArchiveExtractionDestination {
             _import_id: import_id.into(),
         }
     }
+
+    pub fn staging_parent(&self) -> &Path {
+        &self._staging_parent
+    }
 }
 
 pub async fn extract_archives_if_needed(

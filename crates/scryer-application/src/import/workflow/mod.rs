@@ -1,3 +1,4 @@
+use crate::helpers::parse_usable_release_title;
 use crate::stored_paths::{path_to_stored_string, stored_path_to_path_buf};
 use crate::{
     AcquisitionScopeCompleteTransition, AcquisitionScopeStatesQuery, AppError, AppResult,
@@ -25,8 +26,6 @@ use scryer_domain::{
     ImportRecord, ImportResult, ImportSkipReason, ImportStatus, ImportType, MediaFacet, Title,
     TrackedDownloadState, User, is_video_file,
 };
-#[cfg(test)]
-use crate::helpers::parse_usable_release_title;
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};

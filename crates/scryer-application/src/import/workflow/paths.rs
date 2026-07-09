@@ -1098,7 +1098,6 @@ fn parsed_usable_release_from_parent_folder(path: &Path) -> Option<ParsedRelease
     parsed_release_from_parent_folder(path).filter(has_usable_release_title_signal)
 }
 
-#[cfg(test)]
 fn parsed_usable_release_from_file_stem(path: &Path) -> Option<ParsedReleaseMetadata> {
     let fallback = path
         .file_name()
@@ -1111,7 +1110,6 @@ fn parsed_usable_release_from_file_stem(path: &Path) -> Option<ParsedReleaseMeta
     parse_usable_release_title(stem.as_str())
 }
 
-#[cfg(test)]
 fn title_evidence_candidates_from_video_files(
     video_files: &[PathBuf],
 ) -> Vec<ParsedReleaseMetadata> {

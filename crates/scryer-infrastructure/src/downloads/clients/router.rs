@@ -224,7 +224,6 @@ pub struct PrioritizedDownloadClientRouter {
     indexer_configs: Option<Arc<dyn IndexerConfigRepository>>,
     indexer_proxy_configs: Option<Arc<dyn IndexerProxyConfigRepository>>,
     settings: Arc<dyn SettingsRepository>,
-    fallback_client: Arc<dyn DownloadClient>,
     staged_nzb_store: Arc<dyn StagedNzbStore>,
     staged_nzb_pipeline_limit: Arc<Semaphore>,
     plugin_provider: Option<Arc<dyn DownloadClientPluginProvider>>,
@@ -516,7 +515,6 @@ impl PrioritizedDownloadClientRouter {
     pub fn new(
         download_client_configs: Arc<dyn DownloadClientConfigRepository>,
         settings: Arc<dyn SettingsRepository>,
-        fallback_client: Arc<dyn DownloadClient>,
         staged_nzb_store: Arc<dyn StagedNzbStore>,
         staged_nzb_pipeline_limit: Arc<Semaphore>,
         plugin_provider: Option<Arc<dyn DownloadClientPluginProvider>>,
@@ -524,7 +522,6 @@ impl PrioritizedDownloadClientRouter {
         Self::with_feedback_read_timeout(
             download_client_configs,
             settings,
-            fallback_client,
             staged_nzb_store,
             staged_nzb_pipeline_limit,
             plugin_provider,
@@ -535,7 +532,6 @@ impl PrioritizedDownloadClientRouter {
     fn with_feedback_read_timeout(
         download_client_configs: Arc<dyn DownloadClientConfigRepository>,
         settings: Arc<dyn SettingsRepository>,
-        fallback_client: Arc<dyn DownloadClient>,
         staged_nzb_store: Arc<dyn StagedNzbStore>,
         staged_nzb_pipeline_limit: Arc<Semaphore>,
         plugin_provider: Option<Arc<dyn DownloadClientPluginProvider>>,
@@ -547,7 +543,6 @@ impl PrioritizedDownloadClientRouter {
             indexer_configs: None,
             indexer_proxy_configs: None,
             settings,
-            fallback_client: Self::wrap_feedback_client(fallback_client, feedback_read_timeout),
             staged_nzb_store,
             staged_nzb_pipeline_limit,
             plugin_provider,
@@ -1736,12 +1731,9 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                     error = %error,
                     title = request.title.name.as_str(),
                     facet = ?request.title.facet,
-                    "failed to load prioritized download clients; falling back to default client"
+                    "failed to load prioritized download clients"
                 );
-                if resolved_artifact_kind.is_some() {
-                    return Err(error.into_download_submit_unavailable());
-                }
-                return self.fallback_client.submit_download(request).await;
+                return Err(error.into_download_submit_unavailable());
             }
         };
 
@@ -1761,12 +1753,9 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
         let mut clients = selection.clients;
 
         if clients.is_empty() {
-            if resolved_artifact_kind.is_some() {
-                return Err(AppError::Validation(
-                    "no enabled download client can accept the resolved download artifact".into(),
-                ));
-            }
-            return self.fallback_client.submit_download(request).await;
+            return Err(AppError::download_submit_unavailable(
+                "no enabled download clients configured",
+            ));
         }
 
         if let Some(artifact_kind) = resolved_artifact_kind {
@@ -1983,11 +1972,7 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
             .list_enabled_clients_by_priority_excluding(excluded_client_types)
             .await?;
         if clients.is_empty() {
-            return if excluded_client_types.is_empty() {
-                self.fallback_client.list_queue().await
-            } else {
-                Ok(Vec::new())
-            };
+            return Ok(Vec::new());
         }
         let mut all_items = Vec::new();
         let mut read_summary = FeedbackReadSummary::default();
@@ -2041,7 +2026,7 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
     async fn list_queue_for_title(&self, title_id: &str) -> AppResult<Vec<DownloadQueueItem>> {
         let clients = self.list_enabled_clients_by_priority().await?;
         if clients.is_empty() {
-            return self.fallback_client.list_queue_for_title(title_id).await;
+            return Ok(Vec::new());
         }
         let mut all_items = Vec::new();
         let mut read_summary = FeedbackReadSummary::default();
@@ -2091,7 +2076,7 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
     async fn list_history(&self) -> AppResult<Vec<DownloadQueueItem>> {
         let clients = self.list_enabled_clients_by_priority().await?;
         if clients.is_empty() {
-            return self.fallback_client.list_history().await;
+            return Ok(Vec::new());
         }
         let mut all_items = Vec::new();
         let mut read_summary = FeedbackReadSummary::default();
@@ -2166,11 +2151,7 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
             .list_enabled_clients_by_priority_excluding(excluded_client_types)
             .await?;
         if clients.is_empty() {
-            return if excluded_client_types.is_empty() {
-                self.fallback_client.list_recent_activity(limit).await
-            } else {
-                Ok(Vec::new())
-            };
+            return Ok(Vec::new());
         }
 
         let mut all_items = Vec::new();
@@ -2247,10 +2228,7 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
 
         let clients = self.list_enabled_clients_by_priority().await?;
         if clients.is_empty() {
-            return self
-                .fallback_client
-                .list_recent_activity_for_title(title_id, limit)
-                .await;
+            return Ok(Vec::new());
         }
 
         let mut all_items = Vec::new();
@@ -2317,7 +2295,7 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
 
         let clients = self.list_enabled_clients_by_priority().await?;
         if clients.is_empty() {
-            return self.fallback_client.list_history_page(offset, limit).await;
+            return Ok(Vec::new());
         }
 
         let fetch_limit = offset.saturating_add(limit);
@@ -2385,7 +2363,7 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
     async fn list_completed_downloads(&self) -> AppResult<Vec<scryer_domain::CompletedDownload>> {
         let clients = self.list_enabled_clients_by_priority().await?;
         if clients.is_empty() {
-            return self.fallback_client.list_completed_downloads().await;
+            return Ok(Vec::new());
         }
         let mut all_items = Vec::new();
         for config in clients {
@@ -2479,18 +2457,7 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
             .list_enabled_clients_by_priority_excluding(excluded_client_types)
             .await?;
         if clients.is_empty() {
-            return if excluded_client_types.is_empty() {
-                self.fallback_client
-                    .list_recent_completed_downloads_for_client_scope(
-                        limit,
-                        client_ids,
-                        client_types,
-                        excluded_client_types,
-                    )
-                    .await
-            } else {
-                Ok(Vec::new())
-            };
+            return Ok(Vec::new());
         }
 
         let scoped_client_ids = client_ids
@@ -2586,7 +2553,9 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
         if let Some(client) = self.resolve_client_for_queue_action(id, false).await? {
             return client.pause_queue_item(id).await;
         }
-        self.fallback_client.pause_queue_item(id).await
+        Err(AppError::Validation(format!(
+            "download client item not found: {id}"
+        )))
     }
 
     async fn pause_queue_item_for_client(&self, client_id: &str, id: &str) -> AppResult<()> {
@@ -2602,7 +2571,9 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
         if let Some(client) = self.resolve_client_for_queue_action(id, false).await? {
             return client.resume_queue_item(id).await;
         }
-        self.fallback_client.resume_queue_item(id).await
+        Err(AppError::Validation(format!(
+            "download client item not found: {id}"
+        )))
     }
 
     async fn resume_queue_item_for_client(&self, client_id: &str, id: &str) -> AppResult<()> {
@@ -2618,7 +2589,9 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
         if let Some(client) = self.resolve_client_for_queue_action(id, is_history).await? {
             return client.delete_queue_item(id, is_history).await;
         }
-        self.fallback_client.delete_queue_item(id, is_history).await
+        Err(AppError::Validation(format!(
+            "download client item not found: {id}"
+        )))
     }
 
     async fn delete_queue_item_for_client_id(
@@ -2644,9 +2617,9 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
         if let Some(client) = self.resolve_client_for_type(client_type).await? {
             return client.delete_queue_item(id, is_history).await;
         }
-        self.fallback_client
-            .delete_queue_item_for_client(client_type, id, is_history)
-            .await
+        Err(AppError::Validation(format!(
+            "download client not found for type: {client_type}"
+        )))
     }
 
     async fn get_client_status_for_client_id(
@@ -3241,6 +3214,104 @@ mod tests {
         }
     }
 
+    fn no_client_router() -> PrioritizedDownloadClientRouter {
+        PrioritizedDownloadClientRouter::new(
+            Arc::new(MockDownloadClientConfigRepository { configs: vec![] }),
+            Arc::new(MockSettingsRepository::default()),
+            null_staged_nzb_store(),
+            test_pipeline_limit(),
+            None,
+        )
+    }
+
+    #[tokio::test]
+    async fn no_configured_clients_return_empty_feedback_reads() {
+        let router = no_client_router();
+
+        assert!(router.list_queue().await.unwrap().is_empty());
+        assert!(
+            router
+                .list_queue_excluding_client_types(&["weaver"])
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            router
+                .list_queue_for_title("title-1")
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert!(router.list_history().await.unwrap().is_empty());
+        assert!(router.list_history_page(0, 10).await.unwrap().is_empty());
+        assert!(router.list_recent_activity(10).await.unwrap().is_empty());
+        assert!(
+            router
+                .list_recent_activity_for_title("title-1", 10)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert!(router.list_completed_downloads().await.unwrap().is_empty());
+        assert!(
+            router
+                .list_recent_completed_downloads_for_client_scope(10, &[], &[], &[])
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn no_configured_clients_do_not_submit_or_route_queue_actions() {
+        let router = no_client_router();
+
+        let submit_error = router
+            .submit_download(&DownloadClientAddRequest {
+                title: test_title(),
+                purpose: scryer_application::DownloadSubmissionPurpose::Standard,
+                download_id: None,
+                source_hint: Some("https://example.invalid/release.nzb".to_string()),
+                staged_nzb: None,
+                resolved_download_artifact: None,
+                source_kind: Some(DownloadSourceKind::NzbUrl),
+                source_title: Some("Test Release".to_string()),
+                source_password: None,
+                category: None,
+                queue_priority: None,
+                download_directory: None,
+                release_title: None,
+                indexer_name: None,
+                indexer_id: None,
+                info_hash_hint: None,
+                seed_goal_ratio: None,
+                seed_goal_seconds: None,
+                is_recent: None,
+                season_pack: None,
+            })
+            .await
+            .expect_err("no configured clients should make submit unavailable");
+
+        assert!(matches!(
+            submit_error,
+            AppError::DownloadSubmitUnavailable(message)
+                if message.contains("no enabled download clients configured")
+        ));
+        assert!(matches!(
+            router.pause_queue_item("job-1").await,
+            Err(AppError::Validation(message)) if message.contains("download client item not found")
+        ));
+        assert!(matches!(
+            router.resume_queue_item("job-1").await,
+            Err(AppError::Validation(message)) if message.contains("download client item not found")
+        ));
+        assert!(matches!(
+            router.delete_queue_item("job-1", false).await,
+            Err(AppError::Validation(message)) if message.contains("download client item not found")
+        ));
+    }
+
     #[tokio::test]
     async fn submit_download_skips_incompatible_clients_by_source_kind() {
         let torrent_client = Arc::new(MockDownloadClient::default());
@@ -3257,7 +3328,6 @@ mod tests {
                 ],
             }),
             Arc::new(MockSettingsRepository::default()),
-            Arc::new(MockDownloadClient::default()),
             null_staged_nzb_store(),
             test_pipeline_limit(),
             Some(plugin_provider),
@@ -3314,7 +3384,6 @@ mod tests {
                 ],
             }),
             Arc::new(MockSettingsRepository::default()),
-            Arc::new(MockDownloadClient::default()),
             null_staged_nzb_store(),
             test_pipeline_limit(),
             Some(plugin_provider),
@@ -3372,7 +3441,6 @@ mod tests {
                 ],
             }),
             Arc::new(MockSettingsRepository::default()),
-            Arc::new(MockDownloadClient::default()),
             null_staged_nzb_store(),
             test_pipeline_limit(),
             Some(plugin_provider),
@@ -3431,7 +3499,6 @@ mod tests {
                 ],
             }),
             Arc::new(MockSettingsRepository::default()),
-            Arc::new(MockDownloadClient::default()),
             null_staged_nzb_store(),
             test_pipeline_limit(),
             Some(plugin_provider),
@@ -3475,7 +3542,6 @@ mod tests {
                 configs: vec![test_config("nzb", "NZBGet", "nzbget", 0)],
             }),
             Arc::new(MockSettingsRepository::default()),
-            Arc::new(MockDownloadClient::default()),
             null_staged_nzb_store(),
             test_pipeline_limit(),
             None,
@@ -3544,7 +3610,6 @@ mod tests {
                     .to_string(),
                 )]),
             }),
-            Arc::new(MockDownloadClient::default()),
             null_staged_nzb_store(),
             test_pipeline_limit(),
             Some(plugin_provider),
@@ -3620,7 +3685,6 @@ mod tests {
                     ),
                 ]),
             }),
-            Arc::new(MockDownloadClient::default()),
             null_staged_nzb_store(),
             test_pipeline_limit(),
             Some(plugin_provider),
@@ -3707,7 +3771,6 @@ mod tests {
                     .to_string(),
                 )]),
             }),
-            Arc::new(MockDownloadClient::default()),
             null_staged_nzb_store(),
             test_pipeline_limit(),
             Some(plugin_provider),
@@ -3768,7 +3831,6 @@ mod tests {
                     .to_string(),
                 )]),
             }),
-            Arc::new(MockDownloadClient::default()),
             null_staged_nzb_store(),
             test_pipeline_limit(),
             Some(plugin_provider),
@@ -3830,7 +3892,6 @@ mod tests {
                     .to_string(),
                 )]),
             }),
-            Arc::new(MockDownloadClient::default()),
             null_staged_nzb_store(),
             test_pipeline_limit(),
             Some(plugin_provider),
@@ -3869,7 +3930,7 @@ mod tests {
 
     #[tokio::test]
     async fn submit_download_fails_when_all_clients_disabled_for_facet() {
-        let fallback = Arc::new(MockDownloadClient::default());
+        let primary = Arc::new(MockDownloadClient::default());
         let router = PrioritizedDownloadClientRouter::new(
             Arc::new(MockDownloadClientConfigRepository {
                 configs: vec![test_config("primary", "Primary", "qbittorrent", 0)],
@@ -3883,15 +3944,11 @@ mod tests {
                     .to_string(),
                 )]),
             }),
-            fallback.clone(),
             null_staged_nzb_store(),
             test_pipeline_limit(),
             Some(Arc::new(MockDownloadClientPluginProvider {
                 accepted_inputs: vec!["nzb_url".to_string()],
-                clients: vec![(
-                    "primary".to_string(),
-                    Arc::new(MockDownloadClient::default()),
-                )],
+                clients: vec![("primary".to_string(), primary.clone())],
             })),
         );
 
@@ -3928,7 +3985,7 @@ mod tests {
             other => panic!("expected validation error, got {other:?}"),
         }
 
-        assert!(fallback.submissions.lock().unwrap().is_empty());
+        assert!(primary.submissions.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -3970,7 +4027,6 @@ mod tests {
                     ),
                 ]),
             }),
-            Arc::new(MockDownloadClient::default()),
             null_staged_nzb_store(),
             test_pipeline_limit(),
             Some(plugin_provider),
@@ -4045,7 +4101,6 @@ mod tests {
                     ),
                 ]),
             }),
-            Arc::new(MockDownloadClient::default()),
             null_staged_nzb_store(),
             test_pipeline_limit(),
             Some(plugin_provider),
@@ -4108,7 +4163,6 @@ mod tests {
                     .to_string(),
                 )]),
             }),
-            Arc::new(MockDownloadClient::default()),
             null_staged_nzb_store(),
             test_pipeline_limit(),
             Some(plugin_provider),
@@ -4149,6 +4203,7 @@ mod tests {
     #[tokio::test]
     async fn submit_download_fails_when_all_clients_disabled_for_library_override() {
         let title = test_title();
+        let primary = Arc::new(MockDownloadClient::default());
         let router = PrioritizedDownloadClientRouter::new(
             Arc::new(MockDownloadClientConfigRepository {
                 configs: vec![test_config("primary", "Primary", "qbittorrent", 0)],
@@ -4162,15 +4217,11 @@ mod tests {
                     .to_string(),
                 )]),
             }),
-            Arc::new(MockDownloadClient::default()),
             null_staged_nzb_store(),
             test_pipeline_limit(),
             Some(Arc::new(MockDownloadClientPluginProvider {
                 accepted_inputs: vec!["nzb_url".to_string()],
-                clients: vec![(
-                    "primary".to_string(),
-                    Arc::new(MockDownloadClient::default()),
-                )],
+                clients: vec![("primary".to_string(), primary.clone())],
             })),
         );
 
@@ -4206,6 +4257,7 @@ mod tests {
             }
             other => panic!("expected validation error, got {other:?}"),
         }
+        assert!(primary.submissions.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -4241,7 +4293,6 @@ mod tests {
                 ],
             }),
             Arc::new(MockSettingsRepository::default()),
-            Arc::new(MockDownloadClient::default()),
             null_staged_nzb_store(),
             test_pipeline_limit(),
             Some(plugin_provider),
@@ -4292,7 +4343,6 @@ mod tests {
                 ],
             }),
             Arc::new(MockSettingsRepository::default()),
-            Arc::new(MockDownloadClient::default()),
             null_staged_nzb_store(),
             test_pipeline_limit(),
             Some(plugin_provider),
@@ -4344,7 +4394,6 @@ mod tests {
                 ],
             }),
             Arc::new(MockSettingsRepository::default()),
-            Arc::new(MockDownloadClient::default()),
             null_staged_nzb_store(),
             test_pipeline_limit(),
             Some(plugin_provider),
@@ -4396,7 +4445,6 @@ mod tests {
                 ],
             }),
             Arc::new(MockSettingsRepository::default()),
-            Arc::new(MockDownloadClient::default()),
             null_staged_nzb_store(),
             test_pipeline_limit(),
             Some(plugin_provider),
@@ -4437,7 +4485,6 @@ mod tests {
                 ],
             }),
             Arc::new(MockSettingsRepository::default()),
-            Arc::new(MockDownloadClient::default()),
             null_staged_nzb_store(),
             test_pipeline_limit(),
             Some(plugin_provider),
@@ -4457,30 +4504,11 @@ mod tests {
 
     #[tokio::test]
     async fn list_recent_completed_excluding_only_weaver_does_not_use_fallback_client() {
-        let fallback = Arc::new(MockDownloadClient::default());
-        fallback
-            .completed_downloads
-            .lock()
-            .unwrap()
-            .push(scryer_domain::CompletedDownload {
-                client_type: "fallback".to_string(),
-                client_id: String::new(),
-                download_client_item_id: "fallback-1".to_string(),
-                download_id: None,
-                name: "Fallback".to_string(),
-                dest_dir: "/downloads/fallback".to_string(),
-                category: None,
-                size_bytes: None,
-                completed_at: Some(Utc::now()),
-                parameters: Vec::new(),
-            });
-
         let router = PrioritizedDownloadClientRouter::new(
             Arc::new(MockDownloadClientConfigRepository {
                 configs: vec![test_config("weaver-client", "Weaver", "weaver", 0)],
             }),
             Arc::new(MockSettingsRepository::default()),
-            fallback,
             null_staged_nzb_store(),
             test_pipeline_limit(),
             None,
@@ -4569,7 +4597,6 @@ mod tests {
                 ],
             }),
             Arc::new(MockSettingsRepository::default()),
-            Arc::new(MockDownloadClient::default()),
             null_staged_nzb_store(),
             test_pipeline_limit(),
             Some(plugin_provider),
@@ -4625,7 +4652,6 @@ mod tests {
                 ],
             }),
             Arc::new(MockSettingsRepository::default()),
-            Arc::new(MockDownloadClient::default()),
             null_staged_nzb_store(),
             test_pipeline_limit(),
             Some(plugin_provider),
@@ -4685,7 +4711,6 @@ mod tests {
                 ],
             }),
             Arc::new(MockSettingsRepository::default()),
-            Arc::new(MockDownloadClient::default()),
             null_staged_nzb_store(),
             test_pipeline_limit(),
             Some(plugin_provider),
@@ -4721,7 +4746,6 @@ mod tests {
                 configs: vec![test_config("nzbget-client", "NZBGet", "nzbget", 0)],
             }),
             Arc::new(MockSettingsRepository::default()),
-            Arc::new(MockDownloadClient::default()),
             null_staged_nzb_store(),
             test_pipeline_limit(),
             Some(plugin_provider),
@@ -4777,7 +4801,6 @@ mod tests {
                 }],
             }),
             Arc::new(MockSettingsRepository::default()),
-            Arc::new(MockDownloadClient::default()),
             null_staged_nzb_store(),
             test_pipeline_limit(),
             Some(plugin_provider),
@@ -4816,7 +4839,6 @@ mod tests {
                 }],
             }),
             Arc::new(MockSettingsRepository::default()),
-            Arc::new(MockDownloadClient::default()),
             null_staged_nzb_store(),
             test_pipeline_limit(),
             Some(plugin_provider),
@@ -4906,7 +4928,6 @@ mod tests {
                 ],
             }),
             Arc::new(MockSettingsRepository::default()),
-            Arc::new(MockDownloadClient::default()),
             null_staged_nzb_store(),
             test_pipeline_limit(),
             Some(plugin_provider),
@@ -4953,7 +4974,6 @@ mod tests {
                 ],
             }),
             Arc::new(MockSettingsRepository::default()),
-            Arc::new(MockDownloadClient::default()),
             null_staged_nzb_store(),
             test_pipeline_limit(),
             Some(plugin_provider),
@@ -4999,7 +5019,6 @@ mod tests {
                 ],
             }),
             Arc::new(MockSettingsRepository::default()),
-            Arc::new(MockDownloadClient::default()),
             null_staged_nzb_store(),
             test_pipeline_limit(),
             Some(plugin_provider),
@@ -5036,7 +5055,6 @@ mod tests {
                 configs: vec![test_config("failing", "Failing", "qbittorrent", 0)],
             }),
             Arc::new(MockSettingsRepository::default()),
-            Arc::new(MockDownloadClient::default()),
             null_staged_nzb_store(),
             test_pipeline_limit(),
             Some(plugin_provider),

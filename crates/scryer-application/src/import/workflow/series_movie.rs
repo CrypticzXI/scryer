@@ -61,6 +61,192 @@ async fn archive_extraction_destination_for_title(
     ))
 }
 
+struct TitlelessArchiveMatch {
+    title: scryer_domain::Title,
+    extracted_dir: PathBuf,
+}
+
+async fn relocate_titleless_archive_workspace_for_title(
+    app: &AppUseCase,
+    import_id: &str,
+    title: &scryer_domain::Title,
+    extracted_dir: PathBuf,
+) -> AppResult<PathBuf> {
+    let destination = archive_extraction_destination_for_title(app, import_id, title).await?;
+    let target_parent = destination.staging_parent().to_path_buf();
+    if extracted_dir.parent() == Some(target_parent.as_path()) {
+        return Ok(extracted_dir);
+    }
+
+    tokio::fs::create_dir_all(&target_parent)
+        .await
+        .map_err(|error| {
+            AppError::Repository(format!(
+                "failed to create archive staging parent {}: {error}",
+                target_parent.display()
+            ))
+        })?;
+
+    let mut target = target_parent.join(
+        extracted_dir
+            .file_name()
+            .unwrap_or_else(|| std::ffi::OsStr::new(".scryer-ax-relocated")),
+    );
+    if target.exists() {
+        target = target_parent.join(format!(
+            ".scryer-ax-{:016x}",
+            uuid::Uuid::new_v4().as_u128() as u64
+        ));
+    }
+
+    match tokio::fs::rename(&extracted_dir, &target).await {
+        Ok(()) => Ok(target),
+        Err(error) => {
+            crate::archive_extractor::cleanup_extracted_dir(&extracted_dir).await;
+            Err(AppError::Validation(format!(
+                "archive matched title '{}' but extracted workspace {} could not be moved to {} without copying: {error}",
+                title.name,
+                extracted_dir.display(),
+                target.display()
+            )))
+        }
+    }
+}
+
+async fn archive_extraction_destination_for_completed_facet(
+    app: &AppUseCase,
+    import_id: &str,
+    completed: &CompletedDownload,
+) -> AppResult<Option<(crate::archive_extractor::ArchiveExtractionDestination, MediaFacet)>> {
+    let Some(facet) = archive_probe_facet_from_completed(completed) else {
+        return Ok(None);
+    };
+    let Some(library) = app
+        .services
+        .catalog
+        .libraries
+        .default_for_facet(facet.clone())
+        .await?
+    else {
+        return Ok(None);
+    };
+    let Some(root_path) = library
+        .roots
+        .iter()
+        .find(|root| root.is_default)
+        .or_else(|| library.roots.first())
+        .map(|root| root.path.clone())
+    else {
+        return Ok(None);
+    };
+
+    Ok(Some((
+        crate::archive_extractor::ArchiveExtractionDestination::new(root_path, import_id),
+        facet,
+    )))
+}
+
+fn archive_probe_facet_from_completed(completed: &CompletedDownload) -> Option<MediaFacet> {
+    extract_parameter(&completed.parameters, "*scryer_facet")
+        .or_else(|| completed.category.clone())
+        .and_then(|hint| media_facet_from_archive_hint(&hint))
+}
+
+fn media_facet_from_archive_hint(value: &str) -> Option<MediaFacet> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "movie" | "movies" => Some(MediaFacet::Movie),
+        "series" | "show" | "shows" | "tv" => Some(MediaFacet::Series),
+        "anime" => Some(MediaFacet::Anime),
+        _ => None,
+    }
+}
+
+fn archive_extraction_would_be_needed_best_effort(dir: &Path) -> bool {
+    match crate::archive_extractor::archive_extraction_would_be_needed(dir) {
+        Ok(needed) => needed,
+        Err(error) => {
+            tracing::warn!(
+                error = %error,
+                path = %dir.display(),
+                "failed to inspect archive need while building unmatched import detail"
+            );
+            false
+        }
+    }
+}
+
+async fn try_match_titleless_archive_from_inner_video(
+    app: &AppUseCase,
+    import_id: &str,
+    completed: &CompletedDownload,
+    dest_dir: &Path,
+    archive_password: Option<&str>,
+) -> AppResult<Option<TitlelessArchiveMatch>> {
+    if !archive_extraction_would_be_needed_best_effort(dest_dir) {
+        return Ok(None);
+    }
+    let Some((destination, facet)) =
+        archive_extraction_destination_for_completed_facet(app, import_id, completed).await?
+    else {
+        return Ok(None);
+    };
+
+    let Some(extracted_dir) = crate::archive_extractor::extract_archives_if_needed(
+        dest_dir,
+        Some(destination),
+        archive_password,
+        app.services
+            .integrations
+            .archive_extractor_plugin_provider
+            .available()
+            .cloned(),
+    )
+    .await?
+    else {
+        return Ok(None);
+    };
+
+    let is_series = matches!(facet, MediaFacet::Series | MediaFacet::Anime);
+    let video_files = match find_video_files(&extracted_dir, is_series) {
+        Ok(video_files) => video_files,
+        Err(error) => {
+            crate::archive_extractor::cleanup_extracted_dir(&extracted_dir).await;
+            return Err(error);
+        }
+    };
+    if video_files.is_empty() {
+        crate::archive_extractor::cleanup_extracted_dir(&extracted_dir).await;
+        return Ok(None);
+    }
+
+    let titles = app
+        .services
+        .catalog
+        .titles
+        .list_for_matching(None, None)
+        .await?;
+    for candidate in title_evidence_candidates_from_video_files(&video_files) {
+        if let Some(title) =
+            resolve_title_from_release_candidate(&titles, &candidate, Some(facet.as_str()))
+        {
+            let extracted_dir = relocate_titleless_archive_workspace_for_title(
+                app,
+                import_id,
+                &title,
+                extracted_dir,
+            )
+            .await?;
+            return Ok(Some(TitlelessArchiveMatch {
+                title,
+                extracted_dir,
+            }));
+        }
+    }
+
+    crate::archive_extractor::cleanup_extracted_dir(&extracted_dir).await;
+    Ok(None)
+}
+
 async fn resolve_completed_import_target(
     app: &AppUseCase,
     import_id: &str,
@@ -143,13 +329,25 @@ async fn resolve_completed_import_target(
         }
     }
 
+    if title.is_none()
+        && let Some(archive_match) = try_match_titleless_archive_from_inner_video(
+            app,
+            import_id,
+            completed,
+            dest_dir,
+            archive_password,
+        )
+        .await?
+    {
+        title = Some(archive_match.title);
+        extracted_dir = Some(archive_match.extracted_dir);
+    }
+
     let title = match title {
         Some(t) => t,
         None => {
-            let archive_message = if crate::archive_extractor::archive_extraction_would_be_needed(
-                dest_dir,
-            )? {
-                "; archived downloads require a matched title before Scryer can stage extraction under the import destination"
+            let archive_message = if archive_extraction_would_be_needed_best_effort(dest_dir) {
+                "; archived downloads require a facet/category hint and configured library root before Scryer can stage extraction under the import destination"
             } else {
                 ""
             };
@@ -207,13 +405,24 @@ async fn resolve_completed_import_target(
         .await?;
     }
     let effective_dir = extracted_dir.as_deref().unwrap_or(dest_dir);
-    let video_files = if is_series {
-        find_video_files(effective_dir, true)?
+    let video_files = match if is_series {
+        find_video_files(effective_dir, true)
     } else {
-        find_video_files(effective_dir, false)?
+        find_video_files(effective_dir, false)
+    } {
+        Ok(video_files) => video_files,
+        Err(error) => {
+            if let Some(ref dir) = extracted_dir {
+                crate::archive_extractor::cleanup_extracted_dir(dir).await;
+            }
+            return Err(error);
+        }
     };
 
     if video_files.is_empty() {
+        if let Some(ref dir) = extracted_dir {
+            crate::archive_extractor::cleanup_extracted_dir(dir).await;
+        }
         let result = ImportResult {
             decision: ImportDecision::Skipped,
             skip_reason: Some(ImportSkipReason::NoVideoFiles),
