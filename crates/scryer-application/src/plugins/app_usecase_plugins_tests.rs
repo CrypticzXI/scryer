@@ -3739,6 +3739,7 @@ fn validate_downloaded_plugin_descriptor_rejects_invalid_allowed_hosts() {
         "alpha",
         &release,
         &descriptor,
+        PluginSupportTier::Official,
         true,
     )
     .unwrap_err();
@@ -3786,6 +3787,7 @@ fn validate_downloaded_plugin_descriptor_accepts_release_sdk_constraint_override
         "jellyfin",
         &release,
         &descriptor,
+        PluginSupportTier::Official,
         true,
     )
     .unwrap();
@@ -3821,11 +3823,100 @@ fn validate_catalog_downloaded_plugin_descriptor_skips_release_host_compatibilit
         "email",
         &release,
         &descriptor,
+        PluginSupportTier::Official,
         false,
     )
     .unwrap();
 
     assert_eq!(validated.sdk_constraint, ">=99.0.0");
+}
+
+#[test]
+fn validate_downloaded_plugin_descriptor_rejects_unverified_host_process_capability() {
+    let release =
+        downloaded_release_contract("0.2.0", &scryer_plugin_sdk::current_sdk_constraint(), None);
+    let descriptor = scryer_plugin_sdk::PluginDescriptor {
+        id: "customscript".to_string(),
+        name: "Custom Script".to_string(),
+        version: "0.2.0".to_string(),
+        sdk_version: scryer_plugin_sdk::SDK_VERSION.to_string(),
+        sdk_constraint: scryer_plugin_sdk::current_sdk_constraint(),
+        socket_permissions: vec![],
+        provider: scryer_plugin_sdk::ProviderDescriptor::Notification(
+            scryer_plugin_sdk::NotificationDescriptor {
+                provider_type: "customscript".to_string(),
+                provider_aliases: Vec::new(),
+                allowed_hosts: Vec::new(),
+                capabilities: scryer_plugin_sdk::NotificationCapabilities {
+                    requires_host_process: true,
+                    ..Default::default()
+                },
+                config_fields: Vec::new(),
+                default_base_url: None,
+            },
+        ),
+    };
+
+    let err = validate_downloaded_plugin_descriptor(
+        "customscript",
+        "notification",
+        "customscript",
+        &release,
+        &descriptor,
+        PluginSupportTier::Unverified,
+        false,
+    )
+    .unwrap_err();
+    match err {
+        AppError::Validation(msg) => assert!(
+            msg.contains("host-process capability"),
+            "unexpected message: {msg}"
+        ),
+        other => panic!("expected Validation, got {other:?}"),
+    }
+}
+
+#[test]
+fn validate_downloaded_plugin_descriptor_allows_verified_host_process_capability() {
+    let release =
+        downloaded_release_contract("0.2.0", &scryer_plugin_sdk::current_sdk_constraint(), None);
+    let descriptor = scryer_plugin_sdk::PluginDescriptor {
+        id: "customscript".to_string(),
+        name: "Custom Script".to_string(),
+        version: "0.2.0".to_string(),
+        sdk_version: scryer_plugin_sdk::SDK_VERSION.to_string(),
+        sdk_constraint: scryer_plugin_sdk::current_sdk_constraint(),
+        socket_permissions: vec![],
+        provider: scryer_plugin_sdk::ProviderDescriptor::Notification(
+            scryer_plugin_sdk::NotificationDescriptor {
+                provider_type: "customscript".to_string(),
+                provider_aliases: Vec::new(),
+                allowed_hosts: Vec::new(),
+                capabilities: scryer_plugin_sdk::NotificationCapabilities {
+                    requires_host_process: true,
+                    ..Default::default()
+                },
+                config_fields: Vec::new(),
+                default_base_url: None,
+            },
+        ),
+    };
+
+    for tier in [
+        PluginSupportTier::Official,
+        PluginSupportTier::VerifiedCommunity,
+    ] {
+        validate_downloaded_plugin_descriptor(
+            "customscript",
+            "notification",
+            "customscript",
+            &release,
+            &descriptor,
+            tier,
+            false,
+        )
+        .unwrap_or_else(|err| panic!("tier {tier:?} should accept the capability: {err:?}"));
+    }
 }
 
 #[test]
@@ -4003,6 +4094,48 @@ async fn install_uploaded_plugin_requires_risk_acknowledgement() {
 
     assert!(matches!(err, AppError::Validation(_)));
     assert!(err.to_string().contains("risk acknowledgement"));
+}
+
+#[tokio::test]
+async fn install_uploaded_plugin_rejects_host_process_capability() {
+    let provider =
+        MockPluginProvider::new().with_provider("host-proc", "Host Proc", Some("https://example.com"));
+    let h = bootstrap_plugins(Some(provider));
+    let wasm_bytes = vec![0x00, 0x61, 0x73, 0x6d];
+    let mut descriptor =
+        make_runtime_plugin_load("host-proc-plugin", "notification", "host-proc").descriptor;
+    if let scryer_plugin_sdk::ProviderDescriptor::Notification(provider) = &mut descriptor.provider {
+        provider.capabilities.requires_host_process = true;
+    }
+    h.plugin_descriptor_loader
+        .register(&wasm_bytes, descriptor.clone());
+
+    let err = h
+        .app
+        .install_uploaded_plugin(
+            &config_admin(),
+            "host-proc-plugin.wasm",
+            &base64::engine::general_purpose::STANDARD.encode(&wasm_bytes),
+            true,
+        )
+        .await
+        .unwrap_err();
+
+    match err {
+        AppError::Validation(msg) => assert!(
+            msg.contains("host-process capability"),
+            "unexpected message: {msg}"
+        ),
+        other => panic!("expected Validation, got {other:?}"),
+    }
+    // The rejected upload must not have been persisted or pushed to the runtime.
+    assert!(
+        h.plugin_repo
+            .get_plugin_installation("host-proc-plugin")
+            .await
+            .unwrap()
+            .is_none()
+    );
 }
 
 // ── seed_builtin_plugins ─────────────────────────────────────────────────────

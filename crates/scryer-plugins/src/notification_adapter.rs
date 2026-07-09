@@ -11,6 +11,7 @@ use scryer_application::{
 use scryer_domain::NotificationEventType as DomainNotificationEventType;
 use tracing::warn;
 
+use crate::blocking::run_blocking_plugin_call;
 use crate::legacy_runtime::LegacyPlugin;
 use crate::socket_host::SocketHost;
 use crate::types::{
@@ -22,6 +23,8 @@ use crate::types::{
     PluginNotificationMediaRequest, PluginNotificationMediaUpdate, PluginNotificationRequest,
     PluginNotificationResponse, PluginNotificationTitle, decode_plugin_result,
 };
+
+const NOTIFICATION_PLUGIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 pub struct WasmNotificationClient {
     plugin: Arc<Mutex<LegacyPlugin>>,
@@ -63,27 +66,32 @@ impl WasmNotificationClient {
 
         let plugin = Arc::clone(&self.plugin);
         let socket_host = self.socket_host.clone();
-        let output = tokio::task::spawn_blocking(move || {
-            let mut guard = plugin
-                .lock()
-                .map_err(|e| AppError::Repository(format!("plugin mutex poisoned: {e}")))?;
-            if !guard.function_exists(EXPORT_NOTIFICATION_ACTION) {
+        let output = run_blocking_plugin_call(
+            NOTIFICATION_PLUGIN_TIMEOUT,
+            "notification plugin",
+            move || {
+                let mut guard = plugin
+                    .lock()
+                    .map_err(|e| AppError::Repository(format!("plugin mutex poisoned: {e}")))?;
+                if !guard.function_exists(EXPORT_NOTIFICATION_ACTION) {
+                    if let Some(socket_host) = socket_host {
+                        socket_host.cleanup();
+                    }
+                    return Ok(None);
+                }
+
+                let output = guard.call_string(EXPORT_NOTIFICATION_ACTION, &input);
                 if let Some(socket_host) = socket_host {
                     socket_host.cleanup();
                 }
-                return Ok(None);
-            }
-
-            let output = guard.call_string(EXPORT_NOTIFICATION_ACTION, &input);
-            if let Some(socket_host) = socket_host {
-                socket_host.cleanup();
-            }
-            output.map(Some).map_err(|e| {
-                AppError::Repository(format!("plugin {EXPORT_NOTIFICATION_ACTION}() failed: {e}"))
-            })
-        })
-        .await
-        .map_err(|e| AppError::Repository(format!("notification plugin task panicked: {e}")))??;
+                output.map(Some).map_err(|e| {
+                    AppError::Repository(format!(
+                        "plugin {EXPORT_NOTIFICATION_ACTION}() failed: {e}"
+                    ))
+                })
+            },
+        )
+        .await?;
 
         output
             .map(|output| decode_plugin_result(&output, EXPORT_NOTIFICATION_ACTION))
@@ -284,20 +292,23 @@ impl NotificationClient for WasmNotificationClient {
 
         let plugin = Arc::clone(&self.plugin);
         let socket_host = self.socket_host.clone();
-        let output = tokio::task::spawn_blocking(move || {
-            let mut guard = plugin
-                .lock()
-                .map_err(|e| AppError::Repository(format!("plugin mutex poisoned: {e}")))?;
-            let output = guard.call_string(EXPORT_NOTIFICATION_SEND, &input);
-            if let Some(socket_host) = socket_host {
-                socket_host.cleanup();
-            }
-            output.map_err(|e| {
-                AppError::Repository(format!("plugin {EXPORT_NOTIFICATION_SEND}() failed: {e}"))
-            })
-        })
-        .await
-        .map_err(|e| AppError::Repository(format!("notification plugin task panicked: {e}")))??;
+        let output = run_blocking_plugin_call(
+            NOTIFICATION_PLUGIN_TIMEOUT,
+            "notification plugin",
+            move || {
+                let mut guard = plugin
+                    .lock()
+                    .map_err(|e| AppError::Repository(format!("plugin mutex poisoned: {e}")))?;
+                let output = guard.call_string(EXPORT_NOTIFICATION_SEND, &input);
+                if let Some(socket_host) = socket_host {
+                    socket_host.cleanup();
+                }
+                output.map_err(|e| {
+                    AppError::Repository(format!("plugin {EXPORT_NOTIFICATION_SEND}() failed: {e}"))
+                })
+            },
+        )
+        .await?;
 
         let response: PluginNotificationResponse =
             decode_plugin_result(&output, EXPORT_NOTIFICATION_SEND)?;

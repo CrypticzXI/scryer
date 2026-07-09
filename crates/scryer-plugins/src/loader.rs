@@ -199,6 +199,9 @@ enum LoadedPluginBacking {
 struct LoadedPlugin {
     wasm: LoadedPluginBacking,
     descriptor: PluginDescriptor,
+    /// Trust provenance of this plugin. Drives host-capability gating (e.g. the
+    /// host-process capability) via `can_use_first_party_host_bindings`.
+    load_source: PluginLoadSource,
 }
 
 impl LoadedPlugin {
@@ -206,6 +209,9 @@ impl LoadedPlugin {
         Self {
             wasm: LoadedPluginBacking::Owned(wasm_bytes),
             descriptor,
+            // Default to the least-privileged provenance; callers that know the
+            // plugin is first-party override via `with_load_source`.
+            load_source: PluginLoadSource::External { first_party: false },
         }
     }
 
@@ -216,7 +222,13 @@ impl LoadedPlugin {
         Self {
             wasm: LoadedPluginBacking::Builtin(asset),
             descriptor,
+            load_source: PluginLoadSource::Builtin,
         }
+    }
+
+    fn with_load_source(mut self, load_source: PluginLoadSource) -> Self {
+        self.load_source = load_source;
+        self
     }
 
     fn materialize_wasm(&self) -> Result<Vec<u8>, String> {
@@ -1653,6 +1665,23 @@ fn binding_allowed_for_plugin(
     }
 }
 
+/// Wire the host-process host for a notification plugin.
+///
+/// The host-process capability lets a plugin spawn real OS processes on the host
+/// and is therefore reserved for Scryer's own first-party / verified plugins. Any
+/// plugin that is not first-party (operator-supplied `Unverified` notifiers)
+/// receives a disabled host with an empty allowlist, so `scryer_process_exec`
+/// always returns PermissionDenied regardless of a self-declared
+/// `requires_host_process`. This reuses the same first-party trust gate as
+/// first-party host bindings (`can_use_first_party_host_bindings`).
+fn process_host_for_notification(loaded: &LoadedPlugin, config_json: &str) -> ProcessHost {
+    if loaded.load_source.can_use_first_party_host_bindings() {
+        ProcessHost::from_descriptor(&loaded.descriptor, Some(config_json))
+    } else {
+        ProcessHost::disabled()
+    }
+}
+
 fn allowed_host_pattern_is_valid(host: &str) -> bool {
     let host = host.trim();
     if host.is_empty()
@@ -2948,36 +2977,30 @@ impl WasmNotificationPluginProvider {
         plugin: ExternalPluginWasm<'_>,
     ) -> Result<LoadedPluginRecord, String> {
         let (descriptor, wasm_bytes) = load_from_bytes(plugin.bytes)?;
-        if !validate_descriptor_for_type(
-            &descriptor,
-            Some("notification"),
-            PluginLoadSource::External {
-                first_party: plugin.first_party,
-            },
-        ) {
+        let load_source = PluginLoadSource::External {
+            first_party: plugin.first_party,
+        };
+        if !validate_descriptor_for_type(&descriptor, Some("notification"), load_source) {
             return Err("notification descriptor rejected".to_string());
         }
-        Ok(LoadedPluginRecord::new(LoadedPlugin::from_owned(
-            descriptor, wasm_bytes,
-        )))
+        Ok(LoadedPluginRecord::new(
+            LoadedPlugin::from_owned(descriptor, wasm_bytes).with_load_source(load_source),
+        ))
     }
 
     fn prepare_runtime_plugin_record(
         plugin: RuntimePluginLoad,
     ) -> Result<LoadedPluginRecord, String> {
-        if !validate_descriptor_for_type(
-            &plugin.descriptor,
-            Some("notification"),
-            PluginLoadSource::External {
-                first_party: plugin.first_party,
-            },
-        ) {
+        let load_source = PluginLoadSource::External {
+            first_party: plugin.first_party,
+        };
+        if !validate_descriptor_for_type(&plugin.descriptor, Some("notification"), load_source) {
             return Err("notification descriptor rejected".to_string());
         }
-        Ok(LoadedPluginRecord::new(LoadedPlugin::from_owned(
-            plugin.descriptor,
-            plugin.wasm_bytes,
-        )))
+        Ok(LoadedPluginRecord::new(
+            LoadedPlugin::from_owned(plugin.descriptor, plugin.wasm_bytes)
+                .with_load_source(load_source),
+        ))
     }
 
     fn with_external_plugin(mut self, plugin: ExternalPluginWasm<'_>) -> Self {
@@ -3059,10 +3082,10 @@ impl WasmNotificationPluginProvider {
         spec.allowed_hosts =
             allowed_hosts_for_descriptor(&loaded.descriptor, None, Some(&config.config_json));
         spec.timeout = std::time::Duration::from_secs(30);
-        let socket_host =
-            SocketHost::from_descriptor(&loaded.descriptor, Some(&config.config_json));
-        let process_host =
-            ProcessHost::from_descriptor(&loaded.descriptor, Some(&config.config_json));
+        // Raw socket egress is intentionally blocked for all plugins until the
+        // host has a reviewed first-party-only re-enable path.
+        let socket_host = SocketHost::disabled();
+        let process_host = process_host_for_notification(loaded, &config.config_json);
         spec.socket_host = socket_host.clone();
         spec.process_host = process_host;
 
@@ -3711,6 +3734,34 @@ mod tests {
             wasm_bytes: provider_type.as_bytes().to_vec(),
             first_party: true,
         }
+    }
+
+    #[test]
+    fn notification_process_host_gated_to_first_party() {
+        let mut descriptor = descriptor("notification");
+        if let ProviderDescriptor::Notification(provider) = &mut descriptor.provider {
+            provider.capabilities.requires_host_process = true;
+        }
+        let config_json = r#"{"path":"/usr/bin/env"}"#;
+
+        let first_party = LoadedPlugin::from_owned(descriptor.clone(), Vec::new())
+            .with_load_source(PluginLoadSource::External { first_party: true });
+        let builtin = LoadedPlugin::from_owned(descriptor.clone(), Vec::new())
+            .with_load_source(PluginLoadSource::Builtin);
+        let untrusted = LoadedPlugin::from_owned(descriptor, Vec::new())
+            .with_load_source(PluginLoadSource::External { first_party: false });
+
+        // First-party and builtin notifiers keep a working, non-empty allowlist.
+        assert!(
+            process_host_for_notification(&first_party, config_json).allowed_command_count() > 0
+        );
+        assert!(process_host_for_notification(&builtin, config_json).allowed_command_count() > 0);
+        // Operator-supplied (Unverified) notifiers get a disabled host even though
+        // the descriptor self-declares `requires_host_process`.
+        assert_eq!(
+            process_host_for_notification(&untrusted, config_json).allowed_command_count(),
+            0
+        );
     }
 
     #[test]

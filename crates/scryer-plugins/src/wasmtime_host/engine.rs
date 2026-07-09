@@ -1,11 +1,13 @@
 //! Process-wide wasmtime engine for the archive host (RFC 123 §7.2.2).
 //!
 //! One lazily-initialised `Engine` is shared for the whole process. Its `Config`
-//! turns on epoch interruption (for wall-clock cancellation) plus the full wasm
-//! feature surface Scryer's PDK targets (owner decision §2.5): SIMD, relaxed
-//! SIMD, threads, and exceptions. A single background thread increments the
-//! engine epoch on a fixed tick so per-invocation deadlines actually fire
-//! without a timer thread per call.
+//! turns on epoch interruption (for wall-clock cancellation) and pins the
+//! safety-relevant knobs (wasm stack bound, linear-memory guard page, native
+//! unwind info) so a future wasmtime bump cannot silently weaken them. Only the
+//! default-on SIMD / relaxed-SIMD proposals are exposed to guests; threads and
+//! exceptions are deliberately left off (see `archive_engine_config`). A single
+//! background thread increments the engine epoch on a fixed tick so
+//! per-invocation deadlines actually fire without a timer thread per call.
 
 use std::sync::LazyLock;
 use std::time::Duration;
@@ -33,24 +35,31 @@ pub(crate) fn shared_engine() -> &'static Engine {
 
 /// Build the archive host `Config`.
 ///
-/// Feature flags mirror the surface the PDK guests may be built against so
-/// artifact selection can keep modeling flavors (§7.2.2). SIMD / relaxed SIMD
-/// are on by default in wasmtime but are set explicitly for intent. Enabling
-/// threads and exceptions is harmless for single-threaded, non-EH modules — the
-/// archive artifact today is exactly that (RFC §11 risk row: plain wasip1
-/// modules are unaffected).
+/// This engine is process-wide and shared by every untrusted plugin module, so
+/// its feature surface is kept to the minimum today's guests actually consume.
+/// SIMD / relaxed SIMD are on by default in wasmtime and set explicitly for
+/// intent.
+///
+/// `wasm_threads` and `wasm_exceptions` are deliberately NOT enabled. No
+/// shipping guest (the archive + subtitle-command artifacts, or the legacy
+/// Extism-compat reactors) uses either, and turning them on process-wide only
+/// adds attack surface: threads bring a `memory.atomic.wait` blocking primitive
+/// that epoch interruption cannot preempt (a worker-thread DoS), and exceptions
+/// bring needless Cranelift EH codegen. They are dropped pending a real WP6
+/// consumer. When one lands, re-enable them behind a PER-ARTIFACT declared
+/// feature gate on a purpose-built engine — never by flipping them back on for
+/// this shared, untrusted engine.
 fn archive_engine_config() -> Config {
     let mut config = Config::new();
     config.epoch_interruption(true);
     config.wasm_simd(true);
     config.wasm_relaxed_simd(true);
-    config.wasm_threads(true);
-    // Exceptions proposal: available in the resolved wasmtime (46.x, behind the
-    // default-on `gc` feature). Enabled per RFC §7.2.2 / owner decision §2.5. No
-    // current guest emits EH, so this is a forward-enable — non-EH modules are
-    // unaffected. (Threaded-artifact *linkage* via wasmtime-wasi-threads is
-    // deferred to WP6; only the engine capability is turned on here.)
-    config.wasm_exceptions(true);
+    // Pin the safety-relevant posture to wasmtime 46's current defaults so a
+    // future bump cannot silently weaken it. This is a sync engine (no async
+    // path), so there is no async-stack coupling to worry about.
+    config.max_wasm_stack(512 * 1024); // 512 KiB wasm stack bound (wasmtime default).
+    config.guard_before_linear_memory(true); // OOB guard page before linear memory.
+    config.native_unwind_info(true); // Keep native unwind info for trap/backtrace fidelity.
     config
 }
 
@@ -84,8 +93,8 @@ mod tests {
 
     #[test]
     fn engine_config_is_accepted_by_wasmtime() {
-        // Proves the full feature surface (incl. wasm_exceptions) yields a valid
-        // Engine on the resolved wasmtime — the RFC §7.2.2 / §11 spike check.
+        // Proves the pinned, minimized feature surface still yields a valid
+        // Engine on the resolved wasmtime (46.0.1).
         Engine::new(&archive_engine_config()).expect("archive engine config must build");
     }
 

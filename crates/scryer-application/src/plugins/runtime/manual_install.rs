@@ -264,6 +264,9 @@ impl AppUseCase {
         validate_plugin_descriptor_sdk_contract(&descriptor, SDK_VERSION)
             .map_err(AppError::Validation)?;
         validate_plugin_descriptor_host_permissions(&descriptor).map_err(AppError::Validation)?;
+        // Manually uploaded plugins are always Unverified, so the host-process
+        // capability is never permitted on this path.
+        ensure_host_process_capability_allowed(&descriptor, PluginSupportTier::Unverified)?;
 
         let plugin_id = descriptor.id.clone();
         if is_reserved_first_party_provider(descriptor.provider_type()) {

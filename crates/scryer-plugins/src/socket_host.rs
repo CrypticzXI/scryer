@@ -9,11 +9,10 @@ use rustls::pki_types::ServerName;
 use rustls::{ClientConfig, ClientConnection, RootCertStore, StreamOwned};
 
 use crate::types::{
-    PluginDescriptor, SocketCloseRequest, SocketCloseResponse, SocketError, SocketErrorCode,
-    SocketOpenRequest, SocketOpenResponse, SocketPermission, SocketReadRequest, SocketReadResponse,
-    SocketResponse, SocketStartTlsRequest, SocketStartTlsResponse, SocketTlsMode,
-    SocketWriteRequest, SocketWriteResponse, allowed_host_pattern_is_valid,
-    socket_host_pattern_config_key,
+    SocketCloseRequest, SocketCloseResponse, SocketError, SocketErrorCode, SocketOpenRequest,
+    SocketOpenResponse, SocketReadRequest, SocketReadResponse, SocketResponse,
+    SocketStartTlsRequest, SocketStartTlsResponse, SocketTlsMode, SocketWriteRequest,
+    SocketWriteResponse,
 };
 
 pub(crate) const SOCKET_HOST_NAMESPACE: &str = "extism:host/user";
@@ -34,18 +33,6 @@ impl SocketHost {
     pub(crate) fn disabled() -> Self {
         Self {
             state: Arc::new(Mutex::new(SocketHostState::new(Vec::new()))),
-        }
-    }
-
-    pub(crate) fn from_descriptor(
-        descriptor: &PluginDescriptor,
-        config_json: Option<&str>,
-    ) -> Self {
-        Self {
-            state: Arc::new(Mutex::new(SocketHostState::new(resolve_permissions(
-                &descriptor.socket_permissions,
-                config_json,
-            )))),
         }
     }
 
@@ -358,43 +345,6 @@ impl ResolvedSocketPermission {
     }
 }
 
-fn resolve_permissions(
-    permissions: &[SocketPermission],
-    config_json: Option<&str>,
-) -> Vec<ResolvedSocketPermission> {
-    let config = config_json.and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok());
-
-    permissions
-        .iter()
-        .filter_map(|permission| {
-            let host_pattern = resolve_host_pattern(&permission.host_pattern, config.as_ref())?;
-            Some(ResolvedSocketPermission {
-                host_pattern,
-                ports: permission.ports.clone(),
-                tls_modes: permission.tls_modes.clone(),
-            })
-        })
-        .collect()
-}
-
-fn resolve_host_pattern(pattern: &str, config: Option<&serde_json::Value>) -> Option<String> {
-    if let Some(key) = socket_host_pattern_config_key(pattern) {
-        let value = config?
-            .get(key)?
-            .as_str()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())?;
-        let host = normalize_host(value);
-        if host.contains('*') || !allowed_host_pattern_is_valid(&host) {
-            return None;
-        }
-        return Some(host);
-    }
-
-    let host = normalize_host(pattern);
-    allowed_host_pattern_is_valid(&host).then_some(host)
-}
-
 fn host_matches_pattern(pattern: &str, host: &str) -> bool {
     if let Some(suffix) = pattern.strip_prefix("*.") {
         return host
@@ -568,4 +518,32 @@ fn map_io_error(error: io::Error) -> SocketError {
         _ => SocketErrorCode::IoFailed,
     };
     socket_error(code, error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn disabled_socket_host_denies_open() {
+        let host = SocketHost::disabled();
+        let request = SocketOpenRequest {
+            host: "127.0.0.1".to_string(),
+            port: 25,
+            tls_mode: SocketTlsMode::Plain,
+            connect_timeout_ms: Some(1),
+            read_timeout_ms: Some(1),
+            write_timeout_ms: Some(1),
+        };
+
+        let response = host
+            .call(
+                "scryer_socket_open",
+                serde_json::to_string(&request).unwrap(),
+            )
+            .unwrap();
+
+        assert!(response.contains("\"ok\":false"), "{response}");
+        assert!(response.contains("permission_denied"), "{response}");
+    }
 }

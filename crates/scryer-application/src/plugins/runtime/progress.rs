@@ -264,6 +264,7 @@ impl AppUseCase {
             &expected_provider_type,
             &release,
             &descriptor,
+            support_tier,
             false,
         )?;
         Ok(ValidatedCatalogPluginInstall {

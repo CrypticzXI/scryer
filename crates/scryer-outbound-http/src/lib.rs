@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::convert::Infallible;
 use std::fmt;
 use std::future::Future;
-use std::net::{IpAddr, SocketAddr};
+use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 use std::sync::{Arc, LazyLock, Mutex, OnceLock};
 use std::time::Duration;
 
@@ -691,6 +691,7 @@ impl RateLimitRegistry {
         delay: Duration,
         source: RetryAfterSource,
     ) -> (Duration, RetryAfterSource) {
+        let delay = delay.min(default_max_retry_after());
         if delay.is_zero() {
             return (Duration::ZERO, source);
         }
@@ -823,6 +824,13 @@ pub enum OutboundDestinationError {
         label: &'static str,
         host: String,
         source: reqwest::Error,
+    },
+    #[error("{label} host resolves to a blocked link-local or cloud-metadata address: {host}")]
+    BlockedLinkLocalOrMetadata { label: &'static str, host: String },
+    #[error("failed to load {label} plugin trust bundle: {message}")]
+    TrustBundle {
+        label: &'static str,
+        message: String,
     },
 }
 
@@ -1009,6 +1017,286 @@ fn public_http_ip_is_forbidden(ip: IpAddr) -> bool {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Plugin egress policy
+// ---------------------------------------------------------------------------
+//
+// Plugins execute untrusted `.wasm` and can point the host at attacker-chosen
+// destinations, so their egress needs a destination guard in addition to the
+// per-plugin `allowed_hosts` allowlist (which stays the primary boundary).
+//
+// Scryer is self-hosted, so — unlike `public_http_ip_is_forbidden` — this
+// policy deliberately ALLOWS RFC1918, loopback and IPv6 ULA: reaching a LAN or
+// on-box companion service is a legitimate plugin use. It only HARD-BLOCKS the
+// link-local range that fronts cloud instance-metadata services (IPv4
+// 169.254.0.0/16 — AWS/Azure/GCP/DO/Alibaba IMDS at 169.254.169.254, IPv6
+// fe80::/10) plus the `metadata.google.internal` hostname.
+//
+// Validated addresses are DNS-pinned into the returned client so a declared
+// public host cannot DNS-rebind into the blocked range between validation and
+// connection, and callers MUST re-validate every redirect hop by preparing a
+// fresh target for the redirect location.
+
+/// Hostnames that are always blocked for plugin egress regardless of the
+/// per-plugin allowlist, because they front cloud instance-metadata services.
+const BLOCKED_PLUGIN_EGRESS_HOSTS: &[&str] = &["metadata.google.internal"];
+
+/// Returns true when `ip` is in the link-local range fronting cloud
+/// instance-metadata endpoints and must never be reachable by plugin egress.
+fn plugin_egress_ip_is_forbidden(ip: IpAddr) -> bool {
+    match ip {
+        // 169.254.0.0/16 — cloud IMDS lives at 169.254.169.254.
+        IpAddr::V4(ip) => ip.is_link_local(),
+        // fe80::/10 link-local.
+        IpAddr::V6(ip) => ip.is_unicast_link_local(),
+    }
+}
+
+/// Returns true when `host` is an always-blocked plugin-egress hostname.
+fn plugin_egress_host_is_forbidden(host: &str) -> bool {
+    let host = host.trim_end_matches('.');
+    BLOCKED_PLUGIN_EGRESS_HOSTS
+        .iter()
+        .any(|blocked| host.eq_ignore_ascii_case(blocked))
+}
+
+fn validate_plugin_egress_ip(
+    ip: IpAddr,
+    host: &str,
+    label: &'static str,
+) -> Result<(), OutboundDestinationError> {
+    if plugin_egress_ip_is_forbidden(ip) {
+        return Err(OutboundDestinationError::BlockedLinkLocalOrMetadata {
+            label,
+            host: host.to_string(),
+        });
+    }
+    Ok(())
+}
+
+/// Validates the URL host against the always-blocked hostname list and returns
+/// the host string for resolution.
+fn plugin_egress_host_of<'a>(
+    url: &'a reqwest::Url,
+    label: &'static str,
+) -> Result<&'a str, OutboundDestinationError> {
+    let host = url
+        .host_str()
+        .ok_or(OutboundDestinationError::MissingHost { label })?;
+    if plugin_egress_host_is_forbidden(host) {
+        return Err(OutboundDestinationError::BlockedLinkLocalOrMetadata {
+            label,
+            host: host.to_string(),
+        });
+    }
+    Ok(host)
+}
+
+async fn resolve_plugin_http_destination(
+    url: &reqwest::Url,
+    label: &'static str,
+) -> Result<Vec<SocketAddr>, OutboundDestinationError> {
+    let host = plugin_egress_host_of(url, label)?;
+    let port = url
+        .port_or_known_default()
+        .ok_or(OutboundDestinationError::MissingHost { label })?;
+    if let Some(ip) = parse_host_ip_literal(host) {
+        validate_plugin_egress_ip(ip, host, label)?;
+        return Ok(vec![SocketAddr::new(ip, port)]);
+    }
+
+    let mut resolved = tokio::net::lookup_host((host, port))
+        .await
+        .map_err(|source| OutboundDestinationError::ResolveFailed {
+            label,
+            host: host.to_string(),
+            source,
+        })?;
+    let mut resolved_addrs = Vec::new();
+    for addr in &mut resolved {
+        resolved_addrs.push(addr);
+        validate_plugin_egress_ip(addr.ip(), host, label)?;
+    }
+    if resolved_addrs.is_empty() {
+        return Err(OutboundDestinationError::NoResolvedAddresses {
+            label,
+            host: host.to_string(),
+        });
+    }
+    Ok(resolved_addrs)
+}
+
+fn resolve_plugin_http_destination_blocking(
+    url: &reqwest::Url,
+    label: &'static str,
+) -> Result<Vec<SocketAddr>, OutboundDestinationError> {
+    let host = plugin_egress_host_of(url, label)?;
+    let port = url
+        .port_or_known_default()
+        .ok_or(OutboundDestinationError::MissingHost { label })?;
+    if let Some(ip) = parse_host_ip_literal(host) {
+        validate_plugin_egress_ip(ip, host, label)?;
+        return Ok(vec![SocketAddr::new(ip, port)]);
+    }
+
+    let resolved = (host, port).to_socket_addrs().map_err(|source| {
+        OutboundDestinationError::ResolveFailed {
+            label,
+            host: host.to_string(),
+            source,
+        }
+    })?;
+    let mut resolved_addrs = Vec::new();
+    for addr in resolved {
+        resolved_addrs.push(addr);
+        validate_plugin_egress_ip(addr.ip(), host, label)?;
+    }
+    if resolved_addrs.is_empty() {
+        return Err(OutboundDestinationError::NoResolvedAddresses {
+            label,
+            host: host.to_string(),
+        });
+    }
+    Ok(resolved_addrs)
+}
+
+/// An async plugin-egress destination whose validated addresses are pinned into
+/// the returned reqwest client. Redirects are disabled; the caller re-validates
+/// each hop by preparing a fresh target for the redirect location.
+#[derive(Clone)]
+pub struct PinnedPluginHttpTarget {
+    url: reqwest::Url,
+    host: String,
+    resolved_addrs: Vec<SocketAddr>,
+    client: Client,
+}
+
+impl PinnedPluginHttpTarget {
+    pub fn url(&self) -> &reqwest::Url {
+        &self.url
+    }
+
+    pub fn host(&self) -> &str {
+        &self.host
+    }
+
+    pub fn resolved_addrs(&self) -> &[SocketAddr] {
+        &self.resolved_addrs
+    }
+
+    pub fn client(&self) -> &Client {
+        &self.client
+    }
+}
+
+/// Prepares a DNS-pinned, redirect-disabled async client for an untrusted
+/// plugin-controlled URL under the plugin egress policy.
+pub async fn prepare_plugin_http_target(
+    raw: &str,
+    label: &'static str,
+) -> Result<PinnedPluginHttpTarget, OutboundDestinationError> {
+    let url = validate_operator_http_url(raw, label)?;
+    prepare_plugin_http_target_from_url(url, label).await
+}
+
+/// Same as [`prepare_plugin_http_target`] but for an already-parsed URL; use
+/// this to re-validate a redirect location before following it.
+pub async fn prepare_plugin_http_target_from_url(
+    url: reqwest::Url,
+    label: &'static str,
+) -> Result<PinnedPluginHttpTarget, OutboundDestinationError> {
+    let resolved_addrs = resolve_plugin_http_destination(&url, label).await?;
+    let host = url
+        .host_str()
+        .ok_or(OutboundDestinationError::MissingHost { label })?
+        .to_string();
+    let client = reqwest_client_builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .resolve_to_addrs(&host, &resolved_addrs)
+        .build()
+        .map_err(|source| OutboundDestinationError::ClientBuild {
+            label,
+            host: host.clone(),
+            source,
+        })?;
+
+    Ok(PinnedPluginHttpTarget {
+        url,
+        host,
+        resolved_addrs,
+        client,
+    })
+}
+
+/// The blocking counterpart to [`PinnedPluginHttpTarget`], built with the
+/// plugin trust bundle. Used by the in-sandbox plugin HTTP host.
+pub struct PinnedPluginBlockingHttpTarget {
+    url: reqwest::Url,
+    host: String,
+    resolved_addrs: Vec<SocketAddr>,
+    client: BlockingClient,
+}
+
+impl PinnedPluginBlockingHttpTarget {
+    pub fn url(&self) -> &reqwest::Url {
+        &self.url
+    }
+
+    pub fn host(&self) -> &str {
+        &self.host
+    }
+
+    pub fn resolved_addrs(&self) -> &[SocketAddr] {
+        &self.resolved_addrs
+    }
+
+    pub fn client(&self) -> &BlockingClient {
+        &self.client
+    }
+
+    pub fn into_client(self) -> BlockingClient {
+        self.client
+    }
+}
+
+/// Prepares a DNS-pinned, redirect-disabled blocking client for an untrusted
+/// plugin-controlled URL under the plugin egress policy, merging the plugin
+/// trust bundle when provided.
+pub fn prepare_plugin_blocking_http_target(
+    raw: &str,
+    extra_ca_bundle_pem: &str,
+    label: &'static str,
+) -> Result<PinnedPluginBlockingHttpTarget, OutboundDestinationError> {
+    let url = validate_operator_http_url(raw, label)?;
+    let resolved_addrs = resolve_plugin_http_destination_blocking(&url, label)?;
+    let host = url
+        .host_str()
+        .ok_or(OutboundDestinationError::MissingHost { label })?
+        .to_string();
+    let mut builder = blocking_reqwest_client_builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .resolve_to_addrs(&host, &resolved_addrs);
+    if !extra_ca_bundle_pem.trim().is_empty() {
+        let certificates = uploaded_root_certificates(extra_ca_bundle_pem)
+            .map_err(|message| OutboundDestinationError::TrustBundle { label, message })?;
+        builder = builder.tls_certs_merge(certificates);
+    }
+    let client = builder
+        .build()
+        .map_err(|source| OutboundDestinationError::ClientBuild {
+            label,
+            host: host.clone(),
+            source,
+        })?;
+
+    Ok(PinnedPluginBlockingHttpTarget {
+        url,
+        host,
+        resolved_addrs,
+        client,
+    })
+}
+
 fn reqwest_client_builder() -> reqwest::ClientBuilder {
     install_default_rustls_provider();
     Client::builder()
@@ -1143,6 +1431,18 @@ pub async fn send_reqwest_request(request: RequestBuilder) -> Result<Response, r
 pub fn send_blocking_reqwest_request(
     request: reqwest::blocking::RequestBuilder,
 ) -> Result<reqwest::blocking::Response, reqwest::Error> {
+    send_blocking_reqwest_request_with_cooldown_budget(request, None).map_err(|error| match error {
+        BlockingOutboundHttpError::Request(error) => error,
+        BlockingOutboundHttpError::CooldownBudgetExceeded { .. } => {
+            unreachable!("unbounded blocking request cannot exhaust cooldown budget")
+        }
+    })
+}
+
+pub fn send_blocking_reqwest_request_with_cooldown_budget(
+    request: reqwest::blocking::RequestBuilder,
+    max_cooldown_wait: Option<Duration>,
+) -> Result<reqwest::blocking::Response, BlockingOutboundHttpError> {
     let registry = RateLimitRegistry::new();
     let destination = request
         .try_clone()
@@ -1154,6 +1454,17 @@ pub fn send_blocking_reqwest_request(
         .and_then(|request| host_key_from_url(request.url()));
 
     if let Some(destination) = destination.as_ref() {
+        if let (Some(max_wait), Some(remaining)) = (
+            max_cooldown_wait,
+            registry.active_destination_cooldown(destination),
+        ) && remaining > max_wait
+        {
+            return Err(BlockingOutboundHttpError::CooldownBudgetExceeded {
+                destination: destination.clone(),
+                remaining,
+                budget: max_wait,
+            });
+        }
         let _ = registry.wait_for_destination_if_needed_blocking(destination);
     }
     if let Some(host) = host.as_ref() {
@@ -1168,6 +1479,20 @@ pub fn send_blocking_reqwest_request(
         let _ = registry.record_destination_cooldown_blocking(&destination, delay, source);
     }
     Ok(response)
+}
+
+#[derive(Debug, Error)]
+pub enum BlockingOutboundHttpError {
+    #[error(transparent)]
+    Request(#[from] reqwest::Error),
+    #[error(
+        "destination '{destination}' is rate limited for {remaining:?}, exceeding blocking wait budget {budget:?}"
+    )]
+    CooldownBudgetExceeded {
+        destination: DestinationKey,
+        remaining: Duration,
+        budget: Duration,
+    },
 }
 
 fn uploaded_root_certificates(bundle_pem: &str) -> Result<Vec<Certificate>, String> {
@@ -1811,6 +2136,105 @@ mod tests {
         );
     }
 
+    const PLUGIN_EGRESS_BLOCKED_TARGETS: &[&str] = &[
+        "http://169.254.169.254/latest/meta-data/",
+        "http://169.254.1.1/",
+        "http://[fe80::1]/",
+        "http://metadata.google.internal/computeMetadata/v1/",
+    ];
+
+    const PLUGIN_EGRESS_ALLOWED_TARGETS: &[&str] = &[
+        "http://127.0.0.1/",
+        "http://10.0.0.1/",
+        "http://172.16.0.1/",
+        "http://192.168.1.1/",
+        "http://[::1]/",
+        "http://[fc00::1]/",
+    ];
+
+    #[tokio::test]
+    async fn plugin_http_targets_block_link_local_and_metadata() {
+        for raw in PLUGIN_EGRESS_BLOCKED_TARGETS {
+            assert!(
+                matches!(
+                    prepare_plugin_http_target(raw, "plugin egress").await,
+                    Err(OutboundDestinationError::BlockedLinkLocalOrMetadata { .. })
+                ),
+                "{raw} must be blocked for plugin egress"
+            );
+        }
+    }
+
+    #[test]
+    fn plugin_blocking_http_targets_block_link_local_and_metadata() {
+        for raw in PLUGIN_EGRESS_BLOCKED_TARGETS {
+            assert!(
+                matches!(
+                    prepare_plugin_blocking_http_target(raw, "", "plugin egress"),
+                    Err(OutboundDestinationError::BlockedLinkLocalOrMetadata { .. })
+                ),
+                "{raw} must be blocked for blocking plugin egress"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn plugin_http_targets_allow_private_and_local_destinations() {
+        for raw in PLUGIN_EGRESS_ALLOWED_TARGETS {
+            prepare_plugin_http_target(raw, "plugin egress")
+                .await
+                .unwrap_or_else(|error| {
+                    panic!("{raw} should be allowed for self-hosted plugins: {error}")
+                });
+        }
+    }
+
+    #[test]
+    fn plugin_blocking_http_targets_allow_private_and_local_destinations() {
+        for raw in PLUGIN_EGRESS_ALLOWED_TARGETS {
+            prepare_plugin_blocking_http_target(raw, "", "plugin egress").unwrap_or_else(|error| {
+                panic!("{raw} should be allowed for self-hosted plugins: {error}")
+            });
+        }
+    }
+
+    #[tokio::test]
+    async fn plugin_http_redirect_to_metadata_is_rejected() {
+        let (origin_url, _hits) = spawn_http_server(vec![http_response(
+            302,
+            &[("Location", "http://169.254.169.254/latest/meta-data/")],
+            "",
+        )])
+        .await;
+
+        // The loopback origin is allowed for self-hosted plugins...
+        let target = prepare_plugin_http_target(&origin_url, "plugin egress")
+            .await
+            .expect("loopback origin should be allowed");
+        let response = send_reqwest_request(target.client().get(target.url().clone()))
+            .await
+            .expect("origin request should return a response");
+        assert_eq!(response.status(), StatusCode::FOUND);
+
+        // ...but re-validating the redirect hop must reject the metadata target.
+        let location = response
+            .headers()
+            .get(LOCATION)
+            .and_then(|value| value.to_str().ok())
+            .expect("redirect should carry a Location header");
+        let redirect_url = target
+            .url()
+            .join(location)
+            .expect("redirect location should be a valid URL");
+        assert!(
+            matches!(
+                prepare_plugin_http_target_from_url(redirect_url, "plugin egress redirect").await,
+                Err(OutboundDestinationError::BlockedLinkLocalOrMetadata { .. })
+            ),
+            "redirect to cloud metadata must be rejected"
+        );
+    }
+
     #[tokio::test]
     async fn cooldowns_are_isolated_per_scope() {
         let registry = RateLimitRegistry::isolated();
@@ -2045,6 +2469,30 @@ mod tests {
         let second = RateLimitRegistry::new();
 
         assert!(Arc::ptr_eq(&first.state, &second.state));
+    }
+
+    #[test]
+    fn blocking_send_refuses_destination_cooldown_beyond_budget() {
+        let url = reqwest::Url::parse("http://bounded-cooldown-budget.invalid/test").unwrap();
+        let destination = destination_key_from_url(&url).unwrap();
+        let registry = RateLimitRegistry::new();
+        let _ = registry.record_destination_cooldown_blocking(
+            &destination,
+            Duration::from_secs(5),
+            RetryAfterSource::Seconds,
+        );
+
+        let client = blocking_reqwest_client_builder().build().unwrap();
+        let error = send_blocking_reqwest_request_with_cooldown_budget(
+            client.get(url),
+            Some(Duration::from_millis(1)),
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            error,
+            BlockingOutboundHttpError::CooldownBudgetExceeded { .. }
+        ));
     }
 
     #[test]
