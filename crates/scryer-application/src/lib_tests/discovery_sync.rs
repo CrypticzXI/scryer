@@ -2180,6 +2180,44 @@ async fn discovery_sync_first_successful_scan_with_titles_accelerates_first_snap
 }
 
 #[tokio::test]
+async fn discovery_sync_successful_scan_after_first_snapshot_does_not_accelerate() {
+    let gateway = Arc::new(SnapshotMetadataGateway::default());
+    let (app, _admin, _titles) = bootstrap_with_metadata_gateway_and_titles(gateway.clone());
+    let discovery = Arc::new(RecordingDiscoveryRepository::default());
+    let app = app.with_test_overrides(|builder| builder.with_discovery_store(discovery.clone()));
+    let now = Utc.timestamp_opt(10_000, 0).unwrap();
+    app.runtime.environment.set_fixed_now_for_tests(Some(now));
+    *discovery.state.lock().await = Some(DiscoverySyncStateRecord {
+        last_success_generation_id: Some("generation-1".to_string()),
+        next_context_snapshot_eligible_at: Some(now + chrono::Duration::days(1)),
+        next_incremental_reload_eligible_at: Some(now + chrono::Duration::hours(4)),
+        updated_at: now,
+        ..DiscoverySyncStateRecord::default()
+    });
+
+    let mut event = crate::domain_events::new_library_scan_domain_event(
+        crate::domain_events::DomainEventActor::system(),
+        "scan-1",
+        MediaFacet::Movie,
+        DomainEventPayload::LibraryScanCompleted(test_library_scan_completed_event("scan-1", 1)),
+    );
+    event.occurred_at = now;
+    app.append_domain_event(event)
+        .await
+        .expect("scan completion event should append");
+
+    assert!(
+        app.runtime
+            .jobs
+            .job_run_tracker
+            .next_run_at(JobKey::DiscoverySync)
+            .await
+            .is_none()
+    );
+    assert!(gateway.submitted_inputs.lock().await.is_empty());
+}
+
+#[tokio::test]
 async fn discovery_sync_failed_canceled_or_empty_scan_does_not_accelerate_first_snapshot() {
     let gateway = Arc::new(SnapshotMetadataGateway::default());
     let (app, _admin, titles) = bootstrap_with_metadata_gateway_and_titles(gateway.clone());
@@ -2323,9 +2361,10 @@ async fn discovery_sync_initial_snapshot_waits_for_bootstrap_quiet_window() {
     let app = app.with_test_overrides(|builder| builder.with_discovery_store(discovery.clone()));
     let now = Utc.timestamp_opt(10_000, 0).unwrap();
     app.runtime.environment.set_fixed_now_for_tests(Some(now));
+    let quiet_until = now + chrono::Duration::minutes(5);
     *discovery.state.lock().await = Some(DiscoverySyncStateRecord {
         bootstrap_started_at: Some(now - chrono::Duration::minutes(1)),
-        bootstrap_quiet_until: Some(now + chrono::Duration::minutes(5)),
+        bootstrap_quiet_until: Some(quiet_until),
         updated_at: now,
         ..DiscoverySyncStateRecord::default()
     });
@@ -2343,6 +2382,24 @@ async fn discovery_sync_initial_snapshot_waits_for_bootstrap_quiet_window() {
 
     assert!(gateway.submitted_inputs.lock().await.is_empty());
     assert!(discovery.commits.lock().await.is_empty());
+    let state = discovery
+        .state
+        .lock()
+        .await
+        .clone()
+        .expect("state should persist");
+    let next_context_at = state
+        .next_context_snapshot_eligible_at
+        .expect("first snapshot should remain scheduled");
+    assert!(next_context_at >= quiet_until);
+    let next_run_at = app
+        .runtime
+        .jobs
+        .job_run_tracker
+        .next_run_at(JobKey::DiscoverySync)
+        .await
+        .expect("discovery sync should stay scheduled");
+    assert!(next_run_at >= quiet_until);
 }
 
 #[tokio::test]

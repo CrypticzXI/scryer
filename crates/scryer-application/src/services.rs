@@ -2437,77 +2437,37 @@ impl AppUseCase {
         if data.found_titles <= 0 {
             return;
         }
-        let Some(facet) = event.facet.clone() else {
-            return;
-        };
+
         match self
-            .successful_library_scan_completion_exists_before(event.sequence, &facet)
+            .services
+            .library
+            .discovery
+            .get_discovery_sync_state(DISCOVERY_DEFAULT_SCOPE_KEY)
             .await
         {
-            Ok(false) => {
+            Ok(Some(state)) if state.last_success_generation_id.is_some() => {}
+            Ok(_) => {
                 if let Err(error) = self
-                    .schedule_discovery_sync_accelerated("first_library_scan_completed")
+                    .schedule_discovery_sync_soon_silent(
+                        "library_scan_completed_before_first_snapshot",
+                    )
                     .await
                 {
                     tracing::warn!(
                         error = %error,
                         sequence = event.sequence,
-                        facet = facet.as_str(),
-                        "failed to accelerate discovery sync after first library scan"
+                        facet = event.facet.as_ref().map(MediaFacet::as_str),
+                        "failed to accelerate discovery sync after library scan"
                     );
                 }
             }
-            Ok(true) => {}
             Err(error) => {
                 tracing::warn!(
                     error = %error,
                     sequence = event.sequence,
-                    facet = facet.as_str(),
-                    "failed to inspect prior scan events for discovery sync acceleration"
+                    facet = event.facet.as_ref().map(MediaFacet::as_str),
+                    "failed to inspect discovery sync state for scan acceleration"
                 );
-            }
-        }
-    }
-
-    async fn successful_library_scan_completion_exists_before(
-        &self,
-        before_sequence: i64,
-        facet: &MediaFacet,
-    ) -> AppResult<bool> {
-        let mut after_sequence = 0i64;
-        loop {
-            let events = self
-                .services
-                .events
-                .domain_events
-                .list(&DomainEventFilter {
-                    after_sequence: Some(after_sequence),
-                    event_types: Some(vec![DomainEventType::LibraryScanCompleted]),
-                    limit: 500,
-                    ..DomainEventFilter::default()
-                })
-                .await?;
-            if events.is_empty() {
-                return Ok(false);
-            }
-
-            let batch_len = events.len();
-            for event in events {
-                if event.sequence >= before_sequence {
-                    return Ok(false);
-                }
-                after_sequence = after_sequence.max(event.sequence);
-                let scryer_domain::DomainEventPayload::LibraryScanCompleted(data) = &event.payload
-                else {
-                    continue;
-                };
-                if data.found_titles > 0 && event.facet.as_ref() == Some(facet) {
-                    return Ok(true);
-                }
-            }
-
-            if batch_len < 500 {
-                return Ok(false);
             }
         }
     }

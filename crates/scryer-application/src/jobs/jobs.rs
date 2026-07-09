@@ -16,7 +16,7 @@ use scryer_domain::{
     JobRunStartedEventData,
 };
 use serde_json::json;
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap};
 use std::time::UNIX_EPOCH;
 use tokio::sync::broadcast;
 use tracing::{info, warn};
@@ -266,15 +266,6 @@ fn discovery_scan_boundary_event(event: &DomainEvent) -> bool {
             | DomainEventPayload::LibraryScanCanceled(_)
             | DomainEventPayload::LibraryScanFailed(_)
     )
-}
-
-fn discovery_successful_scan_completion_facet(event: &DomainEvent) -> Option<MediaFacet> {
-    let DomainEventPayload::LibraryScanCompleted(data) = &event.payload else {
-        return None;
-    };
-    (data.found_titles > 0)
-        .then(|| event.facet.clone())
-        .flatten()
 }
 
 fn discovery_context_dirty_event_types() -> Vec<DomainEventType> {
@@ -972,7 +963,7 @@ impl AppUseCase {
         }
     }
 
-    pub(crate) async fn schedule_discovery_sync_accelerated(
+    pub(crate) async fn schedule_discovery_sync_soon_silent(
         &self,
         reason: &str,
     ) -> AppResult<DateTime<Utc>> {
@@ -1526,7 +1517,7 @@ impl AppUseCase {
             .retry_unacked_discovery_context_snapshot_acks(&mut state, now)
             .await?;
 
-        self.catch_up_discovery_context_dirty_state(&mut state, now, &scheduler_seed)
+        self.catch_up_discovery_context_dirty_state(&mut state, now)
             .await?;
         let mut pending_changes = self
             .services
@@ -1584,17 +1575,34 @@ impl AppUseCase {
         let snapshot_backoff_ready = state.backoff_until.is_none_or(|until| now >= until);
         let first_snapshot_pending =
             state.last_success_generation_id.is_none() && !library_context.subjects.is_empty();
+        let discovery_sync_tracker_due = trigger_source == JobTriggerSource::ScheduledInterval
+            && self
+                .runtime
+                .jobs
+                .job_run_tracker
+                .next_run_at(JobKey::DiscoverySync)
+                .await
+                .is_some_and(|next_run_at| now >= next_run_at);
+        let first_snapshot_silent_wake_due = first_snapshot_pending
+            && state.next_context_snapshot_eligible_at.is_none()
+            && discovery_sync_tracker_due;
         let first_snapshot_bootstrap_quiet_due = first_snapshot_pending
             && state
                 .bootstrap_quiet_until
                 .is_some_and(|quiet_until| now >= quiet_until);
+        let first_snapshot_candidate_at = state
+            .bootstrap_quiet_until
+            .filter(|quiet_until| *quiet_until > now)
+            .map(|quiet_until| quiet_until.max(discovery_accelerated_at(now, &scheduler_seed)))
+            .unwrap_or_else(|| discovery_accelerated_at(now, &scheduler_seed));
         if first_snapshot_pending
             && state.inflight_context_snapshot_run_id.is_none()
             && snapshot_backoff_ready
             && !first_snapshot_bootstrap_quiet_due
+            && !first_snapshot_silent_wake_due
             && discovery_prefer_earlier_gate(
                 &mut state.next_context_snapshot_eligible_at,
-                discovery_accelerated_at(now, &scheduler_seed),
+                first_snapshot_candidate_at,
             )
         {
             state.updated_at = now;
@@ -1852,15 +1860,11 @@ impl AppUseCase {
         &self,
         state: &mut DiscoverySyncStateRecord,
         now: DateTime<Utc>,
-        scheduler_seed: &str,
     ) -> AppResult<usize> {
         let start_sequence = state.last_seen_domain_event_sequence.unwrap_or_default();
         let mut after_sequence = start_sequence;
         let mut max_seen_sequence = after_sequence;
         let mut subject_change_count = 0usize;
-        let mut successful_scan_facets = self
-            .successful_completed_scan_facets_through_sequence(start_sequence)
-            .await?;
         let event_types = discovery_context_dirty_event_types();
 
         for _ in 0..DISCOVERY_SYNC_DOMAIN_EVENT_CATCH_UP_MAX_BATCHES {
@@ -1916,28 +1920,6 @@ impl AppUseCase {
                     } else {
                         extend_discovery_bootstrap_quiet_window(state, event.occurred_at);
                     }
-                } else if let Some(facet) = discovery_successful_scan_completion_facet(&event) {
-                    if successful_scan_facets.insert(facet) {
-                        let accelerated_at =
-                            discovery_accelerated_at(event.occurred_at, scheduler_seed);
-                        if state.last_success_generation_id.is_some() {
-                            discovery_prefer_earlier_gate(
-                                &mut state.next_incremental_reload_eligible_at,
-                                accelerated_at,
-                            );
-                        } else {
-                            discovery_prefer_earlier_gate(
-                                &mut state.next_context_snapshot_eligible_at,
-                                accelerated_at,
-                            );
-                            discovery_prefer_earlier_gate(
-                                &mut state.bootstrap_quiet_until,
-                                accelerated_at,
-                            );
-                        }
-                        state.dirty_reason_mask |= DISCOVERY_DIRTY_REASON_SCAN_BOUNDARY;
-                        state.updated_at = now;
-                    }
                 } else if discovery_scan_boundary_event(&event) && state.dirty_since.is_some() {
                     state.dirty_reason_mask |= DISCOVERY_DIRTY_REASON_SCAN_BOUNDARY;
                 }
@@ -1959,51 +1941,6 @@ impl AppUseCase {
         }
 
         Ok(subject_change_count)
-    }
-
-    async fn successful_completed_scan_facets_through_sequence(
-        &self,
-        max_sequence: i64,
-    ) -> AppResult<HashSet<MediaFacet>> {
-        let mut facets = HashSet::new();
-        if max_sequence <= 0 {
-            return Ok(facets);
-        }
-
-        let mut after_sequence = 0i64;
-        loop {
-            let events = self
-                .services
-                .events
-                .domain_events
-                .list(&DomainEventFilter {
-                    after_sequence: Some(after_sequence),
-                    event_types: Some(vec![DomainEventType::LibraryScanCompleted]),
-                    limit: DISCOVERY_SYNC_DOMAIN_EVENT_CATCH_UP_BATCH_LIMIT,
-                    ..DomainEventFilter::default()
-                })
-                .await?;
-            if events.is_empty() {
-                break;
-            }
-
-            let batch_len = events.len();
-            for event in events {
-                if event.sequence > max_sequence {
-                    return Ok(facets);
-                }
-                after_sequence = after_sequence.max(event.sequence);
-                if let Some(facet) = discovery_successful_scan_completion_facet(&event) {
-                    facets.insert(facet);
-                }
-            }
-
-            if batch_len < DISCOVERY_SYNC_DOMAIN_EVENT_CATCH_UP_BATCH_LIMIT {
-                break;
-            }
-        }
-
-        Ok(facets)
     }
 
     async fn retry_unacked_discovery_context_snapshot_acks(
