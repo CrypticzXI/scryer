@@ -1481,7 +1481,8 @@
       "type": "string",
       "enum": [
         "rar",
-        "zip"
+        "zip",
+        "7z"
       ]
     },
     "ArchiveExtractorDescriptor": {

@@ -607,7 +607,7 @@ impl AppError {
 
     pub fn archive_extraction_plugin_required(source_path: Option<String>) -> Self {
         Self::ArchiveExtractionPluginRequired {
-            message: "This import is blocked because the download contains archive files. Install or enable the Archive Extraction plugin, then re-import.".to_string(),
+            message: "This import is blocked because the download contains archive files. Install, update, or enable the Archive Extraction plugin, then re-import.".to_string(),
             source_path,
         }
     }

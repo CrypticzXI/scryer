@@ -1,4 +1,3 @@
-use std::borrow::Cow;
 use std::cmp::Reverse;
 use std::fs::{self, File};
 use std::io::{self, Cursor, Read, Write};
@@ -129,6 +128,9 @@ fn plugin_subtitle_archive_format(
 ) -> Option<(ArtifactKind, ArchivePluginFormat)> {
     match detect_artifact_kind(file) {
         Some(ArtifactKind::Zip) => Some((ArtifactKind::Zip, ArchivePluginFormat::Zip)),
+        Some(ArtifactKind::SevenZip) => {
+            Some((ArtifactKind::SevenZip, ArchivePluginFormat::SevenZip))
+        }
         Some(ArtifactKind::Rar) => Some((ArtifactKind::Rar, ArchivePluginFormat::Rar)),
         _ => None,
     }
@@ -137,6 +139,7 @@ fn plugin_subtitle_archive_format(
 fn safe_archive_filename(file: &SubtitleFile, archive_type: ArtifactKind) -> String {
     let extension = match archive_type {
         ArtifactKind::Zip => "zip",
+        ArtifactKind::SevenZip => "7z",
         ArtifactKind::Rar => "rar",
         _ => "archive",
     };
@@ -240,9 +243,7 @@ fn normalize_sync(
         Some(ArtifactKind::Tar) => {
             select_archive_candidate(extract_tar_candidates(file.content)?, context, depth)
         }
-        Some(ArtifactKind::SevenZip) => {
-            select_archive_candidate(extract_sevenz_candidates(file.content)?, context, depth)
-        }
+        Some(ArtifactKind::SevenZip) => Err(AppError::archive_extraction_plugin_required(None)),
         Some(ArtifactKind::Rar) => Err(AppError::archive_extraction_plugin_required(None)),
         None => finalize_subtitle(file),
     }
@@ -430,56 +431,6 @@ fn collect_plugin_output_candidates(output_dir: &Path) -> AppResult<Vec<ArchiveC
             candidates.push(candidate(name, content));
         }
     }
-
-    Ok(candidates)
-}
-
-fn extract_sevenz_candidates(content: Vec<u8>) -> AppResult<Vec<ArchiveCandidate>> {
-    let mut reader =
-        sevenz_rust2::ArchiveReader::new(Cursor::new(content), sevenz_rust2::Password::empty())
-            .map_err(|error| {
-                AppError::Repository(format!("failed to parse 7z subtitle archive: {error}"))
-            })?;
-
-    if reader.archive().files.len() > MAX_ARCHIVE_FILES {
-        return Err(AppError::Validation(
-            "subtitle archive contains too many files".to_string(),
-        ));
-    }
-
-    let mut declared_expanded_bytes = 0usize;
-    for entry in &reader.archive().files {
-        if entry.is_directory() {
-            continue;
-        }
-        let size = usize::try_from(entry.size()).map_err(|_| {
-            AppError::Validation("7z subtitle entry is too large for this platform".to_string())
-        })?;
-        declared_expanded_bytes = checked_expanded_size(declared_expanded_bytes, size)?;
-    }
-
-    let mut candidates = Vec::new();
-    let mut actual_expanded_bytes = 0usize;
-    reader
-        .for_each_entries(|entry, entry_reader| {
-            if entry.is_directory() {
-                return Ok(true);
-            }
-            let name = entry.name().to_string();
-            if !is_safe_relative_path(&name) || !is_extractable_subtitle_artifact(&name) {
-                let drained = drain_limited(entry_reader).map_err(sevenz_error)?;
-                actual_expanded_bytes =
-                    checked_expanded_size(actual_expanded_bytes, drained).map_err(sevenz_error)?;
-                return Ok(true);
-            }
-
-            let content = read_limited(entry_reader).map_err(sevenz_error)?;
-            actual_expanded_bytes = checked_expanded_size(actual_expanded_bytes, content.len())
-                .map_err(sevenz_error)?;
-            candidates.push(candidate(name, content));
-            Ok(true)
-        })
-        .map_err(|error| AppError::Repository(format!("7z subtitle extraction failed: {error}")))?;
 
     Ok(candidates)
 }
@@ -749,20 +700,6 @@ fn read_limited<R: Read>(reader: R) -> AppResult<Vec<u8>> {
     Ok(out)
 }
 
-fn drain_limited<R: Read>(reader: R) -> AppResult<usize> {
-    let mut limited = reader.take((MAX_EXPANDED_BYTES + 1) as u64);
-    let bytes = io::copy(&mut limited, &mut io::sink()).map_err(|error| {
-        AppError::Repository(format!("failed to drain subtitle archive entry: {error}"))
-    })?;
-    let bytes = bytes as usize;
-    ensure_expanded_size(bytes)?;
-    Ok(bytes)
-}
-
-fn sevenz_error(error: impl ToString) -> sevenz_rust2::Error {
-    sevenz_rust2::Error::Other(Cow::Owned(error.to_string()))
-}
-
 struct LimitedWriter {
     content: Vec<u8>,
     limit: usize,
@@ -818,6 +755,7 @@ fn checked_expanded_size(current: usize, next: usize) -> AppResult<usize> {
 mod tests {
     use super::*;
     use std::io::Write;
+    use std::sync::{Arc, Mutex};
 
     const ASS_CONTENT: &[u8] = b"[Script Info]\nTitle: Test\n\n[Events]\nDialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,Hello\n";
     const SRT_CONTENT: &[u8] = b"1\n00:00:01,000 --> 00:00:02,000\nHello\n";
@@ -836,6 +774,66 @@ mod tests {
             language: Some("eng".to_string()),
             episode: Some(17),
             absolute_episode: Some(17),
+        }
+    }
+
+    struct RecordingArchiveClient {
+        operation: Arc<Mutex<Option<ArchivePluginOperation>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl ArchiveExtractorClient for RecordingArchiveClient {
+        async fn process(
+            &self,
+            request: ArchivePluginProcessRequest,
+        ) -> AppResult<ArchivePluginProcessResponse> {
+            let output_dir = match &request.operation {
+                ArchivePluginOperation::ExtractArchive { output_dir, .. } => output_dir,
+                ArchivePluginOperation::Inspect { .. } => {
+                    return Ok(ArchivePluginProcessResponse {
+                        status: ArchivePluginStatus::Failed,
+                        files: Vec::new(),
+                        expanded_bytes: None,
+                        copied_bytes: None,
+                        staged_bytes: None,
+                        error_code: Some("unsupported_operation".to_string()),
+                        message: Some("operation does not extract archive files".to_string()),
+                    });
+                }
+            };
+            let output_dir = Path::new(output_dir);
+            fs::create_dir_all(output_dir).unwrap();
+            fs::write(output_dir.join("Show.S01E17.eng.srt"), SRT_CONTENT).unwrap();
+            *self.operation.lock().unwrap() = Some(request.operation);
+            Ok(ArchivePluginProcessResponse {
+                status: ArchivePluginStatus::Ok,
+                files: Vec::new(),
+                expanded_bytes: Some(SRT_CONTENT.len() as u64),
+                copied_bytes: None,
+                staged_bytes: None,
+                error_code: None,
+                message: None,
+            })
+        }
+    }
+
+    struct RecordingArchiveProvider {
+        client: Arc<dyn ArchiveExtractorClient>,
+        formats: Vec<ArchivePluginFormat>,
+    }
+
+    impl ArchiveExtractorPluginProvider for RecordingArchiveProvider {
+        fn client_for_format(
+            &self,
+            format: ArchivePluginFormat,
+        ) -> Option<Arc<dyn ArchiveExtractorClient>> {
+            self.formats
+                .contains(&format)
+                .then(|| Arc::clone(&self.client))
+        }
+
+        fn available_provider_types(&self) -> Vec<String> {
+            vec!["recording".to_string()]
         }
     }
 
@@ -915,6 +913,51 @@ mod tests {
         assert!(matches!(
             err,
             AppError::ArchiveExtractionPluginRequired { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn sevenz_subtitle_requires_archive_plugin() {
+        let err =
+            normalize_downloaded_subtitle(subtitle_file("release.7z", b"7z".to_vec()), context())
+                .await
+                .unwrap_err();
+
+        assert!(matches!(
+            err,
+            AppError::ArchiveExtractionPluginRequired { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn sevenz_subtitle_uses_archive_plugin_when_supported() {
+        let operation = Arc::new(Mutex::new(None));
+        let client: Arc<dyn ArchiveExtractorClient> = Arc::new(RecordingArchiveClient {
+            operation: Arc::clone(&operation),
+        });
+        let provider: Arc<dyn ArchiveExtractorPluginProvider> =
+            Arc::new(RecordingArchiveProvider {
+                client,
+                formats: vec![ArchivePluginFormat::SevenZip],
+            });
+
+        let normalized = normalize_downloaded_subtitle_with_archive_provider(
+            subtitle_file("release.7z", b"7z".to_vec()),
+            context(),
+            Some(provider),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(normalized.format, "srt");
+        assert_eq!(normalized.content, SRT_CONTENT);
+        let recorded = operation.lock().unwrap().clone().unwrap();
+        assert!(matches!(
+            recorded,
+            ArchivePluginOperation::ExtractArchive {
+                format: ArchivePluginFormat::SevenZip,
+                ..
+            }
         ));
     }
 

@@ -3626,7 +3626,11 @@ mod tests {
                     default_base_url: None,
                     allowed_hosts: vec![],
                     capabilities: ArchiveExtractorCapabilities {
-                        formats: vec![ArchivePluginFormat::Rar, ArchivePluginFormat::Zip],
+                        formats: vec![
+                            ArchivePluginFormat::Rar,
+                            ArchivePluginFormat::SevenZip,
+                            ArchivePluginFormat::Zip,
+                        ],
                     },
                 })
             }
@@ -4189,6 +4193,11 @@ mod tests {
         assert!(
             provider
                 .provider_for_format(ArchivePluginFormat::Zip)
+                .is_some()
+        );
+        assert!(
+            provider
+                .provider_for_format(ArchivePluginFormat::SevenZip)
                 .is_some()
         );
     }

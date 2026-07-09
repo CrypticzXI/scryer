@@ -9,15 +9,14 @@ decompresses it with `zstd::decode_all` and drives it through
 
 ## Provenance
 
-- Source repo: `github.com/scryer-media/scryer-plugins`, release tag
-  `plugins-v3/archive-extraction/v0.1.1`.
-- Release asset: `plugin-v3.wasm.zst`.
+- Source artifact:
+  `archive_extractors/archive-extraction/target/variants/baseline/wasm32-wasip1/plugin-release/archive_extraction_archive_extractor.wasm`.
 - Decompressed artifact:
-  - size `1753286`
-  - blake3 `eed239c261ec45a51d1831bd6303c83819e9223b95d72f6e3216b8c33b2671c2`
-  - sha256 `9d241b543faf5b6920eec3a9efdac86f6ff33f7d7d8ac7c32736d751a901837f`
-- `plugin.wasm.zst`: size `461327`,
-  sha256 `8523f30575ea9be0cce44ca6809e95e31d17b01078e04d255b4ec8ef4885a549`.
+  - size `1839967`
+  - blake3 `ad09621d749d7a88e195fcdef2d58b050b58bf9c1d5d94ed387075db3d1517f5`
+  - sha256 `bdda433d83d47d494e5bf246c3be2e28fd9db6775f9128b70c98c6a73df7da23`
+- `plugin.wasm.zst`: size `424816`,
+  sha256 `d24cd828ac77f7117201a9688366c95da64432641d8d01d8a4cd01900b3ce980`.
 
 ## ABI (frozen, RFC §5)
 

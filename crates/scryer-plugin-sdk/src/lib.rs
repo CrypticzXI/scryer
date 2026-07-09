@@ -599,6 +599,8 @@ pub struct ArchiveExtractorCapabilities {
 pub enum ArchivePluginFormat {
     Rar,
     Zip,
+    #[serde(rename = "7z")]
+    SevenZip,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -2601,6 +2603,14 @@ mod tests {
     #[test]
     fn current_sdk_constraint_uses_current_v3_minor_floor() {
         assert_eq!(current_sdk_constraint(), ">=3.6.0, <4.0.0");
+    }
+
+    #[test]
+    fn seven_zip_archive_format_uses_7z_wire_value() {
+        let json = serde_json::to_string(&ArchivePluginFormat::SevenZip).unwrap();
+        assert_eq!(json, "\"7z\"");
+        let parsed: ArchivePluginFormat = serde_json::from_str("\"7z\"").unwrap();
+        assert_eq!(parsed, ArchivePluginFormat::SevenZip);
     }
 
     #[test]

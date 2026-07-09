@@ -39,7 +39,7 @@ import { useClient } from "urql";
 const ARCHIVE_EXTRACTION_PLUGIN_REQUIRED_CODE = "ARCHIVE_EXTRACTION_PLUGIN_REQUIRED";
 const ARCHIVE_EXTRACTION_PLUGIN_REQUIRED_MESSAGE = [
   "This import is blocked because the download contains archive files.",
-  "Install or enable the Archive Extraction plugin, then re-import.",
+  "Install, update, or enable the Archive Extraction plugin, then re-import.",
 ].join(" ");
 
 type FilePreview = {

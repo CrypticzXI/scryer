@@ -1,4 +1,4 @@
-const FORBIDDEN_ARCHIVE_CORE_DEPENDENCIES: &[&str] = &["weaver-unrar", "zip"];
+const FORBIDDEN_ARCHIVE_CORE_DEPENDENCIES: &[&str] = &["sevenz-rust2", "weaver-unrar", "zip"];
 const FORBIDDEN_BUILTIN_ARCHIVE_PLUGIN_NAMES: &[&str] =
     &["archive-extraction", "archive_extraction"];
 
@@ -16,7 +16,7 @@ fn archive_restricted_crates_stay_out_of_scryer_dependency_graph() {
 
     assert!(
         present.is_empty(),
-        "RAR/ZIP archive extraction must stay behind the optional archive plugin; \
+        "RAR/ZIP/7z archive extraction must stay behind the optional archive plugin; \
          remove these exact packages from Scryer core before merging: {present:?}"
     );
 }

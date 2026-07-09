@@ -182,6 +182,12 @@ fn describe_reports_expected_descriptor_from_real_artifact() {
             .formats
             .contains(&ArchivePluginFormat::Zip)
     );
+    assert!(
+        archive
+            .capabilities
+            .formats
+            .contains(&ArchivePluginFormat::SevenZip)
+    );
 }
 
 #[test]

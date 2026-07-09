@@ -175,9 +175,6 @@ opt-level = 3
 [profile.release-lean.package.rustls-webpki]
 opt-level = 3
 
-[profile.release-lean.package.sevenz-rust2]
-opt-level = 3
-
 [profile.release-lean.package.sha2]
 opt-level = 3
 
@@ -270,9 +267,6 @@ opt-level = 3
 opt-level = 3
 
 [profile.rc.package.rustls-webpki]
-opt-level = 3
-
-[profile.rc.package.sevenz-rust2]
 opt-level = 3
 
 [profile.rc.package.sha2]

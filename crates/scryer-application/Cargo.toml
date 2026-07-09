@@ -14,7 +14,6 @@ runtime = [
 runtime-archives = [
     "dep:flate2",
     "dep:lzma-rs",
-    "dep:sevenz-rust2",
     "dep:tar",
     "dep:weaver-par2",
     "dep:zstd",
@@ -63,7 +62,6 @@ semver = { workspace = true }
 metrics = { workspace = true }
 base64 = "0.22"
 brotli = { version = "8", optional = true }
-sevenz-rust2 = { version = "0.21", features = ["aes256", "bzip2", "deflate", "zstd"], optional = true }
 tar = { version = "0.4", optional = true }
 flate2 = { version = "1", optional = true }
 zstd = { version = "0.13", default-features = false, optional = true }
