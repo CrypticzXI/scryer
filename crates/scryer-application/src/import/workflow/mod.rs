@@ -10,9 +10,7 @@ use crate::{
         created_media_update, deleted_media_update, new_title_domain_event, title_context_snapshot,
     },
     effective_title_folder_path,
-    helpers::{
-        has_usable_release_title_signal, normalize_release_title_signal, parse_usable_release_title,
-    },
+    helpers::{has_usable_release_title_signal, normalize_release_title_signal},
     import_parameters::{extract_parameter, has_scryer_origin, submission_has_scryer_origin},
     import_title_resolution::normalize_imdb_id,
     nfo::{render_episode_nfo, render_movie_nfo, render_plexmatch, render_tvshow_nfo},
@@ -27,6 +25,8 @@ use scryer_domain::{
     ImportRecord, ImportResult, ImportSkipReason, ImportStatus, ImportType, MediaFacet, Title,
     TrackedDownloadState, User, is_video_file,
 };
+#[cfg(test)]
+use crate::helpers::parse_usable_release_title;
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};

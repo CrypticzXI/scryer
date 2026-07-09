@@ -17,8 +17,24 @@ use scryer_plugin_sdk::{
 use tracing::info;
 
 const EXTRACTED_DIR_NAME: &str = "_scryer_extracted";
+const ARCHIVE_STAGING_PREFIX: &str = ".scryer-archive-extract-";
 const MAX_PLUGIN_OUTPUT_FILES: usize = 20_000;
 const MAX_PLUGIN_OUTPUT_BYTES: u64 = 2 * 1024 * 1024 * 1024 * 1024;
+
+#[derive(Debug, Clone)]
+pub struct ArchiveExtractionDestination {
+    staging_parent: PathBuf,
+    import_id: String,
+}
+
+impl ArchiveExtractionDestination {
+    pub fn new(staging_parent: impl Into<PathBuf>, import_id: impl Into<String>) -> Self {
+        Self {
+            staging_parent: staging_parent.into(),
+            import_id: import_id.into(),
+        }
+    }
+}
 
 /// Archive type detected in a download directory.
 #[derive(Debug, Clone, Copy)]
@@ -39,10 +55,11 @@ impl ArchiveType {
 }
 
 /// If the download directory contains no video files but has archive files,
-/// extract them to a subdirectory and return the extraction path.
+/// extract them to a hidden destination-side staging directory and return the path.
 /// Returns `None` if no extraction was needed (video files exist directly).
 pub async fn extract_archives_if_needed(
     dir: &Path,
+    destination: Option<ArchiveExtractionDestination>,
     password: Option<&str>,
     archive_provider: Option<Arc<dyn ArchiveExtractorPluginProvider>>,
 ) -> AppResult<Option<PathBuf>> {
@@ -58,22 +75,27 @@ pub async fn extract_archives_if_needed(
     let Some((archive_path, archive_type)) = archive else {
         return Ok(None);
     };
+    let Some(destination) = destination else {
+        return Err(AppError::Validation(format!(
+            "archive extraction requires a resolved import destination before staging output for {}",
+            dir.display()
+        )));
+    };
+    let output_dir = create_archive_staging_dir(&destination)?;
 
     info!(
         archive = %archive_path.display(),
         archive_type = archive_type.as_str(),
+        output = %output_dir.display(),
         "extracting archive before import"
     );
 
     match archive_type {
-        ArchiveType::SevenZip => {
-            let dir = dir.clone();
-            tokio::task::spawn_blocking(move || {
-                extract_native_archive(&dir, &archive_path, archive_type, password.as_deref())
-            })
-            .await
-            .map_err(|e| AppError::Repository(format!("archive extraction task failed: {e}")))?
-        }
+        ArchiveType::SevenZip => tokio::task::spawn_blocking(move || {
+            extract_native_archive(&archive_path, archive_type, output_dir, password.as_deref())
+        })
+        .await
+        .map_err(|e| AppError::Repository(format!("archive extraction task failed: {e}")))?,
         ArchiveType::Rar | ArchiveType::Zip => {
             let format = archive_plugin_format(archive_type)?;
             let Some(provider) = archive_provider else {
@@ -88,10 +110,15 @@ pub async fn extract_archives_if_needed(
                 format,
                 password,
                 provider,
+                output_dir,
             )
             .await
         }
     }
+}
+
+pub fn archive_extraction_would_be_needed(dir: &Path) -> AppResult<bool> {
+    Ok(plan_archive_extraction(dir)?.is_some())
 }
 
 /// Check if an extraction error indicates a password-protected archive.
@@ -101,21 +128,35 @@ pub fn is_password_required_error(error: &AppError) -> bool {
 }
 
 #[cfg(test)]
-fn extract_archives_sync(dir: &Path, password: Option<&str>) -> AppResult<Option<PathBuf>> {
+fn extract_archives_sync(
+    dir: &Path,
+    destination: Option<ArchiveExtractionDestination>,
+    password: Option<&str>,
+) -> AppResult<Option<PathBuf>> {
     let Some((archive_path, archive_type)) = plan_archive_extraction(dir)? else {
         return Ok(None);
     };
+    let Some(destination) = destination else {
+        return Err(AppError::Validation(format!(
+            "archive extraction requires a resolved import destination before staging output for {}",
+            dir.display()
+        )));
+    };
+    let output_dir = create_archive_staging_dir(&destination)?;
 
     info!(
         archive = %archive_path.display(),
         archive_type = archive_type.as_str(),
+        output = %output_dir.display(),
         "extracting archive before import"
     );
 
     match archive_type {
-        ArchiveType::SevenZip => extract_native_archive(dir, &archive_path, archive_type, password),
+        ArchiveType::SevenZip => {
+            extract_native_archive(&archive_path, archive_type, output_dir, password)
+        }
         ArchiveType::Rar | ArchiveType::Zip => Err(AppError::archive_extraction_plugin_required(
-            Some(dir.to_string_lossy().into_owned()),
+            Some(archive_path.to_string_lossy().into_owned()),
         )),
     }
 }
@@ -136,22 +177,18 @@ fn plan_archive_extraction(dir: &Path) -> AppResult<Option<(PathBuf, ArchiveType
 }
 
 fn extract_native_archive(
-    dir: &Path,
     archive_path: &Path,
     archive_type: ArchiveType,
+    output_dir: PathBuf,
     password: Option<&str>,
 ) -> AppResult<Option<PathBuf>> {
     match archive_type {
         ArchiveType::SevenZip => {
-            let output_dir = dir.join(EXTRACTED_DIR_NAME);
-            std::fs::create_dir_all(&output_dir).map_err(|e| {
-                AppError::Repository(format!("failed to create extraction directory: {e}"))
-            })?;
             extract_sevenz(archive_path, &output_dir, password)?;
             verify_extracted_video(archive_type, output_dir)
         }
         ArchiveType::Rar | ArchiveType::Zip => Err(AppError::archive_extraction_plugin_required(
-            Some(dir.to_string_lossy().into_owned()),
+            Some(archive_path.to_string_lossy().into_owned()),
         )),
     }
 }
@@ -163,11 +200,8 @@ async fn extract_with_archive_plugin(
     format: ArchivePluginFormat,
     password: Option<String>,
     provider: Arc<dyn ArchiveExtractorPluginProvider>,
+    output_dir: PathBuf,
 ) -> AppResult<Option<PathBuf>> {
-    let output_dir = dir.join(EXTRACTED_DIR_NAME);
-    std::fs::create_dir_all(&output_dir)
-        .map_err(|e| AppError::Repository(format!("failed to create extraction directory: {e}")))?;
-
     let (client, operation) = if let Some(par2_path) = find_primary_par2(dir)
         && let Some(client) =
             provider.client_for_repair_then_extract(format, ArchivePluginRepairFormat::Par2)
@@ -198,6 +232,53 @@ async fn extract_with_archive_plugin(
     let request = ArchivePluginProcessRequest { operation };
     let response = client.process(request).await?;
     handle_archive_plugin_response(archive_type, output_dir, response)
+}
+
+fn create_archive_staging_dir(destination: &ArchiveExtractionDestination) -> AppResult<PathBuf> {
+    std::fs::create_dir_all(&destination.staging_parent).map_err(|error| {
+        AppError::Repository(format!(
+            "failed to create archive staging parent {}: {error}",
+            destination.staging_parent.display()
+        ))
+    })?;
+    let staging_name = format!(
+        "{ARCHIVE_STAGING_PREFIX}{}",
+        sanitize_archive_staging_id(&destination.import_id)
+    );
+    let output_dir = destination.staging_parent.join(staging_name);
+    if output_dir.exists() {
+        std::fs::remove_dir_all(&output_dir).map_err(|error| {
+            AppError::Repository(format!(
+                "failed to clear stale archive staging directory {}: {error}",
+                output_dir.display()
+            ))
+        })?;
+    }
+    std::fs::create_dir(&output_dir).map_err(|error| {
+        AppError::Repository(format!(
+            "failed to create archive staging directory {}: {error}",
+            output_dir.display()
+        ))
+    })?;
+    Ok(output_dir)
+}
+
+fn sanitize_archive_staging_id(import_id: &str) -> String {
+    let sanitized = import_id
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    if sanitized.trim_matches('_').is_empty() {
+        uuid::Uuid::new_v4().to_string()
+    } else {
+        sanitized
+    }
 }
 
 fn archive_plugin_format(archive_type: ArchiveType) -> AppResult<ArchivePluginFormat> {
@@ -531,7 +612,7 @@ fn ensure_path_under_output_with_root(path: &Path, output_root: &Path) -> AppRes
             path.display()
         ))
     })?;
-    if !canonical.starts_with(&output_root) {
+    if !canonical.starts_with(output_root) {
         return Err(AppError::Validation(format!(
             "archive entry escapes extraction directory: {}",
             path.display()
@@ -546,20 +627,28 @@ fn sevenz_extraction_error(error: AppError) -> sevenz_rust2::Error {
 
 /// Clean up the extraction directory after import completes.
 pub async fn cleanup_extracted_dir(dir: &Path) {
-    if dir.ends_with(EXTRACTED_DIR_NAME) {
+    if is_archive_staging_dir(dir) {
         let _ = tokio::fs::remove_dir_all(dir).await;
     }
+}
+
+fn is_archive_staging_dir(dir: &Path) -> bool {
+    dir.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name == EXTRACTED_DIR_NAME || name.starts_with(ARCHIVE_STAGING_PREFIX))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{ArchiveExtractorClient, ArchiveExtractorPluginProvider};
+    use scryer_plugin_sdk::ArchivePluginExtractedFile;
     use std::fs;
     use std::sync::{Arc, Mutex};
 
     struct RecordingArchiveClient {
         operation: Arc<Mutex<Option<ArchivePluginOperation>>>,
+        write_output_file: bool,
     }
 
     #[async_trait::async_trait]
@@ -568,12 +657,43 @@ mod tests {
             &self,
             request: ArchivePluginProcessRequest,
         ) -> AppResult<ArchivePluginProcessResponse> {
+            let output_dir = match &request.operation {
+                ArchivePluginOperation::ExtractArchive { output_dir, .. }
+                | ArchivePluginOperation::RepairThenExtract { output_dir, .. } => {
+                    PathBuf::from(output_dir)
+                }
+                ArchivePluginOperation::Inspect { .. }
+                | ArchivePluginOperation::VerifyRepairSet { .. } => {
+                    return Ok(ArchivePluginProcessResponse {
+                        status: ArchivePluginStatus::Failed,
+                        files: Vec::new(),
+                        repair: None,
+                        expanded_bytes: None,
+                        copied_bytes: None,
+                        staged_bytes: None,
+                        error_code: Some("unsupported_operation".to_string()),
+                        message: Some("operation does not extract archive files".to_string()),
+                    });
+                }
+            };
             *self.operation.lock().unwrap() = Some(request.operation);
+            let files = if self.write_output_file {
+                fs::create_dir_all(&output_dir).unwrap();
+                let output_file = output_dir.join("movie.mkv");
+                fs::write(&output_file, b"fake video").unwrap();
+                vec![ArchivePluginExtractedFile {
+                    relative_path: "movie.mkv".to_string(),
+                    size: Some(10),
+                    checksum: None,
+                }]
+            } else {
+                Vec::new()
+            };
             Ok(ArchivePluginProcessResponse {
                 status: ArchivePluginStatus::Ok,
-                files: vec![],
+                files,
                 repair: None,
-                expanded_bytes: Some(0),
+                expanded_bytes: Some(if self.write_output_file { 10 } else { 0 }),
                 copied_bytes: None,
                 staged_bytes: None,
                 error_code: None,
@@ -584,6 +704,7 @@ mod tests {
 
     struct RecordingArchiveProvider {
         client: Arc<dyn ArchiveExtractorClient>,
+        repair_client: Option<Arc<dyn ArchiveExtractorClient>>,
     }
 
     impl ArchiveExtractorPluginProvider for RecordingArchiveProvider {
@@ -592,6 +713,17 @@ mod tests {
             format: ArchivePluginFormat,
         ) -> Option<Arc<dyn ArchiveExtractorClient>> {
             matches!(format, ArchivePluginFormat::Zip).then(|| Arc::clone(&self.client))
+        }
+
+        fn client_for_repair_then_extract(
+            &self,
+            format: ArchivePluginFormat,
+            repair_format: ArchivePluginRepairFormat,
+        ) -> Option<Arc<dyn ArchiveExtractorClient>> {
+            (matches!(format, ArchivePluginFormat::Rar | ArchivePluginFormat::Zip)
+                && matches!(repair_format, ArchivePluginRepairFormat::Par2))
+            .then(|| self.repair_client.as_ref().map(Arc::clone))
+            .flatten()
         }
 
         fn available_provider_types(&self) -> Vec<String> {
@@ -676,7 +808,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         fs::write(dir.path().join("movie.mkv"), b"video").unwrap();
         fs::write(dir.path().join("archive.rar"), b"rar").unwrap();
-        let result = extract_archives_sync(dir.path(), None).unwrap();
+        let result = extract_archives_sync(dir.path(), None, None).unwrap();
         assert!(result.is_none());
     }
 
@@ -690,8 +822,17 @@ mod tests {
 
         let dir = tempfile::tempdir().unwrap();
         fs::copy(&fixture, dir.path().join("archive.rar")).unwrap();
+        let destination = tempfile::tempdir().unwrap();
 
-        let err = extract_archives_sync(dir.path(), None).unwrap_err();
+        let err = extract_archives_sync(
+            dir.path(),
+            Some(ArchiveExtractionDestination::new(
+                destination.path(),
+                "rar-plugin-required",
+            )),
+            None,
+        )
+        .unwrap_err();
         assert!(matches!(
             err,
             AppError::ArchiveExtractionPluginRequired { .. }
@@ -708,9 +849,19 @@ mod tests {
         let operation = Arc::new(Mutex::new(None));
         let client: Arc<dyn ArchiveExtractorClient> = Arc::new(RecordingArchiveClient {
             operation: Arc::clone(&operation),
+            write_output_file: false,
         });
+        let destination = tempfile::tempdir().unwrap();
+        let output_dir = create_archive_staging_dir(&ArchiveExtractionDestination::new(
+            destination.path(),
+            "zip-plain-extract",
+        ))
+        .unwrap();
         let provider: Arc<dyn ArchiveExtractorPluginProvider> =
-            Arc::new(RecordingArchiveProvider { client });
+            Arc::new(RecordingArchiveProvider {
+                client,
+                repair_client: None,
+            });
 
         let result = extract_with_archive_plugin(
             dir.path(),
@@ -719,6 +870,7 @@ mod tests {
             ArchivePluginFormat::Zip,
             None,
             provider,
+            output_dir,
         )
         .await
         .unwrap();
@@ -735,6 +887,100 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn archive_extraction_requires_destination_for_archived_download() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("release.rar"), b"rar").unwrap();
+
+        let error = extract_archives_if_needed(dir.path(), None, None, None)
+            .await
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("requires a resolved import destination")
+        );
+    }
+
+    #[tokio::test]
+    async fn rar_with_par2_stages_under_destination_when_source_is_not_writable() {
+        let source = tempfile::tempdir().unwrap();
+        let destination = tempfile::tempdir().unwrap();
+        let archive_path = source.path().join("archive.rar");
+        let par2_path = source.path().join("archive.par2");
+        fs::write(&archive_path, b"rar").unwrap();
+        fs::write(&par2_path, b"par2").unwrap();
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(source.path(), fs::Permissions::from_mode(0o555)).unwrap();
+        }
+
+        let operation = Arc::new(Mutex::new(None));
+        let client: Arc<dyn ArchiveExtractorClient> = Arc::new(RecordingArchiveClient {
+            operation: Arc::clone(&operation),
+            write_output_file: true,
+        });
+        let provider: Arc<dyn ArchiveExtractorPluginProvider> =
+            Arc::new(RecordingArchiveProvider {
+                client: Arc::clone(&client),
+                repair_client: Some(client),
+            });
+
+        let extracted = extract_archives_if_needed(
+            source.path(),
+            Some(ArchiveExtractionDestination::new(
+                destination.path(),
+                "import/with spaces",
+            )),
+            Some("secret"),
+            Some(provider),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(source.path(), fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        assert!(extracted.starts_with(destination.path()));
+        assert!(!extracted.starts_with(source.path()));
+        let staging_name = extracted
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap();
+        assert!(staging_name.starts_with(ARCHIVE_STAGING_PREFIX));
+        assert!(staging_name.starts_with('.'));
+        assert!(extracted.join("movie.mkv").exists());
+
+        let recorded = operation.lock().unwrap().clone().unwrap();
+        match recorded {
+            ArchivePluginOperation::RepairThenExtract {
+                source_dir,
+                output_dir,
+                format,
+                par2_path: recorded_par2,
+                archive_path: recorded_archive,
+                password,
+            } => {
+                assert_eq!(source_dir, source.path().to_string_lossy());
+                assert_eq!(output_dir, extracted.to_string_lossy());
+                assert_eq!(format, ArchivePluginFormat::Rar);
+                assert_eq!(recorded_par2.unwrap(), par2_path.to_string_lossy());
+                assert_eq!(recorded_archive.unwrap(), archive_path.to_string_lossy());
+                assert_eq!(password.as_deref(), Some("secret"));
+            }
+            other => panic!("expected repair-then-extract operation, got {other:?}"),
+        }
+
+        cleanup_extracted_dir(&extracted).await;
+        assert!(!extracted.exists());
+    }
+
+    #[tokio::test]
     async fn cleanup_only_removes_extracted_dir() {
         let dir = tempfile::tempdir().unwrap();
         let extracted = dir.path().join(EXTRACTED_DIR_NAME);
@@ -748,6 +994,20 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cleanup_removes_archive_staging_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let extracted = dir
+            .path()
+            .join(format!("{ARCHIVE_STAGING_PREFIX}import-123"));
+        fs::create_dir(&extracted).unwrap();
+        fs::write(extracted.join("file.txt"), b"data").unwrap();
+
+        cleanup_extracted_dir(&extracted).await;
+        assert!(!extracted.exists());
+        assert!(dir.path().exists());
+    }
+
+    #[tokio::test]
     async fn cleanup_refuses_non_extracted_dir() {
         let dir = tempfile::tempdir().unwrap();
         let other = dir.path().join("important_data");
@@ -755,7 +1015,7 @@ mod tests {
         fs::write(other.join("file.txt"), b"data").unwrap();
 
         cleanup_extracted_dir(&other).await;
-        // Should NOT be deleted — name doesn't match EXTRACTED_DIR_NAME
+        // Should NOT be deleted: name matches neither legacy nor staging dirs.
         assert!(other.exists());
     }
 }

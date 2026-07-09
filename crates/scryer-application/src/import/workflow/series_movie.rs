@@ -44,6 +44,23 @@ enum CompletedImportTargetResolution {
     Finished(Box<ImportResult>),
 }
 
+async fn archive_extraction_destination_for_title(
+    app: &AppUseCase,
+    import_id: &str,
+    title: &scryer_domain::Title,
+) -> AppResult<crate::archive_extractor::ArchiveExtractionDestination> {
+    let ImportPathSettings {
+        media_root,
+        folder_template,
+        ..
+    } = resolve_import_paths(app, title).await?;
+    let staging_parent = effective_title_folder_path(&media_root, title, &folder_template, None);
+    Ok(crate::archive_extractor::ArchiveExtractionDestination::new(
+        staging_parent,
+        import_id,
+    ))
+}
+
 async fn resolve_completed_import_target(
     app: &AppUseCase,
     import_id: &str,
@@ -55,7 +72,6 @@ async fn resolve_completed_import_target(
     let mut title = None;
     let dest_dir = Path::new(&completed.dest_dir);
     let mut extracted_dir: Option<PathBuf> = None;
-    let mut title_evidence_video_files: Option<Vec<PathBuf>> = None;
     let parsed_completed_name =
         normalize_release_title_signal(parse_release_metadata(&completed.name));
     let parsed_completed_folder = parsed_release_from_folder_name(dest_dir);
@@ -125,45 +141,24 @@ async fn resolve_completed_import_target(
                 facet_hint.as_deref(),
             );
         }
-
-        if title.is_none() {
-            extracted_dir = crate::archive_extractor::extract_archives_if_needed(
-                dest_dir,
-                archive_password,
-                app.services
-                    .integrations
-                    .archive_extractor_plugin_provider
-                    .available()
-                    .cloned(),
-            )
-            .await?;
-            let effective_dir = extracted_dir.as_deref().unwrap_or(dest_dir);
-            let video_files = find_video_files(effective_dir, true)?;
-
-            for candidate in title_evidence_candidates_from_video_files(&video_files) {
-                title = resolve_title_from_release_candidate(
-                    &titles,
-                    &candidate,
-                    facet_hint.as_deref(),
-                );
-                if title.is_some() {
-                    break;
-                }
-            }
-
-            title_evidence_video_files = Some(video_files);
-        }
     }
 
     let title = match title {
         Some(t) => t,
         None => {
+            let archive_message = if crate::archive_extractor::archive_extraction_would_be_needed(
+                dest_dir,
+            )? {
+                "; archived downloads require a matched title before Scryer can stage extraction under the import destination"
+            } else {
+                ""
+            };
             let result = ImportResult {
                 decision: ImportDecision::Unmatched,
                 skip_reason: Some(ImportSkipReason::UnresolvedIdentity),
                 error_message: Some(format!(
-                    "could not match download '{}' to any monitored title",
-                    completed.name
+                    "could not match download '{}' to any monitored title{}",
+                    completed.name, archive_message
                 )),
                 ..base_completed_import_result(import_id, completed, started_at)
             };
@@ -201,6 +196,7 @@ async fn resolve_completed_import_target(
     if extracted_dir.is_none() {
         extracted_dir = crate::archive_extractor::extract_archives_if_needed(
             dest_dir,
+            Some(archive_extraction_destination_for_title(app, import_id, &title).await?),
             archive_password,
             app.services
                 .integrations
@@ -212,9 +208,7 @@ async fn resolve_completed_import_target(
     }
     let effective_dir = extracted_dir.as_deref().unwrap_or(dest_dir);
     let video_files = if is_series {
-        title_evidence_video_files
-            .take()
-            .unwrap_or(find_video_files(effective_dir, true)?)
+        find_video_files(effective_dir, true)?
     } else {
         find_video_files(effective_dir, false)?
     };

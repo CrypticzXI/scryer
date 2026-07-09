@@ -3,12 +3,32 @@ use std::sync::Arc;
 
 use crate::{AppError, AppResult, ArchiveExtractorPluginProvider};
 
+#[derive(Debug, Clone)]
+pub struct ArchiveExtractionDestination {
+    _staging_parent: PathBuf,
+    _import_id: String,
+}
+
+impl ArchiveExtractionDestination {
+    pub fn new(staging_parent: impl Into<PathBuf>, import_id: impl Into<String>) -> Self {
+        Self {
+            _staging_parent: staging_parent.into(),
+            _import_id: import_id.into(),
+        }
+    }
+}
+
 pub async fn extract_archives_if_needed(
     _dir: &Path,
+    _destination: Option<ArchiveExtractionDestination>,
     _password: Option<&str>,
     _archive_provider: Option<Arc<dyn ArchiveExtractorPluginProvider>>,
 ) -> AppResult<Option<PathBuf>> {
     Ok(None)
+}
+
+pub fn archive_extraction_would_be_needed(_dir: &Path) -> AppResult<bool> {
+    Ok(false)
 }
 
 pub fn is_password_required_error(_error: &AppError) -> bool {

@@ -1311,7 +1311,7 @@ async fn title_more_like_this_refreshes_empty_cache_from_metadata_gateway() {
     assert!(inputs[0].include_unresolved);
     assert_eq!(
         *discovery.title_more_like_this_limits.lock().await,
-        vec![48]
+        vec![1, 48]
     );
 }
 

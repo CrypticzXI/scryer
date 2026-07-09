@@ -425,13 +425,13 @@ async fn load_canonical_tags_for_titles(
         let Some(tags) = tags_by_subject.remove(&subject_id) else {
             continue;
         };
-        if let Some(title_id) = row.opt_text("title_id")? {
-            if title_id_set.contains(&title_id) {
-                tags_by_title
-                    .entry(title_id)
-                    .or_insert_with(|| tags.clone());
-                continue;
-            }
+        if let Some(title_id) = row.opt_text("title_id")?
+            && title_id_set.contains(&title_id)
+        {
+            tags_by_title
+                .entry(title_id)
+                .or_insert_with(|| tags.clone());
+            continue;
         }
         let Some(title_ids) = title_ids_by_subject_key.get(&subject_key_norm) else {
             continue;
@@ -517,23 +517,6 @@ fn canonical_rating_select_sql(filter: &str) -> String {
            )
          ORDER BY s.id, source.sort_index, source.source, external.sort_index, external.source"
     )
-}
-
-fn rows_to_tags_by_title(
-    rows: &[crate::queries::sql_runtime::SqlRow],
-) -> AppResult<BTreeMap<String, Vec<CanonicalMediaTag>>> {
-    let mut by_subject = rows_to_tags_by_subject(rows)?;
-    let mut by_title = BTreeMap::new();
-    for row in rows {
-        let Some(title_id) = row.opt_text("title_id")? else {
-            continue;
-        };
-        let subject_id = row.text("subject_id")?;
-        if let Some(tags) = by_subject.remove(&subject_id) {
-            by_title.insert(title_id, tags);
-        }
-    }
-    Ok(by_title)
 }
 
 fn rows_to_tags_by_subject(
@@ -682,7 +665,7 @@ fn title_external_subject_keys(title: &Title) -> Vec<String> {
     };
     let mut keys = Vec::new();
     let mut seen = HashSet::new();
-    for source in source_order.iter().copied() {
+    for source in source_order {
         let source = source.to_ascii_lowercase();
         let facet_kinds = title_subject_facet_kinds(&title.facet, &source, facet_kind);
         for value in title

@@ -1082,17 +1082,6 @@ fn parsed_release_from_file_stem(path: &Path) -> ParsedReleaseMetadata {
         .unwrap_or(fallback);
     normalize_release_title_signal(parse_release_metadata(stem.as_str()))
 }
-fn parsed_usable_release_from_file_stem(path: &Path) -> Option<ParsedReleaseMetadata> {
-    let fallback = path
-        .file_name()
-        .map(|value| value.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    let stem = path
-        .file_stem()
-        .map(|value| value.to_string_lossy().into_owned())
-        .unwrap_or(fallback);
-    parse_usable_release_title(stem.as_str())
-}
 fn parsed_release_from_folder_name(path: &Path) -> Option<ParsedReleaseMetadata> {
     path.file_name()
         .map(|value| value.to_string_lossy().into_owned())
@@ -1104,9 +1093,25 @@ fn parsed_release_from_folder_name(path: &Path) -> Option<ParsedReleaseMetadata>
 fn parsed_release_from_parent_folder(path: &Path) -> Option<ParsedReleaseMetadata> {
     path.parent().and_then(parsed_release_from_folder_name)
 }
+
 fn parsed_usable_release_from_parent_folder(path: &Path) -> Option<ParsedReleaseMetadata> {
     parsed_release_from_parent_folder(path).filter(has_usable_release_title_signal)
 }
+
+#[cfg(test)]
+fn parsed_usable_release_from_file_stem(path: &Path) -> Option<ParsedReleaseMetadata> {
+    let fallback = path
+        .file_name()
+        .map(|value| value.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let stem = path
+        .file_stem()
+        .map(|value| value.to_string_lossy().into_owned())
+        .unwrap_or(fallback);
+    parse_usable_release_title(stem.as_str())
+}
+
+#[cfg(test)]
 fn title_evidence_candidates_from_video_files(
     video_files: &[PathBuf],
 ) -> Vec<ParsedReleaseMetadata> {
