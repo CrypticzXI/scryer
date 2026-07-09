@@ -337,12 +337,7 @@ impl PreparedSubtitleSyncCommand {
                 )
             })?;
             validate_rewritten_output_path(rewritten, &self.guest_output_path)?;
-            let bytes = std::fs::read(&self.host_output_path).map_err(|error| {
-                AppError::Repository(format!(
-                    "failed to read subtitle sync output '{}': {error}",
-                    self.host_output_path.display()
-                ))
-            })?;
+            let bytes = read_guest_output_file(self.output_dir.path(), &self.host_output_path)?;
             Some(SubtitleSyncRewrittenSubtitle {
                 content_base64: BASE64.encode(bytes),
                 format: rewritten.format.clone(),
@@ -414,6 +409,174 @@ fn validate_rewritten_output_path(
     Ok(())
 }
 
+/// Read a file the guest produced inside its writable `/output` preopen.
+///
+/// The guest can write anything into `/output`, including a symlink that points
+/// at a sensitive host file. `validate_rewritten_output_path` only checks the
+/// guest-*reported* path string, so it cannot catch that. Before reading with
+/// ambient host authority we therefore inspect the filesystem object directly:
+/// we reject anything that is not a regular file (which excludes symlinks, since
+/// `symlink_metadata` does not follow them) and confirm the resolved path is
+/// still contained within the output preopen root. This mirrors the symlink
+/// rejection the archive plugin consumer already performs on guest output.
+fn read_guest_output_file(output_root: &Path, path: &Path) -> AppResult<Vec<u8>> {
+    let metadata = std::fs::symlink_metadata(path).map_err(|error| {
+        AppError::Repository(format!(
+            "failed to read subtitle sync output '{}': {error}",
+            path.display()
+        ))
+    })?;
+    if !metadata.file_type().is_file() {
+        return Err(AppError::Validation(format!(
+            "subtitle sync plugin output is not a regular file: {}",
+            path.display()
+        )));
+    }
+
+    let output_root = output_root.canonicalize().map_err(|error| {
+        AppError::Repository(format!(
+            "failed to canonicalize subtitle sync output directory {}: {error}",
+            output_root.display()
+        ))
+    })?;
+    let canonical = path.canonicalize().map_err(|error| {
+        AppError::Repository(format!(
+            "failed to canonicalize subtitle sync output '{}': {error}",
+            path.display()
+        ))
+    })?;
+    if !canonical.starts_with(&output_root) {
+        return Err(AppError::Validation(format!(
+            "subtitle sync plugin output escapes the output directory: {}",
+            path.display()
+        )));
+    }
+
+    std::fs::read(&canonical).map_err(|error| {
+        AppError::Repository(format!(
+            "failed to read subtitle sync output '{}': {error}",
+            path.display()
+        ))
+    })
+}
+
 fn plugin_call_error(export: &str, error: AppError) -> AppError {
     AppError::Repository(format!("{export}() failed: {error}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::SubtitleSyncOptions;
+
+    fn sample_job() -> SubtitleSyncJob {
+        SubtitleSyncJob {
+            input_path: PathBuf::from("/media/library/movie.mkv"),
+            subtitle_content: b"1\n00:00:01,000 --> 00:00:02,000\noriginal\n".to_vec(),
+            subtitle_format: "srt".to_string(),
+            subtitle_file_name: Some("original.srt".to_string()),
+            subtitle_encoding_hint: None,
+            reference_subtitle: None,
+            max_offset_seconds: 60,
+            sync_options: SubtitleSyncOptions::default(),
+            expected_codec: None,
+            media_metadata: None,
+        }
+    }
+
+    fn applied_response(reported_path: PathBuf) -> SubtitleSyncCommandAlignResponse {
+        SubtitleSyncCommandAlignResponse {
+            applied: true,
+            offset_ms: 0,
+            rewritten_subtitle: Some(SubtitleSyncCommandOutputSubtitle {
+                path: reported_path,
+                format: "srt".to_string(),
+            }),
+            score: None,
+            selected_framerate_ratio: None,
+            consistency_ratio: None,
+            nosplit_score: None,
+            split_score: None,
+            skipped_reason: None,
+            backend: "test".to_string(),
+            warnings: Vec::new(),
+            message: None,
+        }
+    }
+
+    #[test]
+    fn reads_back_regular_output_file() {
+        let prepared = PreparedSubtitleSyncCommand::new(sample_job()).expect("prepare command");
+        std::fs::write(&prepared.host_output_path, b"rewritten-subtitle-bytes")
+            .expect("stage guest output");
+
+        let response = applied_response(prepared.guest_output_path.clone());
+        let legacy = prepared
+            .command_response_to_legacy(response)
+            .expect("legacy response");
+
+        let rewritten = legacy
+            .rewritten_subtitle
+            .expect("rewritten subtitle present");
+        let decoded = BASE64
+            .decode(rewritten.content_base64)
+            .expect("decode base64");
+        assert_eq!(decoded, b"rewritten-subtitle-bytes");
+    }
+
+    // A malicious command-model guest can write anything into its writable
+    // `/output` preopen, including a symlink pointing at a sensitive host file.
+    // The host must refuse to follow it rather than exfiltrate the target.
+    #[cfg(unix)]
+    #[test]
+    fn rejects_symlink_escaping_output_dir() {
+        let prepared = PreparedSubtitleSyncCommand::new(sample_job()).expect("prepare command");
+
+        // A sensitive host file that lives OUTSIDE the writable output preopen.
+        let secret_dir = tempfile::tempdir().expect("secret dir");
+        let secret_path = secret_dir.path().join("credentials.env");
+        let secret = b"INDEXER_API_KEY=super-secret-value";
+        std::fs::write(&secret_path, secret).expect("write secret");
+
+        // Guest writes the "rewritten subtitle" as a symlink to the secret.
+        std::os::unix::fs::symlink(&secret_path, &prepared.host_output_path)
+            .expect("create malicious symlink");
+
+        let response = applied_response(prepared.guest_output_path.clone());
+        let error = prepared
+            .command_response_to_legacy(response)
+            .expect_err("symlink escape must be rejected");
+
+        assert!(
+            matches!(error, AppError::Validation(_)),
+            "expected a validation error, got {error:?}"
+        );
+        // The secret bytes must never surface, not even in the error text.
+        assert!(
+            !format!("{error:?}").contains("super-secret-value"),
+            "secret contents leaked into error"
+        );
+    }
+
+    // Even a symlink whose target is inside the output dir is rejected: guest
+    // output must be a plain regular file, never a link.
+    #[cfg(unix)]
+    #[test]
+    fn rejects_symlink_within_output_dir() {
+        let prepared = PreparedSubtitleSyncCommand::new(sample_job()).expect("prepare command");
+
+        let real_path = prepared.output_dir.path().join("real.srt");
+        std::fs::write(&real_path, b"contained").expect("write contained file");
+        std::os::unix::fs::symlink(&real_path, &prepared.host_output_path)
+            .expect("create symlink");
+
+        let response = applied_response(prepared.guest_output_path.clone());
+        let error = prepared
+            .command_response_to_legacy(response)
+            .expect_err("symlink output must be rejected");
+        assert!(
+            matches!(error, AppError::Validation(_)),
+            "expected a validation error, got {error:?}"
+        );
+    }
 }

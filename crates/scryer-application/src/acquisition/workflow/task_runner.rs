@@ -1860,6 +1860,7 @@ pub async fn start_background_acquisition_poller(
 async fn run_discovery_sync_worker(app: AppUseCase, token: tokio_util::sync::CancellationToken) {
     // The acquisition poller spawns this worker, so awaiting the startup pass here
     // keeps service startup nonblocking while preventing overlapping discovery runs.
+    let discovery_sync_wake = app.runtime.jobs.discovery_sync_wake.clone();
     let mut delay = tokio::select! {
         _ = token.cancelled() => return,
         delay = run_discovery_sync_once(&app, JobTriggerSource::ScheduledStartup) => delay,
@@ -1869,6 +1870,7 @@ async fn run_discovery_sync_worker(app: AppUseCase, token: tokio_util::sync::Can
         tokio::select! {
             _ = token.cancelled() => return,
             _ = tokio::time::sleep(delay) => {}
+            _ = discovery_sync_wake.notified() => {}
         }
 
         if let Some(next_run_at) = app

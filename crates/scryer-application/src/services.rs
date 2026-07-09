@@ -981,6 +981,7 @@ pub struct AppRuntimeLibraryState {
 #[derive(Clone)]
 pub struct AppRuntimeJobState {
     pub job_run_tracker: JobRunTracker,
+    pub discovery_sync_wake: Arc<tokio::sync::Notify>,
     pub backup_execution_guards: BackupExecutionGuardTable,
     pub title_deletion_lock: Arc<tokio::sync::Mutex<()>>,
     /// Single-flight guard for the interactive acquisition-search job (RFC 119
@@ -1202,6 +1203,7 @@ impl AppRuntimeState {
             },
             jobs: AppRuntimeJobState {
                 job_run_tracker: JobRunTracker::new(),
+                discovery_sync_wake: Arc::new(tokio::sync::Notify::new()),
                 backup_execution_guards: BackupExecutionGuardTable::default(),
                 title_deletion_lock: Arc::new(tokio::sync::Mutex::new(())),
                 acquisition_search_lock: Arc::new(tokio::sync::Mutex::new(())),
@@ -2373,6 +2375,8 @@ impl AppUseCase {
                 .notification_event_broadcast
                 .send(stored.sequence);
         }
+        self.maybe_accelerate_discovery_sync_for_scan_completion(stored)
+            .await;
     }
 
     pub async fn append_domain_events(
@@ -2419,7 +2423,93 @@ impl AppUseCase {
                 .notification_event_broadcast
                 .send(last.sequence);
         }
+        for event in &stored {
+            self.maybe_accelerate_discovery_sync_for_scan_completion(event)
+                .await;
+        }
         Ok(stored)
+    }
+
+    async fn maybe_accelerate_discovery_sync_for_scan_completion(&self, event: &DomainEvent) {
+        let scryer_domain::DomainEventPayload::LibraryScanCompleted(data) = &event.payload else {
+            return;
+        };
+        if data.found_titles <= 0 {
+            return;
+        }
+        let Some(facet) = event.facet.clone() else {
+            return;
+        };
+        match self
+            .successful_library_scan_completion_exists_before(event.sequence, &facet)
+            .await
+        {
+            Ok(false) => {
+                if let Err(error) = self
+                    .schedule_discovery_sync_accelerated("first_library_scan_completed")
+                    .await
+                {
+                    tracing::warn!(
+                        error = %error,
+                        sequence = event.sequence,
+                        facet = facet.as_str(),
+                        "failed to accelerate discovery sync after first library scan"
+                    );
+                }
+            }
+            Ok(true) => {}
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    sequence = event.sequence,
+                    facet = facet.as_str(),
+                    "failed to inspect prior scan events for discovery sync acceleration"
+                );
+            }
+        }
+    }
+
+    async fn successful_library_scan_completion_exists_before(
+        &self,
+        before_sequence: i64,
+        facet: &MediaFacet,
+    ) -> AppResult<bool> {
+        let mut after_sequence = 0i64;
+        loop {
+            let events = self
+                .services
+                .events
+                .domain_events
+                .list(&DomainEventFilter {
+                    after_sequence: Some(after_sequence),
+                    event_types: Some(vec![DomainEventType::LibraryScanCompleted]),
+                    limit: 500,
+                    ..DomainEventFilter::default()
+                })
+                .await?;
+            if events.is_empty() {
+                return Ok(false);
+            }
+
+            let batch_len = events.len();
+            for event in events {
+                if event.sequence >= before_sequence {
+                    return Ok(false);
+                }
+                after_sequence = after_sequence.max(event.sequence);
+                let scryer_domain::DomainEventPayload::LibraryScanCompleted(data) = &event.payload
+                else {
+                    continue;
+                };
+                if data.found_titles > 0 && event.facet.as_ref() == Some(facet) {
+                    return Ok(true);
+                }
+            }
+
+            if batch_len < 500 {
+                return Ok(false);
+            }
+        }
     }
 
     pub async fn update_import_status_and_notify(

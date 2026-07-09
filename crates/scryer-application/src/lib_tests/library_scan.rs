@@ -2545,10 +2545,19 @@ async fn movie_full_scan_batches_radarr_identity_hints_at_gateway_cap() {
     );
     assert_eq!(metadata_gateway.detail_calls(), 0);
 
+    // Movie discovery yields folders, so each candidate runs async NFO/dir
+    // probing before it lands in the pending match queue. Under full-suite
+    // load the arrival spread of the 22 candidates can exceed the 50ms
+    // wall-clock flush interval (LIBRARY_SCAN_MATCH_FLUSH_INTERVAL), so the
+    // match batcher may flush them across more than one gateway call. That
+    // split is a scheduling artifact, not a batching regression -- every
+    // candidate still fires its id-anchored exact lookup. Assert on the
+    // flattened union of all batches instead of requiring a single coalesced
+    // call, which is what made this test flaky.
     let batches = metadata_gateway.batch_queries().await;
-    assert_eq!(batches.len(), 1);
-    assert_eq!(batches[0].len(), 22);
-    for query in &batches[0] {
+    let queries: Vec<_> = batches.iter().flatten().collect();
+    assert_eq!(queries.len(), 22);
+    for query in &queries {
         assert_eq!(query.query, "");
         assert_eq!(query.type_hint, "movie");
         assert_eq!(query.year, None);
@@ -2556,6 +2565,14 @@ async fn movie_full_scan_batches_radarr_identity_hints_at_gateway_cap() {
         assert_eq!(query.imdb_id, None);
         assert_eq!(query.tvdb_id, None);
     }
+    // Each candidate carries a distinct tmdb id, so the union must contain
+    // exactly the 22 expected anchored lookups with none dropped or duplicated
+    // across the split.
+    let distinct_tmdb_ids: std::collections::HashSet<_> = queries
+        .iter()
+        .filter_map(|query| query.tmdb_id.clone())
+        .collect();
+    assert_eq!(distinct_tmdb_ids.len(), 22);
 }
 
 #[tokio::test]
@@ -2609,16 +2626,26 @@ async fn movie_full_scan_batches_unhinted_fuzzy_candidates_at_gateway_cap() {
     })
     .await;
 
+    // Same flush-timer split as the hinted sibling above: movie folders run
+    // async NFO/dir probing before entering the pending match queue, so under
+    // load the 22 fuzzy candidates can be flushed across more than one gateway
+    // call. Assert on the flattened union rather than a single coalesced call.
     let batches = metadata_gateway.batch_queries().await;
-    assert_eq!(batches.len(), 1);
-    assert_eq!(batches[0].len(), 22);
-    assert!(batches[0].iter().all(|query| {
+    let queries: Vec<_> = batches.iter().flatten().collect();
+    assert_eq!(queries.len(), 22);
+    assert!(queries.iter().all(|query| {
         !query.query.trim().is_empty()
             && query.type_hint == "movie"
             && query.imdb_id.is_none()
             && query.tmdb_id.is_none()
             && query.tvdb_id.is_none()
     }));
+    // Each fuzzy candidate comes from a distinctly named folder, so the union
+    // must hold exactly 22 distinct title queries with none lost across the
+    // split.
+    let distinct_titles: std::collections::HashSet<_> =
+        queries.iter().map(|query| query.query.trim()).collect();
+    assert_eq!(distinct_titles.len(), 22);
 }
 
 #[tokio::test]

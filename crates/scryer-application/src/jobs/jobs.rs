@@ -16,7 +16,7 @@ use scryer_domain::{
     JobRunStartedEventData,
 };
 use serde_json::json;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::time::UNIX_EPOCH;
 use tokio::sync::broadcast;
 use tracing::{info, warn};
@@ -28,6 +28,8 @@ const DISCOVERY_SYNC_LEASE_SECONDS: i64 = 30 * 60;
 const DISCOVERY_SYNC_MANUAL_CONTEXT_COOLDOWN_SECONDS: i64 = 15 * 60;
 const DISCOVERY_SYNC_DAILY_BACKSTOP_SECONDS: i64 = 24 * 60 * 60;
 const DISCOVERY_SYNC_JITTER_WINDOW_SECONDS: i64 = 6 * 60 * 60;
+const DISCOVERY_SYNC_ACCELERATED_DELAY_SECONDS: i64 = 60;
+const DISCOVERY_SYNC_ACCELERATED_JITTER_WINDOW_SECONDS: i64 = 5 * 60;
 const DISCOVERY_SYNC_BOOTSTRAP_JITTER_WINDOW_SECONDS: i64 = 10 * 60;
 const DISCOVERY_SYNC_BOOTSTRAP_QUIET_SECONDS: i64 = 10 * 60;
 const DISCOVERY_SYNC_DOMAIN_EVENT_CATCH_UP_BATCH_LIMIT: usize = 500;
@@ -93,6 +95,17 @@ fn discovery_jitter_seconds(seed: &str, stream: &str, window_seconds: i64) -> i6
     .as_secs() as i64
 }
 
+fn discovery_accelerated_at(now: DateTime<Utc>, scheduler_seed: &str) -> DateTime<Utc> {
+    now + chrono::Duration::seconds(
+        DISCOVERY_SYNC_ACCELERATED_DELAY_SECONDS
+            + discovery_jitter_seconds(
+                scheduler_seed,
+                "first_personalized_snapshot",
+                DISCOVERY_SYNC_ACCELERATED_JITTER_WINDOW_SECONDS,
+            ),
+    )
+}
+
 fn discovery_status_is(actual: &str, expected: &str) -> bool {
     actual.trim().eq_ignore_ascii_case(expected)
 }
@@ -155,6 +168,17 @@ fn discovery_schedule_public_feed_retry(
     state.next_public_feed_eligible_at = Some(retry_at);
 }
 
+fn discovery_prefer_earlier_gate(
+    gate: &mut Option<DateTime<Utc>>,
+    candidate: DateTime<Utc>,
+) -> bool {
+    if gate.is_none_or(|existing| candidate < existing) {
+        *gate = Some(candidate);
+        return true;
+    }
+    false
+}
+
 fn discovery_next_run_at(
     now: DateTime<Utc>,
     next_incremental: DateTime<Utc>,
@@ -163,6 +187,7 @@ fn discovery_next_run_at(
     bootstrap_quiet_until: Option<DateTime<Utc>>,
     backoff_until: Option<DateTime<Utc>>,
     scan_blocked_retry_at: Option<DateTime<Utc>>,
+    pending_changes_quiet_at: Option<DateTime<Utc>>,
 ) -> DateTime<Utc> {
     [
         Some(next_incremental),
@@ -171,12 +196,25 @@ fn discovery_next_run_at(
         bootstrap_quiet_until,
         backoff_until,
         scan_blocked_retry_at,
+        pending_changes_quiet_at,
     ]
     .into_iter()
     .flatten()
     .filter(|candidate| *candidate >= now)
     .min()
     .unwrap_or(next_incremental)
+}
+
+fn discovery_pending_changes_quiet_at(
+    pending_changes: &[DiscoveryPendingContextChangeRecord],
+) -> Option<DateTime<Utc>> {
+    pending_changes
+        .iter()
+        .map(|change| change.last_seen_at)
+        .max()
+        .map(|last_seen| {
+            last_seen + chrono::Duration::seconds(DISCOVERY_SYNC_BOOTSTRAP_QUIET_SECONDS)
+        })
 }
 
 fn discovery_pending_changes_are_quiet(
@@ -228,6 +266,15 @@ fn discovery_scan_boundary_event(event: &DomainEvent) -> bool {
             | DomainEventPayload::LibraryScanCanceled(_)
             | DomainEventPayload::LibraryScanFailed(_)
     )
+}
+
+fn discovery_successful_scan_completion_facet(event: &DomainEvent) -> Option<MediaFacet> {
+    let DomainEventPayload::LibraryScanCompleted(data) = &event.payload else {
+        return None;
+    };
+    (data.found_titles > 0)
+        .then(|| event.facet.clone())
+        .flatten()
 }
 
 fn discovery_context_dirty_event_types() -> Vec<DomainEventType> {
@@ -925,12 +972,46 @@ impl AppUseCase {
         }
     }
 
+    pub(crate) async fn schedule_discovery_sync_accelerated(
+        &self,
+        reason: &str,
+    ) -> AppResult<DateTime<Utc>> {
+        let now = self.runtime.environment.now();
+        let scheduler_seed = self.discovery_scheduler_seed().await?;
+        let next_run_at = discovery_accelerated_at(now, &scheduler_seed);
+        let existing = self
+            .runtime
+            .jobs
+            .job_run_tracker
+            .next_run_at(JobKey::DiscoverySync)
+            .await;
+        if existing.is_none_or(|existing| next_run_at < existing) {
+            info!(
+                reason,
+                next_run_at = %next_run_at,
+                "accelerating discovery sync"
+            );
+            self.runtime
+                .jobs
+                .job_run_tracker
+                .set_next_run_at(JobKey::DiscoverySync, next_run_at)
+                .await;
+            self.runtime.jobs.discovery_sync_wake.notify_waiters();
+        } else {
+            self.runtime.jobs.discovery_sync_wake.notify_waiters();
+        }
+        Ok(next_run_at)
+    }
+
     pub async fn set_job_next_run_at(&self, job_key: JobKey, next_run_at: chrono::DateTime<Utc>) {
         self.runtime
             .jobs
             .job_run_tracker
             .set_next_run_at(job_key, next_run_at)
             .await;
+        if job_key == JobKey::DiscoverySync {
+            self.runtime.jobs.discovery_sync_wake.notify_waiters();
+        }
         let _ = self
             .append_domain_event(new_job_run_domain_event(
                 None,
@@ -973,6 +1054,9 @@ impl AppUseCase {
             .job_run_tracker
             .clear_next_run_at(job_key)
             .await;
+        if job_key == JobKey::DiscoverySync {
+            self.runtime.jobs.discovery_sync_wake.notify_waiters();
+        }
         let _ = self
             .append_domain_event(new_job_run_domain_event(
                 None,
@@ -1386,9 +1470,6 @@ impl AppUseCase {
             .await?;
         let state_created = existing_state.is_none();
         let mut state = existing_state.unwrap_or_default();
-        let previous_incremental_gate = state.next_incremental_reload_eligible_at;
-        let previous_context_gate = state.next_context_snapshot_eligible_at;
-        let previous_public_gate = state.next_public_feed_eligible_at;
         let subject_context_changed =
             state.last_subject_fingerprint.as_deref() != Some(library_context.fingerprint.as_str());
 
@@ -1424,16 +1505,28 @@ impl AppUseCase {
                 DISCOVERY_SYNC_DAILY_BACKSTOP_SECONDS + state.public_feed_jitter_seconds,
             );
 
-        state.next_incremental_reload_eligible_at = Some(next_incremental);
-        state.next_context_snapshot_eligible_at = Some(next_context);
-        state.next_public_feed_eligible_at = Some(next_public);
-        state.updated_at = now;
+        if state.last_success_generation_id.is_some() {
+            if state.next_incremental_reload_eligible_at.is_none() {
+                state.next_incremental_reload_eligible_at = Some(next_incremental);
+                state.updated_at = now;
+            }
+            if state.next_context_snapshot_eligible_at.is_none() {
+                state.next_context_snapshot_eligible_at = Some(next_context);
+                state.updated_at = now;
+            }
+        }
+        if state.last_public_feed_generation_id.is_some()
+            && state.next_public_feed_eligible_at.is_none()
+        {
+            state.next_public_feed_eligible_at = Some(next_public);
+            state.updated_at = now;
+        }
 
         let ack_recovery = self
             .retry_unacked_discovery_context_snapshot_acks(&mut state, now)
             .await?;
 
-        self.catch_up_discovery_context_dirty_state(&mut state, now)
+        self.catch_up_discovery_context_dirty_state(&mut state, now, &scheduler_seed)
             .await?;
         let mut pending_changes = self
             .services
@@ -1488,9 +1581,29 @@ impl AppUseCase {
 
         let active_scan_count = self.active_library_scan_run_count().await?;
         let scans_active = active_scan_count > 0;
-        let scan_blocked_retry_at = scans_active
-            .then_some(now + chrono::Duration::seconds(DISCOVERY_SYNC_BOOTSTRAP_QUIET_SECONDS));
         let snapshot_backoff_ready = state.backoff_until.is_none_or(|until| now >= until);
+        let first_snapshot_pending =
+            state.last_success_generation_id.is_none() && !library_context.subjects.is_empty();
+        let first_snapshot_bootstrap_quiet_due = first_snapshot_pending
+            && state
+                .bootstrap_quiet_until
+                .is_some_and(|quiet_until| now >= quiet_until);
+        if first_snapshot_pending
+            && state.inflight_context_snapshot_run_id.is_none()
+            && snapshot_backoff_ready
+            && !first_snapshot_bootstrap_quiet_due
+            && discovery_prefer_earlier_gate(
+                &mut state.next_context_snapshot_eligible_at,
+                discovery_accelerated_at(now, &scheduler_seed),
+            )
+        {
+            state.updated_at = now;
+        }
+        let scan_blocked_retry_at = scans_active.then_some(if first_snapshot_pending {
+            discovery_accelerated_at(now, &scheduler_seed)
+        } else {
+            now + chrono::Duration::seconds(DISCOVERY_SYNC_BOOTSTRAP_QUIET_SECONDS)
+        });
         let snapshot_resume_due = state.inflight_context_snapshot_run_id.is_some()
             && !scans_active
             && snapshot_backoff_ready;
@@ -1520,12 +1633,18 @@ impl AppUseCase {
             // skips the settle window (backoff still applies via snapshot_can_submit).
             subject_context_changed
                 && (trigger_source == JobTriggerSource::Manual
-                    || state
-                        .bootstrap_quiet_until
-                        .is_none_or(|quiet_until| now >= quiet_until))
+                    || first_snapshot_bootstrap_quiet_due
+                    || (state
+                        .next_context_snapshot_eligible_at
+                        .is_none_or(|gate| now >= gate)
+                        && state
+                            .bootstrap_quiet_until
+                            .is_none_or(|quiet_until| now >= quiet_until)))
         } else {
             snapshot_can_submit
-                && (previous_context_gate.is_some_and(|gate| now >= gate)
+                && (state
+                    .next_context_snapshot_eligible_at
+                    .is_some_and(|gate| now >= gate)
                     || full_snapshot_reconciliation_due)
                 && state.last_success_generation_id.is_some()
         };
@@ -1536,7 +1655,9 @@ impl AppUseCase {
         let public_feed_due = trigger_source == JobTriggerSource::Manual
             || trigger_source == JobTriggerSource::ScheduledStartup
             || state.last_public_feed_generation_id.is_none()
-            || previous_public_gate.is_some_and(|gate| now >= gate);
+            || state
+                .next_public_feed_eligible_at
+                .is_some_and(|gate| now >= gate);
         let public_feed = if public_feed_due {
             Some(
                 self.execute_discovery_public_feed(trigger_source, &defaults, &mut state, now)
@@ -1568,7 +1689,9 @@ impl AppUseCase {
             && !pending_changes.is_empty()
             && pending_changes_are_quiet
             && !incremental_changes_need_snapshot_reconciliation
-            && previous_incremental_gate.is_some_and(|gate| now >= gate)
+            && state
+                .next_incremental_reload_eligible_at
+                .is_some_and(|gate| now >= gate)
             && state.inflight_context_snapshot_run_id.is_none()
             && !manual_context_cooldown_active
             && state.backoff_until.is_none_or(|until| now >= until);
@@ -1596,6 +1719,9 @@ impl AppUseCase {
             .next_context_snapshot_eligible_at
             .unwrap_or(next_context);
         let effective_next_public = state.next_public_feed_eligible_at.unwrap_or(next_public);
+        let pending_changes_quiet_at = (!pending_changes_are_quiet)
+            .then(|| discovery_pending_changes_quiet_at(&pending_changes))
+            .flatten();
 
         let next_run_at = discovery_next_run_at(
             now,
@@ -1605,6 +1731,7 @@ impl AppUseCase {
             state.bootstrap_quiet_until,
             state.backoff_until,
             scan_blocked_retry_at,
+            pending_changes_quiet_at,
         );
 
         self.services
@@ -1725,11 +1852,15 @@ impl AppUseCase {
         &self,
         state: &mut DiscoverySyncStateRecord,
         now: DateTime<Utc>,
+        scheduler_seed: &str,
     ) -> AppResult<usize> {
         let start_sequence = state.last_seen_domain_event_sequence.unwrap_or_default();
         let mut after_sequence = start_sequence;
         let mut max_seen_sequence = after_sequence;
         let mut subject_change_count = 0usize;
+        let mut successful_scan_facets = self
+            .successful_completed_scan_facets_through_sequence(start_sequence)
+            .await?;
         let event_types = discovery_context_dirty_event_types();
 
         for _ in 0..DISCOVERY_SYNC_DOMAIN_EVENT_CATCH_UP_MAX_BATCHES {
@@ -1785,6 +1916,28 @@ impl AppUseCase {
                     } else {
                         extend_discovery_bootstrap_quiet_window(state, event.occurred_at);
                     }
+                } else if let Some(facet) = discovery_successful_scan_completion_facet(&event) {
+                    if successful_scan_facets.insert(facet) {
+                        let accelerated_at =
+                            discovery_accelerated_at(event.occurred_at, scheduler_seed);
+                        if state.last_success_generation_id.is_some() {
+                            discovery_prefer_earlier_gate(
+                                &mut state.next_incremental_reload_eligible_at,
+                                accelerated_at,
+                            );
+                        } else {
+                            discovery_prefer_earlier_gate(
+                                &mut state.next_context_snapshot_eligible_at,
+                                accelerated_at,
+                            );
+                            discovery_prefer_earlier_gate(
+                                &mut state.bootstrap_quiet_until,
+                                accelerated_at,
+                            );
+                        }
+                        state.dirty_reason_mask |= DISCOVERY_DIRTY_REASON_SCAN_BOUNDARY;
+                        state.updated_at = now;
+                    }
                 } else if discovery_scan_boundary_event(&event) && state.dirty_since.is_some() {
                     state.dirty_reason_mask |= DISCOVERY_DIRTY_REASON_SCAN_BOUNDARY;
                 }
@@ -1806,6 +1959,51 @@ impl AppUseCase {
         }
 
         Ok(subject_change_count)
+    }
+
+    async fn successful_completed_scan_facets_through_sequence(
+        &self,
+        max_sequence: i64,
+    ) -> AppResult<HashSet<MediaFacet>> {
+        let mut facets = HashSet::new();
+        if max_sequence <= 0 {
+            return Ok(facets);
+        }
+
+        let mut after_sequence = 0i64;
+        loop {
+            let events = self
+                .services
+                .events
+                .domain_events
+                .list(&DomainEventFilter {
+                    after_sequence: Some(after_sequence),
+                    event_types: Some(vec![DomainEventType::LibraryScanCompleted]),
+                    limit: DISCOVERY_SYNC_DOMAIN_EVENT_CATCH_UP_BATCH_LIMIT,
+                    ..DomainEventFilter::default()
+                })
+                .await?;
+            if events.is_empty() {
+                break;
+            }
+
+            let batch_len = events.len();
+            for event in events {
+                if event.sequence > max_sequence {
+                    return Ok(facets);
+                }
+                after_sequence = after_sequence.max(event.sequence);
+                if let Some(facet) = discovery_successful_scan_completion_facet(&event) {
+                    facets.insert(facet);
+                }
+            }
+
+            if batch_len < DISCOVERY_SYNC_DOMAIN_EVENT_CATCH_UP_BATCH_LIMIT {
+                break;
+            }
+        }
+
+        Ok(facets)
     }
 
     async fn retry_unacked_discovery_context_snapshot_acks(
@@ -2395,6 +2593,16 @@ impl AppUseCase {
         state.last_success_generation_id = Some(run_id.clone());
         state.last_subject_fingerprint = Some(library_context.fingerprint.clone());
         state.last_context_snapshot_completed_at = Some(completed_at);
+        state.next_context_snapshot_eligible_at = Some(
+            completed_at
+                + chrono::Duration::seconds(
+                    DISCOVERY_SYNC_DAILY_BACKSTOP_SECONDS + state.context_jitter_seconds,
+                ),
+        );
+        state.next_incremental_reload_eligible_at = Some(next_hash_jittered_bucket(
+            completed_at,
+            state.incremental_reload_jitter_seconds,
+        ));
         let clear_pending_through_sequence = state.inflight_domain_event_sequence;
         let submitted_fingerprint_still_current = state
             .inflight_subject_fingerprint

@@ -31,6 +31,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, TimeZone, Utc};
 use scryer_domain::{
     CanonicalMediaTag, DomainEventPayload, DomainExternalIds, ExternalId, JobRunStartedEventData,
+    LibraryScanCanceledEventData, LibraryScanCompletedEventData, LibraryScanFailedEventData,
     LibraryScanStartedEventData, MediaFacet, Title, TitleContextSnapshot, TitleUpdatedEventData,
 };
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
@@ -2029,11 +2030,13 @@ async fn discovery_sync_ack_failure_after_commit_schedules_retry() {
 }
 
 #[tokio::test]
-async fn discovery_sync_initial_tick_submits_snapshot_without_bootstrap_window() {
+async fn discovery_sync_existing_library_upgrade_schedules_first_snapshot_promptly() {
     let gateway = Arc::new(SnapshotMetadataGateway::default());
     let (app, _admin, titles) = bootstrap_with_metadata_gateway_and_titles(gateway.clone());
     let discovery = Arc::new(RecordingDiscoveryRepository::default());
     let app = app.with_test_overrides(|builder| builder.with_discovery_store(discovery.clone()));
+    let now = Utc.timestamp_opt(10_000, 0).unwrap();
+    app.runtime.environment.set_fixed_now_for_tests(Some(now));
 
     titles.store.lock().await.push(test_title(
         "title-1",
@@ -2046,8 +2049,8 @@ async fn discovery_sync_initial_tick_submits_snapshot_without_bootstrap_window()
         .await
         .expect("discovery sync should run");
 
-    assert_eq!(gateway.submitted_inputs.lock().await.len(), 1);
-    assert_eq!(discovery.commits.lock().await.len(), 1);
+    assert!(gateway.submitted_inputs.lock().await.is_empty());
+    assert!(discovery.commits.lock().await.is_empty());
     let state = discovery
         .state
         .lock()
@@ -2056,7 +2059,200 @@ async fn discovery_sync_initial_tick_submits_snapshot_without_bootstrap_window()
         .expect("state should be written");
     assert!(state.bootstrap_started_at.is_none());
     assert!(state.bootstrap_quiet_until.is_none());
+    assert!(state.last_success_generation_id.is_none());
+    let first_due = state
+        .next_context_snapshot_eligible_at
+        .expect("first personalized snapshot should be scheduled");
+    assert!(first_due >= now + chrono::Duration::minutes(1));
+    assert!(first_due <= now + chrono::Duration::minutes(6));
+
+    let next_run_at = app
+        .runtime
+        .jobs
+        .job_run_tracker
+        .next_run_at(JobKey::DiscoverySync)
+        .await
+        .expect("discovery sync should be scheduled promptly");
+    assert_eq!(next_run_at, first_due);
+
+    app.runtime
+        .environment
+        .set_fixed_now_for_tests(Some(first_due));
+    app.run_scheduled_job_now(JobKey::DiscoverySync, JobTriggerSource::ScheduledInterval)
+        .await
+        .expect("due discovery sync should run");
+
+    assert_eq!(gateway.submitted_inputs.lock().await.len(), 1);
+    assert_eq!(discovery.commits.lock().await.len(), 1);
+    let state = discovery
+        .state
+        .lock()
+        .await
+        .clone()
+        .expect("state should be written");
     assert!(state.last_success_generation_id.is_some());
+}
+
+#[tokio::test]
+async fn discovery_sync_empty_new_install_does_not_submit_personalized_snapshot() {
+    let gateway = Arc::new(SnapshotMetadataGateway::default());
+    let (app, _admin, _titles) = bootstrap_with_metadata_gateway_and_titles(gateway.clone());
+    let discovery = Arc::new(RecordingDiscoveryRepository::default());
+    let app = app.with_test_overrides(|builder| builder.with_discovery_store(discovery.clone()));
+    let now = Utc.timestamp_opt(10_000, 0).unwrap();
+    app.runtime.environment.set_fixed_now_for_tests(Some(now));
+
+    app.run_scheduled_job_now(JobKey::DiscoverySync, JobTriggerSource::ScheduledInterval)
+        .await
+        .expect("discovery sync should run");
+
+    assert!(gateway.submitted_inputs.lock().await.is_empty());
+    assert!(discovery.commits.lock().await.is_empty());
+    let state = discovery
+        .state
+        .lock()
+        .await
+        .clone()
+        .expect("state should be written");
+    assert!(state.last_success_generation_id.is_none());
+    assert!(state.next_context_snapshot_eligible_at.is_none());
+}
+
+#[tokio::test]
+async fn discovery_sync_first_successful_scan_with_titles_accelerates_first_snapshot() {
+    let gateway = Arc::new(SnapshotMetadataGateway::default());
+    let (app, _admin, titles) = bootstrap_with_metadata_gateway_and_titles(gateway.clone());
+    let discovery = Arc::new(RecordingDiscoveryRepository::default());
+    let app = app.with_test_overrides(|builder| builder.with_discovery_store(discovery.clone()));
+    let now = Utc.timestamp_opt(10_000, 0).unwrap();
+    app.runtime.environment.set_fixed_now_for_tests(Some(now));
+
+    app.run_scheduled_job_now(JobKey::DiscoverySync, JobTriggerSource::ScheduledInterval)
+        .await
+        .expect("empty discovery sync should run");
+    assert!(gateway.submitted_inputs.lock().await.is_empty());
+
+    titles.store.lock().await.push(test_title(
+        "title-1",
+        "The Example Movie",
+        MediaFacet::Movie,
+        vec![("tmdb_movie", "603")],
+    ));
+
+    let completed_at = now + chrono::Duration::seconds(30);
+    app.runtime
+        .environment
+        .set_fixed_now_for_tests(Some(completed_at));
+    let mut event = crate::domain_events::new_library_scan_domain_event(
+        crate::domain_events::DomainEventActor::system(),
+        "scan-1",
+        MediaFacet::Movie,
+        DomainEventPayload::LibraryScanCompleted(test_library_scan_completed_event("scan-1", 1)),
+    );
+    event.occurred_at = completed_at;
+    app.append_domain_event(event)
+        .await
+        .expect("scan completion event should append");
+
+    let next_run_at = app
+        .runtime
+        .jobs
+        .job_run_tracker
+        .next_run_at(JobKey::DiscoverySync)
+        .await
+        .expect("first successful scan should schedule discovery");
+    assert!(next_run_at >= completed_at + chrono::Duration::minutes(1));
+    assert!(next_run_at <= completed_at + chrono::Duration::minutes(6));
+
+    app.runtime
+        .environment
+        .set_fixed_now_for_tests(Some(next_run_at));
+    app.run_scheduled_job_now(JobKey::DiscoverySync, JobTriggerSource::ScheduledInterval)
+        .await
+        .expect("accelerated discovery sync should run");
+
+    let submitted_inputs = gateway.submitted_inputs.lock().await;
+    assert_eq!(submitted_inputs.len(), 1);
+    assert_eq!(submitted_inputs[0].subjects.len(), 1);
+    assert_eq!(submitted_inputs[0].subjects[0].tmdb_id, Some(603));
+    drop(submitted_inputs);
+    assert_eq!(discovery.commits.lock().await.len(), 1);
+}
+
+#[tokio::test]
+async fn discovery_sync_failed_canceled_or_empty_scan_does_not_accelerate_first_snapshot() {
+    let gateway = Arc::new(SnapshotMetadataGateway::default());
+    let (app, _admin, titles) = bootstrap_with_metadata_gateway_and_titles(gateway.clone());
+    let discovery = Arc::new(RecordingDiscoveryRepository::default());
+    let app = app.with_test_overrides(|builder| builder.with_discovery_store(discovery.clone()));
+    let now = Utc.timestamp_opt(10_000, 0).unwrap();
+    app.runtime.environment.set_fixed_now_for_tests(Some(now));
+    titles.store.lock().await.push(test_title(
+        "title-1",
+        "The Example Movie",
+        MediaFacet::Movie,
+        vec![("tmdb_movie", "603")],
+    ));
+
+    let mut empty_event = crate::domain_events::new_library_scan_domain_event(
+        crate::domain_events::DomainEventActor::system(),
+        "scan-empty",
+        MediaFacet::Movie,
+        DomainEventPayload::LibraryScanCompleted(test_library_scan_completed_event(
+            "scan-empty",
+            0,
+        )),
+    );
+    empty_event.occurred_at = now;
+    app.append_domain_event(empty_event)
+        .await
+        .expect("empty scan completion event should append");
+
+    let mut failed_event = crate::domain_events::new_library_scan_domain_event(
+        crate::domain_events::DomainEventActor::system(),
+        "scan-failed",
+        MediaFacet::Movie,
+        DomainEventPayload::LibraryScanFailed(LibraryScanFailedEventData {
+            session_id: "scan-failed".to_string(),
+            error_message: "scan failed".to_string(),
+        }),
+    );
+    failed_event.occurred_at = now;
+    app.append_domain_event(failed_event)
+        .await
+        .expect("failed scan event should append");
+
+    let mut canceled_event = crate::domain_events::new_library_scan_domain_event(
+        crate::domain_events::DomainEventActor::system(),
+        "scan-canceled",
+        MediaFacet::Movie,
+        DomainEventPayload::LibraryScanCanceled(LibraryScanCanceledEventData {
+            session_id: "scan-canceled".to_string(),
+            status: "canceled".to_string(),
+            found_titles: 1,
+            title_match_completed: 1,
+            title_match_total_known: true,
+            titles_completed: 1,
+            titles_total: Some(1),
+            files_completed: 0,
+            files_total: Some(0),
+            summary: None,
+        }),
+    );
+    canceled_event.occurred_at = now;
+    app.append_domain_event(canceled_event)
+        .await
+        .expect("canceled scan event should append");
+
+    assert!(
+        app.runtime
+            .jobs
+            .job_run_tracker
+            .next_run_at(JobKey::DiscoverySync)
+            .await
+            .is_none()
+    );
+    assert!(gateway.submitted_inputs.lock().await.is_empty());
 }
 
 #[tokio::test]
@@ -5198,6 +5394,25 @@ fn discovery_item_record(
         tombstoned_at: None,
         created_at: observed_at,
         updated_at: observed_at,
+    }
+}
+
+fn test_library_scan_completed_event(
+    session_id: &str,
+    found_titles: i64,
+) -> LibraryScanCompletedEventData {
+    LibraryScanCompletedEventData {
+        session_id: session_id.to_string(),
+        status: "completed".to_string(),
+        found_titles,
+        title_match_completed: found_titles,
+        title_match_total_known: true,
+        titles_completed: found_titles,
+        titles_total: Some(found_titles),
+        files_completed: 0,
+        files_total: Some(0),
+        summary: None,
+        warning_message: None,
     }
 }
 
