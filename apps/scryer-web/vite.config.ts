@@ -50,7 +50,6 @@ const UI_CHUNK_MODULES = [
 const MEDIA_CHUNK_MODULES = [
   "/components/containers/media-containers.ts",
   "/components/containers/media-content-container.tsx",
-  "/components/containers/movie-overview-container.tsx",
   "/components/containers/series-overview-container.tsx",
   "/components/views/overview-back-link.tsx",
 ];

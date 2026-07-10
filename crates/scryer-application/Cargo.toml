@@ -18,6 +18,8 @@ runtime-archives = [
     "dep:weaver-par2",
     "dep:zstd",
 ]
+runtime-par2-metal = ["weaver-par2/metal"]
+runtime-par2-wgpu = ["weaver-par2/wgpu"]
 runtime-backups = ["dep:tar", "dep:zstd"]
 runtime-media-analysis = [
     "dep:chardetng",
@@ -66,7 +68,7 @@ tar = { version = "0.4", optional = true }
 flate2 = { version = "1", optional = true }
 zstd = { version = "0.13", default-features = false, optional = true }
 lzma-rs = { version = "0.3", optional = true }
-weaver-par2 = { version = "0.2.1", features = ["metal"], optional = true }
+weaver-par2 = { git = "https://github.com/scryer-media/rarpar.git", rev = "fa3c4ca16567695fea9a66814884abdb1f37604d", version = "0.2.1", optional = true }
 tempfile = "3"
 chardetng = { version = "1", optional = true }
 encoding_rs = { version = "0.8", optional = true }

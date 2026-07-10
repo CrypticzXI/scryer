@@ -597,10 +597,15 @@ jobs:
           if [ -n "${{ matrix.extra_rustflags }}" ]; then
             export RUSTFLAGS="${RUSTFLAGS} ${{ matrix.extra_rustflags }}"
           fi
-          cargo build -p scryer --profile "${SCRYER_CARGO_PROFILE}" --locked --target "${{ matrix.target }}" 2>&1 | tee "${{ matrix.artifact_name }}-build.log"
+          cargo build -p scryer --profile "${SCRYER_CARGO_PROFILE}" --locked --target "${{ matrix.target }}" --no-default-features 2>&1 | tee "${{ matrix.artifact_name }}-docker-build.log"
+          mkdir -p docker-cpu
+          install -m 0755 "target/${{ matrix.target }}/${SCRYER_CARGO_PROFILE}/scryer" docker-cpu/scryer
+          cargo build -p scryer --profile "${SCRYER_CARGO_PROFILE}" --locked --target "${{ matrix.target }}" --features par2-wgpu 2>&1 | tee "${{ matrix.artifact_name }}-build.log"
 
       - name: Package tarball
-        run: tar -czf ${{ matrix.artifact_name }}.tar.gz -C "target/${{ matrix.target }}/${SCRYER_CARGO_PROFILE}" scryer
+        run: |
+          tar -czf ${{ matrix.artifact_name }}.tar.gz -C "target/${{ matrix.target }}/${SCRYER_CARGO_PROFILE}" scryer
+          tar -czf scryer-linux-${{ matrix.arch }}-docker-cpu.tar.gz -C docker-cpu scryer
 
       - name: Show sccache stats
         if: always()
@@ -620,7 +625,9 @@ jobs:
           path: |
             ${{ matrix.artifact_name }}.tar.gz
             ${{ matrix.artifact_name }}-build.log
+            ${{ matrix.artifact_name }}-docker-build.log
             ${{ matrix.artifact_name }}-sccache-stats.txt
+            scryer-linux-${{ matrix.arch }}-docker-cpu.tar.gz
           if-no-files-found: error
           retention-days: 14
 
@@ -736,7 +743,7 @@ jobs:
           if [ -n "${{ matrix.extra_rustflags }}" ]; then
             export RUSTFLAGS="${RUSTFLAGS} ${{ matrix.extra_rustflags }}"
           fi
-          cargo build -p scryer --profile "${SCRYER_CARGO_PROFILE}" --locked --target "${{ matrix.target }}" 2>&1 | tee "${{ matrix.artifact_name }}-build.log"
+          cargo build -p scryer --profile "${SCRYER_CARGO_PROFILE}" --locked --target "${{ matrix.target }}" --features par2-metal 2>&1 | tee "${{ matrix.artifact_name }}-build.log"
 
       - name: Codesign binary
         if: ${{ github.event_name != 'pull_request' }}
@@ -906,7 +913,7 @@ jobs:
           if ($env:USE_LLD_LINK -eq "true") {
             $env:RUSTFLAGS = "$env:RUSTFLAGS -Clinker=lld-link"
           }
-          cargo build -p scryer --profile $env:SCRYER_CARGO_PROFILE --locked --target ${{ matrix.target }} 2>&1 | Tee-Object -FilePath "${{ matrix.artifact_name }}-build.log"
+          cargo build -p scryer --profile $env:SCRYER_CARGO_PROFILE --locked --target ${{ matrix.target }} --features par2-wgpu 2>&1 | Tee-Object -FilePath "${{ matrix.artifact_name }}-build.log"
           if ($LASTEXITCODE -ne 0) {
             exit $LASTEXITCODE
           }

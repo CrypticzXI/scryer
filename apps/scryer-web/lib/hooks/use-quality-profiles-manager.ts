@@ -169,6 +169,10 @@ export function useQualityProfilesManager(
     ParsedQualityProfileEntry[]
   >([]);
   const [qualityProfiles, setQualityProfiles] = React.useState<ParsedQualityProfile[]>([]);
+  // Monotonic counter of applied settings payloads; lets in-flight refetches
+  // detect that a newer (mutation-authoritative) payload landed and discard
+  // their stale snapshot instead of clobbering it.
+  const qualityProfileApplyEpochRef = React.useRef(0);
   const [qualityProfileParseError, setQualityProfileParseError] = React.useState("");
   const [qualityProfileDraft, setQualityProfileDraft] = React.useState<QualityProfileDraft>(() =>
     toQualityProfileDraft(null, "default", "4K"),
@@ -295,7 +299,11 @@ export function useQualityProfilesManager(
     (
       payload: QualityProfileSettingsPayload | null | undefined,
       preserveProfileId?: string,
+      options?: { preserveDraft?: boolean },
     ) => {
+      // Every apply advances the epoch so in-flight event-triggered refetches
+      // that started before this (authoritative) payload can be discarded.
+      qualityProfileApplyEpochRef.current += 1;
       const resolved = resolveQualityProfileCatalogState(
         qualityProfileSettingsToCatalogText(payload),
       );
@@ -327,8 +335,10 @@ export function useQualityProfilesManager(
 
       setQualityProfileCatalogEntriesState(catalogEntries);
       setQualityProfiles(resolvedProfiles);
-      setSelectedQualityProfileId(nextDraftId);
-      setQualityProfileDraft(nextDefaultDraft);
+      if (!options?.preserveDraft) {
+        setSelectedQualityProfileId(nextDraftId);
+        setQualityProfileDraft(nextDefaultDraft);
+      }
       setGlobalQualityProfileId(validGlobalProfile);
       setGlobalScoringPersona(payload?.globalScoringPersona ?? "balanced");
 
@@ -383,23 +393,36 @@ export function useQualityProfilesManager(
     [applyQualityProfileSettingsPayload, client, setGlobalStatus, t],
   );
 
-  const refreshQualityProfiles = React.useCallback(async () => {
-    setMediaSettingsLoading(true);
-    try {
-      const { data, error } = await client
-        .query(qualityProfilesInitQuery, {}, { requestPolicy: "network-only" })
-        .toPromise();
-      if (error) throw error;
+  const refreshQualityProfiles = React.useCallback(
+    async (options?: { preserveDraft?: boolean }) => {
+      setMediaSettingsLoading(true);
+      const epochAtStart = qualityProfileApplyEpochRef.current;
+      try {
+        const { data, error } = await client
+          .query(qualityProfilesInitQuery, {}, { requestPolicy: "network-only" })
+          .toPromise();
+        if (error) throw error;
 
-      setDownloadClients(data.downloadClientConfigs || []);
-      applyQualityProfileSettingsPayload(data.qualityProfileSettings);
-    } catch (error) {
-      setGlobalStatus(error instanceof Error ? error.message : t("status.failedToLoad"));
-    } finally {
-      setMediaSettingsLoading(false);
-      setInitialLoadComplete(true);
-    }
-  }, [applyQualityProfileSettingsPayload, client, setGlobalStatus, t]);
+        // A mutation applied its authoritative payload while this refetch was
+        // in flight; this snapshot is stale and must not clobber that state.
+        if (qualityProfileApplyEpochRef.current !== epochAtStart) {
+          return;
+        }
+        setDownloadClients(data.downloadClientConfigs || []);
+        applyQualityProfileSettingsPayload(
+          data.qualityProfileSettings,
+          undefined,
+          options,
+        );
+      } catch (error) {
+        setGlobalStatus(error instanceof Error ? error.message : t("status.failedToLoad"));
+      } finally {
+        setMediaSettingsLoading(false);
+        setInitialLoadComplete(true);
+      }
+    },
+    [applyQualityProfileSettingsPayload, client, setGlobalStatus, t],
+  );
 
   React.useEffect(() => {
     void refreshQualityProfiles();
@@ -413,7 +436,9 @@ export function useQualityProfilesManager(
           keys.includes(QUALITY_PROFILE_ID_KEY) ||
           keys.includes(SCORING_PERSONA_KEY)
         ) {
-          void refreshQualityProfiles();
+          // Event-triggered refreshes update the list but never the operator's
+          // in-progress draft/selection (an unsaved editor must survive them).
+          void refreshQualityProfiles({ preserveDraft: true });
         }
       },
       [refreshQualityProfiles],

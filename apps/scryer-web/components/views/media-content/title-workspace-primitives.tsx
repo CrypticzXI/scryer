@@ -56,7 +56,7 @@ export function TitleWorkspacePosterFrame({
   children: React.ReactNode;
 }) {
   return (
-    <div className="relative h-[258px] w-[172px] shrink-0 overflow-hidden rounded-[9px] border border-[#2a3556] bg-[var(--scry-inset)] shadow-[0_8px_22px_rgba(0,0,0,0.5)] max-sm:h-[229px] max-sm:w-[151px]">
+    <div className="relative h-[300px] w-[200px] shrink-0 overflow-hidden rounded-[9px] border border-[#2a3556] bg-[var(--scry-inset)] shadow-[0_8px_22px_rgba(0,0,0,0.5)]">
       {children}
     </div>
   );

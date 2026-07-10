@@ -2094,6 +2094,14 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
       deletionJobIdsRef.current.delete(run.id);
       if (deletionJobIdsRef.current.size === 0) {
         clearDeletionFallbackTimers();
+        // Physically remove the deleted titles from the context overlay before
+        // dropping the pending-id render filter, or the union with
+        // titleContextTitles resurrects their cards after the delete completes.
+        setTitleContextTitles((current) =>
+          current.filter(
+            (title) => !pendingDeletedTitleIdsRef.current.has(title.id),
+          ),
+        );
         setPendingDeletedTitleIds(new Set());
       }
       void refreshTitles();
