@@ -154,6 +154,8 @@ function TitleCardImpl({
     : "bg-[rgba(4,6,12,0.82)] text-[var(--scry-muted2)]";
   const BadgeIcon = facetBadgeIcon(facet);
   const hasYear = year != null && `${year}`.trim() !== "";
+  const hasPosterArt = Boolean(posterUrl || posterSourceUrl);
+  const revealBaseTextOnHover = revealTextOnHover && hasPosterArt;
 
   // Exactly one action available → the whole card triggers it.
   const actionCount = requested ? 0 : Number(addable) + Number(requestable);
@@ -223,7 +225,7 @@ function TitleCardImpl({
           aria-hidden="true"
           className={cn(
             "absolute inset-0 bg-gradient-to-t from-black/75 via-black/5 to-transparent",
-            revealTextOnHover &&
+            revealBaseTextOnHover &&
               "opacity-0 transition-opacity duration-200 group-hover:opacity-100 group-focus-within:opacity-100",
           )}
         />
@@ -386,7 +388,7 @@ function TitleCardImpl({
         className={cn(
           "pointer-events-none absolute inset-x-0 bottom-0 z-10 text-center",
           compact ? "px-2.5 pb-2.5" : "px-3 pb-3.5",
-          revealTextOnHover &&
+          revealBaseTextOnHover &&
             "translate-y-2 opacity-0 transition duration-200 group-hover:translate-y-0 group-hover:opacity-100 group-focus-within:translate-y-0 group-focus-within:opacity-100",
         )}
       >

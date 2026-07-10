@@ -1224,20 +1224,10 @@ pub struct MediaRequestPayload {
 
 #[derive(SimpleObject, Clone)]
 pub struct MediaRequestChangedPayload {
-    pub sequence: Long,
     pub event_id: ID,
-    pub occurred_at: DateTime<Utc>,
     pub event_type: DomainEventTypeValue,
     pub request_id: ID,
     pub library_id: ID,
-    pub facet: MediaFacetValue,
-    pub title_name: String,
-    pub created_title_id: Option<ID>,
-    pub requested_quality_profile_id: Option<ID>,
-    pub requested_quality_profile_name: Option<String>,
-    pub requested_monitor_type: Option<String>,
-    pub approved_quality_profile_id: Option<ID>,
-    pub approved_quality_profile_name: Option<String>,
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
@@ -1258,10 +1248,8 @@ pub struct SubmitMediaRequestPayload {
 #[derive(SimpleObject, Clone)]
 pub struct AudioStreamDetailPayload {
     pub codec: Option<String>,
-    pub profile: Option<String>,
     pub channels: Option<i32>,
     pub language: Option<String>,
-    pub name: Option<String>,
     pub bitrate_kbps: Option<i32>,
 }
 
@@ -1292,65 +1280,6 @@ pub struct SystemHealthPayload {
     pub recent_event_preview: Vec<String>,
     pub db_migration_version: Option<String>,
     pub indexer_stats: Vec<IndexerQueryStatsPayload>,
-}
-
-#[derive(SimpleObject, Clone)]
-pub struct UpstreamSchedulerSnapshotPayload {
-    pub entries: Vec<UpstreamSchedulerSnapshotEntryPayload>,
-}
-
-#[derive(SimpleObject, Clone)]
-pub struct UpstreamSchedulerSnapshotEntryPayload {
-    pub host_key: String,
-    pub destination_key: String,
-    pub account_quota_key: Option<String>,
-    pub rss_request_key: Option<String>,
-    pub last_decision: Option<String>,
-    pub last_feedback_at: Option<DateTime<Utc>>,
-    pub last_successful_at: Option<DateTime<Utc>>,
-    pub last_attempt_at: Option<DateTime<Utc>>,
-    pub cooldown_until: Option<DateTime<Utc>>,
-    pub api_remaining_fraction: Option<f64>,
-    pub quota_observed_at: Option<DateTime<Utc>>,
-    pub quota_probe_after: Option<DateTime<Utc>>,
-    pub quota_reset_at: Option<DateTime<Utc>>,
-    pub quota_source: Option<String>,
-    pub quota_stale: bool,
-    pub rss_last_successful_poll_at: Option<DateTime<Utc>>,
-    pub rss_last_attempt_at: Option<DateTime<Utc>>,
-    pub rss_target_interval_seconds: Option<Long>,
-    pub rss_latest_safe_poll_at: Option<DateTime<Utc>>,
-    pub rss_estimated_feed_depth: Option<i32>,
-    pub rss_freshness_risk: Option<f64>,
-    pub rss_destination_recent_activity_at: Option<DateTime<Utc>>,
-    pub rss_last_seen_release_identity: Option<String>,
-    pub rss_last_seen_release_published_at: Option<DateTime<Utc>>,
-    pub rss_last_feed_gap_start_at: Option<DateTime<Utc>>,
-    pub rss_last_feed_gap_end_at: Option<DateTime<Utc>>,
-    pub admitted_count: Long,
-    pub deferred_count: Long,
-    pub skipped_count: Long,
-}
-
-#[derive(SimpleObject, Clone)]
-pub struct OutboundRateLimitSnapshotPayload {
-    pub host_rps: Vec<OutboundHostRpsSnapshotEntryPayload>,
-    pub destination_cooldowns: Vec<OutboundDestinationCooldownSnapshotEntryPayload>,
-}
-
-#[derive(SimpleObject, Clone)]
-pub struct OutboundHostRpsSnapshotEntryPayload {
-    pub host_key: String,
-    pub available_in_seconds: Long,
-    pub requests_per_second: f64,
-    pub burst: i32,
-    pub profile_source: String,
-}
-
-#[derive(SimpleObject, Clone)]
-pub struct OutboundDestinationCooldownSnapshotEntryPayload {
-    pub destination_key: String,
-    pub available_in_seconds: Long,
 }
 
 #[derive(SimpleObject, Clone, Debug)]
@@ -1582,10 +1511,6 @@ pub struct LibraryScanProgressPayload {
     pub hydration_progress: LibraryScanPhaseProgressPayload,
     pub media_analysis_total_known: bool,
     pub media_analysis_progress: LibraryScanPhaseProgressPayload,
-    pub metadata_total_known: bool,
-    pub file_total_known: bool,
-    pub metadata_progress: LibraryScanPhaseProgressPayload,
-    pub file_progress: LibraryScanPhaseProgressPayload,
     pub summary: Option<LibraryScanSummaryPayload>,
 }
 
@@ -1631,61 +1556,19 @@ pub struct JobRunPayload {
 #[derive(SimpleObject, Clone)]
 pub struct DiscoverySyncStatusPayload {
     pub state: DiscoverySyncStatePayload,
-    pub recent_runs: Vec<DiscoverySyncRunPayload>,
     pub pending_context_change_count: Long,
 }
 
 #[derive(SimpleObject, Clone)]
 pub struct DiscoverySyncStatePayload {
-    pub scope_key: String,
     pub last_success_generation_id: Option<ID>,
     pub last_public_feed_generation_id: Option<ID>,
-    pub last_subject_fingerprint: Option<String>,
     pub last_context_snapshot_completed_at: Option<DateTime<Utc>>,
     pub last_incremental_reload_completed_at: Option<DateTime<Utc>>,
     pub last_public_feed_completed_at: Option<DateTime<Utc>>,
-    pub dirty_since: Option<DateTime<Utc>>,
-    pub dirty_reason_mask: Long,
-    pub bootstrap_started_at: Option<DateTime<Utc>>,
-    pub bootstrap_quiet_until: Option<DateTime<Utc>>,
     pub next_context_snapshot_eligible_at: Option<DateTime<Utc>>,
     pub next_incremental_reload_eligible_at: Option<DateTime<Utc>>,
     pub next_public_feed_eligible_at: Option<DateTime<Utc>>,
-    pub backoff_until: Option<DateTime<Utc>>,
-    pub startup_jitter_seconds: Long,
-    pub context_jitter_seconds: Long,
-    pub incremental_reload_jitter_seconds: Long,
-    pub public_feed_jitter_seconds: Long,
-    pub last_seen_domain_event_sequence: Option<Long>,
-    pub inflight_subject_fingerprint: Option<String>,
-    pub inflight_domain_event_sequence: Option<Long>,
-    pub updated_at: DateTime<Utc>,
-}
-
-#[derive(SimpleObject, Clone)]
-pub struct DiscoverySyncRunPayload {
-    pub id: ID,
-    pub kind: String,
-    pub status: String,
-    pub trigger_source: String,
-    pub region: String,
-    pub language: String,
-    pub subject_count: Long,
-    pub subject_fingerprint: Option<String>,
-    pub previous_subject_fingerprint: Option<String>,
-    pub base_generation_id: Option<ID>,
-    pub changed_subject_count: Long,
-    pub affected_target_count: Long,
-    pub smg_request_id: Option<String>,
-    pub smg_status: Option<String>,
-    pub discovery_index_watermark: Option<String>,
-    pub page_count: Option<i32>,
-    pub item_count: Option<Long>,
-    pub facet_count: Option<Long>,
-    pub error_text: Option<String>,
-    pub started_at: Option<DateTime<Utc>>,
-    pub completed_at: Option<DateTime<Utc>>,
-    pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
 
@@ -1884,7 +1767,6 @@ pub struct TitleReleaseBlocklistEntryPayload {
 
 #[derive(SimpleObject, Clone)]
 pub struct IndexerSearchResultPayload {
-    pub indexer_id: Option<ID>,
     pub source: String,
     pub title: String,
     pub link: Option<String>,
@@ -1922,8 +1804,6 @@ pub struct QueueDownloadScopePayload {
 pub struct ParsedEpisodePayload {
     pub season: Option<i32>,
     pub episode_numbers: Vec<i32>,
-    pub absolute_episode: Option<i32>,
-    pub raw: Option<String>,
 }
 
 #[derive(SimpleObject, Clone)]
@@ -1931,27 +1811,20 @@ pub struct ParsedReleasePayload {
     pub raw_title: String,
     pub normalized_title: String,
     pub release_group: Option<String>,
-    pub languages_audio: Vec<String>,
-    pub languages_subtitles: Vec<String>,
-    pub year: Option<i32>,
     pub quality: Option<String>,
     pub source: Option<String>,
     pub video_codec: Option<String>,
     pub video_encoding: Option<String>,
     pub audio: Option<String>,
-    pub audio_channels: Option<String>,
     pub is_dual_audio: bool,
     pub is_atmos: bool,
     pub is_dolby_vision: bool,
     pub detected_hdr: bool,
-    pub fps: Option<f32>,
     pub is_proper_upload: bool,
     pub is_remux: bool,
     pub is_bd_disk: bool,
     pub is_ai_enhanced: bool,
-    pub parser_version: String,
     pub parse_confidence: f32,
-    pub missing_fields: Vec<String>,
     pub parse_hints: Vec<String>,
     pub episode: Option<ParsedEpisodePayload>,
 }
@@ -2161,8 +2034,6 @@ pub struct ImportResultPayload {
     pub title_id: Option<ID>,
     pub source_path: String,
     pub dest_path: Option<String>,
-    pub file_size_bytes: Option<Long>,
-    pub link_type: Option<String>,
     pub error_message: Option<String>,
 }
 
@@ -2282,7 +2153,6 @@ pub struct PendingImportSearchAttemptPayload {
 pub struct PendingImportItemPayload {
     pub id: ID,
     pub library_id: ID,
-    pub library_slug: Option<String>,
     pub facet: MediaFacetValue,
     pub status: PendingImportStatusValue,
     pub title_id: Option<ID>,
@@ -2377,7 +2247,6 @@ pub struct DeleteTitlesPayload {
 #[derive(SimpleObject, Clone)]
 pub struct MediaRenamePlanItemPayload {
     pub collection_id: Option<ID>,
-    pub media_file_id: Option<ID>,
     pub series_movie_link_ids: Vec<ID>,
     pub current_path: String,
     pub proposed_path: Option<String>,
@@ -2408,7 +2277,6 @@ pub struct MediaRenamePlanPayload {
 #[derive(SimpleObject, Clone)]
 pub struct MediaRenameApplyItemPayload {
     pub collection_id: Option<ID>,
-    pub media_file_id: Option<ID>,
     pub series_movie_link_ids: Vec<ID>,
     pub current_path: String,
     pub proposed_path: Option<String>,
@@ -2583,7 +2451,6 @@ pub struct UiTableColumnSettingPayload {
 
 #[derive(SimpleObject, Clone)]
 pub struct UiSettingsPayload {
-    pub user_id: ID,
     pub theme: UiThemeValue,
     pub date_time_format: UiDateTimeFormatValue,
     pub highlight_color: Option<String>,
@@ -2595,8 +2462,6 @@ pub struct UiSettingsPayload {
     pub sidebar_mode: UiSidebarModeValue,
     pub default_landing_view: UiDefaultLandingViewValue,
     pub table_columns: Vec<UiTableColumnSettingPayload>,
-    pub created_at: Option<DateTime<Utc>>,
-    pub updated_at: Option<DateTime<Utc>>,
 }
 
 #[derive(InputObject, Clone)]
@@ -2741,7 +2606,6 @@ pub struct MediaSettingsPayload {
     pub library_path: String,
     pub root_folders: Vec<RootFolderPayload>,
     pub required_audio_languages: Vec<String>,
-    pub folder_template: String,
     pub rename_enabled: bool,
     pub rename_template: String,
     pub rename_collision_policy: String,
@@ -2941,7 +2805,6 @@ pub struct QueueDownloadPayload {
 pub struct WantedSearchPayload {
     pub queued_count: i32,
     pub skipped_in_progress_count: i32,
-    pub conflict: Option<QueueDownloadConflictPayload>,
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
@@ -4824,7 +4687,6 @@ pub struct ExternalImportLibrarySettingApplicationPayload {
 pub struct FinalizeExternalImportPayload {
     pub finalized: bool,
     pub monitor_warmup_session_id: ID,
-    pub library_setting_applications: Vec<ExternalImportLibrarySettingApplicationPayload>,
 }
 
 #[derive(InputObject)]
@@ -4999,7 +4861,6 @@ pub struct PostProcessingScriptRunPayload {
     pub stdout_tail: Option<String>,
     pub stderr_tail: Option<String>,
     pub duration_ms: Option<i32>,
-    pub env_payload_json: Option<String>,
     pub started_at: DateTime<Utc>,
     pub completed_at: Option<DateTime<Utc>>,
 }

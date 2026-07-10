@@ -347,7 +347,6 @@ fn to_app_ui_table_view_mode(mode: UiTableViewModeValue) -> scryer_application::
 
 pub(crate) fn from_ui_settings(settings: scryer_application::UiSettings) -> UiSettingsPayload {
     UiSettingsPayload {
-        user_id: settings.user_id.into(),
         theme: from_ui_theme(settings.theme),
         date_time_format: from_ui_date_time_format(settings.date_time_format),
         highlight_color: settings.highlight_color,
@@ -369,8 +368,6 @@ pub(crate) fn from_ui_settings(settings: scryer_application::UiSettings) -> UiSe
                 visible: column.visible,
             })
             .collect(),
-        created_at: settings.created_at,
-        updated_at: settings.updated_at,
     }
 }
 
@@ -625,19 +622,6 @@ impl SettingsQueries {
         .map_err(to_gql_error)
     }
 
-    async fn media_server_connection(
-        &self,
-        ctx: &Context<'_>,
-        id: ID,
-    ) -> GqlResult<Option<MediaServerConnectionPayload>> {
-        let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
-        app.get_media_server_connection(&actor, id.as_ref())
-            .await
-            .map(|connection| connection.map(from_media_server_connection))
-            .map_err(to_gql_error)
-    }
-
     async fn jellyfin_server_users(
         &self,
         ctx: &Context<'_>,
@@ -860,12 +844,11 @@ impl SettingsQueries {
     async fn download_client_configs(
         &self,
         ctx: &Context<'_>,
-        client_type: Option<String>,
     ) -> GqlResult<Vec<DownloadClientConfigPayload>> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
         let configs = app
-            .list_download_client_configs(&actor, client_type)
+            .list_download_client_configs(&actor, None)
             .await
             .map_err(to_gql_error)?;
         let field_map = app

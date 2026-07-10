@@ -118,11 +118,15 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
     // 0.17.0 re-pinned this census for the intentionally API-breaking release:
     // query fields moved 119 -> 121 with the added Query.episodeById /
     // Query.collectionById id-anchored lookups; the other counts are unchanged.
-    assert_eq!(query_field_count, 121);
-    assert_eq!(mutation_field_count, 164);
+    // 0.17.0 API surface trim (RFC 129 root wave): removed 5 dead query roots
+    // (discoverySyncStatus, libraryScanSession, mediaServerConnection,
+    // outboundRateLimitSnapshot, upstreamSchedulerSnapshot), 1 dead mutation
+    // (queueReplacementRelease), and the 5 exclusive snapshot payload OBJECT types.
+    assert_eq!(query_field_count, 116);
+    assert_eq!(mutation_field_count, 163);
     assert_eq!(subscription_field_count, 13);
-    assert_eq!(public_types.len(), 503);
-    assert_eq!(kind_count("OBJECT"), 264);
+    assert_eq!(public_types.len(), 498);
+    assert_eq!(kind_count("OBJECT"), 259);
     assert_eq!(kind_count("INPUT_OBJECT"), 149);
     assert_eq!(kind_count("ENUM"), 80);
     assert_eq!(kind_count("SCALAR"), 10);
@@ -135,9 +139,7 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
     assert!(query_field_names.contains(&"episodeById"));
     assert!(query_field_names.contains(&"collectionById"));
     assert!(!query_field_names.contains(&"episodeMediaFiles"));
-    assert!(query_field_names.contains(&"outboundRateLimitSnapshot"));
     assert!(query_field_names.contains(&"runtimeInfo"));
-    assert!(query_field_names.contains(&"upstreamSchedulerSnapshot"));
     assert!(query_field_names.contains(&"cutoffUnmetTitlesPage"));
     assert!(mutation_field_names.contains(&"clearExternalImportSetupSecretDraft"));
     assert!(mutation_field_names.contains(&"createIndexerProxyConfig"));
@@ -157,14 +159,9 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
     assert!(public_type_names.contains(&"ExternalImportLibrarySettingApplicationPayload"));
     assert!(public_type_names.contains(&"ExternalImportLibrarySettingKey"));
     assert!(public_type_names.contains(&"ExternalImportLibrarySettingValuePayload"));
-    assert!(public_type_names.contains(&"OutboundDestinationCooldownSnapshotEntryPayload"));
-    assert!(public_type_names.contains(&"OutboundHostRpsSnapshotEntryPayload"));
-    assert!(public_type_names.contains(&"OutboundRateLimitSnapshotPayload"));
     assert!(public_type_names.contains(&"RuntimeInfoPayload"));
     assert!(public_type_names.contains(&"RuntimePathStyleValue"));
     assert!(public_type_names.contains(&"UpdateBackupSettingsInput"));
-    assert!(public_type_names.contains(&"UpstreamSchedulerSnapshotEntryPayload"));
-    assert!(public_type_names.contains(&"UpstreamSchedulerSnapshotPayload"));
     assert!(public_type_names.contains(&"CutoffUnmetTitlesPagePayload"));
     // RFC 119 interactive-search job + convergence surface is present…
     assert!(query_field_names.contains(&"acquisitionSearchJob"));
@@ -188,6 +185,20 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
     assert!(!public_type_names.contains(&"TriggerSeasonWantedSearchInput"));
     assert!(!public_type_names.contains(&"TriggerWantedSearchInput"));
     assert!(!public_type_names.contains(&"ResetWantedItemPayload"));
+
+    // 0.17.0 API surface trim (RFC 129 root wave): dead root fields and their
+    // exclusive snapshot payload types are gone.
+    assert!(!query_field_names.contains(&"discoverySyncStatus"));
+    assert!(!query_field_names.contains(&"libraryScanSession"));
+    assert!(!query_field_names.contains(&"mediaServerConnection"));
+    assert!(!query_field_names.contains(&"outboundRateLimitSnapshot"));
+    assert!(!query_field_names.contains(&"upstreamSchedulerSnapshot"));
+    assert!(!mutation_field_names.contains(&"queueReplacementRelease"));
+    assert!(!public_type_names.contains(&"OutboundRateLimitSnapshotPayload"));
+    assert!(!public_type_names.contains(&"OutboundHostRpsSnapshotEntryPayload"));
+    assert!(!public_type_names.contains(&"OutboundDestinationCooldownSnapshotEntryPayload"));
+    assert!(!public_type_names.contains(&"UpstreamSchedulerSnapshotPayload"));
+    assert!(!public_type_names.contains(&"UpstreamSchedulerSnapshotEntryPayload"));
 }
 
 #[tokio::test]
@@ -786,7 +797,7 @@ async fn graphql_introspection_query_root_uses_semantic_search_and_browse_fields
     assert!(names.contains(&"titleHistory"));
     assert!(!names.contains(&"titleEvents"));
     assert!(!names.contains(&"episodeHistory"));
-    assert!(names.contains(&"libraryScanSession"));
+    assert!(!names.contains(&"libraryScanSession"));
     assert!(!names.contains(&"domainEvents"));
     assert!(names.contains(&"downloadHistory"));
 }
@@ -2235,7 +2246,8 @@ async fn graphql_introspection_media_server_delete_uses_id_and_payload_result() 
             .clone()
     };
     for (field_name, arg_name) in [
-        ("mediaServerConnection", "id"),
+        // mediaServerConnection (singular) removed in the 0.17.0 root-wave trim;
+        // the plural mediaServerConnections + MediaServerConnectionPayload type stay.
         ("jellyfinServerUsers", "connectionId"),
     ] {
         let arg = query_arg(field_name, arg_name);

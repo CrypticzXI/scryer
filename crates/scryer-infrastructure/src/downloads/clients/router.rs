@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
+use std::path::{Component, Path};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -260,6 +261,39 @@ fn download_client_remote_path_mappings(
             None
         }
     }
+}
+
+fn normalize_completed_download_import_dir(item: &mut scryer_domain::CompletedDownload) {
+    let reported_dir = Path::new(item.dest_dir.trim());
+    if !reported_dir.is_dir() {
+        return;
+    }
+
+    let name = item.name.trim();
+    if name.is_empty() || name.contains(['/', '\\']) {
+        return;
+    }
+    let mut components = Path::new(name).components();
+    let Some(Component::Normal(child_name)) = components.next() else {
+        return;
+    };
+    if components.next().is_some() || reported_dir.file_name() == Some(child_name) {
+        return;
+    }
+
+    let release_dir = reported_dir.join(child_name);
+    if !release_dir.is_dir() {
+        return;
+    }
+
+    tracing::debug!(
+        client_id = %item.client_id,
+        client_type = %item.client_type,
+        reported_dir = %reported_dir.display(),
+        release_dir = %release_dir.display(),
+        "resolved completed download release directory from client-reported parent"
+    );
+    item.dest_dir = release_dir.to_string_lossy().into_owned();
 }
 
 #[derive(Clone)]
@@ -2505,6 +2539,15 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                 }
             };
             let mappings = download_client_remote_path_mappings(&config);
+            let accepts_torrents = Self::config_accepts_source_kind(
+                &config,
+                DownloadSourceKind::TorrentFile,
+                self.plugin_provider.as_ref(),
+            ) || Self::config_accepts_source_kind(
+                &config,
+                DownloadSourceKind::MagnetUri,
+                self.plugin_provider.as_ref(),
+            );
             match client.list_completed_downloads().await {
                 Ok(mut items) => {
                     tracing::debug!(
@@ -2518,6 +2561,9 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                         item.client_id = config.id.clone();
                         if let Some(mappings) = mappings.as_deref() {
                             apply_remote_path_mappings_to_completed_download(item, mappings);
+                        }
+                        if accepts_torrents {
+                            normalize_completed_download_import_dir(item);
                         }
                         accepted_items.push(item.clone());
                     }
@@ -2624,6 +2670,15 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                 }
             };
             let mappings = download_client_remote_path_mappings(&config);
+            let accepts_torrents = Self::config_accepts_source_kind(
+                &config,
+                DownloadSourceKind::TorrentFile,
+                self.plugin_provider.as_ref(),
+            ) || Self::config_accepts_source_kind(
+                &config,
+                DownloadSourceKind::MagnetUri,
+                self.plugin_provider.as_ref(),
+            );
             match client.list_recent_completed_downloads(limit).await {
                 Ok(mut items) => {
                     self.record_feedback_read_success(
@@ -2642,6 +2697,9 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                         item.client_id = config.id.clone();
                         if let Some(mappings) = mappings.as_deref() {
                             apply_remote_path_mappings_to_completed_download(item, mappings);
+                        }
+                        if accepts_torrents {
+                            normalize_completed_download_import_dir(item);
                         }
                         accepted_items.push(item.clone());
                     }
@@ -5013,6 +5071,103 @@ mod tests {
         assert!(first.is_empty());
         assert!(second.is_empty());
         assert_eq!(failing_client.recent_completed_call_count(), 1);
+    }
+
+    #[test]
+    fn completed_download_parent_resolves_archive_suffixed_release_directory() {
+        for release_name in ["Paperman.2012.7z", "Paperman.2012.zip", "Paperman.2012.rar"] {
+            let root = tempfile::tempdir().unwrap();
+            let release_dir = root.path().join(release_name);
+            std::fs::create_dir(&release_dir).unwrap();
+            let mut item = scryer_domain::CompletedDownload {
+                client_type: "any-torrent-client".to_string(),
+                client_id: "client-a".to_string(),
+                download_client_item_id: "archive-1".to_string(),
+                download_id: None,
+                name: release_name.to_string(),
+                dest_dir: root.path().to_string_lossy().into_owned(),
+                category: None,
+                size_bytes: None,
+                completed_at: None,
+                parameters: Vec::new(),
+            };
+
+            normalize_completed_download_import_dir(&mut item);
+
+            assert_eq!(item.dest_dir, release_dir.to_string_lossy());
+        }
+    }
+
+    #[test]
+    fn completed_download_parent_does_not_follow_unsafe_or_missing_child_names() {
+        let root = tempfile::tempdir().unwrap();
+        for name in [
+            "../escape",
+            "nested/release",
+            "nested\\release",
+            "missing.7z",
+        ] {
+            let mut item = scryer_domain::CompletedDownload {
+                client_type: "any-torrent-client".to_string(),
+                client_id: "client-a".to_string(),
+                download_client_item_id: "archive-1".to_string(),
+                download_id: None,
+                name: name.to_string(),
+                dest_dir: root.path().to_string_lossy().into_owned(),
+                category: None,
+                size_bytes: None,
+                completed_at: None,
+                parameters: Vec::new(),
+            };
+
+            normalize_completed_download_import_dir(&mut item);
+
+            assert_eq!(item.dest_dir, root.path().to_string_lossy());
+        }
+    }
+
+    #[tokio::test]
+    async fn torrent_client_completed_parent_is_resolved_before_import() {
+        let root = tempfile::tempdir().unwrap();
+        let release_name = "Paperman.2012.7z";
+        let release_dir = root.path().join(release_name);
+        std::fs::create_dir(&release_dir).unwrap();
+
+        let client = Arc::new(MockDownloadClient::default());
+        client
+            .completed_downloads
+            .lock()
+            .unwrap()
+            .push(scryer_domain::CompletedDownload {
+                client_type: "torrent-client".to_string(),
+                client_id: String::new(),
+                download_client_item_id: "archive-1".to_string(),
+                download_id: None,
+                name: release_name.to_string(),
+                dest_dir: root.path().to_string_lossy().into_owned(),
+                category: None,
+                size_bytes: None,
+                completed_at: None,
+                parameters: Vec::new(),
+            });
+        let plugin_provider: Arc<dyn DownloadClientPluginProvider> =
+            Arc::new(MockDownloadClientPluginProvider {
+                accepted_inputs: vec!["torrent_file".to_string()],
+                clients: vec![("client-a".to_string(), client)],
+            });
+        let router = PrioritizedDownloadClientRouter::new(
+            Arc::new(MockDownloadClientConfigRepository {
+                configs: vec![test_config("client-a", "Client A", "torrent-client", 0)],
+            }),
+            Arc::new(MockSettingsRepository::default()),
+            null_staged_nzb_store(),
+            test_pipeline_limit(),
+            Some(plugin_provider),
+        );
+
+        let items = router.list_completed_downloads().await.unwrap();
+
+        assert_eq!(items[0].dest_dir, release_dir.to_string_lossy());
     }
 
     #[tokio::test]

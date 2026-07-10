@@ -1889,18 +1889,6 @@ export const previewExternalImportMutation = `mutation PreviewExternalImport($in
   }
 }`;
 
-export const startExternalImportMonitorWarmupMutation = `mutation StartExternalImportMonitorWarmup($input: StartExternalImportMonitorWarmupInput!) {
-  startExternalImportMonitorWarmup(input: $input) {${EXTERNAL_IMPORT_MONITOR_WARMUP_PROGRESS_FIELDS}
-  }
-}`;
-
-export const cancelExternalImportMonitorWarmupMutation = `mutation CancelExternalImportMonitorWarmup($sessionId: ID!) {
-  cancelExternalImportMonitorWarmup(sessionId: $sessionId) {
-    sessionId
-    canceled
-  }
-}`;
-
 export const executeExternalImportMutation = `mutation ExecuteExternalImport($input: ExecuteExternalImportInput!) {
   executeExternalImport(input: $input) {
     mediaPathsSaved

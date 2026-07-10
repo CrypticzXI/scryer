@@ -165,11 +165,15 @@ pub async fn extract_archives_if_needed(
             )));
         }
         _ => {
-            let dir = dir.clone();
+            let source_dir = archive_path
+                .parent()
+                .filter(|parent| !parent.as_os_str().is_empty())
+                .unwrap_or_else(|| Path::new("."))
+                .to_path_buf();
             let archive_path = archive_path.clone();
             let workspace = workspace.clone();
             tokio::task::spawn_blocking(move || {
-                prepare_archive_input_set(&dir, &archive_path, archive_type, &workspace)
+                prepare_archive_input_set(&source_dir, &archive_path, archive_type, &workspace)
             })
             .await
             .map_err(|e| AppError::Repository(format!("archive PAR2 task failed: {e}")))
@@ -233,6 +237,10 @@ pub fn is_password_required_error(error: &AppError) -> bool {
 }
 
 fn plan_archive_extraction(dir: &Path) -> AppResult<Option<(PathBuf, ArchiveType)>> {
+    if dir.is_file() {
+        return Ok(archive_type_for_path(dir).map(|archive_type| (dir.to_path_buf(), archive_type)));
+    }
+
     // If video files already exist, no extraction needed.
     if has_video_files(dir) {
         return Ok(None);
@@ -1146,17 +1154,11 @@ fn find_primary_archive(dir: &Path) -> Option<(PathBuf, ArchiveType)> {
         if !path.is_file() {
             continue;
         }
-        let ext = path
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("")
-            .to_ascii_lowercase();
-
-        match ext.as_str() {
-            "rar" => rar.push(path),
-            "7z" => sevenz.push(path),
-            "zip" => zip.push(path),
-            _ => {}
+        match archive_type_for_path(&path) {
+            Some(ArchiveType::Rar) => rar.push(path),
+            Some(ArchiveType::SevenZip) => sevenz.push(path),
+            Some(ArchiveType::Zip) => zip.push(path),
+            None => {}
         }
     }
 
@@ -1170,6 +1172,20 @@ fn find_primary_archive(dir: &Path) -> Option<(PathBuf, ArchiveType)> {
         Some((p, ArchiveType::SevenZip))
     } else {
         zip.into_iter().next().map(|p| (p, ArchiveType::Zip))
+    }
+}
+
+fn archive_type_for_path(path: &Path) -> Option<ArchiveType> {
+    match path
+        .extension()
+        .and_then(|extension| extension.to_str())?
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "rar" => Some(ArchiveType::Rar),
+        "7z" => Some(ArchiveType::SevenZip),
+        "zip" => Some(ArchiveType::Zip),
+        _ => None,
     }
 }
 
@@ -1552,6 +1568,26 @@ mod tests {
     }
 
     #[test]
+    fn plan_archive_extraction_accepts_direct_archive_file_paths() {
+        for (file_name, expected_type) in [
+            ("release.rar", "RAR"),
+            ("release.7z", "7z"),
+            ("release.zip", "zip"),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let archive_path = dir.path().join(file_name);
+            fs::write(&archive_path, b"archive").unwrap();
+
+            let (planned_path, archive_type) = plan_archive_extraction(&archive_path)
+                .unwrap()
+                .expect("direct archive file should require extraction");
+
+            assert_eq!(planned_path, archive_path);
+            assert_eq!(archive_type.as_str(), expected_type);
+        }
+    }
+
+    #[test]
     fn find_primary_archive_finds_zip() {
         let dir = tempfile::tempdir().unwrap();
         fs::write(dir.path().join("release.zip"), b"zip").unwrap();
@@ -1848,7 +1884,7 @@ mod tests {
             });
 
         let result = extract_archives_if_needed(
-            dir.path(),
+            &archive_path,
             Some(ArchiveExtractionDestination::new(
                 destination.path(),
                 "7z-plain-extract",

@@ -7,16 +7,16 @@ use scryer_application::{
     CatalogDiscoveryQuery, CatalogDiscoveryResult, CatalogDiscoverySurface, DeletePreview,
     DiscoveryFacetRecord, DiscoveryHomeQuery, DiscoveryHomeResult, DiscoveryItemDetailQuery,
     DiscoveryItemRecord, DiscoveryItemsQuery, DiscoveryItemsResult, DiscoverySectionResult,
-    DiscoverySyncRunRecord, DiscoverySyncStateRecord, DiscoverySyncStatus,
+    DiscoverySyncStateRecord, DiscoverySyncStatus,
     DownloadClientRoutingSettingsEntry, FacetScoringPersonaSelection, IgnorePendingImportResult,
     IndexerProxyTestResult, IndexerRoutingSettingsEntry, IndexerSearchResult, JobDefinition,
     JobRun, LibraryPathsSettings, LibraryScanSummary, LibrarySettings, ManualPluginPreview,
-    MediaRequestCounts, MediaSettings, OutboundRateLimitSnapshot, ParsedEpisodeMetadata,
+    MediaRequestCounts, MediaSettings, ParsedEpisodeMetadata,
     ParsedReleaseMetadata, PendingImportConnection, PendingImportCounts, PendingImportItem,
     PendingImportSearchAttempt, PendingRelease, PluginCatalogStatus, QualityProfile,
     QualityProfileCriteria, QualityProfileDecision, QualityProfileSelection,
     QualityProfileSettings, RegistryPlugin, RenameApplyItemResult, RenameApplyResult, RenamePlan,
-    RenamePlanItem, ResolvePendingImportResult, RssSyncReport, SchedulerSnapshot, ScoringEntry,
+    RenamePlanItem, ResolvePendingImportResult, RssSyncReport, ScoringEntry,
     ScoringSource, ServiceSettings, SmgScryerUpdateNotice, SmgVersionCompatibilityNotice,
     SubmissionScope, SystemHealth, TitleHistoryPage, TitleRatingSummary,
     TitleReleaseBlocklistEntry,
@@ -540,7 +540,6 @@ pub fn from_media_settings(
             })
             .collect(),
         required_audio_languages: settings.required_audio_languages,
-        folder_template: settings.folder_template,
         rename_enabled: settings.rename_enabled,
         rename_template: settings.rename_template,
         rename_collision_policy: settings.rename_collision_policy,
@@ -648,7 +647,6 @@ pub fn from_search_result(result: IndexerSearchResult) -> IndexerSearchResultPay
         .and_then(|v| v.as_f64());
 
     IndexerSearchResultPayload {
-        indexer_id: result.indexer_id.map(Into::into),
         source: result.source,
         title: result.title,
         link: result.link,
@@ -775,27 +773,20 @@ pub fn from_parsed_release(result: ParsedReleaseMetadata) -> ParsedReleasePayloa
         raw_title: result.raw_title,
         normalized_title: result.normalized_title,
         release_group: result.release_group,
-        languages_audio: result.languages_audio,
-        languages_subtitles: result.languages_subtitles,
-        year: result.year,
         quality: result.quality,
         source: result.source.map(|source| source.to_string()),
         video_codec: result.video_codec.map(|codec| codec.to_string()),
         video_encoding: result.video_encoding,
         audio: result.audio.map(|codec| codec.to_string()),
-        audio_channels: result.audio_channels,
         is_dual_audio: result.is_dual_audio,
         is_atmos: result.is_atmos,
         is_dolby_vision: result.is_dolby_vision,
         detected_hdr: result.detected_hdr,
-        fps: result.fps,
         is_proper_upload: result.is_proper_upload,
         is_remux: result.is_remux,
         is_bd_disk: result.is_bd_disk,
         is_ai_enhanced: result.is_ai_enhanced,
-        parser_version: result.parser_version.to_string(),
         parse_confidence: result.parse_confidence,
-        missing_fields: result.missing_fields,
         parse_hints: result.parse_hints,
         episode: result.episode.map(from_parsed_episode),
     }
@@ -809,8 +800,6 @@ pub fn from_parsed_episode(episode: ParsedEpisodeMetadata) -> ParsedEpisodePaylo
             .into_iter()
             .map(|value| value as i32)
             .collect(),
-        absolute_episode: episode.absolute_episode.map(|value| value as i32),
-        raw: episode.raw,
     }
 }
 
@@ -1239,7 +1228,6 @@ pub fn from_title(title: Title) -> TitlePayload {
                 value: id.value,
             })
             .collect(),
-        created_by: title.created_by,
         created_at: title.created_at,
         year: title.year,
         overview: title.overview,
@@ -1275,8 +1263,6 @@ pub fn from_title(title: Title) -> TitlePayload {
         aliases: title.aliases,
         metadata_language: title.metadata_language,
         metadata_fetched_at: title.metadata_fetched_at,
-        min_availability: title.min_availability,
-        digital_release_date: parse_date(title.digital_release_date),
         quality_profile_id: quality_profile_id.map(Into::into),
         root_folder_id: title.root_folder_id.into(),
         monitor_type,
@@ -1415,7 +1401,6 @@ pub fn from_pending_import_item(item: PendingImportItem) -> PendingImportItemPay
     PendingImportItemPayload {
         id: item.id.into(),
         library_id: item.library_id.into(),
-        library_slug: item.library_slug,
         facet: MediaFacetValue::from_domain(item.facet),
         status: PendingImportStatusValue::from_application(item.status),
         title_id: item.title_id.map(Into::into),
@@ -1504,13 +1489,9 @@ pub fn from_library_scan_session(
         title_match_total_known: session.title_match_total_known,
         title_match_progress: from_library_scan_phase_progress(session.title_match_progress),
         hydration_total_known: session.metadata_total_known,
-        hydration_progress: from_library_scan_phase_progress(session.metadata_progress.clone()),
+        hydration_progress: from_library_scan_phase_progress(session.metadata_progress),
         media_analysis_total_known: session.file_total_known,
-        media_analysis_progress: from_library_scan_phase_progress(session.file_progress.clone()),
-        metadata_total_known: session.metadata_total_known,
-        file_total_known: session.file_total_known,
-        metadata_progress: from_library_scan_phase_progress(session.metadata_progress),
-        file_progress: from_library_scan_phase_progress(session.file_progress),
+        media_analysis_progress: from_library_scan_phase_progress(session.file_progress),
         summary: session.summary.map(from_library_scan_summary),
     }
 }
@@ -1562,68 +1543,21 @@ pub fn from_job_run(run: JobRun) -> JobRunPayload {
 pub fn from_discovery_sync_status(status: DiscoverySyncStatus) -> DiscoverySyncStatusPayload {
     DiscoverySyncStatusPayload {
         state: from_discovery_sync_state(status.state),
-        recent_runs: status
-            .recent_runs
-            .into_iter()
-            .map(from_discovery_sync_run)
-            .collect(),
         pending_context_change_count: Long(status.pending_context_change_count),
     }
 }
 
 pub fn from_discovery_sync_state(state: DiscoverySyncStateRecord) -> DiscoverySyncStatePayload {
     DiscoverySyncStatePayload {
-        scope_key: state.scope_key,
         last_success_generation_id: state.last_success_generation_id.map(ID::from),
         last_public_feed_generation_id: state.last_public_feed_generation_id.map(ID::from),
-        last_subject_fingerprint: state.last_subject_fingerprint,
         last_context_snapshot_completed_at: state.last_context_snapshot_completed_at,
         last_incremental_reload_completed_at: state.last_incremental_reload_completed_at,
         last_public_feed_completed_at: state.last_public_feed_completed_at,
-        dirty_since: state.dirty_since,
-        dirty_reason_mask: Long(state.dirty_reason_mask),
-        bootstrap_started_at: state.bootstrap_started_at,
-        bootstrap_quiet_until: state.bootstrap_quiet_until,
         next_context_snapshot_eligible_at: state.next_context_snapshot_eligible_at,
         next_incremental_reload_eligible_at: state.next_incremental_reload_eligible_at,
         next_public_feed_eligible_at: state.next_public_feed_eligible_at,
-        backoff_until: state.backoff_until,
-        startup_jitter_seconds: Long(state.startup_jitter_seconds),
-        context_jitter_seconds: Long(state.context_jitter_seconds),
-        incremental_reload_jitter_seconds: Long(state.incremental_reload_jitter_seconds),
-        public_feed_jitter_seconds: Long(state.public_feed_jitter_seconds),
-        last_seen_domain_event_sequence: state.last_seen_domain_event_sequence.map(Long),
-        inflight_subject_fingerprint: state.inflight_subject_fingerprint,
-        inflight_domain_event_sequence: state.inflight_domain_event_sequence.map(Long),
         updated_at: state.updated_at,
-    }
-}
-
-pub fn from_discovery_sync_run(run: DiscoverySyncRunRecord) -> DiscoverySyncRunPayload {
-    DiscoverySyncRunPayload {
-        id: run.id.into(),
-        kind: run.kind,
-        status: run.status,
-        trigger_source: run.trigger_source,
-        region: run.region,
-        language: run.language,
-        subject_count: Long(run.subject_count),
-        subject_fingerprint: run.subject_fingerprint,
-        previous_subject_fingerprint: run.previous_subject_fingerprint,
-        base_generation_id: run.base_generation_id.map(ID::from),
-        changed_subject_count: Long(run.changed_subject_count),
-        affected_target_count: Long(run.affected_target_count),
-        smg_request_id: run.smg_request_id,
-        smg_status: run.smg_status,
-        discovery_index_watermark: run.discovery_index_watermark,
-        page_count: run.page_count,
-        item_count: run.item_count.map(Long),
-        facet_count: run.facet_count.map(Long),
-        error_text: run.error_text,
-        started_at: run.started_at,
-        completed_at: run.completed_at,
-        created_at: run.created_at,
-        updated_at: run.updated_at,
     }
 }
 
@@ -1899,7 +1833,6 @@ pub fn from_media_rename_plan(plan: RenamePlan) -> MediaRenamePlanPayload {
 fn from_media_rename_plan_item(item: RenamePlanItem) -> MediaRenamePlanItemPayload {
     MediaRenamePlanItemPayload {
         collection_id: item.collection_id.map(Into::into),
-        media_file_id: item.media_file_id.map(Into::into),
         series_movie_link_ids: item
             .series_movie_link_ids
             .into_iter()
@@ -1934,7 +1867,6 @@ pub fn from_media_rename_apply(result: RenameApplyResult) -> MediaRenameApplyPay
 fn from_media_rename_apply_item(item: RenameApplyItemResult) -> MediaRenameApplyItemPayload {
     MediaRenameApplyItemPayload {
         collection_id: item.collection_id.map(Into::into),
-        media_file_id: item.media_file_id.map(Into::into),
         series_movie_link_ids: item
             .series_movie_link_ids
             .into_iter()
@@ -1970,46 +1902,32 @@ pub fn from_movie_entity(movie: scryer_domain::MovieEntity) -> MovieEntityPayloa
     MovieEntityPayload {
         id: movie.id.into(),
         title: movie.title,
-        sort_title: movie.sort_title,
         slug: movie.slug,
         year: movie.year,
         overview: movie.overview,
         poster_url: movie.poster_url,
-        background_url: movie.background_url,
-        language: movie.language,
         runtime_minutes: movie.runtime_minutes,
         content_status: movie.content_status,
-        studio: movie.studio,
-        digital_release_date: parse_date(movie.digital_release_date),
         imdb_id: movie.imdb_id,
         tvdb_id: movie.tvdb_id,
         tmdb_id: movie.tmdb_id,
         mal_id: movie.mal_id,
         anidb_id: movie.anidb_id,
-        created_at: movie.created_at,
-        updated_at: movie.updated_at,
     }
 }
 
 pub fn from_series_movie_link(link: scryer_domain::SeriesMovieLink) -> SeriesMovieLinkPayload {
     SeriesMovieLinkPayload {
         id: link.id.into(),
-        series_title_id: link.series_title_id.into(),
         movie: from_movie_entity(link.movie),
-        placement: link.placement,
         narrative_order: link.narrative_order,
         after_season: link.after_season,
         before_season: link.before_season,
         linked_episode_id: link.linked_episode_id.map(Into::into),
-        association_confidence: link.association_confidence,
         continuity_status: link.continuity_status,
         movie_form: link.movie_form,
-        confidence: link.confidence,
         signal_summary: link.signal_summary,
-        source: link.source,
         monitored: link.monitored,
-        created_at: link.created_at,
-        updated_at: link.updated_at,
     }
 }
 
@@ -2031,7 +1949,6 @@ pub fn from_episode(episode: Episode) -> EpisodePayload {
         is_filler: episode.is_filler,
         is_recap: episode.is_recap,
         absolute_number: episode.absolute_number,
-        tvdb_id: episode.tvdb_id,
         image_url: episode.image_url,
         monitored: episode.monitored,
         created_at: episode.created_at,
@@ -2081,7 +1998,6 @@ pub fn from_title_media_file(file: scryer_application::TitleMediaFile) -> TitleM
         video_frame_rate: file.video_frame_rate,
         video_profile: file.video_profile,
         audio_codec: file.audio_codec,
-        audio_profile: file.audio_profile,
         audio_channels: file.audio_channels,
         audio_bitrate_kbps: file.audio_bitrate_kbps,
         audio_languages: file.audio_languages,
@@ -2090,10 +2006,8 @@ pub fn from_title_media_file(file: scryer_application::TitleMediaFile) -> TitleM
             .into_iter()
             .map(|s| crate::types::AudioStreamDetailPayload {
                 codec: s.codec,
-                profile: s.profile,
                 channels: s.channels,
                 language: s.language,
-                name: s.name,
                 bitrate_kbps: s.bitrate_kbps,
             })
             .collect(),
@@ -2120,7 +2034,6 @@ pub fn from_title_media_file(file: scryer_application::TitleMediaFile) -> TitleM
         resolution: file.resolution,
         video_codec_parsed: file.video_codec_parsed.map(|codec| codec.to_string()),
         audio_codec_parsed: file.audio_codec_parsed,
-        audio_channels_parsed: file.audio_channels_parsed,
         acquisition_score: file.acquisition_score,
         scoring_log: file.scoring_log,
         indexer_source: file.indexer_source,
@@ -2643,78 +2556,6 @@ pub fn from_system_health(health: SystemHealth) -> SystemHealthPayload {
     }
 }
 
-pub fn from_upstream_scheduler_snapshot(
-    snapshot: SchedulerSnapshot,
-) -> UpstreamSchedulerSnapshotPayload {
-    UpstreamSchedulerSnapshotPayload {
-        entries: snapshot
-            .entries
-            .into_iter()
-            .map(|entry| UpstreamSchedulerSnapshotEntryPayload {
-                host_key: entry.host_key.to_string(),
-                destination_key: entry.destination_key.to_string(),
-                account_quota_key: entry.account_quota_key.map(|key| key.to_string()),
-                rss_request_key: entry.rss_request_key,
-                last_decision: entry.last_decision,
-                last_feedback_at: entry.last_feedback_at,
-                last_successful_at: entry.last_successful_at,
-                last_attempt_at: entry.last_attempt_at,
-                cooldown_until: entry.cooldown_until,
-                api_remaining_fraction: entry.api_remaining_fraction,
-                quota_observed_at: entry.quota_observed_at,
-                quota_probe_after: entry.quota_probe_after,
-                quota_reset_at: entry.quota_reset_at,
-                quota_source: entry.quota_source,
-                quota_stale: entry.quota_stale,
-                rss_last_successful_poll_at: entry.rss_last_successful_poll_at,
-                rss_last_attempt_at: entry.rss_last_attempt_at,
-                rss_target_interval_seconds: entry
-                    .rss_target_interval
-                    .map(|duration| Long::from_u64_saturating(duration.as_secs())),
-                rss_latest_safe_poll_at: entry.rss_latest_safe_poll_at,
-                rss_estimated_feed_depth: entry
-                    .rss_estimated_feed_depth
-                    .map(|value| i32::try_from(value).unwrap_or(i32::MAX)),
-                rss_freshness_risk: entry.rss_freshness_risk,
-                rss_destination_recent_activity_at: entry.rss_destination_recent_activity_at,
-                rss_last_seen_release_identity: entry.rss_last_seen_release_identity,
-                rss_last_seen_release_published_at: entry.rss_last_seen_release_published_at,
-                rss_last_feed_gap_start_at: entry.rss_last_feed_gap_start_at,
-                rss_last_feed_gap_end_at: entry.rss_last_feed_gap_end_at,
-                admitted_count: Long::from_u64_saturating(entry.admitted_count),
-                deferred_count: Long::from_u64_saturating(entry.deferred_count),
-                skipped_count: Long::from_u64_saturating(entry.skipped_count),
-            })
-            .collect(),
-    }
-}
-
-pub fn from_outbound_rate_limit_snapshot(
-    snapshot: OutboundRateLimitSnapshot,
-) -> OutboundRateLimitSnapshotPayload {
-    OutboundRateLimitSnapshotPayload {
-        host_rps: snapshot
-            .host_rps
-            .into_iter()
-            .map(|entry| OutboundHostRpsSnapshotEntryPayload {
-                host_key: entry.host_key,
-                available_in_seconds: Long::from_u64_saturating(entry.available_in.as_secs()),
-                requests_per_second: entry.requests_per_second,
-                burst: i32::try_from(entry.burst).unwrap_or(i32::MAX),
-                profile_source: entry.profile_source,
-            })
-            .collect(),
-        destination_cooldowns: snapshot
-            .destination_cooldowns
-            .into_iter()
-            .map(|entry| OutboundDestinationCooldownSnapshotEntryPayload {
-                destination_key: entry.destination_key,
-                available_in_seconds: Long::from_u64_saturating(entry.available_in.as_secs()),
-            })
-            .collect(),
-    }
-}
-
 pub fn from_smg_version_compatibility_notice(
     notice: SmgVersionCompatibilityNotice,
 ) -> SmgVersionCompatibilityNoticePayload {
@@ -3130,7 +2971,6 @@ pub fn from_pp_script_run(
         stdout_tail: r.stdout_tail,
         stderr_tail: r.stderr_tail,
         duration_ms: r.duration_ms.map(|v| v as i32),
-        env_payload_json: r.env_payload_json,
         started_at: parse_required_datetime(&r.started_at, "post-processing script run started_at"),
         completed_at: parse_optional_datetime(
             r.completed_at,

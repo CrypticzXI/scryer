@@ -890,60 +890,6 @@ async fn graphql_system_health() {
 }
 
 #[tokio::test]
-async fn graphql_upstream_scheduler_diagnostics_are_available() {
-    let ctx = TestContext::new().await;
-    let body = gql(
-        &ctx,
-        r#"
-        {
-          upstreamSchedulerSnapshot {
-            entries {
-              hostKey
-              destinationKey
-              accountQuotaKey
-              lastDecision
-              cooldownUntil
-              quotaStale
-              rssTargetIntervalSeconds
-              admittedCount
-              deferredCount
-              skippedCount
-            }
-          }
-          outboundRateLimitSnapshot {
-            hostRps {
-              hostKey
-              availableInSeconds
-              requestsPerSecond
-              burst
-              profileSource
-            }
-            destinationCooldowns {
-              destinationKey
-              availableInSeconds
-            }
-          }
-        }
-        "#,
-        json!({}),
-    )
-    .await;
-    assert_no_errors(&body);
-    assert!(
-        body["data"]["upstreamSchedulerSnapshot"]["entries"].is_array(),
-        "upstream scheduler entries should be an array"
-    );
-    assert!(
-        body["data"]["outboundRateLimitSnapshot"]["hostRps"].is_array(),
-        "host RPS diagnostics should be an array"
-    );
-    assert!(
-        body["data"]["outboundRateLimitSnapshot"]["destinationCooldowns"].is_array(),
-        "destination cooldown diagnostics should be an array"
-    );
-}
-
-#[tokio::test]
 async fn graphql_smg_version_compatibility_notice_reads_persisted_notice() {
     let ctx = TestContext::new().await;
     ctx.settings_store

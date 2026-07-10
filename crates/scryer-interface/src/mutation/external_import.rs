@@ -2380,7 +2380,6 @@ impl ExternalImportMutations {
         Ok(FinalizeExternalImportPayload {
             finalized: true,
             monitor_warmup_session_id: ID::from(apply_session_id),
-            library_setting_applications,
         })
     }
 

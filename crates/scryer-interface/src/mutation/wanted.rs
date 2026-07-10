@@ -15,9 +15,6 @@ pub(crate) fn wanted_search_payload(outcome: WantedSearchOutcome) -> WantedSearc
     WantedSearchPayload {
         queued_count: outcome.queued_count as i32,
         skipped_in_progress_count: outcome.skipped_in_progress_count as i32,
-        conflict: outcome
-            .conflict
-            .map(super::downloads::queue_download_conflict_payload),
     }
 }
 

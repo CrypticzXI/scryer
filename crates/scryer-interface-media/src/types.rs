@@ -14,7 +14,6 @@ pub struct TitlePayload {
     pub monitored: bool,
     pub tags: Vec<String>,
     pub external_ids: Vec<ExternalIdPayload>,
-    pub created_by: Option<String>,
     pub created_at: DateTime<Utc>,
     pub year: Option<i32>,
     pub overview: Option<String>,
@@ -37,8 +36,6 @@ pub struct TitlePayload {
     pub aliases: Vec<String>,
     pub metadata_language: Option<String>,
     pub metadata_fetched_at: Option<DateTime<Utc>>,
-    pub min_availability: Option<String>,
-    pub digital_release_date: Option<Date>,
     pub quality_profile_id: Option<ID>,
     pub root_folder_id: ID,
     pub monitor_type: Option<MonitorTypeValue>,
@@ -165,45 +162,31 @@ pub struct SetCollectionMonitoredPayload {
 pub struct MovieEntityPayload {
     pub id: ID,
     pub title: String,
-    pub sort_title: Option<String>,
     pub slug: Option<String>,
     pub year: Option<i32>,
     pub overview: Option<String>,
     pub poster_url: Option<String>,
-    pub background_url: Option<String>,
-    pub language: Option<String>,
     pub runtime_minutes: Option<i32>,
     pub content_status: Option<String>,
-    pub studio: Option<String>,
-    pub digital_release_date: Option<Date>,
     pub imdb_id: Option<String>,
     pub tvdb_id: Option<String>,
     pub tmdb_id: Option<String>,
     pub mal_id: Option<String>,
     pub anidb_id: Option<String>,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
 }
 
 #[derive(SimpleObject, Clone)]
 pub struct SeriesMovieLinkPayload {
     pub id: ID,
-    pub series_title_id: ID,
     pub movie: MovieEntityPayload,
-    pub placement: Option<String>,
     pub narrative_order: Option<String>,
     pub after_season: Option<i32>,
     pub before_season: Option<i32>,
     pub linked_episode_id: Option<ID>,
-    pub association_confidence: Option<String>,
     pub continuity_status: Option<String>,
     pub movie_form: Option<String>,
-    pub confidence: Option<String>,
     pub signal_summary: Option<String>,
-    pub source: Option<String>,
     pub monitored: bool,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
 }
 
 #[derive(SimpleObject, Clone)]
@@ -225,14 +208,12 @@ pub struct EpisodePayload {
     pub is_filler: bool,
     pub is_recap: bool,
     pub absolute_number: Option<String>,
-    pub tvdb_id: Option<String>,
     pub image_url: Option<String>,
     pub monitored: bool,
     pub created_at: DateTime<Utc>,
 }
 
 #[derive(SimpleObject, Clone)]
-#[graphql(complex)]
 pub struct TitleMediaFilePayload {
     pub id: ID,
     pub title_id: ID,
@@ -254,7 +235,6 @@ pub struct TitleMediaFilePayload {
     pub video_frame_rate: Option<String>,
     pub video_profile: Option<String>,
     pub audio_codec: Option<String>,
-    pub audio_profile: Option<String>,
     pub audio_channels: Option<i32>,
     pub audio_bitrate_kbps: Option<i32>,
     pub audio_languages: Vec<String>,
@@ -273,7 +253,6 @@ pub struct TitleMediaFilePayload {
     pub resolution: Option<String>,
     pub video_codec_parsed: Option<String>,
     pub audio_codec_parsed: Option<String>,
-    pub audio_channels_parsed: Option<String>,
     pub acquisition_score: Option<i32>,
     pub scoring_log: Option<String>,
     pub indexer_source: Option<String>,
@@ -453,10 +432,6 @@ pub struct WantedItemsListPayload {
 #[derive(SimpleObject, Clone)]
 pub struct WantedItemsPagePayload {
     pub items: Vec<WantedItemPayload>,
-    pub limit: i32,
-    pub offset: i32,
-    pub has_more: bool,
-    pub total_count: i32,
 }
 
 #[derive(SimpleObject, Clone)]
@@ -471,7 +446,6 @@ pub struct TitleAcquisitionDiagnosticsPayload {
 }
 
 #[derive(SimpleObject, Clone)]
-#[graphql(complex)]
 pub struct ReleaseDecisionPayload {
     pub id: ID,
     pub wanted_item_id: ID,
@@ -490,13 +464,10 @@ pub struct ReleaseDecisionPayload {
 #[derive(SimpleObject, Clone)]
 pub struct ReleaseDecisionsPagePayload {
     pub items: Vec<ReleaseDecisionPayload>,
-    pub limit: i32,
-    pub offset: i32,
     pub has_more: bool,
 }
 
 #[derive(SimpleObject, Clone)]
-#[graphql(complex)]
 pub struct PendingReleasePayload {
     pub id: ID,
     pub wanted_item_id: ID,

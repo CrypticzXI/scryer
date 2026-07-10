@@ -27,10 +27,10 @@ const POSTER_FALLBACK_TONES: Record<
   PosterFallbackTone,
   { hue: number; spread: number; saturation: [number, number] }
 > = {
-  movie: { hue: 26, spread: 15, saturation: [38, 50] },
-  series: { hue: 150, spread: 18, saturation: [34, 46] },
-  anime: { hue: 272, spread: 16, saturation: [34, 48] },
-  neutral: { hue: 206, spread: 18, saturation: [34, 46] },
+  movie: { hue: 30, spread: 56, saturation: [48, 68] },
+  series: { hue: 152, spread: 58, saturation: [44, 64] },
+  anime: { hue: 278, spread: 62, saturation: [46, 68] },
+  neutral: { hue: 214, spread: 64, saturation: [42, 62] },
 };
 
 const POSTER_FALLBACK_TEXT_ENCODER = new TextEncoder();
@@ -57,17 +57,19 @@ function posterFallbackStyle(
   );
   const toneConfig = POSTER_FALLBACK_TONES[tone];
   const hue = toneConfig.hue + signedFromByte(digest[0], toneConfig.spread);
-  const accentHue = hue + signedFromByte(digest[1], 12);
-  const shadowHue = hue + signedFromByte(digest[2], 8);
+  const accentHue = hue + signedFromByte(digest[1], 46);
+  const shadowHue = hue + signedFromByte(digest[2], 24);
   const saturation = fromByte(
     digest[3],
     toneConfig.saturation[0],
     toneConfig.saturation[1],
   );
-  const topLightness = fromByte(digest[4], 25, 35);
-  const midLightness = fromByte(digest[5], 13, 21);
-  const glowX = fromByte(digest[6], 38, 62);
-  const glowAlpha = fromByte(digest[7], 0.24, 0.39);
+  const topLightness = fromByte(digest[4], 29, 44);
+  const midLightness = fromByte(digest[5], 15, 27);
+  const glowX = fromByte(digest[6], 28, 72);
+  const glowAlpha = fromByte(digest[7], 0.3, 0.5);
+  const secondaryHue = hue + signedFromByte(digest[8], 72);
+  const secondaryAlpha = fromByte(digest[9], 0.1, 0.2);
 
   return {
     backgroundImage: [
@@ -77,11 +79,21 @@ function posterFallbackStyle(
         topLightness + 13,
         glowAlpha,
       )}, transparent 43%)`,
+      `radial-gradient(circle at ${fromByte(digest[10], 18, 82).toFixed(1)}% ${fromByte(
+        digest[11],
+        58,
+        86,
+      ).toFixed(1)}%, ${hsl(
+        secondaryHue,
+        Math.max(38, saturation - 4),
+        midLightness + 8,
+        secondaryAlpha,
+      )}, transparent 48%)`,
       `linear-gradient(180deg, ${hsl(hue, saturation, topLightness)} 0%, ${hsl(
-        hue + signedFromByte(digest[8], 5),
-        saturation - 3,
+        hue + signedFromByte(digest[12], 18),
+        saturation - 1,
         midLightness,
-      )} 58%, ${hsl(shadowHue, Math.max(28, saturation - 8), 7)} 100%)`,
+      )} 58%, ${hsl(shadowHue, Math.max(32, saturation - 10), 8)} 100%)`,
     ].join(","),
   };
 }

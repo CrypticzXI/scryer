@@ -2225,12 +2225,6 @@ impl AppUseCase {
             .await
     }
 
-    pub fn outbound_rate_limit_snapshot(&self) -> OutboundRateLimitSnapshot {
-        scryer_outbound_http::RateLimitRegistry::new()
-            .snapshot()
-            .into()
-    }
-
     pub async fn flush_upstream_scheduler(&self) -> AppResult<()> {
         self.services
             .integrations

@@ -4,8 +4,8 @@ use scryer_interface_core::{actor_from_ctx, app_from_ctx, loaders::loaders_from_
 
 use crate::mappers::{
     from_collection, from_discovery_item, from_download_queue_item, from_episode,
-    from_library_settings, from_pending_release, from_release_decision, from_series_movie_link,
-    from_submission_scope, from_title, from_title_media_file, from_title_rating_summary,
+    from_library_settings, from_release_decision, from_series_movie_link,
+    from_submission_scope, from_title_media_file, from_title_rating_summary,
     from_wanted_item,
 };
 use crate::types::*;
@@ -544,7 +544,7 @@ impl TitlePayload {
             let actor = actor_from_ctx(ctx)?;
             let limit = relation_page_limit(limit);
             let offset = relation_page_offset(offset);
-            let (items, total_count) = app
+            let (items, _total_count) = app
                 .list_acquisition_scope_states(
                     &actor,
                     AcquisitionScopeStatesQuery {
@@ -569,10 +569,6 @@ impl TitlePayload {
                     .map(from_wanted_item)
                     .collect::<scryer_application::AppResult<Vec<_>>>()
                     .map_err(to_gql_error)?,
-                limit,
-                offset,
-                has_more: i64::from(offset) + i64::from(limit) < total_count,
-                total_count: total_count.min(i64::from(i32::MAX)) as i32,
             })
         })
         .await
@@ -610,8 +606,6 @@ impl TitlePayload {
             items.truncate(limit as usize);
             Ok(ReleaseDecisionsPagePayload {
                 items,
-                limit,
-                offset,
                 has_more,
             })
         })
@@ -747,24 +741,6 @@ impl CollectionPayload {
         .await
     }
 
-    async fn title(&self, ctx: &Context<'_>) -> GqlResult<Option<TitlePayload>> {
-        if let Some(loaders) = loaders_from_ctx(ctx) {
-            let title = loaders.title.load_one(self.title_id.to_string()).await?;
-            return Ok(title.map(from_title));
-        }
-        Box::pin(async move {
-            let app = app_from_ctx(ctx)?;
-            let actor = actor_from_ctx(ctx)?;
-            let title = app
-                .get_title(&actor, self.title_id.as_ref())
-                .await
-                .map_err(to_gql_error)?
-                .map(from_title);
-            Ok(title)
-        })
-        .await
-    }
-
     async fn episodes(&self, ctx: &Context<'_>) -> GqlResult<Vec<EpisodePayload>> {
         if let Some(loaders) = loaders_from_ctx(ctx) {
             let episodes = loaders
@@ -789,68 +765,6 @@ impl CollectionPayload {
 
 #[ComplexObject]
 impl EpisodePayload {
-    async fn parent_title(&self, ctx: &Context<'_>) -> GqlResult<Option<TitlePayload>> {
-        if let Some(loaders) = loaders_from_ctx(ctx) {
-            let title = loaders.title.load_one(self.title_id.to_string()).await?;
-            return Ok(title.map(from_title));
-        }
-        Box::pin(async move {
-            let app = app_from_ctx(ctx)?;
-            let actor = actor_from_ctx(ctx)?;
-            let title = app
-                .get_title(&actor, self.title_id.as_ref())
-                .await
-                .map_err(to_gql_error)?
-                .map(from_title);
-            Ok(title)
-        })
-        .await
-    }
-
-    async fn collection(&self, ctx: &Context<'_>) -> GqlResult<Option<CollectionPayload>> {
-        let Some(collection_id) = self.collection_id.as_deref() else {
-            return Ok(None);
-        };
-        if let Some(loaders) = loaders_from_ctx(ctx) {
-            let collection = loaders.collection.load_one(collection_id.to_string()).await?;
-            return Ok(collection.map(from_collection));
-        }
-        Box::pin(async move {
-            let app = app_from_ctx(ctx)?;
-            let actor = actor_from_ctx(ctx)?;
-            let collection = app
-                .get_collection(&actor, collection_id)
-                .await
-                .map_err(to_gql_error)?
-                .map(from_collection);
-            Ok(collection)
-        })
-        .await
-    }
-
-    async fn wanted_item(&self, ctx: &Context<'_>) -> GqlResult<Option<WantedItemPayload>> {
-        if let Some(loaders) = loaders_from_ctx(ctx) {
-            let state = loaders
-                .title_wanted_item
-                .load_one((self.title_id.to_string(), self.id.to_string()))
-                .await?;
-            return state.map(from_wanted_item).transpose().map_err(to_gql_error);
-        }
-        Box::pin(async move {
-            let app = app_from_ctx(ctx)?;
-            let actor = actor_from_ctx(ctx)?;
-            let wanted_item = app
-                .get_title_wanted_item(&actor, self.title_id.as_ref(), Some(self.id.as_ref()))
-                .await
-                .map_err(to_gql_error)?
-                .map(from_wanted_item)
-                .transpose()
-                .map_err(to_gql_error)?;
-            Ok(wanted_item)
-        })
-        .await
-    }
-
     async fn media_files(&self, ctx: &Context<'_>) -> GqlResult<Vec<TitleMediaFilePayload>> {
         if let Some(loaders) = loaders_from_ctx(ctx) {
             let files = loaders
@@ -874,109 +788,7 @@ impl EpisodePayload {
 }
 
 #[ComplexObject]
-impl TitleMediaFilePayload {
-    async fn title(&self, ctx: &Context<'_>) -> GqlResult<Option<TitlePayload>> {
-        if let Some(loaders) = loaders_from_ctx(ctx) {
-            let title = loaders.title.load_one(self.title_id.to_string()).await?;
-            return Ok(title.map(from_title));
-        }
-        Box::pin(async move {
-            let app = app_from_ctx(ctx)?;
-            let actor = actor_from_ctx(ctx)?;
-            let title = app
-                .get_title(&actor, self.title_id.as_ref())
-                .await
-                .map_err(to_gql_error)?
-                .map(from_title);
-            Ok(title)
-        })
-        .await
-    }
-
-    async fn episode(&self, ctx: &Context<'_>) -> GqlResult<Option<EpisodePayload>> {
-        let Some(episode_id) = self.episode_id.as_deref() else {
-            return Ok(None);
-        };
-        if let Some(loaders) = loaders_from_ctx(ctx) {
-            let episode = loaders.episode.load_one(episode_id.to_string()).await?;
-            return Ok(episode.map(from_episode));
-        }
-        Box::pin(async move {
-            let app = app_from_ctx(ctx)?;
-            let actor = actor_from_ctx(ctx)?;
-            let episode = app
-                .get_episode(&actor, episode_id)
-                .await
-                .map_err(to_gql_error)?
-                .map(from_episode);
-            Ok(episode)
-        })
-        .await
-    }
-}
-
-#[ComplexObject]
 impl WantedItemPayload {
-    async fn title(&self, ctx: &Context<'_>) -> GqlResult<Option<TitlePayload>> {
-        if let Some(loaders) = loaders_from_ctx(ctx) {
-            let title = loaders.title.load_one(self.title_id.to_string()).await?;
-            return Ok(title.map(from_title));
-        }
-        Box::pin(async move {
-            let app = app_from_ctx(ctx)?;
-            let actor = actor_from_ctx(ctx)?;
-            let title = app
-                .get_title(&actor, self.title_id.as_ref())
-                .await
-                .map_err(to_gql_error)?
-                .map(from_title);
-            Ok(title)
-        })
-        .await
-    }
-
-    async fn collection(&self, ctx: &Context<'_>) -> GqlResult<Option<CollectionPayload>> {
-        let Some(collection_id) = self.collection_id.as_deref() else {
-            return Ok(None);
-        };
-        if let Some(loaders) = loaders_from_ctx(ctx) {
-            let collection = loaders.collection.load_one(collection_id.to_string()).await?;
-            return Ok(collection.map(from_collection));
-        }
-        Box::pin(async move {
-            let app = app_from_ctx(ctx)?;
-            let actor = actor_from_ctx(ctx)?;
-            let collection = app
-                .get_collection(&actor, collection_id)
-                .await
-                .map_err(to_gql_error)?
-                .map(from_collection);
-            Ok(collection)
-        })
-        .await
-    }
-
-    async fn episode(&self, ctx: &Context<'_>) -> GqlResult<Option<EpisodePayload>> {
-        let Some(episode_id) = self.episode_id.as_deref() else {
-            return Ok(None);
-        };
-        if let Some(loaders) = loaders_from_ctx(ctx) {
-            let episode = loaders.episode.load_one(episode_id.to_string()).await?;
-            return Ok(episode.map(from_episode));
-        }
-        Box::pin(async move {
-            let app = app_from_ctx(ctx)?;
-            let actor = actor_from_ctx(ctx)?;
-            let episode = app
-                .get_episode(&actor, episode_id)
-                .await
-                .map_err(to_gql_error)?
-                .map(from_episode);
-            Ok(episode)
-        })
-        .await
-    }
-
     async fn release_decisions(
         &self,
         ctx: &Context<'_>,
@@ -1009,93 +821,12 @@ impl WantedItemPayload {
             items.truncate(limit as usize);
             Ok(ReleaseDecisionsPagePayload {
                 items,
-                limit,
-                offset,
                 has_more,
             })
         })
         .await
     }
 
-    async fn pending_releases(
-        &self,
-        ctx: &Context<'_>,
-        #[graphql(default = 50)] limit: i32,
-        #[graphql(default = 0)] offset: i32,
-    ) -> GqlResult<PendingReleasesPayload> {
-        Box::pin(async move {
-            let app = app_from_ctx(ctx)?;
-            let actor = actor_from_ctx(ctx)?;
-            let limit = relation_page_limit(limit);
-            let offset = relation_page_offset(offset);
-            let (releases, total) = app
-                .list_pending_releases_for_wanted_item_page(
-                    &actor,
-                    self.id.as_ref(),
-                    i64::from(limit),
-                    i64::from(offset),
-                )
-                .await
-                .map_err(to_gql_error)?;
-            let total_count = total.min(i64::from(i32::MAX)) as i32;
-            let items = releases
-                .into_iter()
-                .map(from_pending_release)
-                .collect::<Vec<_>>();
-            Ok(PendingReleasesPayload {
-                items,
-                limit,
-                offset,
-                has_more: i64::from(offset) + i64::from(limit) < i64::from(total_count),
-                total_count,
-            })
-        })
-        .await
-    }
-}
-
-#[ComplexObject]
-impl ReleaseDecisionPayload {
-    async fn title(&self, ctx: &Context<'_>) -> GqlResult<Option<TitlePayload>> {
-        if let Some(loaders) = loaders_from_ctx(ctx) {
-            let title = loaders.title.load_one(self.title_id.to_string()).await?;
-            return Ok(title.map(from_title));
-        }
-        Box::pin(async move {
-            let app = app_from_ctx(ctx)?;
-            let actor = actor_from_ctx(ctx)?;
-            let title = app
-                .get_title(&actor, self.title_id.as_ref())
-                .await
-                .map_err(to_gql_error)?
-                .map(from_title);
-            Ok(title)
-        })
-        .await
-    }
-
-    async fn wanted_item(&self, ctx: &Context<'_>) -> GqlResult<Option<WantedItemPayload>> {
-        if let Some(loaders) = loaders_from_ctx(ctx) {
-            let item = loaders
-                .wanted_item
-                .load_one(self.wanted_item_id.to_string())
-                .await?;
-            return item.map(from_wanted_item).transpose().map_err(to_gql_error);
-        }
-        Box::pin(async move {
-            let app = app_from_ctx(ctx)?;
-            let actor = actor_from_ctx(ctx)?;
-            let item = app
-                .get_wanted_item(&actor, self.wanted_item_id.as_ref())
-                .await
-                .map_err(to_gql_error)?
-                .map(from_wanted_item)
-                .transpose()
-                .map_err(to_gql_error)?;
-            Ok(item)
-        })
-        .await
-    }
 }
 
 #[ComplexObject]
@@ -1141,77 +872,6 @@ impl DownloadQueueItemPayload {
                         series_movie_link_id: None,
                     })
             }))
-        })
-        .await
-    }
-
-    async fn title(&self, ctx: &Context<'_>) -> GqlResult<Option<TitlePayload>> {
-        let Some(title_id) = self.title_id.as_deref() else {
-            return Ok(None);
-        };
-        if let Some(loaders) = loaders_from_ctx(ctx) {
-            let title = loaders
-                .title_for_management
-                .load_one(title_id.to_string())
-                .await?;
-            return Ok(title.map(from_title));
-        }
-        Box::pin(async move {
-            let app = app_from_ctx(ctx)?;
-            let actor = actor_from_ctx(ctx)?;
-            let title = app
-                .get_title_for_management(&actor, title_id)
-                .await
-                .map_err(to_gql_error)?
-                .map(from_title);
-            Ok(title)
-        })
-        .await
-    }
-}
-
-#[ComplexObject]
-impl PendingReleasePayload {
-    async fn title(&self, ctx: &Context<'_>) -> GqlResult<Option<TitlePayload>> {
-        if let Some(loaders) = loaders_from_ctx(ctx) {
-            let title = loaders
-                .title_for_management
-                .load_one(self.title_id.to_string())
-                .await?;
-            return Ok(title.map(from_title));
-        }
-        Box::pin(async move {
-            let app = app_from_ctx(ctx)?;
-            let actor = actor_from_ctx(ctx)?;
-            let title = app
-                .get_title_for_management(&actor, self.title_id.as_ref())
-                .await
-                .map_err(to_gql_error)?
-                .map(from_title);
-            Ok(title)
-        })
-        .await
-    }
-
-    async fn wanted_item(&self, ctx: &Context<'_>) -> GqlResult<Option<WantedItemPayload>> {
-        if let Some(loaders) = loaders_from_ctx(ctx) {
-            let item = loaders
-                .wanted_item_for_management
-                .load_one(self.wanted_item_id.to_string())
-                .await?;
-            return item.map(from_wanted_item).transpose().map_err(to_gql_error);
-        }
-        Box::pin(async move {
-            let app = app_from_ctx(ctx)?;
-            let actor = actor_from_ctx(ctx)?;
-            let wanted_item = app
-                .get_wanted_item_for_management(&actor, self.wanted_item_id.as_ref())
-                .await
-                .map_err(to_gql_error)?
-                .map(from_wanted_item)
-                .transpose()
-                .map_err(to_gql_error)?;
-            Ok(wanted_item)
         })
         .await
     }

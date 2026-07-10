@@ -59,46 +59,24 @@ fn guard_subscription_stream<T: Send + 'static>(
 }
 
 fn media_request_changed_payload(event: DomainEvent) -> Option<MediaRequestChangedPayload> {
-    let sequence = event.sequence;
     let event_id = event.event_id;
-    let occurred_at = event.occurred_at;
     let event_type = event.payload.event_type();
 
     match event.payload {
         DomainEventPayload::MediaRequestSubmitted(data)
         | DomainEventPayload::MediaRequestUpdated(data) => Some(MediaRequestChangedPayload {
-            sequence: crate::types::Long(sequence),
             event_id: event_id.into(),
-            occurred_at,
             event_type: crate::types::DomainEventTypeValue::from_domain(event_type),
             request_id: data.request_id.into(),
             library_id: data.library_id.into(),
-            facet: crate::types::MediaFacetValue::from_domain(data.facet),
-            title_name: data.title_name,
-            created_title_id: None,
-            requested_quality_profile_id: data.requested_quality_profile_id.map(Into::into),
-            requested_quality_profile_name: data.requested_quality_profile_name,
-            requested_monitor_type: data.requested_monitor_type,
-            approved_quality_profile_id: None,
-            approved_quality_profile_name: None,
         }),
         DomainEventPayload::MediaRequestApproved(data)
         | DomainEventPayload::MediaRequestRejected(data)
         | DomainEventPayload::MediaRequestCanceled(data) => Some(MediaRequestChangedPayload {
-            sequence: crate::types::Long(sequence),
             event_id: event_id.into(),
-            occurred_at,
             event_type: crate::types::DomainEventTypeValue::from_domain(event_type),
             request_id: data.request_id.into(),
             library_id: data.library_id.into(),
-            facet: crate::types::MediaFacetValue::from_domain(data.facet),
-            title_name: data.title_name,
-            created_title_id: data.created_title_id.map(Into::into),
-            requested_quality_profile_id: data.requested_quality_profile_id.map(Into::into),
-            requested_quality_profile_name: data.requested_quality_profile_name,
-            requested_monitor_type: data.requested_monitor_type,
-            approved_quality_profile_id: data.approved_quality_profile_id.map(Into::into),
-            approved_quality_profile_name: data.approved_quality_profile_name,
         }),
         _ => None,
     }

@@ -554,11 +554,10 @@ async fn graphql_introspection_lists_title_fields() {
         ("linkedAccounts", "userId"),
         ("pendingImportBindingPreview", "pendingImportId"),
         ("postProcessingScriptRuns", "scriptId"),
-        ("titleBySlug", "libraryId"),
         ("externalSubtitleBlocklistEntries", "mediaFileId"),
     ] {
         let arg = query_arg(field_name, arg_name);
-        if field_name == "linkedAccounts" || field_name == "titleBySlug" {
+        if field_name == "linkedAccounts" {
             assert_eq!(arg["type"]["kind"], "SCALAR", "{field_name}.{arg_name}");
             assert_eq!(arg["type"]["name"], "ID", "{field_name}.{arg_name}");
         } else {

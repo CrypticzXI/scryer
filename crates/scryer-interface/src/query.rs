@@ -8,7 +8,7 @@ use scryer_application::{
     ExternalImportSetupSecretDraftStatus, ExternalImportSetupSecretInstanceKind,
     ExternalImportSetupSecretOverrideDraft, JwtSessionScope, MediaRequestCounts,
     OAuthAuthorizationSource, PendingImportCounts, RuntimePathStyle, SCRYER_VERSION,
-    SchedulerSnapshotFilter, SortDirection, TitleCatalogContentStatus, TitleCatalogFilter,
+    SortDirection, TitleCatalogContentStatus, TitleCatalogFilter,
     TitleCatalogSort, TitleCatalogSortKey, TitleHistoryFilter,
     is_supported_title_history_event_type, supported_title_history_event_types,
 };
@@ -27,16 +27,16 @@ use crate::mappers::{
     discovery_item_detail_query_from_input, discovery_items_query_from_input, from_activity_event,
     from_backup_info, from_catalog_discovery, from_collection, from_delete_preview,
     from_delete_titles_preview, from_discovery_home, from_discovery_item,
-    from_discovery_items_result, from_discovery_sync_status, from_domain_event,
+    from_discovery_items_result, from_domain_event,
     from_download_queue_item, from_episode, from_external_import_monitor_warmup_progress,
     from_job_definition, from_job_run, from_library, from_library_scan_session,
     from_library_settings, from_linked_account, from_media_rename_plan, from_media_request,
-    from_media_request_counts, from_outbound_rate_limit_snapshot, from_pending_import_connection,
+    from_media_request_counts, from_pending_import_connection,
     from_pending_import_counts, from_pending_release, from_provider_type, from_runtime_path_style,
     from_smg_scryer_update_notice, from_smg_version_compatibility_notice, from_system_health,
     from_title, from_title_acquisition_diagnostics, from_title_history_page,
     from_title_release_blocklist_entry,
-    from_upstream_scheduler_snapshot, from_user_with_auth_factor_status, from_wanted_item,
+    from_user_with_auth_factor_status, from_wanted_item,
     from_wanted_scope_view,
 };
 use crate::types::*;
@@ -767,7 +767,6 @@ impl CatalogQueries {
         &self,
         ctx: &Context<'_>,
         facet: MediaFacetValue,
-        library_id: Option<ID>,
         library_slug: Option<String>,
         slug: String,
     ) -> GqlResult<Option<TitlePayload>> {
@@ -777,7 +776,7 @@ impl CatalogQueries {
             .get_title_by_slug(
                 &actor,
                 facet.into_domain(),
-                library_id.map(String::from),
+                None,
                 library_slug,
                 &slug,
             )
@@ -1079,20 +1078,6 @@ impl ActivityQueries {
             .into_iter()
             .map(from_library_scan_session)
             .collect())
-    }
-
-    async fn library_scan_session(
-        &self,
-        ctx: &Context<'_>,
-        session_id: ID,
-    ) -> GqlResult<Option<LibraryScanProgressPayload>> {
-        let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
-        let session = app
-            .library_scan_session(&actor, session_id.as_str())
-            .await
-            .map_err(to_gql_error)?;
-        Ok(session.map(from_library_scan_session))
     }
 
     async fn external_import_arr_source_warmup_status(
@@ -1470,19 +1455,6 @@ impl JobAndDownloadQueries {
         Ok(from_catalog_discovery(result))
     }
 
-    async fn discovery_sync_status(
-        &self,
-        ctx: &Context<'_>,
-    ) -> GqlResult<DiscoverySyncStatusPayload> {
-        let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
-        let status = app
-            .discovery_sync_status(&actor)
-            .await
-            .map_err(to_gql_error)?;
-        Ok(from_discovery_sync_status(status))
-    }
-
     async fn download_queue(
         &self,
         ctx: &Context<'_>,
@@ -1607,37 +1579,6 @@ impl SystemQueries {
         let actor = actor_from_ctx(ctx)?;
         let health = app.system_health(&actor).await.map_err(to_gql_error)?;
         Ok(from_system_health(health))
-    }
-
-    async fn upstream_scheduler_snapshot(
-        &self,
-        ctx: &Context<'_>,
-        host_key: Option<String>,
-        destination_key: Option<String>,
-        account_quota_key: Option<String>,
-    ) -> GqlResult<UpstreamSchedulerSnapshotPayload> {
-        require_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
-        let app = app_from_ctx(ctx)?;
-        let snapshot = app
-            .upstream_scheduler_snapshot(SchedulerSnapshotFilter::from_raw_keys(
-                host_key,
-                destination_key,
-                account_quota_key,
-            ))
-            .await
-            .map_err(to_gql_error)?;
-        Ok(from_upstream_scheduler_snapshot(snapshot))
-    }
-
-    async fn outbound_rate_limit_snapshot(
-        &self,
-        ctx: &Context<'_>,
-    ) -> GqlResult<OutboundRateLimitSnapshotPayload> {
-        require_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
-        let app = app_from_ctx(ctx)?;
-        Ok(from_outbound_rate_limit_snapshot(
-            app.outbound_rate_limit_snapshot(),
-        ))
     }
 
     async fn scryer_version(&self, ctx: &Context<'_>) -> GqlResult<String> {

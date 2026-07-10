@@ -335,34 +335,6 @@ async fn scan_library_mutation_marks_nonexistent_library_path_failed() {
         wait_for_scan_status(&mut progress_rx, &session_id, LibraryScanStatus::Failed).await;
     assert_eq!(failed_session.facet, MediaFacet::Anime);
     assert_eq!(failed_session.status, LibraryScanStatus::Failed);
-
-    let projected = gql(
-        &ctx,
-        r#"query LibraryScanSession($sessionId: ID!) {
-            libraryScanSession(sessionId: $sessionId) {
-                sessionId
-                facet
-                mode
-                status
-                summary {
-                    scanned
-                    matched
-                    imported
-                    skipped
-                    unmatched
-                }
-            }
-        }"#,
-        json!({ "sessionId": session_id }),
-    )
-    .await;
-    assert_no_errors(&projected);
-    let session = &projected["data"]["libraryScanSession"];
-    assert_eq!(session["sessionId"], session_id);
-    assert_eq!(session["facet"], "anime");
-    assert_eq!(session["mode"], "full");
-    assert_eq!(session["status"], "failed");
-    assert!(session["summary"].is_null());
 }
 
 #[tokio::test]
