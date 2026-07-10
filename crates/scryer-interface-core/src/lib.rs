@@ -10,6 +10,8 @@ use scryer_application::{
 use scryer_domain::{ActorCapabilityMask, AppPermission, Id, LibraryPermission, User};
 use tokio::sync::{broadcast, watch};
 
+pub mod loaders;
+
 const AUTHENTICATION_REQUIRED_MESSAGE: &str = "authentication required";
 const AUTHENTICATION_REQUIRED_CODE: &str = "AUTHENTICATION_REQUIRED";
 const INTERNAL_SERVER_ERROR_MESSAGE: &str = "Internal server error";

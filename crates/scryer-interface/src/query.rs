@@ -975,6 +975,33 @@ impl CatalogQueries {
             .map(from_episode))
     }
 
+    /// Fetch an episode by its globally unique id — targeted-refetch primitive;
+    /// unlike `episode`, no parent title id is required.
+    async fn episode_by_id(&self, ctx: &Context<'_>, id: ID) -> GqlResult<Option<EpisodePayload>> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let episode = app
+            .get_episode(&actor, id.as_ref())
+            .await
+            .map_err(to_gql_error)?;
+        Ok(episode.map(from_episode))
+    }
+
+    /// Fetch a collection by its globally unique id — targeted-refetch primitive.
+    async fn collection_by_id(
+        &self,
+        ctx: &Context<'_>,
+        id: ID,
+    ) -> GqlResult<Option<CollectionPayload>> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let collection = app
+            .get_collection(&actor, id.as_ref())
+            .await
+            .map_err(to_gql_error)?;
+        Ok(collection.map(from_collection))
+    }
+
     async fn title_by_slug(
         &self,
         ctx: &Context<'_>,

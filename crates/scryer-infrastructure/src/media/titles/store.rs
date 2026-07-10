@@ -594,6 +594,22 @@ impl TitleRepository for TitleStore {
         self.get_by_id_internal(id, false).await
     }
 
+    async fn get_by_ids(&self, ids: &[String]) -> AppResult<Vec<Title>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let placeholders = std::iter::repeat_n("{}", ids.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!("SELECT {TITLE_COLUMNS} FROM titles WHERE id IN ({placeholders})");
+        let args = ids.iter().cloned().map(SqlArg::Text).collect::<Vec<_>>();
+        let rows = SqlRuntime::fetch_all(self.datastore.read_exec(), &sql, &args).await?;
+        let mut titles =
+            decode_runtime_title_rows(&rows, PersistedTitleReadMode::Presentation, true)?;
+        attach_canonical_tags_to_titles(self.datastore.read_exec(), &mut titles).await?;
+        Ok(titles)
+    }
+
     async fn get_title_ratings(&self, title_id: &str) -> AppResult<TitleRatingSummary> {
         load_title_ratings(&self.datastore, title_id).await
     }

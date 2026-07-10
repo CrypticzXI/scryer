@@ -13,6 +13,7 @@ use scryer_application::{
     AppError, AppResult, AppUseCase, AuthenticatedTokenClaims, OAuthAuthorizationSource,
 };
 use scryer_domain::{ActorCapabilityMask, AppPermissionMask, Id};
+use scryer_interface::RequestLoaders;
 use scryer_interface::context::{
     AuthRuntimeStateHandle, ConnectionAuthEpoch, MfaVerification, OAuthActorSession,
 };
@@ -1100,9 +1101,17 @@ pub(crate) async fn graphql_handler(
     touch_oauth_grant_last_used(&state.app, actor.as_ref()).await;
     let batch = if let Some(actor) = actor {
         let oauth_session = actor.oauth_session();
+        // Request-scoped dataloaders: the batch cache lives for exactly this
+        // HTTP request (shared across a batched request's entries — same actor,
+        // same snapshot). The WebSocket path intentionally gets none; resolvers
+        // fall back to direct application calls when loaders are absent.
+        let loaders = RequestLoaders::new(state.app.clone(), actor.user.clone());
         match batch {
             async_graphql::BatchRequest::Single(req) => {
-                let mut req = req.data(actor.mfa_verification()).data(actor.user);
+                let mut req = req
+                    .data(actor.mfa_verification())
+                    .data(actor.user)
+                    .data(loaders);
                 if let Some(oauth_session) = oauth_session {
                     req = req.data(oauth_session);
                 }
@@ -1111,7 +1120,10 @@ pub(crate) async fn graphql_handler(
             async_graphql::BatchRequest::Batch(reqs) => async_graphql::BatchRequest::Batch(
                 reqs.into_iter()
                     .map(|req| {
-                        let mut req = req.data(actor.mfa_verification()).data(actor.user.clone());
+                        let mut req = req
+                            .data(actor.mfa_verification())
+                            .data(actor.user.clone())
+                            .data(loaders.clone());
                         if let Some(oauth_session) = actor.oauth_session() {
                             req = req.data(oauth_session);
                         }

@@ -1140,6 +1140,56 @@ impl AppUseCase {
     }
 }
 
+impl AppUseCase {
+    /// Batch variant of [`Self::get_title`]. Loads titles by id in one query and
+    /// silently drops ids the actor cannot `View` (missing/forbidden ids are
+    /// simply absent from the result), matching dataloader lookup semantics.
+    pub async fn get_titles_by_ids(&self, actor: &User, ids: &[String]) -> AppResult<Vec<Title>> {
+        self.get_titles_by_ids_with_permission(actor, ids, scryer_domain::LibraryPermission::View)
+            .await
+    }
+
+    /// Batch variant of [`Self::get_title_for_management`]. Silently drops ids the
+    /// actor cannot manage rather than erroring.
+    pub async fn get_titles_by_ids_for_management(
+        &self,
+        actor: &User,
+        ids: &[String],
+    ) -> AppResult<Vec<Title>> {
+        self.get_titles_by_ids_with_permission(
+            actor,
+            ids,
+            scryer_domain::LibraryPermission::ManageTitles,
+        )
+        .await
+    }
+
+    async fn get_titles_by_ids_with_permission(
+        &self,
+        actor: &User,
+        ids: &[String],
+        permission: scryer_domain::LibraryPermission,
+    ) -> AppResult<Vec<Title>> {
+        let allowed_library_ids = self
+            .authorized_library_ids(actor, None, permission)
+            .await?
+            .into_iter()
+            .collect::<HashSet<_>>();
+        if allowed_library_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        Ok(self
+            .services
+            .catalog
+            .titles
+            .get_by_ids(ids)
+            .await?
+            .into_iter()
+            .filter(|title| allowed_library_ids.contains(&title.library_id))
+            .collect())
+    }
+}
+
 fn tracked_download_state_is_active(state: Option<&str>) -> bool {
     matches!(
         state.map(str::trim),

@@ -34,6 +34,27 @@ impl AppUseCase {
             .await?;
         Ok(Some(item))
     }
+
+    /// Batch variant of [`Self::get_wanted_item`]: loads wanted items by id and
+    /// silently drops those the actor cannot `View`.
+    pub async fn get_wanted_items_by_ids(
+        &self,
+        actor: &User,
+        ids: &[String],
+    ) -> AppResult<Vec<AcquisitionScopeState>> {
+        let items = self
+            .services
+            .workflow
+            .acquisition_scope_states
+            .list_acquisition_scope_states_by_ids(ids)
+            .await?;
+        self.filter_wanted_items_for_permission(
+            actor,
+            items,
+            scryer_domain::LibraryPermission::View,
+        )
+        .await
+    }
 }
 impl AppUseCase {
     pub async fn list_acquisition_scope_states(

@@ -2831,6 +2831,27 @@ export const settingsChangedSubscription = `subscription SettingsChanged {
   settingsChanged
 }`;
 
+// Unified reactive-refresh feed. Drives ReactiveRefresh v2 invalidation: a
+// single subscription replaces the per-concern "poke" subscriptions. Passing
+// `afterSequence` on (re)subscribe replays missed events from the store for
+// lossless catch-up.
+export const domainEventFeedSubscription = `subscription DomainEventFeed($afterSequence: Long) {
+  domainEventFeed(afterSequence: $afterSequence) {
+    sequence
+    eventId
+    occurredAt
+    actorKind
+    actorUserId
+    actorDisplayName
+    titleId
+    facet
+    eventType
+    streamKind
+    streamId
+    payloadJson
+  }
+}`;
+
 export const systemHealthQuery = `query SystemHealth {
   systemHealth {
     serviceReady

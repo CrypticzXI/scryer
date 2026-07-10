@@ -867,6 +867,18 @@ pub trait TitleRepository: Send + Sync {
     async fn get_by_id_without_external_ids(&self, id: &str) -> AppResult<Option<Title>> {
         self.get_by_id(id).await
     }
+    /// Batch-load titles by id for dataloaders. Missing ids are simply absent
+    /// from the result; order and multiplicity are not guaranteed. The default
+    /// fans out to `get_by_id`; SQL stores override with a single `IN` query.
+    async fn get_by_ids(&self, ids: &[String]) -> AppResult<Vec<Title>> {
+        let mut titles = Vec::with_capacity(ids.len());
+        for id in ids {
+            if let Some(title) = self.get_by_id(id).await? {
+                titles.push(title);
+            }
+        }
+        Ok(titles)
+    }
     async fn get_title_ratings(&self, _title_id: &str) -> AppResult<TitleRatingSummary> {
         Ok(TitleRatingSummary::default())
     }
@@ -1416,6 +1428,19 @@ pub trait ShowRepository: Send + Sync {
         &self,
         title_id: &str,
     ) -> AppResult<Vec<scryer_domain::SeriesMovieLink>>;
+    /// Batch-load series-movie links for many series titles. Returns a flat list
+    /// (each link carries `series_title_id`); callers group by that field. The
+    /// default fans out to the singular query; SQL stores override with `IN`.
+    async fn list_series_movie_links_for_titles(
+        &self,
+        title_ids: &[String],
+    ) -> AppResult<Vec<scryer_domain::SeriesMovieLink>> {
+        let mut links = Vec::new();
+        for title_id in title_ids {
+            links.extend(self.list_series_movie_links_for_title(title_id).await?);
+        }
+        Ok(links)
+    }
     async fn get_series_movie_link_by_id(
         &self,
         link_id: &str,
@@ -1443,6 +1468,18 @@ pub trait ShowRepository: Send + Sync {
         title_ids: &[String],
     ) -> AppResult<HashMap<String, Vec<Collection>>>;
     async fn get_collection_by_id(&self, collection_id: &str) -> AppResult<Option<Collection>>;
+    /// Batch-load collections by id for dataloaders. Missing ids are absent from
+    /// the result. The default fans out to `get_collection_by_id`; SQL stores
+    /// override with a single `IN` query.
+    async fn get_collections_by_ids(&self, ids: &[String]) -> AppResult<Vec<Collection>> {
+        let mut collections = Vec::with_capacity(ids.len());
+        for id in ids {
+            if let Some(collection) = self.get_collection_by_id(id).await? {
+                collections.push(collection);
+            }
+        }
+        Ok(collections)
+    }
     async fn get_collection_by_ordered_path(
         &self,
         ordered_path: &str,
@@ -1466,10 +1503,36 @@ pub trait ShowRepository: Send + Sync {
     async fn delete_collection(&self, collection_id: &str) -> AppResult<()>;
     async fn delete_collections_for_title(&self, title_id: &str) -> AppResult<()>;
     async fn list_episodes_for_collection(&self, collection_id: &str) -> AppResult<Vec<Episode>>;
+    /// Batch-load episodes for many collections. Returns a flat list (each
+    /// episode carries `collection_id`); callers group by that field. The
+    /// default fans out to `list_episodes_for_collection`; SQL stores override
+    /// with a single `IN` query.
+    async fn list_episodes_for_collections(
+        &self,
+        collection_ids: &[String],
+    ) -> AppResult<Vec<Episode>> {
+        let mut episodes = Vec::new();
+        for collection_id in collection_ids {
+            episodes.extend(self.list_episodes_for_collection(collection_id).await?);
+        }
+        Ok(episodes)
+    }
     async fn list_episodes_for_title(&self, title_id: &str) -> AppResult<Vec<Episode>>;
     async fn list_episode_external_ids(&self, episode_id: &str)
     -> AppResult<Vec<ScopedExternalId>>;
     async fn get_episode_by_id(&self, episode_id: &str) -> AppResult<Option<Episode>>;
+    /// Batch-load episodes by id for dataloaders. Missing ids are absent from
+    /// the result. The default fans out to `get_episode_by_id`; SQL stores
+    /// override with a single `IN` query.
+    async fn get_episodes_by_ids(&self, ids: &[String]) -> AppResult<Vec<Episode>> {
+        let mut episodes = Vec::with_capacity(ids.len());
+        for id in ids {
+            if let Some(episode) = self.get_episode_by_id(id).await? {
+                episodes.push(episode);
+            }
+        }
+        Ok(episodes)
+    }
     async fn create_episode(&self, episode: Episode) -> AppResult<Episode>;
     async fn update_episode(&self, episode_id: &str, update: EpisodeUpdate) -> AppResult<Episode>;
     async fn set_episodes_monitored(
@@ -2062,6 +2125,28 @@ pub trait SettingsRepository: Send + Sync {
         scope_id: Option<String>,
     ) -> AppResult<Option<String>> {
         self.get_setting_json(scope, key_name, scope_id).await
+    }
+
+    /// Batch-load explicit (non-default) setting values for many scope ids under
+    /// one scope + key. Returns `(scope_id, effective_value_json)` for scope ids
+    /// that have an explicit row; scope ids without one are absent. The default
+    /// fans out to `get_setting_json_explicit`; SQL stores override with `IN`.
+    async fn list_setting_json_explicit_for_scope_ids(
+        &self,
+        scope: &str,
+        key_name: &str,
+        scope_ids: &[String],
+    ) -> AppResult<Vec<(String, String)>> {
+        let mut values = Vec::with_capacity(scope_ids.len());
+        for scope_id in scope_ids {
+            if let Some(value) = self
+                .get_setting_json_explicit(scope, key_name, Some(scope_id.clone()))
+                .await?
+            {
+                values.push((scope_id.clone(), value));
+            }
+        }
+        Ok(values)
     }
 
     async fn upsert_setting_json(
@@ -2851,6 +2936,21 @@ pub trait MediaFileRepository: Send + Sync {
 
     async fn list_media_files_for_title(&self, title_id: &str) -> AppResult<Vec<TitleMediaFile>>;
 
+    /// Batch-load media files for many titles. Returns a flat list (each file
+    /// carries `title_id`); callers group by that field. The default fans out to
+    /// `list_media_files_for_title`; SQL stores override with a single `IN`
+    /// query.
+    async fn list_media_files_for_titles(
+        &self,
+        title_ids: &[String],
+    ) -> AppResult<Vec<TitleMediaFile>> {
+        let mut files = Vec::new();
+        for title_id in title_ids {
+            files.extend(self.list_media_files_for_title(title_id).await?);
+        }
+        Ok(files)
+    }
+
     async fn list_live_media_files_for_episode_ids(
         &self,
         title_id: &str,
@@ -3098,10 +3198,48 @@ pub trait AcquisitionScopeStateRepository: Send + Sync {
         id: &str,
     ) -> AppResult<Option<AcquisitionScopeState>>;
 
+    /// Batch-load acquisition scope states (wanted items) by id for dataloaders.
+    /// Missing ids are absent from the result. The default fans out to
+    /// `get_acquisition_scope_state_by_id`; SQL stores override with `IN`.
+    async fn list_acquisition_scope_states_by_ids(
+        &self,
+        ids: &[String],
+    ) -> AppResult<Vec<AcquisitionScopeState>> {
+        let mut states = Vec::with_capacity(ids.len());
+        for id in ids {
+            if let Some(state) = self.get_acquisition_scope_state_by_id(id).await? {
+                states.push(state);
+            }
+        }
+        Ok(states)
+    }
+
     async fn list_acquisition_scope_states(
         &self,
         query: AcquisitionScopeStatesQuery,
     ) -> AppResult<Vec<AcquisitionScopeState>>;
+
+    /// Batch-load every acquisition scope state for many titles. Returns a flat
+    /// list (each state carries `title_id`); callers group by that field. The
+    /// default fans out via `list_acquisition_scope_states`; SQL stores override
+    /// with a single `IN` query over `title_id`.
+    async fn list_acquisition_scope_states_for_title_ids(
+        &self,
+        title_ids: &[String],
+    ) -> AppResult<Vec<AcquisitionScopeState>> {
+        let mut states = Vec::new();
+        for title_id in title_ids {
+            states.extend(
+                self.list_acquisition_scope_states(AcquisitionScopeStatesQuery {
+                    title_id: Some(title_id.clone()),
+                    limit: i64::MAX,
+                    ..AcquisitionScopeStatesQuery::default()
+                })
+                .await?,
+            );
+        }
+        Ok(states)
+    }
 
     async fn count_acquisition_scope_states(
         &self,

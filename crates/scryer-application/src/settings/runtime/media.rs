@@ -194,6 +194,44 @@ impl AppUseCase {
                 ))
             })
     }
+
+    /// Batch variant of [`Self::load_title_required_audio_override`]. Returns a
+    /// `title_id -> override languages` map containing only titles that carry an
+    /// explicit (non-null) override; titles without one are absent. Not
+    /// actor-scoped, mirroring the singular.
+    pub async fn load_title_required_audio_overrides(
+        &self,
+        title_ids: &[String],
+    ) -> AppResult<HashMap<String, Vec<String>>> {
+        if title_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let raw_values = self
+            .services
+            .config
+            .settings
+            .list_setting_json_explicit_for_scope_ids(
+                SETTINGS_SCOPE_SYSTEM,
+                TITLE_REQUIRED_AUDIO_OVERRIDE_KEY,
+                title_ids,
+            )
+            .await?;
+
+        let mut overrides = HashMap::with_capacity(raw_values.len());
+        for (title_id, raw_value) in raw_values {
+            let parsed =
+                serde_json::from_str::<Option<Vec<String>>>(&raw_value).map_err(|error| {
+                    AppError::Repository(format!(
+                        "failed to parse setting '{TITLE_REQUIRED_AUDIO_OVERRIDE_KEY}' JSON value: {error}"
+                    ))
+                })?;
+            if let Some(languages) = parsed {
+                overrides.insert(title_id, normalize_required_audio_languages(languages));
+            }
+        }
+        Ok(overrides)
+    }
 }
 impl AppUseCase {
     pub(crate) async fn resolve_required_audio_languages(

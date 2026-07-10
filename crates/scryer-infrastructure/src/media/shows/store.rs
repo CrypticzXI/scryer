@@ -113,6 +113,13 @@ impl ShowRepository for ShowStore {
         list_series_movie_links_for_title_query(self.read_target(), title_id).await
     }
 
+    async fn list_series_movie_links_for_titles(
+        &self,
+        title_ids: &[String],
+    ) -> AppResult<Vec<SeriesMovieLink>> {
+        list_series_movie_links_for_titles_query(self.read_target(), title_ids).await
+    }
+
     async fn get_series_movie_link_by_id(
         &self,
         link_id: &str,
@@ -177,6 +184,10 @@ impl ShowRepository for ShowStore {
 
     async fn get_collection_by_id(&self, collection_id: &str) -> AppResult<Option<Collection>> {
         get_collection_by_id_query(self.read_target(), collection_id).await
+    }
+
+    async fn get_collections_by_ids(&self, ids: &[String]) -> AppResult<Vec<Collection>> {
+        get_collections_by_ids_query(self.read_target(), ids).await
     }
 
     async fn get_collection_by_ordered_path(
@@ -281,6 +292,13 @@ impl ShowRepository for ShowStore {
         list_episodes_for_collection_query(self.read_target(), collection_id).await
     }
 
+    async fn list_episodes_for_collections(
+        &self,
+        collection_ids: &[String],
+    ) -> AppResult<Vec<Episode>> {
+        list_episodes_for_collections_query(self.read_target(), collection_ids).await
+    }
+
     async fn list_episodes_for_title(&self, title_id: &str) -> AppResult<Vec<Episode>> {
         list_episodes_for_title_query(self.read_target(), title_id).await
     }
@@ -294,6 +312,10 @@ impl ShowRepository for ShowStore {
 
     async fn get_episode_by_id(&self, episode_id: &str) -> AppResult<Option<Episode>> {
         get_episode_by_id_query(self.read_target(), episode_id).await
+    }
+
+    async fn get_episodes_by_ids(&self, ids: &[String]) -> AppResult<Vec<Episode>> {
+        get_episodes_by_ids_query(self.read_target(), ids).await
     }
 
     async fn create_episode(&self, episode: Episode) -> AppResult<Episode> {
@@ -482,6 +504,30 @@ async fn list_series_movie_links_for_title_query(
         &[SqlArg::Text(title_id.to_string())],
     )
     .await?;
+    rows.iter().map(row_to_series_movie_link).collect()
+}
+
+async fn list_series_movie_links_for_titles_query(
+    target: SqlTarget<'_>,
+    title_ids: &[String],
+) -> AppResult<Vec<SeriesMovieLink>> {
+    if title_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let placeholders = bind_placeholders(title_ids.len());
+    let sql = format!(
+        "SELECT {SERIES_MOVIE_LINK_COLUMNS}
+         FROM series_movie_links sml
+         INNER JOIN movie_entities me ON me.id = sml.movie_entity_id
+         WHERE sml.series_title_id IN ({placeholders})
+         ORDER BY sml.series_title_id ASC, COALESCE(sml.narrative_order, ''), sml.created_at ASC, sml.id ASC"
+    );
+    let args = title_ids
+        .iter()
+        .cloned()
+        .map(SqlArg::Text)
+        .collect::<Vec<_>>();
+    let rows = SqlRuntime::fetch_all(SqlExec::Target(target), &sql, &args).await?;
     rows.iter().map(row_to_series_movie_link).collect()
 }
 
@@ -876,6 +922,20 @@ async fn get_collection_by_id_query(
     row.as_ref().map(row_to_collection).transpose()
 }
 
+async fn get_collections_by_ids_query(
+    target: SqlTarget<'_>,
+    ids: &[String],
+) -> AppResult<Vec<Collection>> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let placeholders = bind_placeholders(ids.len());
+    let sql = format!("SELECT {COLLECTION_COLUMNS} FROM collections WHERE id IN ({placeholders})");
+    let args = ids.iter().cloned().map(SqlArg::Text).collect::<Vec<_>>();
+    let rows = SqlRuntime::fetch_all(SqlExec::Target(target), &sql, &args).await?;
+    rows.iter().map(row_to_collection).collect()
+}
+
 async fn get_collection_by_ordered_path_query(
     target: SqlTarget<'_>,
     ordered_path: &str,
@@ -905,6 +965,26 @@ async fn list_episodes_for_collection_query(
         &[SqlArg::Text(collection_id.to_string())],
     )
     .await?;
+    rows.iter().map(row_to_episode).collect()
+}
+
+async fn list_episodes_for_collections_query(
+    target: SqlTarget<'_>,
+    collection_ids: &[String],
+) -> AppResult<Vec<Episode>> {
+    if collection_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let placeholders = bind_placeholders(collection_ids.len());
+    let sql = format!(
+        "SELECT {EPISODE_COLUMNS} FROM episodes WHERE collection_id IN ({placeholders}) ORDER BY collection_id ASC, episode_number ASC, id ASC"
+    );
+    let args = collection_ids
+        .iter()
+        .cloned()
+        .map(SqlArg::Text)
+        .collect::<Vec<_>>();
+    let rows = SqlRuntime::fetch_all(SqlExec::Target(target), &sql, &args).await?;
     rows.iter().map(row_to_episode).collect()
 }
 
@@ -951,6 +1031,20 @@ async fn get_episode_by_id_query(
     )
     .await?;
     row.as_ref().map(row_to_episode).transpose()
+}
+
+async fn get_episodes_by_ids_query(
+    target: SqlTarget<'_>,
+    ids: &[String],
+) -> AppResult<Vec<Episode>> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let placeholders = bind_placeholders(ids.len());
+    let sql = format!("SELECT {EPISODE_COLUMNS} FROM episodes WHERE id IN ({placeholders})");
+    let args = ids.iter().cloned().map(SqlArg::Text).collect::<Vec<_>>();
+    let rows = SqlRuntime::fetch_all(SqlExec::Target(target), &sql, &args).await?;
+    rows.iter().map(row_to_episode).collect()
 }
 
 async fn find_episode_by_title_and_numbers_query(

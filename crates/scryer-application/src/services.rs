@@ -2719,6 +2719,35 @@ impl AppUseCase {
             .ok_or_else(|| AppError::NotFound(format!("title {}", wanted.title_id)))
     }
 
+    /// Retain only the acquisition scope states whose owning library the actor
+    /// holds `permission` on. Mirrors the per-item permission derivation used by
+    /// `get_wanted_item` / `get_wanted_item_for_management` (the joined
+    /// `library_id` is the title's library), silently dropping forbidden or
+    /// orphaned rows for batch/dataloader callers.
+    pub(crate) async fn filter_wanted_items_for_permission(
+        &self,
+        actor: &User,
+        items: Vec<AcquisitionScopeState>,
+        permission: scryer_domain::LibraryPermission,
+    ) -> AppResult<Vec<AcquisitionScopeState>> {
+        let allowed_library_ids = self
+            .authorized_library_ids(actor, None, permission)
+            .await?
+            .into_iter()
+            .collect::<std::collections::HashSet<_>>();
+        if allowed_library_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        Ok(items
+            .into_iter()
+            .filter(|item| {
+                item.library_id
+                    .as_deref()
+                    .is_some_and(|library_id| allowed_library_ids.contains(library_id))
+            })
+            .collect())
+    }
+
     pub async fn find_download_submission_by_client_item_id(
         &self,
         actor: &User,
@@ -2957,6 +2986,30 @@ impl AppUseCase {
             .await
     }
 
+    /// Batch variant of [`Self::get_title_wanted_item`]: returns every acquisition
+    /// scope state for the `View`-visible subset of `title_ids`. Callers key the
+    /// flat result by `(title_id, episode_id)`.
+    pub async fn get_title_wanted_items_for_titles(
+        &self,
+        actor: &User,
+        title_ids: &[String],
+    ) -> AppResult<Vec<AcquisitionScopeState>> {
+        let visible_title_ids = self
+            .get_titles_by_ids(actor, title_ids)
+            .await?
+            .into_iter()
+            .map(|title| title.id)
+            .collect::<Vec<_>>();
+        if visible_title_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.services
+            .workflow
+            .acquisition_scope_states
+            .list_acquisition_scope_states_for_title_ids(&visible_title_ids)
+            .await
+    }
+
     pub async fn get_title_for_management(
         &self,
         actor: &User,
@@ -2995,6 +3048,27 @@ impl AppUseCase {
             .await?;
         }
         Ok(wanted)
+    }
+
+    /// Batch variant of [`Self::get_wanted_item_for_management`]: loads wanted
+    /// items by id and silently drops those the actor cannot manage.
+    pub async fn get_wanted_items_by_ids_for_management(
+        &self,
+        actor: &User,
+        ids: &[String],
+    ) -> AppResult<Vec<AcquisitionScopeState>> {
+        let items = self
+            .services
+            .workflow
+            .acquisition_scope_states
+            .list_acquisition_scope_states_by_ids(ids)
+            .await?;
+        self.filter_wanted_items_for_permission(
+            actor,
+            items,
+            scryer_domain::LibraryPermission::ManageTitles,
+        )
+        .await
     }
 
     pub async fn get_title_for_download_actions(

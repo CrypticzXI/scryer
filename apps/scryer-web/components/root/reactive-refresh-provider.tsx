@@ -3,10 +3,17 @@ import { CombinedError, useClient } from "urql";
 
 import {
   buildReactiveRefreshQuery,
+  domainEventFeedSubscription,
   type ReactiveRefreshQueryActionInput,
   type ReactiveRefreshQueryActionPlan,
 } from "@/lib/graphql/queries";
 import { extractDownloadFeedbackWarning } from "@/lib/graphql/download-feedback-timeout";
+import { wsClient } from "@/lib/graphql/ws-client";
+import {
+  createReactiveRefreshEngine,
+  normalizeDomainEvent,
+  type ReactiveRefreshEngine,
+} from "@/lib/reactive/domain-event-feed";
 import {
   ReactiveRefreshContext,
   type QueueCatalogTitleRefreshOptions,
@@ -74,6 +81,14 @@ type ReactiveRefreshAction =
 type ReactiveRefreshBatchGroup = "default" | "downloadFeedback";
 
 const REACTIVE_REFRESH_DEBOUNCE_MS = 300;
+
+// Domain-event-feed transport tuning. graphql-ws already retries the socket, so
+// a delivered `error`/`complete` means the subscription itself dropped: we
+// resubscribe with the last-seen `afterSequence` for lossless catch-up, and
+// degrade to a slow interval refresh only if reconnects keep failing.
+const DOMAIN_EVENT_FEED_RECONNECT_DELAY_MS = 3_000;
+const DOMAIN_EVENT_FEED_FALLBACK_FAILURE_THRESHOLD = 3;
+const DOMAIN_EVENT_FEED_FALLBACK_INTERVAL_MS = 30_000;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -345,6 +360,17 @@ export function ReactiveRefreshProvider({
   const flushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const flushInFlightRef = useRef(false);
   const isMountedRef = useRef(true);
+  const engineRef = useRef<ReactiveRefreshEngine | null>(null);
+  if (engineRef.current === null) {
+    engineRef.current = createReactiveRefreshEngine({
+      debounceMs: REACTIVE_REFRESH_DEBOUNCE_MS,
+    });
+  }
+  const engine = engineRef.current;
+
+  const registerReactiveRefresh = useCallback<
+    ReactiveRefreshContextValue["registerReactiveRefresh"]
+  >((registration) => engine.register(registration), [engine]);
 
   const flushPendingActionGroup = useCallback(async (queuedActions: ReactiveRefreshAction[]) => {
     if (queuedActions.length === 0) {
@@ -508,8 +534,109 @@ export function ReactiveRefreshProvider({
     };
   }, []);
 
+  // Single `domainEventFeed` subscription — the only invalidation source for
+  // registered views. Reconnects with `afterSequence` for lossless catch-up and
+  // degrades to a slow interval refresh if reconnects keep failing.
+  useEffect(() => {
+    let disposed = false;
+    let unsubscribe: (() => void) | null = null;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let fallbackTimer: ReturnType<typeof setInterval> | null = null;
+    let consecutiveFailures = 0;
+
+    const startFallback = () => {
+      if (fallbackTimer !== null) {
+        return;
+      }
+      console.warn(
+        "[reactive-refresh] domain event feed unavailable; degrading to interval refresh",
+      );
+      fallbackTimer = setInterval(() => {
+        engine.runAll();
+      }, DOMAIN_EVENT_FEED_FALLBACK_INTERVAL_MS);
+    };
+
+    const stopFallback = () => {
+      if (fallbackTimer !== null) {
+        clearInterval(fallbackTimer);
+        fallbackTimer = null;
+      }
+    };
+
+    const scheduleReconnect = () => {
+      if (disposed) {
+        return;
+      }
+      if (unsubscribe) {
+        unsubscribe();
+        unsubscribe = null;
+      }
+      consecutiveFailures += 1;
+      if (consecutiveFailures >= DOMAIN_EVENT_FEED_FALLBACK_FAILURE_THRESHOLD) {
+        startFallback();
+      }
+      if (reconnectTimer !== null) {
+        return;
+      }
+      reconnectTimer = setTimeout(() => {
+        reconnectTimer = null;
+        connect();
+      }, DOMAIN_EVENT_FEED_RECONNECT_DELAY_MS);
+    };
+
+    const connect = () => {
+      if (disposed) {
+        return;
+      }
+      unsubscribe = wsClient.subscribe(
+        {
+          query: domainEventFeedSubscription,
+          variables: { afterSequence: engine.afterSequence() },
+        },
+        {
+          next(result) {
+            consecutiveFailures = 0;
+            stopFallback();
+            const payload = (
+              result as { data?: { domainEventFeed?: unknown } }
+            ).data?.domainEventFeed;
+            if (payload) {
+              engine.handleEvent(normalizeDomainEvent(payload));
+            }
+          },
+          error(error) {
+            console.error(
+              "[reactive-refresh] domain event feed error:",
+              error,
+            );
+            scheduleReconnect();
+          },
+          complete() {
+            scheduleReconnect();
+          },
+        },
+      );
+    };
+
+    connect();
+
+    return () => {
+      disposed = true;
+      if (unsubscribe) {
+        unsubscribe();
+        unsubscribe = null;
+      }
+      if (reconnectTimer !== null) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+      }
+      stopFallback();
+    };
+  }, [engine]);
+
   const value = useMemo<ReactiveRefreshContextValue>(
     () => ({
+      registerReactiveRefresh,
       queueCatalogTitlesRefresh(options: QueueCatalogTitlesRefreshOptions) {
         queuePendingAction({
           ...options,
@@ -562,7 +689,7 @@ export function ReactiveRefreshProvider({
         });
       },
     }),
-    [queuePendingAction],
+    [queuePendingAction, registerReactiveRefresh],
   );
 
   return (

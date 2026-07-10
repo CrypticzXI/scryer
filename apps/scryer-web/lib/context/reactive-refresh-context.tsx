@@ -4,6 +4,7 @@ import type {
   TitleCatalogTitleProjection,
   TitleSidePanelOverviewProjection,
 } from "@/lib/graphql/queries";
+import type { ReactiveRefreshRegistration } from "@/lib/reactive/domain-event-feed";
 import type { ImportRecord, TitleRecord } from "@/lib/types";
 import type {
   TitleOverviewDownloadFeedbackSnapshot,
@@ -60,6 +61,15 @@ export type QueueImportHistoryRefreshOptions = {
 };
 
 export type ReactiveRefreshContextValue = {
+  /**
+   * Register a targeted refresh: `run` fires (coalesced) whenever a
+   * `domainEventFeed` event satisfies `predicate`. Returns an unregister fn.
+   * Prefer the prebuilt predicates in `@/lib/reactive/domain-event-feed`
+   * (forTitle, forEventTypes, forStreamKind, anyOf/allOf/not) over `always`.
+   */
+  registerReactiveRefresh: (
+    registration: ReactiveRefreshRegistration,
+  ) => () => void;
   queueCatalogTitlesRefresh: (
     options: QueueCatalogTitlesRefreshOptions,
   ) => void;

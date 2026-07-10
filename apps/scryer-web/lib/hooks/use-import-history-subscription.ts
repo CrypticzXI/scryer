@@ -1,32 +1,51 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useId, useRef } from "react";
 
-import { importHistoryChangedSubscription } from "@/lib/graphql/queries";
+import { useReactiveRefresh } from "@/lib/context/reactive-refresh-context";
+import { forEventTypes } from "@/lib/reactive/domain-event-feed";
 
-import { useDeferredWsSubscription } from "@/lib/hooks/use-deferred-ws-subscription";
+// Import + media-file lifecycle events that change the import history table.
+const IMPORT_HISTORY_EVENT_TYPES = [
+  "import_completed",
+  "import_rejected",
+  "import_requested",
+  "import_recovery_completed",
+  "media_file_imported",
+  "media_file_analyzed",
+  "media_file_renamed",
+  "media_file_deleted",
+  "media_file_upgraded",
+  "post_processing_completed",
+] as const;
 
 /**
- * Subscribes to import history change notifications via WebSocket.
- * Calls `onChanged` whenever an import status update occurs so the
+ * Calls `onChanged` whenever an import/media-file lifecycle event occurs so the
  * consumer can refetch the import history table.
+ *
+ * ReactiveRefresh v2: invalidation is sourced from the unified `domainEventFeed`
+ * (via the reactive-refresh registry) instead of the legacy `importHistoryChanged`
+ * poke subscription. The public signature is unchanged.
  */
 export function useImportHistorySubscription(
   onChanged: () => void,
   options?: { pause?: boolean },
 ) {
+  const { registerReactiveRefresh } = useReactiveRefresh();
   const onChangedRef = useRef(onChanged);
   useEffect(() => {
     onChangedRef.current = onChanged;
   });
 
-  useDeferredWsSubscription({
-    enabled: !(options?.pause ?? false),
-    requestKey: "importHistoryChanged",
-    request: { query: importHistoryChangedSubscription },
-    onNext() {
-      onChangedRef.current();
-    },
-    onError(err) {
-      console.error("[import-history] subscription error:", err);
-    },
-  });
+  const pause = options?.pause ?? false;
+  const aliasId = useId();
+
+  useEffect(() => {
+    if (pause) {
+      return;
+    }
+    return registerReactiveRefresh({
+      aliasKey: `import-history:${aliasId}`,
+      predicate: forEventTypes(...IMPORT_HISTORY_EVENT_TYPES),
+      run: () => onChangedRef.current(),
+    });
+  }, [pause, aliasId, registerReactiveRefresh]);
 }

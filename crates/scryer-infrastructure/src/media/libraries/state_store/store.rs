@@ -782,6 +782,30 @@ impl AcquisitionScopeStateRepository for WantedStore {
             .transpose()
     }
 
+    async fn list_acquisition_scope_states_for_title_ids(
+        &self,
+        title_ids: &[String],
+    ) -> AppResult<Vec<AcquisitionScopeState>> {
+        if title_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let placeholders = placeholders(title_ids.len());
+        let sql = format!(
+            "{} WHERE w.title_id IN ({placeholders})",
+            wanted_item_select_sql()
+        );
+        let args = title_ids
+            .iter()
+            .cloned()
+            .map(SqlArg::Text)
+            .collect::<Vec<_>>();
+        SqlRuntime::fetch_all(self.datastore.read_exec(), &sql, &args)
+            .await?
+            .iter()
+            .map(wanted_row_to_item)
+            .collect()
+    }
+
     async fn complete_acquisition_scope_for_title(
         &self,
         title_id: &str,
@@ -943,6 +967,23 @@ impl AcquisitionScopeStateRepository for WantedStore {
         .as_ref()
         .map(wanted_row_to_item)
         .transpose()
+    }
+
+    async fn list_acquisition_scope_states_by_ids(
+        &self,
+        ids: &[String],
+    ) -> AppResult<Vec<AcquisitionScopeState>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let placeholders = placeholders(ids.len());
+        let sql = format!("{} WHERE w.id IN ({placeholders})", wanted_item_select_sql());
+        let args = ids.iter().cloned().map(SqlArg::Text).collect::<Vec<_>>();
+        SqlRuntime::fetch_all(self.datastore.read_exec(), &sql, &args)
+            .await?
+            .iter()
+            .map(wanted_row_to_item)
+            .collect()
     }
 
     async fn list_acquisition_scope_states(

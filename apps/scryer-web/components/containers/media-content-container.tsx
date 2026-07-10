@@ -813,7 +813,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
         .query<{ catalogDiscovery?: CatalogDiscoveryPayload }>(
           catalogDiscoveryQuery,
           { input },
-          { requestPolicy: "network-only" },
+          { requestPolicy: "cache-first" },
         )
         .toPromise();
       if (error) {
@@ -1785,7 +1785,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
                 includeUnresolved: true,
               },
             },
-            { requestPolicy: "network-only" },
+            { requestPolicy: "cache-first" },
           )
           .toPromise();
         if (error) {

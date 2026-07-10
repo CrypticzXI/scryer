@@ -43,7 +43,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1.3", features = ["v4", "serde"] }
-async-graphql = { version = "7.2", default-features = false, features = ["chrono"] }
+async-graphql = { version = "7.2", default-features = false, features = ["chrono", "dataloader"] }
 jsonwebtoken = { version = "10", default-features = false, features = ["aws_lc_rs"] }
 rand_core = "0.10"
 webauthn-rs = { package = "scryer-webauthn", path = "crates/scryer-webauthn" }

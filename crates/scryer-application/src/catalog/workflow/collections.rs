@@ -772,6 +772,34 @@ impl AppUseCase {
     }
 }
 impl AppUseCase {
+    /// Batch-load media files for many titles, keyed by `title_id`. Titles the
+    /// actor cannot `View` are silently dropped (their key is simply absent).
+    pub async fn list_media_files_for_titles(
+        &self,
+        actor: &User,
+        title_ids: &[String],
+    ) -> AppResult<HashMap<String, Vec<crate::TitleMediaFile>>> {
+        let title_ids = self
+            .filter_title_ids_for_permission(
+                actor,
+                title_ids,
+                scryer_domain::LibraryPermission::View,
+            )
+            .await?;
+        let mut grouped: HashMap<String, Vec<crate::TitleMediaFile>> = HashMap::new();
+        for file in self
+            .services
+            .library
+            .media_files
+            .list_media_files_for_titles(&title_ids)
+            .await?
+        {
+            grouped.entry(file.title_id.clone()).or_default().push(file);
+        }
+        Ok(grouped)
+    }
+}
+impl AppUseCase {
     pub async fn list_title_quality_summaries(
         &self,
         actor: &User,
@@ -908,6 +936,97 @@ impl AppUseCase {
             .shows
             .list_series_movie_links_for_title(title_id)
             .await
+    }
+
+    /// Batch variant of [`Self::list_series_movie_links`], keyed by
+    /// `series_title_id`. Titles the actor cannot `View` are silently dropped.
+    pub async fn list_series_movie_links_for_titles(
+        &self,
+        actor: &User,
+        title_ids: &[String],
+    ) -> AppResult<HashMap<String, Vec<scryer_domain::SeriesMovieLink>>> {
+        let title_ids = self
+            .filter_title_ids_for_permission(
+                actor,
+                title_ids,
+                scryer_domain::LibraryPermission::View,
+            )
+            .await?;
+        let mut grouped: HashMap<String, Vec<scryer_domain::SeriesMovieLink>> = HashMap::new();
+        for link in self
+            .services
+            .catalog
+            .shows
+            .list_series_movie_links_for_titles(&title_ids)
+            .await?
+        {
+            grouped
+                .entry(link.series_title_id.clone())
+                .or_default()
+                .push(link);
+        }
+        Ok(grouped)
+    }
+}
+impl AppUseCase {
+    /// Batch-load collections by id, dropping any whose owning title the actor
+    /// cannot `View`. Missing/forbidden ids are simply absent from the result.
+    pub async fn get_collections_by_ids(
+        &self,
+        actor: &User,
+        ids: &[String],
+    ) -> AppResult<Vec<Collection>> {
+        let collections = self
+            .services
+            .catalog
+            .shows
+            .get_collections_by_ids(ids)
+            .await?;
+        let title_ids = collections
+            .iter()
+            .map(|collection| collection.title_id.clone())
+            .collect::<Vec<_>>();
+        let visible_titles = self
+            .get_titles_by_ids(actor, &title_ids)
+            .await?
+            .into_iter()
+            .map(|title| title.id)
+            .collect::<HashSet<_>>();
+        Ok(collections
+            .into_iter()
+            .filter(|collection| visible_titles.contains(&collection.title_id))
+            .collect())
+    }
+
+    /// Batch-load episodes for many collections, keyed by `collection_id`.
+    /// Collections whose title the actor cannot `View` are silently dropped.
+    pub async fn list_episodes_for_collections(
+        &self,
+        actor: &User,
+        collection_ids: &[String],
+    ) -> AppResult<HashMap<String, Vec<Episode>>> {
+        let visible_collection_ids = self
+            .get_collections_by_ids(actor, collection_ids)
+            .await?
+            .into_iter()
+            .map(|collection| collection.id)
+            .collect::<Vec<_>>();
+        if visible_collection_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let mut grouped: HashMap<String, Vec<Episode>> = HashMap::new();
+        for episode in self
+            .services
+            .catalog
+            .shows
+            .list_episodes_for_collections(&visible_collection_ids)
+            .await?
+        {
+            if let Some(collection_id) = episode.collection_id.clone() {
+                grouped.entry(collection_id).or_default().push(episode);
+            }
+        }
+        Ok(grouped)
     }
 }
 impl AppUseCase {
@@ -1088,6 +1207,30 @@ impl AppUseCase {
             .await?;
         }
         Ok(episode)
+    }
+
+    /// Batch variant of [`Self::get_episode`]. Loads episodes by id in one query
+    /// and silently drops those whose title the actor cannot `View`.
+    pub async fn get_episodes_by_ids(
+        &self,
+        actor: &User,
+        ids: &[String],
+    ) -> AppResult<Vec<Episode>> {
+        let episodes = self.services.catalog.shows.get_episodes_by_ids(ids).await?;
+        let title_ids = episodes
+            .iter()
+            .map(|episode| episode.title_id.clone())
+            .collect::<Vec<_>>();
+        let visible_titles = self
+            .get_titles_by_ids(actor, &title_ids)
+            .await?
+            .into_iter()
+            .map(|title| title.id)
+            .collect::<HashSet<_>>();
+        Ok(episodes
+            .into_iter()
+            .filter(|episode| visible_titles.contains(&episode.title_id))
+            .collect())
     }
 }
 impl AppUseCase {

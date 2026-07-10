@@ -167,6 +167,34 @@ impl MediaFileRepository for MediaFileStore {
         .await
     }
 
+    async fn list_media_files_for_titles(
+        &self,
+        title_ids: &[String],
+    ) -> AppResult<Vec<TitleMediaFile>> {
+        if title_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let dialect = dialect_for_datastore(&self.datastore);
+        let placeholders = placeholders(title_ids.len());
+        let sql = format!(
+            "SELECT {}
+             FROM media_files mf
+             LEFT JOIN file_episode_map fem ON fem.file_id = mf.id
+             WHERE mf.title_id IN ({placeholders})
+               AND {}
+             ORDER BY mf.title_id, mf.created_at DESC",
+            media_file_select_columns(dialect, "fem.episode_id"),
+            live_media_file_predicate(dialect, "mf")
+        );
+        let args = title_ids
+            .iter()
+            .cloned()
+            .map(SqlArg::Text)
+            .collect::<Vec<_>>();
+        fetch_media_files(self.datastore.read_exec(), &sql, &args).await
+    }
+
     async fn list_live_media_files_for_episode_ids(
         &self,
         title_id: &str,
