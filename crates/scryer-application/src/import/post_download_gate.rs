@@ -5,8 +5,9 @@ use crate::domain_events::{DomainEventActor, new_title_domain_event, title_conte
 use crate::media::release_labels::resolve_release_labels_from_analysis;
 use crate::release_parser::AudioCodec;
 use crate::{
-    AppUseCase, NewBlocklistEntry, ReleaseDownloadAttemptOutcome, normalize_release_attempt_hint,
-    normalize_release_attempt_title,
+    AppUseCase, NewBlocklistEntry, ReleaseDownloadAttemptOutcome, build_release_parse_context,
+    normalize_release_attempt_hint, normalize_release_attempt_title,
+    parse_release_metadata_for_target,
 };
 use scryer_domain::{
     DomainEventPayload, ImportRejectedEventData, ImportSkipReason, ImportStatus, MediaFacet, Title,
@@ -119,6 +120,22 @@ const SAMPLE_RUNTIME_PERCENT: i32 = 10;
 
 pub(crate) fn facet_to_category_hint(facet: &MediaFacet) -> &'static str {
     facet.as_str()
+}
+
+fn contextualize_import_release(
+    parsed: &crate::ParsedReleaseMetadata,
+    title: &Title,
+) -> crate::ParsedReleaseMetadata {
+    let context = build_release_parse_context(
+        title,
+        None,
+        None,
+        Some(facet_to_category_hint(&title.facet)),
+    );
+    let targeted = parse_release_metadata_for_target(&parsed.raw_title, &context);
+    let mut contextualized = parsed.clone();
+    contextualized.guide_facts = targeted.guide_facts;
+    contextualized
 }
 
 #[cfg(any(feature = "runtime-media-analysis", test))]
@@ -715,6 +732,7 @@ pub(crate) async fn prepare_import_candidate(
     is_filler: bool,
     runtime_sample_validation: RuntimeSampleValidation,
 ) -> Result<PreparedImportCandidate, ImportedFileRejection> {
+    let parsed = contextualize_import_release(parsed, title);
     let source_snapshot_before = app
         .services
         .workflow
@@ -726,7 +744,7 @@ pub(crate) async fn prepare_import_candidate(
     match probe_and_validate(
         app,
         title,
-        parsed,
+        &parsed,
         quality_profile,
         path,
         size_bytes,
@@ -753,7 +771,7 @@ pub(crate) async fn prepare_import_candidate(
                 ));
             }
 
-            let (parsed, rescore_changes) = rescore_from_mediainfo(parsed, accepted.as_ref());
+            let (parsed, rescore_changes) = rescore_from_mediainfo(&parsed, accepted.as_ref());
             if !rescore_changes.is_empty() {
                 tracing::debug!(
                     title = %title.name,
@@ -922,7 +940,8 @@ pub(crate) async fn compute_post_download_acquisition_decision(
     prior_rescore_changes: &[String],
     is_filler: bool,
 ) -> PostDownloadAcquisitionDecision {
-    let (rescored, changes) = rescore_from_mediainfo(parsed, acceptance);
+    let contextualized = contextualize_import_release(parsed, title);
+    let (rescored, changes) = rescore_from_mediainfo(&contextualized, acceptance);
     let mut rescore_changes = prior_rescore_changes.to_vec();
     for change in changes {
         if !rescore_changes
@@ -1319,12 +1338,73 @@ async fn reset_wanted_items_for_retry(app: &AppUseCase, title_id: &str, episode_
 mod tests {
     use super::*;
 
+    fn test_title(facet: MediaFacet) -> Title {
+        Title {
+            id: "title-1".to_string(),
+            name: "Test Title".to_string(),
+            library_id: scryer_domain::default_library_id_for_facet(&facet),
+            root_folder_id: scryer_domain::root_folder_id_for_path("/data/test"),
+            facet,
+            monitored: true,
+            tags: vec![],
+            canonical_tags: vec![],
+            external_ids: vec![],
+            created_by: None,
+            created_at: chrono::Utc::now(),
+            year: Some(2024),
+            overview: None,
+            poster_url: None,
+            poster_source_url: None,
+            background_url: None,
+            background_source_url: None,
+            sort_title: None,
+            catalog_sort_key: String::new(),
+            slug: None,
+            imdb_id: None,
+            runtime_minutes: None,
+            popularity: None,
+            content_status: None,
+            language: None,
+            first_aired: None,
+            network: None,
+            studio: None,
+            country: None,
+            aliases: vec![],
+            tagged_aliases: vec![],
+            metadata_language: None,
+            metadata_fetched_at: None,
+            min_availability: None,
+            digital_release_date: None,
+            folder_path: None,
+        }
+    }
+
     fn automatic(expected_runtime_seconds: Option<i32>) -> RuntimeSampleValidation {
         RuntimeSampleValidation::automatic(expected_runtime_seconds)
     }
 
     fn manual(expected_runtime_seconds: Option<i32>) -> RuntimeSampleValidation {
         RuntimeSampleValidation::manual_override(expected_runtime_seconds)
+    }
+
+    #[test]
+    fn import_release_facts_are_rederived_for_the_title_facet() {
+        let title = test_title(MediaFacet::Series);
+        let parsed = crate::parse_release_metadata("Test.Title.2160p.WEB-DL.DDP5.1.H.264-BiTOR");
+        assert!(
+            !parsed
+                .guide_facts
+                .iter()
+                .any(|fact| fact.code == "trash.blocked.lq_release_title")
+        );
+
+        let contextualized = contextualize_import_release(&parsed, &title);
+        assert!(
+            contextualized
+                .guide_facts
+                .iter()
+                .any(|fact| fact.code == "trash.blocked.lq_release_title")
+        );
     }
 
     #[test]

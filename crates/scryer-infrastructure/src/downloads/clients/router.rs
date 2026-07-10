@@ -5071,5 +5071,4 @@ mod tests {
         assert_eq!(failing_client.list_queue_call_count(), 1);
         assert_eq!(failing_client.list_queue_for_title_call_count(), 1);
     }
-
 }

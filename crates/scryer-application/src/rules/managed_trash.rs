@@ -46,7 +46,15 @@ pub(crate) fn managed_trash_rule_packs() -> &'static [ManagedTrashRulePack] {
     &PACKS
 }
 
-fn source(intent: &str, fact_prefix: &str, locale_rules: &str) -> String {
+fn source(intent: &str, fact_prefix: &str, include_scene: bool, locale_rules: &str) -> String {
+    let scene_rule = include_scene.then(|| {
+        format!(
+            r#"score_entry["trash_scene"] := -40 if {{
+    locale_intent
+    has_fact("{fact_prefix}.scene")
+}}"#
+        )
+    });
     format!(
         r#"# MANAGED_TRASH_REGISTRY_VERSION={MANAGED_TRASH_REGISTRY_VERSION}
 # TRASH_GUIDES_SYNCED_AT={TRASH_GUIDES_SYNCED_AT}
@@ -80,13 +88,11 @@ score_entry["trash_lq"] := -150 if {{
     has_fact("{fact_prefix}.lq")
 }}
 
-score_entry["trash_scene"] := -40 if {{
-    locale_intent
-    has_fact("{fact_prefix}.scene")
-}}
+{scene_rule}
 
 {locale_rules}
-"#
+"#,
+        scene_rule = scene_rule.as_deref().unwrap_or_default(),
     )
 }
 
@@ -133,6 +139,7 @@ score_entry["trash_french_vostfr"] := -100 if {
     has_fact("trash.locale.french.marker.vostfr")
 }"#,
         "trash.locale.french",
+        true,
         r#"regional_reference if {
     has_fact("trash.locale.french.marker.vff")
 }
@@ -201,6 +208,7 @@ locale_intent if {
     has_any_tag(["locale:de", "locale:de-de"])
 }"#,
         "trash.locale.german",
+        true,
         r#"score_entry["trash_german_subbed"] := -100 if {
     locale_intent
     has_fact("trash.locale.german.marker.subbed")
@@ -215,6 +223,7 @@ fn asian_source() -> String {
     lower(tag) == "locale:asian"
 }"#,
         "trash.locale.asian",
+        false,
         "",
     )
 }
@@ -242,5 +251,12 @@ mod tests {
                 .source()
                 .contains("MANAGED_TRASH_REGISTRY_VERSION=managed-trash-registry-v1")
         );
+    }
+
+    #[test]
+    fn managed_packs_only_reference_locale_scene_facts_that_are_generated() {
+        assert!(french_source().contains("trash.locale.french.scene"));
+        assert!(german_source().contains("trash.locale.german.scene"));
+        assert!(!asian_source().contains("trash.locale.asian.scene"));
     }
 }

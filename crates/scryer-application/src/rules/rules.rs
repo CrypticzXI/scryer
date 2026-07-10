@@ -436,6 +436,18 @@ impl AppUseCase {
         .await
     }
 
+    /// Load a safe engine without managed TRaSH packs before reconciliation, so
+    /// neither a current failure nor partial rows from an earlier process can be
+    /// activated. Successful reconciliation replaces it with the complete set.
+    pub async fn reconcile_and_activate_managed_trash_rule_packs(
+        &self,
+    ) -> AppResult<ManagedRuleReconciliation> {
+        self.rebuild_user_rules_engine_filtered(true).await?;
+        let reconciliation = self.reconcile_managed_trash_rule_packs(false).await?;
+        self.rebuild_user_rules_engine().await?;
+        Ok(reconciliation)
+    }
+
     async fn reconcile_managed_trash_rule_packs_from_registry(
         &self,
         packs: &[managed_trash::ManagedTrashRulePack],
@@ -563,6 +575,13 @@ impl AppUseCase {
     }
 
     pub async fn rebuild_user_rules_engine(&self) -> AppResult<()> {
+        self.rebuild_user_rules_engine_filtered(false).await
+    }
+
+    async fn rebuild_user_rules_engine_filtered(
+        &self,
+        exclude_managed_trash: bool,
+    ) -> AppResult<()> {
         let enabled = self
             .services
             .customization
@@ -572,6 +591,13 @@ impl AppUseCase {
 
         let mut policies: Vec<scryer_rules::UserPolicy> = enabled
             .iter()
+            .filter(|rule_set| {
+                !exclude_managed_trash
+                    || !rule_set
+                        .managed_key
+                        .as_deref()
+                        .is_some_and(|key| key.starts_with(managed_trash::MANAGED_TRASH_KEY_PREFIX))
+            })
             .map(|rs| scryer_rules::UserPolicy {
                 id: rs.id.clone(),
                 name: rs.name.clone(),
@@ -779,6 +805,7 @@ mod tests {
     struct TestRuleSetRepo {
         rules: Mutex<Vec<RuleSet>>,
         mutations: Mutex<RuleSetMutationCounts>,
+        fail_on_create: Option<usize>,
     }
 
     impl TestRuleSetRepo {
@@ -786,6 +813,15 @@ mod tests {
             Self {
                 rules: Mutex::new(rules),
                 mutations: Mutex::new(RuleSetMutationCounts::default()),
+                fail_on_create: None,
+            }
+        }
+
+        fn failing_on_create(rules: Vec<RuleSet>, create_number: usize) -> Self {
+            Self {
+                rules: Mutex::new(rules),
+                mutations: Mutex::new(RuleSetMutationCounts::default()),
+                fail_on_create: Some(create_number),
             }
         }
 
@@ -822,7 +858,16 @@ mod tests {
         }
 
         async fn create_rule_set(&self, rule_set: &RuleSet) -> AppResult<()> {
-            self.mutations.lock().await.creates += 1;
+            let create_number = {
+                let mut mutations = self.mutations.lock().await;
+                mutations.creates += 1;
+                mutations.creates
+            };
+            if self.fail_on_create == Some(create_number) {
+                return Err(AppError::Repository(format!(
+                    "injected create failure #{create_number}"
+                )));
+            }
             self.rules.lock().await.push(rule_set.clone());
             Ok(())
         }
@@ -901,6 +946,14 @@ mod tests {
         rules: Vec<RuleSet>,
     ) -> (AppUseCase, Arc<TestRuleSetRepo>) {
         let rule_sets = Arc::new(TestRuleSetRepo::new(rules));
+        let app = build_test_app_with_existing_rule_repo(profiles, rule_sets.clone());
+        (app, rule_sets)
+    }
+
+    fn build_test_app_with_existing_rule_repo(
+        profiles: Vec<QualityProfile>,
+        rule_sets: Arc<TestRuleSetRepo>,
+    ) -> AppUseCase {
         let services = AppServices::builder(
             Arc::new(NullTitleRepository),
             Arc::new(NullShowRepository),
@@ -917,17 +970,14 @@ mod tests {
         .with_rule_sets(rule_sets.clone())
         .build_partial_for_tests();
 
-        (
-            AppUseCase::new(
-                services,
-                JwtAuthConfig {
-                    issuer: "scryer-test".to_string(),
-                    access_ttl_seconds: 3600,
-                    jwt_signing_salt: "test-salt".to_string(),
-                },
-                Arc::new(FacetRegistry::new()),
-            ),
-            rule_sets,
+        AppUseCase::new(
+            services,
+            JwtAuthConfig {
+                issuer: "scryer-test".to_string(),
+                access_ttl_seconds: 3600,
+                jwt_signing_salt: "test-salt".to_string(),
+            },
+            Arc::new(FacetRegistry::new()),
         )
     }
 
@@ -1318,16 +1368,8 @@ mod tests {
                 "trash-guides:locale:asian",
                 &[][..],
                 &["locale:asian"][..],
-                &[
-                    "trash.locale.asian.group.tier3",
-                    "trash.locale.asian.lq",
-                    "trash.locale.asian.scene",
-                ][..],
-                &[
-                    ("trash_lq", -150),
-                    ("trash_scene", -40),
-                    ("trash_tier_3", 20),
-                ][..],
+                &["trash.locale.asian.group.tier3", "trash.locale.asian.lq"][..],
+                &[("trash_lq", -150), ("trash_tier_3", 20)][..],
             ),
         ];
 
@@ -1462,6 +1504,42 @@ mod tests {
         assert_eq!(
             rule_sets.mutation_counts().await,
             RuleSetMutationCounts::default()
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_startup_reconciliation_never_activates_partial_managed_packs() {
+        let partial = legacy_managed_rule(
+            "partial-french",
+            "trash-guides:locale:french",
+            "Partial French",
+            "old source",
+        );
+        let rule_sets = Arc::new(TestRuleSetRepo::failing_on_create(vec![partial], 2));
+        let app = build_test_app_with_existing_rule_repo(vec![], rule_sets.clone());
+
+        let error = app
+            .reconcile_and_activate_managed_trash_rule_packs()
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("injected create failure"));
+        assert_eq!(rule_sets.mutation_counts().await.creates, 2);
+
+        let mut input = multi_audio_rule_input("locale-profile", false, false);
+        input.profile.required_audio_languages = vec!["fra".to_string()];
+        input.release.guide_facts = vec!["trash.locale.french.group.tier1".to_string()];
+        let engine = app
+            .services
+            .customization
+            .user_rules
+            .read()
+            .expect("rules engine lock");
+        let result = engine.evaluator().evaluate(&input, "movie").unwrap();
+        assert!(
+            result
+                .entries
+                .iter()
+                .all(|entry| entry.code != "trash_tier_1")
         );
     }
 

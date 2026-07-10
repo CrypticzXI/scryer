@@ -243,7 +243,7 @@ pub(crate) fn detect_token_signals(normalized_tokens: &[String]) -> TokenSignalM
 
 pub(crate) fn derive_facts(raw_title: &str, category_hint: Option<&str>) -> Vec<GuideFact> {
     let tokens = normalize_raw_title_tokens(raw_title);
-    derive_facts_from_tokens(&tokens, category_hint)
+    derive_facts_from_tokens(raw_title, &tokens, category_hint)
 }
 
 pub(crate) fn derive_locale_group_facts(
@@ -325,6 +325,7 @@ fn is_uhd_quality(quality: Option<&str>) -> bool {
 }
 
 fn derive_facts_from_tokens(
+    raw_title: &str,
     normalized_tokens: &[String],
     category_hint: Option<&str>,
 ) -> Vec<GuideFact> {
@@ -375,12 +376,66 @@ fn derive_facts_from_tokens(
         }
     }
 
+    if has_french_vf2_exclusion(raw_title) {
+        codes.remove("trash.locale.french.marker.vff");
+        codes.remove("trash.locale.french.marker.vfq");
+    }
+    if codes.contains("trash.locale.german.marker.subbed")
+        && !matches_german_subbed(normalized_tokens)
+    {
+        codes.remove("trash.locale.german.marker.subbed");
+    }
+
     codes
         .into_iter()
         .map(|code| GuideFact {
             code: code.to_string(),
         })
         .collect()
+}
+
+fn has_french_vf2_exclusion(raw_title: &str) -> bool {
+    let upper = raw_title.to_ascii_uppercase();
+    [
+        "VF2", "VFF.VFF", "VFF.VFQ", "VFQ.VFF", "VFQ.VFQ", "VFF VFF", "VFF VFQ", "VFQ VFF",
+        "VFQ VFQ",
+    ]
+    .iter()
+    .any(|pattern| contains_ascii_bounded(&upper, pattern))
+}
+
+fn matches_german_subbed(normalized_tokens: &[String]) -> bool {
+    for (language_index, language) in normalized_tokens.iter().enumerate() {
+        if !matches!(language.as_str(), "GER" | "GERMAN") {
+            continue;
+        }
+        for (subtitle_offset, subtitle) in
+            normalized_tokens[language_index + 1..].iter().enumerate()
+        {
+            if !matches!(subtitle.as_str(), "OMU" | "SUB" | "SUBBED" | "SUBS") {
+                continue;
+            }
+            let subtitle_index = language_index + 1 + subtitle_offset;
+            let gap = &normalized_tokens[language_index + 1..subtitle_index];
+            if gap.iter().all(|token| {
+                token.chars().all(|ch| ch.is_ascii_alphabetic())
+                    && !token.contains("DUB")
+                    && !matches!(token.as_str(), "DL" | "ML")
+            }) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn contains_ascii_bounded(value: &str, pattern: &str) -> bool {
+    value.match_indices(pattern).any(|(start, _)| {
+        let end = start + pattern.len();
+        let before_is_word = start > 0 && value.as_bytes()[start - 1].is_ascii_alphanumeric();
+        let after_is_word = end < value.len() && value.as_bytes()[end].is_ascii_alphanumeric();
+        !before_is_word && !after_is_word
+    })
 }
 
 pub(crate) fn project_safe_facts(projected: &mut ParsedReleaseMetadata) {
@@ -544,6 +599,122 @@ mod tests {
             facts
                 .iter()
                 .any(|fact| fact.code == "trash.blocked.lq_release_title")
+        );
+    }
+
+    #[test]
+    fn generated_locale_facts_match_regex_markers_without_component_false_positives() {
+        let vq = derive_facts("Movie.Title.2024.VQ.1080p.WEB-DL", Some("movie"));
+        assert!(
+            vq.iter()
+                .any(|fact| fact.code == "trash.locale.french.marker.vq")
+        );
+        let vfq = derive_facts("Movie.Title.2024.VFQ.1080p.WEB-DL", Some("movie"));
+        assert!(
+            vfq.iter()
+                .any(|fact| fact.code == "trash.locale.french.marker.vfq")
+        );
+        let vff = derive_facts("Movie.Title.2024.VFF.1080p.WEB-DL", Some("movie"));
+        assert!(
+            vff.iter()
+                .any(|fact| fact.code == "trash.locale.french.marker.vff")
+        );
+        let vf2 = derive_facts("Movie.Title.2024.VFF.VFQ.1080p.WEB-DL", Some("movie"));
+        assert!(vf2.iter().all(|fact| {
+            !matches!(
+                fact.code.as_str(),
+                "trash.locale.french.marker.vff" | "trash.locale.french.marker.vfq"
+            )
+        }));
+        let hyphenated = derive_facts("Movie.Title.2024.VFF-VFQ.1080p.WEB-DL", Some("movie"));
+        assert!(hyphenated.iter().any(|fact| {
+            matches!(
+                fact.code.as_str(),
+                "trash.locale.french.marker.vff" | "trash.locale.french.marker.vfq"
+            )
+        }));
+        let german_subbed = derive_facts(
+            "Series.Title.S01E01.German.English.Subbed.1080p.WEB-DL",
+            Some("series"),
+        );
+        assert!(
+            german_subbed
+                .iter()
+                .any(|fact| fact.code == "trash.locale.german.marker.subbed")
+        );
+        for rejected in [
+            "Series.Title.S01E01.German.Dubbed.Subbed.1080p.WEB-DL",
+            "Series.Title.S01E01.German.DL.Subbed.1080p.WEB-DL",
+            "Series.Title.S01E01.Subbed.German.1080p.WEB-DL",
+        ] {
+            assert!(
+                derive_facts(rejected, Some("series"))
+                    .iter()
+                    .all(|fact| fact.code != "trash.locale.german.marker.subbed"),
+                "{rejected}"
+            );
+        }
+        let leading_dub = derive_facts(
+            "Series.Title.S01E01.Dubbed.German.Subbed.1080p.WEB-DL",
+            Some("series"),
+        );
+        assert!(
+            leading_dub
+                .iter()
+                .any(|fact| fact.code == "trash.locale.german.marker.subbed")
+        );
+
+        let ordinary = derive_facts("Series.Title.S01E01.1080p.WEB-DL", Some("series"));
+        assert!(
+            ordinary
+                .iter()
+                .all(|fact| fact.code != "trash.locale.german.marker.dl_undefined")
+        );
+    }
+
+    #[test]
+    fn generated_group_facts_cover_scene_and_locale_lq_groups() {
+        let context = crate::ReleaseParseContext {
+            facet_hint: crate::ContextFacetHint::Movie,
+            title: crate::ContextTitle {
+                name: "Movie Title".to_string(),
+            },
+            aliases: vec![],
+            known_years: vec![2024],
+            imdb_ids: vec![],
+            episodes: vec![],
+        };
+        let scene = crate::best_parse_for_target(
+            "Movie.Title.2024.1080p.WEB-DL.DDP5.1.H.264-CAKES",
+            &context,
+        );
+        assert!(
+            scene
+                .guide_facts
+                .iter()
+                .any(|fact| fact.code == "trash.scene")
+        );
+
+        let asian_lq = crate::best_parse_for_target(
+            "Movie.Title.2024.1080p.WEB-DL.DDP5.1.H.264-AppleTor",
+            &context,
+        );
+        assert!(
+            asian_lq
+                .guide_facts
+                .iter()
+                .any(|fact| fact.code == "trash.locale.asian.lq")
+        );
+
+        let obfuscated = crate::best_parse_for_target(
+            "Movie.Title.2024.1080p.WEB-DL.DDP5.1.H.264-NZBGeek",
+            &context,
+        );
+        assert!(
+            obfuscated
+                .guide_facts
+                .iter()
+                .any(|fact| fact.code == "trash.obfuscated")
         );
     }
 

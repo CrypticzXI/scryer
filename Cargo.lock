@@ -8362,6 +8362,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "clap",
+ "regex-syntax",
  "reqwest",
  "scryer-outbound-http",
  "serde",

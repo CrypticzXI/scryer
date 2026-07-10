@@ -2,7 +2,7 @@
 // Do not edit by hand.
 
 #[allow(dead_code)]
-pub const TRASH_GUIDES_SYNCED_AT: &str = "2026-07-09";
+pub const TRASH_GUIDES_SYNCED_AT: &str = "2026-07-10";
 #[allow(dead_code)]
 pub const TRASH_GUIDES_SOURCE_REVISION: &str = "e6aa63c782aa049e47be746889e4d06db0fe686f";
 
@@ -4508,6 +4508,16 @@ pub static GROUP_RULES: &[GroupRule] = &[
         },
     },
     GroupRule {
+        matcher: "NoGrp",
+        match_kind: GroupMatchKind::Exact,
+        entry: GroupEntry {
+            name: "NoGrp",
+            tier: GroupTier::Banned,
+            facet: RuleFacet::Movie,
+            source_context: SourceContext::Any,
+        },
+    },
+    GroupRule {
         matcher: "Noiy",
         match_kind: GroupMatchKind::Exact,
         entry: GroupEntry {
@@ -6618,6 +6628,16 @@ pub static GROUP_RULES: &[GroupRule] = &[
         },
     },
     GroupRule {
+        matcher: "VISIONPLUSHDR",
+        match_kind: GroupMatchKind::Exact,
+        entry: GroupEntry {
+            name: "VISIONPLUSHDR",
+            tier: GroupTier::Banned,
+            facet: RuleFacet::Movie,
+            source_context: SourceContext::Any,
+        },
+    },
+    GroupRule {
         matcher: "VISIONPLUSHDR-X",
         match_kind: GroupMatchKind::Exact,
         entry: GroupEntry {
@@ -6644,16 +6664,6 @@ pub static GROUP_RULES: &[GroupRule] = &[
             name: "VISIONPLUSHDR-X",
             tier: GroupTier::Banned,
             facet: RuleFacet::Anime,
-            source_context: SourceContext::Any,
-        },
-    },
-    GroupRule {
-        matcher: "VISIONPLUSHDR-X|1000",
-        match_kind: GroupMatchKind::Exact,
-        entry: GroupEntry {
-            name: "VISIONPLUSHDR-X|1000",
-            tier: GroupTier::Banned,
-            facet: RuleFacet::Movie,
             source_context: SourceContext::Any,
         },
     },
@@ -16855,6 +16865,19 @@ pub static ACTIVE_GROUP_RULE_METADATA: &[TrashGuideRuleMetadata] = &[
         source_path: "docs/json/radarr/cf/lq.json",
     },
     TrashGuideRuleMetadata {
+        matcher: "NoGrp",
+        match_kind: GroupMatchKind::Exact,
+        tier: GroupTier::Banned,
+        facet: RuleFacet::Movie,
+        source_context: SourceContext::Any,
+        app: "radarr",
+        stem: "lq",
+        trash_id: "90a6f9a284dff5103f6346090e6280c8",
+        cf_name: "LQ",
+        spec_name: "NoGroup",
+        source_path: "docs/json/radarr/cf/lq.json",
+    },
+    TrashGuideRuleMetadata {
         matcher: "Noiy",
         match_kind: GroupMatchKind::Exact,
         tier: GroupTier::Bronze,
@@ -20820,6 +20843,32 @@ pub static ACTIVE_GROUP_RULE_METADATA: &[TrashGuideRuleMetadata] = &[
         source_path: "docs/json/sonarr/cf/lq.json",
     },
     TrashGuideRuleMetadata {
+        matcher: "VISIONPLUSHDR",
+        match_kind: GroupMatchKind::Exact,
+        tier: GroupTier::Banned,
+        facet: RuleFacet::Movie,
+        source_context: SourceContext::Any,
+        app: "radarr",
+        stem: "lq",
+        trash_id: "90a6f9a284dff5103f6346090e6280c8",
+        cf_name: "LQ",
+        spec_name: "VISIONPLUSHDR",
+        source_path: "docs/json/radarr/cf/lq.json",
+    },
+    TrashGuideRuleMetadata {
+        matcher: "VISIONPLUSHDR-X",
+        match_kind: GroupMatchKind::Exact,
+        tier: GroupTier::Banned,
+        facet: RuleFacet::Movie,
+        source_context: SourceContext::Any,
+        app: "radarr",
+        stem: "lq",
+        trash_id: "90a6f9a284dff5103f6346090e6280c8",
+        cf_name: "LQ",
+        spec_name: "VISIONPLUSHDR",
+        source_path: "docs/json/radarr/cf/lq.json",
+    },
+    TrashGuideRuleMetadata {
         matcher: "VISIONPLUSHDR-X",
         match_kind: GroupMatchKind::Exact,
         tier: GroupTier::Banned,
@@ -20859,7 +20908,7 @@ pub static ACTIVE_GROUP_RULE_METADATA: &[TrashGuideRuleMetadata] = &[
         source_path: "scryer://legacy-release-groups",
     },
     TrashGuideRuleMetadata {
-        matcher: "VISIONPLUSHDR-X|1000",
+        matcher: "VISIONPLUSHDR1000",
         match_kind: GroupMatchKind::Exact,
         tier: GroupTier::Banned,
         facet: RuleFacet::Movie,
@@ -22794,6 +22843,19 @@ pub static ACTIVE_GROUP_RULE_METADATA: &[TrashGuideRuleMetadata] = &[
         cf_name: "Anime BD Tier 07",
         spec_name: "inid4c",
         source_path: "docs/json/sonarr/cf/anime-bd-tier-07.json",
+    },
+    TrashGuideRuleMetadata {
+        matcher: "jennaortega",
+        match_kind: GroupMatchKind::Exact,
+        tier: GroupTier::Banned,
+        facet: RuleFacet::Movie,
+        source_context: SourceContext::Any,
+        app: "radarr",
+        stem: "lq",
+        trash_id: "90a6f9a284dff5103f6346090e6280c8",
+        cf_name: "LQ",
+        spec_name: "jennaortega",
+        source_path: "docs/json/radarr/cf/lq.json",
     },
     TrashGuideRuleMetadata {
         matcher: "jennaortega",
@@ -31573,7 +31635,7 @@ pub static IGNORED_GROUP_RULES: &[MetadataRuleRecord] = &[
         required_json: "false",
         negate_json: "false",
         complete_json: "{\"value\":10}",
-        reason: "group_spec_not_supported",
+        reason: "unsupported_unreviewed_stem",
         source_path: "docs/json/radarr/cf/anime-dual-audio.json",
     },
     MetadataRuleRecord {
@@ -31589,7 +31651,7 @@ pub static IGNORED_GROUP_RULES: &[MetadataRuleRecord] = &[
         required_json: "true",
         negate_json: "false",
         complete_json: "{\"value\":\"dual[ ._-]?(audio)|[([]dual[])]|\\\\b(JA|ZH|KO)(?= ?\\\\+ ?.*?\\\\b(EN))|\\\\b(EN)(?= ?\\\\+ ?.*?\\\\b(JA|ZH|KO))|\\\\b(Japanese|Chinese|Korean) ?[ ._\\\\+&-] ?\\\\b(English)|\\\\b(English) ?[ ._\\\\+&-] ?\\\\b(Japanese|Chinese|Korean)|\\\\b(\\\\d{3,4}(p|i)|4K|U(ltra)?HD)\\\\b.*\\\\b(DUAL)\\\\b(?!.*\\\\(|\\\\))\"}",
-        reason: "group_title_spec_not_lossless",
+        reason: "unsupported_unreviewed_stem",
         source_path: "docs/json/radarr/cf/anime-dual-audio.json",
     },
     MetadataRuleRecord {
@@ -31605,7 +31667,7 @@ pub static IGNORED_GROUP_RULES: &[MetadataRuleRecord] = &[
         required_json: "false",
         negate_json: "false",
         complete_json: "{\"value\":8}",
-        reason: "group_spec_not_supported",
+        reason: "unsupported_unreviewed_stem",
         source_path: "docs/json/radarr/cf/anime-dual-audio.json",
     },
     MetadataRuleRecord {
@@ -31621,7 +31683,7 @@ pub static IGNORED_GROUP_RULES: &[MetadataRuleRecord] = &[
         required_json: "false",
         negate_json: "false",
         complete_json: "{\"value\":21}",
-        reason: "group_spec_not_supported",
+        reason: "unsupported_unreviewed_stem",
         source_path: "docs/json/radarr/cf/anime-dual-audio.json",
     },
     MetadataRuleRecord {
@@ -31637,7 +31699,7 @@ pub static IGNORED_GROUP_RULES: &[MetadataRuleRecord] = &[
         required_json: "true",
         negate_json: "true",
         complete_json: "{\"value\":\"\\\\[(JA|ZH|KO)\\\\]\"}",
-        reason: "group_title_spec_not_lossless",
+        reason: "unsupported_unreviewed_stem",
         source_path: "docs/json/radarr/cf/anime-dual-audio.json",
     },
     MetadataRuleRecord {
@@ -39525,7 +39587,7 @@ pub static IGNORED_GROUP_RULES: &[MetadataRuleRecord] = &[
         required_json: "false",
         negate_json: "false",
         complete_json: "{\"value\":10}",
-        reason: "group_spec_not_supported",
+        reason: "unsupported_unreviewed_stem",
         source_path: "docs/json/sonarr/cf/anime-dual-audio.json",
     },
     MetadataRuleRecord {
@@ -39541,7 +39603,7 @@ pub static IGNORED_GROUP_RULES: &[MetadataRuleRecord] = &[
         required_json: "true",
         negate_json: "false",
         complete_json: "{\"value\":\"dual[ ._-]?(audio)|[([]dual[])]|\\\\b(JA|ZH|KO)(?= ?\\\\+ ?.*?\\\\b(EN))|\\\\b(EN)(?= ?\\\\+ ?.*?\\\\b(JA|ZH|KO))|\\\\b(Japanese|Chinese|Korean) ?[ ._\\\\+&-] ?\\\\b(English)|\\\\b(English) ?[ ._\\\\+&-] ?\\\\b(Japanese|Chinese|Korean)|\\\\b(\\\\d{3,4}(p|i)|4K|U(ltra)?HD)\\\\b.*\\\\b(DUAL)\\\\b(?!.*\\\\(|\\\\))\"}",
-        reason: "group_title_spec_not_lossless",
+        reason: "unsupported_unreviewed_stem",
         source_path: "docs/json/sonarr/cf/anime-dual-audio.json",
     },
     MetadataRuleRecord {
@@ -39557,7 +39619,7 @@ pub static IGNORED_GROUP_RULES: &[MetadataRuleRecord] = &[
         required_json: "false",
         negate_json: "false",
         complete_json: "{\"value\":8}",
-        reason: "group_spec_not_supported",
+        reason: "unsupported_unreviewed_stem",
         source_path: "docs/json/sonarr/cf/anime-dual-audio.json",
     },
     MetadataRuleRecord {
@@ -39573,7 +39635,7 @@ pub static IGNORED_GROUP_RULES: &[MetadataRuleRecord] = &[
         required_json: "false",
         negate_json: "false",
         complete_json: "{\"value\":21}",
-        reason: "group_spec_not_supported",
+        reason: "unsupported_unreviewed_stem",
         source_path: "docs/json/sonarr/cf/anime-dual-audio.json",
     },
     MetadataRuleRecord {
@@ -39589,7 +39651,7 @@ pub static IGNORED_GROUP_RULES: &[MetadataRuleRecord] = &[
         required_json: "true",
         negate_json: "true",
         complete_json: "{\"value\":\"\\\\[(JA|ZH|KO)\\\\]\"}",
-        reason: "group_title_spec_not_lossless",
+        reason: "unsupported_unreviewed_stem",
         source_path: "docs/json/sonarr/cf/anime-dual-audio.json",
     },
     MetadataRuleRecord {
