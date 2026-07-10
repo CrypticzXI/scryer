@@ -1,0 +1,3331 @@
+{
+  "source_revision": "e6aa63c782aa049e47be746889e4d06db0fe686f",
+  "synced_at": "2026-07-09",
+  "stems": [
+    {
+      "app": "radarr",
+      "stem": "10-mono",
+      "detection_owner": "custom_rule_only",
+      "effect_binding": "none",
+      "reason": "existing_parser_or_scoring_signal"
+    },
+    {
+      "app": "radarr",
+      "stem": "1080p",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "10bit",
+      "detection_owner": "custom_rule_only",
+      "effect_binding": "none",
+      "reason": "existing_parser_or_scoring_signal"
+    },
+    {
+      "app": "radarr",
+      "stem": "126811",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "20-stereo",
+      "detection_owner": "custom_rule_only",
+      "effect_binding": "none",
+      "reason": "existing_parser_or_scoring_signal"
+    },
+    {
+      "app": "radarr",
+      "stem": "2160p",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "30-sound",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "3d",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "40-sound",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "4k-remaster",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "51-surround",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "61-surround",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "71-surround",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "720p",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "aac",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "amzn",
+      "detection_owner": "existing_native",
+      "effect_binding": "informational",
+      "reason": "reviewed_service_alias"
+    },
+    {
+      "app": "radarr",
+      "stem": "anime-bd-tier-01",
+      "detection_owner": "existing_native",
+      "effect_binding": "persona_score",
+      "reason": "reviewed_release_group_tier"
+    },
+    {
+      "app": "radarr",
+      "stem": "anime-bd-tier-02",
+      "detection_owner": "existing_native",
+      "effect_binding": "persona_score",
+      "reason": "reviewed_release_group_tier"
+    },
+    {
+      "app": "radarr",
+      "stem": "anime-bd-tier-03",
+      "detection_owner": "existing_native",
+      "effect_binding": "persona_score",
+      "reason": "reviewed_release_group_tier"
+    },
+    {
+      "app": "radarr",
+      "stem": "anime-bd-tier-04",
+      "detection_owner": "existing_native",
+      "effect_binding": "persona_score",
+      "reason": "reviewed_release_group_tier"
+    },
+    {
+      "app": "radarr",
+      "stem": "anime-bd-tier-05",
+      "detection_owner": "existing_native",
+      "effect_binding": "persona_score",
+      "reason": "reviewed_release_group_tier"
+    },
+    {
+      "app": "radarr",
+      "stem": "anime-bd-tier-06",
+      "detection_owner": "existing_native",
+      "effect_binding": "persona_score",
+      "reason": "reviewed_release_group_tier"
+    },
+    {
+      "app": "radarr",
+      "stem": "anime-bd-tier-07",
+      "detection_owner": "existing_native",
+      "effect_binding": "persona_score",
+      "reason": "reviewed_release_group_tier"
+    },
+    {
+      "app": "radarr",
+      "stem": "anime-bd-tier-08",
+      "detection_owner": "existing_native",
+      "effect_binding": "persona_score",
+      "reason": "reviewed_release_group_tier"
+    },
+    {
+      "app": "radarr",
+      "stem": "anime-dual-audio",
+      "detection_owner": "existing_native",
+      "effect_binding": "persona_score",
+      "reason": "reviewed_release_group_tier"
+    },
+    {
+      "app": "radarr",
+      "stem": "anime-lq-groups",
+      "detection_owner": "existing_native",
+      "effect_binding": "persona_score",
+      "reason": "reviewed_release_group_tier"
+    },
+    {
+      "app": "radarr",
+      "stem": "anime-raws",
+      "detection_owner": "native_fact",
+      "effect_binding": "hard_block",
+      "reason": "reviewed_native_fact"
+    },
+    {
+      "app": "radarr",
+      "stem": "anime-web-tier-01",
+      "detection_owner": "existing_native",
+      "effect_binding": "persona_score",
+      "reason": "reviewed_release_group_tier"
+    },
+    {
+      "app": "radarr",
+      "stem": "anime-web-tier-02",
+      "detection_owner": "existing_native",
+      "effect_binding": "persona_score",
+      "reason": "reviewed_release_group_tier"
+    },
+    {
+      "app": "radarr",
+      "stem": "anime-web-tier-03",
+      "detection_owner": "existing_native",
+      "effect_binding": "persona_score",
+      "reason": "reviewed_release_group_tier"
+    },
+    {
+      "app": "radarr",
+      "stem": "anime-web-tier-04",
+      "detection_owner": "existing_native",
+      "effect_binding": "persona_score",
+      "reason": "reviewed_release_group_tier"
+    },
+    {
+      "app": "radarr",
+      "stem": "anime-web-tier-05",
+      "detection_owner": "existing_native",
+      "effect_binding": "persona_score",
+      "reason": "reviewed_release_group_tier"
+    },
+    {
+      "app": "radarr",
+      "stem": "anime-web-tier-06",
+      "detection_owner": "existing_native",
+      "effect_binding": "persona_score",
+      "reason": "reviewed_release_group_tier"
+    },
+    {
+      "app": "radarr",
+      "stem": "asian-lq",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "radarr",
+      "stem": "asian-tier-01",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "radarr",
+      "stem": "asian-tier-02",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "radarr",
+      "stem": "asian-tier-03",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "radarr",
+      "stem": "atmos-undefined",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "atv",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "atvp",
+      "detection_owner": "existing_native",
+      "effect_binding": "informational",
+      "reason": "reviewed_service_alias"
+    },
+    {
+      "app": "radarr",
+      "stem": "aubc",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "av1",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "bad-dual-groups",
+      "detection_owner": "existing_native",
+      "effect_binding": "persona_score",
+      "reason": "reviewed_release_group_tier"
+    },
+    {
+      "app": "radarr",
+      "stem": "bcore",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "bhdstudio",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "black-and-white-editions",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "br-disk",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "cbc",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "cnlp",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "cpng",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "crav",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "crit",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "criterion-collection",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "dd",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "ddplus",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "ddplus-atmos",
+      "detection_owner": "custom_rule_only",
+      "effect_binding": "none",
+      "reason": "existing_parser_or_scoring_signal"
+    },
+    {
+      "app": "radarr",
+      "stem": "dsnp",
+      "detection_owner": "existing_native",
+      "effect_binding": "informational",
+      "reason": "reviewed_service_alias"
+    },
+    {
+      "app": "radarr",
+      "stem": "dts",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "dts-es",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "dts-hd-hra",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "dts-hd-ma",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "dts-x",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "dual-audio-asian",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "dubs-only",
+      "detection_owner": "native_fact",
+      "effect_binding": "persona_score",
+      "reason": "reviewed_native_fact"
+    },
+    {
+      "app": "radarr",
+      "stem": "dv-boost",
+      "detection_owner": "custom_rule_only",
+      "effect_binding": "none",
+      "reason": "existing_parser_or_scoring_signal"
+    },
+    {
+      "app": "radarr",
+      "stem": "dv-disk",
+      "detection_owner": "custom_rule_only",
+      "effect_binding": "none",
+      "reason": "existing_parser_or_scoring_signal"
+    },
+    {
+      "app": "radarr",
+      "stem": "dv-wo-hdr-fallback",
+      "detection_owner": "custom_rule_only",
+      "effect_binding": "none",
+      "reason": "existing_parser_or_scoring_signal"
+    },
+    {
+      "app": "radarr",
+      "stem": "extras",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "fansub",
+      "detection_owner": "native_fact",
+      "effect_binding": "hard_block",
+      "reason": "reviewed_native_fact"
+    },
+    {
+      "app": "radarr",
+      "stem": "fastsub",
+      "detection_owner": "native_fact",
+      "effect_binding": "hard_block",
+      "reason": "reviewed_native_fact"
+    },
+    {
+      "app": "radarr",
+      "stem": "flac",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "flux",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "fod",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "framestor",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "freeleech",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "french-anime-fansub",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "radarr",
+      "stem": "french-anime-tier-01",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "radarr",
+      "stem": "french-anime-tier-02",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "radarr",
+      "stem": "french-anime-tier-03",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "radarr",
+      "stem": "french-hd-bluray-tier-01",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "radarr",
+      "stem": "french-hd-bluray-tier-02",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "radarr",
+      "stem": "french-lq",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "radarr",
+      "stem": "french-remux-tier-01",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "radarr",
+      "stem": "french-remux-tier-02",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "radarr",
+      "stem": "french-scene",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "radarr",
+      "stem": "french-uhd-bluray-tier-01",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "radarr",
+      "stem": "french-uhd-bluray-tier-02",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "radarr",
+      "stem": "french-vf2",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "radarr",
+      "stem": "french-vfb",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "radarr",
+      "stem": "french-vff",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "radarr",
+      "stem": "french-vfi",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "radarr",
+      "stem": "french-vfq",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "radarr",
+      "stem": "french-vof",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "radarr",
+      "stem": "french-voq",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "radarr",
+      "stem": "french-vostfr",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "radarr",
+      "stem": "french-vq",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "radarr",
+      "stem": "french-web-tier-01",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "radarr",
+      "stem": "french-web-tier-02",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "radarr",
+      "stem": "friday",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "funi",
+      "detection_owner": "existing_native",
+      "effect_binding": "informational",
+      "reason": "reviewed_service_alias"
+    },
+    {
+      "app": "radarr",
+      "stem": "generated-dynamic-hdr",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "german",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "german-1080p-booster",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "radarr",
+      "stem": "german-2160p-booster",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "radarr",
+      "stem": "german-anime-bluray-tier-01",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "radarr",
+      "stem": "german-anime-bluray-tier-02",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "radarr",
+      "stem": "german-anime-bluray-tier-03",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "radarr",
+      "stem": "german-anime-scene",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "radarr",
+      "stem": "german-anime-web-tier-01",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "radarr",
+      "stem": "german-anime-web-tier-02",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "radarr",
+      "stem": "german-anime-web-tier-03",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "radarr",
+      "stem": "german-bluray-tier-01",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "radarr",
+      "stem": "german-bluray-tier-02",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "radarr",
+      "stem": "german-bluray-tier-03",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "radarr",
+      "stem": "german-dl",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "radarr",
+      "stem": "german-dl-undefined",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "radarr",
+      "stem": "german-lq",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "radarr",
+      "stem": "german-lq-release-title",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "radarr",
+      "stem": "german-microsized",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "radarr",
+      "stem": "german-remux-tier-01",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "radarr",
+      "stem": "german-remux-tier-02",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "radarr",
+      "stem": "german-scene",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "radarr",
+      "stem": "german-subbed",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "radarr",
+      "stem": "german-web-tier-01",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "radarr",
+      "stem": "german-web-tier-02",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "radarr",
+      "stem": "german-web-tier-03",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "radarr",
+      "stem": "hallowed",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "hami",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "hbo",
+      "detection_owner": "existing_native",
+      "effect_binding": "informational",
+      "reason": "reviewed_service_alias"
+    },
+    {
+      "app": "radarr",
+      "stem": "hd-bluray-tier-01",
+      "detection_owner": "existing_native",
+      "effect_binding": "persona_score",
+      "reason": "reviewed_release_group_tier"
+    },
+    {
+      "app": "radarr",
+      "stem": "hd-bluray-tier-02",
+      "detection_owner": "existing_native",
+      "effect_binding": "persona_score",
+      "reason": "reviewed_release_group_tier"
+    },
+    {
+      "app": "radarr",
+      "stem": "hd-bluray-tier-03",
+      "detection_owner": "existing_native",
+      "effect_binding": "persona_score",
+      "reason": "reviewed_release_group_tier"
+    },
+    {
+      "app": "radarr",
+      "stem": "hdr",
+      "detection_owner": "custom_rule_only",
+      "effect_binding": "none",
+      "reason": "existing_parser_or_scoring_signal"
+    },
+    {
+      "app": "radarr",
+      "stem": "hdr10plus-boost",
+      "detection_owner": "custom_rule_only",
+      "effect_binding": "none",
+      "reason": "existing_parser_or_scoring_signal"
+    },
+    {
+      "app": "radarr",
+      "stem": "hfr",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "hlg",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "hmax",
+      "detection_owner": "existing_native",
+      "effect_binding": "informational",
+      "reason": "reviewed_service_alias"
+    },
+    {
+      "app": "radarr",
+      "stem": "htsr",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "hulu",
+      "detection_owner": "existing_native",
+      "effect_binding": "informational",
+      "reason": "reviewed_service_alias"
+    },
+    {
+      "app": "radarr",
+      "stem": "hybrid",
+      "detection_owner": "custom_rule_only",
+      "effect_binding": "none",
+      "reason": "existing_parser_or_scoring_signal"
+    },
+    {
+      "app": "radarr",
+      "stem": "imax",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "imax-enhanced",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "internal",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "ip",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "iqiy",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "it",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "itvx",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "kcw",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "kktv",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "language-not-english",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "language-not-french",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "language-not-original",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "language-original-plus-french",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "line-mic-dubbed",
+      "detection_owner": "custom_rule_only",
+      "effect_binding": "none",
+      "reason": "existing_parser_or_scoring_signal"
+    },
+    {
+      "app": "radarr",
+      "stem": "linetv",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "lq",
+      "detection_owner": "existing_native",
+      "effect_binding": "persona_score",
+      "reason": "reviewed_release_group_tier"
+    },
+    {
+      "app": "radarr",
+      "stem": "lq-release-title",
+      "detection_owner": "native_fact",
+      "effect_binding": "hard_block",
+      "reason": "reviewed_native_fact"
+    },
+    {
+      "app": "radarr",
+      "stem": "ma",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "mainframe",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "masters-of-cinema",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "max",
+      "detection_owner": "existing_native",
+      "effect_binding": "informational",
+      "reason": "reviewed_service_alias"
+    },
+    {
+      "app": "radarr",
+      "stem": "mp3",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "mpeg2",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "multi",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "my5",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "mytvsuper",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "nf",
+      "detection_owner": "existing_native",
+      "effect_binding": "informational",
+      "reason": "reviewed_service_alias"
+    },
+    {
+      "app": "radarr",
+      "stem": "no-rlsgroup",
+      "detection_owner": "native_fact",
+      "effect_binding": "informational",
+      "reason": "reviewed_native_fact"
+    },
+    {
+      "app": "radarr",
+      "stem": "not-german-japanese-korean-chinese-or-english",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "not-german-japanese-or-english",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "not-german-or-english",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "now",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "obfuscated",
+      "detection_owner": "native_fact",
+      "effect_binding": "informational",
+      "reason": "reviewed_native_fact"
+    },
+    {
+      "app": "radarr",
+      "stem": "open-matte",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "opus",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "ovid",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "p2p-internal",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "pathe",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "pcm",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "pcok",
+      "detection_owner": "existing_native",
+      "effect_binding": "informational",
+      "reason": "reviewed_service_alias"
+    },
+    {
+      "app": "radarr",
+      "stem": "play",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "pmtp",
+      "detection_owner": "existing_native",
+      "effect_binding": "informational",
+      "reason": "reviewed_service_alias"
+    },
+    {
+      "app": "radarr",
+      "stem": "remaster",
+      "detection_owner": "custom_rule_only",
+      "effect_binding": "none",
+      "reason": "existing_parser_or_scoring_signal"
+    },
+    {
+      "app": "radarr",
+      "stem": "remux-tier-01",
+      "detection_owner": "existing_native",
+      "effect_binding": "persona_score",
+      "reason": "reviewed_release_group_tier"
+    },
+    {
+      "app": "radarr",
+      "stem": "remux-tier-02",
+      "detection_owner": "existing_native",
+      "effect_binding": "persona_score",
+      "reason": "reviewed_release_group_tier"
+    },
+    {
+      "app": "radarr",
+      "stem": "remux-tier-03",
+      "detection_owner": "existing_native",
+      "effect_binding": "persona_score",
+      "reason": "reviewed_release_group_tier"
+    },
+    {
+      "app": "radarr",
+      "stem": "repack-proper",
+      "detection_owner": "native_fact",
+      "effect_binding": "persona_score",
+      "reason": "reviewed_native_fact"
+    },
+    {
+      "app": "radarr",
+      "stem": "repack2",
+      "detection_owner": "native_fact",
+      "effect_binding": "persona_score",
+      "reason": "reviewed_native_fact"
+    },
+    {
+      "app": "radarr",
+      "stem": "repack3",
+      "detection_owner": "native_fact",
+      "effect_binding": "persona_score",
+      "reason": "reviewed_native_fact"
+    },
+    {
+      "app": "radarr",
+      "stem": "retags",
+      "detection_owner": "native_fact",
+      "effect_binding": "informational",
+      "reason": "reviewed_native_fact"
+    },
+    {
+      "app": "radarr",
+      "stem": "roku",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "scene",
+      "detection_owner": "native_fact",
+      "effect_binding": "informational",
+      "reason": "reviewed_native_fact"
+    },
+    {
+      "app": "radarr",
+      "stem": "sdr",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "sdr-no-webdl",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "sic",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "sing-along-versions",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "special-edition",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "stan",
+      "detection_owner": "existing_native",
+      "effect_binding": "informational",
+      "reason": "reviewed_service_alias"
+    },
+    {
+      "app": "radarr",
+      "stem": "strp",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "theatrical-cut",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "thefarm",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "truehd",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "truehd-atmos",
+      "detection_owner": "custom_rule_only",
+      "effect_binding": "none",
+      "reason": "existing_parser_or_scoring_signal"
+    },
+    {
+      "app": "radarr",
+      "stem": "tver",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "tving",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "u-next",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "uhd-bluray-tier-01",
+      "detection_owner": "existing_native",
+      "effect_binding": "persona_score",
+      "reason": "reviewed_release_group_tier"
+    },
+    {
+      "app": "radarr",
+      "stem": "uhd-bluray-tier-02",
+      "detection_owner": "existing_native",
+      "effect_binding": "persona_score",
+      "reason": "reviewed_release_group_tier"
+    },
+    {
+      "app": "radarr",
+      "stem": "uhd-bluray-tier-03",
+      "detection_owner": "existing_native",
+      "effect_binding": "persona_score",
+      "reason": "reviewed_release_group_tier"
+    },
+    {
+      "app": "radarr",
+      "stem": "uncensored",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "upscaled",
+      "detection_owner": "native_fact",
+      "effect_binding": "persona_score",
+      "reason": "reviewed_native_fact"
+    },
+    {
+      "app": "radarr",
+      "stem": "v0",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "v1",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "v2",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "v3",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "v4",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "vc-1",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "vdl",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "viki",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "vinegar-syndrome",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "viu",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "vp9",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "vrv",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "wavve",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "web-tier-01",
+      "detection_owner": "existing_native",
+      "effect_binding": "persona_score",
+      "reason": "reviewed_release_group_tier"
+    },
+    {
+      "app": "radarr",
+      "stem": "web-tier-02",
+      "detection_owner": "existing_native",
+      "effect_binding": "persona_score",
+      "reason": "reviewed_release_group_tier"
+    },
+    {
+      "app": "radarr",
+      "stem": "web-tier-03",
+      "detection_owner": "existing_native",
+      "effect_binding": "persona_score",
+      "reason": "reviewed_release_group_tier"
+    },
+    {
+      "app": "radarr",
+      "stem": "webdl-boost",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "wetv",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "with-ad",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "with-asl",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "with-basl",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "with-bsl",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "wrong-language",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "x264",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "x265",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "x265-hd",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "x265-no-hdrdv",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "x266",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "radarr",
+      "stem": "youku",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "10-mono",
+      "detection_owner": "custom_rule_only",
+      "effect_binding": "none",
+      "reason": "existing_parser_or_scoring_signal"
+    },
+    {
+      "app": "sonarr",
+      "stem": "1080p",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "10bit",
+      "detection_owner": "custom_rule_only",
+      "effect_binding": "none",
+      "reason": "existing_parser_or_scoring_signal"
+    },
+    {
+      "app": "sonarr",
+      "stem": "20-stereo",
+      "detection_owner": "custom_rule_only",
+      "effect_binding": "none",
+      "reason": "existing_parser_or_scoring_signal"
+    },
+    {
+      "app": "sonarr",
+      "stem": "2160p",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "30-sound",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "40-sound",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "4od",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "51-surround",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "61-surround",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "71-surround",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "720p",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "aac",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "abema",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "all4",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "amzn",
+      "detection_owner": "existing_native",
+      "effect_binding": "informational",
+      "reason": "reviewed_service_alias"
+    },
+    {
+      "app": "sonarr",
+      "stem": "anime-bd-tier-01",
+      "detection_owner": "existing_native",
+      "effect_binding": "persona_score",
+      "reason": "reviewed_release_group_tier"
+    },
+    {
+      "app": "sonarr",
+      "stem": "anime-bd-tier-02",
+      "detection_owner": "existing_native",
+      "effect_binding": "persona_score",
+      "reason": "reviewed_release_group_tier"
+    },
+    {
+      "app": "sonarr",
+      "stem": "anime-bd-tier-03",
+      "detection_owner": "existing_native",
+      "effect_binding": "persona_score",
+      "reason": "reviewed_release_group_tier"
+    },
+    {
+      "app": "sonarr",
+      "stem": "anime-bd-tier-04",
+      "detection_owner": "existing_native",
+      "effect_binding": "persona_score",
+      "reason": "reviewed_release_group_tier"
+    },
+    {
+      "app": "sonarr",
+      "stem": "anime-bd-tier-05",
+      "detection_owner": "existing_native",
+      "effect_binding": "persona_score",
+      "reason": "reviewed_release_group_tier"
+    },
+    {
+      "app": "sonarr",
+      "stem": "anime-bd-tier-06",
+      "detection_owner": "existing_native",
+      "effect_binding": "persona_score",
+      "reason": "reviewed_release_group_tier"
+    },
+    {
+      "app": "sonarr",
+      "stem": "anime-bd-tier-07",
+      "detection_owner": "existing_native",
+      "effect_binding": "persona_score",
+      "reason": "reviewed_release_group_tier"
+    },
+    {
+      "app": "sonarr",
+      "stem": "anime-bd-tier-08",
+      "detection_owner": "existing_native",
+      "effect_binding": "persona_score",
+      "reason": "reviewed_release_group_tier"
+    },
+    {
+      "app": "sonarr",
+      "stem": "anime-dual-audio",
+      "detection_owner": "existing_native",
+      "effect_binding": "persona_score",
+      "reason": "reviewed_release_group_tier"
+    },
+    {
+      "app": "sonarr",
+      "stem": "anime-lq-groups",
+      "detection_owner": "existing_native",
+      "effect_binding": "persona_score",
+      "reason": "reviewed_release_group_tier"
+    },
+    {
+      "app": "sonarr",
+      "stem": "anime-raws",
+      "detection_owner": "native_fact",
+      "effect_binding": "hard_block",
+      "reason": "reviewed_native_fact"
+    },
+    {
+      "app": "sonarr",
+      "stem": "anime-web-tier-01",
+      "detection_owner": "existing_native",
+      "effect_binding": "persona_score",
+      "reason": "reviewed_release_group_tier"
+    },
+    {
+      "app": "sonarr",
+      "stem": "anime-web-tier-02",
+      "detection_owner": "existing_native",
+      "effect_binding": "persona_score",
+      "reason": "reviewed_release_group_tier"
+    },
+    {
+      "app": "sonarr",
+      "stem": "anime-web-tier-03",
+      "detection_owner": "existing_native",
+      "effect_binding": "persona_score",
+      "reason": "reviewed_release_group_tier"
+    },
+    {
+      "app": "sonarr",
+      "stem": "anime-web-tier-04",
+      "detection_owner": "existing_native",
+      "effect_binding": "persona_score",
+      "reason": "reviewed_release_group_tier"
+    },
+    {
+      "app": "sonarr",
+      "stem": "anime-web-tier-05",
+      "detection_owner": "existing_native",
+      "effect_binding": "persona_score",
+      "reason": "reviewed_release_group_tier"
+    },
+    {
+      "app": "sonarr",
+      "stem": "anime-web-tier-06",
+      "detection_owner": "existing_native",
+      "effect_binding": "persona_score",
+      "reason": "reviewed_release_group_tier"
+    },
+    {
+      "app": "sonarr",
+      "stem": "asian-lq",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "sonarr",
+      "stem": "asian-tier-01",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "sonarr",
+      "stem": "asian-tier-02",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "sonarr",
+      "stem": "asian-tier-03",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "sonarr",
+      "stem": "atmos-undefined",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "atv",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "atvp",
+      "detection_owner": "existing_native",
+      "effect_binding": "informational",
+      "reason": "reviewed_service_alias"
+    },
+    {
+      "app": "sonarr",
+      "stem": "aubc",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "av1",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "bad-dual-groups",
+      "detection_owner": "existing_native",
+      "effect_binding": "persona_score",
+      "reason": "reviewed_release_group_tier"
+    },
+    {
+      "app": "sonarr",
+      "stem": "bglobal",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "bilibili",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "br-disk",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "br-disk-btn",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "bw",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "cbc",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "cc",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "cnlp",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "cpng",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "cr",
+      "detection_owner": "existing_native",
+      "effect_binding": "informational",
+      "reason": "reviewed_service_alias"
+    },
+    {
+      "app": "sonarr",
+      "stem": "crav",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "dcu",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "dd",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "ddplus",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "ddplus-atmos",
+      "detection_owner": "custom_rule_only",
+      "effect_binding": "none",
+      "reason": "existing_parser_or_scoring_signal"
+    },
+    {
+      "app": "sonarr",
+      "stem": "dmm-tv",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "dscp",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "dsnp",
+      "detection_owner": "existing_native",
+      "effect_binding": "informational",
+      "reason": "reviewed_service_alias"
+    },
+    {
+      "app": "sonarr",
+      "stem": "dts",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "dts-es",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "dts-hd-hra",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "dts-hd-ma",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "dts-x",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "dual-audio-asian",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "dubs-only",
+      "detection_owner": "native_fact",
+      "effect_binding": "persona_score",
+      "reason": "reviewed_native_fact"
+    },
+    {
+      "app": "sonarr",
+      "stem": "dv-boost",
+      "detection_owner": "custom_rule_only",
+      "effect_binding": "none",
+      "reason": "existing_parser_or_scoring_signal"
+    },
+    {
+      "app": "sonarr",
+      "stem": "dv-disk",
+      "detection_owner": "custom_rule_only",
+      "effect_binding": "none",
+      "reason": "existing_parser_or_scoring_signal"
+    },
+    {
+      "app": "sonarr",
+      "stem": "dv-wo-hdr-fallback",
+      "detection_owner": "custom_rule_only",
+      "effect_binding": "none",
+      "reason": "existing_parser_or_scoring_signal"
+    },
+    {
+      "app": "sonarr",
+      "stem": "extras",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "fansub",
+      "detection_owner": "native_fact",
+      "effect_binding": "hard_block",
+      "reason": "reviewed_native_fact"
+    },
+    {
+      "app": "sonarr",
+      "stem": "fastsub",
+      "detection_owner": "native_fact",
+      "effect_binding": "hard_block",
+      "reason": "reviewed_native_fact"
+    },
+    {
+      "app": "sonarr",
+      "stem": "flac",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "flux",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "fod",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "freeleech",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "french-adn",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "sonarr",
+      "stem": "french-anime-fansub",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "sonarr",
+      "stem": "french-anime-tier-01",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "sonarr",
+      "stem": "french-anime-tier-02",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "sonarr",
+      "stem": "french-anime-tier-03",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "sonarr",
+      "stem": "french-auvio",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "sonarr",
+      "stem": "french-hd-bluray-tier-01",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "sonarr",
+      "stem": "french-lq",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "sonarr",
+      "stem": "french-mycanal",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "sonarr",
+      "stem": "french-remux-tier-01",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "sonarr",
+      "stem": "french-salto",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "sonarr",
+      "stem": "french-scene",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "sonarr",
+      "stem": "french-vf2",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "sonarr",
+      "stem": "french-vfb",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "sonarr",
+      "stem": "french-vff",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "sonarr",
+      "stem": "french-vfi",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "sonarr",
+      "stem": "french-vfq",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "sonarr",
+      "stem": "french-vof",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "sonarr",
+      "stem": "french-voq",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "sonarr",
+      "stem": "french-vostfr",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "sonarr",
+      "stem": "french-vq",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "sonarr",
+      "stem": "french-web-tier-01",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "sonarr",
+      "stem": "french-web-tier-02",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "sonarr",
+      "stem": "french-web-tier-03",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "sonarr",
+      "stem": "french-wkn",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "sonarr",
+      "stem": "friday",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "funi",
+      "detection_owner": "existing_native",
+      "effect_binding": "informational",
+      "reason": "reviewed_service_alias"
+    },
+    {
+      "app": "sonarr",
+      "stem": "german",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "german-1080p-booster",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "sonarr",
+      "stem": "german-2160p-booster",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "sonarr",
+      "stem": "german-anime-bluray-tier-01",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "sonarr",
+      "stem": "german-anime-bluray-tier-02",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "sonarr",
+      "stem": "german-anime-bluray-tier-03",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "sonarr",
+      "stem": "german-anime-scene",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "sonarr",
+      "stem": "german-anime-web-tier-01",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "sonarr",
+      "stem": "german-anime-web-tier-02",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "sonarr",
+      "stem": "german-anime-web-tier-03",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "sonarr",
+      "stem": "german-bluray-tier-01",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "sonarr",
+      "stem": "german-bluray-tier-02",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "sonarr",
+      "stem": "german-bluray-tier-03",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "sonarr",
+      "stem": "german-dl",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "sonarr",
+      "stem": "german-dl-undefined",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "sonarr",
+      "stem": "german-lq",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "sonarr",
+      "stem": "german-lq-release-title",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "sonarr",
+      "stem": "german-microsized",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "sonarr",
+      "stem": "german-remux-tier-01",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "sonarr",
+      "stem": "german-remux-tier-02",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "sonarr",
+      "stem": "german-scene",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "sonarr",
+      "stem": "german-subbed",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "sonarr",
+      "stem": "german-web-tier-01",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "sonarr",
+      "stem": "german-web-tier-02",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "sonarr",
+      "stem": "german-web-tier-03",
+      "detection_owner": "native_fact",
+      "effect_binding": "locale_score",
+      "reason": "reviewed_locale_fact"
+    },
+    {
+      "app": "sonarr",
+      "stem": "hami",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "hbo",
+      "detection_owner": "existing_native",
+      "effect_binding": "informational",
+      "reason": "reviewed_service_alias"
+    },
+    {
+      "app": "sonarr",
+      "stem": "hd-bluray-tier-01",
+      "detection_owner": "existing_native",
+      "effect_binding": "persona_score",
+      "reason": "reviewed_release_group_tier"
+    },
+    {
+      "app": "sonarr",
+      "stem": "hd-bluray-tier-02",
+      "detection_owner": "existing_native",
+      "effect_binding": "persona_score",
+      "reason": "reviewed_release_group_tier"
+    },
+    {
+      "app": "sonarr",
+      "stem": "hd-streaming-boost",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "hdr",
+      "detection_owner": "custom_rule_only",
+      "effect_binding": "none",
+      "reason": "existing_parser_or_scoring_signal"
+    },
+    {
+      "app": "sonarr",
+      "stem": "hdr10plus-boost",
+      "detection_owner": "custom_rule_only",
+      "effect_binding": "none",
+      "reason": "existing_parser_or_scoring_signal"
+    },
+    {
+      "app": "sonarr",
+      "stem": "hfr",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "hidive",
+      "detection_owner": "existing_native",
+      "effect_binding": "informational",
+      "reason": "reviewed_service_alias"
+    },
+    {
+      "app": "sonarr",
+      "stem": "hlg",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "hmax",
+      "detection_owner": "existing_native",
+      "effect_binding": "informational",
+      "reason": "reviewed_service_alias"
+    },
+    {
+      "app": "sonarr",
+      "stem": "htsr",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "hulu",
+      "detection_owner": "existing_native",
+      "effect_binding": "informational",
+      "reason": "reviewed_service_alias"
+    },
+    {
+      "app": "sonarr",
+      "stem": "hybrid",
+      "detection_owner": "custom_rule_only",
+      "effect_binding": "none",
+      "reason": "existing_parser_or_scoring_signal"
+    },
+    {
+      "app": "sonarr",
+      "stem": "internal",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "ip",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "iqiy",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "it",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "itvx",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "kcw",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "kktv",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "language-not-english",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "language-not-french",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "language-not-original",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "language-original-plus-french",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "linetv",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "lq",
+      "detection_owner": "existing_native",
+      "effect_binding": "persona_score",
+      "reason": "reviewed_release_group_tier"
+    },
+    {
+      "app": "sonarr",
+      "stem": "lq-release-title",
+      "detection_owner": "native_fact",
+      "effect_binding": "hard_block",
+      "reason": "reviewed_native_fact"
+    },
+    {
+      "app": "sonarr",
+      "stem": "max",
+      "detection_owner": "existing_native",
+      "effect_binding": "informational",
+      "reason": "reviewed_service_alias"
+    },
+    {
+      "app": "sonarr",
+      "stem": "mp3",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "mpeg2",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "multi",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "multi-episode",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "my5",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "mytvsuper",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "nf",
+      "detection_owner": "existing_native",
+      "effect_binding": "informational",
+      "reason": "reviewed_service_alias"
+    },
+    {
+      "app": "sonarr",
+      "stem": "nlz",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "no-rlsgroup",
+      "detection_owner": "native_fact",
+      "effect_binding": "informational",
+      "reason": "reviewed_native_fact"
+    },
+    {
+      "app": "sonarr",
+      "stem": "not-german-japanese-korean-chinese-or-english",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "not-german-japanese-or-english",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "not-german-or-english",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "now",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "obfuscated",
+      "detection_owner": "native_fact",
+      "effect_binding": "informational",
+      "reason": "reviewed_native_fact"
+    },
+    {
+      "app": "sonarr",
+      "stem": "opus",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "ovid",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "p2p-internal",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "pcm",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "pcok",
+      "detection_owner": "existing_native",
+      "effect_binding": "informational",
+      "reason": "reviewed_service_alias"
+    },
+    {
+      "app": "sonarr",
+      "stem": "play",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "pmtp",
+      "detection_owner": "existing_native",
+      "effect_binding": "informational",
+      "reason": "reviewed_service_alias"
+    },
+    {
+      "app": "sonarr",
+      "stem": "qibi",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "red",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "remaster",
+      "detection_owner": "custom_rule_only",
+      "effect_binding": "none",
+      "reason": "existing_parser_or_scoring_signal"
+    },
+    {
+      "app": "sonarr",
+      "stem": "remux-tier-01",
+      "detection_owner": "existing_native",
+      "effect_binding": "persona_score",
+      "reason": "reviewed_release_group_tier"
+    },
+    {
+      "app": "sonarr",
+      "stem": "remux-tier-02",
+      "detection_owner": "existing_native",
+      "effect_binding": "persona_score",
+      "reason": "reviewed_release_group_tier"
+    },
+    {
+      "app": "sonarr",
+      "stem": "repack-proper",
+      "detection_owner": "native_fact",
+      "effect_binding": "persona_score",
+      "reason": "reviewed_native_fact"
+    },
+    {
+      "app": "sonarr",
+      "stem": "repack2",
+      "detection_owner": "native_fact",
+      "effect_binding": "persona_score",
+      "reason": "reviewed_native_fact"
+    },
+    {
+      "app": "sonarr",
+      "stem": "repack3",
+      "detection_owner": "native_fact",
+      "effect_binding": "persona_score",
+      "reason": "reviewed_native_fact"
+    },
+    {
+      "app": "sonarr",
+      "stem": "retags",
+      "detection_owner": "native_fact",
+      "effect_binding": "informational",
+      "reason": "reviewed_native_fact"
+    },
+    {
+      "app": "sonarr",
+      "stem": "roku",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "scene",
+      "detection_owner": "native_fact",
+      "effect_binding": "informational",
+      "reason": "reviewed_native_fact"
+    },
+    {
+      "app": "sonarr",
+      "stem": "sdr",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "sdr-no-webdl",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "season-pack",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "sho",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "single-episode",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "stan",
+      "detection_owner": "existing_native",
+      "effect_binding": "informational",
+      "reason": "reviewed_service_alias"
+    },
+    {
+      "app": "sonarr",
+      "stem": "strp",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "syfy",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "truehd",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "truehd-atmos",
+      "detection_owner": "custom_rule_only",
+      "effect_binding": "none",
+      "reason": "existing_parser_or_scoring_signal"
+    },
+    {
+      "app": "sonarr",
+      "stem": "tver",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "tving",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "u-next",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "uhd-streaming-boost",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "uncensored",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "upscaled",
+      "detection_owner": "native_fact",
+      "effect_binding": "persona_score",
+      "reason": "reviewed_native_fact"
+    },
+    {
+      "app": "sonarr",
+      "stem": "v0",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "v1",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "v2",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "v3",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "v4",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "vc-1",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "vdl",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "viki",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "viu",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "vp9",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "vrv",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "wavve",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "web-scene",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "web-tier-01",
+      "detection_owner": "existing_native",
+      "effect_binding": "persona_score",
+      "reason": "reviewed_release_group_tier"
+    },
+    {
+      "app": "sonarr",
+      "stem": "web-tier-02",
+      "detection_owner": "existing_native",
+      "effect_binding": "persona_score",
+      "reason": "reviewed_release_group_tier"
+    },
+    {
+      "app": "sonarr",
+      "stem": "web-tier-03",
+      "detection_owner": "existing_native",
+      "effect_binding": "persona_score",
+      "reason": "reviewed_release_group_tier"
+    },
+    {
+      "app": "sonarr",
+      "stem": "wetv",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "with-ad",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "with-asl",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "with-basl",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "with-bsl",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "wrong-language",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "x264",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "x265",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "x265-hd",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "x265-no-hdrdv",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "x266",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    },
+    {
+      "app": "sonarr",
+      "stem": "youku",
+      "detection_owner": "unsupported",
+      "effect_binding": "none",
+      "reason": "unsupported_unreviewed_stem"
+    }
+  ]
+}

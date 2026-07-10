@@ -4,7 +4,7 @@ use reqwest::StatusCode;
 use reqwest::blocking::Client;
 use reqwest::header::{ACCEPT, RETRY_AFTER, USER_AGENT};
 use scryer_outbound_http::{blocking_reqwest_client, send_blocking_reqwest_request};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
@@ -16,16 +16,19 @@ use xtask_support::{TaskContext, ok, run_checked, step};
 
 const APPS: &[&str] = &["sonarr", "radarr"];
 const FETCH_WORKERS: usize = 36;
+const GITHUB_REPO_API_BASE: &str = "https://api.github.com/repos/TRaSH-Guides/Guides";
 const GITHUB_API_BASE: &str = "https://api.github.com/repos/TRaSH-Guides/Guides/contents/docs/json";
-const GITHUB_RAW_BASE: &str =
-    "https://raw.githubusercontent.com/TRaSH-Guides/Guides/master/docs/json";
+const GITHUB_RAW_BASE: &str = "https://raw.githubusercontent.com/TRaSH-Guides/Guides";
 const REQUEST_USER_AGENT: &str = "scryer-xtask-trash-guides";
+const SOURCE_REVISION_ENV: &str = "SCRYER_TRASH_GUIDES_REVISION";
+const ACCEPT_STEMS_ENV: &str = "SCRYER_TRASH_GUIDES_ACCEPT_STEMS";
 
 const QUALITY_OUTPUT: &str =
     "crates/scryer-application/src/quality/trash_guides_release_groups.generated.rs";
 const PARSER_OUTPUT: &str =
     "crates/scryer-release-parser/src/trash_guides_parser_knowledge.generated.rs";
 const SUMMARY_OUTPUT: &str = "xtask-trash-guides/generated/latest-summary.txt";
+const MANIFEST_OUTPUT: &str = "xtask-trash-guides/generated/stem-classification.json";
 
 struct LegacySeedGroup {
     name: &'static str,
@@ -191,6 +194,11 @@ struct GitHubEntry {
     name: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct GitHubCommit {
+    sha: String,
+}
+
 #[derive(Debug, Clone)]
 struct FetchTask {
     app: String,
@@ -204,6 +212,8 @@ struct UpstreamCf {
     trash_id: String,
     #[serde(default)]
     specifications: Vec<UpstreamSpec>,
+    #[serde(default)]
+    trash_scores: Option<Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -211,15 +221,14 @@ struct UpstreamSpec {
     name: String,
     implementation: String,
     #[serde(default)]
-    fields: UpstreamFields,
+    required: Value,
+    #[serde(default)]
+    negate: Value,
+    #[serde(default)]
+    fields: Value,
 }
 
-#[derive(Debug, Default, Deserialize)]
-struct UpstreamFields {
-    value: Value,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord)]
 struct UpstreamRecord {
     app: String,
     stem: String,
@@ -229,6 +238,16 @@ struct UpstreamRecord {
     spec_name: String,
     implementation: String,
     value: String,
+    trash_scores_json: String,
+    required_json: String,
+    negate_json: String,
+    complete_json: String,
+}
+
+#[derive(Debug)]
+struct FetchedRecords {
+    source_revision: String,
+    records: Vec<UpstreamRecord>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -351,6 +370,76 @@ struct BlockedTitleRecord {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct FactRuleKey {
+    code: String,
+    facet: DistilledFacet,
+    category: CategoryScopeSpec,
+    pattern: TokenPatternSpec,
+}
+
+#[derive(Debug, Clone)]
+struct FactRuleRecord {
+    key: FactRuleKey,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct LocaleGroupFactRuleKey {
+    code: String,
+    matcher: String,
+    match_kind: GroupMatchKindSpec,
+    facet: DistilledFacet,
+    source_context: DistilledContext,
+}
+
+#[derive(Debug, Clone)]
+struct LocaleGroupFactRuleRecord {
+    key: LocaleGroupFactRuleKey,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum DetectionOwner {
+    NativeFact,
+    ExistingNative,
+    ManagedRego,
+    CustomRuleOnly,
+    Unsupported,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum EffectBinding {
+    HardBlock,
+    PersonaScore,
+    LocaleScore,
+    Informational,
+    None,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct StemClassification {
+    detection_owner: DetectionOwner,
+    effect_binding: EffectBinding,
+    reason: &'static str,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct StemClassificationManifest {
+    source_revision: String,
+    synced_at: String,
+    stems: Vec<StemClassificationManifestRecord>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct StemClassificationManifestRecord {
+    app: String,
+    stem: String,
+    detection_owner: DetectionOwner,
+    effect_binding: EffectBinding,
+    reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct MetadataRuleRecord {
     app: String,
     facet: DistilledFacet,
@@ -360,6 +449,10 @@ struct MetadataRuleRecord {
     spec_name: String,
     implementation: String,
     value: String,
+    trash_scores_json: String,
+    required_json: String,
+    negate_json: String,
+    complete_json: String,
     reason: String,
     source_path: String,
 }
@@ -370,20 +463,27 @@ struct DistilledCatalog {
     service_alias_rules: Vec<ServiceAliasRecord>,
     signal_rules: Vec<SignalRuleRecord>,
     blocked_title_rules: Vec<BlockedTitleRecord>,
+    fact_rules: Vec<FactRuleRecord>,
+    locale_group_fact_rules: Vec<LocaleGroupFactRuleRecord>,
+    no_release_group_facets: Vec<DistilledFacet>,
+    source_records: Vec<MetadataRuleRecord>,
     inactive_records: Vec<MetadataRuleRecord>,
     ignored_records: Vec<MetadataRuleRecord>,
 }
 
 pub fn run_sync(ctx: &TaskContext) -> Result<()> {
     step("Fetching TRaSH Guides custom formats");
-    let upstream = fetch_all_records()?;
+    let fetched = fetch_all_records()?;
     ok(format!(
-        "Fetched {} custom-format specifications",
-        upstream.len()
+        "Fetched {} custom-format specifications at {}",
+        fetched.records.len(),
+        fetched.source_revision
     ));
+    let manifest_output = ctx.path(MANIFEST_OUTPUT);
+    enforce_stem_coverage(&manifest_output, &fetched.records)?;
 
     step("Distilling Scryer-native rule sets");
-    let distilled = distill_records(&upstream)?;
+    let distilled = distill_records(&fetched.records)?;
     ok(format!(
         "Distilled {} release-group rules, {} service aliases, {} parser signals, {} blocked title rules",
         distilled.group_rules.len(),
@@ -401,25 +501,33 @@ pub fn run_sync(ctx: &TaskContext) -> Result<()> {
 
     write_if_changed(
         &quality_output,
-        &render_quality_output(&distilled, &synced_at)?,
+        &render_quality_output(&distilled, &synced_at, &fetched.source_revision)?,
     )?;
     write_if_changed(
         &parser_output,
-        &render_parser_output(&distilled, &synced_at)?,
+        &render_parser_output(&distilled, &synced_at, &fetched.source_revision)?,
     )?;
-    write_if_changed(&summary_output, &render_summary(&distilled, &synced_at))?;
+    write_if_changed(
+        &summary_output,
+        &render_summary(&distilled, &synced_at, &fetched.source_revision),
+    )?;
+    write_if_changed(
+        &manifest_output,
+        &render_stem_manifest(&fetched.records, &synced_at, &fetched.source_revision)?,
+    )?;
     format_generated_rust(ctx)?;
     ok("Generated TRaSH distillation artifacts refreshed");
 
     Ok(())
 }
 
-fn fetch_all_records() -> Result<Vec<UpstreamRecord>> {
+fn fetch_all_records() -> Result<FetchedRecords> {
     let client = blocking_reqwest_client().context("failed to build HTTP client")?;
+    let source_revision = resolve_source_revision(&client)?;
     let mut tasks = Vec::new();
 
     for app in APPS {
-        let listing_url = format!("{GITHUB_API_BASE}/{app}/cf");
+        let listing_url = format!("{GITHUB_API_BASE}/{app}/cf?ref={source_revision}");
         let listing = get_json::<Vec<GitHubEntry>>(&client, &listing_url)
             .with_context(|| format!("failed to list {app} custom formats"))?;
 
@@ -442,10 +550,11 @@ fn fetch_all_records() -> Result<Vec<UpstreamRecord>> {
         let mut workers = Vec::new();
         for chunk in tasks.chunks(chunk_size) {
             let client = client.clone();
+            let source_revision = source_revision.clone();
             workers.push(scope.spawn(move || -> Result<Vec<UpstreamRecord>> {
                 let mut chunk_records = Vec::new();
                 for task in chunk {
-                    chunk_records.extend(fetch_records_for_task(&client, task)?);
+                    chunk_records.extend(fetch_records_for_task(&client, task, &source_revision)?);
                 }
                 Ok(chunk_records)
             }));
@@ -462,11 +571,35 @@ fn fetch_all_records() -> Result<Vec<UpstreamRecord>> {
     })?;
 
     records.sort();
-    Ok(records)
+    Ok(FetchedRecords {
+        source_revision,
+        records,
+    })
 }
 
-fn fetch_records_for_task(client: &Client, task: &FetchTask) -> Result<Vec<UpstreamRecord>> {
-    let raw_url = format!("{GITHUB_RAW_BASE}/{}/cf/{}", task.app, task.filename);
+fn resolve_source_revision(client: &Client) -> Result<String> {
+    let requested = std::env::var(SOURCE_REVISION_ENV)
+        .ok()
+        .filter(|revision| !revision.trim().is_empty())
+        .unwrap_or_else(|| "master".to_string());
+    let commit_url = format!("{GITHUB_REPO_API_BASE}/commits/{requested}");
+    let resolved = get_json::<GitHubCommit>(client, &commit_url)
+        .with_context(|| format!("failed to resolve TRaSH Guides revision {requested}"))?;
+    if resolved.sha.is_empty() {
+        bail!("TRaSH Guides resolved an empty source revision for {requested}");
+    }
+    Ok(resolved.sha)
+}
+
+fn fetch_records_for_task(
+    client: &Client,
+    task: &FetchTask,
+    source_revision: &str,
+) -> Result<Vec<UpstreamRecord>> {
+    let raw_url = format!(
+        "{GITHUB_RAW_BASE}/{source_revision}/docs/json/{}/cf/{}",
+        task.app, task.filename
+    );
     let source_path = format!("docs/json/{}/cf/{}", task.app, task.filename);
     let parsed = get_json::<UpstreamCf>(client, &raw_url)
         .with_context(|| format!("failed to fetch {}", task.filename))?;
@@ -476,10 +609,10 @@ fn fetch_records_for_task(client: &Client, task: &FetchTask) -> Result<Vec<Upstr
     for spec in parsed.specifications {
         let value = spec
             .fields
-            .value
-            .as_str()
+            .get("value")
+            .and_then(Value::as_str)
             .map(str::to_string)
-            .unwrap_or_else(|| spec.fields.value.to_string());
+            .unwrap_or_else(|| spec.fields.to_string());
         records.push(UpstreamRecord {
             app: task.app.clone(),
             stem: stem.clone(),
@@ -489,10 +622,19 @@ fn fetch_records_for_task(client: &Client, task: &FetchTask) -> Result<Vec<Upstr
             spec_name: spec.name,
             implementation: spec.implementation,
             value,
+            trash_scores_json: json_string(parsed.trash_scores.as_ref()),
+            required_json: json_string(Some(&spec.required)),
+            negate_json: json_string(Some(&spec.negate)),
+            complete_json: json_string(Some(&spec.fields)),
         });
     }
 
     Ok(records)
+}
+
+fn json_string(value: Option<&Value>) -> String {
+    serde_json::to_string(value.unwrap_or(&Value::Null))
+        .expect("serializing a serde_json::Value cannot fail")
 }
 
 fn get_json<T: for<'de> Deserialize<'de>>(client: &Client, url: &str) -> Result<T> {
@@ -501,6 +643,7 @@ fn get_json<T: for<'de> Deserialize<'de>>(client: &Client, url: &str) -> Result<
         match send_blocking_reqwest_request(
             client
                 .get(url)
+                .timeout(Duration::from_secs(30))
                 .header(USER_AGENT, REQUEST_USER_AGENT)
                 .header(ACCEPT, "application/json"),
         ) {
@@ -565,8 +708,16 @@ fn distill_records(records: &[UpstreamRecord]) -> Result<DistilledCatalog> {
     let mut service_alias_rules = BTreeMap::<ServiceAliasKey, Vec<UpstreamRecord>>::new();
     let mut signal_rules = BTreeMap::<SignalRuleKey, Vec<UpstreamRecord>>::new();
     let mut blocked_title_rules = BTreeMap::<BlockedTitleKey, Vec<UpstreamRecord>>::new();
+    let mut fact_rules = BTreeMap::<FactRuleKey, Vec<UpstreamRecord>>::new();
+    let mut locale_group_fact_rules =
+        BTreeMap::<LocaleGroupFactRuleKey, Vec<UpstreamRecord>>::new();
+    let mut no_release_group_facets = BTreeSet::<DistilledFacet>::new();
     let mut inactive_records = BTreeSet::<MetadataRuleRecord>::new();
     let mut ignored_records = BTreeSet::<MetadataRuleRecord>::new();
+    let source_records = records
+        .iter()
+        .map(|record| metadata_record(record, classify_stem(&record.stem).reason))
+        .collect::<Vec<_>>();
 
     for record in records {
         if let Some(group_target) = classify_active_group_stem(&record.stem) {
@@ -602,7 +753,70 @@ fn distill_records(records: &[UpstreamRecord]) -> Result<DistilledCatalog> {
         }
 
         if is_localized_stem(&record.stem) {
-            inactive_records.insert(metadata_record(record, "localized_preserved_inactive"));
+            if let Some(source_context) = locale_group_source_context(&record.stem) {
+                let matchers = match record.implementation.as_str() {
+                    "ReleaseGroupSpecification" => distill_group_matchers(record)?,
+                    "ReleaseTitleSpecification" if !record_is_negated(record) => {
+                        if let Some(matcher) = distill_title_spec_group_matcher(record) {
+                            vec![matcher]
+                        } else {
+                            inactive_records.insert(metadata_record(
+                                record,
+                                "locale_group_title_spec_not_lossless",
+                            ));
+                            continue;
+                        }
+                    }
+                    "ReleaseTitleSpecification" => {
+                        inactive_records
+                            .insert(metadata_record(record, "locale_group_negated_title_spec"));
+                        continue;
+                    }
+                    _ => {
+                        inactive_records
+                            .insert(metadata_record(record, "locale_group_spec_not_supported"));
+                        continue;
+                    }
+                };
+                for (matcher, match_kind) in matchers {
+                    locale_group_fact_rules
+                        .entry(LocaleGroupFactRuleKey {
+                            code: locale_fact_code(&record.stem),
+                            matcher,
+                            match_kind,
+                            facet: facet_for_record(record),
+                            source_context,
+                        })
+                        .or_default()
+                        .push(record.clone());
+                }
+                continue;
+            }
+            if record.implementation != "ReleaseTitleSpecification" || record_is_negated(record) {
+                inactive_records.insert(metadata_record(
+                    record,
+                    "locale_marker_requires_positive_title_spec",
+                ));
+                continue;
+            }
+            match distill_named_patterns(record, ParserSignalKindSpec::Proper) {
+                Ok(patterns) => {
+                    for pattern in patterns {
+                        fact_rules
+                            .entry(FactRuleKey {
+                                code: locale_fact_code(&record.stem),
+                                facet: facet_for_record(record),
+                                category: CategoryScopeSpec::Any,
+                                pattern,
+                            })
+                            .or_default()
+                            .push(record.clone());
+                    }
+                }
+                Err(_) => {
+                    inactive_records.insert(metadata_record(record, "locale_fact_not_lossless"));
+                }
+            }
             continue;
         }
 
@@ -624,24 +838,56 @@ fn distill_records(records: &[UpstreamRecord]) -> Result<DistilledCatalog> {
                 for pattern in distill_named_patterns(record, ParserSignalKindSpec::AiEnhanced)? {
                     let key = SignalRuleKey {
                         kind: ParserSignalKindSpec::AiEnhanced,
-                        pattern,
+                        pattern: pattern.clone(),
                     };
                     signal_rules.entry(key).or_default().push(record.clone());
+                    fact_rules
+                        .entry(FactRuleKey {
+                            code: "trash.ai_enhanced".to_string(),
+                            facet: facet_for_record(record),
+                            category: CategoryScopeSpec::Any,
+                            pattern,
+                        })
+                        .or_default()
+                        .push(record.clone());
                 }
             }
             "repack-proper" | "repack2" | "repack3" => {
                 for (kind, pattern) in distill_repack_patterns(record)? {
-                    let key = SignalRuleKey { kind, pattern };
+                    let key = SignalRuleKey {
+                        kind,
+                        pattern: pattern.clone(),
+                    };
                     signal_rules.entry(key).or_default().push(record.clone());
+                    for code in fact_codes_for_signal(kind) {
+                        fact_rules
+                            .entry(FactRuleKey {
+                                code: (*code).to_string(),
+                                facet: facet_for_record(record),
+                                category: CategoryScopeSpec::Any,
+                                pattern: pattern.clone(),
+                            })
+                            .or_default()
+                            .push(record.clone());
+                    }
                 }
             }
             "dubs-only" => {
                 for pattern in distill_dubs_only_patterns(record)? {
                     let key = SignalRuleKey {
                         kind: ParserSignalKindSpec::DubsOnly,
-                        pattern,
+                        pattern: pattern.clone(),
                     };
                     signal_rules.entry(key).or_default().push(record.clone());
+                    fact_rules
+                        .entry(FactRuleKey {
+                            code: "trash.dubs_only".to_string(),
+                            facet: facet_for_record(record),
+                            category: CategoryScopeSpec::Any,
+                            pattern,
+                        })
+                        .or_default()
+                        .push(record.clone());
                 }
             }
             "anime-raws" => {
@@ -681,12 +927,23 @@ fn distill_records(records: &[UpstreamRecord]) -> Result<DistilledCatalog> {
                         code: "trash_guides_fansub".to_string(),
                         facet: DistilledFacet::Anime,
                         category: CategoryScopeSpec::Anime,
-                        pattern,
+                        pattern: pattern.clone(),
                     };
                     blocked_title_rules
                         .entry(key)
                         .or_default()
                         .push(record.clone());
+                    for code in ["trash.hardcoded_subs", "trash.fansub"] {
+                        fact_rules
+                            .entry(FactRuleKey {
+                                code: code.to_string(),
+                                facet: DistilledFacet::Anime,
+                                category: CategoryScopeSpec::Anime,
+                                pattern: pattern.clone(),
+                            })
+                            .or_default()
+                            .push(record.clone());
+                    }
                 }
             }
             "fastsub" => {
@@ -696,22 +953,76 @@ fn distill_records(records: &[UpstreamRecord]) -> Result<DistilledCatalog> {
                         code: "trash_guides_fastsub".to_string(),
                         facet: DistilledFacet::Anime,
                         category: CategoryScopeSpec::Anime,
-                        pattern,
+                        pattern: pattern.clone(),
                     };
                     blocked_title_rules
                         .entry(key)
                         .or_default()
                         .push(record.clone());
+                    for code in ["trash.hardcoded_subs", "trash.fastsub"] {
+                        fact_rules
+                            .entry(FactRuleKey {
+                                code: code.to_string(),
+                                facet: DistilledFacet::Anime,
+                                category: CategoryScopeSpec::Anime,
+                                pattern: pattern.clone(),
+                            })
+                            .or_default()
+                            .push(record.clone());
+                    }
+                }
+            }
+            "scene" | "obfuscated" | "retags" => {
+                if record.implementation != "ReleaseTitleSpecification" || record_is_negated(record)
+                {
+                    inactive_records.insert(metadata_record(
+                        record,
+                        "native_fact_requires_positive_title_spec",
+                    ));
+                    continue;
+                }
+                match distill_named_patterns(record, ParserSignalKindSpec::Proper) {
+                    Ok(patterns) => {
+                        for pattern in patterns {
+                            fact_rules
+                                .entry(FactRuleKey {
+                                    code: native_fact_code(&record.stem).to_string(),
+                                    facet: facet_for_record(record),
+                                    category: CategoryScopeSpec::Any,
+                                    pattern,
+                                })
+                                .or_default()
+                                .push(record.clone());
+                        }
+                    }
+                    Err(_) => {
+                        inactive_records
+                            .insert(metadata_record(record, "native_fact_not_lossless"));
+                    }
+                }
+            }
+            "no-rlsgroup" => {
+                if record.implementation == "ReleaseGroupSpecification"
+                    && record.value.trim() == "."
+                {
+                    no_release_group_facets.insert(facet_for_record(record));
+                } else {
+                    inactive_records.insert(metadata_record(
+                        record,
+                        "no_release_group_requires_wildcard_group_spec",
+                    ));
                 }
             }
             "hdr" | "hdr10plus-boost" | "dv-boost" | "dv-disk" | "dv-wo-hdr-fallback"
             | "hybrid" | "remaster" | "truehd-atmos" | "ddplus-atmos" | "10bit" | "10-mono"
             | "20-stereo" | "line-mic-dubbed" => {
-                ignored_records
-                    .insert(metadata_record(record, "existing_parser_or_scoring_signal"));
+                ignored_records.insert(metadata_record(
+                    record,
+                    "custom_rule_only_existing_parser_signal",
+                ));
             }
             _ => {
-                ignored_records.insert(metadata_record(record, "unmapped_v1"));
+                ignored_records.insert(metadata_record(record, "unsupported_unreviewed_stem"));
             }
         }
     }
@@ -734,6 +1045,16 @@ fn distill_records(records: &[UpstreamRecord]) -> Result<DistilledCatalog> {
             .into_iter()
             .map(|(key, provenance)| BlockedTitleRecord { key, provenance })
             .collect(),
+        fact_rules: fact_rules
+            .into_iter()
+            .map(|(key, _)| FactRuleRecord { key })
+            .collect(),
+        locale_group_fact_rules: locale_group_fact_rules
+            .into_iter()
+            .map(|(key, _)| LocaleGroupFactRuleRecord { key })
+            .collect(),
+        no_release_group_facets: no_release_group_facets.into_iter().collect(),
+        source_records,
         inactive_records: inactive_records.into_iter().collect(),
         ignored_records: ignored_records
             .into_iter()
@@ -764,6 +1085,10 @@ fn seed_legacy_group_rules(group_rules: &mut BTreeMap<GroupRuleKey, Vec<Upstream
                 spec_name: seed.name.to_string(),
                 implementation: "ScryerLegacySeed".to_string(),
                 value: format!("{:?}:{:?}:{:?}", seed.tier, seed.context, facet),
+                trash_scores_json: "null".to_string(),
+                required_json: "null".to_string(),
+                negate_json: "null".to_string(),
+                complete_json: "null".to_string(),
             };
             let key = GroupRuleKey {
                 matcher: seed.name.to_string(),
@@ -870,6 +1195,10 @@ fn metadata_record(record: &UpstreamRecord, reason: &str) -> MetadataRuleRecord 
         spec_name: record.spec_name.clone(),
         implementation: record.implementation.clone(),
         value: record.value.clone(),
+        trash_scores_json: record.trash_scores_json.clone(),
+        required_json: record.required_json.clone(),
+        negate_json: record.negate_json.clone(),
+        complete_json: record.complete_json.clone(),
         reason: reason.to_string(),
         source_path: record.source_path.clone(),
     }
@@ -931,6 +1260,170 @@ fn is_anime_stem(stem: &str) -> bool {
 
 fn is_localized_stem(stem: &str) -> bool {
     stem.starts_with("french-") || stem.starts_with("german-") || stem.starts_with("asian-")
+}
+
+fn classify_stem(stem: &str) -> StemClassification {
+    if classify_active_group_stem(stem).is_some() {
+        return StemClassification {
+            detection_owner: DetectionOwner::ExistingNative,
+            effect_binding: EffectBinding::PersonaScore,
+            reason: "reviewed_release_group_tier",
+        };
+    }
+    if is_localized_stem(stem) {
+        return StemClassification {
+            detection_owner: DetectionOwner::NativeFact,
+            effect_binding: EffectBinding::LocaleScore,
+            reason: "reviewed_locale_fact",
+        };
+    }
+    if is_service_alias_stem(stem) {
+        return StemClassification {
+            detection_owner: DetectionOwner::ExistingNative,
+            effect_binding: EffectBinding::Informational,
+            reason: "reviewed_service_alias",
+        };
+    }
+    if matches!(
+        stem,
+        "upscaled"
+            | "repack-proper"
+            | "repack2"
+            | "repack3"
+            | "dubs-only"
+            | "anime-raws"
+            | "lq-release-title"
+            | "fansub"
+            | "fastsub"
+            | "scene"
+            | "obfuscated"
+            | "retags"
+            | "no-rlsgroup"
+    ) {
+        return StemClassification {
+            detection_owner: DetectionOwner::NativeFact,
+            effect_binding: if matches!(
+                stem,
+                "anime-raws" | "lq-release-title" | "fansub" | "fastsub"
+            ) {
+                EffectBinding::HardBlock
+            } else if matches!(stem, "scene" | "obfuscated" | "retags" | "no-rlsgroup") {
+                EffectBinding::Informational
+            } else {
+                EffectBinding::PersonaScore
+            },
+            reason: "reviewed_native_fact",
+        };
+    }
+    if matches!(
+        stem,
+        "hdr"
+            | "hdr10plus-boost"
+            | "dv-boost"
+            | "dv-disk"
+            | "dv-wo-hdr-fallback"
+            | "hybrid"
+            | "remaster"
+            | "truehd-atmos"
+            | "ddplus-atmos"
+            | "10bit"
+            | "10-mono"
+            | "20-stereo"
+            | "line-mic-dubbed"
+    ) {
+        return StemClassification {
+            detection_owner: DetectionOwner::CustomRuleOnly,
+            effect_binding: EffectBinding::None,
+            reason: "existing_parser_or_scoring_signal",
+        };
+    }
+    StemClassification {
+        detection_owner: DetectionOwner::Unsupported,
+        effect_binding: EffectBinding::None,
+        reason: "unsupported_unreviewed_stem",
+    }
+}
+
+fn is_service_alias_stem(stem: &str) -> bool {
+    matches!(
+        stem,
+        "amzn"
+            | "atvp"
+            | "cr"
+            | "dsnp"
+            | "funi"
+            | "hbo"
+            | "hidive"
+            | "hmax"
+            | "hulu"
+            | "max"
+            | "nf"
+            | "pcok"
+            | "pmtp"
+            | "stan"
+    )
+}
+
+fn record_is_negated(record: &UpstreamRecord) -> bool {
+    record.negate_json == "true"
+}
+
+fn native_fact_code(stem: &str) -> &'static str {
+    match stem {
+        "scene" => "trash.scene",
+        "obfuscated" => "trash.obfuscated",
+        "retags" => "trash.retagged",
+        "no-rlsgroup" => "trash.no_release_group",
+        _ => unreachable!("native fact code requested for unsupported stem {stem}"),
+    }
+}
+
+fn fact_codes_for_signal(kind: ParserSignalKindSpec) -> &'static [&'static str] {
+    match kind {
+        ParserSignalKindSpec::AiEnhanced => &["trash.ai_enhanced"],
+        ParserSignalKindSpec::Proper => &["trash.proper"],
+        ParserSignalKindSpec::Repack => &["trash.proper", "trash.repack"],
+        ParserSignalKindSpec::DubsOnly => &["trash.dubs_only"],
+        ParserSignalKindSpec::HardcodedSubs => &["trash.hardcoded_subs"],
+    }
+}
+
+fn locale_fact_code(stem: &str) -> String {
+    let (locale, semantic) = stem
+        .split_once('-')
+        .expect("localized stems always include a locale separator");
+    let semantic = if semantic.contains("tier-01") {
+        "group.tier1".to_string()
+    } else if semantic.contains("tier-02") {
+        "group.tier2".to_string()
+    } else if semantic.contains("tier-03") {
+        "group.tier3".to_string()
+    } else if semantic.contains("lq") {
+        "lq".to_string()
+    } else if semantic.contains("scene") {
+        "scene".to_string()
+    } else {
+        format!("marker.{}", semantic.replace('-', "_"))
+    };
+    format!("trash.locale.{locale}.{semantic}")
+}
+
+fn locale_group_source_context(stem: &str) -> Option<DistilledContext> {
+    if stem.contains("anime-") && stem.contains("tier-") {
+        Some(DistilledContext::Anime)
+    } else if stem.contains("remux-tier-") {
+        Some(DistilledContext::Remux)
+    } else if stem.contains("uhd-bluray-tier-") {
+        Some(DistilledContext::UhdBluRay)
+    } else if stem.contains("bluray-tier-") {
+        Some(DistilledContext::BluRay)
+    } else if stem.contains("web-tier-") {
+        Some(DistilledContext::Web)
+    } else if stem.starts_with("asian-tier-") {
+        Some(DistilledContext::Any)
+    } else {
+        None
+    }
 }
 
 fn distill_group_matchers(record: &UpstreamRecord) -> Result<Vec<(String, GroupMatchKindSpec)>> {
@@ -1433,7 +1926,11 @@ fn format_generated_rust(ctx: &TaskContext) -> Result<()> {
     run_checked(&mut command).context("failed to rustfmt generated TRaSH outputs")
 }
 
-fn render_quality_output(catalog: &DistilledCatalog, synced_at: &str) -> Result<String> {
+fn render_quality_output(
+    catalog: &DistilledCatalog,
+    synced_at: &str,
+    source_revision: &str,
+) -> Result<String> {
     let mut output = String::new();
     writeln!(
         output,
@@ -1443,6 +1940,11 @@ fn render_quality_output(catalog: &DistilledCatalog, synced_at: &str) -> Result<
         output,
         "#[allow(dead_code)]\npub const TRASH_GUIDES_SYNCED_AT: &str = {};",
         rust_str(synced_at)
+    )?;
+    writeln!(
+        output,
+        "#[allow(dead_code)]\npub const TRASH_GUIDES_SOURCE_REVISION: &str = {};",
+        rust_str(source_revision)
     )?;
     writeln!(output)?;
     writeln!(output, "pub static GROUP_RULES: &[GroupRule] = &[")?;
@@ -1508,7 +2010,11 @@ fn render_quality_output(catalog: &DistilledCatalog, synced_at: &str) -> Result<
     Ok(output)
 }
 
-fn render_parser_output(catalog: &DistilledCatalog, synced_at: &str) -> Result<String> {
+fn render_parser_output(
+    catalog: &DistilledCatalog,
+    synced_at: &str,
+    source_revision: &str,
+) -> Result<String> {
     let mut output = String::new();
     writeln!(
         output,
@@ -1518,6 +2024,11 @@ fn render_parser_output(catalog: &DistilledCatalog, synced_at: &str) -> Result<S
         output,
         "#[allow(dead_code)]\npub const TRASH_GUIDES_SYNCED_AT: &str = {};",
         rust_str(synced_at)
+    )?;
+    writeln!(
+        output,
+        "#[allow(dead_code)]\npub const TRASH_GUIDES_SOURCE_REVISION: &str = {};",
+        rust_str(source_revision)
     )?;
     writeln!(output)?;
 
@@ -1541,6 +2052,51 @@ fn render_parser_output(catalog: &DistilledCatalog, synced_at: &str) -> Result<S
                 rust_str(&provenance.source_path),
             )?;
         }
+    }
+    writeln!(output, "];\n")?;
+
+    writeln!(output, "pub static FACT_RULES: &[FactRule] = &[")?;
+    for rule in &catalog.fact_rules {
+        writeln!(
+            output,
+            "    FactRule {{ code: {}, facet: RuleFacet::{}, category: TitleCategoryScope::{}, pattern: {} }},",
+            rust_str(&rule.key.code),
+            render_facet(rule.key.facet),
+            match rule.key.category {
+                CategoryScopeSpec::Any => "Any",
+                CategoryScopeSpec::Anime => "Anime",
+            },
+            render_token_pattern(&rule.key.pattern),
+        )?;
+    }
+    writeln!(output, "];\n")?;
+
+    writeln!(
+        output,
+        "pub static LOCALE_GROUP_FACT_RULES: &[LocaleGroupFactRule] = &["
+    )?;
+    for rule in &catalog.locale_group_fact_rules {
+        writeln!(
+            output,
+            "    LocaleGroupFactRule {{ code: {}, matcher: {}, match_kind: LocaleGroupMatchKind::{}, facet: RuleFacet::{}, source_context: LocaleSourceContext::{} }},",
+            rust_str(&rule.key.code),
+            rust_str(&rule.key.matcher),
+            match rule.key.match_kind {
+                GroupMatchKindSpec::Exact => "Exact",
+                GroupMatchKindSpec::Prefix => "Prefix",
+            },
+            render_facet(rule.key.facet),
+            render_context(rule.key.source_context),
+        )?;
+    }
+    writeln!(output, "];\n")?;
+
+    writeln!(
+        output,
+        "pub static NO_RELEASE_GROUP_FACT_FACETS: &[RuleFacet] = &["
+    )?;
+    for facet in &catalog.no_release_group_facets {
+        writeln!(output, "    RuleFacet::{},", render_facet(*facet))?;
     }
     writeln!(output, "];\n")?;
 
@@ -1607,6 +2163,13 @@ fn render_parser_output(catalog: &DistilledCatalog, synced_at: &str) -> Result<S
         &catalog.ignored_records,
         None,
     )?;
+    writeln!(output)?;
+    render_metadata_rules(
+        &mut output,
+        "UPSTREAM_RECORDS",
+        &catalog.source_records,
+        None,
+    )?;
 
     Ok(output)
 }
@@ -1629,7 +2192,7 @@ fn render_metadata_rules(
         }
         writeln!(
             output,
-            "    MetadataRuleRecord {{ app: {}, facet: RuleFacet::{}, stem: {}, trash_id: {}, cf_name: {}, spec_name: {}, implementation: {}, value: {}, reason: {}, source_path: {} }},",
+            "    MetadataRuleRecord {{ app: {}, facet: RuleFacet::{}, stem: {}, trash_id: {}, cf_name: {}, spec_name: {}, implementation: {}, value: {}, trash_scores_json: {}, required_json: {}, negate_json: {}, complete_json: {}, reason: {}, source_path: {} }},",
             rust_str(&record.app),
             render_facet(record.facet),
             rust_str(&record.stem),
@@ -1638,6 +2201,10 @@ fn render_metadata_rules(
             rust_str(&record.spec_name),
             rust_str(&record.implementation),
             rust_str(&record.value),
+            rust_str(&record.trash_scores_json),
+            rust_str(&record.required_json),
+            rust_str(&record.negate_json),
+            rust_str(&record.complete_json),
             rust_str(&record.reason),
             rust_str(&record.source_path),
         )?;
@@ -1646,7 +2213,7 @@ fn render_metadata_rules(
     Ok(())
 }
 
-fn render_summary(catalog: &DistilledCatalog, synced_at: &str) -> String {
+fn render_summary(catalog: &DistilledCatalog, synced_at: &str, source_revision: &str) -> String {
     let mut output = String::new();
     let (movie_groups, series_groups, anime_groups) =
         count_group_rules_by_facet(&catalog.group_rules);
@@ -1654,6 +2221,7 @@ fn render_summary(catalog: &DistilledCatalog, synced_at: &str) -> String {
         count_blocked_title_rules_by_facet(&catalog.blocked_title_rules);
     let _ = writeln!(output, "TRaSH Guides sync summary");
     let _ = writeln!(output, "Synced at: {synced_at}");
+    let _ = writeln!(output, "Source revision: {source_revision}");
     let _ = writeln!(output);
     let _ = writeln!(
         output,
@@ -1674,6 +2242,7 @@ fn render_summary(catalog: &DistilledCatalog, synced_at: &str) -> String {
         "Active parser token signals: {}",
         catalog.signal_rules.len()
     );
+    let _ = writeln!(output, "Active guide facts: {}", catalog.fact_rules.len());
     let _ = writeln!(
         output,
         "Active blocked title rules: {}",
@@ -1690,6 +2259,104 @@ fn render_summary(catalog: &DistilledCatalog, synced_at: &str) -> String {
     );
     let _ = writeln!(output, "Ignored records: {}", catalog.ignored_records.len());
     output
+}
+
+fn render_stem_manifest(
+    records: &[UpstreamRecord],
+    synced_at: &str,
+    source_revision: &str,
+) -> Result<String> {
+    let mut stems = BTreeMap::<(&str, &str), StemClassification>::new();
+    for record in records {
+        stems
+            .entry((&record.app, &record.stem))
+            .or_insert_with(|| classify_stem(&record.stem));
+    }
+
+    let manifest = StemClassificationManifest {
+        source_revision: source_revision.to_string(),
+        synced_at: synced_at.to_string(),
+        stems: stems
+            .into_iter()
+            .map(
+                |((app, stem), classification)| StemClassificationManifestRecord {
+                    app: app.to_string(),
+                    stem: stem.to_string(),
+                    detection_owner: classification.detection_owner,
+                    effect_binding: classification.effect_binding,
+                    reason: classification.reason.to_string(),
+                },
+            )
+            .collect(),
+    };
+    serde_json::to_string_pretty(&manifest)
+        .map(|mut rendered| {
+            rendered.push('\n');
+            rendered
+        })
+        .context("failed to serialize TRaSH stem classification manifest")
+}
+
+fn enforce_stem_coverage(manifest_path: &Path, records: &[UpstreamRecord]) -> Result<()> {
+    let accepts_new_stems = accepts_new_stems();
+    let known_stems = match fs::read_to_string(manifest_path) {
+        Ok(content) => serde_json::from_str::<StemClassificationManifest>(&content)
+            .with_context(|| {
+                format!(
+                    "failed to parse reviewed TRaSH stem manifest {}",
+                    manifest_path.display()
+                )
+            })?
+            .stems
+            .into_iter()
+            .map(|record| (record.app, record.stem))
+            .collect::<BTreeSet<_>>(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound && accepts_new_stems => {
+            BTreeSet::new()
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            bail!(
+                "reviewed TRaSH stem manifest {} is missing; set {ACCEPT_STEMS_ENV}=1 only to bootstrap or explicitly accept the fetched inventory",
+                manifest_path.display()
+            )
+        }
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("failed to read {}", manifest_path.display()));
+        }
+    };
+
+    let unexpected = unexpected_stems(&known_stems, records);
+    if !unexpected.is_empty() && !accepts_new_stems {
+        let rendered = unexpected
+            .iter()
+            .map(|(app, stem)| format!("{app}/{stem}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        bail!(
+            "unreviewed TRaSH stems detected: {rendered}; classify them in {} or set {ACCEPT_STEMS_ENV}=1 to intentionally regenerate the reviewed inventory",
+            manifest_path.display()
+        );
+    }
+    Ok(())
+}
+
+fn unexpected_stems(
+    known_stems: &BTreeSet<(String, String)>,
+    records: &[UpstreamRecord],
+) -> BTreeSet<(String, String)> {
+    records
+        .iter()
+        .map(|record| (record.app.clone(), record.stem.clone()))
+        .filter(|stem| !known_stems.contains(stem))
+        .collect()
+}
+
+fn accepts_new_stems() -> bool {
+    matches!(
+        std::env::var(ACCEPT_STEMS_ENV).as_deref(),
+        Ok("1" | "true" | "TRUE")
+    )
 }
 
 fn count_group_rules_by_facet(rules: &[GroupRuleRecord]) -> (usize, usize, usize) {
@@ -1814,6 +2481,7 @@ mod tests {
             spec_name: String::new(),
             implementation: String::new(),
             value: String::new(),
+            ..Default::default()
         };
         assert_eq!(facet_for_record(&movie), DistilledFacet::Movie);
 
@@ -1841,6 +2509,7 @@ mod tests {
             spec_name: "APEX".to_string(),
             implementation: "ReleaseGroupSpecification".to_string(),
             value: "^(APEX|PAXA|PEXA|XEPA)$".to_string(),
+            ..Default::default()
         };
         let expanded = distill_group_matchers(&record).expect("expand aliases");
         assert_eq!(
@@ -1875,6 +2544,7 @@ mod tests {
             spec_name: "Pahe".to_string(),
             implementation: "ReleaseGroupSpecification".to_string(),
             value: r"Pahe(\.(ph|in))?\b".to_string(),
+            ..Default::default()
         };
         let expanded = distill_group_matchers(&record).expect("expand pahe");
         assert_eq!(
@@ -1898,6 +2568,7 @@ mod tests {
             spec_name: "AnimeRG".to_string(),
             implementation: "ReleaseTitleSpecification".to_string(),
             value: r"\b(AnimeRG)\b".to_string(),
+            ..Default::default()
         };
         assert_eq!(
             distill_title_spec_group_matcher(&exact_record),
@@ -1949,6 +2620,7 @@ mod tests {
             spec_name: "MAX Rename".to_string(),
             implementation: "ReleaseTitleSpecification".to_string(),
             value: r"\[(MAX)\b|\b(MAX)\]".to_string(),
+            ..Default::default()
         };
         let aliases = distill_service_alias_tokens(&service_record).expect("service aliases");
         assert!(aliases.contains(&"MAX".to_string()));
@@ -1962,6 +2634,7 @@ mod tests {
             spec_name: "TheUpscaler".to_string(),
             implementation: "ReleaseTitleSpecification".to_string(),
             value: r"\b(The[ ._-]?Upscaler)\b".to_string(),
+            ..Default::default()
         };
         let patterns = distill_named_patterns(&upscaled_record, ParserSignalKindSpec::AiEnhanced)
             .expect("upscaled patterns");
@@ -1983,6 +2656,7 @@ mod tests {
             spec_name: "AsukaRaws".to_string(),
             implementation: "ReleaseTitleSpecification".to_string(),
             value: "Asuka[ ._-]?(Raws)".to_string(),
+            ..Default::default()
         };
         let patterns = distill_blocked_title_patterns(&anime_raw_record, "trash_guides_anime_raws")
             .expect("anime raw patterns");
@@ -2000,6 +2674,7 @@ mod tests {
             spec_name: "BiTOR (2160p)".to_string(),
             implementation: "ReleaseTitleSpecification".to_string(),
             value: "(?=.*?(\\b2160p\\b))(?=.*?(\\bBiTOR\\b))".to_string(),
+            ..Default::default()
         };
         let lq_patterns =
             distill_blocked_title_patterns(&lq_record, "trash_guides_lq_release_title")
@@ -2008,5 +2683,63 @@ mod tests {
             pattern.kind == TokenPatternKindSpec::RequiredTokens
                 && pattern.tokens.as_slice() == ["2160P", "BITOR"]
         }));
+    }
+
+    #[test]
+    fn top_level_specification_polarity_and_fields_json_are_preserved() {
+        let upstream = serde_json::from_str::<UpstreamCf>(
+            r#"{
+                "name": "Scene",
+                "trash_id": "scene-id",
+                "trash_scores": {"default": -100},
+                "specifications": [{
+                    "name": "Not GERMAN",
+                    "implementation": "ReleaseTitleSpecification",
+                    "required": true,
+                    "negate": true,
+                    "fields": {"value": "\\bGERMAN\\b", "extra": ["kept"]}
+                }]
+            }"#,
+        )
+        .expect("fixture should deserialize");
+        let spec = upstream
+            .specifications
+            .first()
+            .expect("fixture specification");
+        assert_eq!(json_string(Some(&spec.required)), "true");
+        assert_eq!(json_string(Some(&spec.negate)), "true");
+        let complete_fields = serde_json::from_str::<Value>(&json_string(Some(&spec.fields)))
+            .expect("complete fields JSON");
+        assert_eq!(complete_fields, spec.fields);
+
+        let record = UpstreamRecord {
+            app: "sonarr".to_string(),
+            stem: "scene".to_string(),
+            implementation: "ReleaseTitleSpecification".to_string(),
+            value: r"\bGERMAN\b".to_string(),
+            negate_json: json_string(Some(&spec.negate)),
+            ..Default::default()
+        };
+        let catalog = distill_records(&[record]).expect("distill negated scene");
+        assert!(catalog.fact_rules.is_empty());
+        assert!(
+            catalog
+                .inactive_records
+                .iter()
+                .any(|record| record.reason == "native_fact_requires_positive_title_spec")
+        );
+    }
+
+    #[test]
+    fn coverage_check_rejects_new_stems() {
+        let records = vec![UpstreamRecord {
+            app: "sonarr".to_string(),
+            stem: "new-upstream-stem".to_string(),
+            ..Default::default()
+        }];
+        assert_eq!(
+            unexpected_stems(&BTreeSet::new(), &records),
+            BTreeSet::from([("sonarr".to_string(), "new-upstream-stem".to_string())])
+        );
     }
 }

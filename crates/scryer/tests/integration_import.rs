@@ -412,6 +412,7 @@ async fn install_rule(
         rego_source.to_string(),
         applied_facets,
         0,
+        None,
     )
     .await
     .expect("create rule set");

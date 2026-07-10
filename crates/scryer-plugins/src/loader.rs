@@ -624,6 +624,7 @@ impl IndexerPluginProvider for WasmIndexerPluginProvider {
                             id,
                             name: sp.name.clone(),
                             rego_source: sp.rego_source.clone(),
+                            origin: scryer_rules::PolicyOrigin::User,
                             applied_facets: sp.applied_facets.clone(),
                         }
                     })

@@ -33,6 +33,7 @@ impl RulesMutations {
                 input.rego_source,
                 parse_facets(input.applied_facets),
                 input.priority.unwrap_or(0),
+                input.enabled,
             )
             .await
             .map_err(to_gql_error)?;

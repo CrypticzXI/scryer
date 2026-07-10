@@ -1270,6 +1270,9 @@ async fn bootstrap_application(
     {
         tracing::warn!(error = %e, "failed to migrate canonical audio/persona settings on startup");
     }
+    if let Err(e) = app_use_case.reconcile_managed_trash_rule_packs(false).await {
+        tracing::warn!(error = %e, "failed to reconcile managed TRaSH rule packs on startup");
+    }
     if let Err(e) = app_use_case.rebuild_user_rules_engine().await {
         tracing::warn!(error = %e, "failed to rebuild user rules engine on startup");
     }

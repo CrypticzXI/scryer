@@ -487,6 +487,7 @@ input CreateRuleSetInput {
 	regoSource: String!
 	appliedFacets: [String!]
 	priority: Int
+	enabled: Boolean
 }
 
 input CreateSubtitleProviderConfigInput {
@@ -3373,6 +3374,7 @@ type QueryRoot {
 	pendingImportCounts: PendingImportCountsPayload!
 	navigationBadgeCounts: NavigationBadgeCountsPayload!
 	pendingImports(facet: MediaFacetValue!, libraryIds: [ID!], status: PendingImportStatusValue!, limit: Int! = 50, offset: Int! = 0): PendingImportConnectionPayload!
+	pendingImportTitleSearch(pendingImportId: ID!, query: String!, limit: Int! = 8, language: String! = "eng", year: Int): [MetadataSearchItemPayload!]!
 	pendingImportBindingPreview(pendingImportId: ID!): PendingImportBindingPreviewPayload!
 	jobs: [JobDefinitionPayload!]!
 	activeJobRuns: [JobRunPayload!]!
@@ -3681,13 +3683,14 @@ type ReorderDownloadClientConfigsPayload {
 
 input ResolvePendingImportInput {
 	pendingImportId: ID!
-	tvdbId: String!
+	title: AddTitleInput!
 }
 
 type ResolvePendingImportPayload {
 	title: TitlePayload!
 	created: Boolean!
-	libraryScan: LibraryScanSummaryPayload!
+	libraryScan: LibraryScanSummaryPayload
+	metadataHydrationState: AddTitleHydrationStateValue!
 }
 
 type RestoreApplyPayload {

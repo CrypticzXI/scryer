@@ -23,13 +23,22 @@ pub enum RulesError {
 
 // ── Public types ────────────────────────────────────────────────────────────
 
-/// A user-authored Rego policy loaded from the database.
+/// Distinguishes editable user policies from system-managed scoring policies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PolicyOrigin {
+    #[default]
+    User,
+    System,
+}
+
+/// A Rego policy loaded from the database or supplied by the system.
 #[derive(Debug, Clone)]
 pub struct UserPolicy {
     pub id: String,
     /// Human-readable name shown in the scoring breakdown.
     pub name: String,
     pub rego_source: String,
+    pub origin: PolicyOrigin,
     /// Facets this rule applies to (e.g. "movie", "series", "anime").
     /// Empty means the rule applies to all facets.
     pub applied_facets: Vec<String>,
@@ -38,6 +47,10 @@ pub struct UserPolicy {
 /// Score delta at or below this value is treated as a hard block.
 /// Matches `scryer.block_score()` builtin which returns -10000.
 pub const BLOCK_SCORE_THRESHOLD: i32 = -9000;
+
+/// Managed policies may only contribute bounded score adjustments.
+pub const MANAGED_POLICY_MIN_SCORE: i32 = -500;
+pub const MANAGED_POLICY_MAX_SCORE: i32 = 500;
 
 /// Input document set per-release for user rule evaluation.
 ///
@@ -153,6 +166,9 @@ pub struct ReleaseDoc {
     pub age_days: Option<i64>,
     pub thumbs_up: Option<i32>,
     pub thumbs_down: Option<i32>,
+    /// Stable, parser-supplied guide facts for managed scoring packs.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub guide_facts: Vec<String>,
     /// Arbitrary plugin-supplied metadata, accessible as `input.release.extra.*` in Rego.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub extra: HashMap<String, serde_json::Value>,
@@ -213,6 +229,7 @@ pub struct UserRuleEntry {
     pub delta: i32,
     pub rule_set_id: String,
     pub rule_set_name: String,
+    pub origin: PolicyOrigin,
 }
 
 /// A per-rule error encountered during evaluation.
@@ -220,6 +237,7 @@ pub struct UserRuleEntry {
 pub struct RuleEvalError {
     pub rule_set_id: String,
     pub rule_set_name: String,
+    pub origin: PolicyOrigin,
     pub message: String,
 }
 
@@ -308,8 +326,8 @@ pub fn strip_editor_source(rego_source: &str) -> String {
 #[derive(Clone)]
 pub struct UserRulesEngine {
     template: Arc<Engine>,
-    /// (rule_id, rule_name, applied_facets) triples in policy order.
-    rules: Vec<(String, String, Vec<String>)>,
+    /// (rule_id, rule_name, applied_facets, origin) tuples in policy order.
+    rules: Vec<(String, String, Vec<String>, PolicyOrigin)>,
 }
 
 impl UserRulesEngine {
@@ -322,6 +340,13 @@ impl UserRulesEngine {
         let mut rules = Vec::new();
 
         for policy in policies {
+            if policy.origin == PolicyOrigin::System {
+                let validation =
+                    validation::validate_managed_rule(&policy.rego_source, &policy.id)?;
+                if !validation.valid {
+                    return Err(RulesError::InvalidOutput(validation.errors.join("; ")));
+                }
+            }
             let path = format!("user/{}.rego", policy.id);
             engine
                 .add_policy(path, policy.rego_source.clone())
@@ -330,6 +355,7 @@ impl UserRulesEngine {
                 policy.id.clone(),
                 policy.name.clone(),
                 policy.applied_facets.clone(),
+                policy.origin,
             ));
         }
 
@@ -376,7 +402,7 @@ impl UserRulesEngine {
 /// in the batch.
 pub struct UserRulesEvaluator {
     engine: Engine,
-    rules: Vec<(String, String, Vec<String>)>,
+    rules: Vec<(String, String, Vec<String>, PolicyOrigin)>,
 }
 
 impl UserRulesEvaluator {
@@ -405,7 +431,7 @@ impl UserRulesEvaluator {
         let input_value = serde_json::to_value(input)?;
         self.engine.set_input(input_value.into());
 
-        for (rule_id, rule_name, applied_facets) in &self.rules {
+        for (rule_id, rule_name, applied_facets, origin) in &self.rules {
             // Skip rules that are scoped to other facets.
             if !applied_facets.is_empty() && !applied_facets.iter().any(|f| f == facet) {
                 continue;
@@ -418,7 +444,21 @@ impl UserRulesEvaluator {
                     if let Some(r) = results.result.first()
                         && let Some(expr) = r.expressions.first()
                     {
-                        Self::extract_entries(&expr.value, rule_id, rule_name, &mut result.entries);
+                        let entries =
+                            Self::extract_entries(&expr.value, rule_id, rule_name, *origin);
+                        if *origin == PolicyOrigin::System
+                            && let Err(message) = validate_managed_entries(&entries)
+                        {
+                            warn!(rule_id = rule_id.as_str(), %message, "managed rule evaluation rejected");
+                            result.errors.push(RuleEvalError {
+                                rule_set_id: rule_id.clone(),
+                                rule_set_name: rule_name.clone(),
+                                origin: *origin,
+                                message,
+                            });
+                        } else {
+                            result.entries.extend(entries);
+                        }
                     }
                 }
                 Err(e) => {
@@ -430,6 +470,7 @@ impl UserRulesEvaluator {
                     result.errors.push(RuleEvalError {
                         rule_set_id: rule_id.clone(),
                         rule_set_name: rule_name.clone(),
+                        origin: *origin,
                         message: e.to_string(),
                     });
                 }
@@ -445,16 +486,17 @@ impl UserRulesEvaluator {
         value: &Value,
         rule_id: &str,
         rule_name: &str,
-        entries: &mut Vec<UserRuleEntry>,
-    ) {
+        origin: PolicyOrigin,
+    ) -> Vec<UserRuleEntry> {
+        let mut entries = Vec::new();
         // Value::Undefined means the rule conditions weren't met — no entries.
         if matches!(value, Value::Undefined) {
-            return;
+            return entries;
         }
 
         let obj = match value.as_object() {
             Ok(obj) => obj,
-            Err(_) => return,
+            Err(_) => return entries,
         };
 
         for (key, val) in obj.iter() {
@@ -493,9 +535,34 @@ impl UserRulesEvaluator {
                 delta,
                 rule_set_id: rule_id.to_string(),
                 rule_set_name: rule_name.to_string(),
+                origin,
             });
         }
+        entries
     }
+}
+
+fn validate_managed_entries(entries: &[UserRuleEntry]) -> Result<(), String> {
+    if let Some(entry) = entries
+        .iter()
+        .find(|entry| entry.delta <= BLOCK_SCORE_THRESHOLD)
+    {
+        return Err(format!(
+            "managed rule produced block-capable score {} for {}",
+            entry.delta, entry.code
+        ));
+    }
+
+    let aggregate: i64 = entries.iter().map(|entry| i64::from(entry.delta)).sum();
+    if !(i64::from(MANAGED_POLICY_MIN_SCORE)..=i64::from(MANAGED_POLICY_MAX_SCORE))
+        .contains(&aggregate)
+    {
+        return Err(format!(
+            "managed rule aggregate {aggregate} is outside [{MANAGED_POLICY_MIN_SCORE}, {MANAGED_POLICY_MAX_SCORE}]"
+        ));
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -529,6 +596,7 @@ mod tests {
                 }
             "#
             .to_string(),
+            origin: PolicyOrigin::User,
             applied_facets: vec![],
         };
 
@@ -561,6 +629,7 @@ mod tests {
                 }
             "#
             .to_string(),
+            origin: PolicyOrigin::User,
             applied_facets: vec![],
         };
 
@@ -585,6 +654,7 @@ mod tests {
                     score_entry["bonus_a"] := 100
                 "#
                 .to_string(),
+                origin: PolicyOrigin::User,
                 applied_facets: vec![],
             },
             UserPolicy {
@@ -596,6 +666,7 @@ mod tests {
                     score_entry["bonus_b"] := 200
                 "#
                 .to_string(),
+                origin: PolicyOrigin::User,
                 applied_facets: vec![],
             },
         ];
@@ -634,6 +705,7 @@ mod tests {
                 }
             "#
             .to_string(),
+            origin: PolicyOrigin::User,
             applied_facets: vec![],
         };
 
@@ -662,6 +734,7 @@ mod tests {
                 }
             "#
             .to_string(),
+            origin: PolicyOrigin::User,
             applied_facets: vec![],
         };
 
@@ -674,6 +747,68 @@ mod tests {
         let result = evaluator.evaluate(&input, "movie").unwrap();
         assert_eq!(result.entries.len(), 1);
         assert_eq!(result.entries[0].delta, -10000);
+        assert_eq!(result.entries[0].origin, PolicyOrigin::User);
+    }
+
+    #[test]
+    fn managed_rule_entries_report_system_origin() {
+        let policy = UserPolicy {
+            id: "managed_score".to_string(),
+            name: "Managed Score".to_string(),
+            rego_source: r#"
+                package scryer.rules.user.managed_score
+                import rego.v1
+                score_entry["managed_bonus"] := 120
+            "#
+            .to_string(),
+            origin: PolicyOrigin::System,
+            applied_facets: vec![],
+        };
+
+        let mut evaluator = UserRulesEngine::build(&[policy]).unwrap().evaluator();
+        let result = evaluator.evaluate(&test_input(), "movie").unwrap();
+        assert_eq!(result.entries[0].origin, PolicyOrigin::System);
+    }
+
+    #[test]
+    fn managed_rule_rejects_block_builtin_source() {
+        let policy = UserPolicy {
+            id: "managed_block".to_string(),
+            name: "Managed Block".to_string(),
+            rego_source: r#"
+                package scryer.rules.user.managed_block
+                import rego.v1
+                score_entry["blocked"] := scryer.block_score()
+            "#
+            .to_string(),
+            origin: PolicyOrigin::System,
+            applied_facets: vec![],
+        };
+
+        assert!(UserRulesEngine::build(&[policy]).is_err());
+    }
+
+    #[test]
+    fn managed_rule_rejects_out_of_bounds_runtime_result() {
+        let policy = UserPolicy {
+            id: "managed_bounds".to_string(),
+            name: "Managed Bounds".to_string(),
+            rego_source: r#"
+                package scryer.rules.user.managed_bounds
+                import rego.v1
+                score_entry["too_high"] := 501
+            "#
+            .to_string(),
+            origin: PolicyOrigin::System,
+            applied_facets: vec![],
+        };
+
+        let mut evaluator = UserRulesEngine::build(&[policy]).unwrap().evaluator();
+        let result = evaluator.evaluate(&test_input(), "movie").unwrap();
+        assert!(result.entries.is_empty());
+        assert_eq!(result.errors.len(), 1);
+        assert_eq!(result.errors[0].origin, PolicyOrigin::System);
+        assert!(result.errors[0].message.contains("outside [-500, 500]"));
     }
 
     #[test]
@@ -682,6 +817,7 @@ mod tests {
             id: "bad_rule".to_string(),
             name: "Bad Rule".to_string(),
             rego_source: "this is not valid rego".to_string(),
+            origin: PolicyOrigin::User,
             applied_facets: vec![],
         };
 
@@ -700,6 +836,7 @@ mod tests {
                 score_entry["always"] := 42
             "#
             .to_string(),
+            origin: PolicyOrigin::User,
             applied_facets: vec![],
         };
 
@@ -724,6 +861,7 @@ mod tests {
                 score_entry["anime_boost"] := 500
             "#
             .to_string(),
+            origin: PolicyOrigin::User,
             applied_facets: vec!["anime".to_string()],
         };
 
@@ -751,6 +889,7 @@ mod tests {
                 score_entry["always"] := 100
             "#
             .to_string(),
+            origin: PolicyOrigin::User,
             applied_facets: vec![],
         };
 
@@ -832,6 +971,7 @@ mod tests {
                 score_entry["huge"] := 99999999999
             "#
             .to_string(),
+            origin: PolicyOrigin::User,
             applied_facets: vec![],
         };
 
@@ -863,6 +1003,7 @@ score_entry["nzbgeek_thumbs_down"] := penalty if {
             id: id.to_string(),
             name: id.to_string(),
             rego_source: rewritten,
+            origin: PolicyOrigin::User,
             applied_facets: vec![],
         };
 
@@ -899,6 +1040,7 @@ score_entry["nzbgeek_english_confirmed"] := 200 if {
             id: id.to_string(),
             name: id.to_string(),
             rego_source: rewritten,
+            origin: PolicyOrigin::User,
             applied_facets: vec![],
         };
 
@@ -929,6 +1071,7 @@ score_entry["too_few_chapters"] := scryer.block_score() if {
 "#,
                 "chapter_gate",
             ),
+            origin: PolicyOrigin::User,
             applied_facets: vec!["movie".to_string()],
         };
 
@@ -957,6 +1100,7 @@ score_entry["too_few_chapters"] := scryer.block_score() if {
 "#,
                 "chapter_gate",
             ),
+            origin: PolicyOrigin::User,
             applied_facets: vec!["movie".to_string()],
         };
 
@@ -979,6 +1123,7 @@ score_entry["library_bonus"] := 75 if {
 "#,
                 "library_name_rule",
             ),
+            origin: PolicyOrigin::User,
             applied_facets: vec!["movie".to_string()],
         };
 
@@ -1034,6 +1179,7 @@ score_entry["library_bonus"] := 75 if {
                 age_days: Some(5),
                 thumbs_up: None,
                 thumbs_down: None,
+                guide_facts: vec![],
                 extra: Default::default(),
             },
             profile: ProfileDoc {

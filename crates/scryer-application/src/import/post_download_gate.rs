@@ -969,6 +969,7 @@ pub(crate) async fn compute_post_download_acquisition_decision(
         runtime_minutes,
     )
     .await;
+    crate::quality_profile::apply_min_score_gate(profile, &mut decision);
     let score = decision.preference_score;
     if !rescore_changes.is_empty() {
         tracing::debug!(
@@ -1066,24 +1067,36 @@ async fn append_post_download_user_rule_scores(
     match evaluator.evaluate(&input, category) {
         Ok(result) => {
             for entry in result.entries {
-                decision.log_with_source(
-                    &entry.code,
-                    entry.delta,
-                    crate::ScoringSource::UserRule {
+                let source = match entry.origin {
+                    scryer_rules::PolicyOrigin::User => crate::ScoringSource::UserRule {
                         id: entry.rule_set_id,
                         name: entry.rule_set_name,
                     },
-                );
+                    scryer_rules::PolicyOrigin::System => crate::ScoringSource::SystemRule {
+                        id: entry.rule_set_id,
+                        name: entry.rule_set_name,
+                    },
+                };
+                decision.log_with_source(&entry.code, entry.delta, source);
             }
             for err in result.errors {
-                decision.log_with_source(
-                    "user_rule_error",
-                    0,
-                    crate::ScoringSource::UserRule {
-                        id: err.rule_set_id,
-                        name: err.rule_set_name,
-                    },
-                );
+                let (code, source) = match err.origin {
+                    scryer_rules::PolicyOrigin::User => (
+                        "user_rule_error",
+                        crate::ScoringSource::UserRule {
+                            id: err.rule_set_id,
+                            name: err.rule_set_name,
+                        },
+                    ),
+                    scryer_rules::PolicyOrigin::System => (
+                        "system_rule_error",
+                        crate::ScoringSource::SystemRule {
+                            id: err.rule_set_id,
+                            name: err.rule_set_name,
+                        },
+                    ),
+                };
+                decision.log_with_source(code, 0, source);
             }
         }
         Err(error) => {

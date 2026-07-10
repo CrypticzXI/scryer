@@ -4,7 +4,6 @@ use crate::scoring_weights::{
     ScoringOverrides, ScoringPersona, ScoringWeights, audio_weight_for_codec,
 };
 use chrono::{DateTime, Utc};
-use scryer_release_parser::detect_trash_guides_blocked_title;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -946,9 +945,20 @@ pub fn evaluate_against_profile_for_category(
         }
     }
 
-    // ── TRaSH title block knowledge ──────────────────────────────────────────
-    if let Some(code) = detect_trash_guides_blocked_title(&release.raw_title, category_hint) {
-        d.log(code, BLOCK_SCORE);
+    // ── TRaSH guide facts ────────────────────────────────────────────────────
+    for fact in &release.guide_facts {
+        let delta = match fact.code.as_str() {
+            "trash.scene" => weights.scene_penalty,
+            "trash.obfuscated" => weights.obfuscated_penalty,
+            "trash.retagged" => weights.retagged_penalty,
+            _ => 0,
+        };
+        if delta != 0 {
+            d.log(&fact.code, delta);
+        }
+        if let Some(code) = blocked_code_for_guide_fact(&fact.code) {
+            d.log(code, BLOCK_SCORE);
+        }
     }
 
     // ── Release group reputation ─────────────────────────────────────────────
@@ -970,18 +980,28 @@ pub fn evaluate_against_profile_for_category(
         d.log("low_parse_confidence", -75);
     }
 
-    // ── Min score to grab gate ──────────────────────────────────────────────
-    // Applied last so it considers all scoring factors above. Only blocks
-    // releases that are otherwise allowed — already-blocked releases don't
-    // need a second block entry.
-    if let Some(min_score) = c.min_score_to_grab
-        && d.allowed
-        && d.release_score < min_score
-    {
-        d.log("score_below_minimum", BLOCK_SCORE);
-    }
-
     d
+}
+
+/// Apply the final minimum-score eligibility gate after every built-in and
+/// rule-provided score has been recorded.
+pub fn apply_min_score_gate(profile: &QualityProfile, decision: &mut QualityProfileDecision) {
+    if let Some(min_score) = profile.criteria.min_score_to_grab
+        && decision.allowed
+        && decision.release_score < min_score
+    {
+        decision.log("score_below_minimum", BLOCK_SCORE);
+    }
+}
+
+fn blocked_code_for_guide_fact(code: &str) -> Option<&'static str> {
+    match code {
+        "trash.blocked.anime_raws" => Some("trash_guides_anime_raws"),
+        "trash.blocked.lq_release_title" => Some("trash_guides_lq_release_title"),
+        "trash.blocked.fansub" => Some("trash_guides_fansub"),
+        "trash.blocked.fastsub" => Some("trash_guides_fastsub"),
+        _ => None,
+    }
 }
 
 fn has_dv_hdr_fallback(release: &ParsedReleaseMetadata) -> bool {
@@ -1308,6 +1328,42 @@ mod tests {
         );
         assert!(profile.criteria.atmos_preferred);
         assert_eq!(profile.criteria.quality_tiers.len(), 3);
+    }
+
+    #[test]
+    fn minimum_score_gate_runs_after_rule_scores() {
+        let mut profile = QualityProfile::default();
+        let release = parse_release_metadata("Movie.2024.1080p.WEB-DL.H.264.DDP5.1-GROUP");
+        let weights = balanced_weights();
+        let baseline = evaluate_against_profile(&profile, &release, false, &weights);
+        profile.criteria.min_score_to_grab = Some(baseline.release_score + 10);
+
+        let mut rescued = evaluate_against_profile(&profile, &release, false, &weights);
+        assert!(rescued.allowed);
+        assert!(
+            !rescued
+                .block_codes
+                .contains(&"score_below_minimum".to_string())
+        );
+        rescued.log_with_source(
+            "rule_bonus",
+            20,
+            ScoringSource::UserRule {
+                id: "bonus".to_string(),
+                name: "Bonus".to_string(),
+            },
+        );
+        apply_min_score_gate(&profile, &mut rescued);
+        assert!(rescued.allowed);
+
+        let mut below_minimum = evaluate_against_profile(&profile, &release, false, &weights);
+        apply_min_score_gate(&profile, &mut below_minimum);
+        assert!(!below_minimum.allowed);
+        assert!(
+            below_minimum
+                .block_codes
+                .contains(&"score_below_minimum".to_string())
+        );
     }
 
     #[test]

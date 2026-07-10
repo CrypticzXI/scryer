@@ -787,24 +787,36 @@ impl AppUseCase {
                 match user_evaluator.evaluate(&user_input, facet) {
                     Ok(eval_result) => {
                         for entry in eval_result.entries {
-                            decision.log_with_source(
-                                &entry.code,
-                                entry.delta,
-                                ScoringSource::UserRule {
+                            let source = match entry.origin {
+                                scryer_rules::PolicyOrigin::User => ScoringSource::UserRule {
                                     id: entry.rule_set_id,
                                     name: entry.rule_set_name,
                                 },
-                            );
+                                scryer_rules::PolicyOrigin::System => ScoringSource::SystemRule {
+                                    id: entry.rule_set_id,
+                                    name: entry.rule_set_name,
+                                },
+                            };
+                            decision.log_with_source(&entry.code, entry.delta, source);
                         }
                         for err in eval_result.errors {
-                            decision.log_with_source(
-                                "user_rule_error",
-                                0,
-                                ScoringSource::UserRule {
-                                    id: err.rule_set_id,
-                                    name: err.rule_set_name,
-                                },
-                            );
+                            let (code, source) = match err.origin {
+                                scryer_rules::PolicyOrigin::User => (
+                                    "user_rule_error",
+                                    ScoringSource::UserRule {
+                                        id: err.rule_set_id,
+                                        name: err.rule_set_name,
+                                    },
+                                ),
+                                scryer_rules::PolicyOrigin::System => (
+                                    "system_rule_error",
+                                    ScoringSource::SystemRule {
+                                        id: err.rule_set_id,
+                                        name: err.rule_set_name,
+                                    },
+                                ),
+                            };
+                            decision.log_with_source(code, 0, source);
                         }
                     }
                     Err(error) => {
@@ -812,6 +824,8 @@ impl AppUseCase {
                     }
                 }
             }
+
+            crate::quality_profile::apply_min_score_gate(&resolved_profile, &mut decision);
 
             scored.push(IndexerSearchResult {
                 parsed_release_metadata: Some(scored_release_metadata),

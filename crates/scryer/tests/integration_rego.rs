@@ -192,6 +192,7 @@ fn test_input() -> scryer_rules::UserRuleInput {
             age_days: Some(2),
             thumbs_up: Some(10),
             thumbs_down: Some(1),
+            guide_facts: vec![],
             extra: Default::default(),
         },
         profile: scryer_rules::ProfileDoc {
@@ -331,6 +332,27 @@ async fn rego_create_with_priority() {
     .await;
     assert_no_errors(&body);
     assert_eq!(body["data"]["createRuleSet"]["priority"], 10);
+}
+
+#[tokio::test]
+async fn rego_create_can_start_disabled() {
+    let ctx = TestContext::new().await;
+    let body = gql(
+        &ctx,
+        r#"mutation($input: CreateRuleSetInput!) {
+            createRuleSet(input: $input) { id enabled }
+        }"#,
+        json!({
+            "input": {
+                "name": "Disabled Rule",
+                "regoSource": SIMPLE_BONUS_REGO,
+                "enabled": false,
+            }
+        }),
+    )
+    .await;
+    assert_no_errors(&body);
+    assert_eq!(body["data"]["createRuleSet"]["enabled"], false);
 }
 
 #[tokio::test]

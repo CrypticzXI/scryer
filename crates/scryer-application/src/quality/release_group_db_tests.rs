@@ -227,3 +227,40 @@ fn uhd_bluray_scoring_uses_uhd_context() {
     assert_eq!(code, "group_gold");
     assert_eq!(delta, w.group_gold);
 }
+
+#[test]
+fn indexed_lookup_matches_reference_scan_for_generated_rules() {
+    let facets = [RuleFacet::Movie, RuleFacet::Series, RuleFacet::Anime];
+    let contexts = [
+        SourceContext::Web,
+        SourceContext::BluRay,
+        SourceContext::UhdBluRay,
+        SourceContext::Remux,
+        SourceContext::Anime,
+        SourceContext::Any,
+    ];
+
+    for seed_rule in GROUP_RULES {
+        let candidate = match seed_rule.match_kind {
+            GroupMatchKind::Exact => seed_rule.matcher.to_ascii_uppercase(),
+            GroupMatchKind::Prefix => {
+                format!("{}-PREFIX-CHECK", seed_rule.matcher).to_ascii_uppercase()
+            }
+        };
+        for facet in facets {
+            for context in contexts {
+                let expected = GROUP_RULES.iter().find(|rule| {
+                    group_rule_matches(rule, &candidate)
+                        && rule.entry.facet == facet
+                        && rule.entry.source_context == context
+                });
+                let actual = indexed_group_rule(&candidate, facet, context);
+                assert_eq!(
+                    actual.map(|rule| rule as *const GroupRule),
+                    expected.map(|rule| rule as *const GroupRule),
+                    "indexed lookup drifted for candidate={candidate}, facet={facet:?}, context={context:?}"
+                );
+            }
+        }
+    }
+}
