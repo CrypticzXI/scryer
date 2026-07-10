@@ -603,7 +603,10 @@ pub(super) async fn run_library_scan_pipeline(
         inventory_events_rx.close();
         match_events_rx.close();
         jobs_handle.abort();
+        worker_handle.abort();
+        let _ = jobs_handle.await;
         let _ = worker_handle.await;
+        hydration.abort_and_drain().await;
         pool.drain_for_failure().await?;
         return Err(error);
     }
@@ -656,7 +659,11 @@ pub(super) async fn run_library_scan_pipeline(
 
     if let Some(error) = discovery_error {
         match_events_rx.close();
+        jobs_handle.abort();
+        worker_handle.abort();
+        let _ = jobs_handle.await;
         let _ = worker_handle.await;
+        hydration.abort_and_drain().await;
         pool.drain_for_failure().await?;
         return Err(error);
     }
@@ -715,9 +722,58 @@ pub(super) async fn run_library_scan_pipeline(
         }
     }
 
+    // Channel closure is not proof that either task completed successfully: a
+    // panic drops its senders too. Verify both tasks before committing the
+    // final hydration batch, and explicitly settle analysis work on failure.
+    let candidate_result = jobs_handle
+        .await
+        .map_err(|error| {
+            AppError::Repository(format!("library scan candidate producer panicked: {error}"))
+        })
+        .and_then(|result| result);
+    let worker_result = worker_handle
+        .await
+        .map_err(|error| {
+            AppError::Repository(format!("library scan match worker panicked: {error}"))
+        })
+        .and_then(|result| result);
+    if let Err(error) = candidate_result.and(worker_result) {
+        hydration.abort_and_drain().await;
+        pool.drain_for_failure().await?;
+        return Err(error);
+    }
+
     let canceled = library_scan_cancel_requested(cancel_token.as_ref());
+    if !canceled {
+        let match_decisions = match_events_matched.saturating_add(match_events_terminal);
+        if match_decisions != candidates.len() {
+            hydration.abort_and_drain().await;
+            pool.drain_for_failure().await?;
+            return Err(AppError::Repository(format!(
+                "library scan match worker completed with {match_decisions} decisions for {} candidates",
+                candidates.len()
+            )));
+        }
+        let Some(report) = worker_report.as_ref() else {
+            hydration.abort_and_drain().await;
+            pool.drain_for_failure().await?;
+            return Err(AppError::Repository(
+                "library scan match worker completed without a final report".to_string(),
+            ));
+        };
+        if report.summary.scanned != candidates.len() {
+            let reported_scanned = report.summary.scanned;
+            hydration.abort_and_drain().await;
+            pool.drain_for_failure().await?;
+            return Err(AppError::Repository(format!(
+                "library scan match worker reported {reported_scanned} scanned candidates after receiving {}",
+                candidates.len()
+            )));
+        }
+    }
+
     if canceled {
-        hydration.abort();
+        hydration.abort_and_drain().await;
     } else {
         drain_hydration_into_media(StreamingHydrationDrainContext {
             coordinator: &coordinator,
@@ -824,7 +880,6 @@ pub(super) async fn run_library_scan_pipeline(
         // Worker never reported (cancellation before drain); settle the pool.
         pool.close_input();
         summary.absorb(&pool.finish().await?);
-        let _ = worker_handle.await;
     }
 
     Ok(summary)
@@ -1643,6 +1698,11 @@ impl ScanHydrationBatcher {
         self.pending.clear();
         self.in_flight.abort_all();
     }
+
+    async fn abort_and_drain(&mut self) {
+        self.abort();
+        while self.in_flight.join_next().await.is_some() {}
+    }
 }
 
 async fn hydrate_library_scan_title_works(
@@ -1711,17 +1771,24 @@ struct CandidateJobContext {
     storage_watch: tokio::sync::watch::Receiver<usize>,
 }
 
-fn spawn_candidate_jobs(ctx: CandidateJobContext) -> AppResult<tokio::task::JoinHandle<()>> {
+fn spawn_candidate_jobs(
+    ctx: CandidateJobContext,
+) -> AppResult<tokio::task::JoinHandle<AppResult<()>>> {
     Ok(tokio::spawn(async move {
         let result = match ctx.kind {
             LibraryScanPipelineKind::Movie => run_movie_candidate_jobs(&ctx).await,
             LibraryScanPipelineKind::Series => run_series_candidate_jobs(&ctx).await,
         };
-        if let Err(error) = result {
+        if let Err(error) = &result {
             let _ = ctx
                 .candidate_events
-                .send(ScanCandidateJobEvent::DiscoveryFailed { error });
+                .send(ScanCandidateJobEvent::DiscoveryFailed {
+                    error: AppError::Repository(format!(
+                        "library scan candidate producer failed: {error}"
+                    )),
+                });
         }
+        result
     }))
 }
 
@@ -1940,28 +2007,34 @@ impl<'a> CandidateJobRunner<'a> {
         }
     }
 
-    async fn drain_evidence(&mut self) -> bool {
+    async fn drain_evidence(&mut self) -> AppResult<bool> {
         while !self.evidence_set.is_empty() {
             if library_scan_cancel_requested(self.ctx.cancel_token.as_ref()) {
                 self.evidence_set.abort_all();
-                return false;
+                return Ok(false);
             }
             self.launch_pending_inventory(false).await;
             match self.evidence_set.join_next().await {
                 Some(Ok(output)) => {
                     if !self.forward_evidence_output(output).await {
-                        return false;
+                        return Ok(false);
                     }
                 }
-                Some(Err(error)) if error.is_cancelled() => {}
+                Some(Err(error))
+                    if error.is_cancelled()
+                        && library_scan_cancel_requested(self.ctx.cancel_token.as_ref()) =>
+                {
+                    return Ok(false);
+                }
                 Some(Err(error)) => {
-                    self.metrics.failed = self.metrics.failed.saturating_add(1);
-                    warn!(error = %error, "library scan evidence task failed");
+                    return Err(AppError::Repository(format!(
+                        "library scan evidence task failed: {error}"
+                    )));
                 }
                 None => break,
             }
         }
-        true
+        Ok(true)
     }
 
     fn send_evidence_done(&self) -> bool {
@@ -1973,7 +2046,8 @@ impl<'a> CandidateJobRunner<'a> {
             .is_ok()
     }
 
-    async fn settle(mut self) {
+    async fn settle(mut self) -> AppResult<()> {
+        let mut task_error = None;
         while !library_scan_cancel_requested(self.ctx.cancel_token.as_ref()) {
             self.launch_pending_inventory(true).await;
             if self.evidence_set.is_empty()
@@ -1994,13 +2068,42 @@ impl<'a> CandidateJobRunner<'a> {
                     break;
                 }
                 output = self.evidence_set.join_next(), if !self.evidence_set.is_empty() => {
-                    if let Some(Ok(output)) = output
-                        && !self.forward_evidence_output(output).await
-                    {
-                        break;
+                    match output {
+                        Some(Ok(output)) => {
+                            if !self.forward_evidence_output(output).await {
+                                break;
+                            }
+                        }
+                        Some(Err(error))
+                            if error.is_cancelled()
+                                && library_scan_cancel_requested(
+                                    self.ctx.cancel_token.as_ref(),
+                                ) => {}
+                        Some(Err(error)) => {
+                            task_error = Some(AppError::Repository(format!(
+                                "library scan evidence task failed while settling: {error}"
+                            )));
+                            break;
+                        }
+                        None => {}
                     }
                 }
-                _ = self.inventory_set.join_next(), if !self.inventory_set.is_empty() => {}
+                output = self.inventory_set.join_next(), if !self.inventory_set.is_empty() => {
+                    match output {
+                        Some(Ok(_)) | None => {}
+                        Some(Err(error))
+                            if error.is_cancelled()
+                                && library_scan_cancel_requested(
+                                    self.ctx.cancel_token.as_ref(),
+                                ) => {}
+                        Some(Err(error)) => {
+                            task_error = Some(AppError::Repository(format!(
+                                "library scan inventory task failed: {error}"
+                            )));
+                            break;
+                        }
+                    }
+                }
             }
         }
 
@@ -2009,9 +2112,32 @@ impl<'a> CandidateJobRunner<'a> {
         // leave tasks parked in the sets.
         self.inventory_queue.clear();
         self.evidence_set.abort_all();
-        while self.evidence_set.join_next().await.is_some() {}
+        while let Some(output) = self.evidence_set.join_next().await {
+            if task_error.is_none()
+                && let Err(error) = output
+                && !error.is_cancelled()
+            {
+                task_error = Some(AppError::Repository(format!(
+                    "library scan evidence task panicked while draining: {error}"
+                )));
+            }
+        }
         self.inventory_set.abort_all();
-        while self.inventory_set.join_next().await.is_some() {}
+        while let Some(output) = self.inventory_set.join_next().await {
+            if task_error.is_none()
+                && let Err(error) = output
+                && !error.is_cancelled()
+            {
+                task_error = Some(AppError::Repository(format!(
+                    "library scan inventory task panicked while draining: {error}"
+                )));
+            }
+        }
+
+        match task_error {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
     }
 }
 
@@ -2081,19 +2207,31 @@ async fn run_movie_candidate_jobs(ctx: &CandidateJobContext) -> AppResult<()> {
                 }
             }
             Some(output) = runner.evidence_set.join_next(), if !runner.evidence_set.is_empty() => {
-                if let Ok(output) = output
-                    && !runner.forward_evidence_output(output).await
-                {
-                    return Ok(());
+                match output {
+                    Ok(output) => {
+                        if !runner.forward_evidence_output(output).await {
+                            return Ok(());
+                        }
+                    }
+                    Err(error) if error.is_cancelled()
+                        && library_scan_cancel_requested(ctx.cancel_token.as_ref()) =>
+                    {
+                        return Ok(());
+                    }
+                    Err(error) => {
+                        return Err(AppError::Repository(format!(
+                            "library scan movie evidence task panicked: {error}"
+                        )));
+                    }
                 }
             }
         }
     }
 
-    if !runner.drain_evidence().await || !runner.send_evidence_done() {
+    if !runner.drain_evidence().await? || !runner.send_evidence_done() {
         return Ok(());
     }
-    runner.settle().await;
+    runner.settle().await?;
     Ok(())
 }
 
@@ -2188,10 +2326,22 @@ async fn run_series_candidate_jobs(ctx: &CandidateJobContext) -> AppResult<()> {
                 }
             }
             Some(output) = runner.evidence_set.join_next(), if !runner.evidence_set.is_empty() => {
-                if let Ok(output) = output
-                    && !runner.forward_evidence_output(output).await
-                {
-                    return Ok(());
+                match output {
+                    Ok(output) => {
+                        if !runner.forward_evidence_output(output).await {
+                            return Ok(());
+                        }
+                    }
+                    Err(error) if error.is_cancelled()
+                        && library_scan_cancel_requested(ctx.cancel_token.as_ref()) =>
+                    {
+                        return Ok(());
+                    }
+                    Err(error) => {
+                        return Err(AppError::Repository(format!(
+                            "library scan series evidence task panicked: {error}"
+                        )));
+                    }
                 }
             }
         }
@@ -2226,10 +2376,10 @@ async fn run_series_candidate_jobs(ctx: &CandidateJobContext) -> AppResult<()> {
         coordinator.publish_progress().await;
     }
 
-    if !runner.drain_evidence().await || !runner.send_evidence_done() {
+    if !runner.drain_evidence().await? || !runner.send_evidence_done() {
         return Ok(());
     }
-    runner.settle().await;
+    runner.settle().await?;
     Ok(())
 }
 
@@ -2305,25 +2455,23 @@ async fn run_scan_match_worker(
     mut input: tokio::sync::mpsc::Receiver<(ScanCandidateKey, ScanPipelineCandidate)>,
     events: tokio::sync::mpsc::UnboundedSender<ScanMatchWorkerEvent>,
     cancel_token: Option<CancellationToken>,
-) {
+) -> AppResult<()> {
     let worker_started_at = Instant::now();
     let coordinator = LibraryScanCoordinator::new(ctx.app.clone(), ctx.session_id.clone());
 
     let library_ids = vec![ctx.library_id.clone()];
-    let existing_titles = match ctx
+    let existing_titles = ctx
         .app
         .services
         .catalog
         .titles
         .list_for_libraries(Some(ctx.facet.clone()), &library_ids, None)
         .await
-    {
-        Ok(titles) => titles,
-        Err(error) => {
-            warn!(error = %error, "library scan match worker failed to load existing titles");
-            Vec::new()
-        }
-    };
+        .map_err(|error| {
+            AppError::Repository(format!(
+                "library scan match worker failed to load existing titles: {error}"
+            ))
+        })?;
     let (by_name, by_tvdb, by_imdb, by_tmdb) = match ctx.kind {
         LibraryScanPipelineKind::Movie => build_movie_title_indexes(&existing_titles),
         LibraryScanPipelineKind::Series => build_series_title_indexes(&existing_titles),
@@ -2393,8 +2541,9 @@ async fn run_scan_match_worker(
                 let (chunk, result) = match joined {
                     Ok(entry) => entry,
                     Err(error) => {
-                        warn!(error = %error, "library scan match batch task failed");
-                        continue;
+                        return Err(AppError::Repository(format!(
+                            "library scan metadata batch task panicked: {error}"
+                        )));
                     }
                 };
                 metadata_batches_finished = metadata_batches_finished.saturating_add(1);
@@ -2418,10 +2567,11 @@ async fn run_scan_match_worker(
                 match result {
                     Ok(results) => {
                         state.search_results.extend(results);
-                        if stage_ready_candidates(&state.search_results, &mut pending, &mut ready_resolution)
-                            .is_err() {
-                            break;
-                        }
+                        stage_ready_candidates(
+                            &state.search_results,
+                            &mut pending,
+                            &mut ready_resolution,
+                        )?;
                         debug!(
                             facet = ctx.facet.as_str(),
                             pending = pending.len(),
@@ -2435,12 +2585,16 @@ async fn run_scan_match_worker(
                     Err(error) => {
                         // SMG batch failure: terminal metadata failure for every
                         // candidate keyed into that chunk; the scan continues.
-                        if fail_candidates_for_chunk(&ctx, &coordinator, &mut state, &mut pending, &events, &chunk, &error)
-                            .await
-                            .is_err()
-                        {
-                            break;
-                        }
+                        fail_candidates_for_chunk(
+                            &ctx,
+                            &coordinator,
+                            &mut state,
+                            &mut pending,
+                            &events,
+                            &chunk,
+                            &error,
+                        )
+                        .await?;
                     }
                 }
             }
@@ -2448,12 +2602,16 @@ async fn run_scan_match_worker(
                 && pending.len() < LIBRARY_SCAN_MATCH_PENDING_HIGH_WATER => {
                 match maybe_candidate {
                     Some((key, candidate)) => {
-                        if intake_candidate(&ctx, &coordinator, &mut state, &mut pending, &events, key, candidate)
-                            .await
-                            .is_err()
-                        {
-                            break;
-                        }
+                        intake_candidate(
+                            &ctx,
+                            &coordinator,
+                            &mut state,
+                            &mut pending,
+                            &events,
+                            key,
+                            candidate,
+                        )
+                        .await?;
                         candidates_intaken = candidates_intaken.saturating_add(1);
                         if candidates_intaken.is_multiple_of(LIBRARY_SCAN_DIAGNOSTIC_ITEM_INTERVAL)
                         {
@@ -2497,15 +2655,8 @@ async fn run_scan_match_worker(
 
         // Flush policy: full batch, timer expiry, or closed intake.
         while search_set.len() < LIBRARY_SCAN_METADATA_IN_FLIGHT_BATCHES && !pending.is_empty() {
-            if !state.search_results.is_empty()
-                && stage_ready_candidates(
-                    &state.search_results,
-                    &mut pending,
-                    &mut ready_resolution,
-                )
-                .is_err()
-            {
-                break;
+            if !state.search_results.is_empty() {
+                stage_ready_candidates(&state.search_results, &mut pending, &mut ready_resolution)?;
             }
             if pending.is_empty() {
                 break;
@@ -2525,17 +2676,8 @@ async fn run_scan_match_worker(
                 "intake_closed"
             };
 
-            let chunk = match next_pipeline_search_chunk(
-                &state.search_results,
-                &in_flight_keys,
-                &pending,
-            ) {
-                Ok(chunk) => chunk,
-                Err(error) => {
-                    warn!(error = %error, "library scan match worker failed to build search chunk");
-                    break;
-                }
-            };
+            let chunk =
+                next_pipeline_search_chunk(&state.search_results, &in_flight_keys, &pending)?;
             if chunk.is_empty() {
                 // Everything pending is waiting on an in-flight key; disarm
                 // the timer until results or new candidates arrive.
@@ -2582,8 +2724,8 @@ async fn run_scan_match_worker(
             });
         }
 
-        if !ready_resolution.is_empty()
-            && resolve_ready_candidate_burst(
+        if !ready_resolution.is_empty() {
+            resolve_ready_candidate_burst(
                 &ctx,
                 &coordinator,
                 &mut state,
@@ -2591,10 +2733,7 @@ async fn run_scan_match_worker(
                 &events,
                 LIBRARY_SCAN_MATCH_RESOLUTION_BURST_SIZE,
             )
-            .await
-            .is_err()
-        {
-            break;
+            .await?;
         }
     }
 
@@ -2612,7 +2751,14 @@ async fn run_scan_match_worker(
             stats: MetadataLookupBatchStats::default(),
         },
     );
-    let _ = events.send(ScanMatchWorkerEvent::Done(Box::new(report)));
+    events
+        .send(ScanMatchWorkerEvent::Done(Box::new(report)))
+        .map_err(|_| {
+            AppError::Repository(
+                "library scan match event receiver closed before final report".to_string(),
+            )
+        })?;
+    Ok(())
 }
 
 async fn intake_candidate(
@@ -2623,7 +2769,7 @@ async fn intake_candidate(
     events: &tokio::sync::mpsc::UnboundedSender<ScanMatchWorkerEvent>,
     key: ScanCandidateKey,
     candidate: ScanPipelineCandidate,
-) -> Result<(), ()> {
+) -> AppResult<()> {
     let candidate_started_at = Instant::now();
     state.report.summary.scanned += 1;
     let candidate_kind = match &candidate {
@@ -2708,9 +2854,8 @@ async fn intake_candidate(
             // Register the SMG lookup for metadata progress before queueing.
             let mut search_key_count = 0usize;
             let mut exact_id_key_count = 0usize;
-            if let Ok(keys) = candidate.batch_search_keys()
-                && !keys.is_empty()
-            {
+            let keys = candidate.batch_search_keys()?;
+            if !keys.is_empty() {
                 search_key_count = keys.len();
                 exact_id_key_count = keys.iter().filter(|key| key.has_external_id()).count();
                 state.report.stats.logical_lookups =
@@ -2766,7 +2911,7 @@ fn send_terminal(
     events: &tokio::sync::mpsc::UnboundedSender<ScanMatchWorkerEvent>,
     sink: &mut PipelineTitleWorkSink,
     key: ScanCandidateKey,
-) -> Result<(), ()> {
+) -> AppResult<()> {
     let event = match sink.staged.take() {
         Some(work) => ScanMatchWorkerEvent::Matched {
             key,
@@ -2774,7 +2919,11 @@ fn send_terminal(
         },
         None => ScanMatchWorkerEvent::Terminal { key },
     };
-    events.send(event).map_err(|_| ())
+    events.send(event).map_err(|_| {
+        AppError::Repository(
+            "library scan match event receiver closed before candidate completion".to_string(),
+        )
+    })
 }
 
 fn next_pipeline_search_chunk(
@@ -2823,19 +2972,13 @@ fn stage_ready_candidates(
     search_results: &MetadataSearchResults,
     pending: &mut Vec<QueuedMatchCandidate>,
     ready_resolution: &mut VecDeque<QueuedMatchCandidate>,
-) -> Result<(), ()> {
+) -> AppResult<()> {
     let queued = std::mem::take(pending);
-    let (ready, still_pending) = match split_ready_metadata_candidates(
+    let (ready, still_pending) = split_ready_metadata_candidates(
         queued,
         search_results,
         |queued: &QueuedMatchCandidate| queued.candidate.batch_search_keys(),
-    ) {
-        Ok(split) => split,
-        Err(error) => {
-            warn!(error = %error, "library scan match worker failed to split ready candidates");
-            return Err(());
-        }
-    };
+    )?;
     *pending = still_pending;
     ready_resolution.extend(ready);
     Ok(())
@@ -2848,7 +2991,7 @@ async fn resolve_ready_candidate_burst(
     ready_resolution: &mut VecDeque<QueuedMatchCandidate>,
     events: &tokio::sync::mpsc::UnboundedSender<ScanMatchWorkerEvent>,
     limit: usize,
-) -> Result<(), ()> {
+) -> AppResult<()> {
     let ready_count = ready_resolution.len();
     let resolve_started_at = Instant::now();
     let mut resolved_count = 0usize;
@@ -3001,7 +3144,7 @@ async fn fail_candidates_for_chunk(
     events: &tokio::sync::mpsc::UnboundedSender<ScanMatchWorkerEvent>,
     chunk: &[BatchMetadataSearchKey],
     error: &AppError,
-) -> Result<(), ()> {
+) -> AppResult<()> {
     warn!(
         error = %error,
         chunk_size = chunk.len(),
@@ -3062,7 +3205,12 @@ async fn fail_candidates_for_chunk(
         coordinator.mark_metadata_failed(1).await;
         events
             .send(ScanMatchWorkerEvent::Terminal { key })
-            .map_err(|_| ())?;
+            .map_err(|_| {
+                AppError::Repository(
+                    "library scan match event receiver closed while reporting metadata failure"
+                        .to_string(),
+                )
+            })?;
     }
     coordinator.publish_progress().await;
     Ok(())

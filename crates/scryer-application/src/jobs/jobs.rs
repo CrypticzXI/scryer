@@ -179,8 +179,7 @@ fn discovery_prefer_earlier_gate(
     false
 }
 
-fn discovery_next_run_at(
-    now: DateTime<Utc>,
+struct DiscoveryNextRunCandidates {
     next_incremental: DateTime<Utc>,
     next_context: DateTime<Utc>,
     next_public: DateTime<Utc>,
@@ -188,7 +187,21 @@ fn discovery_next_run_at(
     backoff_until: Option<DateTime<Utc>>,
     scan_blocked_retry_at: Option<DateTime<Utc>>,
     pending_changes_quiet_at: Option<DateTime<Utc>>,
+}
+
+fn discovery_next_run_at(
+    now: DateTime<Utc>,
+    candidates: DiscoveryNextRunCandidates,
 ) -> DateTime<Utc> {
+    let DiscoveryNextRunCandidates {
+        next_incremental,
+        next_context,
+        next_public,
+        bootstrap_quiet_until,
+        backoff_until,
+        scan_blocked_retry_at,
+        pending_changes_quiet_at,
+    } = candidates;
     [
         Some(next_incremental),
         Some(next_context),
@@ -1733,13 +1746,15 @@ impl AppUseCase {
 
         let next_run_at = discovery_next_run_at(
             now,
-            effective_next_incremental,
-            effective_next_context,
-            effective_next_public,
-            state.bootstrap_quiet_until,
-            state.backoff_until,
-            scan_blocked_retry_at,
-            pending_changes_quiet_at,
+            DiscoveryNextRunCandidates {
+                next_incremental: effective_next_incremental,
+                next_context: effective_next_context,
+                next_public: effective_next_public,
+                bootstrap_quiet_until: state.bootstrap_quiet_until,
+                backoff_until: state.backoff_until,
+                scan_blocked_retry_at,
+                pending_changes_quiet_at,
+            },
         );
 
         self.services

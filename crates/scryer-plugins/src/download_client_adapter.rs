@@ -31,6 +31,44 @@ use crate::types::{
 };
 
 const DOWNLOAD_CLIENT_PLUGIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+const TORRENT_PREFETCH_MAX_BYTES: usize = 32 * 1024 * 1024;
+
+async fn read_torrent_body_bounded(mut response: reqwest::Response) -> Result<Vec<u8>, String> {
+    if response
+        .content_length()
+        .is_some_and(|length| length > TORRENT_PREFETCH_MAX_BYTES as u64)
+    {
+        return Err(format!(
+            "torrent body exceeds the {} MiB limit",
+            TORRENT_PREFETCH_MAX_BYTES / (1024 * 1024)
+        ));
+    }
+
+    let capacity = response
+        .content_length()
+        .and_then(|length| usize::try_from(length).ok())
+        .unwrap_or_default()
+        .min(TORRENT_PREFETCH_MAX_BYTES);
+    let mut body = Vec::with_capacity(capacity);
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|error| format!("torrent body read failed: {error}"))?
+    {
+        let next_len = body
+            .len()
+            .checked_add(chunk.len())
+            .ok_or_else(|| "torrent body length overflowed".to_string())?;
+        if next_len > TORRENT_PREFETCH_MAX_BYTES {
+            return Err(format!(
+                "torrent body exceeds the {} MiB limit",
+                TORRENT_PREFETCH_MAX_BYTES / (1024 * 1024)
+            ));
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
+}
 
 pub struct WasmDownloadClient {
     plugin: Arc<Mutex<LegacyPlugin>>,
@@ -675,14 +713,21 @@ impl DownloadClient for WasmDownloadClient {
                                                 .get(reqwest::header::CONTENT_TYPE)
                                                 .and_then(|value| value.to_str().ok())
                                                 .map(str::to_string);
-                                            if let Ok(bytes) = resp.bytes().await
-                                                && !bytes.is_empty()
-                                            {
-                                                torrent_content_type = content_type;
-                                                torrent_file_name =
-                                                    derive_torrent_file_name(request);
-                                                debug!(url = %url, bytes = bytes.len(), "pre-fetched torrent file (via redirect)");
-                                                torrent_bytes_base64 = Some(BASE64.encode(&bytes));
+                                            match read_torrent_body_bounded(resp).await {
+                                                Ok(bytes) if !bytes.is_empty() => {
+                                                    torrent_content_type = content_type;
+                                                    torrent_file_name =
+                                                        derive_torrent_file_name(request);
+                                                    debug!(url = %url, bytes = bytes.len(), "pre-fetched torrent file (via redirect)");
+                                                    torrent_bytes_base64 =
+                                                        Some(BASE64.encode(&bytes));
+                                                }
+                                                Ok(_) => {
+                                                    debug!(url = %url, "torrent redirect fetch returned empty body")
+                                                }
+                                                Err(error) => {
+                                                    debug!(url = %url, error = %error, "torrent redirect body rejected")
+                                                }
                                             }
                                         }
                                     }
@@ -706,7 +751,7 @@ impl DownloadClient for WasmDownloadClient {
                             .get(reqwest::header::CONTENT_TYPE)
                             .and_then(|value| value.to_str().ok())
                             .map(str::to_string);
-                        match resp.bytes().await {
+                        match read_torrent_body_bounded(resp).await {
                             Ok(bytes) if !bytes.is_empty() => {
                                 torrent_content_type = content_type;
                                 torrent_file_name = derive_torrent_file_name(request);
@@ -1163,6 +1208,38 @@ mod tests {
     use super::*;
     use chrono::Utc;
     use scryer_plugin_sdk::PluginTorrentItem;
+    use tokio::io::AsyncWriteExt;
+
+    #[tokio::test]
+    async fn torrent_prefetch_rejects_oversized_declared_body() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test server");
+        let address = listener.local_addr().expect("test server address");
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("accept request");
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                TORRENT_PREFETCH_MAX_BYTES + 1
+            );
+            stream
+                .write_all(response.as_bytes())
+                .await
+                .expect("write response");
+        });
+
+        let response = scryer_outbound_http::generic_reqwest_client()
+            .get(format!("http://{address}/release.torrent"))
+            .send()
+            .await
+            .expect("fetch test response");
+        let error = read_torrent_body_bounded(response)
+            .await
+            .expect_err("oversized torrent body must be rejected");
+
+        assert!(error.contains("exceeds"));
+        server.await.expect("test server task");
+    }
 
     fn sample_request() -> DownloadClientAddRequest {
         DownloadClientAddRequest {

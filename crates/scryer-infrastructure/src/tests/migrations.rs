@@ -500,9 +500,9 @@ async fn migrations_apply_then_validate_is_idempotent() {
 }
 
 #[tokio::test]
-async fn migration_0154_rollup_creates_scheduler_tables_and_rss_gap_columns() {
+async fn migration_0140_rollup_creates_scheduler_tables_and_rss_gap_columns() {
     let db = std::env::temp_dir().join(format!(
-        "scryer_migration_0154_scheduler_{}.db",
+        "scryer_migration_0140_scheduler_{}.db",
         chrono::Utc::now().timestamp_micros()
     ));
     let services = SqliteServices::new(db.to_string_lossy())
@@ -573,9 +573,9 @@ async fn migration_0154_rollup_creates_scheduler_tables_and_rss_gap_columns() {
 }
 
 #[tokio::test]
-async fn migration_0154_uses_canonical_rating_storage_only() {
+async fn migration_0140_uses_canonical_rating_storage_only() {
     let db = std::env::temp_dir().join(format!(
-        "scryer_migration_0154_canonical_ratings_{}.db",
+        "scryer_migration_0140_canonical_ratings_{}.db",
         chrono::Utc::now().timestamp_micros()
     ));
     let services = SqliteServices::new(db.to_string_lossy())
@@ -634,27 +634,29 @@ async fn migration_0154_uses_canonical_rating_storage_only() {
 }
 
 #[test]
-fn migration_0154_sqlite_and_postgres_rollup_sources_include_scheduler_columns() {
+fn migration_0140_sqlite_and_postgres_rollup_sources_include_scheduler_columns() {
     let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let repo_root = manifest_dir
         .parent()
         .and_then(std::path::Path::parent)
         .expect("crate should live under repo/crates");
     let sqlite = std::fs::read_to_string(
-        repo_root.join("crates/scryer/src/db/migrations/0154_post_0_16_6_prerelease_rollup.sql"),
+        repo_root.join("crates/scryer/src/db/migrations/0140_0_17_release_rollup.sql"),
     )
-    .expect("sqlite 0154 rollup migration should load");
+    .expect("sqlite 0140 rollup migration should load");
     let postgres =
         std::fs::read_to_string(repo_root.join(
-            "crates/scryer/src/db/postgres/migrations/0154_post_0_16_6_prerelease_rollup.sql",
+            "crates/scryer/src/db/postgres/migrations/0140_0_17_release_rollup.sql",
         ))
-        .expect("postgres 0154 rollup migration should load");
+        .expect("postgres 0140 rollup migration should load");
 
     for sql in [&sqlite, &postgres] {
         for required in [
             "CREATE TABLE IF NOT EXISTS upstream_scheduler_states",
             "CREATE TABLE IF NOT EXISTS upstream_destination_cooldowns",
             "CREATE TABLE IF NOT EXISTS upstream_scheduler_rss_cadence",
+            "CREATE TABLE IF NOT EXISTS user_ui_settings",
+            "CREATE TABLE IF NOT EXISTS user_ui_table_columns",
             "quota_observed_at",
             "quota_probe_after",
             "quota_reset_at",
@@ -668,7 +670,7 @@ fn migration_0154_sqlite_and_postgres_rollup_sources_include_scheduler_columns()
         ] {
             assert!(
                 sql.contains(required),
-                "0154 rollup migration source should include {required}"
+                "0140 rollup migration source should include {required}"
             );
         }
     }

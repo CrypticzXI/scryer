@@ -1160,7 +1160,7 @@ fn find_primary_archive(dir: &Path) -> Option<(PathBuf, ArchiveType)> {
         }
     }
 
-    rar.sort_by(|left, right| rar_selection_key(left).cmp(&rar_selection_key(right)));
+    rar.sort_by_key(|path| rar_selection_key(path));
     sevenz.sort();
     zip.sort();
 

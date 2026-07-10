@@ -549,167 +549,7 @@ scope = "all"
 
 [[migration]]
 version = 140
-description = "user UI settings"
-checksum_algo = "blake3"
-
-[[migration.steps]]
-kind = "sql"
-file = "migrations/0140_user_ui_settings.sql"
-engine = "sqlite"
-scope = "all"
-
-[[migration.steps]]
-kind = "sql"
-file = "postgres/migrations/0140_user_ui_settings.sql"
-engine = "postgres"
-scope = "all"
-
-[[migration]]
-version = 141
-description = "post 0.16.6 prerelease noop"
-checksum_algo = "blake3"
-
-[[migration.steps]]
-kind = "sql"
-file = "migrations/0141_post_0_16_6_prerelease_noop.sql"
-engine = "all"
-scope = "all"
-
-[[migration]]
-version = 142
-description = "post 0.16.6 prerelease noop"
-checksum_algo = "blake3"
-
-[[migration.steps]]
-kind = "sql"
-file = "migrations/0141_post_0_16_6_prerelease_noop.sql"
-engine = "all"
-scope = "all"
-
-[[migration]]
-version = 143
-description = "post 0.16.6 prerelease noop"
-checksum_algo = "blake3"
-
-[[migration.steps]]
-kind = "sql"
-file = "migrations/0141_post_0_16_6_prerelease_noop.sql"
-engine = "all"
-scope = "all"
-
-[[migration]]
-version = 144
-description = "post 0.16.6 prerelease noop"
-checksum_algo = "blake3"
-
-[[migration.steps]]
-kind = "sql"
-file = "migrations/0141_post_0_16_6_prerelease_noop.sql"
-engine = "all"
-scope = "all"
-
-[[migration]]
-version = 145
-description = "post 0.16.6 prerelease noop"
-checksum_algo = "blake3"
-
-[[migration.steps]]
-kind = "sql"
-file = "migrations/0141_post_0_16_6_prerelease_noop.sql"
-engine = "all"
-scope = "all"
-
-[[migration]]
-version = 146
-description = "post 0.16.6 prerelease noop"
-checksum_algo = "blake3"
-
-[[migration.steps]]
-kind = "sql"
-file = "migrations/0141_post_0_16_6_prerelease_noop.sql"
-engine = "all"
-scope = "all"
-
-[[migration]]
-version = 147
-description = "post 0.16.6 prerelease noop"
-checksum_algo = "blake3"
-
-[[migration.steps]]
-kind = "sql"
-file = "migrations/0141_post_0_16_6_prerelease_noop.sql"
-engine = "all"
-scope = "all"
-
-[[migration]]
-version = 148
-description = "post 0.16.6 prerelease noop"
-checksum_algo = "blake3"
-
-[[migration.steps]]
-kind = "sql"
-file = "migrations/0141_post_0_16_6_prerelease_noop.sql"
-engine = "all"
-scope = "all"
-
-[[migration]]
-version = 149
-description = "post 0.16.6 prerelease noop"
-checksum_algo = "blake3"
-
-[[migration.steps]]
-kind = "sql"
-file = "migrations/0141_post_0_16_6_prerelease_noop.sql"
-engine = "all"
-scope = "all"
-
-[[migration]]
-version = 150
-description = "post 0.16.6 prerelease noop"
-checksum_algo = "blake3"
-
-[[migration.steps]]
-kind = "sql"
-file = "migrations/0141_post_0_16_6_prerelease_noop.sql"
-engine = "all"
-scope = "all"
-
-[[migration]]
-version = 151
-description = "post 0.16.6 prerelease noop"
-checksum_algo = "blake3"
-
-[[migration.steps]]
-kind = "sql"
-file = "migrations/0141_post_0_16_6_prerelease_noop.sql"
-engine = "all"
-scope = "all"
-
-[[migration]]
-version = 152
-description = "post 0.16.6 prerelease noop"
-checksum_algo = "blake3"
-
-[[migration.steps]]
-kind = "sql"
-file = "migrations/0141_post_0_16_6_prerelease_noop.sql"
-engine = "all"
-scope = "all"
-
-[[migration]]
-version = 153
-description = "post 0.16.6 prerelease noop"
-checksum_algo = "blake3"
-
-[[migration.steps]]
-kind = "sql"
-file = "migrations/0141_post_0_16_6_prerelease_noop.sql"
-engine = "all"
-scope = "all"
-
-[[migration]]
-version = 154
-description = "post 0.16.6 prerelease rollup"
+description = "0.17 release rollup"
 checksum_algo = "blake3"
 
 [[migration.steps]]
@@ -720,13 +560,13 @@ scope = "all"
 
 [[migration.steps]]
 kind = "sql"
-file = "migrations/0154_post_0_16_6_prerelease_rollup.sql"
+file = "migrations/0140_0_17_release_rollup.sql"
 engine = "sqlite"
 scope = "all"
 
 [[migration.steps]]
 kind = "sql"
-file = "postgres/migrations/0154_post_0_16_6_prerelease_rollup.sql"
+file = "postgres/migrations/0140_0_17_release_rollup.sql"
 engine = "postgres"
 scope = "all"
 
@@ -737,87 +577,87 @@ engine = "all"
 scope = "all"
 
 [[migration]]
-version = 155
+version = 141
 description = "indexer proxy configs"
 checksum_algo = "blake3"
 
 [[migration.steps]]
 kind = "sql"
-file = "migrations/0155_indexer_proxy_configs.sql"
+file = "migrations/0141_indexer_proxy_configs.sql"
 engine = "sqlite"
 scope = "all"
 
 [[migration.steps]]
 kind = "sql"
-file = "postgres/migrations/0155_indexer_proxy_configs.sql"
+file = "postgres/migrations/0141_indexer_proxy_configs.sql"
 engine = "postgres"
 scope = "all"
 
 [[migration]]
-version = 156
+version = 142
 description = "scope indexer coverage convergence ledger"
 checksum_algo = "blake3"
 
 [[migration.steps]]
 kind = "sql"
-file = "migrations/0156_scope_indexer_coverage.sql"
+file = "migrations/0142_scope_indexer_coverage.sql"
 engine = "sqlite"
 scope = "all"
 
 [[migration.steps]]
 kind = "sql"
-file = "postgres/migrations/0156_scope_indexer_coverage.sql"
+file = "postgres/migrations/0142_scope_indexer_coverage.sql"
 engine = "postgres"
 scope = "all"
 
 [[migration]]
-version = 157
+version = 143
 description = "wanted_items: drop retired search-scheduler columns"
 checksum_algo = "blake3"
 
 [[migration.steps]]
 kind = "sql"
-file = "migrations/0157_wanted_items_drop_scheduler_columns.sql"
+file = "migrations/0143_wanted_items_drop_scheduler_columns.sql"
 engine = "sqlite"
 scope = "all"
 
 [[migration.steps]]
 kind = "sql"
-file = "postgres/migrations/0157_wanted_items_drop_scheduler_columns.sql"
+file = "postgres/migrations/0143_wanted_items_drop_scheduler_columns.sql"
 engine = "postgres"
 scope = "all"
 
 [[migration]]
-version = 158
+version = 144
 description = "drop write-only discovery_raw_pages payload store"
 checksum_algo = "blake3"
 
 [[migration.steps]]
 kind = "sql"
-file = "migrations/0158_drop_discovery_raw_pages.sql"
+file = "migrations/0144_drop_discovery_raw_pages.sql"
 engine = "sqlite"
 scope = "all"
 
 [[migration.steps]]
 kind = "sql"
-file = "postgres/migrations/0158_drop_discovery_raw_pages.sql"
+file = "postgres/migrations/0144_drop_discovery_raw_pages.sql"
 engine = "postgres"
 scope = "all"
 
 [[migration]]
-version = 159
+version = 145
 description = "discovery_items generation/rank personalized-home index"
 checksum_algo = "blake3"
 
 [[migration.steps]]
 kind = "sql"
-file = "migrations/0159_discovery_items_generation_rank_index.sql"
+file = "migrations/0145_discovery_items_generation_rank_index.sql"
 engine = "sqlite"
 scope = "all"
 
 [[migration.steps]]
 kind = "sql"
-file = "postgres/migrations/0159_discovery_items_generation_rank_index.sql"
+file = "postgres/migrations/0145_discovery_items_generation_rank_index.sql"
 engine = "postgres"
 scope = "all"
 
@@ -832,11 +672,11 @@ file = "postgres/baselines/0122_baseline.sql"
 engine = "postgres"
 
 [[baseline]]
-through_version = 154
-file = "baselines/0154_baseline.sql"
+through_version = 140
+file = "baselines/0140_baseline.sql"
 engine = "sqlite"
 
 [[baseline]]
-through_version = 154
-file = "postgres/baselines/0154_baseline.sql"
+through_version = 140
+file = "postgres/baselines/0140_baseline.sql"
 engine = "postgres"

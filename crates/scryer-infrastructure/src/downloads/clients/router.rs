@@ -15,7 +15,10 @@ use scryer_application::{
     apply_remote_path_mappings_to_status, parse_download_client_remote_path_mappings,
 };
 use scryer_domain::{DownloadClientConfig, DownloadQueueItem, IndexerProxyConfig, MediaFacet};
-use scryer_outbound_http::{OutboundHttpClient, RateLimitRegistry, generic_reqwest_client};
+use scryer_outbound_http::{
+    OutboundHttpClient, RateLimitRegistry, generic_reqwest_client, prepare_plugin_http_target,
+    send_reqwest_request,
+};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Semaphore;
 use tokio::time::timeout;
@@ -33,6 +36,47 @@ const DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY: &str = "download_client.routing";
 const LEGACY_NZBGET_CLIENT_ROUTING_SETTINGS_KEY: &str = "nzbget.client_routing";
 const DOWNLOAD_CLIENT_FEEDBACK_TIMEOUT_SECS: u64 = 10;
 const PROXIED_TORRENT_FILE_MAX_BYTES: usize = 32 * 1024 * 1024;
+const BYPARR_RESPONSE_MAX_BYTES: usize = PROXIED_TORRENT_FILE_MAX_BYTES * 2;
+
+#[derive(Debug)]
+enum BoundedResponseBodyError {
+    Read(reqwest::Error),
+    TooLarge,
+}
+
+async fn read_response_body_bounded(
+    mut response: reqwest::Response,
+    max_bytes: usize,
+) -> Result<Vec<u8>, BoundedResponseBodyError> {
+    if response
+        .content_length()
+        .is_some_and(|length| length > max_bytes as u64)
+    {
+        return Err(BoundedResponseBodyError::TooLarge);
+    }
+
+    let capacity = response
+        .content_length()
+        .and_then(|length| usize::try_from(length).ok())
+        .unwrap_or_default()
+        .min(max_bytes);
+    let mut body = Vec::with_capacity(capacity);
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(BoundedResponseBodyError::Read)?
+    {
+        let next_len = body
+            .len()
+            .checked_add(chunk.len())
+            .ok_or(BoundedResponseBodyError::TooLarge)?;
+        if next_len > max_bytes {
+            return Err(BoundedResponseBodyError::TooLarge);
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
+}
 
 fn content_disposition_filename(headers: Option<&serde_json::Value>) -> Option<String> {
     let value = solver::solution_header_string(headers, "content-disposition")?;
@@ -778,6 +822,12 @@ impl PrioritizedDownloadClientRouter {
         let Ok(base_url) = url::Url::parse(&indexer.base_url) else {
             return false;
         };
+        if !matches!(base_url.scheme(), "http" | "https")
+            || download_url.scheme() != base_url.scheme()
+            || download_url.port_or_known_default() != base_url.port_or_known_default()
+        {
+            return false;
+        }
         download_url.host_str().is_some_and(|host| {
             base_url
                 .host_str()
@@ -886,6 +936,20 @@ impl PrioritizedDownloadClientRouter {
             ));
         }
 
+        // Validate before delegating to Byparr as well as before any direct
+        // retry. Otherwise the solver itself becomes a deputy for blocked
+        // link-local or cloud-metadata destinations.
+        drop(
+            prepare_plugin_http_target(download_url, "indexer download artifact")
+                .await
+                .map_err(|error| {
+                    warn!(error = %error, "blocked unsafe indexer download artifact URL");
+                    AppError::DownloadSubmitUnavailable(
+                        "Scryer refused an unsafe download artifact destination.".into(),
+                    )
+                })?,
+        );
+
         // A previously solved clearance session lets the artifact fetch skip
         // the solver entirely. Direct rate limits still propagate; every other
         // failure invalidates the session and falls back to a full solve.
@@ -960,11 +1024,29 @@ impl PrioritizedDownloadClientRouter {
                 solver::BYPARR_UNAVAILABLE_MESSAGE.into(),
             ));
         }
-        let body = response.bytes().await.map_err(|_| {
-            solver::SolverHealthLedger::shared()
-                .record_failure(&proxy_config.id, solver::BYPARR_UNREADABLE_MESSAGE);
-            AppError::DownloadSubmitUnavailable(solver::BYPARR_UNREADABLE_MESSAGE.into())
-        })?;
+        let body = match read_response_body_bounded(response, BYPARR_RESPONSE_MAX_BYTES).await {
+            Ok(body) => body,
+            Err(BoundedResponseBodyError::Read(error)) => {
+                debug!(
+                    proxy_config_id = proxy_config.id.as_str(),
+                    is_timeout = error.is_timeout(),
+                    is_body = error.is_body(),
+                    is_decode = error.is_decode(),
+                    "failed to read Byparr response body"
+                );
+                solver::SolverHealthLedger::shared()
+                    .record_failure(&proxy_config.id, solver::BYPARR_UNREADABLE_MESSAGE);
+                return Err(AppError::DownloadSubmitUnavailable(
+                    solver::BYPARR_UNREADABLE_MESSAGE.into(),
+                ));
+            }
+            Err(BoundedResponseBodyError::TooLarge) => {
+                const MESSAGE: &str =
+                    "Byparr returned a response larger than Scryer's download artifact limit.";
+                solver::SolverHealthLedger::shared().record_failure(&proxy_config.id, MESSAGE);
+                return Err(AppError::DownloadSubmitUnavailable(MESSAGE.into()));
+            }
+        };
         let solution = solver::parse_byparr_solution(&body).map_err(|error| {
             if error == solver::ByparrParseError::Malformed {
                 solver::SolverHealthLedger::shared()
@@ -982,8 +1064,14 @@ impl PrioritizedDownloadClientRouter {
                 "Byparr target request returned HTTP {solution_status}."
             )));
         }
-        let bytes = solution.response.clone().unwrap_or_default().into_bytes();
-        if solver::solved_body_looks_rate_limited(&bytes) {
+        let solution_body = solution.response.as_deref().unwrap_or_default();
+        if solution_body.len() > PROXIED_TORRENT_FILE_MAX_BYTES {
+            return Err(AppError::DownloadSubmitUnavailable(format!(
+                "The resolved download artifact exceeded Scryer's {} MiB limit.",
+                PROXIED_TORRENT_FILE_MAX_BYTES / (1024 * 1024)
+            )));
+        }
+        if solver::solved_body_looks_rate_limited(solution_body.as_bytes()) {
             return Err(target_rate_limit_error(solution.headers.as_ref()));
         }
         solver::SolvedSessionCache::shared().store_solution(
@@ -1013,6 +1101,7 @@ impl PrioritizedDownloadClientRouter {
                 );
             }
         }
+        let bytes = solution.response.unwrap_or_default().into_bytes();
         Self::classify_resolved_download_artifact(
             solution.url.as_deref(),
             solution.headers.as_ref(),
@@ -1050,15 +1139,24 @@ impl PrioritizedDownloadClientRouter {
         session_headers: &[(String, String)],
         request_timeout_seconds: u32,
     ) -> AppResult<FetchedDownloadArtifact> {
-        let mut builder = generic_reqwest_client()
-            .get(download_url)
+        let target = prepare_plugin_http_target(download_url, "indexer download artifact")
+            .await
+            .map_err(|error| {
+                warn!(error = %error, "blocked unsafe indexer download artifact URL");
+                AppError::DownloadSubmitUnavailable(
+                    "Scryer refused an unsafe download artifact destination.".into(),
+                )
+            })?;
+        let mut builder = target
+            .client()
+            .get(target.url().clone())
             .timeout(Duration::from_secs(u64::from(
                 request_timeout_seconds.saturating_add(5),
             )));
         for (name, value) in session_headers {
             builder = builder.header(name, value);
         }
-        let response = builder.send().await.map_err(|error| {
+        let response = send_reqwest_request(builder).await.map_err(|error| {
             if error.is_timeout() {
                 AppError::DownloadSubmitUnavailable(
                     "Byparr resolved the challenge, but the artifact fetch timed out.".into(),
@@ -1081,7 +1179,7 @@ impl PrioritizedDownloadClientRouter {
             return Err(AppError::TemporaryUnavailable {
                 message: solver::rate_limit_message_with_retry_after(retry_after),
                 retry_after,
-                rate_limit_cooldown: RateLimitCooldownAction::RecordFallback,
+                rate_limit_cooldown: RateLimitCooldownAction::AlreadyRecorded,
             });
         }
         if !response.status().is_success() {
@@ -1102,14 +1200,30 @@ impl PrioritizedDownloadClientRouter {
             }
         }
         let headers = (!header_map.is_empty()).then_some(serde_json::Value::Object(header_map));
-        let bytes = response.bytes().await.map_err(|_| {
-            AppError::DownloadSubmitUnavailable(
-                "Byparr resolved the challenge, but Scryer could not read the download artifact."
-                    .into(),
-            )
-        })?;
+        let bytes = match read_response_body_bounded(response, PROXIED_TORRENT_FILE_MAX_BYTES).await
+        {
+            Ok(bytes) => bytes,
+            Err(BoundedResponseBodyError::Read(error)) => {
+                debug!(
+                    is_timeout = error.is_timeout(),
+                    is_body = error.is_body(),
+                    is_decode = error.is_decode(),
+                    "failed to read proxied download artifact body"
+                );
+                return Err(AppError::DownloadSubmitUnavailable(
+                    "Byparr resolved the challenge, but Scryer could not read the download artifact."
+                        .into(),
+                ));
+            }
+            Err(BoundedResponseBodyError::TooLarge) => {
+                return Err(AppError::DownloadSubmitUnavailable(format!(
+                    "The resolved download artifact exceeded Scryer's {} MiB limit.",
+                    PROXIED_TORRENT_FILE_MAX_BYTES / (1024 * 1024)
+                )));
+            }
+        };
         Ok(FetchedDownloadArtifact {
-            bytes: bytes.to_vec(),
+            bytes,
             headers,
             final_url,
         })
@@ -2705,6 +2819,34 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
+    use tokio::io::AsyncWriteExt;
+
+    fn test_indexer_config(base_url: &str) -> scryer_domain::IndexerConfig {
+        let now = Utc::now();
+        scryer_domain::IndexerConfig {
+            id: "indexer-1".to_string(),
+            name: "Indexer".to_string(),
+            provider_type: "torznab".to_string(),
+            base_url: base_url.to_string(),
+            api_key_encrypted: None,
+            rate_limit_seconds: None,
+            rate_limit_burst: None,
+            disabled_until: None,
+            is_enabled: true,
+            enable_interactive_search: true,
+            enable_auto_search: true,
+            indexer_proxy_config_id: None,
+            managed_parent_config_id: None,
+            managed_child_key: None,
+            managed_metadata_json: None,
+            caps_snapshot_json: None,
+            last_health_status: None,
+            last_error_at: None,
+            config_json: None,
+            created_at: now,
+            updated_at: now,
+        }
+    }
 
     #[test]
     fn torrent_metainfo_detection_requires_valid_bencoded_info_dict() {
@@ -2731,6 +2873,115 @@ mod tests {
             error.to_string(),
             "validation: Byparr resolved invalid torrent file bytes.",
         );
+    }
+
+    #[test]
+    fn proxied_download_url_requires_the_full_indexer_origin() {
+        let indexer = test_indexer_config("https://indexer.example/api");
+
+        assert!(
+            PrioritizedDownloadClientRouter::download_url_matches_indexer_origin(
+                &indexer,
+                "https://INDEXER.example/download/release.torrent",
+            )
+        );
+        assert!(
+            !PrioritizedDownloadClientRouter::download_url_matches_indexer_origin(
+                &indexer,
+                "http://indexer.example/download/release.torrent",
+            )
+        );
+        assert!(
+            !PrioritizedDownloadClientRouter::download_url_matches_indexer_origin(
+                &indexer,
+                "https://indexer.example:8443/download/release.torrent",
+            )
+        );
+
+        let default_port_indexer = test_indexer_config("http://indexer.example:80/api");
+        assert!(
+            PrioritizedDownloadClientRouter::download_url_matches_indexer_origin(
+                &default_port_indexer,
+                "http://indexer.example/download/release.torrent",
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn artifact_resolution_blocks_metadata_destinations_before_network_or_solver() {
+        let router = no_client_router();
+        let now = Utc::now();
+        let proxy = IndexerProxyConfig {
+            id: "byparr-1".to_string(),
+            name: "Byparr".to_string(),
+            provider_type: scryer_domain::IndexerProxyProviderType::Byparr,
+            protocol: scryer_domain::ChallengeSolverProtocol::RequestSolutionV1,
+            base_url: "http://127.0.0.1:1".to_string(),
+            request_timeout_seconds: 1,
+            is_enabled: true,
+            last_health_status: None,
+            last_error_message: None,
+            last_error_at: None,
+            created_at: now,
+            updated_at: now,
+        };
+        for target in [
+            "http://169.254.169.254/latest/meta-data/",
+            "http://[::ffff:169.254.169.254]/latest/meta-data/",
+            "http://100.100.100.200/latest/meta-data/",
+        ] {
+            let error = match router.fetch_download_artifact_direct(target, &[], 1).await {
+                Ok(_) => panic!("metadata destination must be rejected before fetch"),
+                Err(error) => error,
+            };
+            assert!(
+                matches!(&error, AppError::DownloadSubmitUnavailable(message)
+                    if message.contains("unsafe download artifact destination")),
+                "unexpected error for {target}: {error}"
+            );
+
+            let error = match router
+                .resolve_download_artifact_via_byparr(&proxy, target, None)
+                .await
+            {
+                Ok(_) => panic!("metadata destination must not be delegated to Byparr"),
+                Err(error) => error,
+            };
+            assert!(
+                matches!(&error, AppError::DownloadSubmitUnavailable(message)
+                    if message.contains("unsafe download artifact destination")),
+                "unexpected solver error for {target}: {error}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn bounded_response_reader_rejects_chunked_body_over_limit() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test server");
+        let address = listener.local_addr().expect("test server address");
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("accept request");
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n3\r\nabc\r\n2\r\nde\r\n0\r\n\r\n",
+                )
+                .await
+                .expect("write response");
+        });
+
+        let response = generic_reqwest_client()
+            .get(format!("http://{address}/artifact"))
+            .send()
+            .await
+            .expect("fetch test response");
+        let error = read_response_body_bounded(response, 4)
+            .await
+            .expect_err("five-byte chunked response must exceed four-byte limit");
+
+        assert!(matches!(error, BoundedResponseBodyError::TooLarge));
+        server.await.expect("test server task");
     }
 
     struct MockDownloadClientConfigRepository {
@@ -5071,5 +5322,4 @@ mod tests {
         assert_eq!(failing_client.list_queue_call_count(), 1);
         assert_eq!(failing_client.list_queue_for_title_call_count(), 1);
     }
-
 }

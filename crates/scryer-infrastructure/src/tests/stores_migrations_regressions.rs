@@ -424,8 +424,8 @@ fn embedded_migration_bundle_includes_external_import_monitor_snapshot_chunk_tab
     );
     assert!(
         keys.iter()
-            .any(|key| key == "0154_post_0.16.6_prerelease_rollup"),
-        "embedded migration bundle is missing 0154_post_0.16.6_prerelease_rollup: {keys:?}"
+            .any(|key| key == "0140_0.17_release_rollup"),
+        "embedded migration bundle is missing 0140_0.17_release_rollup: {keys:?}"
     );
 }
 
