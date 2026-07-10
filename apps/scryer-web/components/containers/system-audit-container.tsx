@@ -57,7 +57,14 @@ function normalizeAuditEvent(value: unknown): AuditLogEvent | null {
     titleId: typeof value.titleId === "string" ? value.titleId : null,
     facet: typeof value.facet === "string" ? value.facet : null,
     eventType: typeof value.eventType === "string" ? value.eventType : "unknown",
-    streamKind: typeof value.streamKind === "string" ? value.streamKind : "global",
+    streamKind:
+      value.streamKind === "GLOBAL" ||
+      value.streamKind === "TITLE" ||
+      value.streamKind === "LIBRARY_SCAN" ||
+      value.streamKind === "JOB_RUN" ||
+      value.streamKind === "DOWNLOAD_QUEUE_ITEM"
+        ? value.streamKind
+        : "GLOBAL",
     streamId: typeof value.streamId === "string" ? value.streamId : null,
     payloadJson: value.payloadJson,
   };

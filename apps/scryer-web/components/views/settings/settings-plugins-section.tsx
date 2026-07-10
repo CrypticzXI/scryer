@@ -82,7 +82,7 @@ export type PluginInstallProgressRecord = {
 };
 
 export type PluginCatalogStatusRecord = {
-  refreshState: string;
+  refreshState: 'READY' | 'DEGRADED';
   githubAvailable: boolean;
   lastCheckedAt?: string | null;
   outageMessage?: string | null;

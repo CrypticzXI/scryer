@@ -253,7 +253,7 @@ export type TotpEnrollmentComplete = {
   recoveryCodes: string[];
 };
 
-export type ImportMode = "hardlink_or_copy" | "move";
+export type ImportMode = "HARDLINK_OR_COPY" | "MOVE";
 
 export type MediaSettings = {
   scope: "MOVIE" | "SERIES" | "ANIME";

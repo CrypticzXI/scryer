@@ -160,17 +160,17 @@ export type UseMediaSettingsResult = {
   refreshCategoryValidation: () => void;
 };
 
-const DEFAULT_RENAME_COLLISION_POLICY = "skip";
-const DEFAULT_RENAME_MISSING_METADATA_POLICY = "fallback_title";
+const DEFAULT_RENAME_COLLISION_POLICY = "SKIP";
+const DEFAULT_RENAME_MISSING_METADATA_POLICY = "FALLBACK_TITLE";
 const DEFAULT_FILLER_POLICY = "download_all";
 const ALLOWED_RENAME_COLLISION_POLICIES = new Set([
-  "skip",
-  "error",
-  "replace_if_better",
+  "SKIP",
+  "ERROR",
+  "REPLACE_IF_BETTER",
 ]);
 const ALLOWED_RENAME_MISSING_METADATA_POLICIES = new Set([
-  "skip",
-  "fallback_title",
+  "SKIP",
+  "FALLBACK_TITLE",
 ]);
 const ALLOWED_FILLER_POLICIES = new Set(["download_all", "skip_filler"]);
 const DEFAULT_RECAP_POLICY = "download_all";
@@ -310,9 +310,9 @@ export function useMediaSettings({
     ANIME: "false",
   });
   const [importMode, setImportMode] = React.useState<Record<ViewCategoryId, ImportMode>>({
-    MOVIE: "hardlink_or_copy",
-    SERIES: "hardlink_or_copy",
-    ANIME: "hardlink_or_copy",
+    MOVIE: "HARDLINK_OR_COPY",
+    SERIES: "HARDLINK_OR_COPY",
+    ANIME: "HARDLINK_OR_COPY",
   });
   const [plexmatchWriteOnImport, setPlexmatchWriteOnImport] = React.useState<
     Record<ViewCategoryId, string>
@@ -733,7 +733,7 @@ export function useMediaSettings({
 
         setImportMode((previous) => {
           const nextMode: ImportMode =
-            mediaSettings.importMode === "move" ? "move" : "hardlink_or_copy";
+            mediaSettings.importMode === "MOVE" ? "MOVE" : "HARDLINK_OR_COPY";
           return previous[mediaSettingsScopeId] === nextMode
             ? previous
             : { ...previous, [mediaSettingsScopeId]: nextMode };

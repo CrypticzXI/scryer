@@ -156,9 +156,9 @@ export function deriveQueueRowPresentation(
           ? "queue.state.extracting"
           : "queue.state.postProcessing";
   const statusLabel =
-    queueItem.importTransferPhase === "copying"
+    queueItem.importTransferPhase === "COPYING"
       ? t("queue.transfer.copying")
-      : queueItem.importTransferPhase === "finalizing"
+      : queueItem.importTransferPhase === "FINALIZING"
         ? t("queue.transfer.finalizing")
         : displayStateKey === "POST_PROCESSING"
           ? t(postProcessingStatusKey)

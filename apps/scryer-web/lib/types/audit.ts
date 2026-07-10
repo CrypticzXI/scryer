@@ -8,7 +8,7 @@ export type AuditLogEvent = {
   titleId: string | null;
   facet: string | null;
   eventType: string;
-  streamKind: string;
+  streamKind: 'GLOBAL' | 'TITLE' | 'LIBRARY_SCAN' | 'JOB_RUN' | 'DOWNLOAD_QUEUE_ITEM';
   streamId: string | null;
   payloadJson: unknown;
 };

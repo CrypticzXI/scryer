@@ -6,7 +6,8 @@ use chrono::{DateTime, NaiveDate, Utc};
 use scryer_domain::{
     AppPermission, CollectionType, ConfigFieldRole, ConfigFieldType, ConfigFieldValueSource,
     DomainEventActorKind, DomainEventType, DownloadQueueState, EpisodeType, ExecutionMode,
-    ImportDecision, ImportErrorCode, ImportSkipReason, ImportStatus, ImportType,
+    ImportDecision, ImportErrorCode, ImportMode, ImportSkipReason, ImportStatus,
+    ImportTransferPhase, ImportType,
     LibraryPermission, MediaFacet, MediaRequestStatus, TitleHistoryEventType, TitleMatchType,
     TrackedDownloadState, TrackedDownloadStatus,
 };
@@ -842,6 +843,128 @@ impl ImportSkipReasonValue {
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
 #[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
+pub enum ImportTransferPhaseValue {
+    Copying,
+    Finalizing,
+}
+
+impl From<ImportTransferPhase> for ImportTransferPhaseValue {
+    fn from(value: ImportTransferPhase) -> Self {
+        match value {
+            ImportTransferPhase::Copying => Self::Copying,
+            ImportTransferPhase::Finalizing => Self::Finalizing,
+        }
+    }
+}
+
+#[derive(Enum, Copy, Clone, Eq, PartialEq)]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
+pub enum CatalogRefreshStateValue {
+    Ready,
+    Degraded,
+}
+
+impl CatalogRefreshStateValue {
+    // The plugin-catalog runtime reports this as a string; parse at the API
+    // boundary and fail safe to Ready.
+    pub fn from_app_str(value: &str) -> Self {
+        match value {
+            "degraded" => Self::Degraded,
+            _ => Self::Ready,
+        }
+    }
+}
+
+#[derive(Enum, Copy, Clone, Eq, PartialEq)]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
+pub enum StreamKindValue {
+    Global,
+    Title,
+    LibraryScan,
+    JobRun,
+    DownloadQueueItem,
+}
+
+#[derive(Enum, Copy, Clone, Eq, PartialEq)]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
+pub enum ImportModeValue {
+    HardlinkOrCopy,
+    Move,
+}
+
+impl From<ImportMode> for ImportModeValue {
+    fn from(value: ImportMode) -> Self {
+        match value {
+            ImportMode::HardlinkOrCopy => Self::HardlinkOrCopy,
+            ImportMode::Move => Self::Move,
+        }
+    }
+}
+
+impl From<ImportModeValue> for ImportMode {
+    fn from(value: ImportModeValue) -> Self {
+        match value {
+            ImportModeValue::HardlinkOrCopy => Self::HardlinkOrCopy,
+            ImportModeValue::Move => Self::Move,
+        }
+    }
+}
+
+#[derive(Enum, Copy, Clone, Eq, PartialEq)]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
+pub enum RenameCollisionPolicyValue {
+    Skip,
+    Error,
+    ReplaceIfBetter,
+}
+
+impl RenameCollisionPolicyValue {
+    // The application/settings layer stores these as canonical strings; the
+    // enum exists at the API boundary only.
+    pub fn as_app_str(self) -> &'static str {
+        match self {
+            Self::Skip => "skip",
+            Self::Error => "error",
+            Self::ReplaceIfBetter => "replace_if_better",
+        }
+    }
+
+    pub fn from_app_str(value: &str) -> Option<Self> {
+        match value {
+            "skip" => Some(Self::Skip),
+            "error" => Some(Self::Error),
+            "replace_if_better" => Some(Self::ReplaceIfBetter),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Enum, Copy, Clone, Eq, PartialEq)]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
+pub enum RenameMissingMetadataPolicyValue {
+    Skip,
+    FallbackTitle,
+}
+
+impl RenameMissingMetadataPolicyValue {
+    pub fn as_app_str(self) -> &'static str {
+        match self {
+            Self::Skip => "skip",
+            Self::FallbackTitle => "fallback_title",
+        }
+    }
+
+    pub fn from_app_str(value: &str) -> Option<Self> {
+        match value {
+            "skip" => Some(Self::Skip),
+            "fallback_title" => Some(Self::FallbackTitle),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Enum, Copy, Clone, Eq, PartialEq)]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
 pub enum CollectionTypeValue {
     Season,
     Movie,
@@ -1297,7 +1420,7 @@ pub struct MediaRequestPayload {
     pub content_status: Option<String>,
     pub requested_quality_profile_id: Option<ID>,
     pub requested_quality_profile_name: Option<String>,
-    pub requested_monitor_type: Option<String>,
+    pub requested_monitor_type: Option<MonitorTypeValue>,
     pub resolved_by_user_id: Option<ID>,
     pub resolved_at: Option<DateTime<Utc>>,
     pub created_title_id: Option<ID>,
@@ -1482,7 +1605,7 @@ pub struct DomainEventEnvelopePayload {
     pub title_id: Option<ID>,
     pub facet: Option<MediaFacetValue>,
     pub event_type: DomainEventTypeValue,
-    pub stream_kind: String,
+    pub stream_kind: StreamKindValue,
     pub stream_id: Option<ID>,
     pub payload_json: Json<serde_json::Value>,
 }
@@ -2060,8 +2183,8 @@ pub struct LibrarySettingsPayload {
     pub nfo_write_on_import: bool,
     pub plexmatch_write_on_import_override: Option<bool>,
     pub plexmatch_write_on_import: Option<bool>,
-    pub import_mode_override: Option<String>,
-    pub import_mode: String,
+    pub import_mode_override: Option<ImportModeValue>,
+    pub import_mode: ImportModeValue,
     pub set_permissions_linux_override: Option<bool>,
     pub set_permissions_linux: bool,
     pub file_chmod_override: Option<String>,
@@ -2351,8 +2474,8 @@ pub struct MediaRenamePlanPayload {
     pub facet: MediaFacetValue,
     pub title_id: Option<ID>,
     pub template: String,
-    pub collision_policy: String,
-    pub missing_metadata_policy: String,
+    pub collision_policy: RenameCollisionPolicyValue,
+    pub missing_metadata_policy: RenameMissingMetadataPolicyValue,
     pub fingerprint: String,
     pub total: i32,
     pub renamable: i32,
@@ -2697,8 +2820,8 @@ pub struct MediaSettingsPayload {
     pub folder_template: String,
     pub rename_enabled: bool,
     pub rename_template: String,
-    pub rename_collision_policy: String,
-    pub rename_missing_metadata_policy: String,
+    pub rename_collision_policy: RenameCollisionPolicyValue,
+    pub rename_missing_metadata_policy: RenameMissingMetadataPolicyValue,
     pub filler_policy: Option<String>,
     pub recap_policy: Option<String>,
     pub monitor_specials: Option<bool>,
@@ -2706,7 +2829,7 @@ pub struct MediaSettingsPayload {
     pub monitor_filler_movies: Option<bool>,
     pub nfo_write_on_import: bool,
     pub plexmatch_write_on_import: Option<bool>,
-    pub import_mode: String,
+    pub import_mode: ImportModeValue,
     pub set_permissions_linux: bool,
     pub file_chmod: Option<String>,
     pub folder_chmod: Option<String>,
@@ -2997,8 +3120,8 @@ pub struct UpdateMediaSettingsInput {
     pub folder_template: Option<String>,
     pub rename_enabled: Option<bool>,
     pub rename_template: Option<String>,
-    pub rename_collision_policy: Option<String>,
-    pub rename_missing_metadata_policy: Option<String>,
+    pub rename_collision_policy: Option<RenameCollisionPolicyValue>,
+    pub rename_missing_metadata_policy: Option<RenameMissingMetadataPolicyValue>,
     pub filler_policy: Option<String>,
     pub recap_policy: Option<String>,
     pub monitor_specials: Option<bool>,
@@ -3006,7 +3129,7 @@ pub struct UpdateMediaSettingsInput {
     pub monitor_filler_movies: Option<bool>,
     pub nfo_write_on_import: Option<bool>,
     pub plexmatch_write_on_import: Option<bool>,
-    pub import_mode: Option<String>,
+    pub import_mode: Option<ImportModeValue>,
     pub set_permissions_linux: Option<bool>,
     pub file_chmod: Option<String>,
     pub folder_chmod: Option<String>,
@@ -3663,7 +3786,7 @@ pub struct LibrarySettingsInput {
     pub monitor_filler_movies: Option<bool>,
     pub nfo_write_on_import: Option<bool>,
     pub plexmatch_write_on_import: Option<bool>,
-    pub import_mode: Option<String>,
+    pub import_mode: Option<ImportModeValue>,
     pub set_permissions_linux: Option<bool>,
     pub file_chmod: Option<String>,
     pub folder_chmod: Option<String>,
@@ -4113,7 +4236,7 @@ pub struct PluginInstallationPayload {
 
 #[derive(SimpleObject)]
 pub struct PluginCatalogStatusPayload {
-    pub refresh_state: String,
+    pub refresh_state: CatalogRefreshStateValue,
     pub github_available: bool,
     pub last_checked_at: Option<DateTime<Utc>>,
     pub outage_message: Option<String>,

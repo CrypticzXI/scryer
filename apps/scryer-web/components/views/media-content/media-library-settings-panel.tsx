@@ -93,8 +93,8 @@ const BOOLEAN_OVERRIDE_OPTIONS = [
 ] as const;
 const IMPORT_MODE_OPTIONS = [
   { value: INHERIT_VALUE, labelKey: "settings.libraryInheritFacet" },
-  { value: "hardlink_or_copy", labelKey: "settings.importModeHardlinkCopy" },
-  { value: "move", labelKey: "settings.importModeMove" },
+  { value: "HARDLINK_OR_COPY", labelKey: "settings.importModeHardlinkCopy" },
+  { value: "MOVE", labelKey: "settings.importModeMove" },
 ] as const;
 
 type LibraryMutationInput = {
@@ -258,7 +258,7 @@ function recapPolicyLabelKey(value: string | null | undefined): string {
 }
 
 function importModeLabelKey(value: ImportMode | null | undefined): string {
-  return value === "move"
+  return value === "MOVE"
     ? "settings.importModeMove"
     : "settings.importModeHardlinkCopy";
 }

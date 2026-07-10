@@ -33,15 +33,8 @@ pub struct SettingsMutations;
 const MEDIA_SERVER_LOGIN_REQUIRES_FORM_LOGIN: &str =
     "Enable form login before enabling media-server login.";
 
-fn parse_import_mode_input(raw: Option<String>) -> GqlResult<Option<scryer_domain::ImportMode>> {
-    raw.map(|value| {
-        scryer_domain::ImportMode::from_setting(&value).map_err(|message| {
-            to_gql_error(AppError::Validation(format!(
-                "invalid importMode: {message}"
-            )))
-        })
-    })
-    .transpose()
+fn parse_import_mode_input(raw: Option<ImportModeValue>) -> Option<scryer_domain::ImportMode> {
+    raw.map(Into::into)
 }
 
 fn parse_required_datetime(value: &str, field: &str) -> DateTime<Utc> {
@@ -1032,7 +1025,7 @@ impl SettingsMutations {
             require_config_app_permission(ctx, scryer_domain::AppPermission::ManageCatalogSettings)
                 .await?;
         let scope = input.scope;
-        let import_mode = parse_import_mode_input(input.import_mode)?;
+        let import_mode = parse_import_mode_input(input.import_mode);
         app.update_media_settings(
             &actor,
             scope.into_media_facet(),
@@ -1051,8 +1044,12 @@ impl SettingsMutations {
                 folder_template: input.folder_template,
                 rename_enabled: input.rename_enabled,
                 rename_template: input.rename_template,
-                rename_collision_policy: input.rename_collision_policy,
-                rename_missing_metadata_policy: input.rename_missing_metadata_policy,
+                rename_collision_policy: input
+                    .rename_collision_policy
+                    .map(|policy| policy.as_app_str().to_string()),
+                rename_missing_metadata_policy: input
+                    .rename_missing_metadata_policy
+                    .map(|policy| policy.as_app_str().to_string()),
                 filler_policy: input.filler_policy,
                 recap_policy: input.recap_policy,
                 monitor_specials: input.monitor_specials,

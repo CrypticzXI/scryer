@@ -28,14 +28,14 @@ type QualityProfileOption = {
 // --- Constants ---
 
 const RENAME_COLLISION_POLICY_OPTIONS = [
-  { value: "skip", label: "settings.renameCollisionPolicySkip" },
-  { value: "error", label: "settings.renameCollisionPolicyError" },
-  { value: "replace_if_better", label: "settings.renameCollisionPolicyReplaceIfBetter" },
+  { value: "SKIP", label: "settings.renameCollisionPolicySkip" },
+  { value: "ERROR", label: "settings.renameCollisionPolicyError" },
+  { value: "REPLACE_IF_BETTER", label: "settings.renameCollisionPolicyReplaceIfBetter" },
 ];
 
 const RENAME_MISSING_METADATA_POLICY_OPTIONS = [
-  { value: "fallback_title", label: "settings.renameMissingMetadataPolicyFallbackTitle" },
-  { value: "skip", label: "settings.renameMissingMetadataPolicySkip" },
+  { value: "FALLBACK_TITLE", label: "settings.renameMissingMetadataPolicyFallbackTitle" },
+  { value: "SKIP", label: "settings.renameMissingMetadataPolicySkip" },
 ];
 
 const FILLER_POLICY_OPTIONS = [

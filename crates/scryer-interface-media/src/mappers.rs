@@ -463,10 +463,8 @@ pub fn from_library_settings(settings: LibrarySettings) -> LibrarySettingsPayloa
         nfo_write_on_import: settings.nfo_write_on_import,
         plexmatch_write_on_import_override: settings.plexmatch_write_on_import_override,
         plexmatch_write_on_import: settings.plexmatch_write_on_import,
-        import_mode_override: settings
-            .import_mode_override
-            .map(|mode| mode.as_str().to_string()),
-        import_mode: settings.import_mode.as_str().to_string(),
+        import_mode_override: settings.import_mode_override.map(Into::into),
+        import_mode: settings.import_mode.into(),
         set_permissions_linux_override: settings.set_permissions_linux_override,
         set_permissions_linux: settings.set_permissions_linux,
         file_chmod_override: settings.file_chmod_override,
@@ -543,8 +541,14 @@ pub fn from_media_settings(
         folder_template: settings.folder_template,
         rename_enabled: settings.rename_enabled,
         rename_template: settings.rename_template,
-        rename_collision_policy: settings.rename_collision_policy,
-        rename_missing_metadata_policy: settings.rename_missing_metadata_policy,
+        rename_collision_policy: RenameCollisionPolicyValue::from_app_str(
+            &settings.rename_collision_policy,
+        )
+        .unwrap_or(RenameCollisionPolicyValue::Skip),
+        rename_missing_metadata_policy: RenameMissingMetadataPolicyValue::from_app_str(
+            &settings.rename_missing_metadata_policy,
+        )
+        .unwrap_or(RenameMissingMetadataPolicyValue::Skip),
         filler_policy: settings.filler_policy,
         recap_policy: settings.recap_policy,
         monitor_specials: settings.monitor_specials,
@@ -552,7 +556,7 @@ pub fn from_media_settings(
         monitor_filler_movies: settings.monitor_filler_movies,
         nfo_write_on_import: settings.nfo_write_on_import,
         plexmatch_write_on_import: settings.plexmatch_write_on_import,
-        import_mode: settings.import_mode.as_str().to_string(),
+        import_mode: settings.import_mode.into(),
         set_permissions_linux: settings.set_permissions_linux,
         file_chmod: settings.file_chmod,
         folder_chmod: settings.folder_chmod,
@@ -1144,9 +1148,7 @@ pub fn from_download_queue_item(item: DownloadQueueItem) -> DownloadQueueItemPay
         state: DownloadQueueStateValue::from_domain(item.state),
         display_state,
         progress_percent: i32::from(item.progress_percent),
-        import_transfer_phase: item
-            .import_transfer_phase
-            .map(|phase| phase.as_str().to_string()),
+        import_transfer_phase: item.import_transfer_phase.map(Into::into),
         import_transfer_bytes: item.import_transfer_bytes.map(Long::from),
         import_transfer_total_bytes: item.import_transfer_total_bytes.map(Long::from),
         import_transfer_started_at: parse_optional_datetime(
@@ -1312,7 +1314,10 @@ pub fn from_media_request(request: MediaRequest) -> MediaRequestPayload {
         content_status: request.content_status,
         requested_quality_profile_id: request.requested_quality_profile_id.map(Into::into),
         requested_quality_profile_name: request.requested_quality_profile_name,
-        requested_monitor_type: request.requested_monitor_type,
+        requested_monitor_type: request
+            .requested_monitor_type
+            .as_deref()
+            .and_then(monitor_type_value_from_normalized),
         resolved_by_user_id: request.resolved_by_user_id.map(Into::into),
         resolved_at: request.resolved_at,
         created_title_id: request.created_title_id.map(Into::into),
@@ -1815,8 +1820,12 @@ pub fn from_media_rename_plan(plan: RenamePlan) -> MediaRenamePlanPayload {
         facet: MediaFacetValue::from_domain(plan.facet),
         title_id: plan.title_id.map(Into::into),
         template: plan.template,
-        collision_policy: plan.collision_policy.as_str().to_string(),
-        missing_metadata_policy: plan.missing_metadata_policy.as_str().to_string(),
+        collision_policy: RenameCollisionPolicyValue::from_app_str(plan.collision_policy.as_str())
+            .unwrap_or(RenameCollisionPolicyValue::Skip),
+        missing_metadata_policy: RenameMissingMetadataPolicyValue::from_app_str(
+            plan.missing_metadata_policy.as_str(),
+        )
+        .unwrap_or(RenameMissingMetadataPolicyValue::Skip),
         fingerprint: plan.fingerprint,
         total: plan.total as i32,
         renamable: plan.renamable as i32,
@@ -2802,18 +2811,18 @@ pub fn from_notification_target(
 
 pub fn from_domain_event(event: DomainEvent) -> DomainEventEnvelopePayload {
     let (stream_kind, stream_id) = match event.stream {
-        scryer_domain::DomainEventStream::Global => ("global".to_string(), None),
+        scryer_domain::DomainEventStream::Global => (StreamKindValue::Global, None),
         scryer_domain::DomainEventStream::Title { title_id } => {
-            ("title".to_string(), Some(title_id))
+            (StreamKindValue::Title, Some(title_id))
         }
         scryer_domain::DomainEventStream::LibraryScan { session_id } => {
-            ("library_scan".to_string(), Some(session_id))
+            (StreamKindValue::LibraryScan, Some(session_id))
         }
         scryer_domain::DomainEventStream::JobRun { run_id } => {
-            ("job_run".to_string(), Some(run_id))
+            (StreamKindValue::JobRun, Some(run_id))
         }
         scryer_domain::DomainEventStream::DownloadQueueItem { item_id } => {
-            ("download_queue_item".to_string(), Some(item_id))
+            (StreamKindValue::DownloadQueueItem, Some(item_id))
         }
     };
 
@@ -2869,7 +2878,7 @@ pub fn from_plugin_installation(inst: PluginInstallation) -> PluginInstallationP
 
 pub fn from_plugin_catalog_status(status: PluginCatalogStatus) -> PluginCatalogStatusPayload {
     PluginCatalogStatusPayload {
-        refresh_state: status.refresh_state,
+        refresh_state: CatalogRefreshStateValue::from_app_str(&status.refresh_state),
         github_available: status.github_available,
         last_checked_at: parse_optional_datetime(
             status.last_checked_at,
@@ -3301,5 +3310,19 @@ mod tests {
             Some("Example.Show.S01E01.1080p.WEB-DL")
         );
         assert!(matches!(mapped.facet, Some(MediaFacetValue::Anime)));
+    }
+}
+
+/// Media-request storage keeps the flattened, lowercase normalization of the
+/// monitor type ("futureepisodes"); the API exposes the typed enum.
+fn monitor_type_value_from_normalized(value: &str) -> Option<MonitorTypeValue> {
+    match value {
+        "monitored" => Some(MonitorTypeValue::Monitored),
+        "unmonitored" => Some(MonitorTypeValue::Unmonitored),
+        "futureepisodes" => Some(MonitorTypeValue::FutureEpisodes),
+        "missingandfutureepisodes" => Some(MonitorTypeValue::MissingAndFutureEpisodes),
+        "allepisodes" => Some(MonitorTypeValue::AllEpisodes),
+        "none" => Some(MonitorTypeValue::NoneSelected),
+        _ => None,
     }
 }

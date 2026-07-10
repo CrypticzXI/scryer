@@ -47,16 +47,7 @@ fn claim_rename_idempotency_key(scope: &str, key: Option<String>) -> GqlResult<O
 fn library_settings_draft(
     input: LibrarySettingsInput,
 ) -> GqlResult<scryer_application::LibrarySettingsOverrideDraft> {
-    let import_mode = input
-        .import_mode
-        .map(|value| {
-            scryer_domain::ImportMode::from_setting(&value).map_err(|message| {
-                to_gql_error(AppError::Validation(format!(
-                    "invalid importMode: {message}"
-                )))
-            })
-        })
-        .transpose()?;
+    let import_mode = input.import_mode.map(scryer_domain::ImportMode::from);
 
     Ok(scryer_application::LibrarySettingsOverrideDraft {
         required_audio_languages: input.required_audio_languages,

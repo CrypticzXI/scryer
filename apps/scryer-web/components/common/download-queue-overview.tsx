@@ -157,10 +157,10 @@ function queueStatusLabel(
   if (stateKey === "POST_PROCESSING" && stageLabel.length > 0) {
     return stageLabel;
   }
-  if (queueItem.importTransferPhase === "copying") {
+  if (queueItem.importTransferPhase === "COPYING") {
     return t("queue.transfer.copying");
   }
-  if (queueItem.importTransferPhase === "finalizing") {
+  if (queueItem.importTransferPhase === "FINALIZING") {
     return t("queue.transfer.finalizing");
   }
   return t(queueStateLabels[stateKey] ?? "queue.state.unknown");

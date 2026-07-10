@@ -26,7 +26,7 @@ import { useProviderCatalogSubscription } from "@/lib/hooks/use-provider-catalog
 import { wsClient } from "@/lib/graphql/ws-client";
 
 type PluginCatalogStatusRecord = {
-  refreshState: string;
+  refreshState: 'READY' | 'DEGRADED';
   githubAvailable: boolean;
   lastCheckedAt?: string | null;
   outageMessage?: string | null;

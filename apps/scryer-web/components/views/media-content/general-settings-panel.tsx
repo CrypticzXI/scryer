@@ -26,8 +26,8 @@ const RECAP_POLICY_OPTIONS = [
 ];
 
 const IMPORT_MODE_OPTIONS: { value: ImportMode; label: string }[] = [
-  { value: "hardlink_or_copy", label: "settings.importModeHardlinkCopy" },
-  { value: "move", label: "settings.importModeMove" },
+  { value: "HARDLINK_OR_COPY", label: "settings.importModeHardlinkCopy" },
+  { value: "MOVE", label: "settings.importModeMove" },
 ];
 
 const FILE_CHMOD_DERIVED_VALUE = "__derive_from_folder__";

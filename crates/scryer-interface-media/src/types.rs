@@ -290,7 +290,7 @@ pub struct DownloadQueueItemPayload {
     pub state: DownloadQueueStateValue,
     pub display_state: DownloadDisplayStateValue,
     pub progress_percent: i32,
-    pub import_transfer_phase: Option<String>,
+    pub import_transfer_phase: Option<ImportTransferPhaseValue>,
     pub import_transfer_bytes: Option<Long>,
     pub import_transfer_total_bytes: Option<Long>,
     pub import_transfer_started_at: Option<DateTime<Utc>>,
