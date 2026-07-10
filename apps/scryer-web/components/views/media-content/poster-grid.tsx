@@ -118,7 +118,7 @@ export const PosterGrid = React.memo(function PosterGrid({
 
   return (
     <div>
-      <div className="grid grid-cols-[repeat(auto-fill,150px)] justify-start gap-3.5">
+      <div className="grid grid-cols-[repeat(auto-fill,200px)] justify-start gap-3.5">
         {titles.map((title) => (
           <PosterCard
             key={title.id}
@@ -194,6 +194,7 @@ const PosterCard = React.memo(function PosterCard({
         createdAt={title.createdAt}
         monitored={title.monitored}
         selected={selected}
+        revealTextOnHover
         emptyLabel={t("label.noArt")}
         onOpen={handleActivate}
         interactiveProps={{

@@ -510,6 +510,7 @@ impl AcquisitionScopeStateRepository for TrackingAcquisitionScopeStateRepo {
         &self,
         title_id: &str,
         limit: i64,
+        offset: i64,
     ) -> AppResult<Vec<ReleaseDecision>> {
         Ok(self
             .release_decisions
@@ -517,6 +518,7 @@ impl AcquisitionScopeStateRepository for TrackingAcquisitionScopeStateRepo {
             .await
             .iter()
             .filter(|decision| decision.title_id == title_id)
+            .skip(offset.max(0) as usize)
             .take(limit.max(0) as usize)
             .cloned()
             .collect())
@@ -526,6 +528,7 @@ impl AcquisitionScopeStateRepository for TrackingAcquisitionScopeStateRepo {
         &self,
         wanted_item_id: &str,
         limit: i64,
+        offset: i64,
     ) -> AppResult<Vec<ReleaseDecision>> {
         Ok(self
             .release_decisions
@@ -533,6 +536,7 @@ impl AcquisitionScopeStateRepository for TrackingAcquisitionScopeStateRepo {
             .await
             .iter()
             .filter(|decision| decision.wanted_item_id == wanted_item_id)
+            .skip(offset.max(0) as usize)
             .take(limit.max(0) as usize)
             .cloned()
             .collect())
@@ -1019,6 +1023,57 @@ impl PendingReleaseRepository for TrackingPendingReleaseRepo {
             .filter(|release| release.title_id == title_id)
             .cloned()
             .collect())
+    }
+
+    async fn list_pending_releases_page(
+        &self,
+        query: PendingReleasesPageQuery,
+    ) -> AppResult<(Vec<PendingRelease>, i64)> {
+        let mut matched = self
+            .store
+            .lock()
+            .await
+            .iter()
+            .filter(|release| release.status == PendingReleaseStatus::Waiting)
+            .filter(|release| {
+                query
+                    .title_id
+                    .as_deref()
+                    .is_none_or(|title_id| release.title_id == title_id)
+            })
+            .filter(|release| {
+                query
+                    .wanted_item_id
+                    .as_deref()
+                    .is_none_or(|wanted_item_id| release.wanted_item_id == wanted_item_id)
+            })
+            .filter(|release| {
+                query.statuses.is_empty()
+                    || query
+                        .statuses
+                        .iter()
+                        .any(|status| status.as_str() == release.status.as_str())
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        match query.sort {
+            PendingReleasePageSort::DelayUntilAsc => matched.sort_by(|a, b| {
+                a.delay_until
+                    .cmp(&b.delay_until)
+                    .then_with(|| a.id.cmp(&b.id))
+            }),
+            PendingReleasePageSort::ReleaseScoreDesc => matched.sort_by(|a, b| {
+                b.release_score
+                    .cmp(&a.release_score)
+                    .then_with(|| a.delay_until.cmp(&b.delay_until))
+                    .then_with(|| a.id.cmp(&b.id))
+            }),
+        }
+        let total = matched.len() as i64;
+        let offset = query.offset.max(0) as usize;
+        let limit = query.limit.max(0) as usize;
+        let page = matched.into_iter().skip(offset).take(limit).collect();
+        Ok((page, total))
     }
 
     async fn update_pending_release_status(

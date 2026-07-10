@@ -1509,7 +1509,7 @@ h6 {
 }
 .cv-auto-poster {
   content-visibility: auto;
-  contain-intrinsic-size: auto 300px; /* poster card approximate height */
+  contain-intrinsic-size: auto 300px; /* 200px wide poster card at 2:3 */
 }
 
 /* PWA safe area utilities for standalone mode on notched devices */

@@ -310,6 +310,37 @@ impl MediaFileRepository for MediaFileStore {
             .collect()
     }
 
+    async fn collection_media_size_bytes(
+        &self,
+        title_id: &str,
+        ordered_path: &str,
+    ) -> AppResult<Option<i64>> {
+        let dialect = dialect_for_datastore(&self.datastore);
+        let total_size_expression = total_size_bytes_sum_expression(dialect, "mf.size_bytes");
+        let sql = format!(
+            "SELECT {total_size_expression} AS total_size_bytes
+               FROM media_files mf
+              WHERE mf.title_id = {{}}
+                AND mf.file_path = {{}}
+                AND mf.size_bytes > 0
+                AND {}",
+            live_media_file_predicate(dialect, "mf")
+        );
+        let total = SqlRuntime::fetch_optional(
+            self.datastore.read_exec(),
+            &sql,
+            &[
+                SqlArg::Text(title_id.to_string()),
+                SqlArg::Text(ordered_path.to_string()),
+            ],
+        )
+        .await?
+        .map(|row| row.i64("total_size_bytes"))
+        .transpose()?
+        .unwrap_or_default();
+        Ok((total > 0).then_some(total))
+    }
+
     async fn list_title_quality_summaries(
         &self,
         title_ids: &[String],

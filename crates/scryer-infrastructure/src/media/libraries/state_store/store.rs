@@ -7,8 +7,9 @@ use scryer_application::{
     AcquisitionScopeState, AcquisitionScopeStateRepository, AcquisitionScopeStatesQuery,
     AcquisitionScopeStatus, AppResult, BlocklistRepository, DownloadSourceKind,
     HousekeepingMediaFileRootRow, HousekeepingRepository, LibraryProbeRepository,
-    LibraryProbeSignature, NewBlocklistEntry, PendingRelease, PendingReleaseRepository,
-    PendingReleaseStatus, ReleaseDecision, SubtitleDownloadRepository,
+    LibraryProbeSignature, NewBlocklistEntry, PendingRelease, PendingReleasePageSort,
+    PendingReleaseRepository, PendingReleaseStatus, PendingReleasesPageQuery, ReleaseDecision,
+    SubtitleDownloadRepository,
     subtitles::{ExternalSubtitleDetectionSource, ExternalSubtitleProbeCacheEntry},
 };
 use scryer_domain::{
@@ -1047,6 +1048,7 @@ impl AcquisitionScopeStateRepository for WantedStore {
         &self,
         title_id: &str,
         limit: i64,
+        offset: i64,
     ) -> AppResult<Vec<ReleaseDecision>> {
         let rows = SqlRuntime::fetch_all(
             self.datastore.read_exec(),
@@ -1055,8 +1057,12 @@ impl AcquisitionScopeStateRepository for WantedStore {
                FROM release_decisions
               WHERE title_id = {}
               ORDER BY created_at DESC
-              LIMIT {}",
-            &[SqlArg::Text(title_id.to_string()), SqlArg::I64(limit)],
+              LIMIT {} OFFSET {}",
+            &[
+                SqlArg::Text(title_id.to_string()),
+                SqlArg::I64(limit),
+                SqlArg::I64(offset.max(0)),
+            ],
         )
         .await?;
         rows.iter().map(release_decision_row_to_item).collect()
@@ -1066,6 +1072,7 @@ impl AcquisitionScopeStateRepository for WantedStore {
         &self,
         wanted_item_id: &str,
         limit: i64,
+        offset: i64,
     ) -> AppResult<Vec<ReleaseDecision>> {
         let rows = SqlRuntime::fetch_all(
             self.datastore.read_exec(),
@@ -1074,8 +1081,12 @@ impl AcquisitionScopeStateRepository for WantedStore {
                FROM release_decisions
               WHERE wanted_item_id = {}
               ORDER BY created_at DESC
-              LIMIT {}",
-            &[SqlArg::Text(wanted_item_id.to_string()), SqlArg::I64(limit)],
+              LIMIT {} OFFSET {}",
+            &[
+                SqlArg::Text(wanted_item_id.to_string()),
+                SqlArg::I64(limit),
+                SqlArg::I64(offset.max(0)),
+            ],
         )
         .await?;
         rows.iter().map(release_decision_row_to_item).collect()
@@ -1445,6 +1456,14 @@ const PENDING_RELEASE_COLUMNS: &str =
     source_kind, release_score, scoring_log_json, indexer_source, release_guid,
     added_at, delay_until, status, grabbed_at, source_password, published_at, info_hash";
 
+/// Same columns as [`PENDING_RELEASE_COLUMNS`] but qualified with the `pr` alias
+/// so the paged read can JOIN `titles` for library scoping without ambiguous
+/// column names. The output column names are unchanged.
+const PENDING_RELEASE_COLUMNS_PR: &str =
+    "pr.id, pr.wanted_item_id, pr.title_id, pr.release_title, pr.release_url, pr.release_size_bytes,
+    pr.source_kind, pr.release_score, pr.scoring_log_json, pr.indexer_source, pr.release_guid,
+    pr.added_at, pr.delay_until, pr.status, pr.grabbed_at, pr.source_password, pr.published_at, pr.info_hash";
+
 fn pending_release_row_to_item(
     row: &SqlRow,
     encryption_key: Option<&EncryptionKey>,
@@ -1640,6 +1659,78 @@ impl PendingReleaseRepository for PendingReleaseStore {
             encryption_key.as_ref(),
         )
         .await
+    }
+
+    async fn list_pending_releases_page(
+        &self,
+        query: PendingReleasesPageQuery,
+    ) -> AppResult<(Vec<PendingRelease>, i64)> {
+        let limit = query.limit.max(0);
+        let offset = query.offset.max(0);
+
+        // Only JOIN titles when a library scope is supplied; the per-wanted-item
+        // caller has already authorized its single scope and passes no libraries.
+        let use_library_filter = !query.library_ids.is_empty();
+        let from_clause = if use_library_filter {
+            "FROM pending_releases pr JOIN titles t ON t.id = pr.title_id"
+        } else {
+            "FROM pending_releases pr"
+        };
+
+        // Base set is `waiting`, matching the historic list_waiting / for_wanted
+        // reads; the optional status filter narrows within that base.
+        let mut where_sql = String::from(" WHERE pr.status = 'waiting'");
+        let mut filter_args: Vec<SqlArg> = Vec::new();
+        if let Some(title_id) = query.title_id.as_deref() {
+            where_sql.push_str(" AND pr.title_id = {}");
+            filter_args.push(SqlArg::Text(title_id.to_string()));
+        }
+        if let Some(wanted_item_id) = query.wanted_item_id.as_deref() {
+            where_sql.push_str(" AND pr.wanted_item_id = {}");
+            filter_args.push(SqlArg::Text(wanted_item_id.to_string()));
+        }
+        append_in_filter(&mut where_sql, &mut filter_args, "pr.status", &query.statuses);
+        if use_library_filter {
+            append_in_filter(
+                &mut where_sql,
+                &mut filter_args,
+                "t.library_id",
+                &query.library_ids,
+            );
+        }
+
+        let count_sql = format!("SELECT COUNT(*) AS cnt {from_clause}{where_sql}");
+        let total = SqlRuntime::fetch_optional(self.datastore.read_exec(), &count_sql, &filter_args)
+            .await?
+            .map(|row| row.i64("cnt"))
+            .transpose()?
+            .unwrap_or_default();
+
+        if limit == 0 || total == 0 {
+            return Ok((Vec::new(), total));
+        }
+
+        let order_sql = match query.sort {
+            PendingReleasePageSort::DelayUntilAsc => " ORDER BY pr.delay_until ASC, pr.id ASC",
+            PendingReleasePageSort::ReleaseScoreDesc => {
+                " ORDER BY pr.release_score DESC, pr.delay_until ASC, pr.id ASC"
+            }
+        };
+        let page_sql = format!(
+            "SELECT {PENDING_RELEASE_COLUMNS_PR} {from_clause}{where_sql}{order_sql} LIMIT {{}} OFFSET {{}}"
+        );
+        let mut page_args = filter_args;
+        page_args.push(SqlArg::I64(limit));
+        page_args.push(SqlArg::I64(offset));
+        let encryption_key = self.encryption_key()?;
+        let items = fetch_pending_releases(
+            self.datastore.read_exec(),
+            &page_sql,
+            &page_args,
+            encryption_key.as_ref(),
+        )
+        .await?;
+        Ok((items, total))
     }
 
     async fn update_pending_release_status(

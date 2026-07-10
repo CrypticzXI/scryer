@@ -3206,8 +3206,25 @@ fn run_scryer_graphql_api_compat_validation(
             check.arg("scripts/check-graphql-schema-compat.mjs");
             check.arg(&previous_schema_path);
             check.arg(&current_schema_path);
-            run_streaming(&mut check, prefix)?;
-            prefixed_ok(prefix, "GraphQL API compatibility passed");
+            match run_streaming(&mut check, prefix) {
+                Ok(()) => prefixed_ok(prefix, "GraphQL API compatibility passed"),
+                Err(error) if schema_breaks_allowed_for_bump(latest_tag, next_version) => {
+                    warn(format!(
+                        "GraphQL API breaking/dangerous changes detected and PERMITTED: this \
+                         release raises the minor or major version (next: {next_version}). The \
+                         full change list is streamed above — every break must be enumerated \
+                         in the release notes. Checker result: {error:#}"
+                    ));
+                }
+                Err(error) => {
+                    return Err(error).with_context(|| {
+                        "GraphQL API compatibility failed for a patch release — breaking \
+                         schema changes are only permitted when the minor or major version \
+                         increases"
+                            .to_string()
+                    });
+                }
+            }
         }
         Err(error) if allow_missing_previous_graphql_schema(next_version) => {
             warn(format!(
@@ -3237,6 +3254,21 @@ fn read_previous_release_graphql_schema(
     show.args(["show", &spec]);
     run_capture(&mut show)
         .with_context(|| format!("failed to read {GRAPHQL_SCHEMA_ARTIFACT} from {latest_tag}"))
+}
+
+/// Breaking/dangerous GraphQL schema changes are permitted only when the
+/// release raises the minor or major version (e.g. 0.16.x → 0.17.0 — a major
+/// Scryer release under 0.x versioning); patch releases keep the hard
+/// compatibility failure.
+fn schema_breaks_allowed_for_bump(latest_tag: Option<&str>, next_version: &Version) -> bool {
+    let Some(tag) = latest_tag else {
+        return false;
+    };
+    let Ok(previous) = Version::parse(tag.trim_start_matches("scryer-v")) else {
+        return false;
+    };
+    next_version.major > previous.major
+        || (next_version.major == previous.major && next_version.minor > previous.minor)
 }
 
 fn update_graphql_schema_artifact(ctx: &TaskContext, current_schema_path: &Path) -> Result<()> {
@@ -3310,6 +3342,27 @@ fn run_scryer_nextest_validation(ctx: &TaskContext, prefix: &'static str) -> Res
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn schema_breaks_allowed_only_for_minor_or_major_bump() {
+        assert!(schema_breaks_allowed_for_bump(
+            Some("scryer-v0.16.8"),
+            &Version::new(0, 17, 0)
+        ));
+        assert!(schema_breaks_allowed_for_bump(
+            Some("scryer-v0.17.3"),
+            &Version::new(1, 0, 0)
+        ));
+        assert!(!schema_breaks_allowed_for_bump(
+            Some("scryer-v0.17.0"),
+            &Version::new(0, 17, 1)
+        ));
+        assert!(!schema_breaks_allowed_for_bump(None, &Version::new(0, 17, 0)));
+        assert!(!schema_breaks_allowed_for_bump(
+            Some("not-a-version"),
+            &Version::new(0, 17, 0)
+        ));
+    }
 
     fn catalog_v3_plugin_artifact(
         url: &str,

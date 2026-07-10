@@ -175,6 +175,16 @@ impl MediaFileRepository for FailingPathUpdateMediaFileRepo {
         self.inner.list_title_media_size_summaries(title_ids).await
     }
 
+    async fn collection_media_size_bytes(
+        &self,
+        title_id: &str,
+        ordered_path: &str,
+    ) -> AppResult<Option<i64>> {
+        self.inner
+            .collection_media_size_bytes(title_id, ordered_path)
+            .await
+    }
+
     async fn list_title_quality_summaries(
         &self,
         title_ids: &[String],

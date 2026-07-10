@@ -193,9 +193,10 @@ impl AcquisitionScopeStateRepository for TestLibraryStateStore {
         &self,
         title_id: &str,
         limit: i64,
+        offset: i64,
     ) -> AppResult<Vec<scryer_application::ReleaseDecision>> {
         self.wanted
-            .list_release_decisions_for_title(title_id, limit)
+            .list_release_decisions_for_title(title_id, limit, offset)
             .await
     }
 
@@ -203,9 +204,10 @@ impl AcquisitionScopeStateRepository for TestLibraryStateStore {
         &self,
         wanted_item_id: &str,
         limit: i64,
+        offset: i64,
     ) -> AppResult<Vec<scryer_application::ReleaseDecision>> {
         self.wanted
-            .list_release_decisions_for_acquisition_scope_state(wanted_item_id, limit)
+            .list_release_decisions_for_acquisition_scope_state(wanted_item_id, limit, offset)
             .await
     }
 }
@@ -257,6 +259,13 @@ impl PendingReleaseRepository for TestLibraryStateStore {
         self.pending_releases
             .list_pending_releases_for_title(title_id)
             .await
+    }
+
+    async fn list_pending_releases_page(
+        &self,
+        query: scryer_application::PendingReleasesPageQuery,
+    ) -> AppResult<(Vec<scryer_application::PendingRelease>, i64)> {
+        self.pending_releases.list_pending_releases_page(query).await
     }
 
     async fn update_pending_release_status(

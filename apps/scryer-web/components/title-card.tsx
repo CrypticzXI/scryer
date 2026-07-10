@@ -76,6 +76,8 @@ export type TitleCardProps = {
   monitored?: boolean | null;
   /** Denser sizing (action button, title, badge) for small grid/rail contexts. */
   compact?: boolean;
+  /** Hide title/year until the card is hovered or keyboard-focused. */
+  revealTextOnHover?: boolean;
   /** Optional top-right corner badge (discovery relation / recency marker). */
   cornerBadge?: TitleCardCornerBadge | null;
   /**
@@ -134,6 +136,7 @@ function TitleCardImpl({
   requested = false,
   monitored,
   compact = false,
+  revealTextOnHover = false,
   cornerBadge,
   onDismiss,
   dismissLabel,
@@ -218,7 +221,11 @@ function TitleCardImpl({
         {/* Base scrim so the title stays legible over a sharp poster */}
         <div
           aria-hidden="true"
-          className="absolute inset-0 bg-gradient-to-t from-black/75 via-black/5 to-transparent"
+          className={cn(
+            "absolute inset-0 bg-gradient-to-t from-black/75 via-black/5 to-transparent",
+            revealTextOnHover &&
+              "opacity-0 transition-opacity duration-200 group-hover:opacity-100 group-focus-within:opacity-100",
+          )}
         />
       </div>
 
@@ -379,6 +386,8 @@ function TitleCardImpl({
         className={cn(
           "pointer-events-none absolute inset-x-0 bottom-0 z-10 text-center",
           compact ? "px-2.5 pb-2.5" : "px-3 pb-3.5",
+          revealTextOnHover &&
+            "translate-y-2 opacity-0 transition duration-200 group-hover:translate-y-0 group-hover:opacity-100 group-focus-within:translate-y-0 group-focus-within:opacity-100",
         )}
       >
         <p

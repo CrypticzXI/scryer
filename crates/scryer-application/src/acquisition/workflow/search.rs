@@ -190,7 +190,7 @@ impl AppUseCase {
             .services
             .workflow
             .acquisition_scope_states
-            .list_release_decisions_for_acquisition_scope_state(&item.id, 10)
+            .list_release_decisions_for_acquisition_scope_state(&item.id, 10, 0)
             .await?;
         Ok(!decisions.is_empty()
             && decisions

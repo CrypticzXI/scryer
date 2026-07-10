@@ -29,9 +29,11 @@ test("reactive catalog title refresh uses catalog list projection", () => {
   assert.equal(result.query.includes("episodesMonitored"), true);
   assert.equal(result.query.includes("episodesTotal"), true);
   assert.equal(result.query.includes("runtimeMinutes"), true);
+  // Background art is part of the catalog list projection (poster/list cards
+  // render it), so the reactive refresh fetches it for row parity.
+  assert.equal(result.query.includes("backgroundUrl"), true);
+  assert.equal(result.query.includes("backgroundSourceUrl"), true);
   assert.equal(result.query.includes("overview"), false);
-  assert.equal(result.query.includes("backgroundUrl"), false);
-  assert.equal(result.query.includes("backgroundSourceUrl"), false);
   assert.equal(result.query.includes("canonicalTags"), false);
   assert.equal(result.query.includes("externalIds"), false);
   assert.equal(result.query.includes("monitorType"), false);

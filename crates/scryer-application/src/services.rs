@@ -2960,6 +2960,55 @@ impl AppUseCase {
             .collect())
     }
 
+    /// Batch variant of [`Self::list_episode_media_files`] for one title:
+    /// one permission check and one scoped-files fetch cover every requested
+    /// episode id, grouped per episode. A missing or non-`View`-visible title
+    /// yields an empty map (silent drop, matching the loader-facing batches).
+    pub async fn list_episode_media_files_for_title(
+        &self,
+        actor: &User,
+        title_id: &str,
+        episode_ids: &[String],
+    ) -> AppResult<std::collections::HashMap<String, Vec<TitleMediaFile>>> {
+        if episode_ids.is_empty() {
+            return Ok(std::collections::HashMap::new());
+        }
+        let Some(title) = self.services.catalog.titles.get_by_id(title_id).await? else {
+            return Ok(std::collections::HashMap::new());
+        };
+        let allowed_library_ids = self
+            .authorized_library_ids(actor, None, scryer_domain::LibraryPermission::View)
+            .await?;
+        if !allowed_library_ids.contains(&title.library_id) {
+            return Ok(std::collections::HashMap::new());
+        }
+        let scoped_files = self
+            .services
+            .library
+            .media_files
+            .list_live_media_files_for_episode_ids(title_id, episode_ids)
+            .await?;
+        let mut files_by_episode: std::collections::HashMap<String, Vec<TitleMediaFile>> =
+            std::collections::HashMap::new();
+        for scoped_file in scoped_files {
+            for episode_id in episode_ids {
+                if scoped_file
+                    .episode_ids
+                    .iter()
+                    .any(|scoped_episode_id| scoped_episode_id == episode_id)
+                {
+                    let mut media_file = scoped_file.media_file.clone();
+                    media_file.episode_id = Some(episode_id.clone());
+                    files_by_episode
+                        .entry(episode_id.clone())
+                        .or_default()
+                        .push(media_file);
+                }
+            }
+        }
+        Ok(files_by_episode)
+    }
+
     pub async fn get_title_wanted_item(
         &self,
         actor: &User,

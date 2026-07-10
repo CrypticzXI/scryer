@@ -22,7 +22,7 @@ impl AppUseCase {
             .services
             .workflow
             .acquisition_scope_states
-            .list_release_decisions_for_title(title_id, 25)
+            .list_release_decisions_for_title(title_id, 25, 0)
             .await?;
         let wanted_items = self
             .services

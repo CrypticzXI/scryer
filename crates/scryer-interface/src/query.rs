@@ -35,7 +35,7 @@ use crate::mappers::{
     from_pending_import_counts, from_pending_release, from_provider_type, from_runtime_path_style,
     from_smg_scryer_update_notice, from_smg_version_compatibility_notice, from_system_health,
     from_title, from_title_acquisition_diagnostics, from_title_history_page,
-    from_title_rating_summary, from_title_release_blocklist_entry,
+    from_title_release_blocklist_entry,
     from_upstream_scheduler_snapshot, from_user_with_auth_factor_status, from_wanted_item,
     from_wanted_scope_view,
 };
@@ -332,218 +332,9 @@ fn convergence_state_to_value(
     }
 }
 
-async fn title_payloads_from_titles(
-    app: &scryer_application::AppUseCase,
-    actor: &scryer_domain::User,
-    titles: Vec<scryer_domain::Title>,
-    selection: TitlePayloadSelection,
-) -> GqlResult<Vec<TitlePayload>> {
-    if titles.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let title_ids: Vec<String> = titles.iter().map(|t| t.id.clone()).collect();
-    let libraries = async {
-        if selection.include_library_context || selection.include_root_folder_path {
-            app.list_libraries_for_permission(actor, None, scryer_domain::LibraryPermission::View)
-                .await
-        } else {
-            Ok(Vec::new())
-        }
-    };
-    let summaries = async {
-        if selection.include_quality_tier {
-            app.list_primary_collection_summaries(actor, &title_ids)
-                .await
-        } else {
-            Ok(Vec::new())
-        }
-    };
-    let media_size_summaries = async {
-        if selection.include_size_bytes {
-            app.list_title_media_size_summaries(actor, &title_ids).await
-        } else {
-            Ok(Vec::new())
-        }
-    };
-    let quality_summaries = async {
-        if selection.include_current_quality_tier {
-            app.list_title_quality_summaries(actor, &title_ids).await
-        } else {
-            Ok(Vec::new())
-        }
-    };
-    let episode_progress_summaries = async {
-        if selection.include_episode_progress {
-            app.list_title_episode_progress_summaries(actor, &title_ids)
-                .await
-        } else {
-            Ok(Vec::new())
-        }
-    };
-    let collections_by_title_id = async {
-        if selection.include_collections {
-            app.list_collections_for_titles(actor, &titles).await
-        } else {
-            Ok(std::collections::HashMap::new())
-        }
-    };
-    let collection_episode_progress_summaries = async {
-        if selection.include_collection_episode_progress {
-            app.list_collection_episode_progress_summaries(actor, &title_ids)
-                .await
-        } else {
-            Ok(Vec::new())
-        }
-    };
-    let ratings = async {
-        if selection.include_ratings {
-            app.list_title_ratings(actor, &title_ids).await
-        } else {
-            Ok(Vec::new())
-        }
-    };
-    let movie_media_summaries = async {
-        if selection.include_movie_media_summary {
-            app.list_title_movie_media_summaries(actor, &title_ids)
-                .await
-        } else {
-            Ok(Vec::new())
-        }
-    };
-    let (
-        libraries,
-        summaries,
-        media_size_summaries,
-        quality_summaries,
-        episode_progress_summaries,
-        collections_by_title_id,
-        collection_episode_progress_summaries,
-        ratings,
-        movie_media_summaries,
-    ) = tokio::try_join!(
-        libraries,
-        summaries,
-        media_size_summaries,
-        quality_summaries,
-        episode_progress_summaries,
-        collections_by_title_id,
-        collection_episode_progress_summaries,
-        ratings,
-        movie_media_summaries,
-    )
-    .map_err(to_gql_error)?;
-    let library_map: std::collections::HashMap<&str, (&String, &String)> = libraries
-        .iter()
-        .map(|library| (library.id.as_str(), (&library.name, &library.slug)))
-        .collect();
-    let root_folder_path_map: std::collections::HashMap<&str, &String> = libraries
-        .iter()
-        .flat_map(|library| library.roots.iter())
-        .map(|root| (root.id.as_str(), &root.path))
-        .collect();
-    let summary_map: std::collections::HashMap<&str, _> =
-        summaries.iter().map(|s| (s.title_id.as_str(), s)).collect();
-    let media_size_map: std::collections::HashMap<&str, i64> = media_size_summaries
-        .iter()
-        .map(|summary| (summary.title_id.as_str(), summary.total_size_bytes))
-        .collect();
-    let quality_map: std::collections::HashMap<&str, &String> = quality_summaries
-        .iter()
-        .map(|summary| (summary.title_id.as_str(), &summary.quality_tier))
-        .collect();
-    let episode_progress_map: std::collections::HashMap<&str, _> = episode_progress_summaries
-        .iter()
-        .map(|summary| (summary.title_id.as_str(), summary))
-        .collect();
-    let collection_episode_progress_map: std::collections::HashMap<&str, _> =
-        collection_episode_progress_summaries
-            .iter()
-            .map(|summary| (summary.collection_id.as_str(), summary))
-            .collect();
-    let ratings_map: std::collections::HashMap<&str, _> = ratings
-        .iter()
-        .map(|(title_id, summary)| (title_id.as_str(), summary))
-        .collect();
-    let movie_media_map: std::collections::HashMap<&str, _> = movie_media_summaries
-        .iter()
-        .map(|summary| (summary.title_id.as_str(), summary))
-        .collect();
-
-    Ok(titles
-        .into_iter()
-        .map(|t| {
-            let id = t.id.clone();
-            let library_id = t.library_id.clone();
-            let root_folder_id = t.root_folder_id.clone();
-            let mut payload = from_title(t);
-            if let Some((library_name, library_slug)) = library_map.get(library_id.as_str()) {
-                payload.library_name = Some((*library_name).clone());
-                payload.library_slug = Some((*library_slug).clone());
-            }
-            if let Some(s) = summary_map.get(id.as_str()) {
-                payload.quality_tier = s.label.clone();
-            }
-            if let Some(quality_tier) = quality_map.get(id.as_str()) {
-                payload.current_quality_tier = Some((*quality_tier).clone());
-            }
-            payload.size_bytes = media_size_map.get(id.as_str()).copied().map(Long::from);
-            if let Some(summary) = episode_progress_map.get(id.as_str()) {
-                payload.episodes_owned = Some(summary.owned_episodes);
-                payload.episodes_monitored = Some(summary.monitored_episodes);
-                payload.episodes_total = Some(summary.total_episodes);
-            }
-            if let Some(summary) = ratings_map.get(id.as_str()) {
-                payload.preloaded_ratings = Some(from_title_rating_summary((*summary).clone()));
-            }
-            if let Some(path) = root_folder_path_map.get(root_folder_id.as_str()) {
-                payload.preloaded_root_folder_path = Some((*path).clone());
-            }
-            if let Some(summary) = movie_media_map.get(id.as_str()) {
-                payload.media_resolution = summary.resolution.clone();
-                payload.media_hdr = summary.hdr_format.clone();
-                payload.media_audio_codec = summary.audio_codec.clone();
-            }
-            if selection.include_collections {
-                payload.preloaded_collections = Some(
-                    collections_by_title_id
-                        .get(id.as_str())
-                        .cloned()
-                        .unwrap_or_default()
-                        .into_iter()
-                        .map(|collection| {
-                            let collection_id = collection.id.clone();
-                            let mut payload = from_collection(collection);
-                            if let Some(summary) =
-                                collection_episode_progress_map.get(collection_id.as_str())
-                            {
-                                payload.episodes_owned = Some(summary.owned_episodes);
-                                payload.episodes_monitored = Some(summary.monitored_episodes);
-                                payload.episodes_total = Some(summary.total_episodes);
-                            }
-                            payload
-                        })
-                        .collect(),
-                );
-            }
-            payload
-        })
-        .collect())
-}
-
 #[derive(Clone, Copy)]
 struct TitlePayloadSelection {
     include_external_ids: bool,
-    include_library_context: bool,
-    include_quality_tier: bool,
-    include_current_quality_tier: bool,
-    include_size_bytes: bool,
-    include_episode_progress: bool,
-    include_collection_episode_progress: bool,
-    include_collections: bool,
-    include_ratings: bool,
-    include_root_folder_path: bool,
-    include_movie_media_summary: bool,
 }
 
 impl TitlePayloadSelection {
@@ -552,33 +343,8 @@ impl TitlePayloadSelection {
         let title_field_exists = |name: &str| {
             lookahead.field(name).exists() || lookahead.field("items").field(name).exists()
         };
-        let collection_field_exists = |name: &str| {
-            lookahead.field("collections").field(name).exists()
-                || lookahead
-                    .field("items")
-                    .field("collections")
-                    .field(name)
-                    .exists()
-        };
         Self {
             include_external_ids: title_field_exists("externalIds"),
-            include_library_context: title_field_exists("libraryName")
-                || title_field_exists("librarySlug"),
-            include_quality_tier: title_field_exists("qualityTier"),
-            include_current_quality_tier: title_field_exists("currentQualityTier"),
-            include_size_bytes: title_field_exists("sizeBytes"),
-            include_episode_progress: title_field_exists("episodesOwned")
-                || title_field_exists("episodesMonitored")
-                || title_field_exists("episodesTotal"),
-            include_collection_episode_progress: collection_field_exists("episodesOwned")
-                || collection_field_exists("episodesMonitored")
-                || collection_field_exists("episodesTotal"),
-            include_collections: title_field_exists("collections"),
-            include_ratings: title_field_exists("ratings"),
-            include_root_folder_path: title_field_exists("rootFolderPath"),
-            include_movie_media_summary: title_field_exists("mediaResolution")
-                || title_field_exists("mediaHdr")
-                || title_field_exists("mediaAudioCodec"),
         }
     }
 }
@@ -789,7 +555,7 @@ impl CatalogQueries {
         let has_more = page.has_more;
         let total_count = page.total_count;
         let filter_counts = page.filter_counts.clone();
-        let items = title_payloads_from_titles(&app, &actor, page.items, selection).await?;
+        let items = page.items.into_iter().map(from_title).collect();
 
         Ok(TitleCatalogPayload {
             items,
@@ -931,13 +697,12 @@ impl CatalogQueries {
     ) -> GqlResult<Vec<TitlePayload>> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        let selection = TitlePayloadSelection::from_ctx(ctx);
         let titles = app
             .list_titles_by_external_ids(&actor, &source, &values)
             .await
             .map_err(to_gql_error)?;
 
-        title_payloads_from_titles(&app, &actor, titles, selection).await
+        Ok(titles.into_iter().map(from_title).collect())
     }
 
     async fn title(&self, ctx: &Context<'_>, id: ID) -> GqlResult<Option<TitlePayload>> {
@@ -951,11 +716,7 @@ impl CatalogQueries {
                 .await
         }
         .map_err(to_gql_error)?;
-        let Some(title) = title else {
-            return Ok(None);
-        };
-        let mut payloads = title_payloads_from_titles(&app, &actor, vec![title], selection).await?;
-        Ok(payloads.pop())
+        Ok(title.map(from_title))
     }
 
     async fn episode(
@@ -1012,7 +773,6 @@ impl CatalogQueries {
     ) -> GqlResult<Option<TitlePayload>> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        let selection = TitlePayloadSelection::from_ctx(ctx);
         let Some(title) = app
             .get_title_by_slug(
                 &actor,
@@ -1026,8 +786,7 @@ impl CatalogQueries {
         else {
             return Ok(None);
         };
-        let mut payloads = title_payloads_from_titles(&app, &actor, vec![title], selection).await?;
-        Ok(payloads.pop())
+        Ok(Some(from_title(title)))
     }
 
     async fn media_rename_preview(
@@ -1973,44 +1732,43 @@ impl SystemQueries {
     ) -> GqlResult<PendingReleasesPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        let mut releases = app
-            .list_pending_releases(&actor)
-            .await
-            .map_err(to_gql_error)?;
-        if let Some(filter) = filter {
-            if let Some(title_id) = filter.title_id {
-                let title_id = String::from(title_id);
-                releases.retain(|release| release.title_id == title_id);
-            }
-            if let Some(wanted_item_id) = filter.wanted_item_id {
-                let wanted_item_id = String::from(wanted_item_id);
-                releases.retain(|release| release.wanted_item_id == wanted_item_id);
-            }
-            if let Some(statuses) = filter.statuses {
-                let statuses = statuses
+        let (title_id, wanted_item_id, statuses) = match filter {
+            Some(filter) => (
+                filter.title_id.map(String::from),
+                filter.wanted_item_id.map(String::from),
+                filter
+                    .statuses
+                    .unwrap_or_default()
                     .into_iter()
                     .map(PendingReleaseStatusValue::into_application)
-                    .collect::<Vec<_>>();
-                releases.retain(|release| statuses.contains(&release.status));
-            }
-        }
-
-        let total_count = releases.len();
-        let limit = limit.clamp(1, 500) as usize;
-        let offset = offset.max(0) as usize;
+                    .collect::<Vec<_>>(),
+            ),
+            None => (None, None, Vec::new()),
+        };
+        let limit = limit.clamp(1, 500);
+        let offset = offset.max(0);
+        let (releases, total_count) = app
+            .list_pending_releases_page(
+                &actor,
+                title_id,
+                wanted_item_id,
+                statuses,
+                i64::from(limit),
+                i64::from(offset),
+            )
+            .await
+            .map_err(to_gql_error)?;
         let items = releases
             .into_iter()
-            .skip(offset)
-            .take(limit)
             .map(from_pending_release)
             .collect::<Vec<_>>();
-        let has_more = offset.saturating_add(items.len()) < total_count;
+        let has_more = i64::from(offset).saturating_add(items.len() as i64) < total_count;
         Ok(PendingReleasesPayload {
             items,
-            limit: usize_to_i32_saturating(limit),
-            offset: usize_to_i32_saturating(offset),
+            limit,
+            offset,
             has_more,
-            total_count: usize_to_i32_saturating(total_count),
+            total_count: total_count.min(i64::from(i32::MAX)) as i32,
         })
     }
 

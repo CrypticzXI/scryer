@@ -46,7 +46,7 @@ use crate::{
     NotificationChannelRepository, NotificationSubscriptionRepository,
     OAuthAuthorizationCodeRecord, OAuthConnectedAppRecord, OAuthRefreshGrantRecord,
     OAuthRefreshRotationOutcome, OAuthRefreshTokenRecord, OAuthRepository, PendingRelease,
-    PendingReleaseRepository, PendingStagedNzb, PluginDescriptorLoader,
+    PendingReleaseRepository, PendingReleasesPageQuery, PendingStagedNzb, PluginDescriptorLoader,
     PluginInstallationRepository, PostProcessingScriptRepository, ReleaseDecision,
     RuleSetRepository, SchedulerAdmission, SchedulerBatchDecision, SchedulerBatchRequest,
     SchedulerFeedback, SchedulerLease, SchedulerSnapshot, SchedulerSnapshotFilter,
@@ -729,6 +729,14 @@ impl MediaFileRepository for NullMediaFileRepository {
         Ok(Vec::new())
     }
 
+    async fn collection_media_size_bytes(
+        &self,
+        _title_id: &str,
+        _ordered_path: &str,
+    ) -> AppResult<Option<i64>> {
+        Ok(None)
+    }
+
     async fn list_title_quality_summaries(
         &self,
         _title_ids: &[String],
@@ -1003,6 +1011,7 @@ impl AcquisitionScopeStateRepository for NullAcquisitionScopeStateRepository {
         &self,
         _title_id: &str,
         _limit: i64,
+        _offset: i64,
     ) -> AppResult<Vec<ReleaseDecision>> {
         Ok(vec![])
     }
@@ -1010,6 +1019,7 @@ impl AcquisitionScopeStateRepository for NullAcquisitionScopeStateRepository {
         &self,
         _wanted_item_id: &str,
         _limit: i64,
+        _offset: i64,
     ) -> AppResult<Vec<ReleaseDecision>> {
         Ok(vec![])
     }
@@ -1758,6 +1768,12 @@ impl PendingReleaseRepository for NullPendingReleaseRepository {
     }
     async fn list_pending_releases_for_title(&self, _: &str) -> AppResult<Vec<PendingRelease>> {
         Ok(vec![])
+    }
+    async fn list_pending_releases_page(
+        &self,
+        _: PendingReleasesPageQuery,
+    ) -> AppResult<(Vec<PendingRelease>, i64)> {
+        Ok((vec![], 0))
     }
     async fn update_pending_release_status(
         &self,

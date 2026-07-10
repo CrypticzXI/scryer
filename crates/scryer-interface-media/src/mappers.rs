@@ -29,7 +29,6 @@ use scryer_domain::{
 };
 use scryer_rules;
 use serde_json::Value;
-use std::fs;
 
 pub fn parse_iso_date(value: Option<String>) -> Option<Date> {
     value.and_then(|value| Date::parse_iso(&value).ok())
@@ -1228,8 +1227,6 @@ pub fn from_title(title: Title) -> TitlePayload {
     TitlePayload {
         id: title.id.into(),
         library_id: title.library_id.into(),
-        library_name: None,
-        library_slug: None,
         name: title.name,
         facet: MediaFacetValue::from_domain(title.facet),
         monitored: title.monitored,
@@ -1288,18 +1285,6 @@ pub fn from_title(title: Title) -> TitlePayload {
         inter_season_movies,
         filler_policy,
         recap_policy,
-        quality_tier: None,
-        current_quality_tier: None,
-        size_bytes: None,
-        episodes_owned: None,
-        episodes_monitored: None,
-        episodes_total: None,
-        media_resolution: None,
-        media_hdr: None,
-        media_audio_codec: None,
-        preloaded_collections: None,
-        preloaded_ratings: None,
-        preloaded_root_folder_path: None,
     }
 }
 
@@ -1966,7 +1951,6 @@ fn from_media_rename_apply_item(item: RenameApplyItemResult) -> MediaRenameApply
 }
 
 pub fn from_collection(collection: Collection) -> CollectionPayload {
-    let file_size_bytes = file_size_bytes_for_path(collection.ordered_path.as_deref());
     CollectionPayload {
         id: collection.id.into(),
         title_id: collection.title_id.into(),
@@ -1975,13 +1959,9 @@ pub fn from_collection(collection: Collection) -> CollectionPayload {
         label: collection.label,
         ordered_path: collection.ordered_path,
         narrative_order: collection.narrative_order,
-        file_size_bytes: file_size_bytes.map(Long::from),
         first_episode_number: collection.first_episode_number,
         last_episode_number: collection.last_episode_number,
         monitored: collection.monitored,
-        episodes_owned: None,
-        episodes_monitored: None,
-        episodes_total: None,
         created_at: collection.created_at,
     }
 }
@@ -2031,17 +2011,6 @@ pub fn from_series_movie_link(link: scryer_domain::SeriesMovieLink) -> SeriesMov
         created_at: link.created_at,
         updated_at: link.updated_at,
     }
-}
-
-pub fn file_size_bytes_for_path(ordered_path: Option<&str>) -> Option<i64> {
-    let path = stored_path_to_path_buf(ordered_path?);
-    fs::metadata(&path).ok().and_then(|metadata| {
-        if metadata.is_file() {
-            Some(metadata.len() as i64)
-        } else {
-            None
-        }
-    })
 }
 
 pub fn from_episode(episode: Episode) -> EpisodePayload {

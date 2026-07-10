@@ -9,8 +9,6 @@ pub use scryer_interface_media_types::*;
 pub struct TitlePayload {
     pub id: ID,
     pub library_id: ID,
-    pub library_name: Option<String>,
-    pub library_slug: Option<String>,
     pub name: String,
     pub facet: MediaFacetValue,
     pub monitored: bool,
@@ -49,30 +47,6 @@ pub struct TitlePayload {
     pub inter_season_movies: Option<bool>,
     pub filler_policy: Option<String>,
     pub recap_policy: Option<String>,
-    /// Legacy title quality label, populated in list queries.
-    pub quality_tier: Option<String>,
-    /// Lowest live media-file quality tier for the title, populated in list queries.
-    pub current_quality_tier: Option<String>,
-    /// Aggregated media-file size in bytes for the title, populated in list queries.
-    pub size_bytes: Option<Long>,
-    /// Owned-vs-total episode progress, excluding specials, populated in list queries.
-    pub episodes_owned: Option<i64>,
-    /// Monitored episode count, excluding specials, populated in list queries.
-    pub episodes_monitored: Option<i64>,
-    /// Total episode count, excluding specials, populated in list queries.
-    pub episodes_total: Option<i64>,
-    /// Primary movie media resolution, populated in list queries when projected.
-    pub media_resolution: Option<String>,
-    /// Primary movie media HDR format, populated in list queries when projected.
-    pub media_hdr: Option<String>,
-    /// Primary movie media audio codec, populated in list queries when projected.
-    pub media_audio_codec: Option<String>,
-    #[graphql(skip)]
-    pub preloaded_collections: Option<Vec<CollectionPayload>>,
-    #[graphql(skip)]
-    pub preloaded_ratings: Option<TitleRatingPayload>,
-    #[graphql(skip)]
-    pub preloaded_root_folder_path: Option<String>,
 }
 
 #[derive(SimpleObject, Clone)]
@@ -174,16 +148,9 @@ pub struct CollectionPayload {
     pub label: Option<String>,
     pub ordered_path: Option<String>,
     pub narrative_order: Option<String>,
-    pub file_size_bytes: Option<Long>,
     pub first_episode_number: Option<String>,
     pub last_episode_number: Option<String>,
     pub monitored: bool,
-    /// Owned-vs-total episode progress for this collection, populated when requested.
-    pub episodes_owned: Option<i64>,
-    /// Monitored episode count for this collection, populated when requested.
-    pub episodes_monitored: Option<i64>,
-    /// Total countable episode count for this collection, populated when requested.
-    pub episodes_total: Option<i64>,
     pub created_at: DateTime<Utc>,
 }
 

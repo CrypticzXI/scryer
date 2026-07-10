@@ -107,7 +107,7 @@ impl AppUseCase {
                 .services
                 .workflow
                 .acquisition_scope_states
-                .list_release_decisions_for_acquisition_scope_state(wid, query.limit)
+                .list_release_decisions_for_acquisition_scope_state(wid, query.limit, query.offset)
                 .await;
         }
         if let Some(tid) = query.title_id.as_deref() {
@@ -128,7 +128,7 @@ impl AppUseCase {
                 .services
                 .workflow
                 .acquisition_scope_states
-                .list_release_decisions_for_title(tid, query.limit)
+                .list_release_decisions_for_title(tid, query.limit, query.offset)
                 .await;
         }
         Ok(vec![])

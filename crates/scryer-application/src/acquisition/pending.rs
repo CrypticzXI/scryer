@@ -317,6 +317,44 @@ impl AppUseCase {
         Ok(allowed)
     }
 
+    /// Paged, storage-side counterpart to [`Self::list_pending_releases`]. The
+    /// `waiting` base set, the optional `title_id` / `wanted_item_id` / `statuses`
+    /// filters, library authorization, ordering, limit/offset, and the total
+    /// count are all resolved in SQL. Returns `(page, total_matching)`.
+    pub async fn list_pending_releases_page(
+        &self,
+        actor: &User,
+        title_id: Option<String>,
+        wanted_item_id: Option<String>,
+        statuses: Vec<PendingReleaseStatus>,
+        limit: i64,
+        offset: i64,
+    ) -> AppResult<(Vec<PendingRelease>, i64)> {
+        let authorized_library_ids = self
+            .authorized_library_ids(actor, None, scryer_domain::LibraryPermission::View)
+            .await?;
+        if authorized_library_ids.is_empty() {
+            return Ok((Vec::new(), 0));
+        }
+        let query = PendingReleasesPageQuery {
+            library_ids: authorized_library_ids,
+            title_id,
+            wanted_item_id,
+            statuses: statuses
+                .into_iter()
+                .map(|status| status.as_str().to_string())
+                .collect(),
+            limit,
+            offset,
+            sort: PendingReleasePageSort::DelayUntilAsc,
+        };
+        self.services
+            .workflow
+            .pending_releases
+            .list_pending_releases_page(query)
+            .await
+    }
+
     pub async fn get_pending_release(
         &self,
         actor: &User,
@@ -346,11 +384,10 @@ impl AppUseCase {
         Ok(release)
     }
 
-    pub async fn list_pending_releases_for_wanted_item(
-        &self,
-        actor: &User,
-        wanted_item_id: &str,
-    ) -> AppResult<Vec<PendingRelease>> {
+    /// Require `View` on the library owning `wanted_item_id`, resolving the
+    /// library from the wanted item (falling back to its title). Shared by the
+    /// per-wanted-item pending-release reads.
+    async fn require_wanted_item_view(&self, actor: &User, wanted_item_id: &str) -> AppResult<()> {
         let wanted = self
             .services
             .workflow
@@ -370,11 +407,46 @@ impl AppUseCase {
                 .ok_or_else(|| AppError::NotFound(format!("title {}", wanted.title_id)))?
         };
         self.require_library_permission(actor, &library_id, scryer_domain::LibraryPermission::View)
-            .await?;
+            .await
+    }
+
+    pub async fn list_pending_releases_for_wanted_item(
+        &self,
+        actor: &User,
+        wanted_item_id: &str,
+    ) -> AppResult<Vec<PendingRelease>> {
+        self.require_wanted_item_view(actor, wanted_item_id).await?;
         self.services
             .workflow
             .pending_releases
             .list_pending_releases_for_wanted_item(wanted_item_id)
+            .await
+    }
+
+    /// Paged, storage-side counterpart to
+    /// [`Self::list_pending_releases_for_wanted_item`]. Authorization is scoped to
+    /// the single wanted item, so no library filter is pushed to the query.
+    pub async fn list_pending_releases_for_wanted_item_page(
+        &self,
+        actor: &User,
+        wanted_item_id: &str,
+        limit: i64,
+        offset: i64,
+    ) -> AppResult<(Vec<PendingRelease>, i64)> {
+        self.require_wanted_item_view(actor, wanted_item_id).await?;
+        let query = PendingReleasesPageQuery {
+            library_ids: Vec::new(),
+            title_id: None,
+            wanted_item_id: Some(wanted_item_id.to_string()),
+            statuses: Vec::new(),
+            limit,
+            offset,
+            sort: PendingReleasePageSort::ReleaseScoreDesc,
+        };
+        self.services
+            .workflow
+            .pending_releases
+            .list_pending_releases_page(query)
             .await
     }
 

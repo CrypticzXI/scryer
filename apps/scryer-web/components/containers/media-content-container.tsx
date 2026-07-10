@@ -52,6 +52,7 @@ import {
   viewToFacet,
 } from "@/lib/constants/settings";
 import { isAbortError, makeAbortableFetch } from "@/lib/graphql/urql-client";
+import { forEventTypes } from "@/lib/reactive/domain-event-feed";
 import { useClient } from "urql";
 import type {
   ContentSettingsSection,
@@ -739,7 +740,8 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   const { registerInteractiveJobRun } = useJobRunToasts();
   const { confirmReplaceConflict, replaceConflictDialog } =
     useDownloadConflictConfirmation();
-  const { queueCatalogTitleRefresh } = useReactiveRefresh();
+  const { queueCatalogTitleRefresh, registerReactiveRefresh } =
+    useReactiveRefresh();
   const [titleDeleteTypedConfirmation, setTitleDeleteTypedConfirmation] =
     React.useState("");
   const [pendingDeletedTitleIds, setPendingDeletedTitleIds] = React.useState<
@@ -791,7 +793,9 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     (contentSettingsSection === "library" ||
       contentSettingsSection === "general" ||
       contentSettingsSection === "routing");
-  const refreshCatalogDiscovery = React.useCallback(async () => {
+  const refreshCatalogDiscovery = React.useCallback(async (options?: {
+    forceNetwork?: boolean;
+  }) => {
     const requestId = catalogDiscoveryRequestIdRef.current + 1;
     catalogDiscoveryRequestIdRef.current = requestId;
     if (!shouldLoadCatalogTitles) {
@@ -813,7 +817,9 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
         .query<{ catalogDiscovery?: CatalogDiscoveryPayload }>(
           catalogDiscoveryQuery,
           { input },
-          { requestPolicy: "cache-first" },
+          // Freshness-first: cache-served for instant paint; discovery events
+          // re-execute with network-only to replace the cached entry.
+          { requestPolicy: options?.forceNetwork ? "network-only" : "cache-first" },
         )
         .toPromise();
       if (error) {
@@ -835,6 +841,20 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   React.useEffect(() => {
     void refreshCatalogDiscovery();
   }, [refreshCatalogDiscovery]);
+
+  // A completed discovery search invalidates the cached catalog-discovery
+  // groups: re-execute over the network so the document cache is replaced.
+  React.useEffect(
+    () =>
+      registerReactiveRefresh({
+        aliasKey: "catalog-discovery",
+        predicate: forEventTypes("discovery_search_completed"),
+        run: () => {
+          void refreshCatalogDiscovery({ forceNetwork: true });
+        },
+      }),
+    [registerReactiveRefresh, refreshCatalogDiscovery],
+  );
 
   const [desktopViewModes, setDesktopViewModes] = React.useState<
     Partial<Record<ViewId, ContentViewMode>>

@@ -22,11 +22,11 @@ use std::time::Duration;
 
 use async_graphql::dataloader::{DataLoader, Loader};
 use scryer_application::{
-    AppUseCase, CollectionEpisodeProgressSummary, PrimaryCollectionSummary,
+    AcquisitionScopeState, AppUseCase, CollectionEpisodeProgressSummary, PrimaryCollectionSummary,
     TitleEpisodeProgressSummary, TitleMediaFile, TitleMediaSizeSummary, TitleMovieMediaSummary,
     TitleQualitySummary, TitleRatingSummary,
 };
-use scryer_domain::{Collection, Episode, Library, Title, User};
+use scryer_domain::{Collection, Episode, Library, SeriesMovieLink, Title, User};
 
 use crate::to_gql_error;
 
@@ -66,6 +66,15 @@ where
     K: std::hash::Hash + Eq,
 {
     items.into_iter().map(|item| (key(&item), item)).collect()
+}
+
+/// Distinct first elements of pair keys, preserving first-seen order.
+fn dedup_first(keys: &[(String, String)]) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    keys.iter()
+        .filter(|(first, _)| seen.insert(first.clone()))
+        .map(|(first, _)| first.clone())
+        .collect()
 }
 
 loader!(TitleLoader, String, Title, |ctx, keys| {
@@ -226,19 +235,116 @@ loader!(
     }
 );
 
+// Keyed (title_id, collection_id): the batch app method takes title ids while
+// the summaries come back keyed by collection id.
 loader!(
     CollectionEpisodeProgressLoader,
-    String,
-    Vec<CollectionEpisodeProgressSummary>,
+    (String, String),
+    CollectionEpisodeProgressSummary,
     |ctx, keys| {
+        let title_ids = dedup_first(keys);
         let summaries = ctx
             .app
-            .list_collection_episode_progress_summaries(&ctx.actor, keys)
+            .list_collection_episode_progress_summaries(&ctx.actor, &title_ids)
             .await
             .map_err(to_gql_error)?;
-        let mut map: HashMap<String, Vec<CollectionEpisodeProgressSummary>> = HashMap::new();
-        for summary in summaries {
-            map.entry(summary.collection_id.clone()).or_default().push(summary);
+        let by_collection: HashMap<String, CollectionEpisodeProgressSummary> = summaries
+            .into_iter()
+            .map(|summary| (summary.collection_id.clone(), summary))
+            .collect();
+        Ok(keys
+            .iter()
+            .filter_map(|key| {
+                by_collection
+                    .get(&key.1)
+                    .map(|summary| (key.clone(), summary.clone()))
+            })
+            .collect())
+    }
+);
+
+loader!(
+    SeriesMovieLinksForTitleLoader,
+    String,
+    Vec<SeriesMovieLink>,
+    |ctx, keys| {
+        ctx.app
+            .list_series_movie_links_for_titles(&ctx.actor, keys)
+            .await
+            .map_err(to_gql_error)
+    }
+);
+
+loader!(WantedItemLoader, String, AcquisitionScopeState, |ctx, keys| {
+    let items = ctx
+        .app
+        .get_wanted_items_by_ids(&ctx.actor, keys)
+        .await
+        .map_err(to_gql_error)?;
+    Ok(by_id(items, |item| item.id.clone()))
+});
+
+loader!(
+    WantedItemForManagementLoader,
+    String,
+    AcquisitionScopeState,
+    |ctx, keys| {
+        let items = ctx
+            .app
+            .get_wanted_items_by_ids_for_management(&ctx.actor, keys)
+            .await
+            .map_err(to_gql_error)?;
+        Ok(by_id(items, |item| item.id.clone()))
+    }
+);
+
+// Keyed (title_id, episode_id): resolves the episode-scoped acquisition state.
+loader!(
+    TitleWantedItemLoader,
+    (String, String),
+    AcquisitionScopeState,
+    |ctx, keys| {
+        let title_ids = dedup_first(keys);
+        let states = ctx
+            .app
+            .get_title_wanted_items_for_titles(&ctx.actor, &title_ids)
+            .await
+            .map_err(to_gql_error)?;
+        Ok(states
+            .into_iter()
+            .filter_map(|state| {
+                state
+                    .episode_id
+                    .clone()
+                    .map(|episode_id| ((state.title_id.clone(), episode_id), state))
+            })
+            .collect())
+    }
+);
+
+// Keyed (title_id, episode_id): one scoped-files fetch per distinct title.
+loader!(
+    EpisodeMediaFilesLoader,
+    (String, String),
+    Vec<TitleMediaFile>,
+    |ctx, keys| {
+        let mut episode_ids_by_title: HashMap<&str, Vec<String>> = HashMap::new();
+        for (title_id, episode_id) in keys {
+            episode_ids_by_title
+                .entry(title_id.as_str())
+                .or_default()
+                .push(episode_id.clone());
+        }
+        let mut map = HashMap::new();
+        for (title_id, episode_ids) in episode_ids_by_title {
+            let files_by_episode = ctx
+                .app
+                .list_episode_media_files_for_title(&ctx.actor, title_id, &episode_ids)
+                .await
+                .map_err(to_gql_error)?;
+            for (episode_id, files) in files_by_episode {
+                map.insert((title_id.to_string(), episode_id), files);
+            }
         }
         Ok(map)
     }
@@ -292,6 +398,11 @@ pub struct RequestLoaders {
     pub collection_episode_progress: DataLoader<CollectionEpisodeProgressLoader>,
     pub ratings: DataLoader<RatingsLoader>,
     pub movie_media_summary: DataLoader<MovieMediaSummaryLoader>,
+    pub series_movie_links_for_title: DataLoader<SeriesMovieLinksForTitleLoader>,
+    pub wanted_item: DataLoader<WantedItemLoader>,
+    pub wanted_item_for_management: DataLoader<WantedItemForManagementLoader>,
+    pub title_wanted_item: DataLoader<TitleWantedItemLoader>,
+    pub episode_media_files: DataLoader<EpisodeMediaFilesLoader>,
 }
 
 impl RequestLoaders {
@@ -319,6 +430,11 @@ impl RequestLoaders {
             collection_episode_progress: dl!(CollectionEpisodeProgressLoader),
             ratings: dl!(RatingsLoader),
             movie_media_summary: dl!(MovieMediaSummaryLoader),
+            series_movie_links_for_title: dl!(SeriesMovieLinksForTitleLoader),
+            wanted_item: dl!(WantedItemLoader),
+            wanted_item_for_management: dl!(WantedItemForManagementLoader),
+            title_wanted_item: dl!(TitleWantedItemLoader),
+            episode_media_files: dl!(EpisodeMediaFilesLoader),
         })
     }
 }

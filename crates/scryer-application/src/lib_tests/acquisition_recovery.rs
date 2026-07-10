@@ -5905,3 +5905,127 @@ async fn rss_upgrades_below_cutoff_movie_with_no_wanted_row() {
         .expect("state row materialized on grab");
     assert_eq!(seeded.status, AcquisitionScopeStatus::Grabbed);
 }
+
+#[tokio::test]
+async fn list_pending_releases_for_wanted_item_page_windows_and_counts() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
+    let (app, user, _) = bootstrap_with_acquisition_tracking_and_indexer_and_release_attempts(
+        download_client,
+        download_submissions,
+        pending_releases.clone(),
+        wanted_items.clone(),
+        Arc::new(MockIndexerClient),
+    );
+    let (title, wanted_id) =
+        seed_movie_wanted_for_acquisition(&app, &user, &wanted_items, "Paged Pending Movie", 2024)
+            .await;
+
+    // Seed five waiting pending releases with descending scores so the
+    // release_score-DESC page ordering is deterministic.
+    for index in 0..5 {
+        let mut pending = pending_movie_release(
+            &wanted_id,
+            &title,
+            &format!("Paged.Pending.{index}.2024.1080p-GRP"),
+            PendingReleaseStatus::Waiting,
+        );
+        pending.release_score = 1000 - index * 10;
+        pending_releases
+            .insert_pending_release(&pending)
+            .await
+            .expect("seed pending release");
+    }
+
+    // Page 2 (limit 2, offset 2) is the third and fourth highest-scored rows,
+    // and the total reflects every matching row, not just the page.
+    let (page, total) = app
+        .list_pending_releases_for_wanted_item_page(&user, &wanted_id, 2, 2)
+        .await
+        .expect("page pending releases");
+    assert_eq!(total, 5);
+    assert_eq!(page.len(), 2);
+    assert_eq!(page[0].release_score, 980);
+    assert_eq!(page[1].release_score, 970);
+
+    // The trailing page returns only the remaining row.
+    let (tail, tail_total) = app
+        .list_pending_releases_for_wanted_item_page(&user, &wanted_id, 2, 4)
+        .await
+        .expect("tail pending releases");
+    assert_eq!(tail_total, 5);
+    assert_eq!(tail.len(), 1);
+    assert_eq!(tail[0].release_score, 960);
+}
+
+#[tokio::test]
+async fn list_release_decisions_offset_paginates_within_title() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
+    let (app, user, _) = bootstrap_with_acquisition_tracking_and_indexer_and_release_attempts(
+        download_client,
+        download_submissions,
+        pending_releases,
+        wanted_items.clone(),
+        Arc::new(MockIndexerClient),
+    );
+    let (title, wanted_id) =
+        seed_movie_wanted_for_acquisition(&app, &user, &wanted_items, "Paged Decisions Movie", 2024)
+            .await;
+
+    for index in 0..5 {
+        wanted_items
+            .insert_release_decision(&ReleaseDecision {
+                id: format!("decision-page-{index}"),
+                wanted_item_id: wanted_id.clone(),
+                title_id: title.id.clone(),
+                release_title: format!("Paged.Decision.{index}"),
+                release_url: None,
+                release_size_bytes: None,
+                decision_code: "eligible".to_string(),
+                candidate_score: 100,
+                current_score: None,
+                score_delta: None,
+                explanation_json: None,
+                created_at: Utc::now().to_rfc3339(),
+            })
+            .await
+            .expect("seed release decision");
+    }
+
+    // limit 2, offset 2 skips the first window in storage rather than in memory.
+    let page = app
+        .list_release_decisions(
+            &user,
+            crate::ReleaseDecisionsQuery {
+                wanted_item_id: None,
+                title_id: Some(title.id.clone()),
+                limit: 2,
+                offset: 2,
+            },
+        )
+        .await
+        .expect("page release decisions");
+    assert_eq!(page.len(), 2);
+    assert_eq!(page[0].id, "decision-page-2");
+    assert_eq!(page[1].id, "decision-page-3");
+
+    let tail = app
+        .list_release_decisions(
+            &user,
+            crate::ReleaseDecisionsQuery {
+                wanted_item_id: None,
+                title_id: Some(title.id.clone()),
+                limit: 2,
+                offset: 4,
+            },
+        )
+        .await
+        .expect("tail release decisions");
+    assert_eq!(tail.len(), 1);
+    assert_eq!(tail[0].id, "decision-page-4");
+}

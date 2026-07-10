@@ -6,7 +6,10 @@ import type {
   TitleReleaseBlocklistEntry,
 } from "@/components/containers/series-overview-container";
 import type { UiDateTimeFormat } from "@/lib/types/settings";
-import { formatUiDate } from "@/lib/utils/date-format";
+// Relative import (not the `@/` alias) so this module stays loadable by plain
+// `node --test`, which cannot resolve bundler path aliases. The type-only alias
+// imports above are erased by type stripping and are fine.
+import { formatUiDate } from "../../../lib/utils/date-format.ts";
 
 export function formatDate(
   iso: string | null | undefined,

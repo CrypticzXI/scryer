@@ -420,6 +420,14 @@ impl MediaFileRepository for MockMediaFileRepo {
         Ok(Vec::new())
     }
 
+    async fn collection_media_size_bytes(
+        &self,
+        _title_id: &str,
+        _ordered_path: &str,
+    ) -> AppResult<Option<i64>> {
+        Ok(None)
+    }
+
     async fn list_title_quality_summaries(
         &self,
         title_ids: &[String],

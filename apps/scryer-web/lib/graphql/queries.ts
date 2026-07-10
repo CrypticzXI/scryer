@@ -1213,6 +1213,8 @@ export const TITLE_LIST_FIELDS = `
     year
     posterUrl
     posterSourceUrl
+    backgroundUrl
+    backgroundSourceUrl
     qualityTier
     currentQualityTier
     sizeBytes
@@ -1250,6 +1252,8 @@ const TITLE_CATALOG_BASE_FIELDS = `
     year
     posterUrl
     posterSourceUrl
+    backgroundUrl
+    backgroundSourceUrl
     contentStatus
     metadataFetchedAt
     createdAt`;
@@ -1343,6 +1347,8 @@ export const TITLE_CATALOG_SEARCH_FIELDS = `
     year
     posterUrl
     posterSourceUrl
+    backgroundUrl
+    backgroundSourceUrl
     rootFolderId
     rootFolderPath
     qualityTier

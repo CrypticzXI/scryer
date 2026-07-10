@@ -115,7 +115,10 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
     // `resetWantedItem` were replaced by `triggerAcquisitionSearch` /
     // `cancelAcquisitionSearch` / `acquisitionSearchJob`, and the payloads gained
     // convergence/recency fields (with new enums + the job payload).
-    assert_eq!(query_field_count, 119);
+    // 0.17.0 re-pinned this census for the intentionally API-breaking release:
+    // query fields moved 119 -> 121 with the added Query.episodeById /
+    // Query.collectionById id-anchored lookups; the other counts are unchanged.
+    assert_eq!(query_field_count, 121);
     assert_eq!(mutation_field_count, 164);
     assert_eq!(subscription_field_count, 13);
     assert_eq!(public_types.len(), 503);
@@ -128,6 +131,9 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
     assert!(query_field_names.contains(&"externalImportSetupSecretDraft"));
     assert!(query_field_names.contains(&"externalImportSetupSecretDraftStatus"));
     assert!(query_field_names.contains(&"episode"));
+    // 0.17.0 dataloader/dual-mode workstream added the id-anchored lookups.
+    assert!(query_field_names.contains(&"episodeById"));
+    assert!(query_field_names.contains(&"collectionById"));
     assert!(!query_field_names.contains(&"episodeMediaFiles"));
     assert!(query_field_names.contains(&"outboundRateLimitSnapshot"));
     assert!(query_field_names.contains(&"runtimeInfo"));

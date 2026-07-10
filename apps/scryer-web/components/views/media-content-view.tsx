@@ -216,7 +216,7 @@ type ParsedQualityProfile = {
 
 const TITLE_OVERVIEW_PANE_MIN_WIDTH = 700;
 const TITLE_WORKSPACE_PANE_GAP = 16;
-const TITLE_POSTER_GRID_MIN_COLUMN_WIDTH = 150;
+const TITLE_POSTER_GRID_MIN_COLUMN_WIDTH = 200;
 const CATALOG_DISCOVERY_INLINE_MIN_WIDTH = 1060;
 const CATALOG_DISCOVERY_POSTER_INLINE_MIN_WIDTH = 980;
 const SELECTED_POSTER_INLINE_MIN_WIDTH =
@@ -1104,8 +1104,7 @@ function TitleContextPanel({
   }
 
   const posterUrl = selectPosterVariantUrl(title.posterUrl, "w250");
-  const backgroundUrl =
-    title.backgroundUrl ?? title.backgroundSourceUrl ?? posterUrl ?? null;
+  const backgroundUrl = title.backgroundUrl ?? title.backgroundSourceUrl ?? null;
   const yearLabel = formatTitleYear(title);
   const statusLabel = localizedTitleStatus(t, title.contentStatus);
   const addedAtLabel =

@@ -2967,6 +2967,16 @@ pub trait MediaFileRepository: Send + Sync {
         title_ids: &[String],
     ) -> AppResult<Vec<TitleMediaSizeSummary>>;
 
+    /// Total byte size of the live media file(s) backing a collection, matched by
+    /// the collection's `ordered_path` against `media_files.file_path`. `None`
+    /// when nothing is indexed at that path (mirrors the previous filesystem
+    /// stat returning no size).
+    async fn collection_media_size_bytes(
+        &self,
+        title_id: &str,
+        ordered_path: &str,
+    ) -> AppResult<Option<i64>>;
+
     async fn list_title_quality_summaries(
         &self,
         title_ids: &[String],
@@ -3250,12 +3260,14 @@ pub trait AcquisitionScopeStateRepository: Send + Sync {
         &self,
         title_id: &str,
         limit: i64,
+        offset: i64,
     ) -> AppResult<Vec<ReleaseDecision>>;
 
     async fn list_release_decisions_for_acquisition_scope_state(
         &self,
         wanted_item_id: &str,
         limit: i64,
+        offset: i64,
     ) -> AppResult<Vec<ReleaseDecision>>;
 }
 
@@ -3335,6 +3347,13 @@ pub trait PendingReleaseRepository: Send + Sync {
         &self,
         title_id: &str,
     ) -> AppResult<Vec<PendingRelease>>;
+    /// Return one page of `waiting` pending releases matching `query` plus the
+    /// total number of matching rows. Filtering, ordering, limit/offset, and the
+    /// count are all computed in storage.
+    async fn list_pending_releases_page(
+        &self,
+        query: PendingReleasesPageQuery,
+    ) -> AppResult<(Vec<PendingRelease>, i64)>;
     async fn update_pending_release_status(
         &self,
         id: &str,

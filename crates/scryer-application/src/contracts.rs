@@ -649,6 +649,33 @@ pub struct ReleaseDecisionsQuery {
     pub wanted_item_id: Option<String>,
     pub title_id: Option<String>,
     pub limit: i64,
+    pub offset: i64,
+}
+
+/// Ordering for a paged pending-releases read. Preserves the historic per-call
+/// order: the root pending-releases view sorted by `delay_until ASC` while the
+/// per-wanted-item view sorted by `release_score DESC`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PendingReleasePageSort {
+    #[default]
+    DelayUntilAsc,
+    ReleaseScoreDesc,
+}
+
+/// Storage-level filter for a single page of `waiting` pending releases plus the
+/// matching total count. `library_ids` scopes rows to titles in those libraries
+/// (empty means no library filter — the caller has already authorized the
+/// scope, e.g. a single wanted item). `statuses` narrows within the `waiting`
+/// base set to preserve the historic in-memory status filter semantics.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PendingReleasesPageQuery {
+    pub library_ids: Vec<String>,
+    pub title_id: Option<String>,
+    pub wanted_item_id: Option<String>,
+    pub statuses: Vec<String>,
+    pub limit: i64,
+    pub offset: i64,
+    pub sort: PendingReleasePageSort,
 }
 
 /// Parsed media properties from media analysis — application-layer DTO.

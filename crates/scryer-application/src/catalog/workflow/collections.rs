@@ -770,6 +770,33 @@ impl AppUseCase {
             .list_title_media_size_summaries(&title_ids)
             .await
     }
+
+    /// Byte size of the media file backing a single collection, keyed by the
+    /// collection's `ordered_path`. Returns `None` when the actor cannot `View`
+    /// the title or when nothing is indexed at that path.
+    pub async fn collection_media_size_bytes(
+        &self,
+        actor: &User,
+        title_id: &str,
+        ordered_path: &str,
+    ) -> AppResult<Option<i64>> {
+        let title_ids = [title_id.to_string()];
+        let allowed = self
+            .filter_title_ids_for_permission(
+                actor,
+                &title_ids,
+                scryer_domain::LibraryPermission::View,
+            )
+            .await?;
+        if allowed.is_empty() {
+            return Ok(None);
+        }
+        self.services
+            .library
+            .media_files
+            .collection_media_size_bytes(title_id, ordered_path)
+            .await
+    }
 }
 impl AppUseCase {
     /// Batch-load media files for many titles, keyed by `title_id`. Titles the

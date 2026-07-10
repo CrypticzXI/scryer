@@ -115,3 +115,12 @@ export function useReactiveRefresh(): ReactiveRefreshContextValue {
   }
   return value;
 }
+
+/**
+ * Like [`useReactiveRefresh`] but returns `null` when no provider is mounted.
+ * For hooks that must also work above the authenticated shell (where the
+ * provider lives) and degrade to a legacy transport there.
+ */
+export function useReactiveRefreshOptional(): ReactiveRefreshContextValue | null {
+  return useContext(ReactiveRefreshContext);
+}
