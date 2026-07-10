@@ -25,3 +25,13 @@ Imports exactly two host functions under `extism:host/user`:
 frozen §5 crypto pair. Every other import is `wasi_snapshot_preview1`; exports
 include `_start` + `memory`. The `abi_imports_match_frozen_contract` test is the
 drift tripwire.
+
+> **Migration (weaver-unrar host-abi rename, 2026-07):** the embedder-neutral
+> ABI renames these imports to `host_aes_cbc_decrypt` / `host_crc32` (namespace
+> stays `extism:host/user` via weaver-unrar's `host-abi-extism` feature). This
+> blob predates the rename and still imports `scryer_*`; the wasmtime host
+> registers both the `host_*` names and the `scryer_*` aliases during the
+> window. When this blob is rebuilt against the renamed weaver-unrar release,
+> update the two names above, flip `abi_imports_match_frozen_contract` to expect
+> `host_*`, and drop the host-side `scryer_*` aliases in
+> `wasmtime_host/crypto_host.rs`.

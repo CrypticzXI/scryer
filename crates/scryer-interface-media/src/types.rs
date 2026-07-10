@@ -214,6 +214,7 @@ pub struct EpisodePayload {
 }
 
 #[derive(SimpleObject, Clone)]
+#[graphql(complex)]
 pub struct TitleMediaFilePayload {
     pub id: ID,
     pub title_id: ID,
@@ -446,6 +447,7 @@ pub struct TitleAcquisitionDiagnosticsPayload {
 }
 
 #[derive(SimpleObject, Clone)]
+#[graphql(complex)]
 pub struct ReleaseDecisionPayload {
     pub id: ID,
     pub wanted_item_id: ID,
@@ -468,6 +470,7 @@ pub struct ReleaseDecisionsPagePayload {
 }
 
 #[derive(SimpleObject, Clone)]
+#[graphql(complex)]
 pub struct PendingReleasePayload {
     pub id: ID,
     pub wanted_item_id: ID,

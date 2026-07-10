@@ -2606,6 +2606,7 @@ pub struct MediaSettingsPayload {
     pub library_path: String,
     pub root_folders: Vec<RootFolderPayload>,
     pub required_audio_languages: Vec<String>,
+    pub folder_template: String,
     pub rename_enabled: bool,
     pub rename_template: String,
     pub rename_collision_policy: String,

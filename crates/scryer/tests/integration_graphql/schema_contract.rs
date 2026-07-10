@@ -122,13 +122,18 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
     // (discoverySyncStatus, libraryScanSession, mediaServerConnection,
     // outboundRateLimitSnapshot, upstreamSchedulerSnapshot), 1 dead mutation
     // (queueReplacementRelease), and the 5 exclusive snapshot payload OBJECT types.
+    // 0.17.0 API surface trim (RFC 129 field wave): removed dead output fields inside
+    // consumed types plus 4 never-selected OBJECT types (DiscoverySyncRunPayload and the
+    // ExternalImportLibrarySetting{Application,Evidence,Value}Payload trio); the trio's
+    // exclusive enums (ExternalImportLibrarySetting{Confidence,Disposition,Key}) drop with
+    // it. Root-field counts unchanged; OBJECT 259->255, ENUM 80->77, public types 498->491.
     assert_eq!(query_field_count, 116);
     assert_eq!(mutation_field_count, 163);
     assert_eq!(subscription_field_count, 13);
-    assert_eq!(public_types.len(), 498);
-    assert_eq!(kind_count("OBJECT"), 259);
+    assert_eq!(public_types.len(), 491);
+    assert_eq!(kind_count("OBJECT"), 255);
     assert_eq!(kind_count("INPUT_OBJECT"), 149);
-    assert_eq!(kind_count("ENUM"), 80);
+    assert_eq!(kind_count("ENUM"), 77);
     assert_eq!(kind_count("SCALAR"), 10);
     assert!(query_field_names.contains(&"backupSettings"));
     assert!(query_field_names.contains(&"indexerProxyConfigs"));
@@ -156,9 +161,6 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
     assert!(public_type_names.contains(&"SaveExternalImportSetupSecretDraftInput"));
     assert!(public_type_names.contains(&"UpdateIndexerProxyConfigInput"));
     assert!(public_type_names.contains(&"ExternalImportSetupSecretDraftPayload"));
-    assert!(public_type_names.contains(&"ExternalImportLibrarySettingApplicationPayload"));
-    assert!(public_type_names.contains(&"ExternalImportLibrarySettingKey"));
-    assert!(public_type_names.contains(&"ExternalImportLibrarySettingValuePayload"));
     assert!(public_type_names.contains(&"RuntimeInfoPayload"));
     assert!(public_type_names.contains(&"RuntimePathStyleValue"));
     assert!(public_type_names.contains(&"UpdateBackupSettingsInput"));
@@ -199,10 +201,26 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
     assert!(!public_type_names.contains(&"OutboundDestinationCooldownSnapshotEntryPayload"));
     assert!(!public_type_names.contains(&"UpstreamSchedulerSnapshotPayload"));
     assert!(!public_type_names.contains(&"UpstreamSchedulerSnapshotEntryPayload"));
+
+    // 0.17.0 API surface trim (RFC 129 field wave): never-selected reachable types are
+    // gone. FinalizeExternalImportPayload.librarySettingApplications was the only anchor
+    // for the external-import library-setting projection, so the trio payload types and
+    // their exclusive enums drop with the field; DiscoverySyncRunPayload was only reachable
+    // through the removed DiscoverySyncStatusPayload.recentRuns field.
+    assert!(!public_type_names.contains(&"DiscoverySyncRunPayload"));
+    assert!(!public_type_names.contains(&"ExternalImportLibrarySettingApplicationPayload"));
+    assert!(!public_type_names.contains(&"ExternalImportLibrarySettingEvidencePayload"));
+    assert!(!public_type_names.contains(&"ExternalImportLibrarySettingValuePayload"));
+    assert!(!public_type_names.contains(&"ExternalImportLibrarySettingKey"));
+    assert!(!public_type_names.contains(&"ExternalImportLibrarySettingConfidence"));
+    assert!(!public_type_names.contains(&"ExternalImportLibrarySettingDisposition"));
 }
 
 #[tokio::test]
-async fn graphql_introspection_external_import_finalize_settings_payload_is_typed() {
+async fn graphql_introspection_external_import_finalize_settings_payload_is_trimmed() {
+    // 0.17.0 API surface trim (RFC 129 field wave): the never-selected library-setting
+    // projection on FinalizeExternalImportPayload was removed, so the trio payload types
+    // and their exclusive enums no longer appear in the schema.
     let ctx = TestContext::new().await;
     let body = gql(
         &ctx,
@@ -212,13 +230,13 @@ async fn graphql_introspection_external_import_finalize_settings_payload_is_type
             fields { name }
           }
           applicationPayload: __type(name: "ExternalImportLibrarySettingApplicationPayload") {
-            fields { name }
+            name
           }
           valuePayload: __type(name: "ExternalImportLibrarySettingValuePayload") {
-            fields { name }
+            name
           }
           settingKey: __type(name: "ExternalImportLibrarySettingKey") {
-            enumValues { name }
+            name
           }
         }
         "#,
@@ -227,62 +245,17 @@ async fn graphql_introspection_external_import_finalize_settings_payload_is_type
     .await;
     assert_no_errors(&body);
 
-    let field_names = |type_name: &str| -> Vec<&str> {
-        body["data"][type_name]["fields"]
-            .as_array()
-            .expect("fields")
-            .iter()
-            .filter_map(|field| field["name"].as_str())
-            .collect()
-    };
-
-    let finalize_fields = field_names("finalizePayload");
-    assert!(finalize_fields.contains(&"librarySettingApplications"));
-
-    let application_fields = field_names("applicationPayload");
-    for expected in [
-        "libraryId",
-        "facet",
-        "setting",
-        "value",
-        "confidence",
-        "disposition",
-        "evidence",
-        "reason",
-    ] {
-        assert!(application_fields.contains(&expected));
-    }
-    assert!(
-        application_fields
-            .iter()
-            .all(|field| !field.to_ascii_lowercase().contains("json"))
-    );
-
-    let value_fields = field_names("valuePayload");
-    assert_eq!(
-        value_fields,
-        vec!["boolValue", "stringValue", "stringListValue"]
-    );
-    assert!(
-        value_fields
-            .iter()
-            .all(|field| !field.to_ascii_lowercase().contains("json"))
-    );
-
-    let setting_keys = body["data"]["settingKey"]["enumValues"]
+    let finalize_fields: Vec<&str> = body["data"]["finalizePayload"]["fields"]
         .as_array()
-        .expect("setting key enum values")
+        .expect("fields")
         .iter()
-        .filter_map(|value| value["name"].as_str())
-        .collect::<Vec<_>>();
-    for expected in [
-        "rename_enabled",
-        "nfo_write_on_import",
-        "quality_profile_id",
-        "monitor_specials",
-    ] {
-        assert!(setting_keys.contains(&expected));
-    }
+        .filter_map(|field| field["name"].as_str())
+        .collect();
+    assert_eq!(finalize_fields, vec!["finalized", "monitorWarmupSessionId"]);
+
+    assert!(body["data"]["applicationPayload"].is_null());
+    assert!(body["data"]["valuePayload"].is_null());
+    assert!(body["data"]["settingKey"].is_null());
 }
 
 #[tokio::test]
@@ -3540,14 +3513,7 @@ async fn graphql_introspection_external_import_finalize_uses_payload_results() {
         .iter()
         .filter_map(|field| field["name"].as_str())
         .collect();
-    assert_eq!(
-        finalize_fields,
-        vec![
-            "finalized",
-            "monitorWarmupSessionId",
-            "librarySettingApplications"
-        ]
-    );
+    assert_eq!(finalize_fields, vec!["finalized", "monitorWarmupSessionId"]);
 }
 
 fn graphql_type_leaf_name(type_value: &Value) -> Option<&str> {

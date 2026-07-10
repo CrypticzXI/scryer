@@ -380,7 +380,6 @@ async fn graphql_introspection_lists_title_fields() {
         ("titleMediaFile", "titleId"),
         ("movieEntity", "id"),
         ("seriesMovieLink", "id"),
-        ("seriesMovieLink", "seriesTitleId"),
         ("wantedItem", "id"),
         ("wantedItem", "titleId"),
         ("releaseDecision", "id"),
@@ -1071,8 +1070,6 @@ async fn graphql_introspection_exposes_calendar_dates_as_date_scalar() {
 
     for (type_alias, name) in [
         ("title", "firstAired"),
-        ("title", "digitalReleaseDate"),
-        ("movieEntity", "digitalReleaseDate"),
         ("episode", "airDate"),
         ("calendarEpisode", "airDate"),
         ("metadataMovie", "tmdbReleaseDate"),
@@ -1157,7 +1154,6 @@ async fn graphql_introspection_exposes_byte_counts_as_long_scalar() {
         ("releaseDecision", "releaseSizeBytes"),
         ("pendingRelease", "releaseSizeBytes"),
         ("indexerSearchResult", "sizeBytes"),
-        ("importResult", "fileSizeBytes"),
         ("mediaRenamePlanItem", "sourceSizeBytes"),
         ("registryPlugin", "bytes"),
     ] {

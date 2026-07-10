@@ -2006,7 +2006,7 @@ mod tests {
             });
 
         let extracted = extract_archives_if_needed(
-            source.path(),
+            &archive_path,
             Some(ArchiveExtractionDestination::new(
                 destination.path(),
                 "import/with spaces",

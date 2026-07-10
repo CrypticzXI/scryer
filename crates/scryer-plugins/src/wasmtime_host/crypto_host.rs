@@ -13,9 +13,11 @@ use std::ops::Range;
 
 use wasmtime::{Caller, Extern, Linker};
 
-/// Import module string both functions live under. Cosmetic legacy — the guest
-/// declares `#[link(wasm_import_module = "extism:host/user")]` with no extism
-/// dependency; both sides must simply agree (RFC §5).
+/// Import module string both functions live under. The weaver-unrar guest's
+/// default namespace is the embedder-neutral `host`; Scryer's plugin artifacts
+/// opt into `extism:host/user` via weaver-unrar's `host-abi-extism` feature, so
+/// the host serves that namespace and both sides agree (RFC §5). No extism
+/// dependency is involved — the string is just the agreed module name.
 const CRYPTO_HOST_NAMESPACE: &str = "extism:host/user";
 
 const AES_BLOCK_LEN: usize = 16;
@@ -30,10 +32,25 @@ const CRC_STATUS_OUT_OF_BOUNDS: i64 = -1;
 
 /// Register both §5 host functions under `extism:host/user` on `linker`.
 ///
+/// The canonical import names are `host_aes_cbc_decrypt` / `host_crc32` (the
+/// embedder-neutral weaver-unrar ABI). The pre-rename `scryer_*` names are also
+/// registered as transitional aliases so artifacts built against weaver-unrar
+/// ≤0.2.0 (the checked-in `fixtures/archive-extraction` blob) still instantiate
+/// against this strict linker; drop them once every artifact imports `host_*`.
+///
 /// Generic over the store data `T`: the functions touch only the guest's
 /// exported memory, never the host context, so they compose with any store
 /// (the archive host's `HostCtx`, or a bare `()` store in tests).
 pub(crate) fn add_to_linker<T: 'static>(linker: &mut Linker<T>) -> wasmtime::Result<()> {
+    linker.func_wrap(
+        CRYPTO_HOST_NAMESPACE,
+        "host_aes_cbc_decrypt",
+        host_aes_cbc_decrypt::<T>,
+    )?;
+    linker.func_wrap(CRYPTO_HOST_NAMESPACE, "host_crc32", host_crc32::<T>)?;
+    // Transitional back-compat aliases: artifacts built against the pre-rename
+    // weaver-unrar ABI (≤0.2.0) import `scryer_*`. Remove once no shipped
+    // artifact does — see `abi_imports_match_frozen_contract`.
     linker.func_wrap(
         CRYPTO_HOST_NAMESPACE,
         "scryer_aes_cbc_decrypt",
@@ -43,7 +60,7 @@ pub(crate) fn add_to_linker<T: 'static>(linker: &mut Linker<T>) -> wasmtime::Res
     Ok(())
 }
 
-/// `scryer_aes_cbc_decrypt(key_ptr, key_len, iv_ptr, buf_ptr, buf_len) -> i64`
+/// `host_aes_cbc_decrypt(key_ptr, key_len, iv_ptr, buf_ptr, buf_len) -> i64`
 ///
 /// AES-CBC decrypt in place over `[buf_ptr, buf_ptr+buf_len)`, stateless per
 /// call. Validation order per §5: key length, then block alignment, then
@@ -96,7 +113,7 @@ fn host_aes_cbc_decrypt<T: 'static>(
     }
 }
 
-/// `scryer_crc32(seed, buf_ptr, buf_len) -> i64`
+/// `host_crc32(seed, buf_ptr, buf_len) -> i64`
 ///
 /// IEEE reflected CRC-32 resumed from `seed` (low 32 bits) over the read-only
 /// `[buf_ptr, buf_ptr+buf_len)`. `buf_len == 0` returns `seed`. Result in the
@@ -256,9 +273,9 @@ mod tests {
     /// A guest that imports both host fns, exports memory, and forwards calls.
     const CRYPTO_GUEST_WAT: &str = r#"
         (module
-          (import "extism:host/user" "scryer_aes_cbc_decrypt"
+          (import "extism:host/user" "host_aes_cbc_decrypt"
             (func $aes (param i64 i64 i64 i64 i64) (result i64)))
-          (import "extism:host/user" "scryer_crc32"
+          (import "extism:host/user" "host_crc32"
             (func $crc (param i64 i64 i64) (result i64)))
           (memory (export "memory") 1)
           (func (export "call_aes") (param i64 i64 i64 i64 i64) (result i64)
@@ -271,7 +288,7 @@ mod tests {
     /// `"memory"` export branch.
     const NO_MEMORY_GUEST_WAT: &str = r#"
         (module
-          (import "extism:host/user" "scryer_crc32"
+          (import "extism:host/user" "host_crc32"
             (func $crc (param i64 i64 i64) (result i64)))
           (func (export "call_crc") (param i64 i64 i64) (result i64)
             (call $crc (local.get 0) (local.get 1) (local.get 2))))

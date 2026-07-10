@@ -4238,7 +4238,7 @@ mod tests {
 
         assert!(exports.contains(&EXPORT_DESCRIBE));
         assert!(!exports.contains(&"scryer_archive_process"));
-        assert!(!exports.contains(&"scryer_crc32"));
+        assert!(!exports.contains(&"host_crc32"));
     }
 
     #[test]
