@@ -848,7 +848,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     () =>
       registerReactiveRefresh({
         aliasKey: "catalog-discovery",
-        predicate: forEventTypes("discovery_search_completed"),
+        predicate: forEventTypes("DISCOVERY_SEARCH_COMPLETED"),
         run: () => {
           void refreshCatalogDiscovery({ forceNetwork: true });
         },
@@ -1180,8 +1180,8 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     () => ({
       ...titleQuickFilters,
       continuing:
-        activeFacet === "movie" ? false : titleQuickFilters.continuing,
-      ended: activeFacet === "movie" ? false : titleQuickFilters.ended,
+        activeFacet === "MOVIE" ? false : titleQuickFilters.continuing,
+      ended: activeFacet === "MOVIE" ? false : titleQuickFilters.ended,
     }),
     [activeFacet, titleQuickFilters],
   );
@@ -1494,9 +1494,9 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
         ? t("settings.seriesSettings")
         : t("settings.animeSettings");
   const activeFacetLabel =
-    activeFacet === "movie"
+    activeFacet === "MOVIE"
       ? t("nav.movies")
-      : activeFacet === "series"
+      : activeFacet === "SERIES"
         ? t("nav.series")
         : t("nav.anime");
   const {
@@ -1552,9 +1552,9 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     }
 
     if (
-      session.status !== "completed" &&
-      session.status !== "warning" &&
-      session.status !== "failed"
+      session.status !== "COMPLETED" &&
+      session.status !== "WARNING" &&
+      session.status !== "FAILED"
     ) {
       return;
     }
@@ -2084,7 +2084,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     (run: JobRun | null) => {
       if (
         !run ||
-        run.jobKey !== "title_deletion" ||
+        run.jobKey !== "TITLE_DELETION" ||
         !deletionJobIdsRef.current.has(run.id) ||
         !isTerminalJobRunStatus(run.status)
       ) {
@@ -2121,7 +2121,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
           jobRuns?: unknown[];
         }>(
           jobRunsQuery,
-          { jobKey: "title_deletion", limit: 10 },
+          { jobKey: "TITLE_DELETION", limit: 10 },
           { requestPolicy: "network-only" },
         )
         .toPromise();
@@ -2589,7 +2589,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
 
   const makeSelectedOverviewMovieFilePrimary = React.useCallback(
     async (title: TitleRecord, fileId: string) => {
-      if (title.facet !== "movie") {
+      if (title.facet !== "MOVIE") {
         return;
       }
       setSelectedOverviewPrimaryMovieFileUpdatingId(fileId);
@@ -3024,7 +3024,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
         ...(imdbId ? [{ source: "imdb", value: imdbId }] : []),
       ];
 
-      const monitorType = monitoredForQueue ? "allEpisodes" : "none";
+      const monitorType = monitoredForQueue ? "ALL_EPISODES" : "NONE";
       try {
         const { data, error } = await client
           .mutation(addTitleMutation, {
@@ -3035,10 +3035,10 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
               tags: [],
               options: {
                 monitorType,
-                ...(queueFacet === "movie"
+                ...(queueFacet === "MOVIE"
                   ? {}
                   : { useSeasonFolders: seasonFoldersForQueue }),
-                ...(queueFacet === "anime"
+                ...(queueFacet === "ANIME"
                   ? {
                       monitorSpecials: false,
                       interSeasonMovies: true,
@@ -3046,7 +3046,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
                   : {}),
               },
               externalIds,
-              ...(queueFacet === "movie"
+              ...(queueFacet === "MOVIE"
                 ? { minAvailability: minAvailabilityForQueue }
                 : {}),
             },
@@ -3892,8 +3892,8 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     }
     const permission =
       contentSettingsSection === "library" && !canManageConfig
-        ? "manageLibrary"
-        : "view";
+        ? "MANAGE_LIBRARY"
+        : "VIEW";
     setLibrariesLoading(true);
     try {
       const { data, error } = await client
@@ -3938,8 +3938,8 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     }
     const permission =
       contentSettingsSection === "library" && !canManageConfig
-        ? "manageLibrary"
-        : "view";
+        ? "MANAGE_LIBRARY"
+        : "VIEW";
     setRootValidationLibrariesLoading(true);
     try {
       const { data, error } = await client

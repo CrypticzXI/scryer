@@ -7,28 +7,28 @@ import { releaseSupportsAdditionalFileQueue } from "./release-queue-scope.ts";
 test("additional-file queue eligibility uses the signed release queue scope", () => {
   assert.equal(
     releaseSupportsAdditionalFileQueue(
-      { queueScope: { kind: "title", episodeIds: [] } },
+      { queueScope: { kind: "TITLE", episodeIds: [] } },
       "movie",
     ),
     true,
   );
   assert.equal(
     releaseSupportsAdditionalFileQueue(
-      { queueScope: { kind: "title", episodeIds: [] } },
+      { queueScope: { kind: "TITLE", episodeIds: [] } },
       "series",
     ),
     false,
   );
   assert.equal(
     releaseSupportsAdditionalFileQueue(
-      { queueScope: { kind: "title", episodeIds: [] } },
+      { queueScope: { kind: "TITLE", episodeIds: [] } },
       "anime",
     ),
     false,
   );
   assert.equal(
     releaseSupportsAdditionalFileQueue(
-      { queueScope: { kind: "episode", episodeId: "episode-1", episodeIds: [] } },
+      { queueScope: { kind: "EPISODE", episodeId: "episode-1", episodeIds: [] } },
       "series",
     ),
     true,
@@ -37,7 +37,7 @@ test("additional-file queue eligibility uses the signed release queue scope", ()
     releaseSupportsAdditionalFileQueue(
       {
         queueScope: {
-          kind: "series_movie",
+          kind: "SERIES_MOVIE",
           seriesMovieLinkId: "series-movie-1",
           episodeIds: [],
         },

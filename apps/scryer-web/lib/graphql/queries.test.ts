@@ -72,7 +72,7 @@ test("reactive movie side panel refresh omits acquisition diagnostics", () => {
       kind: "titleSidePanelOverview",
       titleId: "title-1",
       blocklistLimit: 300,
-      projection: "movie",
+      projection: "MOVIE",
     },
   ]);
 
@@ -126,7 +126,7 @@ test("reactive side panel refresh omits recommendations", () => {
       kind: "titleSidePanelOverview",
       titleId: "title-1",
       blocklistLimit: 300,
-      projection: "movie",
+      projection: "MOVIE",
     },
   ]);
 
@@ -153,7 +153,7 @@ test("series reactive side panel refresh stays lean", () => {
       kind: "titleSidePanelOverview",
       titleId: "title-1",
       blocklistLimit: 300,
-      projection: "series",
+      projection: "SERIES",
     },
   ]);
 

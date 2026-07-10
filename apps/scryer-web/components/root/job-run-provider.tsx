@@ -28,12 +28,12 @@ const JobRunToastContext = React.createContext<JobRunToastContextValue | null>(n
 
 function usesDedicatedLibraryScanToast(jobKey: JobKey): boolean {
   return (
-    jobKey === "library_scan_movies" ||
-    jobKey === "library_scan_series" ||
-    jobKey === "library_scan_anime" ||
-    jobKey === "background_library_refresh_movies" ||
-    jobKey === "background_library_refresh_series" ||
-    jobKey === "background_library_refresh_anime"
+    jobKey === "LIBRARY_SCAN_MOVIES" ||
+    jobKey === "LIBRARY_SCAN_SERIES" ||
+    jobKey === "LIBRARY_SCAN_ANIME" ||
+    jobKey === "BACKGROUND_LIBRARY_REFRESH_MOVIES" ||
+    jobKey === "BACKGROUND_LIBRARY_REFRESH_SERIES" ||
+    jobKey === "BACKGROUND_LIBRARY_REFRESH_ANIME"
   );
 }
 
@@ -211,7 +211,7 @@ export function JobRunProvider({ children }: { children: React.ReactNode }) {
           ? t("jobs.runSummaryCompleted")
           : t("jobs.runSummaryRunning"));
 
-      if (run.status === "failed") {
+      if (run.status === "FAILED") {
         toast.error(run.displayName, {
           id: run.id,
           description,
@@ -220,7 +220,7 @@ export function JobRunProvider({ children }: { children: React.ReactNode }) {
         continue;
       }
 
-      if (run.status === "warning") {
+      if (run.status === "WARNING") {
         toast.warning(run.displayName, {
           id: run.id,
           description,
@@ -229,7 +229,7 @@ export function JobRunProvider({ children }: { children: React.ReactNode }) {
         continue;
       }
 
-      if (run.status === "completed") {
+      if (run.status === "COMPLETED") {
         toast.success(run.displayName, {
           id: run.id,
           description,

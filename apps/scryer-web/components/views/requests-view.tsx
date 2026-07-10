@@ -73,12 +73,12 @@ type RequestStatusFilter = "all" | MediaRequestRecord["status"];
 type RequestFacetFilter = MediaRequestRecord["facet"];
 
 type RequestMonitorType =
-  | "monitored"
-  | "unmonitored"
-  | "futureEpisodes"
-  | "missingAndFutureEpisodes"
-  | "allEpisodes"
-  | "none";
+  | "MONITORED"
+  | "UNMONITORED"
+  | "FUTURE_EPISODES"
+  | "MISSING_AND_FUTURE_EPISODES"
+  | "ALL_EPISODES"
+  | "NONE";
 
 type UpdateRequestValues = {
   requestedQualityProfileId: string;
@@ -176,19 +176,17 @@ function profileLabel(
 }
 
 function monitorTypeLabel(t: ReturnType<typeof useTranslate>, value: string | null | undefined): string | null {
-  switch (value) {
+  const normalized = value?.replace(/[-_\s]/g, "").toLowerCase();
+  switch (normalized) {
     case "monitored":
       return t("search.monitorType.monitored");
     case "unmonitored":
       return t("search.monitorType.unmonitored");
     case "futureepisodes":
-    case "futureEpisodes":
       return t("search.monitorType.futureEpisodes");
     case "missingandfutureepisodes":
-    case "missingAndFutureEpisodes":
       return t("search.monitorType.missingAndFutureEpisodes");
     case "allepisodes":
-    case "allEpisodes":
       return t("search.monitorType.allEpisodes");
     case "none":
       return t("search.monitorType.none");
@@ -204,30 +202,30 @@ function monitorTypeSelectValue(
   const normalized = value?.replace(/[-_\s]/g, "").toLowerCase();
   switch (normalized) {
     case "monitored":
-      return "monitored";
+      return "MONITORED";
     case "unmonitored":
-      return "unmonitored";
+      return "UNMONITORED";
     case "missingandfutureepisodes":
-      return "missingAndFutureEpisodes";
+      return "MISSING_AND_FUTURE_EPISODES";
     case "allepisodes":
-      return "allEpisodes";
+      return "ALL_EPISODES";
     case "none":
-      return "none";
+      return "NONE";
     case "futureepisodes":
     default:
-      return facet === "movie" ? "monitored" : "futureEpisodes";
+      return facet === "MOVIE" ? "MONITORED" : "FUTURE_EPISODES";
   }
 }
 
 function monitorOptions(t: ReturnType<typeof useTranslate>): Array<{ value: RequestMonitorType; label: string }> {
   return [
-    { value: "futureEpisodes", label: t("search.monitorType.futureEpisodes") },
+    { value: "FUTURE_EPISODES", label: t("search.monitorType.futureEpisodes") },
     {
-      value: "missingAndFutureEpisodes",
+      value: "MISSING_AND_FUTURE_EPISODES",
       label: t("search.monitorType.missingAndFutureEpisodes"),
     },
-    { value: "allEpisodes", label: t("search.monitorType.allEpisodes") },
-    { value: "none", label: t("search.monitorType.none") },
+    { value: "ALL_EPISODES", label: t("search.monitorType.allEpisodes") },
+    { value: "NONE", label: t("search.monitorType.none") },
   ];
 }
 
@@ -253,13 +251,13 @@ function requestProfileOptionsForLibrary(
 
 function requestStatusLabel(t: ReturnType<typeof useTranslate>, status: MediaRequestRecord["status"]): string {
   switch (status) {
-    case "pending":
+    case "PENDING":
       return t("requests.status.pending");
-    case "approved":
+    case "APPROVED":
       return t("requests.status.approved");
-    case "rejected":
+    case "REJECTED":
       return "Dismissed";
-    case "canceled":
+    case "CANCELED":
       return t("requests.status.canceled");
     default:
       return status;
@@ -271,25 +269,25 @@ function requestStatusTone(
   status: MediaRequestRecord["status"],
 ): { label: string; Icon: LucideIcon; className: string } {
   switch (status) {
-    case "pending":
+    case "PENDING":
       return {
         label: requestStatusLabel(t, status),
         Icon: Clock,
         className: "border-[var(--scry-warning-border)] bg-[var(--scry-warning-bg)] text-[var(--scry-warning-text)]",
       };
-    case "approved":
+    case "APPROVED":
       return {
         label: requestStatusLabel(t, status),
         Icon: Check,
         className: "border-[var(--scry-success-border)] bg-[var(--scry-success-bg)] text-[var(--scry-success-text)]",
       };
-    case "rejected":
+    case "REJECTED":
       return {
         label: requestStatusLabel(t, status),
         Icon: X,
         className: "border-[var(--scry-danger-border)] bg-[var(--scry-danger-bg)] text-[var(--scry-danger-text)]",
       };
-    case "canceled":
+    case "CANCELED":
     default:
       return {
         label: requestStatusLabel(t, status),
@@ -305,18 +303,18 @@ function statusFilterOptions(mode: RequestsMode): Array<{
 }> {
   if (mode === "admin") {
     return [
-      { value: "pending", label: "Pending" },
-      { value: "approved", label: "Approved" },
-      { value: "rejected", label: "Dismissed" },
+      { value: "PENDING", label: "Pending" },
+      { value: "APPROVED", label: "Approved" },
+      { value: "REJECTED", label: "Dismissed" },
     ];
   }
 
   return [
     { value: "all", label: "All" },
-    { value: "pending", label: "Pending" },
-    { value: "approved", label: "Approved" },
-    { value: "rejected", label: "Dismissed" },
-    { value: "canceled", label: "Canceled" },
+    { value: "PENDING", label: "Pending" },
+    { value: "APPROVED", label: "Approved" },
+    { value: "REJECTED", label: "Dismissed" },
+    { value: "CANCELED", label: "Canceled" },
   ];
 }
 
@@ -370,7 +368,7 @@ export function RequestsView({
   const filters = statusFilterOptions(mode);
   const [adminFacetFilters, setAdminFacetFilters] = React.useState<
     Record<RequestFacetFilter, boolean>
-  >({ movie: true, series: true, anime: true });
+  >({ MOVIE: true, SERIES: true, ANIME: true });
   const displayedRequests = React.useMemo(
     () =>
       mode === "admin"
@@ -382,12 +380,12 @@ export function RequestsView({
     React.useState<MediaRequestRecord | null>(null);
   const [approvalProfileId, setApprovalProfileId] = React.useState("");
   const [approvalMonitorType, setApprovalMonitorType] =
-    React.useState<RequestMonitorType>("futureEpisodes");
+    React.useState<RequestMonitorType>("FUTURE_EPISODES");
   const [editRequest, setEditRequest] =
     React.useState<MediaRequestRecord | null>(null);
   const [editProfileId, setEditProfileId] = React.useState("");
   const [editMonitorType, setEditMonitorType] =
-    React.useState<RequestMonitorType>("futureEpisodes");
+    React.useState<RequestMonitorType>("FUTURE_EPISODES");
   const editProfileOptions = React.useMemo(
     () =>
       editRequest
@@ -455,7 +453,7 @@ export function RequestsView({
   const closeApprovalDialog = () => {
     setApprovalRequest(null);
     setApprovalProfileId("");
-    setApprovalMonitorType("futureEpisodes");
+    setApprovalMonitorType("FUTURE_EPISODES");
   };
 
   const confirmApproval = () => {
@@ -463,7 +461,7 @@ export function RequestsView({
     onApprove(approvalRequest, {
       qualityProfileId: approvalProfileId,
       monitorType:
-        approvalRequest.facet === "movie" ? undefined : approvalMonitorType,
+        approvalRequest.facet === "MOVIE" ? undefined : approvalMonitorType,
     });
     closeApprovalDialog();
   };
@@ -476,14 +474,14 @@ export function RequestsView({
   const closeEditDialog = () => {
     setEditRequest(null);
     setEditProfileId("");
-    setEditMonitorType("futureEpisodes");
+    setEditMonitorType("FUTURE_EPISODES");
   };
 
   const confirmUpdate = () => {
     if (!editRequest || !editProfileId) return;
     onUpdateRequest(editRequest, {
       requestedQualityProfileId: editProfileId,
-      requestedMonitorType: editRequest.facet === "movie" ? undefined : editMonitorType,
+      requestedMonitorType: editRequest.facet === "MOVIE" ? undefined : editMonitorType,
     });
     closeEditDialog();
   };
@@ -514,8 +512,8 @@ export function RequestsView({
     const approveDisabled = loading || actionRequestId !== null;
     const statusMeta = requestStatusTone(t, request.status);
     const StatusIcon = statusMeta.Icon;
-    const canResolveRequest = mode === "admin" && request.status === "pending";
-    const canEditOwnRequest = mode === "mine" && request.status === "pending";
+    const canResolveRequest = mode === "admin" && request.status === "PENDING";
+    const canEditOwnRequest = mode === "mine" && request.status === "PENDING";
     const libraryLabel =
       libraries.find((library) => library.id === request.libraryId)?.name ??
       request.libraryId;
@@ -668,7 +666,7 @@ export function RequestsView({
             {hasExternalIds ? (
               <div className="flex flex-wrap items-center gap-2">
                 <ImdbExternalLink imdbId={imdbId} size="compact" />
-                {request.facet === "movie" ? (
+                {request.facet === "MOVIE" ? (
                   <TvdbMovieExternalLink
                     tvdbId={tvdbId}
                     slug={request.slug}
@@ -682,7 +680,7 @@ export function RequestsView({
                   />
                 )}
                 <TmdbExternalLink
-                  mediaType={request.facet === "movie" ? "movie" : "tv"}
+                  mediaType={request.facet === "MOVIE" ? "movie" : "tv"}
                   tmdbId={tmdbId}
                   size="compact"
                 />
@@ -797,9 +795,9 @@ export function RequestsView({
             ) : null}
             {mode === "admin"
               ? ([
-                  ["movie", "Movie"],
-                  ["series", t("search.facetSeries")],
-                  ["anime", t("search.facetAnime")],
+                  ["MOVIE", "Movie"],
+                  ["SERIES", t("search.facetSeries")],
+                  ["ANIME", t("search.facetAnime")],
                 ] as Array<[RequestFacetFilter, string]>).map(([facet, label]) => (
                   <UnderlineFilterButton
                     key={facet}
@@ -891,7 +889,7 @@ export function RequestsView({
               </SelectContent>
             </Select>
           </label>
-          {approvalRequest && approvalRequest.facet !== "movie" ? (
+          {approvalRequest && approvalRequest.facet !== "MOVIE" ? (
             <label className="space-y-2">
               <span className="block text-sm font-medium text-card-foreground">
                 {t("requests.approvedMonitorType")}
@@ -969,7 +967,7 @@ export function RequestsView({
               </SelectContent>
             </Select>
           </label>
-          {editRequest && editRequest.facet !== "movie" ? (
+          {editRequest && editRequest.facet !== "MOVIE" ? (
             <label className="space-y-2">
               <span className="block text-sm font-medium text-card-foreground">
                 {t("requests.requestedMonitorType")}

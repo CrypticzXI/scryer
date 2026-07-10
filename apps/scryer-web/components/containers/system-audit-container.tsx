@@ -45,7 +45,12 @@ function normalizeAuditEvent(value: unknown): AuditLogEvent | null {
     sequence: typeof value.sequence === "number" ? value.sequence : 0,
     eventId: value.eventId,
     occurredAt: typeof value.occurredAt === "string" ? value.occurredAt : "",
-    actorKind: typeof value.actorKind === "string" ? value.actorKind : "system",
+    actorKind:
+      value.actorKind === "USER" ||
+      value.actorKind === "ANONYMOUS" ||
+      value.actorKind === "SYSTEM"
+        ? value.actorKind
+        : "SYSTEM",
     actorUserId: typeof value.actorUserId === "string" ? value.actorUserId : null,
     actorDisplayName:
       typeof value.actorDisplayName === "string" ? value.actorDisplayName : "System",

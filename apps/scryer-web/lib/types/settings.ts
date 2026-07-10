@@ -37,7 +37,7 @@ export type GeneralSettings = {
   pluginHttpTrustedCertificates: TrustedCertificateEntry[];
 };
 
-export type UiDateTimeFormat = "locale" | "iso24h";
+export type UiDateTimeFormat = "LOCALE" | "ISO24H";
 
 export type UiTableColumnSetting = {
   facet: string;
@@ -48,25 +48,25 @@ export type UiTableColumnSetting = {
 };
 
 export type UiSettings = {
-  theme: "light" | "dark" | "pride" | "system";
+  theme: "LIGHT" | "DARK" | "PRIDE" | "SYSTEM";
   dateTimeFormat: UiDateTimeFormat;
   highlightColor: string | null;
   secondaryColor: string | null;
   highContrastMode: boolean;
   reduceMotion: boolean;
   hideSponsorButton: boolean;
-  density: "compact" | "comfortable";
-  sidebarMode: "expanded" | "collapsed";
+  density: "COMPACT" | "COMFORTABLE";
+  sidebarMode: "EXPANDED" | "COLLAPSED";
   defaultLandingView:
-    | "movies"
-    | "series"
-    | "anime"
-    | "activity"
-    | "calendar"
-    | "wanted"
-    | "history"
-    | "settings"
-    | "system";
+    | "MOVIES"
+    | "SERIES"
+    | "ANIME"
+    | "ACTIVITY"
+    | "CALENDAR"
+    | "WANTED"
+    | "HISTORY"
+    | "SETTINGS"
+    | "SYSTEM";
   tableColumns: UiTableColumnSetting[];
 };
 
@@ -87,9 +87,9 @@ export type SecuritySettings = {
   envOverrideDescription: string | null;
 };
 
-export type ExternalAccountProvider = "plex" | "jellyfin";
-export type ExternalAccountStatus = "pending_claim" | "active" | "disabled";
-export type MediaServerProvider = "jellyfin" | "plex" | "emby";
+export type ExternalAccountProvider = "PLEX" | "JELLYFIN";
+export type ExternalAccountStatus = "PENDING_CLAIM" | "ACTIVE" | "DISABLED";
+export type MediaServerProvider = "JELLYFIN" | "PLEX" | "EMBY";
 
 export type MediaServerPathMapping = {
   sourcePath: string;
@@ -125,9 +125,9 @@ export type PlexServerDiscovery = {
 };
 
 export type MediaServerUserGroupStatus =
-  | "ready"
-  | "missing_credentials"
-  | "error";
+  | "READY"
+  | "MISSING_CREDENTIALS"
+  | "ERROR";
 
 export type MediaServerUser = {
   id: string;
@@ -256,7 +256,7 @@ export type TotpEnrollmentComplete = {
 export type ImportMode = "hardlink_or_copy" | "move";
 
 export type MediaSettings = {
-  scope: "movie" | "series" | "anime";
+  scope: "MOVIE" | "SERIES" | "ANIME";
   libraryPath: string;
   rootFolders: { path: string; isDefault: boolean }[];
   requiredAudioLanguages: string[];

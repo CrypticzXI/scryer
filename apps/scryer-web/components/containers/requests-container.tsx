@@ -149,7 +149,7 @@ export function RequestsContainer({ facet }: RequestsContainerProps) {
     canManageAnyTitle ? "admin" : "mine",
   );
   const [statusFilter, setStatusFilter] = React.useState<RequestStatusFilter>(
-    canManageAnyTitle ? "pending" : "all",
+    canManageAnyTitle ? "PENDING" : "all",
   );
   const [adminLibraries, setAdminLibraries] = React.useState<LibraryRecord[]>([]);
   const [requesterLibraries, setRequesterLibraries] = React.useState<LibraryRecord[]>([]);
@@ -179,7 +179,7 @@ export function RequestsContainer({ facet }: RequestsContainerProps) {
 
   React.useEffect(() => {
     setMode(canManageAnyTitle ? "admin" : "mine");
-    setStatusFilter(canManageAnyTitle ? "pending" : "all");
+    setStatusFilter(canManageAnyTitle ? "PENDING" : "all");
     setAdminLibraries([]);
     setRequesterLibraries([]);
     setRequests([]);
@@ -340,7 +340,7 @@ export function RequestsContainer({ facet }: RequestsContainerProps) {
 
   const changeMode = React.useCallback((nextMode: RequestsMode) => {
     setMode(nextMode);
-    setStatusFilter(nextMode === "admin" ? "pending" : "all");
+    setStatusFilter(nextMode === "admin" ? "PENDING" : "all");
   }, []);
 
   const approveRequest = React.useCallback(

@@ -98,7 +98,7 @@ export function defaultDownloadClientConfigValuesForFields(
   return Object.fromEntries(
     fields.map((field) => [
       field.key,
-      field.defaultValue ?? (field.fieldType === "bool" ? "false" : ""),
+      field.defaultValue ?? (field.fieldType === "BOOL" ? "false" : ""),
     ]),
   );
 }
@@ -111,7 +111,7 @@ export function downloadClientConfigFieldValue(
   return (
     draft.configValues[field.key] ??
     (hasStoredSecretValue ? "" : field.defaultValue) ??
-    (field.fieldType === "bool" ? "false" : "")
+    (field.fieldType === "BOOL" ? "false" : "")
   );
 }
 
@@ -148,11 +148,11 @@ function configValueInput(
     normalizedKey.includes("secret") ||
     normalizedKey.includes("token");
 
-  if (field?.fieldType === "bool") {
+  if (field?.fieldType === "BOOL") {
     return { key, boolValue: String(value).trim().toLowerCase() === "true" };
   }
 
-  if (field?.fieldType === "number") {
+  if (field?.fieldType === "NUMBER") {
     const parsed = Number(String(value).trim());
     if (Number.isNaN(parsed)) {
       return { key, stringValue: String(value) };
@@ -335,7 +335,7 @@ export function isFileBackedDownloadClientConfigField(field: ConfigFieldDef): bo
   const pathPattern = /(?:^|[_\-.])(path|folder|directory|file)(?:$|[_\-.])/;
 
   return (
-    field.fieldType === "path" ||
+    field.fieldType === "PATH" ||
     pathPattern.test(key) ||
     key.endsWith("path") ||
     key.endsWith("folder") ||

@@ -12,19 +12,19 @@ interface KindColors {
 }
 
 const KIND_COLORS: Record<PillKind, KindColors> = {
-  sonarr: {
+  SONARR: {
     dot: "var(--scry-facet-series)",
     bg: "var(--scry-facet-series-bg)",
     border: "var(--scry-facet-series-border)",
     text: "var(--scry-facet-series-text)",
   },
-  radarr: {
+  RADARR: {
     dot: "var(--scry-facet-movie)",
     bg: "var(--scry-facet-movie-bg)",
     border: "var(--scry-facet-movie-border)",
     text: "var(--scry-facet-movie-text)",
   },
-  prowlarr: {
+  PROWLARR: {
     dot: "var(--scry-facet-anime)",
     bg: "var(--scry-facet-anime-bg)",
     border: "var(--scry-facet-anime-border)",
@@ -42,9 +42,9 @@ const KIND_COLORS: Record<PillKind, KindColors> = {
 // "./" in production builds). Sonarr/Radarr sit at the root; Prowlarr under
 // media-sites/.
 const PRODUCT_LOGOS: Partial<Record<PillKind, string>> = {
-  sonarr: `${import.meta.env.BASE_URL}sonarr.svg`,
-  radarr: `${import.meta.env.BASE_URL}radarr.svg`,
-  prowlarr: `${import.meta.env.BASE_URL}media-sites/prowlarr.svg`,
+  SONARR: `${import.meta.env.BASE_URL}sonarr.svg`,
+  RADARR: `${import.meta.env.BASE_URL}radarr.svg`,
+  PROWLARR: `${import.meta.env.BASE_URL}media-sites/prowlarr.svg`,
 };
 
 export function productLogoUrl(kind: PillKind): string | null {

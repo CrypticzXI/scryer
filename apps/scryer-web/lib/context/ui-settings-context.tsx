@@ -2,21 +2,22 @@ import * as React from "react";
 import { useTheme } from "next-themes";
 import { useClient } from "urql";
 import { myUiSettingsQuery } from "@/lib/graphql/queries";
-import { AUTH_SESSION_CHANGED_EVENT } from "@/lib/hooks/use-auth";
+import { AUTH_SESSION_CHANGED_EVENT, getAuthToken } from "@/lib/hooks/use-auth";
+import { getRuntimeBasePath } from "@/lib/runtime-config";
 import { applyHighlightColor, isDarkTheme } from "@/lib/theme";
 import type { UiSettings } from "@/lib/types/settings";
 
 export const DEFAULT_UI_SETTINGS: UiSettings = {
-  theme: "dark",
-  dateTimeFormat: "locale",
+  theme: "DARK",
+  dateTimeFormat: "LOCALE",
   highlightColor: null,
   secondaryColor: null,
   highContrastMode: false,
   reduceMotion: false,
   hideSponsorButton: false,
-  density: "comfortable",
-  sidebarMode: "expanded",
-  defaultLandingView: "movies",
+  density: "COMFORTABLE",
+  sidebarMode: "EXPANDED",
+  defaultLandingView: "MOVIES",
   tableColumns: [],
 };
 
@@ -65,6 +66,20 @@ export function UiSettingsProvider({ children }: { children: React.ReactNode }) 
 
     if (options?.resetToFallback) {
       setUiSettings(DEFAULT_UI_SETTINGS);
+    }
+    // On the login surface with no session, the defaults are authoritative:
+    // firing the user-scoped query there turns every auth-session flap into a
+    // rejected-request storm that can exhaust the origin connection pool and
+    // starve the login page's own bootstrap queries.
+    if (typeof window !== "undefined" && getAuthToken() === null) {
+      const basePath = getRuntimeBasePath();
+      const loginPath = basePath === "/" ? "/login" : `${basePath}/login`;
+      if (window.location.pathname.startsWith(loginPath)) {
+        setUiSettingsLoading(false);
+        setUiSettingsLoaded(false);
+        setUiSettingsLoadError(null);
+        return;
+      }
     }
     setUiSettingsLoading(true);
     setUiSettingsLoaded(false);

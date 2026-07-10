@@ -6,7 +6,7 @@ export type SubtitleProviderConfigRecord = {
   providerType: string;
   hasConfig: boolean;
   storedSecretKeys: string[];
-  enabledFacets: Array<"movie" | "series" | "anime">;
+  enabledFacets: Array<"MOVIE" | "SERIES" | "ANIME">;
   isEnabled: boolean;
   lastHealthStatus: string | null;
   lastError: string | null;
@@ -20,7 +20,7 @@ export type SubtitleProviderDraft = {
   name: string;
   providerType: string;
   isEnabled: boolean;
-  enabledFacets: Array<"movie" | "series" | "anime">;
+  enabledFacets: Array<"MOVIE" | "SERIES" | "ANIME">;
   configValues: Record<string, string>;
   persistedConfigValues: Record<string, string>;
   storedSecretKeys: string[];

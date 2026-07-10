@@ -4,7 +4,7 @@ import type { ViewCategoryId } from "@/lib/types/quality-profiles";
 import type { MetadataCatalogMonitorType } from "@/lib/hooks/use-global-search";
 
 export type FacetDefinition = {
-  /** Domain enum value: "movie" | "series" | "anime" */
+  /** Domain enum value: "MOVIE" | "SERIES" | "ANIME" */
   id: Facet;
   /** URL path segment: "movies" | "series" | "anime" */
   viewId: string;
@@ -33,9 +33,9 @@ export type FacetDefinition = {
 
 export const FACET_REGISTRY: FacetDefinition[] = [
   {
-    id: "movie",
+    id: "MOVIE",
     viewId: "movies",
-    scopeId: "movie",
+    scopeId: "MOVIE",
     metadataKey: "movie",
     icon: Film,
     navLabelKey: "nav.movies",
@@ -47,13 +47,13 @@ export const FACET_REGISTRY: FacetDefinition[] = [
     defaultLibraryPath: "/data/movies",
     renameTemplateKey: "rename.template.movie.global",
     hasEpisodes: false,
-    defaultMonitorType: "monitored",
+    defaultMonitorType: "MONITORED",
     tvdbSearchType: "movie",
   },
   {
-    id: "series",
+    id: "SERIES",
     viewId: "series",
-    scopeId: "series",
+    scopeId: "SERIES",
     metadataKey: "series",
     icon: Monitor,
     navLabelKey: "nav.series",
@@ -65,13 +65,13 @@ export const FACET_REGISTRY: FacetDefinition[] = [
     defaultLibraryPath: "/data/series",
     renameTemplateKey: "rename.template.series.global",
     hasEpisodes: true,
-    defaultMonitorType: "futureEpisodes",
+    defaultMonitorType: "FUTURE_EPISODES",
     tvdbSearchType: "series",
   },
   {
-    id: "anime",
+    id: "ANIME",
     viewId: "anime",
-    scopeId: "anime",
+    scopeId: "ANIME",
     metadataKey: "anime",
     icon: Clapperboard,
     navLabelKey: "nav.anime",
@@ -83,7 +83,7 @@ export const FACET_REGISTRY: FacetDefinition[] = [
     defaultLibraryPath: "/data/anime",
     renameTemplateKey: "rename.template.anime.global",
     hasEpisodes: true,
-    defaultMonitorType: "futureEpisodes",
+    defaultMonitorType: "FUTURE_EPISODES",
     tvdbSearchType: "anime",
   },
 ];

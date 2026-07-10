@@ -1971,8 +1971,8 @@ export type IndexerApiKeyOverride = {
   apiKey: string;
 };
 
-export type ExternalArrSourceKind = "sonarr" | "radarr";
-export type ExternalImportConnectionKind = "sonarr" | "radarr" | "prowlarr";
+export type ExternalArrSourceKind = "SONARR" | "RADARR";
+export type ExternalImportConnectionKind = "SONARR" | "RADARR" | "PROWLARR";
 
 export type ExternalImportConnectionInput = {
   baseUrl: string;
@@ -2014,7 +2014,7 @@ export type ExternalImportSourceLibraryMappingInput = {
   arrRootPath: string;
   scryerRootPath: string;
   libraryId: string;
-  facet: "movie" | "series" | "anime";
+  facet: "MOVIE" | "SERIES" | "ANIME";
 };
 
 export type FinalizeExternalImportInput = {

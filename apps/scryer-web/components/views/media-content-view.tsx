@@ -162,7 +162,7 @@ import type { ContentViewMode } from "./media-content/content-view-mode";
 import { localizedTitleStatus } from "./overview-localization";
 import { SeriesOverviewContainer } from "@/components/containers/series-overview-container";
 
-type Facet = "movie" | "series" | "anime";
+type Facet = "MOVIE" | "SERIES" | "ANIME";
 
 function titleTableColumnLabel(
   key: TitleTableColumnKey,
@@ -1404,7 +1404,7 @@ function TitleContextPanel({
                 onRefreshSubtitles={onRefreshSubtitles}
                 onDeleteFile={(fileId) => onDeleteMediaFile(title, fileId)}
                 onMakePrimaryFile={
-                  title.facet === "movie"
+                  title.facet === "MOVIE"
                     ? (fileId) => onMakePrimaryMediaFile(title, fileId)
                     : undefined
                 }
@@ -2247,9 +2247,9 @@ export function MediaContentView({
       : "overview";
 
   const scopeLabel =
-    activeQualityScopeId === "movie"
+    activeQualityScopeId === "MOVIE"
       ? t("search.facetMovie")
-      : activeQualityScopeId === "series"
+      : activeQualityScopeId === "SERIES"
         ? t("search.facetSeries")
         : t("search.facetAnime");
   const effectiveViewMode: ContentViewMode = viewMode;
@@ -2663,9 +2663,9 @@ export function MediaContentView({
     (checked: boolean) => {
       const value = checked ? "true" : "false";
       const key =
-        activeQualityScopeId === "movie"
+        activeQualityScopeId === "MOVIE"
           ? "nfo.write_on_import.movie"
-          : activeQualityScopeId === "anime"
+          : activeQualityScopeId === "ANIME"
             ? "nfo.write_on_import.anime"
             : "nfo.write_on_import.series";
       setNfoWriteOnImport((previous) => ({
@@ -2681,7 +2681,7 @@ export function MediaContentView({
     (checked: boolean) => {
       const value = checked ? "true" : "false";
       const key =
-        activeQualityScopeId === "anime"
+        activeQualityScopeId === "ANIME"
           ? "plexmatch.write_on_import.anime"
           : "plexmatch.write_on_import.series";
       setPlexmatchWriteOnImport((previous) => ({
@@ -2976,10 +2976,10 @@ export function MediaContentView({
           <MediaLibrarySettingsPanel
             facet={
               view === "movies"
-                ? "movie"
+                ? "MOVIE"
                 : view === "series"
-                  ? "series"
-                  : "anime"
+                  ? "SERIES"
+                  : "ANIME"
             }
             settingsTitle={mediaLibrarySettingsTitle}
             libraries={libraries}

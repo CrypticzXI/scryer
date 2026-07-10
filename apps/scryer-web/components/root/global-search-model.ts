@@ -102,7 +102,7 @@ export function toggleGlobalSearchFilterSelection(
 }
 
 export function catalogFacetFromString(facet: string): Facet {
-  return facet === "movie" ? "movie" : facet === "anime" ? "anime" : "series";
+  return facet === "movie" ? "MOVIE" : facet === "anime" ? "ANIME" : "SERIES";
 }
 
 function filterKeyToFacet(key: GlobalSearchFilterKey): Facet | null {

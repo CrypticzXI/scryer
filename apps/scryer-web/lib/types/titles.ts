@@ -5,7 +5,7 @@ import type { ImportMode } from "./settings";
 
 export type { CanonicalMediaTag };
 
-export type Facet = "movie" | "series" | "anime";
+export type Facet = "MOVIE" | "SERIES" | "ANIME";
 
 export type ExternalId = {
   source: string;
@@ -31,7 +31,7 @@ export type TitleCollectionEpisodeRecord = {
   id: string;
   titleId: string;
   collectionId?: string | null;
-  episodeType?: string | null;
+  episodeType?: 'STANDARD' | 'SPECIAL' | 'OFFICIAL' | 'OVA' | 'ONA' | 'ALTERNATE' | null;
   episodeNumber?: string | number | null;
   seasonNumber?: string | number | null;
   episodeLabel?: string | null;
@@ -52,7 +52,7 @@ export type TitleCollectionEpisodeRecord = {
 export type TitleCollectionRecord = {
   id: string;
   titleId: string;
-  collectionType?: string | null;
+  collectionType?: 'SEASON' | 'MOVIE' | 'ARC' | 'SPECIALS' | null;
   collectionIndex?: string | number | null;
   label?: string | null;
   orderedPath?: string | null;
@@ -231,7 +231,7 @@ export type MediaRequestRecord = {
   id: string;
   libraryId: string;
   facet: Facet;
-  status: "pending" | "approved" | "rejected" | "canceled";
+  status: "PENDING" | "APPROVED" | "REJECTED" | "CANCELED";
   identityFingerprint: string;
   title: string;
   sortTitle?: string | null;

@@ -58,10 +58,10 @@ export const AUDIO_CODEC_CHOICES = [
 ] as const;
 
 export const SCORING_PERSONA_CHOICES = [
-  { value: "balanced", labelKey: "qualityProfile.personaBalanced" },
-  { value: "audiophile", labelKey: "qualityProfile.personaAudiophile" },
-  { value: "efficient", labelKey: "qualityProfile.personaEfficient" },
-  { value: "compatible", labelKey: "qualityProfile.personaCompatible" },
+  { value: "BALANCED", labelKey: "qualityProfile.personaBalanced" },
+  { value: "AUDIOPHILE", labelKey: "qualityProfile.personaAudiophile" },
+  { value: "EFFICIENT", labelKey: "qualityProfile.personaEfficient" },
+  { value: "COMPATIBLE", labelKey: "qualityProfile.personaCompatible" },
 ] as const;
 
 export const SCORING_OVERRIDE_KEYS = [
@@ -73,22 +73,22 @@ export const SCORING_OVERRIDE_KEYS = [
 ] as const;
 
 export const PERSONA_OVERRIDE_DEFAULTS: Record<ScoringPersonaId, Record<string, boolean>> = {
-  balanced: { allow_x265_non4k: false, block_dv_without_fallback: false, prefer_compact_encodes: false, prefer_lossless_audio: false, block_upscaled: true },
-  audiophile: { allow_x265_non4k: false, block_dv_without_fallback: false, prefer_compact_encodes: false, prefer_lossless_audio: true, block_upscaled: true },
-  efficient: { allow_x265_non4k: true, block_dv_without_fallback: false, prefer_compact_encodes: true, prefer_lossless_audio: false, block_upscaled: true },
-  compatible: { allow_x265_non4k: false, block_dv_without_fallback: false, prefer_compact_encodes: false, prefer_lossless_audio: false, block_upscaled: true },
+  BALANCED: { allow_x265_non4k: false, block_dv_without_fallback: false, prefer_compact_encodes: false, prefer_lossless_audio: false, block_upscaled: true },
+  AUDIOPHILE: { allow_x265_non4k: false, block_dv_without_fallback: false, prefer_compact_encodes: false, prefer_lossless_audio: true, block_upscaled: true },
+  EFFICIENT: { allow_x265_non4k: true, block_dv_without_fallback: false, prefer_compact_encodes: true, prefer_lossless_audio: false, block_upscaled: true },
+  COMPATIBLE: { allow_x265_non4k: false, block_dv_without_fallback: false, prefer_compact_encodes: false, prefer_lossless_audio: false, block_upscaled: true },
 };
 
 export const PERSONA_DESCRIPTION_KEYS: Record<ScoringPersonaId, string> = {
-  balanced: "setup.personaBalancedDesc",
-  audiophile: "setup.personaAudiophileDesc",
-  efficient: "setup.personaEfficientDesc",
-  compatible: "setup.personaCompatibleDesc",
+  BALANCED: "setup.personaBalancedDesc",
+  AUDIOPHILE: "setup.personaAudiophileDesc",
+  EFFICIENT: "setup.personaEfficientDesc",
+  COMPATIBLE: "setup.personaCompatibleDesc",
 };
 
 /** Key scoring traits per persona — derived from the Rust scoring_weights.rs presets. */
 export const PERSONA_SCORING_TRAITS: Record<ScoringPersonaId, string[]> = {
-  balanced: [
+  BALANCED: [
     "persona.trait.balanced.source",
     "persona.trait.balanced.audio",
     "persona.trait.balanced.x265",
@@ -96,7 +96,7 @@ export const PERSONA_SCORING_TRAITS: Record<ScoringPersonaId, string[]> = {
     "persona.trait.balanced.remux",
     "persona.trait.balanced.hdr",
   ],
-  audiophile: [
+  AUDIOPHILE: [
     "persona.trait.audiophile.source",
     "persona.trait.audiophile.audio",
     "persona.trait.audiophile.x265",
@@ -104,7 +104,7 @@ export const PERSONA_SCORING_TRAITS: Record<ScoringPersonaId, string[]> = {
     "persona.trait.audiophile.remux",
     "persona.trait.audiophile.hdr",
   ],
-  efficient: [
+  EFFICIENT: [
     "persona.trait.efficient.source",
     "persona.trait.efficient.audio",
     "persona.trait.efficient.x265",
@@ -112,7 +112,7 @@ export const PERSONA_SCORING_TRAITS: Record<ScoringPersonaId, string[]> = {
     "persona.trait.efficient.remux",
     "persona.trait.efficient.hdr",
   ],
-  compatible: [
+  COMPATIBLE: [
     "persona.trait.compatible.source",
     "persona.trait.compatible.audio",
     "persona.trait.compatible.x265",

@@ -50,19 +50,19 @@ import {
 function renderEpisodeTypeBadges(episode: CollectionEpisode, t: TranslateFn) {
   return (
     <>
-      {episode.episodeType === "special" ? (
+      {episode.episodeType === "SPECIAL" ? (
         <Badge tone="info" className="px-1.5 text-[10px]">
           {t("episode.special")}
         </Badge>
-      ) : episode.episodeType === "ova" ? (
+      ) : episode.episodeType === "OVA" ? (
         <Badge tone="info" className="px-1.5 text-[10px]">
           {t("episode.ova")}
         </Badge>
-      ) : episode.episodeType === "ona" ? (
+      ) : episode.episodeType === "ONA" ? (
         <Badge tone="positive" className="px-1.5 text-[10px]">
           {t("episode.ona")}
         </Badge>
-      ) : episode.episodeType === "alternate" ? (
+      ) : episode.episodeType === "ALTERNATE" ? (
         <Badge tone="info" className="px-1.5 text-[10px]">
           {t("episode.alternate")}
         </Badge>

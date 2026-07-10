@@ -11,10 +11,10 @@ import { normalizeLibraryScanProgress } from "@/lib/utils/job-runs";
 
 function isTerminal(status: LibraryScanStatus): boolean {
   return (
-    status === "completed" ||
-    status === "canceled" ||
-    status === "warning" ||
-    status === "failed"
+    status === "COMPLETED" ||
+    status === "CANCELED" ||
+    status === "WARNING" ||
+    status === "FAILED"
   );
 }
 
@@ -155,7 +155,7 @@ export function useLibraryScanEventStream() {
   const sessions = useMemo(
     () =>
       Object.values(sessionsById)
-        .filter((session) => session.mode === "full")
+        .filter((session) => session.mode === "FULL")
         .sort((left, right) => left.startedAt.localeCompare(right.startedAt)),
     [sessionsById],
   );

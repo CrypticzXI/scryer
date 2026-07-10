@@ -51,12 +51,12 @@ export type CatalogQualityProfileOption = {
 };
 
 export type MetadataCatalogMonitorType =
-  | "monitored"
-  | "unmonitored"
-  | "futureEpisodes"
-  | "missingAndFutureEpisodes"
-  | "allEpisodes"
-  | "none";
+  | "MONITORED"
+  | "UNMONITORED"
+  | "FUTURE_EPISODES"
+  | "MISSING_AND_FUTURE_EPISODES"
+  | "ALL_EPISODES"
+  | "NONE";
 
 export type { RootFolderOption } from "@/lib/types/titles";
 import type { LibraryRecord, RootFolderOption } from "@/lib/types/titles";
@@ -305,7 +305,7 @@ export interface UseGlobalSearchResult {
 }
 
 function monitorTypeToMonitored(monitorType: MetadataCatalogMonitorType): boolean {
-  return monitorType !== "unmonitored" && monitorType !== "none";
+  return monitorType !== "UNMONITORED" && monitorType !== "NONE";
 }
 
 function normalizeCatalogAddRequestKey(
@@ -359,7 +359,7 @@ function librariesByFacetFromList(libraries: LibraryRecord[]): Record<Facet, Lib
       acc[library.facet]?.push(library);
       return acc;
     },
-    { movie: [], series: [], anime: [] },
+    { MOVIE: [], SERIES: [], ANIME: [] },
   );
 }
 
@@ -385,7 +385,7 @@ function sameLibrariesByFacet(
   previous: Record<Facet, LibraryRecord[]>,
   next: Record<Facet, LibraryRecord[]>,
 ): boolean {
-  return (["movie", "series", "anime"] as Facet[]).every((facet) => {
+  return (["MOVIE", "SERIES", "ANIME"] as Facet[]).every((facet) => {
     const previousFacetLibraries = previous[facet];
     const nextFacetLibraries = next[facet];
     return (
@@ -478,14 +478,14 @@ export function useGlobalSearch({
   const [isGlobalSearchPanelOpen, setIsGlobalSearchPanelOpen] = useState(false);
   const [catalogConfigLoading, setCatalogConfigLoading] = useState(false);
   const [rootFoldersByFacet, setRootFoldersByFacet] = useState<Record<Facet, RootFolderOption[]>>(
-    () => ({ movie: [], series: [], anime: [] }),
+    () => ({ MOVIE: [], SERIES: [], ANIME: [] }),
   );
   const [librariesByFacet, setLibrariesByFacet] = useState<Record<Facet, LibraryRecord[]>>(
-    () => ({ movie: [], series: [], anime: [] }),
+    () => ({ MOVIE: [], SERIES: [], ANIME: [] }),
   );
   const [requestableLibrariesByFacet, setRequestableLibrariesByFacet] = useState<
     Record<Facet, LibraryRecord[]>
-  >(() => ({ movie: [], series: [], anime: [] }));
+  >(() => ({ MOVIE: [], SERIES: [], ANIME: [] }));
   const forcedOpenRef = useRef(false);
   const autocompleteRequestId = useRef(0);
   const autocompleteAbortRef = useRef<AbortController | null>(null);
@@ -520,7 +520,7 @@ export function useGlobalSearch({
 
   const resolveDefaultQualityProfileIdForFacet = useCallback(
     (facet: Facet) => {
-      const scopeId = facetById(facet)?.scopeId ?? "movie";
+      const scopeId = facetById(facet)?.scopeId ?? "MOVIE";
       const overrideProfileId = coerceProfileSetting(
         categoryQualityProfileOverrides[scopeId],
       );
@@ -619,9 +619,9 @@ export function useGlobalSearch({
         const nextOverrides: Record<ViewCategoryId, string> =
           qualityProfileSettingsToCategoryOverrides(data.qualityProfileSettings);
         setCategoryQualityProfileOverrides((previous) =>
-          previous.movie === nextOverrides.movie &&
-          previous.series === nextOverrides.series &&
-          previous.anime === nextOverrides.anime
+          previous.MOVIE === nextOverrides.MOVIE &&
+          previous.SERIES === nextOverrides.SERIES &&
+          previous.ANIME === nextOverrides.ANIME
             ? previous
             : nextOverrides,
         );
@@ -639,12 +639,12 @@ export function useGlobalSearch({
           );
 
           const nextRootFolders: Record<Facet, RootFolderOption[]> = {
-            movie: data.movieSettings?.rootFolders ?? [],
-            series: data.seriesSettings?.rootFolders ?? [],
-            anime: data.animeSettings?.rootFolders ?? [],
+            MOVIE: data.movieSettings?.rootFolders ?? [],
+            SERIES: data.seriesSettings?.rootFolders ?? [],
+            ANIME: data.animeSettings?.rootFolders ?? [],
           };
           setRootFoldersByFacet((previous) => {
-            const same = (["movie", "series", "anime"] as Facet[]).every((f) => {
+            const same = (["MOVIE", "SERIES", "ANIME"] as Facet[]).every((f) => {
               const prev = previous[f];
               const next = nextRootFolders[f];
               return prev.length === next.length && prev.every((e, i) => e.path === next[i]?.path && e.isDefault === next[i]?.isDefault);
@@ -786,7 +786,7 @@ export function useGlobalSearch({
       }
 
       try {
-        if (title.facet === "movie") {
+        if (title.facet === "MOVIE") {
           const { data, error } = await client.query(metadataMovieQuery, {
             input: {
               tvdbId,
@@ -1347,10 +1347,10 @@ export function useGlobalSearch({
               qualityProfileId: qualityProfileId || undefined,
               rootFolderId: options.rootFolderId || undefined,
               monitorType: options.monitorType,
-              ...(facet === "movie"
+              ...(facet === "MOVIE"
                 ? {}
                 : { useSeasonFolders: options.seasonFolder }),
-              ...(facet === "anime"
+              ...(facet === "ANIME"
                 ? {
                     monitorSpecials: options.monitorSpecials !== false,
                     interSeasonMovies: options.interSeasonMovies !== false,
@@ -1358,7 +1358,7 @@ export function useGlobalSearch({
                 : {}),
             },
             externalIds,
-            ...(facet === "movie" && options.minAvailability ? { minAvailability: options.minAvailability } : {}),
+            ...(facet === "MOVIE" && options.minAvailability ? { minAvailability: options.minAvailability } : {}),
             year: result.year ?? undefined,
             overview: result.overview || undefined,
             sortTitle: result.sortTitle || undefined,

@@ -294,7 +294,7 @@ export const WantedContainer = memo(function WantedContainer({
     void client
       .query(
         librariesQuery,
-        { facet: null, permission: "view" },
+        { facet: null, permission: "VIEW" },
         { requestPolicy: "network-only" },
       )
       .toPromise()
@@ -423,13 +423,13 @@ export const WantedContainer = memo(function WantedContainer({
   const applySearchJobSnapshot = useCallback(
     (job: AcquisitionSearchJob | null) => {
       setSearchJob(job);
-      if (!job || job.state !== "running") {
+      if (!job || job.state !== "RUNNING") {
         searchJobIdRef.current = null;
         storeAcquisitionSearchJobId(null);
       }
-      if (job && job.state !== "running") {
+      if (job && job.state !== "RUNNING") {
         setGlobalStatus(
-          job.state === "cancelled"
+          job.state === "CANCELLED"
             ? t("wanted.searchJobCancelled", {
                 processed: job.processed,
                 grabbed: job.grabbedCount,
@@ -475,7 +475,7 @@ export const WantedContainer = memo(function WantedContainer({
   // Poll the running job (2s) so progress survives navigation; the id is
   // rehydrated from sessionStorage on mount.
   useEffect(() => {
-    const activeId = searchJob?.state === "running" ? searchJob.id : null;
+    const activeId = searchJob?.state === "RUNNING" ? searchJob.id : null;
     if (!activeId) {
       return;
     }
@@ -493,7 +493,7 @@ export const WantedContainer = memo(function WantedContainer({
         if (error) throw error;
         const job = (data?.acquisitionSearchJob ?? null) as AcquisitionSearchJob | null;
         applySearchJobSnapshot(job);
-        if (job && job.state !== "running") {
+        if (job && job.state !== "RUNNING") {
           void refreshItems();
           void refreshCutoff();
         }
@@ -519,7 +519,7 @@ export const WantedContainer = memo(function WantedContainer({
       .toPromise()
       .then(({ data }) => {
         const job = (data?.acquisitionSearchJob ?? null) as AcquisitionSearchJob | null;
-        if (job && job.state === "running") {
+        if (job && job.state === "RUNNING") {
           setSearchJob(job);
         } else {
           searchJobIdRef.current = null;

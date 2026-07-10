@@ -179,9 +179,9 @@ const DEFAULT_FOLDER_TEMPLATE = "{title} ({year})";
 const DEFAULT_RENAME_TEMPLATE =
   "{title} - S{season_order:2}E{episode:2} ({absolute_episode}) - {quality}.{ext}";
 const DEFAULT_CATEGORY_REQUIRED_AUDIO_LANGUAGES: Record<ViewCategoryId, string[]> = {
-  movie: [],
-  series: [],
-  anime: [],
+  MOVIE: [],
+  SERIES: [],
+  ANIME: [],
 };
 
 function buildMediaSettingsInitVariables(activeQualityScopeId: ViewCategoryId) {
@@ -219,12 +219,12 @@ export function useMediaSettings({
   const [globalQualityProfileId, setGlobalQualityProfileId] =
     React.useState("");
   const [globalScoringPersona, setGlobalScoringPersona] =
-    React.useState<ScoringPersonaId>("balanced");
+    React.useState<ScoringPersonaId>("BALANCED");
   const [categoryQualityProfileOverrides, setCategoryQualityProfileOverrides] =
     React.useState<Record<ViewCategoryId, string>>({
-      movie: QUALITY_PROFILE_INHERIT_VALUE,
-      series: QUALITY_PROFILE_INHERIT_VALUE,
-      anime: QUALITY_PROFILE_INHERIT_VALUE,
+      MOVIE: QUALITY_PROFILE_INHERIT_VALUE,
+      SERIES: QUALITY_PROFILE_INHERIT_VALUE,
+      ANIME: QUALITY_PROFILE_INHERIT_VALUE,
     });
   const [categoryRequiredAudioLanguages, setCategoryRequiredAudioLanguages] =
     React.useState<Record<ViewCategoryId, string[]>>({
@@ -237,111 +237,111 @@ export function useMediaSettings({
   const [categoryFolderTemplates, setCategoryFolderTemplates] = React.useState<
     Record<ViewCategoryId, string>
   >({
-    movie: DEFAULT_FOLDER_TEMPLATE,
-    series: DEFAULT_FOLDER_TEMPLATE,
-    anime: DEFAULT_FOLDER_TEMPLATE,
+    MOVIE: DEFAULT_FOLDER_TEMPLATE,
+    SERIES: DEFAULT_FOLDER_TEMPLATE,
+    ANIME: DEFAULT_FOLDER_TEMPLATE,
   });
   const [categoryRenameTemplates, setCategoryRenameTemplates] = React.useState<
     Record<ViewCategoryId, string>
   >({
-    movie: DEFAULT_RENAME_TEMPLATE,
-    series: DEFAULT_RENAME_TEMPLATE,
-    anime: DEFAULT_RENAME_TEMPLATE,
+    MOVIE: DEFAULT_RENAME_TEMPLATE,
+    SERIES: DEFAULT_RENAME_TEMPLATE,
+    ANIME: DEFAULT_RENAME_TEMPLATE,
   });
   const [categoryRenameEnabled, setCategoryRenameEnabled] = React.useState<
     Record<ViewCategoryId, string>
   >({
-    movie: "true",
-    series: "true",
-    anime: "true",
+    MOVIE: "true",
+    SERIES: "true",
+    ANIME: "true",
   });
   const [categoryRenameCollisionPolicies, setCategoryRenameCollisionPolicies] =
     React.useState<Record<ViewCategoryId, string>>({
-      movie: DEFAULT_RENAME_COLLISION_POLICY,
-      series: DEFAULT_RENAME_COLLISION_POLICY,
-      anime: DEFAULT_RENAME_COLLISION_POLICY,
+      MOVIE: DEFAULT_RENAME_COLLISION_POLICY,
+      SERIES: DEFAULT_RENAME_COLLISION_POLICY,
+      ANIME: DEFAULT_RENAME_COLLISION_POLICY,
     });
   const [
     categoryRenameMissingMetadataPolicies,
     setCategoryRenameMissingMetadataPolicies,
   ] = React.useState<Record<ViewCategoryId, string>>({
-    movie: DEFAULT_RENAME_MISSING_METADATA_POLICY,
-    series: DEFAULT_RENAME_MISSING_METADATA_POLICY,
-    anime: DEFAULT_RENAME_MISSING_METADATA_POLICY,
+    MOVIE: DEFAULT_RENAME_MISSING_METADATA_POLICY,
+    SERIES: DEFAULT_RENAME_MISSING_METADATA_POLICY,
+    ANIME: DEFAULT_RENAME_MISSING_METADATA_POLICY,
   });
   const [categoryFillerPolicies, setCategoryFillerPolicies] = React.useState<
     Record<ViewCategoryId, string>
   >({
-    movie: DEFAULT_FILLER_POLICY,
-    series: DEFAULT_FILLER_POLICY,
-    anime: DEFAULT_FILLER_POLICY,
+    MOVIE: DEFAULT_FILLER_POLICY,
+    SERIES: DEFAULT_FILLER_POLICY,
+    ANIME: DEFAULT_FILLER_POLICY,
   });
   const [categoryRecapPolicies, setCategoryRecapPolicies] = React.useState<
     Record<ViewCategoryId, string>
   >({
-    movie: DEFAULT_RECAP_POLICY,
-    series: DEFAULT_RECAP_POLICY,
-    anime: DEFAULT_RECAP_POLICY,
+    MOVIE: DEFAULT_RECAP_POLICY,
+    SERIES: DEFAULT_RECAP_POLICY,
+    ANIME: DEFAULT_RECAP_POLICY,
   });
   const [categoryMonitorSpecials, setCategoryMonitorSpecials] = React.useState<
     Record<ViewCategoryId, string>
   >({
-    movie: "true",
-    series: "true",
-    anime: "false",
+    MOVIE: "true",
+    SERIES: "true",
+    ANIME: "false",
   });
   const [categoryInterSeasonMovies, setCategoryInterSeasonMovies] =
     React.useState<Record<ViewCategoryId, string>>({
-      movie: "true",
-      series: "true",
-      anime: "true",
+      MOVIE: "true",
+      SERIES: "true",
+      ANIME: "true",
     });
   const [categoryMonitorFillerMovies, setCategoryMonitorFillerMovies] =
     React.useState<Record<ViewCategoryId, string>>({
-      movie: "false",
-      series: "false",
-      anime: "false",
+      MOVIE: "false",
+      SERIES: "false",
+      ANIME: "false",
     });
   const [nfoWriteOnImport, setNfoWriteOnImport] = React.useState<
     Record<ViewCategoryId, string>
   >({
-    movie: "false",
-    series: "false",
-    anime: "false",
+    MOVIE: "false",
+    SERIES: "false",
+    ANIME: "false",
   });
   const [importMode, setImportMode] = React.useState<Record<ViewCategoryId, ImportMode>>({
-    movie: "hardlink_or_copy",
-    series: "hardlink_or_copy",
-    anime: "hardlink_or_copy",
+    MOVIE: "hardlink_or_copy",
+    SERIES: "hardlink_or_copy",
+    ANIME: "hardlink_or_copy",
   });
   const [plexmatchWriteOnImport, setPlexmatchWriteOnImport] = React.useState<
     Record<ViewCategoryId, string>
   >({
-    movie: "false",
-    series: "false",
-    anime: "false",
+    MOVIE: "false",
+    SERIES: "false",
+    ANIME: "false",
   });
   const [setPermissionsLinux, setSetPermissionsLinux] = React.useState<
     Record<ViewCategoryId, string>
   >({
-    movie: "false",
-    series: "false",
-    anime: "false",
+    MOVIE: "false",
+    SERIES: "false",
+    ANIME: "false",
   });
   const [fileChmod, setFileChmod] = React.useState<Record<ViewCategoryId, string>>({
-    movie: "",
-    series: "",
-    anime: "",
+    MOVIE: "",
+    SERIES: "",
+    ANIME: "",
   });
   const [folderChmod, setFolderChmod] = React.useState<Record<ViewCategoryId, string>>({
-    movie: "",
-    series: "",
-    anime: "",
+    MOVIE: "",
+    SERIES: "",
+    ANIME: "",
   });
   const [chownGroup, setChownGroup] = React.useState<Record<ViewCategoryId, string>>({
-    movie: "",
-    series: "",
-    anime: "",
+    MOVIE: "",
+    SERIES: "",
+    ANIME: "",
   });
 
   const saveRootFolders = React.useCallback(
@@ -583,9 +583,9 @@ export function useMediaSettings({
         current === resolvedGlobalId ? current : resolvedGlobalId,
       );
       setGlobalScoringPersona((current) =>
-        current === (qualityProfileSettings?.globalScoringPersona ?? "balanced")
+        current === (qualityProfileSettings?.globalScoringPersona ?? "BALANCED")
           ? current
-          : (qualityProfileSettings?.globalScoringPersona ?? "balanced"),
+          : (qualityProfileSettings?.globalScoringPersona ?? "BALANCED"),
       );
 
       setQualityProfiles((currentProfiles) =>
@@ -678,34 +678,34 @@ export function useMediaSettings({
           );
         });
 
-        if (mediaSettings.scope === "anime") {
+        if (mediaSettings.scope === "ANIME") {
           setCategoryFillerPolicies((previous) => {
             const nextPolicy = normalizeFillerPolicy(mediaSettings.fillerPolicy);
-            return previous.anime === nextPolicy
+            return previous.ANIME === nextPolicy
               ? previous
               : { ...previous, anime: nextPolicy };
           });
           setCategoryRecapPolicies((previous) => {
             const nextPolicy = normalizeRecapPolicy(mediaSettings.recapPolicy);
-            return previous.anime === nextPolicy
+            return previous.ANIME === nextPolicy
               ? previous
               : { ...previous, anime: nextPolicy };
           });
           setCategoryMonitorSpecials((previous) => {
             const nextValue = mediaSettings.monitorSpecials ? "true" : "false";
-            return previous.anime === nextValue
+            return previous.ANIME === nextValue
               ? previous
               : { ...previous, anime: nextValue };
           });
           setCategoryInterSeasonMovies((previous) => {
             const nextValue = mediaSettings.interSeasonMovies === false ? "false" : "true";
-            return previous.anime === nextValue
+            return previous.ANIME === nextValue
               ? previous
               : { ...previous, anime: nextValue };
           });
           setCategoryMonitorFillerMovies((previous) => {
             const nextValue = mediaSettings.monitorFillerMovies ? "true" : "false";
-            return previous.anime === nextValue
+            return previous.ANIME === nextValue
               ? previous
               : { ...previous, anime: nextValue };
           });
@@ -1072,17 +1072,17 @@ export function useMediaSettings({
               renameEnabled,
               ...renameConfigInput,
               nfoWriteOnImport: nfoWriteOnImport[activeQualityScopeId] === "true",
-              ...(activeQualityScopeId === "anime"
+              ...(activeQualityScopeId === "ANIME"
                 ? {
-                    fillerPolicy: normalizeFillerPolicy(categoryFillerPolicies.anime),
-                    recapPolicy: normalizeRecapPolicy(categoryRecapPolicies.anime),
-                    monitorSpecials: categoryMonitorSpecials.anime === "true",
-                    interSeasonMovies: categoryInterSeasonMovies.anime !== "false",
-                    monitorFillerMovies: categoryMonitorFillerMovies.anime === "true",
+                    fillerPolicy: normalizeFillerPolicy(categoryFillerPolicies.ANIME),
+                    recapPolicy: normalizeRecapPolicy(categoryRecapPolicies.ANIME),
+                    monitorSpecials: categoryMonitorSpecials.ANIME === "true",
+                    interSeasonMovies: categoryInterSeasonMovies.ANIME !== "false",
+                    monitorFillerMovies: categoryMonitorFillerMovies.ANIME === "true",
                     plexmatchWriteOnImport:
                       plexmatchWriteOnImport[activeQualityScopeId] === "true",
                   }
-                : activeQualityScopeId === "series"
+                : activeQualityScopeId === "SERIES"
                   ? {
                       plexmatchWriteOnImport:
                         plexmatchWriteOnImport[activeQualityScopeId] === "true",

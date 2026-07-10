@@ -31,10 +31,10 @@ const LIBRARY_SCAN_TOAST_OPTIONS = {
 
 function isTerminal(status: LibraryScanStatus): boolean {
   return (
-    status === "completed" ||
-    status === "canceled" ||
-    status === "warning" ||
-    status === "failed"
+    status === "COMPLETED" ||
+    status === "CANCELED" ||
+    status === "WARNING" ||
+    status === "FAILED"
   );
 }
 

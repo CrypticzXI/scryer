@@ -196,7 +196,7 @@ function serializeConfigValues(
     Object.entries(configValues).filter(([, v]) => v !== ""),
   );
   const secretInputKeys = fields
-    .filter((field) => field.fieldType === "password")
+    .filter((field) => field.fieldType === "PASSWORD")
     .map((field) => field.key);
   return providerConfigRecordToValues(nonEmpty, secretInputKeys);
 }
@@ -982,7 +982,7 @@ export function SettingsNotificationsContainer({
       {pluginsTarget
         ? createPortal(
             <FilteredPluginList
-              family="notification"
+              family="NOTIFICATION"
               refreshProviderOptions={refreshProviderTypes}
             />,
             pluginsTarget,

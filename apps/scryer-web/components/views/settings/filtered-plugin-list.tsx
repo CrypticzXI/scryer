@@ -37,11 +37,11 @@ const FILTERED_PLUGIN_MUTED_CLASS = "text-[var(--scry-muted3)]";
 const EMPTY_PLUGIN_TYPES: readonly string[] = [];
 
 const FAMILY_PLUGIN_TYPES: Record<ProviderCatalogFamily, readonly string[]> = {
-  indexer: ["indexer", "usenet_indexer", "torrent_indexer"],
-  download_client: ["download_client"],
-  archive_extractor: ["archive_extractor"],
-  notification: ["notification"],
-  subtitle: ["subtitle_provider"],
+  INDEXER: ["indexer", "usenet_indexer", "torrent_indexer"],
+  DOWNLOAD_CLIENT: ["download_client"],
+  ARCHIVE_EXTRACTOR: ["archive_extractor"],
+  NOTIFICATION: ["notification"],
+  SUBTITLE: ["subtitle_provider"],
 };
 
 export type FilteredPluginListProps = {

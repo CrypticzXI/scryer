@@ -10,15 +10,15 @@ export type QueueDownloadScopeInput =
 
 function queueScopeToInput(scope: ReleaseQueueScope): QueueDownloadScopeInput | null {
   switch (scope.kind) {
-    case "episode":
+    case "EPISODE":
       return scope.episodeId ? { episode: scope.episodeId } : null;
     case "episode_set":
       return scope.episodeIds.length > 0 ? { episodeSet: scope.episodeIds } : null;
     case "collection":
       return scope.collectionId ? { collection: scope.collectionId } : null;
-    case "series_movie":
+    case "SERIES_MOVIE":
       return scope.seriesMovieLinkId ? { seriesMovie: scope.seriesMovieLinkId } : null;
-    case "title":
+    case "TITLE":
       return { title: true };
     case "orphan":
       return { orphan: true };

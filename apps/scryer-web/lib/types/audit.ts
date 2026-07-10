@@ -2,7 +2,7 @@ export type AuditLogEvent = {
   sequence: number;
   eventId: string;
   occurredAt: string;
-  actorKind: string;
+  actorKind: 'USER' | 'ANONYMOUS' | 'SYSTEM';
   actorUserId: string | null;
   actorDisplayName: string;
   titleId: string | null;

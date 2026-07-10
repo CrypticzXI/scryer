@@ -65,17 +65,17 @@ export type ConfigFieldOption = {
 };
 
 export type ConfigFieldTypeValue =
-  | "string"
-  | "password"
-  | "multiline"
-  | "bool"
-  | "select"
-  | "number"
-  | "path"
-  | "tag";
+  | "STRING"
+  | "PASSWORD"
+  | "MULTILINE"
+  | "BOOL"
+  | "SELECT"
+  | "NUMBER"
+  | "PATH"
+  | "TAG";
 
-export type ConfigFieldValueSourceValue = "user" | "host_binding";
-export type ConfigFieldRoleValue = "connection_url";
+export type ConfigFieldValueSourceValue = "USER" | "HOST_BINDING";
+export type ConfigFieldRoleValue = "CONNECTION_URL";
 
 export type ConfigFieldDef = {
   key: string;
@@ -96,7 +96,7 @@ export type ProviderTypeInfo = {
   defaultBaseUrl: string | null;
   configFields: ConfigFieldDef[];
   availableHostBindings: string[];
-  recommendedFacets: Array<"movie" | "series" | "anime">;
+  recommendedFacets: Array<"MOVIE" | "SERIES" | "ANIME">;
 };
 
 export function visibleIndexerConfigFields(

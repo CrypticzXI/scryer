@@ -1887,7 +1887,7 @@ pub fn from_collection(collection: Collection) -> CollectionPayload {
     CollectionPayload {
         id: collection.id.into(),
         title_id: collection.title_id.into(),
-        collection_type: collection.collection_type.as_str().to_string(),
+        collection_type: collection.collection_type.into(),
         collection_index: collection.collection_index,
         label: collection.label,
         ordered_path: collection.ordered_path,
@@ -1937,7 +1937,7 @@ pub fn from_episode(episode: Episode) -> EpisodePayload {
         id: episode.id.into(),
         title_id: episode.title_id.into(),
         collection_id: episode.collection_id.map(Into::into),
-        episode_type: episode.episode_type.as_str().to_string(),
+        episode_type: episode.episode_type.into(),
         episode_number: episode.episode_number,
         season_number: episode.season_number,
         episode_label: episode.episode_label,
@@ -2232,7 +2232,7 @@ pub fn from_activity_event(event: ActivityEvent) -> ActivityEventPayload {
             .into_iter()
             .map(ActivityChannelValue::from_application)
             .collect(),
-        actor_kind: event.actor_kind.as_str().to_string(),
+        actor_kind: event.actor_kind.into(),
         actor_user_id: event.actor_user_id.map(Into::into),
         actor_display_name: event.actor_display_name,
         title_id: event.title_id.map(Into::into),
@@ -2821,7 +2821,7 @@ pub fn from_domain_event(event: DomainEvent) -> DomainEventEnvelopePayload {
         sequence: Long::from(event.sequence),
         event_id: event.event_id.into(),
         occurred_at: event.occurred_at,
-        actor_kind: event.actor_kind.as_str().to_string(),
+        actor_kind: event.actor_kind.into(),
         actor_user_id: event.actor_user_id.map(Into::into),
         actor_display_name: event.actor_display_name,
         title_id: event.title_id.map(Into::into),
@@ -2946,7 +2946,7 @@ pub fn from_pp_script(s: scryer_domain::PostProcessingScript) -> PostProcessingS
         script_type: s.script_type.as_str().to_string(),
         script_content: s.script_content,
         applied_facets: s.applied_facets,
-        execution_mode: s.execution_mode.as_str().to_string(),
+        execution_mode: s.execution_mode.into(),
         timeout_secs: s.timeout_secs as i32,
         priority: s.priority,
         enabled: s.enabled,
@@ -2992,9 +2992,7 @@ pub fn from_title_history_record(
         episode_ids: record.episode_ids.into_iter().map(Into::into).collect(),
         collection_id: record.collection_id.map(Into::into),
         event_type: record.event_type.as_str().to_string(),
-        actor_kind: record
-            .actor_kind
-            .map(|actor_kind| actor_kind.as_str().to_string()),
+        actor_kind: record.actor_kind.map(Into::into),
         actor_user_id: record.actor_user_id.map(Into::into),
         actor_display_name: record.actor_display_name,
         source_title: record.source_title,

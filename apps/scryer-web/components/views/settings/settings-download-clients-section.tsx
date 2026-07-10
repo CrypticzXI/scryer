@@ -673,7 +673,7 @@ export function SettingsDownloadClientsSection({
                 return (
                   <div
                     key={field.key}
-                    className={field.fieldType === "multiline" ? "md:col-span-3" : undefined}
+                    className={field.fieldType === "MULTILINE" ? "md:col-span-3" : undefined}
                   >
                     <DownloadClientConfigField
                       field={field}

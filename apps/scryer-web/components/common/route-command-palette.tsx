@@ -41,7 +41,7 @@ const CATALOG_COMMAND_MIN_QUERY_LENGTH = 2;
 const CATALOG_COMMAND_RESULT_LIMIT = 8;
 
 function catalogFacetFromString(facet: string): Facet {
-  return facet === "movie" ? "movie" : facet === "anime" ? "anime" : "series";
+  return facet === "movie" ? "MOVIE" : facet === "anime" ? "ANIME" : "SERIES";
 }
 
 function isTextInput(target: EventTarget | null): boolean {

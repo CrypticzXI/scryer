@@ -57,7 +57,7 @@ export function compareStrings(left: string, right: string): number {
 export function activityStatusRank(tab: ActivityTab, displayState: string): number {
   switch (tab) {
     case "import":
-      switch (displayState) {
+      switch (displayState.toLowerCase()) {
         case "importing":
           return 0;
         case "import_pending":
@@ -70,7 +70,7 @@ export function activityStatusRank(tab: ActivityTab, displayState: string): numb
           return 99;
       }
     case "history":
-      switch (displayState) {
+      switch (displayState.toLowerCase()) {
         case "completed":
           return 0;
         case "failed":
@@ -81,7 +81,7 @@ export function activityStatusRank(tab: ActivityTab, displayState: string): numb
       }
     case "activity":
     default:
-      switch (displayState) {
+      switch (displayState.toLowerCase()) {
         case "downloading":
           return 0;
         case "queued":
@@ -132,7 +132,7 @@ export function deriveQueueRowPresentation(
   const transferBytes = parseByteCount(queueItem.importTransferBytes);
   const transferTotalBytes = parseByteCount(queueItem.importTransferTotalBytes);
   const hasTransferProgress =
-    displayStateKey === "importing" &&
+    displayStateKey === "IMPORTING" &&
     queueItem.importTransferPhase !== null &&
     transferBytes !== null &&
     transferTotalBytes !== null &&
@@ -146,7 +146,7 @@ export function deriveQueueRowPresentation(
   const needsManualImport =
     queueItem.attentionRequired ||
     queueStateAttention[stateKey] ||
-    queueStateAttention[displayStateKey];
+    queueStateAttention[displayStateKey.toLowerCase()];
   const postProcessingStatusKey =
     stateKey === "verifying"
       ? "queue.state.verifying"
@@ -160,49 +160,49 @@ export function deriveQueueRowPresentation(
       ? t("queue.transfer.copying")
       : queueItem.importTransferPhase === "finalizing"
         ? t("queue.transfer.finalizing")
-        : displayStateKey === "post_processing"
+        : displayStateKey === "POST_PROCESSING"
           ? t(postProcessingStatusKey)
-          : t(queueStateLabels[displayStateKey] ?? "queue.state.unknown");
+          : t(queueStateLabels[displayStateKey.toLowerCase()] ?? "queue.state.unknown");
   const hasStatusDetails =
     (stateKey === "failed" ||
-      displayStateKey === "remove_failed" ||
-      displayStateKey === "import_blocked" ||
-      displayStateKey === "import_failed") &&
+      displayStateKey === "REMOVE_FAILED" ||
+      displayStateKey === "IMPORT_BLOCKED" ||
+      displayStateKey === "IMPORT_FAILED") &&
     failureReason.length > 0;
   const isCompleted = stateKey === "completed" || stateKey === "import_pending";
   const canRetryManualImport =
-    displayStateKey === "import_blocked" || displayStateKey === "import_failed";
+    displayStateKey === "IMPORT_BLOCKED" || displayStateKey === "IMPORT_FAILED";
   const canAssignTitle =
     trackedStateKey === "import_blocked" &&
-    displayStateKey !== "importing" &&
-    displayStateKey !== "removing";
+    displayStateKey !== "IMPORTING" &&
+    displayStateKey !== "REMOVING";
   const canIgnore =
     trackedStateKey === "import_blocked" &&
-    displayStateKey !== "importing" &&
-    displayStateKey !== "removing";
+    displayStateKey !== "IMPORTING" &&
+    displayStateKey !== "REMOVING";
   const canMarkFailed =
     (trackedStateKey === "import_blocked" ||
       trackedStateKey === "import_pending" ||
       trackedStateKey === "failed_pending") &&
-    displayStateKey !== "importing" &&
-    displayStateKey !== "removing";
+    displayStateKey !== "IMPORTING" &&
+    displayStateKey !== "REMOVING";
   const canInteractiveManualImport =
     Boolean(queueItem.titleId) &&
     (queueItem.facet === "series" || queueItem.facet === "anime") &&
     canRetryManualImport;
   const canDirectManualImport =
     Boolean(queueItem.titleId) &&
-    displayStateKey !== "importing" &&
-    displayStateKey !== "removing" &&
+    displayStateKey !== "IMPORTING" &&
+    displayStateKey !== "REMOVING" &&
     ((isCompleted && needsManualImport) ||
       (canRetryManualImport && queueItem.facet === "movie"));
   const releaseTitle =
     queueItem.titleName.trim() || queueItem.downloadClientItemId.trim() || "—";
   const displayTitle = releaseTitle;
   const hasExpandableDetails =
-    (displayStateKey === "import_blocked" ||
-      displayStateKey === "import_failed" ||
-      displayStateKey === "remove_failed") &&
+    (displayStateKey === "IMPORT_BLOCKED" ||
+      displayStateKey === "IMPORT_FAILED" ||
+      displayStateKey === "REMOVE_FAILED") &&
     (failureReason.length > 0 || releaseTitle !== "—");
 
   return {
@@ -310,7 +310,7 @@ export function effectiveQueueItemProgress(queueItem: DownloadQueueItem): number
   const transferBytes = parseByteCount(queueItem.importTransferBytes);
   const transferTotalBytes = parseByteCount(queueItem.importTransferTotalBytes);
   if (
-    queueItem.displayState === "importing" &&
+    queueItem.displayState === "IMPORTING" &&
     queueItem.importTransferPhase !== null &&
     transferBytes !== null &&
     transferTotalBytes !== null &&
@@ -338,7 +338,7 @@ export function formatRemainingDuration(remainingSeconds: number | null): string
 }
 
 export function getProgressBarColor(stateKey: string): string {
-  switch (stateKey) {
+  switch (stateKey.toLowerCase()) {
     case "completed":
       return "bg-[var(--scry-success-solid)]";
     case "failed":

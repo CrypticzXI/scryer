@@ -48,14 +48,14 @@ export const CHOWN_GROUP_KEY = "permissions.chown_group";
 
 // --- Derived from registry ---
 
-export const MOVIE_FOLDER_KEY = FACET_REGISTRY.find((f) => f.id === "movie")!.folderSettingKey;
-export const DEFAULT_MOVIE_LIBRARY_PATH = FACET_REGISTRY.find((f) => f.id === "movie")!.defaultLibraryPath;
-export const SERIES_FOLDER_KEY = FACET_REGISTRY.find((f) => f.id === "series")!.folderSettingKey;
-export const DEFAULT_SERIES_LIBRARY_PATH = FACET_REGISTRY.find((f) => f.id === "series")!.defaultLibraryPath;
+export const MOVIE_FOLDER_KEY = FACET_REGISTRY.find((f) => f.id === "MOVIE")!.folderSettingKey;
+export const DEFAULT_MOVIE_LIBRARY_PATH = FACET_REGISTRY.find((f) => f.id === "MOVIE")!.defaultLibraryPath;
+export const SERIES_FOLDER_KEY = FACET_REGISTRY.find((f) => f.id === "SERIES")!.folderSettingKey;
+export const DEFAULT_SERIES_LIBRARY_PATH = FACET_REGISTRY.find((f) => f.id === "SERIES")!.defaultLibraryPath;
 
-export const RENAME_TEMPLATE_MOVIE_GLOBAL_KEY = FACET_REGISTRY.find((f) => f.id === "movie")!.renameTemplateKey;
-export const RENAME_TEMPLATE_SERIES_GLOBAL_KEY = FACET_REGISTRY.find((f) => f.id === "series")!.renameTemplateKey;
-export const RENAME_TEMPLATE_ANIME_GLOBAL_KEY = FACET_REGISTRY.find((f) => f.id === "anime")!.renameTemplateKey;
+export const RENAME_TEMPLATE_MOVIE_GLOBAL_KEY = FACET_REGISTRY.find((f) => f.id === "MOVIE")!.renameTemplateKey;
+export const RENAME_TEMPLATE_SERIES_GLOBAL_KEY = FACET_REGISTRY.find((f) => f.id === "SERIES")!.renameTemplateKey;
+export const RENAME_TEMPLATE_ANIME_GLOBAL_KEY = FACET_REGISTRY.find((f) => f.id === "ANIME")!.renameTemplateKey;
 
 export const QUALITY_PROFILE_SCOPE_ID_MOVIES = "movie" as const;
 export const QUALITY_PROFILE_SCOPE_ID_SERIES = "series" as const;

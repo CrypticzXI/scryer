@@ -129,7 +129,7 @@ export function SettingsProfileContainer({ userId, username }: Props) {
   const [unlinkingAccountId, setUnlinkingAccountId] = useState<string | null>(null);
   const [linkingProvider, setLinkingProvider] = useState<ExternalAccountProvider | null>(null);
   const [linkAccountDraft, setLinkAccountDraft] = useState<LinkAccountDraft>({
-    provider: "jellyfin",
+    provider: "JELLYFIN",
     connectionId: "",
     jellyfinUsername: "",
     jellyfinPassword: "",
@@ -327,7 +327,7 @@ export function SettingsProfileContainer({ userId, username }: Props) {
         const currentUser = result.data?.me;
         const isProfileUser = currentUser?.id === userId;
         setHasPassword(isProfileUser && currentUser.hasPassword === true);
-        setAccountKind(isProfileUser ? currentUser.accountKind ?? "local" : null);
+        setAccountKind(isProfileUser ? currentUser.accountKind ?? "LOCAL" : null);
       } catch (error) {
         if (!cancelled) {
           setHasPassword(false);
@@ -343,7 +343,7 @@ export function SettingsProfileContainer({ userId, username }: Props) {
   }, [client, setGlobalStatus, t, userId]);
 
   const loadPasskeys = useCallback(async () => {
-    if (!userId || accountKind !== "local") {
+    if (!userId || accountKind !== "LOCAL") {
       setPasskeys([]);
       setLoadingPasskeys(false);
       return;
@@ -514,8 +514,8 @@ export function SettingsProfileContainer({ userId, username }: Props) {
     };
 
     return {
-      jellyfin: eligibleForProvider("jellyfin"),
-      plex: eligibleForProvider("plex"),
+      jellyfin: eligibleForProvider("JELLYFIN"),
+      plex: eligibleForProvider("PLEX"),
     };
   }, [externalAuthSettings, linkedAccounts]);
 
@@ -530,7 +530,7 @@ export function SettingsProfileContainer({ userId, username }: Props) {
   }, [externalAuthSettings]);
 
   const handleAddPasskey = useCallback(async () => {
-    if (!userId || hasPassword !== true || accountKind !== "local") return;
+    if (!userId || hasPassword !== true || accountKind !== "LOCAL") return;
 
     setAddingPasskey(true);
     try {
@@ -724,7 +724,7 @@ export function SettingsProfileContainer({ userId, username }: Props) {
     if (!isVisibleExternalAccountProvider(provider)) {
       return;
     }
-    const connections = provider === "jellyfin" ? linkableConnections.jellyfin : linkableConnections.plex;
+    const connections = provider === "JELLYFIN" ? linkableConnections.jellyfin : linkableConnections.plex;
     setLinkingProvider(provider);
     setLinkAccountError(null);
     setLinkAccountDraft({
@@ -759,7 +759,7 @@ export function SettingsProfileContainer({ userId, username }: Props) {
   const handleSubmitJellyfinLink = useCallback(async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (
-      linkingProvider !== "jellyfin" ||
+      linkingProvider !== "JELLYFIN" ||
       !linkAccountDraft.connectionId ||
       !linkAccountDraft.jellyfinUsername.trim() ||
       !linkAccountDraft.jellyfinPassword
@@ -806,7 +806,7 @@ export function SettingsProfileContainer({ userId, username }: Props) {
 
   const handleSubmitPlexLink = useCallback(async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (linkingProvider !== "plex" || !linkAccountDraft.connectionId) {
+    if (linkingProvider !== "PLEX" || !linkAccountDraft.connectionId) {
       return;
     }
 
@@ -859,14 +859,14 @@ export function SettingsProfileContainer({ userId, username }: Props) {
       newPassword={newPassword}
       confirmPassword={confirmPassword}
       saving={saving}
-      canChangePassword={accountKind === "local"}
+      canChangePassword={accountKind === "LOCAL"}
       requiresCurrentPassword={hasPassword === true}
       onCurrentPasswordChange={setCurrentPassword}
       onNewPasswordChange={setNewPassword}
       onConfirmPasswordChange={setConfirmPassword}
       onChangePassword={handleChangePassword}
-      showPasskeys={Boolean(userId) && accountKind === "local"}
-      canAddPasskey={accountKind === "local" && hasPassword === true}
+      showPasskeys={Boolean(userId) && accountKind === "LOCAL"}
+      canAddPasskey={accountKind === "LOCAL" && hasPassword === true}
       passkeys={passkeys}
       oauthApps={oauthApps}
       totpStatus={totpStatus}

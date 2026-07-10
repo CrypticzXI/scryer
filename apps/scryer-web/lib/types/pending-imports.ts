@@ -4,7 +4,7 @@ export type PendingImportCounts = {
   anime: number;
 };
 
-export type PendingImportStatus = "pending" | "ignored";
+export type PendingImportStatus = "PENDING" | "IGNORED";
 
 export type PendingImportSearchAttempt = {
   query: string;
@@ -18,7 +18,7 @@ export type PendingImportItem = {
   libraryId: string;
   libraryName?: string | null;
   librarySlug?: string | null;
-  facet: "movie" | "series" | "anime";
+  facet: "MOVIE" | "SERIES" | "ANIME";
   status: PendingImportStatus;
   titleId?: string | null;
   titleName?: string | null;
@@ -41,7 +41,7 @@ export type PendingImportBindingEpisode = {
   id: string;
   titleId: string;
   collectionId?: string | null;
-  episodeType: string;
+  episodeType: 'STANDARD' | 'SPECIAL' | 'OFFICIAL' | 'OVA' | 'ONA' | 'ALTERNATE';
   episodeNumber?: string | null;
   seasonNumber?: string | null;
   episodeLabel?: string | null;
@@ -117,14 +117,14 @@ export function hasImportItemsForView(
 
 export function pendingImportFacetValueForView(
   view: string,
-): "movie" | "series" | "anime" {
+): "MOVIE" | "SERIES" | "ANIME" {
   switch (view) {
     case "movies":
-      return "movie";
+      return "MOVIE";
     case "series":
-      return "series";
+      return "SERIES";
     case "anime":
-      return "anime";
+      return "ANIME";
     default:
       throw new Error(`unsupported pending import view: ${view}`);
   }

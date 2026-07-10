@@ -45,14 +45,14 @@ const QUALITY_EDITOR_LIST_CLASS =
 const QUALITY_EDITOR_LIST_ITEM_CLASS =
   "mb-1 flex items-center justify-between rounded-[9px] border border-[var(--scry-border3)] bg-[var(--scry-card2)] px-2 py-1.5 text-[var(--scry-ink2)] hover:bg-[var(--scry-hover)]";
 
-type ViewCategoryId = "movie" | "series" | "anime";
+type ViewCategoryId = "MOVIE" | "SERIES" | "ANIME";
 
 type ParsedQualityProfile = {
   id: string;
   name: string;
 };
 
-type ScoringPersonaId = "balanced" | "audiophile" | "efficient" | "compatible";
+type ScoringPersonaId = "BALANCED" | "AUDIOPHILE" | "EFFICIENT" | "COMPATIBLE";
 
 type ScoringOverridesPayload = {
   allow_x265_non4k?: boolean | null;
@@ -489,9 +489,9 @@ export function SettingsQualityProfilesSection({
   const [categoryPersonaDrafts, setCategoryPersonaDrafts] = React.useState<
     Record<ViewCategoryId, string>
   >({
-    movie: categoryPersonaSelections.movie.overridePersona ?? "__default__",
-    series: categoryPersonaSelections.series.overridePersona ?? "__default__",
-    anime: categoryPersonaSelections.anime.overridePersona ?? "__default__",
+    MOVIE: categoryPersonaSelections.MOVIE.overridePersona ?? "__default__",
+    SERIES: categoryPersonaSelections.SERIES.overridePersona ?? "__default__",
+    ANIME: categoryPersonaSelections.ANIME.overridePersona ?? "__default__",
   });
   const [pendingDeleteProfile, setPendingDeleteProfile] = React.useState<{ id: string; name: string } | null>(null);
   const [pendingEditorAction, setPendingEditorAction] =
@@ -517,9 +517,9 @@ export function SettingsQualityProfilesSection({
 
   React.useEffect(() => {
     setCategoryPersonaDrafts({
-      movie: categoryPersonaSelections.movie.overridePersona ?? "__default__",
-      series: categoryPersonaSelections.series.overridePersona ?? "__default__",
-      anime: categoryPersonaSelections.anime.overridePersona ?? "__default__",
+      MOVIE: categoryPersonaSelections.MOVIE.overridePersona ?? "__default__",
+      SERIES: categoryPersonaSelections.SERIES.overridePersona ?? "__default__",
+      ANIME: categoryPersonaSelections.ANIME.overridePersona ?? "__default__",
     });
   }, [categoryPersonaSelections]);
 

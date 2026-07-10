@@ -117,9 +117,9 @@ function formatTimestamp(
 
 function providerLabel(provider: LinkedAccount["provider"]): string {
   switch (provider) {
-    case "plex":
+    case "PLEX":
       return "Plex";
-    case "jellyfin":
+    case "JELLYFIN":
       return "Jellyfin";
     default:
       return provider;
@@ -236,7 +236,7 @@ export function SettingsProfileSection({
     !passwordMismatch &&
     !saving;
   const selectedLinkConnections =
-    linkingProvider === "jellyfin"
+    linkingProvider === "JELLYFIN"
       ? linkableJellyfinConnections
       : isVisibleExternalAccountProvider("plex")
         ? linkablePlexConnections
@@ -840,9 +840,9 @@ export function SettingsProfileSection({
                 id="settings-profile-link-jellyfin-start"
                 type="button"
                 variant={
-                  linkingProvider === "jellyfin" ? "secondary" : "outline"
+                  linkingProvider === "JELLYFIN" ? "secondary" : "outline"
                 }
-                onClick={() => onStartLinkAccount("jellyfin")}
+                onClick={() => onStartLinkAccount("JELLYFIN")}
                 disabled={linkAccountBusy}
               >
                 {t("profile.linkJellyfinAccount")}
@@ -853,8 +853,8 @@ export function SettingsProfileSection({
               <Button
                 id="settings-profile-link-plex-start"
                 type="button"
-                variant={linkingProvider === "plex" ? "secondary" : "outline"}
-                onClick={() => onStartLinkAccount("plex")}
+                variant={linkingProvider === "PLEX" ? "secondary" : "outline"}
+                onClick={() => onStartLinkAccount("PLEX")}
                 disabled={linkAccountBusy}
               >
                 {t("profile.linkPlexAccount")}
@@ -863,7 +863,7 @@ export function SettingsProfileSection({
           </div>
         </div>
 
-        {linkingProvider === "jellyfin" ? (
+        {linkingProvider === "JELLYFIN" ? (
           <form
             className="grid gap-3 rounded-[12px] border border-[var(--scry-line2)] bg-[var(--scry-card2)] p-4 md:max-w-xl"
             onSubmit={onSubmitJellyfinLink}
@@ -973,7 +973,7 @@ export function SettingsProfileSection({
         ) : null}
 
         {isVisibleExternalAccountProvider("plex") &&
-        linkingProvider === "plex" ? (
+        linkingProvider === "PLEX" ? (
           <form
             className="grid gap-3 rounded-[12px] border border-[var(--scry-line2)] bg-[var(--scry-card2)] p-4 md:max-w-xl"
             onSubmit={onSubmitPlexLink}

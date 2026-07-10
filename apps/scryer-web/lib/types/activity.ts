@@ -34,7 +34,7 @@ export const activitySeverityValues = [
 
 export type ActivitySeverity = (typeof activitySeverityValues)[number];
 
-export const activityChannelValues = ["web_ui", "toast"] as const;
+export const activityChannelValues = ["WEB_UI", "TOAST"] as const;
 
 export type ActivityChannel = (typeof activityChannelValues)[number];
 
@@ -45,7 +45,7 @@ export type ActivityEvent = {
   channels: ActivityChannel[];
   eventType?: ActivityKind;
   message: string;
-  actorKind?: string | null;
+  actorKind?: 'USER' | 'ANONYMOUS' | 'SYSTEM' | null;
   actorUserId?: string | null;
   actorDisplayName?: string | null;
   titleId?: string | null;

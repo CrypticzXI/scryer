@@ -31,35 +31,35 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function normalizeJobKey(value: unknown): JobKey {
-  return typeof value === "string" ? (value as JobKey) : "rss_sync";
+  return typeof value === "string" ? (value as JobKey) : "RSS_SYNC";
 }
 
 function normalizeCategory(value: unknown): JobCategory {
   switch (value) {
-    case "library":
-    case "acquisition":
-    case "maintenance":
-    case "subtitles":
-    case "system":
+    case "LIBRARY":
+    case "ACQUISITION":
+    case "MAINTENANCE":
+    case "SUBTITLES":
+    case "SYSTEM":
       return value;
     default:
-      return "system";
+      return "SYSTEM";
   }
 }
 
 function normalizeSection(value: unknown): JobSection {
-  return value === "maintenance" ? "maintenance" : "primary";
+  return value === "MAINTENANCE" ? "MAINTENANCE" : "PRIMARY";
 }
 
 function normalizeScheduleKind(value: unknown): JobScheduleKind {
   switch (value) {
-    case "manual":
-    case "interval":
-    case "startup_interval":
-    case "daily_at_time":
+    case "MANUAL":
+    case "INTERVAL":
+    case "STARTUP_AND_INTERVAL":
+    case "DAILY_AT_TIME":
       return value;
     default:
-      return "manual";
+      return "MANUAL";
   }
 }
 
@@ -147,7 +147,7 @@ export const SystemJobsContainer = memo(function SystemJobsContainer() {
 
       setActiveRunsById((current) => {
         const next = { ...current };
-        if (normalized.completedAt || normalized.status === "completed" || normalized.status === "warning" || normalized.status === "failed") {
+        if (normalized.completedAt || normalized.status === "COMPLETED" || normalized.status === "WARNING" || normalized.status === "FAILED") {
           delete next[normalized.id];
         } else {
           next[normalized.id] = preferJobRunSnapshot(current[normalized.id], normalized);

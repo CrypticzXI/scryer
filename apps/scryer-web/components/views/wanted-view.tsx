@@ -114,19 +114,19 @@ type ReleaseDecisionExplanationEntry = {
 
 function formatWantedMediaType(mediaType: WantedMediaType, t: Translate) {
   const key: Record<WantedMediaType, string> = {
-    movie: "wanted.type.movie",
-    episode: "wanted.type.episode",
-    series_movie: "wanted.type.seriesMovie",
+    MOVIE: "wanted.type.movie",
+    EPISODE: "wanted.type.episode",
+    SERIES_MOVIE: "wanted.type.seriesMovie",
   };
   return t(key[mediaType]);
 }
 
 function formatWantedStatus(status: WantedStatus, t: Translate) {
   const key: Record<WantedStatus, string> = {
-    wanted: "wanted.status.wanted",
-    grabbed: "wanted.status.grabbed",
-    completed: "wanted.status.completed",
-    paused: "wanted.status.paused",
+    WANTED: "wanted.status.wanted",
+    GRABBED: "wanted.status.grabbed",
+    COMPLETED: "wanted.status.completed",
+    PAUSED: "wanted.status.paused",
   };
   return t(key[status]);
 }
@@ -149,15 +149,15 @@ function formatWantedDecisionCode(code: string, t: Translate) {
 }
 
 function wantedItemContext(item: WantedItem, t: Translate) {
-  if (item.mediaType === "series_movie") {
+  if (item.mediaType === "SERIES_MOVIE") {
     return t("wanted.context.seriesMovie");
   }
-  if (item.mediaType === "episode" && item.seasonNumber) {
+  if (item.mediaType === "EPISODE" && item.seasonNumber) {
     return t("wanted.context.seasonEpisode", {
       seasonNumber: item.seasonNumber,
     });
   }
-  if (item.mediaType === "episode") {
+  if (item.mediaType === "EPISODE") {
     return t("wanted.context.episode");
   }
   return t("wanted.context.movie");
@@ -192,7 +192,7 @@ function wantedItemOverviewTarget(item: WantedItem): OverviewTitleTarget | null 
 }
 
 function formatWantedEpisodeCode(item: WantedItem): string | null {
-  if (item.mediaType !== "episode") {
+  if (item.mediaType !== "EPISODE") {
     return null;
   }
 
@@ -211,10 +211,10 @@ function wantedItemSubtitle(item: WantedItem, t: Translate): string {
 
 function statusBadge(status: WantedStatus, t: Translate) {
   const colors: Record<WantedStatus, string> = {
-    wanted: "bg-[var(--scry-info-bg-strong)] text-[var(--scry-info-text)]",
-    grabbed: "bg-[var(--scry-warning-bg-strong)] text-[var(--scry-warning-text)]",
-    completed: "bg-[var(--scry-success-bg-strong)] text-[var(--scry-success-text)]",
-    paused: "bg-muted text-muted-foreground",
+    WANTED: "bg-[var(--scry-info-bg-strong)] text-[var(--scry-info-text)]",
+    GRABBED: "bg-[var(--scry-warning-bg-strong)] text-[var(--scry-warning-text)]",
+    COMPLETED: "bg-[var(--scry-success-bg-strong)] text-[var(--scry-success-text)]",
+    PAUSED: "bg-muted text-muted-foreground",
   };
   return (
     <span
@@ -651,7 +651,7 @@ function WantedItemsCard({
                       <Search className="h-4 w-4" />
                       <span>{t("wanted.searchNow")}</span>
                     </Button>
-                    {item.status === "paused" ? (
+                    {item.status === "PAUSED" ? (
                       <Button size="sm" variant="secondary" className="flex-1" onClick={() => void resumeItem(item.id)}>
                         <Play className="h-4 w-4" />
                         <span>{t("wanted.resume")}</span>
@@ -854,7 +854,7 @@ function WantedItemsCard({
                           >
                             <Search className="h-3.5 w-3.5" />
                           </IconButton>
-                          {item.status === "paused" ? (
+                          {item.status === "PAUSED" ? (
                             <IconButton
                               label={t("wanted.resume")}
                               appearance="ghost"
@@ -1082,13 +1082,13 @@ function formatPendingStatus(status: PendingReleaseStatus): string {
 
 function pendingStatusBadge(status: PendingReleaseStatus) {
   const cls =
-    status === "grabbed"
+    status === "GRABBED"
       ? "border-[var(--scry-success-border)] bg-[var(--scry-success-bg)] text-[var(--scry-success-text)]"
-      : status === "expired" || status === "dismissed"
+      : status === "EXPIRED" || status === "DISMISSED"
         ? "border-[var(--scry-danger-border)] bg-[var(--scry-danger-bg)] text-[var(--scry-danger-text)]"
-        : status === "processing"
+        : status === "PROCESSING"
           ? "border-[var(--scry-info-border)] bg-[var(--scry-info-bg)] text-[var(--scry-info-text)]"
-          : status === "superseded"
+          : status === "SUPERSEDED"
             ? "border-[var(--scry-warning-border)] bg-[var(--scry-warning-bg)] text-[var(--scry-warning-text)]"
             : "border-[var(--scry-border2)] bg-[var(--scry-chip)] text-[var(--scry-muted2)]";
   return (
@@ -1100,13 +1100,13 @@ function pendingStatusBadge(status: PendingReleaseStatus) {
 
 function pendingPhaseBadge(status: PendingReleaseStatus) {
   const label =
-    status === "processing"
+    status === "PROCESSING"
       ? "Processing"
-      : status === "grabbed"
+      : status === "GRABBED"
         ? "Grabbed"
-        : status === "expired" || status === "dismissed"
+        : status === "EXPIRED" || status === "DISMISSED"
           ? "Closed"
-          : status === "superseded"
+          : status === "SUPERSEDED"
             ? "Superseded"
             : "Scheduled";
   return (

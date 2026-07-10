@@ -1,17 +1,17 @@
 export const APP_PERMISSIONS = {
-  manageUsers: "manageUsers",
-  managePermissions: "managePermissions",
-  manageSystemSettings: "manageSystemSettings",
-  manageCatalogSettings: "manageCatalogSettings",
+  manageUsers: "MANAGE_USERS",
+  managePermissions: "MANAGE_PERMISSIONS",
+  manageSystemSettings: "MANAGE_SYSTEM_SETTINGS",
+  manageCatalogSettings: "MANAGE_CATALOG_SETTINGS",
 } as const;
 
 export const LIBRARY_PERMISSIONS = {
-  view: "view",
-  manageTitles: "manageTitles",
-  resolveImports: "resolveImports",
-  manageLibrary: "manageLibrary",
-  request: "request",
-  autoApproveRequests: "autoApproveRequests",
+  view: "VIEW",
+  manageTitles: "MANAGE_TITLES",
+  resolveImports: "RESOLVE_IMPORTS",
+  manageLibrary: "MANAGE_LIBRARY",
+  request: "REQUEST",
+  autoApproveRequests: "AUTO_APPROVE_REQUESTS",
 } as const;
 
 export type AppPermission = (typeof APP_PERMISSIONS)[keyof typeof APP_PERMISSIONS];

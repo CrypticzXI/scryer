@@ -487,14 +487,14 @@ export function matchesImportStatuses(
   }
 
   switch (item.displayState) {
-    case "importing":
-      return statuses.includes("importing");
-    case "import_pending":
-      return statuses.includes("pending");
-    case "import_blocked":
-      return statuses.includes("blocked");
-    case "import_failed":
-      return statuses.includes("failed");
+    case "IMPORTING":
+      return statuses.includes("IMPORTING");
+    case "IMPORT_PENDING":
+      return statuses.includes("PENDING");
+    case "IMPORT_BLOCKED":
+      return statuses.includes("BLOCKED");
+    case "IMPORT_FAILED":
+      return statuses.includes("FAILED");
     default:
       return false;
   }
@@ -509,14 +509,14 @@ export function matchesActivityStatuses(
   }
 
   switch (item.displayState) {
-    case "downloading":
-      return statuses.includes("downloading");
-    case "queued":
-      return statuses.includes("queued");
-    case "paused":
-      return statuses.includes("paused");
-    case "post_processing":
-      return statuses.includes("post_processing");
+    case "DOWNLOADING":
+      return statuses.includes("DOWNLOADING");
+    case "QUEUED":
+      return statuses.includes("QUEUED");
+    case "PAUSED":
+      return statuses.includes("PAUSED");
+    case "POST_PROCESSING":
+      return statuses.includes("POST_PROCESSING");
     default:
       return false;
   }
@@ -531,11 +531,11 @@ export function matchesHistoryStatuses(
   }
 
   switch (item.displayState) {
-    case "completed":
-      return statuses.includes("success");
-    case "failed":
-    case "remove_failed":
-      return statuses.includes("failed");
+    case "COMPLETED":
+      return statuses.includes("SUCCESS");
+    case "FAILED":
+    case "REMOVE_FAILED":
+      return statuses.includes("FAILED");
     default:
       return false;
   }

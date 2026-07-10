@@ -258,7 +258,7 @@ export function SetupDownloadClientView({
         {dynamicConfigFields.map((field) => (
           <div
             key={field.key}
-            className={field.fieldType === "multiline" ? "md:col-span-2" : undefined}
+            className={field.fieldType === "MULTILINE" ? "md:col-span-2" : undefined}
           >
             <DownloadClientConfigField
               field={field}

@@ -125,25 +125,25 @@ type ActivityFilterChipOption<T extends string> = {
 
 const importFilterOptions: ActivityFilterChipOption<DownloadImportStatus>[] = [
   {
-    value: "importing",
+    value: "IMPORTING",
     labelKey: "activity.importFilter.importing",
     icon: HardDrive,
     iconClassName: "text-[var(--scry-info-text-soft)]",
   },
   {
-    value: "pending",
+    value: "PENDING",
     labelKey: "activity.importFilter.pending",
     icon: Clock3,
     iconClassName: "text-[var(--scry-accent-text)]",
   },
   {
-    value: "blocked",
+    value: "BLOCKED",
     labelKey: "activity.importFilter.blocked",
     icon: CircleAlert,
     iconClassName: "text-[var(--scry-warning-text)]",
   },
   {
-    value: "failed",
+    value: "FAILED",
     labelKey: "activity.importFilter.failed",
     icon: XCircle,
     iconClassName: "text-[var(--scry-danger-text-soft)]",
@@ -152,25 +152,25 @@ const importFilterOptions: ActivityFilterChipOption<DownloadImportStatus>[] = [
 
 const activityFilterOptions: ActivityFilterChipOption<DownloadActivityStatus>[] = [
   {
-    value: "downloading",
+    value: "DOWNLOADING",
     labelKey: "activity.activityFilter.downloading",
     icon: ArrowDownToLine,
     iconClassName: "text-[var(--scry-info-text-soft)]",
   },
   {
-    value: "queued",
+    value: "QUEUED",
     labelKey: "activity.activityFilter.queued",
     icon: Clock3,
     iconClassName: "text-[var(--scry-warning-text)]",
   },
   {
-    value: "paused",
+    value: "PAUSED",
     labelKey: "activity.activityFilter.paused",
     icon: Pause,
     iconClassName: "text-[var(--scry-warning-text)]",
   },
   {
-    value: "post_processing",
+    value: "POST_PROCESSING",
     labelKey: "activity.activityFilter.postProcessing",
     icon: HardDrive,
     iconClassName: "text-[var(--scry-info-text-soft)]",
@@ -179,13 +179,13 @@ const activityFilterOptions: ActivityFilterChipOption<DownloadActivityStatus>[] 
 
 const historyFilterOptions: ActivityFilterChipOption<DownloadHistoryStatus>[] = [
   {
-    value: "success",
+    value: "SUCCESS",
     labelKey: "activity.historyFilter.success",
     icon: CheckCircle2,
     iconClassName: "text-[var(--scry-success-text-soft)]",
   },
   {
-    value: "failed",
+    value: "FAILED",
     labelKey: "activity.historyFilter.failed",
     icon: XCircle,
     iconClassName: "text-[var(--scry-danger-text-soft)]",
@@ -512,7 +512,7 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
         return null;
       }
 
-      return activeSortConfig.direction === "asc" ? (
+      return activeSortConfig.direction === "ASC" ? (
         <ArrowUp className="h-3.5 w-3.5" />
       ) : (
         <ArrowDown className="h-3.5 w-3.5" />
@@ -527,7 +527,7 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
         className={className}
         aria-sort={
           activeSortConfig.key === key
-            ? activeSortConfig.direction === "asc"
+            ? activeSortConfig.direction === "ASC"
               ? "ascending"
               : "descending"
             : "none"
@@ -551,20 +551,20 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
       return queueItems;
     }
 
-    const directionMultiplier = activeSortConfig.direction === "asc" ? 1 : -1;
+    const directionMultiplier = activeSortConfig.direction === "ASC" ? 1 : -1;
     const items = [...queueItems];
 
     items.sort((leftItem, rightItem) => {
       let comparison = 0;
 
       switch (activeSortConfig.key) {
-        case "title": {
+        case "TITLE": {
           const leftTitle = leftItem.titleName.trim() || leftItem.downloadClientItemId.trim();
           const rightTitle = rightItem.titleName.trim() || rightItem.downloadClientItemId.trim();
           comparison = compareStrings(leftTitle, rightTitle);
           break;
         }
-        case "client": {
+        case "CLIENT": {
           const leftClient = leftItem.clientName.trim() || leftItem.clientType.trim();
           const rightClient = rightItem.clientName.trim() || rightItem.clientType.trim();
           comparison = compareStrings(leftClient, rightClient);
@@ -573,25 +573,25 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
           }
           break;
         }
-        case "status": {
+        case "STATUS": {
           comparison =
             activityStatusRank(activeTab, leftItem.displayState) -
             activityStatusRank(activeTab, rightItem.displayState);
           if (comparison === 0) {
-            const leftStatus = t(queueStateLabels[leftItem.displayState] ?? "queue.state.unknown");
+            const leftStatus = t(queueStateLabels[leftItem.displayState.toLowerCase()] ?? "queue.state.unknown");
             const rightStatus = t(
-              queueStateLabels[rightItem.displayState] ?? "queue.state.unknown",
+              queueStateLabels[rightItem.displayState.toLowerCase()] ?? "queue.state.unknown",
             );
             comparison = compareStrings(leftStatus, rightStatus);
           }
           break;
         }
-        case "progress": {
+        case "PROGRESS": {
           comparison =
             effectiveQueueItemProgress(leftItem) - effectiveQueueItemProgress(rightItem);
           break;
         }
-        case "size": {
+        case "SIZE": {
           const leftSize = parseByteCount(leftItem.sizeBytes) ?? 0;
           const rightSize = parseByteCount(rightItem.sizeBytes) ?? 0;
           comparison = leftSize - rightSize;
@@ -803,8 +803,8 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
       );
       const isActionLoading = actionLoadingId === rowId;
       const isRowBusy = rowActionBusy[rowId] ?? false;
-      const isManualImportPending = row.displayStateKey === "importing";
-      const isDeletePending = row.displayStateKey === "removing";
+      const isManualImportPending = row.displayStateKey.toLowerCase() === "importing";
+      const isDeletePending = row.displayStateKey.toLowerCase() === "removing";
       const isRowBlocked =
         isRowBusy || isManualImportPending || isDeletePending || isActionLoading;
       const isDeleteConfirming =
@@ -1137,29 +1137,29 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
                       </TableCheckboxHead>
                     ) : null}
                     {renderSortableHeader(
-                      "title",
+                      "TITLE",
                       t("queue.title"),
                       "w-[32%]",
                     )}
                     {renderSortableHeader(
-                      "client",
+                      "CLIENT",
                       t("queue.client"),
                       "w-[13%]",
                     )}
                     {renderSortableHeader(
-                      "status",
+                      "STATUS",
                       t("queue.status"),
                       "w-[15%]",
                     )}
                     {activeTab === "activity" || activeTab === "import"
                       ? renderSortableHeader(
-                          "progress",
+                          "PROGRESS",
                           t("queue.progress"),
                           "w-[16%]",
                         )
                       : null}
                     {renderSortableHeader(
-                      "size",
+                      "SIZE",
                       t("queue.size"),
                       "w-28 text-center [&_button]:justify-center [&_button]:text-center",
                     )}

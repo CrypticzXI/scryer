@@ -1387,7 +1387,7 @@ export const librariesQuery = `query Libraries($facet: MediaFacetValue, $permiss
 }`;
 
 export const mediaRequestAdminLibrariesQuery = `query MediaRequestAdminLibraries($facet: MediaFacetValue) {
-  libraries(facet: $facet, permission: manageTitles) {
+  libraries(facet: $facet, permission: MANAGE_TITLES) {
     id
     facet
     name
@@ -1405,7 +1405,7 @@ export const mediaRequestAdminLibrariesQuery = `query MediaRequestAdminLibraries
 }`;
 
 export const mediaRequestRequesterLibrariesQuery = `query MediaRequestRequesterLibraries($facet: MediaFacetValue) {
-  libraries(facet: $facet, permission: request) {
+  libraries(facet: $facet, permission: REQUEST) {
     id
     facet
     name
@@ -1560,7 +1560,7 @@ ${TITLE_MORE_LIKE_THIS_CARD_FIELDS}
 
 type ReactiveRefreshVariableValue = string | number | null;
 
-export type TitleSidePanelOverviewProjection = "movie" | "series";
+export type TitleSidePanelOverviewProjection = "MOVIE" | "SERIES";
 
 export type ReactiveRefreshQueryActionInput =
   | {
@@ -1662,7 +1662,7 @@ export function buildReactiveRefreshQuery(
         const blocklistLimitVariableName = `titleSidePanelOverviewBlocklistLimit${index}`;
         const titleAlias = `titleSidePanelOverviewTitleAction${index}`;
         const titleHistoryAlias =
-          action.projection === "movie"
+          action.projection === "MOVIE"
             ? `titleSidePanelOverviewHistoryAction${index}`
             : undefined;
         const titleReleaseBlocklistAlias = `titleSidePanelOverviewBlocklistAction${index}`;
@@ -1672,7 +1672,7 @@ export function buildReactiveRefreshQuery(
         variableDefinitions.push(`$${titleIdVariableName}: ID!`);
         variableDefinitions.push(`$${blocklistLimitVariableName}: Int`);
         const titleFields =
-          action.projection === "series"
+          action.projection === "SERIES"
             ? SERIES_SIDE_PANEL_TITLE_FIELDS
             : MOVIE_SIDE_PANEL_TITLE_FIELDS;
         fields.push(
@@ -2289,7 +2289,7 @@ export const qualityProfileOptionsQuery = `query QualityProfileOptions {
 export const movieOverviewSettingsInitQuery = `query MovieOverviewSettingsInit {
   qualityProfileSettings {${qualityProfileSettingsFieldSelection}
   }
-  mediaSettings(scope: movie) {${mediaSettingsFieldSelection}
+  mediaSettings(scope: MOVIE) {${mediaSettingsFieldSelection}
   }
 }`;
 
@@ -2374,7 +2374,7 @@ export const mediaSettingsInitQuery = `query MediaSettingsInit($scope: ContentSc
 export const globalSearchInitQuery = `query GlobalSearchInit {
   qualityProfileSettings {${qualityProfileSettingsFieldSelection}
   }
-  manageableLibraries: libraries(permission: manageTitles) {
+  manageableLibraries: libraries(permission: MANAGE_TITLES) {
     id
     facet
     name
@@ -2386,7 +2386,7 @@ export const globalSearchInitQuery = `query GlobalSearchInit {
       isDefault
     }
   }
-  requestableLibraries: libraries(permission: request) {
+  requestableLibraries: libraries(permission: REQUEST) {
     id
     facet
     name
@@ -2400,18 +2400,18 @@ export const globalSearchInitQuery = `query GlobalSearchInit {
       isDefault
     }
   }
-  movieSettings: mediaSettings(scope: movie) {${mediaSettingsFieldSelection}
+  movieSettings: mediaSettings(scope: MOVIE) {${mediaSettingsFieldSelection}
   }
-  seriesSettings: mediaSettings(scope: series) {${mediaSettingsFieldSelection}
+  seriesSettings: mediaSettings(scope: SERIES) {${mediaSettingsFieldSelection}
   }
-  animeSettings: mediaSettings(scope: anime) {${mediaSettingsFieldSelection}
+  animeSettings: mediaSettings(scope: ANIME) {${mediaSettingsFieldSelection}
   }
 }`;
 
 export const globalSearchRequesterInitQuery = `query GlobalSearchRequesterInit {
   qualityProfileSettings {${qualityProfileSettingsFieldSelection}
   }
-  requestableLibraries: libraries(permission: request) {
+  requestableLibraries: libraries(permission: REQUEST) {
     id
     facet
     name
@@ -2428,7 +2428,7 @@ export const globalSearchRequesterInitQuery = `query GlobalSearchRequesterInit {
 }`;
 
 export const requestableLibrariesQuery = `query RequestableLibraries {
-  requestableLibraries: libraries(permission: request) {
+  requestableLibraries: libraries(permission: REQUEST) {
     id
     facet
     name

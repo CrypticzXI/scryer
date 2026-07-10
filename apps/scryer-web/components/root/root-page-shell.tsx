@@ -1172,7 +1172,7 @@ function AuthenticatedHomePage({
   }, []);
 
   const activeFacet = useMemo<Facet>(
-    () => facetForView(view)?.id ?? "movie",
+    () => facetForView(view)?.id ?? "MOVIE",
     [view],
   );
   const queueFacet = activeFacet;

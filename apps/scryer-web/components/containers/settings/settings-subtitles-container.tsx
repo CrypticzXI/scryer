@@ -115,13 +115,13 @@ function buildDraftConfigValues(
 
   const nextValues: Record<string, string> = {};
   for (const field of fields) {
-    if (field.valueSource === "host_binding") {
+    if (field.valueSource === "HOST_BINDING") {
       continue;
     }
     nextValues[field.key] =
       parsedConfigValues[field.key] ??
       field.defaultValue ??
-      (field.fieldType === "bool" ? "false" : "");
+      (field.fieldType === "BOOL" ? "false" : "");
   }
   return nextValues;
 }
@@ -144,7 +144,7 @@ function serializeProviderConfigValues(
 
   const fieldKeySet = new Set(fields.map((field) => field.key));
   const secretInputKeys = fields
-    .filter((field) => field.fieldType === "password")
+    .filter((field) => field.fieldType === "PASSWORD")
     .map((field) => field.key);
   for (const [key, value] of Object.entries(persistedConfigValues)) {
     if (!fieldKeySet.has(key) && value.trim() !== "") {
@@ -153,18 +153,18 @@ function serializeProviderConfigValues(
   }
 
   for (const field of fields) {
-    if (field.valueSource === "host_binding") {
+    if (field.valueSource === "HOST_BINDING") {
       continue;
     }
 
     let nextValue = configValues[field.key] ?? "";
-    const isSecretField = field.fieldType === "password";
+    const isSecretField = field.fieldType === "PASSWORD";
 
     if (isSecretField && nextValue.trim() === "") {
       continue;
     }
 
-    if (field.fieldType === "bool") {
+    if (field.fieldType === "BOOL") {
       entries[field.key] =
         nextValue.trim() || field.defaultValue || "false";
       continue;
@@ -996,7 +996,7 @@ export function SettingsSubtitlesContainer({
       {pluginsTarget
         ? createPortal(
             <FilteredPluginList
-              family="subtitle"
+              family="SUBTITLE"
               refreshProviderOptions={refreshProviderTypes}
             />,
             pluginsTarget,

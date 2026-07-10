@@ -199,11 +199,11 @@ function viewForPendingImportFacet(
   facet: PendingImportItem["facet"],
 ): Extract<ViewId, "movies" | "series" | "anime"> {
   switch (facet) {
-    case "movie":
+    case "MOVIE":
       return "movies";
-    case "series":
+    case "SERIES":
       return "series";
-    case "anime":
+    case "ANIME":
       return "anime";
   }
 }
@@ -367,7 +367,7 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
     void client
       .query(
         librariesQuery,
-        { facet: pendingImportFacetValueForView(view), permission: "resolveImports" },
+        { facet: pendingImportFacetValueForView(view), permission: "RESOLVE_IMPORTS" },
         { requestPolicy: "network-only" },
       )
       .toPromise()
@@ -418,7 +418,7 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
         return null;
       }
 
-      const items = activeItemRef.status === "ignored"
+      const items = activeItemRef.status === "IGNORED"
         ? ignoredConnection.items
         : pendingConnection.items;
       return items.find((item) => item.id === activeItemRef.id) ?? null;
@@ -472,11 +472,11 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
       status: PendingImportStatus,
       pageOffset: number,
     ): Promise<PendingImportConnection | null> => {
-      const setLoading = status === "ignored" ? setIgnoredLoading : setPendingLoading;
-      const setLoaded = status === "ignored" ? setIgnoredLoaded : setPendingLoaded;
-      const setError = status === "ignored" ? setIgnoredError : setPendingError;
-      const setOffset = status === "ignored" ? setIgnoredOffset : setPendingOffset;
-      const setConnection = status === "ignored" ? setIgnoredConnection : setPendingConnection;
+      const setLoading = status === "IGNORED" ? setIgnoredLoading : setPendingLoading;
+      const setLoaded = status === "IGNORED" ? setIgnoredLoaded : setPendingLoaded;
+      const setError = status === "IGNORED" ? setIgnoredError : setPendingError;
+      const setOffset = status === "IGNORED" ? setIgnoredOffset : setPendingOffset;
+      const setConnection = status === "IGNORED" ? setIgnoredConnection : setPendingConnection;
 
       setLoading(true);
       setError(null);
@@ -509,17 +509,17 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
 
   const refreshAll = React.useCallback(async () => {
     await Promise.all([
-      refresh("pending", pendingOffset),
-      refresh("ignored", ignoredOffset),
+      refresh("PENDING", pendingOffset),
+      refresh("IGNORED", ignoredOffset),
     ]);
   }, [ignoredOffset, pendingOffset, refresh]);
 
   React.useEffect(() => {
-    void refresh("pending", pendingOffset);
+    void refresh("PENDING", pendingOffset);
   }, [pendingOffset, refresh]);
 
   React.useEffect(() => {
-    void refresh("ignored", ignoredOffset);
+    void refresh("IGNORED", ignoredOffset);
   }, [ignoredOffset, refresh]);
 
   React.useEffect(() => {
@@ -631,7 +631,7 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
       return;
     }
 
-    const items = activeItemRef.status === "ignored"
+    const items = activeItemRef.status === "IGNORED"
       ? ignoredConnection.items
       : pendingConnection.items;
 
@@ -688,7 +688,7 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
   }, [client, setGlobalStatus, t]);
 
   const handleRequestIgnore = React.useCallback((item: PendingImportItem) => {
-    if (item.status !== "pending") {
+    if (item.status !== "PENDING") {
       return;
     }
     if (inFlightPendingImportActionsRef.current.has(item.id)) {
@@ -702,7 +702,7 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
     item: PendingImportItem,
     title: ResolvePendingImportResult["title"],
   ) => {
-    if (item.facet === "movie") {
+    if (item.facet === "MOVIE") {
       const removeMatchedItem = (current: PendingImportConnection): PendingImportConnection => {
         if (!current.items.some((candidate) => candidate.id === item.id)) {
           return current;
@@ -719,7 +719,7 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
 
     const resolvedItem: PendingImportItem = {
       ...item,
-      status: "pending",
+      status: "PENDING",
       titleId: title.id,
       titleName: title.name,
       titleSlug: title.slug ?? item.titleSlug ?? null,
@@ -737,7 +737,7 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
         };
       }
 
-      if (item.status !== "ignored") {
+      if (item.status !== "IGNORED") {
         return current;
       }
 
@@ -747,7 +747,7 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
       };
     });
 
-    if (item.status === "ignored") {
+    if (item.status === "IGNORED") {
       setIgnoredConnection((current) => ({
         total: Math.max(0, current.total - 1),
         items: current.items.filter((candidate) => candidate.id !== item.id),
@@ -847,7 +847,7 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
   }, [activeItem, clearActiveItem, client, refreshAll, selectedEpisodeIds, setGlobalStatus, t]);
 
   const handleIgnore = React.useCallback(async () => {
-    if (!ignoreTargetItem || ignoreTargetItem.status !== "pending") {
+    if (!ignoreTargetItem || ignoreTargetItem.status !== "PENDING") {
       return;
     }
 
@@ -876,7 +876,7 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
         }),
       );
 
-      if (activeItemRef?.id === ignoreTargetItem.id && activeItemRef.status === "pending") {
+      if (activeItemRef?.id === ignoreTargetItem.id && activeItemRef.status === "PENDING") {
         clearActiveItem();
       } else {
         setIgnoreTargetItem(null);
@@ -915,8 +915,8 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
       return null;
     }
 
-    const setOffset = status === "ignored" ? setIgnoredOffset : setPendingOffset;
-    const currentOffset = status === "ignored" ? ignoredOffset : pendingOffset;
+    const setOffset = status === "IGNORED" ? setIgnoredOffset : setPendingOffset;
+    const currentOffset = status === "IGNORED" ? ignoredOffset : pendingOffset;
 
     return (
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
@@ -1088,7 +1088,7 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
       {renderItems(pendingConnection.items)}
 
       {renderPagination(
-        "pending",
+        "PENDING",
         pendingConnection.total,
         pendingHasPrevPage,
         pendingHasNextPage,
@@ -1120,7 +1120,7 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
               {renderItems(ignoredConnection.items)}
 
               {renderPagination(
-                "ignored",
+                "IGNORED",
                 ignoredConnection.total,
                 ignoredHasPrevPage,
                 ignoredHasNextPage,
@@ -1134,7 +1134,7 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
       </div>
     </div>
     <ConfirmDialog
-      open={Boolean(ignoreTargetItem && ignoreTargetItem.status === "pending")}
+      open={Boolean(ignoreTargetItem && ignoreTargetItem.status === "PENDING")}
       title={t("pendingImports.ignoreConfirmTitle")}
       description=""
       confirmLabel={t("pendingImports.ignore")}

@@ -25,8 +25,14 @@ const DC_TYPES_REQUIRING_API_KEY = new Set(["sabnzbd", "weaver"]);
 /** Pill kind for a source key like "sonarr:http://host:8989" / "prowlarr:...". */
 function pillKindForSourceKey(sourceKey: string): ImportInstanceKind | "manual" {
   const prefix = sourceKey.split(":", 1)[0]?.toLowerCase() ?? "";
-  if (prefix === "sonarr" || prefix === "radarr" || prefix === "prowlarr") {
-    return prefix;
+  if (prefix === "sonarr") {
+    return "SONARR";
+  }
+  if (prefix === "radarr") {
+    return "RADARR";
+  }
+  if (prefix === "prowlarr") {
+    return "PROWLARR";
   }
   return "manual";
 }

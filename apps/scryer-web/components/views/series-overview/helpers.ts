@@ -86,8 +86,8 @@ export function parseSeasonSortValue(collection: TitleCollection) {
 }
 
 export function isSpecialsCollection(collection: TitleCollection) {
-  return collection.collectionType === "specials"
-    || (collection.collectionType === "season" && parseSeasonSortValue(collection) === 0);
+  return collection.collectionType === "SPECIALS"
+    || (collection.collectionType === "SEASON" && parseSeasonSortValue(collection) === 0);
 }
 
 export function seasonHeading(

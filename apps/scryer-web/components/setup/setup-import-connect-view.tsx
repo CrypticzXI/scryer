@@ -40,19 +40,19 @@ interface KindColumn {
 
 const KIND_COLUMNS: readonly KindColumn[] = [
   {
-    kind: "sonarr",
+    kind: "SONARR",
     headingColor: "#56b6f0",
     productName: "Sonarr",
     urlPlaceholder: "http://localhost:8989",
   },
   {
-    kind: "radarr",
+    kind: "RADARR",
     headingColor: "#e7b94a",
     productName: "Radarr",
     urlPlaceholder: "http://localhost:7878",
   },
   {
-    kind: "prowlarr",
+    kind: "PROWLARR",
     headingColor: "#a987ff",
     productName: "Prowlarr",
     urlPlaceholder: "http://localhost:9696",

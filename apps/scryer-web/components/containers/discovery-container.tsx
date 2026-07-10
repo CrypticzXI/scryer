@@ -52,13 +52,13 @@ function facetForDiscoveryItem(item: DiscoveryItem): Facet {
   const primaryKind = item.contentType?.trim() || item.targetKind.trim();
   switch (primaryKind.toLowerCase()) {
     case "anime":
-      return "anime";
+      return "ANIME";
     case "series":
-      return "series";
+      return "SERIES";
     case "movie":
-      return "movie";
+      return "MOVIE";
     default:
-      return "movie";
+      return "MOVIE";
   }
 }
 
@@ -212,7 +212,7 @@ export const DiscoveryContainer = memo(function DiscoveryContainer({
     () =>
       registerReactiveRefresh({
         aliasKey: "discovery-home",
-        predicate: forEventTypes("discovery_search_completed"),
+        predicate: forEventTypes("DISCOVERY_SEARCH_COMPLETED"),
         run: () => {
           void refresh({ forceNetwork: true });
         },
@@ -222,7 +222,7 @@ export const DiscoveryContainer = memo(function DiscoveryContainer({
 
   const selectedFacet = selectedItem
     ? facetForDiscoveryItem(selectedItem)
-    : "movie";
+    : "MOVIE";
   const selectedResult = selectedItem
     ? metadataResultForDiscoveryItem(selectedItem)
     : EMPTY_SEARCH_RESULT;

@@ -86,7 +86,7 @@ function externalIdMap(result: MetadataTvdbSearchItem) {
 
 function tmdbPathForFacet(facet: Facet, type: string | null | undefined) {
   const normalizedType = type?.trim().toLowerCase();
-  if (normalizedType === "movie" || facet === "movie") {
+  if (normalizedType === "movie" || facet === "MOVIE") {
     return "movie";
   }
   return "tv";
@@ -94,7 +94,7 @@ function tmdbPathForFacet(facet: Facet, type: string | null | undefined) {
 
 function tvdbPathForFacet(facet: Facet, type: string | null | undefined) {
   const normalizedType = type?.trim().toLowerCase();
-  if (normalizedType === "movie" || facet === "movie") {
+  if (normalizedType === "movie" || facet === "MOVIE") {
     return "movie";
   }
   return "series";

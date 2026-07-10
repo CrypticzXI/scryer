@@ -49,7 +49,7 @@ export const CalendarContainer = memo(function CalendarContainer({
     void client
       .query(
         librariesQuery,
-        { facet: null, permission: "view" },
+        { facet: null, permission: "VIEW" },
         { requestPolicy: "network-only" },
       )
       .toPromise()

@@ -705,10 +705,10 @@ export function MobileSearchOverlay({
   const renderCatalogItem = React.useCallback(
     (
       title: import("@/lib/types").TitleRecord,
-      facet: "movie" | "series" | "anime",
+      facet: "MOVIE" | "SERIES" | "ANIME",
     ) => {
       const targetView: ViewId =
-        facet === "series" ? "series" : facet === "anime" ? "anime" : "movies";
+        facet === "SERIES" ? "series" : facet === "ANIME" ? "anime" : "movies";
       const tvdbId = (title.externalIds ?? [])
         .find((externalId) => externalId.source.toLowerCase() === "tvdb")
         ?.value.trim();
@@ -765,7 +765,7 @@ export function MobileSearchOverlay({
   );
 
   const renderMetadataItem = React.useCallback(
-    (result: MetadataTvdbSearchItem, facet: "movie" | "series" | "anime") => {
+    (result: MetadataTvdbSearchItem, facet: "MOVIE" | "SERIES" | "ANIME") => {
       const {
         actionTitle,
         disabled,
@@ -1200,7 +1200,7 @@ export function MobileSearchOverlay({
         open={addDialogTarget !== null}
         onOpenChange={handleAddDialogOpenChange}
         result={addDialogTarget?.result ?? EMPTY_SEARCH_RESULT}
-        facet={addDialogTarget?.facet ?? "series"}
+        facet={addDialogTarget?.facet ?? "SERIES"}
         catalogQualityProfileOptions={catalogQualityProfileOptions}
         catalogConfigLoading={
           Boolean(addDialogTarget) &&
@@ -1208,13 +1208,13 @@ export function MobileSearchOverlay({
           !isAddDialogConfigReady
         }
         defaultQualityProfileId={resolveDefaultQualityProfileIdForFacet(
-          addDialogTarget?.facet ?? "series",
+          addDialogTarget?.facet ?? "SERIES",
         )}
         manageableLibraries={
-          librariesByFacet[addDialogTarget?.facet ?? "series"]
+          librariesByFacet[addDialogTarget?.facet ?? "SERIES"]
         }
         rootFolderOptions={
-          rootFoldersByFacet[addDialogTarget?.facet ?? "series"]
+          rootFoldersByFacet[addDialogTarget?.facet ?? "SERIES"]
         }
         onAdd={handleAddDialogSubmit}
       />
@@ -1222,9 +1222,9 @@ export function MobileSearchOverlay({
         open={requestDialogTarget !== null}
         onOpenChange={handleRequestDialogOpenChange}
         result={requestDialogTarget?.result ?? EMPTY_SEARCH_RESULT}
-        facet={requestDialogTarget?.facet ?? "series"}
+        facet={requestDialogTarget?.facet ?? "SERIES"}
         requestableLibraries={
-          requestableLibrariesByFacet[requestDialogTarget?.facet ?? "series"]
+          requestableLibrariesByFacet[requestDialogTarget?.facet ?? "SERIES"]
         }
         qualityProfileOptions={catalogQualityProfileOptions}
         onRequest={handleRequestDialogSubmit}

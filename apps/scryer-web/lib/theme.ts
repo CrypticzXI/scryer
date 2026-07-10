@@ -29,6 +29,43 @@ export function isDarkTheme(theme?: string): boolean {
   return theme === "dark" || theme === "pride";
 }
 
+/** Server enum wire value for the UI theme (mirrors GraphQL `UiThemeValue`). */
+export type UiThemeValue = "LIGHT" | "DARK" | "PRIDE" | "SYSTEM";
+
+/**
+ * Map a next-themes lowercase preference (the client theme-provider / CSS-class
+ * identifier) to the server `UiThemeValue` enum sent over GraphQL.
+ */
+export function toUiThemeValue(theme?: string): UiThemeValue {
+  switch (theme) {
+    case "light":
+      return "LIGHT";
+    case "pride":
+      return "PRIDE";
+    case "system":
+      return "SYSTEM";
+    default:
+      return "DARK";
+  }
+}
+
+/**
+ * Map a server `UiThemeValue` enum to the next-themes lowercase preference used
+ * by the client theme provider and CSS classes.
+ */
+export function fromUiThemeValue(value?: string): "light" | "dark" | "pride" | "system" {
+  switch (value) {
+    case "LIGHT":
+      return "light";
+    case "PRIDE":
+      return "pride";
+    case "SYSTEM":
+      return "system";
+    default:
+      return "dark";
+  }
+}
+
 export type HighlightColorPreset = {
   /** Canonical #rrggbb value persisted to `highlightColor`. */
   value: string;

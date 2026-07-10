@@ -82,7 +82,7 @@ type SettingsNotificationsSectionProps = {
 };
 
 const SCOPE_OPTIONS = ["global", "facet", "title"] as const;
-const FACET_SCOPE_OPTIONS: Facet[] = ["movie", "series", "anime"];
+const FACET_SCOPE_OPTIONS: Facet[] = ["MOVIE", "SERIES", "ANIME"];
 const MEDIA_SERVER_PROVIDER_TYPES = new Set(["jellyfin", "plex", "emby"]);
 
 function isMediaServerProviderType(providerType: string): boolean {
@@ -238,7 +238,7 @@ function DynamicConfigField({
     </span>
   ) : null;
 
-  if (field.fieldType === "bool") {
+  if (field.fieldType === "BOOL") {
     return (
       <CheckboxField
         id={fieldId}
@@ -259,7 +259,7 @@ function DynamicConfigField({
     );
   }
 
-  if (field.fieldType === "select" && field.options.length > 0) {
+  if (field.fieldType === "SELECT" && field.options.length > 0) {
     return (
       <label>
         <Label className="mb-2 inline-flex items-center gap-2" htmlFor={fieldId}>
@@ -284,7 +284,7 @@ function DynamicConfigField({
     );
   }
 
-  if (field.fieldType === "multiline") {
+  if (field.fieldType === "MULTILINE") {
     if (field.key === "path_mappings") {
       return (
         <LocalRemotePathMappingsField
@@ -329,11 +329,11 @@ function DynamicConfigField({
         id={fieldId}
         value={value}
         onChange={(e) => onChange(field.key, e.target.value)}
-        {...(field.fieldType === "number" ? signedIntegerInputProps : {})}
+        {...(field.fieldType === "NUMBER" ? signedIntegerInputProps : {})}
         type={
-          field.fieldType === "password"
+          field.fieldType === "PASSWORD"
             ? "password"
-            : field.fieldType === "number"
+            : field.fieldType === "NUMBER"
               ? "number"
               : "text"
         }
@@ -761,7 +761,7 @@ export function SettingsNotificationsSection({
                 <div className="space-y-3">
                   <div className="grid gap-3 md:grid-cols-2">
                     {selectedProviderFields
-                      .filter((f) => f.fieldType !== "bool")
+                      .filter((f) => f.fieldType !== "BOOL")
                       .map((field) => (
                         <DynamicConfigField
                           key={field.key}
@@ -772,10 +772,10 @@ export function SettingsNotificationsSection({
                         />
                       ))}
                   </div>
-                  {selectedProviderFields.some((f) => f.fieldType === "bool") ? (
+                  {selectedProviderFields.some((f) => f.fieldType === "BOOL") ? (
                     <div className="flex items-center gap-6">
                       {selectedProviderFields
-                        .filter((f) => f.fieldType === "bool")
+                        .filter((f) => f.fieldType === "BOOL")
                         .map((field) => (
                           <DynamicConfigField
                             key={field.key}

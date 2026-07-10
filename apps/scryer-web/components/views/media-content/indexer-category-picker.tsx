@@ -7,7 +7,7 @@ import { resolveFloatingPanelPlacement } from "@/lib/floating-panel";
 import { selectorId } from "@/lib/utils/dom-ids";
 import { ChevronDown } from "lucide-react";
 
-export type ViewCategoryId = "movie" | "series" | "anime";
+export type ViewCategoryId = "MOVIE" | "SERIES" | "ANIME";
 
 export type IndexerCategoryDefinition = {
   code: string;
@@ -96,9 +96,9 @@ export const INDEXER_CATEGORY_GROUPS_BY_SCOPE: Record<
   ViewCategoryId,
   Array<"movies" | "series" | "other">
 > = {
-  movie: ["movies", "other"],
-  series: ["series", "other"],
-  anime: ["series", "other"],
+  MOVIE: ["movies", "other"],
+  SERIES: ["series", "other"],
+  ANIME: ["series", "other"],
 };
 
 export function sortCategoryCodes(values: string[]): string[] {

@@ -51,12 +51,12 @@ export function formatUiDate(
   options: DateFormatOptions = {},
 ): string {
   if (!value) return options.fallback ?? "";
-  if (format === "iso24h" && ISO_DATE_ONLY_PATTERN.test(value)) return value;
+  if (format === "ISO24H" && ISO_DATE_ONLY_PATTERN.test(value)) return value;
 
   const date = parseDate(value);
   if (!date) return invalidFallback(value, options.fallback);
 
-  if (format === "iso24h") return formatLocalDateParts(date);
+  if (format === "ISO24H") return formatLocalDateParts(date);
 
   return new Intl.DateTimeFormat(browserLocale(), {
     dateStyle: options.dateStyle ?? "medium",
@@ -71,7 +71,7 @@ export function formatUiTime(
   const date = parseDate(value);
   if (!date) return invalidFallback(value, options.fallback);
 
-  if (format === "iso24h") return formatLocalTimeParts(date);
+  if (format === "ISO24H") return formatLocalTimeParts(date);
 
   return new Intl.DateTimeFormat(browserLocale(), {
     timeStyle: options.timeStyle ?? "short",
@@ -86,7 +86,7 @@ export function formatUiDateTime(
   const date = parseDate(value);
   if (!date) return invalidFallback(value, options.fallback);
 
-  if (format === "iso24h") {
+  if (format === "ISO24H") {
     return `${formatLocalDateParts(date)} ${formatLocalTimeParts(date)}`;
   }
 

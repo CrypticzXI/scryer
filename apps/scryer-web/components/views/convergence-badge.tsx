@@ -20,30 +20,30 @@ export function ConvergenceBadge({
   let label: string;
   let hint: string | undefined;
   switch (state) {
-    case "searching":
+    case "SEARCHING":
       className = "bg-[rgba(var(--scry-accent-rgb),0.2)] text-[var(--scry-accent-text)]";
       label = t("wanted.convergence.searching", {
         covered: indexersCovered,
         routed: indexersRouted,
       });
       break;
-    case "converged":
+    case "CONVERGED":
       className = "bg-[var(--scry-success-bg-strong)] text-[var(--scry-success-text)]";
       label = t("wanted.convergence.converged");
       hint = t("wanted.convergence.convergedHint");
       break;
-    case "deferred":
+    case "DEFERRED":
       className = "bg-[var(--scry-warning-bg-strong)] text-[var(--scry-warning-text)]";
       label = t("wanted.convergence.deferred");
       hint = t("wanted.convergence.deferredHint");
       break;
     default:
       className =
-        recencyLane === "hot"
+        recencyLane === "HOT"
           ? "bg-[var(--scry-info-bg-strong)] text-[var(--scry-info-text)]"
           : "bg-muted text-muted-foreground";
       label =
-        recencyLane === "hot"
+        recencyLane === "HOT"
           ? t("wanted.convergence.queuedHot")
           : t("wanted.convergence.queuedCold");
       break;

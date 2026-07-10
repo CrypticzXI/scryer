@@ -171,9 +171,9 @@ export function SetupWizardContainer({
   const [facetPrefs, setFacetPrefs] = useState<
     Record<ViewCategoryId, FacetQualityPrefs>
   >({
-    movie: { quality: "4k", persona: "balanced" },
-    series: { quality: "4k", persona: "balanced" },
-    anime: { quality: "1080p", persona: "balanced" },
+    MOVIE: { quality: "4k", persona: "BALANCED" },
+    SERIES: { quality: "4k", persona: "BALANCED" },
+    ANIME: { quality: "1080p", persona: "BALANCED" },
   });
   const [personaSaving, setPersonaSaving] = useState(false);
 
@@ -316,9 +316,9 @@ export function SetupWizardContainer({
 
         // Build per-facet profiles from templates
         const WIZARD_FACETS: { facet: ViewCategoryId; name: string }[] = [
-          { facet: "movie", name: "Movies" },
-          { facet: "series", name: "Series" },
-          { facet: "anime", name: "Anime" },
+          { facet: "MOVIE", name: "Movies" },
+          { facet: "SERIES", name: "Series" },
+          { facet: "ANIME", name: "Anime" },
         ];
         const wizardProfileIds = WIZARD_FACETS.map((f) => `wizard-${f.facet}`);
         const builtinProfileIds = ["8k", "4k", "1080p"];

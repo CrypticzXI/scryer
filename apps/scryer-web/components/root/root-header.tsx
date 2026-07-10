@@ -126,10 +126,10 @@ function selectAccountAvatar(accounts: LinkedAccount[]): LinkedAccount | null {
 
   return (
     accounts.find(
-      (account) => account.provider === "jellyfin" && hasAvatar(account),
+      (account) => account.provider === "JELLYFIN" && hasAvatar(account),
     ) ??
     accounts.find(
-      (account) => account.provider === "plex" && hasAvatar(account),
+      (account) => account.provider === "PLEX" && hasAvatar(account),
     ) ??
     null
   );
@@ -1801,7 +1801,7 @@ export const RootHeader = React.memo(function RootHeader({
         open={addDialogTarget !== null}
         onOpenChange={handleAddDialogOpenChange}
         result={addDialogTarget?.result ?? EMPTY_SEARCH_RESULT}
-        facet={addDialogTarget?.facet ?? "series"}
+        facet={addDialogTarget?.facet ?? "SERIES"}
         catalogQualityProfileOptions={catalogQualityProfileOptions}
         catalogConfigLoading={
           Boolean(addDialogTarget) &&
@@ -1809,13 +1809,13 @@ export const RootHeader = React.memo(function RootHeader({
           !isAddDialogConfigReady
         }
         defaultQualityProfileId={resolveDefaultQualityProfileIdForFacet(
-          addDialogTarget?.facet ?? "series",
+          addDialogTarget?.facet ?? "SERIES",
         )}
         manageableLibraries={
-          librariesByFacet[addDialogTarget?.facet ?? "series"]
+          librariesByFacet[addDialogTarget?.facet ?? "SERIES"]
         }
         rootFolderOptions={
-          rootFoldersByFacet[addDialogTarget?.facet ?? "series"]
+          rootFoldersByFacet[addDialogTarget?.facet ?? "SERIES"]
         }
         onAdd={handleAddDialogSubmit}
       />
@@ -1823,9 +1823,9 @@ export const RootHeader = React.memo(function RootHeader({
         open={requestDialogTarget !== null}
         onOpenChange={handleRequestDialogOpenChange}
         result={requestDialogTarget?.result ?? EMPTY_SEARCH_RESULT}
-        facet={requestDialogTarget?.facet ?? "series"}
+        facet={requestDialogTarget?.facet ?? "SERIES"}
         requestableLibraries={
-          requestableLibrariesByFacet[requestDialogTarget?.facet ?? "series"]
+          requestableLibrariesByFacet[requestDialogTarget?.facet ?? "SERIES"]
         }
         qualityProfileOptions={catalogQualityProfileOptions}
         onRequest={handleRequestDialogSubmit}

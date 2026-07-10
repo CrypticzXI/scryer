@@ -46,7 +46,7 @@ interface SetupImportLibrariesViewProps {
   t: (key: string, values?: Record<string, unknown>) => string;
 }
 
-const FACET_PICKER: WizardFacet[] = ["movie", "series", "anime"];
+const FACET_PICKER: WizardFacet[] = ["MOVIE", "SERIES", "ANIME"];
 
 // Drag-and-drop is desktop-only; at tablet width and below (≤1024px) the
 // click-to-place assign sheet replaces it (DnD is unreliable on touch).

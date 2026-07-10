@@ -535,7 +535,7 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
   >({
     titleId,
     blocklistLimit: 300,
-    projection: "series",
+    projection: "SERIES",
     applyOverviewSnapshot: applySidePanelOverviewSnapshot,
     applyDownloadFeedbackSnapshot,
     importKinds: SERIES_OVERVIEW_IMPORT_REFRESH_KINDS,
@@ -959,7 +959,7 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
         const { data, error } = await client
           .query(
             librariesQuery,
-            { facet, permission: "manageTitles" },
+            { facet, permission: "MANAGE_TITLES" },
             { requestPolicy: "network-only" },
           )
           .toPromise();

@@ -24,18 +24,18 @@ interface SetupPersonaViewProps {
 }
 
 const PERSONAS: { id: ScoringPersonaId; icon: typeof Scale; labelKey: string; descKey: string }[] = [
-  { id: "balanced", icon: Scale, labelKey: "qualityProfile.personaBalanced", descKey: "setup.personaBalancedDesc" },
-  { id: "audiophile", icon: Headphones, labelKey: "qualityProfile.personaAudiophile", descKey: "setup.personaAudiophileDesc" },
-  { id: "efficient", icon: Zap, labelKey: "qualityProfile.personaEfficient", descKey: "setup.personaEfficientDesc" },
-  { id: "compatible", icon: MonitorSmartphone, labelKey: "qualityProfile.personaCompatible", descKey: "setup.personaCompatibleDesc" },
+  { id: "BALANCED", icon: Scale, labelKey: "qualityProfile.personaBalanced", descKey: "setup.personaBalancedDesc" },
+  { id: "AUDIOPHILE", icon: Headphones, labelKey: "qualityProfile.personaAudiophile", descKey: "setup.personaAudiophileDesc" },
+  { id: "EFFICIENT", icon: Zap, labelKey: "qualityProfile.personaEfficient", descKey: "setup.personaEfficientDesc" },
+  { id: "COMPATIBLE", icon: MonitorSmartphone, labelKey: "qualityProfile.personaCompatible", descKey: "setup.personaCompatibleDesc" },
 ];
 
 const QUALITY_TARGETS: QualityTargetId[] = ["4k", "1080p"];
 
 const FACETS: { id: ViewCategoryId; labelKey: string }[] = [
-  { id: "movie", labelKey: "setup.facetMovies" },
-  { id: "series", labelKey: "setup.facetSeries" },
-  { id: "anime", labelKey: "setup.facetAnime" },
+  { id: "MOVIE", labelKey: "setup.facetMovies" },
+  { id: "SERIES", labelKey: "setup.facetSeries" },
+  { id: "ANIME", labelKey: "setup.facetAnime" },
 ];
 
 export function SetupPersonaView({

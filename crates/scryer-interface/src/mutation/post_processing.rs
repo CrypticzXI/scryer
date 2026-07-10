@@ -18,15 +18,8 @@ fn parse_script_type(value: &str) -> GqlResult<ScriptType> {
     })
 }
 
-fn parse_execution_mode(value: Option<String>) -> GqlResult<ExecutionMode> {
-    match value {
-        Some(value) => ExecutionMode::parse(&value).ok_or_else(|| {
-            to_gql_error(AppError::Validation(format!(
-                "invalid post-processing execution mode: {value}"
-            )))
-        }),
-        None => Ok(ExecutionMode::default()),
-    }
+fn parse_execution_mode(value: Option<ExecutionModeValue>) -> ExecutionMode {
+    value.map(ExecutionMode::from).unwrap_or_default()
 }
 
 fn require_inline_shell_acknowledgement(acknowledged: Option<bool>) -> GqlResult<()> {
@@ -71,7 +64,7 @@ impl PostProcessingMutations {
         } else {
             validate_file_script_content(&script_content)?;
         }
-        let execution_mode = parse_execution_mode(input.execution_mode)?;
+        let execution_mode = parse_execution_mode(input.execution_mode);
 
         let now = Utc::now();
         let script = PostProcessingScript {
@@ -121,14 +114,7 @@ impl PostProcessingMutations {
             Some(value) => Some(parse_script_type(value)?),
             None => None,
         };
-        let next_execution_mode = match input.execution_mode.as_deref() {
-            Some(value) => Some(ExecutionMode::parse(value).ok_or_else(|| {
-                to_gql_error(AppError::Validation(format!(
-                    "invalid post-processing execution mode: {value}"
-                )))
-            })?),
-            None => None,
-        };
+        let next_execution_mode = input.execution_mode.map(ExecutionMode::from);
 
         if let Some(name) = input.name {
             script.name = name;

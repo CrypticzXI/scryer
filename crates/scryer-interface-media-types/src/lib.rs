@@ -4,10 +4,11 @@ use async_graphql::{
 };
 use chrono::{DateTime, NaiveDate, Utc};
 use scryer_domain::{
-    AppPermission, ConfigFieldRole, ConfigFieldType, ConfigFieldValueSource, DomainEventType,
-    DownloadQueueState, ImportDecision, ImportErrorCode, ImportSkipReason, ImportStatus,
-    ImportType, LibraryPermission, MediaFacet, MediaRequestStatus, TitleHistoryEventType,
-    TitleMatchType, TrackedDownloadState, TrackedDownloadStatus,
+    AppPermission, CollectionType, ConfigFieldRole, ConfigFieldType, ConfigFieldValueSource,
+    DomainEventActorKind, DomainEventType, DownloadQueueState, EpisodeType, ExecutionMode,
+    ImportDecision, ImportErrorCode, ImportSkipReason, ImportStatus, ImportType,
+    LibraryPermission, MediaFacet, MediaRequestStatus, TitleHistoryEventType, TitleMatchType,
+    TrackedDownloadState, TrackedDownloadStatus,
 };
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
@@ -98,7 +99,7 @@ impl ScalarType for Date {
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
-#[graphql(rename_items = "lowercase")]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
 pub enum MediaFacetValue {
     Movie,
     Series,
@@ -106,7 +107,7 @@ pub enum MediaFacetValue {
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
-#[graphql(rename_items = "camelCase")]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
 pub enum LibraryPermissionValue {
     View,
     ManageTitles,
@@ -117,7 +118,7 @@ pub enum LibraryPermissionValue {
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
-#[graphql(rename_items = "camelCase")]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
 pub enum AppPermissionValue {
     ManageUsers,
     ManagePermissions,
@@ -126,7 +127,7 @@ pub enum AppPermissionValue {
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
-#[graphql(rename_items = "snake_case")]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
 pub enum UserAccountKindValue {
     Local,
     ExternalAutoProvisioned,
@@ -223,14 +224,14 @@ impl MediaFacetValue {
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
-#[graphql(rename_items = "lowercase")]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
 pub enum PendingImportStatusValue {
     Pending,
     Ignored,
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
-#[graphql(rename_items = "lowercase")]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
 pub enum MediaRequestStatusValue {
     Pending,
     Approved,
@@ -259,7 +260,7 @@ impl MediaRequestStatusValue {
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
-#[graphql(rename_items = "lowercase")]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
 pub enum ContentScopeValue {
     Movie,
     Series,
@@ -294,7 +295,7 @@ impl ContentScopeValue {
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
-#[graphql(rename_items = "lowercase")]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
 pub enum ScoringPersonaValue {
     Balanced,
     Audiophile,
@@ -303,14 +304,14 @@ pub enum ScoringPersonaValue {
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
-#[graphql(rename_items = "camelCase")]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
 pub enum MonitorTypeValue {
     Monitored,
     Unmonitored,
     FutureEpisodes,
     MissingAndFutureEpisodes,
     AllEpisodes,
-    #[graphql(name = "none")]
+    #[graphql(name = "NONE")]
     NoneSelected,
 }
 
@@ -342,7 +343,7 @@ impl MonitorTypeValue {
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
-#[graphql(rename_items = "camelCase")]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
 pub enum DownloadSourceKindValue {
     NzbFile,
     NzbUrl,
@@ -365,14 +366,14 @@ pub enum RuntimePathStyleValue {
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
-#[graphql(rename_items = "lowercase")]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
 pub enum DelayProfilePreferredProtocolValue {
     Usenet,
     Torrent,
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
-#[graphql(rename_items = "snake_case")]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
 pub enum DownloadQueueStateValue {
     Queued,
     Downloading,
@@ -402,7 +403,7 @@ impl DownloadQueueStateValue {
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
-#[graphql(rename_items = "snake_case")]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
 pub enum DownloadDisplayStateValue {
     Queued,
     Downloading,
@@ -419,7 +420,7 @@ pub enum DownloadDisplayStateValue {
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
-#[graphql(rename_items = "snake_case")]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
 pub enum DownloadActivityFilterValue {
     All,
     Downloading,
@@ -429,7 +430,7 @@ pub enum DownloadActivityFilterValue {
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
-#[graphql(rename_items = "snake_case")]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
 pub enum DownloadImportFilterValue {
     All,
     Importing,
@@ -439,7 +440,7 @@ pub enum DownloadImportFilterValue {
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
-#[graphql(rename_items = "snake_case")]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
 pub enum DownloadHistoryFilterValue {
     All,
     Success,
@@ -447,7 +448,7 @@ pub enum DownloadHistoryFilterValue {
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
-#[graphql(rename_items = "snake_case")]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
 pub enum DownloadHistorySortKeyValue {
     Title,
     Client,
@@ -457,14 +458,14 @@ pub enum DownloadHistorySortKeyValue {
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
-#[graphql(rename_items = "lowercase")]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
 pub enum SortDirectionValue {
     Asc,
     Desc,
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
-#[graphql(rename_items = "snake_case")]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
 pub enum DomainEventTypeValue {
     MediaRequestSubmitted,
     MediaRequestUpdated,
@@ -610,7 +611,7 @@ impl DomainEventTypeValue {
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
-#[graphql(rename_items = "snake_case")]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
 pub enum TrackedDownloadStateValue {
     Downloading,
     ImportPending,
@@ -638,7 +639,7 @@ impl TrackedDownloadStateValue {
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
-#[graphql(rename_items = "lowercase")]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
 pub enum TrackedDownloadStatusValue {
     Ok,
     Warning,
@@ -656,7 +657,7 @@ impl TrackedDownloadStatusValue {
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
-#[graphql(rename_items = "snake_case")]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
 pub enum TitleMatchTypeValue {
     Submission,
     ClientParameter,
@@ -678,7 +679,7 @@ impl TitleMatchTypeValue {
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
-#[graphql(rename_items = "snake_case")]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
 pub enum ImportStatusValue {
     Pending,
     Running,
@@ -702,7 +703,7 @@ impl ImportStatusValue {
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
-#[graphql(rename_items = "snake_case")]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
 pub enum ImportTypeValue {
     MovieDownload,
     SeriesDownload,
@@ -734,7 +735,7 @@ impl ImportTypeValue {
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
-#[graphql(rename_items = "snake_case")]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
 pub enum ImportErrorCodeValue {
     FileNotFound,
     EpisodeNotFound,
@@ -764,7 +765,7 @@ impl ImportErrorCodeValue {
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
-#[graphql(rename_items = "snake_case")]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
 pub enum DownloadQueueDeleteStatusValue {
     Queued,
     Running,
@@ -784,7 +785,7 @@ impl DownloadQueueDeleteStatusValue {
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
-#[graphql(rename_items = "snake_case")]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
 pub enum ImportDecisionValue {
     Imported,
     Rejected,
@@ -808,7 +809,7 @@ impl ImportDecisionValue {
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
-#[graphql(rename_items = "snake_case")]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
 pub enum ImportSkipReasonValue {
     AlreadyImported,
     DuplicateFile,
@@ -840,7 +841,94 @@ impl ImportSkipReasonValue {
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
-#[graphql(rename_items = "snake_case")]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
+pub enum CollectionTypeValue {
+    Season,
+    Movie,
+    Arc,
+    Specials,
+}
+
+impl From<CollectionType> for CollectionTypeValue {
+    fn from(value: CollectionType) -> Self {
+        match value {
+            CollectionType::Season => Self::Season,
+            CollectionType::Movie => Self::Movie,
+            CollectionType::Arc => Self::Arc,
+            CollectionType::Specials => Self::Specials,
+        }
+    }
+}
+
+#[derive(Enum, Copy, Clone, Eq, PartialEq)]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
+pub enum EpisodeTypeValue {
+    Standard,
+    Special,
+    Official,
+    Ova,
+    Ona,
+    Alternate,
+}
+
+impl From<EpisodeType> for EpisodeTypeValue {
+    fn from(value: EpisodeType) -> Self {
+        match value {
+            EpisodeType::Standard => Self::Standard,
+            EpisodeType::Special => Self::Special,
+            EpisodeType::Official => Self::Official,
+            EpisodeType::Ova => Self::Ova,
+            EpisodeType::Ona => Self::Ona,
+            EpisodeType::Alternate => Self::Alternate,
+        }
+    }
+}
+
+#[derive(Enum, Copy, Clone, Eq, PartialEq)]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
+pub enum ActorKindValue {
+    User,
+    Anonymous,
+    System,
+}
+
+impl From<DomainEventActorKind> for ActorKindValue {
+    fn from(value: DomainEventActorKind) -> Self {
+        match value {
+            DomainEventActorKind::User => Self::User,
+            DomainEventActorKind::Anonymous => Self::Anonymous,
+            DomainEventActorKind::System => Self::System,
+        }
+    }
+}
+
+#[derive(Enum, Copy, Clone, Eq, PartialEq)]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
+pub enum ExecutionModeValue {
+    Blocking,
+    FireAndForget,
+}
+
+impl From<ExecutionMode> for ExecutionModeValue {
+    fn from(value: ExecutionMode) -> Self {
+        match value {
+            ExecutionMode::Blocking => Self::Blocking,
+            ExecutionMode::FireAndForget => Self::FireAndForget,
+        }
+    }
+}
+
+impl From<ExecutionModeValue> for ExecutionMode {
+    fn from(value: ExecutionModeValue) -> Self {
+        match value {
+            ExecutionModeValue::Blocking => Self::Blocking,
+            ExecutionModeValue::FireAndForget => Self::FireAndForget,
+        }
+    }
+}
+
+#[derive(Enum, Copy, Clone, Eq, PartialEq)]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
 pub enum ActivityKindValue {
     SettingSaved,
     MovieFetched,
@@ -865,7 +953,7 @@ pub enum ActivityKindValue {
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
-#[graphql(rename_items = "lowercase")]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
 pub enum ActivitySeverityValue {
     Info,
     Success,
@@ -874,14 +962,14 @@ pub enum ActivitySeverityValue {
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
-#[graphql(rename_items = "snake_case")]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
 pub enum ActivityChannelValue {
     WebUi,
     Toast,
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
-#[graphql(rename_items = "snake_case")]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
 pub enum WantedStatusValue {
     Wanted,
     Grabbed,
@@ -901,7 +989,7 @@ impl WantedStatusValue {
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
-#[graphql(rename_items = "snake_case")]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
 pub enum WantedMediaTypeValue {
     Movie,
     Episode,
@@ -932,7 +1020,7 @@ impl WantedMediaTypeValue {
 /// is still sweeping indexers, has converged onto RSS, is queued for the cursor, or
 /// is deferred because every uncovered indexer is currently unavailable.
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
-#[graphql(rename_items = "snake_case")]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
 pub enum ConvergenceStateValue {
     /// No indexer has been searched under the current fingerprint yet — waiting on
     /// the cursor to begin the sweep.
@@ -952,7 +1040,7 @@ pub enum ConvergenceStateValue {
 /// promptly (high candidate value to the scheduler); `Cold` scopes drain under
 /// backpressure.
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
-#[graphql(rename_items = "snake_case")]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
 pub enum RecencyLaneValue {
     Hot,
     Cold,
@@ -962,7 +1050,7 @@ pub enum RecencyLaneValue {
 /// `Missing` scopes have no primary file; `CutoffUpgrade` scopes have a file below
 /// the effective profile cutoff.
 #[derive(Enum, Copy, Clone, Eq, PartialEq, Default)]
-#[graphql(rename_items = "snake_case")]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
 pub enum WantedKindValue {
     #[default]
     Missing,
@@ -979,7 +1067,7 @@ impl WantedKindValue {
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
-#[graphql(rename_items = "snake_case")]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
 pub enum PendingReleaseStatusValue {
     Waiting,
     Standby,
@@ -998,14 +1086,14 @@ pub struct LoginInput {
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
-#[graphql(rename_items = "snake_case")]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
 pub enum ExternalAccountProviderValue {
     Plex,
     Jellyfin,
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
-#[graphql(rename_items = "snake_case")]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
 pub enum MediaServerProviderValue {
     Jellyfin,
     Plex,
@@ -1047,7 +1135,7 @@ impl ExternalAccountProviderValue {
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
-#[graphql(rename_items = "snake_case")]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
 pub enum ExternalAccountStatusValue {
     PendingClaim,
     Active,
@@ -1231,7 +1319,7 @@ pub struct MediaRequestChangedPayload {
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
-#[graphql(rename_items = "snake_case")]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
 pub enum ProviderCatalogFamilyValue {
     Subtitle,
     Notification,
@@ -1360,7 +1448,7 @@ pub struct UserLibraryPermissionGrantPayload {
 pub struct EventPayload {
     pub id: ID,
     pub event_type: String,
-    pub actor_kind: String,
+    pub actor_kind: ActorKindValue,
     pub actor_user_id: Option<ID>,
     pub actor_display_name: String,
     pub title_id: Option<ID>,
@@ -1374,7 +1462,7 @@ pub struct ActivityEventPayload {
     pub kind: ActivityKindValue,
     pub severity: ActivitySeverityValue,
     pub channels: Vec<ActivityChannelValue>,
-    pub actor_kind: String,
+    pub actor_kind: ActorKindValue,
     pub actor_user_id: Option<ID>,
     pub actor_display_name: String,
     pub title_id: Option<ID>,
@@ -1388,7 +1476,7 @@ pub struct DomainEventEnvelopePayload {
     pub sequence: Long,
     pub event_id: ID,
     pub occurred_at: DateTime<Utc>,
-    pub actor_kind: String,
+    pub actor_kind: ActorKindValue,
     pub actor_user_id: Option<ID>,
     pub actor_display_name: String,
     pub title_id: Option<ID>,
@@ -1400,7 +1488,7 @@ pub struct DomainEventEnvelopePayload {
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
-#[graphql(rename_items = "snake_case")]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
 pub enum JobKeyValue {
     LibraryScanMovies,
     LibraryScanSeries,
@@ -1424,7 +1512,7 @@ pub enum JobKeyValue {
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
-#[graphql(rename_items = "lowercase")]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
 pub enum JobCategoryValue {
     Library,
     Acquisition,
@@ -1434,14 +1522,14 @@ pub enum JobCategoryValue {
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
-#[graphql(rename_items = "lowercase")]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
 pub enum JobSectionValue {
     Primary,
     Maintenance,
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
-#[graphql(rename_items = "snake_case")]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
 pub enum JobScheduleKindValue {
     Manual,
     Interval,
@@ -1450,7 +1538,7 @@ pub enum JobScheduleKindValue {
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
-#[graphql(rename_items = "snake_case")]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
 pub enum JobTriggerSourceValue {
     Manual,
     ScheduledStartup,
@@ -1460,7 +1548,7 @@ pub enum JobTriggerSourceValue {
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
-#[graphql(rename_items = "snake_case")]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
 pub enum JobRunStatusValue {
     Queued,
     Discovering,
@@ -1471,14 +1559,14 @@ pub enum JobRunStatusValue {
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
-#[graphql(rename_items = "snake_case")]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
 pub enum LibraryScanModeValue {
     Full,
     Additive,
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
-#[graphql(rename_items = "snake_case")]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
 pub enum LibraryScanStatusValue {
     Discovering,
     Running,
@@ -2097,7 +2185,7 @@ pub struct AssignTrackedDownloadTitleInput {
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
-#[graphql(rename_items = "snake_case")]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
 pub enum AddTitleHydrationStateValue {
     Pending,
     Complete,
@@ -2381,7 +2469,7 @@ pub struct SecuritySettingsPayload {
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
-#[graphql(rename_items = "lowercase")]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
 pub enum UiThemeValue {
     Light,
     Dark,
@@ -2390,29 +2478,29 @@ pub enum UiThemeValue {
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
-#[graphql(rename_items = "lowercase")]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
 pub enum UiDateTimeFormatValue {
     Locale,
-    #[graphql(name = "iso24h")]
+    #[graphql(name = "ISO24H")]
     Iso24h,
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
-#[graphql(rename_items = "lowercase")]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
 pub enum UiDensityValue {
     Compact,
     Comfortable,
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
-#[graphql(rename_items = "lowercase")]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
 pub enum UiSidebarModeValue {
     Collapsed,
     Expanded,
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
-#[graphql(rename_items = "lowercase")]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
 pub enum UiDefaultLandingViewValue {
     Movies,
     Series,
@@ -2426,7 +2514,7 @@ pub enum UiDefaultLandingViewValue {
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
-#[graphql(rename_items = "lowercase")]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
 pub enum UiSettingsFacetValue {
     Movies,
     Series,
@@ -2434,7 +2522,7 @@ pub enum UiSettingsFacetValue {
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
-#[graphql(rename_items = "camelCase")]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
 pub enum UiTableViewModeValue {
     Compact,
     PosterTable,
@@ -2771,7 +2859,7 @@ pub struct TriggerAcquisitionSearchInput {
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
-#[graphql(rename_items = "snake_case")]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
 pub enum QueueDownloadResultStatusValue {
     Queued,
     Conflict,
@@ -2809,7 +2897,7 @@ pub struct WantedSearchPayload {
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
-#[graphql(rename_items = "snake_case")]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
 pub enum DownloadQueueActionKindValue {
     QueuedManualImport,
     IgnoredTrackedDownload,
@@ -3051,7 +3139,7 @@ pub struct JellyfinServerUserPayload {
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
-#[graphql(rename_items = "snake_case")]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
 pub enum MediaServerUserGroupStatusValue {
     Ready,
     MissingCredentials,
@@ -3723,7 +3811,7 @@ pub struct TriggerTitleMismatchRecoverySearchPayload {
 
 /// Lifecycle of the interactive acquisition-search job (RFC 119 §7.3/Phase 2).
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
-#[graphql(rename_items = "snake_case")]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
 pub enum AcquisitionSearchJobStateValue {
     Running,
     Completed,
@@ -4035,14 +4123,14 @@ pub struct PluginCatalogStatusPayload {
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
-#[graphql(rename_items = "snake_case")]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
 pub enum PluginInstallOperationKindValue {
     Install,
     Upgrade,
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
-#[graphql(rename_items = "snake_case")]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
 pub enum PluginInstallStateValue {
     Downloading,
     Verifying,
@@ -4102,7 +4190,7 @@ pub struct PluginConfigFieldOptionPayload {
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
-#[graphql(rename_items = "snake_case")]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
 pub enum PluginConfigFieldTypeValue {
     String,
     Password,
@@ -4130,7 +4218,7 @@ impl PluginConfigFieldTypeValue {
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
-#[graphql(rename_items = "snake_case")]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
 pub enum PluginConfigValueSourceValue {
     User,
     HostBinding,
@@ -4146,7 +4234,7 @@ impl PluginConfigValueSourceValue {
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
-#[graphql(rename_items = "snake_case")]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
 pub enum PluginConfigFieldRoleValue {
     ConnectionUrl,
 }
@@ -4433,7 +4521,7 @@ pub struct ExternalImportConnectionInput {
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
-#[graphql(rename_items = "snake_case")]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
 pub enum ExternalArrSourceKind {
     Sonarr,
     Radarr,
@@ -4444,7 +4532,7 @@ pub enum ExternalArrSourceKind {
 /// covers Prowlarr, which has no warmup of its own but can still be
 /// connection-tested before preview.
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
-#[graphql(rename_items = "snake_case")]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
 pub enum ExternalImportConnectionKind {
     Sonarr,
     Radarr,
@@ -4624,7 +4712,7 @@ pub struct ExternalImportAggregateWarmupProgressPayload {
 }
 
 #[derive(Enum, Copy, Clone, Debug, Eq, PartialEq)]
-#[graphql(rename_items = "snake_case")]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
 pub enum ExternalImportLibrarySettingKey {
     RenameEnabled,
     NfoWriteOnImport,
@@ -4641,7 +4729,7 @@ pub enum ExternalImportLibrarySettingKey {
 }
 
 #[derive(Enum, Copy, Clone, Debug, Eq, PartialEq)]
-#[graphql(rename_items = "snake_case")]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
 pub enum ExternalImportLibrarySettingConfidence {
     High,
     Medium,
@@ -4649,7 +4737,7 @@ pub enum ExternalImportLibrarySettingConfidence {
 }
 
 #[derive(Enum, Copy, Clone, Debug, Eq, PartialEq)]
-#[graphql(rename_items = "snake_case")]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
 pub enum ExternalImportLibrarySettingDisposition {
     AutoApplied,
     Suggested,
@@ -4703,7 +4791,7 @@ pub struct RehydrateAllMetadataPayload {
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
-#[graphql(rename_items = "snake_case")]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
 pub enum ExternalImportMonitorWarmupStatusValue {
     Queued,
     Running,
@@ -4713,7 +4801,7 @@ pub enum ExternalImportMonitorWarmupStatusValue {
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
-#[graphql(rename_items = "snake_case")]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
 pub enum ExternalImportMonitorWarmupPhaseValue {
     LoadingMovies,
     LoadingSeries,
@@ -4833,7 +4921,7 @@ pub struct PostProcessingScriptPayload {
     pub script_type: String,
     pub script_content: String,
     pub applied_facets: Vec<String>,
-    pub execution_mode: String,
+    pub execution_mode: ExecutionModeValue,
     pub timeout_secs: i32,
     pub priority: i32,
     pub enabled: bool,
@@ -4874,7 +4962,7 @@ pub struct CreatePostProcessingScriptInput {
     pub script_content: Option<String>,
     pub inline_shell_acknowledged: Option<bool>,
     pub applied_facets: Option<Vec<String>>,
-    pub execution_mode: Option<String>,
+    pub execution_mode: Option<ExecutionModeValue>,
     pub timeout_secs: Option<i32>,
     pub priority: Option<i32>,
     pub debug: Option<bool>,
@@ -4889,7 +4977,7 @@ pub struct UpdatePostProcessingScriptInput {
     pub script_content: Option<String>,
     pub inline_shell_acknowledged: Option<bool>,
     pub applied_facets: Option<Vec<String>>,
-    pub execution_mode: Option<String>,
+    pub execution_mode: Option<ExecutionModeValue>,
     pub timeout_secs: Option<i32>,
     pub priority: Option<i32>,
     pub enabled: Option<bool>,
@@ -4946,7 +5034,7 @@ pub struct TitleHistoryEventPayload {
     pub episode_ids: Vec<ID>,
     pub collection_id: Option<ID>,
     pub event_type: String,
-    pub actor_kind: Option<String>,
+    pub actor_kind: Option<ActorKindValue>,
     pub actor_user_id: Option<ID>,
     pub actor_display_name: Option<String>,
     pub source_title: Option<String>,
@@ -4977,7 +5065,7 @@ pub struct TitleHistoryPagePayload {
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
-#[graphql(rename_items = "snake_case")]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
 pub enum TitleHistoryEventTypeValue {
     Requested,
     Grabbed,

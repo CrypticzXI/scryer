@@ -19,7 +19,7 @@ export function ActivityQueueStatusBadge({
   expandLabel: string;
   onToggle: () => void;
 }) {
-  const className = `inline-flex items-center gap-1.5 rounded border px-2 py-1 text-xs font-medium ${queueStateClasses[stateKey] ?? "border-border bg-muted text-card-foreground"}`;
+  const className = `inline-flex items-center gap-1.5 rounded border px-2 py-1 text-xs font-medium ${queueStateClasses[stateKey.toLowerCase()] ?? "border-border bg-muted text-card-foreground"}`;
 
   if (!isExpandable) {
     return <span className={className}>{statusLabel}</span>;

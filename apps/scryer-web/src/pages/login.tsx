@@ -131,16 +131,16 @@ export default function LoginPage() {
   const [plexSubmitting, setPlexSubmitting] = useState(false);
   const redirectTarget = resolveRedirectTarget(searchParams.get("redirect"));
   const jellyfinConnections =
-    externalAuthSettings?.loginProviders.includes("jellyfin")
+    externalAuthSettings?.loginProviders.includes("JELLYFIN")
       ? externalAuthSettings.connections.filter(
-          (connection) => connection.provider === "jellyfin" && connection.loginEnabled,
+          (connection) => connection.provider === "JELLYFIN" && connection.loginEnabled,
         )
       : [];
   const plexConnections =
     isVisibleExternalAccountProvider("plex") &&
-    externalAuthSettings?.loginProviders.includes("plex")
+    externalAuthSettings?.loginProviders.includes("PLEX")
       ? externalAuthSettings.connections.filter(
-          (connection) => connection.provider === "plex" && connection.loginEnabled,
+          (connection) => connection.provider === "PLEX" && connection.loginEnabled,
         )
       : [];
   const plexLoginAvailable = plexConnections.length > 0;
@@ -210,7 +210,7 @@ export default function LoginPage() {
         setExternalAuthSettings(settings);
         const firstJellyfinConnectionId =
           settings?.connections.find(
-            (connection) => connection.provider === "jellyfin" && connection.loginEnabled,
+            (connection) => connection.provider === "JELLYFIN" && connection.loginEnabled,
           )?.id ??
           "";
         if (firstJellyfinConnectionId) {
@@ -221,7 +221,7 @@ export default function LoginPage() {
         if (isVisibleExternalAccountProvider("plex")) {
           const firstPlexConnectionId =
             settings?.connections.find(
-              (connection) => connection.provider === "plex" && connection.loginEnabled,
+              (connection) => connection.provider === "PLEX" && connection.loginEnabled,
             )?.id ??
             "";
           if (firstPlexConnectionId) {

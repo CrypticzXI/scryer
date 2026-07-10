@@ -55,54 +55,54 @@ export type ImportHistoryViewProps = {
 };
 
 const statusClasses: Record<ImportRecordStatus, string> = {
-  pending:
+  PENDING:
     "border-border/40 bg-muted-foreground/10 text-card-foreground",
-  running:
+  RUNNING:
     "border-[rgba(var(--scry-accent-rgb),0.4)] bg-[rgba(var(--scry-accent-rgb),0.1)] text-[var(--scry-accent-text)]",
-  processing:
+  PROCESSING:
     "border-[var(--scry-info-border)] bg-[var(--scry-info-bg)] text-[var(--scry-info-text)]",
-  completed:
+  COMPLETED:
     "border-[var(--scry-success-border)] bg-[var(--scry-success-bg)] text-[var(--scry-success-text)]",
-  failed: "border-[var(--scry-danger-border)] bg-[var(--scry-danger-bg)] text-[var(--scry-danger-text)]",
-  skipped: "border-[var(--scry-warning-border)] bg-[var(--scry-warning-bg)] text-[var(--scry-warning-text)]",
+  FAILED: "border-[var(--scry-danger-border)] bg-[var(--scry-danger-bg)] text-[var(--scry-danger-text)]",
+  SKIPPED: "border-[var(--scry-warning-border)] bg-[var(--scry-warning-bg)] text-[var(--scry-warning-text)]",
 };
 
 const decisionClasses: Record<ImportDecision, string> = {
-  imported:
+  IMPORTED:
     "border-[var(--scry-success-border)] bg-[var(--scry-success-bg)] text-[var(--scry-success-text)]",
-  rejected:
+  REJECTED:
     "border-[var(--scry-danger-border)] bg-[var(--scry-danger-bg)] text-[var(--scry-danger-text)]",
-  skipped:
+  SKIPPED:
     "border-[var(--scry-warning-border)] bg-[var(--scry-warning-bg)] text-[var(--scry-warning-text)]",
-  conflict:
+  CONFLICT:
     "border-[rgba(var(--scry-accent-rgb),0.4)] bg-[rgba(var(--scry-accent-rgb),0.1)] text-[var(--scry-accent-text)]",
-  unmatched:
+  UNMATCHED:
     "border-slate-500/40 bg-slate-500/10 text-slate-700 dark:text-slate-200",
-  failed: "border-[var(--scry-danger-border)] bg-[var(--scry-danger-bg)] text-[var(--scry-danger-text)]",
+  FAILED: "border-[var(--scry-danger-border)] bg-[var(--scry-danger-bg)] text-[var(--scry-danger-text)]",
 };
 
 const statusFilterOrder: ImportRecordStatus[] = [
-  "processing",
-  "running",
-  "pending",
-  "completed",
-  "failed",
-  "skipped",
+  "PROCESSING",
+  "RUNNING",
+  "PENDING",
+  "COMPLETED",
+  "FAILED",
+  "SKIPPED",
 ];
 
 type StatusFilter = "all" | ImportRecordStatus;
 
 const importTypeLabels: Record<ImportType, string> = {
-  movie_download: "Movie Download",
-  series_download: "Series Download",
-  manual_import: "Manual Import",
-  rename_preview: "Rename Preview",
-  rename_apply_title: "Rename Apply Title",
-  rename_apply_facet: "Rename Apply Facet",
-  rename_apply_result: "Rename Apply Result",
-  rename_io_failed: "Rename I/O Failed",
-  rename_move: "Rename Move",
-  rename_stale_plan: "Rename Stale Plan",
+  MOVIE_DOWNLOAD: "Movie Download",
+  SERIES_DOWNLOAD: "Series Download",
+  MANUAL_IMPORT: "Manual Import",
+  RENAME_PREVIEW: "Rename Preview",
+  RENAME_APPLY_TITLE: "Rename Apply Title",
+  RENAME_APPLY_FACET: "Rename Apply Facet",
+  RENAME_APPLY_RESULT: "Rename Apply Result",
+  RENAME_IO_FAILED: "Rename I/O Failed",
+  RENAME_MOVE: "Rename Move",
+  RENAME_STALE_PLAN: "Rename Stale Plan",
 };
 
 function formatTimestamp(ts: string | null, dateTimeFormat: UiDateTimeFormat): string {
@@ -114,7 +114,7 @@ function formatTimestamp(ts: string | null, dateTimeFormat: UiDateTimeFormat): s
 }
 
 function formatImportType(record: Pick<ImportRecord, "facet" | "importType">): string {
-  if (record.importType === "series_download" && record.facet === "anime") {
+  if (record.importType === "SERIES_DOWNLOAD" && record.facet === "ANIME") {
     return "Anime Download";
   }
   return importTypeLabels[record.importType] ?? humanizeEnumValue(record.importType);
@@ -132,7 +132,7 @@ function formatImportSkipReason(
   skipReason: ImportSkipReason,
   passwordRequiredLabel: string,
 ): string {
-  if (skipReason === "password_required") {
+  if (skipReason === "PASSWORD_REQUIRED") {
     return passwordRequiredLabel;
   }
   return humanizeEnumValue(skipReason);
@@ -198,7 +198,7 @@ function RetryButton({
   onRetry: (importId: string, password?: string) => Promise<void>;
 }) {
   const t = useTranslate();
-  const isPasswordRequired = record.skipReason === "password_required";
+  const isPasswordRequired = record.skipReason === "PASSWORD_REQUIRED";
   const [retrying, setRetrying] = useState(false);
   const [password, setPassword] = useState("");
   const [showPasswordInput, setShowPasswordInput] = useState(false);
@@ -401,7 +401,7 @@ export function ImportHistoryView({
                       ) : null}
                     </div>
                     <div className="flex items-center gap-2">
-                      {record.status === "failed" && onRetry ? (
+                      {record.status === "FAILED" && onRetry ? (
                         <RetryButton record={record} onRetry={onRetry} />
                       ) : null}
                       <span
@@ -570,7 +570,7 @@ export function ImportHistoryView({
 
                         {onRetry ? (
                           <TableCell className="align-middle">
-                            {record.status === "failed" ? (
+                            {record.status === "FAILED" ? (
                               <RetryButton record={record} onRetry={onRetry} />
                             ) : null}
                           </TableCell>

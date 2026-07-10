@@ -70,15 +70,15 @@ export function RequestMediaDialog({
   }, [facet, open, requestableLibraries]);
 
   const selectedLibrary = requestableLibraries.find((library) => library.id === libraryId) ?? null;
-  const canRequestMonitorType = facet !== "movie";
+  const canRequestMonitorType = facet !== "MOVIE";
   const monitorOptions: Array<{ value: MetadataCatalogMonitorType; label: string }> = [
-    { value: "futureEpisodes", label: t("search.monitorType.futureEpisodes") },
+    { value: "FUTURE_EPISODES", label: t("search.monitorType.futureEpisodes") },
     {
-      value: "missingAndFutureEpisodes",
+      value: "MISSING_AND_FUTURE_EPISODES",
       label: t("search.monitorType.missingAndFutureEpisodes"),
     },
-    { value: "allEpisodes", label: t("search.monitorType.allEpisodes") },
-    { value: "none", label: t("search.monitorType.none") },
+    { value: "ALL_EPISODES", label: t("search.monitorType.allEpisodes") },
+    { value: "NONE", label: t("search.monitorType.none") },
   ];
   const requestProfileOptions = React.useMemo(() => {
     const requestProfileIds = selectedLibrary?.requestQualityProfileIds?.length

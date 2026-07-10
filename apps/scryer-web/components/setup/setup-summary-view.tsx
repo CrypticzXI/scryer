@@ -45,11 +45,11 @@ function formatFacetPrefs(
   t: (key: string) => string,
 ): string {
   const FACET_LABELS: Record<ViewCategoryId, string> = {
-    movie: t("setup.facetMovies"),
-    series: t("setup.facetSeries"),
-    anime: t("setup.facetAnime"),
+    MOVIE: t("setup.facetMovies"),
+    SERIES: t("setup.facetSeries"),
+    ANIME: t("setup.facetAnime"),
   };
-  return (["movie", "series", "anime"] as ViewCategoryId[])
+  return (["MOVIE", "SERIES", "ANIME"] as ViewCategoryId[])
     .map((facet) => {
       const p = facetPrefs[facet];
       const quality = formatQualityTarget(p.quality);
@@ -79,31 +79,31 @@ function activeWarmupPhaseState(
   phaseProgress: ExternalImportMonitorWarmupPhaseProgress;
 } {
   switch (progress.phase) {
-    case "loading_movies":
+    case "LOADING_MOVIES":
       return {
         label: t("setup.monitorWarmupLoadingMovies"),
         totalKnown: progress.moviesTotalKnown,
         phaseProgress: progress.moviesProgress,
       };
-    case "loading_series":
+    case "LOADING_SERIES":
       return {
         label: t("setup.monitorWarmupLoadingSeries"),
         totalKnown: progress.seriesTotalKnown,
         phaseProgress: progress.seriesProgress,
       };
-    case "loading_episodes":
+    case "LOADING_EPISODES":
       return {
         label: t("setup.monitorWarmupLoadingEpisodes"),
         totalKnown: progress.episodeFetchTotalKnown,
         phaseProgress: progress.episodeFetchProgress,
       };
-    case "building_snapshot":
+    case "BUILDING_SNAPSHOT":
       return {
         label: t("setup.monitorWarmupBuildingSnapshot"),
         totalKnown: progress.snapshotBuildTotalKnown,
         phaseProgress: progress.snapshotBuildProgress,
       };
-    case "ready":
+    case "READY":
       return {
         label: t("setup.monitorWarmupReady"),
         totalKnown: progress.overallTotalKnown,
@@ -139,7 +139,7 @@ export function SetupSummaryView({
   const showWarmupCard = Boolean(
     isImportPath &&
       (monitorWarmupError ||
-        (monitorWarmupProgress && monitorWarmupProgress.status !== "completed")),
+        (monitorWarmupProgress && monitorWarmupProgress.status !== "COMPLETED")),
   );
   const warmupPercent =
     warmupPhaseState &&
@@ -203,9 +203,9 @@ export function SetupSummaryView({
               <p className="text-sm text-muted-foreground">
                 {monitorWarmupError
                   ? t("setup.monitorWarmupFailed")
-                  : monitorWarmupProgress?.status === "failed"
+                  : monitorWarmupProgress?.status === "FAILED"
                   ? t("setup.monitorWarmupFailed")
-                  : monitorWarmupProgress?.status === "canceled"
+                  : monitorWarmupProgress?.status === "CANCELED"
                     ? t("setup.monitorWarmupCanceled")
                     : t("setup.monitorWarmupDescription")}
               </p>

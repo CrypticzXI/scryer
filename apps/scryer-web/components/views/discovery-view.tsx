@@ -60,24 +60,24 @@ type DiscoveryViewProps = {
   onAction: (item: DiscoveryItem) => void;
 };
 
-type DiscoveryContentType = "movie" | "series" | "anime";
+type DiscoveryContentType = "MOVIE" | "SERIES" | "ANIME";
 
 const DISCOVERY_CONTENT_TYPES: DiscoveryContentType[] = [
-  "movie",
-  "series",
-  "anime",
+  "MOVIE",
+  "SERIES",
+  "ANIME",
 ];
 const DEFAULT_DISCOVERY_CONTENT_TYPES: DiscoveryContentType[] = [
-  "movie",
-  "series",
-  "anime",
+  "MOVIE",
+  "SERIES",
+  "ANIME",
 ];
 const DISCOVERY_FACET_PILL_CLASS: Record<DiscoveryContentType, string> = {
-  movie:
+  MOVIE:
     "bg-[linear-gradient(135deg,rgba(var(--scry-facet-movie-rgb),0.96),rgba(var(--scry-facet-movie-rgb),0.72))] text-white",
-  series:
+  SERIES:
     "bg-[linear-gradient(135deg,rgba(var(--scry-facet-series-rgb),0.96),rgba(var(--scry-facet-series-rgb),0.72))] text-white",
-  anime:
+  ANIME:
     "bg-[linear-gradient(135deg,rgba(var(--scry-facet-anime-rgb),0.96),rgba(var(--scry-facet-anime-rgb),0.72))] text-white",
 };
 const DEFAULT_MINIMUM_YEAR = 1900;
@@ -662,11 +662,11 @@ function normalizedDiscoveryContentType(
 ): DiscoveryContentType | null {
   switch (value?.trim().toLowerCase()) {
     case "anime":
-      return "anime";
+      return "ANIME";
     case "series":
-      return "series";
+      return "SERIES";
     case "movie":
-      return "movie";
+      return "MOVIE";
     default:
       return null;
   }
@@ -1072,8 +1072,8 @@ function DiscoveryHero({
     "anilist",
     "anidb",
   ].some((source) => externalIds.has(source));
-  const tmdbMediaType = facet === "movie" ? "movie" : "tv";
-  const tvdbKind = facet === "movie" ? "movie" : "series";
+  const tmdbMediaType = facet === "MOVIE" ? "movie" : "tv";
+  const tvdbKind = facet === "MOVIE" ? "movie" : "series";
   const statusLabel =
     item.statusTags
       .find((tag) => tag.trim().length > 0)
@@ -1193,7 +1193,7 @@ function DiscoveryHero({
               mediaType={tmdbMediaType}
               size="compact"
             />
-            {facet === "movie" ? (
+            {facet === "MOVIE" ? (
               <TvdbMovieExternalLink
                 tvdbId={externalIds.bySourceKind("tvdb", tvdbKind)}
                 size="compact"
@@ -1372,9 +1372,9 @@ function DiscoveryFilters({
   }> = DISCOVERY_CONTENT_TYPES.map((key) => ({
     key,
     label:
-      key === "movie"
+      key === "MOVIE"
         ? t("discovery.type.movies")
-        : key === "series"
+        : key === "SERIES"
           ? t("discovery.type.series")
           : t("discovery.type.anime"),
     count: contentTypeCount(contentTypeCountItems, key),

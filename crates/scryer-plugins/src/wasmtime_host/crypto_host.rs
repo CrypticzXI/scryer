@@ -48,9 +48,9 @@ pub(crate) fn add_to_linker<T: 'static>(linker: &mut Linker<T>) -> wasmtime::Res
         host_aes_cbc_decrypt::<T>,
     )?;
     linker.func_wrap(CRYPTO_HOST_NAMESPACE, "host_crc32", host_crc32::<T>)?;
-    // Transitional back-compat aliases: artifacts built against the pre-rename
-    // weaver-unrar ABI (≤0.2.0) import `scryer_*`. Remove once no shipped
-    // artifact does — see `abi_imports_match_frozen_contract`.
+    // Installed artifacts built against weaver-unrar <=0.2.x still import the
+    // pre-rename `scryer_*` names. Keep these aliases through the plugin upgrade
+    // compatibility window even though current artifacts use `host_*`.
     linker.func_wrap(
         CRYPTO_HOST_NAMESPACE,
         "scryer_aes_cbc_decrypt",
@@ -294,6 +294,15 @@ mod tests {
             (call $crc (local.get 0) (local.get 1) (local.get 2))))
     "#;
 
+    const LEGACY_CRYPTO_GUEST_WAT: &str = r#"
+        (module
+          (import "extism:host/user" "scryer_aes_cbc_decrypt"
+            (func (param i64 i64 i64 i64 i64) (result i64)))
+          (import "extism:host/user" "scryer_crc32"
+            (func (param i64 i64 i64) (result i64)))
+          (memory (export "memory") 1))
+    "#;
+
     fn crypto_guest() -> (Store<()>, wasmtime::Instance) {
         let engine = Engine::default();
         let module = Module::new(&engine, CRYPTO_GUEST_WAT).expect("compile crypto guest");
@@ -304,6 +313,19 @@ mod tests {
             .instantiate(&mut store, &module)
             .expect("instantiate crypto guest");
         (store, instance)
+    }
+
+    #[test]
+    fn legacy_crypto_import_aliases_still_instantiate() {
+        let engine = Engine::default();
+        let module = Module::new(&engine, LEGACY_CRYPTO_GUEST_WAT).expect("compile legacy guest");
+        let mut linker: Linker<()> = Linker::new(&engine);
+        add_to_linker(&mut linker).expect("register crypto host fns");
+        let mut store = Store::new(&engine, ());
+
+        linker
+            .instantiate(&mut store, &module)
+            .expect("legacy archive plugin imports remain compatible");
     }
 
     fn memory_of(store: &mut Store<()>, instance: &wasmtime::Instance) -> wasmtime::Memory {

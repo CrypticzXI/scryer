@@ -30,7 +30,7 @@ const DEFAULT_EXTERNAL_AUTH_RUNTIME_SETTINGS: ExternalAuthRuntimeSettings = {
 
 const DEFAULT_EXTERNAL_INVITE_DRAFT: ExternalInviteDraft = {
   userId: "",
-  provider: "jellyfin",
+  provider: "JELLYFIN",
   connectionId: "",
   providerUserIdentifier: "",
   providerUserId: "",

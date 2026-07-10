@@ -1,16 +1,16 @@
-export type WantedMediaType = "movie" | "episode" | "series_movie";
-export type WantedStatus = "wanted" | "grabbed" | "paused" | "completed";
-export type ConvergenceState = "queued" | "searching" | "converged" | "deferred";
-export type RecencyLane = "hot" | "cold";
-export type WantedKind = "missing" | "cutoff_upgrade";
+export type WantedMediaType = "MOVIE" | "EPISODE" | "SERIES_MOVIE";
+export type WantedStatus = "WANTED" | "GRABBED" | "PAUSED" | "COMPLETED";
+export type ConvergenceState = "QUEUED" | "SEARCHING" | "CONVERGED" | "DEFERRED";
+export type RecencyLane = "HOT" | "COLD";
+export type WantedKind = "MISSING" | "CUTOFF_UPGRADE";
 export type PendingReleaseStatus =
-  | "waiting"
-  | "standby"
-  | "processing"
-  | "grabbed"
-  | "superseded"
-  | "expired"
-  | "dismissed";
+  | "WAITING"
+  | "STANDBY"
+  | "PROCESSING"
+  | "GRABBED"
+  | "SUPERSEDED"
+  | "EXPIRED"
+  | "DISMISSED";
 
 export type WantedItem = {
   id: string;
@@ -47,7 +47,7 @@ export type WantedItem = {
 // (RFC 119 §7.3) — survives navigation/refresh, polled by id.
 export type AcquisitionSearchJob = {
   id: string;
-  state: "running" | "completed" | "cancelled" | "failed";
+  state: "RUNNING" | "COMPLETED" | "CANCELLED" | "FAILED";
   total: number;
   processed: number;
   grabbedCount: number;

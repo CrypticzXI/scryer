@@ -137,7 +137,7 @@ export function SettingsUsersContainer() {
   const refreshLibraries = useCallback(async () => {
     try {
       const { data, error } = await client
-        .query(librariesQuery, { facet: null, permission: "view" })
+        .query(librariesQuery, { facet: null, permission: "VIEW" })
         .toPromise();
       if (error) throw error;
       setLibraries((data?.libraries ?? []) as LibraryRecord[]);

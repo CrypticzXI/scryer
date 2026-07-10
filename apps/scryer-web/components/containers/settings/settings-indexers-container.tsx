@@ -89,7 +89,7 @@ function serializeConfigValues(
 
   const fieldKeySet = new Set(fields.map((field) => field.key));
   const secretInputKeys = fields
-    .filter((field) => field.fieldType === "password")
+    .filter((field) => field.fieldType === "PASSWORD")
     .map((field) => field.key);
   for (const [key, value] of Object.entries(configValues)) {
     if (!fieldKeySet.has(key) && value.trim() !== "") {
@@ -98,22 +98,22 @@ function serializeConfigValues(
   }
 
   for (const field of fields) {
-    if (field.valueSource === "host_binding") {
+    if (field.valueSource === "HOST_BINDING") {
       continue;
     }
 
     const isStoredSecret =
-      field.fieldType === "password" && storedSecretKeySet.has(field.key);
+      field.fieldType === "PASSWORD" && storedSecretKeySet.has(field.key);
     let nextValue =
       configValues[field.key] ??
       field.defaultValue ??
-      (field.fieldType === "bool" ? "false" : "");
+      (field.fieldType === "BOOL" ? "false" : "");
 
     if (isStoredSecret && nextValue.trim() === "") {
       continue;
     }
 
-    if (field.fieldType === "bool") {
+    if (field.fieldType === "BOOL") {
       entries[field.key] = nextValue.trim() || field.defaultValue || "false";
       continue;
     }
@@ -144,11 +144,11 @@ function buildDraftConfigValues(
   const nextValues = { ...parsedConfigValues };
   const storedSecretKeySet = new Set(storedSecretKeys);
   for (const field of fields) {
-    if (field.valueSource === "host_binding") {
+    if (field.valueSource === "HOST_BINDING") {
       continue;
     }
 
-    if (field.fieldType === "password" && storedSecretKeySet.has(field.key)) {
+    if (field.fieldType === "PASSWORD" && storedSecretKeySet.has(field.key)) {
       nextValues[field.key] = "";
       continue;
     }
@@ -156,7 +156,7 @@ function buildDraftConfigValues(
     nextValues[field.key] =
       parsedConfigValues[field.key] ??
       field.defaultValue ??
-      (field.fieldType === "bool" ? "false" : "");
+      (field.fieldType === "BOOL" ? "false" : "");
   }
 
   return nextValues;
@@ -169,24 +169,24 @@ function findMissingRequiredConfigField(
 ): ConfigFieldDef | null {
   const storedSecretKeySet = new Set(storedSecretKeys);
   for (const field of fields) {
-    if (!field.required || field.valueSource === "host_binding") {
+    if (!field.required || field.valueSource === "HOST_BINDING") {
       continue;
     }
 
     const nextValue =
       configValues[field.key] ??
       field.defaultValue ??
-      (field.fieldType === "bool" ? "false" : "");
+      (field.fieldType === "BOOL" ? "false" : "");
 
     if (
-      field.fieldType === "password" &&
+      field.fieldType === "PASSWORD" &&
       storedSecretKeySet.has(field.key) &&
       nextValue.trim() === ""
     ) {
       continue;
     }
 
-    if (field.fieldType !== "bool" && nextValue.trim() === "") {
+    if (field.fieldType !== "BOOL" && nextValue.trim() === "") {
       return field;
     }
   }
@@ -901,7 +901,7 @@ export function SettingsIndexersContainer({
       {pluginsTarget
         ? createPortal(
             <FilteredPluginList
-              family="indexer"
+              family="INDEXER"
               refreshProviderOptions={refreshProviderTypes}
             />,
             pluginsTarget,

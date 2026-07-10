@@ -17,19 +17,19 @@ export interface FacetStyle {
 }
 
 const FACET_STYLES: Record<WizardFacet, FacetStyle> = {
-  movie: {
+  MOVIE: {
     dot: "var(--scry-facet-movie)",
     bg: "var(--scry-facet-movie-bg)",
     border: "var(--scry-facet-movie-border)",
     text: "var(--scry-facet-movie-text)",
   },
-  series: {
+  SERIES: {
     dot: "var(--scry-facet-series)",
     bg: "var(--scry-facet-series-bg)",
     border: "var(--scry-facet-series-border)",
     text: "var(--scry-facet-series-text)",
   },
-  anime: {
+  ANIME: {
     dot: "var(--scry-facet-anime)",
     bg: "var(--scry-facet-anime-bg)",
     border: "var(--scry-facet-anime-border)",
@@ -54,11 +54,11 @@ export function facetPillStyle(facet: WizardFacet): CSSProperties {
 /** i18n key for a facet's display label. */
 export function facetLabelKey(facet: WizardFacet): string {
   switch (facet) {
-    case "movie":
+    case "MOVIE":
       return "setup.facetMovies";
-    case "series":
+    case "SERIES":
       return "setup.facetSeries";
-    case "anime":
+    case "ANIME":
       return "setup.facetAnime";
   }
 }

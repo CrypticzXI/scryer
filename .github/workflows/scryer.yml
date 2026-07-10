@@ -605,7 +605,7 @@ jobs:
       - name: Package tarball
         run: |
           tar -czf ${{ matrix.artifact_name }}.tar.gz -C "target/${{ matrix.target }}/${SCRYER_CARGO_PROFILE}" scryer
-          tar -czf scryer-linux-${{ matrix.arch }}-docker-cpu.tar.gz -C docker-cpu scryer
+          tar -czf docker-scryer-linux-${{ matrix.arch }}-cpu.tar.gz -C docker-cpu scryer
 
       - name: Show sccache stats
         if: always()
@@ -627,7 +627,7 @@ jobs:
             ${{ matrix.artifact_name }}-build.log
             ${{ matrix.artifact_name }}-docker-build.log
             ${{ matrix.artifact_name }}-sccache-stats.txt
-            scryer-linux-${{ matrix.arch }}-docker-cpu.tar.gz
+            docker-scryer-linux-${{ matrix.arch }}-cpu.tar.gz
           if-no-files-found: error
           retention-days: 14
 

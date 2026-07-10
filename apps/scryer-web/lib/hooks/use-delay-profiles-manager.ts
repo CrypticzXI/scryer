@@ -21,10 +21,10 @@ type DelayProfilePayload = {
   name: string;
   usenetDelayMinutes: number;
   torrentDelayMinutes: number;
-  preferredProtocol: "usenet" | "torrent";
+  preferredProtocol: "USENET" | "TORRENT";
   minAgeMinutes: number;
   bypassScoreThreshold?: number | null;
-  appliesToFacets: Array<"movie" | "series" | "anime">;
+  appliesToFacets: Array<"MOVIE" | "SERIES" | "ANIME">;
   tags: string[];
   priority: number;
   enabled: boolean;

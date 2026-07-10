@@ -88,7 +88,7 @@ export function TitleHistoryContainer({
     void client
       .query(
         librariesQuery,
-        { facet: null, permission: "view" },
+        { facet: null, permission: "VIEW" },
         { requestPolicy: "network-only" },
       )
       .toPromise()

@@ -46,15 +46,15 @@ function isMissingRequiredField(
   field: ConfigFieldDef,
   configValues: Record<string, string>,
 ) {
-  if (!field.required || field.valueSource === "host_binding") {
+  if (!field.required || field.valueSource === "HOST_BINDING") {
     return false;
   }
 
   const value =
     configValues[field.key] ??
     field.defaultValue ??
-    (field.fieldType === "bool" ? "false" : "");
-  return field.fieldType !== "bool" && value.trim() === "";
+    (field.fieldType === "BOOL" ? "false" : "");
+  return field.fieldType !== "BOOL" && value.trim() === "";
 }
 
 function DynamicConfigField({
@@ -75,7 +75,7 @@ function DynamicConfigField({
     </span>
   ) : null;
 
-  if (field.fieldType === "bool") {
+  if (field.fieldType === "BOOL") {
     return (
       <label className="flex items-center gap-2">
         <Checkbox
@@ -98,7 +98,7 @@ function DynamicConfigField({
     );
   }
 
-  if (field.fieldType === "select" && field.options.length > 0) {
+  if (field.fieldType === "SELECT" && field.options.length > 0) {
     return (
       <label className="space-y-2">
         <Label className="inline-flex items-center gap-2" htmlFor={fieldId}>
@@ -127,7 +127,7 @@ function DynamicConfigField({
     );
   }
 
-  if (field.fieldType === "multiline") {
+  if (field.fieldType === "MULTILINE") {
     return (
       <label className="space-y-2">
         <Label className="inline-flex items-center gap-2" htmlFor={fieldId}>
@@ -159,17 +159,17 @@ function DynamicConfigField({
         id={fieldId}
         value={value}
         onChange={(event) => onChange(field.key, event.target.value)}
-        {...(field.fieldType === "number" ? signedIntegerInputProps : {})}
+        {...(field.fieldType === "NUMBER" ? signedIntegerInputProps : {})}
         type={
-          field.fieldType === "password"
+          field.fieldType === "PASSWORD"
             ? "password"
-            : field.fieldType === "number"
+            : field.fieldType === "NUMBER"
               ? "number"
               : "text"
         }
         required={field.required}
         placeholder={
-          field.fieldType === "password"
+          field.fieldType === "PASSWORD"
             ? t("form.apiKeyInputPlaceholder")
             : field.defaultValue ?? ""
         }
@@ -204,7 +204,7 @@ export function SetupIndexerView({
   const selectedProviderFields = visibleIndexerConfigFields(
     providerType,
     (selectedProvider?.configFields ?? []).filter(
-      (field) => field.valueSource !== "host_binding",
+      (field) => field.valueSource !== "HOST_BINDING",
     ),
   );
   const hasMissingRequiredField = selectedProviderFields.some((field) =>
@@ -259,7 +259,7 @@ export function SetupIndexerView({
           </Select>
         </div>
         {selectedProviderFields
-          .filter((field) => field.fieldType !== "bool")
+          .filter((field) => field.fieldType !== "BOOL")
           .map((field) => (
             <DynamicConfigField
               key={field.key}
@@ -273,10 +273,10 @@ export function SetupIndexerView({
               onChange={onConfigValueChange}
             />
           ))}
-        {selectedProviderFields.some((field) => field.fieldType === "bool") ? (
+        {selectedProviderFields.some((field) => field.fieldType === "BOOL") ? (
           <div className="flex flex-wrap items-center gap-4">
             {selectedProviderFields
-              .filter((field) => field.fieldType === "bool")
+              .filter((field) => field.fieldType === "BOOL")
               .map((field) => (
                 <DynamicConfigField
                   key={field.key}

@@ -9,7 +9,7 @@ import { useTranslate } from "@/lib/context/translate-context";
 import type { LibraryRecord } from "@/lib/types";
 import { normalizeLibraryFilterSelection } from "@/lib/utils/library-filter";
 
-const FACET_ORDER: LibraryRecord["facet"][] = ["movie", "series", "anime"];
+const FACET_ORDER: LibraryRecord["facet"][] = ["MOVIE", "SERIES", "ANIME"];
 const MAX_INLINE_LIBRARY_LABELS = 2;
 
 type LibraryMultiSelectProps = {

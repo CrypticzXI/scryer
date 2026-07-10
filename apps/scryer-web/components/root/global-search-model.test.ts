@@ -69,25 +69,25 @@ function metadata(name: string): MetadataTvdbSearchItem {
 test("buildCatalogSearchSections buckets by facet and ranks query matches", () => {
   const sections = buildCatalogSearchSections(
     [
-      title("m3", "The Green Mile", "movie"),
-      title("a1", "Green Green", "anime"),
-      title("m2", "Green Zone", "movie"),
-      title("m1", "Green", "movie"),
-      title("s1", "Greenleaf", "series"),
+      title("m3", "The Green Mile", "MOVIE"),
+      title("a1", "Green Green", "ANIME"),
+      title("m2", "Green Zone", "MOVIE"),
+      title("m1", "Green", "MOVIE"),
+      title("s1", "Greenleaf", "SERIES"),
     ],
     "green",
   );
 
   assert.deepEqual(
-    sections.movie.map((entry) => entry.id),
+    sections.MOVIE.map((entry) => entry.id),
     ["m1", "m2", "m3"],
   );
   assert.deepEqual(
-    sections.series.map((entry) => entry.id),
+    sections.SERIES.map((entry) => entry.id),
     ["s1"],
   );
   assert.deepEqual(
-    sections.anime.map((entry) => entry.id),
+    sections.ANIME.map((entry) => entry.id),
     ["a1"],
   );
 });
@@ -95,10 +95,10 @@ test("buildCatalogSearchSections buckets by facet and ranks query matches", () =
 test("getVisibleCatalogResults interleaves all-tab library results and preserves type tabs", () => {
   const sections = buildCatalogSearchSections(
     [
-      title("m1", "Movie One", "movie"),
-      title("m2", "Movie Two", "movie"),
-      title("s1", "Series One", "series"),
-      title("a1", "Anime One", "anime"),
+      title("m1", "Movie One", "MOVIE"),
+      title("m2", "Movie Two", "MOVIE"),
+      title("s1", "Series One", "SERIES"),
+      title("a1", "Anime One", "ANIME"),
     ],
     "",
   );
@@ -118,10 +118,10 @@ test("getVisibleCatalogResults interleaves all-tab library results and preserves
   assert.equal(countHiddenCatalogResults("all", 4, allRows), 0);
 
   const movieRows = getVisibleCatalogResults({
-    activeTab: "movie",
+    activeTab: "MOVIE",
     canViewCatalog: true,
     catalogSearchSections: sections,
-    visibleCatalogFacets: getVisibleCatalogFacets("movie", true),
+    visibleCatalogFacets: getVisibleCatalogFacets("MOVIE", true),
     allLimit: 1,
   });
 
@@ -129,40 +129,40 @@ test("getVisibleCatalogResults interleaves all-tab library results and preserves
     movieRows.map(({ facet, title: entry }) => `${facet}:${entry.id}`),
     ["movie:m1", "movie:m2"],
   );
-  assert.equal(countHiddenCatalogResults("movie", 2, movieRows), 0);
+  assert.equal(countHiddenCatalogResults("MOVIE", 2, movieRows), 0);
 });
 
 test("global search filter selection is additive with All as clear", () => {
   const tabs = buildGlobalSearchTabs({
     canViewCatalog: true,
     catalogSearchSections: {
-      movie: [],
-      series: [],
-      anime: [],
+      MOVIE: [],
+      SERIES: [],
+      ANIME: [],
     },
     metadataResultCount: 0,
-    metadataResultCounts: { movie: 0, series: 0, anime: 0 },
+    metadataResultCounts: { MOVIE: 0, SERIES: 0, ANIME: 0 },
     routeCommandResultCount: 2,
     visibleCatalogResultCount: 0,
     t,
   });
 
-  let selected = toggleGlobalSearchFilterSelection([], "movie", tabs);
+  let selected = toggleGlobalSearchFilterSelection([], "MOVIE", tabs);
   selected = toggleGlobalSearchFilterSelection(selected, "actions", tabs);
 
   assert.deepEqual(selected, ["movie", "actions"]);
   assert.equal(isGlobalSearchFilterSelected(selected, "all"), false);
-  assert.equal(isGlobalSearchFilterSelected(selected, "movie"), true);
+  assert.equal(isGlobalSearchFilterSelected(selected, "MOVIE"), true);
   assert.equal(isGlobalSearchFilterSelected(selected, "actions"), true);
 
-  selected = toggleGlobalSearchFilterSelection(selected, "movie", tabs);
+  selected = toggleGlobalSearchFilterSelection(selected, "MOVIE", tabs);
   assert.deepEqual(selected, ["actions"]);
   assert.deepEqual(toggleGlobalSearchFilterSelection(selected, "all", tabs), []);
 
   assert.deepEqual(
-    normalizeGlobalSearchFilterSelection(["movie", "actions"], [
+    normalizeGlobalSearchFilterSelection(["MOVIE", "actions"], [
       { key: "all", label: "All", count: 0 },
-      { key: "movie", label: "Movies", count: 0 },
+      { key: "MOVIE", label: "Movies", count: 0 },
     ]),
     ["movie"],
   );
@@ -171,20 +171,20 @@ test("global search filter selection is additive with All as clear", () => {
 test("selection-aware catalog results add selected filters", () => {
   const sections = buildCatalogSearchSections(
     [
-      title("m1", "Movie One", "movie"),
-      title("m2", "Movie Two", "movie"),
-      title("s1", "Series One", "series"),
-      title("a1", "Anime One", "anime"),
+      title("m1", "Movie One", "MOVIE"),
+      title("m2", "Movie Two", "MOVIE"),
+      title("s1", "Series One", "SERIES"),
+      title("a1", "Anime One", "ANIME"),
     ],
     "",
   );
 
   const movieSeriesFacets = getVisibleCatalogFacetsForFilters(
-    ["movie", "series"],
+    ["MOVIE", "SERIES"],
     true,
   );
   const selectedRows = getVisibleCatalogResultsForFilters({
-    selectedFilters: ["movie", "series"],
+    selectedFilters: ["MOVIE", "SERIES"],
     canViewCatalog: true,
     catalogSearchSections: sections,
     visibleCatalogFacets: movieSeriesFacets,
@@ -197,7 +197,7 @@ test("selection-aware catalog results add selected filters", () => {
   );
   assert.equal(
     countHiddenCatalogResultsForFilters(
-      ["movie", "series"],
+      ["MOVIE", "SERIES"],
       3,
       selectedRows,
     ),
@@ -243,7 +243,7 @@ test("getVisibleRouteCommandResults previews commands in All and shows all comma
     ),
     commands.map((command) => command.id),
   );
-  assert.deepEqual(getVisibleRouteCommandResults("movie", commands), []);
+  assert.deepEqual(getVisibleRouteCommandResults("MOVIE", commands), []);
 
   const allPreview = getVisibleRouteCommandResults("all", commands);
   assert.equal(
@@ -271,18 +271,18 @@ test("getVisibleRouteCommandResults previews commands in All and shows all comma
     0,
   );
   assert.equal(
-    countHiddenRouteCommandResults("movie", commands, []),
+    countHiddenRouteCommandResults("MOVIE", commands, []),
     0,
   );
   assert.deepEqual(
-    getVisibleRouteCommandResultsForFilters(["movie", "actions"], commands).map(
+    getVisibleRouteCommandResultsForFilters(["MOVIE", "actions"], commands).map(
       (command) => command.id,
     ),
     commands.map((command) => command.id),
   );
   assert.equal(
     countHiddenRouteCommandResultsForFilters(
-      ["movie", "actions"],
+      ["MOVIE", "actions"],
       commands,
       commands,
     ),
@@ -329,7 +329,7 @@ test("getVisibleMetadataResults previews rails in All and expands type tabs", ()
     getVisibleMetadataResults("all", results),
     results.slice(0, GLOBAL_SEARCH_ALL_METADATA_RESULT_LIMIT),
   );
-  assert.deepEqual(getVisibleMetadataResults("movie", results), results);
+  assert.deepEqual(getVisibleMetadataResults("MOVIE", results), results);
   assert.deepEqual(getVisibleMetadataResults("library", results), []);
   assert.deepEqual(getVisibleMetadataResults("actions", results), []);
 
@@ -339,23 +339,23 @@ test("getVisibleMetadataResults previews rails in All and expands type tabs", ()
     results.length - GLOBAL_SEARCH_ALL_METADATA_RESULT_LIMIT,
   );
   assert.equal(
-    countHiddenMetadataResults("series", results, results),
+    countHiddenMetadataResults("SERIES", results, results),
     0,
   );
   assert.deepEqual(
-    getVisibleMetadataResultsForFilters(["movie", "series"], results),
+    getVisibleMetadataResultsForFilters(["MOVIE", "SERIES"], results),
     results,
   );
   assert.deepEqual(getVisibleMetadataResultsForFilters(["library"], results), []);
   assert.equal(
-    countHiddenMetadataResultsForFilters(["movie"], results, results),
+    countHiddenMetadataResultsForFilters(["MOVIE"], results, results),
     0,
   );
 });
 
 test("buildGlobalSearchTabs keeps catalog, metadata, and route command counts aligned", () => {
   const catalogSearchSections = buildCatalogSearchSections(
-    [title("m1", "Movie One", "movie"), title("s1", "Series One", "series")],
+    [title("m1", "Movie One", "MOVIE"), title("s1", "Series One", "SERIES")],
     "",
   );
   const metadataResultCounts = buildMetadataResultCounts({
@@ -394,7 +394,7 @@ test("buildGlobalSearchTabs keeps catalog, metadata, and route command counts al
 
 test("buildGlobalSearchTabs hides the actions tab when no commands match", () => {
   const catalogSearchSections = buildCatalogSearchSections(
-    [title("m1", "Movie One", "movie")],
+    [title("m1", "Movie One", "MOVIE")],
     "",
   );
   const metadataResultCounts = buildMetadataResultCounts({

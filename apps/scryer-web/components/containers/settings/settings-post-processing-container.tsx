@@ -66,7 +66,7 @@ const INITIAL_DRAFT: PPScriptDraft = {
   scriptType: "inline",
   scriptContent: "",
   appliedFacets: [],
-  executionMode: "blocking",
+  executionMode: "BLOCKING",
   timeoutSecs: 300,
   priority: 0,
   debug: true,

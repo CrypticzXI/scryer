@@ -7,11 +7,11 @@ export function normalizedDiscoveryItemFacet(
 ): Facet | null {
   switch (value?.trim().toLowerCase()) {
     case "anime":
-      return "anime";
+      return "ANIME";
     case "series":
-      return "series";
+      return "SERIES";
     case "movie":
-      return "movie";
+      return "MOVIE";
     default:
       return null;
   }

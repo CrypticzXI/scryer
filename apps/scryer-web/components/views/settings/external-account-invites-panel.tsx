@@ -99,9 +99,9 @@ type ExternalAccountInvitesPanelProps = {
 
 function providerLabel(provider: ExternalAccountProvider): string {
   switch (provider) {
-    case "plex":
+    case "PLEX":
       return "Plex";
-    case "jellyfin":
+    case "JELLYFIN":
       return "Jellyfin";
     default:
       return provider;
@@ -134,7 +134,7 @@ function inviteConnectionLabel(
     return providerConnectionLabel(connection);
   }
 
-  return invite.provider === "jellyfin"
+  return invite.provider === "JELLYFIN"
     ? providerLabel(invite.provider)
     : invite.connectionId;
 }
@@ -214,7 +214,7 @@ function MediaServerUserCombobox({
     () =>
       groups
         .map((group) => {
-          if (group.status !== "ready" || !normalizedValue) {
+          if (group.status !== "READY" || !normalizedValue) {
             return group;
           }
 
@@ -236,7 +236,7 @@ function MediaServerUserCombobox({
         })
         .filter(
           (group) =>
-            group.status !== "ready" ||
+            group.status !== "READY" ||
             group.users.length > 0 ||
             !normalizedValue,
         ),
@@ -317,7 +317,7 @@ function MediaServerUserCombobox({
                 key={group.connectionId}
                 heading={mediaServerUserGroupLabel(group)}
               >
-                {group.status !== "ready" ? (
+                {group.status !== "READY" ? (
                   <div
                     id={selectorId(
                       "settings-external-invite-media-server-user-group-status",
@@ -393,7 +393,7 @@ function inviteStatus(
   account: LinkedAccount,
   t: ReturnType<typeof useTranslate>,
 ) {
-  if (account.status === "disabled") {
+  if (account.status === "DISABLED") {
     return {
       label: t("settings.externalAccountInviteStatusDisabled"),
       className: "border-destructive/40 bg-destructive/10 text-destructive",
@@ -408,7 +408,7 @@ function inviteStatus(
     };
   }
 
-  if (account.status === "pending_claim") {
+  if (account.status === "PENDING_CLAIM") {
     return {
       label: t("settings.externalAccountInviteStatusPending"),
       className:

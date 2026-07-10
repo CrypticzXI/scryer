@@ -35,7 +35,7 @@ import type {
 
 // ── Wizard-internal model ───────────────────────────────────────────────────
 
-export type WizardFacet = "movie" | "series" | "anime";
+export type WizardFacet = "MOVIE" | "SERIES" | "ANIME";
 export type ImportArrKind = ExternalArrSourceKind; // "sonarr" | "radarr"
 export type ImportInstanceKind = ExternalImportConnectionKind; // + "prowlarr"
 export type ImportInstanceStatus = "idle" | "testing" | "connected" | "error";
@@ -88,16 +88,16 @@ export interface ImportLibraryDraft {
 }
 
 export type ScoringPersonaValue =
-  | "balanced"
-  | "audiophile"
-  | "efficient"
-  | "compatible";
+  | "BALANCED"
+  | "AUDIOPHILE"
+  | "EFFICIENT"
+  | "COMPATIBLE";
 
 export const SCORING_PERSONA_VALUES: readonly ScoringPersonaValue[] = [
-  "balanced",
-  "audiophile",
-  "efficient",
-  "compatible",
+  "BALANCED",
+  "AUDIOPHILE",
+  "EFFICIENT",
+  "COMPATIBLE",
 ];
 
 export interface QualityProfileOption {
@@ -118,12 +118,12 @@ export function isRootRemapped(root: ImportRoot): boolean {
 
 export function facetsForKind(kind: ImportRoot["kind"]): WizardFacet[] {
   switch (kind) {
-    case "radarr":
-      return ["movie"];
-    case "sonarr":
-      return ["series", "anime"];
+    case "RADARR":
+      return ["MOVIE"];
+    case "SONARR":
+      return ["SERIES", "ANIME"];
     default:
-      return ["movie", "series", "anime"]; // manual roots fit any library
+      return ["MOVIE", "SERIES", "ANIME"]; // manual roots fit any library
   }
 }
 
@@ -167,7 +167,7 @@ function rootIdFor(
 }
 
 function arrKindOf(kind: ImportInstanceKind): ImportArrKind | null {
-  return kind === "sonarr" || kind === "radarr" ? kind : null;
+  return kind === "SONARR" || kind === "RADARR" ? kind : null;
 }
 
 function gqlError(error: unknown): string {
@@ -267,11 +267,11 @@ export function useExternalImportSetup({ client }: UseExternalImportSetupArgs) {
   const createdLibrariesRef = useRef<Map<string, string>>(new Map());
 
   const arrInstances = useMemo(
-    () => instances.filter((inst) => inst.kind !== "prowlarr"),
+    () => instances.filter((inst) => inst.kind !== "PROWLARR"),
     [instances],
   );
   const prowlarrInstance = useMemo(
-    () => instances.find((inst) => inst.kind === "prowlarr") ?? null,
+    () => instances.find((inst) => inst.kind === "PROWLARR") ?? null,
     [instances],
   );
 
@@ -726,7 +726,7 @@ export function useExternalImportSetup({ client }: UseExternalImportSetupArgs) {
         facet,
         name: name?.trim() || defaultLibraryName(facet, prev),
         qualityProfileId: null,
-        scoringPersona: "balanced",
+        scoringPersona: "BALANCED",
         existingLibraryId: null,
         isDefault: false,
       },
@@ -1118,7 +1118,7 @@ export function useExternalImportSetup({ client }: UseExternalImportSetupArgs) {
     if (connectedArrSessionIds.length === 0) {
       setAggregateProgressError(null);
       setAggregateProgress({
-        status: "completed",
+        status: "COMPLETED",
         titlesTotalKnown: true,
         titlesFetched: 0,
         titlesTotal: 0,
@@ -1147,12 +1147,12 @@ export function useExternalImportSetup({ client }: UseExternalImportSetupArgs) {
     }
   }, [client, connectedArrSessionIds]);
 
-  const warmupComplete = aggregateProgress?.status === "completed";
+  const warmupComplete = aggregateProgress?.status === "COMPLETED";
   // The warmup failed (backend reported failed/canceled, or the progress query
   // itself errored with no live progress to fall back on).
   const warmupFailed =
-    aggregateProgress?.status === "failed" ||
-    aggregateProgress?.status === "canceled" ||
+    aggregateProgress?.status === "FAILED" ||
+    aggregateProgress?.status === "CANCELED" ||
     (aggregateProgressError !== null && aggregateProgress === null);
   // Terminal either way — used to stop the Summary poll loop.
   const warmupSettled = warmupComplete || warmupFailed;
@@ -1449,10 +1449,10 @@ export function useExternalImportSetup({ client }: UseExternalImportSetupArgs) {
     const mappedRoots = roots.filter((root) => assign[root.id]);
     const remappedRoots = roots.filter((root) => isRootRemapped(root));
     const sonarrCount = arrInstances.filter(
-      (inst) => inst.kind === "sonarr" && inst.status === "connected",
+      (inst) => inst.kind === "SONARR" && inst.status === "connected",
     ).length;
     const radarrCount = arrInstances.filter(
-      (inst) => inst.kind === "radarr" && inst.status === "connected",
+      (inst) => inst.kind === "RADARR" && inst.status === "connected",
     ).length;
     const selectedDcCount = preview
       ? preview.downloadClients.filter((dc) => selectedDcKeys.has(dc.dedupKey))
@@ -1512,9 +1512,9 @@ export function useExternalImportSetup({ client }: UseExternalImportSetupArgs) {
       sources.length > 0 &&
       sources.every(
         (s) =>
-          s.status === "completed" ||
-          s.status === "failed" ||
-          s.status === "canceled",
+          s.status === "COMPLETED" ||
+          s.status === "FAILED" ||
+          s.status === "CANCELED",
       )
     );
   }, [preview, connectedArrSessionIds]);
@@ -1679,22 +1679,22 @@ function defaultLibraryName(
   existing: ImportLibraryDraft[],
 ): string {
   const base =
-    facet === "movie" ? "Movies" : facet === "series" ? "Series" : "Anime";
+    facet === "MOVIE" ? "Movies" : facet === "SERIES" ? "Series" : "Anime";
   const sameFacet = existing.filter((lib) => lib.facet === facet).length;
   return sameFacet === 0 ? base : `${base} ${sameFacet + 1}`;
 }
 
 /** The three per-facet default libraries the board always starts with. */
 function defaultLibraryDrafts(): ImportLibraryDraft[] {
-  const facets: WizardFacet[] = ["movie", "series", "anime"];
+  const facets: WizardFacet[] = ["MOVIE", "SERIES", "ANIME"];
   return facets.map((facet) => {
     const id = `${facet}_default_library`;
     return {
       id,
       facet,
-      name: facet === "movie" ? "Movies" : facet === "series" ? "Series" : "Anime",
+      name: facet === "MOVIE" ? "Movies" : facet === "SERIES" ? "Series" : "Anime",
       qualityProfileId: null,
-      scoringPersona: "balanced",
+      scoringPersona: "BALANCED",
       existingLibraryId: id,
       isDefault: true,
     };

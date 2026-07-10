@@ -243,7 +243,7 @@ function DynamicConfigField({
     </span>
   ) : null;
 
-  if (field.fieldType === "bool") {
+  if (field.fieldType === "BOOL") {
     return (
       <CheckboxField
         id={fieldId}
@@ -260,7 +260,7 @@ function DynamicConfigField({
     );
   }
 
-  if (field.fieldType === "select" && field.options.length > 0) {
+  if (field.fieldType === "SELECT" && field.options.length > 0) {
     return (
       <label>
         <Label className="mb-2 inline-flex items-center gap-2" htmlFor={fieldId}>
@@ -289,7 +289,7 @@ function DynamicConfigField({
     );
   }
 
-  if (field.fieldType === "multiline") {
+  if (field.fieldType === "MULTILINE") {
     return (
       <label>
         <Label className="mb-2 inline-flex items-center gap-2" htmlFor={fieldId}>
@@ -321,11 +321,11 @@ function DynamicConfigField({
         id={fieldId}
         value={value}
         onChange={(e) => onChange(field.key, e.target.value)}
-        {...(field.fieldType === "number" ? signedIntegerInputProps : {})}
+        {...(field.fieldType === "NUMBER" ? signedIntegerInputProps : {})}
         type={
-          field.fieldType === "password"
+          field.fieldType === "PASSWORD"
             ? "password"
-            : field.fieldType === "number"
+            : field.fieldType === "NUMBER"
               ? "number"
               : "text"
         }
@@ -452,7 +452,7 @@ export function SettingsIndexersSection({
       visibleIndexerConfigFields(
         normalizedProviderType,
         (selectedProvider?.configFields ?? []).filter(
-          (field) => field.valueSource !== "host_binding",
+          (field) => field.valueSource !== "HOST_BINDING",
         ),
       ),
     [normalizedProviderType, selectedProvider],
@@ -482,11 +482,11 @@ export function SettingsIndexersSection({
           prev.name === (previousProvider?.name ?? prev.providerType);
         const nextConfigValues: Record<string, string> = {};
         for (const field of nextProvider?.configFields ?? []) {
-          if (field.valueSource === "host_binding") {
+          if (field.valueSource === "HOST_BINDING") {
             continue;
           }
           nextConfigValues[field.key] =
-            field.defaultValue ?? (field.fieldType === "bool" ? "false" : "");
+            field.defaultValue ?? (field.fieldType === "BOOL" ? "false" : "");
         }
         return {
           ...prev,
@@ -1056,7 +1056,7 @@ export function SettingsIndexersSection({
                 </Label>
                 <div className="grid gap-3 md:grid-cols-3">
                   {selectedProviderFields
-                    .filter((f) => f.fieldType !== "bool")
+                    .filter((f) => f.fieldType !== "BOOL")
                     .map((field) => (
                       <DynamicConfigField
                         key={field.key}
@@ -1073,10 +1073,10 @@ export function SettingsIndexersSection({
                       />
                     ))}
                 </div>
-                {selectedProviderFields.some((f) => f.fieldType === "bool") ? (
+                {selectedProviderFields.some((f) => f.fieldType === "BOOL") ? (
                   <div className="flex items-center gap-6">
                     {selectedProviderFields
-                      .filter((f) => f.fieldType === "bool")
+                      .filter((f) => f.fieldType === "BOOL")
                       .map((field) => (
                         <DynamicConfigField
                           key={field.key}

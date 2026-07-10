@@ -1,6 +1,6 @@
-export type DelayProfileProtocol = "usenet" | "torrent";
+export type DelayProfileProtocol = "USENET" | "TORRENT";
 
-export type DelayProfileFacet = "movie" | "series" | "anime";
+export type DelayProfileFacet = "MOVIE" | "SERIES" | "ANIME";
 
 export type DelayProfileDraft = {
   id: string;

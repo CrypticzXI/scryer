@@ -66,10 +66,10 @@ function buildDefaultDraft(
     libraryId: defaultLibraryId,
     qualityProfileId: defaultQualityProfileId,
     rootFolderId: defaultRootFolderId,
-    seasonFolder: facet !== "movie",
+    seasonFolder: facet !== "MOVIE",
     monitorType: defaultMonitorTypeForFacet(facet),
-    ...(facet === "movie" ? { minAvailability: "announced" } : {}),
-    ...(facet === "anime"
+    ...(facet === "MOVIE" ? { minAvailability: "announced" } : {}),
+    ...(facet === "ANIME"
       ? {
           monitorSpecials: false,
           interSeasonMovies: true,
@@ -195,19 +195,19 @@ export function AddToCatalogDialog({
   );
 
   const monitorOptions: Array<{ value: MetadataCatalogMonitorType; label: string }> =
-    facet === "movie"
+    facet === "MOVIE"
       ? [
-          { value: "monitored", label: t("search.monitorType.monitored") },
-          { value: "unmonitored", label: t("search.monitorType.unmonitored") },
+          { value: "MONITORED", label: t("search.monitorType.monitored") },
+          { value: "UNMONITORED", label: t("search.monitorType.unmonitored") },
         ]
       : [
-          { value: "futureEpisodes", label: t("search.monitorType.futureEpisodes") },
+          { value: "FUTURE_EPISODES", label: t("search.monitorType.futureEpisodes") },
           {
-            value: "missingAndFutureEpisodes",
+            value: "MISSING_AND_FUTURE_EPISODES",
             label: t("search.monitorType.missingAndFutureEpisodes"),
           },
-          { value: "allEpisodes", label: t("search.monitorType.allEpisodes") },
-          { value: "none", label: t("search.monitorType.none") },
+          { value: "ALL_EPISODES", label: t("search.monitorType.allEpisodes") },
+          { value: "NONE", label: t("search.monitorType.none") },
         ];
 
   return (
@@ -307,7 +307,7 @@ export function AddToCatalogDialog({
           ) : null}
 
           {/* Season Folder — series + anime */}
-          {facet !== "movie" ? (
+          {facet !== "MOVIE" ? (
             <label className="space-y-1">
               <span className="block text-xs font-medium text-card-foreground">
                 {t("search.addConfigSeasonFolder")}
@@ -332,13 +332,13 @@ export function AddToCatalogDialog({
           ) : null}
 
           {/* Monitored checkbox — movie only */}
-          {facet === "movie" ? (
+          {facet === "MOVIE" ? (
             <label className="flex items-center gap-4 rounded-xl border border-primary/30 bg-primary/10 p-4 sm:col-span-2">
               <Switch
                 id="add-to-catalog-monitored"
-                checked={draft.monitorType === "monitored"}
+                checked={draft.monitorType === "MONITORED"}
                 onCheckedChange={(v) =>
-                  update({ monitorType: v === true ? "monitored" : "unmonitored" })
+                  update({ monitorType: v === true ? "MONITORED" : "UNMONITORED" })
                 }
                 disabled={isSubmitting}
                 size="lg"

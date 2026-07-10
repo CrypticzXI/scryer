@@ -15,38 +15,38 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function normalizeLibraryScanFacet(value: unknown): LibraryScanProgress["facet"] {
-  return value === "anime" ? "anime" : value === "series" ? "series" : "movie";
+  return value === "ANIME" ? "ANIME" : value === "SERIES" ? "SERIES" : "MOVIE";
 }
 
 function normalizeLibraryScanMode(value: unknown): LibraryScanMode {
-  return value === "additive" ? "additive" : "full";
+  return value === "ADDITIVE" ? "ADDITIVE" : "FULL";
 }
 
 function normalizeLibraryScanStatus(value: unknown): LibraryScanStatus {
   switch (value) {
-    case "discovering":
-    case "running":
-    case "completed":
-    case "canceled":
-    case "warning":
-    case "failed":
+    case "DISCOVERING":
+    case "RUNNING":
+    case "COMPLETED":
+    case "CANCELED":
+    case "WARNING":
+    case "FAILED":
       return value;
     default:
-      return "running";
+      return "RUNNING";
   }
 }
 
 export function normalizeJobRunStatus(value: unknown): JobRunStatus {
   switch (value) {
-    case "queued":
-    case "discovering":
-    case "running":
-    case "completed":
-    case "warning":
-    case "failed":
+    case "QUEUED":
+    case "DISCOVERING":
+    case "RUNNING":
+    case "COMPLETED":
+    case "WARNING":
+    case "FAILED":
       return value;
     default:
-      return "running";
+      return "RUNNING";
   }
 }
 
@@ -55,36 +55,36 @@ function normalizeNumber(value: unknown): number {
 }
 
 function normalizeJobKey(value: unknown): JobKey {
-  return typeof value === "string" ? (value as JobKey) : "rss_sync";
+  return typeof value === "string" ? (value as JobKey) : "RSS_SYNC";
 }
 
 function normalizeCategory(value: unknown): JobCategory {
   switch (value) {
-    case "library":
-    case "acquisition":
-    case "maintenance":
-    case "subtitles":
-    case "system":
+    case "LIBRARY":
+    case "ACQUISITION":
+    case "MAINTENANCE":
+    case "SUBTITLES":
+    case "SYSTEM":
       return value;
     default:
-      return "system";
+      return "SYSTEM";
   }
 }
 
 function normalizeSection(value: unknown): JobSection {
-  return value === "maintenance" ? "maintenance" : "primary";
+  return value === "MAINTENANCE" ? "MAINTENANCE" : "PRIMARY";
 }
 
 function normalizeTriggerSource(value: unknown): JobTriggerSource {
   switch (value) {
-    case "manual":
-    case "scheduled_startup":
-    case "scheduled_interval":
-    case "scheduled_daily":
-    case "system_internal":
+    case "MANUAL":
+    case "SCHEDULED_STARTUP":
+    case "SCHEDULED_INTERVAL":
+    case "SCHEDULED_DAILY":
+    case "SYSTEM_INTERNAL":
       return value;
     default:
-      return "manual";
+      return "MANUAL";
   }
 }
 
@@ -190,7 +190,7 @@ export function normalizeJobRun(value: unknown): JobRun | null {
 }
 
 export function isTerminalJobRunStatus(status: JobRunStatus): boolean {
-  return status === "completed" || status === "warning" || status === "failed";
+  return status === "COMPLETED" || status === "WARNING" || status === "FAILED";
 }
 
 export function preferJobRunSnapshot(

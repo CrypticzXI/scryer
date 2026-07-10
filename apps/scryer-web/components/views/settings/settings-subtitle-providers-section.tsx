@@ -68,9 +68,9 @@ type Props = {
 };
 
 const SUBTITLE_FACETS = [
-  { value: "movie", labelKey: "label.movies" },
-  { value: "series", labelKey: "label.series" },
-  { value: "anime", labelKey: "label.anime" },
+  { value: "MOVIE", labelKey: "label.movies" },
+  { value: "SERIES", labelKey: "label.series" },
+  { value: "ANIME", labelKey: "label.anime" },
 ] as const;
 
 const PROVIDER_PANEL_CLASS =
@@ -249,7 +249,7 @@ function DynamicSubtitleConfigField({
     </span>
   ) : null;
 
-  if (field.fieldType === "bool") {
+  if (field.fieldType === "BOOL") {
     return (
       <label className="flex items-center gap-2 rounded-[10px] border border-[var(--scry-border3)] bg-[var(--scry-inset)] px-3 py-2">
         <Checkbox
@@ -274,7 +274,7 @@ function DynamicSubtitleConfigField({
     );
   }
 
-  if (field.fieldType === "select" && field.options.length > 0) {
+  if (field.fieldType === "SELECT" && field.options.length > 0) {
     return (
       <label>
         <Label
@@ -308,7 +308,7 @@ function DynamicSubtitleConfigField({
     );
   }
 
-  if (field.fieldType === "multiline") {
+  if (field.fieldType === "MULTILINE") {
     return (
       <label>
         <Label
@@ -336,7 +336,7 @@ function DynamicSubtitleConfigField({
   }
 
   const isSecretField =
-    field.fieldType === "password" || looksLikeSecretConfigKey(field.key);
+    field.fieldType === "PASSWORD" || looksLikeSecretConfigKey(field.key);
 
   return (
     <label>
@@ -421,7 +421,7 @@ export function SettingsSubtitleProvidersSection({
   const selectedProviderFields = React.useMemo(
     () =>
       (selectedProvider?.configFields ?? []).filter(
-        (field) => field.valueSource !== "host_binding",
+        (field) => field.valueSource !== "HOST_BINDING",
       ),
     [selectedProvider],
   );
@@ -440,13 +440,13 @@ export function SettingsSubtitleProvidersSection({
           previous.name === (previousProvider?.name ?? previous.providerType);
         const nextConfigValues: Record<string, string> = {};
         for (const field of nextProvider?.configFields ?? []) {
-          if (field.valueSource === "host_binding") {
+          if (field.valueSource === "HOST_BINDING") {
             continue;
           }
           nextConfigValues[field.key] =
             previous.persistedConfigValues[field.key] ??
             field.defaultValue ??
-            (field.fieldType === "bool" ? "false" : "");
+            (field.fieldType === "BOOL" ? "false" : "");
         }
         return {
           ...previous,
@@ -480,7 +480,7 @@ export function SettingsSubtitleProvidersSection({
   );
 
   const handleFacetToggle = React.useCallback(
-    (facet: "movie" | "series" | "anime", checked: boolean) => {
+    (facet: "MOVIE" | "SERIES" | "ANIME", checked: boolean) => {
       setProviderDraft((previous) => {
         const current = new Set(previous.enabledFacets);
         if (checked) {

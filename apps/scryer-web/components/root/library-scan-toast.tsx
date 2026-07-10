@@ -41,20 +41,20 @@ function navIconForFacet(facet: Facet): LucideIcon {
 }
 
 const FACET_CONFIG: Record<Facet, FacetConfig> = {
-  movie: {
-    Icon: navIconForFacet("movie"),
+  MOVIE: {
+    Icon: navIconForFacet("MOVIE"),
     rgb: "var(--scry-facet-movie-rgb)",
     base: "var(--scry-facet-movie)",
     grad: "var(--scry-facet-movie-grad)",
   },
-  series: {
-    Icon: navIconForFacet("series"),
+  SERIES: {
+    Icon: navIconForFacet("SERIES"),
     rgb: "var(--scry-facet-series-rgb)",
     base: "var(--scry-facet-series)",
     grad: "var(--scry-facet-series-grad)",
   },
-  anime: {
-    Icon: navIconForFacet("anime"),
+  ANIME: {
+    Icon: navIconForFacet("ANIME"),
     rgb: "var(--scry-facet-anime-rgb)",
     base: "var(--scry-facet-anime)",
     grad: "var(--scry-facet-anime-grad)",
@@ -73,11 +73,11 @@ type PhaseStatus = "done" | "active" | "pending";
 
 function facetLabel(facet: Facet, t: Translate): string {
   switch (facet) {
-    case "movie":
+    case "MOVIE":
       return t("nav.movies");
-    case "series":
+    case "SERIES":
       return t("nav.series");
-    case "anime":
+    case "ANIME":
       return t("nav.anime");
     default:
       return t("settings.libraryScanTitle");
@@ -86,10 +86,10 @@ function facetLabel(facet: Facet, t: Translate): string {
 
 function isTerminal(status: LibraryScanProgress["status"]): boolean {
   return (
-    status === "completed" ||
-    status === "canceled" ||
-    status === "warning" ||
-    status === "failed"
+    status === "COMPLETED" ||
+    status === "CANCELED" ||
+    status === "WARNING" ||
+    status === "FAILED"
   );
 }
 
@@ -341,22 +341,22 @@ export function LibraryScanToast({
   autoDismissMs?: number;
 }) {
   const client = useClient();
-  const facet = FACET_CONFIG[session.facet] ?? FACET_CONFIG.movie;
+  const facet = FACET_CONFIG[session.facet] ?? FACET_CONFIG.MOVIE;
   const FacetIcon = facet.Icon;
   const terminal = isTerminal(session.status);
   const unmatched = session.summary?.unmatched ?? 0;
 
   const visualState: ToastVisualState = !terminal
     ? "scanning"
-    : session.status === "failed"
+    : session.status === "FAILED"
       ? "failed"
-      : session.status === "canceled"
+      : session.status === "CANCELED"
         ? "canceled"
-        : session.status === "warning" || unmatched > 0
+        : session.status === "WARNING" || unmatched > 0
           ? "issues"
           : "success";
 
-  const showCancel = session.mode === "full" && !terminal;
+  const showCancel = session.mode === "FULL" && !terminal;
   const autoDismiss =
     !!onDismiss && (visualState === "success" || visualState === "canceled");
   const countdownColor =

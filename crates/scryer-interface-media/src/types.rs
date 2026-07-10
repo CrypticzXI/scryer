@@ -64,7 +64,7 @@ pub struct TitleRatingPayload {
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
-#[graphql(rename_items = "snake_case")]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
 pub enum TitleCatalogSortKeyValue {
     Title,
     Library,
@@ -98,7 +98,7 @@ pub enum TitleCatalogSortKeyValue {
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
-#[graphql(rename_items = "snake_case")]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
 pub enum TitleCatalogContentStatusValue {
     Continuing,
     Ended,
@@ -140,7 +140,7 @@ pub struct TitleCatalogFilterCountsPayload {
 pub struct CollectionPayload {
     pub id: ID,
     pub title_id: ID,
-    pub collection_type: String,
+    pub collection_type: CollectionTypeValue,
     pub collection_index: String,
     pub label: Option<String>,
     pub ordered_path: Option<String>,
@@ -195,7 +195,7 @@ pub struct EpisodePayload {
     pub id: ID,
     pub title_id: ID,
     pub collection_id: Option<ID>,
-    pub episode_type: String,
+    pub episode_type: EpisodeTypeValue,
     pub episode_number: Option<String>,
     pub season_number: Option<String>,
     pub episode_label: Option<String>,

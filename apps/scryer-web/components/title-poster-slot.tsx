@@ -8,7 +8,7 @@ import { cn } from "@/lib/utils";
 
 const HYDRATION_POSTER_GRACE_MS = 5 * 60 * 1000;
 
-type PosterFallbackTone = "movie" | "series" | "anime" | "neutral";
+type PosterFallbackTone = "MOVIE" | "SERIES" | "ANIME" | "neutral";
 
 type TitlePosterSlotProps = Omit<ComponentProps<"img">, "src"> & {
   src?: string | null;
@@ -27,9 +27,9 @@ const POSTER_FALLBACK_TONES: Record<
   PosterFallbackTone,
   { hue: number; spread: number; saturation: [number, number] }
 > = {
-  movie: { hue: 30, spread: 56, saturation: [48, 68] },
-  series: { hue: 152, spread: 58, saturation: [44, 64] },
-  anime: { hue: 278, spread: 62, saturation: [46, 68] },
+  MOVIE: { hue: 30, spread: 56, saturation: [48, 68] },
+  SERIES: { hue: 152, spread: 58, saturation: [44, 64] },
+  ANIME: { hue: 278, spread: 62, saturation: [46, 68] },
   neutral: { hue: 214, spread: 64, saturation: [42, 62] },
 };
 

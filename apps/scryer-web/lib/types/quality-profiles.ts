@@ -3,7 +3,7 @@ export type ParsedQualityProfile = {
   name: string;
 };
 
-export type ScoringPersonaId = "balanced" | "audiophile" | "efficient" | "compatible";
+export type ScoringPersonaId = "BALANCED" | "AUDIOPHILE" | "EFFICIENT" | "COMPATIBLE";
 
 export type QualityTargetId = "8k" | "4k" | "1080p";
 
@@ -137,4 +137,4 @@ export type ProfileListChoice = {
 
 export type ProfileRawRecord = Record<string, JsonValue>;
 
-export type ViewCategoryId = "movie" | "series" | "anime";
+export type ViewCategoryId = "MOVIE" | "SERIES" | "ANIME";

@@ -30,7 +30,7 @@ export function useIndexersSubscription(
     }
     return registerReactiveRefresh({
       aliasKey: `indexers:${aliasId}`,
-      predicate: forEventTypes("configuration_changed"),
+      predicate: forEventTypes("CONFIGURATION_CHANGED"),
       run: () => onChangedRef.current(),
     });
   }, [pause, aliasId, registerReactiveRefresh]);

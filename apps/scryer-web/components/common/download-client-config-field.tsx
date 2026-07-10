@@ -57,7 +57,7 @@ export function DownloadClientConfigField({
     </span>
   ) : null;
 
-  if (field.fieldType === "bool") {
+  if (field.fieldType === "BOOL") {
     return (
       <CheckboxField
         id={fieldId}
@@ -78,7 +78,7 @@ export function DownloadClientConfigField({
     );
   }
 
-  if (field.fieldType === "select" && field.options.length > 0) {
+  if (field.fieldType === "SELECT" && field.options.length > 0) {
     return (
       <label>
         <Label className="mb-2 inline-flex items-center gap-2" htmlFor={fieldId}>
@@ -105,7 +105,7 @@ export function DownloadClientConfigField({
     );
   }
 
-  if (field.fieldType === "tag" && field.options.length > 0) {
+  if (field.fieldType === "TAG" && field.options.length > 0) {
     const selectedValues = splitConfigTagValue(value);
     const selected = new Set(selectedValues);
     const optionValues = new Set(field.options.map((option) => option.value));
@@ -157,7 +157,7 @@ export function DownloadClientConfigField({
     );
   }
 
-  if (field.fieldType === "multiline") {
+  if (field.fieldType === "MULTILINE") {
     return (
       <label>
         <Label className="mb-2 inline-flex items-center gap-2" htmlFor={fieldId}>
@@ -177,7 +177,7 @@ export function DownloadClientConfigField({
     );
   }
 
-  if (isFileBackedField && field.fieldType !== "number" && field.fieldType !== "password") {
+  if (isFileBackedField && field.fieldType !== "NUMBER" && field.fieldType !== "PASSWORD") {
     return (
       <div>
         <Label className="mb-2 inline-flex items-center gap-2" htmlFor={fieldId}>
@@ -230,11 +230,11 @@ export function DownloadClientConfigField({
         id={fieldId}
         value={value}
         onChange={(event) => onChange(field.key, event.target.value)}
-        {...(field.fieldType === "number" ? signedIntegerInputProps : {})}
+        {...(field.fieldType === "NUMBER" ? signedIntegerInputProps : {})}
         type={
-          field.fieldType === "password"
+          field.fieldType === "PASSWORD"
             ? "password"
-            : field.fieldType === "number"
+            : field.fieldType === "NUMBER"
               ? "number"
               : "text"
         }

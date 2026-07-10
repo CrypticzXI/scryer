@@ -106,29 +106,29 @@ export function BulkTitleEditDialog({
       isMovieView
         ? [
             {
-              value: "monitored",
+              value: "MONITORED",
               label: t("search.monitorType.monitored"),
             },
             {
-              value: "unmonitored",
+              value: "UNMONITORED",
               label: t("search.monitorType.unmonitored"),
             },
           ]
         : [
             {
-              value: "futureEpisodes",
+              value: "FUTURE_EPISODES",
               label: t("search.monitorType.futureEpisodes"),
             },
             {
-              value: "missingAndFutureEpisodes",
+              value: "MISSING_AND_FUTURE_EPISODES",
               label: t("search.monitorType.missingAndFutureEpisodes"),
             },
             {
-              value: "allEpisodes",
+              value: "ALL_EPISODES",
               label: t("search.monitorType.allEpisodes"),
             },
             {
-              value: "none",
+              value: "NONE",
               label: t("search.monitorType.none"),
             },
           ],

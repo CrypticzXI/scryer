@@ -66,9 +66,9 @@ export function useIndexerRouting({
   const [indexers, setIndexers] = React.useState<IndexerRecord[]>([]);
   const [indexerRoutingByScope, setIndexerRoutingByScope] =
     React.useState<IndexerRoutingSettingsByScope>({
-      movie: {},
-      series: {},
-      anime: {},
+      MOVIE: {},
+      SERIES: {},
+      ANIME: {},
     });
   const [indexerRoutingOrderByScope, setIndexerRoutingOrderByScope] =
     React.useState<Record<ViewCategoryId, string[]>>({
@@ -76,7 +76,7 @@ export function useIndexerRouting({
     });
   const [indexerRoutingSaving, setIndexerRoutingSaving] = React.useState<
     Record<ViewCategoryId, boolean>
-  >({ movie: false, series: false, anime: false });
+  >({ MOVIE: false, SERIES: false, ANIME: false });
   const [indexerRoutingLoading, setIndexerRoutingLoading] =
     React.useState(false);
 

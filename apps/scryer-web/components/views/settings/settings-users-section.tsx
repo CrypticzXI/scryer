@@ -191,7 +191,7 @@ export function SettingsUsersSection({
                     settingsUsers.map((user) => {
                       const isOwnUser = currentUserId === user.id;
                       const canSetPassword =
-                        user.accountKind !== "external_auto_provisioned";
+                        user.accountKind !== "EXTERNAL_AUTO_PROVISIONED";
                       const permissionControlsDisabled =
                         mutatingUserId === user.id ||
                         isOwnUser ||

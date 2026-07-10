@@ -154,19 +154,19 @@ const RENAME_FILTER_AUTOCOMPLETE_SUGGESTIONS: TemplateFilterSuggestion[] = [
 ];
 
 function getRenameTokenDescriptions(scopeId: ViewCategoryId): { token: string; labelKey: string }[] {
-  const scopeSpecific = scopeId === "movie"
+  const scopeSpecific = scopeId === "MOVIE"
     ? MOVIE_RENAME_TOKEN_DESCRIPTIONS
-    : scopeId === "anime"
+    : scopeId === "ANIME"
       ? ANIME_RENAME_TOKEN_DESCRIPTIONS
       : SERIES_RENAME_TOKEN_DESCRIPTIONS;
-  const shared = scopeId === "series"
+  const shared = scopeId === "SERIES"
     ? SHARED_RENAME_TOKEN_DESCRIPTIONS.filter((token) => token.token !== "group")
     : SHARED_RENAME_TOKEN_DESCRIPTIONS;
   return [...scopeSpecific, ...EXTERNAL_ID_RENAME_TOKEN_DESCRIPTIONS, ...shared];
 }
 
 function getValidRenameTokens(scopeId: ViewCategoryId): ReadonlySet<string> {
-  return scopeId === "movie"
+  return scopeId === "MOVIE"
     ? VALID_MOVIE_RENAME_TOKENS
     : VALID_EPISODE_RENAME_TOKENS;
 }
@@ -300,9 +300,9 @@ const RENAME_PREVIEW_ANIME_SAMPLE: Record<string, string> = {
 
 function applyRenameTemplate(template: string, scopeId: ViewCategoryId): string | null {
   const sampleValues =
-    scopeId === "movie"
+    scopeId === "MOVIE"
       ? RENAME_PREVIEW_MOVIE_SAMPLE
-      : scopeId === "anime"
+      : scopeId === "ANIME"
         ? RENAME_PREVIEW_ANIME_SAMPLE
         : RENAME_PREVIEW_SERIES_SAMPLE;
   return applyRenameTemplatePreview(template, getValidRenameTokens(scopeId), sampleValues);
@@ -313,9 +313,9 @@ function applyFolderTemplate(template: string, scopeId: ViewCategoryId): string 
   let result = "";
   let i = 0;
   const sampleValues =
-    scopeId === "movie"
+    scopeId === "MOVIE"
       ? RENAME_PREVIEW_MOVIE_SAMPLE
-      : scopeId === "anime"
+      : scopeId === "ANIME"
         ? RENAME_PREVIEW_ANIME_SAMPLE
         : RENAME_PREVIEW_SERIES_SAMPLE;
   while (i < template.length) {

@@ -581,7 +581,7 @@ export function SettingsDownloadClientsContainer({
       {pluginsTarget
         ? createPortal(
             <FilteredPluginList
-              family="download_client"
+              family="DOWNLOAD_CLIENT"
               catalogVersion={providerCatalogVersion}
               extraPluginTypes={DOWNLOAD_CLIENT_ADJACENT_PLUGIN_TYPES}
               refreshProviderOptions={refreshProviderTypes}

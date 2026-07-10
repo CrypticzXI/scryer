@@ -365,8 +365,8 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
     setActiveLibraryId(libraries[0]?.id ?? null);
   }, [canCreateLibrary, libraries, mode]);
   const currentFacet = activeLibrary?.facet ?? facet;
-  const isAnimeFacet = currentFacet === "anime";
-  const showPlexmatch = currentFacet === "series" || currentFacet === "anime";
+  const isAnimeFacet = currentFacet === "ANIME";
+  const showPlexmatch = currentFacet === "SERIES" || currentFacet === "ANIME";
   const savedDownloadClientRoutingEntries =
     savedSettings?.downloadClientRoutingOverride ?? null;
   const savedDownloadClientRoutingState = React.useMemo(

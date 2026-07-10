@@ -50,9 +50,9 @@ export const LIBRARY_PERMISSION_OPTIONS: Array<{ value: LibraryPermission; label
 ];
 
 const FACET_OPTIONS: Array<{ value: LibraryRecord["facet"]; label: string }> = [
-  { value: "movie", label: "Movie" },
-  { value: "series", label: "Series" },
-  { value: "anime", label: "Anime" },
+  { value: "MOVIE", label: "Movie" },
+  { value: "SERIES", label: "Series" },
+  { value: "ANIME", label: "Anime" },
 ];
 
 function permissionLabel(permission: string, options: PermissionOption[]) {

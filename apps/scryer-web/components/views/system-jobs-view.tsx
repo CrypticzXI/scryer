@@ -92,15 +92,15 @@ function renderTableDateTime(
 
 function runStatusTone(status: JobRun["status"] | "idle"): string {
   switch (status) {
-    case "failed":
+    case "FAILED":
       return "text-[var(--scry-danger-text-soft)]";
-    case "warning":
+    case "WARNING":
       return "text-[var(--scry-warning-text)]";
-    case "completed":
+    case "COMPLETED":
       return "text-[var(--scry-success-text-soft)]";
-    case "queued":
-    case "discovering":
-    case "running":
+    case "QUEUED":
+    case "DISCOVERING":
+    case "RUNNING":
       return "text-[var(--scry-info-text-soft)]";
     default:
       return "text-muted-foreground";
@@ -114,23 +114,23 @@ function runStatusLabel(
   switch (status) {
     case "idle":
       return t("jobs.status.idle");
-    case "queued":
+    case "QUEUED":
       return t("jobs.status.queued");
-    case "discovering":
+    case "DISCOVERING":
       return t("jobs.status.discovering");
-    case "running":
+    case "RUNNING":
       return t("jobs.status.running");
-    case "completed":
+    case "COMPLETED":
       return t("jobs.status.completed");
-    case "warning":
+    case "WARNING":
       return t("jobs.status.warning");
-    case "failed":
+    case "FAILED":
       return t("jobs.status.failed");
   }
 }
 
 function parseHealthCheckIssues(run: JobRun): HealthCheckIssue[] {
-  if (run.jobKey !== "health_checks" || !run.summaryJson) {
+  if (run.jobKey !== "HEALTH_CHECKS" || !run.summaryJson) {
     return [];
   }
 
@@ -194,30 +194,30 @@ function triggerSourceLabel(
   t: ReturnType<typeof useTranslate>,
 ): string {
   switch (triggerSource) {
-    case "manual":
+    case "MANUAL":
       return t("jobs.triggerSource.manual");
-    case "scheduled_startup":
+    case "SCHEDULED_STARTUP":
       return t("jobs.triggerSource.scheduledStartup");
-    case "scheduled_interval":
+    case "SCHEDULED_INTERVAL":
       return t("jobs.triggerSource.scheduledInterval");
-    case "scheduled_daily":
+    case "SCHEDULED_DAILY":
       return t("jobs.triggerSource.scheduledDaily");
-    case "system_internal":
+    case "SYSTEM_INTERNAL":
       return t("jobs.triggerSource.systemInternal");
   }
 }
 
 function libraryFacetForJob(jobKey: JobKey): Facet | null {
   switch (jobKey) {
-    case "library_scan_movies":
-    case "background_library_refresh_movies":
-      return "movie";
-    case "library_scan_series":
-    case "background_library_refresh_series":
-      return "series";
-    case "library_scan_anime":
-    case "background_library_refresh_anime":
-      return "anime";
+    case "LIBRARY_SCAN_MOVIES":
+    case "BACKGROUND_LIBRARY_REFRESH_MOVIES":
+      return "MOVIE";
+    case "LIBRARY_SCAN_SERIES":
+    case "BACKGROUND_LIBRARY_REFRESH_SERIES":
+      return "SERIES";
+    case "LIBRARY_SCAN_ANIME":
+    case "BACKGROUND_LIBRARY_REFRESH_ANIME":
+      return "ANIME";
     default:
       return null;
   }
@@ -274,15 +274,15 @@ function compareMaybeDates(
 
 function statusSortWeight(status: JobRun["status"] | "idle"): number {
   switch (status) {
-    case "running":
-    case "discovering":
-    case "queued":
+    case "RUNNING":
+    case "DISCOVERING":
+    case "QUEUED":
       return 0;
-    case "failed":
+    case "FAILED":
       return 1;
-    case "warning":
+    case "WARNING":
       return 2;
-    case "completed":
+    case "COMPLETED":
       return 3;
     case "idle":
     default:
@@ -294,17 +294,17 @@ function jobStatusFromLibraryScanStatus(
   status: LibraryScanStatus,
 ): JobRun["status"] {
   switch (status) {
-    case "discovering":
-      return "discovering";
-    case "running":
-      return "running";
-    case "completed":
-      return "completed";
-    case "canceled":
-    case "warning":
-      return "warning";
-    case "failed":
-      return "failed";
+    case "DISCOVERING":
+      return "DISCOVERING";
+    case "RUNNING":
+      return "RUNNING";
+    case "COMPLETED":
+      return "COMPLETED";
+    case "CANCELED":
+    case "WARNING":
+      return "WARNING";
+    case "FAILED":
+      return "FAILED";
   }
 }
 

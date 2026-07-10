@@ -125,9 +125,9 @@ export function SetupImportWizard({
         sources.length > 0 &&
         sources.every(
           (s) =>
-            s.status === "completed" ||
-            s.status === "failed" ||
-            s.status === "canceled",
+            s.status === "COMPLETED" ||
+            s.status === "FAILED" ||
+            s.status === "CANCELED",
         )
       );
     };

@@ -196,9 +196,9 @@ export function useTitleMoreLikeThisActions({
     [client, navigate, setGlobalStatus, t],
   );
 
-  const addFacet = addDialogTarget?.facet ?? "movie";
+  const addFacet = addDialogTarget?.facet ?? "MOVIE";
   const addResult = addDialogTarget?.result ?? EMPTY_SEARCH_RESULT;
-  const requestFacet = requestDialogTarget?.facet ?? "movie";
+  const requestFacet = requestDialogTarget?.facet ?? "MOVIE";
   const requestResult = requestDialogTarget?.result ?? EMPTY_SEARCH_RESULT;
 
   return {

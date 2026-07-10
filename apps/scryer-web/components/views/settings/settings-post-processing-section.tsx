@@ -293,12 +293,12 @@ export const SettingsPostProcessingSection = React.memo(
                         <FacetBadges facets={script.appliedFacets} />
                       </TableCell>
                       <TableCell className="text-muted-foreground">
-                        {script.executionMode === "blocking"
+                        {script.executionMode === "BLOCKING"
                           ? t("settings.pp.blocking")
                           : t("settings.pp.fireAndForget")}
                       </TableCell>
                       <TableCell className="text-muted-foreground">
-                        {script.executionMode === "blocking"
+                        {script.executionMode === "BLOCKING"
                           ? `${script.timeoutSecs}s`
                           : "--"}
                       </TableCell>
@@ -558,7 +558,7 @@ export const SettingsPostProcessingSection = React.memo(
                   >
                     <RadioGroupItem
                       id="settings-post-processing-execution-blocking"
-                      value="blocking"
+                      value="BLOCKING"
                     />
                     <span className="text-sm">{t("settings.pp.blocking")}</span>
                     <span className="text-xs text-muted-foreground">
@@ -571,7 +571,7 @@ export const SettingsPostProcessingSection = React.memo(
                   >
                     <RadioGroupItem
                       id="settings-post-processing-execution-fire-and-forget"
-                      value="fire_and_forget"
+                      value="FIRE_AND_FORGET"
                     />
                     <span className="text-sm">
                       {t("settings.pp.fireAndForget")}
@@ -584,7 +584,7 @@ export const SettingsPostProcessingSection = React.memo(
               </div>
 
               {/* Timeout + Priority (only for blocking) */}
-              {scriptDraft.executionMode === "blocking" ? (
+              {scriptDraft.executionMode === "BLOCKING" ? (
                 <div className="grid gap-3 md:grid-cols-2">
                   <label>
                     <Label className="mb-2 block">

@@ -82,20 +82,20 @@ type SettingsMediaServersSectionProps = {
 };
 
 const PROVIDERS: Array<{ value: VisibleMediaServerProvider; label: string }> = [
-  { value: "jellyfin", label: "Jellyfin" },
-  { value: "plex", label: "Plex" },
+  { value: "JELLYFIN", label: "Jellyfin" },
+  { value: "PLEX", label: "Plex" },
 ];
 
 const DEFAULT_BASE_URL_BY_PROVIDER: Record<MediaServerProvider, string> = {
-  jellyfin: "",
-  plex: "https://plex.tv",
-  emby: "",
+  JELLYFIN: "",
+  PLEX: "https://plex.tv",
+  EMBY: "",
 };
 
 const DEFAULT_NAME_BY_PROVIDER: Record<MediaServerProvider, string> = {
-  jellyfin: "Jellyfin",
-  plex: "Plex",
-  emby: "Emby",
+  JELLYFIN: "Jellyfin",
+  PLEX: "Plex",
+  EMBY: "Emby",
 };
 
 function providerLabel(provider: MediaServerProvider): string {
@@ -103,7 +103,7 @@ function providerLabel(provider: MediaServerProvider): string {
 }
 
 function providerSupportsAuth(provider: MediaServerProvider): boolean {
-  return provider === "jellyfin" || provider === "plex";
+  return provider === "JELLYFIN" || provider === "PLEX";
 }
 
 function updateLibraryGrant(
@@ -125,7 +125,7 @@ function capabilityBadges(
   effectiveFormLoginEnabled: boolean,
 ): Array<{ label: string; tone: CapabilityBadgeTone }> {
   const badges: Array<{ label: string; tone: CapabilityBadgeTone }> = [];
-  if (connection.provider === "emby") {
+  if (connection.provider === "EMBY") {
     badges.push({ label: "Notifications", tone: "info" });
     return badges;
   }
@@ -219,12 +219,12 @@ export function SettingsMediaServersSection({
           defaultLibraryGrants: providerSupportsAuth(provider)
             ? previous.defaultLibraryGrants
             : [],
-          machineIdPresent: provider === "plex" ? previous.machineIdPresent : false,
-          plexServerId: provider === "plex" ? previous.plexServerId : "",
+          machineIdPresent: provider === "PLEX" ? previous.machineIdPresent : false,
+          plexServerId: provider === "PLEX" ? previous.plexServerId : "",
           jellyfinCredentialMode:
-            provider === "jellyfin" ? "adminLogin" : previous.jellyfinCredentialMode,
-          apiKey: provider === "jellyfin" ? "" : previous.apiKey,
-          clearApiKey: provider === "jellyfin" ? false : previous.clearApiKey,
+            provider === "JELLYFIN" ? "adminLogin" : previous.jellyfinCredentialMode,
+          apiKey: provider === "JELLYFIN" ? "" : previous.apiKey,
+          clearApiKey: provider === "JELLYFIN" ? false : previous.clearApiKey,
         };
       });
     },
@@ -272,7 +272,7 @@ export function SettingsMediaServersSection({
                     </div>
                   </TableCell>
                   <TableCell>
-                    {connection.provider === "plex" ? (
+                    {connection.provider === "PLEX" ? (
                       connection.machineIdPresent ? (
                         <span className="inline-flex items-center gap-1 text-[var(--scry-success-text)]">
                           <CheckCircle2 className="h-3.5 w-3.5" />
@@ -426,9 +426,9 @@ export function SettingsMediaServersSection({
                           baseUrl: event.target.value,
                         }))
                       }
-                      required={draft.provider !== "plex"}
+                      required={draft.provider !== "PLEX"}
                       placeholder={
-                        draft.provider === "plex"
+                        draft.provider === "PLEX"
                           ? "https://plex.tv"
                           : `https://${draft.provider}.example.test`
                       }
@@ -452,7 +452,7 @@ export function SettingsMediaServersSection({
                   </label>
                 </div>
 
-                {draft.provider === "plex" ? (
+                {draft.provider === "PLEX" ? (
                   <div className="space-y-3 rounded border border-border bg-background/40 p-3">
                     <div className="flex flex-wrap items-center gap-3">
                       <Button
@@ -510,9 +510,9 @@ export function SettingsMediaServersSection({
                   </div>
                 ) : null}
 
-                {draft.provider === "jellyfin" || draft.provider === "emby" ? (
+                {draft.provider === "JELLYFIN" || draft.provider === "EMBY" ? (
                   <div className="space-y-3">
-                    {draft.provider === "jellyfin" ? (
+                    {draft.provider === "JELLYFIN" ? (
                       <div className="inline-flex rounded-md border border-border p-1">
                         <Button
                           id="settings-media-server-credential-admin-login"
@@ -549,7 +549,7 @@ export function SettingsMediaServersSection({
                       </div>
                     ) : null}
                     <div className="grid gap-3 md:grid-cols-2">
-                      {draft.provider === "emby" || draft.jellyfinCredentialMode === "apiKey" ? (
+                      {draft.provider === "EMBY" || draft.jellyfinCredentialMode === "apiKey" ? (
                         <>
                           <label>
                             <Label className="mb-2 block" htmlFor="settings-media-server-api-key">

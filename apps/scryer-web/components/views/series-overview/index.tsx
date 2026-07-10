@@ -112,7 +112,7 @@ function coveredEpisodeIdsForQueueItem(
     return Array.from(episodeIds);
   }
 
-  if (scope.kind === "episode" && scope.episodeId) {
+  if (scope.kind === "EPISODE" && scope.episodeId) {
     episodeIds.add(scope.episodeId);
   }
 

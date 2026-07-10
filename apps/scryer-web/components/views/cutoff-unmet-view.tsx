@@ -95,11 +95,11 @@ function cutoffEpisodeCode(item: CutoffUnmetItem): string | null {
 
 function cutoffOverviewView(facet: Facet): ViewId | null {
   switch (facet) {
-    case "movie":
+    case "MOVIE":
       return "movies";
-    case "series":
+    case "SERIES":
       return "series";
-    case "anime":
+    case "ANIME":
       return "anime";
     default:
       return null;
@@ -257,7 +257,7 @@ export function CutoffUnmetView({ state }: { state: CutoffUnmetViewState }) {
     cancelBulkSearch,
   } = state;
 
-  const jobRunning = searchJob?.state === "running";
+  const jobRunning = searchJob?.state === "RUNNING";
   const bulkSearching = jobRunning || searchJobStarting;
   const hasPrev = offset > 0;
   const hasNext = offset + limit < total;

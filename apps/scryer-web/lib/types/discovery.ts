@@ -122,7 +122,7 @@ export type DiscoveryItemsPayload = {
 };
 
 export type CatalogDiscoveryInput = {
-  facet: "movie" | "series" | "anime";
+  facet: "MOVIE" | "SERIES" | "ANIME";
   libraryIds?: string[] | null;
   includeUnresolved?: boolean | null;
   limitPerGroup?: number | null;

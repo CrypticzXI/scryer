@@ -59,15 +59,15 @@ import type {
 } from "@/lib/types";
 
 const DEFAULT_CATEGORY_QUALITY_PROFILES: Record<ViewCategoryId, string> = {
-  movie: QUALITY_PROFILE_INHERIT_VALUE,
-  series: QUALITY_PROFILE_INHERIT_VALUE,
-  anime: QUALITY_PROFILE_INHERIT_VALUE,
+  MOVIE: QUALITY_PROFILE_INHERIT_VALUE,
+  SERIES: QUALITY_PROFILE_INHERIT_VALUE,
+  ANIME: QUALITY_PROFILE_INHERIT_VALUE,
 };
 
 const DEFAULT_CATEGORY_QUALITY_SAVING: Record<ViewCategoryId, boolean> = {
-  movie: false,
-  series: false,
-  anime: false,
+  MOVIE: false,
+  SERIES: false,
+  ANIME: false,
 };
 
 function resolveGlobalQualityProfileId(
@@ -179,7 +179,7 @@ export function useQualityProfilesManager(
   );
   const [globalQualityProfileId, setGlobalQualityProfileId] = React.useState("default");
   const [globalScoringPersona, setGlobalScoringPersona] =
-    React.useState<ScoringPersonaId>("balanced");
+    React.useState<ScoringPersonaId>("BALANCED");
   const [categoryQualityProfileOverrides, setCategoryQualityProfileOverrides] = React.useState<
     Record<ViewCategoryId, string>
   >({ ...DEFAULT_CATEGORY_QUALITY_PROFILES });
@@ -261,9 +261,9 @@ export function useQualityProfilesManager(
   const qualityCategoryLabels = React.useMemo(
     () =>
       ({
-        movie: t("search.facetMovie"),
-        series: t("search.facetSeries"),
-        anime: t("search.facetAnime"),
+        MOVIE: t("search.facetMovie"),
+        SERIES: t("search.facetSeries"),
+        ANIME: t("search.facetAnime"),
       }) as Record<ViewCategoryId, string>,
     [t],
   );
@@ -340,7 +340,7 @@ export function useQualityProfilesManager(
         setQualityProfileDraft(nextDefaultDraft);
       }
       setGlobalQualityProfileId(validGlobalProfile);
-      setGlobalScoringPersona(payload?.globalScoringPersona ?? "balanced");
+      setGlobalScoringPersona(payload?.globalScoringPersona ?? "BALANCED");
 
       const nextOverrides = qualityProfileSettingsToCategoryOverrides(payload);
       setCategoryQualityProfileOverrides((previous) =>

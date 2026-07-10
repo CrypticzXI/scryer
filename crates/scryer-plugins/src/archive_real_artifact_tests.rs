@@ -486,13 +486,13 @@ fn abi_imports_match_frozen_contract() {
     let names: Vec<&str> = host_user.iter().map(|(name, _)| name.as_str()).collect();
     assert_eq!(
         names,
-        vec!["scryer_aes_cbc_decrypt", "scryer_crc32"],
+        vec!["host_aes_cbc_decrypt", "host_crc32"],
         "frozen host ABI drifted: extism:host/user imports must be exactly the two §5 crypto \
          functions"
     );
 
     // Signatures: all params + result are i64 (the §5 crypto pair).
-    for (name, arity) in [("scryer_aes_cbc_decrypt", 5usize), ("scryer_crc32", 3usize)] {
+    for (name, arity) in [("host_aes_cbc_decrypt", 5usize), ("host_crc32", 3usize)] {
         let ty = &host_user.iter().find(|(n, _)| n == name).unwrap().1;
         let ExternType::Func(func) = ty else {
             panic!("{name} must be a function import");

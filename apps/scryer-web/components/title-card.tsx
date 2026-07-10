@@ -23,18 +23,18 @@ export type TitleCardCornerBadge = {
 };
 
 const FACET_BADGE_CLASS: Record<Facet, string> = {
-  movie:
+  MOVIE:
     "bg-[linear-gradient(135deg,rgba(var(--scry-facet-movie-rgb),0.96),rgba(var(--scry-facet-movie-rgb),0.72))] text-white",
-  series:
+  SERIES:
     "bg-[linear-gradient(135deg,rgba(var(--scry-facet-series-rgb),0.96),rgba(var(--scry-facet-series-rgb),0.72))] text-white",
-  anime:
+  ANIME:
     "bg-[linear-gradient(135deg,rgba(var(--scry-facet-anime-rgb),0.96),rgba(var(--scry-facet-anime-rgb),0.72))] text-white",
 };
 
 const FACET_LABEL_KEY: Record<Facet, string> = {
-  movie: "search.facetMovie",
-  series: "search.facetSeries",
-  anime: "search.facetAnime",
+  MOVIE: "search.facetMovie",
+  SERIES: "search.facetSeries",
+  ANIME: "search.facetAnime",
 };
 
 function facetBadgeIcon(facet: Facet | null | undefined): LucideIcon | null {

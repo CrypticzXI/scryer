@@ -30,15 +30,15 @@ function normalizeActivitySeverity(value: string | undefined): ActivitySeverity 
 
 function normalizeActivityChannels(values: unknown): ActivityChannel[] {
   if (!Array.isArray(values)) {
-    return ["web_ui", "toast"];
+    return ["WEB_UI", "TOAST"];
   }
 
   const normalized = values
     .filter((value): value is string => typeof value === "string")
-    .map((value) => value.trim().toLowerCase())
+    .map((value) => value.trim().toUpperCase())
     .filter((value): value is ActivityChannel => activityChannelSet.has(value));
 
-  return normalized.length > 0 ? normalized : ["web_ui", "toast"];
+  return normalized.length > 0 ? normalized : ["WEB_UI", "TOAST"];
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

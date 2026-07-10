@@ -152,9 +152,9 @@ export function GeneralSettingsPanel({
   handleChownGroupChange: (value: string) => void;
 }) {
   const t = useTranslate();
-  const showAnimePolicies = activeQualityScopeId === "anime";
+  const showAnimePolicies = activeQualityScopeId === "ANIME";
   const showPlexmatch =
-    activeQualityScopeId === "series" || activeQualityScopeId === "anime";
+    activeQualityScopeId === "SERIES" || activeQualityScopeId === "ANIME";
   const [chownGroupDraft, setChownGroupDraft] = useState(
     chownGroup[activeQualityScopeId] ?? "",
   );

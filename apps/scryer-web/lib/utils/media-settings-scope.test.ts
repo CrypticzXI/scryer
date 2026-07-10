@@ -8,11 +8,11 @@ import {
 } from "./media-settings-scope.ts";
 
 test("saving an anime rename template updates the anime bucket", () => {
-  const scopeId = facetScopedMediaSettingsScopeId({ scope: "anime" });
+  const scopeId = facetScopedMediaSettingsScopeId({ scope: "ANIME" });
   const templates = {
-    movie: "{title} ({year}) - {quality}.{ext}",
-    series: "{title} - S{season:2}E{episode:2} - {quality}.{ext}",
-    anime: "{title} - S{season_order:2}E{episode:2} ({absolute_episode}) - {quality}.{ext}",
+    MOVIE: "{title} ({year}) - {quality}.{ext}",
+    SERIES: "{title} - S{season:2}E{episode:2} - {quality}.{ext}",
+    ANIME: "{title} - S{season_order:2}E{episode:2} ({absolute_episode}) - {quality}.{ext}",
   };
 
   const next = updateFacetScopedStringRecord(
@@ -21,22 +21,22 @@ test("saving an anime rename template updates the anime bucket", () => {
     "{title} - {episode_title} - {source} - {group} - {quality}.{ext}",
   );
 
-  assert.equal(next.anime, "{title} - {episode_title} - {source} - {group} - {quality}.{ext}");
-  assert.equal(next.series, templates.series);
-  assert.equal(next.movie, templates.movie);
+  assert.equal(next.ANIME, "{title} - {episode_title} - {source} - {group} - {quality}.{ext}");
+  assert.equal(next.SERIES, templates.SERIES);
+  assert.equal(next.MOVIE, templates.MOVIE);
 });
 
 test("reloading anime media settings restores values into anime scope rather than the current series bucket", () => {
-  const scopeId = facetScopedMediaSettingsScopeId({ scope: "anime" });
+  const scopeId = facetScopedMediaSettingsScopeId({ scope: "ANIME" });
   const renameTemplates = {
-    movie: "{title} ({year}) - {quality}.{ext}",
-    series: "SERIES CURRENT TEMPLATE",
-    anime: "ANIME CURRENT TEMPLATE",
+    MOVIE: "{title} ({year}) - {quality}.{ext}",
+    SERIES: "SERIES CURRENT TEMPLATE",
+    ANIME: "ANIME CURRENT TEMPLATE",
   };
   const audioLanguages = {
-    movie: [] as string[],
-    series: ["eng"],
-    anime: ["jpn"],
+    MOVIE: [] as string[],
+    SERIES: ["eng"],
+    ANIME: ["jpn"],
   };
 
   const nextTemplates = updateFacetScopedStringRecord(
@@ -50,8 +50,8 @@ test("reloading anime media settings restores values into anime scope rather tha
     ["eng", "jpn"],
   );
 
-  assert.equal(nextTemplates.series, "SERIES CURRENT TEMPLATE");
-  assert.equal(nextTemplates.anime, "{title} - {episode_title} [{quality}].{ext}");
-  assert.deepEqual(nextAudioLanguages.series, ["eng"]);
-  assert.deepEqual(nextAudioLanguages.anime, ["eng", "jpn"]);
+  assert.equal(nextTemplates.SERIES, "SERIES CURRENT TEMPLATE");
+  assert.equal(nextTemplates.ANIME, "{title} - {episode_title} [{quality}].{ext}");
+  assert.deepEqual(nextAudioLanguages.SERIES, ["eng"]);
+  assert.deepEqual(nextAudioLanguages.ANIME, ["eng", "jpn"]);
 });

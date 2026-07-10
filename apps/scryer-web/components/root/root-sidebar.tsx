@@ -58,7 +58,7 @@ import {
   Users,
 } from "lucide-react";
 import { useTheme } from "next-themes";
-import { getNextTheme } from "@/lib/theme";
+import { fromUiThemeValue, getNextTheme, toUiThemeValue } from "@/lib/theme";
 import { cn } from "@/lib/utils";
 import type { PendingImportCounts } from "@/lib/types";
 import { pendingImportCountForView } from "@/lib/types";
@@ -540,14 +540,18 @@ function RootSidebarContent({
     const nextTheme = getNextTheme(theme);
     setTheme(nextTheme);
 
-    if (!uiSettingsLoaded || uiSettingsLoading || uiSettings.theme === nextTheme) {
+    if (
+      !uiSettingsLoaded ||
+      uiSettingsLoading ||
+      uiSettings.theme === toUiThemeValue(nextTheme)
+    ) {
       return;
     }
 
     const requestId = themeSaveSequenceRef.current + 1;
     themeSaveSequenceRef.current = requestId;
     const previous = uiSettings;
-    const next: UiSettings = { ...uiSettings, theme: nextTheme };
+    const next: UiSettings = { ...uiSettings, theme: toUiThemeValue(nextTheme) };
     setUiSettings(next);
     void client
       .mutation<{ setMyUiSettings?: UiSettings }, { input: UiSettings }>(
@@ -559,7 +563,7 @@ function RootSidebarContent({
         if (themeSaveSequenceRef.current !== requestId) return;
         if (result.error || !result.data?.setMyUiSettings) {
           setUiSettings(previous);
-          setTheme(previous.theme);
+          setTheme(fromUiThemeValue(previous.theme));
           setGlobalStatus(result.error?.message ?? t("status.failedToUpdate"));
           return;
         }
@@ -568,7 +572,7 @@ function RootSidebarContent({
       .catch((error) => {
         if (themeSaveSequenceRef.current !== requestId) return;
         setUiSettings(previous);
-        setTheme(previous.theme);
+        setTheme(fromUiThemeValue(previous.theme));
         setGlobalStatus(
           error instanceof Error ? error.message : t("status.failedToUpdate"),
         );

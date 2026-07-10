@@ -13,10 +13,10 @@ function configField(
   return {
     key: overrides.key,
     label: overrides.label ?? overrides.key,
-    fieldType: overrides.fieldType ?? "string",
+    fieldType: overrides.fieldType ?? "STRING",
     required: overrides.required ?? false,
     defaultValue: overrides.defaultValue ?? null,
-    valueSource: overrides.valueSource ?? "user",
+    valueSource: overrides.valueSource ?? "USER",
     role: overrides.role ?? null,
     hostBinding: overrides.hostBinding ?? null,
     options: overrides.options ?? [],
@@ -62,7 +62,7 @@ test("descriptor credentials are not overwritten by blank fixed fields", () => {
       }),
       [
         configField({ key: "username" }),
-        configField({ key: "password", fieldType: "password" }),
+        configField({ key: "password", fieldType: "PASSWORD" }),
       ],
     ),
   );
@@ -95,7 +95,7 @@ test("descriptor api key is not overwritten by blank fixed api key", () => {
           api_key: "descriptor-api-key",
         },
       }),
-      [configField({ key: "api_key", fieldType: "password" })],
+      [configField({ key: "api_key", fieldType: "PASSWORD" })],
     ),
   );
 
@@ -111,7 +111,7 @@ test("blank optional descriptor secrets are omitted", () => {
           password: "",
         },
       }),
-      [configField({ key: "password", fieldType: "password" })],
+      [configField({ key: "password", fieldType: "PASSWORD" })],
     ),
   );
 
@@ -121,7 +121,7 @@ test("blank optional descriptor secrets are omitted", () => {
 test("file-backed config field detection recognizes explicit and inferred paths", () => {
   assert.equal(
     isFileBackedDownloadClientConfigField(
-      configField({ key: "output", fieldType: "path" }),
+      configField({ key: "output", fieldType: "PATH" }),
     ),
     true,
   );
@@ -133,7 +133,7 @@ test("file-backed config field detection recognizes explicit and inferred paths"
     isFileBackedDownloadClientConfigField(
       configField({
         key: "target",
-        valueSource: "host_binding",
+        valueSource: "HOST_BINDING",
         hostBinding: "download_directory",
       }),
     ),

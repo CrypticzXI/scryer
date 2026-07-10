@@ -5,16 +5,16 @@ import { forEventTypes } from "@/lib/reactive/domain-event-feed";
 
 // Import + media-file lifecycle events that change the import history table.
 const IMPORT_HISTORY_EVENT_TYPES = [
-  "import_completed",
-  "import_rejected",
-  "import_requested",
-  "import_recovery_completed",
-  "media_file_imported",
-  "media_file_analyzed",
-  "media_file_renamed",
-  "media_file_deleted",
-  "media_file_upgraded",
-  "post_processing_completed",
+  "IMPORT_COMPLETED",
+  "IMPORT_REJECTED",
+  "IMPORT_REQUESTED",
+  "IMPORT_RECOVERY_COMPLETED",
+  "MEDIA_FILE_IMPORTED",
+  "MEDIA_FILE_ANALYZED",
+  "MEDIA_FILE_RENAMED",
+  "MEDIA_FILE_DELETED",
+  "MEDIA_FILE_UPGRADED",
+  "POST_PROCESSING_COMPLETED",
 ] as const;
 
 /**

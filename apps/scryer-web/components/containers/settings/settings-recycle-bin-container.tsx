@@ -111,7 +111,7 @@ export function SettingsRecycleBinContainer() {
     void client
       .query<LibrariesQueryResult>(
         librariesQuery,
-        { facet: null, permission: "manageTitles" },
+        { facet: null, permission: "MANAGE_TITLES" },
         { requestPolicy: "network-only" },
       )
       .toPromise()

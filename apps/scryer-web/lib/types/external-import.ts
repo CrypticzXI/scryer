@@ -3,8 +3,8 @@
 // crates/scryer-interface-media-types/src/lib.rs and the selection sets in
 // lib/graphql/{mutations,queries}.ts.
 
-export type ExternalArrSourceKind = "sonarr" | "radarr";
-export type ExternalImportConnectionKind = "sonarr" | "radarr" | "prowlarr";
+export type ExternalArrSourceKind = "SONARR" | "RADARR";
+export type ExternalImportConnectionKind = "SONARR" | "RADARR" | "PROWLARR";
 
 export type ExternalImportConnection = {
   baseUrl: string;
@@ -89,18 +89,18 @@ export type ExternalImportResult = {
 };
 
 export type ExternalImportMonitorWarmupStatus =
-  | "queued"
-  | "running"
-  | "completed"
-  | "canceled"
-  | "failed";
+  | "QUEUED"
+  | "RUNNING"
+  | "COMPLETED"
+  | "CANCELED"
+  | "FAILED";
 
 export type ExternalImportMonitorWarmupPhase =
-  | "loading_movies"
-  | "loading_series"
-  | "loading_episodes"
-  | "building_snapshot"
-  | "ready";
+  | "LOADING_MOVIES"
+  | "LOADING_SERIES"
+  | "LOADING_EPISODES"
+  | "BUILDING_SNAPSHOT"
+  | "READY";
 
 export type ExternalImportMonitorWarmupPhaseProgress = {
   total: number;

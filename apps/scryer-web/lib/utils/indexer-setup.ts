@@ -2,7 +2,7 @@ import { providerConfigRecordToValues } from "@/lib/utils/provider-config";
 import type { ConfigFieldDef } from "@/lib/types";
 
 export function setupIndexerConfigFields(fields: ConfigFieldDef[]) {
-  return fields.filter((field) => field.valueSource !== "host_binding");
+  return fields.filter((field) => field.valueSource !== "HOST_BINDING");
 }
 
 export function buildSetupIndexerConfigValues(
@@ -11,7 +11,7 @@ export function buildSetupIndexerConfigValues(
   const values: Record<string, string> = {};
   for (const field of setupIndexerConfigFields(fields)) {
     values[field.key] =
-      field.defaultValue ?? (field.fieldType === "bool" ? "false" : "");
+      field.defaultValue ?? (field.fieldType === "BOOL" ? "false" : "");
   }
   return values;
 }
@@ -33,8 +33,8 @@ export function serializeSetupIndexerConfigValues(
     let value =
       values[field.key] ??
       field.defaultValue ??
-      (field.fieldType === "bool" ? "false" : "");
-    if (field.fieldType === "bool") {
+      (field.fieldType === "BOOL" ? "false" : "");
+    if (field.fieldType === "BOOL") {
       entries[field.key] = value.trim() || field.defaultValue || "false";
       continue;
     }
@@ -47,7 +47,7 @@ export function serializeSetupIndexerConfigValues(
   }
 
   const secretInputKeys = setupIndexerConfigFields(fields)
-    .filter((field) => field.fieldType === "password")
+    .filter((field) => field.fieldType === "PASSWORD")
     .map((field) => field.key);
   return Object.keys(entries).length > 0
     ? providerConfigRecordToValues(entries, secretInputKeys)
@@ -65,8 +65,8 @@ export function findMissingSetupIndexerField(
     const value =
       values[field.key] ??
       field.defaultValue ??
-      (field.fieldType === "bool" ? "false" : "");
-    if (field.fieldType !== "bool" && value.trim() === "") {
+      (field.fieldType === "BOOL" ? "false" : "");
+    if (field.fieldType !== "BOOL" && value.trim() === "") {
       return field;
     }
   }

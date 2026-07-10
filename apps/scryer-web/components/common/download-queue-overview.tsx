@@ -11,33 +11,33 @@ import {
 } from "@/lib/utils/download-queue";
 
 const queueStateClasses: Record<string, string> = {
-  queued: "border-[var(--scry-warning-border)] bg-[var(--scry-warning-bg)] text-[var(--scry-warning-text)]",
-  downloading: "border-[var(--scry-info-border)] bg-[var(--scry-info-bg)] text-[var(--scry-info-text)]",
-  post_processing: "border-[var(--scry-info-border)] bg-[var(--scry-info-bg)] text-[var(--scry-info-text)]",
-  paused: "border-[var(--scry-warning-border)] bg-[var(--scry-warning-bg)] text-[var(--scry-warning-text)]",
-  completed: "border-[var(--scry-success-border)] bg-[var(--scry-success-bg)] text-[var(--scry-success-text)]",
-  importing: "border-[var(--scry-info-border)] bg-[var(--scry-info-bg)] text-[var(--scry-info-text)]",
-  removing: "border-[var(--scry-info-border)] bg-[var(--scry-info-bg)] text-[var(--scry-info-text)]",
-  import_pending: "border-[rgba(var(--scry-accent-rgb),0.4)] bg-[rgba(var(--scry-accent-rgb),0.1)] text-[var(--scry-accent-text)]",
-  import_blocked: "border-[var(--scry-warning-border)] bg-[var(--scry-warning-bg)] text-[var(--scry-warning-text)]",
-  import_failed: "border-[var(--scry-danger-border)] bg-[var(--scry-danger-bg)] text-[var(--scry-danger-text)]",
-  remove_failed: "border-[var(--scry-danger-border)] bg-[var(--scry-danger-bg)] text-[var(--scry-danger-text)]",
-  failed: "border-[var(--scry-danger-border)] bg-[var(--scry-danger-bg)] text-[var(--scry-danger-text)]",
+  QUEUED: "border-[var(--scry-warning-border)] bg-[var(--scry-warning-bg)] text-[var(--scry-warning-text)]",
+  DOWNLOADING: "border-[var(--scry-info-border)] bg-[var(--scry-info-bg)] text-[var(--scry-info-text)]",
+  POST_PROCESSING: "border-[var(--scry-info-border)] bg-[var(--scry-info-bg)] text-[var(--scry-info-text)]",
+  PAUSED: "border-[var(--scry-warning-border)] bg-[var(--scry-warning-bg)] text-[var(--scry-warning-text)]",
+  COMPLETED: "border-[var(--scry-success-border)] bg-[var(--scry-success-bg)] text-[var(--scry-success-text)]",
+  IMPORTING: "border-[var(--scry-info-border)] bg-[var(--scry-info-bg)] text-[var(--scry-info-text)]",
+  REMOVING: "border-[var(--scry-info-border)] bg-[var(--scry-info-bg)] text-[var(--scry-info-text)]",
+  IMPORT_PENDING: "border-[rgba(var(--scry-accent-rgb),0.4)] bg-[rgba(var(--scry-accent-rgb),0.1)] text-[var(--scry-accent-text)]",
+  IMPORT_BLOCKED: "border-[var(--scry-warning-border)] bg-[var(--scry-warning-bg)] text-[var(--scry-warning-text)]",
+  IMPORT_FAILED: "border-[var(--scry-danger-border)] bg-[var(--scry-danger-bg)] text-[var(--scry-danger-text)]",
+  REMOVE_FAILED: "border-[var(--scry-danger-border)] bg-[var(--scry-danger-bg)] text-[var(--scry-danger-text)]",
+  FAILED: "border-[var(--scry-danger-border)] bg-[var(--scry-danger-bg)] text-[var(--scry-danger-text)]",
 };
 
 const queueStateLabels: Record<string, string> = {
-  queued: "queue.state.queued",
-  downloading: "queue.state.downloading",
-  post_processing: "queue.state.postProcessing",
-  paused: "queue.state.paused",
-  completed: "queue.state.completed",
-  importing: "queue.state.importing",
-  removing: "queue.deleting",
-  import_pending: "queue.state.importPending",
-  import_blocked: "queue.state.importBlocked",
-  import_failed: "queue.manualImportFailed",
-  remove_failed: "queue.removeFailed",
-  failed: "queue.state.failed",
+  QUEUED: "queue.state.queued",
+  DOWNLOADING: "queue.state.downloading",
+  POST_PROCESSING: "queue.state.postProcessing",
+  PAUSED: "queue.state.paused",
+  COMPLETED: "queue.state.completed",
+  IMPORTING: "queue.state.importing",
+  REMOVING: "queue.deleting",
+  IMPORT_PENDING: "queue.state.importPending",
+  IMPORT_BLOCKED: "queue.state.importBlocked",
+  IMPORT_FAILED: "queue.manualImportFailed",
+  REMOVE_FAILED: "queue.removeFailed",
+  FAILED: "queue.state.failed",
 };
 
 function formatProgress(progressPercent: number): number {
@@ -88,7 +88,7 @@ function queueItemProgress(item: DownloadQueueItem): {
   const transferBytes = parseByteCount(item.importTransferBytes);
   const transferTotalBytes = parseByteCount(item.importTransferTotalBytes);
   if (
-    item.displayState === "importing" &&
+    item.displayState === "IMPORTING" &&
     item.importTransferPhase !== null &&
     transferBytes !== null &&
     transferTotalBytes !== null &&
@@ -123,22 +123,22 @@ function formatRemainingDuration(remainingSeconds: number | null): string | null
 
 function getProgressBarColor(stateKey: string): string {
   switch (stateKey) {
-    case "completed":
+    case "COMPLETED":
       return "bg-[var(--scry-success-solid)]";
-    case "failed":
-    case "remove_failed":
+    case "FAILED":
+    case "REMOVE_FAILED":
       return "bg-[var(--scry-danger-solid)]";
-    case "paused":
+    case "PAUSED":
       return "bg-[var(--scry-warning-solid)]";
-    case "import_pending":
+    case "IMPORT_PENDING":
       return "bg-[rgb(var(--scry-accent-rgb))]";
-    case "downloading":
-    case "removing":
-    case "importing":
+    case "DOWNLOADING":
+    case "REMOVING":
+    case "IMPORTING":
       return "bg-[var(--scry-info-solid)]";
-    case "post_processing":
+    case "POST_PROCESSING":
       return "bg-[var(--scry-info-solid)]";
-    case "queued":
+    case "QUEUED":
       return "bg-gray-400";
     default:
       return "bg-muted-foreground";
@@ -154,7 +154,7 @@ function queueStatusLabel(
     queueItem.attentionReason?.trim() ??
     queueItem.trackedStatusMessages[0]?.trim() ??
     "";
-  if (stateKey === "post_processing" && stageLabel.length > 0) {
+  if (stateKey === "POST_PROCESSING" && stageLabel.length > 0) {
     return stageLabel;
   }
   if (queueItem.importTransferPhase === "copying") {
@@ -227,7 +227,7 @@ export function MovieOverviewDownloadList({
                   percent={progress}
                   remainingLabel={remainingLabel}
                   colorClass={getProgressBarColor(stateKey)}
-                  indeterminate={stateKey === "queued"}
+                  indeterminate={stateKey === "QUEUED"}
                 />
               </div>
             </div>
@@ -255,7 +255,7 @@ export function EpisodeQueueIndicator({
         colorClass={getProgressBarColor(stateKey)}
         compact
         hideLabel
-        indeterminate={stateKey === "queued"}
+        indeterminate={stateKey === "QUEUED"}
       />
     </div>
   );

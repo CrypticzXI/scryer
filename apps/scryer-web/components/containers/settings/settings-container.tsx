@@ -143,11 +143,11 @@ export const SettingsContainer = memo(function SettingsContainer({
   const [providerCatalogVersions, setProviderCatalogVersions] = useState<
     Record<ProviderCatalogFamily, number>
   >({
-    subtitle: 0,
-    notification: 0,
-    indexer: 0,
-    download_client: 0,
-    archive_extractor: 0,
+    SUBTITLE: 0,
+    NOTIFICATION: 0,
+    INDEXER: 0,
+    DOWNLOAD_CLIENT: 0,
+    ARCHIVE_EXTRACTOR: 0,
   });
   const showPluginsLink =
     settingsSection === "downloadClients" ||
@@ -520,13 +520,13 @@ export const SettingsContainer = memo(function SettingsContainer({
             <SettingsMediaServersContainer />
           ) : settingsSection === "indexers" ? (
             <SettingsIndexersContainer
-              providerCatalogVersion={providerCatalogVersions.indexer}
+              providerCatalogVersion={providerCatalogVersions.INDEXER}
             />
           ) : settingsSection === "downloadClients" ? (
             <SettingsDownloadClientsContainer
               providerCatalogVersion={
-                providerCatalogVersions.download_client
-                + providerCatalogVersions.archive_extractor
+                providerCatalogVersions.DOWNLOAD_CLIENT
+                + providerCatalogVersions.ARCHIVE_EXTRACTOR
               }
             />
           ) : settingsSection === "rules" ? (
@@ -535,13 +535,13 @@ export const SettingsContainer = memo(function SettingsContainer({
             <SettingsPluginsContainer />
           ) : settingsSection === "notifications" ? (
             <SettingsNotificationsContainer
-              providerCatalogVersion={providerCatalogVersions.notification}
+              providerCatalogVersion={providerCatalogVersions.NOTIFICATION}
             />
           ) : settingsSection === "post-processing" ? (
             <SettingsPostProcessingContainer />
           ) : settingsSection === "subtitles" ? (
             <SettingsSubtitlesContainer
-              providerCatalogVersion={providerCatalogVersions.subtitle}
+              providerCatalogVersion={providerCatalogVersions.SUBTITLE}
             />
           ) : settingsSection === "recycleBin" ? (
             <SettingsRecycleBinContainer />
