@@ -444,14 +444,10 @@ async fn graphql_introspection_lists_title_fields() {
     }
 
     for (type_alias, expected_fields) in [
-        (
-            "wantedItemsPage",
-            vec!["items", "limit", "offset", "hasMore", "totalCount"],
-        ),
-        (
-            "releaseDecisionsPage",
-            vec!["items", "limit", "offset", "hasMore"],
-        ),
+        // 0.17.0 trim: relationship-page metadata fields nobody selected were
+        // removed; PendingReleasesPayload kept its full page contract.
+        ("wantedItemsPage", vec!["items"]),
+        ("releaseDecisionsPage", vec!["items", "hasMore"]),
         (
             "pendingReleasesPage",
             vec!["items", "limit", "offset", "hasMore", "totalCount"],
@@ -895,10 +891,6 @@ async fn graphql_introspection_exposes_typed_timestamps_as_datetime() {
         ("login", "expiresAt"),
         ("title", "createdAt"),
         ("collection", "createdAt"),
-        ("movieEntity", "createdAt"),
-        ("movieEntity", "updatedAt"),
-        ("seriesMovieLink", "createdAt"),
-        ("seriesMovieLink", "updatedAt"),
         ("mediaFile", "createdAt"),
         ("wantedItem", "createdAt"),
         ("wantedItem", "updatedAt"),
@@ -1252,9 +1244,7 @@ async fn graphql_introspection_delete_rename_and_cutoff_payloads_use_id_fields()
     for (type_alias, name) in [
         ("mediaRenamePlan", "titleId"),
         ("mediaRenamePlanItem", "collectionId"),
-        ("mediaRenamePlanItem", "mediaFileId"),
         ("mediaRenameApplyItem", "collectionId"),
-        ("mediaRenameApplyItem", "mediaFileId"),
         ("manualImportFile", "suggestedEpisodeId"),
         ("cutoffUnmetItem", "episodeId"),
     ] {

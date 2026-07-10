@@ -1878,7 +1878,16 @@ pub fn host_key_from_url(url: &reqwest::Url) -> Option<HostKey> {
 }
 
 pub fn destination_key_from_url(url: &reqwest::Url) -> Option<DestinationKey> {
-    url.host_str().map(DestinationKey::from)
+    let host = url.host_str()?;
+    let host_key = HostKey::from(host);
+    if host_is_loopback(host_key.as_str()) {
+        return url
+            .port_or_known_default()
+            .map(|port| DestinationKey::from(format!("{}:{port}", host_key.as_str())))
+            .or_else(|| Some(DestinationKey::from(host_key.as_str())));
+    }
+
+    Some(DestinationKey::from(host_key.as_str()))
 }
 
 fn redirect_target_url(response: &Response) -> Option<reqwest::Url> {
@@ -2464,6 +2473,41 @@ mod tests {
     fn host_keys_are_normalized() {
         assert_eq!(HostKey::from("Example.COM.").as_str(), "example.com");
         assert_eq!(HostKey::from("[2001:db8::1]").as_str(), "2001:db8::1");
+    }
+
+    #[test]
+    fn loopback_destination_keys_include_port() {
+        let first = reqwest::Url::parse("http://127.0.0.1:3001/api").unwrap();
+        let second = reqwest::Url::parse("http://127.0.0.1:3002/api").unwrap();
+        let localhost = reqwest::Url::parse("http://localhost:3001/api").unwrap();
+
+        assert_eq!(
+            destination_key_from_url(&first).unwrap().as_str(),
+            "127.0.0.1:3001"
+        );
+        assert_eq!(
+            destination_key_from_url(&localhost).unwrap().as_str(),
+            "localhost:3001"
+        );
+        assert_ne!(
+            destination_key_from_url(&first),
+            destination_key_from_url(&second)
+        );
+    }
+
+    #[test]
+    fn public_destination_keys_remain_host_scoped() {
+        let first = reqwest::Url::parse("https://example.com:443/api").unwrap();
+        let second = reqwest::Url::parse("https://example.com:8443/api").unwrap();
+
+        assert_eq!(
+            destination_key_from_url(&first).unwrap().as_str(),
+            "example.com"
+        );
+        assert_eq!(
+            destination_key_from_url(&first),
+            destination_key_from_url(&second)
+        );
     }
 
     #[test]

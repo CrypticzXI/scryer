@@ -645,7 +645,7 @@ async fn nzbgeek_search_rate_limited() {
         .respond_with(
             ResponseTemplate::new(429)
                 .set_body_string(load_fixture("nzbgeek/error_rate_limit.json"))
-                .insert_header("Retry-After", "60"),
+                .insert_header("Retry-After", "1"),
         )
         .mount(&ctx.nzbgeek_server)
         .await;

@@ -102,7 +102,6 @@ async fn graphql_media_rename_preview_for_anime_uses_media_file_rows() {
             errors
             items {
               collectionId
-              mediaFileId
               currentPath
               proposedPath
               writeAction
@@ -131,7 +130,6 @@ async fn graphql_media_rename_preview_for_anime_uses_media_file_rows() {
 
     let item = &plan["items"][0];
     assert_eq!(item["collectionId"], Value::Null);
-    assert_eq!(item["mediaFileId"], json!(file_id));
     assert_eq!(
         item["currentPath"],
         json!(file_path.to_string_lossy().to_string())
@@ -281,7 +279,6 @@ async fn graphql_media_rename_preview_for_anime_uses_saved_anime_template() {
             total
             renamable
             items {
-              mediaFileId
               currentPath
               proposedPath
             }
@@ -302,7 +299,6 @@ async fn graphql_media_rename_preview_for_anime_uses_saved_anime_template() {
     let plan = &body["data"]["mediaRenamePreview"];
     assert_eq!(plan["total"].as_i64(), Some(1));
     assert_eq!(plan["renamable"].as_i64(), Some(1));
-    assert_eq!(plan["items"][0]["mediaFileId"], json!(file_id));
     assert_eq!(
         plan["items"][0]["currentPath"],
         json!(file_path.to_string_lossy().to_string())
@@ -418,7 +414,6 @@ async fn graphql_media_rename_preview_for_anime_series_movie_uses_season_zero_nu
             items {
               collectionId
               seriesMovieLinkIds
-              mediaFileId
               currentPath
               proposedPath
               writeAction
@@ -444,7 +439,6 @@ async fn graphql_media_rename_preview_for_anime_series_movie_uses_season_zero_nu
     let item = &plan["items"][0];
     assert_eq!(item["collectionId"], serde_json::Value::Null);
     assert_eq!(item["seriesMovieLinkIds"], json!([series_movie_link.id]));
-    assert_eq!(item["mediaFileId"], json!(file_id));
     assert_eq!(
         item["currentPath"],
         json!(file_path.to_string_lossy().to_string())
@@ -753,7 +747,6 @@ async fn graphql_media_rename_preview_for_movies_stays_collection_based() {
             renamable
             items {
               collectionId
-              mediaFileId
               currentPath
               proposedPath
               writeAction
@@ -778,7 +771,6 @@ async fn graphql_media_rename_preview_for_movies_stays_collection_based() {
 
     let item = &plan["items"][0];
     assert_eq!(item["collectionId"], json!(collection.id));
-    assert_eq!(item["mediaFileId"], json!(file_id));
     assert_eq!(
         item["currentPath"],
         json!(file_path.to_string_lossy().to_string())
@@ -1373,7 +1365,6 @@ async fn graphql_media_rename_preview_for_anime_multi_episode_file_uses_episode_
             total
             renamable
             items {
-              mediaFileId
               proposedPath
               writeAction
             }
@@ -1394,7 +1385,6 @@ async fn graphql_media_rename_preview_for_anime_multi_episode_file_uses_episode_
     let plan = &body["data"]["mediaRenamePreview"];
     assert_eq!(plan["total"].as_i64(), Some(1));
     assert_eq!(plan["renamable"].as_i64(), Some(1));
-    assert_eq!(plan["items"][0]["mediaFileId"], json!(file_id));
     assert_eq!(plan["items"][0]["writeAction"], "move");
     assert_eq!(
         plan["items"][0]["proposedPath"],

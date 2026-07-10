@@ -525,15 +525,8 @@ async fn graphql_introspection_media_requests_changed_uses_typed_payload() {
         assert_eq!(field["type"]["kind"], "NON_NULL", "{name}");
         assert_eq!(field["type"]["ofType"]["name"], "ID", "{name}");
     }
-    for name in [
-        "createdTitleId",
-        "requestedQualityProfileId",
-        "approvedQualityProfileId",
-    ] {
-        let field = field(name);
-        assert_eq!(field["type"]["kind"], "SCALAR", "{name}");
-        assert_eq!(field["type"]["name"], "ID", "{name}");
-    }
+    // 0.17.0 trim: the denormalized created/requested/approved id+name fields
+    // were removed from MediaRequestChangedPayload (never selected by clients).
     let event_type = field("eventType");
     assert_eq!(event_type["type"]["kind"], "NON_NULL");
     assert_eq!(event_type["type"]["ofType"]["name"], "DomainEventTypeValue");
