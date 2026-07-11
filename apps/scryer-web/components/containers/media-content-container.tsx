@@ -329,10 +329,6 @@ function mergePreferLoadedImageFields(
       incoming.mediaFiles === undefined
         ? current.mediaFiles
         : incoming.mediaFiles,
-    moreLikeThis:
-      incoming.moreLikeThis === undefined
-        ? current.moreLikeThis
-        : incoming.moreLikeThis,
     imdbId: incoming.imdbId === undefined ? current.imdbId : incoming.imdbId,
     externalIds:
       incoming.externalIds === undefined ? current.externalIds : incoming.externalIds,
@@ -793,9 +789,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     (contentSettingsSection === "library" ||
       contentSettingsSection === "general" ||
       contentSettingsSection === "routing");
-  const refreshCatalogDiscovery = React.useCallback(async (options?: {
-    forceNetwork?: boolean;
-  }) => {
+  const refreshCatalogDiscovery = React.useCallback(async () => {
     const requestId = catalogDiscoveryRequestIdRef.current + 1;
     catalogDiscoveryRequestIdRef.current = requestId;
     if (!shouldLoadCatalogTitles) {
@@ -817,9 +811,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
         .query<{ catalogDiscovery?: CatalogDiscoveryPayload }>(
           catalogDiscoveryQuery,
           { input },
-          // Freshness-first: cache-served for instant paint; discovery events
-          // re-execute with network-only to replace the cached entry.
-          { requestPolicy: options?.forceNetwork ? "network-only" : "cache-first" },
+          { requestPolicy: "network-only" },
         )
         .toPromise();
       if (error) {
@@ -842,15 +834,14 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     void refreshCatalogDiscovery();
   }, [refreshCatalogDiscovery]);
 
-  // A completed discovery search invalidates the cached catalog-discovery
-  // groups: re-execute over the network so the document cache is replaced.
+  // A completed discovery search updates catalog discovery from the network.
   React.useEffect(
     () =>
       registerReactiveRefresh({
         aliasKey: "catalog-discovery",
         predicate: forEventTypes("DISCOVERY_SEARCH_COMPLETED"),
         run: () => {
-          void refreshCatalogDiscovery({ forceNetwork: true });
+          void refreshCatalogDiscovery();
         },
       }),
     [registerReactiveRefresh, refreshCatalogDiscovery],
@@ -1802,7 +1793,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
                 includeUnresolved: true,
               },
             },
-            { requestPolicy: "cache-first" },
+            { requestPolicy: "network-only" },
           )
           .toPromise();
         if (error) {
@@ -2319,14 +2310,21 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
 
       const merge = (title: TitleRecord): TitleRecord =>
         title.id === titleId ? { ...title, moreLikeThis } : title;
-
-      setSelectedOverviewDetailTitle((current) =>
-        current?.id === titleId ? merge(current) : current,
+      const sourceTitle = titleContextSourceTitles.find(
+        (title) => title.id === titleId,
       );
-      setTitleContextTitles((current) => current.map(merge));
-      setMonitoredTitles((current) => current.map(merge));
+
+      setSelectedOverviewDetailTitle((current) => {
+        const base =
+          current?.id === titleId
+            ? current
+            : selectedOverviewTitleIdRef.current === titleId
+              ? sourceTitle
+              : null;
+        return base ? merge(base) : current;
+      });
     },
-    [setMonitoredTitles],
+    [titleContextSourceTitles],
   );
 
   useTitleListReactiveRefresh({
@@ -2621,12 +2619,13 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
         return null;
       }
       return (
+        (selectedOverviewDetailTitle?.id === selectedOverviewTitleId
+          ? selectedOverviewDetailTitle
+          : null) ??
         titleContextSourceTitles.find(
           (title) => title.id === selectedOverviewTitleId,
         ) ??
-        (selectedOverviewDetailTitle?.id === selectedOverviewTitleId
-          ? selectedOverviewDetailTitle
-          : null)
+        null
       );
     },
     [

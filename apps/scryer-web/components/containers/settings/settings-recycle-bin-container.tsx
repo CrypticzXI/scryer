@@ -239,11 +239,18 @@ export function SettingsRecycleBinContainer() {
     }
     setMutatingId(item.id);
     try {
-      const { error } = await client
-        .mutation(deleteRecycledItemMutation, { id: item.id })
+      const { data, error } = await client
+        .mutation<{ deleteRecycledItem?: { deleted?: boolean } }>(
+          deleteRecycledItemMutation,
+          { id: item.id },
+        )
         .toPromise();
       if (error) throw error;
-      setGlobalStatus(t("status.recycleBinDeleted"));
+      setGlobalStatus(
+        data?.deleteRecycledItem?.deleted === false
+          ? t("status.recycleBinQuarantined")
+          : t("status.recycleBinDeleted"),
+      );
       await fetchItems();
     } catch (error) {
       setGlobalStatus(error instanceof Error ? error.message : t("status.failedToDelete"));

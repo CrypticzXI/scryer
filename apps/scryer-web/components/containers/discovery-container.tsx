@@ -42,12 +42,6 @@ const DISCOVERY_HOME_INPUT: DiscoveryHomeInput = {
   limitPerSection: 18,
 };
 
-// The discovery-home payload is scoped by user/language/authorization, but those
-// are not part of the GraphQL variables (so they are not in the document cache
-// key). Track the scope of the last fetched entry across mounts so a scope change
-// forces a network fetch instead of serving another scope's cached dashboard.
-let lastDiscoveryHomeScopeKey: string | null = null;
-
 function facetForDiscoveryItem(item: DiscoveryItem): Facet {
   const primaryKind = item.contentType?.trim() || item.targetKind.trim();
   switch (primaryKind.toLowerCase()) {
@@ -144,7 +138,7 @@ export const DiscoveryContainer = memo(function DiscoveryContainer({
     };
   }, []);
 
-  const refresh = useCallback(async (options?: { forceNetwork?: boolean }) => {
+  const refresh = useCallback(async () => {
     const requestId = refreshRequestIdRef.current + 1;
     refreshRequestIdRef.current = requestId;
     const scopeKey = JSON.stringify({ userId, uiLanguage, authorizationSignature });
@@ -156,14 +150,6 @@ export const DiscoveryContainer = memo(function DiscoveryContainer({
     if (!sameScope) {
       setHome(null);
     }
-    // Freshness-first: serve the dashboard from the document cache for instant
-    // paint, but fetch from the network when the scope changed (localized /
-    // per-user payload isn't in the cache key) or a discovery event asks for it.
-    const scopeChangedSinceLastFetch = lastDiscoveryHomeScopeKey !== scopeKey;
-    const requestPolicy: "cache-first" | "network-only" =
-      options?.forceNetwork || scopeChangedSinceLastFetch
-        ? "network-only"
-        : "cache-first";
     setLoading(true);
     setError(null);
     try {
@@ -171,7 +157,7 @@ export const DiscoveryContainer = memo(function DiscoveryContainer({
         .query(
           discoveryHomeQuery,
           { input: DISCOVERY_HOME_INPUT },
-          { requestPolicy },
+          { requestPolicy: "network-only" },
         )
         .toPromise();
       if (queryError) {
@@ -183,7 +169,6 @@ export const DiscoveryContainer = memo(function DiscoveryContainer({
       const nextHome = (data?.discoveryHome ?? null) as
         | DiscoveryHomePayload
         | null;
-      lastDiscoveryHomeScopeKey = scopeKey;
       setHome(nextHome);
     } catch (caught) {
       if (!mountedRef.current || refreshRequestIdRef.current !== requestId) {
@@ -206,15 +191,14 @@ export const DiscoveryContainer = memo(function DiscoveryContainer({
     void refresh();
   }, [refresh]);
 
-  // A completed discovery search replaces the cached dashboard: re-execute the
-  // discovery-home query with a network fetch so the cache entry is refreshed.
+  // A completed discovery search updates the dashboard from the network.
   useEffect(
     () =>
       registerReactiveRefresh({
         aliasKey: "discovery-home",
         predicate: forEventTypes("DISCOVERY_SEARCH_COMPLETED"),
         run: () => {
-          void refresh({ forceNetwork: true });
+          void refresh();
         },
       }),
     [registerReactiveRefresh, refresh],
@@ -249,7 +233,7 @@ export const DiscoveryContainer = memo(function DiscoveryContainer({
                 includeUnresolved: true,
               },
             },
-            { requestPolicy: "cache-first" },
+            { requestPolicy: "network-only" },
           )
           .toPromise();
         if (detailError) {

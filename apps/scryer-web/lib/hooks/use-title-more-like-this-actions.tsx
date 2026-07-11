@@ -127,7 +127,7 @@ export function useTitleMoreLikeThisActions({
                 includeUnresolved: true,
               },
             },
-            { requestPolicy: "cache-first" },
+            { requestPolicy: "network-only" },
           )
           .toPromise();
         if (error) {

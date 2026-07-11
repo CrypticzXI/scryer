@@ -2836,6 +2836,7 @@ const en: LocaleDictionary = {
   "pending.forceGrab": "Grab now",
   "pending.dismiss": "Dismiss",
   "pending.grabbed": "Release grabbed.",
+  "pending.grabRejected": "Grab rejected — the release is blocked or unavailable.",
   "pending.dismissed": "Release dismissed.",
   "pending.timeRemaining": "{{time}} remaining",
 
@@ -3321,6 +3322,7 @@ const en: LocaleDictionary = {
   "settings.recycleBinRecycled": "Recycled",
   "status.recycleBinRestored": "File restored to {{path}}.",
   "status.recycleBinDeleted": "File permanently deleted.",
+  "status.recycleBinQuarantined": "Entry was quarantined instead of deleted — the file is unsafe to remove.",
   "status.recycleBinEmptied": "Recycle bin emptied ({{count}} items removed).",
   "status.recycleBinSettingsSaved": "Recycle bin settings saved.",
 };

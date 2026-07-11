@@ -250,9 +250,7 @@ export const backendClient = new Client({
   preferGetMethod: false,
   requestPolicy: "network-only",
   fetch: scryerFetch,
-  // Document `cacheExchange` (not graphcache) sits ahead of the fetch/subscription
-  // exchanges. The global default requestPolicy stays "network-only" so nothing
-  // caches unless a call site opts into "cache-first" (freshness-first discovery).
+  // Keep the lightweight exchange available, but default every request to the network.
   exchanges: [
     cacheExchange,
     subscriptionExchange({

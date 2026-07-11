@@ -117,7 +117,7 @@ export async function fetchTitleMoreLikeThis<TItem = CatalogDiscoveryItem>(
     .query<TitleMoreLikeThisResponse<TItem>>(
       titleMoreLikeThisQuery,
       { id: titleId, limit },
-      { requestPolicy: "cache-first" },
+      { requestPolicy: "network-only" },
     )
     .toPromise();
 

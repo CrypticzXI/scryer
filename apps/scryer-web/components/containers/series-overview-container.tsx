@@ -461,17 +461,7 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
       const nextTitle = snapshot.title;
       const nextCollections = nextTitle?.collections ?? [];
       const nextSeriesMovieLinks = nextTitle?.seriesMovieLinks ?? [];
-      setTitle((current) => {
-        if (!nextTitle) {
-          return null;
-        }
-        return {
-          ...nextTitle,
-          moreLikeThis:
-            nextTitle.moreLikeThis ??
-            (current?.id === nextTitle.id ? current.moreLikeThis : undefined),
-        };
-      });
+      setTitle(nextTitle ?? null);
       if (nextTitle) {
         onTitleResolved?.({
           id: nextTitle.id,

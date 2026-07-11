@@ -253,9 +253,12 @@ export const WantedContainer = memo(function WantedContainer({
 
   const forceGrabPending = useCallback(
     async (id: string) => {
-      const { error } = await executeForceGrab({ id });
+      const { data, error } = await executeForceGrab({ id });
       if (error) {
         setGlobalStatus(error.message);
+      } else if (data?.forceGrabPendingRelease?.grabbed === false) {
+        setGlobalStatus(t("pending.grabRejected"));
+        void refreshPending();
       } else {
         setGlobalStatus(t("pending.grabbed"));
         void refreshPending();
