@@ -11,10 +11,7 @@ import type { TitleMoreLikeThisStripActions } from "@/components/views/title-mor
 import { useGlobalStatus } from "@/lib/context/global-status-context";
 import { useSearchContext } from "@/lib/context/search-context";
 import { useTranslate } from "@/lib/context/translate-context";
-import {
-  discoveryItemDetailQuery,
-  titleRouteTargetQuery,
-} from "@/lib/graphql/queries";
+import { titleRouteTargetQuery } from "@/lib/graphql/queries";
 import type { CatalogDiscoveryItem, Facet } from "@/lib/types";
 import {
   discoveryItemFacet,
@@ -118,28 +115,8 @@ export function useTitleMoreLikeThisActions({
       }
       try {
         await search.ensureCatalogConfigReady(facet);
-        const { data, error } = await client
-          .query(
-            discoveryItemDetailQuery,
-            {
-              input: {
-                targetKey: item.targetKey,
-                includeUnresolved: true,
-              },
-            },
-            { requestPolicy: "network-only" },
-          )
-          .toPromise();
-        if (error) {
-          throw error;
-        }
-        const detailItem =
-          data?.discoveryItemDetail as CatalogDiscoveryItem | null | undefined;
-        if (!detailItem) {
-          throw new Error(t("status.apiError"));
-        }
         const target = {
-          result: metadataResultForDiscoveryItem(detailItem),
+          result: metadataResultForDiscoveryItem(item),
           facet,
         };
         if ((search.librariesByFacet[facet] ?? []).length > 0) {
@@ -156,7 +133,6 @@ export function useTitleMoreLikeThisActions({
       }
     },
     [
-      client,
       search,
       setGlobalStatus,
       t,

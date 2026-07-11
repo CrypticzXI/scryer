@@ -452,7 +452,10 @@ async fn graphql_introspection_lists_title_fields() {
             "releaseDecisionsPage",
             vec!["items", "totalCount", "hasMore"],
         ),
-        ("pendingReleasesPage", vec!["items", "hasMore", "totalCount"]),
+        (
+            "pendingReleasesPage",
+            vec!["items", "hasMore", "totalCount"],
+        ),
     ] {
         let fields: Vec<&str> = body["data"][type_alias]["fields"]
             .as_array()
@@ -516,14 +519,7 @@ async fn graphql_introspection_lists_title_fields() {
         .collect();
     assert_eq!(
         title_catalog_fields,
-        vec![
-            "items",
-            "limit",
-            "offset",
-            "hasMore",
-            "totalCount",
-            "filterCounts"
-        ]
+        vec!["items", "hasMore", "totalCount", "filterCounts"]
     );
     let subscription_fields = body["data"]["subscriptionRoot"]["fields"]
         .as_array()
@@ -2355,7 +2351,7 @@ async fn graphql_delete_download_marks_history_item_completed_after_poller_runs(
         &ctx,
         r#"
         {
-                    downloadHistory(limit: 100, offset: 0, filters: [all]) {
+                    downloadHistory(limit: 100, offset: 0, filters: [ALL]) {
             items {
               downloadClientItemId
               state

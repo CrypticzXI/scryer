@@ -66,7 +66,13 @@ function graphQlErrorCode(error: unknown): string | null {
   return null;
 }
 
-function primaryLoginFailureMessage(t: (key: string) => string): string {
+function primaryLoginFailureMessage(
+  t: (key: string) => string,
+  error?: unknown,
+): string {
+  if (error !== undefined && graphQlErrorCode(error) === "RATE_LIMITED") {
+    return t("auth.signInRateLimited");
+  }
   return t("auth.signInFailedGeneric");
 }
 
@@ -253,12 +259,12 @@ export default function LoginPage() {
           } else if (err.code === "cancelled") {
             setError(t("auth.passkeyCancelled"));
           } else {
-            setError(primaryLoginFailureMessage(t));
+            setError(primaryLoginFailureMessage(t, err));
           }
           return;
         }
 
-        setError(primaryLoginFailureMessage(t));
+        setError(primaryLoginFailureMessage(t, err));
       } finally {
         setPasskeySubmitting(false);
       }
@@ -310,7 +316,7 @@ export default function LoginPage() {
           setLocalTotpCode("");
           setError(null);
         } else {
-          setError(primaryLoginFailureMessage(t));
+          setError(primaryLoginFailureMessage(t, err));
         }
       } finally {
         setSubmitting(false);
@@ -465,8 +471,8 @@ export default function LoginPage() {
         }
         adoptSession(data.loginWithPlex.token, data.loginWithPlex.user ?? null);
         navigate(redirectTarget, { replace: true });
-      } catch {
-        setError(primaryLoginFailureMessage(t));
+      } catch (err) {
+        setError(primaryLoginFailureMessage(t, err));
       } finally {
         setPlexSubmitting(false);
       }

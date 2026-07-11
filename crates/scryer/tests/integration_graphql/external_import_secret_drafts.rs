@@ -95,7 +95,7 @@ mutation SaveDraft($input: SaveExternalImportSetupSecretDraftInput!) {
 const CLEAR_DRAFT: &str = r#"
 mutation ClearDraft {
   clearExternalImportSetupSecretDraft {
-    clearedAt
+    cleared
   }
 }
 "#;
@@ -254,9 +254,9 @@ async fn graphql_external_import_setup_secret_draft_round_trips_typed_owner_scop
 
     let owner_clear = schema_exec_with_variables(&ctx, CLEAR_DRAFT, json!({}), &owner).await;
     assert_no_errors(&owner_clear);
-    assert!(
-        owner_clear["data"]["clearExternalImportSetupSecretDraft"]["clearedAt"].is_string(),
-        "expected clearedAt timestamp: {owner_clear}"
+    assert_eq!(
+        owner_clear["data"]["clearExternalImportSetupSecretDraft"]["cleared"],
+        false
     );
 
     // The owner no longer owns the draft, so their clear must not remove the
@@ -270,9 +270,9 @@ async fn graphql_external_import_setup_secret_draft_round_trips_typed_owner_scop
 
     let other_clear = schema_exec_with_variables(&ctx, CLEAR_DRAFT, json!({}), &other).await;
     assert_no_errors(&other_clear);
-    assert!(
-        other_clear["data"]["clearExternalImportSetupSecretDraft"]["clearedAt"].is_string(),
-        "expected clearedAt timestamp: {other_clear}"
+    assert_eq!(
+        other_clear["data"]["clearExternalImportSetupSecretDraft"]["cleared"],
+        true
     );
 
     let final_read = schema_exec_with_variables(&ctx, READ_DRAFT, json!({}), &other).await;

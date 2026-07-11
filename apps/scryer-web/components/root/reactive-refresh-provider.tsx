@@ -344,8 +344,10 @@ function reactiveRefreshBatchGroup(
 
 export function ReactiveRefreshProvider({
   children,
+  enabled = true,
 }: {
   children: ReactNode;
+  enabled?: boolean;
 }) {
   const client = useClient();
   const pendingActionsRef = useRef<Map<string, ReactiveRefreshAction>>(new Map());
@@ -532,6 +534,9 @@ export function ReactiveRefreshProvider({
   // `complete` means the subscription itself dropped) and degrades to a slow
   // interval refresh of every registered alias if reconnects keep failing.
   useEffect(() => {
+    if (!enabled) {
+      return;
+    }
     const transport = startDomainEventFeedTransport({
       query: domainEventFeedSubscription,
       engine,
@@ -540,7 +545,7 @@ export function ReactiveRefreshProvider({
     return () => {
       transport.stop();
     };
-  }, [engine]);
+  }, [enabled, engine]);
 
   const value = useMemo<ReactiveRefreshContextValue>(
     () => ({

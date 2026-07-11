@@ -890,8 +890,6 @@ async fn graphql_introspection_pending_releases_uses_page_payload() {
             .unwrap_or_else(|| panic!("PendingReleasesPayload.{name} should exist"))
     };
     assert_eq!(page_field("items")["type"]["kind"], "NON_NULL");
-    assert_eq!(page_field("limit")["type"]["ofType"]["name"], "Int");
-    assert_eq!(page_field("offset")["type"]["ofType"]["name"], "Int");
     assert_eq!(page_field("hasMore")["type"]["ofType"]["name"], "Boolean");
     assert_eq!(page_field("totalCount")["type"]["ofType"]["name"], "Int");
 
@@ -1191,9 +1189,9 @@ async fn graphql_introspection_title_history_filter_uses_event_type_enum() {
         .iter()
         .filter_map(|value| value["name"].as_str())
         .collect();
-    assert!(names.contains(&"download_failed"));
-    assert!(names.contains(&"download_ignored"));
-    assert!(names.contains(&"rematched"));
+    assert!(names.contains(&"DOWNLOAD_FAILED"));
+    assert!(names.contains(&"DOWNLOAD_IGNORED"));
+    assert!(names.contains(&"REMATCHED"));
 }
 
 #[tokio::test]
@@ -1719,6 +1717,9 @@ async fn graphql_introspection_provider_configs_use_typed_config_values() {
           configValuePayload: __type(name: "ProviderConfigValuePayload") {
             fields { name type { kind name ofType { kind name ofType { kind name ofType { kind name } } } } }
           }
+          configFieldValue: __type(name: "ProviderConfigFieldValue") {
+            possibleTypes { name }
+          }
           configValueInput: __type(name: "ProviderConfigValueInput") {
             inputFields { name type { kind name ofType { kind name ofType { kind name ofType { kind name } } } } }
           }
@@ -1802,11 +1803,22 @@ async fn graphql_introspection_provider_configs_use_typed_config_values() {
             "hostBinding",
             "options",
             "helpText",
-            "stringValue",
-            "boolValue",
-            "intValue",
-            "floatValue",
-            "secretStored"
+            "value"
+        ]
+    );
+    assert_eq!(
+        body["data"]["configFieldValue"]["possibleTypes"]
+            .as_array()
+            .expect("ProviderConfigFieldValue should expose possible types")
+            .iter()
+            .filter_map(|field| field["name"].as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "StringConfigValuePayload",
+            "BoolConfigValuePayload",
+            "IntConfigValuePayload",
+            "FloatConfigValuePayload",
+            "SecretConfigValuePayload"
         ]
     );
     assert_eq!(
@@ -1882,10 +1894,6 @@ async fn graphql_introspection_provider_configs_use_typed_config_values() {
     };
 
     assert_optional_string(
-        output_field("configValuePayload", "stringValue"),
-        "ProviderConfigValuePayload.stringValue",
-    );
-    assert_optional_string(
         input_field("configValueInput", "secretValue"),
         "ProviderConfigValueInput.secretValue",
     );
@@ -1893,14 +1901,14 @@ async fn graphql_introspection_provider_configs_use_typed_config_values() {
         input_field("configValueInput", "clearSecret"),
         "ProviderConfigValueInput.clearSecret",
     );
-    let secret_stored = output_field("configValuePayload", "secretStored");
+    let value = output_field("configValuePayload", "value");
     assert_eq!(
-        secret_stored["type"]["kind"], "NON_NULL",
-        "ProviderConfigValuePayload.secretStored"
+        value["type"]["kind"], "UNION",
+        "ProviderConfigValuePayload.value"
     );
     assert_eq!(
-        secret_stored["type"]["ofType"]["name"], "Boolean",
-        "ProviderConfigValuePayload.secretStored"
+        value["type"]["name"], "ProviderConfigFieldValue",
+        "ProviderConfigValuePayload.value"
     );
     let field_type = output_field("configValuePayload", "fieldType");
     assert_eq!(
@@ -2115,7 +2123,7 @@ async fn graphql_introspection_config_deletes_use_id_and_payload_results() {
             .iter()
             .filter_map(|field| field["name"].as_str())
             .collect();
-        assert_eq!(field_names, vec!["id", "deleted"]);
+        assert_eq!(field_names, vec!["id"]);
     }
 }
 
@@ -2282,7 +2290,7 @@ async fn graphql_introspection_media_server_delete_uses_id_and_payload_result() 
         .iter()
         .filter_map(|field| field["name"].as_str())
         .collect();
-    assert_eq!(payload_fields, vec!["id", "deleted"]);
+    assert_eq!(payload_fields, vec!["id"]);
 }
 
 #[tokio::test]
@@ -2352,7 +2360,7 @@ async fn graphql_introspection_library_delete_uses_id_and_payload_result() {
         .iter()
         .filter_map(|field| field["name"].as_str())
         .collect();
-    assert_eq!(payload_fields, vec!["id", "deleted"]);
+    assert_eq!(payload_fields, vec!["id"]);
 }
 
 #[tokio::test]
@@ -2430,7 +2438,7 @@ async fn graphql_introspection_media_file_delete_uses_payload_result() {
         .iter()
         .filter_map(|field| field["name"].as_str())
         .collect();
-    assert_eq!(payload_fields, vec!["id", "deleted"]);
+    assert_eq!(payload_fields, vec!["id"]);
 }
 
 #[tokio::test]
@@ -2508,7 +2516,7 @@ async fn graphql_introspection_title_delete_uses_payload_result() {
         .iter()
         .filter_map(|field| field["name"].as_str())
         .collect();
-    assert_eq!(payload_fields, vec!["id", "deleted"]);
+    assert_eq!(payload_fields, vec!["id"]);
 }
 
 #[tokio::test]
@@ -2581,7 +2589,7 @@ async fn graphql_introspection_release_blocklist_clear_uses_id_and_payload_resul
         .iter()
         .filter_map(|field| field["name"].as_str())
         .collect();
-    assert_eq!(payload_fields, vec!["id", "cleared"]);
+    assert_eq!(payload_fields, vec!["id"]);
 }
 
 #[tokio::test]
@@ -2672,10 +2680,10 @@ async fn graphql_introspection_wanted_and_pending_actions_use_id_and_payload_res
     );
 
     for (payload, flag) in [
-        ("pausePayload", "paused"),
-        ("resumePayload", "resumed"),
+        ("pausePayload", ""),
+        ("resumePayload", ""),
         ("forceGrabPayload", "grabbed"),
-        ("dismissPayload", "dismissed"),
+        ("dismissPayload", ""),
     ] {
         let field_names: Vec<&str> = body["data"][payload]["fields"]
             .as_array()
@@ -2683,7 +2691,12 @@ async fn graphql_introspection_wanted_and_pending_actions_use_id_and_payload_res
             .iter()
             .filter_map(|field| field["name"].as_str())
             .collect();
-        assert_eq!(field_names, vec!["id", flag]);
+        let expected = if flag.is_empty() {
+            vec!["id"]
+        } else {
+            vec!["id", flag]
+        };
+        assert_eq!(field_names, expected);
     }
 }
 
@@ -2763,7 +2776,7 @@ async fn graphql_introspection_rule_set_delete_uses_id_and_payload_result() {
         .iter()
         .filter_map(|field| field["name"].as_str())
         .collect();
-    assert_eq!(payload_fields, vec!["id", "deleted"]);
+    assert_eq!(payload_fields, vec!["id"]);
 
     let input_field = |type_alias: &str, name: &str| {
         body["data"][type_alias]["inputFields"]
@@ -3500,7 +3513,7 @@ async fn graphql_introspection_external_import_finalize_uses_payload_results() {
         .iter()
         .filter_map(|field| field["name"].as_str())
         .collect();
-    assert_eq!(cancel_fields, vec!["sessionId"]);
+    assert_eq!(cancel_fields, vec!["sessionId", "canceled"]);
 
     let finalize_fields: Vec<&str> = body["data"]["finalizePayload"]["fields"]
         .as_array()
@@ -3717,7 +3730,7 @@ async fn graphql_introspection_external_import_secret_draft_api_is_typed() {
     );
     assert_eq!(
         introspection_names(&body, "savePayload", "fields"),
-        vec!["saved", "overwroteAnotherUserDraft", "updatedAt"]
+        vec!["overwroteAnotherUserDraft", "updatedAt"]
     );
     assert_eq!(
         introspection_names(&body, "clearPayload", "fields"),
@@ -4487,27 +4500,24 @@ async fn graphql_introspection_account_setup_and_settings_actions_use_semantic_p
             .collect()
     };
 
-    assert_eq!(
-        payload_fields("deleteMyPasskeyPayload"),
-        vec!["id", "deleted"]
-    );
+    assert_eq!(payload_fields("deleteMyPasskeyPayload"), vec!["id"]);
     assert_eq!(
         payload_fields("revokeMyOauthAppPayload"),
         vec!["grantId", "revoked"]
     );
-    assert_eq!(payload_fields("deleteUserPayload"), vec!["id", "deleted"]);
+    assert_eq!(payload_fields("deleteUserPayload"), vec!["id"]);
     assert_eq!(
         payload_fields("unlinkExternalAccountPayload"),
-        vec!["linkedAccountId", "unlinked"]
+        vec!["linkedAccountId"]
     );
     assert_eq!(
         payload_fields("clearTitleImageCachePayload"),
-        vec!["accepted"]
+        vec!["requestedAt"]
     );
     assert_eq!(payload_fields("completeSetupPayload"), vec!["completed"]);
     assert_eq!(
         payload_fields("reorderDownloadClientConfigsPayload"),
-        vec!["ids", "reordered"]
+        vec!["ids"]
     );
     assert_eq!(
         payload_fields("setTitleRequiredAudioPayload"),
@@ -4515,11 +4525,11 @@ async fn graphql_introspection_account_setup_and_settings_actions_use_semantic_p
     );
     assert_eq!(
         payload_fields("rehydrateAllMetadataPayload"),
-        vec!["language", "titlesCleared", "accepted"]
+        vec!["language", "titlesCleared"]
     );
     assert_eq!(
         payload_fields("deletePostProcessingScriptPayload"),
-        vec!["id", "deleted"]
+        vec!["id"]
     );
     assert_eq!(
         payload_fields("triggerTitleMismatchRecoverySearchPayload"),

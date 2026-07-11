@@ -2597,6 +2597,8 @@ const en: LocaleDictionary = {
   "auth.invalidCredentials": "Invalid username or password.",
   "auth.signInFailedGeneric":
     "Sign-in failed. Check your sign-in details and try again.",
+  "auth.signInRateLimited":
+    "Too many sign-in attempts. Please wait a moment and try again.",
   "auth.signInWithScryerPassword": "Sign in with Scryer password",
   "auth.signInWithPasskey": "Sign in with passkey",
   "auth.signInWithJellyfin": "Sign in with Jellyfin",

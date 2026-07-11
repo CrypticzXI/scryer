@@ -2233,9 +2233,17 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
         if (!title) {
           return current?.id === titleId ? null : current;
         }
-        return current?.id === titleId
-          ? mergePreferLoadedImageFields(current, title)
-          : title;
+        if (current?.id !== titleId) {
+          return title;
+        }
+
+        const refreshedTitle = mergePreferLoadedImageFields(current, title);
+        // Catalog refreshes deliberately omit recommendation data. Keep the
+        // selected panel's current response instead of treating that omission
+        // as a reason to reload the rail.
+        return title.moreLikeThis === undefined
+          ? { ...refreshedTitle, moreLikeThis: current.moreLikeThis }
+          : refreshedTitle;
       });
 
       setTitleContextTitles((current) => {

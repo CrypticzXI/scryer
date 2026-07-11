@@ -258,8 +258,8 @@ async fn graphql_media_rename_preview_for_anime_uses_saved_anime_template() {
             "input": {
                 "scope": "ANIME",
                 "renameTemplate": "{title} - {episode_title} - {source} - {group} - {quality}.{ext}",
-                "renameCollisionPolicy": "replace_if_better",
-                "renameMissingMetadataPolicy": "skip"
+                "renameCollisionPolicy": "REPLACE_IF_BETTER",
+                "renameMissingMetadataPolicy": "SKIP"
             }
         }),
     )

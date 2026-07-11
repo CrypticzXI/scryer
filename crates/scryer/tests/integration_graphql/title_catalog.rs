@@ -405,23 +405,23 @@ async fn graphql_titles_use_server_pagination_and_sort() {
     seed_title_episode_sort_fixture(&ctx, &zeta_id, "zeta-episodes", 1, 2).await;
 
     assert_eq!(
-        title_catalog_sort_names(&ctx, "monitored", "desc").await,
+        title_catalog_sort_names(&ctx, "MONITORED", "DESC").await,
         vec!["Alpha Series", "Middle Anime", "Zeta Movie"]
     );
     assert_eq!(
-        title_catalog_sort_names(&ctx, "quality", "asc").await,
+        title_catalog_sort_names(&ctx, "QUALITY", "ASC").await,
         vec!["Alpha Series", "Zeta Movie", "Middle Anime"]
     );
     assert_eq!(
-        title_catalog_sort_names(&ctx, "status", "asc").await,
+        title_catalog_sort_names(&ctx, "STATUS", "ASC").await,
         vec!["Alpha Series", "Zeta Movie", "Middle Anime"]
     );
     assert_eq!(
-        title_catalog_sort_names(&ctx, "size", "desc").await,
+        title_catalog_sort_names(&ctx, "SIZE", "DESC").await,
         vec!["Alpha Series", "Middle Anime", "Zeta Movie"]
     );
     assert_eq!(
-        title_catalog_sort_names(&ctx, "episodes", "desc").await,
+        title_catalog_sort_names(&ctx, "EPISODES", "DESC").await,
         vec!["Alpha Series", "Zeta Movie", "Middle Anime"]
     );
 }
@@ -724,7 +724,7 @@ async fn graphql_add_title_returns_async_hydration_payload_fields() {
     assert_no_errors(&first);
     assert_eq!(
         first["data"]["addTitle"]["metadataHydrationState"],
-        "pending"
+        "PENDING"
     );
     assert_eq!(first["data"]["addTitle"]["reusedExistingTitle"], false);
     assert_eq!(first["data"]["addTitle"]["reusedQueuedDownload"], false);
@@ -733,7 +733,7 @@ async fn graphql_add_title_returns_async_hydration_payload_fields() {
     assert_no_errors(&second);
     assert_eq!(
         second["data"]["addTitle"]["metadataHydrationState"],
-        "pending"
+        "PENDING"
     );
     assert_eq!(second["data"]["addTitle"]["reusedExistingTitle"], true);
     assert_eq!(second["data"]["addTitle"]["reusedQueuedDownload"], false);

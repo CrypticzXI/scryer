@@ -221,20 +221,6 @@ const CATALOG_DISCOVERY_ITEM_FIELDS = `
     rankScore
     ownedInInput`;
 
-const TITLE_MORE_LIKE_THIS_CARD_FIELDS = `
-    id
-    targetKey
-    targetKind
-    contentType
-    displayTitle
-    originalTitle
-    sortTitle
-    year
-    posterUrl
-    resolved
-    resolvedTitleId
-    ownedInInput`;
-
 export const catalogDiscoveryQuery = `query CatalogDiscovery($input: CatalogDiscoveryInput!) {
   catalogDiscovery(input: $input) {
     canViewPersonalized
@@ -1611,7 +1597,7 @@ export const titleMoreLikeThisQuery = `query TitleMoreLikeThis($id: ID!, $limit:
   title(id: $id) {
     id
     moreLikeThis(limit: $limit) {
-${TITLE_MORE_LIKE_THIS_CARD_FIELDS}
+${DISCOVERY_ITEM_DETAIL_FIELDS}
     }
   }
 }`;

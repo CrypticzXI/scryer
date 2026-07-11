@@ -38,6 +38,7 @@ export function useConfigStepUp({
   authToken,
   initialMfaRequireConfigStepUp,
   protectedSettingsRoute,
+  settingsSubscriptionEnabled,
   adoptSession,
   setGlobalStatus,
   navigateTo,
@@ -46,6 +47,7 @@ export function useConfigStepUp({
   authToken: string | null;
   initialMfaRequireConfigStepUp: boolean | null;
   protectedSettingsRoute: boolean;
+  settingsSubscriptionEnabled: boolean;
   adoptSession: (nextToken: string, nextUser: AuthUser | null) => void;
   setGlobalStatus: SetGlobalStatus;
   navigateTo: (
@@ -142,6 +144,7 @@ export function useConfigStepUp({
       },
       [refreshConfigStepUpPolicy],
     ),
+    { enabled: settingsSubscriptionEnabled },
   );
 
   useEffect(() => {

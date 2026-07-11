@@ -26,7 +26,13 @@ import {
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth, type AuthUser } from "@/lib/hooks/use-auth";
 import { usePermissions } from "@/lib/hooks/use-permissions";
-import { authorizationCacheSignature } from "@/lib/utils/permissions";
+import {
+  APP_PERMISSIONS,
+  LIBRARY_PERMISSIONS,
+  authorizationCacheSignature,
+  hasAnyLibraryPermission,
+  hasAppPermission,
+} from "@/lib/utils/permissions";
 import { useSmgNotices } from "@/lib/hooks/use-smg-notices";
 import { useNavigationBadges } from "@/lib/hooks/use-navigation-badges";
 import { useAutoBackupNotice } from "@/lib/hooks/use-auto-backup-notice";
@@ -883,12 +889,22 @@ function AuthenticatedHomePage({
   const setGlobalStatus = useGlobalStatusToast(setGlobalStatusRaw);
   const shellFrameRef = useRef<HTMLDivElement>(null);
   const [shellTopOffset, setShellTopOffset] = useState(0);
+  const canSubscribeToLibraryEvents = hasAnyLibraryPermission(
+    authenticatedUser,
+    LIBRARY_PERMISSIONS.view,
+  );
+  const canSubscribeToJobEvents = hasAppPermission(
+    authenticatedUser,
+    APP_PERMISSIONS.manageSystemSettings,
+  );
   const {
     smgVersionCompatibilityNotice,
     smgScryerUpdateNotice,
     showSmgScryerUpdateReminder,
     dismissSmgScryerUpdateReminder,
-  } = useSmgNotices();
+  } = useSmgNotices({
+    settingsSubscriptionEnabled: canSubscribeToLibraryEvents,
+  });
   const [resolvedOverviewTarget, setResolvedOverviewTarget] =
     useState<OverviewTitleTarget | null>(null);
   const [overviewSlugLoading, setOverviewSlugLoading] = useState(false);
@@ -1505,6 +1521,7 @@ function AuthenticatedHomePage({
     authToken,
     initialMfaRequireConfigStepUp: mfaRequireConfigStepUp,
     protectedSettingsRoute,
+    settingsSubscriptionEnabled: canSubscribeToLibraryEvents,
     adoptSession,
     setGlobalStatus,
     navigateTo,
@@ -1734,8 +1751,10 @@ function AuthenticatedHomePage({
             {serviceRestarting && <BackendRestartOverlay />}
             <Suspense fallback={<ViewLoadingFallback />}>
               <LibraryScanProgressProvider>
-                <JobRunProvider>
-                  <ReactiveRefreshProvider>
+                <JobRunProvider enabled={canSubscribeToJobEvents}>
+                  <ReactiveRefreshProvider
+                    enabled={canSubscribeToLibraryEvents}
+                  >
                     <GlobalSearchProvider
                       activeFacet={activeFacet}
                       authenticatedUser={authenticatedUser}

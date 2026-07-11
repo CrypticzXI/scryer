@@ -117,8 +117,8 @@ export const PosterGrid = React.memo(function PosterGrid({
   }
 
   return (
-    <div>
-      <div className="grid grid-cols-[repeat(auto-fill,200px)] justify-start gap-3.5">
+    <div className="poster-grid-container">
+      <div className="poster-grid-responsive grid justify-start gap-3.5">
         {titles.map((title) => (
           <PosterCard
             key={title.id}

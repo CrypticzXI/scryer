@@ -461,7 +461,17 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
       const nextTitle = snapshot.title;
       const nextCollections = nextTitle?.collections ?? [];
       const nextSeriesMovieLinks = nextTitle?.seriesMovieLinks ?? [];
-      setTitle(nextTitle ?? null);
+      setTitle((current) => {
+        if (
+          nextTitle &&
+          current &&
+          nextTitle.moreLikeThis === undefined &&
+          current.id === nextTitle.id
+        ) {
+          return { ...nextTitle, moreLikeThis: current.moreLikeThis };
+        }
+        return nextTitle ?? null;
+      });
       if (nextTitle) {
         onTitleResolved?.({
           id: nextTitle.id,
@@ -606,7 +616,9 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
     [client],
   );
 
-  const refreshTitleDetail = React.useCallback(async () => {
+  const refreshTitleDetail = React.useCallback(async (
+    { refreshMoreLikeThis = false }: { refreshMoreLikeThis?: boolean } = {},
+  ) => {
     if (!titleId) {
       return;
     }
@@ -626,7 +638,9 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
     if (!snapshot.title) {
       return;
     }
-    void refreshTitleMoreLikeThis(requestedTitleId);
+    if (refreshMoreLikeThis) {
+      void refreshTitleMoreLikeThis(requestedTitleId);
+    }
     if (!snapshot.hasDownloadClients) {
       return;
     }
@@ -641,7 +655,7 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
   const moreLikeThisActions = useTitleMoreLikeThisActions({
     canAddItems: canAddDiscoveryItems,
     canRequestItems: canRequestDiscoveryItems,
-    onCatalogChanged: refreshTitleDetail,
+    onCatalogChanged: () => refreshTitleDetail({ refreshMoreLikeThis: true }),
   });
   const refreshTitleDetailRef = React.useRef(refreshTitleDetail);
   React.useEffect(() => {
@@ -865,7 +879,7 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
     setDownloadFeedbackSettled(false);
     setShowSearchPrerequisiteNotice(false);
     setLoading(true);
-    refreshTitleDetailRef.current()
+    refreshTitleDetailRef.current({ refreshMoreLikeThis: true })
       .catch((error: unknown) => {
         if (!cancelled) {
           setTitleLookupFailed(true);

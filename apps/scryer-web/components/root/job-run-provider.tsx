@@ -37,7 +37,13 @@ function usesDedicatedLibraryScanToast(jobKey: JobKey): boolean {
   );
 }
 
-export function JobRunProvider({ children }: { children: React.ReactNode }) {
+export function JobRunProvider({
+  children,
+  enabled = true,
+}: {
+  children: React.ReactNode;
+  enabled?: boolean;
+}) {
   const client = useClient();
   const t = useTranslate();
   const [runsById, setRunsById] = React.useState<Record<string, JobRun>>({});
@@ -124,6 +130,10 @@ export function JobRunProvider({ children }: { children: React.ReactNode }) {
   }, [scheduleInteractiveRunReconciliation, upsertRun]);
 
   React.useEffect(() => {
+    if (!enabled) {
+      setRunsById({});
+      return;
+    }
     let cancelled = false;
     (async () => {
       const { data, error } = await client.query(activeJobRunsQuery, {}).toPromise();
@@ -151,9 +161,10 @@ export function JobRunProvider({ children }: { children: React.ReactNode }) {
     return () => {
       cancelled = true;
     };
-  }, [client]);
+  }, [client, enabled]);
 
   useDeferredWsSubscription<{ data?: { jobRunEvents?: unknown } }>({
+    enabled,
     requestKey: "jobRunEvents",
     request: { query: jobRunEventsSubscription },
     onNext(result) {

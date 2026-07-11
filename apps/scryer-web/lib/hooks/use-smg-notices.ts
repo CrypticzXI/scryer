@@ -80,7 +80,11 @@ function buildSmgScryerUpdateDismissalValue(
   return `${latest}:${notice.latestVersion.trim()}`;
 }
 
-export function useSmgNotices() {
+export function useSmgNotices({
+  settingsSubscriptionEnabled = true,
+}: {
+  settingsSubscriptionEnabled?: boolean;
+} = {}) {
   const initialSessionCache = useMemo(() => readSmgNoticeSessionCache(), []);
   const [smgVersionCompatibilityNotice, setSmgVersionCompatibilityNotice] =
     useState<SmgVersionCompatibilityNotice | null>(
@@ -196,6 +200,7 @@ export function useSmgNotices() {
       },
       [refreshSmgNotices],
     ),
+    { enabled: settingsSubscriptionEnabled },
   );
 
   useEffect(() => {

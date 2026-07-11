@@ -190,7 +190,6 @@ async fn graphql_title_release_blocklist_entry_can_be_cleared() {
         mutation($id: ID!) {
           clearTitleReleaseBlocklistEntry(id: $id) {
             id
-            cleared
           }
         }
         "#,
@@ -203,11 +202,6 @@ async fn graphql_title_release_blocklist_entry_can_be_cleared() {
         clear_body["data"]["clearTitleReleaseBlocklistEntry"]["id"],
         entry_id
     );
-    assert_eq!(
-        clear_body["data"]["clearTitleReleaseBlocklistEntry"]["cleared"],
-        true
-    );
-
     let blocklist_after = gql(
         &ctx,
         r#"

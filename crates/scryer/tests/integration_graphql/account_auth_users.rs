@@ -868,7 +868,7 @@ async fn graphql_settings_mutations_require_config_step_up() {
             r#"mutation($input: CreateLibraryInput!) { createLibrary(input: $input) { id } }"#,
             json!({
                 "input": {
-                    "facet": "movie",
+                    "facet": "MOVIE",
                     "name": "Step-up Library",
                     "roots": [{ "path": library_root, "isDefault": true }]
                 }

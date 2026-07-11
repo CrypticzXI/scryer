@@ -756,6 +756,7 @@ export function useGlobalSearch({
       },
       [searchSettingsKeys, refreshCatalogQualityProfileState],
     ),
+    { enabled: canViewCatalog },
   );
 
   const isMetadataSearchResultInAnyCatalog = useCallback(

@@ -17,6 +17,7 @@ import { useDeferredWsSubscription } from "@/lib/hooks/use-deferred-ws-subscript
  */
 export function useSettingsSubscription(
   onChanged: (changedKeys: string[]) => void,
+  { enabled = true }: { enabled?: boolean } = {},
 ) {
   const onChangedRef = useRef(onChanged);
   useEffect(() => {
@@ -24,7 +25,7 @@ export function useSettingsSubscription(
   });
 
   useDeferredWsSubscription<{ data?: { settingsChanged?: string[] } }>({
-    enabled: true,
+    enabled,
     requestKey: "settingsChanged",
     request: { query: settingsChangedSubscription },
     onNext(result) {

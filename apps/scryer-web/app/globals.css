@@ -1507,9 +1507,15 @@ h6 {
   content-visibility: auto;
   contain-intrinsic-size: auto 44px; /* compact text-only episode rows */
 }
+.poster-grid-container {
+  container-type: inline-size;
+}
+.poster-grid-responsive {
+  grid-template-columns: repeat(auto-fill, clamp(150px, 12cqw, 200px));
+}
 .cv-auto-poster {
   content-visibility: auto;
-  contain-intrinsic-size: auto 300px; /* 200px wide poster card at 2:3 */
+  contain-intrinsic-size: auto 260px; /* 150-200px wide poster card at 2:3 */
 }
 
 /* PWA safe area utilities for standalone mode on notched devices */
