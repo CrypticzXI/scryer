@@ -55,7 +55,9 @@ export function TitleHistoryContainer({
       const result = await client
         .query<{ titleHistory: TitleHistoryPage }>(titleHistoryQuery, {
           filter: {
-            eventTypes: selectedEventTypes,
+            // Chips use the lowercase display keys; TitleHistoryEventTypeValue
+            // members are their exact uppercase.
+            eventTypes: selectedEventTypes.map((value) => value.toUpperCase()),
             titleIds: selectedTitle ? [selectedTitle.id] : null,
             libraryIds: selectedLibraryIdsToQueryValue(selectedLibraryIds),
             groupByEvent: true,

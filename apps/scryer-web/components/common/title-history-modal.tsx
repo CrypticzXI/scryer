@@ -65,7 +65,10 @@ export function TitleHistoryModal({
         const result = await client
           .query<{ titleHistory: TitleHistoryPage }>(titleHistoryQuery, {
             filter: {
-              eventTypes: eventTypes.length > 0 ? eventTypes : null,
+              eventTypes:
+                eventTypes.length > 0
+                  ? eventTypes.map((value) => value.toUpperCase())
+                  : null,
               titleIds: [titleId],
               episodeId: episodeId ?? null,
               groupByEvent: episodeId == null,

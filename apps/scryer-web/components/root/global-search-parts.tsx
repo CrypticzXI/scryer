@@ -87,7 +87,9 @@ function searchResultIdentityAttributes({
     dataAttributeValue(tvdbId) ?? externalIdValue(externalIds, "tvdb");
   return {
     "data-global-search-result-kind": kind,
-    "data-global-search-result-facet": facet,
+    // Test-hook surface: facet is SCREAMING_SNAKE in app state, but DOM ids
+    // and data attributes stay lowercase (same convention as selectorId).
+    "data-global-search-result-facet": facet.toLowerCase(),
     "data-global-search-result-title": titleName,
     ...(actionKind
       ? { "data-global-search-result-action": actionKind }

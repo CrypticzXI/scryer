@@ -905,7 +905,7 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
   }, [title, collections.length]);
 
   const hydrating = inferredHydrating;
-  const settingsScope = title?.facet === "anime" ? "anime" : "series";
+  const settingsScope = title?.facet === "ANIME" ? "ANIME" : "SERIES";
 
   // Fetch quality profile catalog and default root folder
   React.useEffect(() => {

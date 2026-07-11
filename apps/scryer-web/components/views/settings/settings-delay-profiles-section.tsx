@@ -265,7 +265,7 @@ export function SettingsDelayProfilesSection({
                   )
                 }
               >
-                {(["usenet", "torrent"] as const).map((proto) => (
+                {(["USENET", "TORRENT"] as const).map((proto) => (
                   <label
                     key={proto}
                     htmlFor={selectorId(
@@ -278,7 +278,7 @@ export function SettingsDelayProfilesSection({
                       id={selectorId("settings-delay-profile-preferred", proto)}
                       value={proto}
                     />
-                    {proto === "usenet" ? "Usenet" : "Torrent"}
+                    {proto === "USENET" ? "Usenet" : "Torrent"}
                   </label>
                 ))}
               </RadioGroup>

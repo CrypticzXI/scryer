@@ -533,7 +533,7 @@ export function RequestsView({
         id={mediaRequestRowId(request.id)}
         data-request-status={request.status}
         data-request-title={request.title}
-        data-request-facet={request.facet}
+        data-request-facet={request.facet.toLowerCase()}
         data-request-imdb-id={requestExternalIdValue(request, "imdb")}
         data-request-tvdb-id={requestExternalIdValue(request, "tvdb")}
         data-request-tmdb-id={requestExternalIdValue(request, "tmdb")}
