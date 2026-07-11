@@ -360,7 +360,7 @@ export function TitleSettingsPanel({
           ) : null}
         </div>
 
-        {title.facet === "anime" ? (
+        {title.facet === "ANIME" ? (
           <>
             <div className="min-w-0">
               <label className="mb-1 block text-xs font-medium text-muted-foreground">

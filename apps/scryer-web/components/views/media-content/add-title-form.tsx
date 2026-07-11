@@ -116,9 +116,9 @@ export function AddTitleForm({
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="movie">{t("search.facetMovie")}</SelectItem>
-                  <SelectItem value="series">{t("search.facetSeries")}</SelectItem>
-                  <SelectItem value="anime">{t("search.facetAnime")}</SelectItem>
+                  <SelectItem value="MOVIE">{t("search.facetMovie")}</SelectItem>
+                  <SelectItem value="SERIES">{t("search.facetSeries")}</SelectItem>
+                  <SelectItem value="ANIME">{t("search.facetAnime")}</SelectItem>
                 </SelectContent>
               </Select>
             </label>

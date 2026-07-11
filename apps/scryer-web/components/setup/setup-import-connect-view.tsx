@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 
 import { AddNewButton } from "@/components/common/add-new-button";
+import { selectorToken } from "@/lib/utils/dom-ids";
 import { IconButton } from "@/components/ui/icon-button";
 import { Input } from "@/components/ui/input";
 import {
@@ -161,7 +162,7 @@ export function SetupImportConnectView({
               ))}
 
               <AddNewButton
-                id={`setup-import-${column.kind}-add-instance`}
+                id={`setup-import-${selectorToken(column.kind)}-add-instance`}
                 data-slot="import-add-instance"
                 icon={Plus}
                 label={t("setup.addInstance", { product: column.productName })}
@@ -218,12 +219,12 @@ function InstanceCard({
   const nameDisplay = named ? inst.name : t("setup.unnamedInstance");
   const fieldId = (field: "url" | "api-key") =>
     instanceIndex === 0
-      ? `setup-import-${inst.kind}-${field}`
-      : `setup-import-${inst.kind}-${instanceIndex + 1}-${field}`;
+      ? `setup-import-${selectorToken(inst.kind)}-${field}`
+      : `setup-import-${selectorToken(inst.kind)}-${instanceIndex + 1}-${field}`;
 
   return (
     <div
-      id={`setup-import-${inst.kind}-${instanceIndex + 1}-instance`}
+      id={`setup-import-${selectorToken(inst.kind)}-${instanceIndex + 1}-instance`}
       data-slot="import-instance-card"
       data-kind={inst.kind}
       data-instance-index={instanceIndex}

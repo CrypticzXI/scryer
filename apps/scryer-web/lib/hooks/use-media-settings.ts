@@ -377,48 +377,48 @@ export function useMediaSettings({
       switch (keyName) {
         case "anime.filler_policy":
           input = {
-            scope: "anime",
+            scope: "ANIME",
             fillerPolicy: value,
           };
           break;
         case "anime.recap_policy":
           input = {
-            scope: "anime",
+            scope: "ANIME",
             recapPolicy: value,
           };
           break;
         case "anime.monitor_specials":
           input = {
-            scope: "anime",
+            scope: "ANIME",
             monitorSpecials: boolValue,
           };
           break;
         case "anime.inter_season_movies":
           input = {
-            scope: "anime",
+            scope: "ANIME",
             interSeasonMovies: boolValue,
           };
           break;
         case "anime.monitor_filler_movies":
           input = {
-            scope: "anime",
+            scope: "ANIME",
             monitorFillerMovies: boolValue,
           };
           break;
         case NFO_WRITE_ON_IMPORT_MOVIE_KEY:
-          input = { scope: "movie", nfoWriteOnImport: boolValue };
+          input = { scope: "MOVIE", nfoWriteOnImport: boolValue };
           break;
         case NFO_WRITE_ON_IMPORT_SERIES_KEY:
-          input = { scope: "series", nfoWriteOnImport: boolValue };
+          input = { scope: "SERIES", nfoWriteOnImport: boolValue };
           break;
         case NFO_WRITE_ON_IMPORT_ANIME_KEY:
-          input = { scope: "anime", nfoWriteOnImport: boolValue };
+          input = { scope: "ANIME", nfoWriteOnImport: boolValue };
           break;
         case PLEXMATCH_WRITE_ON_IMPORT_SERIES_KEY:
-          input = { scope: "series", plexmatchWriteOnImport: boolValue };
+          input = { scope: "SERIES", plexmatchWriteOnImport: boolValue };
           break;
         case PLEXMATCH_WRITE_ON_IMPORT_ANIME_KEY:
-          input = { scope: "anime", plexmatchWriteOnImport: boolValue };
+          input = { scope: "ANIME", plexmatchWriteOnImport: boolValue };
           break;
         case RENAME_ENABLED_KEY:
           input = {

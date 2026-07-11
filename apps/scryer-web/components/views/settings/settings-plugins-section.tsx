@@ -73,7 +73,7 @@ export type RegistryPluginRecord = {
 export type PluginInstallProgressRecord = {
   pluginId: string;
   operationKind: "install" | "upgrade";
-  state: "downloading" | "verifying" | "installing" | "succeeded" | "failed";
+  state: "DOWNLOADING" | "VERIFYING" | "INSTALLING" | "SUCCEEDED" | "FAILED";
   label: string;
   stepIndex: number;
   stepCount: number;
@@ -170,20 +170,20 @@ export function isRunningPluginProgress(
   progress?: PluginInstallProgressRecord,
 ): progress is PluginInstallProgressRecord {
   return progress !== undefined
-    && progress.state !== "succeeded"
-    && progress.state !== "failed";
+    && progress.state !== "SUCCEEDED"
+    && progress.state !== "FAILED";
 }
 
 function pluginProgressLabel(progress: PluginInstallProgressRecord, t: Translate): string {
   switch (progress.state) {
-    case "downloading":
+    case "DOWNLOADING":
       return t("settings.pluginInstallDownloading");
-    case "verifying":
+    case "VERIFYING":
       return t("settings.pluginInstallVerifying");
-    case "installing":
+    case "INSTALLING":
       return t("settings.pluginInstallInstalling");
-    case "succeeded":
-    case "failed":
+    case "SUCCEEDED":
+    case "FAILED":
       return progress.label;
     default:
       return progress.label;

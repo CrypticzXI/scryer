@@ -331,13 +331,13 @@ export function SettingsPluginsContainer() {
               [plugin.id]: snapshot,
             }));
 
-            if (snapshot.state === "succeeded" || snapshot.state === "failed") {
+            if (snapshot.state === "SUCCEEDED" || snapshot.state === "FAILED") {
               stopPluginInstallProgressSubscription(plugin.id);
               void (async () => {
                 try {
                   clearPluginBusyState(plugin.id, snapshot.operationKind);
 
-                  if (snapshot.state === "succeeded") {
+                  if (snapshot.state === "SUCCEEDED") {
                     setPluginErrors((current) => {
                       const next = { ...current };
                       delete next[plugin.id];

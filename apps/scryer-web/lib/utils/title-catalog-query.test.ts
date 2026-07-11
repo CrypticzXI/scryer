@@ -31,9 +31,9 @@ test("title catalog variables include quick filters like 0.16.6", () => {
     query: "Fringe",
     filter: {
       monitored: true,
-      contentStatuses: ["continuing"],
+      contentStatuses: ["CONTINUING"],
     },
-    sort: { key: "title", direction: "asc" },
+    sort: { key: "TITLE", direction: "ASC" },
     limit: 300,
     offset: 0,
   });
@@ -53,7 +53,7 @@ test("title catalog variables send all libraries as null", () => {
   assert.equal(variables.libraryIds, null);
   assert.equal(variables.query, null);
   assert.equal(variables.filter, null);
-  assert.deepEqual(variables.sort, { key: "added", direction: "desc" });
+  assert.deepEqual(variables.sort, { key: "ADDED", direction: "DESC" });
 });
 
 test("title catalog query key changes when quick filters change", () => {
@@ -81,21 +81,21 @@ test("title catalog query key changes when quick filters change", () => {
 
 test("title catalog sort input maps optional table columns", () => {
   assert.deepEqual(titleCatalogSortInput({ key: "runtime", direction: "desc" }), {
-    key: "runtime",
-    direction: "desc",
+    key: "RUNTIME",
+    direction: "DESC",
   });
   assert.deepEqual(
     titleCatalogSortInput({ key: "ratingMetacriticUser", direction: "desc" }),
     {
-      key: "rating_metacritic_user",
-      direction: "desc",
+      key: "RATING_METACRITIC_USER",
+      direction: "DESC",
     },
   );
   assert.deepEqual(
     titleCatalogSortInput({ key: "audioCodec", direction: "asc" }),
     {
-      key: "media_audio_codec",
-      direction: "asc",
+      key: "MEDIA_AUDIO_CODEC",
+      direction: "ASC",
     },
   );
 });

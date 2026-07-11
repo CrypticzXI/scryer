@@ -40,6 +40,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { IconButton } from "@/components/ui/icon-button";
 import { TextActionButton } from "@/components/ui/text-action-button";
+import { selectorToken } from "@/lib/utils/dom-ids";
 
 interface SetupImportLibrariesViewProps {
   wizard: UseExternalImportSetupReturn;
@@ -435,7 +436,7 @@ export default function SetupImportLibrariesView({
           const editing = editLibId === lib.id;
           return (
             <div
-              id={`setup-import-library-drop-${lib.facet}`}
+              id={`setup-import-library-drop-${selectorToken(lib.facet)}`}
               key={lib.id}
               data-drop="library"
               data-library-facet={lib.facet}

@@ -485,11 +485,11 @@ export function SettingsSubtitlesContainer({
             }
             setSyncPluginProgress(snapshot);
 
-            if (snapshot.state === "succeeded" || snapshot.state === "failed") {
+            if (snapshot.state === "SUCCEEDED" || snapshot.state === "FAILED") {
               stopSyncPluginProgressSubscription();
               void (async () => {
                 try {
-                  if (snapshot.state === "succeeded") {
+                  if (snapshot.state === "SUCCEEDED") {
                     setSyncPluginInstallError(null);
                     const nextPlugins = await loadPlugins();
                     setPlugins(nextPlugins);

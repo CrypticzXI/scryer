@@ -53,35 +53,35 @@ const EMPTY_TITLE_CATALOG_PROJECTION: TitleCatalogProjection = {
 };
 
 const TITLE_CATALOG_SORT_KEYS: Record<string, string> = {
-  name: "title",
-  library: "library",
-  monitored: "monitored",
-  quality: "quality",
-  episodes: "episodes",
-  status: "status",
-  added: "added",
-  size: "size",
-  year: "year",
-  runtime: "runtime",
-  root: "root",
-  popularity: "popularity",
-  resolution: "media_resolution",
-  hdr: "media_hdr",
-  audioCodec: "media_audio_codec",
-  ratingScryer: "rating_scryer",
-  ratingImdb: "rating_imdb",
-  ratingRottenTomatoes: "rating_rotten_tomatoes",
-  ratingPopcornmeter: "rating_popcornmeter",
-  ratingMetacritic: "rating_metacritic",
-  ratingMetacriticUser: "rating_metacritic_user",
-  ratingLetterboxd: "rating_letterboxd",
-  ratingTmdb: "rating_tmdb",
-  ratingTvdb: "rating_tvdb",
-  ratingTrakt: "rating_trakt",
-  ratingMyanimelist: "rating_myanimelist",
-  ratingAnilist: "rating_anilist",
-  ratingAnidb: "rating_anidb",
-  ratingMdblist: "rating_mdblist",
+  name: "TITLE",
+  library: "LIBRARY",
+  monitored: "MONITORED",
+  quality: "QUALITY",
+  episodes: "EPISODES",
+  status: "STATUS",
+  added: "ADDED",
+  size: "SIZE",
+  year: "YEAR",
+  runtime: "RUNTIME",
+  root: "ROOT",
+  popularity: "POPULARITY",
+  resolution: "MEDIA_RESOLUTION",
+  hdr: "MEDIA_HDR",
+  audioCodec: "MEDIA_AUDIO_CODEC",
+  ratingScryer: "RATING_SCRYER",
+  ratingImdb: "RATING_IMDB",
+  ratingRottenTomatoes: "RATING_ROTTEN_TOMATOES",
+  ratingPopcornmeter: "RATING_POPCORNMETER",
+  ratingMetacritic: "RATING_METACRITIC",
+  ratingMetacriticUser: "RATING_METACRITIC_USER",
+  ratingLetterboxd: "RATING_LETTERBOXD",
+  ratingTmdb: "RATING_TMDB",
+  ratingTvdb: "RATING_TVDB",
+  ratingTrakt: "RATING_TRAKT",
+  ratingMyanimelist: "RATING_MYANIMELIST",
+  ratingAnilist: "RATING_ANILIST",
+  ratingAnidb: "RATING_ANIDB",
+  ratingMdblist: "RATING_MDBLIST",
 };
 
 const SHARED_RATING_COLUMN_KEYS = new Set([
@@ -109,17 +109,20 @@ const ANIME_RATING_COLUMN_KEYS = new Set([
 ]);
 
 function normalizedFacet(facet: string) {
-  return facet === "movie" || facet === "series" || facet === "anime"
-    ? facet
+  const lowered = facet.toLowerCase();
+  return lowered === "movie" || lowered === "series" || lowered === "anime"
+    ? lowered
     : null;
 }
 
 export function titleCatalogSortInput(sort: TitleCatalogSortStateLike) {
-  const key = TITLE_CATALOG_SORT_KEYS[sort.key] ?? "size";
+  const key = TITLE_CATALOG_SORT_KEYS[sort.key] ?? "SIZE";
 
   return {
     key,
-    direction: sort.direction,
+    // Normalize here so stale persisted sort state (pre-0.17 lowercase) can
+    // never reach the SortDirectionValue enum argument.
+    direction: sort.direction.toUpperCase() === "DESC" ? "DESC" : "ASC",
   };
 }
 
@@ -131,8 +134,8 @@ export function titleCatalogFilterInput(filters: TitleCatalogQuickFilters) {
         ? true
         : false;
   const contentStatuses = [
-    filters.continuing ? "continuing" : null,
-    filters.ended ? "ended" : null,
+    filters.continuing ? "CONTINUING" : null,
+    filters.ended ? "ENDED" : null,
   ].filter((value): value is string => Boolean(value));
 
   if (monitored === null && contentStatuses.length === 0) {

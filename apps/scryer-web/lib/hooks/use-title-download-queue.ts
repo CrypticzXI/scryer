@@ -59,7 +59,7 @@ export function useTitleDownloadQueue({
         titleId,
         includeAllActivity: true,
         includeImportActivity: true,
-        activityFilter: "all",
+        activityFilter: "ALL",
       },
     },
     onNext(result) {

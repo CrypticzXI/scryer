@@ -127,14 +127,19 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
     // ExternalImportLibrarySetting{Application,Evidence,Value}Payload trio); the trio's
     // exclusive enums (ExternalImportLibrarySetting{Confidence,Disposition,Key}) drop with
     // it. Root-field counts unchanged; OBJECT 259->255, ENUM 80->77, public types 498->491.
+    // 0.17.0 semantic waves (RFC 129 slice 5): stringly String fields became real enums
+    // (+12 ENUM), and QueueDownloadScopePayload / ProviderConfigFieldValue became unions
+    // (+2 UNION with 6 scope + 5 config-value member OBJECT types, +11 OBJECT).
+    // Root-field counts unchanged; ENUM 77->89, OBJECT 255->266, public types 491->516.
     assert_eq!(query_field_count, 116);
     assert_eq!(mutation_field_count, 163);
     assert_eq!(subscription_field_count, 13);
-    assert_eq!(public_types.len(), 491);
-    assert_eq!(kind_count("OBJECT"), 255);
+    assert_eq!(public_types.len(), 516);
+    assert_eq!(kind_count("OBJECT"), 266);
     assert_eq!(kind_count("INPUT_OBJECT"), 149);
-    assert_eq!(kind_count("ENUM"), 77);
+    assert_eq!(kind_count("ENUM"), 89);
     assert_eq!(kind_count("SCALAR"), 10);
+    assert_eq!(kind_count("UNION"), 2);
     assert!(query_field_names.contains(&"backupSettings"));
     assert!(query_field_names.contains(&"indexerProxyConfigs"));
     assert!(query_field_names.contains(&"externalImportSetupSecretDraft"));
@@ -251,7 +256,7 @@ async fn graphql_introspection_external_import_finalize_settings_payload_is_trim
         .iter()
         .filter_map(|field| field["name"].as_str())
         .collect();
-    assert_eq!(finalize_fields, vec!["finalized", "monitorWarmupSessionId"]);
+    assert_eq!(finalize_fields, vec!["monitorWarmupSessionId"]);
 
     assert!(body["data"]["applicationPayload"].is_null());
     assert!(body["data"]["valuePayload"].is_null());
@@ -733,7 +738,7 @@ async fn graphql_introspection_uninstall_plugin_uses_payload_result() {
         .iter()
         .filter_map(|field| field["name"].as_str())
         .collect();
-    assert_eq!(payload_fields, vec!["pluginId", "uninstalled"]);
+    assert_eq!(payload_fields, vec!["pluginId"]);
 }
 
 #[tokio::test]
@@ -3498,7 +3503,7 @@ async fn graphql_introspection_external_import_finalize_uses_payload_results() {
         .iter()
         .filter_map(|field| field["name"].as_str())
         .collect();
-    assert_eq!(cancel_fields, vec!["sessionId", "canceled"]);
+    assert_eq!(cancel_fields, vec!["sessionId"]);
 
     let finalize_fields: Vec<&str> = body["data"]["finalizePayload"]["fields"]
         .as_array()
@@ -3506,7 +3511,7 @@ async fn graphql_introspection_external_import_finalize_uses_payload_results() {
         .iter()
         .filter_map(|field| field["name"].as_str())
         .collect();
-    assert_eq!(finalize_fields, vec!["finalized", "monitorWarmupSessionId"]);
+    assert_eq!(finalize_fields, vec!["monitorWarmupSessionId"]);
 }
 
 fn graphql_type_leaf_name(type_value: &Value) -> Option<&str> {

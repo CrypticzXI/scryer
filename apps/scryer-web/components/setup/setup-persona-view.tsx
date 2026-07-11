@@ -12,6 +12,7 @@ import type {
   FacetQualityPrefs,
   ViewCategoryId,
 } from "@/lib/types/quality-profiles";
+import { selectorToken } from "@/lib/utils/dom-ids";
 
 interface SetupPersonaViewProps {
   t: (key: string) => string;
@@ -89,7 +90,7 @@ export function SetupPersonaView({
                   <div className="flex gap-1">
                     {QUALITY_TARGETS.map((q) => (
                       <button
-                        id={`setup-persona-${facet}-quality-${q}`}
+                        id={`setup-persona-${selectorToken(facet)}-quality-${q}`}
                         key={q}
                         type="button"
                         onClick={() =>
@@ -115,7 +116,7 @@ export function SetupPersonaView({
                   <div className="flex flex-wrap gap-1">
                     {PERSONAS.map(({ id: persona, icon: Icon, labelKey }) => (
                       <button
-                        id={`setup-persona-${facet}-persona-${persona}`}
+                        id={`setup-persona-${selectorToken(facet)}-persona-${selectorToken(persona)}`}
                         key={persona}
                         type="button"
                         onClick={() =>

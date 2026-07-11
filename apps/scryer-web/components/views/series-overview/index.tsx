@@ -247,7 +247,7 @@ export function SeriesOverviewView({
   const client = useClient();
   const { confirmReplaceConflict, replaceConflictDialog } =
     useDownloadConflictConfirmation();
-  const backLabel = title?.facet === "anime" ? t("nav.anime") : t("nav.series");
+  const backLabel = title?.facet === "ANIME" ? t("nav.anime") : t("nav.series");
   const sortedCollections = React.useMemo(
     () => sortDbCollections(collections),
     [collections],
@@ -930,7 +930,7 @@ export function SeriesOverviewView({
                     </>
                   );
                 })()}
-                {title.facet === "anime" ? (
+                {title.facet === "ANIME" ? (
                   <>
                     {(() => {
                       const externalIds = title.externalIds ?? [];
@@ -1130,7 +1130,7 @@ export function SeriesOverviewView({
 
       <TitleMoreLikeThisStrip
         items={title.moreLikeThis ?? []}
-        fallbackYearLabel={title.facet === "anime" ? t("nav.anime") : t("nav.series")}
+        fallbackYearLabel={title.facet === "ANIME" ? t("nav.anime") : t("nav.series")}
         {...moreLikeThisActions}
       />
 

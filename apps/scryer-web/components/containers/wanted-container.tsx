@@ -327,7 +327,7 @@ export const WantedContainer = memo(function WantedContainer({
       // filters are gone; the title picker narrows via the name-based titleSearch.
       const { data, error } = await client
         .query(wantedItemsQuery, {
-          wantedKind: "missing",
+          wantedKind: "MISSING",
           facet: null,
           libraryIds: selectedLibraryIdsToQueryValue(selectedLibraryIds),
           titleSearch: selectedTitle?.name?.trim() || null,
@@ -441,7 +441,7 @@ export const WantedContainer = memo(function WantedContainer({
 
   const startAcquisitionSearch = useCallback(
     async (input: {
-      wantedKind?: "missing" | "cutoff_upgrade";
+      wantedKind?: "MISSING" | "CUTOFF_UPGRADE";
       facet?: string | null;
       libraryIds?: string[] | null;
       wantedItemId?: string;
@@ -716,7 +716,7 @@ export const WantedContainer = memo(function WantedContainer({
   // (RFC 119 §7.3) — progress/cancel survive navigation and reload.
   const cutoffBulkSearch = useCallback(() => {
     void startAcquisitionSearch({
-      wantedKind: "cutoff_upgrade",
+      wantedKind: "CUTOFF_UPGRADE",
       facet: cutoffFacetFilter ?? null,
       libraryIds: selectedLibraryIdsToQueryValue(selectedLibraryIds),
     });

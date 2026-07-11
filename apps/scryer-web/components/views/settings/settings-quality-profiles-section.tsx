@@ -1385,25 +1385,25 @@ export function SettingsQualityProfilesSection({
               <SelectContent>
                 <SelectItem
                   id={selectorId("settings-quality-profile-global-persona-option", "Balanced")}
-                  value="balanced"
+                  value="BALANCED"
                 >
                   {t("qualityProfile.personaBalanced")}
                 </SelectItem>
                 <SelectItem
                   id={selectorId("settings-quality-profile-global-persona-option", "Audiophile")}
-                  value="audiophile"
+                  value="AUDIOPHILE"
                 >
                   {t("qualityProfile.personaAudiophile")}
                 </SelectItem>
                 <SelectItem
                   id={selectorId("settings-quality-profile-global-persona-option", "Efficient")}
-                  value="efficient"
+                  value="EFFICIENT"
                 >
                   {t("qualityProfile.personaEfficient")}
                 </SelectItem>
                 <SelectItem
                   id={selectorId("settings-quality-profile-global-persona-option", "Compatible")}
-                  value="compatible"
+                  value="COMPATIBLE"
                 >
                   {t("qualityProfile.personaCompatible")}
                 </SelectItem>
@@ -1503,7 +1503,7 @@ export function SettingsQualityProfilesSection({
                             "option",
                             "Balanced",
                           )}
-                          value="balanced"
+                          value="BALANCED"
                         >
                           {t("qualityProfile.personaBalanced")}
                         </SelectItem>
@@ -1514,7 +1514,7 @@ export function SettingsQualityProfilesSection({
                             "option",
                             "Audiophile",
                           )}
-                          value="audiophile"
+                          value="AUDIOPHILE"
                         >
                           {t("qualityProfile.personaAudiophile")}
                         </SelectItem>
@@ -1525,7 +1525,7 @@ export function SettingsQualityProfilesSection({
                             "option",
                             "Efficient",
                           )}
-                          value="efficient"
+                          value="EFFICIENT"
                         >
                           {t("qualityProfile.personaEfficient")}
                         </SelectItem>
@@ -1536,7 +1536,7 @@ export function SettingsQualityProfilesSection({
                             "option",
                             "Compatible",
                           )}
-                          value="compatible"
+                          value="COMPATIBLE"
                         >
                           {t("qualityProfile.personaCompatible")}
                         </SelectItem>

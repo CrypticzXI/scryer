@@ -425,7 +425,7 @@ export const ActivityContainer = memo(function ActivityContainer({
         return;
       }
 
-      if (item.facet === "series" || item.facet === "anime") {
+      if (item.facet === "SERIES" || item.facet === "ANIME") {
         setManualImportItem(item);
         return;
       }

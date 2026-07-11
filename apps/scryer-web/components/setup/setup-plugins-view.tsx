@@ -124,8 +124,8 @@ function isRunningPluginProgress(
   progress?: PluginInstallProgressRecord,
 ): progress is PluginInstallProgressRecord {
   return progress !== undefined
-    && progress.state !== "succeeded"
-    && progress.state !== "failed";
+    && progress.state !== "SUCCEEDED"
+    && progress.state !== "FAILED";
 }
 
 function pluginProgressLabel(
@@ -133,14 +133,14 @@ function pluginProgressLabel(
   t: SetupPluginsViewProps["t"],
 ): string {
   switch (progress.state) {
-    case "downloading":
+    case "DOWNLOADING":
       return t("settings.pluginInstallDownloading");
-    case "verifying":
+    case "VERIFYING":
       return t("settings.pluginInstallVerifying");
-    case "installing":
+    case "INSTALLING":
       return t("settings.pluginInstallInstalling");
-    case "succeeded":
-    case "failed":
+    case "SUCCEEDED":
+    case "FAILED":
       return progress.label;
     default:
       return progress.label;

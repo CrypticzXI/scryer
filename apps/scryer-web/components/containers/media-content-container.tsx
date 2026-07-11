@@ -757,7 +757,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   >([]);
   const [startedLibraryScanSessionId, setStartedLibraryScanSessionId] =
     React.useState<string | null>(null);
-  const activeFacet = viewToFacet[view as keyof typeof viewToFacet] ?? "movie";
+  const activeFacet = viewToFacet[view as keyof typeof viewToFacet] ?? "MOVIE";
   const [selectedLibraryIds, setSelectedLibraryIds] = React.useState<string[]>(
     [],
   );

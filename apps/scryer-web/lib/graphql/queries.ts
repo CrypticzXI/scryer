@@ -3255,7 +3255,7 @@ export const navigationBadgeCountsQuery = `query NavigationBadgeCounts {
   }
 }`;
 
-export const pendingImportsQuery = `query PendingImports($facet: MediaFacetValue!, $libraryIds: [ID!], $status: PendingImportStatusValue! = pending, $limit: Int = 50, $offset: Int = 0) {
+export const pendingImportsQuery = `query PendingImports($facet: MediaFacetValue!, $libraryIds: [ID!], $status: PendingImportStatusValue! = PENDING, $limit: Int = 50, $offset: Int = 0) {
   pendingImports(facet: $facet, libraryIds: $libraryIds, status: $status, limit: $limit, offset: $offset) {
     totalCount
     hasMore
