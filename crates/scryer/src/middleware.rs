@@ -409,7 +409,19 @@ pub(crate) async fn authless_web_client_proof_handler(
     )
     .await
     {
-        warn!("Rejecting authless web client proof request: {reason}");
+        // A rejected proof is a routine access-control outcome, not an error:
+        // the logged-out web client probes for authless (public) access on its
+        // GraphQL requests and the server declines per policy; the client
+        // handles the 403 gracefully. `AuthRequired` fires on every
+        // unauthenticated request to a form-login instance, so keep it at debug
+        // to avoid flooding logs. Rarer reasons (cross-site, missing/malformed
+        // forwarding, non-local peer) stay at warn — they can signal a proxy
+        // misconfiguration or cross-site probing worth noticing.
+        if matches!(reason, AuthlessAccessRejectReason::AuthRequired) {
+            tracing::debug!("Authless web client proof unavailable: {reason}");
+        } else {
+            warn!("Rejecting authless web client proof request: {reason}");
+        }
         let mut response = (
             StatusCode::FORBIDDEN,
             Json(ErrorResponse::new(
