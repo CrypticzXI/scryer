@@ -5,7 +5,11 @@ import { authRuntimeStateQuery, meQuery } from "@/lib/graphql/queries";
 import { loginMutation } from "@/lib/graphql/mutations";
 import type { AuthRuntimeState } from "@/lib/types/settings";
 import type { UserAccountKind } from "@/lib/types/users";
-import type { AppPermission, LibraryPermissionGrant } from "@/lib/utils/permissions";
+import {
+  normalizeJwtPermissionClaims,
+  type AppPermission,
+  type LibraryPermissionGrant,
+} from "@/lib/utils/permissions";
 
 const SESSION_STORAGE_KEY = "scryer_auth_token";
 export const AUTH_SESSION_CHANGED_EVENT = "scryer:auth-session-changed";
@@ -161,6 +165,20 @@ async function queryWithRateLimitRetry<TData>(
   return null;
 }
 
+function normalizeAuthUser(user: AuthUser | null | undefined): AuthUser | null {
+  if (!user) {
+    return null;
+  }
+
+  return {
+    ...user,
+    ...normalizeJwtPermissionClaims(
+      user.appPermissions,
+      user.libraryPermissions,
+    ),
+  };
+}
+
 async function loadUserFromBypass(options?: { clearToken?: boolean }) {
   if (options?.clearToken) {
     clearPersistedAuthToken();
@@ -170,7 +188,7 @@ async function loadUserFromBypass(options?: { clearToken?: boolean }) {
     const data = await queryWithRateLimitRetry<{ me?: AuthUser | null }>(
       meQuery,
     );
-    return data?.me ?? null;
+    return normalizeAuthUser(data?.me);
   } catch {
     return null;
   }
@@ -341,11 +359,14 @@ export type AuthState = {
 function userFromToken(token: string): AuthUser | null {
   const payload = decodeJwtPayload(token);
   if (!payload || isTokenExpired(payload) || payload.authScope === "mfa_enrollment") return null;
+  const authorization = normalizeJwtPermissionClaims(
+    payload.appPermissions,
+    payload.libraryPermissions,
+  );
   return {
     id: payload.sub,
     username: payload.username,
-    appPermissions: (payload.appPermissions ?? []) as AppPermission[],
-    libraryPermissions: (payload.libraryPermissions ?? []) as LibraryPermissionGrant[],
+    ...authorization,
   };
 }
 
@@ -404,7 +425,7 @@ export function useAuth(): AuthState {
       throw error ?? new Error("Login failed");
     }
     const newToken = data.login.token;
-    const nextUser = data.login.user ?? userFromToken(newToken);
+    const nextUser = normalizeAuthUser(data.login.user) ?? userFromToken(newToken);
 
     if (options?.persistSession !== false) {
       applyAuthenticatedSession(newToken, nextUser, setToken, setUser);
@@ -419,8 +440,9 @@ export function useAuth(): AuthState {
   }, []);
 
   const adoptSession = useCallback((nextToken: string, nextUser: AuthUser | null) => {
-    applyAuthenticatedSession(nextToken, nextUser, setToken, setUser);
-    rememberAuthBootstrapSession(nextToken, nextUser);
+    const normalizedUser = normalizeAuthUser(nextUser) ?? userFromToken(nextToken);
+    applyAuthenticatedSession(nextToken, normalizedUser, setToken, setUser);
+    rememberAuthBootstrapSession(nextToken, normalizedUser);
   }, []);
 
   const logout = useCallback(() => {

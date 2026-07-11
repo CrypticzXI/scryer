@@ -5,7 +5,7 @@ import type { AuthUser } from "@/lib/hooks/use-auth";
 import {
   APP_PERMISSIONS,
   LIBRARY_PERMISSIONS,
-} from "@/lib/utils/permissions";
+} from "../../lib/utils/permissions.ts";
 import { buildRouteCommands } from "./route-commands.ts";
 
 function user(overrides: Partial<AuthUser> = {}): AuthUser {

@@ -1,15 +1,15 @@
-import type { LocaleDictionary } from "./types";
-import { DEFAULT_LANGUAGE, interpolate } from "./types";
-import en from "./locales/en";
-import es from "./locales/es";
-import fr from "./locales/fr";
-import de from "./locales/de";
-import it from "./locales/it";
-import pt_BR from "./locales/pt_BR";
-import ko from "./locales/ko";
-import zh_CN from "./locales/zh_CN";
-import ja from "./locales/ja";
-export { DEFAULT_LANGUAGE } from "./types";
+import type { LocaleDictionary } from "./types.ts";
+import { DEFAULT_LANGUAGE, interpolate } from "./types.ts";
+import en from "./locales/en.ts";
+import es from "./locales/es.ts";
+import fr from "./locales/fr.ts";
+import de from "./locales/de.ts";
+import it from "./locales/it.ts";
+import pt_BR from "./locales/pt_BR.ts";
+import ko from "./locales/ko.ts";
+import zh_CN from "./locales/zh_CN.ts";
+import ja from "./locales/ja.ts";
+export { DEFAULT_LANGUAGE } from "./types.ts";
 
 export type LocaleCode = "eng" | "spa" | "fra" | "deu" | "ita" | "por" | "kor" | "zho" | "jpn";
 

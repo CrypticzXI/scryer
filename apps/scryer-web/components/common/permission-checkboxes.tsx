@@ -14,6 +14,7 @@ import {
   type LibraryPermission,
 } from "@/lib/utils/permissions";
 import { cn } from "@/lib/utils";
+import { permissionIdToken } from "@/lib/utils/permissions";
 
 export type LibraryPermissionDrafts = Record<string, string[]>;
 
@@ -171,7 +172,9 @@ function AppPermissionDropdown({
           groups={[{
             options: options.map((permission) => ({
               ...permission,
-              id: idPrefix ? `${idPrefix}-app-${permission.value}` : undefined,
+              id: idPrefix
+                ? `${idPrefix}-app-${permissionIdToken(permission.value)}`
+                : undefined,
             })),
           }]}
           selectedValues={selected}
@@ -210,7 +213,7 @@ function FacetPermissionDropdown({
     <Popover>
       <PopoverTrigger asChild>
         <PermissionDropdownTrigger
-          id={idPrefix ? `${idPrefix}-${facet}-trigger` : undefined}
+          id={idPrefix ? `${idPrefix}-${facet.toLowerCase()}-trigger` : undefined}
           label={label}
           count={selectedCount}
           disabled={facetLibraries.length === 0}
@@ -240,7 +243,7 @@ function FacetPermissionDropdown({
                       return {
                         ...permission,
                         id: idPrefix
-                          ? `${idPrefix}-${facet}-${library.id}-${permission.value}`
+                          ? `${idPrefix}-${facet.toLowerCase()}-${library.id}-${permissionIdToken(permission.value)}`
                           : undefined,
                         disabled: shadowSource !== null,
                         title: shadowTitle(shadowSource),

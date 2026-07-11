@@ -31,10 +31,10 @@ import type {
   ViewId,
   WantedSection,
 } from "@/components/root/types";
-import { FACET_REGISTRY } from "@/lib/facets/registry";
+import { FACET_REGISTRY } from "../../lib/facets/registry.ts";
 import type { AuthUser } from "@/lib/hooks/use-auth";
-import { APP_PERMISSIONS, LIBRARY_PERMISSIONS, hasAnyAppPermission, hasAnyLibraryPermission } from "@/lib/utils/permissions";
-import { canAccessRecycleBinPage } from "@/lib/utils/routes";
+import { APP_PERMISSIONS, LIBRARY_PERMISSIONS, hasAnyAppPermission, hasAnyLibraryPermission } from "../../lib/utils/permissions.ts";
+import { canAccessRecycleBinPage } from "../../lib/utils/routes.ts";
 
 export type RouteCommand = {
   id: string;

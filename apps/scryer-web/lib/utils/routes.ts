@@ -4,7 +4,7 @@ import type {
   SystemSection,
   ViewId,
 } from "@/components/root/types";
-import { isMediaView } from "@/lib/facets/registry";
+import { isMediaView } from "../facets/registry.ts";
 
 export function isMediaSettingsSection(section: ContentSettingsSection): boolean {
   return (

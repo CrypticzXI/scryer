@@ -1,4 +1,4 @@
-import type { LocaleCode } from "@/lib/i18n";
+import type { LocaleCode } from "../i18n/index.ts";
 import type {
   ActivitySection,
   ContentSettingsSection,
@@ -8,9 +8,9 @@ import type {
   ViewId,
   WantedSection,
 } from "@/components/root/types";
-import { normalizeLocale } from "@/lib/i18n";
-import { AVAILABLE_LANGUAGES } from "@/lib/i18n";
-import { isMediaView } from "@/lib/facets/registry";
+import { normalizeLocale } from "../i18n/index.ts";
+import { AVAILABLE_LANGUAGES } from "../i18n/index.ts";
+import { isMediaView } from "../facets/registry.ts";
 
 export const SETTINGS_SECTION_PATH: Record<SettingsSection, string> = {
   profile: "profile",

@@ -1688,7 +1688,9 @@ function defaultLibraryName(
 function defaultLibraryDrafts(): ImportLibraryDraft[] {
   const facets: WizardFacet[] = ["MOVIE", "SERIES", "ANIME"];
   return facets.map((facet) => {
-    const id = `${facet}_default_library`;
+    // Server default-library ids are lowercase (`movie_default_library`);
+    // WizardFacet is SCREAMING_SNAKE.
+    const id = `${facet.toLowerCase()}_default_library`;
     return {
       id,
       facet,
