@@ -1,7 +1,8 @@
 import { lazy, Suspense } from "react";
-import { createBrowserRouter } from "react-router-dom";
+import { createBrowserRouter, Navigate, useLocation } from "react-router-dom";
 import { PageShellFallback } from "@/components/root/page-shell-fallback";
 import { getRuntimeBasePath } from "@/lib/runtime-config";
+import { resolveAppRoute } from "@/lib/utils/routing";
 import { RouteErrorBoundary } from "./error-boundary";
 
 const RootPageShell = lazy(() => import("@/components/root/root-page-shell"));
@@ -10,6 +11,17 @@ const OAuthAuthorizePage = lazy(() => import("@/src/pages/oauth-authorize"));
 const SetupPage = lazy(() => import("@/src/pages/setup"));
 
 function ShellRoute() {
+  const location = useLocation();
+  const resolution = resolveAppRoute(
+    location.pathname,
+    location.search,
+    location.hash,
+  );
+
+  if (resolution.kind === "redirect") {
+    return <Navigate to={resolution.to} replace />;
+  }
+
   return (
     <Suspense fallback={<PageShellFallback />}>
       <RootPageShell />
@@ -46,54 +58,6 @@ export const router = createBrowserRouter(
             </Suspense>
           ),
         },
-        { path: "/", element: <ShellRoute /> },
-        { path: "/movies", element: <ShellRoute /> },
-        { path: "/movies/overview", element: <ShellRoute /> },
-        { path: "/movies/settings", element: <ShellRoute /> },
-        { path: "/movies/settings/general", element: <ShellRoute /> },
-        { path: "/movies/settings/quality", element: <ShellRoute /> },
-        { path: "/movies/settings/renaming", element: <ShellRoute /> },
-        { path: "/movies/settings/routing", element: <ShellRoute /> },
-        { path: "/series", element: <ShellRoute /> },
-        { path: "/series/overview", element: <ShellRoute /> },
-        { path: "/series/settings", element: <ShellRoute /> },
-        { path: "/series/settings/general", element: <ShellRoute /> },
-        { path: "/series/settings/quality", element: <ShellRoute /> },
-        { path: "/series/settings/renaming", element: <ShellRoute /> },
-        { path: "/series/settings/routing", element: <ShellRoute /> },
-        { path: "/anime", element: <ShellRoute /> },
-        { path: "/anime/overview", element: <ShellRoute /> },
-        { path: "/anime/settings", element: <ShellRoute /> },
-        { path: "/anime/settings/general", element: <ShellRoute /> },
-        { path: "/anime/settings/quality", element: <ShellRoute /> },
-        { path: "/anime/settings/renaming", element: <ShellRoute /> },
-        { path: "/anime/settings/routing", element: <ShellRoute /> },
-        { path: "/activity", element: <ShellRoute /> },
-        { path: "/wanted", element: <ShellRoute /> },
-        { path: "/wanted/wanted-items", element: <ShellRoute /> },
-        { path: "/wanted/cutoff-unmet", element: <ShellRoute /> },
-        { path: "/wanted/pending", element: <ShellRoute /> },
-        { path: "/wanted/history", element: <ShellRoute /> },
-        { path: "/history", element: <ShellRoute /> },
-        { path: "/settings", element: <ShellRoute /> },
-        { path: "/settings/profile", element: <ShellRoute /> },
-        { path: "/settings/indexers", element: <ShellRoute /> },
-        { path: "/settings/download-clients", element: <ShellRoute /> },
-        { path: "/settings/quality-profiles", element: <ShellRoute /> },
-        { path: "/settings/delay-profiles", element: <ShellRoute /> },
-        { path: "/settings/general", element: <ShellRoute /> },
-        { path: "/settings/backups", element: <ShellRoute /> },
-        { path: "/settings/users", element: <ShellRoute /> },
-        { path: "/settings/acquisition", element: <ShellRoute /> },
-        { path: "/settings/post-processing", element: <ShellRoute /> },
-        { path: "/settings/rules", element: <ShellRoute /> },
-        { path: "/settings/plugins", element: <ShellRoute /> },
-        { path: "/settings/notifications", element: <ShellRoute /> },
-        { path: "/settings/subtitles", element: <ShellRoute /> },
-        { path: "/settings/recycle-bin", element: <ShellRoute /> },
-        { path: "/system", element: <ShellRoute /> },
-        { path: "/system/jobs", element: <ShellRoute /> },
-        { path: "/system/audit", element: <ShellRoute /> },
         { path: "*", element: <ShellRoute /> },
       ],
     },

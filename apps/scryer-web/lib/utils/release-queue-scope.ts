@@ -5,8 +5,7 @@ export type QueueDownloadScopeInput =
   | { episodeSet: string[] }
   | { collection: string }
   | { seriesMovie: string }
-  | { title: boolean }
-  | { orphan: boolean };
+  | { title: boolean };
 
 function queueScopeToInput(scope: ReleaseQueueScope): QueueDownloadScopeInput | null {
   switch (scope.__typename) {
@@ -21,7 +20,9 @@ function queueScopeToInput(scope: ReleaseQueueScope): QueueDownloadScopeInput | 
     case "TitleScopePayload":
       return { title: true };
     case "OrphanScopePayload":
-      return { orphan: true };
+      // No QueueDownloadScopeInput variant expresses an orphan scope; callers
+      // fall back (typically to a whole-title submission).
+      return null;
     default:
       return null;
   }
@@ -50,7 +51,7 @@ export function releaseSupportsAdditionalFileQueue(
     return true;
   }
   if ("title" in scope) {
-    return titleFacet === "movie";
+    return titleFacet?.toUpperCase() === "MOVIE";
   }
   return false;
 }

@@ -205,6 +205,7 @@ export function SettingsRecycleBinContainer() {
   };
 
   const restoreItem = async (item: RecycledItem) => {
+    if (!canManageItems || !manageTitleLibraryIds.has(item.libraryId)) return;
     setMutatingId(item.id);
     try {
       const { error } = await client
@@ -221,12 +222,21 @@ export function SettingsRecycleBinContainer() {
   };
 
   const requestDelete = (item: RecycledItem) => {
+    if (!canManageItems || !manageTitleLibraryIds.has(item.libraryId)) return;
     setPendingAction({ type: "delete", item });
   };
 
   const confirmDelete = async () => {
     if (!pendingAction || pendingAction.type !== "delete") return;
+    if (!canManageItems) {
+      setPendingAction(null);
+      return;
+    }
     const item = pendingAction.item;
+    if (!manageTitleLibraryIds.has(item.libraryId)) {
+      setPendingAction(null);
+      return;
+    }
     setMutatingId(item.id);
     try {
       const { error } = await client
@@ -244,10 +254,15 @@ export function SettingsRecycleBinContainer() {
   };
 
   const requestEmpty = () => {
+    if (!canManageItems) return;
     setPendingAction({ type: "empty", count: totalCount });
   };
 
   const confirmEmpty = async () => {
+    if (!canManageItems) {
+      setPendingAction(null);
+      return;
+    }
     setMutatingId("__empty__");
     try {
       const { data, error } = await client

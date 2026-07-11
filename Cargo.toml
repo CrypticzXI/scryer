@@ -178,9 +178,6 @@ opt-level = 3
 [profile.release-lean.package.sha2]
 opt-level = 3
 
-[profile.release-lean.package.zlib-rs]
-opt-level = 3
-
 [profile.release-lean.package.zstd]
 opt-level = 3
 
@@ -270,9 +267,6 @@ opt-level = 3
 opt-level = 3
 
 [profile.rc.package.sha2]
-opt-level = 3
-
-[profile.rc.package.zlib-rs]
 opt-level = 3
 
 [profile.rc.package.zstd]

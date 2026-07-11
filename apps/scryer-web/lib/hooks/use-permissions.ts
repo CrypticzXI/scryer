@@ -45,8 +45,6 @@ export function usePermissions(authenticatedUser: AuthUser) {
   const canManageLibrarySettings =
     canManageConfig ||
     hasAnyLibraryPermission(authenticatedUser, LIBRARY_PERMISSIONS.manageLibrary);
-  const canAccessRecycleBin = canManageSystemSettings || canManageTitle;
-
   return {
     canViewCatalog,
     canManageTitle,
@@ -60,6 +58,5 @@ export function usePermissions(authenticatedUser: AuthUser) {
     canManageUsers,
     canManageConfig,
     canManageLibrarySettings,
-    canAccessRecycleBin,
   };
 }

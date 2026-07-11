@@ -1,15 +1,6 @@
-import type {
-  ActivitySection,
-  SettingsSection,
-  ViewId,
-  ContentSettingsSection,
-  LogsSection,
-  SystemSection,
-  WantedSection,
-} from "@/components/root/types";
 import type { ViewCategoryId } from "@/lib/types/quality-profiles";
 import type { Facet } from "@/lib/types/titles";
-import { FACET_REGISTRY, MEDIA_VIEW_IDS, SCOPE_IDS } from "@/lib/facets/registry";
+import { FACET_REGISTRY, SCOPE_IDS } from "@/lib/facets/registry";
 
 // --- Non-facet constants (unchanged) ---
 
@@ -66,113 +57,10 @@ export const RENAME_TEMPLATE_GLOBAL_KEYS: Record<ViewCategoryId, string> = Objec
   FACET_REGISTRY.map((f) => [f.scopeId, f.renameTemplateKey]),
 ) as Record<ViewCategoryId, string>;
 
-// --- URL constants ---
-
-export const URL_SECTION_SETTINGS = "settings";
-export const URL_SECTION_MOVIES = "movies";
-export const URL_SECTION_SERIES = "series";
-export const URL_SECTION_ANIME = "anime";
-export const URL_SECTION_DISCOVERY = "discovery";
-export const URL_SECTION_REQUESTS = "requests";
-export const URL_SECTION_ACTIVITY = "activity";
-export const URL_SECTION_CALENDAR = "calendar";
-export const URL_SECTION_WANTED = "wanted";
-export const URL_SECTION_HISTORY = "history";
-export const URL_SECTION_SYSTEM = "system";
-export const URL_SECTION_LOGS = "logs";
 export const URL_PARAM_LANGUAGE = "lang";
 export const URL_PARAM_VIEW_DEPRECATED = "view";
 export const URL_PARAM_SETTINGS_SECTION_DEPRECATED = "settingsSection";
 export const URL_PARAM_CONTENT_SECTION_DEPRECATED = "contentSection";
-
-export const URL_PATH_SEGMENTS: ViewId[] = [
-  ...MEDIA_VIEW_IDS as string[] as ViewId[],
-  URL_SECTION_DISCOVERY,
-  URL_SECTION_REQUESTS,
-  URL_SECTION_ACTIVITY,
-  URL_SECTION_CALENDAR,
-  URL_SECTION_WANTED,
-  URL_SECTION_HISTORY,
-  URL_SECTION_SETTINGS,
-  URL_SECTION_LOGS,
-  URL_SECTION_SYSTEM,
-];
-
-export const SETTINGS_SECTION_PATH_TO_ID: Record<string, SettingsSection> = {
-  profile: "profile",
-  general: "general",
-  backup: "backups",
-  backups: "backups",
-  security: "security",
-  users: "users",
-  "media-servers": "mediaServers",
-  mediaServers: "mediaServers",
-  indexers: "indexers",
-  "download-clients": "downloadClients",
-  downloadClients: "downloadClients",
-  "quality-profiles": "qualityProfiles",
-  qualityProfiles: "qualityProfiles",
-  "delay-profiles": "delayProfiles",
-  delayProfiles: "delayProfiles",
-  acquisition: "acquisition",
-  rules: "rules",
-  plugins: "plugins",
-  notifications: "notifications",
-  "post-procesing": "post-processing",
-  "post-processing": "post-processing",
-  subtitles: "subtitles",
-  "recycle-bin": "recycleBin",
-  recycleBin: "recycleBin",
-};
-
-export const CONTENT_SECTION_PATH_TO_ID: Record<string, ContentSettingsSection> = {
-  overview: "overview",
-  import: "import",
-  requests: "requests",
-  settings: "library",
-  media: "library",
-};
-
-export const CONTENT_SETTINGS_SUB_PAGE_PATH_TO_ID: Record<string, ContentSettingsSection> = {
-  library: "library",
-  general: "general",
-  quality: "quality",
-  renaming: "renaming",
-  routing: "routing",
-};
-
-export const SYSTEM_SECTION_PATH_TO_ID: Record<string, SystemSection> = {
-  overview: "overview",
-  jobs: "jobs",
-  logs: "logs",
-  audit: "audit",
-  "recycle-bin": "recycleBin",
-  recycleBin: "recycleBin",
-};
-
-export const LOGS_SECTION_PATH_TO_ID: Record<string, LogsSection> = {
-  logs: "logs",
-  service: "logs",
-  "service-logs": "logs",
-  audit: "audit",
-  "audit-logs": "audit",
-};
-
-export const ACTIVITY_SECTION_PATH_TO_ID: Record<string, ActivitySection> = {
-  activity: "activity",
-  import: "import",
-  history: "history",
-};
-
-export const WANTED_SECTION_PATH_TO_ID: Record<string, WantedSection> = {
-  items: "wanted",
-  "wanted-items": "wanted",
-  wanted: "wanted",
-  "cutoff-unmet": "cutoff",
-  cutoff: "cutoff",
-  pending: "pending",
-  history: "history",
-};
 
 export const viewToFacet: Record<string, Facet> = Object.fromEntries(
   FACET_REGISTRY.map((f) => [f.viewId, f.id]),

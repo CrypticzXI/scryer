@@ -1,6 +1,7 @@
 import type {
   ContentSettingsSection,
   SettingsSection,
+  SystemSection,
   ViewId,
 } from "@/components/root/types";
 import { isMediaView } from "@/lib/facets/registry";
@@ -58,7 +59,6 @@ export function canAccessSettingsSection(
   canManageUserAccess: boolean,
   canManageSystemSettings: boolean,
   canManageCatalogSettings: boolean,
-  canAccessRecycleBin: boolean,
 ): boolean {
   switch (section) {
     case "profile":
@@ -67,8 +67,6 @@ export function canAccessSettingsSection(
       return canManageUserAccounts;
     case "users":
       return canManageUserAccess;
-    case "recycleBin":
-      return canAccessRecycleBin;
     case "general":
     case "backups":
     case "mediaServers":
@@ -87,4 +85,21 @@ export function canAccessSettingsSection(
     default:
       return false;
   }
+}
+
+export function canAccessRecycleBinPage(
+  canManageSystemSettings: boolean,
+  canManageTitle: boolean,
+): boolean {
+  return canManageSystemSettings || canManageTitle;
+}
+
+export function canAccessSystemSection(
+  section: SystemSection,
+  canManageSystemSettings: boolean,
+  canManageTitle: boolean,
+): boolean {
+  return section === "recycleBin"
+    ? canAccessRecycleBinPage(canManageSystemSettings, canManageTitle)
+    : canManageSystemSettings;
 }

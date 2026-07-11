@@ -480,11 +480,25 @@ const DOWNLOAD_QUEUE_ITEM_FIELDS = `
     trackedStatusMessages
     trackedMatchType
     queueScope {
-      kind
-      episodeId
-      episodeIds
-      collectionId
-      seriesMovieLinkId
+      __typename
+      ... on EpisodeScopePayload {
+        episodeId
+      }
+      ... on EpisodeSetScopePayload {
+        episodeIds
+      }
+      ... on SeriesMovieScopePayload {
+        seriesMovieLinkId
+      }
+      ... on CollectionScopePayload {
+        collectionId
+      }
+      ... on TitleScopePayload {
+        wholeTitle
+      }
+      ... on OrphanScopePayload {
+        orphaned
+      }
     }`;
 
 const MOVIE_SIDE_PANEL_TITLE_FIELDS = `
@@ -931,9 +945,9 @@ export const seriesSidePanelOverviewQuery = `query SeriesSidePanelOverview($id: 
 }`;
 
 export const titleOverviewDownloadFeedbackQuery = `query TitleOverviewDownloadFeedback($id: ID!) {
-  downloadQueueItems: downloadQueue(titleId: $id, includeAllActivity: true, includeImportActivity: true, activityFilter: all) {${DOWNLOAD_QUEUE_ITEM_FIELDS}
+  downloadQueueItems: downloadQueue(titleId: $id, includeAllActivity: true, includeImportActivity: true, activityFilter: ALL) {${DOWNLOAD_QUEUE_ITEM_FIELDS}
   }
-  completedDownloadQueueItems: downloadQueue(titleId: $id, includeAllActivity: true, includeHistoryOnly: true, activityFilter: all) {${DOWNLOAD_QUEUE_ITEM_FIELDS}
+  completedDownloadQueueItems: downloadQueue(titleId: $id, includeAllActivity: true, includeHistoryOnly: true, activityFilter: ALL) {${DOWNLOAD_QUEUE_ITEM_FIELDS}
   }
 }`;
 
@@ -1022,11 +1036,25 @@ export const searchForTitleQuery = `query SearchReleasesForTitle($titleId: ID!) 
     downloadUrl
     candidateToken
     queueScope {
-      kind
-      episodeId
-      episodeIds
-      collectionId
-      seriesMovieLinkId
+      __typename
+      ... on EpisodeScopePayload {
+        episodeId
+      }
+      ... on EpisodeSetScopePayload {
+        episodeIds
+      }
+      ... on SeriesMovieScopePayload {
+        seriesMovieLinkId
+      }
+      ... on CollectionScopePayload {
+        collectionId
+      }
+      ... on TitleScopePayload {
+        wholeTitle
+      }
+      ... on OrphanScopePayload {
+        orphaned
+      }
     }
     sourceKind
     sizeBytes
@@ -1087,10 +1115,25 @@ export const searchForEpisodeQuery = `query SearchReleasesForEpisode($titleId: I
     downloadUrl
     candidateToken
     queueScope {
-      kind
-      episodeId
-      episodeIds
-      collectionId
+      __typename
+      ... on EpisodeScopePayload {
+        episodeId
+      }
+      ... on EpisodeSetScopePayload {
+        episodeIds
+      }
+      ... on SeriesMovieScopePayload {
+        seriesMovieLinkId
+      }
+      ... on CollectionScopePayload {
+        collectionId
+      }
+      ... on TitleScopePayload {
+        wholeTitle
+      }
+      ... on OrphanScopePayload {
+        orphaned
+      }
     }
     sourceKind
     sizeBytes
@@ -1150,11 +1193,25 @@ export const searchForSeriesMovieQuery = `query SearchReleasesForSeriesMovie($ti
     downloadUrl
     candidateToken
     queueScope {
-      kind
-      episodeId
-      episodeIds
-      collectionId
-      seriesMovieLinkId
+      __typename
+      ... on EpisodeScopePayload {
+        episodeId
+      }
+      ... on EpisodeSetScopePayload {
+        episodeIds
+      }
+      ... on SeriesMovieScopePayload {
+        seriesMovieLinkId
+      }
+      ... on CollectionScopePayload {
+        collectionId
+      }
+      ... on TitleScopePayload {
+        wholeTitle
+      }
+      ... on OrphanScopePayload {
+        orphaned
+      }
     }
     sourceKind
     sizeBytes
@@ -1713,10 +1770,10 @@ export function buildReactiveRefreshQuery(
 
         variableDefinitions.push(`$${titleIdVariableName}: ID!`);
         fields.push(
-          `  ${downloadQueueItemsAlias}: downloadQueue(titleId: $${titleIdVariableName}, includeAllActivity: true, includeImportActivity: true, activityFilter: all) {\n${DOWNLOAD_QUEUE_ITEM_FIELDS}\n  }`,
+          `  ${downloadQueueItemsAlias}: downloadQueue(titleId: $${titleIdVariableName}, includeAllActivity: true, includeImportActivity: true, activityFilter: ALL) {\n${DOWNLOAD_QUEUE_ITEM_FIELDS}\n  }`,
         );
         fields.push(
-          `  ${completedDownloadQueueItemsAlias}: downloadQueue(titleId: $${titleIdVariableName}, includeAllActivity: true, includeHistoryOnly: true, activityFilter: all) {\n${DOWNLOAD_QUEUE_ITEM_FIELDS}\n  }`,
+          `  ${completedDownloadQueueItemsAlias}: downloadQueue(titleId: $${titleIdVariableName}, includeAllActivity: true, includeHistoryOnly: true, activityFilter: ALL) {\n${DOWNLOAD_QUEUE_ITEM_FIELDS}\n  }`,
         );
         variables[titleIdVariableName] = action.titleId;
         actionPlans.push({
@@ -2131,7 +2188,7 @@ export const downloadQueueSubscription = `subscription DownloadQueueStream($incl
 }`;
 
 export const importQueueCountQuery = `query ImportQueueCount {
-  downloadImport(limit: 1, offset: 0, filter: all) {
+  downloadImport(limit: 1, offset: 0, filter: ALL) {
     totalCount
   }
 }`;

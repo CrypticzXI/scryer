@@ -8,6 +8,7 @@ import {
   titleBySlugQuery,
   titleMoreLikeThisQuery,
   titleOverviewDownloadFeedbackQuery,
+  titleRouteTargetQuery,
 } from "@/lib/graphql/queries";
 import type { CatalogDiscoveryItem } from "@/lib/types/discovery";
 
@@ -35,6 +36,10 @@ export type ResolvedTitleOverviewTarget = {
   slug: string | null;
   libraryId: string | null;
   librarySlug: string | null;
+};
+
+export type ResolvedTitleRouteTarget = ResolvedTitleOverviewTarget & {
+  facet: string;
 };
 
 type TitleMoreLikeThisResponse<TItem> = {
@@ -196,6 +201,47 @@ export async function resolveTitleOverviewTargetBySlug(
 
   return {
     id: String(title.id),
+    slug: typeof title.slug === "string" && title.slug.trim().length > 0
+      ? title.slug.trim()
+      : null,
+    libraryId: typeof title.libraryId === "string" && title.libraryId.trim().length > 0
+      ? title.libraryId.trim()
+      : null,
+    librarySlug: typeof title.librarySlug === "string" && title.librarySlug.trim().length > 0
+      ? title.librarySlug.trim()
+      : null,
+  };
+}
+
+export async function resolveTitleOverviewTargetById(
+  client: Client,
+  id: string,
+): Promise<ResolvedTitleRouteTarget | null> {
+  const normalizedId = id.trim();
+  if (!normalizedId) {
+    return null;
+  }
+
+  const { data, error } = await client
+    .query(
+      titleRouteTargetQuery,
+      { id: normalizedId },
+      { requestPolicy: "network-only" },
+    )
+    .toPromise();
+
+  if (error) {
+    throw error;
+  }
+
+  const title = data?.title;
+  if (!title?.id || typeof title.facet !== "string") {
+    return null;
+  }
+
+  return {
+    id: String(title.id),
+    facet: title.facet,
     slug: typeof title.slug === "string" && title.slug.trim().length > 0
       ? title.slug.trim()
       : null,

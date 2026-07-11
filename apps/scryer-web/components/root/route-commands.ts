@@ -34,6 +34,7 @@ import type {
 import { FACET_REGISTRY } from "@/lib/facets/registry";
 import type { AuthUser } from "@/lib/hooks/use-auth";
 import { APP_PERMISSIONS, LIBRARY_PERMISSIONS, hasAnyAppPermission, hasAnyLibraryPermission } from "@/lib/utils/permissions";
+import { canAccessRecycleBinPage } from "@/lib/utils/routes";
 
 export type RouteCommand = {
   id: string;
@@ -100,6 +101,10 @@ export function buildRouteCommands({
     APP_PERMISSIONS.managePermissions,
   ]);
   const canManageSystemSettings = hasAnyAppPermission(user, [APP_PERMISSIONS.manageSystemSettings]);
+  const canAccessRecycleBin = canAccessRecycleBinPage(
+    canManageSystemSettings,
+    canManageTitle,
+  );
   const canManageCatalogSettings = hasAnyAppPermission(user, [APP_PERMISSIONS.manageCatalogSettings]);
   const canManageConfig = canManageSystemSettings || canManageCatalogSettings;
   const canManageLibrarySettings =
@@ -378,9 +383,9 @@ export function buildRouteCommands({
           onSelect: buildNavigate(onNavigate, "settings", "rules"),
         } satisfies RouteCommand, {
           id: "settings-post-processing",
-          label: `${catalogsGroupLabel} / ${t("settings.postProcessing")}`,
+          label: `${automationGroupLabel} / ${t("settings.postProcessing")}`,
           description: t("settings.postProcessing"),
-          groupLabel: catalogsGroupLabel,
+          groupLabel: automationGroupLabel,
           keywords: ["settings", "post", "processing", "import", "rename", "move"],
           icon: FolderCog,
           onSelect: buildNavigate(onNavigate, "settings", "post-processing"),
@@ -437,15 +442,21 @@ export function buildRouteCommands({
           onSelect: buildNavigate(onNavigate, "settings", "plugins"),
         } satisfies RouteCommand]
       : []),
-    ...(canManageSystemSettings || canManageTitle
+    ...(canAccessRecycleBin
       ? [{
-          id: "settings-recycle-bin",
-          label: `${catalogsGroupLabel} / ${t("settings.recycleBin")}`,
+          id: "system-recycle-bin",
+          label: `${systemGroupLabel} / ${t("settings.recycleBin")}`,
           description: t("settings.recycleBin"),
-          groupLabel: catalogsGroupLabel,
+          groupLabel: systemGroupLabel,
           keywords: ["settings", "recycle", "bin", "trash", "deleted"],
           icon: Trash2,
-          onSelect: buildNavigate(onNavigate, "settings", "recycleBin"),
+          onSelect: buildNavigate(
+            onNavigate,
+            "system",
+            undefined,
+            undefined,
+            "recycleBin",
+          ),
         } satisfies RouteCommand]
       : []),
     ...(canManageSystemSettings

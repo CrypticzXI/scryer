@@ -25,7 +25,6 @@ const FOUNDATION_CHUNK_MODULES = [
   "/lib/hooks/use-mobile.ts",
   "/lib/hooks/use-settings-subscription.ts",
   "/lib/utils/download-clients.ts",
-  "/lib/utils/formatting.ts",
   "/lib/utils/poster-images.ts",
   "/lib/utils/quality-profiles.ts",
 ];
@@ -37,7 +36,6 @@ const UI_CHUNK_MODULES = [
   "/components/ui/checkbox.tsx",
   "/components/ui/command.tsx",
   "/components/ui/dialog.tsx",
-  "/components/ui/hover-card.tsx",
   "/components/ui/input.tsx",
   "/components/ui/label.tsx",
   "/components/ui/select.tsx",
@@ -48,7 +46,6 @@ const UI_CHUNK_MODULES = [
 ];
 
 const MEDIA_CHUNK_MODULES = [
-  "/components/containers/media-containers.ts",
   "/components/containers/media-content-container.tsx",
   "/components/containers/series-overview-container.tsx",
   "/components/views/overview-back-link.tsx",

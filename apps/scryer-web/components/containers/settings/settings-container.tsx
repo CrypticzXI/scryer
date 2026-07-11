@@ -78,9 +78,6 @@ const SettingsPostProcessingContainer = lazy(async () => ({
 const SettingsSubtitlesContainer = lazy(async () => ({
   default: (await import("@/components/containers/settings/settings-subtitles-container")).SettingsSubtitlesContainer,
 }));
-const SettingsRecycleBinContainer = lazy(async () => ({
-  default: (await import("@/components/containers/settings/settings-recycle-bin-container")).SettingsRecycleBinContainer,
-}));
 const SettingsBackupsContainer = lazy(async () => ({
   default: (await import("@/components/containers/settings/settings-backups-container")).SettingsBackupsContainer,
 }));
@@ -258,13 +255,11 @@ export const SettingsContainer = memo(function SettingsContainer({
                             ? t("settings.postProcessing")
                             : settingsSection === "subtitles"
                               ? t("settings.subtitles")
-                              : settingsSection === "recycleBin"
-                                ? t("settings.recycleBin")
-                                : settingsSection === "delayProfiles"
-                                  ? t("settings.delayProfiles")
-                                  : settingsSection === "acquisition"
-                                    ? t("settings.acquisition")
-                                    : t("settings.qualityProfiles");
+                              : settingsSection === "delayProfiles"
+                                ? t("settings.delayProfiles")
+                                : settingsSection === "acquisition"
+                                  ? t("settings.acquisition")
+                                  : t("settings.qualityProfiles");
   const primarySettingsNav = [
     {
       section: "profile" as const,
@@ -543,8 +538,6 @@ export const SettingsContainer = memo(function SettingsContainer({
             <SettingsSubtitlesContainer
               providerCatalogVersion={providerCatalogVersions.SUBTITLE}
             />
-          ) : settingsSection === "recycleBin" ? (
-            <SettingsRecycleBinContainer />
           ) : settingsSection === "delayProfiles" ? (
             <SettingsDelayProfilesContainer />
           ) : settingsSection === "acquisition" ? (

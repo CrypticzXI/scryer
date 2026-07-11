@@ -10,15 +10,6 @@ export type RouteCommandItem = {
   onSelect: () => void;
 };
 
-export type RouteCommandPaletteConfig = {
-  title: string;
-  description: string;
-  placeholder: string;
-  noResultsText: string;
-  groupLabel: string;
-  items: RouteCommandItem[];
-};
-
 export type RouteCommandGroup = {
   groupLabel: string | null;
   items: RouteCommandItem[];

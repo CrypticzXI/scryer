@@ -7,11 +7,10 @@ export type ViewId =
   | "activity"
   | "calendar"
   | "wanted"
-  | "history"
   | "settings"
   | "logs"
   | "system";
-export type SystemSection = "overview" | "jobs" | "logs" | "audit" | "recycleBin";
+export type SystemSection = "overview" | "jobs" | "recycleBin";
 export type LogsSection = "logs" | "audit";
 export type ActivitySection = "activity" | "import" | "history";
 export type WantedSection = "wanted" | "cutoff" | "pending" | "history";
@@ -31,12 +30,10 @@ export type SettingsSection =
   | "plugins"
   | "notifications"
   | "post-processing"
-  | "subtitles"
-  | "recycleBin";
+  | "subtitles";
 export type ContentSettingsSection =
   | "overview"
   | "import"
-  | "requests"
   | "library"
   | "general"
   | "quality"

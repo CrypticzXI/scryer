@@ -10,7 +10,7 @@ import { systemHealthQuery } from "@/lib/graphql/queries";
 import type { SystemHealth } from "@/components/root/types";
 import { useTranslate } from "@/lib/context/translate-context";
 import { useGlobalStatus } from "@/lib/context/global-status-context";
-import type { SystemSection } from "@/components/root/types";
+import type { LogsSection, SystemSection } from "@/components/root/types";
 
 function SystemPageFrame({
   breadcrumbLabel,
@@ -59,7 +59,7 @@ export const SystemContainer = memo(function SystemContainer({
   systemSection,
   scryerVersion,
 }: {
-  systemSection: SystemSection;
+  systemSection: SystemSection | LogsSection;
   scryerVersion: string | null;
 }) {
   const setGlobalStatus = useGlobalStatus();

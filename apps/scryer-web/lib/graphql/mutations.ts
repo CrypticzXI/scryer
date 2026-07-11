@@ -1049,10 +1049,25 @@ export const queueExistingMutation = `mutation QueueExisting($input: QueueDownlo
       state
       replaceable
       scope {
-        kind
-        episodeId
-        episodeIds
-        collectionId
+        __typename
+        ... on EpisodeScopePayload {
+          episodeId
+        }
+        ... on EpisodeSetScopePayload {
+          episodeIds
+        }
+        ... on SeriesMovieScopePayload {
+          seriesMovieLinkId
+        }
+        ... on CollectionScopePayload {
+          collectionId
+        }
+        ... on TitleScopePayload {
+          wholeTitle
+        }
+        ... on OrphanScopePayload {
+          orphaned
+        }
       }
     }
   }
@@ -1084,10 +1099,25 @@ export const queueBestReleaseMutation = `mutation QueueBestRelease($input: Queue
       state
       replaceable
       scope {
-        kind
-        episodeId
-        episodeIds
-        collectionId
+        __typename
+        ... on EpisodeScopePayload {
+          episodeId
+        }
+        ... on EpisodeSetScopePayload {
+          episodeIds
+        }
+        ... on SeriesMovieScopePayload {
+          seriesMovieLinkId
+        }
+        ... on CollectionScopePayload {
+          collectionId
+        }
+        ... on TitleScopePayload {
+          wholeTitle
+        }
+        ... on OrphanScopePayload {
+          orphaned
+        }
       }
     }
   }
@@ -1310,7 +1340,6 @@ export function buildDeleteTitleBatchMutation(count: number): string {
   const fields = Array.from(
     { length: count },
     (_, index) => `item${index}: deleteTitle(input: $input${index}) {
-    id
       id
   }`,
   ).join("\n");

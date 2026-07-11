@@ -88,18 +88,12 @@ import type { LocaleCode, LanguageOption } from "@/lib/i18n";
 import {
   buildOverviewDetailPath,
   buildViewPath,
-  parseActivitySectionFromPath,
-  parseContentSectionFromPath,
-  parseLogsSectionFromPath,
-  parseOverviewTargetFromPath,
-  parseSettingsSectionFromPath,
-  parseSystemSectionFromPath,
-  parseViewFromPath,
-  parseWantedSectionFromPath,
+  resolveAppRoute,
 } from "@/lib/utils/routing";
 import {
   canAccessMediaSettingsSection,
   canAccessSettingsSection,
+  canAccessSystemSection,
   isMediaSettingsSection,
   isProtectedSettingsRoute,
 } from "@/lib/utils/routes";
@@ -110,13 +104,15 @@ import {
   facetForView,
 } from "@/lib/facets/registry";
 import { BackendRestartOverlay } from "@/components/common/backend-restart-overlay";
-import { resolveTitleOverviewTargetBySlug } from "@/lib/title-overview-loader";
-
-const mediaContainers = () =>
-  import("@/components/containers/media-containers");
+import {
+  resolveTitleOverviewTargetById,
+  resolveTitleOverviewTargetBySlug,
+} from "@/lib/title-overview-loader";
 
 const MediaContentContainer = lazy(() =>
-  mediaContainers().then((m) => ({ default: m.MediaContentContainer })),
+  import("@/components/containers/media-content-container").then((m) => ({
+    default: m.MediaContentContainer,
+  })),
 );
 
 const RequestsContainer = lazy(() =>
@@ -130,6 +126,8 @@ const SettingsContainer = lazy(() =>
     default: m.SettingsContainer,
   })),
 );
+
+const NotFoundPage = lazy(() => import("@/src/pages/not-found"));
 
 const ActivityContainer = lazy(() =>
   import("@/components/containers/activity-container").then((m) => ({
@@ -158,12 +156,6 @@ const DiscoveryContainer = lazy(() =>
 const CalendarContainer = lazy(() =>
   import("@/components/containers/calendar-container").then((m) => ({
     default: m.CalendarContainer,
-  })),
-);
-
-const WantedHistoryContainer = lazy(() =>
-  import("@/components/containers/title-history-container").then((m) => ({
-    default: m.TitleHistoryContainer,
   })),
 );
 
@@ -503,7 +495,6 @@ function MainContent({
   handleImportRouteEmpty,
   canViewCatalog,
   canAccessActivity,
-  canAccessRecycleBin,
   canResolveImports,
   canManageTitle,
   canRequestMedia,
@@ -540,7 +531,6 @@ function MainContent({
   handleImportRouteEmpty: () => void;
   canViewCatalog: boolean;
   canAccessActivity: boolean;
-  canAccessRecycleBin: boolean;
   canResolveImports: boolean;
   canManageTitle: boolean;
   canRequestMedia: boolean;
@@ -593,30 +583,20 @@ function MainContent({
       />
     );
   }
-  if (view === "history") {
-    if (!canManageTitle) {
-      return (
-        <WantedContainer
-          key="wanted-wanted"
-          wantedSection="wanted"
-          onOpenOverview={handleOpenOverview}
-        />
-      );
-    }
-    return <WantedHistoryContainer key="history" />;
-  }
   if (view === "system") {
-    if (!canManageSystemSettings) {
+    if (
+      !canAccessSystemSection(
+        systemSection,
+        canManageSystemSettings,
+        canManageTitle,
+      )
+    ) {
       return <ViewLoadingFallback />;
     }
-    const effectiveSystemSection =
-      systemSection === "logs" || systemSection === "audit"
-        ? "overview"
-        : systemSection;
     return (
       <SystemContainer
-        key={`system-${effectiveSystemSection}`}
-        systemSection={effectiveSystemSection}
+        key={`system-${systemSection}`}
+        systemSection={systemSection}
         scryerVersion={scryerVersion}
       />
     );
@@ -660,7 +640,6 @@ function MainContent({
       canManageUsers,
       canManageSystemSettings,
       canManageCatalogSettings,
-      canAccessRecycleBin,
     )
       ? settingsSection
       : defaultSettingsSection(
@@ -834,155 +813,37 @@ function AuthenticatedHomePage({
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
 
+  const routeResolution = useMemo(
+    () => resolveAppRoute(pathname, location.search, location.hash),
+    [location.hash, location.search, pathname],
+  );
+  const resolvedRoute =
+    routeResolution.kind === "canonical"
+      ? routeResolution.route
+      : {
+          canonicalPath: pathname,
+          view: "movies" as ViewId,
+          settingsSection: "profile" as SettingsSection,
+          contentSettingsSection: "overview" as ContentSettingsSection,
+          systemSection: "overview" as SystemSection,
+          logsSection: "logs" as LogsSection,
+          activitySection: "activity" as ActivitySection,
+          wantedSection: "wanted" as WantedSection,
+          overviewLibrarySlug: null,
+          overviewTitleSlug: null,
+        };
   const {
-    parsedView: view,
-    parsedSettingsSection: settingsSection,
-    parsedContentSection: contentSettingsSection,
-    parsedSystemSection: systemSection,
-    parsedLogsSection: logsSection,
-    parsedActivitySection: activitySection,
-    parsedWantedSection: wantedSection,
-    parsedOverviewLibrarySlug,
-    parsedOverviewSlug,
-    parsedCanonicalRoutePath,
-  } = useMemo(() => {
-    const trimmed = pathname.replace(/^\/+|\/+$/g, "");
-    const segments = trimmed ? trimmed.split("/") : [];
-    const normalizedSegments = segments.map((segment) => segment.toLowerCase());
-    const routeRoot = normalizedSegments[0] ?? null;
-    const routeSection = normalizedSegments[1] ?? null;
-    let settingsPathSegment = routeSection;
-    let systemPathSegment = routeSection;
-    let wantedPathSegment = routeSection;
-    let parsedView = parseViewFromPath(routeRoot);
-    let canonicalRoutePath: string | null = null;
-
-    if (routeRoot === "automation") {
-      if (routeSection === "wanted") {
-        parsedView = "wanted";
-        wantedPathSegment = normalizedSegments[2] ?? null;
-        canonicalRoutePath = buildViewPath(
-          "wanted",
-          undefined,
-          undefined,
-          undefined,
-          parseWantedSectionFromPath(wantedPathSegment),
-        );
-      } else {
-        parsedView = "settings";
-        settingsPathSegment = routeSection;
-        if (
-          [
-            "acquisition",
-            "rules",
-            "subtitles",
-            "post-procesing",
-            "post-processing",
-          ].includes(routeSection ?? "")
-        ) {
-          canonicalRoutePath = buildViewPath(
-            "settings",
-            parseSettingsSectionFromPath(settingsPathSegment),
-          );
-        }
-      }
-    } else if (routeRoot === "integrations") {
-      parsedView = "settings";
-      settingsPathSegment = routeSection;
-      if (["indexers", "download-clients", "media-servers", "notifications"].includes(routeSection ?? "")) {
-        canonicalRoutePath = buildViewPath(
-          "settings",
-          parseSettingsSectionFromPath(settingsPathSegment),
-        );
-      }
-    } else if (routeRoot === "system") {
-      if (["users", "security", "backup", "backups"].includes(routeSection ?? "")) {
-        parsedView = "settings";
-        settingsPathSegment = routeSection;
-        canonicalRoutePath = buildViewPath(
-          "settings",
-          parseSettingsSectionFromPath(settingsPathSegment),
-        );
-      } else {
-        parsedView = "system";
-        systemPathSegment = routeSection;
-      }
-    } else if (routeRoot === "wanted") {
-      canonicalRoutePath = buildViewPath(
-        "wanted",
-        undefined,
-        undefined,
-        undefined,
-        parseWantedSectionFromPath(wantedPathSegment),
-      );
-    } else if (routeRoot === "settings" && routeSection) {
-      const settingsSection = parseSettingsSectionFromPath(settingsPathSegment);
-      if (
-        [
-          "rules",
-          "acquisition",
-          "subtitles",
-          "post-processing",
-          "indexers",
-          "downloadClients",
-          "mediaServers",
-          "notifications",
-          "users",
-          "security",
-          "backups",
-        ].includes(settingsSection)
-      ) {
-        canonicalRoutePath = buildViewPath("settings", settingsSection);
-      }
-    }
-
-    const parsedSettingsSection: SettingsSection =
-      parsedView === "settings"
-        ? parseSettingsSectionFromPath(settingsPathSegment)
-        : "general";
-    const parsedContentSection: ContentSettingsSection = isMediaView(parsedView)
-      ? parseContentSectionFromPath(
-          normalizedSegments[1] ?? null,
-          normalizedSegments[2] ?? null,
-        )
-      : "overview";
-    const parsedSystemSection: SystemSection =
-      parsedView === "system"
-        ? parseSystemSectionFromPath(systemPathSegment)
-        : "overview";
-    const parsedLogsSection: LogsSection =
-      parsedView === "logs"
-        ? parseLogsSectionFromPath(normalizedSegments[1] ?? null)
-        : "logs";
-    const parsedActivitySection: ActivitySection =
-      parsedView === "activity"
-        ? parseActivitySectionFromPath(normalizedSegments[1] ?? null)
-        : "activity";
-    const parsedWantedSection: WantedSection =
-      parsedView === "wanted"
-        ? parseWantedSectionFromPath(wantedPathSegment)
-        : "wanted";
-    const parsedOverviewTarget =
-      isMediaView(parsedView) && parsedContentSection === "overview"
-        ? parseOverviewTargetFromPath(
-            parsedView,
-            segments[1] ?? null,
-            segments[2] ?? null,
-          )
-        : { librarySlug: null, titleSlug: null };
-    return {
-      parsedView,
-      parsedSettingsSection,
-      parsedContentSection,
-      parsedSystemSection,
-      parsedLogsSection,
-      parsedActivitySection,
-      parsedWantedSection,
-      parsedOverviewLibrarySlug: parsedOverviewTarget.librarySlug,
-      parsedOverviewSlug: parsedOverviewTarget.titleSlug,
-      parsedCanonicalRoutePath: canonicalRoutePath,
-    };
-  }, [pathname]);
+    view,
+    settingsSection,
+    contentSettingsSection,
+    systemSection,
+    logsSection,
+    activitySection,
+    wantedSection,
+    overviewLibrarySlug: parsedOverviewLibrarySlug,
+    overviewTitleSlug: parsedOverviewSlug,
+  } = resolvedRoute;
+  const routeIsCanonical = routeResolution.kind === "canonical";
 
   const legacyOverviewTitleId = useMemo(() => {
     if (
@@ -993,63 +854,6 @@ function AuthenticatedHomePage({
       return null;
     return searchParams.get("id")?.trim() || null;
   }, [view, contentSettingsSection, parsedOverviewSlug, searchParams]);
-
-  useEffect(() => {
-    if (!parsedCanonicalRoutePath) {
-      return;
-    }
-    const nextQuery = searchParams.toString();
-    const nextPathWithQuery = `${parsedCanonicalRoutePath}${nextQuery ? `?${nextQuery}` : ""}`;
-    const currentPathWithQuery = `${pathname}${nextQuery ? `?${nextQuery}` : ""}`;
-
-    if (nextPathWithQuery !== currentPathWithQuery) {
-      navigate(nextPathWithQuery, { replace: true });
-    }
-  }, [navigate, parsedCanonicalRoutePath, pathname, searchParams]);
-
-  useEffect(() => {
-    if (view !== "history") {
-      return;
-    }
-
-    const nextPath = buildViewPath(
-      "wanted",
-      undefined,
-      undefined,
-      undefined,
-      "history",
-    );
-    const nextQuery = searchParams.toString();
-    const nextPathWithQuery = `${nextPath}${nextQuery ? `?${nextQuery}` : ""}`;
-    const currentPathWithQuery = `${pathname}${nextQuery ? `?${nextQuery}` : ""}`;
-
-    if (nextPathWithQuery !== currentPathWithQuery) {
-      navigate(nextPathWithQuery, { replace: true });
-    }
-  }, [navigate, pathname, searchParams, view]);
-
-  useEffect(() => {
-    if (view !== "system" || (systemSection !== "logs" && systemSection !== "audit")) {
-      return;
-    }
-
-    const nextPath = buildViewPath(
-      "logs",
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      systemSection,
-    );
-    const nextQuery = searchParams.toString();
-    const nextPathWithQuery = `${nextPath}${nextQuery ? `?${nextQuery}` : ""}`;
-    const currentPathWithQuery = `${pathname}${nextQuery ? `?${nextQuery}` : ""}`;
-
-    if (nextPathWithQuery !== currentPathWithQuery) {
-      navigate(nextPathWithQuery, { replace: true });
-    }
-  }, [navigate, pathname, searchParams, systemSection, view]);
 
   const navigationOverviewTarget = useMemo(
     () =>
@@ -1088,6 +892,10 @@ function AuthenticatedHomePage({
   const [resolvedOverviewTarget, setResolvedOverviewTarget] =
     useState<OverviewTitleTarget | null>(null);
   const [overviewSlugLoading, setOverviewSlugLoading] = useState(false);
+  const [legacyOverviewResolution, setLegacyOverviewResolution] = useState<{
+    requestedId: string;
+    resolvedId: string;
+  } | null>(null);
 
   const setLanguagePreferenceFromShell = useCallback(
     (code: string) => {
@@ -1400,14 +1208,104 @@ function AuthenticatedHomePage({
     view,
   ]);
 
+  useEffect(() => {
+    let cancelled = false;
+    let keepPendingForNavigation = false;
+
+    if (
+      !routeIsCanonical ||
+      !legacyOverviewTitleId ||
+      !isMediaView(view) ||
+      contentSettingsSection !== "overview"
+    ) {
+      setLegacyOverviewResolution(null);
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    const replaceWithOverviewList = () => {
+      const nextParams = new URLSearchParams(searchParams.toString());
+      nextParams.delete("id");
+      nextParams.delete("episodeId");
+      const nextQuery = nextParams.toString();
+      navigate(`${buildViewPath(view)}${nextQuery ? `?${nextQuery}` : ""}`, {
+        replace: true,
+      });
+    };
+
+    setLegacyOverviewResolution(null);
+    setOverviewSlugLoading(true);
+    void resolveTitleOverviewTargetById(backendClient, legacyOverviewTitleId)
+      .then((target) => {
+        if (cancelled) {
+          return;
+        }
+        if (!target) {
+          replaceWithOverviewList();
+          return;
+        }
+
+        const targetView = FACET_REGISTRY.find(
+          (definition) => definition.id === target.facet,
+        )?.viewId as ViewId | undefined;
+        if (!targetView) {
+          replaceWithOverviewList();
+          return;
+        }
+
+        if (target.slug && target.librarySlug) {
+          keepPendingForNavigation = true;
+          navigateToOverview(targetView, target, overviewEpisodeId, true);
+          return;
+        }
+
+        setLegacyOverviewResolution({
+          requestedId: legacyOverviewTitleId,
+          resolvedId: target.id,
+        });
+      })
+      .catch((error: unknown) => {
+        if (cancelled) {
+          return;
+        }
+        setGlobalStatus(
+          error instanceof Error ? error.message : t("status.apiError"),
+        );
+        replaceWithOverviewList();
+      })
+      .finally(() => {
+        if (!cancelled && !keepPendingForNavigation) {
+          setOverviewSlugLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    contentSettingsSection,
+    legacyOverviewTitleId,
+    navigate,
+    navigateToOverview,
+    overviewEpisodeId,
+    routeIsCanonical,
+    searchParams,
+    setGlobalStatus,
+    t,
+    view,
+  ]);
+
   const overviewTitleId = parsedOverviewSlug
     ? (navigationOverviewTarget?.id ?? resolvedOverviewTarget?.id ?? null)
-    : legacyOverviewTitleId;
+    : legacyOverviewResolution?.requestedId === legacyOverviewTitleId
+      ? legacyOverviewResolution.resolvedId
+      : null;
   const overviewTitleRoutePending = Boolean(
-    parsedOverviewSlug &&
-      isMediaView(view) &&
+    isMediaView(view) &&
       overviewSlugLoading &&
-      !overviewTitleId,
+      !overviewTitleId &&
+      (parsedOverviewSlug || legacyOverviewTitleId),
   );
 
   const handleOpenOverview = useCallback(
@@ -1465,7 +1363,6 @@ function AuthenticatedHomePage({
     canManageUsers,
     canManageConfig,
     canManageLibrarySettings,
-    canAccessRecycleBin,
   } = usePermissions(authenticatedUser);
   const discoveryAuthorizationSignature = useMemo(
     () => authorizationCacheSignature(authenticatedUser),
@@ -1505,6 +1402,7 @@ function AuthenticatedHomePage({
 
   useEffect(() => {
     if (
+      !routeIsCanonical ||
       !isMediaView(view) ||
       canAccessMediaSettingsSection(
         contentSettingsSection,
@@ -1534,6 +1432,7 @@ function AuthenticatedHomePage({
     canResolveImports,
     contentSettingsSection,
     navigateTo,
+    routeIsCanonical,
     view,
   ]);
 
@@ -1575,7 +1474,6 @@ function AuthenticatedHomePage({
           canManageUsers,
           canManageSystemSettings,
           canManageCatalogSettings,
-          canAccessRecycleBin,
         )
       : !(
           isMediaView(view) &&
@@ -1588,7 +1486,10 @@ function AuthenticatedHomePage({
         );
   const protectedSettingsRoute =
     routeCanAccessSettingsContent &&
-    isProtectedSettingsRoute(view, settingsSection, contentSettingsSection);
+    (isProtectedSettingsRoute(view, settingsSection, contentSettingsSection) ||
+      (view === "system" &&
+        systemSection === "recycleBin" &&
+        canManageSystemSettings));
   const {
     refreshConfigStepUpPolicy,
     settingsStepUpCode,
@@ -1611,31 +1512,55 @@ function AuthenticatedHomePage({
   });
 
   useEffect(() => {
-    if (view !== "activity" || canAccessActivity) {
+    if (!routeIsCanonical || view !== "activity" || canAccessActivity) {
       return;
     }
 
     navigateToAccessibleDefault();
-  }, [canAccessActivity, navigateToAccessibleDefault, view]);
-
-  useEffect(() => {
-    if ((view !== "calendar" && view !== "wanted") || canViewCatalog) {
-      return;
-    }
-
-    navigateToAccessibleDefault();
-  }, [canViewCatalog, navigateToAccessibleDefault, view]);
-
-  useEffect(() => {
-    if ((view !== "system" && view !== "logs") || canManageSystemSettings) {
-      return;
-    }
-
-    navigateToAccessibleDefault();
-  }, [canManageSystemSettings, navigateToAccessibleDefault, view]);
+  }, [canAccessActivity, navigateToAccessibleDefault, routeIsCanonical, view]);
 
   useEffect(() => {
     if (
+      !routeIsCanonical ||
+      (view !== "calendar" && view !== "wanted") ||
+      canViewCatalog
+    ) {
+      return;
+    }
+
+    navigateToAccessibleDefault();
+  }, [canViewCatalog, navigateToAccessibleDefault, routeIsCanonical, view]);
+
+  useEffect(() => {
+    if (!routeIsCanonical || (view !== "system" && view !== "logs")) {
+      return;
+    }
+
+    const canAccess =
+      view === "logs"
+        ? canManageSystemSettings
+        : canAccessSystemSection(
+            systemSection,
+            canManageSystemSettings,
+            canManageTitle,
+          );
+    if (canAccess) {
+      return;
+    }
+
+    navigateToAccessibleDefault();
+  }, [
+    canManageTitle,
+    canManageSystemSettings,
+    navigateToAccessibleDefault,
+    routeIsCanonical,
+    systemSection,
+    view,
+  ]);
+
+  useEffect(() => {
+    if (
+      !routeIsCanonical ||
       !isMediaView(view) ||
       contentSettingsSection !== "overview" ||
       canViewCatalog
@@ -1668,20 +1593,17 @@ function AuthenticatedHomePage({
     contentSettingsSection,
     navigateTo,
     navigateToAccessibleDefault,
+    routeIsCanonical,
     view,
   ]);
 
   useEffect(() => {
-    if (isMediaView(view) && contentSettingsSection === "requests") {
-      if (canManageTitle || canRequestMedia) {
-        navigateTo("requests");
-        return;
-      }
-      navigateToAccessibleDefault();
-      return;
-    }
-
-    if (view !== "requests" || canManageTitle || canRequestMedia) {
+    if (
+      !routeIsCanonical ||
+      view !== "requests" ||
+      canManageTitle ||
+      canRequestMedia
+    ) {
       return;
     }
 
@@ -1689,14 +1611,18 @@ function AuthenticatedHomePage({
   }, [
     canManageTitle,
     canRequestMedia,
-    contentSettingsSection,
-    navigateTo,
     navigateToAccessibleDefault,
+    routeIsCanonical,
     view,
   ]);
 
   useEffect(() => {
-    if (view !== "wanted" || wantedSection !== "history" || canManageTitle) {
+    if (
+      !routeIsCanonical ||
+      view !== "wanted" ||
+      wantedSection !== "history" ||
+      canManageTitle
+    ) {
       return;
     }
 
@@ -1711,12 +1637,13 @@ function AuthenticatedHomePage({
     canViewCatalog,
     navigateTo,
     navigateToAccessibleDefault,
+    routeIsCanonical,
     view,
     wantedSection,
   ]);
 
   useEffect(() => {
-    if (view !== "settings") {
+    if (!routeIsCanonical || view !== "settings") {
       return;
     }
 
@@ -1727,7 +1654,6 @@ function AuthenticatedHomePage({
         canManageUsers,
         canManageSystemSettings,
         canManageCatalogSettings,
-        canAccessRecycleBin,
       )
     ) {
       return;
@@ -1747,8 +1673,8 @@ function AuthenticatedHomePage({
     canManageSystemSettings,
     canManageUserAccounts,
     canManageUsers,
-    canAccessRecycleBin,
     navigateTo,
+    routeIsCanonical,
     settingsSection,
     view,
   ]);
@@ -1962,7 +1888,9 @@ function AuthenticatedHomePage({
                             className="flex min-h-[70vh] flex-1 flex-col min-[981px]:min-h-0 min-[981px]:overflow-y-auto"
                           >
                             <Suspense fallback={<ViewLoadingFallback />}>
-                              {settingsStepUpPolicyLoadFailed ? (
+                              {!routeIsCanonical ? (
+                                <NotFoundPage />
+                              ) : settingsStepUpPolicyLoadFailed ? (
                                 <div className="mx-auto flex min-h-[360px] w-full max-w-md flex-col items-center justify-center gap-3 px-6 py-12 text-center">
                                   <div className="flex h-12 w-12 items-center justify-center rounded-[14px] border border-[var(--scry-warning-border)] bg-[var(--scry-warning-bg)] text-[var(--scry-warning-text)] shadow-[0_12px_28px_rgba(2,6,23,0.12)]">
                                     <AlertTriangle
@@ -2022,7 +1950,6 @@ function AuthenticatedHomePage({
                                   handleImportRouteEmpty={handleBackToList}
                                   canViewCatalog={canViewCatalog}
                                   canAccessActivity={canAccessActivity}
-                                  canAccessRecycleBin={canAccessRecycleBin}
                                   canResolveImports={canResolveImports}
                                   canManageTitle={canManageTitle}
                                   canRequestMedia={canRequestMedia}

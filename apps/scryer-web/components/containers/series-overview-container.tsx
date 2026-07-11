@@ -49,7 +49,7 @@ import {
   fetchTitleOverviewDownloadFeedbackSnapshot,
   fetchTitleSidePanelOverviewSnapshot,
 } from "@/lib/title-overview-loader";
-import { SeriesOverviewView } from "@/components/views/series-overview-view";
+import { SeriesOverviewView } from "@/components/views/series-overview";
 import { ManualImportDialog } from "@/components/dialogs/manual-import-dialog";
 import { FixTitleMatchDialog } from "@/components/dialogs/fix-title-match-dialog";
 import { ConfirmDialog } from "@/components/common/confirm-dialog";

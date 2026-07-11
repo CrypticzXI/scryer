@@ -77,6 +77,7 @@ import {
   hasAnyLibraryPermission,
 } from "@/lib/utils/permissions";
 import type { AppPermission, LibraryPermission } from "@/lib/utils/permissions";
+import { canAccessSystemSection } from "@/lib/utils/routes";
 import { selectorId } from "@/lib/utils/dom-ids";
 import ScryerLogo from "@/components/scryer-logo";
 
@@ -353,12 +354,6 @@ const settingsEntries: Array<{
     label: (t) => t("settings.subtitles"),
     icon: Captions,
     requiredAnyAppPermission: [APP_PERMISSIONS.manageCatalogSettings],
-  },
-  {
-    id: "recycleBin",
-    label: (t) => t("settings.recycleBin"),
-    requiredAnyAppPermission: [APP_PERMISSIONS.manageSystemSettings],
-    requiredAnyLibraryPermission: [LIBRARY_PERMISSIONS.manageTitles],
   },
 ];
 
@@ -731,7 +726,12 @@ function RootSidebarContent({
           ];
         }
         if (definition.kind === "system") {
-          if (!canManageSystemSettings) {
+          const canAccess = canAccessSystemSection(
+            definition.id,
+            canManageSystemSettings,
+            canManageTitle,
+          );
+          if (!canAccess) {
             return [];
           }
           return [
@@ -878,10 +878,6 @@ function RootSidebarContent({
         return canAccessFacetImport
           ? t("nav.import")
           : getMediaOverviewLabel(view, t);
-      }
-
-      if (contentSettingsSection === "requests") {
-        return null;
       }
 
       if (isSettingsSubPage(contentSettingsSection)) {
