@@ -210,6 +210,19 @@ impl AcquisitionScopeStateRepository for TestLibraryStateStore {
             .list_release_decisions_for_acquisition_scope_state(wanted_item_id, limit, offset)
             .await
     }
+
+    async fn count_release_decisions_for_title(&self, title_id: &str) -> AppResult<i64> {
+        self.wanted.count_release_decisions_for_title(title_id).await
+    }
+
+    async fn count_release_decisions_for_acquisition_scope_state(
+        &self,
+        wanted_item_id: &str,
+    ) -> AppResult<i64> {
+        self.wanted
+            .count_release_decisions_for_acquisition_scope_state(wanted_item_id)
+            .await
+    }
 }
 
 #[async_trait]

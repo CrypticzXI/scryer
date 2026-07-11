@@ -11,7 +11,7 @@ export type MediaRenamePlanItem = {
   reasonCode?: string | null;
   writeAction?: string | null;
   sourceSizeBytes?: number | null;
-  sourceMtimeUnixMs?: string | null;
+  sourceMtimeUnixMs?: number | null;
 };
 
 export type MediaRenamePlan = {

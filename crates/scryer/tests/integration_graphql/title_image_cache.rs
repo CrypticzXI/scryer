@@ -7,18 +7,28 @@ async fn graphql_clear_title_image_cache_returns_opaque_success() {
     let mutation = r#"
         mutation ClearTitleImageCache {
           clearTitleImageCache {
-            accepted
+            requestedAt
           }
         }
     "#;
 
     let first = gql(&ctx, mutation, json!({})).await;
     assert_no_errors(&first);
-    assert_eq!(first["data"]["clearTitleImageCache"]["accepted"], true);
+    assert!(
+        first["data"]["clearTitleImageCache"]["requestedAt"]
+            .as_str()
+            .is_some_and(|value| !value.is_empty()),
+        "expected requestedAt timestamp: {first}"
+    );
 
     let second = gql(&ctx, mutation, json!({})).await;
     assert_no_errors(&second);
-    assert_eq!(second["data"]["clearTitleImageCache"]["accepted"], true);
+    assert!(
+        second["data"]["clearTitleImageCache"]["requestedAt"]
+            .as_str()
+            .is_some_and(|value| !value.is_empty()),
+        "expected requestedAt timestamp: {second}"
+    );
 
     let unauthorized = schema_exec(&ctx, mutation, None).await;
     assert!(

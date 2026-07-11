@@ -58,8 +58,8 @@ fn library_settings_draft(
         scoring_persona: input
             .scoring_persona
             .map(ScoringPersonaValue::into_application),
-        filler_policy: input.filler_policy,
-        recap_policy: input.recap_policy,
+        filler_policy: input.filler_policy.map(|policy| policy.as_app_str().to_string()),
+        recap_policy: input.recap_policy.map(|policy| policy.as_app_str().to_string()),
         monitor_specials: input.monitor_specials,
         inter_season_movies: input.inter_season_movies,
         monitor_filler_movies: input.monitor_filler_movies,
@@ -167,13 +167,11 @@ impl LibraryMutations {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
         let id = id.to_string();
-        let deleted = app
-            .delete_library(&actor, &id)
+        app.delete_library(&actor, &id)
             .await
             .map_err(to_gql_error)?;
         Ok(DeleteLibraryPayload {
             id: ID::from(id),
-            deleted,
         })
     }
 
@@ -358,7 +356,6 @@ impl LibraryMutations {
         .map_err(to_gql_error)?;
         Ok(DeleteMediaFilePayload {
             id: ID::from(file_id),
-            deleted: true,
         })
     }
 
@@ -419,7 +416,6 @@ impl LibraryMutations {
         Ok(RehydrateAllMetadataPayload {
             language,
             titles_cleared: i64::try_from(cleared).unwrap_or(i64::MAX),
-            accepted: true,
         })
     }
 }

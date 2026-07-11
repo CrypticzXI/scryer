@@ -79,12 +79,12 @@ const INHERIT_VALUE = "__inherit__";
 const BOOLEAN_TRUE_VALUE = "true";
 const BOOLEAN_FALSE_VALUE = "false";
 const FILLER_POLICY_OPTIONS = [
-  { value: "download_all", labelKey: "settings.fillerPolicyDownloadAll" },
-  { value: "skip_filler", labelKey: "settings.fillerPolicySkipFiller" },
+  { value: "DOWNLOAD_ALL", labelKey: "settings.fillerPolicyDownloadAll" },
+  { value: "SKIP_FILLER", labelKey: "settings.fillerPolicySkipFiller" },
 ] as const;
 const RECAP_POLICY_OPTIONS = [
-  { value: "download_all", labelKey: "settings.recapPolicyDownloadAll" },
-  { value: "skip_recap", labelKey: "settings.recapPolicySkipRecap" },
+  { value: "DOWNLOAD_ALL", labelKey: "settings.recapPolicyDownloadAll" },
+  { value: "SKIP_RECAP", labelKey: "settings.recapPolicySkipRecap" },
 ] as const;
 const BOOLEAN_OVERRIDE_OPTIONS = [
   { value: INHERIT_VALUE, labelKey: "settings.libraryInheritFacet" },
@@ -246,13 +246,13 @@ function booleanOverrideFromSelectValue(value: string): boolean | null {
 }
 
 function fillerPolicyLabelKey(value: string | null | undefined): string {
-  return value === "skip_filler"
+  return value === "SKIP_FILLER"
     ? "settings.fillerPolicySkipFiller"
     : "settings.fillerPolicyDownloadAll";
 }
 
 function recapPolicyLabelKey(value: string | null | undefined): string {
-  return value === "skip_recap"
+  return value === "SKIP_RECAP"
     ? "settings.recapPolicySkipRecap"
     : "settings.recapPolicyDownloadAll";
 }
@@ -655,9 +655,9 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
             ? null
             : (draftScoringPersona as ScoringPersonaId),
         fillerPolicy:
-          isAnimeFacet && draftFillerPolicy !== INHERIT_VALUE ? draftFillerPolicy : null,
+          isAnimeFacet && draftFillerPolicy !== INHERIT_VALUE ? (draftFillerPolicy as 'DOWNLOAD_ALL' | 'SKIP_FILLER') : null,
         recapPolicy:
-          isAnimeFacet && draftRecapPolicy !== INHERIT_VALUE ? draftRecapPolicy : null,
+          isAnimeFacet && draftRecapPolicy !== INHERIT_VALUE ? (draftRecapPolicy as 'DOWNLOAD_ALL' | 'SKIP_RECAP') : null,
         monitorSpecials:
           isAnimeFacet ? booleanOverrideFromSelectValue(draftMonitorSpecials) : null,
         interSeasonMovies:

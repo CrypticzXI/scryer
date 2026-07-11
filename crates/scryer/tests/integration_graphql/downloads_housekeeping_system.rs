@@ -12,7 +12,7 @@ async fn graphql_download_queue_empty() {
 #[tokio::test]
 async fn graphql_invalid_nzb_xml_queue_failure_is_blocklisted() {
     let ctx = TestContext::new().await;
-    let title_id = add_test_title(&ctx, "Broken NZB Movie", "movie").await;
+    let title_id = add_test_title(&ctx, "Broken NZB Movie", "MOVIE").await;
     let source_hint = format!("{}/invalid.nzb", ctx.nzbget_server.uri());
     let admin = ctx.app.find_or_create_default_user().await.unwrap();
     let candidate_token = ctx
@@ -108,7 +108,7 @@ async fn graphql_invalid_nzb_xml_queue_failure_is_blocklisted() {
 #[tokio::test]
 async fn graphql_title_release_blocklist_entry_can_be_cleared() {
     let ctx = TestContext::new().await;
-    let title_id = add_test_title(&ctx, "Clear Blocklist Movie", "movie").await;
+    let title_id = add_test_title(&ctx, "Clear Blocklist Movie", "MOVIE").await;
     let source_hint = format!("{}/invalid-clear.nzb", ctx.nzbget_server.uri());
     let admin = ctx.app.find_or_create_default_user().await.unwrap();
     let candidate_token = ctx
@@ -236,7 +236,7 @@ async fn graphql_title_release_blocklist_entry_can_be_cleared() {
 #[tokio::test]
 async fn graphql_title_release_blocklist_uses_persisted_blocklist_source_title() {
     let ctx = TestContext::new().await;
-    let title_id = add_test_title(&ctx, "Friends", "series").await;
+    let title_id = add_test_title(&ctx, "Friends", "SERIES").await;
 
     scryer_infrastructure::BlocklistStore::new(ctx.db.datastore())
         .add(&scryer_application::NewBlocklistEntry {

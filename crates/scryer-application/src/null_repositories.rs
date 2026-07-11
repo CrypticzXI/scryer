@@ -1023,6 +1023,15 @@ impl AcquisitionScopeStateRepository for NullAcquisitionScopeStateRepository {
     ) -> AppResult<Vec<ReleaseDecision>> {
         Ok(vec![])
     }
+    async fn count_release_decisions_for_title(&self, _title_id: &str) -> AppResult<i64> {
+        Ok(0)
+    }
+    async fn count_release_decisions_for_acquisition_scope_state(
+        &self,
+        _wanted_item_id: &str,
+    ) -> AppResult<i64> {
+        Ok(0)
+    }
 }
 
 #[derive(Default)]

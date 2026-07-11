@@ -112,17 +112,17 @@ function coveredEpisodeIdsForQueueItem(
     return Array.from(episodeIds);
   }
 
-  if (scope.kind === "EPISODE" && scope.episodeId) {
+  if (scope.__typename === "EpisodeScopePayload" && scope.episodeId) {
     episodeIds.add(scope.episodeId);
   }
 
-  if (scope.kind === "episode_set") {
+  if (scope.__typename === "EpisodeSetScopePayload") {
     for (const episodeId of scope.episodeIds) {
       episodeIds.add(episodeId);
     }
   }
 
-  if (scope.kind === "collection" && scope.collectionId) {
+  if (scope.__typename === "CollectionScopePayload" && scope.collectionId) {
     for (const episode of episodesByCollection[scope.collectionId] ?? []) {
       episodeIds.add(episode.id);
     }

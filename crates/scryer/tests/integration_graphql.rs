@@ -729,8 +729,8 @@ impl MediaFileRepository for CountingMediaFileRepo {
 /// Helper to add a title and return the title ID.
 async fn add_test_title(ctx: &TestContext, name: &str, facet: &str) -> String {
     let tvdb_id = match facet {
-        "movie" => "123456",
-        "series" | "anime" => "345678",
+        "MOVIE" => "123456",
+        "SERIES" | "ANIME" => "345678",
         _ => "123456",
     };
     let body = gql(

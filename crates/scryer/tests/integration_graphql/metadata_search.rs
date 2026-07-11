@@ -26,7 +26,7 @@ async fn graphql_search_metadata_movie_accepts_year_hint() {
                 tvdbId name year type overview posterUrl
             }
         }"#,
-        json!({ "query": "Test Movie", "type": "movie", "year": 2024 }),
+        json!({ "query": "Test Movie", "type": "MOVIE", "year": 2024 }),
     )
     .await;
     assert_no_errors(&body);

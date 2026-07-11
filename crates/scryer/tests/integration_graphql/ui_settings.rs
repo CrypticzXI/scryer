@@ -54,27 +54,27 @@ async fn graphql_anonymous_ui_settings_round_trip_is_shared() {
         "#,
         json!({
             "input": {
-                "theme": "pride",
-                "dateTimeFormat": "iso24h",
+                "theme": "PRIDE",
+                "dateTimeFormat": "ISO24H",
                 "highlightColor": "#ff3366",
                 "secondaryColor": "#2277aa",
                 "highContrastMode": true,
                 "reduceMotion": true,
                 "hideSponsorButton": true,
-                "density": "compact",
-                "sidebarMode": "collapsed",
-                "defaultLandingView": "calendar",
+                "density": "COMPACT",
+                "sidebarMode": "COLLAPSED",
+                "defaultLandingView": "CALENDAR",
                 "tableColumns": [
                     {
-                        "facet": "movies",
-                        "tableViewMode": "compact",
+                        "facet": "MOVIES",
+                        "tableViewMode": "COMPACT",
                         "columnId": "name",
                         "columnOrder": 0,
                         "visible": true
                     },
                     {
-                        "facet": "series",
-                        "tableViewMode": "posterTable",
+                        "facet": "SERIES",
+                        "tableViewMode": "POSTER_TABLE",
                         "columnId": "episodes",
                         "columnOrder": 1,
                         "visible": false
@@ -117,29 +117,29 @@ async fn graphql_anonymous_ui_settings_round_trip_is_shared() {
     assert_no_errors(&read);
 
     let settings = &read["data"]["myUiSettings"];
-    assert_eq!(settings["theme"], json!("pride"));
-    assert_eq!(settings["dateTimeFormat"], json!("iso24h"));
+    assert_eq!(settings["theme"], json!("PRIDE"));
+    assert_eq!(settings["dateTimeFormat"], json!("ISO24H"));
     assert_eq!(settings["highlightColor"], json!("#ff3366"));
     assert_eq!(settings["secondaryColor"], json!("#2277aa"));
     assert_eq!(settings["highContrastMode"], json!(true));
     assert_eq!(settings["reduceMotion"], json!(true));
     assert_eq!(settings["hideSponsorButton"], json!(true));
-    assert_eq!(settings["density"], json!("compact"));
-    assert_eq!(settings["sidebarMode"], json!("collapsed"));
-    assert_eq!(settings["defaultLandingView"], json!("calendar"));
+    assert_eq!(settings["density"], json!("COMPACT"));
+    assert_eq!(settings["sidebarMode"], json!("COLLAPSED"));
+    assert_eq!(settings["defaultLandingView"], json!("CALENDAR"));
     assert_eq!(
         settings["tableColumns"],
         json!([
             {
-                "facet": "movies",
-                "tableViewMode": "compact",
+                "facet": "MOVIES",
+                "tableViewMode": "COMPACT",
                 "columnId": "name",
                 "columnOrder": 0,
                 "visible": true
             },
             {
-                "facet": "series",
-                "tableViewMode": "posterTable",
+                "facet": "SERIES",
+                "tableViewMode": "POSTER_TABLE",
                 "columnId": "episodes",
                 "columnOrder": 1,
                 "visible": false
@@ -159,15 +159,15 @@ async fn graphql_anonymous_ui_settings_round_trip_is_shared() {
         "#,
         json!({
             "input": {
-                "theme": "dark",
+                "theme": "DARK",
                 "highlightColor": "#ff3366",
                 "secondaryColor": "#2277aa",
                 "highContrastMode": true,
                 "reduceMotion": true,
                 "hideSponsorButton": false,
-                "density": "compact",
-                "sidebarMode": "collapsed",
-                "defaultLandingView": "calendar",
+                "density": "COMPACT",
+                "sidebarMode": "COLLAPSED",
+                "defaultLandingView": "CALENDAR",
                 "tableColumns": []
             }
         }),
@@ -176,7 +176,7 @@ async fn graphql_anonymous_ui_settings_round_trip_is_shared() {
     assert_no_errors(&old_client_update);
     assert_eq!(
         old_client_update["data"]["setMyUiSettings"]["dateTimeFormat"],
-        json!("iso24h")
+        json!("ISO24H")
     );
 }
 
@@ -191,20 +191,20 @@ async fn graphql_ui_settings_are_isolated_per_logged_in_user() {
         r##"
         mutation SetMyUiSettings {
           setMyUiSettings(input: {
-            theme: system
-            dateTimeFormat: iso24h
+            theme: SYSTEM
+            dateTimeFormat: ISO24H
             highlightColor: "#112233"
             secondaryColor: "#445566"
             highContrastMode: false
             reduceMotion: true
             hideSponsorButton: true
-            density: compact
-            sidebarMode: collapsed
-            defaultLandingView: series
+            density: COMPACT
+            sidebarMode: COLLAPSED
+            defaultLandingView: SERIES
             tableColumns: [
               {
-                facet: series
-                tableViewMode: posterTable
+                facet: SERIES
+                tableViewMode: POSTER_TABLE
                 columnId: "episodes"
                 columnOrder: 0
                 visible: true
@@ -240,17 +240,17 @@ async fn graphql_ui_settings_are_isolated_per_logged_in_user() {
     )
     .await;
     assert_no_errors(&read_a);
-    assert_eq!(read_a["data"]["myUiSettings"]["theme"], json!("system"));
+    assert_eq!(read_a["data"]["myUiSettings"]["theme"], json!("SYSTEM"));
     assert_eq!(
         read_a["data"]["myUiSettings"]["dateTimeFormat"],
-        json!("iso24h")
+        json!("ISO24H")
     );
     assert_eq!(
         read_a["data"]["myUiSettings"]["tableColumns"],
         json!([
             {
-                "facet": "series",
-                "tableViewMode": "posterTable",
+                "facet": "SERIES",
+                "tableViewMode": "POSTER_TABLE",
                 "columnId": "episodes",
                 "columnOrder": 0,
                 "visible": true
@@ -276,22 +276,22 @@ async fn graphql_ui_settings_are_isolated_per_logged_in_user() {
     )
     .await;
     assert_no_errors(&read_b);
-    assert_eq!(read_b["data"]["myUiSettings"]["theme"], json!("dark"));
+    assert_eq!(read_b["data"]["myUiSettings"]["theme"], json!("DARK"));
     assert_eq!(
         read_b["data"]["myUiSettings"]["dateTimeFormat"],
-        json!("locale")
+        json!("LOCALE")
     );
     assert_eq!(
         read_b["data"]["myUiSettings"]["density"],
-        json!("comfortable")
+        json!("COMFORTABLE")
     );
     assert_eq!(
         read_b["data"]["myUiSettings"]["sidebarMode"],
-        json!("expanded")
+        json!("EXPANDED")
     );
     assert_eq!(
         read_b["data"]["myUiSettings"]["defaultLandingView"],
-        json!("movies")
+        json!("MOVIES")
     );
     assert_eq!(read_b["data"]["myUiSettings"]["tableColumns"], json!([]));
 }
@@ -311,20 +311,20 @@ async fn graphql_ui_settings_reject_invalid_table_column() {
         "#,
         json!({
             "input": {
-                "theme": "dark",
-                "dateTimeFormat": "locale",
+                "theme": "DARK",
+                "dateTimeFormat": "LOCALE",
                 "highlightColor": null,
                 "secondaryColor": null,
             "highContrastMode": false,
             "reduceMotion": false,
             "hideSponsorButton": false,
-            "density": "comfortable",
-                "sidebarMode": "expanded",
-                "defaultLandingView": "movies",
+            "density": "COMFORTABLE",
+                "sidebarMode": "EXPANDED",
+                "defaultLandingView": "MOVIES",
                 "tableColumns": [
                     {
-                        "facet": "movies",
-                        "tableViewMode": "compact",
+                        "facet": "MOVIES",
+                        "tableViewMode": "COMPACT",
                         "columnId": "poster",
                         "columnOrder": 0,
                         "visible": true

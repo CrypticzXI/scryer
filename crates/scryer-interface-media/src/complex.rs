@@ -585,27 +585,27 @@ impl TitlePayload {
             let actor = actor_from_ctx(ctx)?;
             let limit = relation_page_limit(limit.min(i64::from(i32::MAX)) as i32);
             let offset = relation_page_offset(offset);
-            let decisions = app
-                .list_release_decisions(
+            let (decisions, total_count) = app
+                .list_release_decisions_page(
                     &actor,
                     ReleaseDecisionsQuery {
                         wanted_item_id: None,
                         title_id: Some(self.id.to_string()),
-                        limit: i64::from(limit) + 1,
+                        limit: i64::from(limit),
                         offset: i64::from(offset),
                     },
                 )
                 .await
                 .map_err(to_gql_error)?;
-            let mut items = decisions
+            let items = decisions
                 .into_iter()
                 .map(from_release_decision)
                 .collect::<scryer_application::AppResult<Vec<_>>>()
                 .map_err(to_gql_error)?;
-            let has_more = items.len() > limit as usize;
-            items.truncate(limit as usize);
+            let has_more = i64::from(offset).saturating_add(items.len() as i64) < total_count;
             Ok(ReleaseDecisionsPagePayload {
                 items,
+                total_count,
                 has_more,
             })
         })
@@ -982,27 +982,27 @@ impl WantedItemPayload {
             let actor = actor_from_ctx(ctx)?;
             let limit = relation_page_limit(limit.min(i64::from(i32::MAX)) as i32);
             let offset = relation_page_offset(offset);
-            let decisions = app
-                .list_release_decisions(
+            let (decisions, total_count) = app
+                .list_release_decisions_page(
                     &actor,
                     ReleaseDecisionsQuery {
                         wanted_item_id: Some(self.id.to_string()),
                         title_id: None,
-                        limit: i64::from(limit) + 1,
+                        limit: i64::from(limit),
                         offset: i64::from(offset),
                     },
                 )
                 .await
                 .map_err(to_gql_error)?;
-            let mut items = decisions
+            let items = decisions
                 .into_iter()
                 .map(from_release_decision)
                 .collect::<scryer_application::AppResult<Vec<_>>>()
                 .map_err(to_gql_error)?;
-            let has_more = items.len() > limit as usize;
-            items.truncate(limit as usize);
+            let has_more = i64::from(offset).saturating_add(items.len() as i64) < total_count;
             Ok(ReleaseDecisionsPagePayload {
                 items,
+                total_count,
                 has_more,
             })
         })
@@ -1034,11 +1034,11 @@ impl WantedItemPayload {
                 .into_iter()
                 .map(from_pending_release)
                 .collect::<Vec<_>>();
+            let has_more =
+                i64::from(offset).saturating_add(items.len() as i64) < i64::from(total_count);
             Ok(PendingReleasesPayload {
                 items,
-                limit,
-                offset,
-                has_more: i64::from(offset) + i64::from(limit) < i64::from(total_count),
+                has_more,
                 total_count,
             })
         })
@@ -1100,13 +1100,7 @@ impl DownloadQueueItemPayload {
                 return Ok(self
                     .episode_id
                     .as_ref()
-                    .map(|episode_id| QueueDownloadScopePayload {
-                        kind: "episode".to_string(),
-                        episode_id: Some(episode_id.clone()),
-                        episode_ids: Vec::new(),
-                        collection_id: None,
-                        series_movie_link_id: None,
-                    }));
+                    .map(|episode_id| QueueDownloadScopePayload::episode(episode_id.clone())));
             }
 
             let app = app_from_ctx(ctx)?;
@@ -1125,13 +1119,7 @@ impl DownloadQueueItemPayload {
             Ok(scope.map(from_submission_scope).or_else(|| {
                 self.episode_id
                     .as_ref()
-                    .map(|episode_id| QueueDownloadScopePayload {
-                        kind: "episode".to_string(),
-                        episode_id: Some(episode_id.clone()),
-                        episode_ids: Vec::new(),
-                        collection_id: None,
-                        series_movie_link_id: None,
-                    })
+                    .map(|episode_id| QueueDownloadScopePayload::episode(episode_id.clone()))
             }))
         })
         .await

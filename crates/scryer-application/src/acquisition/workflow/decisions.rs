@@ -73,11 +73,12 @@ async fn record_release_decision(
         .await;
 }
 impl AppUseCase {
-    pub async fn list_release_decisions(
+    /// One page of release decisions plus the total row count for the scope.
+    pub async fn list_release_decisions_page(
         &self,
         actor: &User,
         query: ReleaseDecisionsQuery,
-    ) -> AppResult<Vec<ReleaseDecision>> {
+    ) -> AppResult<(Vec<ReleaseDecision>, i64)> {
         if let Some(wid) = query.wanted_item_id.as_deref() {
             let wanted = self
                 .services
@@ -103,12 +104,19 @@ impl AppUseCase {
                 scryer_domain::LibraryPermission::View,
             )
             .await?;
-            return self
+            let items = self
                 .services
                 .workflow
                 .acquisition_scope_states
                 .list_release_decisions_for_acquisition_scope_state(wid, query.limit, query.offset)
-                .await;
+                .await?;
+            let total = self
+                .services
+                .workflow
+                .acquisition_scope_states
+                .count_release_decisions_for_acquisition_scope_state(wid)
+                .await?;
+            return Ok((items, total));
         }
         if let Some(tid) = query.title_id.as_deref() {
             let title = self
@@ -124,13 +132,20 @@ impl AppUseCase {
                 scryer_domain::LibraryPermission::View,
             )
             .await?;
-            return self
+            let items = self
                 .services
                 .workflow
                 .acquisition_scope_states
                 .list_release_decisions_for_title(tid, query.limit, query.offset)
-                .await;
+                .await?;
+            let total = self
+                .services
+                .workflow
+                .acquisition_scope_states
+                .count_release_decisions_for_title(tid)
+                .await?;
+            return Ok((items, total));
         }
-        Ok(vec![])
+        Ok((vec![], 0))
     }
 }

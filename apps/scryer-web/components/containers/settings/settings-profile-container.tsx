@@ -548,12 +548,12 @@ export function SettingsProfileContainer({ userId, username }: Props) {
     setDeletingPasskeyId(id);
     try {
       const result = await client
-        .mutation<{ deleteMyPasskey?: { deleted?: boolean } }, { id: string }>(
+        .mutation<{ deleteMyPasskey?: { id?: string } }, { id: string }>(
           deleteMyPasskeyMutation,
           { id },
         )
         .toPromise();
-      if (result.error || result.data?.deleteMyPasskey?.deleted !== true) {
+      if (result.error || !result.data?.deleteMyPasskey?.id) {
         setGlobalStatus(result.error?.message ?? t("profile.passkeyDeleteFailed"));
         return;
       }
@@ -571,12 +571,12 @@ export function SettingsProfileContainer({ userId, username }: Props) {
     setRevokingOauthGrantId(grantId);
     try {
       const result = await client
-        .mutation<{ revokeMyOauthApp?: { revoked?: boolean } }, { grantId: string }>(
+        .mutation<{ revokeMyOauthApp?: { grantId?: string } }, { grantId: string }>(
           revokeMyOauthAppMutation,
           { grantId },
         )
         .toPromise();
-      if (result.error || result.data?.revokeMyOauthApp?.revoked !== true) {
+      if (result.error || !result.data?.revokeMyOauthApp?.grantId) {
         setGlobalStatus(result.error?.message ?? "Connected app could not be revoked.");
         return;
       }
@@ -698,12 +698,12 @@ export function SettingsProfileContainer({ userId, username }: Props) {
     setUnlinkingAccountId(id);
     try {
       const result = await client
-        .mutation<{ unlinkExternalAccount?: { unlinked?: boolean } }, { linkedAccountId: string }>(
+        .mutation<{ unlinkExternalAccount?: { linkedAccountId?: string } }, { linkedAccountId: string }>(
           unlinkExternalAccountMutation,
           { linkedAccountId: id },
         )
         .toPromise();
-      if (result.error || result.data?.unlinkExternalAccount?.unlinked !== true) {
+      if (result.error || !result.data?.unlinkExternalAccount?.linkedAccountId) {
         setGlobalStatus(result.error?.message ?? t("profile.linkedAccountUnlinkFailed"));
         return;
       }

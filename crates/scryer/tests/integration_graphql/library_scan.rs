@@ -108,7 +108,7 @@ async fn graphql_scan_title_library() {
     );
 
     let activity_kinds = activity_kinds_for_title(&ctx, &title.id).await;
-    assert!(activity_kinds.iter().any(|kind| kind == "title_updated"));
+    assert!(activity_kinds.iter().any(|kind| kind == "TITLE_UPDATED"));
 }
 
 #[tokio::test]

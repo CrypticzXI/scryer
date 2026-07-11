@@ -33,7 +33,7 @@ export type PendingImportItem = {
 };
 
 export type PendingImportConnection = {
-  total: number;
+  totalCount: number;
   items: PendingImportItem[];
 };
 

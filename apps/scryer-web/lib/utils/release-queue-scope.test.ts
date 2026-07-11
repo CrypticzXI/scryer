@@ -7,28 +7,28 @@ import { releaseSupportsAdditionalFileQueue } from "./release-queue-scope.ts";
 test("additional-file queue eligibility uses the signed release queue scope", () => {
   assert.equal(
     releaseSupportsAdditionalFileQueue(
-      { queueScope: { kind: "TITLE", episodeIds: [] } },
+      { queueScope: { __typename: "TitleScopePayload", wholeTitle: true } },
       "movie",
     ),
     true,
   );
   assert.equal(
     releaseSupportsAdditionalFileQueue(
-      { queueScope: { kind: "TITLE", episodeIds: [] } },
+      { queueScope: { __typename: "TitleScopePayload", wholeTitle: true } },
       "series",
     ),
     false,
   );
   assert.equal(
     releaseSupportsAdditionalFileQueue(
-      { queueScope: { kind: "TITLE", episodeIds: [] } },
+      { queueScope: { __typename: "TitleScopePayload", wholeTitle: true } },
       "anime",
     ),
     false,
   );
   assert.equal(
     releaseSupportsAdditionalFileQueue(
-      { queueScope: { kind: "EPISODE", episodeId: "episode-1", episodeIds: [] } },
+      { queueScope: { __typename: "EpisodeScopePayload", episodeId: "episode-1" } },
       "series",
     ),
     true,
@@ -37,9 +37,8 @@ test("additional-file queue eligibility uses the signed release queue scope", ()
     releaseSupportsAdditionalFileQueue(
       {
         queueScope: {
-          kind: "SERIES_MOVIE",
+          __typename: "SeriesMovieScopePayload",
           seriesMovieLinkId: "series-movie-1",
-          episodeIds: [],
         },
       },
       "anime",
@@ -48,9 +47,9 @@ test("additional-file queue eligibility uses the signed release queue scope", ()
   );
 
   const unsupportedScopes: ReleaseQueueScope[] = [
-    { kind: "collection", collectionId: "season-1", episodeIds: [] },
-    { kind: "episode_set", episodeIds: ["episode-1", "episode-2"] },
-    { kind: "orphan", episodeIds: [] },
+    { __typename: "CollectionScopePayload", collectionId: "season-1" },
+    { __typename: "EpisodeSetScopePayload", episodeIds: ["episode-1", "episode-2"] },
+    { __typename: "OrphanScopePayload", orphaned: true },
   ];
   for (const queueScope of unsupportedScopes) {
     assert.equal(releaseSupportsAdditionalFileQueue({ queueScope }, "movie"), false);

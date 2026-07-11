@@ -56,10 +56,10 @@ function formatValue(value: unknown, key?: string): string {
   return formatSanitizedHistoryValue(value, key);
 }
 
-function parseDataJson(raw: string | null): Record<string, unknown> | null {
+function parseDataJson(raw: unknown): Record<string, unknown> | null {
   if (!raw) return null;
   try {
-    const parsed = JSON.parse(raw);
+    const parsed = raw;
     if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
       return parsed as Record<string, unknown>;
     }

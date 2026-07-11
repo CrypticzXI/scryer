@@ -5985,6 +5985,7 @@ dependencies = [
  "scryer-domain",
  "scryer-interface-core",
  "scryer-interface-media",
+ "serde_json",
 ]
 
 [[package]]

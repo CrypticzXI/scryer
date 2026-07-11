@@ -1179,7 +1179,7 @@ async fn notification_provider_types_query_exposes_jellyfin_multiline_field() {
             .iter()
             .any(|field| {
                 field["key"] == "path_mappings"
-                    && field["fieldType"] == "multiline"
+                    && field["fieldType"] == "MULTILINE"
                     && field["required"] == false
             }),
         "expected path_mappings multiline field in {jellyfin}"

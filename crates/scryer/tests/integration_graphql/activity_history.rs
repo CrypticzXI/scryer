@@ -13,13 +13,13 @@ async fn graphql_title_history_empty() {
     let ctx = TestContext::new().await;
     let body = gql(
         &ctx,
-        r#"{ titleHistory(filter: { limit: 10 }) { records { id eventType sourceTitle } totalCount } }"#,
+        r#"{ titleHistory(filter: { limit: 10 }) { items { id eventType sourceTitle } totalCount } }"#,
         json!({}),
     )
     .await;
     assert_no_errors(&body);
     assert_eq!(body["data"]["titleHistory"]["totalCount"], 0);
-    assert!(body["data"]["titleHistory"]["records"].is_array());
+    assert!(body["data"]["titleHistory"]["items"].is_array());
 }
 
 #[tokio::test]
@@ -53,7 +53,7 @@ async fn graphql_title_history_works_without_legacy_table() {
         query TitleHistory($titleId: ID!) {
           titleHistory(filter: { titleIds: [$titleId], limit: 10 }) {
             totalCount
-            records {
+            items {
               id
               eventType
               sourceTitle
@@ -68,9 +68,9 @@ async fn graphql_title_history_works_without_legacy_table() {
     assert_no_errors(&body);
     assert_eq!(body["data"]["titleHistory"]["totalCount"], 0);
     assert_eq!(
-        body["data"]["titleHistory"]["records"]
+        body["data"]["titleHistory"]["items"]
             .as_array()
-            .expect("history records array")
+            .expect("history items array")
             .len(),
         0
     );
@@ -81,7 +81,7 @@ async fn graphql_title_history_rejects_unsupported_event_type_filters() {
     let ctx = TestContext::new().await;
     let body = gql(
         &ctx,
-        r#"{ titleHistory(filter: { eventTypes: [download_completed], limit: 10 }) { totalCount } }"#,
+        r#"{ titleHistory(filter: { eventTypes: [DOWNLOAD_COMPLETED], limit: 10 }) { totalCount } }"#,
         json!({}),
     )
     .await;
@@ -100,7 +100,7 @@ async fn graphql_title_history_rejects_download_ignored_event_type_filters() {
     let ctx = TestContext::new().await;
     let body = gql(
         &ctx,
-        r#"{ titleHistory(filter: { eventTypes: [download_ignored], limit: 10 }) { totalCount } }"#,
+        r#"{ titleHistory(filter: { eventTypes: [DOWNLOAD_IGNORED], limit: 10 }) { totalCount } }"#,
         json!({}),
     )
     .await;
@@ -248,9 +248,9 @@ async fn graphql_title_history_includes_download_failed_and_blocklisted_events()
         &ctx,
         r#"
         query TitleHistory($titleId: ID!) {
-          titleHistory(filter: { titleIds: [$titleId], eventTypes: [download_failed, blocklisted], limit: 10 }) {
+          titleHistory(filter: { titleIds: [$titleId], eventTypes: [DOWNLOAD_FAILED, BLOCKLISTED], limit: 10 }) {
             totalCount
-            records {
+            items {
               eventType
               sourceTitle
               downloadId
@@ -270,9 +270,9 @@ async fn graphql_title_history_includes_download_failed_and_blocklisted_events()
     assert_no_errors(&body);
 
     assert_eq!(body["data"]["titleHistory"]["totalCount"], 2);
-    let records = body["data"]["titleHistory"]["records"]
+    let records = body["data"]["titleHistory"]["items"]
         .as_array()
-        .expect("title history records array");
+        .expect("title history items array");
 
     let download_failed = records
         .iter()
@@ -440,7 +440,7 @@ async fn graphql_title_history_filters_by_episode_id() {
         query TitleHistory($titleId: ID!, $episodeId: ID!) {
           titleHistory(filter: { titleIds: [$titleId], episodeId: $episodeId, limit: 10 }) {
             totalCount
-            records {
+            items {
               eventType
               episodeId
             }
@@ -453,9 +453,9 @@ async fn graphql_title_history_filters_by_episode_id() {
     assert_no_errors(&body);
 
     assert_eq!(body["data"]["titleHistory"]["totalCount"], 1);
-    let records = body["data"]["titleHistory"]["records"]
+    let records = body["data"]["titleHistory"]["items"]
         .as_array()
-        .expect("title history records array");
+        .expect("title history items array");
     assert_eq!(records.len(), 1);
     assert_eq!(records[0]["eventType"], "imported");
     assert_eq!(records[0]["episodeId"], episode_one.id);
@@ -564,7 +564,7 @@ async fn graphql_title_history_filters_skipped_import_by_episode_id() {
         query TitleHistory($titleId: ID!, $episodeId: ID!) {
           titleHistory(filter: { titleIds: [$titleId], episodeId: $episodeId, limit: 10 }) {
             totalCount
-            records {
+            items {
               eventType
               episodeId
               episodeIds
@@ -580,9 +580,9 @@ async fn graphql_title_history_filters_skipped_import_by_episode_id() {
     assert_no_errors(&body);
 
     assert_eq!(body["data"]["titleHistory"]["totalCount"], 1);
-    let records = body["data"]["titleHistory"]["records"]
+    let records = body["data"]["titleHistory"]["items"]
         .as_array()
-        .expect("title history records array");
+        .expect("title history items array");
     assert_eq!(records.len(), 1);
     assert_eq!(records[0]["eventType"], "import_skipped");
     assert_eq!(records[0]["episodeId"], episode.id);
@@ -725,7 +725,7 @@ async fn graphql_episode_history_omits_ambiguous_source_path_for_multi_file_even
         r#"
         query EpisodeHistory($episodeId: ID!) {
           titleHistory(filter: { episodeId: $episodeId, limit: 10 }) {
-            records {
+            items {
               eventType
               sourceTitle
             }
@@ -737,7 +737,7 @@ async fn graphql_episode_history_omits_ambiguous_source_path_for_multi_file_even
     .await;
     assert_no_errors(&body);
 
-    let records = body["data"]["titleHistory"]["records"]
+    let records = body["data"]["titleHistory"]["items"]
         .as_array()
         .expect("episode history array");
     let imported = records
@@ -769,7 +769,7 @@ async fn graphql_search_metadata_movie() {
                 tvdbId name year type overview posterUrl
             }
         }"#,
-        json!({ "query": "Test Movie", "type": "movie" }),
+        json!({ "query": "Test Movie", "type": "MOVIE" }),
     )
     .await;
     assert_no_errors(&body);

@@ -286,7 +286,7 @@ fn from_webauthn_challenge_start(
 ) -> WebauthnChallengePayload {
     WebauthnChallengePayload {
         challenge_id: challenge.challenge_id.into(),
-        options_json: challenge.options_json,
+        options_json: scryer_interface_media::mappers::json_string_to_value(challenge.options_json),
     }
 }
 
@@ -724,11 +724,12 @@ impl SettingsMutations {
         let actor =
             require_config_app_permission(ctx, scryer_domain::AppPermission::ManageSystemSettings)
                 .await?;
-        let accepted = app
-            .clear_title_image_cache(&actor)
+        app.clear_title_image_cache(&actor)
             .await
             .map_err(to_gql_error)?;
-        Ok(ClearTitleImageCachePayload { accepted })
+        Ok(ClearTitleImageCachePayload {
+            requested_at: Utc::now(),
+        })
     }
 
     async fn update_recycle_bin_settings(
@@ -915,10 +916,7 @@ impl SettingsMutations {
         app.delete_media_server_connection(&actor, &id)
             .await
             .map_err(to_gql_error)?;
-        Ok(DeleteMediaServerConnectionPayload {
-            id: ID::from(id),
-            deleted: true,
-        })
+        Ok(DeleteMediaServerConnectionPayload { id: ID::from(id) })
     }
 
     async fn test_media_server_connection(
@@ -1050,8 +1048,8 @@ impl SettingsMutations {
                 rename_missing_metadata_policy: input
                     .rename_missing_metadata_policy
                     .map(|policy| policy.as_app_str().to_string()),
-                filler_policy: input.filler_policy,
-                recap_policy: input.recap_policy,
+                filler_policy: input.filler_policy.map(|policy| policy.as_app_str().to_string()),
+                recap_policy: input.recap_policy.map(|policy| policy.as_app_str().to_string()),
                 monitor_specials: input.monitor_specials,
                 inter_season_movies: input.inter_season_movies,
                 monitor_filler_movies: input.monitor_filler_movies,
@@ -1290,7 +1288,7 @@ impl SettingsMutations {
         app.webauthn_register_complete(
             &actor,
             input.challenge_id.as_ref(),
-            &input.response_json,
+            &serde_json::to_string(&input.response_json.0).unwrap_or_default(),
             input.friendly_name,
             auth_runtime.snapshot().effective_form_login_enabled,
         )
@@ -1437,7 +1435,7 @@ impl SettingsMutations {
         let user = match app
             .webauthn_authenticate_complete(
                 input.challenge_id.as_ref(),
-                &input.response_json,
+                &serde_json::to_string(&input.response_json.0).unwrap_or_default(),
                 form_login_enabled,
             )
             .await
@@ -1475,7 +1473,7 @@ impl SettingsMutations {
         )
         .await
         .map_err(to_gql_error)?;
-        Ok(DeleteMyPasskeyPayload { id, deleted: true })
+        Ok(DeleteMyPasskeyPayload { id })
     }
 
     async fn revoke_my_oauth_app(
@@ -1486,11 +1484,10 @@ impl SettingsMutations {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
         let grant_id_string = grant_id.to_string();
-        let revoked = app
-            .revoke_oauth_connected_app(&actor, &grant_id_string)
+        app.revoke_oauth_connected_app(&actor, &grant_id_string)
             .await
             .map_err(to_gql_error)?;
-        Ok(RevokeMyOauthAppPayload { grant_id, revoked })
+        Ok(RevokeMyOauthAppPayload { grant_id })
     }
 
     async fn login(&self, ctx: &Context<'_>, input: LoginInput) -> GqlResult<LoginPayload> {

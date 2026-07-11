@@ -92,7 +92,7 @@ test("queue validation failure normalizes into global status text that toasts as
   );
 
   assert.equal(message, "no download client enabled for library movie_default_library");
-  assert.equal(classifyStatusToastLevel(message), "error");
+  assert.equal(classifyStatusToastLevel(message), "ERROR");
 });
 
 test("GraphQL internal errors mask repository details and include the reference id", () => {
@@ -113,5 +113,5 @@ test("GraphQL internal errors mask repository details and include the reference 
     message,
     "Internal server error. Reference ID: err-123",
   );
-  assert.equal(classifyStatusToastLevel(message), "error");
+  assert.equal(classifyStatusToastLevel(message), "ERROR");
 });

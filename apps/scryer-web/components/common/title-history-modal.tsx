@@ -78,7 +78,7 @@ export function TitleHistoryModal({
         if (result.data?.titleHistory) {
           const page = result.data.titleHistory;
           setEvents((prev) =>
-            append ? [...prev, ...page.records] : page.records,
+            append ? [...prev, ...page.items] : page.items,
           );
           setTotalCount(page.totalCount);
         }

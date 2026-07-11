@@ -65,7 +65,7 @@ export type PendingReleaseItem = {
   releaseUrl: string | null;
   releaseSizeBytes: number | null;
   releaseScore: number;
-  scoringLogJson: string | null;
+  scoringLogJson: unknown;
   indexerSource: string | null;
   addedAt: string;
   delayUntil: string;
@@ -83,7 +83,7 @@ export type ReleaseDecisionItem = {
   candidateScore: number;
   currentScore: number | null;
   scoreDelta: number | null;
-  explanationJson: string | null;
+  explanationJson: unknown;
   createdAt: string;
 };
 

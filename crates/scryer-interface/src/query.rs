@@ -550,8 +550,6 @@ impl CatalogQueries {
             )
             .await
             .map_err(to_gql_error)?;
-        let limit = page.limit;
-        let offset = page.offset;
         let has_more = page.has_more;
         let total_count = page.total_count;
         let filter_counts = page.filter_counts.clone();
@@ -559,8 +557,6 @@ impl CatalogQueries {
 
         Ok(TitleCatalogPayload {
             items,
-            limit: usize_to_i32_saturating(limit),
-            offset: usize_to_i32_saturating(offset),
             has_more,
             total_count: usize_to_i32_saturating(total_count),
             filter_counts: TitleCatalogFilterCountsPayload {
@@ -983,11 +979,12 @@ impl CatalogQueries {
             offset: filter.offset.unwrap_or(0).max(0) as usize,
         };
 
+        let offset = f.offset;
         let page = app
             .list_title_history(&actor, &f)
             .await
             .map_err(to_gql_error)?;
-        Ok(from_title_history_page(page).map_err(to_gql_error)?)
+        Ok(from_title_history_page(page, offset).map_err(to_gql_error)?)
     }
 
     async fn title_release_blocklist(
@@ -1280,7 +1277,7 @@ impl ActivityQueries {
             )
             .await
             .map_err(to_gql_error)?;
-        Ok(from_pending_import_connection(connection))
+        Ok(from_pending_import_connection(connection, offset))
     }
 
     async fn pending_import_title_search(
@@ -1706,8 +1703,6 @@ impl SystemQueries {
         let has_more = i64::from(offset).saturating_add(items.len() as i64) < total_count;
         Ok(PendingReleasesPayload {
             items,
-            limit,
-            offset,
             has_more,
             total_count: total_count.min(i64::from(i32::MAX)) as i32,
         })
@@ -1901,13 +1896,16 @@ impl AcquisitionQueries {
             )
             .await
             .map_err(to_gql_error)?;
+        let items = views
+            .into_iter()
+            .map(from_wanted_scope_view)
+            .collect::<scryer_application::AppResult<Vec<_>>>()
+            .map_err(to_gql_error)?;
+        let has_more = offset.saturating_add(items.len() as i64) < total;
         Ok(WantedItemsListPayload {
-            items: views
-                .into_iter()
-                .map(from_wanted_scope_view)
-                .collect::<scryer_application::AppResult<Vec<_>>>()
-                .map_err(to_gql_error)?,
-            total,
+            items,
+            total_count: total,
+            has_more,
         })
     }
 
@@ -1935,12 +1933,15 @@ impl AcquisitionQueries {
             )
             .await
             .map_err(to_gql_error)?;
+        let items: Vec<_> = items
+            .into_iter()
+            .map(|(item, convergence)| from_cutoff_unmet_item(item, convergence))
+            .collect();
+        let has_more = (offset.max(0) as usize).saturating_add(items.len()) < total;
         Ok(CutoffUnmetTitlesPagePayload {
-            items: items
-                .into_iter()
-                .map(|(item, convergence)| from_cutoff_unmet_item(item, convergence))
-                .collect(),
-            total: total as i64,
+            items,
+            total_count: total as i64,
+            has_more,
         })
     }
 

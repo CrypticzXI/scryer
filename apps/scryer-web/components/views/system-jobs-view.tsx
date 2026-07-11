@@ -135,7 +135,7 @@ function parseHealthCheckIssues(run: JobRun): HealthCheckIssue[] {
   }
 
   try {
-    const parsed = JSON.parse(run.summaryJson) as unknown;
+    const parsed = run.summaryJson;
     if (!isRecord(parsed) || !Array.isArray(parsed.checks)) {
       return [];
     }

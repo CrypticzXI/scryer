@@ -79,30 +79,36 @@ fn provider_config_value_payload(
             _ => true,
         });
 
-    let (string_value, bool_value, int_value, float_value) = if field_is_secret {
-        (None, None, None, None)
+    let typed_value = if field_is_secret {
+        Some(ProviderConfigFieldValue::Secret(SecretConfigValuePayload {
+            stored: secret_stored,
+        }))
     } else {
         match value {
-            Some(Value::Bool(value)) => (None, Some(*value), None, None),
+            Some(Value::Bool(value)) => Some(ProviderConfigFieldValue::Bool(
+                BoolConfigValuePayload { value: *value },
+            )),
             Some(Value::Number(value)) => {
                 let int_value = value.as_i64().or_else(|| {
                     value
                         .as_u64()
                         .and_then(|unsigned| i64::try_from(unsigned).ok())
                 });
-                (
-                    None,
-                    None,
-                    int_value,
-                    if int_value.is_none() {
-                        value.as_f64()
-                    } else {
-                        None
-                    },
-                )
+                match int_value {
+                    Some(value) => Some(ProviderConfigFieldValue::Int(IntConfigValuePayload {
+                        value,
+                    })),
+                    None => value.as_f64().map(|value| {
+                        ProviderConfigFieldValue::Float(FloatConfigValuePayload { value })
+                    }),
+                }
             }
-            Some(Value::String(value)) => (Some(value.clone()), None, None, None),
-            _ => (None, None, None, None),
+            Some(Value::String(value)) => Some(ProviderConfigFieldValue::String(
+                StringConfigValuePayload {
+                    value: value.clone(),
+                },
+            )),
+            _ => None,
         }
     };
 
@@ -124,11 +130,7 @@ fn provider_config_value_payload(
             .map(provider_config_field_payload_options)
             .unwrap_or_default(),
         help_text: field.and_then(|field| field.help_text.clone()),
-        string_value,
-        bool_value,
-        int_value,
-        float_value,
-        secret_stored,
+        value: typed_value,
     }
 }
 
@@ -449,10 +451,10 @@ pub fn from_library_settings(settings: LibrarySettings) -> LibrarySettingsPayloa
             .scoring_persona_override
             .map(ScoringPersonaValue::from_application),
         scoring_persona: ScoringPersonaValue::from_application(settings.scoring_persona),
-        filler_policy_override: settings.filler_policy_override,
-        filler_policy: settings.filler_policy,
-        recap_policy_override: settings.recap_policy_override,
-        recap_policy: settings.recap_policy,
+        filler_policy_override: settings.filler_policy_override.as_deref().and_then(FillerPolicyValue::from_app_str),
+        filler_policy: settings.filler_policy.as_deref().and_then(FillerPolicyValue::from_app_str),
+        recap_policy_override: settings.recap_policy_override.as_deref().and_then(RecapPolicyValue::from_app_str),
+        recap_policy: settings.recap_policy.as_deref().and_then(RecapPolicyValue::from_app_str),
         monitor_specials_override: settings.monitor_specials_override,
         monitor_specials: settings.monitor_specials,
         inter_season_movies_override: settings.inter_season_movies_override,
@@ -549,8 +551,8 @@ pub fn from_media_settings(
             &settings.rename_missing_metadata_policy,
         )
         .unwrap_or(RenameMissingMetadataPolicyValue::Skip),
-        filler_policy: settings.filler_policy,
-        recap_policy: settings.recap_policy,
+        filler_policy: settings.filler_policy.as_deref().and_then(FillerPolicyValue::from_app_str),
+        recap_policy: settings.recap_policy.as_deref().and_then(RecapPolicyValue::from_app_str),
         monitor_specials: settings.monitor_specials,
         inter_season_movies: settings.inter_season_movies,
         monitor_filler_movies: settings.monitor_filler_movies,
@@ -682,50 +684,30 @@ pub fn from_search_result(result: IndexerSearchResult) -> IndexerSearchResultPay
 
 pub fn from_submission_scope(scope: SubmissionScope) -> QueueDownloadScopePayload {
     match scope {
-        SubmissionScope::Episode { episode_id } => QueueDownloadScopePayload {
-            kind: "episode".to_string(),
-            episode_id: Some(episode_id.into()),
-            episode_ids: Vec::new(),
-            series_movie_link_id: None,
-            collection_id: None,
-        },
-        SubmissionScope::EpisodeSet { episode_ids } => QueueDownloadScopePayload {
-            kind: "episode_set".to_string(),
-            episode_id: None,
-            episode_ids: episode_ids.into_iter().map(Into::into).collect(),
-            series_movie_link_id: None,
-            collection_id: None,
-        },
+        SubmissionScope::Episode { episode_id } => {
+            QueueDownloadScopePayload::episode(episode_id.into())
+        }
+        SubmissionScope::EpisodeSet { episode_ids } => {
+            QueueDownloadScopePayload::EpisodeSet(EpisodeSetScopePayload {
+                episode_ids: episode_ids.into_iter().map(Into::into).collect(),
+            })
+        }
         SubmissionScope::SeriesMovie {
             series_movie_link_id,
-        } => QueueDownloadScopePayload {
-            kind: "series_movie".to_string(),
-            episode_id: None,
-            episode_ids: Vec::new(),
-            series_movie_link_id: Some(series_movie_link_id.into()),
-            collection_id: None,
-        },
-        SubmissionScope::Collection { collection_id } => QueueDownloadScopePayload {
-            kind: "collection".to_string(),
-            episode_id: None,
-            episode_ids: Vec::new(),
-            series_movie_link_id: None,
-            collection_id: Some(collection_id.into()),
-        },
-        SubmissionScope::Title => QueueDownloadScopePayload {
-            kind: "title".to_string(),
-            episode_id: None,
-            episode_ids: Vec::new(),
-            series_movie_link_id: None,
-            collection_id: None,
-        },
-        SubmissionScope::Orphan => QueueDownloadScopePayload {
-            kind: "orphan".to_string(),
-            episode_id: None,
-            episode_ids: Vec::new(),
-            series_movie_link_id: None,
-            collection_id: None,
-        },
+        } => QueueDownloadScopePayload::SeriesMovie(SeriesMovieScopePayload {
+            series_movie_link_id: series_movie_link_id.into(),
+        }),
+        SubmissionScope::Collection { collection_id } => {
+            QueueDownloadScopePayload::Collection(CollectionScopePayload {
+                collection_id: collection_id.into(),
+            })
+        }
+        SubmissionScope::Title => {
+            QueueDownloadScopePayload::Title(TitleScopePayload { whole_title: true })
+        }
+        SubmissionScope::Orphan => {
+            QueueDownloadScopePayload::Orphan(OrphanScopePayload { orphaned: true })
+        }
     }
 }
 
@@ -1213,8 +1195,12 @@ pub fn from_title(title: Title) -> TitlePayload {
         .map(|value| !value.eq_ignore_ascii_case("disabled"));
     let monitor_specials = extract_tag_bool(&title.tags, "scryer:monitor-specials:");
     let inter_season_movies = extract_tag_bool(&title.tags, "scryer:inter-season-movies:");
-    let filler_policy = extract_tag_string(&title.tags, "scryer:filler-policy:");
-    let recap_policy = extract_tag_string(&title.tags, "scryer:recap-policy:");
+    let filler_policy = extract_tag_string(&title.tags, "scryer:filler-policy:")
+        .as_deref()
+        .and_then(FillerPolicyValue::from_app_str);
+    let recap_policy = extract_tag_string(&title.tags, "scryer:recap-policy:")
+        .as_deref()
+        .and_then(RecapPolicyValue::from_app_str);
 
     TitlePayload {
         id: title.id.into(),
@@ -1428,14 +1414,18 @@ pub fn from_pending_import_item(item: PendingImportItem) -> PendingImportItemPay
 
 pub fn from_pending_import_connection(
     connection: PendingImportConnection,
+    offset: i64,
 ) -> PendingImportConnectionPayload {
+    let items: Vec<_> = connection
+        .items
+        .into_iter()
+        .map(from_pending_import_item)
+        .collect();
+    let has_more = offset.saturating_add(items.len() as i64) < connection.total;
     PendingImportConnectionPayload {
-        total: connection.total as i32,
-        items: connection
-            .items
-            .into_iter()
-            .map(from_pending_import_item)
-            .collect(),
+        items,
+        total_count: connection.total as i32,
+        has_more,
     }
 }
 
@@ -1538,10 +1528,10 @@ pub fn from_job_run(run: JobRun) -> JobRunPayload {
         trigger_source: JobTriggerSourceValue::from_application(run.trigger_source),
         started_at: run.started_at,
         completed_at: run.completed_at,
-        summary_json: run.summary_json,
+        summary_json: run.summary_json.map(json_string_to_value),
         summary_text: run.summary_text,
         error_text: run.error_text,
-        progress_json: run.progress_json,
+        progress_json: run.progress_json.map(json_string_to_value),
         library_scan_progress: run.library_scan_progress.map(from_library_scan_session),
     }
 }
@@ -1855,7 +1845,7 @@ fn from_media_rename_plan_item(item: RenamePlanItem) -> MediaRenamePlanItemPaylo
         reason_code: item.reason_code,
         write_action: item.write_action.as_str().to_string(),
         source_size_bytes: item.source_size_bytes.map(Long::from_u64_saturating),
-        source_mtime_unix_ms: item.source_mtime_unix_ms.map(|value| value.to_string()),
+        source_mtime_unix_ms: item.source_mtime_unix_ms.map(Long::from),
     }
 }
 
@@ -2445,7 +2435,7 @@ pub fn from_release_decision(
         candidate_score: decision.candidate_score,
         current_score: decision.current_score,
         score_delta: decision.score_delta,
-        explanation_json: decision.explanation_json,
+        explanation_json: decision.explanation_json.map(json_string_to_value),
         created_at: parse_datetime(&decision.created_at, "release decision created_at")
             .map_err(scryer_application::AppError::Validation)?,
     })
@@ -2939,7 +2929,7 @@ pub fn from_pending_release(pr: PendingRelease) -> PendingReleasePayload {
         release_url: pr.release_url,
         release_size_bytes: pr.release_size_bytes.map(Long::from),
         release_score: pr.release_score,
-        scoring_log_json: pr.scoring_log_json,
+        scoring_log_json: pr.scoring_log_json.map(json_string_to_value),
         indexer_source: pr.indexer_source,
         added_at: parse_required_datetime(&pr.added_at, "pending release added_at"),
         delay_until: parse_required_datetime(&pr.delay_until, "pending release delay_until"),
@@ -3020,7 +3010,7 @@ pub fn from_title_history_record(
         blocklist_reason: record.blocklist_reason,
         source_path: record.source_path,
         dest_path: record.dest_path,
-        data_json: record.data_json,
+        data_json: record.data_json.map(json_string_to_value),
         occurred_at: parse_datetime(&record.occurred_at, "title history occurred_at")
             .map_err(scryer_application::AppError::Validation)?,
         created_at: parse_datetime(&record.created_at, "title history created_at")
@@ -3030,14 +3020,18 @@ pub fn from_title_history_record(
 
 pub fn from_title_history_page(
     page: TitleHistoryPage,
+    offset: usize,
 ) -> scryer_application::AppResult<TitleHistoryPagePayload> {
+    let items = page
+        .records
+        .into_iter()
+        .map(from_title_history_record)
+        .collect::<scryer_application::AppResult<Vec<_>>>()?;
+    let has_more = (offset.saturating_add(items.len()) as i64) < page.total_count;
     Ok(TitleHistoryPagePayload {
-        records: page
-            .records
-            .into_iter()
-            .map(from_title_history_record)
-            .collect::<scryer_application::AppResult<Vec<_>>>()?,
+        items,
         total_count: page.total_count,
+        has_more,
     })
 }
 
@@ -3047,7 +3041,11 @@ mod tests {
         from_import_record, from_title_history_record, from_wanted_item,
         provider_config_values_from_json_with_fields, provider_config_values_to_json,
     };
-    use crate::types::{MediaFacetValue, PluginConfigFieldTypeValue, ProviderConfigValueInput};
+    use crate::types::{
+        BoolConfigValuePayload, FloatConfigValuePayload, IntConfigValuePayload, MediaFacetValue,
+        PluginConfigFieldTypeValue, ProviderConfigFieldValue, ProviderConfigValueInput,
+        SecretConfigValuePayload,
+    };
     use scryer_application::{AcquisitionScopeState, AcquisitionScopeStatus};
     use scryer_domain::{
         CompletedDownload, ConfigFieldDef, ConfigFieldType, ConfigFieldValueSource, ImportRecord,
@@ -3179,29 +3177,41 @@ mod tests {
             Some(PluginConfigFieldTypeValue::Password)
         ));
         assert!(api_key.required);
-        assert!(api_key.secret_stored);
-        assert_eq!(api_key.string_value, None);
-        assert_eq!(api_key.bool_value, None);
-        assert_eq!(api_key.int_value, None);
-        assert_eq!(api_key.float_value, None);
+        assert!(matches!(
+            api_key.value,
+            Some(ProviderConfigFieldValue::Secret(SecretConfigValuePayload {
+                stored: true
+            }))
+        ));
         let username = field("username");
-        assert!(username.secret_stored);
-        assert_eq!(username.string_value, None);
+        assert!(matches!(
+            username.value,
+            Some(ProviderConfigFieldValue::Secret(SecretConfigValuePayload {
+                stored: true
+            }))
+        ));
 
         let base_url = field("base_url");
-        assert_eq!(
-            base_url.string_value.as_deref(),
-            Some("https://example.test")
-        );
-        assert!(!base_url.secret_stored);
-        assert_eq!(field("enabled").bool_value, Some(true));
-        assert_eq!(field("retries").int_value, Some(3));
-        assert_eq!(field("ratio").float_value, Some(1.5));
+        match &base_url.value {
+            Some(ProviderConfigFieldValue::String(payload)) => {
+                assert_eq!(payload.value, "https://example.test");
+            }
+            _ => panic!("base_url should be a string value"),
+        }
+        assert!(matches!(
+            field("enabled").value,
+            Some(ProviderConfigFieldValue::Bool(BoolConfigValuePayload { value: true }))
+        ));
+        assert!(matches!(
+            field("retries").value,
+            Some(ProviderConfigFieldValue::Int(IntConfigValuePayload { value: 3 }))
+        ));
+        assert!(matches!(
+            field("ratio").value,
+            Some(ProviderConfigFieldValue::Float(FloatConfigValuePayload { value })) if value == 1.5
+        ));
         let metadata = field("metadata");
-        assert_eq!(metadata.string_value, None);
-        assert_eq!(metadata.bool_value, None);
-        assert_eq!(metadata.int_value, None);
-        assert_eq!(metadata.float_value, None);
+        assert!(metadata.value.is_none());
     }
 
     #[test]
@@ -3325,4 +3335,10 @@ fn monitor_type_value_from_normalized(value: &str) -> Option<MonitorTypeValue> {
         "none" => Some(MonitorTypeValue::NoneSelected),
         _ => None,
     }
+}
+
+/// Boundary conversion for JSON persisted as text in the application layer:
+/// the wire carries real JSON, never a string-encoded document.
+pub fn json_string_to_value(raw: String) -> async_graphql::Json<serde_json::Value> {
+    async_graphql::Json(serde_json::from_str(&raw).unwrap_or(serde_json::Value::Null))
 }

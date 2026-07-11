@@ -54,7 +54,6 @@ impl PluginMutations {
             .map_err(to_gql_error)?;
         Ok(UninstallPluginPayload {
             plugin_id: ID::from(plugin_id),
-            uninstalled: true,
         })
     }
 

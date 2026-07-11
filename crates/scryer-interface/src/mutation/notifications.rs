@@ -143,7 +143,6 @@ impl NotificationMutations {
             .map_err(to_gql_error)?;
         Ok(DeleteNotificationChannelPayload {
             id: ID::from(id),
-            deleted: true,
         })
     }
 
@@ -232,7 +231,6 @@ impl NotificationMutations {
             .map_err(to_gql_error)?;
         Ok(DeleteNotificationSubscriptionPayload {
             id: ID::from(id),
-            deleted: true,
         })
     }
 }

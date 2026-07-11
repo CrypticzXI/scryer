@@ -16,13 +16,13 @@ import type { LocalPathStyle } from "@/lib/utils/local-path-style";
 import type { ViewCategoryId } from "./indexer-category-picker";
 
 const FILLER_POLICY_OPTIONS = [
-  { value: "download_all", label: "settings.fillerPolicyDownloadAll" },
-  { value: "skip_filler", label: "settings.fillerPolicySkipFiller" },
+  { value: "DOWNLOAD_ALL", label: "settings.fillerPolicyDownloadAll" },
+  { value: "SKIP_FILLER", label: "settings.fillerPolicySkipFiller" },
 ];
 
 const RECAP_POLICY_OPTIONS = [
-  { value: "download_all", label: "settings.recapPolicyDownloadAll" },
-  { value: "skip_recap", label: "settings.recapPolicySkipRecap" },
+  { value: "DOWNLOAD_ALL", label: "settings.recapPolicyDownloadAll" },
+  { value: "SKIP_RECAP", label: "settings.recapPolicySkipRecap" },
 ];
 
 const IMPORT_MODE_OPTIONS: { value: ImportMode; label: string }[] = [

@@ -69,7 +69,7 @@ export function TitleHistoryContainer({
         throw result.error;
       }
 
-      setEvents(result.data?.titleHistory.records ?? []);
+      setEvents(result.data?.titleHistory.items ?? []);
       setTotalCount(result.data?.titleHistory.totalCount ?? 0);
     } catch (fetchError) {
       setError(

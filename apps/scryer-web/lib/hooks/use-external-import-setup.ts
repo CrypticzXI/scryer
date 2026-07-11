@@ -1404,7 +1404,7 @@ export function useExternalImportSetup({ client }: UseExternalImportSetupArgs) {
       })
       .toPromise();
     const finalized = finalizeData?.finalizeExternalImport;
-    if (finalizeErr || !finalized?.finalized) {
+    if (finalizeErr || !finalized?.monitorWarmupSessionId) {
       return fail(gqlError(finalizeErr) || "Failed to finalize import");
     }
     const monitorWarmupSessionId = finalized.monitorWarmupSessionId as string;

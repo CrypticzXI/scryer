@@ -169,8 +169,8 @@ async fn graphql_runtime_browse_and_download_client_permissions() {
         query {
             downloadClientConfigs { id name }
             indexers { id name }
-            downloadClientRouting(scope: movie) { clientId category }
-            indexerRouting(scope: movie) { indexerId categories }
+            downloadClientRouting(scope: MOVIE) { clientId category }
+            indexerRouting(scope: MOVIE) { indexerId categories }
         }
         "#,
         Some(catalog_user),
@@ -206,17 +206,19 @@ async fn graphql_wanted_items_empty() {
         r#"query($wantedKind: WantedKindValue!) {
             wantedItems(wantedKind: $wantedKind) {
                 items { id convergenceState indexersCovered indexersRouted recencyLane }
-                total
+                totalCount
+                hasMore
             }
         }"#,
-        json!({ "wantedKind": "missing" }),
+        json!({ "wantedKind": "MISSING" }),
     )
     .await;
     assert_no_errors(&body);
     assert_eq!(
-        body["data"]["wantedItems"]["total"], 0,
+        body["data"]["wantedItems"]["totalCount"], 0,
         "should have no wanted items initially"
     );
+    assert_eq!(body["data"]["wantedItems"]["hasMore"], false);
 }
 
 // ---------------------------------------------------------------------------

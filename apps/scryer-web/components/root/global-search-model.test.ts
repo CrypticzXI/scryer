@@ -113,7 +113,7 @@ test("getVisibleCatalogResults interleaves all-tab library results and preserves
 
   assert.deepEqual(
     allRows.map(({ facet, title: entry }) => `${facet}:${entry.id}`),
-    ["movie:m1", "series:s1", "anime:a1", "movie:m2"],
+    ["MOVIE:m1", "SERIES:s1", "ANIME:a1", "MOVIE:m2"],
   );
   assert.equal(countHiddenCatalogResults("all", 4, allRows), 0);
 
@@ -127,7 +127,7 @@ test("getVisibleCatalogResults interleaves all-tab library results and preserves
 
   assert.deepEqual(
     movieRows.map(({ facet, title: entry }) => `${facet}:${entry.id}`),
-    ["movie:m1", "movie:m2"],
+    ["MOVIE:m1", "MOVIE:m2"],
   );
   assert.equal(countHiddenCatalogResults("MOVIE", 2, movieRows), 0);
 });
@@ -150,7 +150,7 @@ test("global search filter selection is additive with All as clear", () => {
   let selected = toggleGlobalSearchFilterSelection([], "MOVIE", tabs);
   selected = toggleGlobalSearchFilterSelection(selected, "actions", tabs);
 
-  assert.deepEqual(selected, ["movie", "actions"]);
+  assert.deepEqual(selected, ["MOVIE", "actions"]);
   assert.equal(isGlobalSearchFilterSelected(selected, "all"), false);
   assert.equal(isGlobalSearchFilterSelected(selected, "MOVIE"), true);
   assert.equal(isGlobalSearchFilterSelected(selected, "actions"), true);
@@ -164,7 +164,7 @@ test("global search filter selection is additive with All as clear", () => {
       { key: "all", label: "All", count: 0 },
       { key: "MOVIE", label: "Movies", count: 0 },
     ]),
-    ["movie"],
+    ["MOVIE"],
   );
 });
 
@@ -193,7 +193,7 @@ test("selection-aware catalog results add selected filters", () => {
 
   assert.deepEqual(
     selectedRows.map(({ facet, title: entry }) => `${facet}:${entry.id}`),
-    ["movie:m1", "series:s1", "movie:m2"],
+    ["MOVIE:m1", "SERIES:s1", "MOVIE:m2"],
   );
   assert.equal(
     countHiddenCatalogResultsForFilters(
@@ -380,9 +380,9 @@ test("buildGlobalSearchTabs keeps catalog, metadata, and route command counts al
     [
       ["all", 7],
       ["library", 2],
-      ["movie", 2],
-      ["series", 3],
-      ["anime", 0],
+      ["MOVIE", 2],
+      ["SERIES", 3],
+      ["ANIME", 0],
       ["actions", 2],
     ],
   );

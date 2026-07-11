@@ -189,9 +189,7 @@ export const WantedContainer = memo(function WantedContainer({
       setPendingItems(nextItems);
       setPendingTotal(typeof page.totalCount === "number" ? page.totalCount : nextItems.length);
       setPendingHasMore(Boolean(page.hasMore));
-      setPendingNextOffset(
-        typeof page.offset === "number" ? page.offset + nextItems.length : nextItems.length,
-      );
+      setPendingNextOffset(nextItems.length);
     } catch (error) {
       const message = error instanceof Error ? error.message : t("status.failedToLoad");
       setGlobalStatus(message);
@@ -229,11 +227,7 @@ export const WantedContainer = memo(function WantedContainer({
       });
       setPendingTotal(typeof page.totalCount === "number" ? page.totalCount : pendingTotal);
       setPendingHasMore(Boolean(page.hasMore));
-      setPendingNextOffset(
-        typeof page.offset === "number"
-          ? page.offset + nextItems.length
-          : pendingNextOffset + nextItems.length,
-      );
+      setPendingNextOffset(pendingNextOffset + nextItems.length);
     } catch (error) {
       const message = error instanceof Error ? error.message : t("status.failedToLoad");
       setGlobalStatus(message);
@@ -343,7 +337,7 @@ export const WantedContainer = memo(function WantedContainer({
         .toPromise();
       if (error) throw error;
       setItems(data?.wantedItems?.items ?? []);
-      setTotal(data?.wantedItems?.total ?? 0);
+      setTotal(data?.wantedItems?.totalCount ?? 0);
     } catch (error) {
       const message = error instanceof Error ? error.message : t("status.failedToLoad");
       setGlobalStatus(message);
@@ -378,7 +372,7 @@ export const WantedContainer = memo(function WantedContainer({
         .toPromise();
       if (error) throw error;
       setCutoffItems(data?.cutoffUnmetTitlesPage?.items ?? []);
-      setCutoffTotal(data?.cutoffUnmetTitlesPage?.total ?? 0);
+      setCutoffTotal(data?.cutoffUnmetTitlesPage?.totalCount ?? 0);
     } catch (error) {
       const message = error instanceof Error ? error.message : t("status.failedToLoad");
       setGlobalStatus(message);

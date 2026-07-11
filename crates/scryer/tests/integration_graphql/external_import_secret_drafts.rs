@@ -29,7 +29,7 @@ fn secret_draft_input(label: &str) -> Value {
         "instanceApiKeys": [
             {
                 "instanceId": format!("sonarr-{label}"),
-                "kind": "sonarr",
+                "kind": "SONARR",
                 "apiKey": format!("sonarr-key-{label}")
             }
         ],
@@ -86,7 +86,6 @@ async fn create_denied_user(ctx: &TestContext, username: &str) -> User {
 const SAVE_DRAFT: &str = r#"
 mutation SaveDraft($input: SaveExternalImportSetupSecretDraftInput!) {
   saveExternalImportSetupSecretDraft(input: $input) {
-    saved
     overwroteAnotherUserDraft
     updatedAt
   }
@@ -96,7 +95,7 @@ mutation SaveDraft($input: SaveExternalImportSetupSecretDraftInput!) {
 const CLEAR_DRAFT: &str = r#"
 mutation ClearDraft {
   clearExternalImportSetupSecretDraft {
-    cleared
+    clearedAt
   }
 }
 "#;
@@ -176,10 +175,6 @@ async fn graphql_external_import_setup_secret_draft_round_trips_typed_owner_scop
     .await;
     assert_no_errors(&owner_save);
     assert_eq!(
-        owner_save["data"]["saveExternalImportSetupSecretDraft"]["saved"],
-        true
-    );
-    assert_eq!(
         owner_save["data"]["saveExternalImportSetupSecretDraft"]["overwroteAnotherUserDraft"],
         false
     );
@@ -244,10 +239,6 @@ async fn graphql_external_import_setup_secret_draft_round_trips_typed_owner_scop
     .await;
     assert_no_errors(&other_save);
     assert_eq!(
-        other_save["data"]["saveExternalImportSetupSecretDraft"]["saved"],
-        true
-    );
-    assert_eq!(
         other_save["data"]["saveExternalImportSetupSecretDraft"]["overwroteAnotherUserDraft"],
         true
     );
@@ -263,16 +254,25 @@ async fn graphql_external_import_setup_secret_draft_round_trips_typed_owner_scop
 
     let owner_clear = schema_exec_with_variables(&ctx, CLEAR_DRAFT, json!({}), &owner).await;
     assert_no_errors(&owner_clear);
+    assert!(
+        owner_clear["data"]["clearExternalImportSetupSecretDraft"]["clearedAt"].is_string(),
+        "expected clearedAt timestamp: {owner_clear}"
+    );
+
+    // The owner no longer owns the draft, so their clear must not remove the
+    // other user's draft (previously observable as `cleared: false`).
+    let other_still_owns = schema_exec_with_variables(&ctx, READ_DRAFT, json!({}), &other).await;
+    assert_no_errors(&other_still_owns);
     assert_eq!(
-        owner_clear["data"]["clearExternalImportSetupSecretDraft"]["cleared"],
-        false
+        other_still_owns["data"]["externalImportSetupSecretDraftStatus"]["hasDraft"],
+        true
     );
 
     let other_clear = schema_exec_with_variables(&ctx, CLEAR_DRAFT, json!({}), &other).await;
     assert_no_errors(&other_clear);
-    assert_eq!(
-        other_clear["data"]["clearExternalImportSetupSecretDraft"]["cleared"],
-        true
+    assert!(
+        other_clear["data"]["clearExternalImportSetupSecretDraft"]["clearedAt"].is_string(),
+        "expected clearedAt timestamp: {other_clear}"
     );
 
     let final_read = schema_exec_with_variables(&ctx, READ_DRAFT, json!({}), &other).await;

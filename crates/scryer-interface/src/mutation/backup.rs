@@ -114,7 +114,8 @@ impl BackupMutations {
             .delete_backup(&actor, &filename)
             .await
             .map_err(to_gql_error)?;
-        Ok(DeleteBackupPayload { filename, deleted })
+        let _ = deleted;
+        Ok(DeleteBackupPayload { filename })
     }
 
     async fn inspect_restore_bundle(

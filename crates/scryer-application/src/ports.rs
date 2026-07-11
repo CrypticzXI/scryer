@@ -3269,6 +3269,13 @@ pub trait AcquisitionScopeStateRepository: Send + Sync {
         limit: i64,
         offset: i64,
     ) -> AppResult<Vec<ReleaseDecision>>;
+
+    async fn count_release_decisions_for_title(&self, title_id: &str) -> AppResult<i64>;
+
+    async fn count_release_decisions_for_acquisition_scope_state(
+        &self,
+        wanted_item_id: &str,
+    ) -> AppResult<i64>;
 }
 
 /// Locate the acquisition-state row matching `item`'s scope (episode /

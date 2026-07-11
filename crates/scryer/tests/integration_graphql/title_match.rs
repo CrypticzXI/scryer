@@ -93,7 +93,7 @@ fn graphql_fix_title_match_movie_updates_identity_and_history() {
                 r#"
         query TitleHistory($titleId: ID!) {
           titleHistory(filter: { titleIds: [$titleId], limit: 10 }) {
-            records {
+            items {
               eventType
               dataJson
             }
@@ -104,17 +104,15 @@ fn graphql_fix_title_match_movie_updates_identity_and_history() {
             )
             .await;
             assert_no_errors(&events);
-            let rematch_events = events["data"]["titleHistory"]["records"]
+            let rematch_events = events["data"]["titleHistory"]["items"]
                 .as_array()
                 .expect("title events array");
             let rematch_event = rematch_events
                 .iter()
                 .find(|event| event["eventType"] == "rematched")
                 .expect("rematched history event");
-            let data_json = rematch_event["dataJson"]
-                .as_str()
-                .expect("rematch data json");
-            let data_value: Value = serde_json::from_str(data_json).expect("parse rematch data");
+            let data_value = rematch_event["dataJson"].clone();
+            assert!(data_value.is_object(), "dataJson should be a JSON object");
             assert_eq!(data_value["old_tvdb_id"], "999");
             assert_eq!(data_value["new_tvdb_id"], "123456");
             assert_eq!(data_value["source"], "manual");
@@ -123,9 +121,9 @@ fn graphql_fix_title_match_movie_updates_identity_and_history() {
                 &ctx,
                 r#"
         query TitleHistory($titleId: ID!) {
-          titleHistory(filter: { titleIds: [$titleId], eventTypes: [rematched], limit: 10 }) {
+          titleHistory(filter: { titleIds: [$titleId], eventTypes: [REMATCHED], limit: 10 }) {
             totalCount
-            records {
+            items {
               eventType
             }
           }
@@ -137,7 +135,7 @@ fn graphql_fix_title_match_movie_updates_identity_and_history() {
             assert_no_errors(&history);
             assert_eq!(history["data"]["titleHistory"]["totalCount"], 1);
             assert_eq!(
-                history["data"]["titleHistory"]["records"][0]["eventType"],
+                history["data"]["titleHistory"]["items"][0]["eventType"],
                 "rematched"
             );
 
@@ -145,14 +143,14 @@ fn graphql_fix_title_match_movie_updates_identity_and_history() {
             assert!(
                 activity_kinds
                     .iter()
-                    .any(|kind| kind == "metadata_hydration_started")
+                    .any(|kind| kind == "METADATA_HYDRATION_STARTED")
             );
             assert!(
                 activity_kinds
                     .iter()
-                    .any(|kind| kind == "metadata_hydration_completed")
+                    .any(|kind| kind == "METADATA_HYDRATION_COMPLETED")
             );
-            assert!(activity_kinds.iter().any(|kind| kind == "title_updated"));
+            assert!(activity_kinds.iter().any(|kind| kind == "TITLE_UPDATED"));
         },
     );
 }
@@ -364,7 +362,7 @@ fn graphql_fix_title_match_series_rebuilds_and_relinks_library() {
                 r#"
         query TitleHistory($titleId: ID!) {
           titleHistory(filter: { titleIds: [$titleId], limit: 10 }) {
-            records {
+            items {
               eventType
               dataJson
             }
@@ -375,17 +373,15 @@ fn graphql_fix_title_match_series_rebuilds_and_relinks_library() {
             )
             .await;
             assert_no_errors(&events);
-            let rematch_events = events["data"]["titleHistory"]["records"]
+            let rematch_events = events["data"]["titleHistory"]["items"]
                 .as_array()
                 .expect("title events array");
             let rematch_event = rematch_events
                 .iter()
                 .find(|event| event["eventType"] == "rematched")
                 .expect("rematched history event");
-            let data_json = rematch_event["dataJson"]
-                .as_str()
-                .expect("rematch data json");
-            let data_value: Value = serde_json::from_str(data_json).expect("parse rematch data");
+            let data_value = rematch_event["dataJson"].clone();
+            assert!(data_value.is_object(), "dataJson should be a JSON object");
             assert_eq!(data_value["old_tvdb_id"], "999");
             assert_eq!(data_value["new_tvdb_id"], "345678");
 
@@ -393,14 +389,14 @@ fn graphql_fix_title_match_series_rebuilds_and_relinks_library() {
             assert!(
                 activity_kinds
                     .iter()
-                    .any(|kind| kind == "metadata_hydration_started")
+                    .any(|kind| kind == "METADATA_HYDRATION_STARTED")
             );
             assert!(
                 activity_kinds
                     .iter()
-                    .any(|kind| kind == "metadata_hydration_completed")
+                    .any(|kind| kind == "METADATA_HYDRATION_COMPLETED")
             );
-            assert!(activity_kinds.iter().any(|kind| kind == "title_updated"));
+            assert!(activity_kinds.iter().any(|kind| kind == "TITLE_UPDATED"));
         },
     );
 }

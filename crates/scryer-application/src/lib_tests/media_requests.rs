@@ -224,11 +224,10 @@ async fn submit_media_request_creates_request_requester_and_domain_event() {
         .await
         .expect("request submission should succeed");
 
-    assert!(outcome.accepted);
-
     let requests = harness.media_requests.requests.lock().await;
     assert_eq!(requests.len(), 1);
     let request = &requests[0];
+    assert_eq!(request.id, outcome.request_id);
     assert_eq!(request.library_id, library_id);
     assert_eq!(request.status, MediaRequestStatus::Pending);
     assert_eq!(request.requested_quality_profile_id.as_deref(), Some("4k"));
@@ -294,7 +293,7 @@ async fn submit_media_request_auto_approves_for_requester_with_auto_approve_perm
         .await
         .expect("request submission should auto-approve");
 
-    assert!(outcome.accepted);
+    assert!(!outcome.request_id.is_empty());
     let titles = harness.titles.store.lock().await;
     assert_eq!(titles.len(), 1);
     let title_id = titles[0].id.clone();
@@ -475,8 +474,7 @@ async fn submit_media_request_duplicate_same_user_creates_separate_submission_an
         .await
         .expect("duplicate request should succeed opaquely");
 
-    assert!(first.accepted);
-    assert!(second.accepted);
+    assert_ne!(first.request_id, second.request_id);
     let requests = harness.media_requests.requests.lock().await;
     assert_eq!(requests.len(), 2);
     assert!(requests.iter().all(|request| request.requesters.len() == 1));
@@ -519,8 +517,7 @@ async fn submit_media_request_second_user_creates_private_submission_without_exp
         .await
         .expect("second request should attach opaquely");
 
-    assert!(first.accepted);
-    assert!(second.accepted);
+    assert_ne!(first.request_id, second.request_id);
     let requests = harness.media_requests.requests.lock().await;
     assert_eq!(requests.len(), 2);
     assert!(requests.iter().all(|request| request.requesters.len() == 1));
@@ -1281,7 +1278,6 @@ async fn approve_media_request_creates_title_and_resolves_overlapping_pending_re
         .await
         .expect("approval should create the title");
 
-    assert!(outcome.accepted);
     assert!(outcome.search_error.is_none());
     let titles = harness.titles.store.lock().await;
     assert_eq!(titles.len(), 1);

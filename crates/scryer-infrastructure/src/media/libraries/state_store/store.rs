@@ -1091,6 +1091,33 @@ impl AcquisitionScopeStateRepository for WantedStore {
         .await?;
         rows.iter().map(release_decision_row_to_item).collect()
     }
+
+    async fn count_release_decisions_for_title(&self, title_id: &str) -> AppResult<i64> {
+        SqlRuntime::fetch_optional(
+            self.datastore.read_exec(),
+            "SELECT COUNT(*) AS cnt FROM release_decisions WHERE title_id = {}",
+            &[SqlArg::Text(title_id.to_string())],
+        )
+        .await?
+        .map(|row| row.i64("cnt"))
+        .transpose()
+        .map(|value| value.unwrap_or_default())
+    }
+
+    async fn count_release_decisions_for_acquisition_scope_state(
+        &self,
+        wanted_item_id: &str,
+    ) -> AppResult<i64> {
+        SqlRuntime::fetch_optional(
+            self.datastore.read_exec(),
+            "SELECT COUNT(*) AS cnt FROM release_decisions WHERE wanted_item_id = {}",
+            &[SqlArg::Text(wanted_item_id.to_string())],
+        )
+        .await?
+        .map(|row| row.i64("cnt"))
+        .transpose()
+        .map(|value| value.unwrap_or_default())
+    }
 }
 
 fn housekeeping_cutoff_arg(days: i64) -> SqlArg {

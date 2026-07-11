@@ -26,12 +26,13 @@ export type TitleHistoryEvent = {
   blocklistReason: string | null;
   sourcePath: string | null;
   destPath: string | null;
-  dataJson: string | null;
+  dataJson: unknown;
   occurredAt: string;
   createdAt: string;
 };
 
 export type TitleHistoryPage = {
-  records: TitleHistoryEvent[];
+  items: TitleHistoryEvent[];
   totalCount: number;
+  hasMore: boolean;
 };

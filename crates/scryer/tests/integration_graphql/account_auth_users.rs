@@ -71,7 +71,7 @@ async fn recovery_admin_token_resolves_while_form_login_enabled_and_resets_other
     assert!(
         me["data"]["me"]["appPermissions"]
             .as_array()
-            .is_some_and(|permissions| permissions.contains(&json!("manageUsers"))),
+            .is_some_and(|permissions| permissions.contains(&json!("MANAGE_USERS"))),
         "recovery admin should resolve with ManageUsers: {me}"
     );
 
@@ -415,7 +415,7 @@ async fn graphql_me_reports_effective_oauth_permissions() {
     assert_eq!(session_me["data"]["me"]["username"], "oauth_me_permissions");
     assert_eq!(
         session_me["data"]["me"]["appPermissions"],
-        json!(["manageUsers"])
+        json!(["MANAGE_USERS"])
     );
 }
 
@@ -657,7 +657,7 @@ async fn graphql_local_bypass_session_satisfies_config_step_up_without_totp() {
         .unwrap();
     ctx.auth_runtime.apply_saved_security_settings(true, true);
 
-    set_folder_template(&ctx, "movie", "{title} ({year})").await;
+    set_folder_template(&ctx, "MOVIE", "{title} ({year})").await;
 }
 
 #[tokio::test]
@@ -826,13 +826,13 @@ async fn graphql_settings_mutations_require_config_step_up() {
         (
             "saveExternalImportSetupSecretDraft",
             "saveExternalImportSetupSecretDraft",
-            r#"mutation($input: SaveExternalImportSetupSecretDraftInput!) { saveExternalImportSetupSecretDraft(input: $input) { saved } }"#,
+            r#"mutation($input: SaveExternalImportSetupSecretDraftInput!) { saveExternalImportSetupSecretDraft(input: $input) { updatedAt } }"#,
             json!({
                 "input": {
                     "instanceApiKeys": [
                         {
                             "instanceId": "step-up-sonarr",
-                            "kind": "sonarr",
+                            "kind": "SONARR",
                             "apiKey": "step-up-secret"
                         }
                     ],
@@ -1559,7 +1559,7 @@ async fn graphql_external_account_invites_expose_last_login() {
         json!({
             "input": {
                 "userId": user_id,
-                "provider": "jellyfin",
+                "provider": "JELLYFIN",
                 "connectionId": "jellyfin-main",
                 "providerUserIdentifier": "jellyfin-user",
                 "providerUserId": "jellyfin-user-id"
@@ -1596,8 +1596,8 @@ async fn graphql_external_account_invites_expose_last_login() {
         .iter()
         .find(|row| row["userId"].as_str() == Some(user_id))
         .expect("created invite row");
-    assert_eq!(row["provider"], "jellyfin");
-    assert_eq!(row["status"], "pending_claim");
+    assert_eq!(row["provider"], "JELLYFIN");
+    assert_eq!(row["status"], "PENDING_CLAIM");
     assert_eq!(row["lastLoginAt"], Value::Null);
 
     let viewer = User {
@@ -1670,7 +1670,7 @@ async fn login_with_valid_credentials_returns_token() {
     assert_eq!(body["data"]["login"]["user"]["username"], "logintest");
     assert_eq!(
         body["data"]["login"]["user"]["appPermissions"],
-        json!(["manageUsers"])
+        json!(["MANAGE_USERS"])
     );
 }
 
@@ -1722,7 +1722,7 @@ async fn me_reports_password_status_for_token_authenticated_user() {
     assert!(me_body["errors"].is_null(), "me should succeed: {me_body}");
     assert_eq!(me_body["data"]["me"]["username"], "metest");
     assert_eq!(me_body["data"]["me"]["hasPassword"], true);
-    assert_eq!(me_body["data"]["me"]["accountKind"], "local");
+    assert_eq!(me_body["data"]["me"]["accountKind"], "LOCAL");
 
     let refreshed_token = ctx
         .app
@@ -1930,7 +1930,6 @@ async fn delete_media_file_honors_custom_library_permissions_after_library_refac
                 previewFingerprint: "{fingerprint}"
               }}) {{
                 id
-                deleted
               }}
             }}
             "#
@@ -1940,7 +1939,6 @@ async fn delete_media_file_honors_custom_library_permissions_after_library_refac
     .await;
     assert_no_errors(&delete_body);
     assert_eq!(delete_body["data"]["deleteMediaFile"]["id"], file_id);
-    assert_eq!(delete_body["data"]["deleteMediaFile"]["deleted"], true);
 
     assert!(
         !file_path.exists(),
@@ -2010,7 +2008,6 @@ async fn delete_media_file_honors_custom_library_permissions_after_library_refac
                 previewFingerprint: "{catalog_only_fingerprint}"
               }}) {{
                 id
-                deleted
               }}
             }}
             "#
@@ -2022,10 +2019,6 @@ async fn delete_media_file_honors_custom_library_permissions_after_library_refac
     assert_eq!(
         catalog_only_delete_body["data"]["deleteMediaFile"]["id"],
         catalog_only_file_id
-    );
-    assert_eq!(
-        catalog_only_delete_body["data"]["deleteMediaFile"]["deleted"],
-        true
     );
     assert!(
         catalog_only_path.exists(),
@@ -2139,7 +2132,7 @@ async fn token_is_revoked_after_permission_change_until_relogin() {
                 username: "entrevoketest",
                 password: "s3cr3t!!",
                 appPermissions: [],
-                libraryPermissions: [{{ libraryId: "{library_id}", permissions: [view] }}]
+                libraryPermissions: [{{ libraryId: "{library_id}", permissions: [VIEW] }}]
             }}) {{
                 id
                 username
@@ -2179,7 +2172,7 @@ async fn token_is_revoked_after_permission_change_until_relogin() {
             r#"mutation {{
                 setUserLibraryPermissions(input: {{
                     userId: "{user_id}",
-                    grants: [{{ libraryId: "{library_id}", permissions: [view, request, autoApproveRequests, manageTitles] }}]
+                    grants: [{{ libraryId: "{library_id}", permissions: [VIEW, REQUEST, AUTO_APPROVE_REQUESTS, MANAGE_TITLES] }}]
                 }}) {{
                     id
                     libraryPermissions {{ libraryId permissions }}
@@ -2200,10 +2193,10 @@ async fn token_is_revoked_after_permission_change_until_relogin() {
             .iter()
             .map(|value| value.as_str().expect("permission string"))
             .collect::<Vec<_>>();
-    assert!(permissions.contains(&"view"));
-    assert!(permissions.contains(&"manageTitles"));
-    assert!(permissions.contains(&"request"));
-    assert!(permissions.contains(&"autoApproveRequests"));
+    assert!(permissions.contains(&"VIEW"));
+    assert!(permissions.contains(&"MANAGE_TITLES"));
+    assert!(permissions.contains(&"REQUEST"));
+    assert!(permissions.contains(&"AUTO_APPROVE_REQUESTS"));
 
     let old_result = ctx.app.authenticate_token(&old_token).await;
     assert!(

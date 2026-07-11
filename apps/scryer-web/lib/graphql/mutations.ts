@@ -67,14 +67,12 @@ ${LOGIN_PAYLOAD_FIELDS}
 export const deleteMyPasskeyMutation = `mutation DeleteMyPasskey($id: ID!) {
   deleteMyPasskey(id: $id) {
     id
-    deleted
   }
 }`;
 
 export const revokeMyOauthAppMutation = `mutation RevokeMyOauthApp($grantId: ID!) {
   revokeMyOauthApp(grantId: $grantId) {
     grantId
-    revoked
   }
 }`;
 
@@ -208,7 +206,6 @@ export const setUserLibraryPermissionsMutation = `mutation SetUserLibraryPermiss
 export const deleteUserMutation = `mutation DeleteUser($id: ID!) {
   deleteUser(id: $id) {
     id
-    deleted
   }
 }`;
 
@@ -231,7 +228,6 @@ export const resetUserMfaMutation = `mutation ResetUserMfa($id: ID!) {
 export const deleteTitleMutation = `mutation DeleteTitle($input: DeleteTitleInput!) {
   deleteTitle(input: $input) {
     id
-    deleted
   }
 }`;
 
@@ -336,8 +332,8 @@ export const updateIndexerProxyConfigMutation = `mutation UpdateIndexerProxyConf
 
 export const deleteIndexerProxyConfigMutation = `mutation DeleteIndexerProxyConfig($id: ID!) {
   deleteIndexerProxyConfig(id: $id) {
-    ok
-  }
+      id
+}
 }`;
 
 export const testIndexerProxyConfigMutation = `mutation TestIndexerProxyConfig($id: ID!) {
@@ -352,7 +348,6 @@ export const testIndexerProxyConfigMutation = `mutation TestIndexerProxyConfig($
 export const deleteIndexerMutation = `mutation DeleteIndexer($id: ID!) {
   deleteIndexerConfig(id: $id) {
     id
-    deleted
   }
 }`;
 
@@ -420,14 +415,12 @@ export const testDownloadClientConnectionMutation = `mutation TestDownloadClient
 export const deleteDownloadClientMutation = `mutation DeleteDownloadClient($id: ID!) {
   deleteDownloadClientConfig(id: $id) {
     id
-    deleted
   }
 }`;
 
 export const reorderDownloadClientsMutation = `mutation ReorderDownloadClients($input: ReorderDownloadClientConfigsInput!) {
   reorderDownloadClientConfigs(input: $input) {
     ids
-    reordered
   }
 }`;
 
@@ -469,13 +462,12 @@ export const addTitleAndQueueMutation = `mutation AddTitleAndQueue($input: AddTi
 
 export const submitMediaRequestMutation = `mutation SubmitMediaRequest($input: SubmitMediaRequestInput!) {
   submitMediaRequest(input: $input) {
-    accepted
-  }
+      requestId
+}
 }`;
 
 export const approveMediaRequestMutation = `mutation ApproveMediaRequest($input: ApproveMediaRequestInput!) {
   approveMediaRequest(input: $input) {
-    accepted
     titleId
     wantedSearch {
       queuedCount
@@ -487,8 +479,8 @@ export const approveMediaRequestMutation = `mutation ApproveMediaRequest($input:
 
 export const dismissMediaRequestMutation = `mutation DismissMediaRequest($requestId: ID!) {
   dismissMediaRequest(requestId: $requestId) {
-    accepted
-  }
+      requestId
+}
 }`;
 
 export const updateMyMediaRequestMutation = `mutation UpdateMyMediaRequest($input: UpdateMediaRequestInput!) {
@@ -508,14 +500,13 @@ export const updateMyMediaRequestMutation = `mutation UpdateMyMediaRequest($inpu
 
 export const cancelMyMediaRequestMutation = `mutation CancelMyMediaRequest($requestId: ID!) {
   cancelMyMediaRequest(requestId: $requestId) {
-    accepted
-  }
+      requestId
+}
 }`;
 
 export const deleteMediaFileMutation = `mutation DeleteMediaFile($input: DeleteMediaFileInput!) {
   deleteMediaFile(input: $input) {
     id
-    deleted
   }
 }`;
 
@@ -555,7 +546,6 @@ export const updateLibraryMutation = `mutation UpdateLibrary($input: UpdateLibra
 export const deleteLibraryMutation = `mutation DeleteLibrary($id: ID!) {
   deleteLibrary(id: $id) {
     id
-    deleted
   }
 }`;
 
@@ -683,7 +673,6 @@ export const updateSubtitleProviderConfigMutation = `mutation UpdateSubtitleProv
 export const deleteSubtitleProviderConfigMutation = `mutation DeleteSubtitleProviderConfig($id: ID!) {
   deleteSubtitleProviderConfig(id: $id) {
     id
-    deleted
   }
 }`;
 
@@ -744,8 +733,8 @@ export const setMyUiSettingsMutation = `mutation SetMyUiSettings($input: SetMyUi
 
 export const clearTitleImageCacheMutation = `mutation ClearTitleImageCache {
   clearTitleImageCache {
-    accepted
-  }
+      requestedAt
+}
 }`;
 
 export const createBackupMutation = `mutation CreateBackup($input: CreateBackupInput!) {
@@ -764,7 +753,6 @@ export const prepareBackupDownloadMutation = `mutation PrepareBackupDownload($in
 export const deleteBackupMutation = `mutation DeleteBackup($input: DeleteBackupInput!) {
   deleteBackup(input: $input) {
     filename
-    deleted
   }
 }`;
 
@@ -837,7 +825,6 @@ export const updateMediaServerConnectionMutation = `mutation UpdateMediaServerCo
 export const deleteMediaServerConnectionMutation = `mutation DeleteMediaServerConnection($id: ID!) {
   deleteMediaServerConnection(id: $id) {
     id
-    deleted
   }
 }`;
 
@@ -874,7 +861,6 @@ export const linkJellyfinAccountMutation = `mutation LinkJellyfinAccount($input:
 export const unlinkExternalAccountMutation = `mutation UnlinkExternalAccount($linkedAccountId: ID!) {
   unlinkExternalAccount(linkedAccountId: $linkedAccountId) {
     linkedAccountId
-    unlinked
   }
 }`;
 
@@ -1325,7 +1311,7 @@ export function buildDeleteTitleBatchMutation(count: number): string {
     { length: count },
     (_, index) => `item${index}: deleteTitle(input: $input${index}) {
     id
-    deleted
+      id
   }`,
   ).join("\n");
 
@@ -1383,20 +1369,21 @@ export const triggerAcquisitionSearchMutation = `mutation TriggerAcquisitionSear
 }`;
 
 export const cancelAcquisitionSearchMutation = `mutation CancelAcquisitionSearch($id: ID!) {
-  cancelAcquisitionSearch(id: $id)
+  cancelAcquisitionSearch(id: $id) {
+    id
+    accepted
+  }
 }`;
 
 export const pauseWantedItemMutation = `mutation PauseWantedItem($id: ID!) {
   pauseWantedItem(id: $id) {
     id
-    paused
   }
 }`;
 
 export const resumeWantedItemMutation = `mutation ResumeWantedItem($id: ID!) {
   resumeWantedItem(id: $id) {
     id
-    resumed
   }
 }`;
 
@@ -1416,14 +1403,12 @@ export const triggerRssSyncMutation = `mutation TriggerRssSync {
 export const forceGrabPendingReleaseMutation = `mutation ForceGrabPendingRelease($id: ID!) {
   forceGrabPendingRelease(id: $id) {
     id
-    grabbed
   }
 }`;
 
 export const dismissPendingReleaseMutation = `mutation DismissPendingRelease($id: ID!) {
   dismissPendingRelease(id: $id) {
     id
-    dismissed
   }
 }`;
 
@@ -1475,7 +1460,6 @@ export const beginInstallPluginMutation = `mutation BeginInstallPlugin($pluginId
 export const uninstallPluginMutation = `mutation UninstallPlugin($pluginId: ID!) {
   uninstallPlugin(pluginId: $pluginId) {
     pluginId
-    uninstalled
   }
 }`;
 
@@ -1611,14 +1595,12 @@ export const installUploadedPluginMutation = `mutation InstallUploadedPlugin($in
 export const restoreRecycledItemMutation = `mutation RestoreRecycledItem($id: ID!) {
   restoreRecycledItem(id: $id) {
     id
-    restored
   }
 }`;
 
 export const deleteRecycledItemMutation = `mutation DeleteRecycledItem($id: ID!) {
   deleteRecycledItem(id: $id) {
     id
-    deleted
   }
 }`;
 
@@ -1669,7 +1651,6 @@ export const updateNotificationChannelMutation = `mutation UpdateNotificationCha
 export const deleteNotificationChannelMutation = `mutation DeleteNotificationChannel($id: ID!) {
   deleteNotificationChannel(id: $id) {
     id
-    deleted
   }
 }`;
 
@@ -1715,7 +1696,6 @@ export const updateNotificationSubscriptionMutation = `mutation UpdateNotificati
 export const deleteNotificationSubscriptionMutation = `mutation DeleteNotificationSubscription($id: ID!) {
   deleteNotificationSubscription(id: $id) {
     id
-    deleted
   }
 }`;
 
@@ -1756,7 +1736,6 @@ export const updateRuleSetMutation = `mutation UpdateRuleSet($input: UpdateRuleS
 export const deleteRuleSetMutation = `mutation DeleteRuleSet($id: ID!) {
   deleteRuleSet(id: $id) {
     id
-    deleted
   }
 }`;
 
@@ -1851,7 +1830,6 @@ export const startExternalImportArrSourceWarmupMutation = `mutation StartExterna
 export const cancelExternalImportArrSourceWarmupMutation = `mutation CancelExternalImportArrSourceWarmup($sessionId: ID!) {
   cancelExternalImportArrSourceWarmup(sessionId: $sessionId) {
     sessionId
-    canceled
   }
 }`;
 
@@ -1901,7 +1879,6 @@ export const executeExternalImportMutation = `mutation ExecuteExternalImport($in
 
 export const finalizeExternalImportMutation = `mutation FinalizeExternalImport($input: FinalizeExternalImportInput!) {
   finalizeExternalImport(input: $input) {
-    finalized
     monitorWarmupSessionId
   }
 }`;
@@ -1910,7 +1887,6 @@ export const finalizeExternalImportMutation = `mutation FinalizeExternalImport($
 // owner-scoped singleton. Requires ManageSystemSettings + config step-up.
 export const saveExternalImportSetupSecretDraftMutation = `mutation SaveExternalImportSetupSecretDraft($input: SaveExternalImportSetupSecretDraftInput!) {
   saveExternalImportSetupSecretDraft(input: $input) {
-    saved
     overwroteAnotherUserDraft
     updatedAt
   }
@@ -1918,15 +1894,14 @@ export const saveExternalImportSetupSecretDraftMutation = `mutation SaveExternal
 
 export const clearExternalImportSetupSecretDraftMutation = `mutation ClearExternalImportSetupSecretDraft {
   clearExternalImportSetupSecretDraft {
-    cleared
-  }
+      clearedAt
+}
 }`;
 
 export const rehydrateAllMetadataMutation = `mutation RehydrateAllMetadata($input: RehydrateAllMetadataInput!) {
   rehydrateAllMetadata(input: $input) {
     language
     titlesCleared
-    accepted
   }
 }`;
 
@@ -1946,7 +1921,6 @@ export const updatePostProcessingScriptMutation = `mutation UpdatePostProcessing
 export const deletePostProcessingScriptMutation = `mutation DeletePostProcessingScript($id: ID!) {
   deletePostProcessingScript(id: $id) {
     id
-    deleted
   }
 }`;
 
@@ -2084,7 +2058,6 @@ export const blocklistExternalSubtitleMutation = `mutation BlocklistExternalSubt
 export const clearTitleReleaseBlocklistEntryMutation = `mutation ClearTitleReleaseBlocklistEntry($id: ID!) {
   clearTitleReleaseBlocklistEntry(id: $id) {
     id
-    cleared
   }
 }`;
 

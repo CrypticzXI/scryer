@@ -288,8 +288,8 @@ fn external_import_setup_secret_draft_input_from_gql(
 fn save_external_import_setup_secret_draft_payload(
     result: ExternalImportSetupSecretDraftSaveResult,
 ) -> SaveExternalImportSetupSecretDraftPayload {
+    let _ = result.saved;
     SaveExternalImportSetupSecretDraftPayload {
-        saved: result.saved,
         overwrote_another_user_draft: result.overwrote_another_user_draft,
         updated_at: result.updated_at,
     }
@@ -1703,7 +1703,9 @@ impl ExternalImportMutations {
         let app = app_from_ctx(ctx)?;
         app.clear_external_import_setup_secret_draft(&actor)
             .await
-            .map(|cleared| ClearExternalImportSetupSecretDraftPayload { cleared })
+            .map(|_| ClearExternalImportSetupSecretDraftPayload {
+                cleared_at: Utc::now(),
+            })
             .map_err(to_gql_error)
     }
 
@@ -1788,7 +1790,6 @@ impl ExternalImportMutations {
         }
         Ok(CancelExternalImportMonitorWarmupPayload {
             session_id,
-            canceled,
         })
     }
 
@@ -2378,7 +2379,6 @@ impl ExternalImportMutations {
         }
 
         Ok(FinalizeExternalImportPayload {
-            finalized: true,
             monitor_warmup_session_id: ID::from(apply_session_id),
         })
     }

@@ -270,7 +270,7 @@ impl ConfigMutations {
         app.delete_indexer_proxy_config(&actor, id.as_ref())
             .await
             .map_err(to_gql_error)?;
-        Ok(DeleteIndexerProxyConfigPayload { ok: true })
+        Ok(DeleteIndexerProxyConfigPayload { id })
     }
 
     async fn test_indexer_proxy_config(
@@ -300,7 +300,6 @@ impl ConfigMutations {
             .map_err(to_gql_error)?;
         Ok(DeleteIndexerConfigPayload {
             id: ID::from(id),
-            deleted: true,
         })
     }
 
@@ -430,7 +429,6 @@ impl ConfigMutations {
             .map_err(to_gql_error)?;
         Ok(DeleteDownloadClientConfigPayload {
             id: ID::from(id),
-            deleted: true,
         })
     }
 
@@ -448,7 +446,6 @@ impl ConfigMutations {
             .map_err(to_gql_error)?;
         Ok(ReorderDownloadClientConfigsPayload {
             ids,
-            reordered: true,
         })
     }
 
@@ -553,7 +550,6 @@ impl ConfigMutations {
             .map_err(to_gql_error)?;
         Ok(DeleteSubtitleProviderConfigPayload {
             id: ID::from(id),
-            deleted: true,
         })
     }
 

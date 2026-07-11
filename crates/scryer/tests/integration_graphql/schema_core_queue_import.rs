@@ -709,7 +709,10 @@ async fn graphql_introspection_exposes_typed_timestamps_as_datetime() {
           indexerSearchResult: __type(name: "IndexerSearchResultPayload") { fields { name type { kind name ofType { kind name } } } }
           titleReleaseBlocklistEntry: __type(name: "TitleReleaseBlocklistEntryPayload") { fields { name type { kind name ofType { kind name ofType { kind name ofType { kind name } } } } } }
           importRecord: __type(name: "ImportRecordPayload") { fields { name type { kind name ofType { kind name } } } }
-          queueDownloadScope: __type(name: "QueueDownloadScopePayload") { fields { name type { kind name ofType { kind name ofType { kind name ofType { kind name } } } } } }
+          episodeScope: __type(name: "EpisodeScopePayload") { fields { name type { kind name ofType { kind name ofType { kind name ofType { kind name } } } } } }
+          episodeSetScope: __type(name: "EpisodeSetScopePayload") { fields { name type { kind name ofType { kind name ofType { kind name ofType { kind name } } } } } }
+          seriesMovieScope: __type(name: "SeriesMovieScopePayload") { fields { name type { kind name ofType { kind name ofType { kind name ofType { kind name } } } } } }
+          collectionScope: __type(name: "CollectionScopePayload") { fields { name type { kind name ofType { kind name ofType { kind name ofType { kind name } } } } } }
           autoBackupSettings: __type(name: "AutoBackupSettingsPayload") { fields { name type { kind name ofType { kind name } } } }
           indexerConfig: __type(name: "IndexerConfigPayload") { fields { name type { kind name ofType { kind name } } } }
           downloadClientConfig: __type(name: "DownloadClientConfigPayload") { fields { name type { kind name ofType { kind name } } } }
@@ -815,6 +818,11 @@ async fn graphql_introspection_exposes_typed_timestamps_as_datetime() {
         ("titleHistoryEvent", "id"),
         ("titleHistoryEvent", "titleId"),
         ("restoreInspect", "uploadId"),
+        // 0.17.0: QueueDownloadScopePayload became a union; the scope ids are
+        // non-null fields on the member payloads now.
+        ("episodeScope", "episodeId"),
+        ("seriesMovieScope", "seriesMovieLinkId"),
+        ("collectionScope", "collectionId"),
     ] {
         assert_non_null_id_field(type_alias, name);
     }
@@ -829,9 +837,6 @@ async fn graphql_introspection_exposes_typed_timestamps_as_datetime() {
         ("domainEventEnvelope", "actorUserId"),
         ("domainEventEnvelope", "titleId"),
         ("libraryScanProgress", "libraryId"),
-        ("queueDownloadScope", "episodeId"),
-        ("queueDownloadScope", "seriesMovieLinkId"),
-        ("queueDownloadScope", "collectionId"),
         ("postProcessingScriptRun", "titleId"),
         ("titleHistoryEvent", "episodeId"),
         ("titleHistoryEvent", "collectionId"),
@@ -844,7 +849,7 @@ async fn graphql_introspection_exposes_typed_timestamps_as_datetime() {
 
     for (type_alias, name) in [
         ("titleReleaseBlocklistEntry", "episodeIds"),
-        ("queueDownloadScope", "episodeIds"),
+        ("episodeSetScope", "episodeIds"),
         ("titleHistoryEvent", "episodeIds"),
     ] {
         assert_non_null_id_list_field(type_alias, name);
@@ -1981,7 +1986,7 @@ async fn graphql_introspection_exposes_queue_action_payloads() {
 #[tokio::test]
 async fn graphql_queue_manual_import_returns_ok_and_persists_pending_request() {
     let ctx = TestContext::new().await;
-    let title_id = add_test_title(&ctx, "Queued Manual Import Movie", "movie").await;
+    let title_id = add_test_title(&ctx, "Queued Manual Import Movie", "MOVIE").await;
 
     Mock::given(method("POST"))
         .and(path("/jsonrpc"))

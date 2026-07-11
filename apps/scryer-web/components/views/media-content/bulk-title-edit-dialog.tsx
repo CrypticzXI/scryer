@@ -365,10 +365,10 @@ export function BulkTitleEditDialog({
                   <SelectItem value={INHERIT_VALUE}>
                     {t("title.inheritDefault")}
                   </SelectItem>
-                  <SelectItem value="download_all">
+                  <SelectItem value="DOWNLOAD_ALL">
                     {t("settings.fillerPolicyDownloadAll")}
                   </SelectItem>
-                  <SelectItem value="skip_filler">
+                  <SelectItem value="SKIP_FILLER">
                     {t("settings.fillerPolicySkipFiller")}
                   </SelectItem>
                 </SelectContent>
@@ -395,10 +395,10 @@ export function BulkTitleEditDialog({
                   <SelectItem value={INHERIT_VALUE}>
                     {t("title.inheritDefault")}
                   </SelectItem>
-                  <SelectItem value="download_all">
+                  <SelectItem value="DOWNLOAD_ALL">
                     {t("settings.recapPolicyDownloadAll")}
                   </SelectItem>
-                  <SelectItem value="skip_recap">
+                  <SelectItem value="SKIP_RECAP">
                     {t("settings.recapPolicySkipRecap")}
                   </SelectItem>
                 </SelectContent>

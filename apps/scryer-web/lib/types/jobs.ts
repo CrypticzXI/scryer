@@ -78,9 +78,9 @@ export type JobRun = {
   triggerSource: JobTriggerSource;
   startedAt: string;
   completedAt: string | null;
-  summaryJson: string | null;
+  summaryJson: unknown;
   summaryText: string | null;
   errorText: string | null;
-  progressJson: string | null;
+  progressJson: unknown;
   libraryScanProgress: LibraryScanProgress | null;
 };

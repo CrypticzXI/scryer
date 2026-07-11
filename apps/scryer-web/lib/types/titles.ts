@@ -189,8 +189,8 @@ export type TitleRecord = {
   useSeasonFolders?: boolean | null;
   monitorSpecials?: boolean | null;
   interSeasonMovies?: boolean | null;
-  fillerPolicy?: string | null;
-  recapPolicy?: string | null;
+  fillerPolicy?: 'DOWNLOAD_ALL' | 'SKIP_FILLER' | null;
+  recapPolicy?: 'DOWNLOAD_ALL' | 'SKIP_RECAP' | null;
   collections?: TitleCollectionRecord[] | null;
   mediaFiles?: TitleMediaFileRecord[] | null;
   moreLikeThis?: CatalogDiscoveryItem[] | null;
@@ -268,9 +268,9 @@ export type LibrarySettingsRecord = {
   scoringPersonaOverride: string | null;
   scoringPersona: string;
   fillerPolicyOverride: string | null;
-  fillerPolicy: string | null;
+  fillerPolicy: 'DOWNLOAD_ALL' | 'SKIP_FILLER' | null;
   recapPolicyOverride: string | null;
-  recapPolicy: string | null;
+  recapPolicy: 'DOWNLOAD_ALL' | 'SKIP_RECAP' | null;
   monitorSpecialsOverride: boolean | null;
   monitorSpecials: boolean | null;
   interSeasonMoviesOverride: boolean | null;
@@ -300,8 +300,8 @@ export type LibrarySettingsDraft = {
   qualityProfileId: string | null;
   requestQualityProfileIds: string[] | null;
   scoringPersona: string | null;
-  fillerPolicy: string | null;
-  recapPolicy: string | null;
+  fillerPolicy: 'DOWNLOAD_ALL' | 'SKIP_FILLER' | null;
+  recapPolicy: 'DOWNLOAD_ALL' | 'SKIP_RECAP' | null;
   monitorSpecials: boolean | null;
   interSeasonMovies: boolean | null;
   monitorFillerMovies: boolean | null;

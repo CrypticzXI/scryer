@@ -162,7 +162,7 @@ export type UseMediaSettingsResult = {
 
 const DEFAULT_RENAME_COLLISION_POLICY = "SKIP";
 const DEFAULT_RENAME_MISSING_METADATA_POLICY = "FALLBACK_TITLE";
-const DEFAULT_FILLER_POLICY = "download_all";
+const DEFAULT_FILLER_POLICY = "DOWNLOAD_ALL";
 const ALLOWED_RENAME_COLLISION_POLICIES = new Set([
   "SKIP",
   "ERROR",
@@ -172,9 +172,9 @@ const ALLOWED_RENAME_MISSING_METADATA_POLICIES = new Set([
   "SKIP",
   "FALLBACK_TITLE",
 ]);
-const ALLOWED_FILLER_POLICIES = new Set(["download_all", "skip_filler"]);
-const DEFAULT_RECAP_POLICY = "download_all";
-const ALLOWED_RECAP_POLICIES = new Set(["download_all", "skip_recap"]);
+const ALLOWED_FILLER_POLICIES = new Set(["DOWNLOAD_ALL", "SKIP_FILLER"]);
+const DEFAULT_RECAP_POLICY = "DOWNLOAD_ALL";
+const ALLOWED_RECAP_POLICIES = new Set(["DOWNLOAD_ALL", "SKIP_RECAP"]);
 const DEFAULT_FOLDER_TEMPLATE = "{title} ({year})";
 const DEFAULT_RENAME_TEMPLATE =
   "{title} - S{season_order:2}E{episode:2} ({absolute_episode}) - {quality}.{ext}";

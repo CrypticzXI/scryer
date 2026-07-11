@@ -317,11 +317,11 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
   const facet = facetForView(view);
 
   const [pendingConnection, setPendingConnection] = React.useState<PendingImportConnection>({
-    total: 0,
+    totalCount: 0,
     items: [],
   });
   const [ignoredConnection, setIgnoredConnection] = React.useState<PendingImportConnection>({
-    total: 0,
+    totalCount: 0,
     items: [],
   });
   const [pendingOffset, setPendingOffset] = React.useState(0);
@@ -426,13 +426,13 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
     [activeItemRef, ignoredConnection.items, pendingConnection.items],
   );
   const pendingHasPrevPage = pendingOffset > 0;
-  const pendingHasNextPage = pendingOffset + PAGE_SIZE < pendingConnection.total;
-  const pendingPageStart = pendingConnection.total === 0 ? 0 : pendingOffset + 1;
-  const pendingPageEnd = Math.min(pendingOffset + PAGE_SIZE, pendingConnection.total);
+  const pendingHasNextPage = pendingOffset + PAGE_SIZE < pendingConnection.totalCount;
+  const pendingPageStart = pendingConnection.totalCount === 0 ? 0 : pendingOffset + 1;
+  const pendingPageEnd = Math.min(pendingOffset + PAGE_SIZE, pendingConnection.totalCount);
   const ignoredHasPrevPage = ignoredOffset > 0;
-  const ignoredHasNextPage = ignoredOffset + PAGE_SIZE < ignoredConnection.total;
-  const ignoredPageStart = ignoredConnection.total === 0 ? 0 : ignoredOffset + 1;
-  const ignoredPageEnd = Math.min(ignoredOffset + PAGE_SIZE, ignoredConnection.total);
+  const ignoredHasNextPage = ignoredOffset + PAGE_SIZE < ignoredConnection.totalCount;
+  const ignoredPageStart = ignoredConnection.totalCount === 0 ? 0 : ignoredOffset + 1;
+  const ignoredPageEnd = Math.min(ignoredOffset + PAGE_SIZE, ignoredConnection.totalCount);
 
   const fetchPendingImportsPage = React.useCallback(
     async (
@@ -453,7 +453,7 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
       }
 
       const connection = (data?.pendingImports ?? {
-        total: 0,
+        totalCount: 0,
         items: [],
       }) as PendingImportConnection;
       return {
@@ -485,10 +485,10 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
         let nextOffset = Math.max(0, pageOffset);
         let nextConnection = await fetchPendingImportsPage(status, nextOffset);
 
-        if (nextConnection.total > 0 && nextOffset >= nextConnection.total) {
+        if (nextConnection.totalCount > 0 && nextOffset >= nextConnection.totalCount) {
           nextOffset = Math.max(
             0,
-            Math.floor((nextConnection.total - 1) / PAGE_SIZE) * PAGE_SIZE,
+            Math.floor((nextConnection.totalCount - 1) / PAGE_SIZE) * PAGE_SIZE,
           );
           nextConnection = await fetchPendingImportsPage(status, nextOffset);
         }
@@ -543,18 +543,18 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
       return;
     }
 
-    if (pendingConnection.total > 0 || ignoredConnection.total > 0) {
+    if (pendingConnection.totalCount > 0 || ignoredConnection.totalCount > 0) {
       return;
     }
 
     onNavigateBackToOverview();
   }, [
-    ignoredConnection.total,
+    ignoredConnection.totalCount,
     ignoredError,
     ignoredLoaded,
     ignoredLoading,
     onNavigateBackToOverview,
-    pendingConnection.total,
+    pendingConnection.totalCount,
     pendingError,
     pendingLoaded,
     pendingLoading,
@@ -708,7 +708,7 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
           return current;
         }
         return {
-          total: Math.max(0, current.total - 1),
+          totalCount: Math.max(0, current.totalCount - 1),
           items: current.items.filter((candidate) => candidate.id !== item.id),
         };
       };
@@ -742,14 +742,14 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
       }
 
       return {
-        total: current.total + 1,
+        totalCount: current.totalCount + 1,
         items: [resolvedItem, ...current.items].slice(0, PAGE_SIZE),
       };
     });
 
     if (item.status === "IGNORED") {
       setIgnoredConnection((current) => ({
-        total: Math.max(0, current.total - 1),
+        totalCount: Math.max(0, current.totalCount - 1),
         items: current.items.filter((candidate) => candidate.id !== item.id),
       }));
     }
@@ -1036,13 +1036,13 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
             })}
           </p>
         </div>
-        {!pendingLoading && !pendingError && pendingConnection.total > 0 ? (
+        {!pendingLoading && !pendingError && pendingConnection.totalCount > 0 ? (
           <span className="inline-flex h-[30px] items-center gap-2 rounded-[9px] border border-[var(--scry-warning-border)] bg-[var(--scry-warning-bg)] px-3 text-xs font-semibold tabular-nums text-[var(--scry-warning-text)]">
             <TriangleAlertIcon className="h-3.5 w-3.5" />
-            {pendingConnection.total === 1
+            {pendingConnection.totalCount === 1
               ? t("pendingImports.unresolvedCountOne")
               : t("pendingImports.unresolvedCountOther", {
-                  count: String(pendingConnection.total),
+                  count: String(pendingConnection.totalCount),
                 })}
           </span>
         ) : null}
@@ -1077,7 +1077,7 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
         </Card>
       ) : null}
 
-      {!pendingLoading && !pendingError && pendingConnection.total === 0 ? (
+      {!pendingLoading && !pendingError && pendingConnection.totalCount === 0 ? (
         <Card>
           <CardContent className="py-6 text-sm text-muted-foreground">
             {t("pendingImports.empty")}
@@ -1089,14 +1089,14 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
 
       {renderPagination(
         "PENDING",
-        pendingConnection.total,
+        pendingConnection.totalCount,
         pendingHasPrevPage,
         pendingHasNextPage,
         pendingPageStart,
         pendingPageEnd,
       )}
 
-      {ignoredConnection.total > 0 ? (
+      {ignoredConnection.totalCount > 0 ? (
         <Card className="border-border/80 bg-card/50">
           <Collapsible open={ignoredOpen} onOpenChange={setIgnoredOpen}>
             <CollapsibleTrigger asChild>
@@ -1121,7 +1121,7 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
 
               {renderPagination(
                 "IGNORED",
-                ignoredConnection.total,
+                ignoredConnection.totalCount,
                 ignoredHasPrevPage,
                 ignoredHasNextPage,
                 ignoredPageStart,

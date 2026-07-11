@@ -188,7 +188,7 @@ async fn active_library_scans_query_returns_progress_snapshot() {
         .as_str()
         .expect("scanLibrary should return a session id")
         .to_string();
-    assert_eq!(start["data"]["scanLibrary"]["facet"], "series");
+    assert_eq!(start["data"]["scanLibrary"]["facet"], "SERIES");
 
     let deadline = Instant::now() + Duration::from_secs(5);
     let scan = loop {
@@ -222,11 +222,11 @@ async fn active_library_scans_query_returns_progress_snapshot() {
     };
 
     assert_eq!(scan["sessionId"], session_id);
-    assert_eq!(scan["facet"], "series");
+    assert_eq!(scan["facet"], "SERIES");
     assert!(
         matches!(
             scan["status"].as_str(),
-            Some("discovering") | Some("running")
+            Some("DISCOVERING") | Some("RUNNING")
         ),
         "expected active scan status, got {scan}"
     );
@@ -280,9 +280,9 @@ async fn scan_library_mutation_returns_ok_status_and_started_session() {
             .as_str()
             .is_some_and(|value| !value.is_empty())
     );
-    assert_eq!(session["facet"], "movie");
-    assert_eq!(session["mode"], "full");
-    assert_eq!(session["status"], "discovering");
+    assert_eq!(session["facet"], "MOVIE");
+    assert_eq!(session["mode"], "FULL");
+    assert_eq!(session["status"], "DISCOVERING");
 }
 
 #[tokio::test]

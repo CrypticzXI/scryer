@@ -16,7 +16,7 @@ async fn graphql_media_settings_rejects_invalid_folder_template_tokens() {
         "#,
         json!({
           "input": {
-            "scope": "movie",
+            "scope": "MOVIE",
             "folderTemplate": "{quality}"
           }
         }),
@@ -47,7 +47,7 @@ async fn graphql_media_settings_rejects_invalid_rename_template_tokens() {
         "#,
         json!({
           "input": {
-            "scope": "movie",
+            "scope": "MOVIE",
             "renameTemplate": "{title|truncate:0}.{ext}"
           }
         }),
@@ -92,7 +92,7 @@ async fn graphql_typed_media_settings_round_trip() {
         "#,
         json!({
           "input": {
-            "scope": "anime",
+            "scope": "ANIME",
             "rootFolders": [
               { "path": "/library/anime-main", "isDefault": true },
               { "path": "/library/anime-archive", "isDefault": false }
@@ -101,10 +101,10 @@ async fn graphql_typed_media_settings_round_trip() {
             "folderTemplate": "{title|truncate:64|space:_} ({year})",
             "renameEnabled": false,
             "renameTemplate": "{title|truncate:64|space:_} [{quality}].{ext}",
-            "renameCollisionPolicy": "replace_if_better",
-            "renameMissingMetadataPolicy": "skip",
-            "fillerPolicy": "skip_filler",
-            "recapPolicy": "skip_recap",
+            "renameCollisionPolicy": "REPLACE_IF_BETTER",
+            "renameMissingMetadataPolicy": "SKIP",
+            "fillerPolicy": "SKIP_FILLER",
+            "recapPolicy": "SKIP_RECAP",
             "monitorSpecials": true,
             "interSeasonMovies": false,
             "monitorFillerMovies": true,
@@ -117,7 +117,7 @@ async fn graphql_typed_media_settings_round_trip() {
     assert_no_errors(&update);
 
     let updated = &update["data"]["updateMediaSettings"];
-    assert_eq!(updated["scope"], "anime");
+    assert_eq!(updated["scope"], "ANIME");
     assert_eq!(updated["libraryPath"], "/library/anime-main");
     assert_eq!(updated["rootFolders"][0]["path"], "/library/anime-main");
     assert_eq!(updated["rootFolders"][0]["isDefault"], true);
@@ -132,10 +132,10 @@ async fn graphql_typed_media_settings_round_trip() {
         updated["renameTemplate"],
         "{title|truncate:64|space:_} [{quality}].{ext}"
     );
-    assert_eq!(updated["renameCollisionPolicy"], "replace_if_better");
-    assert_eq!(updated["renameMissingMetadataPolicy"], "skip");
-    assert_eq!(updated["fillerPolicy"], "skip_filler");
-    assert_eq!(updated["recapPolicy"], "skip_recap");
+    assert_eq!(updated["renameCollisionPolicy"], "REPLACE_IF_BETTER");
+    assert_eq!(updated["renameMissingMetadataPolicy"], "SKIP");
+    assert_eq!(updated["fillerPolicy"], "SKIP_FILLER");
+    assert_eq!(updated["recapPolicy"], "SKIP_RECAP");
     assert_eq!(updated["monitorSpecials"], true);
     assert_eq!(updated["interSeasonMovies"], false);
     assert_eq!(updated["monitorFillerMovies"], true);
@@ -166,13 +166,13 @@ async fn graphql_typed_media_settings_round_trip() {
           }
         }
         "#,
-        json!({ "scope": "anime" }),
+        json!({ "scope": "ANIME" }),
     )
     .await;
     assert_no_errors(&read);
 
     let settings = &read["data"]["mediaSettings"];
-    assert_eq!(settings["scope"], "anime");
+    assert_eq!(settings["scope"], "ANIME");
     assert_eq!(settings["libraryPath"], "/library/anime-main");
     assert_eq!(settings["rootFolders"][1]["path"], "/library/anime-archive");
     assert_eq!(settings["requiredAudioLanguages"][0], "eng");
@@ -186,10 +186,10 @@ async fn graphql_typed_media_settings_round_trip() {
         settings["renameTemplate"],
         "{title|truncate:64|space:_} [{quality}].{ext}"
     );
-    assert_eq!(settings["renameCollisionPolicy"], "replace_if_better");
-    assert_eq!(settings["renameMissingMetadataPolicy"], "skip");
-    assert_eq!(settings["fillerPolicy"], "skip_filler");
-    assert_eq!(settings["recapPolicy"], "skip_recap");
+    assert_eq!(settings["renameCollisionPolicy"], "REPLACE_IF_BETTER");
+    assert_eq!(settings["renameMissingMetadataPolicy"], "SKIP");
+    assert_eq!(settings["fillerPolicy"], "SKIP_FILLER");
+    assert_eq!(settings["recapPolicy"], "SKIP_RECAP");
     assert_eq!(settings["monitorSpecials"], true);
     assert_eq!(settings["interSeasonMovies"], false);
     assert_eq!(settings["monitorFillerMovies"], true);

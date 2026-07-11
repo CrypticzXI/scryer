@@ -1724,10 +1724,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
         setCatalogPaginationState({
           queryKey,
           hasMore: Boolean(page.hasMore),
-          nextOffset:
-            typeof page.offset === "number" && typeof page.limit === "number"
-              ? page.offset + nextTitles.length
-              : nextTitles.length,
+          nextOffset: nextTitles.length,
           totalCount:
             typeof page.totalCount === "number"
               ? page.totalCount
@@ -1907,10 +1904,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
       setCatalogPaginationState({
         queryKey,
         hasMore: Boolean(page.hasMore),
-        nextOffset:
-          typeof page.offset === "number"
-            ? page.offset + nextTitles.length
-            : offset + nextTitles.length,
+        nextOffset: offset + nextTitles.length,
         totalCount:
           typeof page.totalCount === "number"
             ? page.totalCount
@@ -2038,11 +2032,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
         return {
           ...current,
           hasMore: includePageMetadata ? Boolean(page.hasMore) : current.hasMore,
-          nextOffset: includePageMetadata
-            ? typeof page.offset === "number" && typeof page.limit === "number"
-              ? page.offset + nextTitles.length
-              : nextTitles.length
-            : current.nextOffset,
+          nextOffset: includePageMetadata ? nextTitles.length : current.nextOffset,
           totalCount:
             includePageMetadata && typeof page.totalCount === "number"
               ? page.totalCount
@@ -4173,7 +4163,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
       setLibrarySettingsSaving(true);
       try {
         const { data, error } = await client
-          .mutation<{ deleteLibrary: { id: string; deleted: boolean } }>(
+          .mutation<{ deleteLibrary: { id: string } }>(
             deleteLibraryMutation,
             {
               id: libraryId,
@@ -4181,7 +4171,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
           )
           .toPromise();
         if (error) throw error;
-        if (!data?.deleteLibrary?.deleted) {
+        if (!data?.deleteLibrary?.id) {
           throw new Error(t("settings.libraryDeleteFailed"));
         }
         setSelectedLibraryIds((current) =>

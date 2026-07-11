@@ -29,12 +29,11 @@ pub struct SubmitMediaRequestInput {
 
 #[derive(Clone, Debug)]
 pub struct SubmitMediaRequestOutcome {
-    pub accepted: bool,
+    pub request_id: String,
 }
 
 #[derive(Clone, Debug)]
 pub struct ApproveMediaRequestOutcome {
-    pub accepted: bool,
     pub title_id: String,
     pub wanted_search: Option<WantedSearchOutcome>,
     pub search_error: Option<String>,
@@ -156,6 +155,7 @@ impl AppUseCase {
             .await?;
         self.publish_stored_domain_event(&submission.event).await;
         let submitted_request = submission.request;
+        let request_id = submitted_request.id.clone();
 
         if self
             .has_granted_library_permission(
@@ -169,7 +169,7 @@ impl AppUseCase {
                 .await?;
         }
 
-        Ok(SubmitMediaRequestOutcome { accepted: true })
+        Ok(SubmitMediaRequestOutcome { request_id })
     }
 
     pub async fn list_media_requests(
@@ -319,7 +319,6 @@ impl AppUseCase {
             Ok(wanted_search) => Some(wanted_search),
             Err(error) => {
                 return Ok(ApproveMediaRequestOutcome {
-                    accepted: true,
                     title_id,
                     wanted_search: None,
                     search_error: Some(error.to_string()),
@@ -328,7 +327,6 @@ impl AppUseCase {
         };
 
         Ok(ApproveMediaRequestOutcome {
-            accepted: true,
             title_id,
             wanted_search,
             search_error: None,

@@ -9,18 +9,18 @@ export type QueueDownloadScopeInput =
   | { orphan: boolean };
 
 function queueScopeToInput(scope: ReleaseQueueScope): QueueDownloadScopeInput | null {
-  switch (scope.kind) {
-    case "EPISODE":
+  switch (scope.__typename) {
+    case "EpisodeScopePayload":
       return scope.episodeId ? { episode: scope.episodeId } : null;
-    case "episode_set":
+    case "EpisodeSetScopePayload":
       return scope.episodeIds.length > 0 ? { episodeSet: scope.episodeIds } : null;
-    case "collection":
+    case "CollectionScopePayload":
       return scope.collectionId ? { collection: scope.collectionId } : null;
-    case "SERIES_MOVIE":
+    case "SeriesMovieScopePayload":
       return scope.seriesMovieLinkId ? { seriesMovie: scope.seriesMovieLinkId } : null;
-    case "TITLE":
+    case "TitleScopePayload":
       return { title: true };
-    case "orphan":
+    case "OrphanScopePayload":
       return { orphan: true };
     default:
       return null;

@@ -184,7 +184,7 @@ impl PostProcessingMutations {
             .await
             .map_err(to_gql_error)?;
 
-        Ok(DeletePostProcessingScriptPayload { id, deleted: true })
+        Ok(DeletePostProcessingScriptPayload { id })
     }
 
     async fn toggle_post_processing_script(

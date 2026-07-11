@@ -5998,8 +5998,8 @@ async fn list_release_decisions_offset_paginates_within_title() {
     }
 
     // limit 2, offset 2 skips the first window in storage rather than in memory.
-    let page = app
-        .list_release_decisions(
+    let (page, page_total) = app
+        .list_release_decisions_page(
             &user,
             crate::ReleaseDecisionsQuery {
                 wanted_item_id: None,
@@ -6010,12 +6010,13 @@ async fn list_release_decisions_offset_paginates_within_title() {
         )
         .await
         .expect("page release decisions");
+    assert_eq!(page_total, 5);
     assert_eq!(page.len(), 2);
     assert_eq!(page[0].id, "decision-page-2");
     assert_eq!(page[1].id, "decision-page-3");
 
-    let tail = app
-        .list_release_decisions(
+    let (tail, tail_total) = app
+        .list_release_decisions_page(
             &user,
             crate::ReleaseDecisionsQuery {
                 wanted_item_id: None,
@@ -6026,6 +6027,7 @@ async fn list_release_decisions_offset_paginates_within_title() {
         )
         .await
         .expect("tail release decisions");
+    assert_eq!(tail_total, 5);
     assert_eq!(tail.len(), 1);
     assert_eq!(tail[0].id, "decision-page-4");
 }

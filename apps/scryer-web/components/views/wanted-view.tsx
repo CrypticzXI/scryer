@@ -263,12 +263,12 @@ function formatBytes(bytes: number | null) {
 }
 
 function parseDecisionExplanation(
-  explanationJson: string | null,
+  explanationJson: unknown,
 ): ReleaseDecisionExplanationEntry[] {
   if (!explanationJson) return [];
 
   try {
-    const parsed = JSON.parse(explanationJson);
+    const parsed = explanationJson;
     if (!Array.isArray(parsed)) return [];
 
     return parsed.flatMap((entry) => {

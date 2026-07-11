@@ -376,8 +376,8 @@ export function TitleSettingsPanel({
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value={INHERIT_VALUE}>{t("title.inheritDefault")}</SelectItem>
-                  <SelectItem value="download_all">{t("settings.fillerPolicyDownloadAll")}</SelectItem>
-                  <SelectItem value="skip_filler">{t("settings.fillerPolicySkipFiller")}</SelectItem>
+                  <SelectItem value="DOWNLOAD_ALL">{t("settings.fillerPolicyDownloadAll")}</SelectItem>
+                  <SelectItem value="SKIP_FILLER">{t("settings.fillerPolicySkipFiller")}</SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -396,8 +396,8 @@ export function TitleSettingsPanel({
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value={INHERIT_VALUE}>{t("title.inheritDefault")}</SelectItem>
-                  <SelectItem value="download_all">{t("settings.recapPolicyDownloadAll")}</SelectItem>
-                  <SelectItem value="skip_recap">{t("settings.recapPolicySkipRecap")}</SelectItem>
+                  <SelectItem value="DOWNLOAD_ALL">{t("settings.recapPolicyDownloadAll")}</SelectItem>
+                  <SelectItem value="SKIP_RECAP">{t("settings.recapPolicySkipRecap")}</SelectItem>
                 </SelectContent>
               </Select>
             </div>

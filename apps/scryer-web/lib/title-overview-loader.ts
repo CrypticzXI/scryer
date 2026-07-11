@@ -96,7 +96,7 @@ export async function fetchTitleSidePanelOverviewSnapshot<
   return {
     title: (data?.title ?? null) as TTitle | null,
     acquisitionDiagnostics: (data?.titleAcquisitionDiagnostics ?? null) as TDiagnostics | null,
-    titleHistory: (data?.titleHistory?.records ?? []) as TEvent[],
+    titleHistory: (data?.titleHistory?.items ?? []) as TEvent[],
     titleReleaseBlocklist: (data?.titleReleaseBlocklist ?? []) as TBlocklist[],
     externalSubtitles: (data?.externalSubtitles ?? []) as TSubtitle[],
     hasDownloadClients: data?.setupStatus?.hasDownloadClients !== false,

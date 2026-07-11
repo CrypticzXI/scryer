@@ -372,7 +372,6 @@ impl TitleMutations {
         .map_err(to_gql_error)?;
         Ok(DeleteTitlePayload {
             id: ID::from(title_id),
-            deleted: true,
         })
     }
 
@@ -424,7 +423,6 @@ impl TitleMutations {
             .map_err(to_gql_error)?;
         Ok(ClearTitleReleaseBlocklistEntryPayload {
             id: ID::from(id),
-            cleared: true,
         })
     }
 

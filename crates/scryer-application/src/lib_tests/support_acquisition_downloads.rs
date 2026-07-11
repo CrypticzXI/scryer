@@ -541,6 +541,28 @@ impl AcquisitionScopeStateRepository for TrackingAcquisitionScopeStateRepo {
             .cloned()
             .collect())
     }
+    async fn count_release_decisions_for_title(&self, title_id: &str) -> AppResult<i64> {
+        Ok(self
+            .release_decisions
+            .lock()
+            .await
+            .iter()
+            .filter(|decision| decision.title_id == title_id)
+            .count() as i64)
+    }
+
+    async fn count_release_decisions_for_acquisition_scope_state(
+        &self,
+        wanted_item_id: &str,
+    ) -> AppResult<i64> {
+        Ok(self
+            .release_decisions
+            .lock()
+            .await
+            .iter()
+            .filter(|decision| decision.wanted_item_id == wanted_item_id)
+            .count() as i64)
+    }
 }
 
 #[async_trait]

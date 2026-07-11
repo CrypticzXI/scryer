@@ -1,3 +1,10 @@
+export type ProviderConfigFieldValue =
+  | { __typename: "StringConfigValuePayload"; value: string }
+  | { __typename: "BoolConfigValuePayload"; value: boolean }
+  | { __typename: "IntConfigValuePayload"; value: number }
+  | { __typename: "FloatConfigValuePayload"; value: number }
+  | { __typename: "SecretConfigValuePayload"; stored: boolean };
+
 export type ProviderConfigValue = {
   key: string;
   label?: string | null;
@@ -9,11 +16,7 @@ export type ProviderConfigValue = {
   hostBinding?: string | null;
   options?: Array<{ value: string; label: string }> | null;
   helpText?: string | null;
-  stringValue?: string | null;
-  boolValue?: boolean | null;
-  intValue?: number | null;
-  floatValue?: number | null;
-  secretStored?: boolean | null;
+  value?: ProviderConfigFieldValue | null;
 };
 
 export type ProviderConfigValueInput = {
@@ -30,15 +33,24 @@ export function providerConfigValuesToRecord(
   values: ProviderConfigValue[] | null | undefined,
 ): Record<string, string> {
   const record: Record<string, string> = {};
-  for (const value of values ?? []) {
-    if (typeof value.stringValue === "string") {
-      record[value.key] = value.stringValue;
-    } else if (typeof value.boolValue === "boolean") {
-      record[value.key] = value.boolValue ? "true" : "false";
-    } else if (typeof value.intValue === "number") {
-      record[value.key] = String(value.intValue);
-    } else if (typeof value.floatValue === "number") {
-      record[value.key] = String(value.floatValue);
+  for (const entry of values ?? []) {
+    const value = entry.value;
+    if (!value) {
+      continue;
+    }
+    switch (value.__typename) {
+      case "StringConfigValuePayload":
+        record[entry.key] = value.value;
+        break;
+      case "BoolConfigValuePayload":
+        record[entry.key] = value.value ? "true" : "false";
+        break;
+      case "IntConfigValuePayload":
+      case "FloatConfigValuePayload":
+        record[entry.key] = String(value.value);
+        break;
+      case "SecretConfigValuePayload":
+        break;
     }
   }
   return record;

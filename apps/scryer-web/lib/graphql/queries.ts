@@ -284,11 +284,14 @@ export const PROVIDER_CONFIG_VALUE_FIELDS = `
     hostBinding
     options { value label }
     helpText
-    stringValue
-    boolValue
-    intValue
-    floatValue
-    secretStored`;
+    value {
+      __typename
+      ... on StringConfigValuePayload { value }
+      ... on BoolConfigValuePayload { value }
+      ... on IntConfigValuePayload { value }
+      ... on FloatConfigValuePayload { value }
+      ... on SecretConfigValuePayload { stored }
+    }`;
 
 const SERIES_SIDE_PANEL_MOVIE_LINK_FIELDS = `
       id
@@ -903,7 +906,7 @@ export const movieSidePanelOverviewQuery = `query MovieSidePanelOverview($id: ID
     latestWantedSearchAt
   }
   titleHistory: titleHistory(filter: { titleIds: [$id], limit: 50, offset: 0 }) {
-    records {${TITLE_EVENT_FIELDS}
+    items {${TITLE_EVENT_FIELDS}
     }
   }
   titleReleaseBlocklist(titleId: $id, limit: $blocklistLimit) {${TITLE_RELEASE_BLOCKLIST_FIELDS}
@@ -1481,8 +1484,6 @@ export function buildTitlesQuery(
   const includePageMetadata = options.includePageMetadata ?? true;
   const pageMetadataFields = includePageMetadata
     ? `
-    limit
-    offset
     hasMore
     totalCount
     filterCounts {
@@ -1680,7 +1681,7 @@ export function buildReactiveRefreshQuery(
         );
         if (titleHistoryAlias) {
           fields.push(
-            `  ${titleHistoryAlias}: titleHistory(filter: { titleIds: [$${titleIdVariableName}], limit: 50, offset: 0 }) {\n    records {\n${TITLE_EVENT_FIELDS}\n    }\n  }`,
+            `  ${titleHistoryAlias}: titleHistory(filter: { titleIds: [$${titleIdVariableName}], limit: 50, offset: 0 }) {\n    items {\n${TITLE_EVENT_FIELDS}\n    }\n  }`,
           );
         }
         fields.push(
@@ -2319,7 +2320,8 @@ export const cutoffUnmetTitlesPageQuery = `query CutoffUnmetTitlesPage($facet: M
       indexersCovered
       indexersRouted
     }
-    total
+    totalCount
+    hasMore
   }
 }`;
 
@@ -3024,7 +3026,8 @@ export const wantedItemsQuery = `query WantedItems($wantedKind: WantedKindValue!
       createdAt
       updatedAt
     }
-    total
+    totalCount
+    hasMore
   }
 }`;
 
@@ -3254,7 +3257,8 @@ export const navigationBadgeCountsQuery = `query NavigationBadgeCounts {
 
 export const pendingImportsQuery = `query PendingImports($facet: MediaFacetValue!, $libraryIds: [ID!], $status: PendingImportStatusValue! = pending, $limit: Int = 50, $offset: Int = 0) {
   pendingImports(facet: $facet, libraryIds: $libraryIds, status: $status, limit: $limit, offset: $offset) {
-    total
+    totalCount
+    hasMore
     items {
       id
       libraryId
@@ -3389,8 +3393,6 @@ export const pendingReleasesQuery = `query PendingReleases($filter: PendingRelea
       delayUntil
       status
     }
-    limit
-    offset
     hasMore
     totalCount
   }
@@ -3479,7 +3481,7 @@ export const externalSubtitlesQuery = `query ExternalSubtitles($titleId: ID!) {
 
 export const titleHistoryQuery = `query TitleHistory($filter: TitleHistoryFilterInput!) {
   titleHistory(filter: $filter) {
-    records {
+    items {
       id
       titleId
       titleName

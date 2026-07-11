@@ -77,7 +77,6 @@ impl RulesMutations {
 
         Ok(DeleteRuleSetPayload {
             id: ID::from(id),
-            deleted: true,
         })
     }
 

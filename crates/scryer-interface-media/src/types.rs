@@ -1,4 +1,4 @@
-use async_graphql::{Enum, ID, InputObject, SimpleObject};
+use async_graphql::{Enum, ID, InputObject, Json, SimpleObject};
 use chrono::{DateTime, Utc};
 
 pub use crate::conversions::{FromApplication, IntoApplication};
@@ -42,8 +42,8 @@ pub struct TitlePayload {
     pub use_season_folders: Option<bool>,
     pub monitor_specials: Option<bool>,
     pub inter_season_movies: Option<bool>,
-    pub filler_policy: Option<String>,
-    pub recap_policy: Option<String>,
+    pub filler_policy: Option<FillerPolicyValue>,
+    pub recap_policy: Option<RecapPolicyValue>,
 }
 
 #[derive(SimpleObject, Clone)]
@@ -119,8 +119,6 @@ pub struct TitleCatalogFilterInput {
 #[derive(SimpleObject, Clone)]
 pub struct TitleCatalogPayload {
     pub items: Vec<TitlePayload>,
-    pub limit: i32,
-    pub offset: i32,
     pub has_more: bool,
     pub total_count: i32,
     pub filter_counts: TitleCatalogFilterCountsPayload,
@@ -427,7 +425,8 @@ pub struct WantedItemPayload {
 #[derive(SimpleObject, Clone)]
 pub struct WantedItemsListPayload {
     pub items: Vec<WantedItemPayload>,
-    pub total: i64,
+    pub total_count: i64,
+    pub has_more: bool,
 }
 
 #[derive(SimpleObject, Clone)]
@@ -459,13 +458,14 @@ pub struct ReleaseDecisionPayload {
     pub candidate_score: i32,
     pub current_score: Option<i32>,
     pub score_delta: Option<i32>,
-    pub explanation_json: Option<String>,
+    pub explanation_json: Option<Json<serde_json::Value>>,
     pub created_at: DateTime<Utc>,
 }
 
 #[derive(SimpleObject, Clone)]
 pub struct ReleaseDecisionsPagePayload {
     pub items: Vec<ReleaseDecisionPayload>,
+    pub total_count: i64,
     pub has_more: bool,
 }
 
@@ -479,7 +479,7 @@ pub struct PendingReleasePayload {
     pub release_url: Option<String>,
     pub release_size_bytes: Option<Long>,
     pub release_score: i32,
-    pub scoring_log_json: Option<String>,
+    pub scoring_log_json: Option<Json<serde_json::Value>>,
     pub indexer_source: Option<String>,
     pub added_at: DateTime<Utc>,
     pub delay_until: DateTime<Utc>,
@@ -496,8 +496,6 @@ pub struct PendingReleaseFilterInput {
 #[derive(SimpleObject, Clone)]
 pub struct PendingReleasesPayload {
     pub items: Vec<PendingReleasePayload>,
-    pub limit: i32,
-    pub offset: i32,
     pub has_more: bool,
     pub total_count: i32,
 }

@@ -56,7 +56,6 @@ impl WantedMutations {
             .map_err(to_gql_error)?;
         Ok(PauseWantedItemPayload {
             id: ID::from(id),
-            paused: true,
         })
     }
 
@@ -75,7 +74,6 @@ impl WantedMutations {
             .map_err(to_gql_error)?;
         Ok(ResumeWantedItemPayload {
             id: ID::from(id),
-            resumed: true,
         })
     }
 
@@ -87,13 +85,11 @@ impl WantedMutations {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
         let id = id.to_string();
-        let grabbed = app
-            .force_grab_pending_release(&actor, &id)
+        app.force_grab_pending_release(&actor, &id)
             .await
             .map_err(to_gql_error)?;
         Ok(ForceGrabPendingReleasePayload {
             id: ID::from(id),
-            grabbed,
         })
     }
 
@@ -105,13 +101,11 @@ impl WantedMutations {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
         let id = id.to_string();
-        let dismissed = app
-            .dismiss_pending_release(&actor, &id)
+        app.dismiss_pending_release(&actor, &id)
             .await
             .map_err(to_gql_error)?;
         Ok(DismissPendingReleasePayload {
             id: ID::from(id),
-            dismissed,
         })
     }
 
@@ -162,11 +156,17 @@ impl WantedMutations {
     }
 
     /// Cancel a running interactive acquisition-search job (RFC 119 §7.3).
-    async fn cancel_acquisition_search(&self, ctx: &Context<'_>, id: ID) -> GqlResult<bool> {
+    async fn cancel_acquisition_search(
+        &self,
+        ctx: &Context<'_>,
+        id: ID,
+    ) -> GqlResult<CancelAcquisitionSearchPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        app.cancel_acquisition_search(&actor, id.as_ref())
+        let accepted = app
+            .cancel_acquisition_search(&actor, id.as_ref())
             .await
-            .map_err(to_gql_error)
+            .map_err(to_gql_error)?;
+        Ok(CancelAcquisitionSearchPayload { id, accepted })
     }
 }

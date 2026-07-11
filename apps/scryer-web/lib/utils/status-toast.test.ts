@@ -8,14 +8,14 @@ test("raw GraphQL validation queue failure classifies as error", () => {
     classifyStatusToastLevel(
       "[GraphQL] validation: no download client enabled for library movie_default_library",
     ),
-    "error",
+    "ERROR",
   );
 });
 
 test("normalized validation queue failure classifies as error", () => {
   assert.equal(
     classifyStatusToastLevel("no download client enabled for library movie_default_library"),
-    "error",
+    "ERROR",
   );
 });
 
@@ -27,20 +27,20 @@ test("suppressed validation prompts still do not toast", () => {
 test("rename apply completion with only applied items classifies as success", () => {
   assert.equal(
     classifyStatusToastLevel("Rename apply complete: 12 applied, 0 skipped, 0 failed."),
-    "success",
+    "SUCCESS",
   );
 });
 
 test("rename apply completion with skipped items classifies as warning", () => {
   assert.equal(
     classifyStatusToastLevel("Rename apply complete: 12 applied, 1 skipped, 0 failed."),
-    "warning",
+    "WARNING",
   );
 });
 
 test("rename apply completion with failed items classifies as error", () => {
   assert.equal(
     classifyStatusToastLevel("Rename apply complete: 12 applied, 1 skipped, 2 failed."),
-    "error",
+    "ERROR",
   );
 });
