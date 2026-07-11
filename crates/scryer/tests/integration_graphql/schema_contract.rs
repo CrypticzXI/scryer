@@ -2216,15 +2216,12 @@ async fn graphql_introspection_media_server_delete_uses_id_and_payload_result() 
             .expect("query arg should exist")
             .clone()
     };
-    for (field_name, arg_name) in [
-        // mediaServerConnection (singular) removed in the 0.17.0 root-wave trim;
-        // the plural mediaServerConnections + MediaServerConnectionPayload type stay.
-        ("jellyfinServerUsers", "connectionId"),
-    ] {
-        let arg = query_arg(field_name, arg_name);
-        assert_eq!(arg["type"]["kind"], "NON_NULL", "{field_name}");
-        assert_eq!(arg["type"]["ofType"]["name"], "ID", "{field_name}");
-    }
+    // mediaServerConnection (singular) removed in the 0.17.0 root-wave trim;
+    // the plural mediaServerConnections + MediaServerConnectionPayload type stay.
+    let field_name = "jellyfinServerUsers";
+    let arg = query_arg(field_name, "connectionId");
+    assert_eq!(arg["type"]["kind"], "NON_NULL", "{field_name}");
+    assert_eq!(arg["type"]["ofType"]["name"], "ID", "{field_name}");
 
     let output_field = |type_alias: &str, field_name: &str| {
         body["data"][type_alias]["fields"]

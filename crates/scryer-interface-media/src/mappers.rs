@@ -3037,6 +3037,26 @@ pub fn from_title_history_page(
     })
 }
 
+/// Media-request storage keeps the flattened, lowercase normalization of the
+/// monitor type ("futureepisodes"); the API exposes the typed enum.
+fn monitor_type_value_from_normalized(value: &str) -> Option<MonitorTypeValue> {
+    match value {
+        "monitored" => Some(MonitorTypeValue::Monitored),
+        "unmonitored" => Some(MonitorTypeValue::Unmonitored),
+        "futureepisodes" => Some(MonitorTypeValue::FutureEpisodes),
+        "missingandfutureepisodes" => Some(MonitorTypeValue::MissingAndFutureEpisodes),
+        "allepisodes" => Some(MonitorTypeValue::AllEpisodes),
+        "none" => Some(MonitorTypeValue::NoneSelected),
+        _ => None,
+    }
+}
+
+/// Boundary conversion for JSON persisted as text in the application layer:
+/// the wire carries real JSON, never a string-encoded document.
+pub fn json_string_to_value(raw: String) -> async_graphql::Json<serde_json::Value> {
+    async_graphql::Json(serde_json::from_str(&raw).unwrap_or(serde_json::Value::Null))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -3323,24 +3343,4 @@ mod tests {
         );
         assert!(matches!(mapped.facet, Some(MediaFacetValue::Anime)));
     }
-}
-
-/// Media-request storage keeps the flattened, lowercase normalization of the
-/// monitor type ("futureepisodes"); the API exposes the typed enum.
-fn monitor_type_value_from_normalized(value: &str) -> Option<MonitorTypeValue> {
-    match value {
-        "monitored" => Some(MonitorTypeValue::Monitored),
-        "unmonitored" => Some(MonitorTypeValue::Unmonitored),
-        "futureepisodes" => Some(MonitorTypeValue::FutureEpisodes),
-        "missingandfutureepisodes" => Some(MonitorTypeValue::MissingAndFutureEpisodes),
-        "allepisodes" => Some(MonitorTypeValue::AllEpisodes),
-        "none" => Some(MonitorTypeValue::NoneSelected),
-        _ => None,
-    }
-}
-
-/// Boundary conversion for JSON persisted as text in the application layer:
-/// the wire carries real JSON, never a string-encoded document.
-pub fn json_string_to_value(raw: String) -> async_graphql::Json<serde_json::Value> {
-    async_graphql::Json(serde_json::from_str(&raw).unwrap_or(serde_json::Value::Null))
 }

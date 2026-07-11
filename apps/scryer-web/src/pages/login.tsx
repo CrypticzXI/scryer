@@ -137,7 +137,7 @@ export default function LoginPage() {
         )
       : [];
   const plexConnections =
-    isVisibleExternalAccountProvider("plex") &&
+    isVisibleExternalAccountProvider("PLEX") &&
     externalAuthSettings?.loginProviders.includes("PLEX")
       ? externalAuthSettings.connections.filter(
           (connection) => connection.provider === "PLEX" && connection.loginEnabled,
@@ -218,7 +218,7 @@ export default function LoginPage() {
             current || firstJellyfinConnectionId,
           );
         }
-        if (isVisibleExternalAccountProvider("plex")) {
+        if (isVisibleExternalAccountProvider("PLEX")) {
           const firstPlexConnectionId =
             settings?.connections.find(
               (connection) => connection.provider === "PLEX" && connection.loginEnabled,

@@ -238,7 +238,7 @@ export function SettingsProfileSection({
   const selectedLinkConnections =
     linkingProvider === "JELLYFIN"
       ? linkableJellyfinConnections
-      : isVisibleExternalAccountProvider("plex")
+      : isVisibleExternalAccountProvider("PLEX")
         ? linkablePlexConnections
         : [];
   const selectedLinkConnection = selectedLinkConnections.find(
@@ -848,7 +848,7 @@ export function SettingsProfileSection({
                 {t("profile.linkJellyfinAccount")}
               </Button>
             ) : null}
-            {isVisibleExternalAccountProvider("plex") &&
+            {isVisibleExternalAccountProvider("PLEX") &&
             linkablePlexConnections.length > 0 ? (
               <Button
                 id="settings-profile-link-plex-start"
@@ -972,7 +972,7 @@ export function SettingsProfileSection({
           </form>
         ) : null}
 
-        {isVisibleExternalAccountProvider("plex") &&
+        {isVisibleExternalAccountProvider("PLEX") &&
         linkingProvider === "PLEX" ? (
           <form
             className="grid gap-3 rounded-[12px] border border-[var(--scry-line2)] bg-[var(--scry-card2)] p-4 md:max-w-xl"
