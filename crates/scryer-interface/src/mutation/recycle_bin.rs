@@ -36,8 +36,7 @@ impl RecycleBinMutations {
             .delete_recycled_item(&actor, id.as_str())
             .await
             .map_err(to_gql_error)?;
-        let _ = deleted;
-        Ok(DeleteRecycledItemPayload { id })
+        Ok(DeleteRecycledItemPayload { id, deleted })
     }
 
     /// Empty recycle bins for the selected libraries. Returns the number of items purged.

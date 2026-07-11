@@ -1703,9 +1703,7 @@ impl ExternalImportMutations {
         let app = app_from_ctx(ctx)?;
         app.clear_external_import_setup_secret_draft(&actor)
             .await
-            .map(|_| ClearExternalImportSetupSecretDraftPayload {
-                cleared_at: Utc::now(),
-            })
+            .map(|cleared| ClearExternalImportSetupSecretDraftPayload { cleared })
             .map_err(to_gql_error)
     }
 
@@ -1790,6 +1788,7 @@ impl ExternalImportMutations {
         }
         Ok(CancelExternalImportMonitorWarmupPayload {
             session_id,
+            canceled,
         })
     }
 

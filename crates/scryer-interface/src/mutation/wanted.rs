@@ -85,11 +85,13 @@ impl WantedMutations {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
         let id = id.to_string();
-        app.force_grab_pending_release(&actor, &id)
+        let grabbed = app
+            .force_grab_pending_release(&actor, &id)
             .await
             .map_err(to_gql_error)?;
         Ok(ForceGrabPendingReleasePayload {
             id: ID::from(id),
+            grabbed,
         })
     }
 

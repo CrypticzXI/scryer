@@ -571,12 +571,12 @@ export function SettingsProfileContainer({ userId, username }: Props) {
     setRevokingOauthGrantId(grantId);
     try {
       const result = await client
-        .mutation<{ revokeMyOauthApp?: { grantId?: string } }, { grantId: string }>(
+        .mutation<{ revokeMyOauthApp?: { grantId?: string; revoked?: boolean } }, { grantId: string }>(
           revokeMyOauthAppMutation,
           { grantId },
         )
         .toPromise();
-      if (result.error || !result.data?.revokeMyOauthApp?.grantId) {
+      if (result.error || result.data?.revokeMyOauthApp?.revoked !== true) {
         setGlobalStatus(result.error?.message ?? "Connected app could not be revoked.");
         return;
       }

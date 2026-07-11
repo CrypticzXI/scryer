@@ -73,6 +73,7 @@ export const deleteMyPasskeyMutation = `mutation DeleteMyPasskey($id: ID!) {
 export const revokeMyOauthAppMutation = `mutation RevokeMyOauthApp($grantId: ID!) {
   revokeMyOauthApp(grantId: $grantId) {
     grantId
+    revoked
   }
 }`;
 
@@ -753,6 +754,7 @@ export const prepareBackupDownloadMutation = `mutation PrepareBackupDownload($in
 export const deleteBackupMutation = `mutation DeleteBackup($input: DeleteBackupInput!) {
   deleteBackup(input: $input) {
     filename
+    deleted
   }
 }`;
 
@@ -1432,6 +1434,7 @@ export const triggerRssSyncMutation = `mutation TriggerRssSync {
 export const forceGrabPendingReleaseMutation = `mutation ForceGrabPendingRelease($id: ID!) {
   forceGrabPendingRelease(id: $id) {
     id
+    grabbed
   }
 }`;
 
@@ -1630,6 +1633,7 @@ export const restoreRecycledItemMutation = `mutation RestoreRecycledItem($id: ID
 export const deleteRecycledItemMutation = `mutation DeleteRecycledItem($id: ID!) {
   deleteRecycledItem(id: $id) {
     id
+    deleted
   }
 }`;
 
@@ -1859,6 +1863,7 @@ export const startExternalImportArrSourceWarmupMutation = `mutation StartExterna
 export const cancelExternalImportArrSourceWarmupMutation = `mutation CancelExternalImportArrSourceWarmup($sessionId: ID!) {
   cancelExternalImportArrSourceWarmup(sessionId: $sessionId) {
     sessionId
+    canceled
   }
 }`;
 
@@ -1923,7 +1928,7 @@ export const saveExternalImportSetupSecretDraftMutation = `mutation SaveExternal
 
 export const clearExternalImportSetupSecretDraftMutation = `mutation ClearExternalImportSetupSecretDraft {
   clearExternalImportSetupSecretDraft {
-      clearedAt
+      cleared
 }
 }`;
 

@@ -979,7 +979,9 @@ impl RenameCollisionPolicyValue {
     }
 
     pub fn from_app_str(value: &str) -> Option<Self> {
-        match value {
+        // Tolerant like the application-layer parser (trim + case-insensitive):
+        // the stored value is a raw settings string.
+        match value.trim().to_ascii_lowercase().as_str() {
             "skip" => Some(Self::Skip),
             "error" => Some(Self::Error),
             "replace_if_better" => Some(Self::ReplaceIfBetter),
@@ -1004,7 +1006,7 @@ impl RenameMissingMetadataPolicyValue {
     }
 
     pub fn from_app_str(value: &str) -> Option<Self> {
-        match value {
+        match value.trim().to_ascii_lowercase().as_str() {
             "skip" => Some(Self::Skip),
             "fallback_title" => Some(Self::FallbackTitle),
             _ => None,
@@ -1433,6 +1435,9 @@ pub struct OAuthConnectedAppPayload {
 #[derive(SimpleObject, Clone)]
 pub struct RevokeMyOauthAppPayload {
     pub grant_id: ID,
+    /// False when the grant was already revoked (or not owned by the caller)
+    /// — access was not newly cut.
+    pub revoked: bool,
 }
 
 #[derive(SimpleObject, Clone)]
@@ -4667,6 +4672,8 @@ pub struct DeleteBackupInput {
 #[derive(SimpleObject, Clone)]
 pub struct DeleteBackupPayload {
     pub filename: String,
+    /// False when no backup file with that name existed — not an error.
+    pub deleted: bool,
 }
 
 #[derive(SimpleObject, Clone)]
@@ -4680,6 +4687,9 @@ pub struct RssSyncReportPayload {
 #[derive(SimpleObject, Clone)]
 pub struct ForceGrabPendingReleasePayload {
     pub id: async_graphql::ID,
+    /// False when the grab was rejected (e.g. the release is blocklisted)
+    /// rather than queued — not an error.
+    pub grabbed: bool,
 }
 
 #[derive(SimpleObject, Clone)]
@@ -4717,6 +4727,9 @@ pub struct RestoreRecycledItemPayload {
 #[derive(SimpleObject, Clone)]
 pub struct DeleteRecycledItemPayload {
     pub id: async_graphql::ID,
+    /// False when the entry was quarantined instead of purged (unsafe to
+    /// delete) — the file remains on disk.
+    pub deleted: bool,
 }
 
 #[derive(SimpleObject, Clone)]
@@ -4839,8 +4852,8 @@ pub struct SaveExternalImportSetupSecretDraftPayload {
 
 #[derive(SimpleObject, Clone)]
 pub struct ClearExternalImportSetupSecretDraftPayload {
-    /// When the draft was cleared.
-    pub cleared_at: DateTime<Utc>,
+    /// False when there was no draft owned by the caller to clear.
+    pub cleared: bool,
 }
 
 #[derive(InputObject)]
@@ -4926,6 +4939,8 @@ pub struct FinalizeExternalImportInput {
 #[derive(SimpleObject, Clone)]
 pub struct CancelExternalImportMonitorWarmupPayload {
     pub session_id: ID,
+    /// False when the warmup had already finished — not an error.
+    pub canceled: bool,
 }
 
 #[derive(SimpleObject, Clone)]

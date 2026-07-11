@@ -168,14 +168,14 @@ function applyReactiveRefreshActionResult(
       >;
       const titleHistoryPage = typedActionPlan.titleHistoryAlias
         ? payload[typedActionPlan.titleHistoryAlias] as
-        | { records?: unknown[] }
+        | { items?: unknown[] }
         | null
         | undefined
         : null;
       action.apply({
         title: payload[typedActionPlan.titleAlias] ?? null,
         acquisitionDiagnostics: null,
-        titleHistory: (titleHistoryPage?.records ?? []) as TitleSidePanelOverviewSnapshot<
+        titleHistory: (titleHistoryPage?.items ?? []) as TitleSidePanelOverviewSnapshot<
           unknown,
           unknown,
           unknown,

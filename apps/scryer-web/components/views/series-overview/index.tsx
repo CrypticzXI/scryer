@@ -83,8 +83,10 @@ function compareEpisodeQueueItems(
   left: DownloadQueueItem,
   right: DownloadQueueItem,
 ): number {
-  const leftRank = EPISODE_QUEUE_PRECEDENCE[left.displayState] ?? Number.MAX_SAFE_INTEGER;
-  const rightRank = EPISODE_QUEUE_PRECEDENCE[right.displayState] ?? Number.MAX_SAFE_INTEGER;
+  const leftRank =
+    EPISODE_QUEUE_PRECEDENCE[left.displayState.toLowerCase()] ?? Number.MAX_SAFE_INTEGER;
+  const rightRank =
+    EPISODE_QUEUE_PRECEDENCE[right.displayState.toLowerCase()] ?? Number.MAX_SAFE_INTEGER;
   if (leftRank !== rightRank) {
     return leftRank - rightRank;
   }

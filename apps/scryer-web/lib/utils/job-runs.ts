@@ -179,12 +179,10 @@ export function normalizeJobRun(value: unknown): JobRun | null {
         : new Date().toISOString(),
     completedAt:
       typeof value.completedAt === "string" ? value.completedAt : null,
-    summaryJson:
-      typeof value.summaryJson === "string" ? value.summaryJson : null,
+    summaryJson: value.summaryJson ?? null,
     summaryText: typeof value.summaryText === "string" ? value.summaryText : null,
     errorText: typeof value.errorText === "string" ? value.errorText : null,
-    progressJson:
-      typeof value.progressJson === "string" ? value.progressJson : null,
+    progressJson: value.progressJson ?? null,
     libraryScanProgress: normalizeLibraryScanProgress(value.libraryScanProgress),
   };
 }

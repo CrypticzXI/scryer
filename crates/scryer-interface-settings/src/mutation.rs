@@ -1484,10 +1484,11 @@ impl SettingsMutations {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
         let grant_id_string = grant_id.to_string();
-        app.revoke_oauth_connected_app(&actor, &grant_id_string)
+        let revoked = app
+            .revoke_oauth_connected_app(&actor, &grant_id_string)
             .await
             .map_err(to_gql_error)?;
-        Ok(RevokeMyOauthAppPayload { grant_id })
+        Ok(RevokeMyOauthAppPayload { grant_id, revoked })
     }
 
     async fn login(&self, ctx: &Context<'_>, input: LoginInput) -> GqlResult<LoginPayload> {

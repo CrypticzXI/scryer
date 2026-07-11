@@ -92,6 +92,7 @@ type CreateBackupMutationResult = {
 type DeleteBackupMutationResult = {
   deleteBackup?: {
     filename: string;
+    deleted: boolean;
   };
 };
 
@@ -568,7 +569,7 @@ export function SettingsBackupsContainer() {
           input: { filename: pendingDelete.filename },
         })
         .toPromise();
-      if (error || !data?.deleteBackup?.filename) {
+      if (error || data?.deleteBackup?.deleted !== true) {
         throw error ?? new Error(t("status.failedToDelete"));
       }
 

@@ -550,7 +550,9 @@ pub fn from_media_settings(
         rename_missing_metadata_policy: RenameMissingMetadataPolicyValue::from_app_str(
             &settings.rename_missing_metadata_policy,
         )
-        .unwrap_or(RenameMissingMetadataPolicyValue::Skip),
+        // Match the application-layer default (DEFAULT_MISSING_METADATA_POLICY):
+        // an unparseable stored value must not flip the semantic to Skip.
+        .unwrap_or(RenameMissingMetadataPolicyValue::FallbackTitle),
         filler_policy: settings.filler_policy.as_deref().and_then(FillerPolicyValue::from_app_str),
         recap_policy: settings.recap_policy.as_deref().and_then(RecapPolicyValue::from_app_str),
         monitor_specials: settings.monitor_specials,
@@ -1815,7 +1817,7 @@ pub fn from_media_rename_plan(plan: RenamePlan) -> MediaRenamePlanPayload {
         missing_metadata_policy: RenameMissingMetadataPolicyValue::from_app_str(
             plan.missing_metadata_policy.as_str(),
         )
-        .unwrap_or(RenameMissingMetadataPolicyValue::Skip),
+        .unwrap_or(RenameMissingMetadataPolicyValue::FallbackTitle),
         fingerprint: plan.fingerprint,
         total: plan.total as i32,
         renamable: plan.renamable as i32,
