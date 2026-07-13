@@ -112,22 +112,8 @@ CREATE TABLE IF NOT EXISTS discovery_sections (
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE TABLE IF NOT EXISTS canonical_media_subjects (
-    id TEXT PRIMARY KEY NOT NULL,
-    subject_key TEXT NOT NULL,
-    subject_key_norm TEXT NOT NULL,
-    language TEXT NOT NULL,
-    target_kind TEXT NOT NULL DEFAULT '',
-    title_id TEXT REFERENCES titles(id) ON DELETE SET NULL,
-    display_title TEXT NOT NULL DEFAULT '',
-    year INTEGER,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE (subject_key_norm, language)
-);
-
-CREATE TABLE IF NOT EXISTS canonical_media_tags (
-    subject_id TEXT NOT NULL REFERENCES canonical_media_subjects(id) ON DELETE CASCADE,
+CREATE TABLE IF NOT EXISTS title_metadata_tags (
+    title_id TEXT NOT NULL REFERENCES titles(id) ON DELETE CASCADE,
     tag_key TEXT NOT NULL,
     category TEXT NOT NULL,
     name TEXT NOT NULL,
@@ -135,28 +121,43 @@ CREATE TABLE IF NOT EXISTS canonical_media_tags (
     is_adult INTEGER NOT NULL DEFAULT 0,
     is_spoiler INTEGER NOT NULL DEFAULT 0,
     sort_index INTEGER NOT NULL DEFAULT 0,
-    PRIMARY KEY (subject_id, tag_key)
+    PRIMARY KEY (title_id, tag_key)
 );
 
-CREATE TABLE IF NOT EXISTS canonical_media_tag_sources (
-    subject_id TEXT NOT NULL,
+CREATE TABLE IF NOT EXISTS title_metadata_tag_sources (
+    title_id TEXT NOT NULL,
     tag_key TEXT NOT NULL,
     source TEXT NOT NULL,
     sort_index INTEGER NOT NULL DEFAULT 0,
-    FOREIGN KEY (subject_id, tag_key)
-        REFERENCES canonical_media_tags(subject_id, tag_key) ON DELETE CASCADE,
-    UNIQUE (subject_id, tag_key, source)
+    FOREIGN KEY (title_id, tag_key)
+        REFERENCES title_metadata_tags(title_id, tag_key) ON DELETE CASCADE,
+    UNIQUE (title_id, tag_key, source)
 );
 
-CREATE TABLE IF NOT EXISTS canonical_media_tag_source_keys (
-    subject_id TEXT NOT NULL,
+CREATE TABLE IF NOT EXISTS title_metadata_tag_source_keys (
+    title_id TEXT NOT NULL,
     tag_key TEXT NOT NULL,
     source_tag_key TEXT NOT NULL,
     sort_index INTEGER NOT NULL DEFAULT 0,
-    FOREIGN KEY (subject_id, tag_key)
-        REFERENCES canonical_media_tags(subject_id, tag_key) ON DELETE CASCADE,
-    UNIQUE (subject_id, tag_key, source_tag_key)
+    FOREIGN KEY (title_id, tag_key)
+        REFERENCES title_metadata_tags(title_id, tag_key) ON DELETE CASCADE,
+    UNIQUE (title_id, tag_key, source_tag_key)
 );
+
+INSERT OR IGNORE INTO title_metadata_tags (
+    title_id, tag_key, category, name, confidence, is_adult, is_spoiler, sort_index
+)
+SELECT titles.id,
+       'metadata:genre:' || LOWER(REPLACE(TRIM(CAST(genre.value AS TEXT)), ' ', '_')),
+       'genre',
+       TRIM(CAST(genre.value AS TEXT)),
+       NULL,
+       0,
+       0,
+       CAST(genre.key AS INTEGER)
+  FROM titles
+  JOIN json_each(CASE WHEN json_valid(titles.genres) THEN titles.genres ELSE '[]' END) AS genre
+ WHERE TRIM(CAST(genre.value AS TEXT)) <> '';
 
 CREATE TABLE IF NOT EXISTS discovery_titles (
     id TEXT PRIMARY KEY NOT NULL,
@@ -166,7 +167,6 @@ CREATE TABLE IF NOT EXISTS discovery_titles (
     target_kind TEXT NOT NULL,
     resolved INTEGER NOT NULL DEFAULT 0,
     resolved_title_id TEXT REFERENCES titles(id) ON DELETE SET NULL,
-    canonical_subject_id TEXT REFERENCES canonical_media_subjects(id) ON DELETE SET NULL,
     display_title TEXT NOT NULL,
     original_title TEXT,
     sort_title TEXT,
@@ -181,6 +181,38 @@ CREATE TABLE IF NOT EXISTS discovery_titles (
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE (target_key_norm, language)
+);
+
+CREATE TABLE IF NOT EXISTS discovery_title_metadata_tags (
+    discovery_title_id TEXT NOT NULL REFERENCES discovery_titles(id) ON DELETE CASCADE,
+    tag_key TEXT NOT NULL,
+    category TEXT NOT NULL,
+    name TEXT NOT NULL,
+    confidence REAL,
+    is_adult INTEGER NOT NULL DEFAULT 0,
+    is_spoiler INTEGER NOT NULL DEFAULT 0,
+    sort_index INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (discovery_title_id, tag_key)
+);
+
+CREATE TABLE IF NOT EXISTS discovery_title_metadata_tag_sources (
+    discovery_title_id TEXT NOT NULL,
+    tag_key TEXT NOT NULL,
+    source TEXT NOT NULL,
+    sort_index INTEGER NOT NULL DEFAULT 0,
+    FOREIGN KEY (discovery_title_id, tag_key)
+        REFERENCES discovery_title_metadata_tags(discovery_title_id, tag_key) ON DELETE CASCADE,
+    UNIQUE (discovery_title_id, tag_key, source)
+);
+
+CREATE TABLE IF NOT EXISTS discovery_title_metadata_tag_source_keys (
+    discovery_title_id TEXT NOT NULL,
+    tag_key TEXT NOT NULL,
+    source_tag_key TEXT NOT NULL,
+    sort_index INTEGER NOT NULL DEFAULT 0,
+    FOREIGN KEY (discovery_title_id, tag_key)
+        REFERENCES discovery_title_metadata_tags(discovery_title_id, tag_key) ON DELETE CASCADE,
+    UNIQUE (discovery_title_id, tag_key, source_tag_key)
 );
 
 CREATE TABLE IF NOT EXISTS discovery_title_terms (
@@ -297,14 +329,12 @@ CREATE INDEX IF NOT EXISTS idx_discovery_pending_changes_scope_sequence
     ON discovery_pending_context_changes(scope_key, last_seen_sequence);
 CREATE INDEX IF NOT EXISTS idx_discovery_sections_run_surface
     ON discovery_sections(run_id, surface, sort_index);
-CREATE INDEX IF NOT EXISTS idx_canonical_media_subjects_title
-    ON canonical_media_subjects(title_id);
-CREATE INDEX IF NOT EXISTS idx_canonical_media_subjects_key_language
-    ON canonical_media_subjects(subject_key_norm, language);
-CREATE INDEX IF NOT EXISTS idx_canonical_media_tags_category_name
-    ON canonical_media_tags(category, name, subject_id);
+CREATE INDEX IF NOT EXISTS idx_title_metadata_tags_category_name
+    ON title_metadata_tags(category, name, title_id);
 CREATE INDEX IF NOT EXISTS idx_discovery_titles_key_language
     ON discovery_titles(target_key_norm, language);
+CREATE INDEX IF NOT EXISTS idx_discovery_title_metadata_tags_category_name
+    ON discovery_title_metadata_tags(category, name, discovery_title_id);
 CREATE INDEX IF NOT EXISTS idx_discovery_title_terms_kind_value
     ON discovery_title_terms(term_kind, term_value, discovery_title_id);
 CREATE INDEX IF NOT EXISTS idx_discovery_title_terms_title
@@ -528,24 +558,24 @@ CREATE INDEX IF NOT EXISTS idx_workflow_operations_active_job_started
     WHERE job_key IS NOT NULL
       AND status IN ('queued', 'running', 'discovering');
 
-CREATE TABLE IF NOT EXISTS canonical_media_rating_summaries (
-    subject_id TEXT PRIMARY KEY NOT NULL REFERENCES canonical_media_subjects(id) ON DELETE CASCADE,
+CREATE TABLE IF NOT EXISTS title_metadata_rating_summaries (
+    title_id TEXT PRIMARY KEY NOT NULL REFERENCES titles(id) ON DELETE CASCADE,
     rating REAL,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE TABLE IF NOT EXISTS canonical_media_rating_sources (
-    subject_id TEXT NOT NULL REFERENCES canonical_media_subjects(id) ON DELETE CASCADE,
+CREATE TABLE IF NOT EXISTS title_metadata_rating_sources (
+    title_id TEXT NOT NULL REFERENCES titles(id) ON DELETE CASCADE,
     source TEXT NOT NULL,
     sort_index INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (subject_id, source)
+    PRIMARY KEY (title_id, source)
 );
 
-CREATE TABLE IF NOT EXISTS canonical_media_external_ratings (
-    subject_id TEXT NOT NULL REFERENCES canonical_media_subjects(id) ON DELETE CASCADE,
+CREATE TABLE IF NOT EXISTS title_metadata_external_ratings (
+    title_id TEXT NOT NULL REFERENCES titles(id) ON DELETE CASCADE,
     source TEXT NOT NULL,
     sort_index INTEGER NOT NULL DEFAULT 0,
     value REAL,
@@ -555,17 +585,56 @@ CREATE TABLE IF NOT EXISTS canonical_media_external_ratings (
     url TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (subject_id, source)
+    PRIMARY KEY (title_id, source)
 );
 
-CREATE INDEX IF NOT EXISTS idx_canonical_media_rating_sources_order
-    ON canonical_media_rating_sources(subject_id, sort_index ASC, source ASC);
+CREATE TABLE IF NOT EXISTS discovery_title_metadata_rating_summaries (
+    discovery_title_id TEXT PRIMARY KEY NOT NULL REFERENCES discovery_titles(id) ON DELETE CASCADE,
+    rating REAL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 
-CREATE INDEX IF NOT EXISTS idx_canonical_media_external_ratings_order
-    ON canonical_media_external_ratings(subject_id, sort_index ASC, source ASC);
+CREATE TABLE IF NOT EXISTS discovery_title_metadata_rating_sources (
+    discovery_title_id TEXT NOT NULL REFERENCES discovery_titles(id) ON DELETE CASCADE,
+    source TEXT NOT NULL,
+    sort_index INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (discovery_title_id, source)
+);
 
-CREATE INDEX IF NOT EXISTS idx_canonical_media_external_ratings_source_norm
-    ON canonical_media_external_ratings(source, normalized, subject_id);
+CREATE TABLE IF NOT EXISTS discovery_title_metadata_external_ratings (
+    discovery_title_id TEXT NOT NULL REFERENCES discovery_titles(id) ON DELETE CASCADE,
+    source TEXT NOT NULL,
+    sort_index INTEGER NOT NULL DEFAULT 0,
+    value REAL,
+    score REAL,
+    normalized REAL NOT NULL,
+    votes INTEGER,
+    url TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (discovery_title_id, source)
+);
+
+CREATE INDEX IF NOT EXISTS idx_title_metadata_rating_sources_order
+    ON title_metadata_rating_sources(title_id, sort_index ASC, source ASC);
+
+CREATE INDEX IF NOT EXISTS idx_title_metadata_external_ratings_order
+    ON title_metadata_external_ratings(title_id, sort_index ASC, source ASC);
+
+CREATE INDEX IF NOT EXISTS idx_title_metadata_external_ratings_source_norm
+    ON title_metadata_external_ratings(source, normalized, title_id);
+
+CREATE INDEX IF NOT EXISTS idx_discovery_title_metadata_rating_sources_order
+    ON discovery_title_metadata_rating_sources(discovery_title_id, sort_index ASC, source ASC);
+
+CREATE INDEX IF NOT EXISTS idx_discovery_title_metadata_external_ratings_order
+    ON discovery_title_metadata_external_ratings(discovery_title_id, sort_index ASC, source ASC);
+
+CREATE INDEX IF NOT EXISTS idx_discovery_title_metadata_external_ratings_source_norm
+    ON discovery_title_metadata_external_ratings(source, normalized, discovery_title_id);
 
 CREATE TABLE IF NOT EXISTS user_ui_settings (
     user_id TEXT PRIMARY KEY NOT NULL REFERENCES users(id) ON DELETE CASCADE,

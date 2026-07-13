@@ -183,6 +183,14 @@ async fn restore_bundle_parts_into_postgres_pool(
                 "failed to clear generated title image variants: {error}"
             ))
         })?;
+    sqlx::query("DELETE FROM title_image_blobs")
+        .execute(&mut *tx)
+        .await
+        .map_err(|error| {
+            AppError::Repository(format!(
+                "failed to clear generated title image blobs: {error}"
+            ))
+        })?;
 
     for table in export_tables.iter().rev() {
         let sql = format!("DELETE FROM {}", quote_identifier(table));

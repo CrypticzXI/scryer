@@ -131,11 +131,12 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
     // (+12 ENUM), and QueueDownloadScopePayload / ProviderConfigFieldValue became unions
     // (+2 UNION with 6 scope + 5 config-value member OBJECT types, +11 OBJECT).
     // Root-field counts unchanged; ENUM 77->89, OBJECT 255->266, public types 491->516.
-    assert_eq!(query_field_count, 116);
+    // Library catalog filter options add one query and two payload OBJECT types.
+    assert_eq!(query_field_count, 117, "query fields: {query_field_names:?}");
     assert_eq!(mutation_field_count, 163);
     assert_eq!(subscription_field_count, 13);
-    assert_eq!(public_types.len(), 516);
-    assert_eq!(kind_count("OBJECT"), 266);
+    assert_eq!(public_types.len(), 518);
+    assert_eq!(kind_count("OBJECT"), 268);
     assert_eq!(kind_count("INPUT_OBJECT"), 149);
     assert_eq!(kind_count("ENUM"), 89);
     assert_eq!(kind_count("SCALAR"), 10);
@@ -145,6 +146,7 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
     assert!(query_field_names.contains(&"externalImportSetupSecretDraft"));
     assert!(query_field_names.contains(&"externalImportSetupSecretDraftStatus"));
     assert!(query_field_names.contains(&"episode"));
+    assert!(query_field_names.contains(&"titleCatalogFilterOptions"));
     // 0.17.0 dataloader/dual-mode workstream added the id-anchored lookups.
     assert!(query_field_names.contains(&"episodeById"));
     assert!(query_field_names.contains(&"collectionById"));

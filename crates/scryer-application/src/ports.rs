@@ -2338,6 +2338,7 @@ pub trait HousekeepingRepository: Send + Sync {
     async fn list_all_media_file_paths(&self) -> AppResult<Vec<(String, String)>>;
     async fn list_media_files_with_roots(&self) -> AppResult<Vec<HousekeepingMediaFileRootRow>>;
     async fn delete_media_files_by_ids(&self, ids: &[String]) -> AppResult<u32>;
+    async fn prune_unreferenced_title_image_blobs(&self, limit: u32) -> AppResult<u32>;
     async fn run_database_maintenance(&self) -> AppResult<()> {
         Ok(())
     }
@@ -2807,9 +2808,15 @@ pub trait ExternalImportMonitorSnapshotRepository: Send + Sync {
         facet: MediaFacet,
     ) -> AppResult<()>;
 
-    async fn delete_external_import_monitor_snapshot_chunks_except_session(
+    async fn delete_external_import_monitor_snapshot_chunks_for_session_prefix(
         &self,
-        preserved_session_id: &str,
+        session_prefix: &str,
+        facet: MediaFacet,
+    ) -> AppResult<()>;
+
+    async fn delete_external_import_monitor_snapshot_chunks_except_session_prefix(
+        &self,
+        preserved_session_prefix: &str,
     ) -> AppResult<()>;
 }
 

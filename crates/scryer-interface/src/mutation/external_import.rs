@@ -2181,31 +2181,11 @@ impl ExternalImportMutations {
         let _apply_guard = app.acquire_external_import_apply_guard().await;
         clear_external_import_monitor_apply_targets(&app, &actor).await?;
         let apply_session_id = scryer_application::EXTERNAL_IMPORT_MONITOR_APPLY_SESSION_ID;
-        let mut movie_writer = SnapshotChunkWriter::new(
-            app.clone(),
-            actor.clone(),
-            apply_session_id.to_string(),
-            MediaFacet::Movie,
-            ExternalImportMonitorSnapshotEntryKind::Movie,
-        );
-        let mut series_writer = SnapshotChunkWriter::new(
-            app.clone(),
-            actor.clone(),
-            apply_session_id.to_string(),
-            MediaFacet::Series,
-            ExternalImportMonitorSnapshotEntryKind::Series,
-        );
-        let mut anime_writer = SnapshotChunkWriter::new(
-            app.clone(),
-            actor.clone(),
-            apply_session_id.to_string(),
-            MediaFacet::Anime,
-            ExternalImportMonitorSnapshotEntryKind::Series,
-        );
         let mut scan_hints = LibraryScanHintSet::new();
-        let mut movie_entries = BTreeMap::<String, ExternalImportMonitorMovieEntry>::new();
+        let mut movie_entries =
+            BTreeMap::<(String, String), ExternalImportMonitorMovieEntry>::new();
         let mut series_entries =
-            BTreeMap::<String, (MediaFacet, ExternalImportMonitorSeriesEntry)>::new();
+            BTreeMap::<(String, String), (MediaFacet, ExternalImportMonitorSeriesEntry)>::new();
 
         for session_id in &source_order {
             let source_result = source_results
@@ -2257,7 +2237,7 @@ impl ExternalImportMutations {
                                 movie.id,
                             );
                             movie_entries
-                                .entry(merge_key)
+                                .entry((mapping.library_id.clone(), merge_key))
                                 .and_modify(|existing| existing.monitored |= entry.monitored)
                                 .or_insert(entry);
                             Ok(())
@@ -2327,7 +2307,7 @@ impl ExternalImportMutations {
                                 series_entry.series.id,
                             );
                             series_entries
-                                .entry(merge_key)
+                                .entry((mapping.library_id.clone(), merge_key))
                                 .and_modify(|(_, existing)| {
                                     merge_series_monitor_entry(existing, entry.clone())
                                 })
@@ -2341,20 +2321,55 @@ impl ExternalImportMutations {
             }
         }
 
-        for entry in movie_entries.into_values() {
-            movie_writer.push(&entry).await?;
+        let mut movie_entries_by_library =
+            BTreeMap::<String, Vec<ExternalImportMonitorMovieEntry>>::new();
+        for ((library_id, _), entry) in movie_entries {
+            movie_entries_by_library
+                .entry(library_id)
+                .or_default()
+                .push(entry);
+        }
+        for (library_id, entries) in movie_entries_by_library {
+            let mut writer = SnapshotChunkWriter::new(
+                app.clone(),
+                actor.clone(),
+                scryer_application::external_import_monitor_apply_session_id_for_library(
+                    &library_id,
+                ),
+                MediaFacet::Movie,
+                ExternalImportMonitorSnapshotEntryKind::Movie,
+            );
+            for entry in entries {
+                writer.push(&entry).await?;
+            }
+            writer.finish().await?;
         }
 
-        for (facet, entry) in series_entries.into_values() {
-            match facet {
-                MediaFacet::Series => series_writer.push(&entry).await?,
-                MediaFacet::Anime => anime_writer.push(&entry).await?,
-                MediaFacet::Movie => {}
-            }
+        let mut series_entries_by_library =
+            BTreeMap::<(String, String), (MediaFacet, Vec<ExternalImportMonitorSeriesEntry>)>::new(
+            );
+        for ((library_id, _), (facet, entry)) in series_entries {
+            series_entries_by_library
+                .entry((library_id, facet.as_str().to_string()))
+                .or_insert_with(|| (facet.clone(), Vec::new()))
+                .1
+                .push(entry);
         }
-        movie_writer.finish().await?;
-        series_writer.finish().await?;
-        anime_writer.finish().await?;
+        for ((library_id, _), (facet, entries)) in series_entries_by_library {
+            let mut writer = SnapshotChunkWriter::new(
+                app.clone(),
+                actor.clone(),
+                scryer_application::external_import_monitor_apply_session_id_for_library(
+                    &library_id,
+                ),
+                facet,
+                ExternalImportMonitorSnapshotEntryKind::Series,
+            );
+            for entry in entries {
+                writer.push(&entry).await?;
+            }
+            writer.finish().await?;
+        }
         app.set_external_import_monitor_warmup_scan_hints(&actor, apply_session_id, scan_hints)
             .await;
         let mut library_setting_applications = derive_external_import_library_setting_applications(

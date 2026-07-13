@@ -562,7 +562,15 @@ impl ExternalImportMonitorSnapshotRepository for NullExternalImportMonitorSnapsh
         Ok(())
     }
 
-    async fn delete_external_import_monitor_snapshot_chunks_except_session(
+    async fn delete_external_import_monitor_snapshot_chunks_for_session_prefix(
+        &self,
+        _: &str,
+        _: MediaFacet,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn delete_external_import_monitor_snapshot_chunks_except_session_prefix(
         &self,
         _: &str,
     ) -> AppResult<()> {
@@ -1626,6 +1634,9 @@ impl HousekeepingRepository for NullHousekeepingRepository {
     }
 
     async fn delete_media_files_by_ids(&self, _ids: &[String]) -> AppResult<u32> {
+        Ok(0)
+    }
+    async fn prune_unreferenced_title_image_blobs(&self, _limit: u32) -> AppResult<u32> {
         Ok(0)
     }
 }

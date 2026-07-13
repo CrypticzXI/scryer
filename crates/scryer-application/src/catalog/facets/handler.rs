@@ -147,7 +147,6 @@ pub fn movie_to_hydration_result(movie: MovieMetadata, language: &str) -> Hydrat
     }
 
     let update = TitleMetadataUpdate {
-        canonical_subject_key: movie.target_key.and_then(non_empty),
         name: non_empty(movie.name),
         year: movie.year.filter(|&y| y > 0),
         overview: non_empty(movie.overview),
@@ -191,7 +190,6 @@ pub fn movie_to_hydration_result(movie: MovieMetadata, language: &str) -> Hydrat
 pub fn series_to_hydration_result(series: SeriesMetadata, language: &str) -> HydrationResult {
     let extra_external_ids = primary_anime_mapping_extra_external_ids(&series.anime_mappings);
     let update = TitleMetadataUpdate {
-        canonical_subject_key: series.target_key.and_then(non_empty),
         name: non_empty(series.name),
         year: series.year.filter(|&y| y > 0),
         overview: non_empty(series.overview),

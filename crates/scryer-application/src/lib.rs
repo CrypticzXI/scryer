@@ -226,11 +226,11 @@ pub use contracts::{
     ManagedIndexerRoutingScope, MediaAnalysisOutcome, MediaFileAnalysis, MediaFileRole,
     NewBlocklistEntry, NewIndexerProxyConfig, NotificationScopeIdUpdate, PendingReleasePageSort,
     PendingReleasesPageQuery, PendingStagedNzb, QueueDownloadOutcome, QueuedDownloadResult,
-    QueuedReleaseSelection, ReleaseDecisionsQuery,
-    ResolvedDownloadArtifact, SearchMode, StagedNzbRef, SubmissionConflictPolicy, SubmissionScope,
-    SubmissionScopeConflict, SubtitleGenerationInput, SubtitleProviderConfigUpdate,
-    SubtitleProviderValidationResult, SubtitleStreamDetail, SuccessfulGrabCommit,
-    TitleHistoryFilter, TitleHistoryPage, WantedSearchOutcome,
+    QueuedReleaseSelection, ReleaseDecisionsQuery, ResolvedDownloadArtifact, SearchMode,
+    StagedNzbRef, SubmissionConflictPolicy, SubmissionScope, SubmissionScopeConflict,
+    SubtitleGenerationInput, SubtitleProviderConfigUpdate, SubtitleProviderValidationResult,
+    SubtitleStreamDetail, SuccessfulGrabCommit, TitleHistoryFilter, TitleHistoryPage,
+    WantedSearchOutcome,
 };
 pub use domain_events::DomainEventActor;
 pub use download_client_path_mappings::{
@@ -523,13 +523,15 @@ pub use types::{
     WebauthnCredentialRecord,
 };
 pub use types::{
-    EXTERNAL_IMPORT_MONITOR_APPLY_SESSION_ID, ExternalIdHint, ExternalIdProvider,
-    ExternalImportMonitorEpisodeEntry, ExternalImportMonitorMovieEntry,
-    ExternalImportMonitorSeasonEntry, ExternalImportMonitorSeriesEntry,
-    ExternalImportMonitorSnapshotChunk, ExternalImportMonitorSnapshotEntryKind, LibraryScanHint,
-    LibraryScanHintFacet, LibraryScanHintSet, LibraryScanHintSource,
-    library_scan_file_full_path_key, library_scan_file_leaf_key, library_scan_folder_full_path_key,
-    library_scan_folder_leaf_key,
+    EXTERNAL_IMPORT_MONITOR_APPLY_SESSION_ID, EXTERNAL_IMPORT_MONITOR_APPLY_SESSION_PREFIX,
+    ExternalIdHint, ExternalIdProvider, ExternalImportMonitorEpisodeEntry,
+    ExternalImportMonitorMovieEntry, ExternalImportMonitorSeasonEntry,
+    ExternalImportMonitorSeriesEntry, ExternalImportMonitorSnapshotChunk,
+    ExternalImportMonitorSnapshotEntryKind, LibraryScanHint, LibraryScanHintFacet,
+    LibraryScanHintSet, LibraryScanHintSource,
+    external_import_monitor_apply_session_id_for_library,
+    is_external_import_monitor_apply_session_id, library_scan_file_full_path_key,
+    library_scan_file_leaf_key, library_scan_folder_full_path_key, library_scan_folder_leaf_key,
 };
 pub use types::{
     IndexerQueryOutcome, IndexerSearchOutcome, IndexerSearchResponse, IndexerSearchResult,

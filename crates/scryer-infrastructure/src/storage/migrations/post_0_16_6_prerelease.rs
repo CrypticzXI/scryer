@@ -26,6 +26,7 @@ pub(crate) async fn converge_post_0_16_6_prerelease_schema_sqlite(
 
     sqlite_converge_external_import_monitor_snapshot_chunks(tx).await?;
     sqlite_drop_column_if_exists(tx, "discovery_titles", "rating").await?;
+    sqlite_drop_column_if_exists(tx, "discovery_titles", "canonical_subject_id").await?;
     sqlite_drop_table_if_exists(tx, "discovery_title_ratings").await?;
     sqlite_drop_table_if_exists(tx, "title_external_ratings").await?;
     sqlite_drop_table_if_exists(tx, "title_rating_sources").await?;
@@ -33,6 +34,10 @@ pub(crate) async fn converge_post_0_16_6_prerelease_schema_sqlite(
     sqlite_drop_table_if_exists(tx, "canonical_media_external_ratings").await?;
     sqlite_drop_table_if_exists(tx, "canonical_media_rating_sources").await?;
     sqlite_drop_table_if_exists(tx, "canonical_media_rating_summaries").await?;
+    sqlite_drop_table_if_exists(tx, "canonical_media_tag_source_keys").await?;
+    sqlite_drop_table_if_exists(tx, "canonical_media_tag_sources").await?;
+    sqlite_drop_table_if_exists(tx, "canonical_media_tags").await?;
+    sqlite_drop_table_if_exists(tx, "canonical_media_subjects").await?;
     Ok(())
 }
 
@@ -47,6 +52,7 @@ pub(crate) async fn converge_post_0_16_6_prerelease_schema_postgres(
         "ALTER TABLE IF EXISTS titles ADD COLUMN IF NOT EXISTS catalog_sort_key TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE IF EXISTS titles ADD COLUMN IF NOT EXISTS popularity DOUBLE PRECISION",
         "ALTER TABLE IF EXISTS discovery_titles DROP COLUMN IF EXISTS rating",
+        "ALTER TABLE IF EXISTS discovery_titles DROP COLUMN IF EXISTS canonical_subject_id",
         "DROP TABLE IF EXISTS discovery_title_ratings",
         "DROP TABLE IF EXISTS title_external_ratings",
         "DROP TABLE IF EXISTS title_rating_sources",
@@ -54,6 +60,10 @@ pub(crate) async fn converge_post_0_16_6_prerelease_schema_postgres(
         "DROP TABLE IF EXISTS canonical_media_external_ratings",
         "DROP TABLE IF EXISTS canonical_media_rating_sources",
         "DROP TABLE IF EXISTS canonical_media_rating_summaries",
+        "DROP TABLE IF EXISTS canonical_media_tag_source_keys",
+        "DROP TABLE IF EXISTS canonical_media_tag_sources",
+        "DROP TABLE IF EXISTS canonical_media_tags",
+        "DROP TABLE IF EXISTS canonical_media_subjects",
     ] {
         sqlx::raw_sql(sql)
             .execute(&mut **tx)

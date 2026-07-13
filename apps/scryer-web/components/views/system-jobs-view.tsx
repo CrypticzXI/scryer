@@ -17,6 +17,7 @@ import type { Facet, JobDefinition, JobKey, JobRun, LibraryScanStatus } from "@/
 import type { UiDateTimeFormat } from "@/lib/types/settings";
 import { formatUiDate, formatUiDateTime, formatUiTime } from "@/lib/utils/date-format";
 import { isTerminalJobRunStatus } from "@/lib/utils/job-runs";
+import { defaultLibraryIdForFacet } from "@/lib/utils/library-scan-sessions";
 import { cn } from "@/lib/utils";
 
 const JOBS_PANEL_CLASS =
@@ -419,9 +420,13 @@ export function SystemJobsView({ state }: { state: SystemJobsViewState }) {
   const jobRows = useMemo<JobTableRow[]>(() =>
     jobs.map((job) => {
       const rawActiveRun = activeRunsByJob[job.key];
+      const libraryFacet = libraryFacetForJob(job.key);
       const activeLibraryScan =
-        job.usesLibraryScanProgress && libraryFacetForJob(job.key)
-          ? getActiveSession(libraryFacetForJob(job.key)!)
+        job.usesLibraryScanProgress && libraryFacet
+          ? getActiveSession(
+              libraryFacet,
+              defaultLibraryIdForFacet(libraryFacet),
+            )
           : null;
       const recentRun = lastRunsByJob.get(job.key) ?? null;
       const activeRun = isStaleActiveRun(rawActiveRun, recentRun) ? null : (rawActiveRun ?? null);
@@ -719,10 +724,13 @@ export function SystemJobsView({ state }: { state: SystemJobsViewState }) {
                   {(() => {
                     const activeRun = activeRunsByJob[selectedJob.key] ?? null;
                     const recentRun = lastRunsByJob.get(selectedJob.key) ?? null;
+                    const libraryFacet = libraryFacetForJob(selectedJob.key);
                     const activeLibraryScan =
-                      selectedJob.usesLibraryScanProgress &&
-                      libraryFacetForJob(selectedJob.key)
-                        ? getActiveSession(libraryFacetForJob(selectedJob.key)!)
+                      selectedJob.usesLibraryScanProgress && libraryFacet
+                        ? getActiveSession(
+                            libraryFacet,
+                            defaultLibraryIdForFacet(libraryFacet),
+                          )
                         : null;
                     const effectiveActiveRun = isStaleActiveRun(activeRun, recentRun)
                       ? null

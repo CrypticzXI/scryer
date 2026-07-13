@@ -241,7 +241,6 @@ mod tests {
                 .update_title_hydrated_metadata(
                     &title.id,
                     TitleMetadataUpdate {
-                        canonical_subject_key: None,
                         name: None,
                         year: Some(2024),
                         overview: Some("postgres blank install smoke".to_string()),
@@ -288,11 +287,14 @@ mod tests {
                 "https://example.com/poster.jpg".to_string()
             );
 
+            let variant_bytes = vec![5, 6, 7, 8];
+            let variant_digest = format!("blake3:{}", blake3::hash(&variant_bytes).to_hex());
             images
                 .upsert_title_image_source_result(
                     &title.id,
                     TitleImageSourceResult {
                         kind: TitleImageKind::Poster,
+                        requested_source_url: "https://example.com/poster.jpg".to_string(),
                         source_url: "https://example.com/poster.jpg".to_string(),
                         source_etag: Some("source-etag".to_string()),
                         source_last_modified: Some("Wed, 14 May 2026 03:00:00 GMT".to_string()),
@@ -304,8 +306,8 @@ mod tests {
                             format: "avif".to_string(),
                             width: 250,
                             height: 375,
-                            bytes: vec![5, 6, 7, 8],
-                            digest: "blake3:poster-thumb".to_string(),
+                            bytes: variant_bytes,
+                            digest: variant_digest,
                         }],
                     },
                     None,

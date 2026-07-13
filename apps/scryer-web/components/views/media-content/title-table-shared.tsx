@@ -945,6 +945,7 @@ export function TitleTableTooltipActionButton({
       {...buttonProps}
       tooltip={tooltip ?? buttonProps.label}
       tooltipClassName={tooltipClassName}
+      tooltipUseProvider={false}
       showTitleAttribute={showTitleAttribute}
     />
   );
@@ -1068,5 +1069,29 @@ export function TitleCollectionEmptyState({
         <p className="text-muted-foreground">{t("title.noManaged")}</p>
       )}
     </>
+  );
+}
+
+export function TitleCollectionErrorState({
+  t,
+  error,
+  onRetry,
+}: {
+  t: Translate;
+  error: string | null;
+  onRetry: () => void;
+}) {
+  return (
+    <div className="mx-auto max-w-sm rounded-xl border border-destructive/40 bg-card/60 px-5 py-5 text-center shadow-sm">
+      <p className="text-sm font-medium text-foreground">
+        {t("status.failedToLoad")}
+      </p>
+      {error ? (
+        <p className="mt-1 text-sm text-muted-foreground">{error}</p>
+      ) : null}
+      <Button type="button" variant="primary" className="mt-4" onClick={onRetry}>
+        {t("importHistory.retry")}
+      </Button>
+    </div>
   );
 }

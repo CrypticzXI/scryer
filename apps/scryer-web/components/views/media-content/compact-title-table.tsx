@@ -25,7 +25,7 @@ import { TitlePosterSlot } from "@/components/title-poster-slot";
 import { releaseSupportsAdditionalFileQueue } from "@/lib/utils/release-queue-scope";
 import { selectPosterVariantUrl } from "@/lib/utils/poster-images";
 import { Checkbox } from "@/components/ui/checkbox";
-import { ActionTooltip } from "@/components/ui/tooltip";
+import { ActionTooltip, TooltipProvider } from "@/components/ui/tooltip";
 import {
   TableBody,
   TableCell,
@@ -130,7 +130,7 @@ type CompactTitleTableProps = {
   scanLibraryNotice?: string | null;
 };
 
-export function CompactTitleTable({
+export const CompactTitleTable = React.memo(function CompactTitleTable({
   view,
   titles,
   titleLoading,
@@ -172,7 +172,6 @@ export function CompactTitleTable({
   scanLibraryDisabled = false,
   scanLibraryNotice,
 }: CompactTitleTableProps) {
-  "use no memo";
   const location = useLocation();
   const t = useTranslate();
   const dateTimeFormat = useUiDateTimeFormat();
@@ -385,7 +384,7 @@ export function CompactTitleTable({
   });
   const getTitleTableMaxScrollTop = useTitleTableVirtualizerRebuild({
     itemCount: sortedTitles.length,
-    loading: titleLoading,
+    loading: false,
     rebuildKey: `${
       selectedPaneMode ? "selected-pane" : "full-table"
     }:${visibleColumnSignature}:${expandedInteractiveRowSignature}`,
@@ -400,7 +399,7 @@ export function CompactTitleTable({
   );
   useOverviewElementScrollRestoration({
     enabled: true,
-    ready: !titleLoading && titles.length > 0,
+    ready: titles.length > 0,
     storageKeySuffix: scrollStorageKeySuffix,
     scrollRef: titleTableScrollRef,
     getMaxScrollTop: getTitleTableMaxScrollTop,
@@ -418,7 +417,6 @@ export function CompactTitleTable({
     }
     if (
       autoScrolledSelectedTitleKeyRef.current === selectedTitleScrollKey ||
-      titleLoading ||
       sortedTitles.length === 0
     ) {
       return;
@@ -442,7 +440,6 @@ export function CompactTitleTable({
     selectedTitleId,
     selectedTitleScrollKey,
     sortedTitles,
-    titleLoading,
     titleVirtualizer,
   ]);
 
@@ -814,7 +811,10 @@ export function CompactTitleTable({
             </button>
           </TableCell>
           <TableCell className="text-center align-middle">
-            <ActionTooltip content={`${t("title.table.monitored")}: ${item.name}`}>
+            <ActionTooltip
+              useProvider={false}
+              content={`${t("title.table.monitored")}: ${item.name}`}
+            >
               <span
                 className="inline-flex h-4 w-4 shrink-0 items-center justify-center"
                 aria-label={`${t("title.table.monitored")}: ${item.name}`}
@@ -904,7 +904,10 @@ export function CompactTitleTable({
           ) : null}
           {showMonitoredColumn ? (
             <TableCell className="text-center align-middle">
-              <ActionTooltip content={`${t("title.table.monitored")}: ${item.name}`}>
+              <ActionTooltip
+                useProvider={false}
+                content={`${t("title.table.monitored")}: ${item.name}`}
+              >
                 <span
                   className="inline-flex h-4 w-4 shrink-0 items-center justify-center"
                   aria-label={`${t("title.table.monitored")}: ${item.name}`}
@@ -1364,16 +1367,17 @@ export function CompactTitleTable({
           selectedDrawerMode ? "min-h-0" : "min-h-[22rem]",
         )}
       >
-        <table
-          data-ui="compact-title-table"
-          data-view={view}
-          className="w-full table-fixed caption-bottom text-sm"
-          style={
-            titleTableMinWidthRem === null
-              ? undefined
-              : { minWidth: `${titleTableMinWidthRem}rem` }
-          }
-        >
+        <TooltipProvider delayDuration={300}>
+          <table
+            data-ui="compact-title-table"
+            data-view={view}
+            className="w-full table-fixed caption-bottom text-sm"
+            style={
+              titleTableMinWidthRem === null
+                ? undefined
+                : { minWidth: `${titleTableMinWidthRem}rem` }
+            }
+          >
           {titleTableColGroup}
           {titleTableHeader}
           {sortedTitles.length > 0 ? (
@@ -1429,8 +1433,9 @@ export function CompactTitleTable({
               />
             </TableBody>
           )}
-        </table>
+          </table>
+        </TooltipProvider>
       </div>
     </div>
   );
-}
+});

@@ -1419,6 +1419,27 @@ impl HousekeepingRepository for HousekeepingStore {
         delete_media_files_by_ids_shared(&self.datastore, ids).await
     }
 
+    async fn prune_unreferenced_title_image_blobs(&self, limit: u32) -> AppResult<u32> {
+        execute_housekeeping_delete(
+            &self.datastore,
+            "prune_unreferenced_title_image_blobs",
+            "DELETE FROM title_image_blobs
+              WHERE digest IN (
+                    SELECT blob.digest
+                      FROM title_image_blobs blob
+                     WHERE NOT EXISTS (
+                            SELECT 1
+                              FROM title_image_variants variant
+                             WHERE variant.blob_digest = blob.digest
+                     )
+                     ORDER BY blob.digest
+                     LIMIT {}
+              )",
+            vec![SqlArg::I64(i64::from(limit))],
+        )
+        .await
+    }
+
     async fn run_database_maintenance(&self) -> AppResult<()> {
         match &self.datastore {
             StoreDatastore::Sqlite { .. } => {

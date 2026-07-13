@@ -100,6 +100,7 @@ async fn scoped_anibridge_external_ids_round_trip_for_collections_and_episodes()
 
     let mut title = make_test_title("title-anime", None);
     title.facet = MediaFacet::Anime;
+    title.library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Anime);
     title.external_ids = vec![ExternalId {
         source: "tvdb_id".to_string(),
         value: "431162".to_string(),
@@ -423,8 +424,7 @@ fn embedded_migration_bundle_includes_external_import_monitor_snapshot_chunk_tab
         "embedded migration bundle is missing 0117_external_import_monitor_snapshot_chunks: {keys:?}"
     );
     assert!(
-        keys.iter()
-            .any(|key| key == "0140_0.17_release_rollup"),
+        keys.iter().any(|key| key == "0140_0.17_release_rollup"),
         "embedded migration bundle is missing 0140_0.17_release_rollup: {keys:?}"
     );
 }

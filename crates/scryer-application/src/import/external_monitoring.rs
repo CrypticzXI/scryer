@@ -88,7 +88,7 @@ impl AppUseCase {
         self.services
             .workflow
             .external_import_monitor_snapshots
-            .delete_external_import_monitor_snapshot_chunks(
+            .delete_external_import_monitor_snapshot_chunks_for_session_prefix(
                 crate::EXTERNAL_IMPORT_MONITOR_APPLY_SESSION_ID,
                 facet,
             )
@@ -141,7 +141,7 @@ impl AppUseCase {
         actor: &User,
         session_id: &str,
     ) -> AppResult<()> {
-        if session_id == crate::EXTERNAL_IMPORT_MONITOR_APPLY_SESSION_ID {
+        if crate::is_external_import_monitor_apply_session_id(session_id) {
             return Ok(());
         }
         for facet in [MediaFacet::Movie, MediaFacet::Series, MediaFacet::Anime] {
@@ -173,7 +173,7 @@ impl AppUseCase {
         self.services
             .workflow
             .external_import_monitor_snapshots
-            .delete_external_import_monitor_snapshot_chunks_except_session(
+            .delete_external_import_monitor_snapshot_chunks_except_session_prefix(
                 crate::EXTERNAL_IMPORT_MONITOR_APPLY_SESSION_ID,
             )
             .await?;

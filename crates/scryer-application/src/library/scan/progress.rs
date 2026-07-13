@@ -170,7 +170,6 @@ impl LibraryScanSession {
 #[derive(Default)]
 struct LibraryScanRuntimeState {
     sessions: HashMap<String, LibraryScanSession>,
-    facet_sessions: HashMap<MediaFacet, String>,
     next_sequence: u64,
 }
 
@@ -178,6 +177,39 @@ struct LibraryScanRuntimeState {
 struct LibraryScanTrackerEvent {
     sequence: u64,
     session: LibraryScanSession,
+}
+
+fn library_scan_scopes_conflict(
+    active: &LibraryScanSession,
+    facet: &MediaFacet,
+    library_id: Option<&str>,
+) -> bool {
+    if &active.facet != facet {
+        return false;
+    }
+
+    match (active.library_id.as_deref(), library_id) {
+        (Some(active_library_id), Some(requested_library_id)) => {
+            active_library_id == requested_library_id
+        }
+        _ => true,
+    }
+}
+
+fn flush_pending_library_scan_sessions(
+    pending: &mut HashMap<String, LibraryScanSession>,
+    tx: &broadcast::Sender<LibraryScanSession>,
+) -> bool {
+    let mut sessions = pending
+        .drain()
+        .map(|(_, session)| session)
+        .collect::<Vec<_>>();
+    sessions.sort_by(|left, right| {
+        left.started_at
+            .cmp(&right.started_at)
+            .then_with(|| left.session_id.cmp(&right.session_id))
+    });
+    sessions.into_iter().all(|session| tx.send(session).is_ok())
 }
 
 #[derive(Clone)]
@@ -215,7 +247,7 @@ impl LibraryScanTracker {
         let (tx, rx) = broadcast::channel(256);
 
         tokio::spawn(async move {
-            let mut pending: Option<LibraryScanSession> = None;
+            let mut pending = HashMap::<String, LibraryScanSession>::new();
             let mut flush_timer: Option<Pin<Box<Sleep>>> = None;
 
             loop {
@@ -231,13 +263,15 @@ impl LibraryScanTracker {
                                     }
                                     let session = event.session;
                                     if session.status.is_terminal() {
-                                        pending = None;
-                                        flush_timer = None;
+                                        pending.remove(&session.session_id);
+                                        if pending.is_empty() {
+                                            flush_timer = None;
+                                        }
                                         if tx.send(session).is_err() {
                                             break;
                                         }
                                     } else {
-                                        pending = Some(session);
+                                        pending.insert(session.session_id.clone(), session);
                                     }
                                 }
                                 Err(broadcast::error::RecvError::Lagged(n)) => {
@@ -246,20 +280,14 @@ impl LibraryScanTracker {
                                     );
                                 }
                                 Err(broadcast::error::RecvError::Closed) => {
-                                    if let Some(session) = pending.take()
-                                        && tx.send(session).is_err()
-                                    {
-                                        break;
-                                    }
+                                    flush_pending_library_scan_sessions(&mut pending, &tx);
                                     break;
                                 }
                             }
                         }
                         _ = timer.as_mut() => {
                             flush_timer = None;
-                            if let Some(session) = pending.take()
-                                && tx.send(session).is_err()
-                            {
+                            if !flush_pending_library_scan_sessions(&mut pending, &tx) {
                                 break;
                             }
                         }
@@ -274,11 +302,12 @@ impl LibraryScanTracker {
                         }
                         let session = event.session;
                         if session.status.is_terminal() {
+                            pending.remove(&session.session_id);
                             if tx.send(session).is_err() {
                                 break;
                             }
                         } else {
-                            pending = Some(session);
+                            pending.insert(session.session_id.clone(), session);
                             flush_timer = Some(Box::pin(tokio::time::sleep(
                                 LIBRARY_SCAN_PROGRESS_PUSH_INTERVAL,
                             )));
@@ -289,7 +318,10 @@ impl LibraryScanTracker {
                             "library_scan_progress: receiver lagged, skipped {n} messages"
                         );
                     }
-                    Err(broadcast::error::RecvError::Closed) => break,
+                    Err(broadcast::error::RecvError::Closed) => {
+                        flush_pending_library_scan_sessions(&mut pending, &tx);
+                        break;
+                    }
                 }
             }
         });
@@ -428,35 +460,52 @@ impl LibraryScanTracker {
         library_id: Option<String>,
         mode: LibraryScanMode,
     ) -> AppResult<LibraryScanSession> {
-        let event = {
-            let mut state = self.state.lock().await;
-            if state.facet_sessions.contains_key(&facet) {
-                return Err(AppError::Validation(format!(
-                    "{} library scan already running",
-                    facet.as_str()
-                )));
-            }
+        let event =
+            {
+                let mut state = self.state.lock().await;
+                if state.sessions.contains_key(&session_id) {
+                    return Err(AppError::Validation(format!(
+                        "library scan session {session_id} is already running"
+                    )));
+                }
+                if state.sessions.values().any(|active| {
+                    library_scan_scopes_conflict(active, &facet, library_id.as_deref())
+                }) {
+                    return Err(AppError::Validation(format!(
+                        "{} library scan already running",
+                        facet.as_str()
+                    )));
+                }
 
-            let snapshot = LibraryScanSession::with_id_for_library(
-                session_id,
-                facet.clone(),
-                library_id,
-                mode,
-            );
-            state
-                .facet_sessions
-                .insert(facet, snapshot.session_id.clone());
-            state
-                .sessions
-                .insert(snapshot.session_id.clone(), snapshot.clone());
-            state.next_sequence = state.next_sequence.saturating_add(1);
-            LibraryScanTrackerEvent {
-                sequence: state.next_sequence,
-                session: snapshot,
-            }
-        };
+                let snapshot = LibraryScanSession::with_id_for_library(
+                    session_id,
+                    facet.clone(),
+                    library_id,
+                    mode,
+                );
+                state
+                    .sessions
+                    .insert(snapshot.session_id.clone(), snapshot.clone());
+                state.next_sequence = state.next_sequence.saturating_add(1);
+                LibraryScanTrackerEvent {
+                    sequence: state.next_sequence,
+                    session: snapshot,
+                }
+            };
         self.notify_event(event.clone()).await;
         Ok(event.session)
+    }
+
+    pub(crate) async fn has_conflicting_session(
+        &self,
+        facet: &MediaFacet,
+        library_id: Option<&str>,
+    ) -> bool {
+        let state = self.state.lock().await;
+        state
+            .sessions
+            .values()
+            .any(|active| library_scan_scopes_conflict(active, facet, library_id))
     }
 
     pub(crate) async fn apply_delta(
@@ -626,7 +675,6 @@ impl LibraryScanTracker {
             } else {
                 LibraryScanStatus::Completed
             };
-            state.facet_sessions.remove(&session.facet);
             state.next_sequence = state.next_sequence.saturating_add(1);
             LibraryScanTrackerEvent {
                 sequence: state.next_sequence,
@@ -646,7 +694,6 @@ impl LibraryScanTracker {
             session.metadata_total_known = true;
             session.file_total_known = true;
             session.status = LibraryScanStatus::Failed;
-            state.facet_sessions.remove(&session.facet);
             state.next_sequence = state.next_sequence.saturating_add(1);
             LibraryScanTrackerEvent {
                 sequence: state.next_sequence,
@@ -666,7 +713,6 @@ impl LibraryScanTracker {
             session.metadata_total_known = true;
             session.file_total_known = true;
             session.status = LibraryScanStatus::Canceled;
-            state.facet_sessions.remove(&session.facet);
             state.next_sequence = state.next_sequence.saturating_add(1);
             LibraryScanTrackerEvent {
                 sequence: state.next_sequence,
@@ -1347,6 +1393,263 @@ mod tests {
 
         assert!(matches!(err, AppError::Validation(_)));
         assert_eq!(first.facet, MediaFacet::Movie);
+    }
+
+    #[tokio::test]
+    async fn start_session_allows_distinct_libraries_in_same_facet() {
+        let tracker = LibraryScanTracker::new();
+
+        let first = tracker
+            .start_session_with_id_for_library(
+                "movie-scan-a".into(),
+                MediaFacet::Movie,
+                Some("movie-library-a".into()),
+                LibraryScanMode::Full,
+            )
+            .await
+            .expect("start first movie library scan");
+        let second = tracker
+            .start_session_with_id_for_library(
+                "movie-scan-b".into(),
+                MediaFacet::Movie,
+                Some("movie-library-b".into()),
+                LibraryScanMode::Full,
+            )
+            .await
+            .expect("start second movie library scan");
+        let duplicate = tracker
+            .start_session_with_id_for_library(
+                "movie-scan-a-duplicate".into(),
+                MediaFacet::Movie,
+                Some("movie-library-a".into()),
+                LibraryScanMode::Full,
+            )
+            .await
+            .expect_err("reject duplicate scan for the same library");
+
+        assert!(matches!(duplicate, AppError::Validation(_)));
+        assert_eq!(first.library_id.as_deref(), Some("movie-library-a"));
+        assert_eq!(second.library_id.as_deref(), Some("movie-library-b"));
+        assert_eq!(tracker.list_active().await.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn duplicate_session_id_does_not_replace_an_unrelated_active_scan() {
+        let tracker = LibraryScanTracker::new();
+        let first = tracker
+            .start_session_with_id_for_library(
+                "shared-session-id".into(),
+                MediaFacet::Movie,
+                Some("movie-library-a".into()),
+                LibraryScanMode::Full,
+            )
+            .await
+            .expect("start first scan");
+
+        let duplicate_id = tracker
+            .start_session_with_id_for_library(
+                "shared-session-id".into(),
+                MediaFacet::Series,
+                Some("series-library-a".into()),
+                LibraryScanMode::Full,
+            )
+            .await
+            .expect_err("reject a reused active session id");
+
+        assert!(matches!(duplicate_id, AppError::Validation(_)));
+        assert_eq!(tracker.list_active().await, vec![first]);
+        assert!(
+            tracker
+                .has_conflicting_session(&MediaFacet::Movie, Some("movie-library-a"))
+                .await
+        );
+    }
+
+    #[tokio::test]
+    async fn unscoped_facet_session_conflicts_with_scoped_sessions_in_both_start_orders() {
+        let unscoped_first = LibraryScanTracker::new();
+        unscoped_first
+            .start_session(MediaFacet::Movie)
+            .await
+            .expect("start unscoped movie scan");
+        let scoped_error = unscoped_first
+            .start_session_with_id_for_library(
+                "scoped-after-unscoped".into(),
+                MediaFacet::Movie,
+                Some("movie-library-a".into()),
+                LibraryScanMode::Full,
+            )
+            .await
+            .expect_err("unscoped scan should block scoped scan");
+
+        let scoped_first = LibraryScanTracker::new();
+        scoped_first
+            .start_session_with_id_for_library(
+                "scoped-before-unscoped".into(),
+                MediaFacet::Movie,
+                Some("movie-library-a".into()),
+                LibraryScanMode::Full,
+            )
+            .await
+            .expect("start scoped movie scan");
+        let unscoped_error = scoped_first
+            .start_session(MediaFacet::Movie)
+            .await
+            .expect_err("scoped scan should block unscoped scan");
+
+        assert!(matches!(scoped_error, AppError::Validation(_)));
+        assert!(matches!(unscoped_error, AppError::Validation(_)));
+    }
+
+    #[tokio::test]
+    async fn terminal_sessions_release_only_their_own_library_scope() {
+        let tracker = LibraryScanTracker::new();
+        let completed = tracker
+            .start_session_with_id_for_library(
+                "completed-scan".into(),
+                MediaFacet::Movie,
+                Some("completed-library".into()),
+                LibraryScanMode::Full,
+            )
+            .await
+            .expect("start scan to complete");
+        let failed = tracker
+            .start_session_with_id_for_library(
+                "failed-scan".into(),
+                MediaFacet::Movie,
+                Some("failed-library".into()),
+                LibraryScanMode::Full,
+            )
+            .await
+            .expect("start scan to fail");
+        let canceled = tracker
+            .start_session_with_id_for_library(
+                "canceled-scan".into(),
+                MediaFacet::Movie,
+                Some("canceled-library".into()),
+                LibraryScanMode::Full,
+            )
+            .await
+            .expect("start scan to cancel");
+
+        tracker
+            .set_summary(&completed.session_id, LibraryScanSummary::default())
+            .await;
+        tracker
+            .complete_if_finished(&completed.session_id)
+            .await
+            .expect("complete first scan");
+        tracker
+            .fail_session(&failed.session_id)
+            .await
+            .expect("fail second scan");
+        tracker
+            .cancel_session(&canceled.session_id)
+            .await
+            .expect("cancel third scan");
+
+        for library_id in ["completed-library", "failed-library", "canceled-library"] {
+            tracker
+                .start_session_with_id_for_library(
+                    format!("replacement-{library_id}"),
+                    MediaFacet::Movie,
+                    Some(library_id.to_string()),
+                    LibraryScanMode::Full,
+                )
+                .await
+                .expect("terminal scan should release its library scope");
+        }
+        let still_active_error = tracker
+            .start_session_with_id_for_library(
+                "duplicate-replacement".into(),
+                MediaFacet::Movie,
+                Some("completed-library".into()),
+                LibraryScanMode::Full,
+            )
+            .await
+            .expect_err("other active replacement should keep its scope locked");
+        assert!(matches!(still_active_error, AppError::Validation(_)));
+    }
+
+    #[tokio::test]
+    async fn subscription_coalesces_concurrent_sessions_independently() {
+        let tracker = LibraryScanTracker::new();
+        let mut receiver = tracker.subscribe();
+        let first = tracker
+            .start_session_with_id_for_library(
+                "subscription-scan-a".into(),
+                MediaFacet::Movie,
+                Some("subscription-library-a".into()),
+                LibraryScanMode::Full,
+            )
+            .await
+            .expect("start first subscribed scan");
+        let second = tracker
+            .start_session_with_id_for_library(
+                "subscription-scan-b".into(),
+                MediaFacet::Movie,
+                Some("subscription-library-b".into()),
+                LibraryScanMode::Full,
+            )
+            .await
+            .expect("start second subscribed scan");
+        tracker.add_found_titles(&first.session_id, 3).await;
+        tracker.add_found_titles(&second.session_id, 7).await;
+
+        let mut received = Vec::new();
+        for _ in 0..2 {
+            received.push(
+                tokio::time::timeout(Duration::from_secs(2), receiver.recv())
+                    .await
+                    .expect("receive coalesced session in time")
+                    .expect("subscription remains open"),
+            );
+        }
+        received.sort_by(|left, right| left.session_id.cmp(&right.session_id));
+        assert_eq!(received[0].session_id, first.session_id);
+        assert_eq!(received[0].found_titles, 3);
+        assert_eq!(received[1].session_id, second.session_id);
+        assert_eq!(received[1].found_titles, 7);
+    }
+
+    #[tokio::test]
+    async fn terminal_event_does_not_discard_another_sessions_pending_progress() {
+        let tracker = LibraryScanTracker::new();
+        let mut receiver = tracker.subscribe();
+        let first = tracker
+            .start_session_with_id_for_library(
+                "terminal-scan-a".into(),
+                MediaFacet::Movie,
+                Some("terminal-library-a".into()),
+                LibraryScanMode::Full,
+            )
+            .await
+            .expect("start terminal scan");
+        let second = tracker
+            .start_session_with_id_for_library(
+                "pending-scan-b".into(),
+                MediaFacet::Movie,
+                Some("pending-library-b".into()),
+                LibraryScanMode::Full,
+            )
+            .await
+            .expect("start pending scan");
+        tracker.add_found_titles(&second.session_id, 11).await;
+        tracker.fail_session(&first.session_id).await;
+
+        let terminal = tokio::time::timeout(Duration::from_secs(2), receiver.recv())
+            .await
+            .expect("receive terminal session in time")
+            .expect("subscription remains open");
+        let pending = tokio::time::timeout(Duration::from_secs(2), receiver.recv())
+            .await
+            .expect("receive other pending session in time")
+            .expect("subscription remains open");
+
+        assert_eq!(terminal.session_id, first.session_id);
+        assert_eq!(terminal.status, LibraryScanStatus::Failed);
+        assert_eq!(pending.session_id, second.session_id);
+        assert_eq!(pending.found_titles, 11);
     }
 
     #[tokio::test]

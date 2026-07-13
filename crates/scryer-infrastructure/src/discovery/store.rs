@@ -14,10 +14,8 @@ use serde_json::Value as JsonValue;
 use std::collections::{HashMap, HashSet};
 
 use crate::media::canonical_tags::{
-    CanonicalMediaSubjectInput, load_canonical_ratings_for_subject_ids,
-    load_canonical_tags_for_subject_ids, normalize_canonical_subject_key,
-    replace_canonical_media_ratings_tx, replace_canonical_media_tags_tx,
-    upsert_canonical_media_subject_tx,
+    load_discovery_title_metadata_ratings, load_discovery_title_metadata_tags,
+    replace_discovery_title_metadata_ratings_tx, replace_discovery_title_metadata_tags_tx,
 };
 use crate::queries::sql_runtime::{
     SqlArg, SqlExec, SqlRow, SqlRuntime, SqlTx, StoreDatastore, repo_err,
@@ -105,7 +103,6 @@ const TITLE_COLUMNS: &[&str] = &[
     "target_kind",
     "resolved",
     "resolved_title_id",
-    "canonical_subject_id",
     "display_title",
     "original_title",
     "sort_title",
@@ -1336,29 +1333,6 @@ fn discovery_title_target_key_norm(item: &DiscoveryItemRecord) -> String {
     }
 }
 
-fn canonical_subject_input_for_discovery_item(
-    item: &DiscoveryItemRecord,
-    target_key_norm: &str,
-    language: &str,
-) -> CanonicalMediaSubjectInput {
-    CanonicalMediaSubjectInput {
-        subject_key: {
-            let value = item.target_key.trim();
-            if value.is_empty() {
-                target_key_norm.to_string()
-            } else {
-                value.to_string()
-            }
-        },
-        subject_key_norm: normalize_canonical_subject_key(target_key_norm),
-        language: normalize_discovery_language(language),
-        target_kind: item.target_kind.trim().to_string(),
-        title_id: item.resolved_title_id.clone(),
-        display_title: item.display_title.trim().to_string(),
-        year: item.year,
-    }
-}
-
 fn discovery_title_id_for(target_key_norm: &str, language: &str) -> String {
     let digest = blake3::hash(format!("{language}\0{target_key_norm}").as_bytes());
     format!("discovery-title:{}", digest.to_hex())
@@ -1611,15 +1585,15 @@ async fn fetch_discovery_home_top_rated_items(
                     CASE WHEN TRIM(t.target_key) = '' THEN LOWER(i.id) ELSE LOWER(TRIM(t.target_key)) END AS identity_key,
                     (
                         SELECT MAX(CASE WHEN r.normalized <= 1.0 THEN r.normalized * 10.0 ELSE r.normalized END)
-                        FROM canonical_media_external_ratings r
-                        WHERE r.subject_id = t.canonical_subject_id
+                        FROM discovery_title_metadata_external_ratings r
+                        WHERE r.discovery_title_id = t.id
                           AND r.normalized IS NOT NULL
                           AND r.normalized > 0
                     ) AS external_rating_score,
                     (
                         SELECT MAX(COALESCE(r.votes, 0))
-                        FROM canonical_media_external_ratings r
-                        WHERE r.subject_id = t.canonical_subject_id
+                        FROM discovery_title_metadata_external_ratings r
+                        WHERE r.discovery_title_id = t.id
                           AND r.normalized IS NOT NULL
                           AND r.normalized > 0
                     ) AS external_rating_votes
@@ -1677,15 +1651,15 @@ async fn fetch_discovery_home_top_rated_items(
                     CASE WHEN TRIM(t.target_key) = '' THEN LOWER(i.id) ELSE LOWER(TRIM(t.target_key)) END AS identity_key,
                     (
                         SELECT MAX(CASE WHEN r.normalized <= 1.0 THEN r.normalized * 10.0 ELSE r.normalized END)
-                        FROM canonical_media_external_ratings r
-                        WHERE r.subject_id = t.canonical_subject_id
+                        FROM discovery_title_metadata_external_ratings r
+                        WHERE r.discovery_title_id = t.id
                           AND r.normalized IS NOT NULL
                           AND r.normalized > 0
                     ) AS external_rating_score,
                     (
                         SELECT MAX(COALESCE(r.votes, 0))
-                        FROM canonical_media_external_ratings r
-                        WHERE r.subject_id = t.canonical_subject_id
+                        FROM discovery_title_metadata_external_ratings r
+                        WHERE r.discovery_title_id = t.id
                           AND r.normalized IS NOT NULL
                           AND r.normalized > 0
                     ) AS external_rating_votes
@@ -2333,10 +2307,8 @@ fn append_canonical_facet_filter(
     clauses.push(format!(
         "EXISTS (
             SELECT 1
-            FROM discovery_titles dt
-            JOIN canonical_media_tags tag
-              ON tag.subject_id = dt.canonical_subject_id
-            WHERE dt.id = i.discovery_title_id
+            FROM discovery_title_metadata_tags tag
+            WHERE tag.discovery_title_id = i.discovery_title_id
               AND LOWER(tag.category) = {{}}
               AND (
                     LOWER(tag.tag_key) IN ({placeholders})
@@ -2518,10 +2490,6 @@ fn upsert_discovery_title_sql() -> String {
             resolved_title_id = COALESCE(
                 NULLIF(excluded.resolved_title_id, ''),
                 discovery_titles.resolved_title_id
-            ),
-            canonical_subject_id = COALESCE(
-                NULLIF(excluded.canonical_subject_id, ''),
-                discovery_titles.canonical_subject_id
             ),
             display_title = COALESCE(
                 NULLIF(excluded.display_title, ''),
@@ -3044,54 +3012,17 @@ async fn hydrate_title_canonical_tags(
     discovery_title_ids: &[String],
     title_indexes: &HashMap<String, Vec<usize>>,
 ) -> AppResult<()> {
-    let rows = fetch_child_rows(
-        datastore,
-        "SELECT id AS discovery_title_id, canonical_subject_id
-         FROM discovery_titles
-         WHERE id IN ({}) AND canonical_subject_id IS NOT NULL",
-        discovery_title_ids,
-    )
-    .await?;
-
-    let mut subject_to_discovery_titles = HashMap::<String, Vec<String>>::new();
-    for row in rows {
-        let discovery_title_id = row.text("discovery_title_id")?;
-        let Some(subject_id) = row.opt_text("canonical_subject_id")? else {
-            continue;
-        };
-        if subject_id.trim().is_empty() {
-            continue;
-        }
-        subject_to_discovery_titles
-            .entry(subject_id)
-            .or_default()
-            .push(discovery_title_id);
-    }
-    if subject_to_discovery_titles.is_empty() {
-        return Ok(());
-    }
-
-    let mut subject_ids = subject_to_discovery_titles
-        .keys()
-        .cloned()
-        .collect::<Vec<_>>();
-    subject_ids.sort();
-    let tags_by_subject =
-        load_canonical_tags_for_subject_ids(datastore.read_exec(), &subject_ids).await?;
-    for (subject_id, tags) in tags_by_subject {
+    let tags_by_title =
+        load_discovery_title_metadata_tags(datastore.read_exec(), discovery_title_ids).await?;
+    for (discovery_title_id, tags) in tags_by_title {
         if tags.is_empty() {
             continue;
         }
-        let Some(discovery_title_ids) = subject_to_discovery_titles.get(&subject_id) else {
+        let Some(indexes) = title_indexes.get(&discovery_title_id) else {
             continue;
         };
-        for discovery_title_id in discovery_title_ids {
-            let Some(indexes) = title_indexes.get(discovery_title_id) else {
-                continue;
-            };
-            for index in indexes {
-                items[*index].canonical_tags = tags.clone();
-            }
+        for index in indexes {
+            items[*index].canonical_tags = tags.clone();
         }
     }
     Ok(())
@@ -3213,53 +3144,16 @@ async fn hydrate_title_ratings(
     discovery_title_ids: &[String],
     title_indexes: &HashMap<String, Vec<usize>>,
 ) -> AppResult<()> {
-    let rows = fetch_child_rows(
-        datastore,
-        "SELECT id AS discovery_title_id, canonical_subject_id
-         FROM discovery_titles
-         WHERE id IN ({}) AND canonical_subject_id IS NOT NULL",
-        discovery_title_ids,
-    )
-    .await?;
-
-    let mut subject_to_discovery_titles = HashMap::<String, Vec<String>>::new();
-    for row in rows {
-        let discovery_title_id = row.text("discovery_title_id")?;
-        let Some(subject_id) = row.opt_text("canonical_subject_id")? else {
+    let ratings_by_title =
+        load_discovery_title_metadata_ratings(datastore.read_exec(), discovery_title_ids).await?;
+    for (discovery_title_id, ratings) in ratings_by_title {
+        let Some(indexes) = title_indexes.get(&discovery_title_id) else {
             continue;
         };
-        if subject_id.trim().is_empty() {
-            continue;
-        }
-        subject_to_discovery_titles
-            .entry(subject_id)
-            .or_default()
-            .push(discovery_title_id);
-    }
-    if subject_to_discovery_titles.is_empty() {
-        return Ok(());
-    }
-
-    let mut subject_ids = subject_to_discovery_titles
-        .keys()
-        .cloned()
-        .collect::<Vec<_>>();
-    subject_ids.sort();
-    let ratings_by_subject =
-        load_canonical_ratings_for_subject_ids(datastore.read_exec(), &subject_ids).await?;
-    for (subject_id, ratings) in ratings_by_subject {
-        let Some(discovery_title_ids) = subject_to_discovery_titles.get(&subject_id) else {
-            continue;
-        };
-        for discovery_title_id in discovery_title_ids {
-            let Some(indexes) = title_indexes.get(discovery_title_id) else {
-                continue;
-            };
-            for index in indexes {
-                items[*index].rating = ratings.rating;
-                items[*index].rating_sources = ratings.rating_sources.clone();
-                items[*index].external_ratings = ratings.external_ratings.clone();
-            }
+        for index in indexes {
+            items[*index].rating = ratings.rating;
+            items[*index].rating_sources = ratings.rating_sources.clone();
+            items[*index].external_ratings = ratings.external_ratings.clone();
         }
     }
     Ok(())
@@ -3604,25 +3498,15 @@ async fn upsert_discovery_title_tx(
     let language = normalize_discovery_language(language);
     let target_key_norm = discovery_title_target_key_norm(item);
     let discovery_title_id = discovery_title_id_for(&target_key_norm, &language);
-    let canonical_subject_id = upsert_canonical_media_subject_tx(
-        tx,
-        &canonical_subject_input_for_discovery_item(item, &target_key_norm, &language),
-    )
-    .await?;
     SqlRuntime::execute(
         SqlExec::Tx(tx),
         &upsert_discovery_title_sql(),
-        &title_args(
-            item,
-            &discovery_title_id,
-            &target_key_norm,
-            &language,
-            &canonical_subject_id,
-        ),
+        &title_args(item, &discovery_title_id, &target_key_norm, &language),
     )
     .await?;
     if replace_canonical_tags {
-        replace_canonical_media_tags_tx(tx, &canonical_subject_id, &item.canonical_tags).await?;
+        replace_discovery_title_metadata_tags_tx(tx, &discovery_title_id, &item.canonical_tags)
+            .await?;
     }
     let ratings = TitleRatingSummary {
         rating: item.rating,
@@ -3634,7 +3518,7 @@ async fn upsert_discovery_title_tx(
         || !ratings.rating_sources.is_empty()
         || !ratings.external_ratings.is_empty()
     {
-        replace_canonical_media_ratings_tx(tx, &canonical_subject_id, &ratings).await?;
+        replace_discovery_title_metadata_ratings_tx(tx, &discovery_title_id, &ratings).await?;
     }
     insert_title_children_tx(tx, item, &discovery_title_id).await?;
     Ok(discovery_title_id)
@@ -3645,7 +3529,6 @@ fn title_args(
     discovery_title_id: &str,
     target_key_norm: &str,
     language: &str,
-    canonical_subject_id: &str,
 ) -> Vec<SqlArg> {
     vec![
         SqlArg::Text(discovery_title_id.to_string()),
@@ -3655,7 +3538,6 @@ fn title_args(
         SqlArg::Text(item.target_kind.clone()),
         SqlArg::Bool(item.resolved),
         SqlArg::OptText(item.resolved_title_id.clone()),
-        SqlArg::Text(canonical_subject_id.to_string()),
         SqlArg::Text(item.display_title.clone()),
         SqlArg::OptText(item.original_title.clone()),
         SqlArg::OptText(item.sort_title.clone()),
@@ -4090,41 +3972,44 @@ mod tests {
             .collect()
     }
 
-    async fn discovery_subject_tag_count(pool: &sqlx::SqlitePool, subject_key: &str) -> i64 {
+    async fn discovery_title_tag_count(pool: &sqlx::SqlitePool, target_key_norm: &str) -> i64 {
         sqlx::query_scalar(
             "SELECT COUNT(*)
-               FROM canonical_media_tags tags
-               JOIN canonical_media_subjects subjects ON subjects.id = tags.subject_id
-              WHERE subjects.subject_key_norm = ?",
+               FROM discovery_title_metadata_tags tags
+               JOIN discovery_titles titles ON titles.id = tags.discovery_title_id
+              WHERE titles.target_key_norm = ?",
         )
-        .bind(subject_key)
+        .bind(target_key_norm)
         .fetch_one(pool)
         .await
-        .expect("canonical tag count should load")
+        .expect("discovery title tag count should load")
     }
 
-    async fn discovery_subject_rating_row_count(pool: &sqlx::SqlitePool, subject_key: &str) -> i64 {
+    async fn discovery_title_rating_row_count(
+        pool: &sqlx::SqlitePool,
+        target_key_norm: &str,
+    ) -> i64 {
         sqlx::query_scalar(
             "SELECT
                 (SELECT COUNT(*)
-                   FROM canonical_media_rating_summaries ratings
-                   JOIN canonical_media_subjects subjects ON subjects.id = ratings.subject_id
-                  WHERE subjects.subject_key_norm = ?)
+                   FROM discovery_title_metadata_rating_summaries ratings
+                   JOIN discovery_titles titles ON titles.id = ratings.discovery_title_id
+                  WHERE titles.target_key_norm = ?)
               + (SELECT COUNT(*)
-                   FROM canonical_media_rating_sources ratings
-                   JOIN canonical_media_subjects subjects ON subjects.id = ratings.subject_id
-                  WHERE subjects.subject_key_norm = ?)
+                   FROM discovery_title_metadata_rating_sources ratings
+                   JOIN discovery_titles titles ON titles.id = ratings.discovery_title_id
+                  WHERE titles.target_key_norm = ?)
               + (SELECT COUNT(*)
-                   FROM canonical_media_external_ratings ratings
-                   JOIN canonical_media_subjects subjects ON subjects.id = ratings.subject_id
-                  WHERE subjects.subject_key_norm = ?)",
+                   FROM discovery_title_metadata_external_ratings ratings
+                   JOIN discovery_titles titles ON titles.id = ratings.discovery_title_id
+                  WHERE titles.target_key_norm = ?)",
         )
-        .bind(subject_key)
-        .bind(subject_key)
-        .bind(subject_key)
+        .bind(target_key_norm)
+        .bind(target_key_norm)
+        .bind(target_key_norm)
         .fetch_one(pool)
         .await
-        .expect("canonical rating row count should load")
+        .expect("discovery title rating row count should load")
     }
 
     #[test]
@@ -4203,7 +4088,7 @@ mod tests {
             .await
             .expect("tagged item should upsert");
         assert_eq!(
-            discovery_subject_tag_count(&services.pool, "tmdb:movie:604").await,
+            discovery_title_tag_count(&services.pool, "tmdb:movie:604").await,
             1
         );
 
@@ -4213,7 +4098,7 @@ mod tests {
             .await
             .expect("empty-tag item should upsert");
         assert_eq!(
-            discovery_subject_tag_count(&services.pool, "tmdb:movie:604").await,
+            discovery_title_tag_count(&services.pool, "tmdb:movie:604").await,
             0
         );
 
@@ -4259,7 +4144,7 @@ mod tests {
             .await
             .expect("rated item should upsert");
         assert_eq!(
-            discovery_subject_rating_row_count(&services.pool, "tmdb:movie:604").await,
+            discovery_title_rating_row_count(&services.pool, "tmdb:movie:604").await,
             3
         );
 
@@ -4271,7 +4156,7 @@ mod tests {
             .await
             .expect("empty-rating item should upsert");
         assert_eq!(
-            discovery_subject_rating_row_count(&services.pool, "tmdb:movie:604").await,
+            discovery_title_rating_row_count(&services.pool, "tmdb:movie:604").await,
             0
         );
 
@@ -5164,7 +5049,7 @@ mod tests {
         );
         assert_eq!(more_like_this[0].external_ratings.len(), 1);
         assert_eq!(more_like_this[0].external_ratings[0].source, "imdb");
-        let canonical_rows = SqlRuntime::fetch_all(
+        let discovery_title_rows = SqlRuntime::fetch_all(
             store.datastore.read_exec(),
             "SELECT id
              FROM discovery_titles
@@ -5176,11 +5061,11 @@ mod tests {
             ],
         )
         .await
-        .expect("canonical title rows should query");
+        .expect("discovery title rows should query");
         assert_eq!(
-            canonical_rows.len(),
+            discovery_title_rows.len(),
             1,
-            "snapshot occurrences and title recommendations should share one canonical title row"
+            "snapshot occurrences and title recommendations should share one discovery title row"
         );
         let occurrence_title_id = SqlRuntime::fetch_optional(
             store.datastore.read_exec(),

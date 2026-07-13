@@ -138,7 +138,11 @@ impl AppUseCase {
                 scryer_domain::LibraryPermission::View,
             )
             .await?;
-        self.services.catalog.titles.list_title_ratings(&title_ids).await
+        self.services
+            .catalog
+            .titles
+            .list_title_ratings(&title_ids)
+            .await
     }
 }
 impl AppUseCase {
@@ -156,8 +160,7 @@ impl AppUseCase {
             .titles
             .update_metadata(id, name, facet, tags, None)
             .await?;
-        self.emit_title_updated_activity(actor, &title)
-            .await;
+        self.emit_title_updated_activity(actor, &title).await;
         Ok(title)
     }
 }
@@ -266,10 +269,8 @@ impl AppUseCase {
             .find(|file| file.id == file_id)
             .ok_or_else(|| AppError::NotFound(format!("media file {file_id}")))?;
         if title.facet != MediaFacet::Movie {
-            let series_movie_link_id = selected_file
-                .series_movie_link_ids
-                .first()
-                .ok_or_else(|| {
+            let series_movie_link_id =
+                selected_file.series_movie_link_ids.first().ok_or_else(|| {
                     AppError::Validation(
                         "primary movie file can only be set for movie titles or series movie files"
                             .to_string(),
@@ -291,8 +292,7 @@ impl AppUseCase {
                 .media_files
                 .set_media_file_roles_for_title(&title.id, &selected_file.id, &additional_file_ids)
                 .await?;
-            self.emit_title_updated_activity(actor, &title)
-                .await;
+            self.emit_title_updated_activity(actor, &title).await;
             return Ok(title);
         }
         let movie_scope =
@@ -301,7 +301,9 @@ impl AppUseCase {
                 &selected_file.file_path,
             )
             .ok_or_else(|| {
-                AppError::Validation("movie title does not have a canonical folder path".to_string())
+                AppError::Validation(
+                    "movie title does not have a canonical folder path".to_string(),
+                )
             })?;
         if !movie_scope.file_is_inside_canonical_folder(&selected_file.file_path) {
             return Err(AppError::Validation(
@@ -321,8 +323,7 @@ impl AppUseCase {
             .media_files
             .set_media_file_roles_for_title(&title.id, &selected_file.id, &additional_file_ids)
             .await?;
-        self.emit_title_updated_activity(actor, &title)
-            .await;
+        self.emit_title_updated_activity(actor, &title).await;
         Ok(title)
     }
 }
@@ -359,7 +360,12 @@ impl AppUseCase {
             .services
             .catalog
             .titles
-            .find_by_external_id_in_facet(existing_title.facet.clone(), "tvdb", target_tvdb_id)
+            .find_by_external_id_in_library_and_facet(
+                &existing_title.library_id,
+                existing_title.facet.clone(),
+                "tvdb",
+                target_tvdb_id,
+            )
             .await?
             .filter(|title| title.id != existing_title.id);
         if let Some(duplicate) = duplicate {
@@ -408,16 +414,23 @@ impl AppUseCase {
         let replacement_tags =
             strip_derived_match_tags(&existing_title.tags, REMATCH_DERIVED_TAG_PREFIXES);
 
-        let mut reset_title = self
-            .services
-            .catalog
-            .titles
-            .replace_match_state(
-                &existing_title.id,
-                replacement_external_ids,
-                replacement_tags,
-            )
-            .await?;
+        let mut reset_title = {
+            let _title_image_maintenance_guard = self
+                .runtime
+                .catalog
+                .title_image_maintenance_lock
+                .write()
+                .await;
+            self.services
+                .catalog
+                .titles
+                .replace_match_state(
+                    &existing_title.id,
+                    replacement_external_ids,
+                    replacement_tags,
+                )
+                .await?
+        };
 
         if has_episodes
             && reset_title

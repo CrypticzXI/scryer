@@ -15,6 +15,8 @@ const RELEASE_ATTEMPT_RETENTION_DAYS: i64 = 90;
 const DOWNLOAD_DELETE_RETENTION_DAYS: i64 = 7;
 const DISCOVERY_SUCCESSFUL_GENERATIONS_TO_RETAIN: usize = 2;
 const DISCOVERY_DIAGNOSTIC_RETENTION_DAYS: i64 = 30;
+const TITLE_IMAGE_BLOB_GC_BATCH_SIZE: u32 = 100;
+const TITLE_IMAGE_BLOB_GC_MAX_BATCHES: usize = 10;
 
 #[derive(Clone, Debug)]
 struct RecycleEntryLibrary {
@@ -668,6 +670,26 @@ impl AppUseCase {
                 0
             }
         };
+
+        {
+            let _title_image_maintenance_guard = self
+                .runtime
+                .catalog
+                .title_image_maintenance_lock
+                .write()
+                .await;
+            for _ in 0..TITLE_IMAGE_BLOB_GC_MAX_BATCHES {
+                let pruned = self
+                    .services
+                    .workflow
+                    .housekeeping
+                    .prune_unreferenced_title_image_blobs(TITLE_IMAGE_BLOB_GC_BATCH_SIZE)
+                    .await?;
+                if pruned < TITLE_IMAGE_BLOB_GC_BATCH_SIZE {
+                    break;
+                }
+            }
+        }
 
         self.services
             .workflow

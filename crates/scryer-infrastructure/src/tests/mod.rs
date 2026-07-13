@@ -533,6 +533,7 @@ fn test_title_image_source_result_with_variants(
 ) -> TitleImageSourceResult {
     TitleImageSourceResult {
         kind,
+        requested_source_url: source_url.to_string(),
         source_url: source_url.to_string(),
         source_etag: None,
         source_last_modified: None,
@@ -547,16 +548,25 @@ fn test_title_image_variant_record(
     variant_key: &str,
     width: i32,
     height: i32,
-    digest: &str,
+    seed: &str,
 ) -> TitleImageVariantRecord {
+    let bytes = seed.as_bytes().to_vec();
     TitleImageVariantRecord {
         variant_key: variant_key.to_string(),
         format: "avif".to_string(),
         width,
         height,
-        bytes: vec![4, 5, 6],
-        digest: digest.to_string(),
+        digest: format!("blake3:{}", blake3::hash(&bytes).to_hex()),
+        bytes,
     }
+}
+
+fn test_title_image_version(seed: &str) -> String {
+    blake3::hash(seed.as_bytes())
+        .to_hex()
+        .chars()
+        .take(16)
+        .collect()
 }
 
 fn assert_variant_target(

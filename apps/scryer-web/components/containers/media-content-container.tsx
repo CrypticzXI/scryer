@@ -70,6 +70,13 @@ import {
   singleSelectedLibraryId,
 } from "@/lib/utils/library-filter";
 import {
+  activeLibraryScanSessionsForSelection,
+  didActiveLibraryScanSessionEnd,
+  isLibraryScanTargetBusy,
+  libraryScanProgressKey,
+  libraryScanSessionIds,
+} from "@/lib/utils/library-scan-sessions";
+import {
   EMPTY_TITLE_ADVANCED_FILTERS,
   EMPTY_TITLE_QUICK_FILTERS,
   buildTitleCatalogQueryVariables,
@@ -185,6 +192,20 @@ function createAdvancedTitleFiltersByFacet(): Record<
 function createSelectedLibraryIdsByFacet(): Record<Facet, string[]> {
   return { MOVIE: [], SERIES: [], ANIME: [] };
 }
+
+type CatalogSurfacePhase =
+  | "resolving"
+  | "content"
+  | "empty"
+  | "rootsMissing"
+  | "rootsInvalid"
+  | "error";
+
+type CatalogBootstrapState = {
+  key: string;
+  phase: CatalogSurfacePhase;
+  error: string | null;
+};
 
 type MediaContentContainerProps = {
   view: ViewId;
@@ -778,8 +799,29 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   const deletionFallbackTimersRef = React.useRef<
     ReturnType<typeof setTimeout>[]
   >([]);
-  const [startedLibraryScanSessionId, setStartedLibraryScanSessionId] =
-    React.useState<string | null>(null);
+  const [libraryScanUiStateByLibraryId, setLibraryScanUiStateByLibraryId] =
+    React.useState<
+      Record<
+        string,
+        {
+          loading: boolean;
+          sessionId: string | null;
+          notice: string | null;
+          summary: ReturnType<
+            typeof useTitleManagementState
+          >["libraryScanSummary"];
+        }
+      >
+    >({});
+  const libraryScanReconcileTimersRef = React.useRef(
+    new Map<
+      string,
+      {
+        refreshTimers: number[];
+        releaseTimer: number;
+      }
+    >(),
+  );
   const activeFacet = viewToFacet[view as keyof typeof viewToFacet] ?? "MOVIE";
   const [selectedLibraryIdsByFacet, setSelectedLibraryIdsByFacet] =
     React.useState<Record<Facet, string[]>>(createSelectedLibraryIdsByFacet);
@@ -818,10 +860,19 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
       MOVIE: false,
       SERIES: false,
       ANIME: false,
-    }));
+  }));
   const advancedTitleFilters = advancedTitleFiltersByFacet[activeFacet];
-  const effectiveAdvancedTitleFilters =
+  const debouncedAdvancedTitleFilters =
     debouncedAdvancedTitleFiltersByFacet[activeFacet];
+  const effectiveAdvancedTitleFilters = React.useMemo(
+    () => ({
+      ...advancedTitleFilters,
+      minimumYear: debouncedAdvancedTitleFilters.minimumYear,
+      maximumYear: debouncedAdvancedTitleFilters.maximumYear,
+      minimumRating: debouncedAdvancedTitleFilters.minimumRating,
+    }),
+    [advancedTitleFilters, debouncedAdvancedTitleFilters],
+  );
   const titleCatalogFilterOptions =
     titleCatalogFilterOptionsByFacet[activeFacet];
   const titleCatalogFilterOptionsError =
@@ -857,11 +908,21 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     const timeout = window.setTimeout(() => {
       setDebouncedAdvancedTitleFiltersByFacet((current) => ({
         ...current,
-        [activeFacet]: advancedTitleFilters,
+        [activeFacet]: {
+          ...current[activeFacet],
+          minimumYear: advancedTitleFilters.minimumYear,
+          maximumYear: advancedTitleFilters.maximumYear,
+          minimumRating: advancedTitleFilters.minimumRating,
+        },
       }));
     }, TITLE_CATALOG_FILTER_DEBOUNCE_MS);
     return () => window.clearTimeout(timeout);
-  }, [activeFacet, advancedTitleFilters]);
+  }, [
+    activeFacet,
+    advancedTitleFilters.maximumYear,
+    advancedTitleFilters.minimumRating,
+    advancedTitleFilters.minimumYear,
+  ]);
   const catalogDiscoveryRequestIdRef = React.useRef(0);
   const [catalogDiscoveryGroups, setCatalogDiscoveryGroups] =
     React.useState<CatalogDiscoveryGroup[]>([]);
@@ -874,14 +935,11 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
       null,
     );
   const {
+    sessions: libraryScanSessions,
     getActiveSession,
     getSessionById,
     refreshSessions: refreshLibraryScanSessions,
   } = useLibraryScanProgress();
-  const activeLibraryScanSession = getActiveSession(activeFacet);
-  const startedLibraryScanSession = startedLibraryScanSessionId
-    ? getSessionById(startedLibraryScanSessionId)
-    : null;
   const isMobile = useIsMobile();
   const activeQualityScopeId =
     CATEGORY_SCOPE_MAP[view as keyof typeof CATEGORY_SCOPE_MAP] ?? "movie";
@@ -897,7 +955,10 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   const refreshCatalogDiscovery = React.useCallback(async () => {
     const requestId = catalogDiscoveryRequestIdRef.current + 1;
     catalogDiscoveryRequestIdRef.current = requestId;
-    if (!shouldLoadCatalogTitles) {
+    if (
+      !shouldLoadCatalogTitles ||
+      !catalogDependentRequestsAllowedRef.current
+    ) {
       setCatalogDiscoveryGroups([]);
       return;
     }
@@ -935,14 +996,13 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     }
   }, [activeFacet, client, selectedLibraryIds, shouldLoadCatalogTitles]);
 
-  React.useEffect(() => {
-    void refreshCatalogDiscovery();
-  }, [refreshCatalogDiscovery]);
-
   const refreshTitleCatalogFilterOptions = React.useCallback(async () => {
     const requestId = titleCatalogFilterOptionsRequestIdRef.current + 1;
     titleCatalogFilterOptionsRequestIdRef.current = requestId;
-    if (!shouldLoadCatalogTitles) {
+    if (
+      !shouldLoadCatalogTitles ||
+      !catalogDependentRequestsAllowedRef.current
+    ) {
       return;
     }
     const libraryIds = selectedLibraryIds.filter(
@@ -1030,10 +1090,6 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     setAdvancedTitleFilters,
     shouldLoadCatalogTitles,
   ]);
-
-  React.useEffect(() => {
-    void refreshTitleCatalogFilterOptions();
-  }, [refreshTitleCatalogFilterOptions]);
 
   // A completed discovery search updates catalog discovery from the network.
   React.useEffect(
@@ -1153,6 +1209,23 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
       ? (libraries[0]?.id ?? null)
       : null;
   }, [libraries, selectedLibraryIds]);
+  const activeTargetLibraryScanSession = effectiveLibraryScanTargetId
+    ? getActiveSession(activeFacet, effectiveLibraryScanTargetId)
+    : null;
+  const activeLibraryScanUiState = effectiveLibraryScanTargetId
+    ? libraryScanUiStateByLibraryId[effectiveLibraryScanTargetId]
+    : undefined;
+  const relevantActiveLibraryScanSessions = React.useMemo(
+    () =>
+      activeLibraryScanSessionsForSelection(
+        libraryScanSessions,
+        activeFacet,
+        selectedLibraryIds.filter(
+          (libraryId) => libraryId !== ALL_LIBRARIES_VALUE,
+        ),
+      ),
+    [activeFacet, libraryScanSessions, selectedLibraryIds],
+  );
   const [librariesLoading, setLibrariesLoading] = React.useState(false);
   React.useEffect(() => {
     if (librariesFacet !== activeFacet) {
@@ -1185,19 +1258,19 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   >([]);
   const [libraryDownloadClientsLoading, setLibraryDownloadClientsLoading] =
     React.useState(false);
-  const [catalogBootstrapState, setCatalogBootstrapState] = React.useState({
-    facet: activeFacet,
-    loading: false,
-    initialLoadComplete: false,
+  const [catalogBootstrapState, setCatalogBootstrapState] =
+    React.useState<CatalogBootstrapState>({
+    key: "",
+    phase: "resolving",
+    error: null,
   });
+  const catalogBootstrapInFlightKeyRef = React.useRef<string | null>(null);
+  const catalogDependentRequestsAllowedRef = React.useRef(false);
   const [rootValidationLibraries, setRootValidationLibraries] = React.useState<
     LibraryRecord[]
   >([]);
   const [rootValidationLibrariesLoading, setRootValidationLibrariesLoading] =
     React.useState(false);
-  const [catalogHasValidRoot, setCatalogHasValidRoot] = React.useState<
-    boolean | null
-  >(null);
   const [, setInvalidRootLibraryIds] = React.useState<string[]>([]);
   const [invalidRootPathsByLibraryId, setInvalidRootPathsByLibraryId] =
     React.useState<Record<string, string[]>>({});
@@ -1262,7 +1335,8 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   const libraryScanTitleRefreshRef = React.useRef<{
     key: string;
     refreshedAt: number;
-  }>({ key: "", refreshedAt: 0 });
+    sessionIds: string[];
+  }>({ key: "", refreshedAt: 0, sessionIds: [] });
   const latestCriticalMutationEpochRef = React.useRef(0);
   const selectedPanelHydrationKeyRef = React.useRef<string | null>(null);
   const selectedPanelMoreLikeThisKeyRef = React.useRef<string | null>(null);
@@ -1307,10 +1381,6 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     setDeleteFilesOnDisk,
     deleteTitleLoadingById,
     setDeleteTitleLoadingById,
-    libraryScanLoading,
-    setLibraryScanLoading,
-    libraryScanSummary,
-    setLibraryScanSummary,
   } = useTitleManagementState();
   const [titleContextTitles, setTitleContextTitles] = React.useState<
     TitleRecord[]
@@ -1350,19 +1420,55 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     },
     [activeFacet],
   );
-  const libraryScanInProgress =
-    libraryScanLoading ||
-    Boolean(activeLibraryScanSession) ||
-    Boolean(startedLibraryScanSessionId && !startedLibraryScanSession);
+  const libraryScanInProgress = isLibraryScanTargetBusy(
+    libraryScanUiStateByLibraryId,
+    effectiveLibraryScanTargetId,
+    activeTargetLibraryScanSession,
+    getSessionById,
+  );
+  const catalogBootstrapKey = `${activeFacet}:${selectedLibraryIds.join(",")}`;
+  const catalogSurfaceState =
+    shouldLoadCatalogTitles &&
+    catalogBootstrapState.key === catalogBootstrapKey
+      ? catalogBootstrapState
+      : {
+          key: catalogBootstrapKey,
+          phase: "resolving" as const,
+          error: null,
+        };
   const catalogInitialLoadComplete =
     shouldLoadCatalogTitles &&
-    catalogBootstrapState.facet === activeFacet &&
-    catalogBootstrapState.initialLoadComplete;
-  const catalogBootstrapInFlight =
-    catalogBootstrapState.facet === activeFacet &&
-    catalogBootstrapState.loading;
+    catalogSurfaceState.phase !== "resolving";
   const catalogBootstrapLoading =
-    shouldLoadCatalogTitles && !catalogInitialLoadComplete;
+    shouldLoadCatalogTitles && catalogSurfaceState.phase === "resolving";
+  const catalogSurfaceAllowsDependentRequests =
+    shouldLoadCatalogTitles &&
+    (catalogSurfaceState.phase === "content" ||
+      catalogSurfaceState.phase === "empty");
+  catalogDependentRequestsAllowedRef.current =
+    catalogSurfaceAllowsDependentRequests;
+  React.useEffect(() => {
+    if (!catalogSurfaceAllowsDependentRequests) {
+      setCatalogDiscoveryGroups([]);
+      return;
+    }
+
+    void refreshCatalogDiscovery();
+    void refreshTitleCatalogFilterOptions();
+  }, [
+    catalogSurfaceAllowsDependentRequests,
+    refreshCatalogDiscovery,
+    refreshTitleCatalogFilterOptions,
+  ]);
+  const retryCatalogBootstrap = React.useCallback(() => {
+    catalogBootstrapRequestSeqRef.current += 1;
+    catalogBootstrapInFlightKeyRef.current = null;
+    setCatalogBootstrapState({
+      key: "",
+      phase: "resolving",
+      error: null,
+    });
+  }, []);
   const titleDeletePreviewVariables = React.useMemo(
     () =>
       titleToDelete && deleteFilesOnDisk ? { titleId: titleToDelete.id } : null,
@@ -1423,12 +1529,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   );
   const catalogSourceTitlesWithLibraries = React.useMemo(
     () =>
-      appendCatalogTitlesPreservingImages(
-        monitoredTitles,
-        titleContextTitles.filter((title) =>
-          catalogTitleMatchesActiveListFilters(title, activeCatalogListFilters),
-        ),
-      ).map((title) => ({
+      monitoredTitles.map((title) => ({
         ...title,
         libraryName:
           title.libraryName ??
@@ -1437,21 +1538,41 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
         librarySlug:
           title.librarySlug ?? librarySlugById.get(title.libraryId) ?? null,
       })),
-    [
-      activeCatalogListFilters,
-      libraryNameById,
-      librarySlugById,
-      monitoredTitles,
-      titleContextTitles,
-    ],
+    [libraryNameById, librarySlugById, monitoredTitles],
   );
   const titleContextSourceTitles = React.useMemo(
     () =>
-      catalogSourceTitlesWithLibraries.filter(
+      appendCatalogTitlesPreservingImages(
+        catalogSourceTitlesWithLibraries,
+        titleContextTitles
+          .filter((title) =>
+            catalogTitleMatchesActiveListFilters(
+              title,
+              activeCatalogListFilters,
+            ),
+          )
+          .map((title) => ({
+            ...title,
+            libraryName:
+              title.libraryName ??
+              libraryNameById.get(title.libraryId) ??
+              title.libraryId,
+            librarySlug:
+              title.librarySlug ?? librarySlugById.get(title.libraryId) ?? null,
+          })),
+      ).filter(
         (title) =>
           title.facet === activeFacet && !pendingDeletedTitleIds.has(title.id),
       ),
-    [activeFacet, catalogSourceTitlesWithLibraries, pendingDeletedTitleIds],
+    [
+      activeCatalogListFilters,
+      activeFacet,
+      catalogSourceTitlesWithLibraries,
+      libraryNameById,
+      librarySlugById,
+      pendingDeletedTitleIds,
+      titleContextTitles,
+    ],
   );
   const titleQuickFilterCounts = catalogPaginationState.filterCounts;
   React.useEffect(() => {
@@ -1465,10 +1586,19 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   const visibleTitles = React.useMemo(
     () =>
       filterTitlesByQuickFilters(
-        titleContextSourceTitles,
+        catalogSourceTitlesWithLibraries.filter(
+          (title) =>
+            title.facet === activeFacet &&
+            !pendingDeletedTitleIds.has(title.id),
+        ),
         effectiveTitleQuickFilters,
       ),
-    [effectiveTitleQuickFilters, titleContextSourceTitles],
+    [
+      activeFacet,
+      catalogSourceTitlesWithLibraries,
+      effectiveTitleQuickFilters,
+      pendingDeletedTitleIds,
+    ],
   );
   const selectedTitles = React.useMemo(
     () => visibleTitles.filter((title) => selectedTitleIds.has(title.id)),
@@ -1747,83 +1877,109 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   const [ruleSets, setRuleSets] = React.useState<RuleSetRecord[]>([]);
   const [rulesLoading, setRulesLoading] = React.useState(true);
   const [rulesSaving, setRulesSaving] = React.useState(false);
-  const [libraryScanNotice, setLibraryScanNotice] = React.useState<
-    string | null
-  >(null);
+  const libraryScanNotice = activeLibraryScanUiState?.notice ?? null;
+  const libraryScanSummary = activeLibraryScanUiState?.summary ?? null;
   const [titleMonitoringLoadingById, setTitleMonitoringLoadingById] =
     React.useState<Record<string, boolean>>({});
 
   React.useEffect(() => {
-    if (!activeLibraryScanSession) {
-      setLibraryScanNotice(null);
-    }
-  }, [activeLibraryScanSession]);
-
-  React.useEffect(() => {
-    if (!startedLibraryScanSessionId) {
-      return;
-    }
-
-    const session = getSessionById(startedLibraryScanSessionId);
-    if (!session) {
-      return;
-    }
-
-    if (
-      session.status !== "COMPLETED" &&
-      session.status !== "WARNING" &&
-      session.status !== "FAILED"
-    ) {
-      return;
-    }
-
-    if (session.summary) {
-      setLibraryScanSummary(session.summary);
-    }
-
-    setStartedLibraryScanSessionId(null);
-  }, [getSessionById, setLibraryScanSummary, startedLibraryScanSessionId]);
-
-  React.useEffect(() => {
-    if (!startedLibraryScanSessionId || startedLibraryScanSession) {
-      return;
-    }
-
-    let cancelled = false;
-    const retryDelaysMs = [0, 400, 1_200];
-    const timers = retryDelaysMs.map((delayMs) =>
-      window.setTimeout(() => {
-        if (cancelled) {
-          return;
+    setLibraryScanUiStateByLibraryId((current) => {
+      let next = current;
+      for (const [libraryId, state] of Object.entries(current)) {
+        if (!state.sessionId) {
+          continue;
         }
-        void refreshLibraryScanSessions().catch((error) => {
-          console.error(
-            "[library-scan] failed to reconcile started scan session:",
-            error,
-          );
-        });
-      }, delayMs),
-    );
-    const releaseTimer = window.setTimeout(() => {
-      if (!cancelled) {
-        setStartedLibraryScanSessionId(null);
+        const session = getSessionById(state.sessionId);
+        if (
+          !session ||
+          (session.status !== "COMPLETED" &&
+            session.status !== "WARNING" &&
+            session.status !== "FAILED" &&
+            session.status !== "CANCELED")
+        ) {
+          continue;
+        }
+        if (next === current) {
+          next = { ...current };
+        }
+        next[libraryId] = {
+          ...state,
+          loading: false,
+          sessionId: null,
+          summary: session.summary ?? state.summary,
+        };
       }
-    }, 4_000);
+      return next;
+    });
+  }, [getSessionById, libraryScanSessions]);
 
-    return () => {
-      cancelled = true;
-      timers.forEach((timer) => window.clearTimeout(timer));
-      window.clearTimeout(releaseTimer);
-    };
+  React.useEffect(() => {
+    const unreconciledSessionIds = new Set(
+      Object.values(libraryScanUiStateByLibraryId)
+        .map((state) => state.sessionId)
+        .filter(
+          (sessionId): sessionId is string =>
+            sessionId !== null && !getSessionById(sessionId),
+        ),
+    );
+
+    for (const [sessionId, timers] of libraryScanReconcileTimersRef.current) {
+      if (unreconciledSessionIds.has(sessionId)) {
+        continue;
+      }
+      timers.refreshTimers.forEach((timer) => window.clearTimeout(timer));
+      window.clearTimeout(timers.releaseTimer);
+      libraryScanReconcileTimersRef.current.delete(sessionId);
+    }
+
+    for (const sessionId of unreconciledSessionIds) {
+      if (libraryScanReconcileTimersRef.current.has(sessionId)) {
+        continue;
+      }
+      const refreshTimers = [0, 400, 1_200].map((delayMs) =>
+        window.setTimeout(() => {
+          void refreshLibraryScanSessions().catch((error) => {
+            console.error(
+              `[library-scan] failed to reconcile started scan session ${sessionId}:`,
+              error,
+            );
+          });
+        }, delayMs),
+      );
+      const releaseTimer = window.setTimeout(() => {
+        setLibraryScanUiStateByLibraryId((current) =>
+          Object.fromEntries(
+            Object.entries(current).map(([libraryId, state]) => [
+              libraryId,
+              state.sessionId === sessionId
+                ? { ...state, loading: false, sessionId: null }
+                : state,
+            ]),
+          ),
+        );
+        libraryScanReconcileTimersRef.current.delete(sessionId);
+      }, 4_000);
+      libraryScanReconcileTimersRef.current.set(sessionId, {
+        refreshTimers,
+        releaseTimer,
+      });
+    }
   }, [
+    getSessionById,
+    libraryScanUiStateByLibraryId,
     refreshLibraryScanSessions,
-    startedLibraryScanSession,
-    startedLibraryScanSessionId,
   ]);
 
-  React.useEffect(() => {
-    setLibraryScanNotice(null);
-  }, [activeFacet]);
+  React.useEffect(
+    () => () => {
+      for (const timers of libraryScanReconcileTimersRef.current.values()) {
+        timers.refreshTimers.forEach((timer) => window.clearTimeout(timer));
+        window.clearTimeout(timers.releaseTimer);
+      }
+      libraryScanReconcileTimersRef.current.clear();
+    },
+    [],
+  );
 
   const refreshRuleSets = React.useCallback(async () => {
     setRulesLoading(true);
@@ -2580,59 +2736,70 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
 
   React.useEffect(() => {
     if (!shouldLoadCatalogTitles) {
-      libraryScanTitleRefreshRef.current = { key: "", refreshedAt: 0 };
+      libraryScanTitleRefreshRef.current = {
+        key: "",
+        refreshedAt: 0,
+        sessionIds: [],
+      };
       return;
     }
 
-    if (!activeLibraryScanSession) {
-      if (libraryScanTitleRefreshRef.current.key) {
-        libraryScanTitleRefreshRef.current = { key: "", refreshedAt: 0 };
+    if (relevantActiveLibraryScanSessions.length === 0) {
+      if (libraryScanTitleRefreshRef.current.sessionIds.length > 0) {
+        libraryScanTitleRefreshRef.current = {
+          key: "",
+          refreshedAt: 0,
+          sessionIds: [],
+        };
         void refreshLoadedCatalogTitlesQuietly();
         void refreshTitleCatalogFilterOptions();
       }
       return;
     }
 
-    const selectedConcreteLibraryIds = selectedLibraryIds.filter(
-      (libraryId) => libraryId !== ALL_LIBRARIES_VALUE,
+    const progressKey = libraryScanProgressKey(
+      relevantActiveLibraryScanSessions,
     );
-    if (
-      activeLibraryScanSession.libraryId &&
-      selectedConcreteLibraryIds.length > 0 &&
-      !selectedConcreteLibraryIds.includes(activeLibraryScanSession.libraryId)
-    ) {
-      return;
-    }
-
-    const progressKey = [
-      activeLibraryScanSession.sessionId,
-      activeLibraryScanSession.mediaAnalysisProgress.total,
-      activeLibraryScanSession.mediaAnalysisProgress.completed,
-      activeLibraryScanSession.mediaAnalysisProgress.failed,
-      activeLibraryScanSession.summary?.imported ?? 0,
-      activeLibraryScanSession.updatedAt,
-    ].join(":");
     const now =
       typeof performance !== "undefined" ? performance.now() : Date.now();
     const previous = libraryScanTitleRefreshRef.current;
+    const sessionIds = libraryScanSessionIds(
+      relevantActiveLibraryScanSessions,
+    );
+    if (
+      didActiveLibraryScanSessionEnd(
+        previous.sessionIds,
+        relevantActiveLibraryScanSessions,
+      )
+    ) {
+      libraryScanTitleRefreshRef.current = {
+        key: progressKey,
+        refreshedAt: now,
+        sessionIds,
+      };
+      void refreshLoadedCatalogTitlesQuietly();
+      void refreshTitleCatalogFilterOptions();
+      return;
+    }
     if (
       previous.key === progressKey ||
       (previous.key !== "" &&
         now - previous.refreshedAt < LIBRARY_SCAN_TITLE_REFRESH_THROTTLE_MS)
     ) {
+      libraryScanTitleRefreshRef.current = { ...previous, sessionIds };
       return;
     }
 
     libraryScanTitleRefreshRef.current = {
       key: progressKey,
       refreshedAt: now,
+      sessionIds,
     };
     void refreshLoadedCatalogTitlesQuietly({ firstPageOnly: true });
   }, [
-    activeLibraryScanSession,
+    relevantActiveLibraryScanSessions,
     refreshLoadedCatalogTitlesQuietly,
     refreshTitleCatalogFilterOptions,
-    selectedLibraryIds,
     shouldLoadCatalogTitles,
   ]);
 
@@ -3880,52 +4047,6 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     };
   }, [client, rootFolderValidationSnapshot]);
 
-  React.useEffect(() => {
-    if (!shouldLoadCatalogTitles || !canManageLibrarySettings) {
-      setCatalogHasValidRoot(null);
-      return;
-    }
-
-    let cancelled = false;
-    setCatalogHasValidRoot(null);
-
-    void client
-      .query(
-        catalogHasValidRootQuery,
-        { facet: activeFacet },
-        { requestPolicy: "network-only" },
-      )
-      .toPromise()
-      .then(({ data, error }) => {
-        if (cancelled) {
-          return;
-        }
-        if (error) {
-          console.error(
-            "[catalog-root-validation] failed to validate catalog roots:",
-            error,
-          );
-          setCatalogHasValidRoot(null);
-          return;
-        }
-        setCatalogHasValidRoot(data?.catalogHasValidRoot ?? null);
-      })
-      .catch((error) => {
-        if (cancelled) {
-          return;
-        }
-        console.error(
-          "[catalog-root-validation] failed to validate catalog roots:",
-          error,
-        );
-        setCatalogHasValidRoot(null);
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [activeFacet, canManageLibrarySettings, client, shouldLoadCatalogTitles]);
-
   const openBulkTitleEdit = React.useCallback(() => {
     if (selectedTitles.length === 0 || bulkActionBusy) {
       return;
@@ -4457,22 +4578,33 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     async (libraryId?: string) => {
       const targetLibraryId = libraryId ?? effectiveLibraryScanTargetId;
       if (!targetLibraryId) {
-        setLibraryScanNotice("Choose a library to scan.");
+        setGlobalStatus("Choose a library to scan.");
         return;
       }
-      if (activeLibraryScanSession) {
-        setLibraryScanNotice(
-          t("settings.libraryScanAlreadyRunning", {
-            facet: activeFacetLabel,
-          }),
-        );
+      if (getActiveSession(activeFacet, targetLibraryId)) {
+        setLibraryScanUiStateByLibraryId((current) => ({
+          ...current,
+          [targetLibraryId]: {
+            loading: false,
+            sessionId: current[targetLibraryId]?.sessionId ?? null,
+            notice: t("settings.libraryScanAlreadyRunning", {
+              facet: activeFacetLabel,
+            }),
+            summary: current[targetLibraryId]?.summary ?? null,
+          },
+        }));
         return;
       }
 
-      setLibraryScanNotice(null);
-      setLibraryScanLoading(true);
-      setLibraryScanSummary(null);
-      setStartedLibraryScanSessionId(null);
+      setLibraryScanUiStateByLibraryId((current) => ({
+        ...current,
+        [targetLibraryId]: {
+          loading: true,
+          sessionId: null,
+          notice: null,
+          summary: null,
+        },
+      }));
       try {
         const result = await client
           .mutation(scanLibraryMutation, {
@@ -4481,7 +4613,17 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
           .toPromise();
         if (result.error) throw result.error;
         const sessionId = result.data?.scanLibrary?.sessionId ?? null;
-        setStartedLibraryScanSessionId(sessionId);
+        setLibraryScanUiStateByLibraryId((current) => ({
+          ...current,
+          [targetLibraryId]: {
+            ...(current[targetLibraryId] ?? {
+              notice: null,
+              summary: null,
+            }),
+            loading: false,
+            sessionId,
+          },
+        }));
         void refreshLibraryScanSessions().catch((error) => {
           console.error(
             "[library-scan] failed to refresh active scan sessions:",
@@ -4493,11 +4635,17 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
         const message =
           error instanceof Error ? error.message : String(error ?? "");
         if (/library scan already running/i.test(message)) {
-          setLibraryScanNotice(
-            t("settings.libraryScanAlreadyRunning", {
-              facet: activeFacetLabel,
-            }),
-          );
+          setLibraryScanUiStateByLibraryId((current) => ({
+            ...current,
+            [targetLibraryId]: {
+              loading: false,
+              sessionId: current[targetLibraryId]?.sessionId ?? null,
+              notice: t("settings.libraryScanAlreadyRunning", {
+                facet: activeFacetLabel,
+              }),
+              summary: current[targetLibraryId]?.summary ?? null,
+            },
+          }));
           return;
         }
         if (
@@ -4524,19 +4672,26 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
             : t("settings.libraryScanFailed"),
         );
       } finally {
-        setLibraryScanLoading(false);
+        setLibraryScanUiStateByLibraryId((current) => ({
+          ...current,
+          [targetLibraryId]: {
+            ...(current[targetLibraryId] ?? {
+              sessionId: null,
+              notice: null,
+              summary: null,
+            }),
+            loading: false,
+          },
+        }));
       }
     },
     [
+      activeFacet,
       activeFacetLabel,
-      activeLibraryScanSession,
       client,
       effectiveLibraryScanTargetId,
+      getActiveSession,
       refreshLibraryScanSessions,
-      setLibraryScanLoading,
-      setLibraryScanNotice,
-      setLibraryScanSummary,
-      setStartedLibraryScanSessionId,
       setGlobalStatus,
       t,
     ],
@@ -4555,26 +4710,19 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     void refreshLibraries();
   }, [refreshLibraries, shouldLoadCatalogTitles]);
 
-  React.useEffect(() => {
-    if (
-      shouldLoadCatalogTitles ||
-      catalogBootstrapState.facet !== activeFacet ||
-      !catalogBootstrapState.loading
-    ) {
+  React.useLayoutEffect(() => {
+    if (shouldLoadCatalogTitles) {
       return;
     }
 
+    catalogBootstrapRequestSeqRef.current += 1;
+    catalogBootstrapInFlightKeyRef.current = null;
     setCatalogBootstrapState((current) =>
-      current.facet === activeFacet && current.loading
-        ? { ...current, loading: false }
-        : current,
+      current.key === "" && current.phase === "resolving"
+        ? current
+        : { key: "", phase: "resolving", error: null },
     );
-  }, [
-    activeFacet,
-    catalogBootstrapState.facet,
-    catalogBootstrapState.loading,
-    shouldLoadCatalogTitles,
-  ]);
+  }, [shouldLoadCatalogTitles]);
 
   React.useEffect(() => {
     if (contentSettingsSection !== "library" || !isMediaView) {
@@ -4610,68 +4758,127 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     const isRoutingSection = contentSettingsSection === "routing";
 
     if (shouldLoadCatalogTitles) {
-      if (!catalogInitialLoadComplete) {
-        if (catalogBootstrapInFlight) {
+      if (catalogSurfaceState.phase === "resolving") {
+        if (catalogBootstrapInFlightKeyRef.current === catalogBootstrapKey) {
           return;
         }
 
-        // Keep bootstrap completion stable across rerenders while loading.
-        // Effect-local cleanup would cancel the bootstrap as soon as the
-        // loading state rerendered, leaving the catalog permanently blank.
         const requestSeq = ++catalogBootstrapRequestSeqRef.current;
+        catalogBootstrapInFlightKeyRef.current = catalogBootstrapKey;
         skipNextCatalogOverviewReloadRef.current = false;
         setCatalogBootstrapState({
-          facet: activeFacet,
-          loading: true,
-          initialLoadComplete: false,
+          key: catalogBootstrapKey,
+          phase: "resolving",
+          error: null,
         });
 
-        const finalizeBootstrap = () => {
+        const commitBootstrapState = (
+          phase: CatalogSurfacePhase,
+          error: string | null = null,
+        ) => {
           if (catalogBootstrapRequestSeqRef.current !== requestSeq) {
             return;
           }
 
+          catalogBootstrapInFlightKeyRef.current = null;
           skipNextCatalogOverviewReloadRef.current = true;
           setCatalogBootstrapState({
-            facet: activeFacet,
-            loading: false,
-            initialLoadComplete: true,
+            key: catalogBootstrapKey,
+            phase,
+            error,
           });
         };
 
-        const librariesPromise = refreshLibraries();
         void (async () => {
-          await reloadTitles(debouncedTitleFilter, []);
+          const nextLibraries = await refreshLibraries();
           if (catalogBootstrapRequestSeqRef.current !== requestSeq) {
             return;
           }
-
-          const nextLibraries = await librariesPromise;
-          if (catalogBootstrapRequestSeqRef.current !== requestSeq) {
+          if (nextLibraries === null) {
+            commitBootstrapState("error", t("status.failedToLoad"));
             return;
           }
 
-          const normalizedSelectedLibraryIds = nextLibraries
-            ? normalizeLibraryFilterSelection(selectedLibraryIds, nextLibraries)
-            : [];
-          const librarySelectionChanged = !sameStringArray(
+          const normalizedSelectedLibraryIds = normalizeLibraryFilterSelection(
             selectedLibraryIds,
-            normalizedSelectedLibraryIds,
+            nextLibraries,
           );
-          setSelectedLibraryIds((current) =>
-            librarySelectionChanged
-              ? normalizedSelectedLibraryIds
-              : current,
+          if (
+            !sameStringArray(selectedLibraryIds, normalizedSelectedLibraryIds)
+          ) {
+            catalogBootstrapInFlightKeyRef.current = null;
+            setSelectedLibraryIds(normalizedSelectedLibraryIds);
+            return;
+          }
+
+          const scopedLibraries = normalizedSelectedLibraryIds.includes(
+            ALL_LIBRARIES_VALUE,
+          )
+            ? nextLibraries
+            : nextLibraries.filter((library) =>
+                normalizedSelectedLibraryIds.includes(library.id),
+              );
+          const hasConfiguredRoots = scopedLibraries.some((library) =>
+            library.roots.some((root) => root.path.trim().length > 0),
           );
 
-          if (librarySelectionChanged) {
-            await reloadTitles(debouncedTitleFilter, normalizedSelectedLibraryIds);
-            if (catalogBootstrapRequestSeqRef.current !== requestSeq) {
-              return;
-            }
+          if (canManageLibrarySettings && !hasConfiguredRoots) {
+            setMonitoredTitles([]);
+            setCatalogPaginationState({ ...emptyTitleCatalogState });
+            commitBootstrapState("rootsMissing");
+            return;
           }
-          finalizeBootstrap();
-        })();
+
+          const rootValidityPromise = canManageLibrarySettings
+            ? client
+                .query(
+                  catalogHasValidRootQuery,
+                  { facet: activeFacet },
+                  { requestPolicy: "network-only" },
+                )
+                .toPromise()
+                .then(({ data, error }) => {
+                  if (error) {
+                    throw error;
+                  }
+                  return data?.catalogHasValidRoot ?? false;
+                })
+            : Promise.resolve(true);
+          const [nextTitles, hasValidRoot] = await Promise.all([
+            reloadTitles(debouncedTitleFilter, normalizedSelectedLibraryIds),
+            rootValidityPromise,
+          ]);
+          if (catalogBootstrapRequestSeqRef.current !== requestSeq) {
+            return;
+          }
+          if (nextTitles === null) {
+            commitBootstrapState("error", t("status.failedToLoad"));
+            return;
+          }
+
+          commitBootstrapState(
+            canManageLibrarySettings && !hasValidRoot
+              ? "rootsInvalid"
+              : nextTitles.length > 0
+                ? "content"
+                : "empty",
+          );
+        })().catch((error) => {
+          console.error("[catalog-bootstrap] failed to resolve catalog:", error);
+          commitBootstrapState(
+            "error",
+            error instanceof Error ? error.message : t("status.failedToLoad"),
+          );
+        });
+        setRoutingInitLoading(false);
+        return;
+      }
+
+      if (
+        catalogSurfaceState.phase === "rootsMissing" ||
+        catalogSurfaceState.phase === "rootsInvalid" ||
+        catalogSurfaceState.phase === "error"
+      ) {
         setRoutingInitLoading(false);
         return;
       }
@@ -4731,10 +4938,10 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   }, [
     activeFacet,
     activeQualityScopeId,
-    catalogBootstrapInFlight,
-    catalogBootstrapLoading,
-    catalogInitialLoadComplete,
+    catalogBootstrapKey,
+    catalogSurfaceState.phase,
     canManageConfig,
+    canManageLibrarySettings,
     client,
     contentSettingsSection,
     refreshLibraries,
@@ -4746,6 +4953,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     reloadTitles,
     selectedLibraryIds,
     setGlobalStatus,
+    setMonitoredTitles,
     setSelectedLibraryIds,
     shouldLoadCatalogTitles,
     t,
@@ -4867,6 +5075,9 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
           setTitleTableColumnVisible,
           catalogBootstrapLoading,
           catalogInitialLoadComplete,
+          catalogSurfacePhase: catalogSurfaceState.phase,
+          catalogSurfaceError: catalogSurfaceState.error,
+          retryCatalogBootstrap,
           monitoredTitles: visibleTitles,
           titleContextTitles: titleContextSourceTitles,
           catalogDiscoveryGroups: activeCatalogDiscoveryGroups,
@@ -4921,7 +5132,6 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
           libraryDownloadClientsLoading,
           rootValidationLibraries,
           rootValidationLibrariesLoading,
-          catalogHasValidRoot,
           invalidRootPathsByLibraryId,
           selectedLibraryIds,
           allLibrariesValue: ALL_LIBRARIES_VALUE,

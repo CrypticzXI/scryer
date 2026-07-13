@@ -33,7 +33,6 @@ pub struct TitleRatingSummary {
 
 #[derive(Clone, Debug, Default)]
 pub struct TitleMetadataUpdate {
-    pub canonical_subject_key: Option<String>,
     pub name: Option<String>,
     pub year: Option<i32>,
     pub overview: Option<String>,
@@ -233,6 +232,19 @@ pub struct ExternalImportMonitorSnapshotChunk {
 }
 
 pub const EXTERNAL_IMPORT_MONITOR_APPLY_SESSION_ID: &str = "external-import-monitor-apply";
+pub const EXTERNAL_IMPORT_MONITOR_APPLY_SESSION_PREFIX: &str = "external-import-monitor-apply:";
+
+pub fn external_import_monitor_apply_session_id_for_library(library_id: &str) -> String {
+    format!(
+        "{EXTERNAL_IMPORT_MONITOR_APPLY_SESSION_PREFIX}{}",
+        library_id.trim()
+    )
+}
+
+pub fn is_external_import_monitor_apply_session_id(session_id: &str) -> bool {
+    session_id == EXTERNAL_IMPORT_MONITOR_APPLY_SESSION_ID
+        || session_id.starts_with(EXTERNAL_IMPORT_MONITOR_APPLY_SESSION_PREFIX)
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum LibraryScanHintSource {
@@ -544,6 +556,7 @@ pub struct TitleImageVariantSpec {
 #[derive(Clone, Debug)]
 pub struct TitleImageSourceResult {
     pub kind: TitleImageKind,
+    pub requested_source_url: String,
     pub source_url: String,
     pub source_etag: Option<String>,
     pub source_last_modified: Option<String>,

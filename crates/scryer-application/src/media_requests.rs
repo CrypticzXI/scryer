@@ -99,8 +99,12 @@ impl AppUseCase {
             .enrich_media_request_metadata(&input.facet, external_ids)
             .await;
         external_ids = metadata_enrichment.external_ids;
-        self.ensure_request_subject_is_not_in_library(&library.id, &external_ids)
-            .await?;
+        self.ensure_request_subject_is_not_in_library(
+            &library.id,
+            library.facet.clone(),
+            &external_ids,
+        )
+        .await?;
         let (requested_quality_profile_id, requested_quality_profile_name) = self
             .request_quality_profile_snapshot_for_submission(
                 &library,
@@ -789,19 +793,22 @@ impl AppUseCase {
     async fn ensure_request_subject_is_not_in_library(
         &self,
         library_id: &str,
+        facet: MediaFacet,
         external_ids: &[ExternalId],
     ) -> AppResult<()> {
         for (source, values) in group_external_id_values_by_source(external_ids) {
-            let titles = self
+            let existing = self
                 .services
                 .catalog
                 .titles
-                .list_by_external_ids(&source, &values)
+                .list_existing_external_ids_in_library_and_facet(
+                    library_id,
+                    facet.clone(),
+                    &source,
+                    &values,
+                )
                 .await?;
-            if titles
-                .into_iter()
-                .any(|title| title.library_id == library_id)
-            {
+            if !existing.is_empty() {
                 return Err(AppError::Validation(
                     "title already exists in the target library".into(),
                 ));

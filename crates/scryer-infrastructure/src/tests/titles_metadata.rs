@@ -12,6 +12,51 @@ async fn nzbget_client_is_sendable() {
     let _ = client.endpoint();
 }
 
+async fn insert_test_library(services: &SqliteServices, id: &str, facet: MediaFacet) {
+    sqlx::query(
+        "INSERT INTO libraries
+            (id, facet, name, slug, is_default, created_at, updated_at)
+         VALUES (?, ?, ?, ?, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+    )
+    .bind(id)
+    .bind(facet.as_str())
+    .bind(id)
+    .bind(id)
+    .execute(services.pool())
+    .await
+    .expect("test library should insert");
+}
+
+#[tokio::test]
+async fn title_create_requires_an_existing_library_for_the_title_facet() {
+    let (services, db) = temp_services("scryer_title_library_ownership_validation").await;
+    let catalog = title_store(&services);
+
+    let mut missing_library = make_test_title("title-missing-library", None);
+    missing_library.library_id = "missing-library".to_string();
+    let missing_err = TitleRepository::create(&catalog, missing_library)
+        .await
+        .expect_err("missing library should reject title creation");
+    assert!(matches!(
+        missing_err,
+        scryer_application::AppError::Validation(message)
+            if message.contains("missing-library") && message.contains("movie")
+    ));
+
+    let mut wrong_facet = make_test_title("title-wrong-library-facet", None);
+    wrong_facet.facet = MediaFacet::Series;
+    let facet_err = TitleRepository::create(&catalog, wrong_facet)
+        .await
+        .expect_err("library from another facet should reject title creation");
+    assert!(matches!(
+        facet_err,
+        scryer_application::AppError::Validation(message)
+            if message.contains("series")
+    ));
+
+    let _ = std::fs::remove_file(db);
+}
+
 #[tokio::test]
 async fn title_queries_prefer_local_cached_poster_url() {
     let db = std::env::temp_dir().join(format!(
@@ -38,11 +83,24 @@ async fn title_queries_prefer_local_cached_poster_url() {
         Some("https://tvdb.example/poster.jpg")
     );
 
+    let variant_bytes = vec![7, 8, 9];
+    let variant_digest = format!("blake3:{}", blake3::hash(&variant_bytes).to_hex());
+    let expected_local_url = format!(
+        "/images/titles/title-1/poster/w250?v={}",
+        variant_digest
+            .split_once(':')
+            .map(|(_, digest)| digest)
+            .unwrap_or(&variant_digest)
+            .chars()
+            .take(16)
+            .collect::<String>()
+    );
     title_images
         .upsert_title_image_source_result(
             &title.id,
             TitleImageSourceResult {
                 kind: TitleImageKind::Poster,
+                requested_source_url: "https://tvdb.example/poster.jpg".to_string(),
                 source_url: "https://tvdb.example/poster.jpg".to_string(),
                 source_etag: Some("\"etag-1\"".to_string()),
                 source_last_modified: None,
@@ -54,8 +112,8 @@ async fn title_queries_prefer_local_cached_poster_url() {
                     format: "avif".to_string(),
                     width: 250,
                     height: 375,
-                    bytes: vec![7, 8, 9],
-                    digest: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string(),
+                    bytes: variant_bytes,
+                    digest: variant_digest,
                 }],
             },
             None,
@@ -69,7 +127,7 @@ async fn title_queries_prefer_local_cached_poster_url() {
         .expect("title should exist");
     assert_eq!(
         after_cache.poster_url.as_deref(),
-        Some("/images/titles/title-1/poster/w250?v=bbbbbbbbbbbbbbbb")
+        Some(expected_local_url.as_str())
     );
     assert_eq!(
         after_cache.poster_source_url.as_deref(),
@@ -82,7 +140,7 @@ async fn title_queries_prefer_local_cached_poster_url() {
     assert_eq!(listed.len(), 1);
     assert_eq!(
         listed[0].poster_url.as_deref(),
-        Some("/images/titles/title-1/poster/w250?v=bbbbbbbbbbbbbbbb")
+        Some(expected_local_url.as_str())
     );
 
     let _ = std::fs::remove_file(db);
@@ -96,6 +154,7 @@ async fn hydrated_title_metadata_with_extra_external_ids_completes_on_single_con
 
     let mut title = make_test_title("title-hydration-extra-ids", None);
     title.facet = MediaFacet::Anime;
+    title.library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Anime);
     title.external_ids = vec![
         ExternalId {
             source: "tvdb".to_string(),
@@ -249,16 +308,46 @@ async fn replace_title_match_state_completes_on_single_connection_sqlite() {
 
     let mut title = make_test_title("title-replace-match-state", None);
     title.facet = MediaFacet::Anime;
+    title.library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Anime);
     title.external_ids = vec![ExternalId {
         source: "tvdb".to_string(),
         value: "12345".to_string(),
     }];
     title.year = Some(2024);
     title.overview = Some("overview before clear".to_string());
+    title.popularity = Some(42.0);
+    title.poster_url = Some("https://tvdb.example/rematch-poster.jpg".to_string());
 
     TitleRepository::create(&catalog, title.clone())
         .await
         .expect("title should insert");
+    title_image_store(&services)
+        .upsert_title_image_source_result(
+            &title.id,
+            test_title_image_source_result(
+                TitleImageKind::Poster,
+                "https://tvdb.example/rematch-poster.jpg",
+                "w250",
+                250,
+                375,
+                "rematch-poster-bytes",
+            ),
+            None,
+        )
+        .await
+        .expect("title image should insert");
+    sqlx::query(
+        "INSERT INTO media_files (
+            id, title_id, file_path, size_bytes, scan_status, created_at
+         ) VALUES (?, ?, ?, 1234, 'complete', ?)",
+    )
+    .bind("media-replace-match-state")
+    .bind(&title.id)
+    .bind("/anime/replace-match-state.mkv")
+    .bind(Utc::now().to_rfc3339())
+    .execute(services.pool())
+    .await
+    .expect("media file should insert");
 
     let updated = timeout(
         Duration::from_secs(1),
@@ -278,6 +367,8 @@ async fn replace_title_match_state_completes_on_single_connection_sqlite() {
 
     assert_eq!(updated.year, None);
     assert_eq!(updated.overview, None);
+    assert_eq!(updated.popularity, None);
+    assert_eq!(updated.poster_url, None);
     assert!(
         updated
             .external_ids
@@ -285,6 +376,20 @@ async fn replace_title_match_state_completes_on_single_connection_sqlite() {
             .any(|external_id| { external_id.source == "tvdb" && external_id.value == "99999" })
     );
     assert!(updated.tags.iter().any(|tag| tag == "score:9.1"));
+    let remaining_image_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM title_images WHERE title_id = ?")
+            .bind(&title.id)
+            .fetch_one(services.pool())
+            .await
+            .expect("title image count should load");
+    let remaining_media_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM media_files WHERE title_id = ?")
+            .bind(&title.id)
+            .fetch_one(services.pool())
+            .await
+            .expect("media file count should load");
+    assert_eq!(remaining_image_count, 0);
+    assert_eq!(remaining_media_count, 1);
 
     let _ = std::fs::remove_file(db);
 }
@@ -393,7 +498,6 @@ async fn title_writes_generate_and_refresh_catalog_sort_key_sqlite() {
         &catalog,
         &title.id,
         TitleMetadataUpdate {
-            canonical_subject_key: None,
             name: Some("鋼の錬金術師".to_string()),
             year: None,
             overview: None,
@@ -607,9 +711,9 @@ async fn hydrated_title_metadata_persists_external_ratings() {
 }
 
 #[tokio::test]
-async fn smg_canonical_subject_preference_detaches_external_id_fallback_subjects() {
+async fn identical_metadata_identity_is_isolated_by_library_title() {
     let db = std::env::temp_dir().join(format!(
-        "scryer_title_canonical_subject_preference_{}.db",
+        "scryer_title_metadata_library_isolation_{}.db",
         chrono::Utc::now().timestamp_micros()
     ));
     let services = SqliteServices::new(db.to_string_lossy())
@@ -617,77 +721,282 @@ async fn smg_canonical_subject_preference_detaches_external_id_fallback_subjects
         .expect("db should initialize");
     let catalog = title_store(&services);
 
-    let mut title = make_test_title("title-canonical-preference", None);
-    title.facet = MediaFacet::Movie;
-    title.external_ids = vec![ExternalId {
+    for id in ["movie-library-a", "movie-library-b"] {
+        insert_test_library(&services, id, MediaFacet::Movie).await;
+    }
+
+    let external_ids = vec![ExternalId {
         source: "tvdb".to_string(),
         value: "123456".to_string(),
     }];
-    TitleRepository::create(&catalog, title.clone())
+    let mut title_a = make_test_title("title-library-a", None);
+    title_a.library_id = "movie-library-a".to_string();
+    title_a.facet = MediaFacet::Movie;
+    title_a.slug = Some("library-a-title".to_string());
+    title_a.external_ids = external_ids.clone();
+    let mut title_b = make_test_title("title-library-b", None);
+    title_b.library_id = "movie-library-b".to_string();
+    title_b.facet = MediaFacet::Movie;
+    title_b.slug = Some("library-b-title".to_string());
+    title_b.external_ids = external_ids;
+    TitleRepository::create(&catalog, title_a.clone())
         .await
-        .expect("title should insert");
+        .expect("first library title should insert");
+    TitleRepository::create(&catalog, title_b.clone())
+        .await
+        .expect("second library title should insert");
 
-    let fallback_tag = scryer_domain::CanonicalMediaTag {
-        key: "canonical:genre:legacy".to_string(),
+    let tag_a = scryer_domain::CanonicalMediaTag {
+        key: "canonical:genre:library-a".to_string(),
         category: "genre".to_string(),
-        name: "Legacy".to_string(),
-        confidence: Some(0.5),
+        name: "Library A".to_string(),
+        confidence: Some(0.9),
         sources: vec!["test".to_string()],
-        source_tag_keys: vec!["legacy".to_string()],
+        source_tag_keys: vec!["library-a".to_string()],
         is_adult: false,
         is_spoiler: false,
     };
+    let mut tag_b = tag_a.clone();
+    tag_b.key = "canonical:genre:library-b".to_string();
+    tag_b.name = "Library B".to_string();
+    tag_b.source_tag_keys = vec!["library-b".to_string()];
+
+    let hydrate_a = TitleRepository::update_title_hydrated_metadata(
+        &catalog,
+        &title_a.id,
+        TitleMetadataUpdate {
+            metadata_fetched_at: Some(Utc::now().to_rfc3339()),
+            canonical_tags: vec![tag_a.clone()],
+            ratings: Some(TitleRatingSummary {
+                rating: Some(9.1),
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+    );
+    let hydrate_b = TitleRepository::update_title_hydrated_metadata(
+        &catalog,
+        &title_b.id,
+        TitleMetadataUpdate {
+            metadata_fetched_at: Some(Utc::now().to_rfc3339()),
+            canonical_tags: vec![tag_b.clone()],
+            ratings: Some(TitleRatingSummary {
+                rating: Some(6.4),
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+    );
+    let (hydrated_a, hydrated_b) = tokio::join!(hydrate_a, hydrate_b);
+    hydrated_a.expect("first title metadata should persist concurrently");
+    hydrated_b.expect("second title metadata should persist concurrently");
+
+    let reloaded_a = TitleRepository::get_by_id(&catalog, &title_a.id)
+        .await
+        .expect("first title lookup should succeed")
+        .expect("first title should exist");
+    let reloaded_b = TitleRepository::get_by_id(&catalog, &title_b.id)
+        .await
+        .expect("second title lookup should succeed")
+        .expect("second title should exist");
+    assert_eq!(reloaded_a.canonical_tags, vec![tag_a.clone()]);
+    assert_eq!(reloaded_b.canonical_tags, vec![tag_b.clone()]);
+
+    let page_a = TitleRepository::list_for_libraries_catalog(
+        &catalog,
+        Some(MediaFacet::Movie),
+        std::slice::from_ref(&title_a.library_id),
+        None,
+        TitleCatalogFilter::default(),
+        TitleCatalogSort::default(),
+        10,
+        0,
+        true,
+        false,
+    )
+    .await
+    .expect("first library catalog should load owner tags");
+    assert_eq!(page_a.items.len(), 1);
+    assert_eq!(page_a.items[0].canonical_tags, vec![tag_a.clone()]);
+
+    let slug_a = TitleRepository::get_by_facet_libraries_and_slug(
+        &catalog,
+        MediaFacet::Movie,
+        std::slice::from_ref(&title_a.library_id),
+        "library-a-title",
+    )
+    .await
+    .expect("first library slug lookup should succeed")
+    .expect("first library slug should resolve");
+    assert_eq!(slug_a.canonical_tags, vec![tag_a.clone()]);
+
+    let searched = TitleRepository::list(
+        &catalog,
+        Some(MediaFacet::Movie),
+        Some("Poster Test".to_string()),
+    )
+    .await
+    .expect("presentation search should load owner tags");
+    assert_eq!(searched.len(), 2);
+    for title in searched {
+        let expected = if title.id == title_a.id {
+            &tag_a
+        } else {
+            &tag_b
+        };
+        assert_eq!(title.canonical_tags, vec![expected.clone()]);
+    }
+
+    let lookup_matches = TitleRepository::list_by_external_id_lookups(
+        &catalog,
+        &[TitleExternalIdLookup {
+            lookup_index: 0,
+            source: "tvdb".to_string(),
+            external_id: "123456".to_string(),
+        }],
+    )
+    .await
+    .expect("external-id lookup should load owner tags");
+    assert_eq!(lookup_matches.len(), 2);
+    for matched in lookup_matches {
+        let expected = if matched.title.id == title_a.id {
+            &tag_a
+        } else {
+            &tag_b
+        };
+        assert_eq!(matched.title.canonical_tags, vec![expected.clone()]);
+    }
+    assert_eq!(
+        TitleRepository::get_title_ratings(&catalog, &title_a.id)
+            .await
+            .expect("first title ratings should load")
+            .rating,
+        Some(9.1)
+    );
+    assert_eq!(
+        TitleRepository::get_title_ratings(&catalog, &title_b.id)
+            .await
+            .expect("second title ratings should load")
+            .rating,
+        Some(6.4)
+    );
+
+    let rematched_a = TitleRepository::replace_match_state(
+        &catalog,
+        &title_a.id,
+        vec![ExternalId {
+            source: "tvdb".to_string(),
+            value: "654321".to_string(),
+        }],
+        vec!["rematched".to_string()],
+    )
+    .await
+    .expect("first title should rematch independently");
+    assert!(rematched_a.canonical_tags.is_empty());
+    assert_eq!(
+        TitleRepository::get_title_ratings(&catalog, &title_a.id)
+            .await
+            .expect("rematched title ratings should load"),
+        TitleRatingSummary::default()
+    );
+    let after_rematch_b = TitleRepository::get_by_id(&catalog, &title_b.id)
+        .await
+        .expect("second title lookup after rematch should succeed")
+        .expect("second title should survive first title rematch");
+    assert_eq!(after_rematch_b.canonical_tags, vec![tag_b.clone()]);
+    assert_eq!(
+        TitleRepository::get_title_ratings(&catalog, &title_b.id)
+            .await
+            .expect("second title ratings should survive first title rematch")
+            .rating,
+        Some(6.4)
+    );
+
+    let mut updated_tag_a = tag_a;
+    updated_tag_a.key = "canonical:genre:library-a-updated".to_string();
+    updated_tag_a.name = "Library A Updated".to_string();
+    updated_tag_a.source_tag_keys = vec!["library-a-updated".to_string()];
     TitleRepository::update_title_hydrated_metadata(
         &catalog,
-        &title.id,
+        &title_a.id,
         TitleMetadataUpdate {
-            metadata_language: Some("ja".to_string()),
             metadata_fetched_at: Some(Utc::now().to_rfc3339()),
-            canonical_tags: vec![fallback_tag.clone()],
+            canonical_tags: vec![updated_tag_a.clone()],
+            ratings: Some(TitleRatingSummary {
+                rating: Some(8.2),
+                ..Default::default()
+            }),
             ..Default::default()
         },
     )
     .await
-    .expect("fallback canonical tag should persist");
-
-    let fallback = TitleRepository::get_by_id(&catalog, &title.id)
+    .expect("first title metadata should rehydrate independently");
+    let unchanged_b = TitleRepository::get_by_id(&catalog, &title_b.id)
         .await
-        .expect("title lookup should succeed")
-        .expect("title should exist");
-    assert_eq!(fallback.canonical_tags, vec![fallback_tag]);
+        .expect("second title lookup after first rehydrate should succeed")
+        .expect("second title should remain after first rehydrate");
+    assert_eq!(unchanged_b.canonical_tags, vec![tag_b]);
+    assert_eq!(
+        TitleRepository::get_title_ratings(&catalog, &title_b.id)
+            .await
+            .expect("second title ratings should remain after first rehydrate")
+            .rating,
+        Some(6.4)
+    );
 
-    let updated = TitleRepository::update_title_hydrated_metadata(
-        &catalog,
-        &title.id,
-        TitleMetadataUpdate {
-            canonical_subject_key: Some("smg:movie:preferred-title".to_string()),
-            metadata_language: Some("en".to_string()),
-            metadata_fetched_at: Some(Utc::now().to_rfc3339()),
-            canonical_tags: vec![],
-            ..Default::default()
-        },
+    let now = Utc::now().to_rfc3339();
+    for (id, title_id, path) in [
+        ("file-library-a", &title_a.id, "/library-a/movie.mkv"),
+        ("file-library-b", &title_b.id, "/library-b/movie.mkv"),
+    ] {
+        sqlx::query(
+            "INSERT INTO media_files (
+                id, title_id, file_path, size_bytes, scan_status, created_at
+             ) VALUES (?, ?, ?, 100, 'complete', ?)",
+        )
+        .bind(id)
+        .bind(title_id)
+        .bind(path)
+        .bind(&now)
+        .execute(&services.pool)
+        .await
+        .expect("library-owned media file should insert");
+    }
+
+    TitleRepository::delete(&catalog, &title_a.id)
+        .await
+        .expect("first library title should delete");
+    let deleted_owned_rows: i64 = sqlx::query_scalar(
+        "SELECT
+            (SELECT COUNT(*) FROM title_metadata_tags WHERE title_id = ?)
+          + (SELECT COUNT(*) FROM title_metadata_rating_summaries WHERE title_id = ?)
+          + (SELECT COUNT(*) FROM media_files WHERE title_id = ?)",
     )
+    .bind(&title_a.id)
+    .bind(&title_a.id)
+    .bind(&title_a.id)
+    .fetch_one(&services.pool)
     .await
-    .expect("smg canonical subject preference should persist");
-
-    assert_eq!(
-        updated.canonical_tags,
-        Vec::<scryer_domain::CanonicalMediaTag>::new()
-    );
-    let reloaded = TitleRepository::get_by_id(&catalog, &title.id)
+    .expect("deleted title-owned row count should load");
+    assert_eq!(deleted_owned_rows, 0);
+    let remaining_b_files: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM media_files WHERE title_id = ?")
+            .bind(&title_b.id)
+            .fetch_one(&services.pool)
+            .await
+            .expect("second title media file count should load");
+    assert_eq!(remaining_b_files, 1);
+    let remaining_b = TitleRepository::get_by_id(&catalog, &title_b.id)
         .await
-        .expect("title lookup should succeed")
-        .expect("title should exist");
-    assert_eq!(
-        reloaded.canonical_tags,
-        Vec::<scryer_domain::CanonicalMediaTag>::new()
-    );
+        .expect("second title lookup after first delete should succeed")
+        .expect("second title should survive first delete");
+    assert_eq!(remaining_b.canonical_tags, unchanged_b.canonical_tags);
 
     let _ = std::fs::remove_file(db);
 }
 
 #[tokio::test]
-async fn empty_title_metadata_preserves_existing_canonical_tags() {
+async fn full_empty_title_tags_clear_while_partial_updates_preserve() {
     let db = std::env::temp_dir().join(format!(
         "scryer_title_empty_canonical_tags_preserve_{}.db",
         chrono::Utc::now().timestamp_micros()
@@ -699,6 +1008,7 @@ async fn empty_title_metadata_preserves_existing_canonical_tags() {
 
     let mut title = make_test_title("title-canonical-tags-preserve", None);
     title.facet = MediaFacet::Series;
+    title.library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Series);
     TitleRepository::create(&catalog, title.clone())
         .await
         .expect("title should insert");
@@ -717,7 +1027,6 @@ async fn empty_title_metadata_preserves_existing_canonical_tags() {
         &catalog,
         &title.id,
         TitleMetadataUpdate {
-            canonical_subject_key: Some("smg:series:preserve".to_string()),
             metadata_language: Some("en".to_string()),
             metadata_fetched_at: Some(Utc::now().to_rfc3339()),
             canonical_tags: vec![tag.clone()],
@@ -727,11 +1036,22 @@ async fn empty_title_metadata_preserves_existing_canonical_tags() {
     .await
     .expect("canonical tags should persist");
 
+    let partial = TitleRepository::update_title_hydrated_metadata(
+        &catalog,
+        &title.id,
+        TitleMetadataUpdate {
+            overview: Some("partial manual update".to_string()),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("partial title metadata should preserve existing tags");
+    assert_eq!(partial.canonical_tags, vec![tag.clone()]);
+
     let updated = TitleRepository::update_title_hydrated_metadata(
         &catalog,
         &title.id,
         TitleMetadataUpdate {
-            canonical_subject_key: Some("smg:series:preserve".to_string()),
             metadata_language: Some("en".to_string()),
             metadata_fetched_at: Some(Utc::now().to_rfc3339()),
             canonical_tags: vec![],
@@ -739,78 +1059,14 @@ async fn empty_title_metadata_preserves_existing_canonical_tags() {
         },
     )
     .await
-    .expect("empty canonical tags should not clear existing tags");
-    assert_eq!(updated.canonical_tags, vec![tag.clone()]);
+    .expect("full metadata with empty canonical tags should clear existing tags");
+    assert!(updated.canonical_tags.is_empty());
 
     let reloaded = TitleRepository::get_by_id(&catalog, &title.id)
         .await
         .expect("title lookup should succeed")
         .expect("title should exist");
-    assert_eq!(reloaded.canonical_tags, vec![tag]);
-
-    let _ = std::fs::remove_file(db);
-}
-
-#[tokio::test]
-async fn title_reads_canonical_tags_from_matching_unlinked_subject() {
-    let db = std::env::temp_dir().join(format!(
-        "scryer_title_canonical_tags_external_subject_{}.db",
-        chrono::Utc::now().timestamp_micros()
-    ));
-    let services = SqliteServices::new(db.to_string_lossy())
-        .await
-        .expect("db should initialize");
-    let catalog = title_store(&services);
-
-    let mut title = make_test_title("title-canonical-tags-external-subject", None);
-    title.facet = MediaFacet::Series;
-    title.external_ids = vec![ExternalId {
-        source: "tvdb".to_string(),
-        value: "123456".to_string(),
-    }];
-    TitleRepository::create(&catalog, title.clone())
-        .await
-        .expect("title should insert");
-
-    sqlx::query(
-        "INSERT INTO canonical_media_subjects (
-            id, subject_key, subject_key_norm, language, target_kind, title_id, display_title, year
-        ) VALUES (?, ?, ?, ?, ?, NULL, ?, ?)",
-    )
-    .bind("canonical:eng:tvdb:series:123456")
-    .bind("tvdb:series:123456")
-    .bind("tvdb:series:123456")
-    .bind("eng")
-    .bind("series")
-    .bind("Canonical Tag Subject")
-    .bind(2026_i32)
-    .execute(&services.pool)
-    .await
-    .expect("canonical subject should insert");
-    sqlx::query(
-        "INSERT INTO canonical_media_tags (
-            subject_id, tag_key, category, name, confidence, is_adult, is_spoiler, sort_index
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-    )
-    .bind("canonical:eng:tvdb:series:123456")
-    .bind("canonical:genre:external-subject")
-    .bind("genre")
-    .bind("External Subject Genre")
-    .bind(0.8_f64)
-    .bind(false)
-    .bind(false)
-    .bind(0_i32)
-    .execute(&services.pool)
-    .await
-    .expect("canonical tag should insert");
-
-    let reloaded = TitleRepository::get_by_id(&catalog, &title.id)
-        .await
-        .expect("title lookup should succeed")
-        .expect("title should exist");
-    assert_eq!(reloaded.canonical_tags.len(), 1);
-    assert_eq!(reloaded.canonical_tags[0].category, "genre");
-    assert_eq!(reloaded.canonical_tags[0].name, "External Subject Genre");
+    assert!(reloaded.canonical_tags.is_empty());
 
     let _ = std::fs::remove_file(db);
 }
@@ -842,6 +1098,12 @@ async fn title_queries_change_local_version_when_cached_poster_changes() {
             "22222222222222222222222222222222",
         ),
     ] {
+        sqlx::query("UPDATE titles SET poster_url = ? WHERE id = ?")
+            .bind(source_url)
+            .bind(&title.id)
+            .execute(&services.pool)
+            .await
+            .expect("source urls should update");
         title_images
             .upsert_title_image_source_result(
                 &title.id,
@@ -854,21 +1116,19 @@ async fn title_queries_change_local_version_when_cached_poster_changes() {
             )
             .await
             .expect("title image should upsert");
-        sqlx::query("UPDATE titles SET poster_url = ? WHERE id = ?")
-            .bind(source_url)
-            .bind(&title.id)
-            .execute(&services.pool)
-            .await
-            .expect("source urls should update");
     }
 
     let updated = TitleRepository::get_by_id(&catalog, &title.id)
         .await
         .expect("title lookup should succeed")
         .expect("title should exist");
+    let expected_poster_url = format!(
+        "/images/titles/title-2/poster/w250?v={}",
+        test_title_image_version("22222222222222222222222222222222")
+    );
     assert_eq!(
         updated.poster_url.as_deref(),
-        Some("/images/titles/title-2/poster/w250?v=2222222222222222")
+        Some(expected_poster_url.as_str())
     );
 
     let _ = std::fs::remove_file(db);
@@ -999,6 +1259,7 @@ async fn list_titles_due_for_hydration_excludes_active_facets_in_due_order() {
 
     let mut anime_title = make_test_title("anime-due", None);
     anime_title.facet = MediaFacet::Anime;
+    anime_title.library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Anime);
     anime_title.external_ids = vec![ExternalId {
         source: "tvdb".to_string(),
         value: "301".to_string(),
@@ -1019,6 +1280,7 @@ async fn list_titles_due_for_hydration_excludes_active_facets_in_due_order() {
 
     let mut series_title = make_test_title("series-due", None);
     series_title.facet = MediaFacet::Series;
+    series_title.library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Series);
     series_title.external_ids = vec![ExternalId {
         source: "tvdb".to_string(),
         value: "201".to_string(),
@@ -1106,9 +1368,13 @@ async fn title_queries_find_by_external_id() {
         .expect("title should exist");
 
     assert_eq!(found.id, title.id);
+    let expected_poster_url = format!(
+        "/images/titles/title-external-id/poster/w250?v={}",
+        test_title_image_version("ffffffffffffffffffffffffffffffff")
+    );
     assert_eq!(
         found.poster_url.as_deref(),
-        Some("/images/titles/title-external-id/poster/w250?v=ffffffffffffffff")
+        Some(expected_poster_url.as_str())
     );
     assert_eq!(
         found.poster_source_url.as_deref(),
@@ -1148,6 +1414,7 @@ async fn title_queries_list_existing_external_ids_in_library_and_facet_is_scoped
         .expect("db should initialize");
     let catalog = title_store(&services);
     let movie_library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Movie);
+    insert_test_library(&services, "other-movie-library", MediaFacet::Movie).await;
 
     let mut same_library_movie =
         make_test_title("same-library-movie", Some("https://tvdb.example/same.jpg"));
@@ -1189,7 +1456,8 @@ async fn title_queries_list_existing_external_ids_in_library_and_facet_is_scoped
         Some("https://tvdb.example/series.jpg"),
     );
     different_facet_title.facet = MediaFacet::Series;
-    different_facet_title.library_id = movie_library_id.clone();
+    different_facet_title.library_id =
+        scryer_domain::default_library_id_for_facet(&MediaFacet::Series);
     different_facet_title.external_ids = vec![ExternalId {
         source: "tvdb".to_string(),
         value: "444444".to_string(),
@@ -1296,6 +1564,10 @@ async fn title_queries_list_by_external_id_lookups_return_all_matching_titles() 
         .expect("db should initialize");
     let catalog = title_store(&services);
 
+    for id in ["library-a", "library-b"] {
+        insert_test_library(&services, id, MediaFacet::Movie).await;
+    }
+
     let mut first = make_test_title("title-shared-a", Some("https://tvdb.example/a.jpg"));
     first.library_id = "library-a".to_string();
     first.external_ids = vec![ExternalId {
@@ -1378,6 +1650,10 @@ async fn title_queries_get_by_facet_and_slug_trim_input_and_reject_duplicates() 
     let (services, db) = temp_services("scryer_title_slug_lookup").await;
     let catalog = title_store(&services);
 
+    for id in ["library-a", "library-b"] {
+        insert_test_library(&services, id, MediaFacet::Movie).await;
+    }
+
     let mut first = make_test_title("title-slug-primary", None);
     first.facet = MediaFacet::Movie;
     first.library_id = "library-a".to_string();
@@ -1418,6 +1694,10 @@ async fn title_queries_get_by_facet_and_slug_trim_input_and_reject_duplicates() 
 async fn title_queries_get_by_facet_libraries_and_slug_trim_input_and_reject_duplicates() {
     let (services, db) = temp_services("scryer_title_library_slug_lookup").await;
     let catalog = title_store(&services);
+
+    for id in ["library-a", "library-b"] {
+        insert_test_library(&services, id, MediaFacet::Movie).await;
+    }
 
     let mut first = make_test_title("title-library-slug-a", None);
     first.facet = MediaFacet::Movie;
@@ -2004,7 +2284,7 @@ async fn replace_title_image_and_append_event_commits_image_and_event_atomically
         .await
         .expect("blob lookup should succeed")
         .expect("blob should exist");
-    assert_eq!(blob.bytes, vec![4, 5, 6]);
+    assert_eq!(blob.bytes, b"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee".to_vec());
 
     let events = domain_events
         .list(&DomainEventFilter {
@@ -2102,6 +2382,8 @@ async fn fanart_queries_use_w1280_variant_when_present() {
         .await
         .expect("source urls should update");
 
+    let fanart_bytes = vec![9_u8, 10, 11];
+    let fanart_digest = format!("blake3:{}", blake3::hash(&fanart_bytes).to_hex());
     title_images
         .upsert_title_image_source_result(
             &title.id,
@@ -2113,8 +2395,8 @@ async fn fanart_queries_use_w1280_variant_when_present() {
                     format: "avif".to_string(),
                     width: 1280,
                     height: 720,
-                    bytes: vec![9, 10, 11],
-                    digest: "33333333333333333333333333333333".to_string(),
+                    bytes: fanart_bytes.clone(),
+                    digest: fanart_digest.clone(),
                 }],
             ),
             None,
@@ -2126,9 +2408,10 @@ async fn fanart_queries_use_w1280_variant_when_present() {
         .await
         .expect("title lookup should succeed")
         .expect("title should exist");
+    let fanart_version = &fanart_digest["blake3:".len().."blake3:".len() + 16];
     assert_eq!(
         updated.background_url.as_deref(),
-        Some("/images/titles/title-fanart-w1280/fanart/w1280?v=3333333333333333")
+        Some(format!("/images/titles/title-fanart-w1280/fanart/w1280?v={fanart_version}").as_str())
     );
     assert_eq!(
         updated.background_source_url.as_deref(),
@@ -2143,8 +2426,8 @@ async fn fanart_queries_use_w1280_variant_when_present() {
         fanart_variant,
         Some(TitleImageBlob {
             content_type: "image/avif".to_string(),
-            etag: "33333333333333333333333333333333".to_string(),
-            bytes: vec![9, 10, 11],
+            etag: fanart_digest,
+            bytes: fanart_bytes,
         })
     );
 

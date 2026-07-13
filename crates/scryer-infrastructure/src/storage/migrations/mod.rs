@@ -3,6 +3,7 @@ pub mod hook_ids;
 pub(crate) mod notification_targets;
 pub(crate) mod post_0_16_6_prerelease;
 pub(crate) mod title_catalog_sort_keys;
+pub(crate) mod title_image_blobs;
 pub(crate) mod title_root_folder_ids;
 
 use crate::encryption::EncryptionKey;
@@ -735,6 +736,9 @@ async fn run_rust_hook(
         }
         "migrate_title_catalog_sort_keys" => {
             title_catalog_sort_keys::migrate_title_catalog_sort_keys_sqlite(tx).await
+        }
+        "migrate_title_image_blobs" => {
+            title_image_blobs::migrate_title_image_blobs_sqlite(tx).await
         }
         "converge_post_0_16_6_prerelease_schema" => {
             post_0_16_6_prerelease::converge_post_0_16_6_prerelease_schema_sqlite(tx).await

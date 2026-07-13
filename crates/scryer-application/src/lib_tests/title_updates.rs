@@ -46,6 +46,127 @@ async fn update_title_metadata_changes_name_and_tags() {
 }
 
 #[tokio::test]
+async fn fix_title_match_conflicts_are_scoped_to_the_title_library_and_facet() {
+    let (app, user) = bootstrap();
+    let default_library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Movie);
+    let second_library = app
+        .create_library(
+            &user,
+            MediaFacet::Movie,
+            "Rematch Movies B".to_string(),
+            vec![LibraryRootDraft {
+                path: "/Volumes/Media/RematchMoviesB".to_string(),
+                is_default: true,
+            }],
+            None,
+        )
+        .await
+        .expect("second movie library should be created");
+    let target = app
+        .create_title_without_hydration_in_library(
+            &user,
+            NewTitle {
+                name: "Rematch Target".to_string(),
+                facet: MediaFacet::Movie,
+                monitored: true,
+                external_ids: vec![ExternalId {
+                    source: "tvdb".to_string(),
+                    value: "111001".to_string(),
+                }],
+                year: Some(2020),
+                overview: Some("metadata that should reset".to_string()),
+                ..Default::default()
+            },
+            default_library_id.clone(),
+        )
+        .await
+        .expect("rematch target should be created")
+        .title;
+    let other_library_copy = app
+        .create_title_without_hydration_in_library(
+            &user,
+            NewTitle {
+                name: "Other Library Identity".to_string(),
+                facet: MediaFacet::Movie,
+                monitored: true,
+                external_ids: vec![ExternalId {
+                    source: "tvdb".to_string(),
+                    value: "222002".to_string(),
+                }],
+                ..Default::default()
+            },
+            second_library.id.clone(),
+        )
+        .await
+        .expect("other library copy should be created")
+        .title;
+    let same_library_conflict = app
+        .create_title_without_hydration_in_library(
+            &user,
+            NewTitle {
+                name: "Same Library Conflict".to_string(),
+                facet: MediaFacet::Movie,
+                monitored: true,
+                external_ids: vec![ExternalId {
+                    source: "tvdb".to_string(),
+                    value: "333003".to_string(),
+                }],
+                ..Default::default()
+            },
+            default_library_id,
+        )
+        .await
+        .expect("same-library conflict fixture should be created")
+        .title;
+
+    let cross_library_result = app
+        .fix_title_match(&user, &target.id, "222002")
+        .await
+        .expect("an identity in another library must not block rematch");
+    assert!(!cross_library_result.hydrated);
+    assert!(!cross_library_result.warnings.is_empty());
+    let reset_target = app
+        .services
+        .catalog
+        .titles
+        .get_by_id(&target.id)
+        .await
+        .expect("rematch target should load")
+        .expect("rematch target should exist");
+    let untouched_copy = app
+        .services
+        .catalog
+        .titles
+        .get_by_id(&other_library_copy.id)
+        .await
+        .expect("other library copy should load")
+        .expect("other library copy should exist");
+    assert!(
+        reset_target
+            .external_ids
+            .iter()
+            .any(|external_id| { external_id.source == "tvdb" && external_id.value == "222002" })
+    );
+    assert!(
+        untouched_copy
+            .external_ids
+            .iter()
+            .any(|external_id| { external_id.source == "tvdb" && external_id.value == "222002" })
+    );
+
+    let same_library_error = app
+        .fix_title_match(&user, &target.id, "333003")
+        .await
+        .expect_err("same-library duplicate must be rejected");
+    assert!(matches!(
+        same_library_error,
+        AppError::Validation(message)
+            if message.contains("already assigned")
+                && message.contains(&same_library_conflict.name)
+    ));
+}
+
+#[tokio::test]
 async fn set_primary_movie_file_promotes_selected_and_demotes_same_folder_files() {
     let media_files = Arc::new(MockMediaFileRepo::default());
     let (app, user, _) = bootstrap_with_cutoff_projection_state(
@@ -316,6 +437,201 @@ async fn set_episode_monitored_emits_one_title_updated_with_actor() {
     let events = title_updated_events(&app, &title.id).await;
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].actor_user_id.as_deref(), Some(user.id.as_str()));
+}
+
+#[tokio::test]
+async fn external_import_monitor_snapshots_are_scoped_and_retryable_per_library() {
+    let (app, user) = bootstrap();
+    let snapshots = Arc::new(MockExternalImportMonitorSnapshotRepo::default());
+    let app = app.with_test_overrides(|services| {
+        services.with_external_import_monitor_snapshots(snapshots.clone())
+    });
+    let default_library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Movie);
+    let second_library = app
+        .create_library(
+            &user,
+            MediaFacet::Movie,
+            "Snapshot Movies B".to_string(),
+            vec![LibraryRootDraft {
+                path: "/Volumes/Media/SnapshotMoviesB".to_string(),
+                is_default: true,
+            }],
+            None,
+        )
+        .await
+        .expect("second movie library should be created");
+
+    let first = app
+        .create_title_without_hydration_in_library(
+            &user,
+            NewTitle {
+                name: "Snapshot Identity A".to_string(),
+                facet: MediaFacet::Movie,
+                monitored: true,
+                external_ids: vec![ExternalId {
+                    source: "tmdb".to_string(),
+                    value: "998731".to_string(),
+                }],
+                ..Default::default()
+            },
+            default_library_id.clone(),
+        )
+        .await
+        .expect("default-library title should be created")
+        .title;
+    let second = app
+        .create_title_without_hydration_in_library(
+            &user,
+            NewTitle {
+                name: "Snapshot Identity B".to_string(),
+                facet: MediaFacet::Movie,
+                monitored: false,
+                external_ids: vec![ExternalId {
+                    source: "tmdb".to_string(),
+                    value: "998731".to_string(),
+                }],
+                ..Default::default()
+            },
+            second_library.id.clone(),
+        )
+        .await
+        .expect("second-library identity copy should be created")
+        .title;
+
+    append_movie_monitor_snapshot_chunk_for_library(
+        &app,
+        &user,
+        &default_library_id,
+        vec![ExternalImportMonitorMovieEntry {
+            tmdb_id: Some("998731".to_string()),
+            imdb_id: None,
+            path: None,
+            monitored: false,
+        }],
+    )
+    .await;
+    append_movie_monitor_snapshot_chunk_for_library(
+        &app,
+        &user,
+        &second_library.id,
+        vec![ExternalImportMonitorMovieEntry {
+            tmdb_id: Some("998731".to_string()),
+            imdb_id: None,
+            path: None,
+            monitored: true,
+        }],
+    )
+    .await;
+
+    assert!(
+        app.apply_pending_external_import_monitor_snapshot_for_library(
+            &MediaFacet::Movie,
+            &default_library_id,
+        )
+        .await
+        .expect("default-library snapshot should apply")
+    );
+    let first_after = app
+        .services
+        .catalog
+        .titles
+        .get_by_id(&first.id)
+        .await
+        .expect("first title should load")
+        .expect("first title should exist");
+    let second_before = app
+        .services
+        .catalog
+        .titles
+        .get_by_id(&second.id)
+        .await
+        .expect("second title should load")
+        .expect("second title should exist");
+    assert!(!first_after.monitored);
+    assert!(!second_before.monitored);
+    assert!(
+        !app.apply_pending_external_import_monitor_snapshot_for_library(
+            &MediaFacet::Movie,
+            &default_library_id,
+        )
+        .await
+        .expect("consumed default-library snapshot should be absent")
+    );
+
+    assert!(
+        app.apply_pending_external_import_monitor_snapshot_for_library(
+            &MediaFacet::Movie,
+            &second_library.id,
+        )
+        .await
+        .expect("second-library snapshot should apply")
+    );
+    let second_after = app
+        .services
+        .catalog
+        .titles
+        .get_by_id(&second.id)
+        .await
+        .expect("second title should load")
+        .expect("second title should exist");
+    assert!(second_after.monitored);
+
+    append_movie_monitor_snapshot_chunk_for_library(
+        &app,
+        &user,
+        &second_library.id,
+        vec![ExternalImportMonitorMovieEntry {
+            tmdb_id: Some("777001".to_string()),
+            imdb_id: None,
+            path: None,
+            monitored: false,
+        }],
+    )
+    .await;
+    assert!(
+        app.apply_pending_external_import_monitor_snapshot_for_library(
+            &MediaFacet::Movie,
+            &second_library.id,
+        )
+        .await
+        .is_err(),
+        "an unresolved snapshot should remain retryable"
+    );
+    let retry_title = app
+        .create_title_without_hydration_in_library(
+            &user,
+            NewTitle {
+                name: "Snapshot Retry Identity".to_string(),
+                facet: MediaFacet::Movie,
+                monitored: true,
+                external_ids: vec![ExternalId {
+                    source: "tmdb".to_string(),
+                    value: "777001".to_string(),
+                }],
+                ..Default::default()
+            },
+            second_library.id.clone(),
+        )
+        .await
+        .expect("retry title should be created")
+        .title;
+    assert!(
+        app.apply_pending_external_import_monitor_snapshot_for_library(
+            &MediaFacet::Movie,
+            &second_library.id,
+        )
+        .await
+        .expect("retained snapshot should apply on retry")
+    );
+    let retry_after = app
+        .services
+        .catalog
+        .titles
+        .get_by_id(&retry_title.id)
+        .await
+        .expect("retry title should load")
+        .expect("retry title should exist");
+    assert!(!retry_after.monitored);
 }
 
 #[tokio::test]

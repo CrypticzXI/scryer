@@ -38,13 +38,13 @@ async fn run_rebaseline_inner(ctx: &TaskContext, args: RebaselineArgs) -> Result
     let postgres_entry_present =
         manifest_has_baseline_entry(&manifest, args.through, BaselineEngine::Postgres);
 
-    let should_write_sqlite = !sqlite_baseline_path.exists();
-    let should_write_postgres = !postgres_baseline_path.exists();
+    let should_write_sqlite = args.force || !sqlite_baseline_path.exists();
+    let should_write_postgres = args.force || !postgres_baseline_path.exists();
     let sqlite_changed = should_write_sqlite || !sqlite_entry_present;
     let postgres_changed = should_write_postgres || !postgres_entry_present;
     if !sqlite_changed && !postgres_changed {
         bail!(
-            "SQLite and PostgreSQL baselines through {:04} already exist and are already registered",
+            "SQLite and PostgreSQL baselines through {:04} already exist and are already registered; pass --force to regenerate them",
             args.through
         );
     }
@@ -57,9 +57,14 @@ async fn run_rebaseline_inner(ctx: &TaskContext, args: RebaselineArgs) -> Result
             args.through
         );
     }
+    let mut generation_catalog = source_bundle.catalog.clone();
+    if args.force {
+        generation_catalog
+            .baselines
+            .retain(|baseline| baseline.through_version != args.through);
+    }
     if postgres_changed
-        && source_bundle
-            .catalog
+        && generation_catalog
             .latest_baseline_at_or_below(
                 args.through,
                 scryer_infrastructure::migration_assets::EngineScope::Postgres,
@@ -81,7 +86,7 @@ async fn run_rebaseline_inner(ctx: &TaskContext, args: RebaselineArgs) -> Result
             .context("failed to open reference in-memory sqlite database")?;
         scryer_infrastructure::migrations::replay_catalog_into_fresh_db(
             &reference_pool,
-            &source_bundle.catalog,
+            &generation_catalog,
             &source_bundle.payload_bytes,
             Some(args.through),
             false,
@@ -105,8 +110,10 @@ async fn run_rebaseline_inner(ctx: &TaskContext, args: RebaselineArgs) -> Result
             .expect("PostgreSQL container is present when PostgreSQL work is required");
         let target_db = format!("rebaseline_target_{}", unique_token(args.through));
         let target_pool = container.create_database_pool(&target_db).await?;
-        scryer_infrastructure::postgres::replay_source_catalog_for_fresh_install(
+        scryer_infrastructure::postgres::replay_catalog_into_fresh_db(
             &target_pool,
+            &generation_catalog,
+            &source_bundle.payload_bytes,
             Some(args.through),
         )
         .await
@@ -144,7 +151,7 @@ async fn run_rebaseline_inner(ctx: &TaskContext, args: RebaselineArgs) -> Result
         .context("failed to open reference full-replay in-memory sqlite database")?;
     scryer_infrastructure::migrations::replay_catalog_into_fresh_db(
         &reference_head_pool,
-        &source_bundle.catalog,
+        &generation_catalog,
         &source_bundle.payload_bytes,
         None,
         false,
@@ -204,7 +211,7 @@ async fn run_rebaseline_inner(ctx: &TaskContext, args: RebaselineArgs) -> Result
         let reference_pool = container.create_database_pool(&reference_db).await?;
         scryer_infrastructure::postgres::replay_catalog_into_fresh_db(
             &reference_pool,
-            &source_bundle.catalog,
+            &generation_catalog,
             &source_bundle.payload_bytes,
             None,
         )

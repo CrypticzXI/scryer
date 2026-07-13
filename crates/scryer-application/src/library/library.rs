@@ -894,9 +894,23 @@ impl AppUseCase {
         self.require_app_permission(actor, scryer_domain::AppPermission::ManageCatalogSettings)
             .await?;
 
-        let (_coordinator, session) =
-            LibraryScanCoordinator::start(self.clone(), facet.clone(), LibraryScanMode::Full, None)
-                .await?;
+        let library_paths = self.read_library_paths_for_scan_facet(&facet).await?;
+        let library_id = self
+            .services
+            .catalog
+            .libraries
+            .default_for_facet(facet.clone())
+            .await?
+            .map(|library| library.id)
+            .unwrap_or_else(|| scryer_domain::default_library_id_for_facet(&facet));
+        let (_coordinator, session) = LibraryScanCoordinator::start_for_library(
+            self.clone(),
+            facet.clone(),
+            Some(library_id.clone()),
+            LibraryScanMode::Full,
+            None,
+        )
+        .await?;
         self.ensure_library_scan_cancellation_token(&session.session_id, LibraryScanMode::Full)
             .await;
         let mut session_guard =
@@ -906,17 +920,8 @@ impl AppUseCase {
         let actor = actor.clone();
         let session_id = session.session_id.clone();
         tokio::spawn(async move {
-            let result = async {
-                let library_paths = app.read_library_paths_for_scan_facet(&facet).await?;
-                let library_id = app
-                    .services
-                    .catalog
-                    .libraries
-                    .default_for_facet(facet.clone())
-                    .await?
-                    .map(|library| library.id)
-                    .unwrap_or_else(|| scryer_domain::default_library_id_for_facet(&facet));
-                app.run_started_library_scan_session(
+            let result = app
+                .run_started_library_scan_session(
                     &actor,
                     &facet,
                     &library_id,
@@ -925,9 +930,7 @@ impl AppUseCase {
                     LibraryScanMode::Full,
                     None,
                 )
-                .await
-            }
-            .await;
+                .await;
             if let Err(error) = result {
                 warn!(
                     error = %error,
@@ -1124,7 +1127,7 @@ impl AppUseCase {
         } else {
             if should_apply_import_monitor_snapshot
                 && let Err(error) = self
-                    .apply_pending_external_import_monitor_snapshot_for_facet(&facet)
+                    .apply_pending_external_import_monitor_snapshot_for_library(facet, library_id)
                     .await
             {
                 let warning_message =

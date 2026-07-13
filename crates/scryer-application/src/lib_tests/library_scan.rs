@@ -314,6 +314,14 @@ impl PerDirectoryBlockingLibraryScanner {
         self.release_blocked_scans.notify_waiters();
     }
 
+    async fn release_blocked_directory_scan(&self, root: &std::path::Path) {
+        self.blocked_directories
+            .lock()
+            .await
+            .remove::<str>(root.to_string_lossy().as_ref());
+        self.release_blocked_scans.notify_waiters();
+    }
+
     async fn wait_for_blocked_directory_scan(&self) {
         if self.blocked_scan_calls.load(Ordering::SeqCst) > 0 {
             return;
@@ -329,6 +337,23 @@ impl PerDirectoryBlockingLibraryScanner {
         })
         .await
         .expect("timed out waiting for blocked title directory scan");
+    }
+
+    async fn wait_for_blocked_directory_scan_count(&self, expected: usize) {
+        if self.blocked_scan_calls.load(Ordering::SeqCst) >= expected {
+            return;
+        }
+        timeout(Duration::from_secs(5), async {
+            loop {
+                let notified = self.blocked_scan_started.notified();
+                if self.blocked_scan_calls.load(Ordering::SeqCst) >= expected {
+                    break;
+                }
+                notified.await;
+            }
+        })
+        .await
+        .expect("timed out waiting for concurrent blocked title directory scans");
     }
 }
 
@@ -4363,6 +4388,160 @@ async fn cancel_full_library_scan_with_in_flight_title_walk_drains_executor_perm
             .library_scan_analysis_limit
             .available_permits(),
         GLOBAL_LIBRARY_SCAN_ANALYSIS_CONCURRENCY
+    );
+}
+
+#[tokio::test]
+async fn distinct_movie_libraries_scan_concurrently_and_cancel_independently() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let default_root = tempdir.path().join("default-movies");
+    let first_root = tempdir.path().join("first-movies");
+    let second_root = tempdir.path().join("second-movies");
+    let first_title_dir = first_root.join("First Unknown Movie (2025)");
+    let second_title_dir = second_root.join("Second Unknown Movie (2026)");
+    std::fs::create_dir_all(&default_root).expect("create default movie root");
+    std::fs::create_dir_all(&first_title_dir).expect("create first movie folder");
+    std::fs::create_dir_all(&second_title_dir).expect("create second movie folder");
+
+    let settings = Arc::new(StoredSettingsRepo::default());
+    settings
+        .set_value(
+            SETTINGS_SCOPE_MEDIA,
+            "movies.path",
+            default_root.to_string_lossy().as_ref(),
+        )
+        .await;
+    let (base_app, user) = bootstrap_with_scan_unmatched_and_metadata_tracking(
+        settings,
+        Arc::new(MutableLibraryScanner::default()),
+        Arc::new(TrackingLibraryScanUnmatchedItemRepo::default()),
+        Arc::new(EmptySearchMetadataGateway),
+    );
+    base_app
+        .reconcile_default_library_roots()
+        .await
+        .expect("reconcile default movie root");
+    let first_library = base_app
+        .create_library(
+            &user,
+            MediaFacet::Movie,
+            "First Movies".to_string(),
+            vec![LibraryRootDraft {
+                path: first_root.to_string_lossy().to_string(),
+                is_default: true,
+            }],
+            None,
+        )
+        .await
+        .expect("create first movie library");
+    let second_library = base_app
+        .create_library(
+            &user,
+            MediaFacet::Movie,
+            "Second Movies".to_string(),
+            vec![LibraryRootDraft {
+                path: second_root.to_string_lossy().to_string(),
+                is_default: true,
+            }],
+            None,
+        )
+        .await
+        .expect("create second movie library");
+
+    let scanner = Arc::new(PerDirectoryBlockingLibraryScanner::default());
+    scanner
+        .set_directory_files(&first_title_dir, Vec::new())
+        .await;
+    scanner
+        .set_directory_files(&second_title_dir, Vec::new())
+        .await;
+    scanner.block_directory(&first_title_dir).await;
+    scanner.block_directory(&second_title_dir).await;
+    let app = base_app.with_test_overrides(|builder| builder.with_library_scanner(scanner.clone()));
+
+    let first = app
+        .trigger_library_scan_by_id(&user, &first_library.id)
+        .await
+        .expect("start first movie library scan");
+    let second = app
+        .trigger_library_scan_by_id(&user, &second_library.id)
+        .await
+        .expect("start second movie library scan");
+    scanner.wait_for_blocked_directory_scan_count(2).await;
+
+    let mut active_library_ids = app
+        .active_library_scan_sessions()
+        .await
+        .into_iter()
+        .filter_map(|session| session.library_id)
+        .collect::<Vec<_>>();
+    active_library_ids.sort();
+    let mut expected_library_ids = vec![first_library.id.clone(), second_library.id.clone()];
+    expected_library_ids.sort();
+    assert_eq!(active_library_ids, expected_library_ids);
+    let default_library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Movie);
+    assert!(
+        !app.runtime
+            .library
+            .library_scan_tracker
+            .has_conflicting_session(&MediaFacet::Movie, Some(&default_library_id))
+            .await,
+        "custom library scans must not block the default-library job scope"
+    );
+    app.trigger_library_scan_by_id(&user, &first_library.id)
+        .await
+        .expect_err("duplicate scan for first library should be rejected");
+
+    app.cancel_library_scan(&user, &first.session_id)
+        .await
+        .expect("request first scan cancellation");
+    scanner
+        .release_blocked_directory_scan(&first_title_dir)
+        .await;
+    let canceled =
+        wait_for_projected_library_scan_session_matching(&app, &first.session_id, |session| {
+            session.status == LibraryScanStatus::Canceled
+        })
+        .await;
+    assert_eq!(
+        canceled.library_id.as_deref(),
+        Some(first_library.id.as_str())
+    );
+
+    let active = app.active_library_scan_sessions().await;
+    assert_eq!(active.len(), 1);
+    assert_eq!(active[0].session_id, second.session_id);
+    let restarted = app
+        .trigger_library_scan_by_id(&user, &first_library.id)
+        .await
+        .expect("restart first library while second remains active");
+    let restarted =
+        wait_for_projected_library_scan_session_matching(&app, &restarted.session_id, |session| {
+            matches!(
+                session.status,
+                LibraryScanStatus::Completed | LibraryScanStatus::Warning
+            )
+        })
+        .await;
+    assert_eq!(
+        restarted.library_id.as_deref(),
+        Some(first_library.id.as_str())
+    );
+
+    scanner
+        .release_blocked_directory_scan(&second_title_dir)
+        .await;
+    let second =
+        wait_for_projected_library_scan_session_matching(&app, &second.session_id, |session| {
+            matches!(
+                session.status,
+                LibraryScanStatus::Completed | LibraryScanStatus::Warning
+            )
+        })
+        .await;
+    assert_eq!(
+        second.library_id.as_deref(),
+        Some(second_library.id.as_str())
     );
 }
 

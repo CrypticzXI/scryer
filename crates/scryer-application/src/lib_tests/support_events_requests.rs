@@ -65,14 +65,51 @@ impl ExternalImportMonitorSnapshotRepository for MockExternalImportMonitorSnapsh
         Ok(())
     }
 
-    async fn delete_external_import_monitor_snapshot_chunks_except_session(
+    async fn delete_external_import_monitor_snapshot_chunks_for_session_prefix(
         &self,
-        preserved_session_id: &str,
+        session_prefix: &str,
+        facet: MediaFacet,
     ) -> AppResult<()> {
         let mut chunks = self.chunks.lock().await;
-        chunks.retain(|chunk| chunk.session_id == preserved_session_id);
+        chunks
+            .retain(|chunk| !chunk.session_id.starts_with(session_prefix) || chunk.facet != facet);
         Ok(())
     }
+
+    async fn delete_external_import_monitor_snapshot_chunks_except_session_prefix(
+        &self,
+        preserved_session_prefix: &str,
+    ) -> AppResult<()> {
+        let mut chunks = self.chunks.lock().await;
+        chunks.retain(|chunk| chunk.session_id.starts_with(preserved_session_prefix));
+        Ok(())
+    }
+}
+
+pub(super) async fn append_movie_monitor_snapshot_chunk_for_library(
+    app: &AppUseCase,
+    user: &User,
+    library_id: &str,
+    entries: Vec<ExternalImportMonitorMovieEntry>,
+) {
+    let payload_ndjson = entries
+        .into_iter()
+        .map(|entry| serde_json::to_string(&entry).expect("serialize movie snapshot entry"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    app.append_external_import_monitor_snapshot_chunk(
+        user,
+        ExternalImportMonitorSnapshotChunk {
+            session_id: crate::external_import_monitor_apply_session_id_for_library(library_id),
+            facet: MediaFacet::Movie,
+            entry_kind: ExternalImportMonitorSnapshotEntryKind::Movie,
+            chunk_index: 0,
+            payload_ndjson,
+            created_at: Utc::now().to_rfc3339(),
+        },
+    )
+    .await
+    .expect("append movie monitor snapshot chunk");
 }
 
 pub(super) async fn append_series_monitor_snapshot_chunk(
@@ -86,10 +123,13 @@ pub(super) async fn append_series_monitor_snapshot_chunk(
         .map(|entry| serde_json::to_string(&entry).expect("serialize series snapshot entry"))
         .collect::<Vec<_>>()
         .join("\n");
+    let session_id = crate::external_import_monitor_apply_session_id_for_library(
+        &scryer_domain::default_library_id_for_facet(&facet),
+    );
     app.append_external_import_monitor_snapshot_chunk(
         user,
         ExternalImportMonitorSnapshotChunk {
-            session_id: crate::EXTERNAL_IMPORT_MONITOR_APPLY_SESSION_ID.to_string(),
+            session_id,
             facet,
             entry_kind: ExternalImportMonitorSnapshotEntryKind::Series,
             chunk_index: 0,

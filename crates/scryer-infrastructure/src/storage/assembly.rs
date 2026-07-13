@@ -1835,6 +1835,7 @@ mod tests {
         _temp: TempDir,
     }
 
+    #[cfg(not(feature = "runtime-backups"))]
     const BACKUP_PAYLOAD_SUPPORT_UNAVAILABLE: &str =
         "backup bundle payload support is not compiled into this target";
 
@@ -1876,7 +1877,14 @@ mod tests {
         target_engine: TestBackupEngine,
         postgres_url: Option<&str>,
     ) -> AppResult<()> {
-        match run_backup_restore_round_trip(source_engine, target_engine, postgres_url).await {
+        let result =
+            run_backup_restore_round_trip(source_engine, target_engine, postgres_url).await;
+        #[cfg(feature = "runtime-backups")]
+        {
+            return result;
+        }
+        #[cfg(not(feature = "runtime-backups"))]
+        match result {
             Err(AppError::Repository(message)) if message == BACKUP_PAYLOAD_SUPPORT_UNAVAILABLE => {
                 eprintln!(
                     "skipping backup/restore round trip; {BACKUP_PAYLOAD_SUPPORT_UNAVAILABLE}"
@@ -1902,6 +1910,7 @@ mod tests {
 
         let result = async {
             source.seed().await?;
+            target.seed_stale_rebuild_only_image_rows().await?;
             let outcome = source.export_backup(&bundle_path, passphrase).await?;
             let inspected = inspect_backup_bundle(&bundle_path, Some(passphrase))?;
             let expected_bundle_tables = BACKUP_TABLE_CATALOG
@@ -1947,8 +1956,16 @@ mod tests {
                 "backup should not include generated title image variant rows"
             );
             assert!(
+                !outcome.summary.row_counts.contains_key("title_image_blobs"),
+                "backup should not include generated title image blob rows"
+            );
+            assert!(
                 !inspected.row_counts.contains_key("title_image_variants"),
                 "inspected bundle should not include generated title image variant rows"
+            );
+            assert!(
+                !inspected.row_counts.contains_key("title_image_blobs"),
+                "inspected bundle should not include generated title image blob rows"
             );
             assert!(
                 outcome.summary.row_counts.contains_key("settings_values"),
@@ -2219,6 +2236,38 @@ mod tests {
                 }
             }
         }
+        async fn seed_stale_rebuild_only_image_rows(&self) -> AppResult<()> {
+            match self.engine {
+                TestBackupEngine::Sqlite => {
+                    let services = SqliteServices::new_with_mode(
+                        self.config.database_url.clone(),
+                        MigrationMode::Apply,
+                    )
+                    .await?;
+                    let datastore = services.datastore();
+                    let titles = TitleStore::new(datastore.clone());
+                    let images = TitleImageStore::new(datastore);
+                    TitleRepository::create(&titles, backup_matrix_title()).await?;
+                    seed_backup_matrix_title_image(&images).await?;
+                    services.pool().close().await;
+                }
+                TestBackupEngine::Postgres => {
+                    let services = PostgresServices::new_with_mode(
+                        self.config.database_url.clone(),
+                        MigrationMode::Apply,
+                    )
+                    .await?;
+                    let datastore = services.datastore();
+                    let titles = TitleStore::new(datastore.clone());
+                    let images = TitleImageStore::new(datastore);
+                    TitleRepository::create(&titles, backup_matrix_title()).await?;
+                    seed_backup_matrix_title_image(&images).await?;
+                    services.pool().close().await;
+                }
+            }
+            Ok(())
+        }
+
         async fn verify_restored(&self) -> AppResult<()> {
             match self.engine {
                 TestBackupEngine::Sqlite => {
@@ -2301,11 +2350,14 @@ mod tests {
     where
         I: TitleImageRepository,
     {
+        let variant_bytes = vec![1, 2, 3, 4, 5];
+        let variant_digest = format!("blake3:{}", blake3::hash(&variant_bytes).to_hex());
         images
             .upsert_title_image_source_result(
                 "backup-lattice-title",
                 TitleImageSourceResult {
                     kind: TitleImageKind::Poster,
+                    requested_source_url: "https://example.invalid/poster.jpg".to_string(),
                     source_url: "https://example.invalid/poster.jpg".to_string(),
                     source_etag: Some("matrix-etag".to_string()),
                     source_last_modified: Some("Wed, 12 Jun 2026 03:00:00 GMT".to_string()),
@@ -2317,8 +2369,8 @@ mod tests {
                         format: "avif".to_string(),
                         width: 250,
                         height: 375,
-                        bytes: vec![1, 2, 3, 4, 5],
-                        digest: "blake3:backup-matrix-poster-w250".to_string(),
+                        bytes: variant_bytes,
+                        digest: variant_digest,
                     }],
                 },
                 None,
@@ -2444,6 +2496,13 @@ mod tests {
                 AppError::Repository(format!("failed to count restored variants: {error}"))
             })?;
         assert_eq!(variant_count, 0);
+        let blob_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM title_image_blobs")
+            .fetch_one(pool)
+            .await
+            .map_err(|error| {
+                AppError::Repository(format!("failed to count restored image blobs: {error}"))
+            })?;
+        assert_eq!(blob_count, 0);
         Ok(())
     }
 
@@ -2494,6 +2553,13 @@ mod tests {
                 AppError::Repository(format!("failed to count restored variants: {error}"))
             })?;
         assert_eq!(variant_count, 0);
+        let blob_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM title_image_blobs")
+            .fetch_one(pool)
+            .await
+            .map_err(|error| {
+                AppError::Repository(format!("failed to count restored image blobs: {error}"))
+            })?;
+        assert_eq!(blob_count, 0);
         Ok(())
     }
 

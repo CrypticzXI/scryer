@@ -1,6 +1,9 @@
 use std::io::Cursor;
 
-use super::{normalized_base_path_from_env, synthesize_local_title_image_url};
+use super::{
+    normalize_title_image_source_url, normalized_base_path_from_env,
+    synthesize_local_title_image_url, title_image_blob_digest,
+};
 use async_trait::async_trait;
 use fast_image_resize as fir;
 use image::codecs::avif::AvifEncoder;
@@ -182,6 +185,7 @@ impl HttpTitleImageProcessor {
 
         Ok(TitleImageSourceResult {
             kind,
+            requested_source_url: source_url.to_string(),
             source_url: source_url.to_string(),
             source_etag,
             source_last_modified,
@@ -202,50 +206,6 @@ impl HttpTitleImageProcessor {
     ) -> AppResult<TitleImageSourceResult> {
         self.process_bytes(kind, source_url, bytes, None, None, variant_specs)
     }
-}
-
-fn normalize_title_image_source_url(source_url: &str) -> AppResult<String> {
-    let trimmed = source_url.trim();
-    if trimmed.is_empty() {
-        return Err(AppError::Validation(
-            "title image URL must not be empty".into(),
-        ));
-    }
-
-    let mut parsed = match reqwest::Url::parse(trimmed) {
-        Ok(parsed) => parsed,
-        Err(_) => {
-            let relative = trimmed.trim_start_matches('/');
-            reqwest::Url::parse(&format!("https://artworks.thetvdb.com/{relative}")).map_err(
-                |error| AppError::Validation(format!("invalid title image URL: {error}")),
-            )?
-        }
-    };
-    if !matches!(parsed.scheme(), "http" | "https") {
-        return Err(AppError::Validation(
-            "title image URL must use http or https".into(),
-        ));
-    }
-    if parsed.host_str().is_none() {
-        return Err(AppError::Validation(
-            "title image URL must include a host".into(),
-        ));
-    }
-    if !parsed.username().is_empty() || parsed.password().is_some() {
-        return Err(AppError::Validation(
-            "title image URL must not include credentials".into(),
-        ));
-    }
-
-    let normalized_path = parsed
-        .path()
-        .split('/')
-        .filter(|segment| !segment.is_empty())
-        .collect::<Vec<_>>()
-        .join("/");
-    parsed.set_path(&format!("/{normalized_path}"));
-
-    Ok(parsed.to_string())
 }
 
 fn title_image_scope(source_url: &str) -> String {
@@ -272,14 +232,17 @@ impl TitleImageProcessor for HttpTitleImageProcessor {
         source_url: &str,
         variants: Vec<TitleImageVariantSpec>,
     ) -> AppResult<TitleImageSourceResult> {
+        let requested_source_url = source_url.to_string();
         let (source_url, bytes, etag, last_modified) = self.fetch_source(source_url).await?;
         let this = self.clone();
-        tokio::task::spawn_blocking(move || {
+        let mut result = tokio::task::spawn_blocking(move || {
             scryer_application::nice_thread();
             this.process_bytes(kind, &source_url, &bytes, etag, last_modified, variants)
         })
         .await
-        .map_err(|err| AppError::Repository(format!("image encode task failed: {err}")))?
+        .map_err(|err| AppError::Repository(format!("image encode task failed: {err}")))??;
+        result.requested_source_url = requested_source_url;
+        Ok(result)
     }
 }
 
@@ -313,7 +276,7 @@ fn build_width_variant(
         format: SupportedImageFormat::Avif.as_str().to_string(),
         width: actual_width as i32,
         height: actual_height as i32,
-        digest: blake3_digest(&bytes),
+        digest: title_image_blob_digest(&bytes),
         bytes,
     })
 }
@@ -436,10 +399,6 @@ fn apply_orientation(image: DynamicImage, orientation: u16) -> DynamicImage {
         8 => image.rotate270(),
         _ => image,
     }
-}
-
-fn blake3_digest(bytes: &[u8]) -> String {
-    format!("blake3:{}", blake3::hash(bytes).to_hex())
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

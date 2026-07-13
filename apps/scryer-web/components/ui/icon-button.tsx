@@ -20,6 +20,7 @@ type IconButtonProps = Omit<
   tooltip?: React.ReactNode | false
   tooltipSide?: React.ComponentProps<typeof ActionTooltip>["side"]
   tooltipClassName?: string
+  tooltipUseProvider?: boolean
 }
 
 function IconButton({
@@ -30,6 +31,7 @@ function IconButton({
   tooltip,
   tooltipSide,
   tooltipClassName,
+  tooltipUseProvider,
   className,
   title,
   children,
@@ -64,6 +66,7 @@ function IconButton({
       content={tooltipContent}
       side={tooltipSide}
       className={tooltipClassName}
+      useProvider={tooltipUseProvider}
       wrapperTabIndex={
         props.disabled && tooltipContent !== false && tooltipContent != null
           ? 0

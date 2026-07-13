@@ -266,7 +266,7 @@ export function LibraryScanProgressProvider({
         id={LIBRARY_SCAN_TOASTER_ID}
         position="top-right"
         duration={10000}
-        expand
+        expand={false}
         visibleToasts={MAX_VISIBLE_LIBRARY_SCAN_TOASTS}
         style={LIBRARY_SCAN_TOASTER_STYLE}
         toastOptions={LIBRARY_SCAN_TOAST_OPTIONS}

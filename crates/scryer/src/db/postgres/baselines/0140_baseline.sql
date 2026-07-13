@@ -9,65 +9,6 @@ CREATE TABLE blocklist (
     data_json jsonb,
     created_at timestamp with time zone NOT NULL
 );
-CREATE TABLE canonical_media_external_ratings (
-    subject_id text NOT NULL,
-    source text NOT NULL,
-    sort_index integer DEFAULT 0 NOT NULL,
-    value double precision,
-    score double precision,
-    normalized double precision NOT NULL,
-    votes integer,
-    url text DEFAULT ''::text NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL
-);
-CREATE TABLE canonical_media_rating_sources (
-    subject_id text NOT NULL,
-    source text NOT NULL,
-    sort_index integer DEFAULT 0 NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL
-);
-CREATE TABLE canonical_media_rating_summaries (
-    subject_id text NOT NULL,
-    rating double precision,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL
-);
-CREATE TABLE canonical_media_subjects (
-    id text NOT NULL,
-    subject_key text NOT NULL,
-    subject_key_norm text NOT NULL,
-    language text NOT NULL,
-    target_kind text DEFAULT ''::text NOT NULL,
-    title_id text,
-    display_title text DEFAULT ''::text NOT NULL,
-    year integer,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL
-);
-CREATE TABLE canonical_media_tag_source_keys (
-    subject_id text NOT NULL,
-    tag_key text NOT NULL,
-    source_tag_key text NOT NULL,
-    sort_index integer DEFAULT 0 NOT NULL
-);
-CREATE TABLE canonical_media_tag_sources (
-    subject_id text NOT NULL,
-    tag_key text NOT NULL,
-    source text NOT NULL,
-    sort_index integer DEFAULT 0 NOT NULL
-);
-CREATE TABLE canonical_media_tags (
-    subject_id text NOT NULL,
-    tag_key text NOT NULL,
-    category text NOT NULL,
-    name text NOT NULL,
-    confidence double precision,
-    is_adult boolean DEFAULT false NOT NULL,
-    is_spoiler boolean DEFAULT false NOT NULL,
-    sort_index integer DEFAULT 0 NOT NULL
-);
 CREATE TABLE collection_external_ids (
     id text NOT NULL,
     collection_id text NOT NULL,
@@ -286,6 +227,53 @@ CREATE TABLE discovery_title_external_ids (
     external_identity text DEFAULT ''::text NOT NULL,
     sort_index integer DEFAULT 0 NOT NULL
 );
+CREATE TABLE discovery_title_metadata_external_ratings (
+    discovery_title_id text NOT NULL,
+    source text NOT NULL,
+    sort_index integer DEFAULT 0 NOT NULL,
+    value double precision,
+    score double precision,
+    normalized double precision NOT NULL,
+    votes integer,
+    url text DEFAULT ''::text NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
+);
+CREATE TABLE discovery_title_metadata_rating_sources (
+    discovery_title_id text NOT NULL,
+    source text NOT NULL,
+    sort_index integer DEFAULT 0 NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
+);
+CREATE TABLE discovery_title_metadata_rating_summaries (
+    discovery_title_id text NOT NULL,
+    rating double precision,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
+);
+CREATE TABLE discovery_title_metadata_tag_source_keys (
+    discovery_title_id text NOT NULL,
+    tag_key text NOT NULL,
+    source_tag_key text NOT NULL,
+    sort_index integer DEFAULT 0 NOT NULL
+);
+CREATE TABLE discovery_title_metadata_tag_sources (
+    discovery_title_id text NOT NULL,
+    tag_key text NOT NULL,
+    source text NOT NULL,
+    sort_index integer DEFAULT 0 NOT NULL
+);
+CREATE TABLE discovery_title_metadata_tags (
+    discovery_title_id text NOT NULL,
+    tag_key text NOT NULL,
+    category text NOT NULL,
+    name text NOT NULL,
+    confidence double precision,
+    is_adult boolean DEFAULT false NOT NULL,
+    is_spoiler boolean DEFAULT false NOT NULL,
+    sort_index integer DEFAULT 0 NOT NULL
+);
 CREATE TABLE discovery_title_source_tag_values (
     discovery_title_id text NOT NULL,
     source_tag_sort_index integer NOT NULL,
@@ -313,7 +301,6 @@ CREATE TABLE discovery_titles (
     target_kind text NOT NULL,
     resolved boolean DEFAULT false NOT NULL,
     resolved_title_id text,
-    canonical_subject_id text,
     display_title text NOT NULL,
     original_title text,
     sort_title text,
@@ -1211,16 +1198,20 @@ CREATE TABLE title_external_ids (
     updated_at timestamp with time zone,
     library_id text
 );
-CREATE TABLE title_image_variants (
-    id text NOT NULL,
-    title_image_id text NOT NULL,
-    variant_key text NOT NULL,
-    path text,
+CREATE TABLE title_image_blobs (
+    digest text NOT NULL,
     format text NOT NULL,
     width bigint NOT NULL,
     height bigint NOT NULL,
     bytes bytea NOT NULL,
-    digest text NOT NULL,
+    created_at timestamp with time zone NOT NULL,
+    updated_at timestamp with time zone NOT NULL
+);
+CREATE TABLE title_image_variants (
+    id text NOT NULL,
+    title_image_id text NOT NULL,
+    variant_key text NOT NULL,
+    blob_digest text NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL
 );
@@ -1238,6 +1229,53 @@ CREATE TABLE title_images (
     source_height bigint,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL
+);
+CREATE TABLE title_metadata_external_ratings (
+    title_id text NOT NULL,
+    source text NOT NULL,
+    sort_index integer DEFAULT 0 NOT NULL,
+    value double precision,
+    score double precision,
+    normalized double precision NOT NULL,
+    votes integer,
+    url text DEFAULT ''::text NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
+);
+CREATE TABLE title_metadata_rating_sources (
+    title_id text NOT NULL,
+    source text NOT NULL,
+    sort_index integer DEFAULT 0 NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
+);
+CREATE TABLE title_metadata_rating_summaries (
+    title_id text NOT NULL,
+    rating double precision,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
+);
+CREATE TABLE title_metadata_tag_source_keys (
+    title_id text NOT NULL,
+    tag_key text NOT NULL,
+    source_tag_key text NOT NULL,
+    sort_index integer DEFAULT 0 NOT NULL
+);
+CREATE TABLE title_metadata_tag_sources (
+    title_id text NOT NULL,
+    tag_key text NOT NULL,
+    source text NOT NULL,
+    sort_index integer DEFAULT 0 NOT NULL
+);
+CREATE TABLE title_metadata_tags (
+    title_id text NOT NULL,
+    tag_key text NOT NULL,
+    category text NOT NULL,
+    name text NOT NULL,
+    confidence double precision,
+    is_adult boolean DEFAULT false NOT NULL,
+    is_spoiler boolean DEFAULT false NOT NULL,
+    sort_index integer DEFAULT 0 NOT NULL
 );
 CREATE TABLE title_more_like_this_items (
     source_title_id text NOT NULL,
@@ -1533,22 +1571,6 @@ ALTER TABLE ONLY domain_events ALTER COLUMN sequence SET DEFAULT nextval('domain
 ALTER TABLE ONLY title_search_terms ALTER COLUMN term_id SET DEFAULT nextval('title_search_terms_term_id_seq'::regclass);
 ALTER TABLE ONLY blocklist
     ADD CONSTRAINT blocklist_pkey PRIMARY KEY (id);
-ALTER TABLE ONLY canonical_media_external_ratings
-    ADD CONSTRAINT canonical_media_external_ratings_pkey PRIMARY KEY (subject_id, source);
-ALTER TABLE ONLY canonical_media_rating_sources
-    ADD CONSTRAINT canonical_media_rating_sources_pkey PRIMARY KEY (subject_id, source);
-ALTER TABLE ONLY canonical_media_rating_summaries
-    ADD CONSTRAINT canonical_media_rating_summaries_pkey PRIMARY KEY (subject_id);
-ALTER TABLE ONLY canonical_media_subjects
-    ADD CONSTRAINT canonical_media_subjects_pkey PRIMARY KEY (id);
-ALTER TABLE ONLY canonical_media_subjects
-    ADD CONSTRAINT canonical_media_subjects_subject_key_norm_language_key UNIQUE (subject_key_norm, language);
-ALTER TABLE ONLY canonical_media_tag_source_keys
-    ADD CONSTRAINT canonical_media_tag_source_ke_subject_id_tag_key_source_tag_key UNIQUE (subject_id, tag_key, source_tag_key);
-ALTER TABLE ONLY canonical_media_tag_sources
-    ADD CONSTRAINT canonical_media_tag_sources_subject_id_tag_key_source_key UNIQUE (subject_id, tag_key, source);
-ALTER TABLE ONLY canonical_media_tags
-    ADD CONSTRAINT canonical_media_tags_pkey PRIMARY KEY (subject_id, tag_key);
 ALTER TABLE ONLY collection_external_ids
     ADD CONSTRAINT collection_external_ids_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY collections
@@ -1577,6 +1599,18 @@ ALTER TABLE ONLY discovery_sync_state
     ADD CONSTRAINT discovery_sync_state_pkey PRIMARY KEY (scope_key);
 ALTER TABLE ONLY discovery_title_external_ids
     ADD CONSTRAINT discovery_title_external_ids_discovery_title_id_source_exte_key UNIQUE (discovery_title_id, source, external_kind, external_identity);
+ALTER TABLE ONLY discovery_title_metadata_external_ratings
+    ADD CONSTRAINT discovery_title_metadata_external_ratings_pkey PRIMARY KEY (discovery_title_id, source);
+ALTER TABLE ONLY discovery_title_metadata_rating_sources
+    ADD CONSTRAINT discovery_title_metadata_rating_sources_pkey PRIMARY KEY (discovery_title_id, source);
+ALTER TABLE ONLY discovery_title_metadata_rating_summaries
+    ADD CONSTRAINT discovery_title_metadata_rating_summaries_pkey PRIMARY KEY (discovery_title_id);
+ALTER TABLE ONLY discovery_title_metadata_tag_source_keys
+    ADD CONSTRAINT discovery_title_metadata_tag__discovery_title_id_tag_key_s_key1 UNIQUE (discovery_title_id, tag_key, source_tag_key);
+ALTER TABLE ONLY discovery_title_metadata_tag_sources
+    ADD CONSTRAINT discovery_title_metadata_tag__discovery_title_id_tag_key_so_key UNIQUE (discovery_title_id, tag_key, source);
+ALTER TABLE ONLY discovery_title_metadata_tags
+    ADD CONSTRAINT discovery_title_metadata_tags_pkey PRIMARY KEY (discovery_title_id, tag_key);
 ALTER TABLE ONLY discovery_title_source_tag_values
     ADD CONSTRAINT discovery_title_source_tag_va_discovery_title_id_source_tag_key UNIQUE (discovery_title_id, source_tag_sort_index, source_tag_value);
 ALTER TABLE ONLY discovery_title_source_tags
@@ -1757,6 +1791,8 @@ ALTER TABLE ONLY subtitle_provider_configs
     ADD CONSTRAINT subtitle_provider_configs_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY title_external_ids
     ADD CONSTRAINT title_external_ids_pkey PRIMARY KEY (id);
+ALTER TABLE ONLY title_image_blobs
+    ADD CONSTRAINT title_image_blobs_pkey PRIMARY KEY (digest);
 ALTER TABLE ONLY title_image_variants
     ADD CONSTRAINT title_image_variants_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY title_image_variants
@@ -1765,6 +1801,18 @@ ALTER TABLE ONLY title_images
     ADD CONSTRAINT title_images_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY title_images
     ADD CONSTRAINT title_images_title_id_kind_key UNIQUE (title_id, kind);
+ALTER TABLE ONLY title_metadata_external_ratings
+    ADD CONSTRAINT title_metadata_external_ratings_pkey PRIMARY KEY (title_id, source);
+ALTER TABLE ONLY title_metadata_rating_sources
+    ADD CONSTRAINT title_metadata_rating_sources_pkey PRIMARY KEY (title_id, source);
+ALTER TABLE ONLY title_metadata_rating_summaries
+    ADD CONSTRAINT title_metadata_rating_summaries_pkey PRIMARY KEY (title_id);
+ALTER TABLE ONLY title_metadata_tag_source_keys
+    ADD CONSTRAINT title_metadata_tag_source_key_title_id_tag_key_source_tag_k_key UNIQUE (title_id, tag_key, source_tag_key);
+ALTER TABLE ONLY title_metadata_tag_sources
+    ADD CONSTRAINT title_metadata_tag_sources_title_id_tag_key_source_key UNIQUE (title_id, tag_key, source);
+ALTER TABLE ONLY title_metadata_tags
+    ADD CONSTRAINT title_metadata_tags_pkey PRIMARY KEY (title_id, tag_key);
 ALTER TABLE ONLY title_more_like_this_items
     ADD CONSTRAINT title_more_like_this_items_source_title_id_discovery_title__key UNIQUE (source_title_id, discovery_title_id);
 ALTER TABLE ONLY title_search_terms
@@ -1815,12 +1863,6 @@ ALTER TABLE ONLY workflow_operations
     ADD CONSTRAINT workflow_operations_pkey PRIMARY KEY (id);
 CREATE INDEX idx_blocklist_source_title ON blocklist USING btree (source_title) WHERE (source_title IS NOT NULL);
 CREATE INDEX idx_blocklist_title_id ON blocklist USING btree (title_id);
-CREATE INDEX idx_canonical_media_external_ratings_order ON canonical_media_external_ratings USING btree (subject_id, sort_index, source);
-CREATE INDEX idx_canonical_media_external_ratings_source_norm ON canonical_media_external_ratings USING btree (source, normalized, subject_id);
-CREATE INDEX idx_canonical_media_rating_sources_order ON canonical_media_rating_sources USING btree (subject_id, sort_index, source);
-CREATE INDEX idx_canonical_media_subjects_key_language ON canonical_media_subjects USING btree (subject_key_norm, language);
-CREATE INDEX idx_canonical_media_subjects_title ON canonical_media_subjects USING btree (title_id);
-CREATE INDEX idx_canonical_media_tags_category_name ON canonical_media_tags USING btree (category, name, subject_id);
 CREATE INDEX idx_collection_external_ids_title_provenance ON collection_external_ids USING btree (title_id, provenance);
 CREATE UNIQUE INDEX idx_collection_external_ids_unique ON collection_external_ids USING btree (collection_id, source, external_id, provenance, source_scope);
 CREATE INDEX idx_collections_title ON collections USING btree (title_id, collection_type);
@@ -1842,6 +1884,10 @@ CREATE INDEX idx_discovery_submitted_subjects_run_key ON discovery_submitted_sub
 CREATE INDEX idx_discovery_submitted_subjects_title ON discovery_submitted_subjects USING btree (title_id);
 CREATE INDEX idx_discovery_sync_runs_kind_status ON discovery_sync_runs USING btree (kind, status, updated_at);
 CREATE INDEX idx_discovery_title_external_ids_title ON discovery_title_external_ids USING btree (discovery_title_id, sort_index);
+CREATE INDEX idx_discovery_title_metadata_external_ratings_order ON discovery_title_metadata_external_ratings USING btree (discovery_title_id, sort_index, source);
+CREATE INDEX idx_discovery_title_metadata_external_ratings_source_norm ON discovery_title_metadata_external_ratings USING btree (source, normalized, discovery_title_id);
+CREATE INDEX idx_discovery_title_metadata_rating_sources_order ON discovery_title_metadata_rating_sources USING btree (discovery_title_id, sort_index, source);
+CREATE INDEX idx_discovery_title_metadata_tags_category_name ON discovery_title_metadata_tags USING btree (category, name, discovery_title_id);
 CREATE INDEX idx_discovery_title_source_tag_values_title ON discovery_title_source_tag_values USING btree (discovery_title_id, source_tag_sort_index, value_sort_index);
 CREATE INDEX idx_discovery_title_source_tags_title ON discovery_title_source_tags USING btree (discovery_title_id, sort_index);
 CREATE INDEX idx_discovery_title_terms_kind_value ON discovery_title_terms USING btree (term_kind, term_value, discovery_title_id);
@@ -1958,8 +2004,13 @@ CREATE INDEX idx_subtitle_provider_configs_enabled ON subtitle_provider_configs 
 CREATE INDEX idx_subtitle_provider_configs_provider_type ON subtitle_provider_configs USING btree (provider_type);
 CREATE UNIQUE INDEX idx_title_external_ids_library_lookup ON title_external_ids USING btree (library_id, source, external_id);
 CREATE INDEX idx_title_external_ids_title_id ON title_external_ids USING btree (title_id);
+CREATE INDEX idx_title_image_variants_blob_digest ON title_image_variants USING btree (blob_digest);
 CREATE INDEX idx_title_image_variants_image_variant ON title_image_variants USING btree (title_image_id, variant_key);
 CREATE INDEX idx_title_images_title_kind ON title_images USING btree (title_id, kind);
+CREATE INDEX idx_title_metadata_external_ratings_order ON title_metadata_external_ratings USING btree (title_id, sort_index, source);
+CREATE INDEX idx_title_metadata_external_ratings_source_norm ON title_metadata_external_ratings USING btree (source, normalized, title_id);
+CREATE INDEX idx_title_metadata_rating_sources_order ON title_metadata_rating_sources USING btree (title_id, sort_index, source);
+CREATE INDEX idx_title_metadata_tags_category_name ON title_metadata_tags USING btree (category, name, title_id);
 CREATE INDEX idx_title_more_like_this_items_source_order ON title_more_like_this_items USING btree (source_title_id, sort_index, rank_score DESC);
 CREATE INDEX idx_title_more_like_this_items_title ON title_more_like_this_items USING btree (discovery_title_id);
 CREATE INDEX idx_title_search_terms_facet_normalized_term ON title_search_terms USING btree (facet, normalized_term);
@@ -2002,20 +2053,6 @@ CREATE INDEX idx_workflow_operations_job_recent_started ON workflow_operations U
 CREATE INDEX idx_workflow_operations_status_started ON workflow_operations USING btree (status, started_at);
 ALTER TABLE ONLY blocklist
     ADD CONSTRAINT blocklist_title_id_fkey FOREIGN KEY (title_id) REFERENCES titles(id) ON DELETE CASCADE;
-ALTER TABLE ONLY canonical_media_external_ratings
-    ADD CONSTRAINT canonical_media_external_ratings_subject_id_fkey FOREIGN KEY (subject_id) REFERENCES canonical_media_subjects(id) ON DELETE CASCADE;
-ALTER TABLE ONLY canonical_media_rating_sources
-    ADD CONSTRAINT canonical_media_rating_sources_subject_id_fkey FOREIGN KEY (subject_id) REFERENCES canonical_media_subjects(id) ON DELETE CASCADE;
-ALTER TABLE ONLY canonical_media_rating_summaries
-    ADD CONSTRAINT canonical_media_rating_summaries_subject_id_fkey FOREIGN KEY (subject_id) REFERENCES canonical_media_subjects(id) ON DELETE CASCADE;
-ALTER TABLE ONLY canonical_media_subjects
-    ADD CONSTRAINT canonical_media_subjects_title_id_fkey FOREIGN KEY (title_id) REFERENCES titles(id) ON DELETE SET NULL;
-ALTER TABLE ONLY canonical_media_tag_source_keys
-    ADD CONSTRAINT canonical_media_tag_source_keys_subject_id_tag_key_fkey FOREIGN KEY (subject_id, tag_key) REFERENCES canonical_media_tags(subject_id, tag_key) ON DELETE CASCADE;
-ALTER TABLE ONLY canonical_media_tag_sources
-    ADD CONSTRAINT canonical_media_tag_sources_subject_id_tag_key_fkey FOREIGN KEY (subject_id, tag_key) REFERENCES canonical_media_tags(subject_id, tag_key) ON DELETE CASCADE;
-ALTER TABLE ONLY canonical_media_tags
-    ADD CONSTRAINT canonical_media_tags_subject_id_fkey FOREIGN KEY (subject_id) REFERENCES canonical_media_subjects(id) ON DELETE CASCADE;
 ALTER TABLE ONLY collection_external_ids
     ADD CONSTRAINT collection_external_ids_collection_id_fkey FOREIGN KEY (collection_id) REFERENCES collections(id) ON DELETE CASCADE;
 ALTER TABLE ONLY collection_external_ids
@@ -2066,14 +2103,24 @@ ALTER TABLE ONLY discovery_sync_state
     ADD CONSTRAINT discovery_sync_state_last_success_generation_id_fkey FOREIGN KEY (last_success_generation_id) REFERENCES discovery_sync_runs(id) ON DELETE SET NULL;
 ALTER TABLE ONLY discovery_title_external_ids
     ADD CONSTRAINT discovery_title_external_ids_discovery_title_id_fkey FOREIGN KEY (discovery_title_id) REFERENCES discovery_titles(id) ON DELETE CASCADE;
+ALTER TABLE ONLY discovery_title_metadata_external_ratings
+    ADD CONSTRAINT discovery_title_metadata_external_ratin_discovery_title_id_fkey FOREIGN KEY (discovery_title_id) REFERENCES discovery_titles(id) ON DELETE CASCADE;
+ALTER TABLE ONLY discovery_title_metadata_rating_sources
+    ADD CONSTRAINT discovery_title_metadata_rating_sources_discovery_title_id_fkey FOREIGN KEY (discovery_title_id) REFERENCES discovery_titles(id) ON DELETE CASCADE;
+ALTER TABLE ONLY discovery_title_metadata_rating_summaries
+    ADD CONSTRAINT discovery_title_metadata_rating_summari_discovery_title_id_fkey FOREIGN KEY (discovery_title_id) REFERENCES discovery_titles(id) ON DELETE CASCADE;
+ALTER TABLE ONLY discovery_title_metadata_tag_source_keys
+    ADD CONSTRAINT discovery_title_metadata_tag_s_discovery_title_id_tag_key_fkey1 FOREIGN KEY (discovery_title_id, tag_key) REFERENCES discovery_title_metadata_tags(discovery_title_id, tag_key) ON DELETE CASCADE;
+ALTER TABLE ONLY discovery_title_metadata_tag_sources
+    ADD CONSTRAINT discovery_title_metadata_tag_so_discovery_title_id_tag_key_fkey FOREIGN KEY (discovery_title_id, tag_key) REFERENCES discovery_title_metadata_tags(discovery_title_id, tag_key) ON DELETE CASCADE;
+ALTER TABLE ONLY discovery_title_metadata_tags
+    ADD CONSTRAINT discovery_title_metadata_tags_discovery_title_id_fkey FOREIGN KEY (discovery_title_id) REFERENCES discovery_titles(id) ON DELETE CASCADE;
 ALTER TABLE ONLY discovery_title_source_tag_values
     ADD CONSTRAINT discovery_title_source_tag_values_discovery_title_id_fkey FOREIGN KEY (discovery_title_id) REFERENCES discovery_titles(id) ON DELETE CASCADE;
 ALTER TABLE ONLY discovery_title_source_tags
     ADD CONSTRAINT discovery_title_source_tags_discovery_title_id_fkey FOREIGN KEY (discovery_title_id) REFERENCES discovery_titles(id) ON DELETE CASCADE;
 ALTER TABLE ONLY discovery_title_terms
     ADD CONSTRAINT discovery_title_terms_discovery_title_id_fkey FOREIGN KEY (discovery_title_id) REFERENCES discovery_titles(id) ON DELETE CASCADE;
-ALTER TABLE ONLY discovery_titles
-    ADD CONSTRAINT discovery_titles_canonical_subject_id_fkey FOREIGN KEY (canonical_subject_id) REFERENCES canonical_media_subjects(id) ON DELETE SET NULL;
 ALTER TABLE ONLY discovery_titles
     ADD CONSTRAINT discovery_titles_resolved_title_id_fkey FOREIGN KEY (resolved_title_id) REFERENCES titles(id) ON DELETE SET NULL;
 ALTER TABLE ONLY download_import_artifacts
@@ -2199,9 +2246,23 @@ ALTER TABLE ONLY subtitle_downloads
 ALTER TABLE ONLY title_external_ids
     ADD CONSTRAINT title_external_ids_title_id_fkey FOREIGN KEY (title_id) REFERENCES titles(id) ON DELETE CASCADE;
 ALTER TABLE ONLY title_image_variants
+    ADD CONSTRAINT title_image_variants_blob_digest_fkey FOREIGN KEY (blob_digest) REFERENCES title_image_blobs(digest) ON DELETE RESTRICT;
+ALTER TABLE ONLY title_image_variants
     ADD CONSTRAINT title_image_variants_title_image_id_fkey FOREIGN KEY (title_image_id) REFERENCES title_images(id) ON DELETE CASCADE;
 ALTER TABLE ONLY title_images
     ADD CONSTRAINT title_images_title_id_fkey FOREIGN KEY (title_id) REFERENCES titles(id) ON DELETE CASCADE;
+ALTER TABLE ONLY title_metadata_external_ratings
+    ADD CONSTRAINT title_metadata_external_ratings_title_id_fkey FOREIGN KEY (title_id) REFERENCES titles(id) ON DELETE CASCADE;
+ALTER TABLE ONLY title_metadata_rating_sources
+    ADD CONSTRAINT title_metadata_rating_sources_title_id_fkey FOREIGN KEY (title_id) REFERENCES titles(id) ON DELETE CASCADE;
+ALTER TABLE ONLY title_metadata_rating_summaries
+    ADD CONSTRAINT title_metadata_rating_summaries_title_id_fkey FOREIGN KEY (title_id) REFERENCES titles(id) ON DELETE CASCADE;
+ALTER TABLE ONLY title_metadata_tag_source_keys
+    ADD CONSTRAINT title_metadata_tag_source_keys_title_id_tag_key_fkey FOREIGN KEY (title_id, tag_key) REFERENCES title_metadata_tags(title_id, tag_key) ON DELETE CASCADE;
+ALTER TABLE ONLY title_metadata_tag_sources
+    ADD CONSTRAINT title_metadata_tag_sources_title_id_tag_key_fkey FOREIGN KEY (title_id, tag_key) REFERENCES title_metadata_tags(title_id, tag_key) ON DELETE CASCADE;
+ALTER TABLE ONLY title_metadata_tags
+    ADD CONSTRAINT title_metadata_tags_title_id_fkey FOREIGN KEY (title_id) REFERENCES titles(id) ON DELETE CASCADE;
 ALTER TABLE ONLY title_more_like_this_items
     ADD CONSTRAINT title_more_like_this_items_discovery_title_id_fkey FOREIGN KEY (discovery_title_id) REFERENCES discovery_titles(id) ON DELETE CASCADE;
 ALTER TABLE ONLY title_more_like_this_items

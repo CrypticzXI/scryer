@@ -29,15 +29,6 @@ pub(crate) struct LibraryScanCoordinator {
 }
 
 impl LibraryScanCoordinator {
-    pub(crate) async fn start(
-        app: AppUseCase,
-        facet: MediaFacet,
-        mode: LibraryScanMode,
-        session_id_override: Option<String>,
-    ) -> AppResult<(Self, LibraryScanSession)> {
-        Self::start_for_library(app, facet, None, mode, session_id_override).await
-    }
-
     pub(crate) async fn start_for_library(
         app: AppUseCase,
         facet: MediaFacet,

@@ -24,7 +24,7 @@ import { TitlePosterSlot } from "@/components/title-poster-slot";
 import { SearchResultBuckets } from "@/components/common/release-search-results";
 import { releaseSupportsAdditionalFileQueue } from "@/lib/utils/release-queue-scope";
 import { Checkbox } from "@/components/ui/checkbox";
-import { ActionTooltip } from "@/components/ui/tooltip";
+import { ActionTooltip, TooltipProvider } from "@/components/ui/tooltip";
 import {
   TableBody,
   TableCell,
@@ -129,7 +129,7 @@ type TitleTableProps = {
   scanLibraryNotice?: string | null;
 };
 
-export function TitleTable({
+export const TitleTable = React.memo(function TitleTable({
   view,
   titles,
   titleLoading,
@@ -170,7 +170,6 @@ export function TitleTable({
   scanLibraryDisabled = false,
   scanLibraryNotice,
 }: TitleTableProps) {
-  "use no memo";
   const location = useLocation();
   const t = useTranslate();
   const dateTimeFormat = useUiDateTimeFormat();
@@ -338,7 +337,7 @@ export function TitleTable({
   });
   const getTitleTableMaxScrollTop = useTitleTableVirtualizerRebuild({
     itemCount: sortedTitles.length,
-    loading: titleLoading,
+    loading: false,
     rebuildKey: `${
       selectedPaneMode ? "selected-pane" : "full-table"
     }:${visibleColumnSignature}:${expandedInteractiveRowSignature}`,
@@ -353,7 +352,7 @@ export function TitleTable({
   );
   useOverviewElementScrollRestoration({
     enabled: true,
-    ready: !titleLoading && titles.length > 0,
+    ready: titles.length > 0,
     storageKeySuffix: scrollStorageKeySuffix,
     scrollRef: titleTableScrollRef,
     getMaxScrollTop: getTitleTableMaxScrollTop,
@@ -371,7 +370,6 @@ export function TitleTable({
     }
     if (
       autoScrolledSelectedTitleKeyRef.current === selectedTitleScrollKey ||
-      titleLoading ||
       sortedTitles.length === 0
     ) {
       return;
@@ -395,7 +393,6 @@ export function TitleTable({
     selectedTitleId,
     selectedTitleScrollKey,
     sortedTitles,
-    titleLoading,
     titleVirtualizer,
   ]);
 
@@ -756,7 +753,10 @@ export function TitleTable({
           ) : null}
           {showMonitoredColumn ? (
             <TableCell className="text-center align-middle">
-              <ActionTooltip content={`${t("title.table.monitored")}: ${item.name}`}>
+              <ActionTooltip
+                useProvider={false}
+                content={`${t("title.table.monitored")}: ${item.name}`}
+              >
                 <span
                   className="inline-flex h-6 w-6 shrink-0 items-center justify-center"
                   aria-label={`${t("title.table.monitored")}: ${item.name}`}
@@ -1182,12 +1182,13 @@ export function TitleTable({
         "relative h-full min-h-[22rem] w-full overflow-x-auto overflow-y-auto rounded-[14px] border border-[var(--scry-border)] bg-[var(--scry-surfD)]",
       )}
     >
-      <table
-        data-ui="title-table"
-        data-view={view}
-        className="w-full table-fixed caption-bottom text-sm"
-        style={{ minWidth: `${titleTableMinWidthRem}rem` }}
-      >
+      <TooltipProvider delayDuration={300}>
+        <table
+          data-ui="title-table"
+          data-view={view}
+          className="w-full table-fixed caption-bottom text-sm"
+          style={{ minWidth: `${titleTableMinWidthRem}rem` }}
+        >
         {titleTableColGroup}
         {titleTableHeader}
         {sortedTitles.length > 0 ? (
@@ -1243,7 +1244,8 @@ export function TitleTable({
             />
           </TableBody>
         )}
-      </table>
+        </table>
+      </TooltipProvider>
     </div>
   );
-}
+});

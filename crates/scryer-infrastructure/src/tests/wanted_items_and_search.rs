@@ -336,6 +336,7 @@ async fn title_search_short_typo_does_not_return_loose_spellfix_neighbors() {
     let mut aoashi = make_test_title("title-search-aoashi", None);
     aoashi.name = "Aoashi".to_string();
     aoashi.facet = MediaFacet::Anime;
+    aoashi.library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Anime);
     TitleRepository::create(&catalog, aoashi.clone())
         .await
         .expect("close typo target should insert");
@@ -343,6 +344,7 @@ async fn title_search_short_typo_does_not_return_loose_spellfix_neighbors() {
     let mut ranma = make_test_title("title-search-ranma", None);
     ranma.name = "Ranma 1/2 (2024)".to_string();
     ranma.facet = MediaFacet::Anime;
+    ranma.library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Anime);
     TitleRepository::create(&catalog, ranma.clone())
         .await
         .expect("loose neighbor should insert");
@@ -350,6 +352,7 @@ async fn title_search_short_typo_does_not_return_loose_spellfix_neighbors() {
     let mut blue_box = make_test_title("title-search-blue-box", None);
     blue_box.name = "Blue Box".to_string();
     blue_box.facet = MediaFacet::Anime;
+    blue_box.library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Anime);
     TitleRepository::create(&catalog, blue_box.clone())
         .await
         .expect("loose neighbor should insert");
@@ -384,6 +387,7 @@ async fn title_search_returns_valid_single_substitution_typo_for_frieren() {
     let mut frieren = make_test_title("title-search-frieren", None);
     frieren.name = "Silver Horizon: Beyond Journey's End".to_string();
     frieren.facet = MediaFacet::Anime;
+    frieren.library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Anime);
     frieren.aliases = vec!["Sora no Vale".to_string(), "Frieren".to_string()];
     TitleRepository::create(&catalog, frieren.clone())
         .await

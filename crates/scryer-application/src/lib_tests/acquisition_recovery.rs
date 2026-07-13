@@ -5973,9 +5973,14 @@ async fn list_release_decisions_offset_paginates_within_title() {
         wanted_items.clone(),
         Arc::new(MockIndexerClient),
     );
-    let (title, wanted_id) =
-        seed_movie_wanted_for_acquisition(&app, &user, &wanted_items, "Paged Decisions Movie", 2024)
-            .await;
+    let (title, wanted_id) = seed_movie_wanted_for_acquisition(
+        &app,
+        &user,
+        &wanted_items,
+        "Paged Decisions Movie",
+        2024,
+    )
+    .await;
 
     for index in 0..5 {
         wanted_items

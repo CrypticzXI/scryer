@@ -19,10 +19,8 @@ use std::collections::BTreeSet;
 use unicode_normalization::UnicodeNormalization;
 
 use crate::media::canonical_tags::{
-    attach_canonical_tags_to_titles, canonical_subject_input_for_title_with_key,
-    load_canonical_ratings_for_title_ids, prefer_canonical_media_subject_for_title_tx,
-    replace_canonical_media_ratings_tx, replace_canonical_media_tags_tx,
-    upsert_canonical_media_subject_tx,
+    attach_metadata_tags_to_titles, load_title_metadata_ratings, load_title_metadata_tags,
+    replace_title_metadata_ratings_tx, replace_title_metadata_tags_tx,
 };
 use crate::queries::{
     common::parse_utc_datetime,
@@ -189,13 +187,16 @@ impl TitleStore {
                 }
                 match &self.datastore {
                     StoreDatastore::Sqlite { pool, .. } => {
-                        return list_titles_via_sqlite_title_search_query(
+                        let mut titles = list_titles_via_sqlite_title_search_query(
                             pool,
                             facet,
                             query,
                             include_external_ids,
                         )
-                        .await;
+                        .await?;
+                        attach_metadata_tags_to_titles(self.datastore.read_exec(), &mut titles)
+                            .await?;
+                        return Ok(titles);
                     }
                     StoreDatastore::Postgres { .. } => {
                         let (sql, args) = build_ranked_title_list_sql(facet, None, query);
@@ -214,7 +215,7 @@ impl TitleStore {
         };
 
         let mut titles = decode_runtime_title_rows(&rows, mode, include_external_ids)?;
-        attach_canonical_tags_to_titles(self.datastore.read_exec(), &mut titles).await?;
+        attach_metadata_tags_to_titles(self.datastore.read_exec(), &mut titles).await?;
         Ok(titles)
     }
 
@@ -237,11 +238,8 @@ impl TitleStore {
             include_external_ids,
         )?;
         if let Some(title) = title.as_mut() {
-            attach_canonical_tags_to_titles(
-                self.datastore.read_exec(),
-                std::slice::from_mut(title),
-            )
-            .await?;
+            attach_metadata_tags_to_titles(self.datastore.read_exec(), std::slice::from_mut(title))
+                .await?;
         }
         Ok(title)
     }
@@ -460,11 +458,12 @@ impl TitleRepository for TitleStore {
             title_catalog_dialect_for_datastore(&self.datastore),
         );
         let rows = SqlRuntime::fetch_all(self.datastore.read_exec(), &page_sql, &page_args).await?;
-        let items = decode_runtime_title_rows(
+        let mut items = decode_runtime_title_rows(
             &rows,
             PersistedTitleReadMode::Presentation,
             include_external_ids,
         )?;
+        attach_metadata_tags_to_titles(self.datastore.read_exec(), &mut items).await?;
         let has_more = include_catalog_counts && offset.saturating_add(items.len()) < total_count;
 
         Ok(TitleCatalogResult {
@@ -499,23 +498,18 @@ impl TitleRepository for TitleStore {
             "WITH requested(request_ordinal, external_id) AS (
                  VALUES {requested_values}
              ),
-             requested_title_ids AS (
+             matched_title_ids AS (
                  SELECT requested.request_ordinal,
-                        (
-                            SELECT title_external_ids.title_id
-                              FROM title_external_ids
-                             WHERE LOWER(title_external_ids.source) = LOWER({{}})
-                               AND title_external_ids.external_id = requested.external_id
-                             ORDER BY title_external_ids.title_id
-                             LIMIT 1
-                        ) AS title_id
+                        title_external_ids.title_id
                    FROM requested
+                   JOIN title_external_ids
+                     ON LOWER(title_external_ids.source) = LOWER({{}})
+                    AND title_external_ids.external_id = requested.external_id
              ),
              deduped AS (
                  SELECT MIN(request_ordinal) AS first_request_ordinal,
                         title_id
-                   FROM requested_title_ids
-                  WHERE title_id IS NOT NULL
+                   FROM matched_title_ids
                   GROUP BY title_id
              )
              SELECT {TITLE_COLUMNS}
@@ -531,7 +525,10 @@ impl TitleRepository for TitleStore {
         args.push(SqlArg::Text(source.to_string()));
 
         let rows = SqlRuntime::fetch_all(self.datastore.read_exec(), &sql, &args).await?;
-        decode_runtime_title_rows(&rows, PersistedTitleReadMode::Presentation, true)
+        let mut titles =
+            decode_runtime_title_rows(&rows, PersistedTitleReadMode::Presentation, true)?;
+        attach_metadata_tags_to_titles(self.datastore.read_exec(), &mut titles).await?;
+        Ok(titles)
     }
 
     async fn list_by_external_id_lookups(
@@ -573,7 +570,8 @@ impl TitleRepository for TitleStore {
 
         let rows = SqlRuntime::fetch_all(self.datastore.read_exec(), &sql, &args).await?;
         let base_path = normalized_base_path_from_env();
-        rows.iter()
+        let mut matches = rows
+            .iter()
             .map(|row| {
                 Ok(TitleExternalIdLookupMatch {
                     lookup_index: row.i64("lookup_index")? as usize,
@@ -585,7 +583,19 @@ impl TitleRepository for TitleStore {
                     )?,
                 })
             })
-            .collect()
+            .collect::<AppResult<Vec<_>>>()?;
+        let title_ids = matches
+            .iter()
+            .map(|matched| matched.title.id.clone())
+            .collect::<Vec<_>>();
+        let tags_by_title =
+            load_title_metadata_tags(self.datastore.read_exec(), &title_ids).await?;
+        for matched in &mut matches {
+            if let Some(tags) = tags_by_title.get(&matched.title.id) {
+                matched.title.canonical_tags = tags.clone();
+            }
+        }
+        Ok(matches)
     }
 
     async fn list_for_matching(
@@ -617,7 +627,7 @@ impl TitleRepository for TitleStore {
         let rows = SqlRuntime::fetch_all(self.datastore.read_exec(), &sql, &args).await?;
         let mut titles =
             decode_runtime_title_rows(&rows, PersistedTitleReadMode::Presentation, true)?;
-        attach_canonical_tags_to_titles(self.datastore.read_exec(), &mut titles).await?;
+        attach_metadata_tags_to_titles(self.datastore.read_exec(), &mut titles).await?;
         Ok(titles)
     }
 
@@ -657,7 +667,9 @@ impl TitleRepository for TitleStore {
             ],
         )
         .await?;
-        let titles = decode_runtime_title_rows(&rows, PersistedTitleReadMode::Presentation, true)?;
+        let mut titles =
+            decode_runtime_title_rows(&rows, PersistedTitleReadMode::Presentation, true)?;
+        attach_metadata_tags_to_titles(self.datastore.read_exec(), &mut titles).await?;
         single_slug_match(titles, &normalized_slug)
     }
 
@@ -694,7 +706,9 @@ impl TitleRepository for TitleStore {
         args.extend(library_ids.iter().cloned().map(SqlArg::Text));
 
         let rows = SqlRuntime::fetch_all(self.datastore.read_exec(), &sql, &args).await?;
-        let titles = decode_runtime_title_rows(&rows, PersistedTitleReadMode::Presentation, true)?;
+        let mut titles =
+            decode_runtime_title_rows(&rows, PersistedTitleReadMode::Presentation, true)?;
+        attach_metadata_tags_to_titles(self.datastore.read_exec(), &mut titles).await?;
         single_slug_match(titles, &normalized_slug)
     }
 
@@ -720,7 +734,15 @@ impl TitleRepository for TitleStore {
             ],
         )
         .await?;
-        decode_optional_runtime_title_row(row.as_ref(), PersistedTitleReadMode::Presentation, true)
+        let mut titles = decode_optional_runtime_title_row(
+            row.as_ref(),
+            PersistedTitleReadMode::Presentation,
+            true,
+        )?
+        .into_iter()
+        .collect::<Vec<_>>();
+        attach_metadata_tags_to_titles(self.datastore.read_exec(), &mut titles).await?;
+        Ok(titles.pop())
     }
 
     async fn find_by_external_id_in_facet(
@@ -752,7 +774,15 @@ impl TitleRepository for TitleStore {
             ],
         )
         .await?;
-        decode_optional_runtime_title_row(row.as_ref(), PersistedTitleReadMode::Presentation, true)
+        let mut titles = decode_optional_runtime_title_row(
+            row.as_ref(),
+            PersistedTitleReadMode::Presentation,
+            true,
+        )?
+        .into_iter()
+        .collect::<Vec<_>>();
+        attach_metadata_tags_to_titles(self.datastore.read_exec(), &mut titles).await?;
+        Ok(titles.pop())
     }
 
     async fn find_by_external_id_in_library_and_facet(
@@ -796,7 +826,15 @@ impl TitleRepository for TitleStore {
             ],
         )
         .await?;
-        decode_optional_runtime_title_row(row.as_ref(), PersistedTitleReadMode::Presentation, true)
+        let mut titles = decode_optional_runtime_title_row(
+            row.as_ref(),
+            PersistedTitleReadMode::Presentation,
+            true,
+        )?
+        .into_iter()
+        .collect::<Vec<_>>();
+        attach_metadata_tags_to_titles(self.datastore.read_exec(), &mut titles).await?;
+        Ok(titles.pop())
     }
 
     async fn list_existing_external_ids_in_library_and_facet(
@@ -1213,7 +1251,6 @@ impl TitleRepository for TitleStore {
                 Box::pin(async move {
                     let ratings = metadata.ratings.clone();
                     let canonical_tags = metadata.canonical_tags.clone();
-                    let canonical_subject_key = metadata.canonical_subject_key.clone();
                     let mut title = load_title_canonical_tx_or_not_found(tx, &id, true).await?;
                     apply_title_metadata_update(&mut title, metadata)?;
                     let hydration_state = if metadata_marks_fetched {
@@ -1222,40 +1259,17 @@ impl TitleRepository for TitleStore {
                         HydrationStateWrite::Preserve
                     };
                     persist_title_tx(tx, &title, hydration_state).await?;
-                    if canonical_subject_key
-                        .as_deref()
-                        .is_some_and(|key| !key.trim().is_empty())
-                        || metadata_marks_fetched
-                        || !canonical_tags.is_empty()
-                        || ratings.is_some()
-                    {
-                        let subject_input = canonical_subject_input_for_title_with_key(
-                            &title,
-                            canonical_subject_key.as_deref(),
-                        );
-                        let subject_id =
-                            upsert_canonical_media_subject_tx(tx, &subject_input).await?;
-                        if canonical_subject_key
-                            .as_deref()
-                            .is_some_and(|key| !key.trim().is_empty())
-                        {
-                            prefer_canonical_media_subject_for_title_tx(
-                                tx,
-                                &subject_id,
-                                &subject_input,
-                            )
-                            .await?;
-                        }
-                        if !canonical_tags.is_empty() {
-                            replace_canonical_media_tags_tx(tx, &subject_id, &canonical_tags)
-                                .await?;
-                        }
-                        // Full SMG metadata responses pass Some(...), including an empty
-                        // summary when SMG reports no ratings; None is reserved for callers
-                        // that are not updating ratings and must preserve existing rows.
-                        if let Some(ratings) = ratings {
-                            replace_canonical_media_ratings_tx(tx, &subject_id, &ratings).await?;
-                        }
+                    // A fetched metadata payload is authoritative even when the gateway
+                    // returns no normalized tags. Partial/manual updates omit the fetched
+                    // marker and preserve the existing title-owned snapshot.
+                    if metadata_marks_fetched || !canonical_tags.is_empty() {
+                        replace_title_metadata_tags_tx(tx, &title.id, &canonical_tags).await?;
+                    }
+                    // Full SMG metadata responses pass Some(...), including an empty
+                    // summary when SMG reports no ratings; None is reserved for callers
+                    // that are not updating ratings and must preserve existing rows.
+                    if let Some(ratings) = ratings {
+                        replace_title_metadata_ratings_tx(tx, &title.id, &ratings).await?;
                     }
                     load_title_tx_or_not_found(tx, &id, true).await
                 })
@@ -1289,6 +1303,7 @@ impl TitleRepository for TitleStore {
                 title.slug = None;
                 title.imdb_id = None;
                 title.runtime_minutes = None;
+                title.popularity = None;
                 title.content_status = None;
                 title.language = None;
                 title.first_aired = None;
@@ -1300,7 +1315,25 @@ impl TitleRepository for TitleStore {
                 title.metadata_language = None;
                 title.metadata_fetched_at = None;
                 title.digital_release_date = None;
+                SqlRuntime::execute(
+                    SqlExec::Tx(tx),
+                    "DELETE FROM title_images WHERE title_id = {}",
+                    &[SqlArg::Text(title.id.clone())],
+                )
+                .await?;
+                SqlRuntime::execute(
+                    SqlExec::Tx(tx),
+                    "UPDATE titles
+                        SET poster_local_path = NULL,
+                            background_local_path = NULL
+                      WHERE id = {}",
+                    &[SqlArg::Text(title.id.clone())],
+                )
+                .await?;
                 persist_title_tx(tx, &title, HydrationStateWrite::Reschedule).await?;
+                replace_title_metadata_tags_tx(tx, &title.id, &[]).await?;
+                replace_title_metadata_ratings_tx(tx, &title.id, &TitleRatingSummary::default())
+                    .await?;
                 load_title_tx_or_not_found(tx, &id, true).await
             })
         })
@@ -1966,10 +1999,8 @@ async fn fetch_title_catalog_filter_options(
                 LOWER(TRIM(catalog_tag.category)) AS category,
                 MIN(catalog_tag.name) AS name
            FROM titles
-           JOIN canonical_media_subjects catalog_subject
-             ON catalog_subject.title_id = titles.id
-           JOIN canonical_media_tags catalog_tag
-             ON catalog_tag.subject_id = catalog_subject.id
+           JOIN title_metadata_tags catalog_tag
+             ON catalog_tag.title_id = titles.id
           WHERE {scope_sql}
             AND LOWER(TRIM(catalog_tag.category)) IN ('genre', 'theme')
           GROUP BY catalog_tag.tag_key, LOWER(TRIM(catalog_tag.category))
@@ -2132,10 +2163,8 @@ fn build_title_catalog_where_sql(
         clauses.push(
             "EXISTS (
                 SELECT 1
-                  FROM canonical_media_subjects catalog_rating_subject
-                  JOIN canonical_media_rating_summaries catalog_rating
-                    ON catalog_rating.subject_id = catalog_rating_subject.id
-                 WHERE catalog_rating_subject.title_id = titles.id
+                  FROM title_metadata_rating_summaries catalog_rating
+                 WHERE catalog_rating.title_id = titles.id
                    AND catalog_rating.rating >= {}
             )"
             .to_string(),
@@ -2178,10 +2207,8 @@ fn title_catalog_tag_filter_clause(
     Some(format!(
         "EXISTS (
             SELECT 1
-              FROM canonical_media_subjects catalog_tag_subject
-              JOIN canonical_media_tags catalog_tag
-                ON catalog_tag.subject_id = catalog_tag_subject.id
-             WHERE catalog_tag_subject.title_id = titles.id
+              FROM title_metadata_tags catalog_tag
+             WHERE catalog_tag.title_id = titles.id
                AND LOWER(TRIM(catalog_tag.category)) = {{}}
                AND catalog_tag.tag_key IN ({placeholders})
         )"
@@ -2535,12 +2562,10 @@ fn title_catalog_normalized_rating_source_expression(alias: &str) -> String {
 }
 
 fn title_catalog_scryer_rating_subquery() -> String {
-    "SELECT cms.title_id,
+    "SELECT rating.title_id,
             MAX(rating.rating) AS rating
-       FROM canonical_media_subjects cms
-       JOIN canonical_media_rating_summaries rating ON rating.subject_id = cms.id
-      WHERE cms.title_id IS NOT NULL
-      GROUP BY cms.title_id"
+       FROM title_metadata_rating_summaries rating
+      GROUP BY rating.title_id"
         .to_string()
 }
 
@@ -2552,16 +2577,14 @@ fn title_catalog_external_rating_subquery(sources: &[&str]) -> String {
         .join(", ");
     let source_expression = title_catalog_normalized_rating_source_expression("ter");
     format!(
-        "SELECT cms.title_id,
+        "SELECT ter.title_id,
                 MAX(CASE
                     WHEN ter.normalized <= 1.0 THEN ter.normalized * 10.0
                     ELSE ter.normalized
                 END) AS normalized
-           FROM canonical_media_subjects cms
-           JOIN canonical_media_external_ratings ter ON ter.subject_id = cms.id
-          WHERE cms.title_id IS NOT NULL
-            AND {source_expression} IN ({source_list})
-          GROUP BY cms.title_id"
+           FROM title_metadata_external_ratings ter
+          WHERE {source_expression} IN ({source_list})
+          GROUP BY ter.title_id"
     )
 }
 
@@ -2799,7 +2822,7 @@ async fn load_title_tx_with_mode(
         SqlRuntime::fetch_optional(SqlExec::Tx(tx), &sql, &[SqlArg::Text(id.to_string())]).await?;
     let mut title = decode_optional_runtime_title_row(row.as_ref(), mode, include_external_ids)?;
     if let Some(title) = title.as_mut() {
-        attach_canonical_tags_to_titles(SqlExec::Tx(tx), std::slice::from_mut(title)).await?;
+        attach_metadata_tags_to_titles(SqlExec::Tx(tx), std::slice::from_mut(title)).await?;
     }
     Ok(title)
 }
@@ -2883,6 +2906,23 @@ async fn find_existing_title_for_create_tx(
 }
 
 async fn create_title_tx(tx: &mut SqlTx<'_>, title: &Title) -> AppResult<()> {
+    let library = SqlRuntime::fetch_optional(
+        SqlExec::Tx(tx),
+        "SELECT id FROM libraries WHERE id = {} AND facet = {}",
+        &[
+            SqlArg::Text(title.library_id.clone()),
+            SqlArg::Text(title.facet.as_str().to_string()),
+        ],
+    )
+    .await?;
+    if library.is_none() {
+        return Err(AppError::Validation(format!(
+            "library {} does not exist for facet {}",
+            title.library_id,
+            title.facet.as_str()
+        )));
+    }
+
     let args = title_write_args(title, scheduled_hydration_attempt(title), 0);
     SqlRuntime::execute(SqlExec::Tx(tx), TITLE_INSERT_SQL, &args).await?;
     replace_title_search_projection_sql_tx(tx, title).await?;
@@ -3048,8 +3088,7 @@ async fn load_title_ratings(
     title_id: &str,
 ) -> AppResult<TitleRatingSummary> {
     let mut ratings =
-        load_canonical_ratings_for_title_ids(datastore.read_exec(), &[title_id.to_string()])
-            .await?;
+        load_title_metadata_ratings(datastore.read_exec(), &[title_id.to_string()]).await?;
     Ok(ratings.remove(title_id).unwrap_or_default())
 }
 
@@ -3061,7 +3100,7 @@ async fn load_title_ratings_batch(
         return Ok(Vec::new());
     }
 
-    let mut by_title_id = load_canonical_ratings_for_title_ids(datastore.read_exec(), title_ids)
+    let mut by_title_id = load_title_metadata_ratings(datastore.read_exec(), title_ids)
         .await?
         .into_iter()
         .collect::<std::collections::HashMap<_, _>>();
@@ -3306,11 +3345,10 @@ mod tests {
         assert!(sql.contains("titles.year >= {}"));
         assert!(sql.contains("titles.year <= {}"));
         assert_eq!(
-            sql.matches("FROM canonical_media_subjects catalog_tag_subject")
-                .count(),
+            sql.matches("FROM title_metadata_tags catalog_tag").count(),
             2
         );
-        assert!(sql.contains("FROM canonical_media_subjects catalog_rating_subject"));
+        assert!(sql.contains("FROM title_metadata_rating_summaries catalog_rating"));
         assert!(sql.contains("monitored = {}"));
         assert!(sql.contains("LOWER(TRIM(COALESCE(content_status, ''))) IN"));
         assert_eq!(args.len(), 15);

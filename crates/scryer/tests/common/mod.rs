@@ -496,6 +496,12 @@ impl HousekeepingRepository for TestLibraryStateStore {
         self.housekeeping.delete_media_files_by_ids(ids).await
     }
 
+    async fn prune_unreferenced_title_image_blobs(&self, limit: u32) -> AppResult<u32> {
+        self.housekeeping
+            .prune_unreferenced_title_image_blobs(limit)
+            .await
+    }
+
     async fn run_database_maintenance(&self) -> AppResult<()> {
         self.housekeeping.run_database_maintenance().await
     }

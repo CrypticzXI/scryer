@@ -106,16 +106,37 @@ impl ExternalImportMonitorSnapshotRepository for ExternalImportMonitorStore {
         Ok(())
     }
 
-    async fn delete_external_import_monitor_snapshot_chunks_except_session(
+    async fn delete_external_import_monitor_snapshot_chunks_for_session_prefix(
         &self,
-        preserved_session_id: &str,
+        session_prefix: &str,
+        facet: MediaFacet,
     ) -> AppResult<()> {
         execute_write(
             &self.datastore,
-            "delete_external_import_monitor_snapshot_chunks_except_session",
-            "DELETE FROM external_import_monitor_snapshot_chunks WHERE session_id <> {}"
+            "delete_external_import_monitor_snapshot_chunks_for_session_prefix",
+            "DELETE FROM external_import_monitor_snapshot_chunks
+              WHERE session_id LIKE {} AND facet = {}"
                 .to_string(),
-            vec![SqlArg::Text(preserved_session_id.to_string())],
+            vec![
+                SqlArg::Text(format!("{session_prefix}%")),
+                SqlArg::Text(facet.as_str().to_string()),
+            ],
+        )
+        .await
+        .map_err(map_snapshot_chunk_error)?;
+        Ok(())
+    }
+
+    async fn delete_external_import_monitor_snapshot_chunks_except_session_prefix(
+        &self,
+        preserved_session_prefix: &str,
+    ) -> AppResult<()> {
+        execute_write(
+            &self.datastore,
+            "delete_external_import_monitor_snapshot_chunks_except_session_prefix",
+            "DELETE FROM external_import_monitor_snapshot_chunks WHERE session_id NOT LIKE {}"
+                .to_string(),
+            vec![SqlArg::Text(format!("{preserved_session_prefix}%"))],
         )
         .await
         .map_err(map_snapshot_chunk_error)?;

@@ -59,6 +59,7 @@ type ActionTooltipProps = {
   sideOffset?: React.ComponentProps<typeof TooltipPrimitive.Content>["sideOffset"]
   collisionPadding?: React.ComponentProps<typeof TooltipPrimitive.Content>["collisionPadding"]
   delayDuration?: React.ComponentProps<typeof TooltipPrimitive.Provider>["delayDuration"]
+  useProvider?: boolean
   className?: string
   wrapperClassName?: string
   wrapperTabIndex?: number
@@ -71,6 +72,7 @@ function ActionTooltip({
   sideOffset = 8,
   collisionPadding = 8,
   delayDuration = 300,
+  useProvider = true,
   className,
   wrapperClassName,
   wrapperTabIndex,
@@ -79,30 +81,34 @@ function ActionTooltip({
     return children
   }
 
-  return (
-    <TooltipProvider delayDuration={delayDuration}>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <span
-            className={cn("inline-flex", wrapperClassName)}
-            tabIndex={wrapperTabIndex}
-          >
-            {children}
-          </span>
-        </TooltipTrigger>
-        <TooltipContent
-          side={side}
-          sideOffset={sideOffset}
-          collisionPadding={collisionPadding}
-          className={cn(
-            "max-w-[18rem] whitespace-normal break-words text-left text-sm leading-snug",
-            className,
-          )}
+  const tooltip = (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span
+          className={cn("inline-flex", wrapperClassName)}
+          tabIndex={wrapperTabIndex}
         >
-          {content}
-        </TooltipContent>
-      </Tooltip>
-    </TooltipProvider>
+          {children}
+        </span>
+      </TooltipTrigger>
+      <TooltipContent
+        side={side}
+        sideOffset={sideOffset}
+        collisionPadding={collisionPadding}
+        className={cn(
+          "max-w-[18rem] whitespace-normal break-words text-left text-sm leading-snug",
+          className,
+        )}
+      >
+        {content}
+      </TooltipContent>
+    </Tooltip>
+  )
+
+  return useProvider ? (
+    <TooltipProvider delayDuration={delayDuration}>{tooltip}</TooltipProvider>
+  ) : (
+    tooltip
   )
 }
 

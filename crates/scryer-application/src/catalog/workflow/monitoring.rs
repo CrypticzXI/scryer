@@ -8,6 +8,17 @@ fn parse_external_import_monitor_snapshot_line<T: serde::de::DeserializeOwned>(
         ))
     })
 }
+#[cfg(test)]
+impl AppUseCase {
+    pub(crate) async fn apply_pending_external_import_monitor_snapshot_for_facet(
+        &self,
+        facet: &MediaFacet,
+    ) -> AppResult<bool> {
+        let library_id = scryer_domain::default_library_id_for_facet(facet);
+        self.apply_pending_external_import_monitor_snapshot_for_library(facet, &library_id)
+            .await
+    }
+}
 impl AppUseCase {
     /// Low-level title monitoring persistence and side effects. This helper
     /// intentionally does not emit domain events; canonical apply helpers do.
@@ -150,12 +161,17 @@ impl AppUseCase {
     }
 }
 impl AppUseCase {
-    async fn apply_movie_monitor_snapshot_chunks(&self, _now: &DateTime<Utc>) -> AppResult<()> {
+    async fn apply_movie_monitor_snapshot_chunks(
+        &self,
+        session_id: &str,
+        library_id: &str,
+        _now: &DateTime<Utc>,
+    ) -> AppResult<()> {
         let titles = self
             .services
             .catalog
             .titles
-            .list(Some(MediaFacet::Movie), None)
+            .list_for_libraries(Some(MediaFacet::Movie), &[library_id.to_string()], None)
             .await?;
         let mut titles_by_tmdb = HashMap::<String, Vec<Title>>::new();
         let mut titles_by_imdb = HashMap::<String, Vec<Title>>::new();
@@ -174,6 +190,7 @@ impl AppUseCase {
         }
 
         let mut touched_title_ids = HashSet::new();
+        let mut unresolved_entries = 0usize;
         let mut processed_chunk_count = 0i32;
         let mut after_chunk_index = None;
         loop {
@@ -182,7 +199,7 @@ impl AppUseCase {
                 .workflow
                 .external_import_monitor_snapshots
                 .list_external_import_monitor_snapshot_chunk_batch(
-                    crate::EXTERNAL_IMPORT_MONITOR_APPLY_SESSION_ID,
+                    session_id,
                     MediaFacet::Movie,
                     ExternalImportMonitorSnapshotEntryKind::Movie,
                     after_chunk_index,
@@ -208,7 +225,10 @@ impl AppUseCase {
                         unique_title_match(&titles_by_tmdb, entry.tmdb_id.as_deref()).or_else(
                             || unique_title_match(&titles_by_imdb, entry.imdb_id.as_deref()),
                         );
-                    let Some(title) = matched_title else { continue };
+                    let Some(title) = matched_title else {
+                        unresolved_entries += 1;
+                        continue;
+                    };
 
                     let updated = self
                         .apply_title_monitoring_change(None, &title.id, entry.monitored)
@@ -237,6 +257,12 @@ impl AppUseCase {
                     .delete_acquisition_scope_states_for_title(&title.id)
                     .await?;
             }
+        }
+
+        if unresolved_entries > 0 {
+            return Err(AppError::Repository(format!(
+                "{unresolved_entries} imported movie monitoring entries did not match titles in library {library_id}"
+            )));
         }
 
         Ok(())
@@ -385,13 +411,15 @@ impl AppUseCase {
     async fn apply_series_monitor_snapshot_chunks(
         &self,
         facet: &MediaFacet,
+        session_id: &str,
+        library_id: &str,
         _now: &DateTime<Utc>,
     ) -> AppResult<()> {
         let titles = self
             .services
             .catalog
             .titles
-            .list(Some(facet.clone()), None)
+            .list_for_libraries(Some(facet.clone()), &[library_id.to_string()], None)
             .await?;
         let mut titles_by_tvdb = HashMap::<String, Vec<Title>>::new();
 
@@ -405,6 +433,7 @@ impl AppUseCase {
 
         let mut touched_title_ids = HashSet::new();
         let mut title_ids_needing_activity = HashSet::<String>::new();
+        let mut unresolved_entries = 0usize;
         let mut processed_chunk_count = 0i32;
         let mut after_chunk_index = None;
         loop {
@@ -413,7 +442,7 @@ impl AppUseCase {
                 .workflow
                 .external_import_monitor_snapshots
                 .list_external_import_monitor_snapshot_chunk_batch(
-                    crate::EXTERNAL_IMPORT_MONITOR_APPLY_SESSION_ID,
+                    session_id,
                     facet.clone(),
                     ExternalImportMonitorSnapshotEntryKind::Series,
                     after_chunk_index,
@@ -437,6 +466,7 @@ impl AppUseCase {
                         parse_external_import_monitor_snapshot_line(line)?;
                     let Some(title) = unique_title_match(&titles_by_tvdb, entry.tvdb_id.as_deref())
                     else {
+                        unresolved_entries += 1;
                         continue;
                     };
 
@@ -469,15 +499,25 @@ impl AppUseCase {
             self.runtime.acquisition.acquisition_wake.notify_one();
         }
 
+        if unresolved_entries > 0 {
+            return Err(AppError::Repository(format!(
+                "{unresolved_entries} imported {} monitoring entries did not match titles in library {library_id}",
+                facet.as_str()
+            )));
+        }
+
         Ok(())
     }
 }
 impl AppUseCase {
-    pub(crate) async fn apply_pending_external_import_monitor_snapshot_for_facet(
+    pub(crate) async fn apply_pending_external_import_monitor_snapshot_for_library(
         &self,
         facet: &MediaFacet,
+        library_id: &str,
     ) -> AppResult<bool> {
         let _apply_guard = self.acquire_external_import_apply_guard().await;
+        let apply_session_id =
+            crate::external_import_monitor_apply_session_id_for_library(library_id);
         let now = Utc::now();
         let chunk_entry_kind = match facet {
             MediaFacet::Movie => ExternalImportMonitorSnapshotEntryKind::Movie,
@@ -490,7 +530,7 @@ impl AppUseCase {
             .workflow
             .external_import_monitor_snapshots
             .list_external_import_monitor_snapshot_chunk_batch(
-                crate::EXTERNAL_IMPORT_MONITOR_APPLY_SESSION_ID,
+                &apply_session_id,
                 facet.clone(),
                 chunk_entry_kind,
                 None,
@@ -504,21 +544,24 @@ impl AppUseCase {
 
         match facet {
             MediaFacet::Movie => {
-                self.apply_movie_monitor_snapshot_chunks(&now).await?;
+                self.apply_movie_monitor_snapshot_chunks(&apply_session_id, library_id, &now)
+                    .await?;
             }
             MediaFacet::Series | MediaFacet::Anime => {
-                self.apply_series_monitor_snapshot_chunks(facet, &now)
-                    .await?;
+                self.apply_series_monitor_snapshot_chunks(
+                    facet,
+                    &apply_session_id,
+                    library_id,
+                    &now,
+                )
+                .await?;
             }
         }
 
         self.services
             .workflow
             .external_import_monitor_snapshots
-            .delete_external_import_monitor_snapshot_chunks(
-                crate::EXTERNAL_IMPORT_MONITOR_APPLY_SESSION_ID,
-                facet.clone(),
-            )
+            .delete_external_import_monitor_snapshot_chunks(&apply_session_id, facet.clone())
             .await?;
 
         Ok(true)

@@ -797,7 +797,7 @@ impl AppUseCase {
                 job_key.display_name()
             )));
         }
-        self.ensure_job_can_start(job_key).await?;
+        self.ensure_job_can_start(job_key, None).await?;
 
         let run = self
             .create_job_run_record(
@@ -849,7 +849,7 @@ impl AppUseCase {
                 .await;
         }
 
-        self.ensure_job_can_start(job_key).await?;
+        self.ensure_job_can_start(job_key, None).await?;
         let run = self
             .create_job_run_record(job_key, trigger_source, None, None)
             .await?;
@@ -880,7 +880,7 @@ impl AppUseCase {
         trigger_source: JobTriggerSource,
     ) -> AppResult<crate::security::backup::AutoBackupRunOutcome> {
         let job_key = JobKey::AutoBackup;
-        self.ensure_job_can_start(job_key).await?;
+        self.ensure_job_can_start(job_key, None).await?;
         let run = self
             .create_job_run_record(job_key, trigger_source, None, None)
             .await?;
@@ -926,7 +926,7 @@ impl AppUseCase {
         let actor = self.find_or_create_default_user().await?;
         let mut first_error = None;
         for library in libraries {
-            if let Err(error) = self.ensure_job_can_start(job_key).await {
+            if let Err(error) = self.ensure_job_can_start(job_key, Some(&library.id)).await {
                 if first_error.is_none() {
                     first_error = Some(error.to_string());
                 }
@@ -1073,7 +1073,11 @@ impl AppUseCase {
             .await;
     }
 
-    async fn ensure_job_can_start(&self, job_key: JobKey) -> AppResult<()> {
+    async fn ensure_job_can_start(
+        &self,
+        job_key: JobKey,
+        library_id: Option<&str>,
+    ) -> AppResult<()> {
         if self
             .runtime
             .jobs
@@ -1088,15 +1092,23 @@ impl AppUseCase {
         }
 
         if let Some(facet) = job_key_library_facet(job_key) {
-            let active_scans = self
+            let library_id = match library_id {
+                Some(library_id) => library_id.to_string(),
+                None => self
+                    .services
+                    .catalog
+                    .libraries
+                    .default_for_facet(facet.clone())
+                    .await?
+                    .map(|library| library.id)
+                    .unwrap_or_else(|| scryer_domain::default_library_id_for_facet(&facet)),
+            };
+            if self
                 .runtime
                 .library
                 .library_scan_tracker
-                .list_active()
-                .await;
-            if active_scans
-                .into_iter()
-                .any(|session| session.facet == facet)
+                .has_conflicting_session(&facet, Some(&library_id))
+                .await
             {
                 return Err(AppError::Validation(format!(
                     "{} library scan is already running",

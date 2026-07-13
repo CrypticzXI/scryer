@@ -10,75 +10,6 @@ CREATE TABLE blocklist (
     created_at   TEXT NOT NULL,
     FOREIGN KEY (title_id) REFERENCES titles(id) ON DELETE CASCADE
 );
-CREATE TABLE canonical_media_external_ratings (
-    subject_id TEXT NOT NULL REFERENCES canonical_media_subjects(id) ON DELETE CASCADE,
-    source TEXT NOT NULL,
-    sort_index INTEGER NOT NULL DEFAULT 0,
-    value REAL,
-    score REAL,
-    normalized REAL NOT NULL,
-    votes INTEGER,
-    url TEXT NOT NULL DEFAULT '',
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (subject_id, source)
-);
-CREATE TABLE canonical_media_rating_sources (
-    subject_id TEXT NOT NULL REFERENCES canonical_media_subjects(id) ON DELETE CASCADE,
-    source TEXT NOT NULL,
-    sort_index INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (subject_id, source)
-);
-CREATE TABLE canonical_media_rating_summaries (
-    subject_id TEXT PRIMARY KEY NOT NULL REFERENCES canonical_media_subjects(id) ON DELETE CASCADE,
-    rating REAL,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-CREATE TABLE canonical_media_subjects (
-    id TEXT PRIMARY KEY NOT NULL,
-    subject_key TEXT NOT NULL,
-    subject_key_norm TEXT NOT NULL,
-    language TEXT NOT NULL,
-    target_kind TEXT NOT NULL DEFAULT '',
-    title_id TEXT REFERENCES titles(id) ON DELETE SET NULL,
-    display_title TEXT NOT NULL DEFAULT '',
-    year INTEGER,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE (subject_key_norm, language)
-);
-CREATE TABLE canonical_media_tag_source_keys (
-    subject_id TEXT NOT NULL,
-    tag_key TEXT NOT NULL,
-    source_tag_key TEXT NOT NULL,
-    sort_index INTEGER NOT NULL DEFAULT 0,
-    FOREIGN KEY (subject_id, tag_key)
-        REFERENCES canonical_media_tags(subject_id, tag_key) ON DELETE CASCADE,
-    UNIQUE (subject_id, tag_key, source_tag_key)
-);
-CREATE TABLE canonical_media_tag_sources (
-    subject_id TEXT NOT NULL,
-    tag_key TEXT NOT NULL,
-    source TEXT NOT NULL,
-    sort_index INTEGER NOT NULL DEFAULT 0,
-    FOREIGN KEY (subject_id, tag_key)
-        REFERENCES canonical_media_tags(subject_id, tag_key) ON DELETE CASCADE,
-    UNIQUE (subject_id, tag_key, source)
-);
-CREATE TABLE canonical_media_tags (
-    subject_id TEXT NOT NULL REFERENCES canonical_media_subjects(id) ON DELETE CASCADE,
-    tag_key TEXT NOT NULL,
-    category TEXT NOT NULL,
-    name TEXT NOT NULL,
-    confidence REAL,
-    is_adult INTEGER NOT NULL DEFAULT 0,
-    is_spoiler INTEGER NOT NULL DEFAULT 0,
-    sort_index INTEGER NOT NULL DEFAULT 0,
-    PRIMARY KEY (subject_id, tag_key)
-);
 CREATE TABLE collection_external_ids(
     id TEXT PRIMARY KEY NOT NULL,
     title_id TEXT NOT NULL,
@@ -280,6 +211,62 @@ CREATE TABLE discovery_title_external_ids (
     sort_index INTEGER NOT NULL DEFAULT 0,
     UNIQUE (discovery_title_id, source, external_kind, external_identity)
 );
+CREATE TABLE discovery_title_metadata_external_ratings (
+    discovery_title_id TEXT NOT NULL REFERENCES discovery_titles(id) ON DELETE CASCADE,
+    source TEXT NOT NULL,
+    sort_index INTEGER NOT NULL DEFAULT 0,
+    value REAL,
+    score REAL,
+    normalized REAL NOT NULL,
+    votes INTEGER,
+    url TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (discovery_title_id, source)
+);
+CREATE TABLE discovery_title_metadata_rating_sources (
+    discovery_title_id TEXT NOT NULL REFERENCES discovery_titles(id) ON DELETE CASCADE,
+    source TEXT NOT NULL,
+    sort_index INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (discovery_title_id, source)
+);
+CREATE TABLE discovery_title_metadata_rating_summaries (
+    discovery_title_id TEXT PRIMARY KEY NOT NULL REFERENCES discovery_titles(id) ON DELETE CASCADE,
+    rating REAL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE discovery_title_metadata_tag_source_keys (
+    discovery_title_id TEXT NOT NULL,
+    tag_key TEXT NOT NULL,
+    source_tag_key TEXT NOT NULL,
+    sort_index INTEGER NOT NULL DEFAULT 0,
+    FOREIGN KEY (discovery_title_id, tag_key)
+        REFERENCES discovery_title_metadata_tags(discovery_title_id, tag_key) ON DELETE CASCADE,
+    UNIQUE (discovery_title_id, tag_key, source_tag_key)
+);
+CREATE TABLE discovery_title_metadata_tag_sources (
+    discovery_title_id TEXT NOT NULL,
+    tag_key TEXT NOT NULL,
+    source TEXT NOT NULL,
+    sort_index INTEGER NOT NULL DEFAULT 0,
+    FOREIGN KEY (discovery_title_id, tag_key)
+        REFERENCES discovery_title_metadata_tags(discovery_title_id, tag_key) ON DELETE CASCADE,
+    UNIQUE (discovery_title_id, tag_key, source)
+);
+CREATE TABLE discovery_title_metadata_tags (
+    discovery_title_id TEXT NOT NULL REFERENCES discovery_titles(id) ON DELETE CASCADE,
+    tag_key TEXT NOT NULL,
+    category TEXT NOT NULL,
+    name TEXT NOT NULL,
+    confidence REAL,
+    is_adult INTEGER NOT NULL DEFAULT 0,
+    is_spoiler INTEGER NOT NULL DEFAULT 0,
+    sort_index INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (discovery_title_id, tag_key)
+);
 CREATE TABLE discovery_title_source_tag_values (
     discovery_title_id TEXT NOT NULL REFERENCES discovery_titles(id) ON DELETE CASCADE,
     source_tag_sort_index INTEGER NOT NULL,
@@ -310,7 +297,6 @@ CREATE TABLE discovery_titles (
     target_kind TEXT NOT NULL,
     resolved INTEGER NOT NULL DEFAULT 0,
     resolved_title_id TEXT REFERENCES titles(id) ON DELETE SET NULL,
-    canonical_subject_id TEXT REFERENCES canonical_media_subjects(id) ON DELETE SET NULL,
     display_title TEXT NOT NULL,
     original_title TEXT,
     sort_title TEXT,
@@ -1200,20 +1186,25 @@ CREATE TABLE title_external_ids(
     updated_at TEXT, facet TEXT, library_id TEXT,
     FOREIGN KEY (title_id) REFERENCES titles(id) ON DELETE CASCADE
 );
-CREATE TABLE title_image_variants (
-  id TEXT PRIMARY KEY,
-  title_image_id TEXT NOT NULL,
-  variant_key TEXT NOT NULL,
-  path TEXT,
+CREATE TABLE title_image_blobs (
+  digest TEXT PRIMARY KEY,
   format TEXT NOT NULL,
   width INTEGER NOT NULL,
   height INTEGER NOT NULL,
   bytes BLOB NOT NULL,
-  digest TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE title_image_variants (
+  id TEXT PRIMARY KEY,
+  title_image_id TEXT NOT NULL,
+  variant_key TEXT NOT NULL,
+  blob_digest TEXT NOT NULL,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   UNIQUE (title_image_id, variant_key),
-  FOREIGN KEY (title_image_id) REFERENCES title_images(id) ON DELETE CASCADE
+  FOREIGN KEY (title_image_id) REFERENCES title_images(id) ON DELETE CASCADE,
+  FOREIGN KEY (blob_digest) REFERENCES title_image_blobs(digest) ON DELETE RESTRICT
 );
 CREATE TABLE title_images (
   id TEXT PRIMARY KEY,
@@ -1231,6 +1222,62 @@ CREATE TABLE title_images (
   updated_at TEXT NOT NULL,
   UNIQUE (title_id, kind),
   FOREIGN KEY (title_id) REFERENCES titles(id) ON DELETE CASCADE
+);
+CREATE TABLE title_metadata_external_ratings (
+    title_id TEXT NOT NULL REFERENCES titles(id) ON DELETE CASCADE,
+    source TEXT NOT NULL,
+    sort_index INTEGER NOT NULL DEFAULT 0,
+    value REAL,
+    score REAL,
+    normalized REAL NOT NULL,
+    votes INTEGER,
+    url TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (title_id, source)
+);
+CREATE TABLE title_metadata_rating_sources (
+    title_id TEXT NOT NULL REFERENCES titles(id) ON DELETE CASCADE,
+    source TEXT NOT NULL,
+    sort_index INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (title_id, source)
+);
+CREATE TABLE title_metadata_rating_summaries (
+    title_id TEXT PRIMARY KEY NOT NULL REFERENCES titles(id) ON DELETE CASCADE,
+    rating REAL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE title_metadata_tag_source_keys (
+    title_id TEXT NOT NULL,
+    tag_key TEXT NOT NULL,
+    source_tag_key TEXT NOT NULL,
+    sort_index INTEGER NOT NULL DEFAULT 0,
+    FOREIGN KEY (title_id, tag_key)
+        REFERENCES title_metadata_tags(title_id, tag_key) ON DELETE CASCADE,
+    UNIQUE (title_id, tag_key, source_tag_key)
+);
+CREATE TABLE title_metadata_tag_sources (
+    title_id TEXT NOT NULL,
+    tag_key TEXT NOT NULL,
+    source TEXT NOT NULL,
+    sort_index INTEGER NOT NULL DEFAULT 0,
+    FOREIGN KEY (title_id, tag_key)
+        REFERENCES title_metadata_tags(title_id, tag_key) ON DELETE CASCADE,
+    UNIQUE (title_id, tag_key, source)
+);
+CREATE TABLE title_metadata_tags (
+    title_id TEXT NOT NULL REFERENCES titles(id) ON DELETE CASCADE,
+    tag_key TEXT NOT NULL,
+    category TEXT NOT NULL,
+    name TEXT NOT NULL,
+    confidence REAL,
+    is_adult INTEGER NOT NULL DEFAULT 0,
+    is_spoiler INTEGER NOT NULL DEFAULT 0,
+    sort_index INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (title_id, tag_key)
 );
 CREATE TABLE title_more_like_this_items (
     source_title_id TEXT NOT NULL REFERENCES titles(id) ON DELETE CASCADE,
@@ -1508,18 +1555,6 @@ CREATE INDEX idx_blocklist_source_title
     WHERE source_title IS NOT NULL;
 CREATE INDEX idx_blocklist_title_id
     ON blocklist (title_id);
-CREATE INDEX idx_canonical_media_external_ratings_order
-    ON canonical_media_external_ratings(subject_id, sort_index ASC, source ASC);
-CREATE INDEX idx_canonical_media_external_ratings_source_norm
-    ON canonical_media_external_ratings(source, normalized, subject_id);
-CREATE INDEX idx_canonical_media_rating_sources_order
-    ON canonical_media_rating_sources(subject_id, sort_index ASC, source ASC);
-CREATE INDEX idx_canonical_media_subjects_key_language
-    ON canonical_media_subjects(subject_key_norm, language);
-CREATE INDEX idx_canonical_media_subjects_title
-    ON canonical_media_subjects(title_id);
-CREATE INDEX idx_canonical_media_tags_category_name
-    ON canonical_media_tags(category, name, subject_id);
 CREATE INDEX idx_collection_external_ids_title_provenance
     ON collection_external_ids(title_id, provenance);
 CREATE UNIQUE INDEX idx_collection_external_ids_unique
@@ -1562,6 +1597,14 @@ CREATE INDEX idx_discovery_sync_runs_kind_status
     ON discovery_sync_runs(kind, status, updated_at);
 CREATE INDEX idx_discovery_title_external_ids_title
     ON discovery_title_external_ids(discovery_title_id, sort_index);
+CREATE INDEX idx_discovery_title_metadata_external_ratings_order
+    ON discovery_title_metadata_external_ratings(discovery_title_id, sort_index ASC, source ASC);
+CREATE INDEX idx_discovery_title_metadata_external_ratings_source_norm
+    ON discovery_title_metadata_external_ratings(source, normalized, discovery_title_id);
+CREATE INDEX idx_discovery_title_metadata_rating_sources_order
+    ON discovery_title_metadata_rating_sources(discovery_title_id, sort_index ASC, source ASC);
+CREATE INDEX idx_discovery_title_metadata_tags_category_name
+    ON discovery_title_metadata_tags(category, name, discovery_title_id);
 CREATE INDEX idx_discovery_title_source_tag_values_title
     ON discovery_title_source_tag_values(discovery_title_id, source_tag_sort_index, value_sort_index);
 CREATE INDEX idx_discovery_title_source_tags_title
@@ -1804,7 +1847,17 @@ CREATE INDEX idx_title_external_ids_title_id
     ON title_external_ids(title_id);
 CREATE INDEX idx_title_image_variants_image_variant
   ON title_image_variants(title_image_id, variant_key);
+CREATE INDEX idx_title_image_variants_blob_digest
+  ON title_image_variants(blob_digest);
 CREATE INDEX idx_title_images_title_kind ON title_images(title_id, kind);
+CREATE INDEX idx_title_metadata_external_ratings_order
+    ON title_metadata_external_ratings(title_id, sort_index ASC, source ASC);
+CREATE INDEX idx_title_metadata_external_ratings_source_norm
+    ON title_metadata_external_ratings(source, normalized, title_id);
+CREATE INDEX idx_title_metadata_rating_sources_order
+    ON title_metadata_rating_sources(title_id, sort_index ASC, source ASC);
+CREATE INDEX idx_title_metadata_tags_category_name
+    ON title_metadata_tags(category, name, title_id);
 CREATE INDEX idx_title_more_like_this_items_source_order
     ON title_more_like_this_items(source_title_id, sort_index ASC, rank_score DESC);
 CREATE INDEX idx_title_more_like_this_items_title

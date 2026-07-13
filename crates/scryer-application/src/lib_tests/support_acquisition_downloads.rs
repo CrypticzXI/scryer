@@ -1307,6 +1307,10 @@ impl HousekeepingRepository for TrackingHousekeepingRepo {
     async fn delete_media_files_by_ids(&self, _ids: &[String]) -> AppResult<u32> {
         Ok(0)
     }
+
+    async fn prune_unreferenced_title_image_blobs(&self, _limit: u32) -> AppResult<u32> {
+        Ok(0)
+    }
 }
 
 #[derive(Clone)]

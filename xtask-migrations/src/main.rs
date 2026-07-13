@@ -20,6 +20,8 @@ enum Commands {
 pub(crate) struct RebaselineArgs {
     #[arg(long)]
     through: i64,
+    #[arg(long)]
+    force: bool,
 }
 
 fn main() -> Result<()> {

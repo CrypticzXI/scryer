@@ -559,6 +559,12 @@ engine = "all"
 scope = "all"
 
 [[migration.steps]]
+kind = "rust"
+hook_id = "migrate_title_image_blobs"
+engine = "all"
+scope = "all"
+
+[[migration.steps]]
 kind = "sql"
 file = "migrations/0140_0_17_release_rollup.sql"
 engine = "sqlite"

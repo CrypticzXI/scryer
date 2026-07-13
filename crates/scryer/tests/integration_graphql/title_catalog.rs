@@ -113,45 +113,28 @@ async fn seed_catalog_filter_metadata(
     tags: &[(&str, &str, &str)],
     rating: Option<f64>,
 ) {
-    let subject_id = Id::new().0;
-    let subject_key = format!("catalog-filter:{title_id}");
-    sqlx::query(
-        "INSERT INTO canonical_media_subjects (
-            id, subject_key, subject_key_norm, language, target_kind, title_id, display_title
-         ) VALUES (?, ?, ?, 'eng', 'movie', ?, 'Catalog record')",
-    )
-    .bind(&subject_id)
-    .bind(&subject_key)
-    .bind(&subject_key)
-    .bind(title_id)
-    .execute(ctx.db.pool())
-    .await
-    .expect("canonical catalog filter subject should insert");
-
     for (tag_key, category, name) in tags {
         sqlx::query(
-            "INSERT INTO canonical_media_tags (
-                subject_id, tag_key, category, name, confidence, is_adult, is_spoiler, sort_index
+            "INSERT INTO title_metadata_tags (
+                title_id, tag_key, category, name, confidence, is_adult, is_spoiler, sort_index
              ) VALUES (?, ?, ?, ?, 1.0, 0, 0, 0)",
         )
-        .bind(&subject_id)
+        .bind(title_id)
         .bind(tag_key)
         .bind(category)
         .bind(name)
         .execute(ctx.db.pool())
         .await
-        .expect("canonical catalog filter tag should insert");
+        .expect("title catalog filter tag should insert");
     }
 
     if let Some(rating) = rating {
-        sqlx::query(
-            "INSERT INTO canonical_media_rating_summaries (subject_id, rating) VALUES (?, ?)",
-        )
-        .bind(&subject_id)
-        .bind(rating)
-        .execute(ctx.db.pool())
-        .await
-        .expect("canonical catalog filter rating should insert");
+        sqlx::query("INSERT INTO title_metadata_rating_summaries (title_id, rating) VALUES (?, ?)")
+            .bind(title_id)
+            .bind(rating)
+            .execute(ctx.db.pool())
+            .await
+            .expect("title catalog filter rating should insert");
     }
 }
 
@@ -330,7 +313,6 @@ async fn graphql_title_catalog_advanced_filters_apply_to_seeded_catalog_data() {
         None,
     )
     .await;
-
     let body = gql(
         &ctx,
         r#"query(
@@ -1185,6 +1167,13 @@ async fn graphql_titles_by_external_ids_returns_catalog_titles() {
         true,
     )
     .await;
+    seed_catalog_filter_metadata(
+        &ctx,
+        &second.id,
+        &[("canonical:genre:family", "genre", "Family")],
+        None,
+    )
+    .await;
 
     let body = gql(
         &ctx,
@@ -1194,6 +1183,7 @@ async fn graphql_titles_by_external_ids_returns_catalog_titles() {
             name
             facet
             externalIds { source value }
+            canonicalTags { key name }
           }
         }"#,
         json!({
@@ -1207,14 +1197,77 @@ async fn graphql_titles_by_external_ids_returns_catalog_titles() {
     let titles = body["data"]["titlesByExternalIds"]
         .as_array()
         .expect("titles array");
-    let expected_first_match = if first.id <= duplicate.id {
-        first.id.as_str()
-    } else {
-        duplicate.id.as_str()
-    };
-    assert_eq!(titles.len(), 2);
-    assert_eq!(titles[0]["id"].as_str(), Some(expected_first_match));
-    assert_eq!(titles[1]["id"].as_str(), Some(second.id.as_str()));
+    let mut expected_duplicate_ids = [first.id.as_str(), duplicate.id.as_str()];
+    expected_duplicate_ids.sort_unstable();
+    assert_eq!(titles.len(), 3);
+    assert_eq!(titles[0]["id"].as_str(), Some(expected_duplicate_ids[0]));
+    assert_eq!(titles[1]["id"].as_str(), Some(expected_duplicate_ids[1]));
+    assert_eq!(titles[2]["id"].as_str(), Some(second.id.as_str()));
+    assert_eq!(
+        titles[2]["canonicalTags"],
+        json!([{ "key": "canonical:genre:family", "name": "Family" }])
+    );
+}
+
+#[tokio::test]
+async fn graphql_titles_by_external_ids_filters_all_owner_copies_before_returning_matches() {
+    let ctx = TestContext::new().await;
+    let first_library = create_title_catalog_library(
+        &ctx,
+        "MOVIE",
+        "External ID Copy A",
+        &[("/catalog-rbac/external-copy-a", true)],
+    )
+    .await;
+    let second_library = create_title_catalog_library(
+        &ctx,
+        "MOVIE",
+        "External ID Copy B",
+        &[("/catalog-rbac/external-copy-b", true)],
+    )
+    .await;
+    let first_library_id = library_id(&first_library);
+    let second_library_id = library_id(&second_library);
+    let first_title_id = add_catalog_filter_title(
+        &ctx,
+        "External Identity Copy A",
+        "99118861",
+        &first_library_id,
+        &library_root_id(&first_library, "/catalog-rbac/external-copy-a"),
+        2024,
+    )
+    .await;
+    let second_title_id = add_catalog_filter_title(
+        &ctx,
+        "External Identity Copy B",
+        "99118861",
+        &second_library_id,
+        &library_root_id(&second_library, "/catalog-rbac/external-copy-b"),
+        2024,
+    )
+    .await;
+
+    let (unauthorized_title_id, authorized_title_id, authorized_library_id) =
+        if first_title_id < second_title_id {
+            (&first_title_id, &second_title_id, &second_library_id)
+        } else {
+            (&second_title_id, &first_title_id, &first_library_id)
+        };
+    assert!(unauthorized_title_id < authorized_title_id);
+
+    let body = schema_exec(
+        &ctx,
+        r#"query {
+            titlesByExternalIds(source: "tvdb", values: ["99118861"]) { id }
+        }"#,
+        Some(catalog_view_actor(authorized_library_id)),
+    )
+    .await;
+    assert_no_errors(&body);
+    assert_eq!(
+        body["data"]["titlesByExternalIds"],
+        json!([{ "id": authorized_title_id }])
+    );
 }
 
 #[tokio::test]

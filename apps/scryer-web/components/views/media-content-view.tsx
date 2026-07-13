@@ -124,6 +124,8 @@ import {
   TitleWorkspaceSectionHeader,
 } from "./media-content/title-workspace-primitives";
 import {
+  TitleCollectionEmptyState,
+  TitleCollectionErrorState,
   TitleTableActionButton,
   TitleCollectionLoadingState,
   bytesToReadable,
@@ -1754,6 +1756,15 @@ export function MediaContentView({
     ) => void;
     catalogBootstrapLoading: boolean;
     catalogInitialLoadComplete: boolean;
+    catalogSurfacePhase:
+      | "resolving"
+      | "content"
+      | "empty"
+      | "rootsMissing"
+      | "rootsInvalid"
+      | "error";
+    catalogSurfaceError: string | null;
+    retryCatalogBootstrap: () => void;
     monitoredTitles: TitleRecord[];
     titleContextTitles: TitleRecord[];
     catalogDiscoveryGroups: CatalogDiscoveryGroup[];
@@ -1832,7 +1843,6 @@ export function MediaContentView({
     librariesLoading: boolean;
     rootValidationLibraries: LibraryRecord[];
     rootValidationLibrariesLoading: boolean;
-    catalogHasValidRoot: boolean | null;
     invalidRootPathsByLibraryId: Record<string, string[]>;
     selectedLibraryIds: string[];
     allLibrariesValue: string;
@@ -2011,6 +2021,9 @@ export function MediaContentView({
     setTitleTableColumnVisible,
     catalogBootstrapLoading,
     catalogInitialLoadComplete,
+    catalogSurfacePhase,
+    catalogSurfaceError,
+    retryCatalogBootstrap,
     monitoredTitles,
     titleContextTitles,
     catalogDiscoveryGroups,
@@ -2059,7 +2072,6 @@ export function MediaContentView({
     libraryDownloadClientsLoading,
     rootValidationLibraries,
     rootValidationLibrariesLoading,
-    catalogHasValidRoot,
     invalidRootPathsByLibraryId,
     selectedLibraryIds,
     allLibrariesValue,
@@ -2098,7 +2110,6 @@ export function MediaContentView({
     React.useState(titleFilter);
   const [titleLayoutRef, titleLayoutWidth] =
     useMeasuredElementWidth<HTMLDivElement>();
-  const deferredMonitoredTitles = React.useDeferredValue(monitoredTitles);
   const deferredTitleContextTitles =
     React.useDeferredValue(titleContextTitles);
   const deferredCatalogDiscoveryGroups = React.useDeferredValue(
@@ -2205,16 +2216,16 @@ export function MediaContentView({
   }, [titleFilter]);
   const compactSelectedVisibleCount = React.useMemo(
     () =>
-      deferredMonitoredTitles.filter((title) => selectedTitleIds.has(title.id))
+      monitoredTitles.filter((title) => selectedTitleIds.has(title.id))
         .length,
-    [deferredMonitoredTitles, selectedTitleIds],
+    [monitoredTitles, selectedTitleIds],
   );
   const bulkPosterStackTitles = React.useMemo(
     () =>
-      deferredMonitoredTitles
+      monitoredTitles
         .filter((title) => selectedTitleIds.has(title.id))
         .slice(0, 3),
-    [deferredMonitoredTitles, selectedTitleIds],
+    [monitoredTitles, selectedTitleIds],
   );
   const selectedOverviewTitle = React.useMemo(
     () => {
@@ -2523,7 +2534,7 @@ export function MediaContentView({
     catalogHasMoreTitles,
     catalogLoadingMoreTitles,
     collectionViewMode,
-    deferredMonitoredTitles.length,
+    monitoredTitles.length,
     isTitleCatalogView,
     loadMoreCatalogTitles,
     selectedTitlePosterLayoutActive,
@@ -2556,41 +2567,15 @@ export function MediaContentView({
       setSelectedOverviewTitleId,
     ],
   );
-  const explicitlySelectedLibraryIds = selectedLibraryIds.filter(
-    (libraryId) => libraryId !== allLibrariesValue,
-  );
-  const selectedLibraryIdSet =
-    explicitlySelectedLibraryIds.length > 0
-      ? new Set(explicitlySelectedLibraryIds)
-      : null;
-  const relevantLibraries = selectedLibraryIdSet
-    ? libraries.filter((library) => selectedLibraryIdSet.has(library.id))
-    : libraries;
-  const hasConfiguredRootFolders =
-    !catalogInitialLoadComplete || librariesLoading
-      ? null
-      : relevantLibraries.some((library) =>
-          library.roots.some((folder) => folder.path.trim().length > 0),
-        );
-  const hasInvalidConfiguredRootFolders =
-    catalogInitialLoadComplete &&
-    !librariesLoading &&
-    hasConfiguredRootFolders === true &&
-    catalogHasValidRoot === false;
   const showInitialScanAction =
     canManageLibrarySettings &&
-    catalogInitialLoadComplete &&
-    monitoredTitles.length === 0 &&
-    hasConfiguredRootFolders === true &&
-    !hasInvalidConfiguredRootFolders;
+    catalogSurfacePhase === "empty";
   const showConfigureRootFoldersAction =
     canManageLibrarySettings &&
-    catalogInitialLoadComplete &&
-    monitoredTitles.length === 0 &&
-    (hasConfiguredRootFolders === false || hasInvalidConfiguredRootFolders);
-  const configureRootFoldersReason = hasInvalidConfiguredRootFolders
-    ? "invalid"
-    : "missing";
+    (catalogSurfacePhase === "rootsMissing" ||
+      catalogSurfacePhase === "rootsInvalid");
+  const configureRootFoldersReason =
+    catalogSurfacePhase === "rootsInvalid" ? "invalid" : "missing";
   const configureRootFoldersHref =
     view === "movies" || view === "series" || view === "anime"
       ? buildViewPath(view, undefined, "library")
@@ -2877,13 +2862,6 @@ export function MediaContentView({
     titleQuickFilterCounts.all,
     catalogTotalTitleCount,
   );
-  const rootConfigurationResolutionPending =
-    showEmptyStateActions &&
-    canManageLibrarySettings &&
-    catalogInitialLoadComplete &&
-    knownCatalogTitleCount === 0 &&
-    monitoredTitles.length === 0 &&
-    librariesLoading;
 
   const handleDeleteCatalogTitle = React.useCallback(
     (title: TitleRecord) => {
@@ -2892,7 +2870,7 @@ export function MediaContentView({
     [deleteCatalogTitle],
   );
   const mediaTitle = mediaTitleLabel(view, t);
-  const visibleTitleCount = deferredMonitoredTitles.length;
+  const visibleTitleCount = monitoredTitles.length;
   const totalTitleCount = knownCatalogTitleCount;
   const titleSummaryNoun = (() => {
     if (view === "movies") {
@@ -3434,24 +3412,18 @@ export function MediaContentView({
                   (selectedOverviewTitleId !== null &&
                     activeOverviewTitle === null &&
                     selectedOverviewDetailLoading);
-                const titleListLoading =
-                  (titleLoading || catalogBootstrapLoading) &&
-                  !(
-                    activeOverviewTitle !== null &&
-                    deferredMonitoredTitles.length > 0
-                  );
+                const titleListLoading = false;
                 const titleListInitialLoadComplete =
-                  catalogInitialLoadComplete ||
-                  (activeOverviewTitle !== null &&
-                    deferredMonitoredTitles.length > 0);
+                  catalogSurfacePhase === "content" ||
+                  catalogSurfacePhase === "empty";
 
                 if (
-                  rootConfigurationResolutionPending ||
+                  catalogSurfacePhase === "resolving" ||
                   overviewTitleResolutionPending
                 ) {
                   titleCollectionView = (
                     <div
-                      data-slot="title-list-root-config-loading"
+                      data-slot="title-list-bootstrap-loading"
                       className={cn(
                         "flex h-full w-full items-start justify-center px-4 pt-12",
                         selectedTitleCompactLayoutActive &&
@@ -3463,11 +3435,37 @@ export function MediaContentView({
                       <TitleCollectionLoadingState />
                     </div>
                   );
+                } else if (
+                  catalogSurfacePhase === "rootsMissing" ||
+                  catalogSurfacePhase === "rootsInvalid"
+                ) {
+                  titleCollectionView = (
+                    <div className="flex h-full w-full items-start justify-center px-4 pt-12">
+                      <TitleCollectionEmptyState
+                        t={t}
+                        showConfigureRootsAction={
+                          showConfigureRootFoldersAction
+                        }
+                        configureRootsReason={configureRootFoldersReason}
+                        configureRootsHref={configureRootFoldersHref}
+                      />
+                    </div>
+                  );
+                } else if (catalogSurfacePhase === "error") {
+                  titleCollectionView = (
+                    <div className="flex h-full w-full items-start justify-center px-4 pt-12">
+                      <TitleCollectionErrorState
+                        t={t}
+                        error={catalogSurfaceError}
+                        onRetry={retryCatalogBootstrap}
+                      />
+                    </div>
+                  );
                 } else if (collectionViewMode === "poster") {
                   titleCollectionView = (
                     <PosterGrid
                       key={`${view}-poster-grid`}
-                      titles={deferredMonitoredTitles}
+                      titles={monitoredTitles}
                       catalogInitialLoadComplete={titleListInitialLoadComplete}
                       catalogHasMoreTitles={catalogHasMoreTitles}
                       catalogLoadingMoreTitles={catalogLoadingMoreTitles}
@@ -3499,7 +3497,7 @@ export function MediaContentView({
                     <CompactTitleTable
                       key={`${view}-${selectedTitleCompactLayoutActive && !selectedTitleListInlineActive ? "drawer" : "full"}-compact-title-table`}
                       view={view}
-                      titles={deferredMonitoredTitles}
+                      titles={monitoredTitles}
                       titleLoading={titleListLoading}
                       catalogHasMoreTitles={catalogHasMoreTitles}
                       catalogLoadingMoreTitles={catalogLoadingMoreTitles}
@@ -3558,7 +3556,7 @@ export function MediaContentView({
                     <TitleTable
                       key={`${view}-poster-title-table`}
                       view={view}
-                      titles={deferredMonitoredTitles}
+                      titles={monitoredTitles}
                       titleLoading={titleListLoading}
                       catalogHasMoreTitles={catalogHasMoreTitles}
                       catalogLoadingMoreTitles={catalogLoadingMoreTitles}

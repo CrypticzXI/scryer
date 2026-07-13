@@ -493,31 +493,51 @@ pub const BACKUP_TABLE_CATALOG: &[BackupTableCatalogEntry] = &[
         classification: BackupTableClassification::Export,
     },
     BackupTableCatalogEntry {
-        table: "canonical_media_subjects",
+        table: "title_metadata_tags",
         classification: BackupTableClassification::Export,
     },
     BackupTableCatalogEntry {
-        table: "canonical_media_tags",
+        table: "title_metadata_tag_sources",
         classification: BackupTableClassification::Export,
     },
     BackupTableCatalogEntry {
-        table: "canonical_media_tag_sources",
+        table: "title_metadata_tag_source_keys",
         classification: BackupTableClassification::Export,
     },
     BackupTableCatalogEntry {
-        table: "canonical_media_tag_source_keys",
+        table: "title_metadata_rating_summaries",
         classification: BackupTableClassification::Export,
     },
     BackupTableCatalogEntry {
-        table: "canonical_media_rating_summaries",
+        table: "title_metadata_rating_sources",
         classification: BackupTableClassification::Export,
     },
     BackupTableCatalogEntry {
-        table: "canonical_media_rating_sources",
+        table: "title_metadata_external_ratings",
         classification: BackupTableClassification::Export,
     },
     BackupTableCatalogEntry {
-        table: "canonical_media_external_ratings",
+        table: "discovery_title_metadata_tags",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
+        table: "discovery_title_metadata_tag_sources",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
+        table: "discovery_title_metadata_tag_source_keys",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
+        table: "discovery_title_metadata_rating_summaries",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
+        table: "discovery_title_metadata_rating_sources",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
+        table: "discovery_title_metadata_external_ratings",
         classification: BackupTableClassification::Export,
     },
     BackupTableCatalogEntry {
@@ -847,6 +867,10 @@ pub const BACKUP_TABLE_CATALOG: &[BackupTableCatalogEntry] = &[
     BackupTableCatalogEntry {
         table: "title_external_ids",
         classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
+        table: "title_image_blobs",
+        classification: BackupTableClassification::Rebuild,
     },
     BackupTableCatalogEntry {
         table: "title_image_variants",
@@ -1773,6 +1797,41 @@ mod tests {
                 "{table} should be exported in logical backups"
             );
         }
+    }
+
+    #[test]
+    fn backup_table_catalog_exports_owner_scoped_metadata_tables() {
+        for table in [
+            "title_metadata_tags",
+            "title_metadata_tag_sources",
+            "title_metadata_tag_source_keys",
+            "title_metadata_rating_summaries",
+            "title_metadata_rating_sources",
+            "title_metadata_external_ratings",
+            "discovery_title_metadata_tags",
+            "discovery_title_metadata_tag_sources",
+            "discovery_title_metadata_tag_source_keys",
+            "discovery_title_metadata_rating_summaries",
+            "discovery_title_metadata_rating_sources",
+            "discovery_title_metadata_external_ratings",
+        ] {
+            let classification = BACKUP_TABLE_CATALOG
+                .iter()
+                .find(|entry| entry.table == table)
+                .map(|entry| entry.classification);
+
+            assert_eq!(
+                classification,
+                Some(BackupTableClassification::Export),
+                "{table} should be exported in logical backups"
+            );
+        }
+
+        assert!(
+            BACKUP_TABLE_CATALOG
+                .iter()
+                .all(|entry| !entry.table.starts_with("canonical_media_"))
+        );
     }
 
     #[test]
