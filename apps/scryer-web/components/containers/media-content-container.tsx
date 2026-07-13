@@ -4811,9 +4811,9 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
             return;
           }
 
-          const scopedLibraries = normalizedSelectedLibraryIds.includes(
-            ALL_LIBRARIES_VALUE,
-          )
+          const scopedLibraries =
+            normalizedSelectedLibraryIds.length === 0 ||
+            normalizedSelectedLibraryIds.includes(ALL_LIBRARIES_VALUE)
             ? nextLibraries
             : nextLibraries.filter((library) =>
                 normalizedSelectedLibraryIds.includes(library.id),

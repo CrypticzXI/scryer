@@ -1,7 +1,9 @@
 use async_graphql::Result as GqlResult;
 use scryer_domain::{ExternalId, NewTitle};
 
-use crate::types::{AddTitleInput, DownloadSourceKindValue, FillerPolicyValue, IntoApplication, RecapPolicyValue};
+use crate::types::{
+    AddTitleInput, DownloadSourceKindValue, FillerPolicyValue, IntoApplication, RecapPolicyValue,
+};
 
 pub(crate) struct ResolvedTitleOptionsInput {
     pub quality_profile_id: Option<async_graphql::ID>,
@@ -65,12 +67,16 @@ pub(crate) fn apply_title_options(tags: &mut Vec<String>, options: ResolvedTitle
     set_structured_tag(
         tags,
         "scryer:filler-policy:",
-        options.filler_policy.map(|value| value.as_app_str().to_string()),
+        options
+            .filler_policy
+            .map(|value| value.as_app_str().to_string()),
     );
     set_structured_tag(
         tags,
         "scryer:recap-policy:",
-        options.recap_policy.map(|value| value.as_app_str().to_string()),
+        options
+            .recap_policy
+            .map(|value| value.as_app_str().to_string()),
     );
 
     if let Some(use_season_folders) = options.use_season_folders {

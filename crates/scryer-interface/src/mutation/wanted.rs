@@ -54,9 +54,7 @@ impl WantedMutations {
         app.pause_wanted_item(&actor, &id)
             .await
             .map_err(to_gql_error)?;
-        Ok(PauseWantedItemPayload {
-            id: ID::from(id),
-        })
+        Ok(PauseWantedItemPayload { id: ID::from(id) })
     }
 
     /// Resume acquisition for a paused scope. `id` is a state-row id or a
@@ -72,9 +70,7 @@ impl WantedMutations {
         app.resume_wanted_item(&actor, &id)
             .await
             .map_err(to_gql_error)?;
-        Ok(ResumeWantedItemPayload {
-            id: ID::from(id),
-        })
+        Ok(ResumeWantedItemPayload { id: ID::from(id) })
     }
 
     async fn force_grab_pending_release(
@@ -106,9 +102,7 @@ impl WantedMutations {
         app.dismiss_pending_release(&actor, &id)
             .await
             .map_err(to_gql_error)?;
-        Ok(DismissPendingReleasePayload {
-            id: ID::from(id),
-        })
+        Ok(DismissPendingReleasePayload { id: ID::from(id) })
     }
 
     /// Start an interactive acquisition-search job over the selected wanted/upgrade

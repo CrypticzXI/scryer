@@ -978,7 +978,10 @@ impl AcquisitionScopeStateRepository for WantedStore {
             return Ok(Vec::new());
         }
         let placeholders = placeholders(ids.len());
-        let sql = format!("{} WHERE w.id IN ({placeholders})", wanted_item_select_sql());
+        let sql = format!(
+            "{} WHERE w.id IN ({placeholders})",
+            wanted_item_select_sql()
+        );
         let args = ids.iter().cloned().map(SqlArg::Text).collect::<Vec<_>>();
         SqlRuntime::fetch_all(self.datastore.read_exec(), &sql, &args)
             .await?
@@ -1737,7 +1740,12 @@ impl PendingReleaseRepository for PendingReleaseStore {
             where_sql.push_str(" AND pr.wanted_item_id = {}");
             filter_args.push(SqlArg::Text(wanted_item_id.to_string()));
         }
-        append_in_filter(&mut where_sql, &mut filter_args, "pr.status", &query.statuses);
+        append_in_filter(
+            &mut where_sql,
+            &mut filter_args,
+            "pr.status",
+            &query.statuses,
+        );
         if use_library_filter {
             append_in_filter(
                 &mut where_sql,
@@ -1748,11 +1756,12 @@ impl PendingReleaseRepository for PendingReleaseStore {
         }
 
         let count_sql = format!("SELECT COUNT(*) AS cnt {from_clause}{where_sql}");
-        let total = SqlRuntime::fetch_optional(self.datastore.read_exec(), &count_sql, &filter_args)
-            .await?
-            .map(|row| row.i64("cnt"))
-            .transpose()?
-            .unwrap_or_default();
+        let total =
+            SqlRuntime::fetch_optional(self.datastore.read_exec(), &count_sql, &filter_args)
+                .await?
+                .map(|row| row.i64("cnt"))
+                .transpose()?
+                .unwrap_or_default();
 
         if limit == 0 || total == 0 {
             return Ok((Vec::new(), total));

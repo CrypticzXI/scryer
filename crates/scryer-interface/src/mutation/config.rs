@@ -298,9 +298,7 @@ impl ConfigMutations {
         app.delete_indexer_config(&actor, &id)
             .await
             .map_err(to_gql_error)?;
-        Ok(DeleteIndexerConfigPayload {
-            id: ID::from(id),
-        })
+        Ok(DeleteIndexerConfigPayload { id: ID::from(id) })
     }
 
     async fn create_download_client_config(
@@ -427,9 +425,7 @@ impl ConfigMutations {
         app.delete_download_client_config(&actor, &id)
             .await
             .map_err(to_gql_error)?;
-        Ok(DeleteDownloadClientConfigPayload {
-            id: ID::from(id),
-        })
+        Ok(DeleteDownloadClientConfigPayload { id: ID::from(id) })
     }
 
     async fn reorder_download_client_configs(
@@ -444,9 +440,7 @@ impl ConfigMutations {
         app.reorder_download_clients(&actor, id_strings)
             .await
             .map_err(to_gql_error)?;
-        Ok(ReorderDownloadClientConfigsPayload {
-            ids,
-        })
+        Ok(ReorderDownloadClientConfigsPayload { ids })
     }
 
     async fn test_download_client_connection(
@@ -548,9 +542,7 @@ impl ConfigMutations {
         app.delete_subtitle_provider_config(&actor, &id)
             .await
             .map_err(to_gql_error)?;
-        Ok(DeleteSubtitleProviderConfigPayload {
-            id: ID::from(id),
-        })
+        Ok(DeleteSubtitleProviderConfigPayload { id: ID::from(id) })
     }
 
     async fn test_subtitle_provider_connection(

@@ -75,9 +75,7 @@ impl RulesMutations {
             .await
             .map_err(to_gql_error)?;
 
-        Ok(DeleteRuleSetPayload {
-            id: ID::from(id),
-        })
+        Ok(DeleteRuleSetPayload { id: ID::from(id) })
     }
 
     async fn toggle_rule_set(

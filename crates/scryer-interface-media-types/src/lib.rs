@@ -7,9 +7,8 @@ use scryer_domain::{
     AppPermission, CollectionType, ConfigFieldRole, ConfigFieldType, ConfigFieldValueSource,
     DomainEventActorKind, DomainEventType, DownloadQueueState, EpisodeType, ExecutionMode,
     ImportDecision, ImportErrorCode, ImportMode, ImportSkipReason, ImportStatus,
-    ImportTransferPhase, ImportType,
-    LibraryPermission, MediaFacet, MediaRequestStatus, TitleHistoryEventType, TitleMatchType,
-    TrackedDownloadState, TrackedDownloadStatus,
+    ImportTransferPhase, ImportType, LibraryPermission, MediaFacet, MediaRequestStatus,
+    TitleHistoryEventType, TitleMatchType, TrackedDownloadState, TrackedDownloadStatus,
 };
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]

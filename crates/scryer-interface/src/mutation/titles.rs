@@ -421,9 +421,7 @@ impl TitleMutations {
         app.clear_title_release_blocklist_entry(&actor, &id)
             .await
             .map_err(to_gql_error)?;
-        Ok(ClearTitleReleaseBlocklistEntryPayload {
-            id: ID::from(id),
-        })
+        Ok(ClearTitleReleaseBlocklistEntryPayload { id: ID::from(id) })
     }
 
     async fn set_title_monitored(

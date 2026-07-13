@@ -58,8 +58,12 @@ fn library_settings_draft(
         scoring_persona: input
             .scoring_persona
             .map(ScoringPersonaValue::into_application),
-        filler_policy: input.filler_policy.map(|policy| policy.as_app_str().to_string()),
-        recap_policy: input.recap_policy.map(|policy| policy.as_app_str().to_string()),
+        filler_policy: input
+            .filler_policy
+            .map(|policy| policy.as_app_str().to_string()),
+        recap_policy: input
+            .recap_policy
+            .map(|policy| policy.as_app_str().to_string()),
         monitor_specials: input.monitor_specials,
         inter_season_movies: input.inter_season_movies,
         monitor_filler_movies: input.monitor_filler_movies,
@@ -170,9 +174,7 @@ impl LibraryMutations {
         app.delete_library(&actor, &id)
             .await
             .map_err(to_gql_error)?;
-        Ok(DeleteLibraryPayload {
-            id: ID::from(id),
-        })
+        Ok(DeleteLibraryPayload { id: ID::from(id) })
     }
 
     async fn scan_library(

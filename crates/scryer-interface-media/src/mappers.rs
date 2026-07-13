@@ -7,19 +7,17 @@ use scryer_application::{
     CatalogDiscoveryQuery, CatalogDiscoveryResult, CatalogDiscoverySurface, DeletePreview,
     DiscoveryFacetRecord, DiscoveryHomeQuery, DiscoveryHomeResult, DiscoveryItemDetailQuery,
     DiscoveryItemRecord, DiscoveryItemsQuery, DiscoveryItemsResult, DiscoverySectionResult,
-    DiscoverySyncStateRecord, DiscoverySyncStatus,
-    DownloadClientRoutingSettingsEntry, FacetScoringPersonaSelection, IgnorePendingImportResult,
-    IndexerProxyTestResult, IndexerRoutingSettingsEntry, IndexerSearchResult, JobDefinition,
-    JobRun, LibraryPathsSettings, LibraryScanSummary, LibrarySettings, ManualPluginPreview,
-    MediaRequestCounts, MediaSettings, ParsedEpisodeMetadata,
-    ParsedReleaseMetadata, PendingImportConnection, PendingImportCounts, PendingImportItem,
-    PendingImportSearchAttempt, PendingRelease, PluginCatalogStatus, QualityProfile,
-    QualityProfileCriteria, QualityProfileDecision, QualityProfileSelection,
+    DiscoverySyncStateRecord, DiscoverySyncStatus, DownloadClientRoutingSettingsEntry,
+    FacetScoringPersonaSelection, IgnorePendingImportResult, IndexerProxyTestResult,
+    IndexerRoutingSettingsEntry, IndexerSearchResult, JobDefinition, JobRun, LibraryPathsSettings,
+    LibraryScanSummary, LibrarySettings, ManualPluginPreview, MediaRequestCounts, MediaSettings,
+    ParsedEpisodeMetadata, ParsedReleaseMetadata, PendingImportConnection, PendingImportCounts,
+    PendingImportItem, PendingImportSearchAttempt, PendingRelease, PluginCatalogStatus,
+    QualityProfile, QualityProfileCriteria, QualityProfileDecision, QualityProfileSelection,
     QualityProfileSettings, RegistryPlugin, RenameApplyItemResult, RenameApplyResult, RenamePlan,
-    RenamePlanItem, ResolvePendingImportResult, RssSyncReport, ScoringEntry,
-    ScoringSource, ServiceSettings, SmgScryerUpdateNotice, SmgVersionCompatibilityNotice,
-    SubmissionScope, SystemHealth, TitleHistoryPage, TitleRatingSummary,
-    TitleReleaseBlocklistEntry,
+    RenamePlanItem, ResolvePendingImportResult, RssSyncReport, ScoringEntry, ScoringSource,
+    ServiceSettings, SmgScryerUpdateNotice, SmgVersionCompatibilityNotice, SubmissionScope,
+    SystemHealth, TitleHistoryPage, TitleRatingSummary, TitleReleaseBlocklistEntry,
 };
 use scryer_domain::{
     CalendarEpisode, Collection, ConfigFieldDef, ConfigFieldType, DomainEvent,
@@ -85,9 +83,11 @@ fn provider_config_value_payload(
         }))
     } else {
         match value {
-            Some(Value::Bool(value)) => Some(ProviderConfigFieldValue::Bool(
-                BoolConfigValuePayload { value: *value },
-            )),
+            Some(Value::Bool(value)) => {
+                Some(ProviderConfigFieldValue::Bool(BoolConfigValuePayload {
+                    value: *value,
+                }))
+            }
             Some(Value::Number(value)) => {
                 let int_value = value.as_i64().or_else(|| {
                     value
@@ -103,11 +103,11 @@ fn provider_config_value_payload(
                     }),
                 }
             }
-            Some(Value::String(value)) => Some(ProviderConfigFieldValue::String(
-                StringConfigValuePayload {
+            Some(Value::String(value)) => {
+                Some(ProviderConfigFieldValue::String(StringConfigValuePayload {
                     value: value.clone(),
-                },
-            )),
+                }))
+            }
             _ => None,
         }
     };
@@ -451,10 +451,22 @@ pub fn from_library_settings(settings: LibrarySettings) -> LibrarySettingsPayloa
             .scoring_persona_override
             .map(ScoringPersonaValue::from_application),
         scoring_persona: ScoringPersonaValue::from_application(settings.scoring_persona),
-        filler_policy_override: settings.filler_policy_override.as_deref().and_then(FillerPolicyValue::from_app_str),
-        filler_policy: settings.filler_policy.as_deref().and_then(FillerPolicyValue::from_app_str),
-        recap_policy_override: settings.recap_policy_override.as_deref().and_then(RecapPolicyValue::from_app_str),
-        recap_policy: settings.recap_policy.as_deref().and_then(RecapPolicyValue::from_app_str),
+        filler_policy_override: settings
+            .filler_policy_override
+            .as_deref()
+            .and_then(FillerPolicyValue::from_app_str),
+        filler_policy: settings
+            .filler_policy
+            .as_deref()
+            .and_then(FillerPolicyValue::from_app_str),
+        recap_policy_override: settings
+            .recap_policy_override
+            .as_deref()
+            .and_then(RecapPolicyValue::from_app_str),
+        recap_policy: settings
+            .recap_policy
+            .as_deref()
+            .and_then(RecapPolicyValue::from_app_str),
         monitor_specials_override: settings.monitor_specials_override,
         monitor_specials: settings.monitor_specials,
         inter_season_movies_override: settings.inter_season_movies_override,
@@ -553,8 +565,14 @@ pub fn from_media_settings(
         // Match the application-layer default (DEFAULT_MISSING_METADATA_POLICY):
         // an unparseable stored value must not flip the semantic to Skip.
         .unwrap_or(RenameMissingMetadataPolicyValue::FallbackTitle),
-        filler_policy: settings.filler_policy.as_deref().and_then(FillerPolicyValue::from_app_str),
-        recap_policy: settings.recap_policy.as_deref().and_then(RecapPolicyValue::from_app_str),
+        filler_policy: settings
+            .filler_policy
+            .as_deref()
+            .and_then(FillerPolicyValue::from_app_str),
+        recap_policy: settings
+            .recap_policy
+            .as_deref()
+            .and_then(RecapPolicyValue::from_app_str),
         monitor_specials: settings.monitor_specials,
         inter_season_movies: settings.inter_season_movies,
         monitor_filler_movies: settings.monitor_filler_movies,
@@ -3222,11 +3240,15 @@ mod tests {
         }
         assert!(matches!(
             field("enabled").value,
-            Some(ProviderConfigFieldValue::Bool(BoolConfigValuePayload { value: true }))
+            Some(ProviderConfigFieldValue::Bool(BoolConfigValuePayload {
+                value: true
+            }))
         ));
         assert!(matches!(
             field("retries").value,
-            Some(ProviderConfigFieldValue::Int(IntConfigValuePayload { value: 3 }))
+            Some(ProviderConfigFieldValue::Int(IntConfigValuePayload {
+                value: 3
+            }))
         ));
         assert!(matches!(
             field("ratio").value,

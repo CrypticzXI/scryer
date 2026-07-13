@@ -212,7 +212,9 @@ impl AcquisitionScopeStateRepository for TestLibraryStateStore {
     }
 
     async fn count_release_decisions_for_title(&self, title_id: &str) -> AppResult<i64> {
-        self.wanted.count_release_decisions_for_title(title_id).await
+        self.wanted
+            .count_release_decisions_for_title(title_id)
+            .await
     }
 
     async fn count_release_decisions_for_acquisition_scope_state(
@@ -278,7 +280,9 @@ impl PendingReleaseRepository for TestLibraryStateStore {
         &self,
         query: scryer_application::PendingReleasesPageQuery,
     ) -> AppResult<(Vec<scryer_application::PendingRelease>, i64)> {
-        self.pending_releases.list_pending_releases_page(query).await
+        self.pending_releases
+            .list_pending_releases_page(query)
+            .await
     }
 
     async fn update_pending_release_status(

@@ -275,14 +275,19 @@ loader!(
     }
 );
 
-loader!(WantedItemLoader, String, AcquisitionScopeState, |ctx, keys| {
-    let items = ctx
-        .app
-        .get_wanted_items_by_ids(&ctx.actor, keys)
-        .await
-        .map_err(to_gql_error)?;
-    Ok(by_id(items, |item| item.id.clone()))
-});
+loader!(
+    WantedItemLoader,
+    String,
+    AcquisitionScopeState,
+    |ctx, keys| {
+        let items = ctx
+            .app
+            .get_wanted_items_by_ids(&ctx.actor, keys)
+            .await
+            .map_err(to_gql_error)?;
+        Ok(by_id(items, |item| item.id.clone()))
+    }
+);
 
 loader!(
     WantedItemForManagementLoader,
@@ -350,19 +355,14 @@ loader!(
     }
 );
 
-loader!(
-    RatingsLoader,
-    String,
-    TitleRatingSummary,
-    |ctx, keys| {
-        let ratings = ctx
-            .app
-            .list_title_ratings(&ctx.actor, keys)
-            .await
-            .map_err(to_gql_error)?;
-        Ok(ratings.into_iter().collect())
-    }
-);
+loader!(RatingsLoader, String, TitleRatingSummary, |ctx, keys| {
+    let ratings = ctx
+        .app
+        .list_title_ratings(&ctx.actor, keys)
+        .await
+        .map_err(to_gql_error)?;
+    Ok(ratings.into_iter().collect())
+});
 
 loader!(
     MovieMediaSummaryLoader,

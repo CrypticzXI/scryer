@@ -312,9 +312,7 @@ impl UserMutations {
         app.unlink_external_account(&actor, &linked_account_id_string)
             .await
             .map_err(to_gql_error)?;
-        Ok(UnlinkExternalAccountPayload {
-            linked_account_id,
-        })
+        Ok(UnlinkExternalAccountPayload { linked_account_id })
     }
 
     async fn login_with_plex(

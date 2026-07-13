@@ -1,6 +1,8 @@
 use async_graphql::{ComplexObject, Context, ID, Result as GqlResult};
 use scryer_application::{AcquisitionScopeStatesQuery, ReleaseDecisionsQuery};
-use scryer_interface_core::{actor_from_ctx, app_from_ctx, loaders::loaders_from_ctx, to_gql_error};
+use scryer_interface_core::{
+    actor_from_ctx, app_from_ctx, loaders::loaders_from_ctx, to_gql_error,
+};
 
 use crate::mappers::{
     from_collection, from_discovery_item, from_download_queue_item, from_episode,
@@ -299,7 +301,10 @@ impl TitlePayload {
 
     async fn library_name(&self, ctx: &Context<'_>) -> GqlResult<Option<String>> {
         if let Some(loaders) = loaders_from_ctx(ctx) {
-            let library = loaders.library.load_one(self.library_id.to_string()).await?;
+            let library = loaders
+                .library
+                .load_one(self.library_id.to_string())
+                .await?;
             return Ok(library.map(|library| library.name));
         }
         Box::pin(async move {
@@ -320,7 +325,10 @@ impl TitlePayload {
 
     async fn library_slug(&self, ctx: &Context<'_>) -> GqlResult<Option<String>> {
         if let Some(loaders) = loaders_from_ctx(ctx) {
-            let library = loaders.library.load_one(self.library_id.to_string()).await?;
+            let library = loaders
+                .library
+                .load_one(self.library_id.to_string())
+                .await?;
             return Ok(library.map(|library| library.slug));
         }
         Box::pin(async move {
@@ -806,7 +814,10 @@ impl EpisodePayload {
             return Ok(None);
         };
         if let Some(loaders) = loaders_from_ctx(ctx) {
-            let collection = loaders.collection.load_one(collection_id.to_string()).await?;
+            let collection = loaders
+                .collection
+                .load_one(collection_id.to_string())
+                .await?;
             return Ok(collection.map(from_collection));
         }
         Box::pin(async move {
@@ -828,7 +839,10 @@ impl EpisodePayload {
                 .title_wanted_item
                 .load_one((self.title_id.to_string(), self.id.to_string()))
                 .await?;
-            return state.map(from_wanted_item).transpose().map_err(to_gql_error);
+            return state
+                .map(from_wanted_item)
+                .transpose()
+                .map_err(to_gql_error);
         }
         Box::pin(async move {
             let app = app_from_ctx(ctx)?;
@@ -934,7 +948,10 @@ impl WantedItemPayload {
             return Ok(None);
         };
         if let Some(loaders) = loaders_from_ctx(ctx) {
-            let collection = loaders.collection.load_one(collection_id.to_string()).await?;
+            let collection = loaders
+                .collection
+                .load_one(collection_id.to_string())
+                .await?;
             return Ok(collection.map(from_collection));
         }
         Box::pin(async move {

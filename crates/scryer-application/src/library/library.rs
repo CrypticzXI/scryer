@@ -373,6 +373,16 @@ enum StartedLibraryScanOutcome {
     Canceled(LibraryScanSummary),
 }
 
+struct StartedLibraryScanRequest {
+    actor: User,
+    facet: MediaFacet,
+    library_id: String,
+    library_paths: Vec<String>,
+    session_id: String,
+    mode: LibraryScanMode,
+    scan_hints: Option<LibraryScanHintSet>,
+}
+
 #[derive(Clone, Debug)]
 struct InvalidLibraryRoot {
     path: String,
@@ -920,17 +930,16 @@ impl AppUseCase {
         let actor = actor.clone();
         let session_id = session.session_id.clone();
         tokio::spawn(async move {
-            let result = app
-                .run_started_library_scan_session(
-                    &actor,
-                    &facet,
-                    &library_id,
-                    &library_paths,
-                    &session_id,
-                    LibraryScanMode::Full,
-                    None,
-                )
-                .await;
+            let request = StartedLibraryScanRequest {
+                actor,
+                facet: facet.clone(),
+                library_id: library_id.clone(),
+                library_paths: library_paths.clone(),
+                session_id: session_id.clone(),
+                mode: LibraryScanMode::Full,
+                scan_hints: None,
+            };
+            let result = app.run_started_library_scan_session(&request).await;
             if let Err(error) = result {
                 warn!(
                     error = %error,
@@ -1003,17 +1012,16 @@ impl AppUseCase {
         let facet = library.facet.clone();
         let library_id = library.id.clone();
         tokio::spawn(async move {
-            let result = app
-                .run_started_library_scan_session(
-                    &actor,
-                    &facet,
-                    &library_id,
-                    &library_paths,
-                    &session_id,
-                    LibraryScanMode::Full,
-                    scan_hints,
-                )
-                .await;
+            let request = StartedLibraryScanRequest {
+                actor,
+                facet: facet.clone(),
+                library_id: library_id.clone(),
+                library_paths: library_paths.clone(),
+                session_id: session_id.clone(),
+                mode: LibraryScanMode::Full,
+                scan_hints,
+            };
+            let result = app.run_started_library_scan_session(&request).await;
             match result {
                 Ok(_) => {}
                 Err(error) => {
@@ -1060,17 +1068,16 @@ impl AppUseCase {
 
         self.ensure_library_scan_cancellation_token(&session.session_id, mode.clone())
             .await;
-        let result = self
-            .run_started_library_scan_session(
-                actor,
-                &facet,
-                &session_library_id,
-                &library_paths,
-                &session.session_id,
-                mode,
-                None,
-            )
-            .await;
+        let request = StartedLibraryScanRequest {
+            actor: actor.clone(),
+            facet,
+            library_id: session_library_id,
+            library_paths,
+            session_id: session.session_id.clone(),
+            mode,
+            scan_hints: None,
+        };
+        let result = self.run_started_library_scan_session(&request).await;
 
         if result.is_err() {
             LibraryScanCoordinator::new(self.clone(), session.session_id.clone())
@@ -1098,36 +1105,35 @@ impl AppUseCase {
 
     async fn run_started_library_scan_session(
         &self,
-        actor: &User,
-        facet: &MediaFacet,
-        library_id: &str,
-        library_paths: &[String],
-        session_id: &str,
-        mode: LibraryScanMode,
-        scan_hints: Option<LibraryScanHintSet>,
+        request: &StartedLibraryScanRequest,
     ) -> AppResult<StartedLibraryScanOutcome> {
-        let cancel_token = self.library_scan_cancellation_token(session_id).await;
-        let should_apply_import_monitor_snapshot = mode == LibraryScanMode::Full;
+        let cancel_token = self
+            .library_scan_cancellation_token(&request.session_id)
+            .await;
+        let should_apply_import_monitor_snapshot = request.mode == LibraryScanMode::Full;
         let summary = self
             .execute_started_library_scan_session(
-                actor,
-                facet,
-                library_id,
-                library_paths,
-                session_id,
-                mode,
+                &request.actor,
+                &request.facet,
+                &request.library_id,
+                &request.library_paths,
+                &request.session_id,
+                request.mode.clone(),
                 cancel_token.clone(),
-                scan_hints,
+                request.scan_hints.clone(),
             )
             .await?;
         if library_scan_cancel_requested(cancel_token.as_ref()) {
-            self.cancel_started_library_scan_session(session_id, &summary)
+            self.cancel_started_library_scan_session(&request.session_id, &summary)
                 .await;
             Ok(StartedLibraryScanOutcome::Canceled(summary))
         } else {
             if should_apply_import_monitor_snapshot
                 && let Err(error) = self
-                    .apply_pending_external_import_monitor_snapshot_for_library(facet, library_id)
+                    .apply_pending_external_import_monitor_snapshot_for_library(
+                        &request.facet,
+                        &request.library_id,
+                    )
                     .await
             {
                 let warning_message =
@@ -1136,16 +1142,16 @@ impl AppUseCase {
                     .runtime
                     .library
                     .library_scan_tracker
-                    .set_warning_message(session_id, Some(warning_message))
+                    .set_warning_message(&request.session_id, Some(warning_message))
                     .await;
                 warn!(
-                    facet = facet.as_str(),
-                    session_id,
+                    facet = request.facet.as_str(),
+                    session_id = %request.session_id,
                     error = %error,
                     "failed to apply pending external import monitoring snapshot after full scan"
                 );
             }
-            self.finalize_started_library_scan_session(session_id, &summary)
+            self.finalize_started_library_scan_session(&request.session_id, &summary)
                 .await;
             Ok(StartedLibraryScanOutcome::Completed(summary))
         }

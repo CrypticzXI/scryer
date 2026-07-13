@@ -3357,7 +3357,10 @@ mod tests {
             Some("scryer-v0.17.0"),
             &Version::new(0, 17, 1)
         ));
-        assert!(!schema_breaks_allowed_for_bump(None, &Version::new(0, 17, 0)));
+        assert!(!schema_breaks_allowed_for_bump(
+            None,
+            &Version::new(0, 17, 0)
+        ));
         assert!(!schema_breaks_allowed_for_bump(
             Some("not-a-version"),
             &Version::new(0, 17, 0)

@@ -141,9 +141,7 @@ impl NotificationMutations {
         app.delete_notification_channel(&actor, &id)
             .await
             .map_err(to_gql_error)?;
-        Ok(DeleteNotificationChannelPayload {
-            id: ID::from(id),
-        })
+        Ok(DeleteNotificationChannelPayload { id: ID::from(id) })
     }
 
     async fn test_notification_channel(
@@ -229,8 +227,6 @@ impl NotificationMutations {
         app.delete_notification_subscription(&actor, &id)
             .await
             .map_err(to_gql_error)?;
-        Ok(DeleteNotificationSubscriptionPayload {
-            id: ID::from(id),
-        })
+        Ok(DeleteNotificationSubscriptionPayload { id: ID::from(id) })
     }
 }

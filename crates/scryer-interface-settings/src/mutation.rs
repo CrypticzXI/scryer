@@ -1048,8 +1048,12 @@ impl SettingsMutations {
                 rename_missing_metadata_policy: input
                     .rename_missing_metadata_policy
                     .map(|policy| policy.as_app_str().to_string()),
-                filler_policy: input.filler_policy.map(|policy| policy.as_app_str().to_string()),
-                recap_policy: input.recap_policy.map(|policy| policy.as_app_str().to_string()),
+                filler_policy: input
+                    .filler_policy
+                    .map(|policy| policy.as_app_str().to_string()),
+                recap_policy: input
+                    .recap_policy
+                    .map(|policy| policy.as_app_str().to_string()),
                 monitor_specials: input.monitor_specials,
                 inter_season_movies: input.inter_season_movies,
                 monitor_filler_movies: input.monitor_filler_movies,
