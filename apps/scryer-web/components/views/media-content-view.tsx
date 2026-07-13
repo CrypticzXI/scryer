@@ -1119,7 +1119,7 @@ function TitleContextPanel({
         aria-label={t("title.contextPanelTitle")}
         className={cn(
           panelClassName,
-          "grid grid-rows-[minmax(0,1fr)_minmax(0,1fr)]",
+          "flex",
         )}
       >
         <CatalogFiltersPanel
@@ -1133,9 +1133,9 @@ function TitleContextPanel({
           onRetryOptions={onRetryFilterOptions}
           onFiltersChange={onAdvancedFiltersChange}
           onClear={onClearAdvancedFilters}
-          className="border-b border-[var(--scry-border2)]"
+          className="shrink-0 border-b border-[var(--scry-border2)]"
         />
-        <div className="flex min-h-0 overflow-hidden">
+        <div className="flex min-h-0 flex-1 overflow-hidden">
           <TitleContextForYouPanel
             discoveryGroups={discoveryGroups}
             view={view}
@@ -3163,17 +3163,12 @@ export function MediaContentView({
               </div>
             </div>
             <div
-              data-catalog-scroll-root={
-                collectionViewMode === "poster" && !selectedTitleLayoutActive
-                  ? "true"
-                  : undefined
-              }
               className={cn(
                 "flex min-h-0 flex-1 flex-col bg-transparent p-3 sm:p-4 lg:p-5",
                 selectedTitleLayoutActive
                   ? "overflow-hidden"
                   : collectionViewMode === "poster"
-                    ? "overflow-y-auto"
+                    ? "overflow-hidden"
                     : undefined,
               )}
             >
@@ -3485,6 +3480,7 @@ export function MediaContentView({
                       scanLibraryLoading={libraryScanLoading}
                       scanLibraryDisabled={libraryScanDisabled}
                       scanLibraryNotice={libraryScanNotice}
+                      scrollContainer={!selectedTitleLayoutActive}
                     />
                   );
                 } else if (collectionViewMode === "compact") {
@@ -3642,7 +3638,7 @@ export function MediaContentView({
                       : "flex min-h-0 flex-1"
                     : contextPanelAvailable
                       ? collectionViewMode === "poster"
-                        ? "sticky top-4 flex max-h-[calc(100vh-11rem)]"
+                        ? "flex h-full min-h-0"
                         : "flex h-full"
                       : "hidden";
                 const titleOverviewPane = multiSelectActive ? (
@@ -3827,7 +3823,7 @@ export function MediaContentView({
                         : "grid min-h-0 gap-4",
                       !selectedTitleLayoutActive &&
                         (collectionViewMode === "poster"
-                          ? "items-start"
+                          ? "h-full items-stretch"
                           : "h-full"),
                     )}
                     style={
@@ -3867,7 +3863,9 @@ export function MediaContentView({
                         collectionViewMode === "poster"
                           ? selectedTitlePosterLayoutActive
                             ? "h-full min-h-0 overflow-y-auto pr-1"
-                            : ""
+                            : selectedTitleLayoutActive
+                              ? ""
+                              : "flex h-full min-h-0 flex-col"
                           : "flex min-h-0 flex-col",
                         selectedTitleCompactLayoutActive &&
                           (selectedTitleListInlineActive
@@ -3882,7 +3880,11 @@ export function MediaContentView({
                         className={cn(
                           "min-w-0",
                           collectionViewMode === "poster"
-                            ? ""
+                            ? selectedTitlePosterLayoutActive
+                              ? ""
+                              : selectedTitleLayoutActive
+                                ? ""
+                                : "min-h-0 flex-1"
                             : "min-h-0 flex-1",
                         )}
                       >

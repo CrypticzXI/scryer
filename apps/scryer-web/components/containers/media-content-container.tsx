@@ -390,6 +390,8 @@ function mergePreferLoadedImageFields(
       incoming.mediaFiles === undefined
         ? current.mediaFiles
         : incoming.mediaFiles,
+    sizeBytes:
+      incoming.sizeBytes === undefined ? current.sizeBytes : incoming.sizeBytes,
     imdbId: incoming.imdbId === undefined ? current.imdbId : incoming.imdbId,
     externalIds:
       incoming.externalIds === undefined ? current.externalIds : incoming.externalIds,
@@ -3843,8 +3845,15 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   }, []);
 
   const clearSelectedOverviewTitle = React.useCallback(() => {
+    selectedOverviewTitleIdRef.current = null;
     setSelectedOverviewTitleId(null);
+    setSelectedOverviewDetailTitle(null);
   }, []);
+
+  const handleCloseOverview = React.useCallback(() => {
+    clearSelectedOverviewTitle();
+    onCloseOverview();
+  }, [clearSelectedOverviewTitle, onCloseOverview]);
 
   const setViewMode = React.useCallback(
     (nextMode: ContentViewMode) => {
@@ -5226,7 +5235,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
           updateLibrary,
           deleteLibrary,
           onOpenOverview,
-          onCloseOverview,
+          onCloseOverview: handleCloseOverview,
           selectedOverviewTitleId,
           selectedOverviewTitle: selectedOverviewTitleRecord,
           selectedOverviewDetailLoading,

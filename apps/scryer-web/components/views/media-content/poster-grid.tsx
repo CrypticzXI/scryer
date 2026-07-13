@@ -37,6 +37,7 @@ type PosterGridProps = {
   scanLibraryLoading?: boolean;
   scanLibraryDisabled?: boolean;
   scanLibraryNotice?: string | null;
+  scrollContainer?: boolean;
 };
 
 export const PosterGrid = React.memo(function PosterGrid({
@@ -58,6 +59,7 @@ export const PosterGrid = React.memo(function PosterGrid({
   scanLibraryLoading = false,
   scanLibraryDisabled = false,
   scanLibraryNotice,
+  scrollContainer = false,
 }: PosterGridProps) {
   const t = useTranslate();
   const endSentinelRef = React.useRef<HTMLDivElement | null>(null);
@@ -117,7 +119,14 @@ export const PosterGrid = React.memo(function PosterGrid({
   }
 
   return (
-    <div className="poster-grid-container">
+    <div
+      data-catalog-scroll-root={scrollContainer ? "true" : undefined}
+      className={
+        scrollContainer
+          ? "poster-grid-container h-full min-h-0 overflow-y-auto"
+          : "poster-grid-container"
+      }
+    >
       <div className="poster-grid-responsive grid justify-start gap-3.5">
         {titles.map((title) => (
           <PosterCard
