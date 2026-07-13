@@ -3,9 +3,10 @@ use chrono::{DateTime, Utc};
 use scryer_application::{
     AppError, AppResult, CreateTitleOutcome, PendingImportStatus, PendingTitleHydration,
     SortDirection, TitleArtworkUrlUpdate, TitleCatalogContentStatus, TitleCatalogFilter,
-    TitleCatalogFilterCounts, TitleCatalogResult, TitleCatalogSort, TitleCatalogSortKey,
-    TitleDeletePreviewInfo, TitleExternalIdLookup, TitleExternalIdLookupMatch, TitleMetadataUpdate,
-    TitleRatingSummary, TitleRepository,
+    TitleCatalogFilterCounts, TitleCatalogFilterOptions, TitleCatalogResult, TitleCatalogSort,
+    TitleCatalogSortKey, TitleCatalogTagFilterOption, TitleDeletePreviewInfo,
+    TitleExternalIdLookup, TitleExternalIdLookupMatch, TitleMetadataUpdate, TitleRatingSummary,
+    TitleRepository,
     persisted_records::{
         PersistedTitleDecodeOptions, PersistedTitleReadMode, finalize_persisted_title,
     },
@@ -474,6 +475,16 @@ impl TitleRepository for TitleStore {
             total_count,
             filter_counts,
         })
+    }
+
+    async fn title_catalog_filter_options(
+        &self,
+        facet: Option<MediaFacet>,
+        library_ids: &[String],
+        root_folder_ids: &[String],
+    ) -> AppResult<TitleCatalogFilterOptions> {
+        fetch_title_catalog_filter_options(&self.datastore, facet, library_ids, root_folder_ids)
+            .await
     }
 
     async fn list_by_external_ids(&self, source: &str, values: &[String]) -> AppResult<Vec<Title>> {
@@ -1881,22 +1892,30 @@ async fn fetch_title_catalog_filter_counts(
     query: Option<&str>,
     active_filter: &TitleCatalogFilter,
 ) -> AppResult<TitleCatalogFilterCounts> {
-    let all_filter = TitleCatalogFilter::default();
+    let all_filter = TitleCatalogFilter {
+        monitored: None,
+        content_statuses: Vec::new(),
+        ..active_filter.clone()
+    };
     let monitored_filter = TitleCatalogFilter {
         monitored: Some(true),
         content_statuses: active_filter.content_statuses.clone(),
+        ..active_filter.clone()
     };
     let unmonitored_filter = TitleCatalogFilter {
         monitored: Some(false),
         content_statuses: active_filter.content_statuses.clone(),
+        ..active_filter.clone()
     };
     let continuing_filter = TitleCatalogFilter {
         monitored: active_filter.monitored,
         content_statuses: vec![TitleCatalogContentStatus::Continuing],
+        ..active_filter.clone()
     };
     let ended_filter = TitleCatalogFilter {
         monitored: active_filter.monitored,
         content_statuses: vec![TitleCatalogContentStatus::Ended],
+        ..active_filter.clone()
     };
 
     Ok(TitleCatalogFilterCounts {
@@ -1929,6 +1948,98 @@ async fn fetch_title_catalog_filter_counts(
         ended: fetch_title_catalog_count(datastore, facet, library_ids, query, &ended_filter)
             .await?,
     })
+}
+
+async fn fetch_title_catalog_filter_options(
+    datastore: &StoreDatastore,
+    facet: Option<MediaFacet>,
+    library_ids: &[String],
+    root_folder_ids: &[String],
+) -> AppResult<TitleCatalogFilterOptions> {
+    if library_ids.is_empty() {
+        return Ok(TitleCatalogFilterOptions::default());
+    }
+    let (scope_sql, scope_args) =
+        build_title_catalog_options_scope_sql(facet, library_ids, root_folder_ids);
+    let tags_sql = format!(
+        "SELECT catalog_tag.tag_key AS tag_key,
+                LOWER(TRIM(catalog_tag.category)) AS category,
+                MIN(catalog_tag.name) AS name
+           FROM titles
+           JOIN canonical_media_subjects catalog_subject
+             ON catalog_subject.title_id = titles.id
+           JOIN canonical_media_tags catalog_tag
+             ON catalog_tag.subject_id = catalog_subject.id
+          WHERE {scope_sql}
+            AND LOWER(TRIM(catalog_tag.category)) IN ('genre', 'theme')
+          GROUP BY catalog_tag.tag_key, LOWER(TRIM(catalog_tag.category))
+          ORDER BY category, LOWER(MIN(catalog_tag.name)), catalog_tag.tag_key"
+    );
+    let rows = SqlRuntime::fetch_all(datastore.read_exec(), &tags_sql, &scope_args).await?;
+    let mut genres = Vec::new();
+    let mut tags = Vec::new();
+    for row in rows {
+        let option = TitleCatalogTagFilterOption {
+            key: row.text("tag_key")?,
+            name: row.text("name")?,
+        };
+        match row.text("category")?.as_str() {
+            "genre" => genres.push(option),
+            "theme" => tags.push(option),
+            _ => {}
+        }
+    }
+
+    let years_sql = format!(
+        "SELECT MIN(titles.year) AS minimum_year,
+                MAX(titles.year) AS maximum_year
+           FROM titles
+          WHERE {scope_sql}"
+    );
+    let years = SqlRuntime::fetch_optional(datastore.read_exec(), &years_sql, &scope_args).await?;
+
+    Ok(TitleCatalogFilterOptions {
+        genres,
+        tags,
+        minimum_year: years
+            .as_ref()
+            .map(|row| row.opt_i32("minimum_year"))
+            .transpose()?
+            .flatten(),
+        maximum_year: years
+            .as_ref()
+            .map(|row| row.opt_i32("maximum_year"))
+            .transpose()?
+            .flatten(),
+    })
+}
+
+fn build_title_catalog_options_scope_sql(
+    facet: Option<MediaFacet>,
+    library_ids: &[String],
+    root_folder_ids: &[String],
+) -> (String, Vec<SqlArg>) {
+    let mut clauses = Vec::new();
+    let mut args = Vec::new();
+    let library_placeholders = std::iter::repeat_n("{}", library_ids.len())
+        .collect::<Vec<_>>()
+        .join(", ");
+    clauses.push(format!("titles.library_id IN ({library_placeholders})"));
+    args.extend(library_ids.iter().cloned().map(SqlArg::Text));
+
+    if let Some(facet) = facet {
+        clauses.push("titles.facet = {}".to_string());
+        args.push(SqlArg::Text(facet.as_str().to_string()));
+    }
+    if !root_folder_ids.is_empty() {
+        let root_placeholders = std::iter::repeat_n("{}", root_folder_ids.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        clauses.push(format!("titles.root_folder_id IN ({root_placeholders})"));
+        args.extend(root_folder_ids.iter().cloned().map(SqlArg::Text));
+    }
+
+    (clauses.join(" AND "), args)
 }
 
 #[expect(
@@ -1989,6 +2100,49 @@ fn build_title_catalog_where_sql(
         args.push(SqlArg::Text(format!("%{}%", query.to_lowercase())));
     }
 
+    if !filter.root_folder_ids.is_empty() {
+        let placeholders = std::iter::repeat_n("{}", filter.root_folder_ids.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        clauses.push(format!("titles.root_folder_id IN ({placeholders})"));
+        args.extend(filter.root_folder_ids.iter().cloned().map(SqlArg::Text));
+    }
+
+    if let Some(minimum_year) = filter.minimum_year {
+        clauses.push("titles.year >= {}".to_string());
+        args.push(SqlArg::I32(minimum_year));
+    }
+    if let Some(maximum_year) = filter.maximum_year {
+        clauses.push("titles.year <= {}".to_string());
+        args.push(SqlArg::I32(maximum_year));
+    }
+
+    if let Some(clause) =
+        title_catalog_tag_filter_clause("genre", &filter.genre_tag_keys, &mut args)
+    {
+        clauses.push(clause);
+    }
+    if let Some(clause) =
+        title_catalog_tag_filter_clause("theme", &filter.theme_tag_keys, &mut args)
+    {
+        clauses.push(clause);
+    }
+
+    if let Some(minimum_rating) = filter.minimum_rating {
+        clauses.push(
+            "EXISTS (
+                SELECT 1
+                  FROM canonical_media_subjects catalog_rating_subject
+                  JOIN canonical_media_rating_summaries catalog_rating
+                    ON catalog_rating.subject_id = catalog_rating_subject.id
+                 WHERE catalog_rating_subject.title_id = titles.id
+                   AND catalog_rating.rating >= {}
+            )"
+            .to_string(),
+        );
+        args.push(SqlArg::F64(minimum_rating));
+    }
+
     if let Some(monitored) = filter.monitored {
         clauses.push("monitored = {}".to_string());
         args.push(SqlArg::Bool(monitored));
@@ -2006,6 +2160,32 @@ fn build_title_catalog_where_sql(
     }
 
     (clauses.join(" AND "), args)
+}
+
+fn title_catalog_tag_filter_clause(
+    category: &str,
+    tag_keys: &[String],
+    args: &mut Vec<SqlArg>,
+) -> Option<String> {
+    if tag_keys.is_empty() {
+        return None;
+    }
+    let placeholders = std::iter::repeat_n("{}", tag_keys.len())
+        .collect::<Vec<_>>()
+        .join(", ");
+    args.push(SqlArg::Text(category.to_string()));
+    args.extend(tag_keys.iter().cloned().map(SqlArg::Text));
+    Some(format!(
+        "EXISTS (
+            SELECT 1
+              FROM canonical_media_subjects catalog_tag_subject
+              JOIN canonical_media_tags catalog_tag
+                ON catalog_tag.subject_id = catalog_tag_subject.id
+             WHERE catalog_tag_subject.title_id = titles.id
+               AND LOWER(TRIM(catalog_tag.category)) = {{}}
+               AND catalog_tag.tag_key IN ({placeholders})
+        )"
+    ))
 }
 
 fn title_catalog_content_status_values(statuses: &[TitleCatalogContentStatus]) -> Vec<String> {
@@ -3100,5 +3280,53 @@ mod tests {
             sql.contains("WHEN ter.normalized <= 1.0 THEN ter.normalized * 10.0"),
             "rating sort should compare 0-1 and 0-10 normalized scores on the same scale: {sql}"
         );
+    }
+
+    #[test]
+    fn title_catalog_where_sql_combines_advanced_filter_groups() {
+        let filter = TitleCatalogFilter {
+            monitored: Some(true),
+            content_statuses: vec![TitleCatalogContentStatus::Continuing],
+            root_folder_ids: vec!["root-1".to_string(), "root-2".to_string()],
+            genre_tag_keys: vec!["canonical:genre:alpha".to_string()],
+            theme_tag_keys: vec!["canonical:theme:beta".to_string()],
+            minimum_year: Some(2000),
+            maximum_year: Some(2020),
+            minimum_rating: Some(7.5),
+        };
+
+        let (sql, args) = build_title_catalog_where_sql(
+            Some(MediaFacet::Movie),
+            &["library-1".to_string()],
+            Some("sample"),
+            &filter,
+        );
+
+        assert!(sql.contains("titles.root_folder_id IN"));
+        assert!(sql.contains("titles.year >= {}"));
+        assert!(sql.contains("titles.year <= {}"));
+        assert_eq!(
+            sql.matches("FROM canonical_media_subjects catalog_tag_subject")
+                .count(),
+            2
+        );
+        assert!(sql.contains("FROM canonical_media_subjects catalog_rating_subject"));
+        assert!(sql.contains("monitored = {}"));
+        assert!(sql.contains("LOWER(TRIM(COALESCE(content_status, ''))) IN"));
+        assert_eq!(args.len(), 15);
+    }
+
+    #[test]
+    fn title_catalog_filter_options_scope_uses_library_root_and_facet() {
+        let (sql, args) = build_title_catalog_options_scope_sql(
+            Some(MediaFacet::Series),
+            &["library-1".to_string()],
+            &["root-1".to_string()],
+        );
+
+        assert!(sql.contains("titles.library_id IN"));
+        assert!(sql.contains("titles.facet = {}"));
+        assert!(sql.contains("titles.root_folder_id IN"));
+        assert_eq!(args.len(), 3);
     }
 }

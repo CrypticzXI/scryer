@@ -906,16 +906,29 @@ impl AppUseCase {
         let actor = actor.clone();
         let session_id = session.session_id.clone();
         tokio::spawn(async move {
-            if let Err(error) = app
-                .run_started_library_scan_session(
+            let result = async {
+                let library_paths = app.read_library_paths_for_scan_facet(&facet).await?;
+                let library_id = app
+                    .services
+                    .catalog
+                    .libraries
+                    .default_for_facet(facet.clone())
+                    .await?
+                    .map(|library| library.id)
+                    .unwrap_or_else(|| scryer_domain::default_library_id_for_facet(&facet));
+                app.run_started_library_scan_session(
                     &actor,
-                    facet.clone(),
+                    &facet,
+                    &library_id,
+                    &library_paths,
                     &session_id,
                     LibraryScanMode::Full,
                     None,
                 )
                 .await
-            {
+            }
+            .await;
+            if let Err(error) = result {
                 warn!(
                     error = %error,
                     session_id = %session_id,
@@ -985,11 +998,14 @@ impl AppUseCase {
         let actor = actor.clone();
         let session_id = session.session_id.clone();
         let facet = library.facet.clone();
+        let library_id = library.id.clone();
         tokio::spawn(async move {
             let result = app
                 .run_started_library_scan_session(
                     &actor,
-                    facet.clone(),
+                    &facet,
+                    &library_id,
+                    &library_paths,
                     &session_id,
                     LibraryScanMode::Full,
                     scan_hints,
@@ -1027,10 +1043,11 @@ impl AppUseCase {
             .unwrap_or_else(|| scryer_domain::default_library_id_for_facet(&facet));
         self.require_library_management_permission(actor, &session_library_id)
             .await?;
+        let library_paths = self.read_library_paths_for_scan_facet(&facet).await?;
         let (_coordinator, session) = LibraryScanCoordinator::start_for_library(
             self.clone(),
             facet.clone(),
-            Some(session_library_id),
+            Some(session_library_id.clone()),
             mode.clone(),
             session_id_override,
         )
@@ -1041,7 +1058,15 @@ impl AppUseCase {
         self.ensure_library_scan_cancellation_token(&session.session_id, mode.clone())
             .await;
         let result = self
-            .run_started_library_scan_session(actor, facet, &session.session_id, mode, None)
+            .run_started_library_scan_session(
+                actor,
+                &facet,
+                &session_library_id,
+                &library_paths,
+                &session.session_id,
+                mode,
+                None,
+            )
             .await;
 
         if result.is_err() {
@@ -1071,28 +1096,21 @@ impl AppUseCase {
     async fn run_started_library_scan_session(
         &self,
         actor: &User,
-        facet: MediaFacet,
+        facet: &MediaFacet,
+        library_id: &str,
+        library_paths: &[String],
         session_id: &str,
         mode: LibraryScanMode,
         scan_hints: Option<LibraryScanHintSet>,
     ) -> AppResult<StartedLibraryScanOutcome> {
-        let library_paths = self.read_library_paths_for_scan_facet(&facet).await?;
-        let library_id = self
-            .services
-            .catalog
-            .libraries
-            .default_for_facet(facet.clone())
-            .await?
-            .map(|library| library.id)
-            .unwrap_or_else(|| scryer_domain::default_library_id_for_facet(&facet));
         let cancel_token = self.library_scan_cancellation_token(session_id).await;
         let should_apply_import_monitor_snapshot = mode == LibraryScanMode::Full;
         let summary = self
             .execute_started_library_scan_session(
                 actor,
-                &facet,
-                &library_id,
-                &library_paths,
+                facet,
+                library_id,
+                library_paths,
                 session_id,
                 mode,
                 cancel_token.clone(),

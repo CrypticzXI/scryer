@@ -1520,6 +1520,23 @@ export const librarySettingsQuery = `query LibrarySettings($libraryId: ID!) {
   }
 }`;
 
+export const titleCatalogFilterOptionsQuery = `query TitleCatalogFilterOptions(
+  $facet: MediaFacetValue,
+  $libraryIds: [ID!],
+  $rootFolderIds: [ID!]
+) {
+  titleCatalogFilterOptions(
+    facet: $facet,
+    libraryIds: $libraryIds,
+    rootFolderIds: $rootFolderIds
+  ) {
+    genres { key name }
+    tags { key name }
+    minimumYear
+    maximumYear
+  }
+}`;
+
 export function buildTitlesQuery(
   projection: TitleCatalogTitleProjection = {},
   options: TitleCatalogQueryBuildOptions = {},

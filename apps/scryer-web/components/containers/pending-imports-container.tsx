@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import type { Translate, ViewId } from "@/components/root/types";
 import { useGlobalStatus } from "@/lib/context/global-status-context";
+import { useLibraryScanProgress } from "@/lib/context/library-scan-progress-context";
 import { useTranslate } from "@/lib/context/translate-context";
 import { facetForView } from "@/lib/facets/registry";
 import {
@@ -315,6 +316,14 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
   const setGlobalStatus = useGlobalStatus();
   const t = useTranslate();
   const facet = facetForView(view);
+  const { dismissFacetReviewToasts } = useLibraryScanProgress();
+  const facetId = facet?.id;
+
+  React.useEffect(() => {
+    if (facetId) {
+      dismissFacetReviewToasts(facetId);
+    }
+  }, [dismissFacetReviewToasts, facetId]);
 
   const [pendingConnection, setPendingConnection] = React.useState<PendingImportConnection>({
     totalCount: 0,

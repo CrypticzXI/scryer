@@ -802,6 +802,72 @@ pub trait TitleRepository: Send + Sync {
             filter_counts,
         })
     }
+    async fn title_catalog_filter_options(
+        &self,
+        facet: Option<MediaFacet>,
+        library_ids: &[String],
+        root_folder_ids: &[String],
+    ) -> AppResult<TitleCatalogFilterOptions> {
+        if library_ids.is_empty() {
+            return Ok(TitleCatalogFilterOptions::default());
+        }
+
+        let root_folder_ids = root_folder_ids.iter().collect::<BTreeSet<_>>();
+        let titles = self.list_for_libraries(facet, library_ids, None).await?;
+        let mut genres = BTreeMap::<String, String>::new();
+        let mut tags = BTreeMap::<String, String>::new();
+        let mut minimum_year = None;
+        let mut maximum_year = None;
+
+        for title in titles {
+            if !root_folder_ids.is_empty() && !root_folder_ids.contains(&title.root_folder_id) {
+                continue;
+            }
+            if let Some(year) = title.year {
+                minimum_year = Some(minimum_year.map_or(year, |current: i32| current.min(year)));
+                maximum_year = Some(maximum_year.map_or(year, |current: i32| current.max(year)));
+            }
+            for tag in title.canonical_tags {
+                let target = if tag.category.eq_ignore_ascii_case("genre") {
+                    Some(&mut genres)
+                } else if tag.category.eq_ignore_ascii_case("theme") {
+                    Some(&mut tags)
+                } else {
+                    None
+                };
+                if let Some(target) = target {
+                    let key = tag.key.trim();
+                    let name = tag.name.trim();
+                    if !key.is_empty() && !name.is_empty() {
+                        target
+                            .entry(key.to_string())
+                            .or_insert_with(|| name.to_string());
+                    }
+                }
+            }
+        }
+
+        let to_options = |values: BTreeMap<String, String>| {
+            let mut options = values
+                .into_iter()
+                .map(|(key, name)| TitleCatalogTagFilterOption { key, name })
+                .collect::<Vec<_>>();
+            options.sort_by(|left, right| {
+                left.name
+                    .to_lowercase()
+                    .cmp(&right.name.to_lowercase())
+                    .then_with(|| left.key.cmp(&right.key))
+            });
+            options
+        };
+
+        Ok(TitleCatalogFilterOptions {
+            genres: to_options(genres),
+            tags: to_options(tags),
+            minimum_year,
+            maximum_year,
+        })
+    }
     async fn list_by_external_ids(&self, source: &str, values: &[String]) -> AppResult<Vec<Title>>;
     async fn list_by_external_id_lookups(
         &self,
@@ -1181,6 +1247,38 @@ fn title_catalog_status_sort_value(title: &Title) -> String {
 }
 
 fn title_matches_catalog_filter(title: &Title, filter: &TitleCatalogFilter) -> bool {
+    if !filter.root_folder_ids.is_empty()
+        && !filter
+            .root_folder_ids
+            .iter()
+            .any(|root_folder_id| root_folder_id == &title.root_folder_id)
+    {
+        return false;
+    }
+
+    if let Some(minimum_year) = filter.minimum_year
+        && title.year.is_none_or(|year| year < minimum_year)
+    {
+        return false;
+    }
+    if let Some(maximum_year) = filter.maximum_year
+        && title.year.is_none_or(|year| year > maximum_year)
+    {
+        return false;
+    }
+
+    if !title_matches_catalog_tag_filter(title, "genre", &filter.genre_tag_keys)
+        || !title_matches_catalog_tag_filter(title, "theme", &filter.theme_tag_keys)
+    {
+        return false;
+    }
+
+    // The fallback repository surface has no normalized rating projection.
+    // Treat those titles as unrated; the production store applies this in SQL.
+    if filter.minimum_rating.is_some() {
+        return false;
+    }
+
     if let Some(monitored) = filter.monitored
         && title.monitored != monitored
     {
@@ -1205,29 +1303,49 @@ fn title_matches_catalog_filter(title: &Title, filter: &TitleCatalogFilter) -> b
     true
 }
 
+fn title_matches_catalog_tag_filter(title: &Title, category: &str, tag_keys: &[String]) -> bool {
+    tag_keys.is_empty()
+        || title.canonical_tags.iter().any(|tag| {
+            tag.category.eq_ignore_ascii_case(category)
+                && tag_keys.iter().any(|tag_key| tag_key == &tag.key)
+        })
+}
+
 fn title_catalog_filter_counts(
     titles: &[Title],
     active_filter: &TitleCatalogFilter,
 ) -> TitleCatalogFilterCounts {
+    let all_filter = TitleCatalogFilter {
+        monitored: None,
+        content_statuses: Vec::new(),
+        ..active_filter.clone()
+    };
     let monitored_filter = TitleCatalogFilter {
         monitored: Some(true),
         content_statuses: active_filter.content_statuses.clone(),
+        ..active_filter.clone()
     };
     let unmonitored_filter = TitleCatalogFilter {
         monitored: Some(false),
         content_statuses: active_filter.content_statuses.clone(),
+        ..active_filter.clone()
     };
     let continuing_filter = TitleCatalogFilter {
         monitored: active_filter.monitored,
         content_statuses: vec![TitleCatalogContentStatus::Continuing],
+        ..active_filter.clone()
     };
     let ended_filter = TitleCatalogFilter {
         monitored: active_filter.monitored,
         content_statuses: vec![TitleCatalogContentStatus::Ended],
+        ..active_filter.clone()
     };
 
     TitleCatalogFilterCounts {
-        all: titles.len(),
+        all: titles
+            .iter()
+            .filter(|title| title_matches_catalog_filter(title, &all_filter))
+            .count(),
         monitored: titles
             .iter()
             .filter(|title| title_matches_catalog_filter(title, &monitored_filter))

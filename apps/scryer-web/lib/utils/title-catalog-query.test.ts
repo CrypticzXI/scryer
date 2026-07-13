@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  EMPTY_TITLE_ADVANCED_FILTERS,
   EMPTY_TITLE_QUICK_FILTERS,
   buildTitleCatalogQueryVariables,
   titleCatalogProjectionForTable,
@@ -37,6 +38,61 @@ test("title catalog variables include quick filters like 0.16.6", () => {
     limit: 300,
     offset: 0,
   });
+});
+
+test("title catalog variables include normalized advanced filters", () => {
+  const variables = buildTitleCatalogQueryVariables({
+    facet: "movie",
+    libraryIds: ["library-1"],
+    query: "",
+    filters: EMPTY_TITLE_QUICK_FILTERS,
+    advancedFilters: {
+      rootFolderIds: ["root-2", "root-1"],
+      genreTagKeys: ["canonical:genre:beta", "canonical:genre:alpha"],
+      themeTagKeys: ["canonical:theme:sample"],
+      minimumYear: 2000,
+      maximumYear: 2020,
+      minimumRating: 7.5,
+    },
+    sort: { key: "name", direction: "asc" },
+    limit: 72,
+    offset: 0,
+  });
+
+  assert.deepEqual(variables.filter, {
+    monitored: null,
+    contentStatuses: [],
+    rootFolderIds: ["root-1", "root-2"],
+    genreTagKeys: ["canonical:genre:alpha", "canonical:genre:beta"],
+    themeTagKeys: ["canonical:theme:sample"],
+    minimumYear: 2000,
+    maximumYear: 2020,
+    minimumRating: 7.5,
+  });
+});
+
+test("title catalog query key changes when advanced filters change", () => {
+  const base = {
+    facet: "series",
+    query: "",
+    libraryIds: [],
+    filters: EMPTY_TITLE_QUICK_FILTERS,
+    sort: { key: "name", direction: "asc" },
+  };
+
+  const unfilteredKey = titleCatalogQueryKey({
+    ...base,
+    advancedFilters: EMPTY_TITLE_ADVANCED_FILTERS,
+  });
+  const filteredKey = titleCatalogQueryKey({
+    ...base,
+    advancedFilters: {
+      ...EMPTY_TITLE_ADVANCED_FILTERS,
+      rootFolderIds: ["root-1"],
+    },
+  });
+
+  assert.notEqual(unfilteredKey, filteredKey);
 });
 
 test("title catalog variables send all libraries as null", () => {

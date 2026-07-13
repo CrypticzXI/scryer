@@ -154,6 +154,38 @@ impl AppUseCase {
             .await
     }
 
+    pub async fn title_catalog_filter_options(
+        &self,
+        actor: &User,
+        facet: Option<MediaFacet>,
+        requested_library_ids: Option<Vec<String>>,
+        root_folder_ids: Vec<String>,
+    ) -> AppResult<crate::TitleCatalogFilterOptions> {
+        let mut library_ids = self
+            .authorized_library_ids(actor, facet.clone(), scryer_domain::LibraryPermission::View)
+            .await?;
+        let requested_library_ids = requested_library_ids
+            .as_ref()
+            .map(|requested| {
+                requested
+                    .iter()
+                    .map(|library_id| library_id.trim())
+                    .filter(|library_id| !library_id.is_empty())
+                    .map(str::to_owned)
+                    .collect::<HashSet<_>>()
+            })
+            .unwrap_or_default();
+        if !requested_library_ids.is_empty() {
+            library_ids.retain(|library_id| requested_library_ids.contains(library_id));
+        }
+
+        self.services
+            .catalog
+            .titles
+            .title_catalog_filter_options(facet, &library_ids, &root_folder_ids)
+            .await
+    }
+
     pub async fn list_titles_unpaged(
         &self,
         actor: &User,

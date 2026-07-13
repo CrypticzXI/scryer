@@ -198,6 +198,10 @@ fn title_catalog_filter_from_input(filter: Option<TitleCatalogFilterInput>) -> T
     let Some(filter) = filter else {
         return TitleCatalogFilter::default();
     };
+    let (minimum_year, maximum_year) = match (filter.minimum_year, filter.maximum_year) {
+        (Some(minimum), Some(maximum)) if minimum > maximum => (Some(maximum), Some(minimum)),
+        bounds => bounds,
+    };
     TitleCatalogFilter {
         monitored: filter.monitored,
         content_statuses: filter
@@ -209,7 +213,33 @@ fn title_catalog_filter_from_input(filter: Option<TitleCatalogFilterInput>) -> T
                 TitleCatalogContentStatusValue::Ended => TitleCatalogContentStatus::Ended,
             })
             .collect(),
+        root_folder_ids: normalize_catalog_filter_values(
+            filter
+                .root_folder_ids
+                .unwrap_or_default()
+                .into_iter()
+                .map(String::from),
+        ),
+        genre_tag_keys: normalize_catalog_filter_values(filter.genre_tag_keys.unwrap_or_default()),
+        theme_tag_keys: normalize_catalog_filter_values(filter.theme_tag_keys.unwrap_or_default()),
+        minimum_year,
+        maximum_year,
+        minimum_rating: filter
+            .minimum_rating
+            .filter(|rating| rating.is_finite())
+            .map(|rating| rating.clamp(0.0, 10.0)),
     }
+}
+
+fn normalize_catalog_filter_values(values: impl IntoIterator<Item = String>) -> Vec<String> {
+    let mut normalized = Vec::new();
+    for value in values {
+        let value = value.trim();
+        if !value.is_empty() && !normalized.iter().any(|candidate| candidate == value) {
+            normalized.push(value.to_string());
+        }
+    }
+    normalized
 }
 
 fn usize_to_i32_saturating(value: usize) -> i32 {
@@ -566,6 +596,47 @@ impl CatalogQueries {
                 continuing: usize_to_i32_saturating(filter_counts.continuing),
                 ended: usize_to_i32_saturating(filter_counts.ended),
             },
+        })
+    }
+
+    async fn title_catalog_filter_options(
+        &self,
+        ctx: &Context<'_>,
+        facet: Option<MediaFacetValue>,
+        library_ids: Option<Vec<ID>>,
+        root_folder_ids: Option<Vec<ID>>,
+    ) -> GqlResult<TitleCatalogFilterOptionsPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let options = app
+            .title_catalog_filter_options(
+                &actor,
+                facet.map(MediaFacetValue::into_domain),
+                optional_ids_to_strings(library_ids),
+                normalize_catalog_filter_values(
+                    root_folder_ids
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(String::from),
+                ),
+            )
+            .await
+            .map_err(to_gql_error)?;
+        let map_options = |values: Vec<scryer_application::TitleCatalogTagFilterOption>| {
+            values
+                .into_iter()
+                .map(|option| TitleCatalogTagFilterOptionPayload {
+                    key: option.key,
+                    name: option.name,
+                })
+                .collect()
+        };
+
+        Ok(TitleCatalogFilterOptionsPayload {
+            genres: map_options(options.genres),
+            tags: map_options(options.tags),
+            minimum_year: options.minimum_year,
+            maximum_year: options.maximum_year,
         })
     }
 

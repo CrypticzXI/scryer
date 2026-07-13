@@ -114,6 +114,26 @@ pub struct TitleCatalogSortInput {
 pub struct TitleCatalogFilterInput {
     pub monitored: Option<bool>,
     pub content_statuses: Option<Vec<TitleCatalogContentStatusValue>>,
+    pub root_folder_ids: Option<Vec<ID>>,
+    pub genre_tag_keys: Option<Vec<String>>,
+    pub theme_tag_keys: Option<Vec<String>>,
+    pub minimum_year: Option<i32>,
+    pub maximum_year: Option<i32>,
+    pub minimum_rating: Option<f64>,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct TitleCatalogTagFilterOptionPayload {
+    pub key: String,
+    pub name: String,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct TitleCatalogFilterOptionsPayload {
+    pub genres: Vec<TitleCatalogTagFilterOptionPayload>,
+    pub tags: Vec<TitleCatalogTagFilterOptionPayload>,
+    pub minimum_year: Option<i32>,
+    pub maximum_year: Option<i32>,
 }
 
 #[derive(SimpleObject, Clone)]

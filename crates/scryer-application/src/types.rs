@@ -754,10 +754,30 @@ impl Default for TitleCatalogSort {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct TitleCatalogFilter {
     pub monitored: Option<bool>,
     pub content_statuses: Vec<TitleCatalogContentStatus>,
+    pub root_folder_ids: Vec<String>,
+    pub genre_tag_keys: Vec<String>,
+    pub theme_tag_keys: Vec<String>,
+    pub minimum_year: Option<i32>,
+    pub maximum_year: Option<i32>,
+    pub minimum_rating: Option<f64>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TitleCatalogTagFilterOption {
+    pub key: String,
+    pub name: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TitleCatalogFilterOptions {
+    pub genres: Vec<TitleCatalogTagFilterOption>,
+    pub tags: Vec<TitleCatalogTagFilterOption>,
+    pub minimum_year: Option<i32>,
+    pub maximum_year: Option<i32>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

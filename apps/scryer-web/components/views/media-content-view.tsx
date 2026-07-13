@@ -18,6 +18,7 @@ import {
   Pencil,
   RefreshCw,
   Search,
+  SlidersHorizontal,
   Sparkles,
   Table as TableIcon,
   Trash2,
@@ -56,7 +57,6 @@ import {
   SheetTitle,
   SheetTrigger,
 } from "@/components/ui/sheet";
-import { LibraryMultiSelect } from "@/components/common/library-multi-select";
 import {
   MediaFilesOnDiskPanel,
   type MediaFileOnDisk,
@@ -96,7 +96,9 @@ import type {
   TitleRecord,
   CatalogDiscoveryGroup,
   CatalogDiscoveryItem,
+  TitleCatalogFilterOptionsRecord,
 } from "@/lib/types";
+import type { TitleCatalogAdvancedFilters } from "@/lib/utils/title-catalog-query";
 import type { ImportMode } from "@/lib/types/settings";
 import type { ExternalSubtitleRecord } from "@/lib/types/subtitles";
 import type { ViewCategoryId } from "./media-content/indexer-category-picker";
@@ -109,6 +111,7 @@ import { RenameSettingsPanel } from "./media-content/rename-settings-panel";
 import { FacetSettingsSection } from "./media-content/facet-settings-section";
 import { AddTitleForm } from "./media-content/add-title-form";
 import { PosterGrid } from "./media-content/poster-grid";
+import { CatalogFiltersPanel } from "./media-content/catalog-filters-panel";
 import { TitleTable } from "./media-content/title-table";
 import { CompactTitleTable } from "./media-content/compact-title-table";
 import {
@@ -882,6 +885,16 @@ function TitleContextPanel({
   id,
   title,
   discoveryGroups,
+  libraries,
+  librariesLoading,
+  selectedLibraryIds,
+  onSelectedLibraryIdsChange,
+  advancedFilters,
+  filterOptions,
+  filterOptionsError,
+  onRetryFilterOptions,
+  onAdvancedFiltersChange,
+  onClearAdvancedFilters,
   view,
   overviewTargetView,
   resolvedProfileName,
@@ -917,6 +930,18 @@ function TitleContextPanel({
   id?: string;
   title: TitleRecord | null;
   discoveryGroups: CatalogDiscoveryGroup[];
+  libraries: LibraryRecord[];
+  librariesLoading: boolean;
+  selectedLibraryIds: string[];
+  onSelectedLibraryIdsChange: (libraryIds: string[]) => void;
+  advancedFilters: TitleCatalogAdvancedFilters;
+  filterOptions: TitleCatalogFilterOptionsRecord;
+  filterOptionsError: boolean;
+  onRetryFilterOptions: () => void;
+  onAdvancedFiltersChange: (
+    updates: Partial<TitleCatalogAdvancedFilters>,
+  ) => void;
+  onClearAdvancedFilters: () => void;
   view: ViewId;
   overviewTargetView: ViewId;
   resolvedProfileName: string | null;
@@ -1090,15 +1115,33 @@ function TitleContextPanel({
       <aside
         id={id}
         aria-label={t("title.contextPanelTitle")}
-        className={panelClassName}
+        className={cn(
+          panelClassName,
+          "grid grid-rows-[minmax(0,1fr)_minmax(0,1fr)]",
+        )}
       >
-        <TitleContextForYouPanel
-          discoveryGroups={discoveryGroups}
-          view={view}
-          canManageTitle={canManageTitle}
-          canRequestMedia={canRequestMedia}
-          onDiscoveryAction={onDiscoveryAction}
+        <CatalogFiltersPanel
+          libraries={libraries}
+          librariesLoading={librariesLoading}
+          selectedLibraryIds={selectedLibraryIds}
+          onSelectedLibraryIdsChange={onSelectedLibraryIdsChange}
+          filters={advancedFilters}
+          options={filterOptions}
+          optionsError={filterOptionsError}
+          onRetryOptions={onRetryFilterOptions}
+          onFiltersChange={onAdvancedFiltersChange}
+          onClear={onClearAdvancedFilters}
+          className="border-b border-[var(--scry-border2)]"
         />
+        <div className="flex min-h-0 overflow-hidden">
+          <TitleContextForYouPanel
+            discoveryGroups={discoveryGroups}
+            view={view}
+            canManageTitle={canManageTitle}
+            canRequestMedia={canRequestMedia}
+            onDiscoveryAction={onDiscoveryAction}
+          />
+        </div>
       </aside>
     );
   }
@@ -1719,6 +1762,14 @@ export function MediaContentView({
     onCatalogDiscoveryAction: (item: CatalogDiscoveryItem) => void;
     titleQuickFilters: TitleQuickFilters;
     titleQuickFilterCounts: TitleQuickFilterCounts;
+    advancedTitleFilters: TitleCatalogAdvancedFilters;
+    titleCatalogFilterOptions: TitleCatalogFilterOptionsRecord;
+    titleCatalogFilterOptionsError: boolean;
+    retryTitleCatalogFilterOptions: () => void;
+    updateAdvancedTitleFilters: (
+      updates: Partial<TitleCatalogAdvancedFilters>,
+    ) => void;
+    clearAdvancedTitleFilters: () => void;
     toggleTitleQuickMonitoringFilter: (
       filter: "monitored" | "unmonitored",
     ) => void;
@@ -1968,6 +2019,12 @@ export function MediaContentView({
     onCatalogDiscoveryAction,
     titleQuickFilters,
     titleQuickFilterCounts,
+    advancedTitleFilters,
+    titleCatalogFilterOptions,
+    titleCatalogFilterOptionsError,
+    retryTitleCatalogFilterOptions,
+    updateAdvancedTitleFilters,
+    clearAdvancedTitleFilters,
     toggleTitleQuickMonitoringFilter,
     toggleTitleQuickStatusFilter,
     clearTitleQuickFilters,
@@ -3188,6 +3245,43 @@ export function MediaContentView({
                               variant="outline"
                               className="h-10 w-full shrink-0 gap-2 rounded-[10px] border-[var(--scry-border2)] bg-[var(--scry-inset)] px-3 text-[13px] text-[var(--scry-body)] shadow-none transition hover:bg-[var(--scry-hover)] hover:text-[var(--scry-ink2)] sm:w-auto"
                             >
+                              <SlidersHorizontal className="h-4 w-4 text-[var(--scry-accent-text)]" />
+                              <span>{t("discovery.filters")}</span>
+                            </Button>
+                          </SheetTrigger>
+                          <SheetContent
+                            side="right"
+                            className="w-[min(92vw,26rem)] max-w-none gap-0 border-l border-[var(--scry-border2)] bg-[var(--scry-surfD)] p-0 sm:max-w-none"
+                          >
+                            <SheetHeader className="sr-only">
+                              <SheetTitle>{t("discovery.filters")}</SheetTitle>
+                            </SheetHeader>
+                            <CatalogFiltersPanel
+                              libraries={libraries}
+                              librariesLoading={librariesLoading}
+                              selectedLibraryIds={selectedLibraryIds}
+                              onSelectedLibraryIdsChange={
+                                setSelectedLibraryIds
+                              }
+                              filters={advancedTitleFilters}
+                              options={titleCatalogFilterOptions}
+                              optionsError={titleCatalogFilterOptionsError}
+                              onRetryOptions={retryTitleCatalogFilterOptions}
+                              onFiltersChange={updateAdvancedTitleFilters}
+                              onClear={clearAdvancedTitleFilters}
+                              className="h-full"
+                            />
+                          </SheetContent>
+                        </Sheet>
+                      ) : null}
+                      {catalogDiscoveryFlyoutAvailable ? (
+                        <Sheet>
+                          <SheetTrigger asChild>
+                            <Button
+                              type="button"
+                              variant="outline"
+                              className="h-10 w-full shrink-0 gap-2 rounded-[10px] border-[var(--scry-border2)] bg-[var(--scry-inset)] px-3 text-[13px] text-[var(--scry-body)] shadow-none transition hover:bg-[var(--scry-hover)] hover:text-[var(--scry-ink2)] sm:w-auto"
+                            >
                               <Sparkles className="h-4 w-4 text-[var(--scry-accent-text)]" />
                               <span>{t("title.contextForYouTitle")}</span>
                             </Button>
@@ -3281,13 +3375,6 @@ export function MediaContentView({
                           className="hidden h-10 shrink-0 sm:block sm:w-10"
                         />
                       )}
-                      <LibraryMultiSelect
-                        libraries={libraries}
-                        selectedLibraryIds={selectedLibraryIds}
-                        onSelectedLibraryIdsChange={setSelectedLibraryIds}
-                        disabled={librariesLoading || libraries.length === 0}
-                        triggerClassName="h-10 w-full rounded-[10px] border-[var(--scry-border2)] bg-[var(--scry-inset)] text-[13px] text-[var(--scry-body)] shadow-none sm:w-[180px]"
-                      />
                       <ToggleGroup
                         type="single"
                         variant="outline"
@@ -3670,6 +3757,16 @@ export function MediaContentView({
                       id={selectedTitleContextPanelId}
                       title={activeOverviewTitle}
                       discoveryGroups={deferredCatalogDiscoveryGroups}
+                      libraries={libraries}
+                      librariesLoading={librariesLoading}
+                      selectedLibraryIds={selectedLibraryIds}
+                      onSelectedLibraryIdsChange={setSelectedLibraryIds}
+                      advancedFilters={advancedTitleFilters}
+                      filterOptions={titleCatalogFilterOptions}
+                      filterOptionsError={titleCatalogFilterOptionsError}
+                      onRetryFilterOptions={retryTitleCatalogFilterOptions}
+                      onAdvancedFiltersChange={updateAdvancedTitleFilters}
+                      onClearAdvancedFilters={clearAdvancedTitleFilters}
                       view={view}
                       overviewTargetView={overviewTargetView}
                       resolvedProfileName={resolvedProfileName}

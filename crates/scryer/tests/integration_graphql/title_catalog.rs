@@ -48,6 +48,113 @@ fn library_root_id(library: &Value, path: &str) -> String {
         .to_string()
 }
 
+fn catalog_view_actor(library_id: &str) -> User {
+    User {
+        id: Id::new().0,
+        username: "catalog-filter-viewer".to_string(),
+        password_hash: None,
+        account_kind: Default::default(),
+        authorization: UserAuthorization {
+            app: AppPermissionMask::NONE,
+            libraries: HashMap::from([(
+                library_id.to_string(),
+                LibraryPermissionMask::from_permissions([LibraryPermission::View]),
+            )]),
+            default_library: LibraryPermissionMask::NONE,
+            actor_capabilities: scryer_domain::ActorCapabilityMask::MANAGE_OWN_ACCOUNT,
+            loaded: true,
+        },
+    }
+}
+
+async fn add_catalog_filter_title(
+    ctx: &TestContext,
+    name: &str,
+    tvdb_id: &str,
+    library_id: &str,
+    root_folder_id: &str,
+    year: i32,
+) -> String {
+    let body = gql(
+        ctx,
+        r#"mutation($input: AddTitleInput!) {
+            addTitle(input: $input) { title { id } }
+        }"#,
+        json!({
+            "input": {
+                "name": name,
+                "facet": "MOVIE",
+                "libraryId": library_id,
+                "monitored": true,
+                "tags": [],
+                "externalIds": [{ "source": "tvdb", "value": tvdb_id }],
+                "options": { "rootFolderId": root_folder_id }
+            }
+        }),
+    )
+    .await;
+    assert_no_errors(&body);
+    let title_id = body["data"]["addTitle"]["title"]["id"]
+        .as_str()
+        .expect("catalog filter title id")
+        .to_string();
+    sqlx::query("UPDATE titles SET year = ? WHERE id = ?")
+        .bind(year)
+        .bind(&title_id)
+        .execute(ctx.db.pool())
+        .await
+        .expect("catalog filter title year should update");
+    title_id
+}
+
+async fn seed_catalog_filter_metadata(
+    ctx: &TestContext,
+    title_id: &str,
+    tags: &[(&str, &str, &str)],
+    rating: Option<f64>,
+) {
+    let subject_id = Id::new().0;
+    let subject_key = format!("catalog-filter:{title_id}");
+    sqlx::query(
+        "INSERT INTO canonical_media_subjects (
+            id, subject_key, subject_key_norm, language, target_kind, title_id, display_title
+         ) VALUES (?, ?, ?, 'eng', 'movie', ?, 'Catalog record')",
+    )
+    .bind(&subject_id)
+    .bind(&subject_key)
+    .bind(&subject_key)
+    .bind(title_id)
+    .execute(ctx.db.pool())
+    .await
+    .expect("canonical catalog filter subject should insert");
+
+    for (tag_key, category, name) in tags {
+        sqlx::query(
+            "INSERT INTO canonical_media_tags (
+                subject_id, tag_key, category, name, confidence, is_adult, is_spoiler, sort_index
+             ) VALUES (?, ?, ?, ?, 1.0, 0, 0, 0)",
+        )
+        .bind(&subject_id)
+        .bind(tag_key)
+        .bind(category)
+        .bind(name)
+        .execute(ctx.db.pool())
+        .await
+        .expect("canonical catalog filter tag should insert");
+    }
+
+    if let Some(rating) = rating {
+        sqlx::query(
+            "INSERT INTO canonical_media_rating_summaries (subject_id, rating) VALUES (?, ?)",
+        )
+        .bind(&subject_id)
+        .bind(rating)
+        .execute(ctx.db.pool())
+        .await
+        .expect("canonical catalog filter rating should insert");
+    }
+}
+
 async fn stored_title_root_folder_id(ctx: &TestContext, title_id: &str) -> String {
     ctx.titles
         .get_by_id(title_id)
@@ -148,6 +255,272 @@ async fn graphql_list_titles_starts_empty() {
     let body = gql(&ctx, "{ titles { items { id } } }", json!({})).await;
     assert_no_errors(&body);
     assert_eq!(body["data"]["titles"]["items"].as_array().unwrap().len(), 0);
+}
+
+#[tokio::test]
+async fn graphql_title_catalog_advanced_filters_apply_to_seeded_catalog_data() {
+    let ctx = TestContext::new().await;
+    let library = create_title_catalog_library(
+        &ctx,
+        "MOVIE",
+        "Catalog Filter Library",
+        &[
+            ("/catalog-filter/default", true),
+            ("/catalog-filter/archive", false),
+        ],
+    )
+    .await;
+    let library_id = library_id(&library);
+    let default_root_id = library_root_id(&library, "/catalog-filter/default");
+    let archive_root_id = library_root_id(&library, "/catalog-filter/archive");
+    let first_title_id = add_catalog_filter_title(
+        &ctx,
+        "Catalog Record A",
+        "990001",
+        &library_id,
+        &default_root_id,
+        2001,
+    )
+    .await;
+    let second_title_id = add_catalog_filter_title(
+        &ctx,
+        "Catalog Record B",
+        "990002",
+        &library_id,
+        &archive_root_id,
+        2015,
+    )
+    .await;
+    let unrated_title_id = add_catalog_filter_title(
+        &ctx,
+        "Catalog Record C",
+        "990003",
+        &library_id,
+        &default_root_id,
+        2004,
+    )
+    .await;
+    seed_catalog_filter_metadata(
+        &ctx,
+        &first_title_id,
+        &[
+            ("genre-alpha", "genre", "Genre Alpha"),
+            ("theme-signal", "theme", "Theme Signal"),
+        ],
+        Some(8.0),
+    )
+    .await;
+    seed_catalog_filter_metadata(
+        &ctx,
+        &second_title_id,
+        &[
+            ("genre-beta", "genre", "Genre Beta"),
+            ("theme-other", "theme", "Theme Other"),
+        ],
+        Some(9.0),
+    )
+    .await;
+    seed_catalog_filter_metadata(
+        &ctx,
+        &unrated_title_id,
+        &[
+            ("genre-alpha", "genre", "Genre Alpha"),
+            ("theme-signal", "theme", "Theme Signal"),
+        ],
+        None,
+    )
+    .await;
+
+    let body = gql(
+        &ctx,
+        r#"query(
+            $libraryIds: [ID!]
+            $rootFolderIds: [ID!]
+            $genreTagKeys: [String!]
+            $themeTagKeys: [String!]
+        ) {
+            titles(
+                facet: MOVIE,
+                libraryIds: $libraryIds,
+                filter: {
+                    rootFolderIds: $rootFolderIds
+                    genreTagKeys: $genreTagKeys
+                    themeTagKeys: $themeTagKeys
+                    minimumYear: 2001
+                    maximumYear: 2004
+                    minimumRating: 7.5
+                }
+            ) { items { id } totalCount }
+            titleCatalogFilterOptions(
+                facet: MOVIE
+                libraryIds: $libraryIds
+                rootFolderIds: $rootFolderIds
+            ) {
+                genres { key name }
+                tags { key name }
+                minimumYear
+                maximumYear
+            }
+        }"#,
+        json!({
+            "libraryIds": [library_id],
+            "rootFolderIds": [default_root_id],
+            "genreTagKeys": ["genre-missing", "genre-alpha"],
+            "themeTagKeys": ["theme-signal"],
+        }),
+    )
+    .await;
+
+    assert_no_errors(&body);
+    assert_eq!(body["data"]["titles"]["totalCount"], 1);
+    assert_eq!(body["data"]["titles"]["items"][0]["id"], first_title_id);
+    assert_eq!(
+        body["data"]["titleCatalogFilterOptions"]["genres"],
+        json!([{ "key": "genre-alpha", "name": "Genre Alpha" }])
+    );
+    assert_eq!(
+        body["data"]["titleCatalogFilterOptions"]["tags"],
+        json!([{ "key": "theme-signal", "name": "Theme Signal" }])
+    );
+    assert_eq!(
+        body["data"]["titleCatalogFilterOptions"]["minimumYear"],
+        2001
+    );
+    assert_eq!(
+        body["data"]["titleCatalogFilterOptions"]["maximumYear"],
+        2004
+    );
+
+    let unrated_body = gql(
+        &ctx,
+        r#"query($libraryIds: [ID!], $rootFolderIds: [ID!]) {
+            titles(
+                facet: MOVIE
+                libraryIds: $libraryIds
+                filter: {
+                    rootFolderIds: $rootFolderIds
+                    genreTagKeys: ["genre-alpha"]
+                    themeTagKeys: ["theme-signal"]
+                    minimumYear: 2001
+                    maximumYear: 2004
+                }
+            ) { items { id } totalCount }
+        }"#,
+        json!({
+            "libraryIds": [library_id],
+            "rootFolderIds": [default_root_id],
+        }),
+    )
+    .await;
+    assert_no_errors(&unrated_body);
+    let mut ids = unrated_body["data"]["titles"]["items"]
+        .as_array()
+        .expect("filtered title items")
+        .iter()
+        .map(|title| title["id"].as_str().expect("filtered title id"))
+        .collect::<Vec<_>>();
+    ids.sort_unstable();
+    let mut expected_ids = vec![first_title_id.as_str(), unrated_title_id.as_str()];
+    expected_ids.sort_unstable();
+    assert_eq!(ids, expected_ids);
+}
+
+#[tokio::test]
+async fn graphql_title_catalog_filters_honor_library_view_permissions() {
+    let ctx = TestContext::new().await;
+    let allowed_library = create_title_catalog_library(
+        &ctx,
+        "MOVIE",
+        "Allowed Catalog Library",
+        &[("/catalog-rbac/allowed", true)],
+    )
+    .await;
+    let denied_library = create_title_catalog_library(
+        &ctx,
+        "MOVIE",
+        "Denied Catalog Library",
+        &[("/catalog-rbac/denied", true)],
+    )
+    .await;
+    let allowed_library_id = library_id(&allowed_library);
+    let denied_library_id = library_id(&denied_library);
+    let allowed_root_id = library_root_id(&allowed_library, "/catalog-rbac/allowed");
+    let denied_root_id = library_root_id(&denied_library, "/catalog-rbac/denied");
+    let allowed_title_id = add_catalog_filter_title(
+        &ctx,
+        "Authorized Catalog Record",
+        "991001",
+        &allowed_library_id,
+        &allowed_root_id,
+        2002,
+    )
+    .await;
+    let denied_title_id = add_catalog_filter_title(
+        &ctx,
+        "Restricted Catalog Record",
+        "991002",
+        &denied_library_id,
+        &denied_root_id,
+        2022,
+    )
+    .await;
+    seed_catalog_filter_metadata(
+        &ctx,
+        &allowed_title_id,
+        &[("genre-allowed", "genre", "Genre Allowed")],
+        Some(8.0),
+    )
+    .await;
+    seed_catalog_filter_metadata(
+        &ctx,
+        &denied_title_id,
+        &[("genre-restricted", "genre", "Genre Restricted")],
+        Some(9.0),
+    )
+    .await;
+
+    let actor = catalog_view_actor(&allowed_library_id);
+    let body = schema_exec(
+        &ctx,
+        &format!(
+            r#"query {{
+                titles(
+                    facet: MOVIE
+                    libraryIds: ["{allowed_library_id}", "{denied_library_id}"]
+                ) {{ items {{ id }} totalCount }}
+                titleCatalogFilterOptions(
+                    facet: MOVIE
+                    libraryIds: ["{allowed_library_id}", "{denied_library_id}"]
+                    rootFolderIds: ["{allowed_root_id}", "{denied_root_id}"]
+                ) {{ genres {{ key name }} minimumYear maximumYear }}
+                deniedOptions: titleCatalogFilterOptions(
+                    facet: MOVIE
+                    libraryIds: ["{denied_library_id}"]
+                ) {{ genres {{ key name }} minimumYear maximumYear }}
+            }}"#,
+        ),
+        Some(actor),
+    )
+    .await;
+
+    assert_no_errors(&body);
+    assert_eq!(body["data"]["titles"]["totalCount"], 1);
+    assert_eq!(body["data"]["titles"]["items"][0]["id"], allowed_title_id);
+    assert_eq!(
+        body["data"]["titleCatalogFilterOptions"]["genres"],
+        json!([{ "key": "genre-allowed", "name": "Genre Allowed" }])
+    );
+    assert_eq!(
+        body["data"]["titleCatalogFilterOptions"]["minimumYear"],
+        2002
+    );
+    assert_eq!(
+        body["data"]["titleCatalogFilterOptions"]["maximumYear"],
+        2002
+    );
+    assert_eq!(body["data"]["deniedOptions"]["genres"], json!([]));
+    assert!(body["data"]["deniedOptions"]["minimumYear"].is_null());
+    assert!(body["data"]["deniedOptions"]["maximumYear"].is_null());
 }
 
 async fn add_test_title_with_tvdb_id(

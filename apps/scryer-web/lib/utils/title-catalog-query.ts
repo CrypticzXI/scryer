@@ -5,6 +5,15 @@ export type TitleCatalogQuickFilters = {
   ended: boolean;
 };
 
+export type TitleCatalogAdvancedFilters = {
+  rootFolderIds: string[];
+  genreTagKeys: string[];
+  themeTagKeys: string[];
+  minimumYear: number | null;
+  maximumYear: number | null;
+  minimumRating: number | null;
+};
+
 export type TitleCatalogSortStateLike = {
   key: string;
   direction: string;
@@ -27,6 +36,7 @@ export type TitleCatalogQueryOptions = {
   libraryIds: string[];
   query: string;
   filters: TitleCatalogQuickFilters;
+  advancedFilters?: TitleCatalogAdvancedFilters;
   sort: TitleCatalogSortStateLike;
   projection?: TitleCatalogProjection;
   limit: number;
@@ -38,6 +48,15 @@ export const EMPTY_TITLE_QUICK_FILTERS: TitleCatalogQuickFilters = {
   unmonitored: false,
   continuing: false,
   ended: false,
+};
+
+export const EMPTY_TITLE_ADVANCED_FILTERS: TitleCatalogAdvancedFilters = {
+  rootFolderIds: [],
+  genreTagKeys: [],
+  themeTagKeys: [],
+  minimumYear: null,
+  maximumYear: null,
+  minimumRating: null,
 };
 
 const EMPTY_TITLE_CATALOG_PROJECTION: TitleCatalogProjection = {
@@ -126,7 +145,10 @@ export function titleCatalogSortInput(sort: TitleCatalogSortStateLike) {
   };
 }
 
-export function titleCatalogFilterInput(filters: TitleCatalogQuickFilters) {
+export function titleCatalogFilterInput(
+  filters: TitleCatalogQuickFilters,
+  advancedFilters: TitleCatalogAdvancedFilters = EMPTY_TITLE_ADVANCED_FILTERS,
+) {
   const monitored =
     filters.monitored === filters.unmonitored
       ? null
@@ -138,13 +160,40 @@ export function titleCatalogFilterInput(filters: TitleCatalogQuickFilters) {
     filters.ended ? "ENDED" : null,
   ].filter((value): value is string => Boolean(value));
 
-  if (monitored === null && contentStatuses.length === 0) {
+  const rootFolderIds = [...advancedFilters.rootFolderIds].sort();
+  const genreTagKeys = [...advancedFilters.genreTagKeys].sort();
+  const themeTagKeys = [...advancedFilters.themeTagKeys].sort();
+  const minimumRating =
+    advancedFilters.minimumRating != null && advancedFilters.minimumRating > 0
+      ? advancedFilters.minimumRating
+      : null;
+
+  if (
+    monitored === null &&
+    contentStatuses.length === 0 &&
+    rootFolderIds.length === 0 &&
+    genreTagKeys.length === 0 &&
+    themeTagKeys.length === 0 &&
+    advancedFilters.minimumYear === null &&
+    advancedFilters.maximumYear === null &&
+    minimumRating === null
+  ) {
     return null;
   }
 
   return {
     monitored,
     contentStatuses,
+    ...(rootFolderIds.length > 0 ? { rootFolderIds } : {}),
+    ...(genreTagKeys.length > 0 ? { genreTagKeys } : {}),
+    ...(themeTagKeys.length > 0 ? { themeTagKeys } : {}),
+    ...(advancedFilters.minimumYear !== null
+      ? { minimumYear: advancedFilters.minimumYear }
+      : {}),
+    ...(advancedFilters.maximumYear !== null
+      ? { maximumYear: advancedFilters.maximumYear }
+      : {}),
+    ...(minimumRating !== null ? { minimumRating } : {}),
   };
 }
 
@@ -208,17 +257,24 @@ export function titleCatalogQueryKey({
   query,
   libraryIds,
   filters,
+  advancedFilters,
   sort,
   projection,
 }: Pick<
   TitleCatalogQueryOptions,
-  "facet" | "query" | "libraryIds" | "filters" | "sort" | "projection"
+  | "facet"
+  | "query"
+  | "libraryIds"
+  | "filters"
+  | "advancedFilters"
+  | "sort"
+  | "projection"
 >) {
   return JSON.stringify({
     facet,
     query: query.trim(),
     libraryIds: [...libraryIds].sort(),
-    filter: titleCatalogFilterInput(filters),
+    filter: titleCatalogFilterInput(filters, advancedFilters),
     sort: titleCatalogSortInput(sort),
     projection: titleCatalogProjectionSignature(projection),
   });
@@ -229,6 +285,7 @@ export function buildTitleCatalogQueryVariables({
   libraryIds,
   query,
   filters,
+  advancedFilters,
   sort,
   limit,
   offset,
@@ -237,7 +294,7 @@ export function buildTitleCatalogQueryVariables({
     facet,
     libraryIds: libraryIds.length > 0 ? libraryIds : null,
     query: query.trim() || null,
-    filter: titleCatalogFilterInput(filters),
+    filter: titleCatalogFilterInput(filters, advancedFilters),
     sort: titleCatalogSortInput(sort),
     limit,
     offset,

@@ -102,6 +102,83 @@ impl LibraryScanner for NotifyingLibraryScanner {
     }
 }
 
+struct HydratingMovieSearchGateway {
+    search_item: MetadataSearchItem,
+    movie: MovieMetadata,
+}
+
+#[async_trait]
+impl MetadataGateway for HydratingMovieSearchGateway {
+    async fn search_tvdb(
+        &self,
+        _query: &str,
+        _type_hint: &str,
+        _year: Option<i32>,
+    ) -> AppResult<Vec<MetadataSearchItem>> {
+        Ok(vec![self.search_item.clone()])
+    }
+
+    async fn search_tvdb_batch(
+        &self,
+        queries: &[MetadataSearchQuery],
+        _language: &str,
+    ) -> AppResult<HashMap<MetadataSearchQuery, Vec<MetadataSearchItem>>> {
+        Ok(queries
+            .iter()
+            .cloned()
+            .map(|query| (query, vec![self.search_item.clone()]))
+            .collect())
+    }
+
+    async fn search_tvdb_rich(
+        &self,
+        _query: &str,
+        _type_hint: &str,
+        _limit: i32,
+        _language: &str,
+        _year: Option<i32>,
+    ) -> AppResult<Vec<RichMetadataSearchItem>> {
+        Ok(Vec::new())
+    }
+
+    async fn search_tvdb_multi(
+        &self,
+        _query: &str,
+        _limit: i32,
+        _language: &str,
+    ) -> AppResult<MultiMetadataSearchResult> {
+        Ok(MultiMetadataSearchResult::default())
+    }
+
+    async fn get_movie(&self, tvdb_id: i64, _language: &str) -> AppResult<MovieMetadata> {
+        if tvdb_id == self.movie.tvdb_id {
+            Ok(self.movie.clone())
+        } else {
+            Err(AppError::NotFound(format!("movie {tvdb_id}")))
+        }
+    }
+
+    async fn get_series(&self, tvdb_id: i64, _language: &str) -> AppResult<SeriesMetadata> {
+        Err(AppError::NotFound(format!("series {tvdb_id}")))
+    }
+
+    async fn get_metadata_bulk(
+        &self,
+        movie_tvdb_ids: &[i64],
+        _series_tvdb_ids: &[i64],
+        _language: &str,
+    ) -> AppResult<BulkMetadataResult> {
+        Ok(BulkMetadataResult {
+            movies: movie_tvdb_ids
+                .iter()
+                .filter(|tvdb_id| **tvdb_id == self.movie.tvdb_id)
+                .map(|tvdb_id| (*tvdb_id, self.movie.clone()))
+                .collect(),
+            series: HashMap::new(),
+        })
+    }
+}
+
 #[derive(Clone, Default)]
 struct CountingRecommendationMetadataGateway {
     movies: HashMap<i64, MovieMetadata>,
@@ -202,6 +279,7 @@ impl MetadataGateway for CountingRecommendationMetadataGateway {
 struct PerDirectoryBlockingLibraryScanner {
     library_files: Arc<Mutex<Vec<LibraryFile>>>,
     directory_files: Arc<Mutex<std::collections::HashMap<String, Vec<LibraryFile>>>>,
+    scanned_directories: Arc<Mutex<Vec<String>>>,
     blocked_directories: Arc<Mutex<std::collections::HashSet<String>>>,
     blocked_scan_calls: Arc<AtomicUsize>,
     blocked_scan_started: Arc<Notify>,
@@ -218,6 +296,10 @@ impl PerDirectoryBlockingLibraryScanner {
             .lock()
             .await
             .insert(root.to_string_lossy().to_string(), files);
+    }
+
+    async fn scanned_directories(&self) -> Vec<String> {
+        self.scanned_directories.lock().await.clone()
     }
 
     async fn block_directory(&self, root: &std::path::Path) {
@@ -278,6 +360,7 @@ impl LibraryScanner for PerDirectoryBlockingLibraryScanner {
     // The shallow evidence listing never blocks: it models the real
     // scanner's single readdir, while the recursive walk above can be held.
     async fn scan_directory_children(&self, root: &str) -> AppResult<Vec<LibraryFile>> {
+        self.scanned_directories.lock().await.push(root.to_string());
         let root_path = std::path::Path::new(root).to_path_buf();
         Ok(self
             .directory_files
@@ -3042,6 +3125,141 @@ async fn movie_full_scan_of_empty_library_completes_with_deterministic_zero_tota
         metadata_gateway.batch_queries().await.is_empty(),
         "an empty library must not issue SMG lookups"
     );
+}
+
+#[tokio::test]
+async fn movie_full_scan_by_id_uses_selected_library_scope() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let default_root = tempdir.path().join("default-movies");
+    let selected_root = tempdir.path().join("selected-movies");
+    let default_title_dir = default_root.join("Default Movie (2025)");
+    let selected_title_dir = selected_root.join("Selected Movie (2026)");
+    std::fs::create_dir_all(&default_title_dir).expect("create default movie folder");
+    std::fs::create_dir_all(&selected_title_dir).expect("create selected movie folder");
+    let default_file = default_title_dir.join("Default.Movie.2025.mkv");
+    let selected_file = selected_title_dir.join("Selected.Movie.2026.mkv");
+    std::fs::write(&default_file, b"default movie").expect("write default movie");
+    std::fs::write(&selected_file, b"selected movie").expect("write selected movie");
+
+    let settings = Arc::new(StoredSettingsRepo::default());
+    settings
+        .set_value(
+            SETTINGS_SCOPE_MEDIA,
+            "movies.path",
+            default_root.to_string_lossy().as_ref(),
+        )
+        .await;
+    let unmatched_items = Arc::new(TrackingLibraryScanUnmatchedItemRepo::default());
+    let (base_app, user, titles) = bootstrap_with_scan_unmatched_and_metadata_tracking_and_titles(
+        settings,
+        Arc::new(MutableLibraryScanner::default()),
+        unmatched_items,
+        Arc::new(HydratingMovieSearchGateway {
+            search_item: MetadataSearchItem {
+                tvdb_id: "778899".to_string(),
+                name: "Selected Movie".to_string(),
+                year: Some(2026),
+                auto_match_safe: true,
+                auto_match_signals: vec!["exact_title".into()],
+            },
+            movie: make_movie_metadata(778899, "Selected Movie"),
+        }),
+    );
+    base_app
+        .reconcile_default_library_roots()
+        .await
+        .expect("reconcile default movie root");
+    let selected_library = base_app
+        .create_library(
+            &user,
+            MediaFacet::Movie,
+            "Selected Movies".to_string(),
+            vec![LibraryRootDraft {
+                path: selected_root.to_string_lossy().to_string(),
+                is_default: true,
+            }],
+            None,
+        )
+        .await
+        .expect("create selected movie library");
+
+    let scanner = Arc::new(PerDirectoryBlockingLibraryScanner::default());
+    scanner
+        .set_directory_files(
+            &default_title_dir,
+            vec![build_test_library_file(
+                default_file.to_string_lossy().as_ref(),
+            )],
+        )
+        .await;
+    scanner
+        .set_directory_files(
+            &selected_title_dir,
+            vec![build_test_library_file(
+                selected_file.to_string_lossy().as_ref(),
+            )],
+        )
+        .await;
+    let app = base_app.with_test_overrides(|builder| {
+        builder
+            .with_library_scanner(scanner.clone())
+            .with_media_analyzer(Arc::new(CountingValidMediaAnalyzer::default()))
+    });
+
+    let session = app
+        .trigger_library_scan_by_id(&user, &selected_library.id)
+        .await
+        .expect("trigger selected movie library scan");
+    assert_eq!(
+        session.library_id.as_deref(),
+        Some(selected_library.id.as_str())
+    );
+    let completed =
+        wait_for_projected_library_scan_session_matching(&app, &session.session_id, |session| {
+            matches!(
+                session.status,
+                LibraryScanStatus::Completed | LibraryScanStatus::Warning
+            )
+        })
+        .await;
+
+    assert_eq!(
+        scanner.scanned_directories().await,
+        vec![selected_title_dir.to_string_lossy().to_string()]
+    );
+    assert_eq!(
+        completed.library_id.as_deref(),
+        Some(selected_library.id.as_str())
+    );
+    assert_eq!(completed.found_titles, 1);
+    assert_eq!(completed.title_match_progress.total, 1);
+    assert_eq!(completed.file_progress.total, 1);
+    let summary = completed.summary.expect("selected library scan summary");
+    assert_eq!(summary.scanned, 1);
+    assert_eq!(summary.matched, 1);
+
+    let stored_titles = titles.store.lock().await.clone();
+    assert_eq!(stored_titles.len(), 1);
+    let selected_title = &stored_titles[0];
+    assert_eq!(selected_title.name, "Selected Movie");
+    assert_eq!(selected_title.library_id, selected_library.id);
+    assert_eq!(selected_title.root_folder_id, selected_library.roots[0].id);
+    assert_eq!(
+        selected_title.folder_path.as_deref(),
+        Some(selected_title_dir.to_string_lossy().as_ref())
+    );
+    let media_files = app
+        .services
+        .library
+        .media_files
+        .list_media_files_for_title(&selected_title.id)
+        .await
+        .expect("list selected movie media files");
+    assert_eq!(media_files.len(), 1);
+    assert_eq!(media_files[0].file_path, selected_file.to_string_lossy());
+    assert!(stored_titles.iter().all(|title| {
+        title.library_id != scryer_domain::default_library_id_for_facet(&MediaFacet::Movie)
+    }));
 }
 
 #[tokio::test]

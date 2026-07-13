@@ -7,7 +7,7 @@ import { LibraryScanProgressContext } from "@/lib/context/library-scan-progress-
 import { useTranslate } from "@/lib/context/translate-context";
 import { useLibraryScanEventStream } from "@/lib/hooks/use-library-scan-event-stream";
 import { useIsMobile } from "@/lib/hooks/use-mobile";
-import type { LibraryScanStatus } from "@/lib/types";
+import type { Facet, LibraryScanStatus } from "@/lib/types";
 import type { ViewId } from "@/components/root/types";
 import { dispatchNavigationBadgesRefresh } from "@/lib/events/navigation-badges";
 import { facetById } from "@/lib/facets/registry";
@@ -130,6 +130,23 @@ export function LibraryScanProgressProvider({
     [dismissSession],
   );
 
+  const dismissFacetReviewToasts = React.useCallback(
+    (facet: Facet) => {
+      for (const session of sessions) {
+        if (
+          session.facet !== facet ||
+          (session.summary?.unmatched ?? 0) === 0 ||
+          !shownToastIdsRef.current.has(session.sessionId) ||
+          backgroundedSessionIdsRef.current.has(session.sessionId)
+        ) {
+          continue;
+        }
+        dismissSessionToast(session.sessionId);
+      }
+    },
+    [dismissSessionToast, sessions],
+  );
+
   React.useEffect(() => {
     for (const session of sessions) {
       if (isTerminal(session.status)) {
@@ -230,9 +247,16 @@ export function LibraryScanProgressProvider({
       sessions: sessions.filter((session) => !isTerminal(session.status)),
       getActiveSession,
       getSessionById,
+      dismissFacetReviewToasts,
       refreshSessions,
     }),
-    [getActiveSession, getSessionById, refreshSessions, sessions],
+    [
+      dismissFacetReviewToasts,
+      getActiveSession,
+      getSessionById,
+      refreshSessions,
+      sessions,
+    ],
   );
 
   return (

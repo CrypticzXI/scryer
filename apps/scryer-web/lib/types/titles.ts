@@ -202,6 +202,18 @@ export type RootFolderOption = {
   isDefault: boolean;
 };
 
+export type TitleCatalogTagFilterOption = {
+  key: string;
+  name: string;
+};
+
+export type TitleCatalogFilterOptionsRecord = {
+  genres: TitleCatalogTagFilterOption[];
+  tags: TitleCatalogTagFilterOption[];
+  minimumYear: number | null;
+  maximumYear: number | null;
+};
+
 export type LibraryRootRecord = {
   id: string;
   path: string;
