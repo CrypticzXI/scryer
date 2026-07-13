@@ -32,6 +32,53 @@ export type MultiSelectAllOption = {
   id?: string;
 };
 
+type MultiSelectOptionRowProps = {
+  option: MultiSelectOption;
+  checked: boolean;
+  disabled: boolean;
+  optionIdPrefix?: string;
+  optionClassName?: string;
+  optionLabelClassName?: string;
+  onToggle: (value: string) => void;
+};
+
+const MultiSelectOptionRow = React.memo(function MultiSelectOptionRow({
+  option,
+  checked,
+  disabled,
+  optionIdPrefix,
+  optionClassName,
+  optionLabelClassName,
+  onToggle,
+}: MultiSelectOptionRowProps) {
+  const optionDisabled = disabled || option.disabled === true;
+  return (
+    <button
+      id={option.id ?? (optionIdPrefix ? `${optionIdPrefix}-${option.value}` : undefined)}
+      type="button"
+      onClick={() => onToggle(option.value)}
+      disabled={optionDisabled}
+      title={option.title}
+      className={cn(
+        "flex w-full items-center gap-2 rounded-[8px] px-2 py-1.5 text-left text-sm text-[var(--scry-ink2)] transition-colors",
+        "hover:bg-[var(--scry-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[rgba(var(--scry-accent-rgb),0.32)]",
+        "disabled:cursor-not-allowed disabled:opacity-55 disabled:hover:bg-transparent",
+        optionClassName,
+      )}
+    >
+      <Checkbox
+        checked={checked}
+        disabled={optionDisabled}
+        size="compact"
+        className="pointer-events-none"
+      />
+      <span className={cn("min-w-0 flex-1 truncate", optionLabelClassName)}>
+        {option.label}
+      </span>
+    </button>
+  );
+});
+
 type MultiSelectOptionListProps = {
   groups: MultiSelectGroup[];
   selectedValues: string[];
@@ -68,54 +115,32 @@ function MultiSelectOptionList({
     () => new Set(selectedValues),
     [selectedValues],
   );
+  const allOptionsRef = React.useRef(allOptions);
+  const selectedValuesRef = React.useRef(selectedValues);
+  const onSelectedValuesChangeRef = React.useRef(onSelectedValuesChange);
+  React.useLayoutEffect(() => {
+    allOptionsRef.current = allOptions;
+    selectedValuesRef.current = selectedValues;
+    onSelectedValuesChangeRef.current = onSelectedValuesChange;
+  }, [allOptions, onSelectedValuesChange, selectedValues]);
 
   const toggleOption = React.useCallback(
     (value: string) => {
-      const nextSet = new Set(selectedSet);
+      const nextSet = new Set(selectedValuesRef.current);
       if (nextSet.has(value)) {
         nextSet.delete(value);
       } else {
         nextSet.add(value);
       }
 
-      onSelectedValuesChange(
-        allOptions
+      onSelectedValuesChangeRef.current(
+        allOptionsRef.current
           .map((option) => option.value)
           .filter((optionValue) => nextSet.has(optionValue)),
       );
     },
-    [allOptions, onSelectedValuesChange, selectedSet],
+    [],
   );
-
-  const renderOption = (option: MultiSelectOption) => {
-    const checked = selectedSet.has(option.value);
-    return (
-      <button
-        key={option.value}
-        id={option.id ?? (optionIdPrefix ? `${optionIdPrefix}-${option.value}` : undefined)}
-        type="button"
-        onClick={() => toggleOption(option.value)}
-        disabled={disabled || option.disabled}
-        title={option.title}
-        className={cn(
-          "flex w-full items-center gap-2 rounded-[8px] px-2 py-1.5 text-left text-sm text-[var(--scry-ink2)] transition-colors",
-          "hover:bg-[var(--scry-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[rgba(var(--scry-accent-rgb),0.32)]",
-          "disabled:cursor-not-allowed disabled:opacity-55 disabled:hover:bg-transparent",
-          optionClassName,
-        )}
-      >
-        <Checkbox
-          checked={checked}
-          disabled={disabled || option.disabled}
-          size="compact"
-          className="pointer-events-none"
-        />
-        <span className={cn("min-w-0 flex-1 truncate", optionLabelClassName)}>
-          {option.label}
-        </span>
-      </button>
-    );
-  };
 
   return (
     <div className={cn("flex flex-col gap-1 overflow-y-auto", maxHeightClassName, className)}>
@@ -156,7 +181,18 @@ function MultiSelectOptionList({
               {group.label}
             </div>
           ) : null}
-          {group.options.map(renderOption)}
+          {group.options.map((option) => (
+            <MultiSelectOptionRow
+              key={option.value}
+              option={option}
+              checked={selectedSet.has(option.value)}
+              disabled={disabled}
+              optionIdPrefix={optionIdPrefix}
+              optionClassName={optionClassName}
+              optionLabelClassName={optionLabelClassName}
+              onToggle={toggleOption}
+            />
+          ))}
         </div>
       ))}
     </div>

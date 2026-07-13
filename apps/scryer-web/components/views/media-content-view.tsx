@@ -1743,6 +1743,7 @@ export function MediaContentView({
     refreshTitles: (query?: string) => Promise<void> | void;
     titleLoading: boolean;
     catalogTotalTitleCount: number;
+    catalogManagedBytes: number;
     catalogHasMoreTitles: boolean;
     catalogLoadingMoreTitles: boolean;
     loadMoreCatalogTitles: () => Promise<void> | void;
@@ -2011,6 +2012,7 @@ export function MediaContentView({
     refreshTitles,
     titleLoading,
     catalogTotalTitleCount,
+    catalogManagedBytes,
     catalogHasMoreTitles,
     catalogLoadingMoreTitles,
     loadMoreCatalogTitles,
@@ -2878,14 +2880,7 @@ export function MediaContentView({
     }
     return view === "series" ? "series" : "anime";
   })();
-  const totalManagedBytes = React.useMemo(
-    () =>
-      deferredTitleContextTitles.reduce(
-        (total, title) => total + Math.max(0, title.sizeBytes ?? 0),
-        0,
-      ),
-    [deferredTitleContextTitles],
-  );
+  const totalManagedBytes = Math.max(0, catalogManagedBytes);
   const mediaSummary = [
     `${totalTitleCount.toLocaleString()} ${titleSummaryNoun}`,
     `${visibleTitleCount.toLocaleString()} shown${catalogHasMoreTitles ? "+" : ""}`,

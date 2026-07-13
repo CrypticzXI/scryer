@@ -211,6 +211,7 @@ export function DownloadClientConfigField({
         <FolderBrowserDialog
           open={browserOpen}
           onOpenChange={setBrowserOpen}
+          selectionTypes={["folder"]}
           initialPath={value || field.defaultValue || "/"}
           title={`Select ${field.label}`}
           onSelect={(path) => onChange(field.key, path)}

@@ -731,6 +731,7 @@ export default function SetupImportLibrariesView({
           if (!open) setBrowseTarget(null);
         }}
         onSelect={handleBrowseSelect}
+        selectionTypes={["folder"]}
         title={t("setup.addSourceRoot")}
         initialPath={
           browseTarget?.kind === "manual"

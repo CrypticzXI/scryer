@@ -1974,6 +1974,7 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
         open={browserOpen}
         onOpenChange={setBrowserOpen}
         onSelect={handleBrowserSelect}
+        selectionTypes={["folder"]}
         initialPath={browserInitialPath}
         title={browserTitle}
       />

@@ -452,6 +452,7 @@ export function DownloadClientRemotePathMappingsField({
           }
         }}
         onSelect={handleFolderSelect}
+        selectionTypes={["folder"]}
         initialPath={browseInitialPath}
         title={label}
       />

@@ -668,16 +668,6 @@ engine = "postgres"
 scope = "all"
 
 [[baseline]]
-through_version = 122
-file = "baselines/0122_baseline.sql"
-engine = "sqlite"
-
-[[baseline]]
-through_version = 122
-file = "postgres/baselines/0122_baseline.sql"
-engine = "postgres"
-
-[[baseline]]
 through_version = 140
 file = "baselines/0140_baseline.sql"
 engine = "sqlite"

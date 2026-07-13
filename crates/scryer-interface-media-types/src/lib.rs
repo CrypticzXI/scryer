@@ -4758,6 +4758,7 @@ pub struct SetupStatusPayload {
 pub struct DirectoryEntryPayload {
     pub name: String,
     pub path: String,
+    pub is_directory: bool,
 }
 
 // ── External Import (Sonarr/Radarr) ────────────────────────────────────────

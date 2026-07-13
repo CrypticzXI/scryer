@@ -807,6 +807,9 @@ pub struct TitleCatalogResult {
     pub has_more: bool,
     pub total_count: usize,
     pub filter_counts: TitleCatalogFilterCounts,
+    /// Exact managed media bytes for the authorized facet/library scope.
+    /// This deliberately ignores catalog search and filter state.
+    pub managed_bytes: i64,
 }
 
 #[derive(Clone, Debug, Default)]

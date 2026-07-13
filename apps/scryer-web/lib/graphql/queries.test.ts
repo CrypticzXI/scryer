@@ -65,6 +65,12 @@ test("title catalog query can omit page metadata for quiet refreshes", () => {
   assert.equal(query.includes("filterCounts"), false);
 });
 
+test("title catalog page metadata includes the scoped managed-byte aggregate", () => {
+  const query = buildTitlesQuery();
+
+  assert.equal(query.includes("managedBytes"), true);
+});
+
 test("reactive movie side panel refresh omits acquisition diagnostics", () => {
   const result = buildReactiveRefreshQuery([
     {

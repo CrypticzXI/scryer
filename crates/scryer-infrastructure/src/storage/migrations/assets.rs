@@ -599,9 +599,9 @@ mod tests {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../scryer/src/db")
     }
 
-    fn source_postgres_0122_baseline_sql() -> String {
-        fs::read_to_string(source_db_root().join("postgres/baselines/0122_baseline.sql"))
-            .expect("read PostgreSQL 0122 baseline")
+    fn source_postgres_0140_baseline_sql() -> String {
+        fs::read_to_string(source_db_root().join("postgres/baselines/0140_baseline.sql"))
+            .expect("read PostgreSQL 0140 baseline")
     }
 
     #[test]
@@ -615,22 +615,22 @@ mod tests {
         assert!(
             bundle
                 .catalog
-                .latest_baseline_at_or_below(122, EngineScope::Sqlite)
-                .is_some_and(|baseline| baseline.file == "baselines/0122_baseline.sql"),
+                .latest_baseline_at_or_below(140, EngineScope::Sqlite)
+                .is_some_and(|baseline| baseline.file == "baselines/0140_baseline.sql"),
             "SQLite should register the latest manifest-owned baseline"
         );
         assert!(
             bundle
                 .catalog
-                .latest_baseline_at_or_below(122, EngineScope::Postgres)
-                .is_some_and(|baseline| baseline.file == "postgres/baselines/0122_baseline.sql"),
+                .latest_baseline_at_or_below(140, EngineScope::Postgres)
+                .is_some_and(|baseline| baseline.file == "postgres/baselines/0140_baseline.sql"),
             "PostgreSQL should register the latest manifest-owned baseline"
         );
     }
 
     #[test]
-    fn postgres_0122_baseline_keeps_expected_index_coverage() {
-        let sql = source_postgres_0122_baseline_sql();
+    fn postgres_0140_baseline_keeps_expected_index_coverage() {
+        let sql = source_postgres_0140_baseline_sql();
         let index_statement_count = sql
             .lines()
             .filter(|line| {
@@ -639,8 +639,8 @@ mod tests {
             })
             .count();
         assert_eq!(
-            index_statement_count, 102,
-            "PostgreSQL 0122 baseline should preserve the audited index set"
+            index_statement_count, 190,
+            "PostgreSQL 0140 baseline should preserve the audited index set"
         );
 
         for index_name in [
@@ -650,7 +650,7 @@ mod tests {
             "idx_download_queue_commands_source",
             "idx_external_subtitle_probe_cache_file_path",
             "idx_history_events_title_time",
-            "idx_notification_subscriptions_channel_scope",
+            "idx_notification_subscriptions_target_scope",
             "idx_release_download_attempts_outcome_attempted",
             "idx_subtitle_provider_configs_provider_type",
             "idx_wanted_items_next_search",
@@ -658,37 +658,36 @@ mod tests {
         ] {
             assert!(
                 sql.contains(index_name),
-                "expected PostgreSQL 0122 baseline to include {index_name}"
+                "expected PostgreSQL 0140 baseline to include {index_name}"
             );
         }
     }
 
     #[test]
-    fn postgres_0122_baseline_keeps_title_aware_unmatched_items_schema() {
-        let sql = source_postgres_0122_baseline_sql();
+    fn postgres_0140_baseline_keeps_title_aware_unmatched_items_schema() {
+        let sql = source_postgres_0140_baseline_sql();
         assert!(
             sql.contains("title_id text"),
-            "PostgreSQL 0122 baseline must include library_scan_unmatched_items.title_id"
+            "PostgreSQL 0140 baseline must include library_scan_unmatched_items.title_id"
         );
         assert!(
             sql.contains("idx_library_scan_unmatched_items_facet_title_status_updated"),
-            "PostgreSQL 0122 baseline must preserve the title-aware unmatched-items index"
+            "PostgreSQL 0140 baseline must preserve the title-aware unmatched-items index"
         );
     }
 
     #[test]
-    fn postgres_0122_baseline_keeps_runtime_title_image_columns() {
-        let sql = source_postgres_0122_baseline_sql();
+    fn postgres_0140_baseline_keeps_runtime_title_image_columns() {
+        let sql = source_postgres_0140_baseline_sql();
         for expected in [
             "poster_local_path text",
-            "banner_local_path text",
             "background_local_path text",
             "CREATE TABLE title_images",
             "CREATE TABLE title_image_variants",
         ] {
             assert!(
                 sql.contains(expected),
-                "expected PostgreSQL 0122 baseline to include {expected}"
+                "expected PostgreSQL 0140 baseline to include {expected}"
             );
         }
     }
@@ -701,7 +700,7 @@ mod tests {
             .catalog
             .migrations
             .iter()
-            .filter(|migration| migration.version > 122)
+            .filter(|migration| migration.version > 140)
             .filter(|migration| {
                 migration
                     .steps
@@ -719,7 +718,7 @@ mod tests {
                 .any(|step| step.engine().applies_to(EngineScope::Postgres));
             assert!(
                 treats_sqlite && treats_postgres,
-                "migration {} must explicitly treat both sqlite and postgres after the 0122 postgres baseline",
+                "migration {} must explicitly treat both sqlite and postgres after the 0140 postgres baseline",
                 migration.key
             );
         }

@@ -1026,8 +1026,8 @@ mod tests {
     }
 
     fn postgres_parity_index_names_from_source() -> BTreeSet<String> {
-        std::fs::read_to_string(postgres_0122_baseline_path())
-            .expect("read PostgreSQL 0122 baseline")
+        std::fs::read_to_string(postgres_0140_baseline_path())
+            .expect("read PostgreSQL 0140 baseline")
             .lines()
             .filter_map(|line| {
                 let trimmed = line.trim();
@@ -1040,9 +1040,9 @@ mod tests {
             .collect()
     }
 
-    fn postgres_0122_baseline_path() -> PathBuf {
+    fn postgres_0140_baseline_path() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../scryer/src/db/postgres/baselines/0122_baseline.sql")
+            .join("../scryer/src/db/postgres/baselines/0140_baseline.sql")
     }
 
     async fn assert_postgres_runtime_schema_columns(pool: &sqlx::PgPool) -> AppResult<()> {
@@ -1070,7 +1070,7 @@ mod tests {
             .iter()
             .map(|(table, _)| table.clone())
             .collect();
-        let expected_columns = postgres_0122_baseline_columns();
+        let expected_columns = postgres_0140_baseline_columns();
 
         let mut missing_columns = Vec::new();
         for (table, columns) in &expected_columns {
@@ -1083,7 +1083,7 @@ mod tests {
 
         assert!(
             missing_columns.is_empty(),
-            "expected PostgreSQL blank install to include every 0122 baseline column; missing {missing_columns:?}"
+            "expected PostgreSQL blank install to include every 0140 baseline column; missing {missing_columns:?}"
         );
 
         let unexpected_columns: Vec<String> = actual_columns
@@ -1098,7 +1098,7 @@ mod tests {
 
         assert!(
             unexpected_columns.is_empty(),
-            "PostgreSQL blank install exposes columns outside the 0122 baseline: {unexpected_columns:?}"
+            "PostgreSQL blank install exposes columns outside the 0140 baseline: {unexpected_columns:?}"
         );
 
         for removed_table in [
@@ -1117,9 +1117,9 @@ mod tests {
         Ok(())
     }
 
-    fn postgres_0122_baseline_columns() -> BTreeMap<String, BTreeSet<String>> {
+    fn postgres_0140_baseline_columns() -> BTreeMap<String, BTreeSet<String>> {
         let mut columns = parse_create_table_columns(include_str!(
-            "../../../../scryer/src/db/postgres/baselines/0122_baseline.sql"
+            "../../../../scryer/src/db/postgres/baselines/0140_baseline.sql"
         ));
         columns
             .entry("titles".to_string())

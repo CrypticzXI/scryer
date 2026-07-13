@@ -142,6 +142,7 @@ pub struct TitleCatalogPayload {
     pub has_more: bool,
     pub total_count: i32,
     pub filter_counts: TitleCatalogFilterCountsPayload,
+    pub managed_bytes: Long,
 }
 
 #[derive(SimpleObject, Clone)]

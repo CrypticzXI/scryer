@@ -240,6 +240,7 @@ export function SetupMediaPathsView({
         open={browseTarget !== null}
         onOpenChange={(open) => { if (!open) setBrowseTarget(null); }}
         onSelect={handleBrowseSelect}
+        selectionTypes={["folder"]}
         initialPath={browseInitialPath || "/"}
         title={t("setup.browse")}
       />

@@ -1546,6 +1546,7 @@ export function buildTitlesQuery(
     ? `
     hasMore
     totalCount
+    managedBytes
     filterCounts {
       all
       monitored
@@ -3486,10 +3487,11 @@ export const setupStatusQuery = `query SetupStatus {
   }
 }`;
 
-export const browsePathQuery = `query BrowsePath($path: String!) {
-  browsePath(path: $path) {
+export const browsePathQuery = `query BrowsePath($path: String!, $includeFiles: Boolean) {
+  browsePath(path: $path, includeFiles: $includeFiles) {
     name
     path
+    isDirectory
   }
 }`;
 

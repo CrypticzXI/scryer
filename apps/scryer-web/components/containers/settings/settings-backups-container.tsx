@@ -1127,6 +1127,7 @@ export function SettingsBackupsContainer() {
       <FolderBrowserDialog
         open={folderBrowserOpen}
         onOpenChange={setFolderBrowserOpen}
+        selectionTypes={["folder"]}
         initialPath={
           backupPathDraft.trim() ||
           savedBackupSettings.effectiveBackupPath ||

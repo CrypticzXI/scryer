@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect } from "react";
 import { useClient } from "urql";
-import { Folder, FolderOpen, ChevronRight, ArrowUp, Loader2 } from "lucide-react";
+import { File, Folder, FolderOpen, ChevronRight, ArrowUp, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -19,12 +19,14 @@ import { selectorId } from "@/lib/utils/dom-ids";
 interface DirectoryEntry {
   name: string;
   path: string;
+  isDirectory: boolean;
 }
 
 interface FolderBrowserDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onSelect: (path: string) => void;
+  selectionTypes: Array<"folder" | "file">;
   initialPath?: string;
   title?: string;
 }
@@ -33,10 +35,15 @@ export function FolderBrowserDialog({
   open,
   onOpenChange,
   onSelect,
+  selectionTypes,
   initialPath = "/",
-  title = "Select folder",
+  title = "Select path",
 }: FolderBrowserDialogProps) {
   const client = useClient();
+  const canSelectFolders = selectionTypes.includes("folder");
+  const canSelectFiles = selectionTypes.includes("file");
+  const selectionDescription =
+    canSelectFolders && canSelectFiles ? "file or folder" : canSelectFiles ? "file" : "folder";
   const [currentPath, setCurrentPath] = useState(initialPath || "/");
   const [entries, setEntries] = useState<DirectoryEntry[]>([]);
   const [loading, setLoading] = useState(false);
@@ -50,19 +57,19 @@ export function FolderBrowserDialog({
       setLoading(true);
       setError(null);
       const { data, error: gqlError } = await client
-        .query(browsePathQuery, { path: nextPath })
+        .query(browsePathQuery, { path: nextPath, includeFiles: canSelectFiles })
         .toPromise();
       setLoading(false);
       if (gqlError) {
         setEntries([]);
         setBrowsedPath(null);
-        setError(userFacingGraphQlErrorMessage(gqlError, "Unable to browse folder."));
+        setError(userFacingGraphQlErrorMessage(gqlError, "Unable to browse path."));
         return;
       }
       setEntries(data?.browsePath ?? []);
       setBrowsedPath(nextPath);
     },
-    [client],
+    [canSelectFiles, client],
   );
 
   useEffect(() => {
@@ -90,7 +97,7 @@ export function FolderBrowserDialog({
             {title}
           </DialogTitle>
           <DialogDescription className="sr-only">
-            Browse folders on the Scryer host and select the current path.
+            Browse paths on the Scryer host and select a {selectionDescription}.
           </DialogDescription>
         </DialogHeader>
 
@@ -200,7 +207,7 @@ export function FolderBrowserDialog({
                 )}
                 {entries.length === 0 && !loading && (
                   <div className="px-3 py-10 text-center text-sm text-[var(--scry-muted3)]">
-                    No subdirectories
+                    {canSelectFiles ? "No files or subdirectories" : "No subdirectories"}
                   </div>
                 )}
                 {entries.map((entry) => (
@@ -208,11 +215,22 @@ export function FolderBrowserDialog({
                     id={selectorId("folder-browser-entry", entry.path)}
                     key={entry.path}
                     type="button"
-                    onClick={() => browse(entry.path)}
+                    onClick={() => {
+                      if (entry.isDirectory) {
+                        void browse(entry.path);
+                        return;
+                      }
+                      onSelect(entry.path);
+                      onOpenChange(false);
+                    }}
                     className="mb-1 grid w-full min-w-0 max-w-full grid-cols-[2rem_minmax(0,1fr)] items-center gap-2.5 overflow-hidden rounded-[10px] border border-transparent px-3 py-2 text-left text-sm transition-colors hover:border-[var(--scry-border3)] hover:bg-[var(--scry-hover)]"
                   >
                     <span className="grid h-8 w-8 shrink-0 place-items-center rounded-[9px] bg-[var(--scry-inset)] text-[var(--scry-accent-text)]">
-                      <Folder className="h-4 w-4 shrink-0" />
+                      {entry.isDirectory ? (
+                        <Folder className="h-4 w-4 shrink-0" />
+                      ) : (
+                        <File className="h-4 w-4 shrink-0" />
+                      )}
                     </span>
                     <span
                       className="block min-w-0 max-w-full overflow-hidden text-ellipsis whitespace-nowrap font-[var(--font-code)] text-[var(--scry-ink2)]"
@@ -239,17 +257,19 @@ export function FolderBrowserDialog({
             >
               Cancel
             </Button>
-            <Button
-              id="folder-browser-select"
-              disabled={!canSelect}
-              onClick={() => {
-                onSelect(currentPath);
-                onOpenChange(false);
-              }}
-            >
-              <FolderOpen className="mr-1.5 h-4 w-4" />
-              Select folder
-            </Button>
+            {canSelectFolders && (
+              <Button
+                id="folder-browser-select"
+                disabled={!canSelect}
+                onClick={() => {
+                  onSelect(currentPath);
+                  onOpenChange(false);
+                }}
+              >
+                <FolderOpen className="mr-1.5 h-4 w-4" />
+                Select folder
+              </Button>
+            )}
           </div>
         </DialogFooter>
       </DialogContent>

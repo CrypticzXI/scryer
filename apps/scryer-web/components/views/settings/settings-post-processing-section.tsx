@@ -508,7 +508,13 @@ export const SettingsPostProcessingSection = React.memo(
                       onSelect={(path) =>
                         setScriptDraft((prev) => ({ ...prev, scriptContent: path }))
                       }
-                      initialPath={scriptDraft.scriptContent || "/"}
+                      selectionTypes={["file"]}
+                      initialPath={
+                        scriptDraft.scriptContent.startsWith("/")
+                          ? scriptDraft.scriptContent.replace(/\/[^/]+$/, "") || "/"
+                          : "/"
+                      }
+                      title="Select script file"
                     />
                   </>
                 )}

@@ -257,6 +257,7 @@ export function ImportRemapDialog({
           open={browseOpen}
           onOpenChange={setBrowseOpen}
           onSelect={(path) => setValue(path)}
+          selectionTypes={["folder"]}
           title={t("setup.remapScryerHostPath")}
           initialPath={value || root.arrRootPath || "/"}
         />

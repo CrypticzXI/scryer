@@ -1123,54 +1123,6 @@ ALTER TABLE ONLY public.download_jobs
         assert_eq!(file_link_count, 2);
     }
 
-    #[test]
-    fn saved_0122_baselines_have_table_column_constraint_and_index_parity() {
-        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .expect("xtask-migrations has a repository parent");
-        let sqlite = parse_baseline_shape(
-            &std::fs::read_to_string(
-                repo_root.join("crates/scryer/src/db/baselines/0122_baseline.sql"),
-            )
-            .expect("read SQLite 0122 baseline"),
-        );
-        let postgres = parse_baseline_shape(
-            &std::fs::read_to_string(
-                repo_root.join("crates/scryer/src/db/postgres/baselines/0122_baseline.sql"),
-            )
-            .expect("read PostgreSQL 0122 baseline"),
-        );
-
-        assert_eq!(
-            sqlite.tables.keys().collect::<Vec<_>>(),
-            postgres.tables.keys().collect::<Vec<_>>()
-        );
-        assert_eq!(sqlite.indexes, postgres.indexes);
-
-        for (table, sqlite_table) in &sqlite.tables {
-            let postgres_table = postgres
-                .tables
-                .get(table)
-                .unwrap_or_else(|| panic!("PostgreSQL missing table {table}"));
-            assert_eq!(
-                sqlite_table.columns, postgres_table.columns,
-                "column set mismatch for table {table}"
-            );
-            assert_eq!(
-                sqlite_table.primary_keys, postgres_table.primary_keys,
-                "primary-key mismatch for table {table}"
-            );
-            assert_eq!(
-                sqlite_table.unique_constraints, postgres_table.unique_constraints,
-                "unique-constraint mismatch for table {table}"
-            );
-            assert_eq!(
-                sqlite_table.foreign_keys, postgres_table.foreign_keys,
-                "foreign-key mismatch for table {table}"
-            );
-        }
-    }
-
     #[derive(Debug, Eq, PartialEq)]
     struct BaselineShape {
         tables: BTreeMap<String, TableShape>,

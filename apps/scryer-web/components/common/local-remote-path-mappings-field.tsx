@@ -325,6 +325,7 @@ export function LocalRemotePathMappingsField({
           }
         }}
         onSelect={handleFolderSelect}
+        selectionTypes={["folder"]}
         initialPath={browseInitialPath}
         title={label}
       />

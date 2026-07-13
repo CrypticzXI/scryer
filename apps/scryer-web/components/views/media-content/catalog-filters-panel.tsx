@@ -125,9 +125,37 @@ export function CatalogFiltersPanel({
     () => new Map(options.genres.map((option) => [option.key, option.name])),
     [options.genres],
   );
+  const genreOptions = React.useMemo(
+    () =>
+      options.genres.map((option) => ({
+        value: option.key,
+        label: option.name,
+      })),
+    [options.genres],
+  );
   const tagLabels = React.useMemo(
     () => new Map(options.tags.map((option) => [option.key, option.name])),
     [options.tags],
+  );
+  const tagOptions = React.useMemo(
+    () =>
+      options.tags.map((option) => ({
+        value: option.key,
+        label: option.name,
+      })),
+    [options.tags],
+  );
+  const handleRootFolderChange = React.useCallback(
+    (rootFolderIds: string[]) => onFiltersChange({ rootFolderIds }),
+    [onFiltersChange],
+  );
+  const handleGenreChange = React.useCallback(
+    (genreTagKeys: string[]) => onFiltersChange({ genreTagKeys }),
+    [onFiltersChange],
+  );
+  const handleThemeChange = React.useCallback(
+    (themeTagKeys: string[]) => onFiltersChange({ themeTagKeys }),
+    [onFiltersChange],
   );
   const minimumYearBound = options.minimumYear ?? DEFAULT_MINIMUM_YEAR;
   const maximumYearBound = Math.max(
@@ -218,9 +246,7 @@ export function CatalogFiltersPanel({
         <MultiSelectDropdown
           groups={rootGroups}
           selectedValues={filters.rootFolderIds}
-          onSelectedValuesChange={(rootFolderIds) =>
-            onFiltersChange({ rootFolderIds })
-          }
+          onSelectedValuesChange={handleRootFolderChange}
           triggerLabel={rootLabel}
           ariaLabel={t("title.rootFolder")}
           disabled={librariesLoading || rootGroups.length === 0}
@@ -232,14 +258,9 @@ export function CatalogFiltersPanel({
       <FilterLabel>{t("discovery.genres")}</FilterLabel>
       <div className="mb-4">
         <MultiSelectDropdown
-          options={options.genres.map((option) => ({
-            value: option.key,
-            label: option.name,
-          }))}
+          options={genreOptions}
           selectedValues={filters.genreTagKeys}
-          onSelectedValuesChange={(genreTagKeys) =>
-            onFiltersChange({ genreTagKeys })
-          }
+          onSelectedValuesChange={handleGenreChange}
           triggerLabel={
             filters.genreTagKeys.length === 0
               ? t("discovery.selectGenres")
@@ -270,14 +291,9 @@ export function CatalogFiltersPanel({
       <FilterLabel>{t("discovery.tags")}</FilterLabel>
       <div className="mb-4">
         <MultiSelectDropdown
-          options={options.tags.map((option) => ({
-            value: option.key,
-            label: option.name,
-          }))}
+          options={tagOptions}
           selectedValues={filters.themeTagKeys}
-          onSelectedValuesChange={(themeTagKeys) =>
-            onFiltersChange({ themeTagKeys })
-          }
+          onSelectedValuesChange={handleThemeChange}
           triggerLabel={
             filters.themeTagKeys.length === 0
               ? t("discovery.selectTags")

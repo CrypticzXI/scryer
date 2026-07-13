@@ -1935,7 +1935,7 @@ async fn graphql_titles_expose_matched_size_bytes_only_for_movies() {
 
     let body = gql(
         &ctx,
-        r#"query($facet: MediaFacetValue) { titles(facet: $facet) { items { id name sizeBytes } } }"#,
+        r#"query($facet: MediaFacetValue) { titles(facet: $facet) { managedBytes items { id name sizeBytes } } }"#,
         json!({ "facet": "MOVIE" }),
     )
     .await;
@@ -1951,6 +1951,7 @@ async fn graphql_titles_expose_matched_size_bytes_only_for_movies() {
 
     assert_eq!(listed_title["name"], "Matched Size Movie");
     assert_eq!(listed_title["sizeBytes"], json!(1_200));
+    assert_eq!(body["data"]["titles"]["managedBytes"], json!(1_200));
 }
 
 #[tokio::test]

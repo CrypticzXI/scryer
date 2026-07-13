@@ -413,6 +413,7 @@ impl TitleRepository for TitleStore {
                 has_more: false,
                 total_count: 0,
                 filter_counts: TitleCatalogFilterCounts::default(),
+                managed_bytes: 0,
             });
         }
 
@@ -435,6 +436,11 @@ impl TitleRepository for TitleStore {
         } else {
             0
         };
+        let managed_bytes = if include_catalog_counts {
+            fetch_title_catalog_managed_bytes(&self.datastore, facet.clone(), library_ids).await?
+        } else {
+            0
+        };
 
         if limit == 0 || (include_catalog_counts && total_count == 0) {
             return Ok(TitleCatalogResult {
@@ -444,6 +450,7 @@ impl TitleRepository for TitleStore {
                 has_more: false,
                 total_count,
                 filter_counts,
+                managed_bytes,
             });
         }
 
@@ -473,6 +480,7 @@ impl TitleRepository for TitleStore {
             has_more,
             total_count,
             filter_counts,
+            managed_bytes,
         })
     }
 
@@ -1915,6 +1923,35 @@ async fn fetch_title_catalog_count(
             .transpose()?
             .unwrap_or(0)
             .max(0) as usize,
+    )
+}
+
+async fn fetch_title_catalog_managed_bytes(
+    datastore: &StoreDatastore,
+    facet: Option<MediaFacet>,
+    library_ids: &[String],
+) -> AppResult<i64> {
+    if library_ids.is_empty() {
+        return Ok(0);
+    }
+
+    let (scope_sql, args) = build_title_catalog_options_scope_sql(facet, library_ids, &[]);
+    let media_size_sql =
+        title_catalog_media_size_subquery(title_catalog_dialect_for_datastore(datastore));
+    let sql = format!(
+        "SELECT COALESCE(SUM(COALESCE(catalog_media_size.total_size_bytes, 0)), 0) AS managed_bytes \
+           FROM titles \
+      LEFT JOIN ({media_size_sql}) catalog_media_size ON catalog_media_size.title_id = titles.id \
+          WHERE {scope_sql}"
+    );
+
+    Ok(
+        SqlRuntime::fetch_optional(datastore.read_exec(), &sql, &args)
+            .await?
+            .map(|row| row.i64("managed_bytes"))
+            .transpose()?
+            .unwrap_or(0)
+            .max(0),
     )
 }
 

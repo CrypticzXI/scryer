@@ -764,6 +764,7 @@ pub trait TitleRepository: Send + Sync {
                 has_more: false,
                 total_count: 0,
                 filter_counts: TitleCatalogFilterCounts::default(),
+                managed_bytes: 0,
             });
         }
 
@@ -800,6 +801,8 @@ pub trait TitleRepository: Send + Sync {
             has_more,
             total_count,
             filter_counts,
+            // Non-SQL test repositories do not expose media-file aggregates.
+            managed_bytes: 0,
         })
     }
     async fn title_catalog_filter_options(

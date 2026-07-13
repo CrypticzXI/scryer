@@ -561,7 +561,8 @@ impl CatalogQueries {
         let lookahead = ctx.look_ahead();
         let include_catalog_counts = lookahead.field("hasMore").exists()
             || lookahead.field("totalCount").exists()
-            || lookahead.field("filterCounts").exists();
+            || lookahead.field("filterCounts").exists()
+            || lookahead.field("managedBytes").exists();
         let page = app
             .list_titles(
                 &actor,
@@ -580,6 +581,7 @@ impl CatalogQueries {
         let has_more = page.has_more;
         let total_count = page.total_count;
         let filter_counts = page.filter_counts.clone();
+        let managed_bytes = page.managed_bytes;
         let items = page.items.into_iter().map(from_title).collect();
 
         Ok(TitleCatalogPayload {
@@ -593,6 +595,7 @@ impl CatalogQueries {
                 continuing: usize_to_i32_saturating(filter_counts.continuing),
                 ended: usize_to_i32_saturating(filter_counts.ended),
             },
+            managed_bytes: Long::from(managed_bytes),
         })
     }
 
@@ -2385,16 +2388,18 @@ impl UtilityQueries {
         &self,
         ctx: &Context<'_>,
         #[graphql(default_with = "String::from(\"/\")")] path: String,
+        include_files: Option<bool>,
     ) -> GqlResult<Vec<DirectoryEntryPayload>> {
         require_library_settings_permission(ctx).await?;
         let read_dir = browse_path_read_dir(&path).map_err(to_gql_error)?;
         let mut entries: Vec<DirectoryEntryPayload> = Vec::new();
+        let include_files = include_files.unwrap_or(false);
         for entry in read_dir.flatten() {
             let ft = match entry.file_type() {
                 Ok(ft) => ft,
                 Err(_) => continue,
             };
-            if !ft.is_dir() {
+            if !ft.is_dir() && !(include_files && ft.is_file()) {
                 continue;
             }
             let name = entry.file_name().to_string_lossy().into_owned();
@@ -2405,6 +2410,7 @@ impl UtilityQueries {
             entries.push(DirectoryEntryPayload {
                 name,
                 path: full_path,
+                is_directory: ft.is_dir(),
             });
         }
         entries.sort_by_key(|a| a.name.to_lowercase());
