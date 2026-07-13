@@ -2238,7 +2238,9 @@ export function MediaContentView({
         return (
           deferredTitleContextTitles.find(
             (title) => title.id === selectedOverviewTitleId,
-          ) ?? null
+          ) ??
+          monitoredTitles.find((title) => title.id === selectedOverviewTitleId) ??
+          null
         );
       }
       if (routeOverviewSlug) {
@@ -2252,6 +2254,7 @@ export function MediaContentView({
     },
     [
       deferredTitleContextTitles,
+      monitoredTitles,
       routeOverviewSlug,
       selectedOverviewTitleId,
       selectedOverviewTitleOverride,
