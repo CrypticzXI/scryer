@@ -1370,7 +1370,6 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   }>({ key: "", refreshedAt: 0, sessionIds: [] });
   const latestCriticalMutationEpochRef = React.useRef(0);
   const selectedPanelHydrationKeyRef = React.useRef<string | null>(null);
-  const selectedPanelMoreLikeThisKeyRef = React.useRef<string | null>(null);
   const skipNextCatalogOverviewReloadRef = React.useRef(false);
   const [catalogPaginationState, setCatalogPaginationState] =
     React.useState<TitleCatalogState>(emptyTitleCatalogState);
@@ -3189,11 +3188,8 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   React.useEffect(() => {
     if (!shouldLoadCatalogTitles || !selectedPanelHydrationTitleId) {
       selectedPanelHydrationKeyRef.current = null;
-      return;
-    }
-
-    if (!selectedPanelNeedsPanelDetails && !selectedPanelNeedsMovieMediaDetails) {
-      selectedPanelHydrationKeyRef.current = null;
+      setSelectedOverviewBlocklistState({ titleId: null, entries: [] });
+      setSelectedOverviewExternalSubtitleState({ titleId: null, entries: [] });
       return;
     }
 
@@ -3202,221 +3198,143 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
       titleId,
       selectedPanelHydrationMetadataFetchedAt,
       selectedPanelHydrationCreatedAt,
-      selectedPanelNeedsPanelDetails ? "panel" : "panel-ready",
-      selectedPanelNeedsMovieMediaDetails ? "media" : "media-ready",
     ].join(":");
     if (selectedPanelHydrationKeyRef.current === requestKey) {
       return;
     }
     selectedPanelHydrationKeyRef.current = requestKey;
 
-    let cancelled = false;
+    const needsTitleDetails =
+      selectedPanelNeedsPanelDetails || selectedPanelNeedsMovieMediaDetails;
     const requestEpoch = reactiveRefreshEpoch();
-    void client
-      .query<{ title?: TitleRecord | null }>(
-        movieSidePanelTitleQuery,
-        { id: titleId },
-        { requestPolicy: "network-only" },
-      )
-      .toPromise()
-      .then(({ data, error }) => {
-        if (cancelled) {
+    let cancelled = false;
+
+    // Start every selected-title request together. React batches the state
+    // commits in this completion handler, so the rail does not repaint once
+    // per response as its supporting data arrives.
+    const titleDetailsRequest = needsTitleDetails
+      ? client
+          .query<{ title?: TitleRecord | null }>(
+            movieSidePanelTitleQuery,
+            { id: titleId },
+            { requestPolicy: "network-only" },
+          )
+          .toPromise()
+      : Promise.resolve(null);
+    const recommendationsResult = selectedPanelNeedsMoreLikeThis
+      ? fetchTitleMoreLikeThis(client, titleId).then(
+          (items) => ({ status: "fulfilled" as const, items }),
+          (error: unknown) => ({ status: "rejected" as const, error }),
+        )
+      : null;
+
+    void Promise.allSettled([
+      titleDetailsRequest,
+      loadSelectedOverviewExternalSubtitles(titleId),
+      client
+        .query<{ titleReleaseBlocklist?: TitleReleaseBlocklistEntry[] }>(
+          titleReleaseBlocklistQuery,
+          { titleId, limit: 6 },
+        )
+        .toPromise(),
+    ] as const).then(
+      ([titleDetailsResult, externalSubtitlesResult, blocklistResult]) => {
+        if (
+          cancelled ||
+          selectedPanelHydrationKeyRef.current !== requestKey
+        ) {
           return;
         }
-        if (error) {
+
+        if (titleDetailsResult.status === "rejected") {
           console.error(
             "[selected-title-panel-refresh] refresh failed:",
-            error,
+            titleDetailsResult.reason,
           );
-          if (selectedPanelHydrationKeyRef.current === requestKey) {
-            selectedPanelHydrationKeyRef.current = null;
-          }
-          return;
-        }
-        if (data?.title) {
-          applyRefreshedTitleRecord(titleId, data.title, requestEpoch);
-        }
-      })
-      .catch((error: unknown) => {
-        if (!cancelled) {
+        } else if (titleDetailsResult.value?.error) {
           console.error(
             "[selected-title-panel-refresh] refresh failed:",
-            error,
+            titleDetailsResult.value.error,
           );
-          if (selectedPanelHydrationKeyRef.current === requestKey) {
-            selectedPanelHydrationKeyRef.current = null;
-          }
+        } else if (titleDetailsResult.value?.data?.title) {
+          applyRefreshedTitleRecord(
+            titleId,
+            titleDetailsResult.value.data.title,
+            requestEpoch,
+          );
         }
-      });
+
+        const externalSubtitles =
+          externalSubtitlesResult.status === "fulfilled"
+            ? externalSubtitlesResult.value
+            : [];
+        if (externalSubtitlesResult.status === "rejected") {
+          console.error(
+            "[selected-title-external-subtitles-refresh] refresh failed:",
+            externalSubtitlesResult.reason,
+          );
+        }
+        setSelectedOverviewExternalSubtitleState({
+          titleId,
+          entries: externalSubtitles,
+        });
+
+        const blocklistEntries =
+          blocklistResult.status === "fulfilled" && !blocklistResult.value.error
+            ? (blocklistResult.value.data?.titleReleaseBlocklist ?? [])
+            : [];
+        if (blocklistResult.status === "rejected") {
+          console.error(
+            "[selected-title-blocklist-refresh] refresh failed:",
+            blocklistResult.reason,
+          );
+        } else if (blocklistResult.value.error) {
+          console.error(
+            "[selected-title-blocklist-refresh] refresh failed:",
+            blocklistResult.value.error,
+          );
+        }
+        setSelectedOverviewBlocklistState({ titleId, entries: blocklistEntries });
+
+        if (recommendationsResult) {
+          void recommendationsResult.then((result) => {
+            window.requestAnimationFrame(() => {
+              if (selectedPanelHydrationKeyRef.current !== requestKey) {
+                return;
+              }
+              if (result.status === "rejected") {
+                console.error(
+                  "[selected-title-more-like-this-refresh] refresh failed:",
+                  result.error,
+                );
+              }
+              applyTitleMoreLikeThis(
+                titleId,
+                result.status === "fulfilled" ? result.items : [],
+                requestEpoch,
+              );
+            });
+          });
+        }
+      },
+    );
 
     return () => {
       cancelled = true;
-      if (selectedPanelHydrationKeyRef.current === requestKey) {
-        selectedPanelHydrationKeyRef.current = null;
-      }
     };
   }, [
     applyRefreshedTitleRecord,
-    client,
-    selectedPanelHydrationCreatedAt,
-    selectedPanelHydrationMetadataFetchedAt,
-    selectedPanelHydrationTitleId,
-    selectedPanelNeedsMovieMediaDetails,
-    selectedPanelNeedsPanelDetails,
-    shouldLoadCatalogTitles,
-  ]);
-
-  React.useEffect(() => {
-    if (
-      !shouldLoadCatalogTitles ||
-      !selectedPanelHydrationTitleId ||
-      !selectedPanelNeedsMoreLikeThis
-    ) {
-      selectedPanelMoreLikeThisKeyRef.current = null;
-      return;
-    }
-
-    const titleId = selectedPanelHydrationTitleId;
-    const requestKey = [
-      titleId,
-      selectedPanelHydrationMetadataFetchedAt,
-      selectedPanelHydrationCreatedAt,
-      "more-like-this",
-    ].join(":");
-    if (selectedPanelMoreLikeThisKeyRef.current === requestKey) {
-      return;
-    }
-    selectedPanelMoreLikeThisKeyRef.current = requestKey;
-
-    let cancelled = false;
-    const requestEpoch = reactiveRefreshEpoch();
-    void fetchTitleMoreLikeThis(client, titleId)
-      .then((items) => {
-        if (!cancelled) {
-          applyTitleMoreLikeThis(titleId, items, requestEpoch);
-        }
-      })
-      .catch((error: unknown) => {
-        if (!cancelled) {
-          console.error("[selected-title-more-like-this-refresh] refresh failed:", error);
-          if (selectedPanelMoreLikeThisKeyRef.current === requestKey) {
-            selectedPanelMoreLikeThisKeyRef.current = null;
-          }
-        }
-      });
-
-    return () => {
-      cancelled = true;
-      if (selectedPanelMoreLikeThisKeyRef.current === requestKey) {
-        selectedPanelMoreLikeThisKeyRef.current = null;
-      }
-    };
-  }, [
     applyTitleMoreLikeThis,
     client,
+    loadSelectedOverviewExternalSubtitles,
     selectedPanelHydrationCreatedAt,
     selectedPanelHydrationMetadataFetchedAt,
     selectedPanelHydrationTitleId,
     selectedPanelNeedsMoreLikeThis,
+    selectedPanelNeedsMovieMediaDetails,
+    selectedPanelNeedsPanelDetails,
     shouldLoadCatalogTitles,
   ]);
-
-  React.useEffect(() => {
-    if (
-      !shouldLoadCatalogTitles ||
-      !selectedPanelHydrationTitleId
-    ) {
-      setSelectedOverviewExternalSubtitleState({ titleId: null, entries: [] });
-      return;
-    }
-
-    let cancelled = false;
-    const titleId = selectedPanelHydrationTitleId;
-    setSelectedOverviewExternalSubtitleState((current) =>
-      current.titleId === titleId ? current : { titleId, entries: [] },
-    );
-    void loadSelectedOverviewExternalSubtitles(titleId)
-      .then((entries) => {
-        if (!cancelled) {
-          setSelectedOverviewExternalSubtitleState({ titleId, entries });
-        }
-      })
-      .catch((error: unknown) => {
-        if (!cancelled) {
-          console.error(
-            "[selected-title-external-subtitles-refresh] refresh failed:",
-            error,
-          );
-          setSelectedOverviewExternalSubtitleState((current) =>
-            current.titleId === titleId ? { titleId, entries: [] } : current,
-          );
-        }
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [
-    loadSelectedOverviewExternalSubtitles,
-    selectedPanelHydrationTitleId,
-    shouldLoadCatalogTitles,
-  ]);
-
-  React.useEffect(() => {
-    if (!shouldLoadCatalogTitles || !selectedPanelHydrationTitleId) {
-      setSelectedOverviewBlocklistState({ titleId: null, entries: [] });
-      return;
-    }
-
-    let cancelled = false;
-    const titleId = selectedPanelHydrationTitleId;
-    setSelectedOverviewBlocklistState((current) =>
-      current.titleId === titleId ? current : { titleId, entries: [] },
-    );
-    void client
-      .query<{ titleReleaseBlocklist?: TitleReleaseBlocklistEntry[] }>(
-        titleReleaseBlocklistQuery,
-        {
-          titleId,
-          limit: 6,
-        },
-      )
-      .toPromise()
-      .then(({ data, error }) => {
-        if (cancelled) {
-          return;
-        }
-        if (error) {
-          console.error(
-            "[selected-title-blocklist-refresh] refresh failed:",
-            error,
-          );
-          setSelectedOverviewBlocklistState((current) =>
-            current.titleId === titleId ? { titleId, entries: [] } : current,
-          );
-          return;
-        }
-        setSelectedOverviewBlocklistState({
-          titleId,
-          entries: data?.titleReleaseBlocklist ?? [],
-        });
-      })
-      .catch((error: unknown) => {
-        if (!cancelled) {
-          console.error(
-            "[selected-title-blocklist-refresh] refresh failed:",
-            error,
-          );
-          setSelectedOverviewBlocklistState((current) =>
-            current.titleId === titleId ? { titleId, entries: [] } : current,
-          );
-        }
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [client, selectedPanelHydrationTitleId, shouldLoadCatalogTitles]);
 
   React.useEffect(() => {
     if (

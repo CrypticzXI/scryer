@@ -1270,8 +1270,7 @@ export const CompactTitleTable = React.memo(function CompactTitleTable({
         data-slot="title-list-scroll"
         ref={titleTableScrollRef}
         className={cn(
-          "relative flex-1 overflow-x-auto overflow-y-auto rounded-[14px] border border-[var(--scry-border)]",
-          selectedPaneMode ? "bg-[var(--scry-card2)]" : "bg-[var(--scry-surfD)]",
+          "relative flex-1 overflow-x-auto overflow-y-auto rounded-[14px] border border-[var(--scry-border)] bg-[var(--scry-surfD)]",
           selectedDrawerMode ? "min-h-0" : "min-h-[22rem]",
         )}
       >
@@ -1295,9 +1294,7 @@ export const CompactTitleTable = React.memo(function CompactTitleTable({
             initialScrollOffset={initialScrollOffset}
             estimateSize={estimateTitleRowSize}
             overscan={8}
-            rebuildKey={`${
-              selectedPaneMode ? "selected-pane" : "full-table"
-            }:${visibleColumnSignature}:${expandedInteractiveRowSignature}`}
+            rebuildKey={`${visibleColumnSignature}:${expandedInteractiveRowSignature}`}
             selectedTitleId={selectedTitleId}
             selectedTitleScrollKey={selectedTitleScrollKey}
             catalogPagingEnabled={catalogPagingEnabled}

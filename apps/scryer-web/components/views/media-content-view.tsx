@@ -501,12 +501,14 @@ function TitleContextRecommendationButton({
 
 function TitleContextMoreLikeThisStrip({
   items,
+  loading,
   view,
   canManageTitle,
   canRequestMedia,
   onAction,
 }: {
   items: CatalogDiscoveryItem[];
+  loading: boolean;
   view: ViewId;
   canManageTitle: boolean;
   canRequestMedia: boolean;
@@ -515,7 +517,30 @@ function TitleContextMoreLikeThisStrip({
   const t = useTranslate();
 
   if (items.length === 0) {
-    return null;
+    if (!loading) {
+      return null;
+    }
+
+    return (
+      <TitleWorkspaceSectionCard className="rounded-[14px] bg-[var(--scry-surf)]">
+        <TitleWorkspaceSectionHeader
+          icon={Sparkles}
+          title={t("title.contextMoreLikeThis")}
+        />
+        <div
+          aria-busy="true"
+          aria-label={t("title.contextMoreLikeThis")}
+          className="flex h-36 gap-[11px] overflow-hidden"
+        >
+          {[0, 1, 2, 3].map((index) => (
+            <div
+              key={index}
+              className="h-36 w-24 shrink-0 animate-pulse rounded-[10px] bg-white/[0.06]"
+            />
+          ))}
+        </div>
+      </TitleWorkspaceSectionCard>
+    );
   }
 
   return (
@@ -1226,11 +1251,12 @@ function TitleContextPanel({
         {titleListDisclosure ? (
           <div className="mb-3 flex items-center">{titleListDisclosure}</div>
         ) : null}
-        <TitleWorkspaceHero
-          backgroundUrl={backgroundUrl}
-          closeLabel={t("label.clear")}
-          onClose={onClearSelection}
-        >
+        <div className="-mx-4 -mt-4 sm:-mx-5 sm:-mt-5">
+          <TitleWorkspaceHero
+            backgroundUrl={backgroundUrl}
+            closeLabel={t("label.clear")}
+            onClose={onClearSelection}
+          >
           <TitleWorkspacePosterFrame>
             <TitlePosterSlot
               src={posterUrl}
@@ -1302,13 +1328,13 @@ function TitleContextPanel({
                   ))}
                 </div>
               ) : null}
-              <div className="mt-3">
+              <div className="mt-3 min-h-10">
                 <TitleRatingsStrip ratings={title.ratings} variant="hero" />
               </div>
-              <p className="mt-3 line-clamp-5 text-[12.5px] leading-5 text-[#b7c0dd]">
+              <p className="mt-3 min-h-[6.25rem] line-clamp-5 text-[12.5px] leading-5 text-[#b7c0dd]">
                 {overviewText}
               </p>
-              <div className="mt-auto flex flex-wrap items-center gap-2 pt-3 text-[11px] text-[var(--scry-faint2)]">
+              <div className="mt-auto flex min-h-11 flex-wrap items-center gap-2 pt-3 text-[11px] text-[var(--scry-faint2)]">
                 {hasExternalLinks ? (
                   <div className="flex flex-wrap items-center gap-2 [&_a]:h-8 [&_a]:rounded-[8px] [&_a]:border-white/10 [&_a]:bg-white/[0.07] [&_a]:px-2.5 [&_a]:py-1 [&_a]:text-[11px] [&_a]:text-[#dbe4fb] [&_a:hover]:bg-white/[0.12] [&_img]:h-4 [&_img]:w-4 [&_span]:text-[#dbe4fb]">
                     <ImdbExternalLink imdbId={imdbId} />
@@ -1331,7 +1357,8 @@ function TitleContextPanel({
                 </span>
               </div>
             </div>
-        </TitleWorkspaceHero>
+          </TitleWorkspaceHero>
+        </div>
 
         <TitleWorkspaceActionGrid>
           <TitleWorkspaceActionButton
@@ -1479,6 +1506,7 @@ function TitleContextPanel({
 
           <TitleContextMoreLikeThisStrip
             items={moreLikeThisItems}
+            loading={title?.moreLikeThis === undefined}
             view={view}
             canManageTitle={canManageTitle}
             canRequestMedia={canRequestMedia}
@@ -2471,9 +2499,7 @@ export function MediaContentView({
     selectedTitleCompactLayoutActive && selectedTitleListInlineActive;
   const selectedTitleFullTableInlineActive =
     selectedTitleTableInlineActive && effectiveViewMode === "poster-table";
-  const collectionViewMode: ContentViewMode = selectedTitleCompactDrawerActive
-    ? "compact"
-    : effectiveViewMode;
+  const collectionViewMode: ContentViewMode = effectiveViewMode;
   const selectedTitlePosterLayoutActive =
     selectedTitleLayoutActive && collectionViewMode === "poster";
   // The design never sheds table columns — the table always keeps the chosen
@@ -3489,17 +3515,12 @@ export function MediaContentView({
                 } else if (collectionViewMode === "compact") {
                   titleCollectionView = (
                     <CompactTitleTable
-                      key={`${view}-${selectedTitleCompactLayoutActive && !selectedTitleListInlineActive ? "drawer" : "full"}-compact-title-table`}
+                      key={`${view}-compact-title-table`}
                       view={view}
                       titles={monitoredTitles}
                       titleLoading={titleListLoading}
                       catalogHasMoreTitles={catalogHasMoreTitles}
                       catalogLoadingMoreTitles={catalogLoadingMoreTitles}
-                      catalogPagingEnabled={
-                        !selectedTitleCompactLayoutActive ||
-                        selectedTitleListInlineActive ||
-                        selectedTitleListDrawerOpen
-                      }
                       onCatalogEndReached={loadMoreCatalogTitles}
                       sortKey={titleCatalogSortKey}
                       sortDirection={titleCatalogSortDirection}
@@ -3510,10 +3531,6 @@ export function MediaContentView({
                       qualityProfilesLoading={mediaSettingsLoading}
                       onOpenOverview={onOpenOverview}
                       selectedTitleId={contextPanelSelectedTitleId}
-                      selectedDrawerMode={
-                        selectedTitleCompactLayoutActive &&
-                        !selectedTitleListInlineActive
-                      }
                       contextPanelId={selectedTitleContextPanelId}
                       onSelectTitle={onSelectTitleForContextPanel}
                       onDelete={handleDeleteCatalogTitle}

@@ -18,7 +18,7 @@ export function TitleWorkspaceHero({
   children: React.ReactNode;
 }) {
   return (
-    <section className="relative mb-3 overflow-hidden rounded-[14px] border border-[var(--scry-border2)] bg-[var(--scry-bg)]">
+    <section className="relative mb-3 overflow-hidden bg-[var(--scry-bg)]">
       {backgroundUrl ? (
         <img
           src={backgroundUrl}
@@ -30,6 +30,7 @@ export function TitleWorkspaceHero({
         />
       ) : null}
       <div className="absolute inset-0 bg-[linear-gradient(105deg,rgba(8,12,22,0.96)_30%,rgba(8,12,22,0.55)_70%,rgba(8,12,22,0.2))]" />
+      <div className="absolute inset-x-0 bottom-0 h-1/2 bg-gradient-to-b from-transparent to-[var(--scry-bg)]" />
       <ActionTooltip
         content={closeLabel}
         wrapperClassName="absolute right-2.5 top-2.5 z-10"

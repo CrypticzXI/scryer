@@ -229,96 +229,98 @@ export function CatalogFiltersPanel({
         </div>
       ) : null}
 
-      <FilterLabel>{t("settings.librariesLabel")}</FilterLabel>
-      <div className="mb-4">
-        <LibraryMultiSelect
-          libraries={libraries}
-          selectedLibraryIds={selectedLibraryIds}
-          onSelectedLibraryIdsChange={onSelectedLibraryIdsChange}
-          disabled={librariesLoading || libraries.length === 0}
-          triggerClassName="h-9 w-full rounded-[9px] border-[var(--scry-border2)] bg-[var(--scry-bg)] text-[12.5px]"
-          contentClassName="max-w-[min(30rem,90vw)]"
-        />
+      <div className="grid gap-x-4 md:grid-cols-2">
+        <div className="mb-4 min-w-0">
+          <FilterLabel>{t("settings.librariesLabel")}</FilterLabel>
+          <LibraryMultiSelect
+            libraries={libraries}
+            selectedLibraryIds={selectedLibraryIds}
+            onSelectedLibraryIdsChange={onSelectedLibraryIdsChange}
+            disabled={librariesLoading || libraries.length === 0}
+            triggerClassName="h-9 w-full rounded-[9px] border-[var(--scry-border2)] bg-[var(--scry-bg)] text-[12.5px]"
+            contentClassName="max-w-[min(30rem,90vw)]"
+          />
+        </div>
+        <div className="mb-4 min-w-0">
+          <FilterLabel>{t("title.rootFolder")}</FilterLabel>
+          <MultiSelectDropdown
+            groups={rootGroups}
+            selectedValues={filters.rootFolderIds}
+            onSelectedValuesChange={handleRootFolderChange}
+            triggerLabel={rootLabel}
+            ariaLabel={t("title.rootFolder")}
+            disabled={librariesLoading || rootGroups.length === 0}
+            size="compact"
+            chrome="toolbar"
+          />
+        </div>
       </div>
 
-      <FilterLabel>{t("title.rootFolder")}</FilterLabel>
-      <div className="mb-4">
-        <MultiSelectDropdown
-          groups={rootGroups}
-          selectedValues={filters.rootFolderIds}
-          onSelectedValuesChange={handleRootFolderChange}
-          triggerLabel={rootLabel}
-          ariaLabel={t("title.rootFolder")}
-          disabled={librariesLoading || rootGroups.length === 0}
-          size="compact"
-          chrome="toolbar"
-        />
-      </div>
-
-      <FilterLabel>{t("discovery.genres")}</FilterLabel>
-      <div className="mb-4">
-        <MultiSelectDropdown
-          options={genreOptions}
-          selectedValues={filters.genreTagKeys}
-          onSelectedValuesChange={handleGenreChange}
-          triggerLabel={
-            filters.genreTagKeys.length === 0
-              ? t("discovery.selectGenres")
-              : filters.genreTagKeys.length === 1
-                ? (genreLabels.get(filters.genreTagKeys[0]) ??
-                  filters.genreTagKeys[0])
-                : t("title.catalogFilters.selectedCount", {
-                    count: filters.genreTagKeys.length,
-                  })
-          }
-          ariaLabel={t("discovery.genres")}
-          size="compact"
-          chrome="toolbar"
-        />
-        <FilterChips
-          values={filters.genreTagKeys}
-          labels={genreLabels}
-          onRemove={(key) =>
-            onFiltersChange({
-              genreTagKeys: filters.genreTagKeys.filter(
-                (candidate) => candidate !== key,
-              ),
-            })
-          }
-        />
-      </div>
-
-      <FilterLabel>{t("discovery.tags")}</FilterLabel>
-      <div className="mb-4">
-        <MultiSelectDropdown
-          options={tagOptions}
-          selectedValues={filters.themeTagKeys}
-          onSelectedValuesChange={handleThemeChange}
-          triggerLabel={
-            filters.themeTagKeys.length === 0
-              ? t("discovery.selectTags")
-              : filters.themeTagKeys.length === 1
-                ? (tagLabels.get(filters.themeTagKeys[0]) ??
-                  filters.themeTagKeys[0])
-                : t("title.catalogFilters.selectedCount", {
-                    count: filters.themeTagKeys.length,
-                  })
-          }
-          ariaLabel={t("discovery.tags")}
-          size="compact"
-          chrome="toolbar"
-        />
-        <FilterChips
-          values={filters.themeTagKeys}
-          labels={tagLabels}
-          onRemove={(key) =>
-            onFiltersChange({
-              themeTagKeys: filters.themeTagKeys.filter(
-                (candidate) => candidate !== key,
-              ),
-            })
-          }
-        />
+      <div className="grid gap-x-4 md:grid-cols-2">
+        <div className="mb-4 min-w-0">
+          <FilterLabel>{t("discovery.genres")}</FilterLabel>
+          <MultiSelectDropdown
+            options={genreOptions}
+            selectedValues={filters.genreTagKeys}
+            onSelectedValuesChange={handleGenreChange}
+            triggerLabel={
+              filters.genreTagKeys.length === 0
+                ? t("discovery.selectGenres")
+                : filters.genreTagKeys.length === 1
+                  ? (genreLabels.get(filters.genreTagKeys[0]) ??
+                    filters.genreTagKeys[0])
+                  : t("title.catalogFilters.selectedCount", {
+                      count: filters.genreTagKeys.length,
+                    })
+            }
+            ariaLabel={t("discovery.genres")}
+            size="compact"
+            chrome="toolbar"
+          />
+          <FilterChips
+            values={filters.genreTagKeys}
+            labels={genreLabels}
+            onRemove={(key) =>
+              onFiltersChange({
+                genreTagKeys: filters.genreTagKeys.filter(
+                  (candidate) => candidate !== key,
+                ),
+              })
+            }
+          />
+        </div>
+        <div className="mb-4 min-w-0">
+          <FilterLabel>{t("discovery.tags")}</FilterLabel>
+          <MultiSelectDropdown
+            options={tagOptions}
+            selectedValues={filters.themeTagKeys}
+            onSelectedValuesChange={handleThemeChange}
+            triggerLabel={
+              filters.themeTagKeys.length === 0
+                ? t("discovery.selectTags")
+                : filters.themeTagKeys.length === 1
+                  ? (tagLabels.get(filters.themeTagKeys[0]) ??
+                    filters.themeTagKeys[0])
+                  : t("title.catalogFilters.selectedCount", {
+                      count: filters.themeTagKeys.length,
+                    })
+            }
+            ariaLabel={t("discovery.tags")}
+            size="compact"
+            chrome="toolbar"
+          />
+          <FilterChips
+            values={filters.themeTagKeys}
+            labels={tagLabels}
+            onRemove={(key) =>
+              onFiltersChange({
+                themeTagKeys: filters.themeTagKeys.filter(
+                  (candidate) => candidate !== key,
+                ),
+              })
+            }
+          />
+        </div>
       </div>
 
       <div className="mb-2.5 flex items-center justify-between">

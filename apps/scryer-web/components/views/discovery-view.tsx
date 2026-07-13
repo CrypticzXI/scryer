@@ -155,79 +155,6 @@ function itemCalendarBadgeLabel(item: DiscoveryItem) {
   return dateLikeTag ?? (item.year ? String(item.year) : null);
 }
 
-// Discovery items carry no dedicated release-date column — only `year` plus
-// free-form tags. Mine those tags for a full YYYY-MM-DD token we can turn into a
-// real Date, so the promotion rails can badge genuine recency when the data
-// allows and otherwise fall back to a section-scoped "New" marker.
-function parseDateToken(value: string): Date | null {
-  const match = value.match(DATE_TOKEN_PATTERN);
-  if (!match || !match[3]) {
-    return null;
-  }
-  const year = Number(match[1]);
-  const month = Number(match[2]);
-  const day = Number(match[3]);
-  if (
-    !Number.isInteger(year) ||
-    !Number.isInteger(month) ||
-    !Number.isInteger(day) ||
-    month < 1 ||
-    month > 12 ||
-    day < 1 ||
-    day > 31
-  ) {
-    return null;
-  }
-  const date = new Date(Date.UTC(year, month - 1, day));
-  return Number.isNaN(date.getTime()) ? null : date;
-}
-
-function itemReleaseDate(item: DiscoveryItem): Date | null {
-  for (const tag of [
-    ...(item.statusTags ?? []),
-    ...(item.contextTerms ?? []),
-    ...(item.sourceTags ?? []),
-    ...(item.relationSubtypes ?? []),
-  ]) {
-    const date = parseDateToken(tag);
-    if (date) {
-      return date;
-    }
-  }
-  return null;
-}
-
-type RecencyBucket = "thisWeek" | "thisMonth" | "new";
-
-// Returns a translation-key suffix for the item's release recency, or null when
-// the item is not recent enough to badge. `sectionScoped` items (the promotion
-// rails) always earn at least the generic "new" marker.
-function itemRecencyBucket(
-  item: DiscoveryItem,
-  sectionScoped: boolean,
-): RecencyBucket | null {
-  const releaseDate = itemReleaseDate(item);
-  if (releaseDate) {
-    const now = Date.now();
-    const ageMs = now - releaseDate.getTime();
-    const dayMs = 24 * 60 * 60 * 1000;
-    // Ignore clearly future or very old dates for the "recency" framing.
-    if (ageMs >= -dayMs && ageMs <= 7 * dayMs) {
-      return "thisWeek";
-    }
-    if (ageMs > 7 * dayMs && ageMs <= 31 * dayMs) {
-      return "thisMonth";
-    }
-  }
-  return sectionScoped ? "new" : null;
-}
-
-const RECENCY_BUCKET_KEYS: Record<RecencyBucket, string> = {
-  thisWeek: "discovery.recency.newThisWeek",
-  thisMonth: "discovery.recency.newThisMonth",
-  new: "discovery.recency.new",
-};
-
 function hashHue(value: string) {
   let hash = 0;
   for (let index = 0; index < value.length; index += 1) {
@@ -962,7 +889,6 @@ function DiscoverySectionRail({
     () => uniqueDiscoveryItems(section.items),
     [section.items],
   );
-  const promotionRail = sectionIsPublicPromotion(section);
   // Surface the relation pill where the relationship is the point of the rail.
   const relationRail =
     sectionIsCompleteCollection(section) || sectionIsMoreLikeThis(section);
@@ -989,18 +915,9 @@ function DiscoverySectionRail({
           };
         }
       }
-      if (promotionRail) {
-        const bucket = itemRecencyBucket(item, true);
-        if (bucket) {
-          return {
-            label: t(RECENCY_BUCKET_KEYS[bucket]),
-            tone: "accent",
-          };
-        }
-      }
       return null;
     },
-    [promotionRail, relationRail, t],
+    [relationRail, t],
   );
 
   return (

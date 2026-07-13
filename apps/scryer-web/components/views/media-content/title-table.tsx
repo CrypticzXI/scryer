@@ -1109,9 +1109,7 @@ export const TitleTable = React.memo(function TitleTable({
           initialScrollOffset={initialScrollOffset}
           estimateSize={estimateTitleRowSize}
           overscan={5}
-          rebuildKey={`${
-            selectedPaneMode ? "selected-pane" : "full-table"
-          }:${visibleColumnSignature}:${expandedInteractiveRowSignature}`}
+          rebuildKey={`${visibleColumnSignature}:${expandedInteractiveRowSignature}`}
           selectedTitleId={selectedTitleId}
           selectedTitleScrollKey={selectedTitleScrollKey}
           catalogHasMoreTitles={catalogHasMoreTitles}
