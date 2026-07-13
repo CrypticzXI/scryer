@@ -1,10 +1,11 @@
 import * as React from "react";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import { Loader2 } from "lucide-react";
 import { Link } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { IconButton } from "@/components/ui/icon-button";
 import { Progress } from "@/components/ui/progress";
-import { TableCell, TableRow } from "@/components/ui/table";
+import { TableBody, TableCell, TableRow } from "@/components/ui/table";
 import type { ViewId, Translate } from "@/components/root/types";
 import type { TitleRecord } from "@/lib/types";
 import type { UiDateTimeFormat } from "@/lib/types/settings";
@@ -327,6 +328,204 @@ export function useTitleTableVirtualizerRebuild<TElement extends HTMLElement>({
 
   return getMaxScrollTop;
 }
+
+export type VirtualizedTitleTableBodyHandle = {
+  getMaxScrollTop: (element: HTMLElement) => number;
+  scrollToOffset: (offset: number) => void;
+};
+
+type VirtualizedTitleTableBodyProps = {
+  titles: readonly TitleRecord[];
+  scrollRef: React.RefObject<HTMLDivElement | null>;
+  initialScrollOffset: number;
+  estimateSize: (index: number) => number;
+  overscan: number;
+  rebuildKey?: React.Key;
+  selectedTitleId?: string | null;
+  selectedTitleScrollKey?: string | null;
+  catalogPagingEnabled?: boolean;
+  catalogHasMoreTitles?: boolean;
+  catalogLoadingMoreTitles?: boolean;
+  onCatalogEndReached?: () => Promise<void> | void;
+  columnCount: number;
+  renderRow: (title: TitleRecord) => React.ReactNode;
+  emptyContent: React.ReactNode;
+};
+
+const VirtualizedTitleTableRow = React.memo(function VirtualizedTitleTableRow({
+  title,
+  renderRow,
+}: {
+  title: TitleRecord;
+  renderRow: (title: TitleRecord) => React.ReactNode;
+}) {
+  return <>{renderRow(title)}</>;
+});
+
+/**
+ * Owns TanStack Virtual's mutable scroll state. Its parent remains eligible for
+ * React Compiler, while retained rows can bail out as this controller updates
+ * its rendered range during a scroll.
+ */
+export const VirtualizedTitleTableBody = React.forwardRef<
+  VirtualizedTitleTableBodyHandle,
+  VirtualizedTitleTableBodyProps
+>(function VirtualizedTitleTableBody(
+  {
+    titles,
+    scrollRef,
+    initialScrollOffset,
+    estimateSize,
+    overscan,
+    rebuildKey,
+    selectedTitleId,
+    selectedTitleScrollKey,
+    catalogPagingEnabled = true,
+    catalogHasMoreTitles,
+    catalogLoadingMoreTitles,
+    onCatalogEndReached,
+    columnCount,
+    renderRow,
+    emptyContent,
+  },
+  ref,
+) {
+  const titleVirtualizer = useVirtualizer({
+    count: titles.length,
+    getScrollElement: () => scrollRef.current,
+    getItemKey: (index) => titles[index]?.id ?? index,
+    estimateSize,
+    initialOffset: initialScrollOffset,
+    overscan,
+    useFlushSync: false,
+  });
+  const getMaxScrollTop = useTitleTableVirtualizerRebuild({
+    itemCount: titles.length,
+    loading: false,
+    rebuildKey,
+    scrollRef,
+    titleVirtualizer,
+  });
+
+  React.useImperativeHandle(
+    ref,
+    () => ({
+      getMaxScrollTop,
+      scrollToOffset: (offset) => titleVirtualizer.scrollToOffset(offset),
+    }),
+    [getMaxScrollTop, titleVirtualizer],
+  );
+
+  const autoScrolledSelectedTitleKeyRef = React.useRef<string | null>(null);
+  React.useEffect(() => {
+    if (!selectedTitleId || !selectedTitleScrollKey) {
+      autoScrolledSelectedTitleKeyRef.current = null;
+      return;
+    }
+    if (
+      autoScrolledSelectedTitleKeyRef.current === selectedTitleScrollKey ||
+      titles.length === 0
+    ) {
+      return;
+    }
+
+    const selectedIndex = titles.findIndex(
+      (title) => title.id === selectedTitleId,
+    );
+    if (selectedIndex < 0) {
+      return;
+    }
+
+    autoScrolledSelectedTitleKeyRef.current = selectedTitleScrollKey;
+    const frameId = window.requestAnimationFrame(() => {
+      titleVirtualizer.scrollToIndex(selectedIndex, { align: "center" });
+    });
+    return () => window.cancelAnimationFrame(frameId);
+  }, [
+    selectedTitleId,
+    selectedTitleScrollKey,
+    titleVirtualizer,
+    titles,
+  ]);
+
+  React.useEffect(() => {
+    const element = scrollRef.current;
+    if (
+      !element ||
+      !catalogPagingEnabled ||
+      !catalogHasMoreTitles ||
+      catalogLoadingMoreTitles ||
+      !onCatalogEndReached
+    ) {
+      return;
+    }
+
+    const maybeLoadNextPage = () => {
+      if (element.clientHeight <= 0) {
+        return;
+      }
+      const remaining =
+        element.scrollHeight - (element.scrollTop + element.clientHeight);
+      if (remaining <= 1200) {
+        void onCatalogEndReached();
+      }
+    };
+
+    element.addEventListener("scroll", maybeLoadNextPage, { passive: true });
+    return () => element.removeEventListener("scroll", maybeLoadNextPage);
+  }, [
+    catalogHasMoreTitles,
+    catalogLoadingMoreTitles,
+    catalogPagingEnabled,
+    onCatalogEndReached,
+    scrollRef,
+    titles.length,
+  ]);
+
+  if (titles.length === 0) {
+    return <TableBody>{emptyContent}</TableBody>;
+  }
+
+  const virtualItems = titleVirtualizer.getVirtualItems();
+  const totalVirtualSize = titleVirtualizer.getTotalSize();
+  const firstVirtualItem = virtualItems[0];
+  const lastVirtualItem = virtualItems[virtualItems.length - 1];
+  const topSpacerHeight = firstVirtualItem?.start ?? 0;
+  const bottomSpacerHeight = lastVirtualItem
+    ? Math.max(totalVirtualSize - lastVirtualItem.end, 0)
+    : 0;
+
+  return (
+    <TableBody className="[&_tr:last-child]:border-0">
+      {topSpacerHeight > 0 ? (
+        <tr aria-hidden>
+          <td
+            colSpan={columnCount}
+            style={{ height: topSpacerHeight, padding: 0 }}
+          />
+        </tr>
+      ) : null}
+      {virtualItems.map((virtualRow) => {
+        const title = titles[virtualRow.index];
+        return title ? (
+          <VirtualizedTitleTableRow
+            key={virtualRow.key}
+            title={title}
+            renderRow={renderRow}
+          />
+        ) : null;
+      })}
+      {bottomSpacerHeight > 0 ? (
+        <tr aria-hidden>
+          <td
+            colSpan={columnCount}
+            style={{ height: bottomSpacerHeight, padding: 0 }}
+          />
+        </tr>
+      ) : null}
+    </TableBody>
+  );
+});
 
 export function resolveOverviewTargetView(view: string): ViewId {
   if (view === "movies") {

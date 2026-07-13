@@ -1,5 +1,4 @@
 import * as React from "react";
-import { useVirtualizer } from "@tanstack/react-virtual";
 import { useLocation } from "react-router-dom";
 import { useTranslate } from "@/lib/context/translate-context";
 import { useUiDateTimeFormat } from "@/lib/context/ui-settings-context";
@@ -26,7 +25,6 @@ import { releaseSupportsAdditionalFileQueue } from "@/lib/utils/release-queue-sc
 import { Checkbox } from "@/components/ui/checkbox";
 import { ActionTooltip, TooltipProvider } from "@/components/ui/tooltip";
 import {
-  TableBody,
   TableCell,
   TableHead,
   TableHeader,
@@ -75,7 +73,8 @@ import {
   type TitleTableSortDirection,
   type TitleTableSortKey,
   type TitleTableVisibleColumns,
-  useTitleTableVirtualizerRebuild,
+  VirtualizedTitleTableBody,
+  type VirtualizedTitleTableBodyHandle,
 } from "./title-table-shared";
 
 type TitleTableProps = {
@@ -319,11 +318,10 @@ export const TitleTable = React.memo(function TitleTable({
     [expandedInteractiveRows],
   );
 
-  const titleVirtualizer = useVirtualizer({
-    count: sortedTitles.length,
-    getScrollElement: () => titleTableScrollRef.current,
-    getItemKey: (index) => sortedTitles[index]?.id ?? index,
-    estimateSize: (index) => {
+  const titleTableVirtualizerRef =
+    React.useRef<VirtualizedTitleTableBodyHandle>(null);
+  const estimateTitleRowSize = React.useCallback(
+    (index: number) => {
       const titleId = sortedTitles[index]?.id;
       return (
         100 +
@@ -332,23 +330,19 @@ export const TitleTable = React.memo(function TitleTable({
           : 0)
       );
     },
-    initialOffset: initialScrollOffset,
-    overscan: 5,
-  });
-  const getTitleTableMaxScrollTop = useTitleTableVirtualizerRebuild({
-    itemCount: sortedTitles.length,
-    loading: false,
-    rebuildKey: `${
-      selectedPaneMode ? "selected-pane" : "full-table"
-    }:${visibleColumnSignature}:${expandedInteractiveRowSignature}`,
-    scrollRef: titleTableScrollRef,
-    titleVirtualizer,
-  });
+    [expandedInteractiveRows, sortedTitles],
+  );
+  const getTitleTableMaxScrollTop = React.useCallback(
+    (element: HTMLElement) =>
+      titleTableVirtualizerRef.current?.getMaxScrollTop(element) ??
+      Math.max(0, element.scrollHeight - element.clientHeight),
+    [],
+  );
   const restoreTitleTableScroll = React.useCallback(
     (nextTop: number) => {
-      titleVirtualizer.scrollToOffset(nextTop);
+      titleTableVirtualizerRef.current?.scrollToOffset(nextTop);
     },
-    [titleVirtualizer],
+    [],
   );
   useOverviewElementScrollRestoration({
     enabled: true,
@@ -362,89 +356,17 @@ export const TitleTable = React.memo(function TitleTable({
   const selectedTitleScrollKey = selectedTitleId
     ? `${selectedTitleId}:${sortKey}:${sortDirection}`
     : null;
-  const autoScrolledSelectedTitleKeyRef = React.useRef<string | null>(null);
-  React.useEffect(() => {
-    if (!selectedTitleId || !selectedTitleScrollKey) {
-      autoScrolledSelectedTitleKeyRef.current = null;
-      return;
-    }
-    if (
-      autoScrolledSelectedTitleKeyRef.current === selectedTitleScrollKey ||
-      sortedTitles.length === 0
-    ) {
-      return;
-    }
-
-    const selectedIndex = sortedTitles.findIndex(
-      (title) => title.id === selectedTitleId,
-    );
-    if (selectedIndex < 0) {
-      return;
-    }
-
-    autoScrolledSelectedTitleKeyRef.current = selectedTitleScrollKey;
-    const frameId = window.requestAnimationFrame(() => {
-      titleVirtualizer.scrollToIndex(selectedIndex, { align: "center" });
-    });
-    return () => {
-      window.cancelAnimationFrame(frameId);
-    };
-  }, [
-    selectedTitleId,
-    selectedTitleScrollKey,
-    sortedTitles,
-    titleVirtualizer,
-  ]);
-
-  React.useEffect(() => {
-    const element = titleTableScrollRef.current;
-    if (
-      !element ||
-      !catalogHasMoreTitles ||
-      catalogLoadingMoreTitles ||
-      !onCatalogEndReached
-    ) {
-      return;
-    }
-
-    const maybeLoadNextPage = () => {
-      if (element.clientHeight <= 0) {
-        return;
-      }
-      const remaining =
-        element.scrollHeight - (element.scrollTop + element.clientHeight);
-      if (remaining <= 1200) {
-        void onCatalogEndReached();
-      }
-    };
-
-    element.addEventListener("scroll", maybeLoadNextPage, { passive: true });
-    return () => {
-      element.removeEventListener("scroll", maybeLoadNextPage);
-    };
-  }, [
-    catalogHasMoreTitles,
-    catalogLoadingMoreTitles,
-    onCatalogEndReached,
-    titles.length,
-  ]);
 
   const handleOpenOverview = React.useCallback(
     (item: OverviewTitleTarget) => {
       persistOverviewScrollValue(
         location.pathname,
         scrollStorageKeySuffix,
-        titleVirtualizer.scrollOffset ?? titleTableScrollRef.current?.scrollTop,
+        titleTableScrollRef.current?.scrollTop,
       );
-      onOpenOverview(overviewTargetView, item);
+      onOpenOverview(resolveOverviewTargetView(view), item);
     },
-    [
-      location.pathname,
-      onOpenOverview,
-      overviewTargetView,
-      scrollStorageKeySuffix,
-      titleVirtualizer.scrollOffset,
-    ],
+    [location.pathname, onOpenOverview, scrollStorageKeySuffix, view],
   );
 
   const handleActivateTitle = React.useCallback(
@@ -457,8 +379,7 @@ export const TitleTable = React.memo(function TitleTable({
         persistOverviewScrollValue(
           location.pathname,
           scrollStorageKeySuffix,
-          titleVirtualizer.scrollOffset ??
-            titleTableScrollRef.current?.scrollTop,
+          titleTableScrollRef.current?.scrollTop,
         );
         onSelectTitle(item);
         return;
@@ -472,7 +393,6 @@ export const TitleTable = React.memo(function TitleTable({
       onToggleSelected,
       scrollStorageKeySuffix,
       selectionMode,
-      titleVirtualizer.scrollOffset,
     ],
   );
 
@@ -1144,15 +1064,6 @@ export const TitleTable = React.memo(function TitleTable({
     </TableHeader>
   );
 
-  const virtualItems = titleVirtualizer.getVirtualItems();
-  const totalVirtualSize = titleVirtualizer.getTotalSize();
-  const firstVirtualItem = virtualItems[0];
-  const lastVirtualItem = virtualItems[virtualItems.length - 1];
-  const topSpacerHeight = firstVirtualItem?.start ?? 0;
-  const bottomSpacerHeight = lastVirtualItem
-    ? Math.max(totalVirtualSize - lastVirtualItem.end, 0)
-    : 0;
-
   if (
     !titleLoading &&
     sortedTitles.length === 0 &&
@@ -1191,45 +1102,27 @@ export const TitleTable = React.memo(function TitleTable({
         >
         {titleTableColGroup}
         {titleTableHeader}
-        {sortedTitles.length > 0 ? (
-          <TableBody className="[&_tr:last-child]:border-0">
-            {topSpacerHeight > 0 ? (
-              <tr aria-hidden>
-                <td
-                  colSpan={columnCount}
-                  style={{ height: topSpacerHeight, padding: 0 }}
-                />
-              </tr>
-            ) : null}
-            {virtualItems.map((virtualRow) => {
-              const item = sortedTitles[virtualRow.index];
-              if (!item) {
-                return null;
-              }
-              return (
-                <React.Fragment key={virtualRow.key}>
-                  {renderTitleRow(item)}
-                </React.Fragment>
-              );
-            })}
-            {bottomSpacerHeight > 0 ? (
-              <tr aria-hidden>
-                <td
-                  colSpan={columnCount}
-                  style={{
-                    height: bottomSpacerHeight,
-                    padding: 0,
-                  }}
-                />
-              </tr>
-            ) : null}
-          </TableBody>
-        ) : titleLoading ? (
-          <TableBody>
+        <VirtualizedTitleTableBody
+          ref={titleTableVirtualizerRef}
+          titles={sortedTitles}
+          scrollRef={titleTableScrollRef}
+          initialScrollOffset={initialScrollOffset}
+          estimateSize={estimateTitleRowSize}
+          overscan={5}
+          rebuildKey={`${
+            selectedPaneMode ? "selected-pane" : "full-table"
+          }:${visibleColumnSignature}:${expandedInteractiveRowSignature}`}
+          selectedTitleId={selectedTitleId}
+          selectedTitleScrollKey={selectedTitleScrollKey}
+          catalogHasMoreTitles={catalogHasMoreTitles}
+          catalogLoadingMoreTitles={catalogLoadingMoreTitles}
+          onCatalogEndReached={onCatalogEndReached}
+          columnCount={columnCount}
+          renderRow={renderTitleRow}
+          emptyContent={
+            titleLoading ? (
             <TitleTableLoadingState colSpan={columnCount} />
-          </TableBody>
-        ) : (
-          <TableBody>
+            ) : (
             <TitleTableEmptyState
               colSpan={columnCount}
               t={t}
@@ -1242,8 +1135,9 @@ export const TitleTable = React.memo(function TitleTable({
               scanDisabled={scanLibraryDisabled}
               scanNotice={scanLibraryNotice}
             />
-          </TableBody>
-        )}
+            )
+          }
+        />
         </table>
       </TooltipProvider>
     </div>

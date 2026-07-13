@@ -55,13 +55,11 @@ function matchesChunkModule(id: string, modules: readonly string[]) {
   return modules.some((moduleId) => id.endsWith(moduleId));
 }
 
-export default defineConfig(({ command, mode }) => ({
+export default defineConfig(({ command }) => ({
   base: command === "serve" ? "/" : "./",
   plugins: [
     react(),
-    ...(mode === "production"
-      ? [babel({ presets: [reactCompilerPreset()] })]
-      : []),
+    babel({ presets: [reactCompilerPreset()] }),
     compression({
       include: /\.(js|css|svg|webmanifest|json)$/i,
       exclude: /service-worker\.js$/,
